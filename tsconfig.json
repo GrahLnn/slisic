@@ -17,13 +17,7 @@
     /* type checking */
     "strict": true,
     "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "types": ["bun-types", "node"],
-
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["./*"]
-    }
+    "noUnusedParameters": true
   },
   "include": ["src"]
 }

@@ -1,34 +1,28 @@
-# Slisic
+# Tauri + React Modern Template
 
-A compact music player built around smart shuffle and consistent listening experience.
+A feature-rich Tauri + React development template, integrated with the latest development tools and frameworks.
 
 ## Features
 
-- Download from most major streaming platforms (powered by yt-dlp), or import from local folders.
-
-- Loudness normalization (LUFS) for consistent volume across tracks.
-
-- Auto split & naming for media with embedded chapters (via FFmpeg).
-
-- Perceptually balanced, user-guided shuffle: probabilities follow your tastes while smoothing spikes, so nothing is overplayed or forgotten.
-
-- Real-time music visualizer.
+- [Tauri](https://tauri.app/) - Build smaller, faster, and more secure desktop applications
+- [Rsbuild](https://rsbuild.dev/) - High-performance build tool
+- [React 19](https://react.dev/) - Latest version of React
+- [Tailwind CSS v4](https://tailwindcss.com/) - Next generation utility-first CSS framework
+- [Bun](https://bun.sh/) - High-performance JavaScript runtime and package manager
+- [React Scan](https://github.com/react-scan/react-scan) - React application performance analysis tool
 
 ## Getting Started
 
-### Development
+### Installation
 
 ```bash
-// Clone the repository
 bun install
-bun tauri dev
 ```
 
-### Validation
+### Development
+
+Start the development server:
 
 ```bash
-bun test ./src/flow/music
-bun run typecheck
-bun run build
-bun run rust:check
+bun tauri dev
 ```

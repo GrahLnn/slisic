@@ -1,8 +1,0 @@
-{
-  "linter": {
-    "enabled": true
-  },
-  "files": {
-    "includes": ["**", "!src/cmd/commands.ts"]
-  }
-}

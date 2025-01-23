@@ -1,101 +1,69 @@
-import "@fontsource/maple-mono";
-import "sileo/styles.css";
+import { useState } from "react";
+import reactLogo from "./assets/react.svg";
+import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
-import { useEffect } from "react";
-import { Toaster } from "sileo";
-import TopBar from "./topbar";
-import Pages from "./pages/pages";
-import {
-	canRenderApp,
-	canStartApp,
-	useBootstrapAppEntryState,
-} from "./bootstrap";
-import { action as musicAction } from "./flow/music";
-import {
-  action as updaterAction,
-  ensureStarted as ensureUpdaterStarted,
-} from "./flow/updater";
-import AudioVisualizerCanvas from "./components/audio/canvas";
-import DevSpectrogramOverlay from "./components/audio/dev_spectrogram_overlay";
-import { ENABLE_DEV_SPECTROGRAM_OVERLAY } from "./components/audio/dev_spectrogram_overlay.logic";
-import Filter from "./components/svg_filter";
-import { setCursorInApp } from "./flow/cursorInApp";
-
-export interface AppShellProps {
-	FilterComponent?: React.ComponentType;
-	AudioVisualizerComponent?: React.ComponentType;
-	DevSpectrogramOverlayComponent?: React.ComponentType;
-	TopBarComponent?: React.ComponentType;
-	PagesComponent?: React.ComponentType;
-	ToasterComponent?: React.ComponentType<{
-		position?:
-			| "top-left"
-			| "top-center"
-			| "top-right"
-			| "bottom-left"
-			| "bottom-center"
-			| "bottom-right";
-	}>;
-	enableDevSpectrogramOverlay?: boolean;
-}
-
-export function AppShell({
-	FilterComponent = Filter,
-	AudioVisualizerComponent = AudioVisualizerCanvas,
-	DevSpectrogramOverlayComponent = DevSpectrogramOverlay,
-	TopBarComponent = TopBar,
-	PagesComponent = Pages,
-	ToasterComponent = Toaster,
-	enableDevSpectrogramOverlay = ENABLE_DEV_SPECTROGRAM_OVERLAY,
-}: AppShellProps) {
-	return (
-		<>
-			<FilterComponent />
-			<AudioVisualizerComponent />
-			{enableDevSpectrogramOverlay ? <DevSpectrogramOverlayComponent /> : null}
-			<div
-				className="flex h-screen flex-col overflow-hidden hide-scrollbar"
-				onMouseEnter={() => setCursorInApp(true)}
-				onMouseLeave={() => setCursorInApp(false)}
-				onContextMenu={
-					!import.meta.env.DEV
-						? (event) => event.preventDefault()
-						: undefined
-				}
-			>
-				<TopBarComponent />
-				<main className="flex flex-1 overflow-hidden hide-scrollbar">
-					<PagesComponent />
-				</main>
-				<ToasterComponent position="bottom-right" />
-			</div>
-		</>
-	);
-}
 
 function App() {
-  const bootstrap = useBootstrapAppEntryState();
-  const shouldStartApp = canStartApp(bootstrap);
-  const shouldRenderApp = canRenderApp(bootstrap);
+	const [greetMsg, setGreetMsg] = useState("");
+	const [name, setName] = useState("");
 
-  useEffect(() => {
-    if (!shouldStartApp) {
-      return;
-    }
+	async function greet() {
+		// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+		setGreetMsg(await invoke("greet", { name }));
+	}
 
-    ensureUpdaterStarted();
-    updaterAction.run();
-    void musicAction.run();
-    return () => {
-      void musicAction.dispose();
-    };
-  }, [shouldStartApp]);
+	return (
+		<main className="flex justify-center flex-col text-center gap-4">
+			<h1>Welcome to Tauri + React</h1>
 
-  if (!shouldRenderApp) {
-    return null;
-  }
+			<div className="flex justify-center">
+				<a href="https://vitejs.dev" target="_blank" rel="noreferrer">
+					<img
+						src="/rsbuild.svg"
+						className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#FFD700]"
+						alt="Vite logo"
+					/>
+				</a>
+				<a href="https://tauri.app" target="_blank" rel="noreferrer">
+					<img
+						src="/tauri.svg"
+						className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#24c8db]"
+						alt="Tauri logo"
+					/>
+				</a>
+				<a href="https://reactjs.org" target="_blank" rel="noreferrer">
+					<img
+						src={reactLogo}
+						className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#61dafb]"
+						alt="React logo"
+					/>
+				</a>
+			</div>
+			<p>Click on the Tauri, Rsbuild, and React logos to learn more.</p>
 
-  return <AppShell />;
+			<form
+				className="flex justify-center"
+				onSubmit={(e) => {
+					e.preventDefault();
+					greet();
+				}}
+			>
+				<input
+					id="greet-input"
+					onChange={(e) => setName(e.currentTarget.value)}
+					placeholder="Enter a name..."
+					className="mr-[5px] rounded-lg border border-transparent px-[1.2em] py-[0.6em] text-base font-medium text-[#0f0f0f] bg-white shadow-[0_2px_2px_rgba(0,0,0,0.2)] transition-[border-color] duration-[0.25s] outline-none dark:text-white dark:bg-[#0f0f0f98]"
+				/>
+				<button
+					className="rounded-lg border border-transparent px-[1.2em] py-[0.6em] text-base font-medium text-[#0f0f0f] bg-white shadow-[0_2px_2px_rgba(0,0,0,0.2)] transition-[border-color] duration-[0.25s] cursor-pointer outline-none hover:border-[#396cd8] active:border-[#396cd8] active:bg-[#e8e8e8] dark:text-white dark:bg-[#0f0f0f98] dark:active:bg-[#0f0f0f69]"
+					type="submit"
+				>
+					Greet
+				</button>
+			</form>
+			<p>{greetMsg}</p>
+		</main>
+	);
 }
 
 export default App;
