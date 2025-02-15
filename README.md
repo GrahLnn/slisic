@@ -10,6 +10,8 @@ A feature-rich Tauri + React development template, integrated with the latest de
 - [Tailwind CSS v4](https://tailwindcss.com/) - Next generation utility-first CSS framework
 - [Bun](https://bun.sh/) - High-performance JavaScript runtime and package manager
 - [React Scan](https://github.com/react-scan/react-scan) - React application performance analysis tool
+- [shadcn/ui](https://ui.shadcn.com/docs) - Beautifully designed components built with Radix UI and Tailwind CSS
+- [tauri-specta](https://github.com/specta-rs/tauri-specta) - Generate TypeScript bindings for Tauri commands and events
 
 ## Getting Started
 
@@ -25,4 +27,10 @@ Start the development server:
 
 ```bash
 bun tauri dev
+```
+
+Add a shadcn component:
+
+```bash
+bunx --bun shadcn@latest add [components]
 ```
