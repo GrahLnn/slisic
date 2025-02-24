@@ -86,12 +86,14 @@ function WindowsControls() {
   return (
     <div className="flex items-center">
       <TopBarButton onClick={() => appWindow.minimize()}>
-        {icons.minus({ size: 14 })}
+        <icons.minus size={14} />
       </TopBarButton>
       <TopBarButton onClick={() => appWindow.toggleMaximize()}>
-        {maximized
-          ? icons.stacksquare({ size: 14 })
-          : icons.square({ size: 14 })}
+        {maximized ? (
+          <icons.stacksquare size={14} />
+        ) : (
+          <icons.square size={14} />
+        )}
       </TopBarButton>
       <TopBarButton
         onClick={() => appWindow.close()}
@@ -99,7 +101,7 @@ function WindowsControls() {
         className="pr-0.5"
         emphasizeColor="#f0f0f0"
       >
-        {icons.xmark({})}
+        <icons.xmark />
       </TopBarButton>
     </div>
   );
