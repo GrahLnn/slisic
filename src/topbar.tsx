@@ -98,7 +98,6 @@ function WindowsControls() {
       <TopBarButton
         onClick={() => appWindow.close()}
         color="#e81123"
-        className="pr-0.5"
         emphasizeColor="#f0f0f0"
       >
         <icons.xmark />
