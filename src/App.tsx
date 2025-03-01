@@ -1,7 +1,7 @@
 import { useState } from "react";
 import reactLogo from "./assets/react.svg";
 import "./App.css";
-import { commands } from "./commands";
+import { cmdAdapter } from "./commandAdapter";
 import TopBar from "./topbar";
 
 function App() {
@@ -10,7 +10,7 @@ function App() {
 
   async function greet() {
     // using tauri-specta automatically generates bindings for you
-    setGreetMsg(await commands.greet(name));
+    setGreetMsg(await cmdAdapter.greet(name));
   }
 
   return (
