@@ -1,13 +1,23 @@
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
 import { Window } from "@tauri-apps/api/window";
 import { platform } from "@tauri-apps/plugin-os";
 import {
+  type KeyboardEvent,
   type PropsWithChildren,
+  memo,
   useCallback,
   useEffect,
   useState,
-  type KeyboardEvent,
 } from "react";
 
 const appWindow = new Window("main");
@@ -141,15 +151,72 @@ function CtrlButton({
   );
 }
 
-function LeftControls() {
+interface DropdownMenuItemProps {
+  name: string;
+  shortcut?: string;
+  fn?: () => void;
+  data?: React.ReactNode;
+}
+
+interface DropdownButtonProps extends PropsWithChildren {
+  p?: string;
+  o?: string;
+  className?: string;
+  label?: string | React.ReactNode;
+  items?: Array<DropdownMenuItemProps>;
+}
+
+function DropdownButton({
+  children,
+  label,
+  items,
+  p,
+  o,
+  className,
+}: DropdownButtonProps) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        className={cn([
+          "focus:outline-none focus:ring-0 focus:border-0",
+          "rounded-md cursor-default",
+          p || "p-2",
+          o || "opacity-60",
+          "hover:bg-black/5 dark:hover:bg-white/5 hover:opacity-100 transition-all duration-300 ease-in-out",
+          "data-[state=open]:bg-black/5 dark:data-[state=open]:bg-white/5 data-[state=open]:opacity-100",
+          className,
+        ])}
+      >
+        {children}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="w-56">
+        {label && <DropdownMenuLabel>{label}</DropdownMenuLabel>}
+        {label && <DropdownMenuSeparator />}
+        {items?.map((item) => (
+          <>
+            <DropdownMenuItem key={item.name} onClick={item.fn}>
+              {item.name}
+              {item.shortcut && (
+                <DropdownMenuShortcut>{item.shortcut}</DropdownMenuShortcut>
+              )}
+            </DropdownMenuItem>
+            {item.data}
+          </>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+const LeftControls = memo(() => {
   return (
     <div className="flex items-center px-2">
       <img src="/tauri.svg" className="h-4 " alt="Tauri logo" />
     </div>
   );
-}
+});
 
-function RightControls() {
+const RightControls = memo(() => {
   return (
     <div className="flex items-center">
       <CtrlButton>
@@ -166,9 +233,15 @@ function RightControls() {
       <WindowsControls />
     </div>
   );
-}
+});
 
-function MiddleControls() {
+const settingsItems = [
+  { name: "Preferences", fn: () => {} },
+  { name: "Help", fn: () => {} },
+  { name: "Upgrade to pro", fn: () => {} },
+];
+
+const MiddleControls = memo(() => {
   return (
     <div className={cn(["flex items-center h-full"])}>
       <CtrlButton>
@@ -176,16 +249,16 @@ function MiddleControls() {
       </CtrlButton>
 
       <CtrlButton className="text-xs font-light" o="opacity-80" p="py-2 px-5">
-        <span>A useful app</span>
+        <span>a tauri app</span>
       </CtrlButton>
-      <CtrlButton>
+      <DropdownButton label="Settings" items={settingsItems}>
         <icons.sliders size={14} />
-      </CtrlButton>
+      </DropdownButton>
     </div>
   );
-}
+});
 
-export default function TopBar() {
+const TopBar = memo(() => {
   const [windowFocused, setWindowFocused] = useState(true);
 
   useEffect(() => {
@@ -239,4 +312,6 @@ export default function TopBar() {
       )}
     </>
   );
-}
+});
+
+export default TopBar;

@@ -1,18 +1,100 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
+import { cn } from "@/lib/utils";
+import { memo, useState } from "react";
 import "./App.css";
-import { cmdAdapter } from "./commandAdapter";
+import reactLogo from "./assets/react.svg";
+import Input from "./components/Input";
 import TopBar from "./topbar";
+import { cmdAdapter } from "./utils/commandAdapter";
 
-function App() {
+const GreetForm = memo(() => {
   const [greetMsg, setGreetMsg] = useState("");
   const [name, setName] = useState("");
 
   async function greet() {
-    // using tauri-specta automatically generates bindings for you
-    setGreetMsg(await cmdAdapter.greet(name));
+    if (name === "") {
+      setGreetMsg("Your name?");
+      return;
+    }
+    const res = await cmdAdapter.greet(name);
+    res.match({
+      ok: (value) => {
+        setGreetMsg(value);
+        setName("");
+      },
+      err: (error) => setGreetMsg(`Error: ${error}`),
+    });
   }
 
+  async function clean() {
+    const res = await cmdAdapter.clean();
+    res.match({
+      ok: (value) => {
+        setGreetMsg(value);
+        setName("");
+      },
+      err: (error) => setGreetMsg(`Error: ${error}`),
+    });
+  }
+
+  return (
+    <>
+      <form
+        className="flex justify-center"
+        onSubmit={(e) => {
+          e.preventDefault();
+          greet();
+        }}
+      >
+        <Input
+          id="greet-input"
+          value={name}
+          onChange={(e) => setName(e.currentTarget.value)}
+          placeholder="Enter a name..."
+          className={cn(
+            "mr-[5px] rounded-lg border border-transparent",
+            "px-[1.2em] py-[0.6em]",
+            "text-base font-medium text-[#0f0f0f] bg-white",
+            "shadow-[0_2px_2px_rgba(0,0,0,0.2)] transition-[border-color] duration-[0.25s]",
+            "outline-none",
+            "dark:text-white dark:bg-[#0f0f0f98] dark:border-[#171717]"
+          )}
+        />
+        <button
+          className={cn(
+            "rounded-lg border outline-none cursor-pointer",
+            "px-[1.2em] py-[0.6em]",
+            "border-transparent text-[#0f0f0f] bg-white",
+            "text-base font-medium",
+            "shadow-[0_2px_2px_rgba(0,0,0,0.2)] transition-[border-color] duration-[0.25s]",
+            "hover:border-[#396cd8] active:border-[#396cd8] active:bg-[#e8e8e8]",
+            "dark:text-white dark:bg-[#0f0f0f98] dark:active:bg-[#0f0f0f69]"
+          )}
+          type="submit"
+        >
+          Greet
+        </button>
+        <button
+          className={cn(
+            "rounded-lg border outline-none cursor-pointer",
+            "px-[1.2em] py-[0.6em]",
+            "border-transparent text-[#0f0f0f] bg-white",
+            "text-base font-medium",
+            "shadow-[0_2px_2px_rgba(0,0,0,0.2)] transition-[border-color] duration-[0.25s]",
+            "hover:border-[#396cd8] active:border-[#396cd8] active:bg-[#e8e8e8]",
+            "dark:text-white dark:bg-[#0f0f0f98] dark:active:bg-[#0f0f0f69]"
+          )}
+          type="reset"
+          onClick={clean}
+        >
+          Clean
+        </button>
+      </form>
+      <p className="min-h-[1.5rem] mt-2">{greetMsg}</p>
+    </>
+  );
+});
+
+function App() {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <TopBar />
@@ -44,27 +126,7 @@ function App() {
         </div>
         <p>Click on the Tauri, Rsbuild, and React logos to learn more.</p>
 
-        <form
-          className="flex justify-center"
-          onSubmit={(e) => {
-            e.preventDefault();
-            greet();
-          }}
-        >
-          <input
-            id="greet-input"
-            onChange={(e) => setName(e.currentTarget.value)}
-            placeholder="Enter a name..."
-            className="mr-[5px] rounded-lg border border-transparent px-[1.2em] py-[0.6em] text-base font-medium text-[#0f0f0f] bg-white shadow-[0_2px_2px_rgba(0,0,0,0.2)] transition-[border-color] duration-[0.25s] outline-none dark:text-white dark:bg-[#0f0f0f98]"
-          />
-          <button
-            className="rounded-lg border border-transparent px-[1.2em] py-[0.6em] text-base font-medium text-[#0f0f0f] bg-white shadow-[0_2px_2px_rgba(0,0,0,0.2)] transition-[border-color] duration-[0.25s] cursor-pointer outline-none hover:border-[#396cd8] active:border-[#396cd8] active:bg-[#e8e8e8] dark:text-white dark:bg-[#0f0f0f98] dark:active:bg-[#0f0f0f69]"
-            type="submit"
-          >
-            Greet
-          </button>
-        </form>
-        <p>{greetMsg}</p>
+        <GreetForm />
       </main>
     </div>
   );
