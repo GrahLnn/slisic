@@ -211,7 +211,7 @@ function DropdownButton({
 const LeftControls = memo(() => {
   return (
     <div className="flex items-center px-2">
-      <img src="/tauri.svg" className="h-4 " alt="Tauri logo" />
+      <img src="/tauri.svg" className="h-4 opacity-60" alt="Tauri logo" />
     </div>
   );
 });
