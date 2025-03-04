@@ -8,7 +8,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import { icons } from "@/src/assets/icons";
+import { icons, logos } from "@/src/assets/icons";
 import { Window } from "@tauri-apps/api/window";
 import { platform } from "@tauri-apps/plugin-os";
 import {
@@ -137,7 +137,7 @@ function CtrlButton({
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: <explanation> */}
       <div
         className={cn([
-          "rounded-md cursor-default",
+          "rounded-md cursor-default h-8 flex items-center",
           p || "p-2",
           o || "opacity-60",
           "hover:bg-black/5 dark:hover:bg-white/5 hover:opacity-100 transition-all duration-300 ease-in-out",
@@ -189,12 +189,16 @@ function DropdownButton({
       >
         {children}
       </DropdownMenuTrigger>
-      <DropdownMenuContent className="w-56">
+      <DropdownMenuContent className="w-56 bg-popover/80 backdrop-filter backdrop-blur-[16px]">
         {label && <DropdownMenuLabel>{label}</DropdownMenuLabel>}
         {label && <DropdownMenuSeparator />}
         {items?.map((item) => (
           <>
-            <DropdownMenuItem key={item.name} onClick={item.fn}>
+            <DropdownMenuItem
+              className="focus:bg-accent/60"
+              key={item.name}
+              onClick={item.fn}
+            >
               {item.name}
               {item.shortcut && (
                 <DropdownMenuShortcut>{item.shortcut}</DropdownMenuShortcut>
@@ -211,7 +215,7 @@ function DropdownButton({
 const LeftControls = memo(() => {
   return (
     <div className="flex items-center px-2">
-      <img src="/tauri.svg" className="h-4 opacity-60" alt="Tauri logo" />
+      <logos.tauri className="h-4 w-4 opacity-60 text-[var(--content)]" />
     </div>
   );
 });
@@ -248,8 +252,8 @@ const MiddleControls = memo(() => {
         <icons.gridCircle size={14} />
       </CtrlButton>
 
-      <CtrlButton className="text-xs font-light" o="opacity-80" p="py-2 px-5">
-        <span>a tauri app</span>
+      <CtrlButton className="text-xs font-light" o="opacity-80" p="px-5">
+        <div className="text-trim-cap">a tauri app</div>
       </CtrlButton>
       <DropdownButton label="Settings" items={settingsItems}>
         <icons.sliders size={14} />

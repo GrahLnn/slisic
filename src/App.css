@@ -39,6 +39,7 @@ input::-webkit-credentials-auto-fill-button {
     0 6px 12px rgba(0, 0, 0, 0.06);
   --card-bg: #f8f9fa;
   --app-bg: #f5f8fa;
+  --content: #1a1a1a;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -64,6 +65,7 @@ input::-webkit-credentials-auto-fill-button {
     --ring: hsl(240 3.8% 46.1%);
     --card-bg: #171717;
     --app-bg: #0a0a0a;
+    --content: #ebebeb;
   }
 }
 
@@ -121,4 +123,12 @@ h1 {
   body {
     @apply bg-background text-foreground;
   }
+}
+
+.text-trim-ex {
+  text-box: ex alphabetic;
+}
+
+.text-trim-cap {
+  text-box: cap alphabetic;
 }
