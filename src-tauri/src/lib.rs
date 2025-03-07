@@ -24,7 +24,7 @@ pub fn run() {
             Typescript::default()
                 .formatter(prettier)
                 .header("/* eslint-disable */"),
-            "../src/utils/commands.ts",
+            "../src/cmd/commands.ts",
         )
         .expect("Failed to export typescript bindings");
 

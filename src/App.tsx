@@ -4,7 +4,7 @@ import "./App.css";
 import reactLogo from "./assets/react.svg";
 import Input from "./components/Input";
 import TopBar from "./topbar";
-import { cmdAdapter } from "./utils/commandAdapter";
+import { cmdAdapter } from "./cmd/commandAdapter";
 
 const GreetForm = memo(() => {
   const [greetMsg, setGreetMsg] = useState("");
@@ -39,7 +39,7 @@ const GreetForm = memo(() => {
   return (
     <>
       <form
-        className="flex justify-center"
+        className="flex justify-center gap-2"
         onSubmit={(e) => {
           e.preventDefault();
           greet();
@@ -51,7 +51,7 @@ const GreetForm = memo(() => {
           onChange={(e) => setName(e.currentTarget.value)}
           placeholder="Enter a name..."
           className={cn(
-            "mr-[5px] rounded-lg border border-transparent",
+            "rounded-lg border border-transparent",
             "px-[1.2em] py-[0.6em]",
             "text-base font-medium text-[#0f0f0f] bg-white",
             "shadow-[0_2px_2px_rgba(0,0,0,0.2)] transition-[border-color] duration-[0.25s]",

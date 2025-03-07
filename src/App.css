@@ -132,3 +132,21 @@ h1 {
 .text-trim-cap {
   text-box: cap alphabetic;
 }
+
+#window-blur-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 10000;
+  pointer-events: auto !important;
+  background-color: transparent;
+}
+
+#windows-control-portal {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 99999;
+}

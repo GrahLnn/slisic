@@ -9,113 +9,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { icons, logos } from "@/src/assets/icons";
-import { Window } from "@tauri-apps/api/window";
 import { platform } from "@tauri-apps/plugin-os";
-import {
-  type KeyboardEvent,
-  type PropsWithChildren,
-  memo,
-  useCallback,
-  useEffect,
-  useState,
-} from "react";
+import React, { memo, useEffect, type PropsWithChildren } from "react";
+import { useWindowFocus } from "./state_machine/windowFocus";
 
-const appWindow = new Window("main");
 const os = platform();
-
-interface WindowsButtonProps extends PropsWithChildren {
-  onClick?: () => void;
-  className?: string;
-  title?: string;
-  color?: string;
-  emphasizeColor?: string;
-}
-
-function WindowsButton({
-  children,
-  onClick,
-  title,
-  color,
-  className,
-  emphasizeColor,
-}: WindowsButtonProps) {
-  const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key === "Enter" || event.key === " ") {
-      onClick?.();
-    }
-  };
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      onKeyDown={handleKeyDown}
-      className={cn(
-        "h-8 w-[46px] flex items-center justify-center",
-        "opacity-60 hover:opacity-100",
-        "transition-all",
-        color
-          ? "hover:bg-[var(--hover-bg-color)] hover:text-[var(--hover-text-color)]"
-          : "hover:bg-black/5 dark:hover:bg-white/5",
-        className
-      )}
-      style={{
-        ...(color
-          ? ({ "--hover-bg-color": color } as React.CSSProperties)
-          : {}),
-        ...(emphasizeColor
-          ? ({ "--hover-text-color": emphasizeColor } as React.CSSProperties)
-          : {}),
-      }}
-      title={title}
-      tabIndex={0}
-    >
-      {children}
-    </button>
-  );
-}
-
-function WindowsControls() {
-  const [maximized, setMaximized] = useState(false);
-  const getWindowState = useCallback(async () => {
-    const isMaximized = await Window.getCurrent().isMaximized();
-    setMaximized(isMaximized);
-  }, []);
-
-  useEffect(() => {
-    getWindowState().catch(console.error);
-
-    const unlisten = Window.getCurrent().onResized(() => {
-      getWindowState().catch(console.error);
-    });
-
-    return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
-    };
-  }, [getWindowState]);
-
-  return (
-    <div className="flex items-center">
-      <WindowsButton onClick={() => appWindow.minimize()}>
-        <icons.minus size={14} />
-      </WindowsButton>
-      <WindowsButton onClick={() => appWindow.toggleMaximize()}>
-        {maximized ? (
-          <icons.stacksquare size={14} />
-        ) : (
-          <icons.square size={14} />
-        )}
-      </WindowsButton>
-      <WindowsButton
-        onClick={() => appWindow.close()}
-        color="#e81123"
-        emphasizeColor="#f0f0f0"
-      >
-        <icons.xmark />
-      </WindowsButton>
-    </div>
-  );
-}
 
 interface CtrlButtonProps {
   children: React.ReactNode;
@@ -193,7 +91,7 @@ function DropdownButton({
         {label && <DropdownMenuLabel>{label}</DropdownMenuLabel>}
         {label && <DropdownMenuSeparator />}
         {items?.map((item) => (
-          <>
+          <React.Fragment key={item.name}>
             <DropdownMenuItem
               className="focus:bg-accent/60"
               key={item.name}
@@ -205,7 +103,7 @@ function DropdownButton({
               )}
             </DropdownMenuItem>
             {item.data}
-          </>
+          </React.Fragment>
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
@@ -214,8 +112,8 @@ function DropdownButton({
 
 const LeftControls = memo(() => {
   return (
-    <div className="flex items-center px-2">
-      <logos.tauri className="h-4 w-4 opacity-60 text-[var(--content)]" />
+    <div className="flex items-center px-2 text-[var(--content)]">
+      <logos.tauri className="h-4 w-4 opacity-60" />
     </div>
   );
 });
@@ -234,7 +132,7 @@ const RightControls = memo(() => {
         <icons.arrowDown size={14} />
       </CtrlButton>
 
-      <WindowsControls />
+      <div className="w-[138px]" />
     </div>
   );
 });
@@ -263,34 +161,71 @@ const MiddleControls = memo(() => {
 });
 
 const TopBar = memo(() => {
-  const [windowFocused, setWindowFocused] = useState(true);
+  const windowFocused = useWindowFocus();
 
   useEffect(() => {
-    const handleFocus = () => setWindowFocused(true);
-    const handleBlur = () => setWindowFocused(false);
-    window.addEventListener("focus", handleFocus);
-    window.addEventListener("blur", handleBlur);
+    if (!windowFocused) {
+      document.body.setAttribute("window-blur", "");
+
+      // 创建遮罩层
+      const overlay = document.createElement("div");
+      overlay.id = "window-blur-overlay";
+      overlay.className = "window-blur-overlay";
+
+      // 添加事件监听器以捕获所有事件
+      const blockEvent = (e: Event) => {
+        e.stopPropagation();
+        e.preventDefault();
+      };
+
+      overlay.addEventListener("mousedown", blockEvent, true);
+      overlay.addEventListener("mouseup", blockEvent, true);
+      overlay.addEventListener("click", blockEvent, true);
+      overlay.addEventListener("dblclick", blockEvent, true);
+      overlay.addEventListener("contextmenu", blockEvent, true);
+      overlay.addEventListener("wheel", blockEvent, true);
+      overlay.addEventListener("touchstart", blockEvent, true);
+      overlay.addEventListener("touchend", blockEvent, true);
+      overlay.addEventListener("touchmove", blockEvent, true);
+      overlay.addEventListener("keydown", blockEvent, true);
+      overlay.addEventListener("keyup", blockEvent, true);
+
+      document.body.appendChild(overlay);
+    } else {
+      document.body.removeAttribute("window-blur");
+
+      // 移除遮罩层
+      const overlay = document.getElementById("window-blur-overlay");
+      if (overlay) {
+        document.body.removeChild(overlay);
+      }
+    }
+
+    // 清理函数
     return () => {
-      window.removeEventListener("focus", handleFocus);
-      window.removeEventListener("blur", handleBlur);
+      const overlay = document.getElementById("window-blur-overlay");
+      if (overlay) {
+        document.body.removeChild(overlay);
+      }
     };
-  }, []);
+  }, [windowFocused]);
 
   return (
     <>
       {os === "windows" && (
-        <header
+        <div
           className={cn([
-            "absolute top-0 left-0",
-            "w-screen h-8 z-100 select-none",
+            "fixed top-0 left-0 flex",
+            "w-screen h-8 z-[9999] select-none",
             "before:absolute before:inset-0 before:-z-10",
             "before:bg-gradient-to-b before:from-[var(--app-bg)] before:to-[var(--app-bg)]/60",
+            "before:transition-colors before:duration-300",
             "after:absolute after:inset-0 after:-z-10",
             "after:backdrop-blur-[16px] after:opacity-100 after:origin-top",
             "after:bg-gradient-to-b after:from-transparent after:via-transparent after:to-white/0",
             "after:mask-image-[linear-gradient(to_bottom,rgba(0,0,0,1)_0%,rgba(0,0,0,0)_100%)]",
+            "after:transition-all after:duration-300",
           ])}
-          data-tauri-drag-region
         >
           <div
             className={cn([
@@ -299,20 +234,17 @@ const TopBar = memo(() => {
               "transition-all duration-300",
             ])}
           >
-            <div
-              data-tauri-drag-region="false"
-              className="flex justify-start pl-1"
-            >
+            <div data-tauri-drag-region className="flex justify-start pl-1">
               <LeftControls />
             </div>
-            <div data-tauri-drag-region="false">
+            <div data-tauri-drag-region>
               <MiddleControls />
             </div>
-            <div data-tauri-drag-region="false" className="flex justify-end">
+            <div data-tauri-drag-region className="flex justify-end">
               <RightControls />
             </div>
           </div>
-        </header>
+        </div>
       )}
     </>
   );

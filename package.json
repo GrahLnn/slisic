@@ -9,30 +9,32 @@
   },
   "dependencies": {
     "@radix-ui/react-dropdown-menu": "^2.1.6",
-    "@tailwindcss/postcss": "^4.0.9",
-    "@tauri-apps/api": "^2.2.0",
+    "@tailwindcss/postcss": "^4.0.11",
+    "@tauri-apps/api": "^2.3.0",
     "@tauri-apps/plugin-os": "~2.2.0",
     "@tauri-apps/plugin-shell": "~2.2.0",
     "@types/punycode": "^2.1.4",
-    "arktype": "^2.1.0",
+    "@xstate/react": "^5.0.2",
+    "arktype": "^2.1.7",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.475.0",
-    "motion": "^12.4.7",
+    "motion": "^12.4.10",
     "postcss": "^8.5.3",
     "punycode": "^2.3.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwind-merge": "^3.0.2",
-    "tailwindcss": "^4.0.9",
-    "tailwindcss-animate": "^1.0.7"
+    "tailwindcss": "^4.0.11",
+    "tailwindcss-animate": "^1.0.7",
+    "xstate": "^5.19.2"
   },
   "devDependencies": {
-    "@rsbuild/core": "^1.2.11",
+    "@rsbuild/core": "^1.2.15",
     "@rsbuild/plugin-react": "^1.1.1",
-    "@tauri-apps/cli": "^2.2.7",
+    "@tauri-apps/cli": "^2.3.1",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
-    "typescript": "^5.7.3"
+    "typescript": "^5.8.2"
   }
 }

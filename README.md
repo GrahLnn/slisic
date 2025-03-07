@@ -13,6 +13,7 @@ A feature-rich Tauri + React development template, integrated with the latest de
 - [shadcn/ui](https://ui.shadcn.com/docs) - Beautifully designed components built with Radix UI and Tailwind CSS
 - [tauri-specta](https://github.com/specta-rs/tauri-specta) - Generate TypeScript bindings for Tauri commands and events
 - [surrealdb](https://surrealdb.com/) - A NoSQL database designed for the next generation of applications
+- [xstate](https://xstate.js.org/) - A state management library for React, using state machines
 
 ## Getting Started
 
