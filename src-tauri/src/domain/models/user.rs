@@ -1,5 +1,5 @@
 use crate::database::core::{Curd, HasId};
-use crate::domain::enums::table::Table;
+use crate::database::enums::table::Table;
 use anyhow::Error;
 use serde::{Deserialize, Serialize};
 use specta::Type;

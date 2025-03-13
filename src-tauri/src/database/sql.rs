@@ -1,3 +1,5 @@
+use super::enums::table::Table;
+
 pub struct QueryTemplate {
     pub query: &'static str,
 }
@@ -21,5 +23,9 @@ impl Queries {
                 query: "UPDATE users SET status = $1 WHERE id = $2",
             },
         }
+    }
+    pub fn range_query(table: Table, start: i64, end: i64) -> String {
+        let table_name = table.as_str();
+        format!("SELECT * FROM {table_name}:{start}..={end};")
     }
 }

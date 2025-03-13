@@ -125,11 +125,13 @@ h1 {
   }
 }
 
-.text-trim-ex {
+.trim-ex {
+  /* biome-ignore lint/correctness/noUnknownProperty: <explanation> */
   text-box: ex alphabetic;
 }
 
-.text-trim-cap {
+.trim-cap {
+  /* biome-ignore lint/correctness/noUnknownProperty: <explanation> */
   text-box: cap alphabetic;
 }
 

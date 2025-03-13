@@ -5,6 +5,7 @@ import reactLogo from "./assets/react.svg";
 import Input from "./components/Input";
 import TopBar from "./topbar";
 import { cmdAdapter } from "./cmd/commandAdapter";
+import { Scrollbar } from "./components/scrollbar/scrollbar";
 
 const GreetForm = memo(() => {
   const [greetMsg, setGreetMsg] = useState("");
@@ -128,6 +129,7 @@ function App() {
 
         <GreetForm />
       </main>
+      <Scrollbar />
     </div>
   );
 }
