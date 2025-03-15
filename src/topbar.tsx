@@ -35,7 +35,7 @@ function CtrlButton({
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: <explanation> */}
       <div
         className={cn([
-          "rounded-md cursor-default h-8 flex items-center",
+          "rounded-md cursor-default h-8 flex items-center justify-center",
           p || "p-2",
           o || "opacity-60",
           "hover:bg-black/5 dark:hover:bg-white/5 hover:opacity-100 transition-all duration-300 ease-in-out",
@@ -88,7 +88,11 @@ function DropdownButton({
         {children}
       </DropdownMenuTrigger>
       <DropdownMenuContent className="w-56 bg-popover/80 backdrop-filter backdrop-blur-[16px]">
-        {label && <DropdownMenuLabel>{label}</DropdownMenuLabel>}
+        {label && (
+          <DropdownMenuLabel className="cursor-default select-none">
+            {label}
+          </DropdownMenuLabel>
+        )}
         {label && <DropdownMenuSeparator />}
         {items?.map((item) => (
           <React.Fragment key={item.name}>
@@ -146,13 +150,19 @@ const settingsItems = [
 const MiddleControls = memo(() => {
   return (
     <div className={cn(["flex items-center h-full"])}>
-      <CtrlButton>
+      <DropdownButton label="Page Nav" items={settingsItems}>
         <icons.gridCircle size={14} />
-      </CtrlButton>
+      </DropdownButton>
 
-      <CtrlButton className="text-xs font-light" o="opacity-80" p="px-5">
-        <div className="text-trim-cap">a tauri app</div>
-      </CtrlButton>
+      <DropdownButton
+        label="User Preferences"
+        items={settingsItems}
+        className="text-xs font-light h-8"
+        o="opacity-80"
+        p="px-5"
+      >
+        <div className="text-trim-cap">a taur i app</div>
+      </DropdownButton>
       <DropdownButton label="Settings" items={settingsItems}>
         <icons.sliders size={14} />
       </DropdownButton>
