@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
 /* @custom-variant dark (&:is(.dark *)); */
 
@@ -151,4 +152,26 @@ h1 {
   top: 0;
   right: 0;
   z-index: 99999;
+}
+
+.lightbox-shadow {
+  --shadow-color: 0deg 0% 47%;
+  box-shadow: 0 0 10px hsl(var(--shadow-color) / 0.3),
+    0 0 30px hsl(var(--shadow-color) / 0.67);
+}
+
+@media (prefers-color-scheme: dark) {
+  .lightbox-shadow {
+    --shadow-color: 0deg 0% 47%;
+    box-shadow: 0 0 10px hsl(var(--shadow-color) / 0.3),
+      0 0 30px hsl(var(--shadow-color) / 0.67);
+  }
+}
+
+[data-rounded-scroll='true'] div::-webkit-scrollbar {
+  display: none;
+}
+[data-rounded-scroll='true'] div {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }

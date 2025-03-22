@@ -4,7 +4,7 @@ import "./App.css";
 import reactLogo from "./assets/react.svg";
 import Input from "./components/Input";
 import TopBar from "./topbar";
-import { cmdAdapter } from "./cmd/commandAdapter";
+import { cmd } from "./cmd/commandAdapter";
 import { Scrollbar } from "./components/scrollbar/scrollbar";
 
 const GreetForm = memo(() => {
@@ -16,7 +16,7 @@ const GreetForm = memo(() => {
       setGreetMsg("Your name?");
       return;
     }
-    const res = await cmdAdapter.greet(name);
+    const res = await cmd.greet(name);
     res.match({
       ok: (value) => {
         setGreetMsg(value);
@@ -27,7 +27,7 @@ const GreetForm = memo(() => {
   }
 
   async function clean() {
-    const res = await cmdAdapter.clean();
+    const res = await cmd.clean();
     res.match({
       ok: (value) => {
         setGreetMsg(value);

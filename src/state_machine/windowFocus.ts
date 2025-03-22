@@ -1,30 +1,31 @@
 import { useSelector } from "@xstate/react";
-import {
-  type AnyActorLogic,
-  createActor,
-  createMachine,
-  fromCallback,
-} from "xstate";
+import { createActor, createMachine, fromCallback } from "xstate";
+import { createStateAndSignals } from "./core";
 
-export const windowFocusMachine: AnyActorLogic = createMachine({
+const { State, Signal } = createStateAndSignals({
+  states: ["focused", "blurred"],
+  signals: ["FOCUS", "BLUR"],
+});
+
+export const windowFocusMachine = createMachine({
   /**
    * 这里不需要复杂的上下文，就简单用两个状态表示
    * "focused" 与 "blurred"。
    */
   id: "windowFocus",
-  initial: "focused",
+  initial: State.focused,
   states: {
-    focused: {
+    [State.focused]: {
       on: {
-        BLUR: {
-          target: "blurred",
+        [Signal.blur.into()]: {
+          target: State.blurred,
         },
       },
     },
-    blurred: {
+    [State.blurred]: {
       on: {
-        FOCUS: {
-          target: "focused",
+        [Signal.focus.into()]: {
+          target: State.focused,
         },
       },
     },
@@ -37,10 +38,10 @@ export const windowFocusMachine: AnyActorLogic = createMachine({
     src: fromCallback(({ sendBack }) => {
       // 事件回调
       function handleFocus() {
-        sendBack({ type: "FOCUS" });
+        sendBack(Signal.focus);
       }
       function handleBlur() {
-        sendBack({ type: "BLUR" });
+        sendBack(Signal.blur);
       }
 
       // 组件或应用加载后，添加事件监听
@@ -62,14 +63,13 @@ const windowFocusActor = createActor(windowFocusMachine);
 windowFocusActor.start();
 
 /**
- * 自定义Hook，用于获取窗口焦点状态
+ * 获取窗口焦点状态
  * @returns 当前窗口是否处于焦点状态
  */
-export function useWindowFocus(): boolean {
-  // 使用useSelector从状态机中获取当前状态
-  const isFocused = useSelector(windowFocusActor, (state) =>
-    state.matches("focused")
+export function isWindowFocus(): boolean {
+  return useSelector(windowFocusActor, (machineState) =>
+    machineState.matches(State.focused)
   );
-
-  return isFocused;
 }
+
+

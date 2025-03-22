@@ -13,7 +13,7 @@ type CommandReturnType<K extends CommandKey> = ReturnType<
 /**
  * 创建一个代理对象，自动将所有命令的返回值转换为自定义Result类型
  */
-export const cmdAdapter = new Proxy(
+export const cmd = new Proxy(
   {} as {
     [K in CommandKey]: (
       ...args: Parameters<CommandsType[K]>
@@ -26,7 +26,7 @@ export const cmdAdapter = new Proxy(
       : ReturnType<CommandsType[K]>;
   },
   {
-    get: (target, prop: string) => {
+    get: (_, prop: string) => {
       // 如果属性不是commands的方法，返回undefined
       if (!(prop in commands)) {
         return undefined;
@@ -34,7 +34,7 @@ export const cmdAdapter = new Proxy(
 
       // 返回一个包装函数
       // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-            return async (...args: any[]) => {
+      return async (...args: any[]) => {
         try {
           // biome-ignore lint/suspicious/noExplicitAny: <explanation>
           const originalResult = await (commands as any)[prop](...args);
