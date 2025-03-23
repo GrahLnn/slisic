@@ -4,7 +4,7 @@ import "./App.css";
 import reactLogo from "./assets/react.svg";
 import Input from "./components/Input";
 import TopBar from "./topbar";
-import { cmd } from "./cmd/commandAdapter";
+import cmd from "./cmd";
 import { Scrollbar } from "./components/scrollbar/scrollbar";
 
 const GreetForm = memo(() => {
