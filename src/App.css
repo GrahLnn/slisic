@@ -98,7 +98,7 @@ body {
   @apply font-body;
   @apply text-[#090909] dark:text-[#f6f6f6];
 
-  @apply bg-[var(--app-bg)] transition;
+  @apply bg-[var(--app-bg)] transition duration-500 ease-in-out;
 }
 
 #root {

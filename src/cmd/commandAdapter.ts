@@ -1,5 +1,5 @@
-import { commands, type Result as SpectaResult } from "./commands";
-import { Ok, Err, type Result } from "@/lib/result";
+import { Err, Ok, type Result } from "@/lib/result";
+import { type Result as SpectaResult, commands } from "./commands";
 
 // 类型定义
 type CommandsType = typeof commands;

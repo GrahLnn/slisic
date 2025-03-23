@@ -11,8 +11,8 @@ import { cn } from "@/lib/utils";
 import { icons, logos } from "@/src/assets/icons";
 import { platform } from "@tauri-apps/plugin-os";
 import React, { memo, useEffect, type PropsWithChildren } from "react";
-import { isWindowFocus } from "./state_machine/windowFocus";
 import { shouldBarVisible } from "./state_machine/barVisible";
+import { isWindowFocus } from "./state_machine/windowFocus";
 
 const os = platform();
 
@@ -133,12 +133,7 @@ const LeftControls = memo(() => {
 
 const RightControls = memo(() => {
   return (
-    <div
-      className={cn([
-        "flex items-center",
-        // "transition duration-300 ease-in-out",
-      ])}
-    >
+    <div className={cn(["flex items-center"])}>
       <CtrlButton>
         <icons.magnifler3 size={14} />
       </CtrlButton>
@@ -243,12 +238,12 @@ const TopBar = memo(() => {
             "w-screen h-8 z-[9999] select-none",
             "before:absolute before:inset-0 before:-z-10",
             "before:bg-gradient-to-b before:from-[var(--app-bg)] before:to-[var(--app-bg)]/60",
-            "before:transition-colors before:duration-300",
+            "before:transition before:duration-500 ease-in-out",
             "after:absolute after:inset-0 after:-z-10",
             "after:backdrop-blur-[16px] after:opacity-100 after:origin-top",
             "after:bg-gradient-to-b after:from-transparent after:via-transparent after:to-white/0",
             "after:mask-image-[linear-gradient(to_bottom,rgba(0,0,0,1)_0%,rgba(0,0,0,0)_100%)]",
-            "after:transition-all after:duration-300",
+            "after:transition after:duration-500 ease-in-out",
           ])}
         >
           <div
