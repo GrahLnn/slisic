@@ -101,6 +101,18 @@ body {
   @apply bg-[var(--app-bg)] transition duration-500 ease-in-out;
 }
 
+body::-webkit-scrollbar {
+  display: none;
+}
+
+body[window-blur] {
+  overflow: hidden;
+  pointer-events: none;
+  overscroll-behavior: contain;
+  touch-action: none;
+  user-select: none;
+}
+
 #root {
   @apply h-full;
 }

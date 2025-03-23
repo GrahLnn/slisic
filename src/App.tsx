@@ -97,37 +97,39 @@ const GreetForm = memo(() => {
 
 function App() {
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
+    <div className="min-h-screen flex flex-col overflow-hidden hide-scrollbar">
       <TopBar />
-      <main className="flex justify-center flex-col text-center gap-4">
-        <h1>Welcome to Tauri + React</h1>
+      <main className="flex-1 flex overflow-hidden mt-8 hide-scrollbar">
+        <div className="flex justify-center flex-col text-center gap-4 flex-1">
+          <h1>Welcome to Tauri + React</h1>
 
-        <div className="flex justify-center">
-          <a href="https://vitejs.dev" target="_blank" rel="noreferrer">
-            <img
-              src="/rsbuild.svg"
-              className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#FFD700]"
-              alt="Vite logo"
-            />
-          </a>
-          <a href="https://tauri.app" target="_blank" rel="noreferrer">
-            <img
-              src="/tauri.svg"
-              className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#24c8db]"
-              alt="Tauri logo"
-            />
-          </a>
-          <a href="https://reactjs.org" target="_blank" rel="noreferrer">
-            <img
-              src={reactLogo}
-              className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#61dafb]"
-              alt="React logo"
-            />
-          </a>
+          <div className="flex justify-center">
+            <a href="https://vitejs.dev" target="_blank" rel="noreferrer">
+              <img
+                src="/rsbuild.svg"
+                className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#FFD700]"
+                alt="Vite logo"
+              />
+            </a>
+            <a href="https://tauri.app" target="_blank" rel="noreferrer">
+              <img
+                src="/tauri.svg"
+                className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#24c8db]"
+                alt="Tauri logo"
+              />
+            </a>
+            <a href="https://reactjs.org" target="_blank" rel="noreferrer">
+              <img
+                src={reactLogo}
+                className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#61dafb]"
+                alt="React logo"
+              />
+            </a>
+          </div>
+          <p>Click on the Tauri, Rsbuild, and React logos to learn more.</p>
+
+          <GreetForm />
         </div>
-        <p>Click on the Tauri, Rsbuild, and React logos to learn more.</p>
-
-        <GreetForm />
       </main>
       <Scrollbar />
     </div>
