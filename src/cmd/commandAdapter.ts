@@ -9,6 +9,13 @@ type CommandReturnType<K extends CommandKey> = ReturnType<
 > extends Promise<infer R>
   ? R
   : never;
+type SpectaToResult<K extends CommandKey> = CommandReturnType<K> extends {
+  status: "ok" | "error";
+  data?: infer D;
+  error?: infer E;
+}
+  ? Promise<Result<D, E>>
+  : CommandReturnType<K>;
 
 /**
  * 创建一个代理对象，自动将所有命令的返回值转换为自定义Result类型
@@ -17,13 +24,7 @@ export const cmd = new Proxy(
   {} as {
     [K in CommandKey]: (
       ...args: Parameters<CommandsType[K]>
-    ) => CommandReturnType<K> extends {
-      status: "ok" | "error";
-      data?: infer D;
-      error?: infer E;
-    }
-      ? Promise<Result<D, E>>
-      : ReturnType<CommandsType[K]>;
+    ) => SpectaToResult<K>;
   },
   {
     get: (_, prop: string) => {
