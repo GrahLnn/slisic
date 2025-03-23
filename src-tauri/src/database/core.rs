@@ -1,3 +1,6 @@
+use super::enums::table::Table;
+use super::sql::Queries;
+
 use async_trait::async_trait;
 use futures::future::try_join_all;
 use serde::{Deserialize, Serialize};
@@ -51,34 +54,42 @@ pub trait HasId {
 pub trait Curd:
     Serialize + for<'de> Deserialize<'de> + std::fmt::Debug + 'static + Clone + Send + Sync
 {
-    const TABLE: &'static str;
+    const TABLE: Table;
 
     fn record_id<T>(id: T) -> RecordId
     where
         RecordIdKey: From<T>,
     {
-        RecordId::from((Self::TABLE, id))
+        RecordId::from((Self::TABLE.as_str(), id))
     }
 
     async fn create(data: Self) -> Result<Self> {
         let db = get_db()?;
-        let created: Option<Self> = db.create(Self::TABLE).content(data).await?;
+        let created: Option<Self> = db.create(Self::TABLE.as_str()).content(data).await?;
         created.ok_or(DBError::NotFound)
     }
 
-    async fn create_by_id(id: &str, data: Self) -> Result<Self> {
+    async fn create_by_id<T>(id: T, data: Self) -> Result<Self>
+    where
+        RecordIdKey: From<T>,
+        T: Send + 'static,
+    {
         let db = get_db()?;
-        let created: Option<Self> = db.create((Self::TABLE, id)).content(data).await?;
+        let created: Option<Self> = db.create((Self::TABLE.as_str(), id)).content(data).await?;
         created.ok_or(DBError::NotFound)
     }
 
     async fn create_or_update(id: &str, data: Self) -> Result<Self> {
         let db = get_db()?;
-        let created = match db.create((Self::TABLE, id)).content(data.clone()).await {
+        let created = match db
+            .create((Self::TABLE.as_str(), id))
+            .content(data.clone())
+            .await
+        {
             Ok(Some(record)) => Ok(record),
             Ok(None) => Err(DBError::NotFound),
             Err(_) => db
-                .update((Self::TABLE, id))
+                .update((Self::TABLE.as_str(), id))
                 .content(data)
                 .await?
                 .ok_or(DBError::NotFound),
@@ -92,7 +103,7 @@ pub trait Curd:
         T: Send + 'static,
     {
         let db = get_db()?;
-        let record: Option<Self> = db.select((Self::TABLE, id)).await?;
+        let record: Option<Self> = db.select((Self::TABLE.as_str(), id)).await?;
         record.ok_or(DBError::NotFound)
     }
 
@@ -104,29 +115,33 @@ pub trait Curd:
 
     async fn select_all() -> Result<Vec<Self>> {
         let db = get_db()?;
-        let records: Vec<Self> = db.select(Self::TABLE).await?;
+        let records: Vec<Self> = db.select(Self::TABLE.as_str()).await?;
         Ok(records)
     }
 
     async fn update(id: &str, data: Self) -> Result<Self> {
         let db = get_db()?;
-        let updated: Option<Self> = db.update((Self::TABLE, id)).content(data).await?;
+        let updated: Option<Self> = db.update((Self::TABLE.as_str(), id)).content(data).await?;
         updated.ok_or(DBError::NotFound)
     }
 
     async fn merge(id: Option<&str>, data: Self) -> Result<Self> {
         let db = get_db()?;
         let merged: Option<Self> = if let Some(id) = id {
-            db.update((Self::TABLE, id)).merge(data).await?
+            db.update((Self::TABLE.as_str(), id)).merge(data).await?
         } else {
-            db.update(Self::TABLE).merge(data).await?.into_iter().next() // TODO: 兼容Vec的返回
+            db.update(Self::TABLE.as_str())
+                .merge(data)
+                .await?
+                .into_iter()
+                .next() // TODO: 兼容Vec的返回
         };
         merged.ok_or(DBError::NotFound)
     }
 
     async fn insert(data: Vec<Self>) -> Result<Vec<Self>> {
         let db = get_db()?;
-        let created: Vec<Self> = db.insert(Self::TABLE).content(data).await?;
+        let created: Vec<Self> = db.insert(Self::TABLE.as_str()).content(data).await?;
         Ok(created)
     }
 
@@ -145,7 +160,7 @@ pub trait Curd:
                 let inserted: Vec<Self> = db_clone
                     .query(format!(
                         "INSERT INTO {} $data ON DUPLICATE KEY UPDATE id = id",
-                        Self::TABLE
+                        Self::TABLE.as_str()
                     ))
                     .bind(("data", chunk))
                     .await?
@@ -161,13 +176,13 @@ pub trait Curd:
 
     async fn delete(id: &str) -> Result<()> {
         let db = get_db()?;
-        let _: Option<Self> = db.delete((Self::TABLE, id)).await?;
+        let _: Option<Self> = db.delete((Self::TABLE.as_str(), id)).await?;
         Ok(())
     }
 
     async fn clean() -> Result<()> {
         let db = get_db()?;
-        let _: Vec<Self> = db.delete(Self::TABLE).await?;
+        let _: Vec<Self> = db.delete(Self::TABLE.as_str()).await?;
         Ok(())
     }
 
@@ -181,6 +196,15 @@ pub trait Curd:
         let db = get_db()?;
         let mut result = db.query(sql).await?;
         let records: Vec<Self> = result.take(idx.unwrap_or(0))?;
+        Ok(records)
+    }
+
+    async fn range_select(start: i64, end: i64) -> Result<Vec<Self>> {
+        let db = get_db()?;
+        let mut result = db
+            .query(Queries::range_query(Self::TABLE, start, end))
+            .await?;
+        let records: Vec<Self> = result.take(0)?;
         Ok(records)
     }
 

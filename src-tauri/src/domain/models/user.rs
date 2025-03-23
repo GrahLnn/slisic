@@ -16,7 +16,7 @@ pub struct DbUser {
 }
 
 impl Curd for DbUser {
-    const TABLE: &'static str = Table::User.as_str();
+    const TABLE: Table = Table::User;
 }
 
 impl HasId for DbUser {
@@ -34,7 +34,7 @@ impl DbUser {
 
     pub async fn from_model(model: User) -> Result<Self, Error> {
         Ok(Self {
-            id: RecordId::from((Self::TABLE, model.id)),
+            id: RecordId::from((Self::TABLE.as_str(), model.id)),
         })
     }
 }
