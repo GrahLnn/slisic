@@ -11,7 +11,7 @@ import {
   memo,
 } from "react";
 import ReactDOM from "react-dom";
-import { useWindowFocus } from "../state_machine/windowFocus";
+import { isWindowFocus } from "../state_machine/windowFocus";
 
 const appWindow = new Window("main");
 
@@ -86,7 +86,7 @@ const WindowsButton = memo(function WindowsButton({
 
 const WindowsControlsCore = memo(function WindowsControlsCore() {
   const [maximized, setMaximized] = useState(false);
-  const windowFocused = useWindowFocus();
+  const windowFocused = isWindowFocus();
 
   const getWindowState = useCallback(async () => {
     const isMaximized = await Window.getCurrent().isMaximized();
