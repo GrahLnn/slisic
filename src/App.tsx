@@ -1,11 +1,12 @@
 import { cn } from "@/lib/utils";
+import "@fontsource/maple-mono";
 import { memo, useState } from "react";
 import "./App.css";
 import reactLogo from "./assets/react.svg";
-import Input from "./components/Input";
-import TopBar from "./topbar";
 import cmd from "./cmd";
+import Input from "./components/Input";
 import { Scrollbar } from "./components/scrollbar/scrollbar";
+import TopBar from "./topbar";
 
 const GreetForm = memo(() => {
   const [greetMsg, setGreetMsg] = useState("");
@@ -126,7 +127,9 @@ function App() {
               />
             </a>
           </div>
-          <p>Click on the Tauri, Rsbuild, and React logos to learn more.</p>
+          <p style={{ fontFamily: '"Maple Mono", monospace' }}>
+            Click on the Tauri, Rsbuild, and React logos to learn more.
+          </p>
 
           <GreetForm />
         </div>

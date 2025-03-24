@@ -8,6 +8,7 @@
     "preview": "rsbuild preview"
   },
   "dependencies": {
+    "@fontsource/maple-mono": "^5.2.5",
     "@radix-ui/react-dropdown-menu": "^2.1.6",
     "@tailwindcss/postcss": "^4.0.15",
     "@tauri-apps/api": "^2.4.0",
