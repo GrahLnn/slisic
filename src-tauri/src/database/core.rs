@@ -1,5 +1,5 @@
 use super::enums::table::Table;
-use super::sql::Queries;
+use super::sql::QueryKind;
 
 use async_trait::async_trait;
 use futures::future::try_join_all;
@@ -202,7 +202,7 @@ pub trait Curd:
     async fn range_select(start: i64, end: i64) -> Result<Vec<Self>> {
         let db = get_db()?;
         let mut result = db
-            .query(Queries::range_query(Self::TABLE, start, end))
+            .query(QueryKind::range_query(Self::TABLE, start, end))
             .await?;
         let records: Vec<Self> = result.take(0)?;
         Ok(records)

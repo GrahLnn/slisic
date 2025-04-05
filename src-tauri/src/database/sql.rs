@@ -1,27 +1,24 @@
 use super::enums::table::Table;
 
-pub struct QueryTemplate {
-    pub query: &'static str,
+pub enum QueryKind {
+    FindUser,
+    CreatePost,
+    InitAccess,
 }
 
-pub struct Queries {
-    pub find_user: QueryTemplate,
-    pub create_post: QueryTemplate,
-    pub update_status: QueryTemplate,
-}
-
-impl Queries {
-    pub fn new() -> Self {
-        Self {
-            find_user: QueryTemplate {
-                query: "SELECT * FROM users WHERE id = $1",
-            },
-            create_post: QueryTemplate {
-                query: "INSERT INTO posts (title, content, user_id) VALUES ($1, $2, $3)",
-            },
-            update_status: QueryTemplate {
-                query: "UPDATE users SET status = $1 WHERE id = $2",
-            },
+impl QueryKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            QueryKind::FindUser => "SELECT * FROM user WHERE name = $name",
+            QueryKind::CreatePost => "INSERT INTO posts CONTENT $data",
+            QueryKind::InitAccess => {
+                r#"
+                    DEFINE ACCESS account ON DATABASE TYPE RECORD
+                    SIGNUP ( CREATE user SET name = root, pass = crypto::argon2::generate($pass) )
+                    SIGNIN ( SELECT * FROM user WHERE name = root AND crypto::argon2::compare(pass, $pass) )
+                    DURATION FOR TOKEN 15m, FOR SESSION 12h
+                "#
+            }
         }
     }
     pub fn range_query(table: Table, start: i64, end: i64) -> String {
