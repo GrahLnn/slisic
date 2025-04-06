@@ -1,4 +1,4 @@
-use crate::database::core::{Curd, HasId};
+use crate::database::{Crud, HasId};
 use crate::database::enums::table::Table;
 use anyhow::Error;
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ pub struct DbUser {
     pub id: RecordId,
 }
 
-impl Curd for DbUser {
+impl Crud for DbUser {
     const TABLE: Table = Table::User;
 }
 

@@ -3,7 +3,7 @@ mod domain;
 mod utils;
 
 use anyhow::Result;
-use database::core::{init_db, Curd};
+use database::{init_db, Crud};
 use domain::models::user::DbUser;
 use futures::future;
 use specta_typescript::{formatter::prettier, Typescript};
@@ -16,7 +16,9 @@ const DB_PATH: &str = "surreal.db";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder: Builder = Builder::new().commands(collect_commands![greet, clean]);
+    let all_cmd = collect_commands![greet, clean];
+
+    let builder: Builder = Builder::new().commands(all_cmd);
 
     #[cfg(debug_assertions)]
     builder
