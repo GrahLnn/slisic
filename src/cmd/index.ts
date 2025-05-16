@@ -1,3 +1,3 @@
-import { cmd } from "./commandAdapter";
+import { crab } from "./commandAdapter";
 
-export default cmd;
+export default crab;

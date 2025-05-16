@@ -1,33 +1,40 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "react-tauri",
-  "version": "0.1.0",
+  "productName": "tauri-react-template",
+  "version": "0.0.1",
   "identifier": "com.tauri.dev",
   "build": {
-    "frontendDist": "../build",
+    "frontendDist": "../dist",
     "devUrl": "http://localhost:3000",
-    "beforeDevCommand": "bun dev",
-    "beforeBuildCommand": "bun build"
+    "beforeDevCommand": "bun run dev",
+    "beforeBuildCommand": "bun run build"
   },
   "app": {
     "windows": [
       {
-        "title": "react-tauri",
+        "hiddenTitle": true,
         "width": 1400,
         "height": 750,
         "minWidth": 768,
         "minHeight": 500,
         "resizable": true,
-        "decorations": false
+        "fullscreen": false,
+        "alwaysOnTop": false,
+        "focus": false,
+        "visible": false,
+        "dragDropEnabled": true,
+        "decorations": true,
+        "transparent": true,
+        "center": true
       }
     ],
     "security": {
       "csp": {
-				"default-src": "'self' webkit-pdfjs-viewer: asset: http://asset.localhost blob: data: filesystem: http: https: tauri:",
-				"connect-src": "'self' ipc: http://ipc.localhost ws: wss: http: https: tauri:",
-				"img-src": "'self' asset: http://asset.localhost blob: data: filesystem: http: https: tauri:",
-				"style-src": "'self' 'unsafe-inline' http: https: tauri:"
-			},
+        "default-src": "'self' webkit-pdfjs-viewer: asset: http://asset.localhost blob: data: filesystem: http: https: tauri:",
+        "connect-src": "'self' ipc: http://ipc.localhost ws: wss: http: https: tauri:",
+        "img-src": "'self' asset: http://asset.localhost blob: data: filesystem: http: https: tauri:",
+        "style-src": "'self' 'unsafe-inline' http: https: tauri:"
+      },
       "assetProtocol": {
         "enable": true,
         "scope": ["$APPDATA/**", "$RESOURCE/../**", "**"]

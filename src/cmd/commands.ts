@@ -5,6 +5,9 @@
 
 
 export const commands = {
+async appReady() : Promise<void> {
+    await TAURI_INVOKE("app_ready");
+},
 async greet(name: string) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("greet", { name }) };
@@ -26,6 +29,11 @@ async clean() : Promise<Result<string, string>> {
 /** user-defined events **/
 
 
+export const events = __makeEvents__<{
+fullScreenEvent: FullScreenEvent
+}>({
+fullScreenEvent: "full-screen-event"
+})
 
 /** user-defined constants **/
 
@@ -33,7 +41,7 @@ async clean() : Promise<Result<string, string>> {
 
 /** user-defined types **/
 
-
+export type FullScreenEvent = { is_fullscreen: boolean }
 
 /** tauri-specta globals **/
 

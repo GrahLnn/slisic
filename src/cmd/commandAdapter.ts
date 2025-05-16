@@ -20,7 +20,7 @@ type SpectaToResult<K extends CommandKey> = CommandReturnType<K> extends {
 /**
  * 创建一个代理对象，自动将所有命令的返回值转换为自定义Result类型
  */
-export const cmd = new Proxy(
+export const crab = new Proxy(
   {} as {
     [K in CommandKey]: (
       ...args: Parameters<CommandsType[K]>

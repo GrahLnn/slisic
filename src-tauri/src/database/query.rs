@@ -1,3 +1,6 @@
+use serde_json::Value;
+use surrealdb::RecordId;
+
 use super::enums::table::Table;
 
 pub enum QueryKind {
@@ -5,6 +8,20 @@ pub enum QueryKind {
     CreatePost,
     InitAccess,
     CheckRootUser,
+}
+
+pub enum Order {
+    Asc,
+    Desc,
+}
+
+impl Order {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Order::Asc => "ASC",
+            Order::Desc => "DESC",
+        }
+    }
 }
 
 impl QueryKind {
@@ -38,7 +55,34 @@ impl QueryKind {
         let table_name = table.as_str();
         format!("SELECT * FROM {table_name}:{start}..={end};")
     }
+    pub fn replace(id: RecordId, data: Value) -> String {
+        format!("UPDATE {id} REPLACE {data};")
+    }
+    pub fn pagin(table: Table, count: i64, cursor: Option<RecordId>, order: Order) -> String {
+        let than = match order {
+            Order::Asc => ">",
+            Order::Desc => "<",
+        };
+        let table_name = table.as_str();
+        match cursor {
+            Some(cursor) => format!(
+                "SELECT * FROM {table_name} WHERE id {than} {cursor} ORDER BY id {} LIMIT {count};",
+                order.as_str()
+            ),
+            None => format!(
+                "SELECT * FROM {table_name} ORDER BY id {} LIMIT {count};",
+                order.as_str()
+            ),
+        }
+    }
+    pub fn limit(table: Table, count: i64) -> String {
+        let table_name = table.as_str();
+        format!("SELECT * FROM {table_name} LIMIT {count};")
+    }
     pub fn insert(table: &str) -> String {
         format!("INSERT INTO {table} $data ON DUPLICATE KEY UPDATE id = id;")
+    }
+    pub fn upsert_set(id: &str, key: &str, value: &str) -> String {
+        format!("UPDATE {id} SET {key} = '{value}';")
     }
 }

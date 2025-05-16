@@ -1,58 +1,74 @@
-import { useEffect, useState } from "react";
+import { Atom, atom, useAtom, useAtomValue, useSetAtom } from "jotai";
+import { matchable, Matchable } from "@/lib/matchable";
 
-type Subscriber<T> = (value: T) => void;
+export function createAtom<T>(initialValue: T) {
+  const atomm = atom<T>(initialValue);
 
-class Bus<T> {
-  private value: T;
-  private subscribers = new Set<Subscriber<T>>();
-
-  constructor(initialValue: T) {
-    this.value = initialValue;
+  function useSee() {
+    return useAtomValue(atomm);
   }
 
-  subscribe(callback: Subscriber<T>) {
-    this.subscribers.add(callback);
-    callback(this.value); // 初次同步
-    return () => {
-      this.subscribers.delete(callback);
-    };
+  function useSet() {
+    return useSetAtom(atomm);
   }
 
-  set(value: T) {
-    this.value = value;
-    for (const cb of this.subscribers) {
-      cb(value);
-    }
+  function get() {
+    return atomm;
   }
 
-  get() {
-    return this.value;
-  }
-}
-
-export function createBus<T>(initialValue: T) {
-  const bus = new Bus<T>(initialValue);
-
-  function useValue() {
-    const [value, setValue] = useState(() => bus.get());
-    useEffect(() => {
-      const unsubscribe = bus.subscribe(setValue);
-      return unsubscribe;
-    }, []);
-    return value;
-  }
-
-  function setValue(value: T) {
-    bus.set(value);
-  }
-
-  function getValue() {
-    return bus.get();
+  function useAll() {
+    return useAtom(atomm);
   }
 
   return {
-    useValue,
-    setValue,
-    getValue,
+    atom: atomm,
+    useSee,
+    useSet,
+    useAll,
+    get,
+  };
+}
+
+export function createMatchAtom<T extends string | number>(initialValue: T) {
+  const inner = createAtom<Matchable<T>>(matchable(initialValue));
+
+  return {
+    atom: inner.atom,
+    useAll: () => {
+      const [raw, setRaw] = inner.useAll();
+      return [
+        raw,
+        (v: T) =>
+          setRaw((prev) => {
+            if (prev.value === v) return prev; // 避免不必要更新
+            return matchable(v);
+          }),
+      ] as const;
+    },
+    useSee: () => inner.useSee(),
+    useSet: () => {
+      const set = inner.useSet();
+      return (value: T) =>
+        set((prev) => {
+          if (prev.value === value) return prev;
+          return matchable(value);
+        });
+    },
+    get: inner.get,
+  };
+}
+
+export function createDerivedAtom<T>(derive: (get: <V>(a: Atom<V>) => V) => T) {
+  const derivedAtom = atom<T>((get) => derive(get));
+  function useSee() {
+    return useAtomValue(derivedAtom);
+  }
+  function get() {
+    return derivedAtom;
+  }
+  return {
+    atom: derivedAtom,
+    useSee,
+    get,
   };
 }

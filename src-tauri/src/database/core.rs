@@ -1,6 +1,5 @@
 use super::error::DBError;
-use super::QueryKind;
-
+use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 use surrealdb::engine::local::{Db, SurrealKv};
@@ -9,7 +8,6 @@ use surrealdb::Surreal;
 use tokio::sync::OnceCell;
 
 static DB: LazyLock<OnceCell<Arc<Surreal<Db>>>> = LazyLock::new(|| OnceCell::new());
-pub type Result<T> = std::result::Result<T, DBError>;
 
 pub async fn init_db(path: PathBuf) -> Result<()> {
     let db = Surreal::new::<SurrealKv>(path).await?;

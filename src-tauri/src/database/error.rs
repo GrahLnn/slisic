@@ -22,3 +22,9 @@ impl From<surrealdb::Error> for DBError {
         DBError::SurrealError(err.to_string())
     }
 }
+
+impl From<anyhow::Error> for DBError {
+    fn from(err: anyhow::Error) -> Self {
+        DBError::SurrealError(err.to_string())
+    }
+}

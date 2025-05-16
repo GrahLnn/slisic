@@ -1,14 +1,14 @@
 import { cn } from "@/lib/utils";
 import "@fontsource/maple-mono";
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import "./App.css";
 import reactLogo from "./assets/react.svg";
-import cmd from "./cmd";
+import crab from "./cmd";
 import Input from "./components/Input";
 import { Scrollbar } from "./components/scrollbar/scrollbar";
 import TopBar from "./topbar";
 
-const GreetForm = memo(() => {
+const GreetForm = memo(function GreetForm() {
   const [greetMsg, setGreetMsg] = useState("");
   const [name, setName] = useState("");
 
@@ -17,24 +17,24 @@ const GreetForm = memo(() => {
       setGreetMsg("Your name?");
       return;
     }
-    const res = await cmd.greet(name);
+    const res = await crab.greet(name);
     res.match({
-      ok: (value) => {
+      Ok: (value) => {
         setGreetMsg(value);
         setName("");
       },
-      err: (error) => setGreetMsg(`Error: ${error}`),
+      Err: (error) => setGreetMsg(`Error: ${error}`),
     });
   }
 
   async function clean() {
-    const res = await cmd.clean();
+    const res = await crab.clean();
     res.match({
-      ok: (value) => {
+      Ok: (value) => {
         setGreetMsg(value);
         setName("");
       },
-      err: (error) => setGreetMsg(`Error: ${error}`),
+      Err: (error) => setGreetMsg(`Error: ${error}`),
     });
   }
 
@@ -97,6 +97,9 @@ const GreetForm = memo(() => {
 });
 
 function App() {
+  useEffect(() => {
+    crab.appReady();
+  }, []);
   return (
     <div className="min-h-screen flex flex-col overflow-hidden hide-scrollbar">
       <TopBar />
@@ -130,7 +133,6 @@ function App() {
           <p style={{ fontFamily: '"Maple Mono", monospace' }}>
             Click on the Tauri, Rsbuild, and React logos to learn more.
           </p>
-
           <GreetForm />
         </div>
       </main>
