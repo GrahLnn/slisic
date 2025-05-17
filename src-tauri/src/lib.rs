@@ -2,6 +2,7 @@ mod database;
 mod domain;
 mod utils;
 
+use std::cell::RefCell;
 use std::time::Duration;
 
 use anyhow::Result;
