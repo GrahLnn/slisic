@@ -17,8 +17,9 @@ use tokio::time::sleep;
 use utils::event::{self, WINDOW_READY};
 
 #[cfg(target_os = "macos")]
+use std::cell::RefCell;
+#[cfg(target_os = "macos")]
 thread_local! {
-    use std::cell::RefCell;
     static MAIN_WINDOW_OBSERVER: RefCell<Option<macos_titlebar::FullscreenStateManager>> = RefCell::new(None);
 }
 
