@@ -36,6 +36,14 @@ export default [
       "react-hooks/exhaustive-deps": "warn",
       "react/react-in-jsx-scope": "off",
     },
+    overrides: [
+      {
+        files: ["*.ts", "*.tsx"],
+        rules: {
+          "react/prop-types": "off",
+        },
+      },
+    ],
   },
   prettier,
 ];
