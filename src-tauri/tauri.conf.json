@@ -10,6 +10,8 @@
     "beforeBuildCommand": "bun run build"
   },
   "app": {
+    "withGlobalTauri": true,
+    "macOSPrivateApi": true,
     "windows": [
       {
         "hiddenTitle": true,
