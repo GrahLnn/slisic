@@ -26,7 +26,6 @@
         "visible": false,
         "dragDropEnabled": true,
         "decorations": true,
-        "transparent": true,
         "center": true
       }
     ],
