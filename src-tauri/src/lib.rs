@@ -2,24 +2,19 @@ mod database;
 mod domain;
 mod utils;
 
-use std::cell::RefCell;
-use std::time::Duration;
-
 use anyhow::Result;
 use database::{init_db, Crud};
 use domain::models::user::DbUser;
 use futures::future;
 use specta_typescript::{formatter::prettier, Typescript};
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tauri::Manager;
 use tauri::{async_runtime::block_on, AppHandle};
 use tauri_specta::{collect_commands, collect_events, Builder};
 use tokio::task::block_in_place;
 use tokio::time::sleep;
 use utils::event::{self, WINDOW_READY};
-
-#[cfg(target_os = "macos")]
-use utils::macos_titlebar;
 
 #[cfg(target_os = "macos")]
 thread_local! {
@@ -54,7 +49,7 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(builder.invoke_handler())
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
             builder.mount_events(app);
             block_in_place(|| {
@@ -84,9 +79,10 @@ pub fn run() {
                         }
                         #[cfg(target_os = "macos")]
                         {
-                            // Call the setup function from your new module
-                            macos_titlebar::setup_custom_macos_titlebar(&window);
                             use objc2::MainThreadMarker;
+                            use std::cell::RefCell;
+                            use utils::macos_titlebar;
+                            macos_titlebar::setup_custom_macos_titlebar(&window);
 
                             // Manage the FullscreenObserver's lifetime.
                             // This is a bit tricky because you need to store it somewhere
