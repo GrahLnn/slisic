@@ -1,21 +1,22 @@
-import { Err, Ok, type Result } from "@/lib/result";
-import { type Result as SpectaResult, commands } from "./commands";
+import { commands, type Result as SpectaResult } from "./commands";
+import { Ok, Err, type Result } from "@/lib/result";
 
-// 类型定义
 type CommandsType = typeof commands;
 type CommandKey = keyof CommandsType;
-type CommandReturnType<K extends CommandKey> = ReturnType<
-  CommandsType[K]
-> extends Promise<infer R>
-  ? R
-  : never;
-type SpectaToResult<K extends CommandKey> = CommandReturnType<K> extends {
-  status: "ok" | "error";
-  data?: infer D;
-  error?: infer E;
-}
-  ? Promise<Result<D, E>>
-  : CommandReturnType<K>;
+// 从 SpectaResult 里提取成功值
+type DataOf<R> = R extends { status: "ok"; data: infer D } ? D : never;
+// 从 SpectaResult 里提取错误值
+type ErrorOf<R> = R extends { status: "error"; error: infer E } ? E : never;
+
+type CommandReturnType<K extends CommandKey> = ReturnType<CommandsType[K]>;
+
+type SpectaToResult<K extends CommandKey> =
+  CommandReturnType<K> extends Promise<infer R>
+    ? // 如果是 SpectaResult 结构 → 转成自定义 Result
+      R extends { status: "ok" | "error" }
+      ? Promise<Result<DataOf<R>, ErrorOf<R>>>
+      : CommandReturnType<K> // 普通 Promise 直接透传
+    : CommandReturnType<K>; // 同步函数保持同步
 
 /**
  * 创建一个代理对象，自动将所有命令的返回值转换为自定义Result类型
@@ -69,3 +70,4 @@ export const crab = new Proxy(
     },
   }
 );
+
