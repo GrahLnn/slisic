@@ -51,9 +51,12 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_shell::init())
+        .invoke_handler(builder.invoke_handler())
         .setup(|app| {
             let handle = app.handle().clone();
-
+            builder.mount_events(app);
             block_in_place(|| {
                 block_on(async move {
                     let local_data_dir = handle.path().app_local_data_dir()?;
@@ -143,9 +146,6 @@ pub fn run() {
                 })
             })
         })
-        .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_shell::init())
-        .invoke_handler(builder.invoke_handler())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
