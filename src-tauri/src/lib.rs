@@ -18,6 +18,7 @@ use utils::event::{self, WINDOW_READY};
 
 #[cfg(target_os = "macos")]
 thread_local! {
+    use std::cell::RefCell;
     static MAIN_WINDOW_OBSERVER: RefCell<Option<macos_titlebar::FullscreenStateManager>> = RefCell::new(None);
 }
 
@@ -80,7 +81,6 @@ pub fn run() {
                         #[cfg(target_os = "macos")]
                         {
                             use objc2::MainThreadMarker;
-                            use std::cell::RefCell;
                             use utils::macos_titlebar;
                             macos_titlebar::setup_custom_macos_titlebar(&window);
 
