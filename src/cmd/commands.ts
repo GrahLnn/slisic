@@ -5,8 +5,24 @@
 
 
 export const commands = {
+async exists(path: string) : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("exists", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async appReady() : Promise<void> {
     await TAURI_INVOKE("app_ready");
+},
+async getMouseAndWindowPosition() : Promise<Result<MouseWindowInfo, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_mouse_and_window_position") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 async greet(name: string) : Promise<Result<string, string>> {
     try {
@@ -42,6 +58,7 @@ fullScreenEvent: "full-screen-event"
 /** user-defined types **/
 
 export type FullScreenEvent = { is_fullscreen: boolean }
+export type MouseWindowInfo = { mouse_x: number; mouse_y: number; window_x: number; window_y: number; window_width: number; window_height: number; rel_x: number; rel_y: number; pixel_ratio: number }
 
 /** tauri-specta globals **/
 

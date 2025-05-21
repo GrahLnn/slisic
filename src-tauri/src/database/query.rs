@@ -75,6 +75,13 @@ impl QueryKind {
             ),
         }
     }
+    pub fn all_by_order(table: Table, order: Order, key: &str) -> String {
+        let table_name = table.as_str();
+        format!(
+            "SELECT * FROM {table_name} ORDER BY {key} {};",
+            order.as_str()
+        )
+    }
     pub fn limit(table: Table, count: i64) -> String {
         let table_name = table.as_str();
         format!("SELECT * FROM {table_name} LIMIT {count};")
@@ -84,5 +91,11 @@ impl QueryKind {
     }
     pub fn upsert_set(id: &str, key: &str, value: &str) -> String {
         format!("UPDATE {id} SET {key} = '{value}';")
+    }
+    pub fn select_id_single(table: Table, k: &str, v: &str) -> String {
+        format!(
+            "RETURN (SELECT id FROM ONLY {} WHERE {k} = '{v}' LIMIT 1).id;",
+            table.as_str()
+        )
     }
 }

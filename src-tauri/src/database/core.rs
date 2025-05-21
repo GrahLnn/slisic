@@ -1,4 +1,5 @@
 use super::error::DBError;
+use super::schema;
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
@@ -15,6 +16,10 @@ pub async fn init_db(path: PathBuf) -> Result<()> {
 
     // let _ = db.query(QueryKind::InitAccess.as_str()).await?;
     DB.set(Arc::new(db)).map_err(|_| DBError::NotInitialized)?;
+    let db = get_db()?;
+    for item in inventory::iter::<schema::SchemaItem> {
+        db.query(item.ddl).await?;
+    }
     Ok(())
 }
 

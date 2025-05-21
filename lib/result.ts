@@ -27,6 +27,7 @@ export class Result<T, E = Error> {
     return this.match({
       Ok: (value) => value,
       Err: (error) => {
+        console.error("unwrap error:", error);
         throw new Error(`Called unwrap on an Err: ${error}`);
       },
     });
@@ -85,6 +86,7 @@ export class Result<T, E = Error> {
   // 如果成功，则调用传入函数
   tap(fn: (value: T) => void): this {
     if (this.isOk()) fn(this.unwrap());
+    else console.error("tap error:", (this as Result<any, E>).unwrapErr());
     return this;
   }
 
@@ -111,3 +113,4 @@ export async function rtry<T, E = Error>(
     return Err(errorFactory ? errorFactory(err) : (err as E));
   }
 }
+
