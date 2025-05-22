@@ -18,18 +18,29 @@ pub struct MouseWindowInfo {
 #[tauri::command]
 #[specta::specta]
 pub fn get_mouse_and_window_position(app: AppHandle) -> Result<MouseWindowInfo, String> {
-    let window = app.get_webview_window("main").unwrap();
+    let window = app.get_webview_window("main").ok_or("未找到窗口 main")?;
 
-    // ① 鼠标位置（物理像素，桌面左上角原点）
-    let cursor = window.cursor_position().unwrap(); // PhysicalPosition<f64>
+    // ① 鼠标位置
+    let cursor = window
+        .cursor_position()
+        .map_err(|e| format!("获取鼠标位置失败: {e:?}"))?;
 
-    // ② 窗口外框左上角（物理像素，桌面左上角原点）
-    let win_pos = window.outer_position().unwrap(); // PhysicalPosition<i32>
+    // ② 窗口左上角
+    let win_pos = window
+        .outer_position()
+        .map_err(|e| format!("获取窗口位置失败: {e:?}"))?;
 
-    // ③ 窗口尺寸（物理像素）
-    let win_size = window.outer_size().unwrap(); // PhysicalSize<u32>
+    // ③ 窗口尺寸
+    let win_size = window
+        .outer_size()
+        .map_err(|e| format!("获取窗口尺寸失败: {e:?}"))?;
 
-    // ④ 计算鼠标在窗口坐标系里的相对位置
+    // ④ 缩放因子
+    let pixel_ratio = window
+        .scale_factor()
+        .map_err(|e| format!("获取缩放因子失败: {e:?}"))?;
+
+    // ⑤ 计算相对坐标
     let rel_x = cursor.x as i32 - win_pos.x;
     let rel_y = cursor.y as i32 - win_pos.y;
 
@@ -42,6 +53,6 @@ pub fn get_mouse_and_window_position(app: AppHandle) -> Result<MouseWindowInfo, 
         window_height: win_size.height,
         rel_x,
         rel_y,
-        pixel_ratio: window.scale_factor().unwrap(),
+        pixel_ratio,
     })
 }
