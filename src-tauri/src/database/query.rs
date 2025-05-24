@@ -98,4 +98,7 @@ impl QueryKind {
             table.as_str()
         )
     }
+    pub fn all_id(table: Table) -> String {
+        format!("RETURN (SELECT id FROM {}).id;", table.as_str())
+    }
 }

@@ -3,7 +3,6 @@ use super::error::DBError;
 use super::{get_db, HasId, QueryKind};
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::future::try_join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -215,11 +214,21 @@ pub trait Crud:
         Self::unrelate_by_id(self.id(), target.id(), rel).await
     }
 
+    async fn outs(in_id: RecordId, rel: &str, out_table: Table) -> Result<Vec<RecordId>> {
+        let sql = format!("RETURN {in_id}->{rel}->{out_table};");
+        query_take(sql.as_str(), None).await
+    }
+
     async fn select_record_id(k: &str, v: &str) -> Result<RecordId> {
         let sql = QueryKind::select_id_single(Self::TABLE, k, v);
         let ids: Vec<RecordId> = query_take(sql.as_str(), None).await?;
         let id = ids.into_iter().next();
         id.ok_or(DBError::NotFound.into())
+    }
+
+    async fn all_record() -> Result<Vec<RecordId>> {
+        let sql = QueryKind::all_id(Self::TABLE);
+        query_take(sql.as_str(), None).await
     }
 }
 
@@ -319,3 +328,4 @@ pub async fn run_tx(stmts: Vec<TxStmt>) -> Result<Response> {
     let resp = resp.check()?;
     Ok(resp)
 }
+
