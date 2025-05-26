@@ -1,73 +1,56 @@
 import { commands, type Result as SpectaResult } from "./commands";
 import { Ok, Err, type Result } from "@/lib/result";
 
+type AwaitedRet<F extends (...args: any) => any> = Awaited<ReturnType<F>>;
+
+type SpectaData<R> = R extends { status: "ok"; data: infer D } ? D : never;
+type SpectaError<R> = R extends { status: "error"; error: infer E } ? E : never;
+
+type CmdRawResult<K extends CommandKey> = AwaitedRet<CommandsType[K]> extends {
+  status: "ok" | "error";
+}
+  ? Result<
+      SpectaData<AwaitedRet<CommandsType[K]>>,
+      SpectaError<AwaitedRet<CommandsType[K]>>
+    >
+  : AwaitedRet<CommandsType[K]>;
+
 type CommandsType = typeof commands;
 type CommandKey = keyof CommandsType;
-// 从 SpectaResult 里提取成功值
-type DataOf<R> = R extends { status: "ok"; data: infer D } ? D : never;
-// 从 SpectaResult 里提取错误值
-type ErrorOf<R> = R extends { status: "error"; error: infer E } ? E : never;
 
-type CommandReturnType<K extends CommandKey> = ReturnType<CommandsType[K]>;
+function toResult<T, E>(r: SpectaResult<T, E>): Result<T, E> {
+  switch (r.status) {
+    case "ok":
+      return Ok<T, E>(r.data);
+    case "error":
+      return Err<E, T>(r.error);
+  }
+}
 
-type SpectaToResult<K extends CommandKey> =
-  CommandReturnType<K> extends Promise<infer R>
-    ? // 如果是 SpectaResult 结构 → 转成自定义 Result
-      R extends { status: "ok" | "error" }
-      ? Promise<Result<DataOf<R>, ErrorOf<R>>>
-      : CommandReturnType<K> // 普通 Promise 直接透传
-    : CommandReturnType<K>; // 同步函数保持同步
+function isSpectaResult<T, E>(x: any): x is SpectaResult<T, E> {
+  return (
+    x != null &&
+    typeof x === "object" &&
+    (x.status === "ok" || x.status === "error")
+  );
+}
 
-/**
- * 创建一个代理对象，自动将所有命令的返回值转换为自定义Result类型
- */
 export const crab = new Proxy(
   {} as {
     [K in CommandKey]: (
-      ...args: Parameters<CommandsType[K]>
-    ) => SpectaToResult<K>;
+      ...a: Parameters<CommandsType[K]>
+    ) => Promise<CmdRawResult<K>>;
   },
   {
-    get: (_, prop: string) => {
-      // 如果属性不是commands的方法，返回undefined
-      if (!(prop in commands)) {
-        return undefined;
-      }
-
-      // 返回一个包装函数
-      // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+    get(_, prop: CommandKey) {
       return async (...args: any[]) => {
-        try {
-          // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-          const originalResult = await (commands as any)[prop](...args);
+        type Raw = AwaitedRet<CommandsType[typeof prop]>;
+        type T = SpectaData<Raw>;
+        type E = SpectaError<Raw>;
 
-          // 检查返回值是否是Result格式
-          if (
-            originalResult &&
-            typeof originalResult === "object" &&
-            originalResult !== null &&
-            "status" in originalResult
-          ) {
-            const spectaResult = originalResult as SpectaResult<
-              unknown,
-              unknown
-            >;
-
-            switch (spectaResult.status) {
-              case "ok":
-                return Ok(spectaResult.data);
-              case "error":
-                return Err(spectaResult.error);
-            }
-          }
-
-          // 如果不是Result格式，直接返回原始结果
-          return originalResult;
-        } catch (error) {
-          return Err(error);
-        }
+        const r: Raw = await (commands as any)[prop](...args);
+        return isSpectaResult(r) ? toResult<T, E>(r) : r;
       };
     },
   }
 );
-

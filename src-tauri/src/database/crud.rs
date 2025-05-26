@@ -186,15 +186,14 @@ pub trait Crud:
 
     async fn relate_by_id(self_id: RecordId, target_id: RecordId, rel: &str) -> Result<()> {
         let db = get_db()?;
-        let sql = format!("RELATE {self_id}->{rel}->{target_id};");
-        db.query(&sql).await?;
+        db.query(QueryKind::relate(self_id, target_id, rel)).await?;
         Ok(())
     }
 
     async fn unrelate_by_id(self_id: RecordId, target_id: RecordId, rel: &str) -> Result<()> {
         let db = get_db()?;
-        let sql = format!("DELETE {self_id}->{rel} WHERE out={target_id} RETURN NONE;");
-        db.query(&sql).await?;
+        db.query(QueryKind::unrelate(self_id, target_id, rel))
+            .await?;
         Ok(())
     }
 

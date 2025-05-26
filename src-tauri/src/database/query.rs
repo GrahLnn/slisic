@@ -1,7 +1,7 @@
 use serde_json::Value;
 use surrealdb::RecordId;
 
-use super::enums::table::Table;
+use super::enums::table::{Table, TableName};
 
 pub enum QueryKind {
     FindUser,
@@ -58,12 +58,17 @@ impl QueryKind {
     pub fn replace(id: RecordId, data: Value) -> String {
         format!("UPDATE {id} REPLACE {data};")
     }
-    pub fn pagin(table: Table, count: i64, cursor: Option<RecordId>, order: Order) -> String {
+    pub fn pagin<T: TableName>(
+        table: T,
+        count: i64,
+        cursor: Option<RecordId>,
+        order: Order,
+    ) -> String {
         let than = match order {
             Order::Asc => ">",
             Order::Desc => "<",
         };
-        let table_name = table.as_str();
+        let table_name = table.table_name();
         match cursor {
             Some(cursor) => format!(
                 "SELECT * FROM {table_name} WHERE id {than} {cursor} ORDER BY id {} LIMIT {count};",
@@ -101,4 +106,11 @@ impl QueryKind {
     pub fn all_id(table: Table) -> String {
         format!("RETURN (SELECT id FROM {}).id;", table.as_str())
     }
+    pub fn relate(self_id: RecordId, target_id: RecordId, rel: &str) -> String {
+        format!("RELATE {self_id}->{rel}->{target_id} SET created_at = time::now();")
+    }
+    pub fn unrelate(self_id: RecordId, target_id: RecordId, rel: &str) -> String {
+        format!("DELETE {self_id}->{rel} WHERE out={target_id} RETURN NONE;")
+    }
 }
+

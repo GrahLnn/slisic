@@ -1,4 +1,6 @@
-type RawResult<T, E = Error> = { ok: true; value: T } | { ok: false; error: E };
+export type Ok<T> = { ok: true; value: T };
+export type Err<E> = { ok: false; error: E };
+export type RawResult<T, E = Error> = Ok<T> | Err<E>;
 
 export const Ok = <T, E = never>(value: T): Result<T, E> =>
   new Result({ ok: true, value });
@@ -10,8 +12,9 @@ export class Result<T, E = Error> {
   constructor(private readonly result: RawResult<T, E>) {}
 
   match<U>(handlers: { Ok: (value: T) => U; Err: (error: E) => U }): U {
-    if (this.result.ok) return handlers.Ok(this.result.value);
-    return handlers.Err(this.result.error);
+    return this.result.ok
+      ? handlers.Ok(this.result.value)
+      : handlers.Err(this.result.error);
   }
 
   isOk(): this is Result<T, E> {
@@ -113,4 +116,3 @@ export async function rtry<T, E = Error>(
     return Err(errorFactory ? errorFactory(err) : (err as E));
   }
 }
-
