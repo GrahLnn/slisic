@@ -1,6 +1,6 @@
-export type Ok<T> = { ok: true; value: T };
-export type Err<E> = { ok: false; error: E };
-export type RawResult<T, E = Error> = Ok<T> | Err<E>;
+type Ok<T> = { ok: true; value: T };
+type Err<E> = { ok: false; error: E };
+type RawResult<T, E = Error> = Ok<T> | Err<E>;
 
 export const Ok = <T, E = never>(value: T): Result<T, E> =>
   new Result({ ok: true, value });
