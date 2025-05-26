@@ -180,6 +180,7 @@ const TopBar = memo(function TopBarComponent() {
               !windowFocused && "opacity-30",
               "transition duration-300 ease-in-out",
             ])}
+            data-tauri-drag-region={!allowBarInteraction}
           >
             {allowBarInteraction && (
               <>
