@@ -163,7 +163,7 @@ const TopBar = memo(function TopBarComponent() {
         <div
           className={cn([
             "fixed top-0 left-0 flex",
-            "w-screen h-8 z-[9999] select-none",
+            "w-screen h-8 z-[100] select-none",
             "before:absolute before:inset-0 before:-z-10",
             "before:bg-gradient-to-b before:from-[var(--app-bg)] before:to-[var(--app-bg)]/60",
             "before:transition-colors before:duration-500 before:ease-in-out",

@@ -18,23 +18,17 @@ const GreetForm = memo(function GreetForm() {
       return;
     }
     const res = await crab.greet(name);
-    res.match({
-      Ok: (value) => {
-        setGreetMsg(value);
-        setName("");
-      },
-      Err: (error) => setGreetMsg(`Error: ${error}`),
+    res.tap((v) => {
+      setGreetMsg(v);
+      setName("");
     });
   }
 
   async function clean() {
     const res = await crab.clean();
-    res.match({
-      Ok: (value) => {
-        setGreetMsg(value);
-        setName("");
-      },
-      Err: (error) => setGreetMsg(`Error: ${error}`),
+    res.tap((v) => {
+      setGreetMsg(v);
+      setName("");
     });
   }
 
