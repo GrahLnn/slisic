@@ -1,4 +1,3 @@
-/* ---------- enum 专用 ---------- */
 type RequireAll<T extends string | number, R> = Record<T, () => R>;
 type RequireDefault<T extends string | number, R> =
   | (Partial<Record<T, () => R>> & { _: () => R })
@@ -22,7 +21,6 @@ function matchableEnum<T extends string | number>(value: T): MatchableEnum<T> {
   };
 }
 
-/* ---------- union 专用 ---------- */
 type VariantTag<T> = T extends any ? keyof T : never;
 
 type FullHandlers<T, R> = {
@@ -37,7 +35,9 @@ type MatchableUnion<T extends Record<string, any>> = {
     tag: K;
     value: Extract<T, Record<K, any>>[K];
     match<R>(h: DefaultHandlers<T, R>): R;
-    is(l: VariantTag<T>): this is MatchableUnion<T> & { tag: typeof l };
+    is<L extends VariantTag<T>>(
+      l: L
+    ): this is Extract<MatchableUnion<T>, { tag: L }>;
   };
 }[VariantTag<T>];
 
@@ -55,7 +55,9 @@ function matchableUnion<T extends Record<string, any>>(
         (h as { _: (p: any) => R })._;
       return fn(payload);
     },
-    is(l: VariantTag<T>): l is VariantTag<T> {
+    is(
+      l: VariantTag<T>
+    ): this is Extract<MatchableUnion<T>, { tag: typeof l }> {
       return l === tag;
     },
   } as any;
