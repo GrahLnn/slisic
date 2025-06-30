@@ -1,21 +1,36 @@
-type RequireAll<T extends string | number, R> = Record<T, () => R>;
-type RequireDefault<T extends string | number, R> =
-  | (Partial<Record<T, () => R>> & { _: () => R })
+type ToRecordKey<T> = T extends boolean
+  ? `${T}` // 把 true/false 变成 "true"/"false"
+  : T extends string | number
+  ? T
+  : never;
+
+type RequireAll<T extends string | number | boolean, R> = Record<
+  ToRecordKey<T>,
+  () => R
+>;
+type RequireDefault<T extends string | number | boolean, R> =
+  | (Partial<Record<ToRecordKey<T>, () => R>> & { _: () => R })
   | RequireAll<T, R>;
 
-type MatchableEnum<T extends string | number> = {
+type MatchableEnum<T extends string | number | boolean> = {
   value: T;
   match<R>(handlers: RequireDefault<T, R>): R;
   is(v: T): v is T;
 };
 
-function matchableEnum<T extends string | number>(value: T): MatchableEnum<T> {
+function matchableEnum<T extends string | number | boolean>(
+  value: T
+): MatchableEnum<T> {
   return {
     value,
-    match<R>(h: RequireDefault<T, R>) {
-      if (value in h) return (h as Record<T, () => R>)[value]();
-      if ("_" in h) return (h as { _: () => R })._();
-      throw new Error(`unhandled enum value ${value as string}`);
+    match<R>(h: RequireDefault<T, R>): R {
+      // 运行时：boolean 转成 "true"/"false"
+      const k = (
+        typeof value === "boolean" ? String(value) : value
+      ) as keyof typeof h;
+
+      const handler = (k in h ? h[k] : (h as { _: () => R })._) as () => R;
+      return handler();
     },
     is: (v: T): v is T => v === value,
   };
@@ -127,18 +142,20 @@ function matchableUnion<T extends Record<string, any>>(
 // 这样每个分支的 `is` 参数就一致，不会在联合时交集成 `never`。
 // 但通常 **阻断分发 `[T] extends …` 最简单**，推荐首选。
 
-export type Matchable<T> = [T] extends [string | number]
+export type Matchable<T> = [T] extends [string | number | boolean]
   ? MatchableEnum<T>
   : [T] extends [Record<string, any>]
   ? MatchableUnion<T>
   : never;
 
-export function matchable<T extends string | number>(value: T): Matchable<T>;
-export function matchable<T extends Record<string, any>>(
+export function me<T extends string | number | boolean>(
   value: T
 ): Matchable<T>;
-export function matchable(value: any): any {
-  return typeof value === "string" || typeof value === "number"
+export function me<T extends Record<string, any>>(
+  value: T
+): Matchable<T>;
+export function me(value: any): any {
+  return ["string", "number", "boolean"].includes(typeof value)
     ? matchableEnum(value)
     : matchableUnion(value);
 }
