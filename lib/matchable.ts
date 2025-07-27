@@ -1,27 +1,45 @@
+import { type } from "arktype";
+import { K } from "./comb";
+
 type ToRecordKey<T> = T extends boolean
   ? `${T}` // 把 true/false 变成 "true"/"false"
   : T extends string | number
   ? T
   : never;
 
+type Handler<R, V = any> = {
+  /** 当 V = any ⇒ (v: any) => R，可接受 () => R / (v: Sub) => R */
+  (v: V): R;
+  /** 小技巧：加个无用属性触发 bivariant 行为 */
+  bivarianceHack?: never;
+};
+
 type RequireAll<T extends string | number | boolean, R> = Record<
   ToRecordKey<T>,
-  () => R
+  Handler<R>
 >;
+
 type RequireDefault<T extends string | number | boolean, R> =
-  | (Partial<Record<ToRecordKey<T>, () => R>> & { _: () => R })
+  | (Partial<Record<ToRecordKey<T>, Handler<R>>> & { _: Handler<R> })
   | RequireAll<T, R>;
 
 type MatchableEnum<T extends string | number | boolean> = {
+  __recognizer__: "enum";
   value: T;
   match<R>(handlers: RequireDefault<T, R>): R;
   is(v: T): v is T;
+  not(v: T): v is T;
+  in(v: Array<T>): boolean;
+  not_in(v: Array<T>): boolean;
+  pick<L extends T>(branch: L): <R>(fn: Handler<R>) => R | null;
+  catch<L extends Array<T>>(arr_branch: L): <R>(fn: Handler<R>) => R | null;
 };
 
 function matchableEnum<T extends string | number | boolean>(
   value: T
 ): MatchableEnum<T> {
   return {
+    __recognizer__: "enum",
     value,
     match<R>(h: RequireDefault<T, R>): R {
       // 运行时：boolean 转成 "true"/"false"
@@ -29,10 +47,31 @@ function matchableEnum<T extends string | number | boolean>(
         typeof value === "boolean" ? String(value) : value
       ) as keyof typeof h;
 
-      const handler = (k in h ? h[k] : (h as { _: () => R })._) as () => R;
-      return handler();
+      const handler = (
+        k in h ? h[k] : (h as { _: Handler<R> })._
+      ) as Handler<R>;
+      return handler(value);
     },
     is: (v: T): v is T => v === value,
+    not: (v: T): v is T => v !== value,
+    in(arr: Array<T>): boolean {
+      return arr.includes(value);
+    },
+    not_in(arr: Array<T>): boolean {
+      return !this.in(arr);
+    },
+    pick<L extends T>(branch: L) {
+      const self = this;
+      return function <R>(fn: Handler<R>): R | null {
+        return self.is(branch) ? fn(self.value) : null;
+      };
+    },
+    catch<L extends Array<T>>(arr_branch: L) {
+      const self = this;
+      return function <R>(fn: Handler<R>): R | null {
+        return self.in(arr_branch) ? fn(self.value) : null;
+      };
+    },
   };
 }
 
@@ -47,12 +86,26 @@ type DefaultHandlers<T, R> =
 
 type MatchableUnion<T extends Record<string, any>> = {
   [K in VariantTag<T>]: {
+    __recognizer__: "union";
     tag: K;
     value: Extract<T, Record<K, any>>[K];
     match<R>(h: DefaultHandlers<T, R>): R;
     is<L extends VariantTag<T>>(
       l: L
     ): this is Extract<MatchableUnion<T>, { tag: L }>;
+    not<L extends VariantTag<T>>(
+      l: L
+    ): this is Extract<MatchableUnion<T>, { tag: L }>;
+    in(arr: Array<VariantTag<T>>): boolean;
+    not_in(arr: Array<VariantTag<T>>): boolean;
+    pick<K extends VariantTag<T>>(
+      branch: K
+    ): <R>(fn: (payload: Extract<T, Record<K, any>>[K]) => R) => R | null;
+    catch<K extends Array<VariantTag<T>>>(
+      arr_branch: K
+    ): <R>(
+      fn: (payload: Extract<T, Record<K[number], any>>[K[number]]) => R
+    ) => R | null;
   };
 }[VariantTag<T>];
 
@@ -62,6 +115,7 @@ function matchableUnion<T extends Record<string, any>>(
   const tag = Object.keys(value)[0] as VariantTag<T>;
   const payload = (value as any)[tag];
   return {
+    __recognizer__: "union",
     tag,
     value: payload,
     match<R>(h: DefaultHandlers<T, R>) {
@@ -70,92 +124,136 @@ function matchableUnion<T extends Record<string, any>>(
         (h as { _: (p: any) => R })._;
       return fn(payload);
     },
-    is(
-      l: VariantTag<T>
-    ): this is Extract<MatchableUnion<T>, { tag: typeof l }> {
+    is<L extends VariantTag<T>>(
+      l: L
+    ): this is Extract<MatchableUnion<T>, { tag: L }> {
       return l === tag;
     },
-  } as any;
+    not<L extends VariantTag<T>>(
+      l: L
+    ): this is Extract<MatchableUnion<T>, { tag: L }> {
+      return l !== tag;
+    },
+    in(arr: Array<VariantTag<T>>): boolean {
+      return arr.includes(tag);
+    },
+    not_in(arr: Array<VariantTag<T>>): boolean {
+      return !this.in(arr);
+    },
+    pick<K extends VariantTag<T>>(branch: K) {
+      const self = this;
+      return function <R>(
+        fn: (payload: Extract<T, Record<K, any>>[K]) => R
+      ): R | null {
+        return self.is(branch) ? fn(self.value as any) : null;
+      };
+    },
+    catch<K extends Array<VariantTag<T>>>(arr_branch: K) {
+      const self = this;
+      return function <R>(
+        fn: (payload: Extract<T, Record<K[number], any>>[K[number]]) => R
+      ): R | null {
+        return self.in(arr_branch) ? fn(self.value as any) : null;
+      };
+    },
+  };
 }
 
-// ### 为何参数被推成 **`never`**？
+const emptyMatchable = {
+  __recognizer__: "empty",
+  value: null,
+  match: K(null),
+  is: K(false),
+  not: K(false),
+  pick: K(K(null)),
+  catch: K(K(null)),
+  not_in: K(false),
+  in: K(false),
+};
 
-// ```ts
-// export type Matchable<T> =
-//   T extends string | number        // ← 裸露的 T
-//     ? MatchableEnum<T>             // ①
-//     : T extends Record<string, any>
-//     ? MatchableUnion<T>            // ②
-//     : never;
-// ```
+type EmptyMatchable = typeof emptyMatchable;
 
-// `T` 如果是联合（例如 `"detail" | "list"`），**条件类型默认会“分发”**：
+type MatchableObj<T extends Record<string, any>> = {
+  __recognizer__: "object";
+  value: T;
+  /** pick 单字段：存在且非空才执行 */
+  pick<K extends keyof T>(
+    key: K
+  ): <R>(fn: (v: NonNullable<T[K]>) => R) => R | null;
+  /** pickMul 多字段：全部非空才执行 */
+  catch<KS extends readonly (keyof T)[]>(
+    ...keys: KS
+  ): <R>(
+    fn: (props: { [P in KS[number]]: NonNullable<T[P]> }) => R
+  ) => R | null;
+};
 
-// ```
-// Matchable<"detail" | "list">
-//   ⇓ 分别套进去
-// MatchableEnum<"detail"> | MatchableEnum<"list">
-// ```
+function matchableObj<T extends object>(value: T): MatchableObj<T> {
+  return {
+    __recognizer__: "object",
+    value,
+    pick(key) {
+      return (fn) => (value[key] != null ? fn(value[key] as any) : null);
+    },
 
-// 接着，`MatchableEnum<X>` 里的 `is` 各自长这样：
+    catch(...keys) {
+      return (fn) => {
+        if (keys.some((k) => !value[k])) return null;
+        const picked: any = {};
+        for (const k of keys) picked[k] = value[k];
+        return fn(picked);
+      };
+    },
+  };
+}
 
-// ```ts
-// is(v: "detail"): v is "detail"   // 分支 1
-// is(v: "list"):   v is "list"     // 分支 2
-// ```
-
-// 把这两个函数做并集时，TypeScript 会取 **参数类型的交集** →
-// `"detail" & "list"` ⇒ **`never`**。于是调用时报
-
-// ```
-// Argument of type '"detail"' is not assignable to parameter of type 'never'.
-// ```
-
-// ---
-
-// ## 解决办法：让条件类型 **不分发**
-
-// 给 `T` 套一层元组即可阻断分发：
-
-// ```ts
-// export type Matchable<T> =
-//   [T] extends [string | number]            // ← 用 [T] 包裹
-//     ? MatchableEnum<T>
-//     : [T] extends [Record<string, any>]
-//     ? MatchableUnion<T>
-//     : never;
-// ```
-
-// * `[T]` → 非“裸类型”，条件类型只评估 **一次**，不会把联合拆开。
-// * 此时 `is` 的参数就是完整的联合 `"detail" | "list"`，调用自然通过。
-
-// ## 另一种做法：在 `is` 里写统一参数类型
-
-// 若你想保留可分发的 `Matchable<T>`，也可以把
-// `MatchableEnum` / `MatchableUnion` 中的 `is` 改写为 **同一个宽参数类型**，
-// 例如：
-
-// ```ts
-// is(v: T | (string & {})): v is Extract<T, typeof v>
-// ```
-
-// 这样每个分支的 `is` 参数就一致，不会在联合时交集成 `never`。
-// 但通常 **阻断分发 `[T] extends …` 最简单**，推荐首选。
-
-export type Matchable<T> = [T] extends [string | number | boolean]
-  ? MatchableEnum<T>
-  : [T] extends [Record<string, any>]
-  ? MatchableUnion<T>
+type IsUnion<T, U = T> = T extends any
+  ? [U] extends [T]
+    ? false
+    : true
   : never;
 
-export function me<T extends string | number | boolean>(
-  value: T
-): Matchable<T>;
-export function me<T extends Record<string, any>>(
-  value: T
-): Matchable<T>;
+type IsSingleKeyObj<O extends Record<string, any>> = IsUnion<
+  keyof O
+> extends true
+  ? false
+  : true;
+
+/* 判断 “联合里的每个成员都恰好 1 键” */
+type IsUnionOfSingleKey<U extends Record<string, any>> =
+  // 把 U 分发，收集结果；若有任何 false ⇒ 最终 union 包含 false
+  (U extends any ? IsSingleKeyObj<U> : never) extends false ? false : true;
+
+type MatchableError<T> = {
+  __matchable_error__: `❌ match() only supports string | number | boolean | Record<string, any>, but got: ${Extract<
+    T,
+    string | number | bigint | boolean | null | undefined
+  >}`;
+  value: T;
+};
+
+type _MatchableCore<T> = [T] extends [string | number | boolean]
+  ? MatchableEnum<T>
+  : [T] extends [Record<string, any>]
+  ? IsUnionOfSingleKey<T> extends true
+    ? MatchableUnion<T> // 单键：视作 Rust‑enum 封装
+    : MatchableObj<T> // 多键：普通对象
+  : MatchableError<T>;
+
+export type Matchable<T> =
+  | ([T] extends [null] ? EmptyMatchable : never)
+  | ([T] extends [undefined] ? EmptyMatchable : never)
+  | _MatchableCore<NonNullable<T>>;
+
+export function me<
+  T extends string | number | boolean | Record<string, any> | null | undefined
+>(value: T): Matchable<T>;
 export function me(value: any): any {
-  return ["string", "number", "boolean"].includes(typeof value)
-    ? matchableEnum(value)
-    : matchableUnion(value);
+  if (value == null) return emptyMatchable;
+  if (["string", "number", "boolean"].includes(typeof value))
+    return matchableEnum(value);
+  // ⚠️ 如果想用 Union 模式，必须“单键封装”，因为等同于rust的enum：
+  if (Object.keys(value).length === 1) return matchableUnion(value);
+  // 否则走对象模式
+  return matchableObj(value);
 }
