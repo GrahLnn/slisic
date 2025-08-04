@@ -14,7 +14,7 @@ type TransferBase<TState extends readonly string[]> = {
 
 type TransferMap<TState extends readonly string[]> = TransferBase<TState> & {
   pick: <K extends keyof TransferBase<TState>>(
-    keys: readonly K[] | K
+    ...keys: K[]
   ) => Pick<TransferBase<TState>, K>;
 };
 
@@ -58,8 +58,36 @@ export function createStateAndSignals<
   return { State, Signal, transfer };
 }
 
-/* ---------- 自动 to_xx version（含真正 transfer） ---------- */
-export function createStateAndToSignals<
+/**
+ * 构建类型安全的状态与信号对象工厂。
+ *
+ * 传入状态字符串数组（`states`），可选扩展信号（`extra_signals`），自动生成：
+ * - `State`: 所有状态名到自身的映射（如 { idle: 'idle', loading: 'loading' }）。
+ * - `Signal`: 所有信号名（含自动生成的 to_xxx 与 extra_signals）到信号对象的映射。
+ * - `transfer`: 状态与信号的目标关系映射，并内置类型安全的 pick 方法，可按需筛选子集。
+ *
+ * 适用于需要自动生成状态机结构（如 UI 状态、流程驱动、信号控制流）的场景。
+ *
+ * @template TState 状态名字符串字面量数组类型
+ * @template TExtra 可选扩展信号字符串字面量数组类型
+ * @param {TState} states 所有状态名的只读字符串数组
+ * @param {TExtra} [extra_signals] 额外自定义信号名（非自动生成）的只读字符串数组
+ * @returns {{
+ *   State: StateMap<TState>,
+ *   Signal: SignalMap<ToSignal<TState> | TExtra[number]>,
+ *   transfer: TransferMap<TState>
+ * }}
+ *
+ * @example
+ * const { State, Signal, transfer } = sst(
+ *   ['idle', 'loading', 'done'],
+ *   ['reset', 'force']
+ * );
+ * // State: { idle: 'idle', loading: 'loading', done: 'done' }
+ * // Signal: { to_idle, to_loading, to_done, reset, force }
+ * // transfer.pick(['to_idle', 'reset'])
+ */
+export function sst<
   const TState extends readonly string[],
   const TExtra extends readonly string[] = []
 >(
@@ -94,7 +122,7 @@ export function createStateAndToSignals<
 
   /* pick 柯里化 */
   function pick<K extends keyof typeof transferBase>(
-    keys: readonly K[] | K
+    ...keys: K[]
   ): Pick<typeof transferBase, K> {
     const arr = (Array.isArray(keys) ? keys : [keys]) as readonly K[];
     return Object.fromEntries(arr.map((k) => [k, transferBase[k]])) as Pick<
@@ -254,12 +282,12 @@ export function invokeEvt<S extends string>(id: S): WithPrefix<S> {
   return `xstate.done.actor.${id}`;
 }
 
-export function upcast(state: string) {
-  return `..${state}`;
+export function godown(state: string) {
+  return `.${state}`;
 }
 
-export function downcast(state: string) {
-  return `.${state}`;
+export function goto(state: string) {
+  return `#${state}`;
 }
 
 type InvokeForm<
@@ -308,4 +336,7 @@ export function invokeState<
       },
     },
   } as InvokeForm<K, S, A>;
+}
+export interface ActorInput<T> {
+  input: T;
 }

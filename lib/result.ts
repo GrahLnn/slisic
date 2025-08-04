@@ -37,7 +37,7 @@ export class Result<T, E = Error> {
   }
 
   // 如果失败，返回内部错误；成功则抛出错误
-  unwrapErr(): E {
+  unwrap_err(): E {
     return this.match({
       Ok: (value) => {
         throw new Error(`Called unwrapErr on an Ok: ${value}`);
@@ -47,15 +47,17 @@ export class Result<T, E = Error> {
   }
 
   // 如果成功则返回内部值，否则返回默认值
-  unwrapOr(defaultValue: T): T {
+  unwrap_or(): T | undefined;
+  unwrap_or(defaultValue: NonNullable<T>): T;
+  unwrap_or(defaultValue?: NonNullable<T>): T | undefined {
     return this.match({
       Ok: (value) => value,
-      Err: () => defaultValue,
+      Err: () => defaultValue as T, // defaultValue 存在时命中上面的重载
     });
   }
 
   // 如果成功，则返回内部值，否则调用传入函数
-  orElse(fn: (error: E) => T): T {
+  or_else(fn: (error: E) => T): T {
     return this.match({
       Ok: (value) => value,
       Err: (error) => fn(error),
@@ -71,7 +73,7 @@ export class Result<T, E = Error> {
   }
 
   // 如果失败，则对错误做转换；成功时保持内部值
-  mapErr<F>(fn: (error: E) => F): Result<T, F> {
+  map_err<F>(fn: (error: E) => F): Result<T, F> {
     return this.match({
       Ok: (value) => Ok(value),
       Err: (error) => Err(fn(error)),
@@ -89,13 +91,13 @@ export class Result<T, E = Error> {
   // 如果成功，则调用传入函数
   tap(fn: (value: T) => void): this {
     if (this.isOk()) fn(this.unwrap());
-    else console.error("tap error:", (this as Result<any, E>).unwrapErr());
+    else console.error("tap error:", (this as Result<any, E>).unwrap_err());
     return this;
   }
 
   // 如果失败，则调用传入函数
-  tapErr(fn: (error: E) => void): this {
-    if (this.isErr()) fn(this.unwrapErr());
+  tap_err(fn: (error: E) => void): this {
+    if (this.isErr()) fn(this.unwrap_err());
     return this;
   }
 

@@ -1,5 +1,6 @@
 import { type } from "arktype";
 import { K } from "./comb";
+import { isEqual } from "lodash";
 
 type ToRecordKey<T> = T extends boolean
   ? `${T}` // 把 true/false 变成 "true"/"false"
@@ -31,8 +32,8 @@ type MatchableEnum<T extends string | number | boolean> = {
   not(v: T): v is T;
   in(v: Array<T>): boolean;
   not_in(v: Array<T>): boolean;
-  pick<L extends T>(branch: L): <R>(fn: Handler<R>) => R | null;
-  catch<L extends Array<T>>(arr_branch: L): <R>(fn: Handler<R>) => R | null;
+  into(): <R>(fn: Handler<R>) => R | null;
+  catch<L extends Array<T>>(...arr_branch: L): <R>(fn: Handler<R>) => R | null;
 };
 
 function matchableEnum<T extends string | number | boolean>(
@@ -60,13 +61,13 @@ function matchableEnum<T extends string | number | boolean>(
     not_in(arr: Array<T>): boolean {
       return !this.in(arr);
     },
-    pick<L extends T>(branch: L) {
+    into() {
       const self = this;
       return function <R>(fn: Handler<R>): R | null {
-        return self.is(branch) ? fn(self.value) : null;
+        return fn(self.value);
       };
     },
-    catch<L extends Array<T>>(arr_branch: L) {
+    catch<L extends Array<T>>(...arr_branch: L) {
       const self = this;
       return function <R>(fn: Handler<R>): R | null {
         return self.in(arr_branch) ? fn(self.value) : null;
@@ -98,11 +99,9 @@ type MatchableUnion<T extends Record<string, any>> = {
     ): this is Extract<MatchableUnion<T>, { tag: L }>;
     in(arr: Array<VariantTag<T>>): boolean;
     not_in(arr: Array<VariantTag<T>>): boolean;
-    pick<K extends VariantTag<T>>(
-      branch: K
-    ): <R>(fn: (payload: Extract<T, Record<K, any>>[K]) => R) => R | null;
+    into(): <R>(fn: (payload: Extract<T, Record<K, any>>[K]) => R) => R | null;
     catch<K extends Array<VariantTag<T>>>(
-      arr_branch: K
+      ...arr_branch: K
     ): <R>(
       fn: (payload: Extract<T, Record<K[number], any>>[K[number]]) => R
     ) => R | null;
@@ -140,20 +139,20 @@ function matchableUnion<T extends Record<string, any>>(
     not_in(arr: Array<VariantTag<T>>): boolean {
       return !this.in(arr);
     },
-    pick<K extends VariantTag<T>>(branch: K) {
+    into() {
       const self = this;
-      return function <R>(
-        fn: (payload: Extract<T, Record<K, any>>[K]) => R
-      ): R | null {
-        return self.is(branch) ? fn(self.value as any) : null;
+      return function <R>(fn: Handler<R>): R | null {
+        return self.value && !isEqual(self.value, []) ? fn(self.value) : null;
       };
     },
-    catch<K extends Array<VariantTag<T>>>(arr_branch: K) {
+    catch<K extends Array<VariantTag<T>>>(...arr_branch: K) {
       const self = this;
       return function <R>(
         fn: (payload: Extract<T, Record<K[number], any>>[K[number]]) => R
       ): R | null {
-        return self.in(arr_branch) ? fn(self.value as any) : null;
+        return self.in(arr_branch) && self.value && !isEqual(self.value, [])
+          ? fn(self.value as any)
+          : null;
       };
     },
   };
@@ -165,9 +164,9 @@ const emptyMatchable = {
   match: K(null),
   is: K(false),
   not: K(false),
-  pick: K(K(null)),
   catch: K(K(null)),
   not_in: K(false),
+  into: K(K(null)),
   in: K(false),
 };
 
@@ -176,11 +175,7 @@ type EmptyMatchable = typeof emptyMatchable;
 type MatchableObj<T extends Record<string, any>> = {
   __recognizer__: "object";
   value: T;
-  /** pick 单字段：存在且非空才执行 */
-  pick<K extends keyof T>(
-    key: K
-  ): <R>(fn: (v: NonNullable<T[K]>) => R) => R | null;
-  /** pickMul 多字段：全部非空才执行 */
+  into(): <R>(fn: (props: T) => R) => R | null;
   catch<KS extends readonly (keyof T)[]>(
     ...keys: KS
   ): <R>(
@@ -192,10 +187,11 @@ function matchableObj<T extends object>(value: T): MatchableObj<T> {
   return {
     __recognizer__: "object",
     value,
-    pick(key) {
-      return (fn) => (value[key] != null ? fn(value[key] as any) : null);
+    into() {
+      return (fn) => {
+        return fn(value);
+      };
     },
-
     catch(...keys) {
       return (fn) => {
         if (keys.some((k) => !value[k])) return null;
