@@ -24,6 +24,10 @@ use utils::macos_titlebar::FullscreenStateManager;
 thread_local! {
     static MAIN_WINDOW_OBSERVER: RefCell<Option<FullscreenStateManager>> = RefCell::new(None);
 }
+#[cfg(target_os = "windows")]
+use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
+#[cfg(target_os = "windows")]
+use windows::core::Interface;
 
 const DB_PATH: &str = "surreal.db";
 
@@ -88,6 +92,15 @@ pub fn run() {
                         #[cfg(target_os = "windows")]
                         {
                             window.set_decorations(false).unwrap();
+                            window
+                                .with_webview(|webview| unsafe {
+                                    let core = webview.controller().CoreWebView2().unwrap();
+                                    let settings = core.Settings().unwrap();
+                                    let s4: ICoreWebView2Settings4 = settings.cast().unwrap(); // 提升到 Settings4
+                                    s4.SetIsGeneralAutofillEnabled(false).unwrap();
+                                    s4.SetIsPasswordAutosaveEnabled(false).unwrap();
+                                })
+                                .expect("disable autofill");
                         }
                         #[cfg(target_os = "macos")]
                         {
