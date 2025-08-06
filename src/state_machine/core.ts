@@ -212,7 +212,6 @@ export type DoneEventOf<Fn extends AsyncFn, Name extends string> = {
 };
 
 /* 核心：把一组异步函数映射成 done-event 联合  */
-/* ✅ 兼容新版 actors 的 DoneEvents */
 export type DoneEvents<A extends Record<string, any>> = {
   [K in keyof A]: SrcOf<A[K]> extends (...a: any) => Promise<infer R>
     ? DoneEvt<K & string, R>
@@ -252,28 +251,34 @@ type DoneKeys<E extends AnyEvt> = E extends { type: infer T; output: any }
   ? T & string
   : never;
 
-export function eventHandler<AllEvents extends AnyEvt>() {
-  function take() {}
+/** 同时兼容 K 和 WithPrefix<K> 的 output 提取 */
+type OutputOf<E extends AnyEvt, K extends string> =
+  | Extract<E, { type: K } & { output: unknown }>["output"]
+  | Extract<E, { type: WithPrefix<K> } & { output: unknown }>["output"];
 
-  function whenDone<
-    K extends DoneKeys<AllEvents>, // 所有可用 type
-    C
-  >(
-    key: K | WithPrefix<K> // 带前缀或不带前缀
-  ) {
-    /** 第 2 层：真正的 predicate，返回任意类型 R */
-    return function predicate<R>(
-      fn: (output: DoneEvtFor<AllEvents, K>["output"], ctx: C) => R
+/** 同时兼容 K 和 WithPrefix<K> 的事件本体提取 */
+type EvtForKey<E extends AnyEvt, K extends string> = Extract<
+  E,
+  { type: K } | { type: WithPrefix<K> }
+>;
+
+export function eventHandler<AllEvents extends AnyEvt>() {
+  function whenDone<K extends DoneKeys<AllEvents>>(key: K | WithPrefix<K>) {
+    return function <R, A extends { context: any; event: AllEvents }>(
+      fn: (
+        output: OutputOf<AllEvents, K>,
+        ctx: A["context"],
+        evt: EvtForKey<AllEvents, K>
+      ) => R
     ) {
-      /* 返回给 XState 的 guard / action / whatever */
-      return ({ context, event }: { context: C; event: AllEvents }) => {
+      return ({ context, event }: A) => {
         assertEvent(event, key);
-        return fn((event as DoneEvtFor<AllEvents, K>).output, context);
+        return fn((event as any).output, context, event as any);
       };
     };
   }
 
-  function match() {}
+  function take() {}
 
   return { whenDone, take };
 }

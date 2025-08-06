@@ -1,7 +1,9 @@
+use std::fmt::Display;
+
 use serde_json::Value;
 use surrealdb::RecordId;
 
-use super::enums::table::{Table, TableName};
+use super::enums::table::{Rel, Table, TableName};
 
 pub enum QueryKind {
     FindUser,
@@ -61,8 +63,9 @@ impl QueryKind {
     pub fn pagin<T: TableName>(
         table: T,
         count: i64,
-        cursor: Option<RecordId>,
+        cursor: Option<String>,
         order: Order,
+        order_key: &str,
     ) -> String {
         let than = match order {
             Order::Asc => ">",
@@ -71,28 +74,61 @@ impl QueryKind {
         let table_name = table.table_name();
         match cursor {
             Some(cursor) => format!(
-                "SELECT * FROM {table_name} WHERE id {than} {cursor} ORDER BY id {} LIMIT {count};",
+                "SELECT * FROM {table_name} WHERE {order_key} {than} {cursor} ORDER BY {order_key} {} LIMIT {count};",
                 order.as_str()
             ),
             None => format!(
-                "SELECT * FROM {table_name} ORDER BY id {} LIMIT {count};",
+                "SELECT * FROM {table_name} ORDER BY {order_key} {} LIMIT {count};",
                 order.as_str()
             ),
         }
     }
-    pub fn all_by_order(table: Table, order: Order, key: &str) -> String {
-        let table_name = table.as_str();
+    pub fn rel_pagin<T: TableName>(
+        in_id: RecordId,
+        table: T,
+        count: i64,
+        cursor: Option<String>,
+        order: Order,
+        order_key: &str,
+    ) -> String {
+        let than = match order {
+            Order::Asc => ">",
+            Order::Desc => "<",
+        };
+        let table_name = table.table_name();
+        match cursor {
+            Some(cursor) => format!(
+                "SELECT * FROM {table_name} WHERE {order_key} {than} {cursor} AND in={in_id} ORDER BY {order_key} {} LIMIT {count};",
+                order.as_str()
+            ),
+            None => format!(
+                "SELECT * FROM {table_name} WHERE in={in_id} ORDER BY {order_key} {} LIMIT {count};",
+                order.as_str()
+            ),
+        }
+    }
+
+    pub fn all_by_order<T: TableName>(table: T, order: Order, key: &str) -> String {
+        let table_name = table.table_name();
         format!(
             "SELECT * FROM {table_name} ORDER BY {key} {};",
             order.as_str()
         )
     }
-    pub fn limit(table: Table, count: i64) -> String {
-        let table_name = table.as_str();
+    pub fn limit<T: TableName>(table: T, count: i64) -> String {
+        let table_name = table.table_name();
         format!("SELECT * FROM {table_name} LIMIT {count};")
     }
-    pub fn insert(table: &str) -> String {
-        format!("INSERT INTO {table} $data ON DUPLICATE KEY UPDATE id = id;")
+    pub fn insert(table: Table) -> String {
+        format!("INSERT IGNORE INTO {table} $data;")
+    }
+    pub fn insert_replace(table: Table, keys: Vec<String>) -> String {
+        let key_str = keys
+            .iter()
+            .map(|k| format!("{k}=$input.{k}"))
+            .collect::<Vec<String>>()
+            .join(",");
+        format!("INSERT INTO {table} $data ON DUPLICATE KEY UPDATE {key_str};")
     }
     pub fn upsert_set(id: &str, key: &str, value: &str) -> String {
         format!("UPDATE {id} SET {key} = '{value}';")
@@ -100,17 +136,45 @@ impl QueryKind {
     pub fn select_id_single(table: Table, k: &str, v: &str) -> String {
         format!(
             "RETURN (SELECT id FROM ONLY {} WHERE {k} = '{v}' LIMIT 1).id;",
-            table.as_str()
+            table.table_name()
         )
     }
     pub fn all_id(table: Table) -> String {
-        format!("RETURN (SELECT id FROM {}).id;", table.as_str())
+        format!("RETURN (SELECT id FROM {table}).id;")
     }
-    pub fn relate(self_id: RecordId, target_id: RecordId, rel: &str) -> String {
+    pub fn single_field<T: TableName + Display>(table: T, k: &str) -> String {
+        format!("RETURN (SELECT {k} FROM {table}).{k};")
+    }
+    pub fn single_field_by_ids(ids: Vec<RecordId>, k: &str) -> String {
+        format!(
+            "RETURN (SELECT {k} FROM [{}]).{k};",
+            ids.iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<String>>()
+                .join(",")
+        )
+    }
+    pub fn relate(self_id: RecordId, target_id: RecordId, rel: Rel) -> String {
         format!("RELATE {self_id}->{rel}->{target_id} SET created_at = time::now();")
     }
-    pub fn unrelate(self_id: RecordId, target_id: RecordId, rel: &str) -> String {
+    pub fn unrelate(self_id: RecordId, target_id: RecordId, rel: Rel) -> String {
         format!("DELETE {self_id}->{rel} WHERE out={target_id} RETURN NONE;")
     }
+    pub fn unrelate_all(self_id: RecordId, rel: Rel) -> String {
+        format!("DELETE {self_id}->{rel};")
+    }
+    pub fn rel_outs(in_id: RecordId, rel: Rel, out_table: Table) -> String {
+        format!("RETURN {in_id}->{rel}->{out_table};")
+    }
+    pub fn rel_ins(out_id: RecordId, rel: Rel, in_table: Table) -> String {
+        format!("RETURN {out_id}<-{rel}<-{in_table};")
+    }
+    pub fn rel_id(self_id: RecordId, rel: Rel, target_id: RecordId) -> String {
+        format!(
+            "RETURN (SELECT * FROM ONLY {rel} WHERE in={self_id} AND out={target_id} LIMIT 1).id;"
+        )
+    }
+    pub fn create_return_id(table: Table) -> String {
+        format!("RETURN (CREATE ONLY {table} CONTENT $data).id;")
+    }
 }
-

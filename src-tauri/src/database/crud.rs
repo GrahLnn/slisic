@@ -1,4 +1,4 @@
-use super::enums::table::Table;
+use super::enums::table::{Rel, Table};
 use super::error::DBError;
 use super::{get_db, HasId, QueryKind};
 use anyhow::Result;
@@ -7,6 +7,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use surrealdb::{RecordId, RecordIdKey, Response};
+
+fn struct_field_names<T: Serialize>(data: &T) -> Vec<String> {
+    // serialize struct to serde_json::Value
+    let value = serde_json::to_value(data).unwrap();
+    match value {
+        Value::Object(map) => map.keys().cloned().collect(),
+        _ => vec![],
+    }
+}
 
 #[async_trait]
 pub trait Crud:
@@ -30,6 +39,16 @@ pub trait Crud:
         created.ok_or(DBError::NotFound.into())
     }
 
+    async fn create_return_id(&self) -> Result<RecordId> {
+        let db = get_db()?;
+        let created: Option<RecordId> = db
+            .query(QueryKind::create_return_id(Self::TABLE))
+            .bind(("data", self.clone()))
+            .await?
+            .take(0)?;
+        created.ok_or(DBError::NotFound.into())
+    }
+
     async fn create_by_id<T>(id: T, data: Self) -> Result<Self>
     where
         RecordIdKey: From<T>,
@@ -46,6 +65,12 @@ pub trait Crud:
     {
         let db = get_db()?;
         let updated: Option<Self> = db.upsert(self.id()).content(self.clone()).await?;
+        updated.ok_or(DBError::NotFound.into())
+    }
+
+    async fn upsert_by_id(id: RecordId, data: Self) -> Result<Self> {
+        let db = get_db()?;
+        let updated: Option<Self> = db.upsert(id).content(data).await?;
         updated.ok_or(DBError::NotFound.into())
     }
 
@@ -80,10 +105,14 @@ pub trait Crud:
         Ok(records)
     }
 
-    async fn update(id: RecordId, data: Self) -> Result<Self>
+    async fn update(self) -> Result<Self>
     where
         Self: HasId,
     {
+        Self::update_by_id(self.id(), self).await
+    }
+
+    async fn update_by_id(id: RecordId, data: Self) -> Result<Self> {
         let db = get_db()?;
         let updated: Option<Self> = db.update(id).content(data).await?;
         updated.ok_or(DBError::NotFound.into())
@@ -129,7 +158,7 @@ pub trait Crud:
         for chunk in data.chunks(chunk_size) {
             let chunk_clone = chunk.to_vec(); // Clone the chunk to ensure it lives long enough
             let inserted: Vec<Self> = db
-                .query(QueryKind::insert(Self::TABLE.as_str()))
+                .query(QueryKind::insert(Self::TABLE))
                 .bind(("data", chunk_clone)) // Use the cloned chunk
                 .await?
                 .take(0)?;
@@ -139,7 +168,39 @@ pub trait Crud:
         Ok(inserted_all)
     }
 
-    async fn delete(id: &str) -> Result<()> {
+    async fn insert_replace(data: Vec<Self>) -> Result<Vec<Self>> {
+        let db = get_db()?;
+        let chunk_size = 50_000;
+        let mut inserted_all = Vec::with_capacity(data.len());
+        let keys = struct_field_names(&data[0]);
+
+        for chunk in data.chunks(chunk_size) {
+            let chunk_clone = chunk.to_vec();
+            let inserted: Vec<Self> = db
+                .query(QueryKind::insert_replace(Self::TABLE, keys.clone()))
+                .bind(("data", chunk_clone))
+                .await?
+                .take(0)?;
+            inserted_all.extend(inserted);
+            println!(
+                "{} inserted: {}/{}",
+                Self::TABLE,
+                inserted_all.len(),
+                data.len()
+            );
+        }
+
+        Ok(inserted_all)
+    }
+
+    async fn delete(self) -> Result<()>
+    where
+        Self: HasId,
+    {
+        Self::delete_record(self.id()).await
+    }
+
+    async fn delete_by_idkey(id: &str) -> Result<()> {
         let db = get_db()?;
         let _: Option<Self> = db.delete((Self::TABLE.as_str(), id)).await?;
         Ok(())
@@ -184,20 +245,27 @@ pub trait Crud:
         Ok(records)
     }
 
-    async fn relate_by_id(self_id: RecordId, target_id: RecordId, rel: &str) -> Result<()> {
+    async fn relate_by_id(in_id: RecordId, out_id: RecordId, rel: Rel) -> Result<()> {
         let db = get_db()?;
-        db.query(QueryKind::relate(self_id, target_id, rel)).await?;
+        let sql = QueryKind::relate(in_id, out_id, rel);
+        db.query(sql).await?;
         Ok(())
     }
 
-    async fn unrelate_by_id(self_id: RecordId, target_id: RecordId, rel: &str) -> Result<()> {
+    async fn unrelate_by_id(self_id: RecordId, target_id: RecordId, rel: Rel) -> Result<()> {
         let db = get_db()?;
         db.query(QueryKind::unrelate(self_id, target_id, rel))
             .await?;
         Ok(())
     }
 
-    async fn relate<T>(&self, target: T, rel: &str) -> Result<()>
+    async fn unrelate_all(self_id: RecordId, rel: Rel) -> Result<()> {
+        let db = get_db()?;
+        db.query(QueryKind::unrelate_all(self_id, rel)).await?;
+        Ok(())
+    }
+
+    async fn relate<T>(&self, target: T, rel: Rel) -> Result<()>
     where
         Self: HasId + Send + Sync,
         T: HasId + Send + Sync,
@@ -205,7 +273,7 @@ pub trait Crud:
         Self::relate_by_id(self.id(), target.id(), rel).await
     }
 
-    async fn unrelate<T>(&self, target: T, rel: &str) -> Result<()>
+    async fn unrelate<T>(&self, target: T, rel: Rel) -> Result<()>
     where
         Self: HasId + Send + Sync,
         T: HasId + Send + Sync,
@@ -213,8 +281,13 @@ pub trait Crud:
         Self::unrelate_by_id(self.id(), target.id(), rel).await
     }
 
-    async fn outs(in_id: RecordId, rel: &str, out_table: Table) -> Result<Vec<RecordId>> {
-        let sql = format!("RETURN {in_id}->{rel}->{out_table};");
+    async fn outs(in_id: RecordId, rel: Rel, out_table: Table) -> Result<Vec<RecordId>> {
+        let sql = QueryKind::rel_outs(in_id, rel, out_table);
+        query_take(sql.as_str(), None).await
+    }
+
+    async fn ins(out_id: RecordId, rel: Rel, in_table: Table) -> Result<Vec<RecordId>> {
+        let sql = QueryKind::rel_ins(out_id, rel, in_table);
         query_take(sql.as_str(), None).await
     }
 
@@ -229,6 +302,19 @@ pub trait Crud:
         let sql = QueryKind::all_id(Self::TABLE);
         query_take(sql.as_str(), None).await
     }
+}
+
+pub async fn relate_by_id(in_id: RecordId, out_id: RecordId, rel: Rel) -> Result<()> {
+    let db = get_db()?;
+    db.query(QueryKind::relate(in_id, out_id, rel)).await?;
+    Ok(())
+}
+
+pub async fn unrelate_by_id(self_id: RecordId, target_id: RecordId, rel: Rel) -> Result<()> {
+    let db = get_db()?;
+    db.query(QueryKind::unrelate(self_id, target_id, rel))
+        .await?;
+    Ok(())
 }
 
 pub async fn query_take<T>(sql: &str, idx: Option<usize>) -> Result<Vec<T>>
@@ -327,4 +413,3 @@ pub async fn run_tx(stmts: Vec<TxStmt>) -> Result<Response> {
     let resp = resp.check()?;
     Ok(resp)
 }
-
