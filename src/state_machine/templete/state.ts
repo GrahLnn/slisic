@@ -1,4 +1,4 @@
-import { sst, ValueOf } from "../core";
+import { sst, ValueOf } from "../kit";
 import { resultx } from "../state";
 
 export const ss = {

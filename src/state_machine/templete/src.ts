@@ -1,5 +1,5 @@
 import { setup, assign, enqueueActions } from "xstate";
-import { type DoneEvents, eventHandler, createActors } from "../core";
+import { type DoneEvents, eventHandler, createActors } from "../kit";
 import { Context } from "./core";
 import { Signals } from "./state";
 import { utils } from "./utils";

@@ -1,5 +1,5 @@
 import { and, raise } from "xstate";
-import { goto, godown, invokeState } from "../core";
+import { goto, godown, invokeState } from "../kit";
 import { invoker, src } from "./src";
 import { ss } from "./state";
 import { resultx } from "../state";

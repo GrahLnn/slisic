@@ -1,4 +1,4 @@
 import crab from "@/src/cmd";
-import { ActorInput } from "../core";
+import { ActorInput } from "../kit";
 
 export const utils = {};

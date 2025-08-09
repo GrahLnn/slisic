@@ -1,5 +1,5 @@
 import { createMachine, createActor } from "xstate";
-import { sst } from "./core";
+import { sst } from "./kit";
 import { Matchable, me } from "@/lib/matchable";
 import { useSelector } from "@xstate/react";
 
