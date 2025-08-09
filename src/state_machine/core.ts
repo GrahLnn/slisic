@@ -295,36 +295,12 @@ export function goto(state: string) {
   return `#${state}`;
 }
 
-type InvokeForm<
-  K extends string,
-  S extends string,
-  A extends string | readonly string[] | undefined = undefined
-> = {
-  [P in K]: {
-    readonly initial: "do";
-    readonly states: {
-      readonly do: {
-        readonly invoke: {
-          readonly id: S;
-          readonly src: S;
-          readonly onDone: {
-            readonly target: "done";
-            readonly actions: A;
-          };
-        };
-      };
-      readonly done: { readonly type: "final" };
-    };
-  };
-};
-
 export function invokeState<
-  K extends string,
   S extends string,
   A extends string | readonly string[] | undefined = undefined
->(key: K, src: S, actions?: A): InvokeForm<K, S, A> {
+>(src: S, actions?: A) {
   return {
-    [key]: {
+    [src]: {
       initial: "do",
       states: {
         do: {
@@ -340,7 +316,7 @@ export function invokeState<
         done: { type: "final" },
       },
     },
-  } as InvokeForm<K, S, A>;
+  } as const;
 }
 export interface ActorInput<T> {
   input: T;
