@@ -36,6 +36,7 @@ pub fn run() {
     let commands = collect_commands![
         utils::file::exists,
         utils::core::app_ready,
+        utils::core::copy_to_clipboard,
         utils::window::get_mouse_and_window_position,
         greet,
         clean,
