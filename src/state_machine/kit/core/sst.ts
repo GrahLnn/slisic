@@ -5,44 +5,42 @@ import {
   TransferBase,
   TransferMap,
   StateSignalResult,
+  ElemNoSpaceTuple,
 } from "./types";
 import { createSignal } from "./signal";
 
-/* ---------- 手动版（transfer 为空壳，但带 pick 方法） ---------- */
 export function ss<
   const TState extends readonly string[],
-  TSignal extends string
+  const TSignal extends readonly string[] = []
 >(cfg: {
-  states: TState;
-  signals: readonly TSignal[];
-}): StateSignalResult<TState, TSignal> {
+  states: TState & ElemNoSpaceTuple<TState>;
+  signals: TSignal & ElemNoSpaceTuple<TSignal>;
+}): StateSignalResult<TState, TSignal[number]> {
   const State = {} as StateMap<TState>;
   for (const s of cfg.states) (State as any)[s] = s;
 
-  const Signal = {} as SignalMap<TSignal>;
-  for (const sig of cfg.signals)
-    Signal[sig.toLowerCase() as Lowercase<TSignal>] = createSignal(sig);
+  const Signal = {} as SignalMap<TSignal[number]>;
+  for (const sig of cfg.signals) {
+    const key = sig.toLowerCase() as Lowercase<TSignal[number]>;
+    // 这里的 sig 仍是 TSignal[number] 的字面量联合，不会被报错信息污染
+    Signal[key] = createSignal(sig);
+  }
 
-  const transfer = {
-    pick: () => ({}),
-  } as unknown as TransferMap<TState>;
-
+  const transfer = { pick: () => ({}) } as unknown as TransferMap<TState>;
   return { State, Signal, transfer };
 }
 
-/* ---------- sst：自动生成 State / Signal / transfer ---------- */
 export function sst<
   const TState extends readonly string[],
   const TExtra extends readonly string[] = []
 >(
-  states: TState,
-  extra_signals?: TExtra
+  states: ElemNoSpaceTuple<TState>,
+  extra_signals?: ElemNoSpaceTuple<TExtra>
 ): StateSignalResult<TState, ToSignal<TState> | TExtra[number]> {
   const State = {} as StateMap<TState>;
   for (const s of states) (State as any)[s] = s;
 
   const Signal = {} as SignalMap<ToSignal<TState> | TExtra[number]>;
-
   const transferBase = {} as TransferBase<TState>;
 
   // 1) 根据状态生成 to_xxx
@@ -53,7 +51,7 @@ export function sst<
     (transferBase as any)[key] = { target: s };
   }
 
-  // 2) 额外信号（运行时扩展 transfer；类型保持保守的 TransferBase）
+  // 2) 额外信号
   if (extra_signals) {
     for (const s of extra_signals) {
       const type = s as TExtra[number];
@@ -63,7 +61,7 @@ export function sst<
     }
   }
 
-  // 3) pick（带完备的键名约束）
+  // 3) pick
   function pick<K extends keyof typeof transferBase>(
     ...keys: K[]
   ): Pick<typeof transferBase, K> {

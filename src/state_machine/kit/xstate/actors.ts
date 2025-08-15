@@ -26,7 +26,7 @@ export type DoneEventOf<Fn extends AsyncFn, Name extends string> = {
 };
 
 /* 将一堆 actor 映射成 done-event 联合 */
-export type DoneEvents<A extends Record<string, any>> = {
+export type InvokeEvt<A extends Record<string, any>> = {
   [K in keyof A]: SrcOf<A[K]> extends (...a: any) => Promise<infer R>
     ? DoneEvt<K & string, R>
     : never;

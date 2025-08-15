@@ -13,6 +13,8 @@ export type {
   WithPrefix,
   PathValue,
   EvtOf,
+  UniqueEvts,
+  SignalEvt,
 } from "./core/types";
 export { ss, sst } from "./core/sst";
 
@@ -22,13 +24,13 @@ export {
   type Decorated,
   type DoneEvt,
   type DoneEventOf,
-  type DoneEvents,
+  type InvokeEvt,
   type DoneKeys,
   type OutputOf,
   type EvtForKey,
 } from "./xstate/actors";
 
-export { eventHandler, event, collect, type EventsFrom } from "./xstate/events";
+export { eventHandler, event, collect, type PayloadEvt } from "./xstate/events";
 export {
   invokeEvt,
   godown,

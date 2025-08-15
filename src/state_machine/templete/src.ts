@@ -1,17 +1,22 @@
 import { setup, assign, enqueueActions } from "xstate";
 import {
-  type DoneEvents,
+  InvokeEvt,
   eventHandler,
   createActors,
-  EventsFrom,
+  UniqueEvts,
+  PayloadEvt,
+  SignalEvt,
 } from "../kit";
 import { Context } from "./core";
-import { Signals, payloads } from "./state";
+import { payloads, ss } from "./state";
 import { invoker } from "./utils";
 import { I, K } from "@/lib/comb";
-import { udf, vec } from "@/lib/e";
 
-export type Events = DoneEvents<typeof invoker> | Signals;
+type Events = UniqueEvts<
+  | InvokeEvt<typeof invoker>
+  | PayloadEvt<typeof payloads.infer>
+  | SignalEvt<typeof ss>
+>;
 
 export const EH = eventHandler<Events>();
 export const src = setup({
