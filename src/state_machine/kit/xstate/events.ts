@@ -32,9 +32,12 @@ export type PayloadEvt<T extends readonly unknown[]> = T[number];
 
 type PayloadEvent = { type: string; output: unknown };
 type PayloadMapFromUnion<U extends PayloadEvent> = {
-  [K in U["type"] & string]: (
-    payload: Extract<U, { type: K }>["output"]
-  ) => Extract<U, { type: K }>;
+  [K in U["type"] & string]: {
+    load: (
+      payload: Extract<U, { type: K }>["output"]
+    ) => Extract<U, { type: K }>;
+    evt: () => K;
+  };
 };
 type PayloadMap<E extends readonly PayloadEvent[]> = PayloadMapFromUnion<
   E[number]
@@ -55,8 +58,14 @@ export function collect<const E extends readonly PayloadEvent[]>(...events: E) {
   const methods = Object.assign(
     {},
     ...events.map((e) => ({
-      [e.type]: (p: EventOfType<E[number], typeof e.type>["output"]) =>
-        ({ type: e.type, output: p } as EventOfType<E[number], typeof e.type>),
+      [e.type]: {
+        load: (p: EventOfType<E[number], typeof e.type>["output"]) =>
+          ({ type: e.type, output: p } as EventOfType<
+            E[number],
+            typeof e.type
+          >),
+        evt: () => e.type,
+      },
     }))
   ) as PayloadMap<E>;
 

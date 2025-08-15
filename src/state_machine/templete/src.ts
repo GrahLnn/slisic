@@ -13,9 +13,9 @@ import { invoker } from "./utils";
 import { I, K } from "@/lib/comb";
 
 type Events = UniqueEvts<
+  | SignalEvt<typeof ss>
   | InvokeEvt<typeof invoker>
   | PayloadEvt<typeof payloads.infer>
-  | SignalEvt<typeof ss>
 >;
 
 export const EH = eventHandler<Events>();
