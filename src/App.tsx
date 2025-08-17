@@ -95,9 +95,9 @@ function App() {
     crab.appReady();
   }, []);
   return (
-    <div className="min-h-screen flex flex-col overflow-hidden hide-scrollbar">
+    <div className="h-screen flex flex-col overflow-hidden hide-scrollbar">
       <TopBar />
-      <main className="flex-1 flex overflow-hidden mt-8 hide-scrollbar">
+      <main className="flex-1 flex overflow-hidden hide-scrollbar">
         <div className="flex justify-center flex-col text-center gap-4 flex-1">
           <h1>Welcome to Tauri + React</h1>
 

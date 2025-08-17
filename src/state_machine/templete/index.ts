@@ -10,5 +10,5 @@ actor.subscribe((snapshot) => {
   console.log(state, snapshot.context);
 });
 export * from "./api";
-export * from "./state";
+export * from "./events";
 export { actor } from "./api";

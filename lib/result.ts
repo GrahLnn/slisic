@@ -31,7 +31,7 @@ export class Result<T, E = Error> {
       Ok: (value) => value,
       Err: (error) => {
         console.error("unwrap error:", error);
-        throw new Error(`Called unwrap on an Err: ${error}`);
+        throw new Error(`${error}`);
       },
     });
   }
@@ -40,7 +40,8 @@ export class Result<T, E = Error> {
   unwrap_err(): E {
     return this.match({
       Ok: (value) => {
-        throw new Error(`Called unwrapErr on an Ok: ${value}`);
+        console.error("unwrap_err value:", value);
+        throw new Error(`${value}`);
       },
       Err: (error) => error,
     });

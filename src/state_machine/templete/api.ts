@@ -2,7 +2,7 @@ import { createActor } from "xstate";
 import { machine } from "./machine";
 import { useSelector } from "@xstate/react";
 import { me } from "@/lib/matchable";
-import { MainStateT } from "./state";
+import { MainStateT } from "./events";
 
 export const actor = createActor(machine);
 export const hook = {

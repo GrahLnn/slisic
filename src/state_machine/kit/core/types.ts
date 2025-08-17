@@ -1,5 +1,7 @@
 /* ---------- 公用类型（仅类型，不含实现） ---------- */
 
+import { MachineEvent, PayloadEvent } from "../xstate/events";
+
 /** 状态名映射：{ idle: "idle", ... } */
 export type StateMap<T extends readonly string[]> = { [K in T[number]]: K };
 
@@ -39,7 +41,11 @@ export type AsyncFn = (...a: any[]) => Promise<any>;
 export type Awaited<T> = T extends Promise<infer R> ? R : T;
 
 export type AnyEvt = { type: string };
-export type WithPrefix<S extends string> = `xstate.done.actor.${S}`;
+export type Prefix = "xstate.done.actor.";
+export type WithPrefix<S extends string> = `${Prefix}${S}`;
+export type StripPrefix<S extends string> = S extends `${Prefix}${infer R}`
+  ? R
+  : S;
 
 export type PathValue<T, P extends readonly string[]> = P extends [
   infer H,
@@ -72,6 +78,9 @@ export type SignalEvt<T, Key extends PropertyKey = "Signal"> = ValueOf<{
       : S
     : never;
 }>;
+
+export type PayloadEvt<T extends readonly PayloadEvent[]> = T[number];
+export type MachineEvt<T extends readonly MachineEvent[]> = T[number];
 
 // ===== 基础：Union -> Intersection / Last / Union -> Tuple =====
 type UnionToIntersection<U> = (
@@ -116,16 +125,20 @@ type Duplicates<
     : Duplicates<R, [...Seen, H], Out>
   : Out;
 
-// ===== 关键修复：按 `type` 展开联合（Normalize）=====
+type CanonicalTypeKey<K> = K extends string ? StripPrefix<K> : K;
+
+/* —— 修改：NormalizeByType 里把 type 归一化（剥前缀） —— */
 type NormalizeByType<U extends { type: PropertyKey }> = U extends any
   ? U["type"] extends infer T
     ? T extends PropertyKey
-      ? Omit<U, "type"> & { type: T } // 把 {type: A|B} 展成 {type:A}|{type:B}
+      ? Omit<U, "type"> & {
+          type: T extends string ? CanonicalTypeKey<T> : T;
+        }
       : never
     : never
   : never;
 
-// 把“事件元组”映射为其 type 元组（保留重复）
+/* —— DuplicateTypeList：基于“归一化 + 剥前缀后的 type”去重 —— */
 type TypesOfTuple<T extends readonly any[]> = T extends readonly [
   infer H,
   ...infer R
@@ -133,49 +146,43 @@ type TypesOfTuple<T extends readonly any[]> = T extends readonly [
   ? [H extends { type: infer K } ? K : never, ...TypesOfTuple<R>]
   : [];
 
-// 检出重复的 type（返回一个不含重复元素的列表；无重复则 []）
 type DuplicateTypeList<U extends { type: PropertyKey }> = Duplicates<
   TypesOfTuple<UnionToTuple<NormalizeByType<U>>>
 >;
 
-// ===== 宽类型判定（不仅仅是 string 本身，也覆盖“广义 string”）=====
-type IsBroadString<K> = K extends string
-  ? string extends K
-    ? true
-    : false
-  : false;
-type IsBroadNumber<K> = K extends number
-  ? number extends K
-    ? true
-    : false
-  : false;
-type IsBroadSymbol<K> = K extends symbol
-  ? symbol extends K
-    ? true
-    : false
-  : false;
-
-type BroadKinds<U extends { type: PropertyKey }> = U extends { type: infer K }
-  ? IsBroadString<K> extends true
-    ? "string"
-    : IsBroadNumber<K> extends true
-    ? "number"
-    : IsBroadSymbol<K> extends true
-    ? "symbol"
+/* —— 宽类型检查也基于归一化后的 type（含剥前缀） —— */
+type BroadKinds<U extends { type: PropertyKey }> = NormalizeByType<U> extends {
+  type: infer K;
+}
+  ? K extends string
+    ? string extends K
+      ? "string"
+      : never
+    : K extends number
+    ? number extends K
+      ? "number"
+      : never
+    : K extends symbol
+    ? symbol extends K
+      ? "symbol"
+      : never
     : never
   : never;
 
-// ===== 对外接口：若重复或含宽类型，给出清晰错误；否则原样返回 =====
+/* —— UniqueEvts：逻辑不变，但内部用的是“剥前缀后”的 NormalizeByType —— */
 export type UniqueEvts<U extends { type: PropertyKey }> = [
   DuplicateTypeList<U>
 ] extends [[]]
-  ? [BroadKinds<NormalizeByType<U>>] extends [never]
+  ? [BroadKinds<U>] extends [never]
     ? U
-    : { __ERROR_NON_LITERAL_EVENT_TYPES: BroadKinds<NormalizeByType<U>> }
+    : { __ERROR_NON_LITERAL_EVENT_TYPES: BroadKinds<U> }
   : {
       __ERROR_DUPLICATE_EVENT_TYPES: DuplicateTypeList<U>;
-      __ERROR_NON_LITERAL_EVENT_TYPES: BroadKinds<NormalizeByType<U>>; // 可能为 never
+      __ERROR_NON_LITERAL_EVENT_TYPES: BroadKinds<U>;
     };
+
+/* —— （可选）兼容你示例里用到的 BroadTypes 名称 —— */
+type BroadTypes<U extends { type: PropertyKey }> = BroadKinds<U>;
 
 // ====== 手动测试用例 ======
 

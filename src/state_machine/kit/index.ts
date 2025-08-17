@@ -15,6 +15,8 @@ export type {
   EvtOf,
   UniqueEvts,
   SignalEvt,
+  PayloadEvt,
+  MachineEvt,
 } from "./core/types";
 export { ss, sst } from "./core/sst";
 
@@ -30,7 +32,13 @@ export {
   type EvtForKey,
 } from "./xstate/actors";
 
-export { eventHandler, event, collect, type PayloadEvt } from "./xstate/events";
+export {
+  eventHandler,
+  event,
+  collect,
+  to_string,
+  machine,
+} from "./xstate/events";
 export {
   invokeEvt,
   godown,
