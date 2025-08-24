@@ -47,9 +47,25 @@ pub fn run() {
     #[cfg(debug_assertions)]
     builder
         .export(
-            Typescript::default()
-                .formatter(prettier)
-                .header("/* eslint-disable */"),
+            Typescript::default().formatter(prettier).header(
+                r#"/* eslint-disable */
+
+export type EventsShape<T extends Record<string, any>> = {
+  [K in keyof T]: __EventObj__<T[K]> & {
+    (handle: __WebviewWindow__): __EventObj__<T[K]>;
+  };
+};
+
+export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
+  return function lievt<K extends keyof T>(key: K) {
+    return (handler: (payload: T[K]) => void) => {
+      const obj = ev[key] as __EventObj__<T[K]>;
+      return obj.listen((e) => handler(e.payload));
+    };
+  };
+}
+"#,
+            ),
             "../src/cmd/commands.ts",
         )
         .expect("Failed to export typescript bindings");

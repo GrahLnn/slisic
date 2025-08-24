@@ -1,4 +1,9 @@
-import { commands, type Result as SpectaResult } from "./commands";
+import {
+  commands,
+  events,
+  makeLievt,
+  type Result as SpectaResult,
+} from "./commands";
 import { Ok, Err, type Result } from "@/lib/result";
 
 type AwaitedRet<F extends (...args: any) => any> = Awaited<ReturnType<F>>;
@@ -54,3 +59,5 @@ export const crab = new Proxy(
     },
   }
 );
+
+export const lievt = makeLievt(events);

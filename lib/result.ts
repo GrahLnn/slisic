@@ -17,6 +17,14 @@ export class Result<T, E = Error> {
       : handlers.Err(this.result.error);
   }
 
+  answer(): T | E {
+    return this.result.ok ? this.result.value : this.result.error;
+  }
+
+  name(): "Ok" | "Err" {
+    return this.result.ok ? "Ok" : "Err";
+  }
+
   isOk(): this is Result<T, E> {
     return this.result.ok;
   }
@@ -119,3 +127,8 @@ export async function rtry<T, E = Error>(
     return Err(errorFactory ? errorFactory(err) : (err as E));
   }
 }
+
+export const tap =
+  <A, E>(fn: (a: A) => void) =>
+  (r: Result<A, E>): Result<A, E> =>
+    r.tap(fn);
