@@ -7,7 +7,7 @@ import {
   type AssignArgs,
   type ProvidedActor,
   type AnyActorLogic,
-  Spawner,
+  ActionArgs,
 } from "xstate";
 import { WithPrefix, StripPrefix, type Prefix } from "../core/types";
 import { DoneKeys, OutputOf, EvtForKey } from "./actors";
@@ -208,7 +208,21 @@ export function eventHandler<
       };
   }
 
-  return { whenDone };
+  function take<S extends DoneKeys<TEvents> | `${Prefix}${DoneKeys<TEvents>}`>(
+    key: S
+  ): <R>(
+    fn: (ctx: TContext, evt: EvtForKey<TEvents, NormalizeKey<S>>) => R
+  ) => (args: ActionArgs<TContext, TEvents, TEvents>) => R;
+
+  function take(key: string) {
+    return (fn: any) => (args: any) => {
+      const { context, event } = args;
+      assertEvent(event, key);
+      return fn(context as TContext, event as any);
+    };
+  }
+
+  return { whenDone, take };
 }
 
 /* -----------------------------------------------------------------------------
