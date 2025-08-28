@@ -2,8 +2,10 @@ mod database;
 mod domain;
 mod utils;
 
+use crate::utils::enq::init_global_download_queue;
 use anyhow::Result;
 use database::{init_db, Crud};
+use domain::models::music;
 use domain::models::user::DbUser;
 use futures::future;
 use specta_typescript::{formatter::prettier, Typescript};
@@ -35,21 +37,53 @@ const DB_PATH: &str = "surreal.db";
 pub fn run() {
     let commands = collect_commands![
         utils::file::exists,
+        utils::file::all_audio_recursive,
+        utils::config::resolve_save_path,
+        utils::config::update_save_path,
         utils::core::app_ready,
         utils::window::get_mouse_and_window_position,
-        greet,
-        clean,
+        utils::ytdlp::ytdlp_download_and_install,
+        utils::ytdlp::ytdlp_check_update,
+        utils::ytdlp::check_exists,
+        utils::ytdlp::github_ok,
+        utils::ytdlp::look_media,
+        utils::ytdlp::test_download_audio,
+        utils::ffmpeg::ffmpeg_check_update,
+        utils::ffmpeg::ffmpeg_download_and_install,
+        utils::ffmpeg::ffmpeg_version,
+        utils::ffmpeg::ffmpeg_check_exists,
+        music::create,
+        music::read,
+        music::read_all,
+        music::update,
+        music::delete,
     ];
-    let events = collect_events![event::FullScreenEvent];
+    let events = collect_events![event::FullScreenEvent, utils::ytdlp::ProcessResult];
 
     let builder: Builder = Builder::new().commands(commands).events(events);
 
     #[cfg(debug_assertions)]
     builder
         .export(
-            Typescript::default()
-                .formatter(prettier)
-                .header("/* eslint-disable */"),
+            Typescript::default().formatter(prettier).header(
+                r#"/* eslint-disable */
+
+export type EventsShape<T extends Record<string, any>> = {
+  [K in keyof T]: __EventObj__<T[K]> & {
+    (handle: __WebviewWindow__): __EventObj__<T[K]>;
+  };
+};
+
+export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
+  return function lievt<K extends keyof T>(key: K) {
+    return (handler: (payload: T[K]) => void) => {
+      const obj = ev[key] as __EventObj__<T[K]>;
+      return obj.listen((e) => handler(e.payload));
+    };
+  };
+}
+"#,
+            ),
             "../src/cmd/commands.ts",
         )
         .expect("Failed to export typescript bindings");
@@ -65,6 +99,7 @@ pub fn run() {
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             let handle = app.handle().clone();
+            let _ = init_global_download_queue(handle.clone(), /*capacity*/ 1024);
             builder.mount_events(app);
             block_in_place(|| {
                 block_on(async move {
@@ -168,36 +203,4 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn greet(name: &str) -> Result<String, String> {
-    let _ = DbUser::insert_jump(vec![DbUser {
-        id: DbUser::record_id(name),
-    }])
-    .await
-    .map_err(|e| e.to_string())?;
-    let dbusers = DbUser::select_all().await.map_err(|e| e.to_string())?;
-
-    let futures = dbusers.into_iter().map(|u| u.into_model());
-    let users = future::try_join_all(futures)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(format!(
-        "Hello, {}! You've been greeted from Rust!",
-        users
-            .iter()
-            .map(|u| u.id.as_str())
-            .collect::<Vec<&str>>()
-            .join(", ")
-    ))
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn clean() -> Result<String, String> {
-    DbUser::clean().await.map_err(|e| e.to_string())?;
-    Ok("message cleaned".to_string())
 }

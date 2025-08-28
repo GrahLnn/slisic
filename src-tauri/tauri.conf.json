@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "tauri-react-template",
+  "productName": "Slisic",
   "version": "0.0.1",
-  "identifier": "com.tauri.dev",
+  "identifier": "Slisic",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:3000",

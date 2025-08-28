@@ -11,12 +11,16 @@ pub trait TableName {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Table {
     User,
+    Collection,
+    Entry,
 }
 
 impl Table {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Table::User => "user",
+            Table::Collection => "collection",
+            Table::Entry => "entry",
         }
     }
 }
@@ -36,12 +40,14 @@ impl TableName for Table {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rel {
     SignIn,
+    Collect,
 }
 
 impl Rel {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Rel::SignIn => "sign_in",
+            Rel::Collect => "collect",
         }
     }
     pub async fn record_id(self, in_id: RecordId, out_id: RecordId) -> Result<RecordId> {

@@ -8,9 +8,14 @@ export const S =
   (y: (a: A) => B) =>
   (z: A): C =>
     x(z)(y(z));
+// export const B =
+//   <A, B, C>(f: (b: B) => C) =>
+//   (g: (a: A) => B) =>
+//   (x: A): C =>
+//     f(g(x));
 export const B =
-  <A, B, C>(f: (b: B) => C) =>
-  (g: (a: A) => B) =>
+  <A, B, C>(g: (a: A) => B) =>
+  (f: (b: B) => C) =>
   (x: A): C =>
     f(g(x));
 
@@ -28,3 +33,4 @@ export const T =
   <A, B>(x: A) =>
   (f: (a: A) => B): B =>
     f(x);
+export const call0 = <R>(f: () => R): R => f();
