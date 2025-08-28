@@ -4,9 +4,9 @@ import App from "./App";
 import WindowsControlsPortal from "./windowctrl/windows";
 import MacOSControlsPortal from "./windowctrl/macos";
 import { platform } from "@tauri-apps/plugin-os";
-import { matchable } from "@/lib/matchable";
+import { me } from "@/lib/matchable";
 
-const os = matchable(platform());
+const os = me(platform());
 
 const rootEl = document.getElementById("root");
 if (rootEl) {

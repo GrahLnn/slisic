@@ -17,6 +17,14 @@ export class Result<T, E = Error> {
       : handlers.Err(this.result.error);
   }
 
+  answer(): T | E {
+    return this.result.ok ? this.result.value : this.result.error;
+  }
+
+  name(): "Ok" | "Err" {
+    return this.result.ok ? "Ok" : "Err";
+  }
+
   isOk(): this is Result<T, E> {
     return this.result.ok;
   }
@@ -31,7 +39,7 @@ export class Result<T, E = Error> {
       Ok: (value) => value,
       Err: (error) => {
         console.error("unwrap error:", error);
-        throw new Error(`Called unwrap on an Err: ${error}`);
+        throw new Error(`${error}`);
       },
     });
   }
@@ -40,7 +48,8 @@ export class Result<T, E = Error> {
   unwrap_err(): E {
     return this.match({
       Ok: (value) => {
-        throw new Error(`Called unwrapErr on an Ok: ${value}`);
+        console.error("unwrap_err value:", value);
+        throw new Error(`${value}`);
       },
       Err: (error) => error,
     });
@@ -107,14 +116,19 @@ export class Result<T, E = Error> {
   }
 }
 
-export async function rtry<T, E = Error>(
+export async function futry<T, E = Error>(
   promise: Promise<T>,
-  errorFactory?: (err: unknown) => E
+  mapErr?: (err: unknown) => E
 ): Promise<Result<T, E>> {
   try {
     const value = await promise;
     return Ok(value);
   } catch (err) {
-    return Err(errorFactory ? errorFactory(err) : (err as E));
+    return Err(mapErr ? mapErr(err) : (err as E));
   }
 }
+
+export const tap =
+  <A, E>(fn: (a: A) => void) =>
+  (r: Result<A, E>): Result<A, E> =>
+    r.tap(fn);

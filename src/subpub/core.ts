@@ -1,5 +1,5 @@
 import { Atom, atom, useAtom, useAtomValue, useSetAtom } from "jotai";
-import { matchable, Matchable } from "@/lib/matchable";
+import { me, Matchable } from "@/lib/matchable";
 
 export function createAtom<T>(initialValue: T) {
   const atomm = atom<T>(initialValue);
@@ -30,7 +30,7 @@ export function createAtom<T>(initialValue: T) {
 }
 
 export function createMatchAtom<T extends string | number>(initialValue: T) {
-  const inner = createAtom<Matchable<T>>(matchable(initialValue));
+  const inner = createAtom<Matchable<T>>(me(initialValue));
 
   return {
     atom: inner.atom,
@@ -41,7 +41,7 @@ export function createMatchAtom<T extends string | number>(initialValue: T) {
         (v: T) =>
           setRaw((prev) => {
             if (prev.value === v) return prev; // 避免不必要更新
-            return matchable(v);
+            return me(v);
           }),
       ] as const;
     },
@@ -51,7 +51,7 @@ export function createMatchAtom<T extends string | number>(initialValue: T) {
       return (value: T) =>
         set((prev) => {
           if (prev.value === value) return prev;
-          return matchable(value);
+          return me(value);
         });
     },
     get: inner.get,

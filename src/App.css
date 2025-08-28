@@ -105,6 +105,10 @@ body::-webkit-scrollbar {
   display: none;
 }
 
+div::-webkit-scrollbar {
+  display: none;
+}
+
 body[window-blur] {
   overflow: hidden;
   pointer-events: none;
@@ -148,6 +152,10 @@ h1 {
   text-box: cap alphabetic;
 }
 
+.trim-end {
+  text-box: trim-end ex alphabetic;
+}
+
 #window-blur-overlay {
   position: fixed;
   top: 0;
@@ -180,16 +188,84 @@ h1 {
   }
 }
 
-[data-rounded-scroll='true'] div::-webkit-scrollbar {
+[data-rounded-scroll="true"] div::-webkit-scrollbar {
   display: none;
 }
-[data-rounded-scroll='true'] div {
+[data-rounded-scroll="true"] div {
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
-input[type="password"]::-ms-reveal,
-input[type="password"]::-ms-clear,
-input[type="password"]::-webkit-contacts-auto-fill-button,
-input[type="password"]::-webkit-credentials-auto-fill-button {
+input::-ms-reveal,
+input::-ms-clear,
+input::-webkit-contacts-auto-fill-button,
+input::-webkit-credentials-auto-fill-button {
   display: none !important;
+}
+
+.hover\:glow-box:hover {
+  mix-blend-mode: plus-lighter;
+  box-shadow: 0 0 30px 0 #9e9e9e;
+}
+
+@utility mask-lor {
+  mask: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 1) 0%,
+    rgba(0, 0, 0, 0.8) 50%,
+    rgba(0, 0, 0, 0) 100%
+  );
+}
+
+@utility mask-tob {
+    mask: linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 1) 0%,
+      rgba(0, 0, 0, 0.8) 50%,
+      rgba(0, 0, 0, 0) 100%
+    );
+}
+
+.liquidGlass-wrapper {
+  position: relative;
+  display: flex;
+  /* font-weight: 600; */
+  overflow: hidden;
+
+  /* box-shadow: 0 6px 6px rgba(0, 0, 0, 0.2), 0 0 20px rgba(0, 0, 0, 0.1); */
+
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 2.2);
+}
+
+.liquidGlass-effect {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+
+  backdrop-filter: blur(3px);
+  filter: url(#glass-distortion);
+  overflow: hidden;
+}
+
+.liquidGlass-tint {
+  z-index: 1;
+  position: absolute;
+  inset: 0;
+  /* background: rgba(0, 0, 0, 0.2); */
+}
+
+.liquidGlass-shine {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+
+  overflow: hidden;
+
+  /* box-shadow: inset 2px 2px 1px 0 rgba(0, 0, 0, 0.5),
+    inset -1px -1px 1px 1px rgba(0, 0, 0, 0.5); */
+}
+
+@import url('https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@700&display=swap');
+
+.font-cinzel {
+  font-family: 'Cinzel Decorative', serif;
 }

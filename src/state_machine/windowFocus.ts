@@ -1,8 +1,8 @@
 import { useSelector } from "@xstate/react";
 import { createActor, createMachine, fromCallback } from "xstate";
-import { createStateAndSignals } from "./core";
+import { ss } from "./kit";
 
-const { State, Signal } = createStateAndSignals({
+const { State, Signal } = ss({
   states: ["focused", "blurred"],
   signals: ["FOCUS", "BLUR"],
 });
@@ -55,4 +55,3 @@ export function useIsWindowFocus(): boolean {
     machineState.matches(State.focused)
   );
 }
-

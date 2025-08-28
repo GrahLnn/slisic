@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use surrealdb::opt::PatchOp;
 use surrealdb::{RecordId, RecordIdKey, Response};
 
 fn struct_field_names<T: Serialize>(data: &T) -> Vec<String> {
@@ -15,6 +16,13 @@ fn struct_field_names<T: Serialize>(data: &T) -> Vec<String> {
         Value::Object(map) => map.keys().cloned().collect(),
         _ => vec![],
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Relation {
+    #[serde(rename = "in")]
+    pub _in: RecordId,
+    pub out: RecordId,
 }
 
 #[async_trait]
@@ -125,12 +133,36 @@ pub trait Crud:
         merged.ok_or(DBError::NotFound.into())
     }
 
-    // async fn patch(id: RecordId, data: Value) -> Result<Self> {
-    //     let db = get_db()?;
+    async fn patch(id: RecordId, data: Vec<PatchOp>) -> Result<Self> {
+        let db = get_db()?;
 
-    //     let patched: Option<Self> = db.update(id).patch(data).await?;
-    //     patched.ok_or(DBError::NotFound.into())
-    // }
+        // 如果 patch 操作的列表为空，则直接返回当前记录，避免不必要的操作
+        if data.is_empty() {
+            let record: Option<Self> = db.select(id).await?;
+            return record.ok_or(DBError::NotFound.into());
+        }
+
+        // 将 Vec<PatchOp> 转换为迭代器
+        let mut ops = data.into_iter();
+
+        // 取出第一个操作，用它来完成从 `Update` 到 `Patch` 的类型转换。
+        // 因为我们已经检查过 data 不为空，所以这里的 unwrap 是安全的。
+        let first_op = ops.next().unwrap();
+        let initial_patch_query = db.update(id).patch(first_op);
+
+        // 使用 fold 来链式调用剩余的 patch 操作。
+        // `initial_patch_query` 是累加器的初始值。
+        // `query` 是上一次迭代的结果（一个 Patch 查询）。
+        // `op` 是当前迭代的 PatchOp。
+        // `query.patch(op)` 返回一个新的 Patch 查询，作为下一次迭代的 `query`。
+        let final_query = ops.fold(initial_patch_query, |query, op| query.patch(op));
+
+        // 执行最终构建好的查询
+        let patched: Option<Self> = final_query.await?;
+
+        // 返回结果
+        patched.ok_or(DBError::NotFound.into())
+    }
 
     // async fn replace(id: RecordId, data: Value) -> Result<Self> {
     //     let replaced: Option<Self> = Self::query_take(&QueryKind::replace(id, data), None)
@@ -166,6 +198,12 @@ pub trait Crud:
         }
 
         Ok(inserted_all)
+    }
+
+    async fn insert_relation(rel: Rel, data: Vec<Relation>) -> Result<Vec<Relation>> {
+        let db = get_db()?;
+        let relate: Vec<Relation> = db.insert(rel.as_str()).relation(data).await?;
+        Ok(relate)
     }
 
     async fn insert_replace(data: Vec<Self>) -> Result<Vec<Self>> {

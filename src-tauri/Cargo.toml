@@ -1,8 +1,8 @@
 [package]
-name = "app"
+name = "Slisic"
 version = "0.1.0"
 description = "A Tauri App"
-authors = ["you"]
+authors = ["GrahLnn"]
 license = ""
 repository = ""
 edition = "2021"
@@ -21,10 +21,13 @@ tauri-build = { version = "2.0.4", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.3.1", features = [ "macos-private-api", "protocol-asset"] }
+tauri = { version = "2.3.1", features = [
+    "macos-private-api",
+    "protocol-asset",
+] }
 tauri-plugin-log = "2.0.0-rc"
 tauri-plugin-shell = "2"
-tokio = "1.43.0"
+tokio = { version = "1.43.0", features = ["process"] }
 tracing = "0.1.41"
 rspc = "0.4.1"
 specta = "2.0.0-rc.22"
@@ -43,9 +46,32 @@ tauri-plugin-dialog = "2"
 inventory = "0.3.20"
 windows = "0.61.3"
 webview2-com = "0.38.0"
+walkdir = "2.5.0"
+sha2 = "0.10.9"
+reqwest = { version = "0.12.22", default-features = false, features = [
+    "rustls-tls",
+    "http2",
+    "json",
+    "stream",
+] }
+futures-util = "0.3.31"
+hex = "0.4.3"
+uuid = "1.18.0"
+ebur128 = "0.1.10"
+rayon = "1.11.0"
+dashmap = "6.1.0"
+fs2 = "0.4.3"
+regex = "1.11.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tar = "0.4.44"
+xz2 = "0.1.7"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.1"
 objc2 = "0.6.1"
 objc2-app-kit = "0.3.1"
 objc2-foundation = "0.3.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+zip = { version = "4.3.0", default-features = false, features = ["deflate"] }

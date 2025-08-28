@@ -1,8 +1,8 @@
 import { useSelector } from "@xstate/react";
 import { createActor, createMachine } from "xstate";
-import { createStateAndSignals } from "./core";
+import { ss } from "./kit";
 
-const { State, Signal } = createStateAndSignals({
+const { State, Signal } = ss({
   states: ["visible", "hidden"],
   signals: ["VISIBLE", "HIDE"],
 });
@@ -46,4 +46,3 @@ export function toggleVisibility(shouldVisible: boolean) {
 export function useIsBarVisible() {
   return useSelector(visibilityActor, (state) => state.matches(State.visible));
 }
-

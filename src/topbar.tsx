@@ -6,6 +6,8 @@ import { type PropsWithChildren, memo, useEffect } from "react";
 import { useIsBarVisible } from "./state_machine/barVisible";
 import { useIsWindowFocus } from "./state_machine/windowFocus";
 import { station } from "./subpub/buses";
+import { useXState as useCenterToolState } from "./state_machine/centertool";
+import crab from "./cmd";
 
 interface CtrlButtonProps extends PropsWithChildren {
   icon?: React.ReactNode;
@@ -76,7 +78,17 @@ const RightControls = memo(function RightControlsComponent() {
     <div className={cn(["flex items-center"])}>
       <CtrlButton label="Search" icon={<icons.magnifler3 size={14} />} />
       <CtrlButton label="Language" icon={<icons.globe3 size={14} />} />
-      <CtrlButton label="Update" icon={<icons.arrowDown size={14} />} />
+      <CtrlButton
+        label="Update"
+        icon={<icons.arrowDown size={14} />}
+        onClick={() => {
+          crab.testDownloadAudio().then((r) =>
+            r.tap((a) => {
+              console.log(a);
+            })
+          );
+        }}
+      />
 
       {os.match({
         windows: () => <div className="w-[138px]" />,
@@ -89,9 +101,11 @@ const RightControls = memo(function RightControlsComponent() {
 
 const MiddleControls = memo(function MiddleControlsComponent() {
   const middleTools = station.centerTool.useSee();
+  const state = useCenterToolState();
+
   return (
-    <AnimatePresence>
-      {middleTools && (
+    <AnimatePresence mode="wait">
+      {middleTools && state.is("view") && (
         <motion.div
           key={middleTools?.key || "tool"}
           initial={{ opacity: 0, y: 2 }}
@@ -110,75 +124,79 @@ const TopBar = memo(function TopBarComponent() {
   const windowFocused = useIsWindowFocus();
   const allowBarInteraction = station.allowBarInteraction.useSee();
 
-  useEffect(() => {
-    if (!windowFocused) {
-      document.body.setAttribute("window-blur", "");
+  // useEffect(() => {
+  //   if (!windowFocused) {
+  //     document.body.setAttribute("window-blur", "");
 
-      // 创建遮罩层
-      const overlay = document.createElement("div");
-      overlay.id = "window-blur-overlay";
-      overlay.className = "window-blur-overlay";
+  //     // 创建遮罩层
+  //     const overlay = document.createElement("div");
+  //     overlay.id = "window-blur-overlay";
+  //     overlay.className = "window-blur-overlay";
 
-      // 添加事件监听器以捕获所有事件
-      const blockEvent = (e: Event) => {
-        e.stopPropagation();
-        e.preventDefault();
-      };
+  //     // 添加事件监听器以捕获所有事件
+  //     const blockEvent = (e: Event) => {
+  //       e.stopPropagation();
+  //       e.preventDefault();
+  //     };
 
-      overlay.addEventListener("mousedown", blockEvent, true);
-      overlay.addEventListener("mouseup", blockEvent, true);
-      overlay.addEventListener("click", blockEvent, true);
-      overlay.addEventListener("dblclick", blockEvent, true);
-      overlay.addEventListener("contextmenu", blockEvent, true);
-      overlay.addEventListener("wheel", blockEvent, true);
-      overlay.addEventListener("touchstart", blockEvent, true);
-      overlay.addEventListener("touchend", blockEvent, true);
-      overlay.addEventListener("touchmove", blockEvent, true);
-      overlay.addEventListener("keydown", blockEvent, true);
-      overlay.addEventListener("keyup", blockEvent, true);
+  //     overlay.addEventListener("mousedown", blockEvent, true);
+  //     overlay.addEventListener("mouseup", blockEvent, true);
+  //     overlay.addEventListener("click", blockEvent, true);
+  //     overlay.addEventListener("dblclick", blockEvent, true);
+  //     overlay.addEventListener("contextmenu", blockEvent, true);
+  //     overlay.addEventListener("wheel", blockEvent, true);
+  //     overlay.addEventListener("touchstart", blockEvent, true);
+  //     overlay.addEventListener("touchend", blockEvent, true);
+  //     overlay.addEventListener("touchmove", blockEvent, true);
+  //     overlay.addEventListener("keydown", blockEvent, true);
+  //     overlay.addEventListener("keyup", blockEvent, true);
 
-      document.body.appendChild(overlay);
-    } else {
-      document.body.removeAttribute("window-blur");
+  //     document.body.appendChild(overlay);
+  //   } else {
+  //     document.body.removeAttribute("window-blur");
 
-      // 移除遮罩层
-      const overlay = document.getElementById("window-blur-overlay");
-      if (overlay) {
-        document.body.removeChild(overlay);
-      }
-    }
+  //     // 移除遮罩层
+  //     const overlay = document.getElementById("window-blur-overlay");
+  //     if (overlay) {
+  //       document.body.removeChild(overlay);
+  //     }
+  //   }
 
-    // 清理函数
-    return () => {
-      const overlay = document.getElementById("window-blur-overlay");
-      if (overlay) {
-        document.body.removeChild(overlay);
-      }
-    };
-  }, [windowFocused]);
+  //   // 清理函数
+  //   return () => {
+  //     const overlay = document.getElementById("window-blur-overlay");
+  //     if (overlay) {
+  //       document.body.removeChild(overlay);
+  //     }
+  //   };
+  // }, [windowFocused]);
 
   return (
     <>
       {
         <div
           className={cn([
-            "fixed top-0 left-0 flex",
-            "w-screen h-8 z-[100] select-none",
-            "before:absolute before:inset-0 before:-z-10",
-            "before:bg-gradient-to-b before:from-[var(--app-bg)] before:to-[var(--app-bg)]/60",
-            "before:transition-colors before:duration-500 before:ease-in-out",
-            "after:absolute after:inset-0 after:-z-10",
-            "after:backdrop-blur-[16px] after:opacity-100 after:origin-top",
-            "after:bg-gradient-to-b after:from-transparent after:via-transparent after:to-white/0",
-            "after:mask-image-[linear-gradient(to_bottom,rgba(0,0,0,1)_0%,rgba(0,0,0,0)_100%)]",
-            "after:transition-colors after:duration-500 after:ease-in-out",
+            "flex flex-none relative",
+            "w-full h-8 z-[100] select-none liquidGlass-wrapper",
+            // "before:content-[''] before:absolute before:inset-0 before:-z-10",
+            // "before:bg-gradient-to-b before:from-[var(--app-bg)] before:to-[var(--app-bg)]/60",
+            // "before:transition-colors before:duration-500 before:ease-in-out",
+            // "after:content-[''] after:absolute after:inset-0 after:-z-10",
+            // "after:backdrop-blur-[16px] after:opacity-100 after:origin-top",
+            // "after:bg-gradient-to-b after:from-transparent after:via-transparent after:to-white/0",
+            // "after:mask-image-[linear-gradient(to_bottom,rgba(0,0,0,1)_0%,rgba(0,0,0,0)_100%)]",
+            // "after:transition-colors after:duration-500 after:ease-in-out",
           ])}
         >
+          <div className="liquidGlass-effect" />
+          <div className="liquidGlass-tint dark:bg-[rgba(0,0,0,0.2)] bg-[rgba(255,255,255,0.5)] transition" />
+          {/* <div className="liquidGlass-shine" /> */}
           <div
             className={cn([
               "grid grid-cols-[1fr_auto_1fr] w-full h-full",
               !windowFocused && "opacity-30",
               "transition duration-300 ease-in-out",
+              "z-10",
             ])}
             data-tauri-drag-region={!allowBarInteraction}
           >
