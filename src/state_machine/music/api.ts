@@ -2,7 +2,7 @@ import { Actor, createActor } from "xstate";
 import { machine } from "./machine";
 import { useSelector } from "@xstate/react";
 import { me } from "@/lib/matchable";
-import { MainStateT, payloads, ss } from "./state";
+import { MainStateT, payloads, ss } from "./events";
 import { CollectMission, Playlist } from "@/src/cmd/commands";
 
 export const actor = createActor(machine);
@@ -11,7 +11,10 @@ export const hook = {
   useSlot: () => useSelector(actor, (state) => state.context.slot),
   useContext: () => useSelector(actor, (state) => state.context),
   useList: () => useSelector(actor, (state) => state.context.collections),
-  useAudioFrame: () => useSelector(actor, (s) => s.context.audioFrame),
+  //   useAudioFrame: () => useSelector(actor, (s) => s.context.audioFrame),
+  useCurPlay: () => useSelector(actor, (s) => s.context.nowPlaying),
+  useCurList: () => useSelector(actor, (s) => s.context.selected),
+  ussIsPlaying: () => useSelector(actor, (s) => s.matches({ play: "playing" })),
 };
 /**
  * Active Operation State
@@ -25,6 +28,7 @@ export const move = {
  */
 export const action = {
   run: () => actor.send(ss.mainx.Signal.run),
+  back: () => actor.send(ss.mainx.Signal.back),
   set_slot: (slot: CollectMission) => actor.send(payloads.set_slot.load(slot)),
   add_new: () => actor.send(ss.mainx.Signal.to_create),
   add_review: (url: string) => actor.send(payloads.add_review_actor.load(url)),

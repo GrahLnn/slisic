@@ -1,8 +1,8 @@
-import { Playlist, CollectMission } from "@/src/cmd/commands";
+import { Playlist, CollectMission, Music } from "@/src/cmd/commands";
 
 import { Actor, ActorRefFromLogic } from "xstate";
 import { machine } from "../muinfo";
-import { AudioAnalyzer } from "@/src/components/audio/Analyzer";
+import { AudioAnalyzer } from "@/src/components/audio/analyzer";
 
 export interface Review {
   url: string;
@@ -35,12 +35,14 @@ export function new_frame(): Frame {
 
 export interface Context {
   collections: Playlist[];
+  selected?: Playlist;
+  flatList: Array<Music>;
   slot?: CollectMission;
   reviews: Review[];
   ref?: any;
   audio: HTMLAudioElement;
   analyzer?: AudioAnalyzer;
-  audioFrame: Frame;
+  nowPlaying?: Music;
 }
 
 export function new_slot(): CollectMission {

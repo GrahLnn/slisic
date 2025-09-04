@@ -260,8 +260,8 @@ input::-webkit-credentials-auto-fill-button {
 
   overflow: hidden;
 
-  /* box-shadow: inset 2px 2px 1px 0 rgba(0, 0, 0, 0.5),
-    inset -1px -1px 1px 1px rgba(0, 0, 0, 0.5); */
+  box-shadow: inset 2px 2px 1px 0 rgba(0, 0, 0, 0.5),
+    inset -1px -1px 1px 1px rgba(0, 0, 0, 0.5);
 }
 
 @import url('https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@700&display=swap');

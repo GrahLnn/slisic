@@ -20,8 +20,7 @@ export const ss = defineSS(
   ns("resultx", resultx),
   ns("mainx", sst(["idle", "loading", "view"], ["run", "unmount", "back"]))
 );
-export const utils = {};
-export const invoker = createActors(utils);
+export const invoker = createActors({});
 export const payloads = collect(event<string>()("examplea"));
 export const machines = collect(machine<string>(sub_mc)("exampleb"));
 

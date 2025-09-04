@@ -208,19 +208,27 @@ export function eventHandler<
         return fn((event as any).output, context, event as any, sp);
       };
   }
-
-  function take<S extends DoneKeys<TEvents> | `${Prefix}${DoneKeys<TEvents>}`>(
-    key: S
+  type KeyLike = DoneKeys<TEvents> | `${Prefix}${DoneKeys<TEvents>}`;
+  function take(): <R>(
+    fn: (ctx: TContext) => R
+  ) => (args: ActionArgs<TContext, any, any>) => R;
+  function take<S extends KeyLike>(
+    key?: S
   ): <R>(
     fn: (ctx: TContext, evt: EvtForKey<TEvents, NormalizeKey<S>>) => R
   ) => (args: ActionArgs<TContext, TEvents, TEvents>) => R;
 
-  function take(key: string) {
-    return (fn: any) => (args: any) => {
-      const { context, event } = args;
-      assertEvent(event, key);
-      return fn(context as TContext, event as any);
-    };
+  function take(key?: string) {
+    return key
+      ? (fn: any) => (args: any) => {
+          const { context, event } = args;
+          assertEvent(event, key);
+          return fn(context as TContext, event as any);
+        }
+      : (fn: any) => (args: any) => {
+          const { context } = args;
+          return fn(context as TContext);
+        };
   }
 
   return { whenDone, take };

@@ -178,19 +178,10 @@ const TopBar = memo(function TopBarComponent() {
           className={cn([
             "flex flex-none relative",
             "w-full h-8 z-[100] select-none liquidGlass-wrapper",
-            // "before:content-[''] before:absolute before:inset-0 before:-z-10",
-            // "before:bg-gradient-to-b before:from-[var(--app-bg)] before:to-[var(--app-bg)]/60",
-            // "before:transition-colors before:duration-500 before:ease-in-out",
-            // "after:content-[''] after:absolute after:inset-0 after:-z-10",
-            // "after:backdrop-blur-[16px] after:opacity-100 after:origin-top",
-            // "after:bg-gradient-to-b after:from-transparent after:via-transparent after:to-white/0",
-            // "after:mask-image-[linear-gradient(to_bottom,rgba(0,0,0,1)_0%,rgba(0,0,0,0)_100%)]",
-            // "after:transition-colors after:duration-500 after:ease-in-out",
           ])}
         >
           <div className="liquidGlass-effect" />
-          <div className="liquidGlass-tint dark:bg-[rgba(0,0,0,0.2)] bg-[rgba(255,255,255,0.5)] transition" />
-          {/* <div className="liquidGlass-shine" /> */}
+          <div className="liquidGlass-tint " />
           <div
             className={cn([
               "grid grid-cols-[1fr_auto_1fr] w-full h-full",
@@ -218,7 +209,7 @@ const TopBar = memo(function TopBarComponent() {
                   data-tauri-drag-region
                   className={cn(["flex justify-end"])}
                 >
-                  <RightControls />
+                  {/* <RightControls /> */}
                 </div>
               </>
             )}
