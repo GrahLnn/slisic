@@ -8,8 +8,7 @@ import {
 } from "xstate";
 import { goto, godown, invokeState } from "../kit";
 import { src } from "./src";
-import { invoker } from "./utils";
-import { payloads, ss, sub_machine } from "./state";
+import { payloads, ss, sub_machine, invoker } from "./events";
 import { resultx } from "../state";
 import { ActorDone } from "../muinfo";
 import { B, call0, I, K } from "@/lib/comb";
@@ -18,12 +17,12 @@ import crab from "@/src/cmd";
 import { tap } from "@/lib/result";
 import { lievt } from "@/src/cmd/commandAdapter";
 import { Frame, new_frame } from "./core";
-import { AudioAnalyzer } from "@/src/components/audio/Analyzer";
 
 export const machine = src.createMachine({
   initial: ss.mainx.State.idle,
   context: {
     collections: [],
+    flatList: [],
     reviews: [],
     audio: new Audio(),
     audioFrame: new_frame(),
@@ -77,6 +76,12 @@ export const machine = src.createMachine({
     },
     [ss.mainx.State.play]: {
       initial: ss.playx.State.stop,
+      on: {
+        to_create: {
+          target: ss.mainx.State.create,
+          actions: "new_slot",
+        },
+      },
       states: {
         [ss.playx.State.playing]: {
           invoke: {
@@ -84,23 +89,36 @@ export const machine = src.createMachine({
             src: "analyzeAudio",
             input: ({ context }) => ({
               audio: context.audio,
-              analyzer: context.analyzer, // 可选
+              analyzer: context.analyzer,
             }),
           },
+          entry: "play_audio",
           on: {
             [payloads.update_audio_frame.evt()]: {
               actions: "update_audio_frame",
             },
             toggle_audio: {
+              actions: ["reset_frame", "stop_audio", "clean_audio"],
               target: ss.playx.State.stop,
+            },
+            next: {
               actions: ["reset_frame", "stop_audio"],
+              target: ss.playx.State.next,
             },
           },
+        },
+        [ss.playx.State.next]: {
+          entry: [
+            "ensure_analyzer",
+            "ensure_play",
+            raise(ss.playx.Signal.to_playing),
+          ],
+          on: ss.playx.transfer.pick("to_playing"),
         },
         [ss.playx.State.stop]: {
           on: {
             toggle_audio: {
-              actions: ["ensure_analyzer", "play_audio"],
+              actions: ["ensure_analyzer", "ensure_list", "ensure_play"],
               target: ss.playx.State.playing,
             },
           },
@@ -125,7 +143,7 @@ export const machine = src.createMachine({
           actions: "edit_slot",
           target: godown(resultx.State.err),
         },
-        cancle: [
+        back: [
           {
             target: ss.mainx.State.play,
             guard: "hasData",

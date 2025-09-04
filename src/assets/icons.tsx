@@ -1958,4 +1958,135 @@ export const motionIcons = {
       </svg>
     );
   },
+  /**
+   *
+   * @preview ![](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMiIgaGVpZ2h0PSIxMiIgdmlld0JveD0iMCAwIDEyIDEyIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJ3aGl0ZSIvPjxnIGZpbGw9Im5vbmUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZT0iIzIxMjEyMSI+PHBhdGggZD0ibTcsNC43NWwuNjM4LTIuMDMxYy4yMjUtLjcxNi0uMTE0LTEuNDg4LS43OTQtMS44MDdsLS4zNDUtLjE2Mi0yLjgwMiwzLjQ0OWMtLjI5LjM1Ny0uNDQ4LjgwMi0uNDQ4LDEuMjYxdjMuNzljMCwxLjEwNS44OTUsMiwyLDJoMy4yMjljLjg3OCwwLDEuNjUzLS41NzMsMS45MTItMS40MTJsLjc2OS0yLjVjLjM5Ni0xLjI4Ni0uNTY2LTIuNTg4LTEuOTEyLTIuNTg4aC0yLjI0OVoiPjwvcGF0aD48bGluZSB4MT0iLjc1IiB5MT0iMTAuNzUiIHgyPSIuNzUiIHkyPSI1LjI1Ij48L2xpbmU+PC9nPjwvc3ZnPg==)
+   */
+  thumbsUp({ size, color, className, ...props }: MotionIconProps) {
+    return (
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width={size || 12}
+        height={size || 12}
+        viewBox="0 0 12 12"
+        className={className}
+      >
+        <g
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.5"
+          stroke={color || "currentColor"}
+        >
+          <motion.path
+            d="m7,4.75l.638-2.031c.225-.716-.114-1.488-.794-1.807l-.345-.162-2.802,3.449c-.29.357-.448.802-.448,1.261v3.79c0,1.105.895,2,2,2h3.229c.878,0,1.653-.573,1.912-1.412l.769-2.5c.396-1.286-.566-2.588-1.912-2.588h-2.249Z"
+            {...props}
+          />
+          <motion.line x1=".75" y1="10.75" x2=".75" y2="5.25" {...props} />
+        </g>
+      </svg>
+    );
+  },
+  /**
+   *
+   * @preview ![](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMiIgaGVpZ2h0PSIxMiIgdmlld0JveD0iMCAwIDEyIDEyIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJ3aGl0ZSIvPjxnIGZpbGw9IiMyMTIxMjEiPjxwYXRoIGQ9Ik03IDcuMjVsMC42NCAyLjAzYTEuNSAxLjUgMCAwIDEtMC44IDEuODFsLTAuMzQgMC4xNi0yLjgtMy40NWEyIDIgMCAwIDEtMC40NS0xLjI2di0zLjc5YTIgMiAwIDAgMSAyLTJoMy4yM2MwLjg4IDAgMS42NSAwLjU3IDEuOTEgMS40MWwwLjc3IDIuNWEyIDIgMCAwIDEtMS45MSAyLjU5aC0yLjI1eiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjEyMTIxIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS13aWR0aD0iMS41Ij48L3BhdGg+PHBhdGggZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjEyMTIxIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS13aWR0aD0iMS41IiBkPSJNMC43NSAxLjI1djUuNSI+PC9wYXRoPjwvZz48L3N2Zz4=)
+   */
+  thumbsDown({ size, color, className, ...props }: MotionIconProps) {
+    return (
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width={size || 12}
+        height={size || 12}
+        viewBox="0 0 12 12"
+        className={className}
+      >
+        <g fill={color || "currentColor"}>
+          <motion.path
+            d="M7 7.25l0.64 2.03a1.5 1.5 0 0 1-0.8 1.81l-0.34 0.16-2.8-3.45a2 2 0 0 1-0.45-1.26v-3.79a2 2 0 0 1 2-2h3.23c0.88 0 1.65 0.57 1.91 1.41l0.77 2.5a2 2 0 0 1-1.91 2.59h-2.25z"
+            fill="none"
+            stroke={color || "currentColor"}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.5"
+            {...props}
+          />
+          <motion.path
+            fill="none"
+            stroke={color || "currentColor"}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.5"
+            d="M0.75 1.25v5.5"
+            {...props}
+          />
+        </g>
+      </svg>
+    );
+  },
+  /**
+   *
+   * @preview ![](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOCIgaGVpZ2h0PSIxOCIgdmlld0JveD0iMCAwIDE4IDE4Ij48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJ3aGl0ZSIvPjxnIGZpbGw9Im5vbmUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZT0iIzIxMjEyMSI+PHBhdGggZD0iTTQuMTcyOTcgNC43NTAwMUw2LjQ4ODk3IDIuMTJDNi44OTA5NyAxLjY2IDcuNjAzOTcgMS42NjAwMSA3Ljk5ODk3IDIuMTMwMDFMMTAuMjQ2IDQuNzUwMDEiPjwvcGF0aD48cGF0aCBkPSJNMTEuNjkyIDIuMjYwMDFMMTMuODI3IDQuNzUiPjwvcGF0aD48cGF0aCBkPSJNMTMuODI2OSA0Ljc1TDEzLjM0OTkgMTMuODZDMTMuMjkzOSAxNC45MjAxIDEyLjQxNTkgMTUuNzUgMTEuMzUyOSAxNS43NUg2LjY0ODkzQzUuNTg0OTMgMTUuNzUgNC43MDc5MyAxNC45MiA0LjY1MTkzIDEzLjg2TDQuMTc0OTMgNC43NUgxMy44MjY5WiI+PC9wYXRoPjxwYXRoIGQ9Ik03LjM3NSA3Ljc1TDcuNjI1IDEyLjc1Ij48L3BhdGg+PHBhdGggZD0iTTEwLjYyNSA3Ljc1TDEwLjM3NSAxMi43NSI+PC9wYXRoPjwvZz48L3N2Zz4=)
+   * @returns
+   */
+  trash2Content({ size, color, className, ...props }: MotionIconProps) {
+    return (
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width={size || 18}
+        height={size || 18}
+        viewBox="0 0 18 18"
+        className={className}
+      >
+        <g
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.5"
+          stroke={color || "currentColor"}
+        >
+          <motion.path
+            d="M4.17297 4.75001L6.48897 2.12C6.89097 1.66 7.60397 1.66001 7.99897 2.13001L10.246 4.75001"
+            {...props}
+          />
+          <motion.path d="M11.692 2.26001L13.827 4.75" {...props} />
+          <motion.path
+            d="M13.8269 4.75L13.3499 13.86C13.2939 14.9201 12.4159 15.75 11.3529 15.75H6.64893C5.58493 15.75 4.70793 14.92 4.65193 13.86L4.17493 4.75H13.8269Z"
+            {...props}
+          />
+          <motion.path d="M7.375 7.75L7.625 12.75" {...props} />
+          <motion.path d="M10.625 7.75L10.375 12.75" {...props} />
+        </g>
+      </svg>
+    );
+  },
+  /**
+   * @preview ![](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOCIgaGVpZ2h0PSIxOCIgdmlld0JveD0iMCAwIDE4IDE4Ij48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJ3aGl0ZSIvPjxnIGZpbGw9Im5vbmUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZT0iIzIxMjEyMSI+PHBvbHlsaW5lIHBvaW50cz0iNC45NDYgMTMuMDU0IDUuMzc1IDEwLjU1MSAxLjc1IDcuMDE3IDYuNzYgNi4yODkgOSAxLjc1IDExLjI0IDYuMjg5IDExLjY1MSA2LjM0OSI+PC9wb2x5bGluZT48cG9seWxpbmUgcG9pbnRzPSIxNS4zNTQ4IDYuODg3MyAxNi4yNSA3LjAxNyAxMi42MjUgMTAuNTUxIDEzLjQ4MSAxNS41NCA5IDEzLjE4NSI+PC9wb2x5bGluZT48bGluZSB4MT0iMiIgeTE9IjE2IiB4Mj0iMTYiIHkyPSIyIj48L2xpbmU+PC9nPjwvc3ZnPg==)
+   */
+  starSlash({ size, color, className, ...props }: MotionIconProps) {
+    return (
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width={size || 18}
+        height={size || 18}
+        viewBox="0 0 18 18"
+        className={className}
+      >
+        <motion.g
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.5"
+          stroke={color || "currentColor"}
+          {...props}
+        >
+          <motion.polyline
+            points="4.946 13.054 5.375 10.551 1.75 7.017 6.76 6.289 9 1.75 11.24 6.289 11.651 6.349"
+            {...props}
+          />
+          <polyline points="15.3548 6.8873 16.25 7.017 12.625 10.551 13.481 15.54 9 13.185" />
+          <motion.line x1="2" y1="16" x2="16" y2="2" {...props} />
+        </motion.g>
+      </svg>
+    );
+  },
 };

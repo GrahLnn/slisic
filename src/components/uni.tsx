@@ -48,6 +48,23 @@ import * as React from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Result } from "@/lib/result";
 
+export function BackButton({ onClick }: { onClick: () => void }) {
+  return (
+    <div
+      className={cn([
+        "flex items-center gap-2 cursor-pointer py-2 h-8",
+        // "rounded-lg transition duration-300",
+        // "hover:bg-[#e7eced] dark:hover:bg-[#525252]",
+        "text-[#737373] dark:hover:text-[#a3a3a3] hover:text-[#262626] transition duration-300",
+      ])}
+      onClick={onClick}
+    >
+      <icons.arrowLeft size={16} thick={2} />
+      <div className=" whitespace-nowrap ">Back</div>
+    </div>
+  );
+}
+
 interface DataListProps {
   children: React.ReactNode;
   className?: string;

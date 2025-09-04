@@ -1,4 +1,11 @@
-import { setup, assign, assertEvent, fromCallback } from "xstate";
+import {
+  setup,
+  assign,
+  enqueueActions,
+  fromCallback,
+  raise,
+  assertEvent,
+} from "xstate";
 import {
   InvokeEvt,
   eventHandler,
@@ -8,30 +15,38 @@ import {
   MachineEvt,
 } from "../kit";
 import { Context, Frame, new_frame, new_slot } from "./core";
-import { payloads, ss, sub_machine } from "./state";
-import { invoker } from "./utils";
+import { payloads, ss, sub_machine, invoker } from "./events";
 import { I, K, B } from "@/lib/comb";
 import { udf, vec } from "@/lib/e";
 import { hideCenterTool, viewCenterTool } from "../centertool";
 import { fileToBlobUrl, pickRandom } from "@/lib/utils";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { AudioAnalyzer } from "@/src/components/audio/Analyzer";
+import { AudioAnalyzer } from "@/src/components/audio/analyzer";
+import { station } from "@/src/subpub/buses";
 
-export const analyzeAudio = fromCallback<
-  // 让 receive 的事件随便 any，避免类型约束阻塞
+export interface PlayerCtx {
+  audio: HTMLAudioElement;
+  analyzer?: AudioAnalyzer;
+  audioFrame: Frame;
+}
+
+const analyzeAudio = fromCallback<
   any,
   { audio: HTMLAudioElement; analyzer?: AudioAnalyzer }
 >(({ input, sendBack, receive }) => {
   const analyzer = input.analyzer ?? new AudioAnalyzer(2048, 0.8);
   let stop: null | (() => void) = null;
   let closed = false;
-  console.log(input);
+
   analyzer.connect(input.audio).then(() => {
     if (closed) return;
-    stop = analyzer.onFrame(B(payloads.update_audio_frame.load)(sendBack));
+    stop = analyzer.onFrame((frame) => {
+      if (closed) return;
+      //   sendBack(payloads.update_audio_frame.load(frame));
+      station.audioFrame.set(frame);
+    });
   });
 
-  // 可选：支持外部发来的“停止采样”消息
   receive((evt) => {
     if (evt?.type === "analyzer.stop") {
       closed = true;
@@ -40,14 +55,12 @@ export const analyzeAudio = fromCallback<
     }
   });
 
-  // Cleanup：离开被 invoke 的状态时自动调用
   return () => {
     closed = true;
     stop?.();
     analyzer.disconnect();
   };
 });
-
 type Events = UniqueEvts<
   | SignalEvt<typeof ss>
   | InvokeEvt<typeof invoker>
@@ -112,51 +125,50 @@ export const src = setup({
     update_single: assign({
       collections: EH.whenDone(payloads.update_single.evt())(I),
     }),
-    play_audio: EH.take(payloads.toggle_audio.evt())(async (ctx, event) => {
-      const all = event.output.folders.flatMap((f) => f.musics);
-      if (all.length === 0) return;
-
-      let last = -1;
-      let lastUrl: string | null = null;
-
-      const playNext = async () => {
+    ensure_list: assign({
+      flatList: EH.whenDone(payloads.toggle_audio.evt())((i) =>
+        i!.folders.flatMap((f) => f.musics)
+      ),
+      selected: EH.whenDone(payloads.toggle_audio.evt())((i) => i || undefined),
+    }),
+    ensure_play: assign({
+      nowPlaying: ({ context }) => {
+        const all = context.flatList;
         if (all.length === 0) return;
 
         let idx = Math.floor(Math.random() * all.length);
-        if (all.length > 1 && idx === last) {
+        if (all.length > 1) {
           idx =
             (idx + 1 + Math.floor(Math.random() * (all.length - 1))) %
             all.length;
         }
-        last = idx;
-
-        const path = all[idx].path;
-        const url = await fileToBlobUrl(path);
-
-        if (lastUrl) URL.revokeObjectURL(lastUrl);
-        lastUrl = url;
-
-        ctx.audio.crossOrigin = "anonymous";
-        ctx.audio.src = url;
-        void ctx.audio.play();
-      };
-
-      ctx.audio.onended = () => {
-        void playNext();
-      };
-      await playNext();
+        const mu = all[idx];
+        return mu;
+      },
     }),
-    stop_audio: EH.take(payloads.toggle_audio.evt())((ctx) => {
-      ctx.audio.onended = null;
-      ctx.audio.pause();
-      ctx.audio.currentTime = 0;
+    play_audio: async ({ context, self }) => {
+      const cur_mu = context.nowPlaying;
+      if (!cur_mu) return;
+      const url = await fileToBlobUrl(cur_mu.path);
+      context.audio.crossOrigin = "anonymous";
+      context.audio.src = url;
+      context.audio.play();
+      context.audio.onended = () => self.send(ss.playx.Signal.next);
+    },
+    stop_audio: ({ context }) => {
+      context.audio.onended = null;
+      context.audio.pause();
+      context.audio.currentTime = 0;
+    },
+    clean_audio: assign({
+      nowPlaying: udf,
+      selected: udf,
     }),
-    reset_frame: assign({
-      audioFrame: new_frame,
-    }),
-    update_audio_frame: assign({
-      audioFrame: EH.whenDone(payloads.update_audio_frame.evt())(I),
-    }),
+    reset_frame: () => station.audioFrame.set(new_frame()),
+    update_audio_frame: ({ event }) => {
+      assertEvent(event, payloads.update_audio_frame.evt());
+      station.audioFrame.set(event.output);
+    },
     ensure_analyzer: assign({
       analyzer: ({ context }) =>
         context.analyzer ?? new AudioAnalyzer(2048, 0.8),

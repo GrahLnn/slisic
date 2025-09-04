@@ -1,32 +1,28 @@
 import { Atom, atom, useAtom, useAtomValue, useSetAtom } from "jotai";
 import { me, Matchable } from "@/lib/matchable";
+import { createStore } from "jotai/vanilla";
+export const appStore = createStore();
 
 export function createAtom<T>(initialValue: T) {
-  const atomm = atom<T>(initialValue);
+  const a = atom<T>(initialValue);
 
-  function useSee() {
-    return useAtomValue(atomm);
-  }
-
-  function useSet() {
-    return useSetAtom(atomm);
-  }
-
-  function get() {
-    return atomm;
-  }
-
-  function useAll() {
-    return useAtom(atomm);
-  }
-
-  return {
-    atom: atomm,
-    useSee,
-    useSet,
-    useAll,
-    get,
+  // —— 非 Hook API（可以在任何地方用）
+  const set = (next: T | ((prev: T) => T)) => {
+    if (typeof next === "function") {
+      const updater = next as (p: T) => T;
+      appStore.set(a, updater(appStore.get(a)));
+    } else {
+      appStore.set(a, next);
+    }
   };
+  const get = () => appStore.get(a);
+
+  // —— Hook 版（仅组件/自定义 Hook 内使用）
+  const useSee = () => useAtomValue(a);
+  const useSet = () => useSetAtom(a);
+  const useAll = () => useAtom(a);
+
+  return { atom: a, set, get, useSee, useSet, useAll };
 }
 
 export function createMatchAtom<T extends string | number>(initialValue: T) {

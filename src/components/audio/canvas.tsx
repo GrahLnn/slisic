@@ -1,11 +1,12 @@
 import { MeshGradient } from "@paper-design/shaders-react";
-import { Frame } from "../audio/Analyzer";
+import { Frame } from "./analyzer";
 import { useIsDark } from "@/src/state_machine/normal";
+import { station } from "@/src/subpub/buses";
 
-export function AudioVisualizerCanvas({ audioData }: { audioData: Frame }) {
+export function AudioVisualizerCanvas() {
+  const audioData = station.audioFrame.useSee();
   const { speed } = computeParams(audioData);
   const isDark = useIsDark();
-  console.log(isDark);
   return (
     <MeshGradient
       colors={
