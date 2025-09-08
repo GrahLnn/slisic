@@ -1,5 +1,3 @@
-import { Result } from "./result";
-
 export const I = <T>(x: T): T => x;
 export const K =
   <T, U>(x: T) =>

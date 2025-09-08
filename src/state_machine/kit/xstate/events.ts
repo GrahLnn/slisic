@@ -7,6 +7,7 @@ import {
   type AssignArgs,
   type ProvidedActor,
   type AnyActorLogic,
+  Spawner,
   ActionArgs,
 } from "xstate";
 import { WithPrefix, StripPrefix, type Prefix } from "../core/types";
@@ -111,14 +112,27 @@ export function machine<O, L extends AnyActorLogic = AnyActorLogic>(
 /* -----------------------------------------------------------------------------
  * 3) 事件收集器（把 readonly 元组转成“键到工厂/工具”的对象）
  * ---------------------------------------------------------------------------*/
-
+type SendAllDict<E extends readonly MachineEvent<any>[]> = {
+  [K in keyof MachineMap<E> & string]: MachineMap<E>[K] extends {
+    machine: infer L;
+  }
+    ? L
+    : never;
+};
 export function collect<const E extends readonly PayloadEvent[]>(
   ...events: E
 ): PayloadMap<E> & { infer: E };
+
 export function collect<
   const E extends readonly ME[],
   ME extends MachineEvent<any>
->(...events: E): MachineMap<E> & { infer: E };
+>(
+  ...events: E
+): MachineMap<E> & {
+  infer: E;
+  /** 返回形如 { [event.id]: event.machine, ... } 的字典 */
+  as_act: () => SendAllDict<E>;
+};
 
 /** 实现：根据 __kind 分支构造不同的字典 */
 export function collect(
@@ -128,11 +142,13 @@ export function collect(
     {},
     ...events.map((e) => {
       if (e.__kind === "machine") {
-        // machine 事件：把 "xstate.done.actor.xxx" → "xxx" 作为键暴露
-        const key = (e.type as string).slice(DONE_PREFIX.length);
-        return { [key]: { evt: () => e.type, id: key, machine: e.machine } };
+        const key = (e.type as string).startsWith(DONE_PREFIX)
+          ? (e.type as string).slice(DONE_PREFIX.length)
+          : (e.type as string);
+        return {
+          [key]: { evt: () => e.type, id: key, machine: (e as any).machine },
+        };
       }
-      // payload 事件：暴露 load 工厂与事件名
       return {
         [e.type]: {
           load: (p: any) => ({ type: e.type, output: p }),
@@ -141,7 +157,22 @@ export function collect(
       };
     })
   );
-  return { ...(methods as any), infer: events as any };
+
+  const machineEntries = events.flatMap((e) => {
+    if ((e as any).__kind !== "machine") return [];
+    const t = (e as any).type as string;
+    const id = t.startsWith(DONE_PREFIX) ? t.slice(DONE_PREFIX.length) : t;
+    const logic = (e as any).machine;
+    return [[id, logic] as const];
+  });
+
+  const as_act = () => Object.fromEntries(machineEntries);
+
+  return {
+    ...(methods as any),
+    infer: events as any,
+    as_act,
+  };
 }
 
 /* -----------------------------------------------------------------------------
@@ -207,19 +238,27 @@ export function eventHandler<
         return fn((event as any).output, context, event as any, sp);
       };
   }
-
-  function take<S extends DoneKeys<TEvents> | `${Prefix}${DoneKeys<TEvents>}`>(
-    key: S
+  type KeyLike = DoneKeys<TEvents> | `${Prefix}${DoneKeys<TEvents>}`;
+  function take(): <R>(
+    fn: (ctx: TContext) => R
+  ) => (args: ActionArgs<TContext, any, any>) => R;
+  function take<S extends KeyLike>(
+    key?: S
   ): <R>(
     fn: (ctx: TContext, evt: EvtForKey<TEvents, NormalizeKey<S>>) => R
   ) => (args: ActionArgs<TContext, TEvents, TEvents>) => R;
 
-  function take(key: string) {
-    return (fn: any) => (args: any) => {
-      const { context, event } = args;
-      assertEvent(event, key);
-      return fn(context as TContext, event as any);
-    };
+  function take(key?: string) {
+    return key
+      ? (fn: any) => (args: any) => {
+          const { context, event } = args;
+          assertEvent(event, key);
+          return fn(context as TContext, event as any);
+        }
+      : (fn: any) => (args: any) => {
+          const { context } = args;
+          return fn(context as TContext);
+        };
   }
 
   return { whenDone, take };

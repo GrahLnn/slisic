@@ -116,15 +116,15 @@ export class Result<T, E = Error> {
   }
 }
 
-export async function rtry<T, E = Error>(
+export async function futry<T, E = Error>(
   promise: Promise<T>,
-  errorFactory?: (err: unknown) => E
+  mapErr?: (err: unknown) => E
 ): Promise<Result<T, E>> {
   try {
     const value = await promise;
     return Ok(value);
   } catch (err) {
-    return Err(errorFactory ? errorFactory(err) : (err as E));
+    return Err(mapErr ? mapErr(err) : (err as E));
   }
 }
 
