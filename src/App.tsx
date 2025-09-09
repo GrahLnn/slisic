@@ -9,6 +9,7 @@ import { action } from "./state_machine/global/api";
 import { station } from "./subpub/buses";
 import { Provider } from "jotai";
 import { appStore } from "./subpub/core";
+import { AudioVisualizerCanvas } from "./components/audio/canvas";
 
 function App() {
   useEffect(() => {
@@ -23,6 +24,9 @@ function App() {
         onMouseLeave={() => station.cursorinapp.set(false)}
       >
         <TopBar />
+        <div className="fixed top-0 left-0 w-full h-full">
+          <AudioVisualizerCanvas />
+        </div>
         <main className="flex-1 flex overflow-hidden hide-scrollbar">
           <Pages />
         </main>

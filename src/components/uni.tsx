@@ -75,9 +75,9 @@ export function DataList({ children, className }: DataListProps) {
     <div
       className={cn([
         "flex flex-col gap-2 p-3 w-full",
-        "overflow-hidden  transition duration-300",
-        "border-[#e5e5e5] dark:border-[#171717]",
-        "bg-[#f7fafc] dark:bg-[#0c0c0c]",
+        "overflow-hidden transition duration-300",
+        "border-[#e5e5e5] dark:border-[#373737]",
+        "bg-[#f7fafc] dark:bg-[#262626] opacity-80",
         ,
         className,
       ])}
@@ -154,6 +154,24 @@ export function PairEdit({
   );
 }
 
+export function Head({ title, explain }: { title: string; explain?: string }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="text-sm font-semibold text-[#262626] dark:text-[#e5e5e5] transition">
+        {title}
+      </div>
+      <div
+        className={cn([
+          "text-xs transition",
+          "text-[#525252] dark:text-[#a3a3a3]",
+        ])}
+      >
+        {explain}
+      </div>
+    </div>
+  );
+}
+
 interface MultiFolderChooserProps {
   label: string;
   value: Array<{ k: string; v: string }>;
@@ -168,25 +186,14 @@ export function MultiFolderChooser({
   label,
   value,
   explain,
+  check,
   onChoose,
   ondelete,
 }: MultiFolderChooserProps) {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex justify-between items-center">
-        <div className="flex flex-col gap-1">
-          <div className="text-sm font-semibold text-[#262626] dark:text-[#d4d4d4] transition">
-            {label}
-          </div>
-          <div
-            className={cn([
-              "text-xs transition",
-              "text-[#525252] dark:text-[#a3a3a3]",
-            ])}
-          >
-            {explain}
-          </div>
-        </div>
+        <Head title={label} explain={explain} />
         <EntryToolButton
           label="Select"
           onClick={() => {
@@ -197,21 +204,21 @@ export function MultiFolderChooser({
           }}
         />
       </div>
-      {value.map((v) => (
-        <Pair
-          key={v.k}
-          label={v.k}
-          value={v.v}
-          bantoggle
-          on
-          banTip="Delete"
-          banfn={() => ondelete?.(v.k)}
-          // action={motionIcons.duplicate2}
-          // actionfn={async () => {
-          //   return crab.copyToClipboard(note.value);
-          // }}
-        />
-      ))}
+      {value.map((v) => {
+        const verified = !check?.includes(v.k);
+        return (
+          <Pair
+            key={v.k}
+            label={v.k}
+            value={verified ? v.v : "Already exists"}
+            bantoggle
+            on
+            banTip="Delete"
+            banfn={() => ondelete?.(v.k)}
+            verified={verified}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -258,7 +265,7 @@ export function Pair({
       >
         <div
           className={cn([
-            "text-xs text-[#525252] dark:text-[#a3a3a3] transition",
+            "text-xs text-[#525252] dark:text-[#d4d4d4] transition",
             on === false && "line-through",
           ])}
         >
@@ -331,7 +338,7 @@ export function Pair({
             className={cn([
               "text-xs text-nowrap whitespace-nowrap max-w-md",
               (on || !bantoggle) && verified
-                ? "text-[#404040] dark:text-[#a3a3a3]"
+                ? "text-[#404040] dark:text-[#d4d4d4]"
                 : "text-[#525252] dark:text-[#8a8a8a]",
               !verified && "text-[#ef0202] dark:text-[#a92626]",
             ])}
@@ -777,17 +784,22 @@ interface EntryToolButtonProps {
   icon?: React.ReactNode;
   label: string;
   onClick?: () => void;
+  className?: string;
 }
 
 export function EntryToolButton({
   icon,
   label,
   onClick,
+  className,
 }: EntryToolButtonProps) {
   const [hover, setHover] = useState(false);
   return (
     <div
-      className="flex items-center gap-1 cursor-pointer transition duration-300 ease-in-out hover:bg-[#e7eced] dark:hover:bg-[#383838] rounded-md pl-2 pr-2.5 py-1"
+      className={cn([
+        "flex items-center gap-1 cursor-pointer transition duration-300 ease-in-out hover:bg-[#e7eced] dark:hover:bg-[#383838] rounded-md pl-2 pr-2.5 py-1",
+        className,
+      ])}
       onClick={onClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
@@ -798,7 +810,7 @@ export function EntryToolButton({
           "text-xs transition duration-300",
           hover
             ? "text-[#262626] dark:text-[#d4d4d4]"
-            : "text-[#525252] dark:text-[#a3a3a3]",
+            : "text-[#525252] dark:text-[#e5e5e5]",
         ])}
       >
         {label}
@@ -1032,7 +1044,7 @@ export function EditHead({
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <div className="text-[#404040] dark:text-[#d4d4d4] transition font-semibold text-lg">
+      <div className="text-[#171717] dark:text-[#f5f5f5] transition font-semibold text-lg">
         {title}
       </div>
       <div className="text-xs text-[#525252] dark:text-[#a3a3a3] transition">
@@ -1150,7 +1162,7 @@ export function InputItem({
 export function ListSeparator() {
   return (
     <motion.div
-      className="h-4 ml-5 w-px bg-[#e5e5e5] dark:bg-[#171717] transition"
+      className="h-4 ml-5 w-px bg-[#a3a3a3] dark:bg-[#373737] transition opacity-60 dark:opacity-100"
       initial={{
         height: 0,
       }}

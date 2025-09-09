@@ -103,7 +103,9 @@ pub fn all_audio_recursive(folder: String) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
-const AUDIO_EXTS: &[&str] = &["mp3", "flac", "wav", "aac", "m4a", "ogg", "opus", "aiff"];
+const AUDIO_EXTS: &[&str] = &[
+    "mp3", "flac", "wav", "aac", "m4a", "ogg", "opus", "aiff", "webm",
+];
 
 fn is_audio(p: &Path) -> bool {
     p.extension()

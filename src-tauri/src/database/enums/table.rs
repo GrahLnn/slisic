@@ -13,6 +13,7 @@ pub enum Table {
     User,
     Collection,
     Entry,
+    Music,
 }
 
 impl Table {
@@ -21,6 +22,7 @@ impl Table {
             Table::User => "user",
             Table::Collection => "collection",
             Table::Entry => "entry",
+            Table::Music => "music",
         }
     }
 }
@@ -41,6 +43,7 @@ impl TableName for Table {
 pub enum Rel {
     SignIn,
     Collect,
+    HasMusic,
 }
 
 impl Rel {
@@ -48,6 +51,7 @@ impl Rel {
         match self {
             Rel::SignIn => "sign_in",
             Rel::Collect => "collect",
+            Rel::HasMusic => "has_music",
         }
     }
     pub async fn record_id(self, in_id: RecordId, out_id: RecordId) -> Result<RecordId> {

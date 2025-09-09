@@ -69,6 +69,8 @@ export type ElemNoSpaceTuple<T extends readonly string[]> = {
 };
 type NoSpace<S extends string> = S extends `${string} ${string}`
   ? "States containing spaces are not accepted."
+  : S extends `${string}.${string}`
+  ? "States containing dots are not accepted."
   : S;
 
 export type SignalEvt<T, Key extends PropertyKey = "Signal"> = ValueOf<{

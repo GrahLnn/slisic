@@ -2,7 +2,7 @@ mod database;
 mod domain;
 mod utils;
 
-use crate::utils::enq::init_global_download_queue;
+use crate::utils::{enq::init_global_download_queue, ytdlp::spawn_ytdlp_auto_update};
 use anyhow::Result;
 use database::{init_db, Crud};
 use domain::models::music;
@@ -57,8 +57,16 @@ pub fn run() {
         music::read_all,
         music::update,
         music::delete,
+        music::fatigue,
+        music::boost,
+        music::unstar,
     ];
-    let events = collect_events![event::FullScreenEvent, utils::ytdlp::ProcessResult];
+    let events = collect_events![
+        event::FullScreenEvent,
+        utils::ytdlp::ProcessResult,
+        utils::ytdlp::YtdlpVersionChanged,
+        music::ProcessMsg
+    ];
 
     let builder: Builder = Builder::new().commands(commands).events(events);
 
@@ -101,6 +109,7 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
             let handle = app.handle().clone();
             let _ = init_global_download_queue(handle.clone(), /*capacity*/ 1024);
             builder.mount_events(app);
+            spawn_ytdlp_auto_update(handle.clone());
             block_in_place(|| {
                 block_on(async move {
                     let local_data_dir = handle.path().app_local_data_dir()?;

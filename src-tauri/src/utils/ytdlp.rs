@@ -16,14 +16,22 @@ use std::{
 use fs2::FileExt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::utils::{
-    ffmpeg::{ensure_ffmpeg, transcode_to_flac, FlacOpts},
-    file::{bin_dir, http, make_executable, remove_quarantine, InstallResult},
+use crate::{
+    domain::models::music::ProcessMsg,
+    utils::{
+        ffmpeg::{ensure_ffmpeg, transcode_to_flac, FlacOpts},
+        file::{bin_dir, http, make_executable, remove_quarantine, InstallResult},
+    },
 };
+use chrono::TimeZone;
 use futures::stream::{self, StreamExt};
+use std::time::Duration;
+use tauri::async_runtime::spawn;
+use tauri::AppHandle;
 use tauri::Manager;
 use tauri_specta::Event;
 use tokio::process::Command;
+use tokio::time::sleep;
 use uuid::Uuid;
 
 const GH_API_LATEST: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
@@ -418,6 +426,85 @@ pub async fn check_exists(app: tauri::AppHandle) -> Result<Option<InstallResult>
     }
 }
 
+fn duration_until_next_9am_local() -> Duration {
+    use chrono::{Duration as ChronoDur, Local, NaiveDate, NaiveTime};
+
+    let now = Local::now();
+    let today: NaiveDate = now.date_naive();
+
+    let nine = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+    let today_9 = now.timezone().from_local_datetime(&today.and_time(nine));
+
+    // 处理“本地时间歧义/缺失”（DST 切换时可能发生）
+    let today_9 = match today_9 {
+        chrono::LocalResult::Single(dt) => dt,
+        chrono::LocalResult::Ambiguous(early, _late) => early, // 任选其一即可
+        chrono::LocalResult::None => {
+            // 若 09:00 不存在（极端 DST 情况），退到 09:30 或直接顺延一天 09:00
+            let fallback = now + ChronoDur::hours(24);
+            let d = fallback.date_naive().and_time(nine);
+            now.timezone().from_local_datetime(&d).earliest().unwrap()
+        }
+    };
+
+    let target = if today_9 > now {
+        today_9
+    } else {
+        let tmr = (today + ChronoDur::days(1)).and_time(nine);
+        now.timezone().from_local_datetime(&tmr).earliest().unwrap()
+    };
+
+    (target - now)
+        .to_std()
+        .unwrap_or_else(|_| Duration::from_secs(0))
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Type, Event)]
+pub struct YtdlpVersionChanged {
+    pub str: String,
+}
+
+/// 真正的“检查并（必要时）更新”
+/// - 仅当 `needs_update == true` 时，才会调用下载与安装
+pub async fn update_ytdlp(app: &AppHandle) {
+    match ytdlp_check_update(app.clone()).await {
+        Ok(check) => {
+            if check.needs_update {
+                // info!("yt-dlp: found update {} -> {:?}, start installing", check.installed_version.unwrap_or_default(), check.latest_version);
+                let res = ytdlp_download_and_install(app.clone()).await;
+                if let Ok(v) = res {
+                    YtdlpVersionChanged {
+                        str: v.installed_version,
+                    }
+                    .emit(app)
+                    .ok();
+                }
+            } else {
+                // info!("yt-dlp: already up to date ({:?})", check.installed_version);
+            }
+        }
+        Err(_e) => {
+            // warn!("yt-dlp: check update failed: {e}");
+        }
+    }
+}
+
+/// 启动一个后台任务：
+/// - 应用启动时立即跑一次
+/// - 之后每天本地时间 09:00 跑一次
+pub fn spawn_ytdlp_auto_update(app: AppHandle) {
+    spawn(async move {
+        // 启动立刻跑一次（不要在 setup 里直接 await）
+        update_ytdlp(&app).await;
+
+        loop {
+            let wait: Duration = duration_until_next_9am_local();
+            sleep(wait).await; // ✅ 用 tauri::async_runtime::sleep
+            update_ytdlp(&app).await;
+        }
+    });
+}
+
 pub async fn flat_data(app: tauri::AppHandle, url: String) -> Result<serde_json::Value, String> {
     let exe = installed_bin_path(&app).map_err(|e| e.to_string())?;
     if !exe.exists() {
@@ -459,13 +546,11 @@ pub async fn download_audio(
     url: String,
     save_dir: PathBuf,
 ) -> Result<PathBuf, String> {
-    // 1) 找 yt-dlp
     let exe = installed_bin_path(&app).map_err(|e| e.to_string())?;
     if !exe.exists() {
         return Err("yt-dlp not found, please install/download first".into());
     }
 
-    // 2) 准备保存目录
     if !save_dir.exists() {
         fs::create_dir_all(&save_dir).map_err(|e| format!("create dir failed: {e}"))?;
     } else if !save_dir.is_dir() {
@@ -475,61 +560,66 @@ pub async fn download_audio(
         ));
     }
 
-    // 3) 输出模板：让 yt-dlp 自己决定扩展名
-    // 注意：不要自己猜扩展名，bestaudio 可能是 webm/opus、m4a、aac…不固定。
-    let out_tmpl = save_dir.join("%(title)s.m4a");
-    let out_tmpl = out_tmpl.to_string_lossy().to_string();
+    // 交给 yt-dlp 选扩展名，但示例里你手写了 m4a；如果你确实只要 m4a，可以保留。
+    let out_tmpl = save_dir
+        .join("%(title)s.%(ext)s")
+        .to_string_lossy()
+        .to_string();
 
-    // 4) 运行 yt-dlp
-    // 关键点：
-    // -f bestaudio          仅选最佳音轨，不做容器转换
-    // --no-playlist         只下单个条目（你也可以去掉让它跟随列表）
-    // --no-part             避免 .part 残留
-    // --print after_move:filepath  下载完成、移动到最终位置后打印最终文件路径
-    // （某些情况下不会触发 move，可按需再加一个 before_dl:filepath 兜底）
     let output = Command::new(&exe)
+        // 关键：强制 UTF-8 输出，避免 GBK/本地代码页造成的乱码
+        .env("PYTHONIOENCODING", "utf-8")
+        // 可选：禁用 yt-dlp 自更新
+        .env("YTDLP_NO_UPDATE", "1")
+        // 让文件名尽量可被 Windows 接受（可选）
+        .arg("--windows-filenames")
         .arg("-f")
         .arg("bestaudio")
         .arg("--no-playlist")
         .arg("--no-part")
         .arg("-o")
         .arg(&out_tmpl)
+        // 打印最终路径 + 兜底路径（有些情况下没有“move”过程）
         .arg("--print")
         .arg("after_move:filepath")
+        .arg("--print")
+        .arg("before_dl:filepath")
         .arg(&url)
         .output()
         .await
         .map_err(|e| format!("execute yt-dlp failed: {e}"))?;
 
-    // 5) 错误处理（复用你上个函数的风格）
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = String::from_utf8(output.stderr)
+            .unwrap_or_else(|v| String::from_utf8_lossy(&v.into_bytes()).into_owned());
         if let Some(line) = stderr.lines().rev().find(|l| l.contains("ERROR:")) {
-            return Err(line
-                .to_string()
-                .replace("ERROR: ", "")
-                .replace(&format!(": {url}"), ""));
+            return Err(line.replace("ERROR: ", "").replace(&format!(": {url}"), ""));
         } else {
             return Err(format!("yt-dlp failed: {}", stderr));
         }
     }
 
-    // 6) 解析 stdout 拿最终文件路径
-    // --print 会把路径打印到 stdout 的一行；取最后一个非空行最稳妥
+    // 这里可以安全用 UTF-8 解析
     let stdout = String::from_utf8(output.stdout)
         .unwrap_or_else(|v| String::from_utf8_lossy(&v.into_bytes()).into_owned());
-    let final_path_line = stdout
+
+    // 取最后一个非空行（after_move 优先，其次 before_dl）
+    let printed = stdout
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .last()
-        .ok_or_else(|| "yt-dlp did not print final filepath".to_string())?;
+        .ok_or_else(|| "yt-dlp did not print any filepath".to_string())?;
 
-    let final_path = Path::new(final_path_line).to_path_buf();
+    let printed = printed.trim_matches(|c| c == '"' || c == '\''); // 有些平台可能带引号
+    let final_path = Path::new(printed).to_path_buf();
 
-    // 7) 兜底校验：如果没有这个文件，可能是没有触发 move（极少数容器直写）
-    // 这时再用模板猜测一下最接近的文件（可选）。这里直接强校验存在性更“实话实说”。
     if !final_path.exists() {
+        // 兜底：部分站点/容器没有触发 move，或者 ext 与模板不同
+        // 在 save_dir 下找“最近生成”的音频文件作为近似匹配
+        if let Some(p) = newest_in_dir(&save_dir)? {
+            return Ok(p);
+        }
         return Err(format!(
             "download finished but file not found at printed path: {}",
             final_path.display()
@@ -539,16 +629,64 @@ pub async fn download_audio(
     Ok(final_path)
 }
 
+fn newest_in_dir(dir: &Path) -> Result<Option<PathBuf>, String> {
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let p = entry.path();
+        if p.is_file() {
+            // 这里列表可按需加常见音频后缀
+            let is_audio = matches!(
+                p.extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "m4a" | "mp3" | "opus" | "aac" | "flac" | "wav" | "ogg" | "webm"
+            );
+            if !is_audio {
+                continue;
+            }
+            let t = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            if best.as_ref().map(|(bt, _)| t > *bt).unwrap_or(true) {
+                best = Some((t, p));
+            }
+        }
+    }
+    Ok(best.map(|(_, p)| p))
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
+pub struct MediaInfo {
+    pub title: String,
+    pub item_type: String,
+    pub entries_count: Option<u32>,
+}
+
 #[tauri::command]
 #[specta::specta]
-pub async fn look_media(app: tauri::AppHandle, url: String) -> Result<String, String> {
+pub async fn look_media(app: tauri::AppHandle, url: String) -> Result<MediaInfo, String> {
     let v = flat_data(app, url).await?;
     let title = v
         .get("title")
         .and_then(|x| x.as_str())
         .ok_or_else(|| "title filed not found".to_string())?;
-
-    Ok(title.to_string())
+    let item_type = v.get("_type").and_then(|x| x.as_str()).unwrap_or("unknown");
+    let entries_count = if item_type == "playlist" {
+        v.get("entries")
+            .and_then(|x| x.as_array())
+            .map(|x| x.len() as u32)
+    } else {
+        None
+    };
+    Ok(MediaInfo {
+        title: title.to_string(),
+        item_type: item_type.to_string(),
+        entries_count,
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -635,6 +773,12 @@ pub fn process_entry<'a>(
         for t in ancestors_titles {
             dir.push(sanitize_segment(t));
         }
+
+        ProcessMsg {
+            str: format!("Processing {}", entry.title),
+        }
+        .emit(&app)
+        .ok();
 
         // ===== 2) 本节点状态文件路径（按层级建目录）=====
         let work_root = app
@@ -834,6 +978,11 @@ pub fn process_entry<'a>(
             if let Some(ref chs) = chapters {
                 let mut chapter_dir = dir.clone();
                 chapter_dir.push(sanitize_segment(&entry.title));
+                ProcessMsg {
+                    str: format!("split audio {}", entry.title),
+                }
+                .emit(&app)
+                .ok();
                 let _outs = split_audio_by_chapters(
                     &app,
                     &whole_path,

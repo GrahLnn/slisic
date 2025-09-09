@@ -31,7 +31,7 @@ export const utils = {
 const sub_mc = createMachine({});
 
 export const invoker = createActors(utils);
-export const payloads = collect(event<string>()("examplea"));
+export const payloads = collect(event<string>()("new_version"));
 export const machines = collect(machine<string>(sub_mc)("exampleb"));
 
 export type MainStateT = keyof typeof ss.mainx.State;

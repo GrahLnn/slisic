@@ -1,5 +1,6 @@
 import {
   and,
+  assign,
   createMachine,
   enqueueActions,
   fromCallback,
@@ -25,7 +26,6 @@ export const machine = src.createMachine({
     flatList: [],
     reviews: [],
     audio: new Audio(),
-    audioFrame: new_frame(),
   },
   on: {
     unmount: {
@@ -34,10 +34,10 @@ export const machine = src.createMachine({
       reenter: true,
     },
     add_review_actor: {
-      actions: "add_review_actor",
+      actions: ["add_review_actor", raise(ss.mainx.Signal.review_check)],
     },
     [sub_machine.review.evt()]: {
-      actions: "over_review",
+      actions: ["over_review", raise(ss.mainx.Signal.review_check)],
     },
     update_single: {
       actions: "update_single",
@@ -48,8 +48,10 @@ export const machine = src.createMachine({
       const pr = lievt("processResult")(() =>
         crab.readAll().then(tap(B(payloads.update_single.load)(sendBack)))
       );
+      const pcmsg = lievt("processMsg")((msg) => console.log(msg.str));
       return () => {
         pr.then(call0);
+        pcmsg.then(call0);
       };
     }),
   },
@@ -60,6 +62,7 @@ export const machine = src.createMachine({
       },
     },
     [ss.mainx.State.loading]: {
+      id: ss.mainx.State.loading,
       type: "parallel",
       states: invokeState(invoker.load_collections.name, "update_colls"),
 
@@ -81,35 +84,65 @@ export const machine = src.createMachine({
           target: ss.mainx.State.create,
           actions: "new_slot",
         },
+        delete: {
+          actions: ["delete", raise(ss.mainx.Signal.after_delete)],
+        },
+        AFTER_DELETE: [{ guard: "noData", target: ss.mainx.State.new_guide }],
       },
       states: {
         [ss.playx.State.playing]: {
           invoke: {
-            id: "analyzeAudio",
-            src: "analyzeAudio",
+            id: sub_machine.analyzeAudio.id,
+            src: sub_machine.analyzeAudio.id,
             input: ({ context }) => ({
-              audio: context.audio,
-              analyzer: context.analyzer,
+              analyzer: context.analyzer!,
             }),
           },
-          entry: "play_audio",
+          entry: ["ensure_analyzer", "play_audio"],
           on: {
             [payloads.update_audio_frame.evt()]: {
               actions: "update_audio_frame",
             },
             toggle_audio: {
-              actions: ["reset_frame", "stop_audio", "clean_audio"],
+              actions: [
+                "reset_frame",
+                "stop_audio",
+                "clean_judge",
+                "clean_audio",
+              ],
               target: ss.playx.State.stop,
             },
             next: {
-              actions: ["reset_frame", "stop_audio"],
+              actions: [
+                "reset_frame",
+                "stop_audio",
+                "clean_judge",
+                "update_parm",
+                "update_last",
+                "update_list",
+                "update_selected",
+                "update_coll",
+              ],
               target: ss.playx.State.next,
+            },
+            unstar: {
+              actions: ["unstar", "update_coll"],
+              target: ss.playx.State.next,
+            },
+            up: {
+              actions: ["up", "boost_parm", "update_coll"],
+            },
+            down: {
+              actions: ["down", "update_parm", "update_coll"],
             },
           },
         },
         [ss.playx.State.next]: {
           entry: [
+            "ensure_engine",
+            "resume_ctx",
             "ensure_analyzer",
+            "ensure_graph",
             "ensure_play",
             raise(ss.playx.Signal.to_playing),
           ],
@@ -118,14 +151,66 @@ export const machine = src.createMachine({
         [ss.playx.State.stop]: {
           on: {
             toggle_audio: {
-              actions: ["ensure_analyzer", "ensure_list", "ensure_play"],
+              actions: [
+                "ensure_engine",
+                "resume_ctx",
+                "ensure_analyzer",
+                "ensure_graph",
+                "ensure_list",
+                "ensure_play",
+              ],
               target: ss.playx.State.playing,
+            },
+            edit_playlist: {
+              actions: "into_slot",
+              target: goto(ss.mainx.State.edit),
             },
           },
         },
       },
     },
-    [ss.mainx.State.fast_edit]: {},
+    [ss.mainx.State.edit]: {
+      id: ss.mainx.State.edit,
+      on: {
+        back: {
+          actions: "clean_slot",
+          target: ss.mainx.State.play,
+        },
+        set_slot: {
+          actions: "edit_slot",
+          target: godown(resultx.State.err),
+        },
+      },
+      initial: resultx.State.err,
+      states: {
+        [resultx.State.err]: {
+          always: [
+            {
+              guard: and(["is_list_complete", "is_data_diff"]),
+              target: resultx.State.ok,
+            },
+          ],
+          on: {
+            review_check: [
+              {
+                guard: and(["is_list_complete", "is_data_diff"]),
+                target: resultx.State.ok,
+              },
+            ],
+          },
+        },
+        [resultx.State.ok]: {
+          entry: raise(ss.mainx.Signal.review_check),
+          on: {
+            done: goto(ss.mainx.State.updating),
+            review_check: {
+              target: resultx.State.err,
+              guard: "is_review",
+            },
+          },
+        },
+      },
+    },
     [ss.mainx.State.new_guide]: {
       id: ss.mainx.State.new_guide,
       entry: "hide_center_tool",
@@ -159,26 +244,49 @@ export const machine = src.createMachine({
       initial: resultx.State.err,
       states: {
         [resultx.State.err]: {
-          entry: raise(resultx.Signal.go),
+          always: {
+            target: resultx.State.ok,
+            guard: "is_list_complete",
+          },
           on: {
-            go: {
+            review_check: {
               target: resultx.State.ok,
-              guard: "is_list_complete",
+              guard: "is_review",
             },
           },
         },
         [resultx.State.ok]: {
+          entry: raise(ss.mainx.Signal.review_check),
           on: {
-            done: goto(ss.mainx.State.save),
+            done: goto(ss.mainx.State.saving),
+            review_check: {
+              target: resultx.State.err,
+              guard: "is_review",
+            },
           },
         },
       },
     },
-    [ss.mainx.State.save]: {
-      id: ss.mainx.State.save,
+    [ss.mainx.State.updating]: {
+      id: ss.mainx.State.updating,
       invoke: {
-        id: invoker.save_collections.name,
-        src: invoker.save_collections.name,
+        id: invoker.update_collection.name,
+        src: invoker.update_collection.name,
+        input: ({ context: { slot, selected } }) => ({
+          slot,
+          selected,
+        }),
+        onDone: {
+          target: ss.mainx.State.loading,
+          actions: "clean_ctx",
+        },
+      },
+    },
+    [ss.mainx.State.saving]: {
+      id: ss.mainx.State.saving,
+      invoke: {
+        id: invoker.save_collection.name,
+        src: invoker.save_collection.name,
         input: ({ context: { slot } }) => ({
           slot,
         }),

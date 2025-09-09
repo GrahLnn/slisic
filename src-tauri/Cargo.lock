@@ -19,6 +19,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "block2 0.6.1",
+ "chrono",
  "dashmap 6.1.0",
  "ebur128",
  "fs2",

@@ -36,24 +36,22 @@ pub fn init_global_download_queue(app: tauri::AppHandle, capacity: usize) -> Res
     // 单 worker 循环（需要多 worker 就开多个 spawn）
     tauri::async_runtime::spawn(async move {
         while let Some(mut job) = rx.recv().await {
-            // 这里也可以 emit 事件：app.emit_all("download://started", &job.id).ok();
             let res = process_entry(app.clone(), &base_folder, &mut job, &[], &[]).await;
 
             match res {
                 Ok(result) => {
                     fs::remove_dir_all(&result.working_path).ok();
-                    download_ok(&app, result.clone().into()).await.ok();
-                    result.emit(&app).ok();
-                    // match result.saved_path {
-                    //     Some(p) => {
-                    //         download_ok(p.to_string_lossy().into_owned()).await.ok();
-                    //     }
-                    //     None => {}
-                    // }
-                    // app.emit_all("download://finished", (&job.id, true)).ok();
+                    match download_ok(&app, result.clone().into()).await {
+                        Ok(_) => {
+                            result.emit(&app).ok();
+                        }
+                        Err(e) => {
+                            println!("download error: {}", e);
+                        }
+                    }
                 }
                 Err(e) => {
-                    // app.emit_all("download://finished", (&job.id, false, e)).ok();
+                    println!("download error: {}", e);
                 }
             }
         }

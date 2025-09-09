@@ -3,7 +3,7 @@ import { machine } from "./machine";
 import { useSelector } from "@xstate/react";
 import { me } from "@/lib/matchable";
 import { MainStateT, payloads, ss } from "./events";
-import { CollectMission, Playlist } from "@/src/cmd/commands";
+import { CollectMission, Music, Playlist } from "@/src/cmd/commands";
 
 export const actor = createActor(machine);
 export const hook = {
@@ -15,6 +15,7 @@ export const hook = {
   useCurPlay: () => useSelector(actor, (s) => s.context.nowPlaying),
   useCurList: () => useSelector(actor, (s) => s.context.selected),
   ussIsPlaying: () => useSelector(actor, (s) => s.matches({ play: "playing" })),
+  useIsReview: () => useSelector(actor, (s) => s.context.reviews.length > 0),
 };
 /**
  * Active Operation State
@@ -35,4 +36,11 @@ export const action = {
   save: () => actor.send(ss.resultx.Signal.done),
   play: (playlist: Playlist) =>
     actor.send(payloads.toggle_audio.load(playlist)),
+  edit: (playlist: Playlist) =>
+    actor.send(payloads.edit_playlist.load(playlist)),
+  unstar: (music: Music) => actor.send(payloads.unstar.load(music)),
+  up: (music: Music) => actor.send(payloads.up.load(music)),
+  down: (music: Music) => actor.send(payloads.down.load(music)),
+  delete: (playlist: Playlist) => actor.send(payloads.delete.load(playlist)),
+  cancle_review: (url: string) => actor.send(payloads.cancel_review.load(url)),
 };

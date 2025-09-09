@@ -91,7 +91,7 @@ async checkExists() : Promise<Result<InstallResult | null, string>> {
 async githubOk() : Promise<boolean> {
     return await TAURI_INVOKE("github_ok");
 },
-async lookMedia(url: string) : Promise<Result<string, string>> {
+async lookMedia(url: string) : Promise<Result<MediaInfo, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("look_media", { url }) };
 } catch (e) {
@@ -167,9 +167,9 @@ async readAll() : Promise<Result<Playlist[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async update(data: CollectMission) : Promise<Result<null, string>> {
+async update(data: CollectMission, anchor: Playlist) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("update", { data }) };
+    return { status: "ok", data: await TAURI_INVOKE("update", { data, anchor }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -182,6 +182,30 @@ async delete(name: string) : Promise<Result<null, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async fatigue(music: Music) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("fatigue", { music }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async boost(music: Music) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("boost", { music }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async unstar(list: Playlist, music: Music) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("unstar", { list, music }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -190,10 +214,14 @@ async delete(name: string) : Promise<Result<null, string>> {
 
 export const events = __makeEvents__<{
 fullScreenEvent: FullScreenEvent,
-processResult: ProcessResult
+processMsg: ProcessMsg,
+processResult: ProcessResult,
+ytdlpVersionChanged: YtdlpVersionChanged
 }>({
 fullScreenEvent: "full-screen-event",
-processResult: "process-result"
+processMsg: "process-msg",
+processResult: "process-result",
+ytdlpVersionChanged: "ytdlp-version-changed"
 })
 
 /** user-defined constants **/
@@ -203,18 +231,21 @@ processResult: "process-result"
 /** user-defined types **/
 
 export type CheckResult = { installed_path: string | null; installed_version: string | null; latest_version: string | null; needs_update: boolean; asset_name: string; download_url: string }
-export type CollectMission = { name: string; folders: FolderSample[]; links: LinkSample[] }
+export type CollectMission = { name: string; folders: FolderSample[]; links: LinkSample[]; entries: Entry[] }
 export type Entry = { path: string | null; name: string; musics: Music[]; avg_db: number | null; url: string | null; downloaded_ok: boolean | null; tracking: boolean | null }
 export type FfCheck = { installed_path: string | null; latest_tag: string | null; needs_install: boolean; asset_name: string | null; download_url: string | null; note: string | null }
 export type FolderSample = { path: string; items: string[] }
 export type FullScreenEvent = { is_fullscreen: boolean }
 export type InstallResult = { installed_path: string; installed_version: string }
-export type LinkSample = { url: string; title_or_msg: string; status: LinkStatus | null; tracking: boolean }
+export type LinkSample = { url: string; title_or_msg: string; entry_type: string; count: number | null; status: LinkStatus | null; tracking: boolean }
 export type LinkStatus = "Ok" | "Err"
+export type MediaInfo = { title: string; item_type: string; entries_count: number | null }
 export type MouseWindowInfo = { mouse_x: number; mouse_y: number; window_x: number; window_y: number; window_width: number; window_height: number; rel_x: number; rel_y: number; pixel_ratio: number }
 export type Music = { path: string; title: string; avg_db: number | null; base_bias: number; user_boost: number; fatigue: number; diversity: number }
-export type Playlist = { name: string; avg_db: number | null; folders: Entry[] }
+export type Playlist = { name: string; avg_db: number | null; entries: Entry[] }
+export type ProcessMsg = { str: string }
 export type ProcessResult = { working_path: string; saved_path: string; name: string }
+export type YtdlpVersionChanged = { str: string }
 
 /** tauri-specta globals **/
 

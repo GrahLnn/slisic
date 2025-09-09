@@ -1,14 +1,14 @@
 import { actor } from "./api";
 
 actor.start();
-// actor.subscribe((snapshot) => {
-//   const state =
-//     typeof snapshot.value === "string"
-//       ? snapshot.value
-//       : JSON.stringify(snapshot.value);
+actor.subscribe((snapshot) => {
+  const state =
+    typeof snapshot.value === "string"
+      ? snapshot.value
+      : JSON.stringify(snapshot.value);
 
-//   console.log(state, snapshot.context);
-// });
+  console.log(state, snapshot.context);
+});
 export * from "./api";
 export * from "./events";
 export { actor } from "./api";
