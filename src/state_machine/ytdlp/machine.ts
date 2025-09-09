@@ -1,18 +1,36 @@
-import { and, raise } from "xstate";
+import { and, fromCallback, raise } from "xstate";
 import { goto, godown, invokeState } from "../kit";
 import { src } from "./src";
-import { invoker, ss } from "./events";
+import { invoker, payloads, ss } from "./events";
 import { resultx } from "../state";
+import { B, call0 } from "@/lib/comb";
+import crab from "@/src/cmd";
+import { lievt } from "@/src/cmd/commandAdapter";
+import { tap } from "@/lib/result";
 
 export const machine = src.createMachine({
   initial: ss.mainx.State.check_exist,
   context: {},
   on: {
-    [ss.mainx.Signal.unmount.into()]: {
+    unmount: {
       target: godown(ss.mainx.State.idle),
       actions: "clean_ctx",
       reenter: true,
     },
+    new_version: {
+      actions: "new_version",
+    },
+  },
+  invoke: {
+    src: fromCallback(({ sendBack }) => {
+      const new_version = lievt("ytdlpVersionChanged")((r) => {
+        console.log("new_version", r);
+        sendBack(payloads.new_version.load(r.str));
+      });
+      return () => {
+        new_version.then(call0);
+      };
+    }),
   },
   states: {
     [ss.mainx.State.check_exist]: {

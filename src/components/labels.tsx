@@ -257,7 +257,11 @@ export const labels = {
     layoutId?: string;
   }) => (
     <Wrapper withHover={withHover}>
-      <motionIcons.musicPlus size={60} layoutId={layoutId} />
+      <motionIcons.musicPlus
+        size={60}
+        layoutId={layoutId}
+        className="dark:text-[#d4d4d4] text-[#404040] opacity-90"
+      />
     </Wrapper>
   ),
   musicPlay: ({

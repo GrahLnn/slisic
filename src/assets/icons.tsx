@@ -2077,13 +2077,16 @@ export const motionIcons = {
           strokeLinejoin="round"
           strokeWidth="1.5"
           stroke={color || "currentColor"}
-          {...props}
+          //   {...props}
         >
           <motion.polyline
             points="4.946 13.054 5.375 10.551 1.75 7.017 6.76 6.289 9 1.75 11.24 6.289 11.651 6.349"
             {...props}
           />
-          <polyline points="15.3548 6.8873 16.25 7.017 12.625 10.551 13.481 15.54 9 13.185" />
+          <motion.polyline
+            points="15.3548 6.8873 16.25 7.017 12.625 10.551 13.481 15.54 9 13.185"
+            {...props}
+          />
           <motion.line x1="2" y1="16" x2="16" y2="2" {...props} />
         </motion.g>
       </svg>

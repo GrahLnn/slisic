@@ -1,4 +1,9 @@
-import { AnimatePresence, motion, LayoutGroup } from "motion/react";
+import {
+  AnimatePresence,
+  motion,
+  LayoutGroup,
+  useAnimationControls,
+} from "motion/react";
 import { SpotlightSection } from "../components/arc_scroll";
 import {
   useCallback,
@@ -16,10 +21,15 @@ import { K } from "@/lib/comb";
 import { EmptyPage } from "../components/empty";
 import { New } from "../components/music/new";
 import { BackButton, ListSeparator } from "../components/uni";
-import { AudioVisualizerCanvas } from "../components/audio/canvas";
-import { useAudioAnalyzer } from "../components/audio/useAudioAnalyzer";
 import { station } from "@/src/subpub/buses";
-import { Playlist } from "../cmd/commands";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuShortcut,
+  ContextMenuTrigger,
+  LongPressContextMenuItem,
+} from "@/components/ui/context-menu";
 
 interface GuideCardProps {
   content: React.ReactNode;
@@ -76,119 +86,6 @@ const Card: React.FC<GuideCardProps> = ({ content, title, idx, onClick }) => {
   );
 };
 
-function SnapList({
-  lists,
-  action,
-}: {
-  lists: Playlist[];
-  action: { play: (i: Playlist) => void };
-}) {
-  const [expanded, setExpanded] = useState(false);
-
-  // 第一个元素（收起时唯一可见）
-  const first = lists[0];
-  const rest = useMemo(() => lists.slice(1), [lists]);
-
-  return (
-    <LayoutGroup id="snap-list">
-      <motion.div
-        className="h-screen overflow-y-scroll snap-y snap-mandatory flex flex-col items-center justify-center relative"
-        onHoverStart={() => setExpanded(true)}
-        onHoverEnd={() => setExpanded(false)}
-      >
-        {/* —— 收起状态：居中“唯一真实项”+ 透明 ghost —— */}
-        <motion.div
-          layoutId={`item-${first.name}`}
-          layout // 参与布局动画
-          className="snap-center text-2xl font-cinzel text-[#0a0a0a] dark:text-[#fafafa] cursor-pointer absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
-          onClick={() => action.play(first)}
-          // 两种状态：收起=中心；展开=占据它在列表中的最终位置（由下面列表中的同 layoutId 接管）
-          style={{ pointerEvents: expanded ? "none" : "auto" }}
-          initial={false}
-          animate={{ opacity: expanded ? 0 : 1, scale: expanded ? 0.98 : 1 }}
-          transition={{ type: "spring", stiffness: 500, damping: 40 }}
-        >
-          {first.name}
-        </motion.div>
-
-        {/* 收起时的 ghost 层（仅视觉堆叠，不参与 layoutId） */}
-        {!expanded && (
-          <div className="pointer-events-none">
-            {rest.map((i) => (
-              <motion.div
-                key={`ghost-${i.name}`}
-                className="snap-center text-2xl font-cinzel text-[#0a0a0a] dark:text-[#fafafa] absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 0 }}
-              >
-                {i.name}
-              </motion.div>
-            ))}
-          </div>
-        )}
-
-        {/* —— 展开状态：真正的列表（带 layoutId）—— */}
-        <AnimatePresence initial={false} mode="sync">
-          {expanded && (
-            <motion.div
-              key="expanded-list"
-              className="w-full flex flex-col gap-8 items-center justify-center py-24"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 8 }}
-              transition={{ type: "tween", duration: 0.18 }}
-            >
-              {/* 把“第一个元素”在这里以同一个 layoutId 渲染，形成共享布局过渡 */}
-              <motion.div
-                layoutId={`item-${first.name}`}
-                layout
-                className="snap-center text-2xl font-cinzel text-[#0a0a0a] dark:text-[#fafafa] cursor-pointer"
-                onClick={() => action.play(first)}
-                transition={{
-                  layout: { type: "spring", stiffness: 600, damping: 45 },
-                }}
-              >
-                {first.name}
-              </motion.div>
-
-              {rest.map((i) => (
-                <motion.div
-                  key={i.name}
-                  layoutId={`item-${i.name}`}
-                  layout
-                  className="snap-center text-2xl font-cinzel text-[#0a0a0a] dark:text-[#fafafa] cursor-pointer"
-                  onClick={() => action.play(i)}
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 6 }}
-                  transition={{
-                    type: "tween",
-                    duration: 0.16,
-                  }}
-                >
-                  {i.name}
-                </motion.div>
-              ))}
-
-              <motion.div
-                layoutId="add-list"
-                layout
-                className="snap-center text-2xl font-cinzel text-[#0a0a0a] dark:text-[#fafafa] cursor-pointer"
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 6 }}
-                transition={{ type: "tween", duration: 0.16 }}
-              >
-                Add List
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
-    </LayoutGroup>
-  );
-}
-
 function Play() {
   const lists = hook.useList();
   const isPlaying = hook.ussIsPlaying();
@@ -198,6 +95,20 @@ function Play() {
   const [hoveredKey, setHoveredKey] = useState<string | null>(null); // 记录当前悬停的 item
   const containerRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const upCtrl = useAnimationControls();
+  const downCtrl = useAnimationControls();
+  const starCtrl = useAnimationControls();
+
+  const oneShot = async (ctrl: ReturnType<typeof useAnimationControls>) => {
+    // 立刻重置到 0（无动画）
+    ctrl.set({ pathLength: 0 });
+    // 播放 0 → 1
+    await ctrl.start({
+      pathLength: 1,
+      transition: { duration: 0.3, ease: "easeInOut" },
+    });
+    // 结束后保持在 1（静态）
+  };
 
   const setItemRef = useCallback(
     (key: string): React.RefCallback<HTMLDivElement> =>
@@ -222,9 +133,6 @@ function Play() {
 
   return (
     <>
-      <div className="fixed top-0 left-0 w-full h-full">
-        <AudioVisualizerCanvas />
-      </div>
       <Face>
         <div className={cn(["flex flex-col z-10 w-full h-full"])}>
           <div
@@ -242,6 +150,7 @@ function Play() {
               // 当前且正在播放时，未 hover 显示 curPlay.title；hover 显示自己的 name
               const shouldSwap = isPlaying && isCurrent;
               const showName = shouldSwap ? hoveredKey === i.name : true;
+              const isOk = i.entries.every((f) => f.downloaded_ok);
 
               return (
                 <motion.div
@@ -258,70 +167,96 @@ function Play() {
                       : { filter: "blur(0px)", opacity: 1 }
                   }
                   transition={{ duration: 0.3, ease: "easeOut" }}
-                  onClick={() => {
-                    if (disabled) return;
-                    action.play(i);
-                  }}
                   // 无障碍/键盘：禁用态不可聚焦
                   tabIndex={disabled ? -1 : 0}
                   aria-disabled={disabled || undefined}
                 >
                   {/* 文字切换区：仅在 shouldSwap 时做有进有出的切换，否则直接显示 name */}
-                  <div
-                    className="cursor-pointer"
-                    onMouseEnter={() => setHoveredKey(i.name)}
-                    onMouseLeave={() =>
-                      setHoveredKey((k) => (k === i.name ? null : k))
-                    }
-                  >
-                    {(() => {
-                      const alt = curPlay?.title ?? i.name;
-                      const longer =
-                        (alt?.length ?? 0) >= i.name.length ? alt : i.name;
+                  <ContextMenu>
+                    <ContextMenuTrigger
+                      className={cn([
+                        isOk
+                          ? "cursor-pointer"
+                          : "select-none text-[#404040] dark:text-[#a3a3a3] animate-pulse",
+                      ])}
+                      onMouseEnter={() => setHoveredKey(i.name)}
+                      onMouseLeave={() =>
+                        setHoveredKey((k) => (k === i.name ? null : k))
+                      }
+                      onClick={() => {
+                        if (disabled || !isOk) return;
+                        action.play(i);
+                      }}
+                    >
+                      {(() => {
+                        const alt = curPlay?.title ?? i.name;
+                        const longer =
+                          (alt?.length ?? 0) >= i.name.length ? alt : i.name;
 
-                      return shouldSwap ? (
-                        <span className="relative inline-block">
-                          {/* 幽灵占位：撑开成两者里最长的宽度，保持命中区域稳定 */}
-                          <span
-                            aria-hidden
-                            className="invisible block whitespace-pre"
-                          >
-                            {longer}
+                        return shouldSwap ? (
+                          <span className="relative inline-block">
+                            {/* 幽灵占位：撑开成两者里最长的宽度，保持命中区域稳定 */}
+                            <span
+                              aria-hidden
+                              className="invisible block whitespace-pre"
+                            >
+                              {longer}
+                            </span>
+
+                            <AnimatePresence mode="wait" initial={false}>
+                              {showName ? (
+                                <motion.span
+                                  key="name"
+                                  className="absolute inset-0 flex items-center justify-center pointer-events-none"
+                                  initial={{ filter: "blur(6px)", opacity: 0 }}
+                                  animate={{ filter: "blur(0px)", opacity: 1 }}
+                                  exit={{ filter: "blur(6px)", opacity: 0 }}
+                                  transition={{
+                                    duration: 0.25,
+                                    ease: "easeOut",
+                                  }}
+                                >
+                                  {i.name}
+                                </motion.span>
+                              ) : (
+                                <motion.span
+                                  key="title"
+                                  className="absolute inset-0 flex items-center justify-center pointer-events-none"
+                                  initial={{ filter: "blur(6px)", opacity: 0 }}
+                                  animate={{ filter: "blur(0px)", opacity: 1 }}
+                                  exit={{ filter: "blur(6px)", opacity: 0 }}
+                                  transition={{
+                                    duration: 0.25,
+                                    ease: "easeOut",
+                                  }}
+                                >
+                                  {alt}
+                                </motion.span>
+                              )}
+                            </AnimatePresence>
                           </span>
-
-                          <AnimatePresence mode="wait" initial={false}>
-                            {showName ? (
-                              <motion.span
-                                key="name"
-                                className="absolute inset-0 flex items-center justify-center pointer-events-none"
-                                initial={{ filter: "blur(6px)", opacity: 0 }}
-                                animate={{ filter: "blur(0px)", opacity: 1 }}
-                                exit={{ filter: "blur(6px)", opacity: 0 }}
-                                transition={{ duration: 0.25, ease: "easeOut" }}
-                              >
-                                {i.name}
-                              </motion.span>
-                            ) : (
-                              <motion.span
-                                key="title"
-                                className="absolute inset-0 flex items-center justify-center pointer-events-none"
-                                initial={{ filter: "blur(6px)", opacity: 0 }}
-                                animate={{ filter: "blur(0px)", opacity: 1 }}
-                                exit={{ filter: "blur(6px)", opacity: 0 }}
-                                transition={{ duration: 0.25, ease: "easeOut" }}
-                              >
-                                {alt}
-                              </motion.span>
-                            )}
-                          </AnimatePresence>
-                        </span>
-                      ) : (
-                        <span>{i.name}</span>
-                      );
-                    })()}
-                  </div>
+                        ) : (
+                          <span>{i.name}</span>
+                        );
+                      })()}
+                    </ContextMenuTrigger>
+                    {!isPlaying && (
+                      <ContextMenuContent className="opacity-70">
+                        <ContextMenuItem onClick={() => action.edit(i)}>
+                          Edit
+                        </ContextMenuItem>
+                        <LongPressContextMenuItem
+                          durationMs={2000}
+                          onConfirm={() => action.delete(i)}
+                          className="text-[#e81123] focus:text-[#e81123] data-[highlighted]:text-[#e81123]"
+                        >
+                          Delete
+                        </LongPressContextMenuItem>
+                      </ContextMenuContent>
+                    )}
+                  </ContextMenu>
                   <AnimatePresence>
-                    {isPlaying && isCursorInApp && isCurrent && (
+                    {curPlay && isPlaying && isCursorInApp && isCurrent && (
                       <motion.div
                         className={cn([
                           "flex justify-between w-full gap-4 min-w-24",
@@ -350,8 +285,12 @@ function Play() {
                               "hover:text-[#468be6]",
                               "transition duration-300",
                             ])}
+                            onClick={() => oneShot(upCtrl)}
                           >
-                            <motionIcons.thumbsUp />
+                            <motionIcons.thumbsUp
+                              initial={{ pathLength: 1 }}
+                              animate={upCtrl}
+                            />
                           </div>
                           <div
                             className={cn([
@@ -359,8 +298,12 @@ function Play() {
                               "hover:opacity-60 opacity-40",
                               "transition duration-300",
                             ])}
+                            onClick={() => oneShot(downCtrl)}
                           >
-                            <motionIcons.thumbsDown />
+                            <motionIcons.thumbsDown
+                              initial={{ pathLength: 1 }}
+                              animate={downCtrl}
+                            />
                           </div>
                         </div>
                         <div className={cn(["flex items-center"])}>
@@ -371,8 +314,16 @@ function Play() {
                               "hover:text-[#e81123] dark:hover:text-[#e3303f]",
                               "transition duration-300",
                             ])}
+                            onClick={() => {
+                              action.unstar(curPlay);
+                              oneShot(starCtrl);
+                            }}
                           >
-                            <motionIcons.starSlash size={14} />
+                            <motionIcons.starSlash
+                              size={14}
+                              initial={{ pathLength: 1 }}
+                              animate={starCtrl}
+                            />
                           </div>
                         </div>
                       </motion.div>
@@ -404,47 +355,85 @@ function Play() {
   );
 }
 
+function Create() {
+  return (
+    <Face>
+      <div className="relative flex w-full h-full overflow-hidden">
+        <div className="absolute left-6 top-0 flex items-center gap-2">
+          <BackButton onClick={action.back} />
+        </div>
+        <div className="flex flex-col justify-center items-center w-1/2">
+          <motion.div layoutId="musicPlus">
+            <labels.musicPlus />
+          </motion.div>
+        </div>
+
+        <div className="w-1/2 py-4 px-6 overflow-y-auto">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5 }}
+          >
+            <New />
+          </motion.div>
+        </div>
+      </div>
+    </Face>
+  );
+}
+
+function Edit() {
+  return (
+    <Face>
+      <div className="relative flex w-full h-full overflow-hidden">
+        <div className="absolute left-6 top-0 flex items-center gap-2">
+          <BackButton onClick={action.back} />
+        </div>
+        <div className="flex flex-col justify-center items-center w-1/2">
+          <motion.div layoutId="musicPlus">
+            <labels.musicPlus />
+          </motion.div>
+        </div>
+
+        <div className="w-1/2 py-4 px-6 overflow-y-auto">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5 }}
+          >
+            <New />
+          </motion.div>
+        </div>
+      </div>
+    </Face>
+  );
+}
+
+function Guide() {
+  return (
+    <EmptyPage
+      symbol={
+        <motion.div layoutId="musicPlus">
+          <labels.musicPlus />
+        </motion.div>
+      }
+      explain="You don’t have any play list yet. Let’s add your first one!"
+      cta="Add First List"
+      onClick={action.add_new}
+    />
+  );
+}
+
 export default function Home() {
   const state = hook.useState();
 
   return state.match({
     play: () => <Play />,
-    new_guide: () => (
-      <EmptyPage
-        symbol={
-          <motion.div layoutId="musicPlus">
-            <labels.musicPlus />
-          </motion.div>
-        }
-        explain="You don’t have any play list yet. Let’s add your first one!"
-        cta="Add First List"
-        onClick={action.add_new}
-      />
-    ),
-    create: () => (
-      <Face>
-        <div className="relative flex w-full h-full overflow-hidden">
-          <div className="absolute left-6 top-0 flex items-center gap-2">
-            <BackButton onClick={action.back} />
-          </div>
-          <div className="flex flex-col justify-center items-center w-1/2">
-            <motion.div layoutId="musicPlus">
-              <labels.musicPlus />
-            </motion.div>
-          </div>
-
-          <div className="w-1/2 py-4 px-6 overflow-y-auto">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5 }}
-            >
-              <New />
-            </motion.div>
-          </div>
-        </div>
-      </Face>
-    ),
+    new_guide: () => <Guide />,
+    create: () => <Create />,
+    saving: () => <Create />,
+    updating: () => <Create />,
+    edit: () => <Edit />,
     _: K(null),
   });
 }

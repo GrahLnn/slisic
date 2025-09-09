@@ -5,13 +5,15 @@ import { station } from "@/src/subpub/buses";
 
 export function AudioVisualizerCanvas() {
   const audioData = station.audioFrame.useSee();
+  //   console.log("audioData", audioData);
   const { speed } = computeParams(audioData);
+  //   console.log("speed", speed);
   const isDark = useIsDark();
   return (
     <MeshGradient
       colors={
         isDark
-          ? ["#000000", "#1a1a1a", "#333333", "#666666"]
+          ? ["#d4d0c8", "#4b8ca5", "#330953", "#180117"]
           : ["#f9d7d3", "#c3a3dd", "#7ccaff", "#fefefe"]
       }
       speed={speed}

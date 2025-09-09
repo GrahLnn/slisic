@@ -13,13 +13,17 @@ import {
   eventHandler,
   ActorInput,
   to_string,
+  godown,
 } from "./kit";
 import { I } from "@/lib/comb";
 import crab from "../cmd";
 import { Err, Ok, Result } from "@/lib/result";
 import { actor } from "../state_machine/home";
+import { MediaInfo } from "../cmd/commands";
 
-export const ss = defineSS(ns("mainx", sst(["idle", "probe_info", "done"])));
+export const ss = defineSS(
+  ns("mainx", sst(["idle", "probe_info", "done"], ["cancle"]))
+);
 export const payloads = collect(event<string>()("probe"));
 const invoker = createActors({
   async look_media({ input }: ActorInput<{ url: string }>) {
@@ -34,15 +38,15 @@ type Events = UniqueEvts<
   | PayloadEvt<typeof payloads.infer>
 >;
 
-export type ActorDone = { url: string; r: Result<string, string> };
+export type ActorDone = { url: string; r: Result<MediaInfo, string> };
 
 type Context = {
   url?: string;
-  result?: Result<string, string>;
+  result?: Result<MediaInfo, string>;
 };
 const h = eventHandler<Context, Events>();
 const src = setup({
-  actors: invoker.send_all(),
+  actors: invoker.as_act(),
   types: {
     input: {} as { url: string },
     context: {} as Context,
@@ -65,6 +69,9 @@ export const machine = src.createMachine({
   context: ({ input }) => ({
     url: input.url,
   }),
+  on: {
+    cancle: godown(ss.mainx.State.done),
+  },
   states: {
     [ss.mainx.State.probe_info]: {
       invoke: {

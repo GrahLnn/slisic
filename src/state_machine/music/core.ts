@@ -3,6 +3,7 @@ import { Playlist, CollectMission, Music } from "@/src/cmd/commands";
 import { Actor, ActorRefFromLogic } from "xstate";
 import { machine } from "../muinfo";
 import { AudioAnalyzer } from "@/src/components/audio/analyzer";
+import { AudioEngine } from "@/src/components/audio/engine";
 
 export interface Review {
   url: string;
@@ -35,6 +36,7 @@ export function new_frame(): Frame {
 
 export interface Context {
   collections: Playlist[];
+  saving_record?: string[];
   selected?: Playlist;
   flatList: Array<Music>;
   slot?: CollectMission;
@@ -42,12 +44,27 @@ export interface Context {
   ref?: any;
   audio: HTMLAudioElement;
   analyzer?: AudioAnalyzer;
+  engine?: AudioEngine;
   nowPlaying?: Music;
+  nowJudge?: "Up" | "Down";
+  lastPlay?: Music;
+  __stopOnFrame?: () => void;
+  __stopSampling?: () => void;
 }
 
 export function new_slot(): CollectMission {
   return {
     name: "",
+    folders: [],
+    links: [],
+    entries: [],
+  };
+}
+
+export function into_slot(playlist: Playlist): CollectMission {
+  return {
+    name: playlist.name,
+    entries: playlist.entries,
     folders: [],
     links: [],
   };

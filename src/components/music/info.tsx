@@ -12,6 +12,7 @@ import {
   EditHead,
   EntryToolButton,
   EntryToolButtonSwitch,
+  Head,
   MultiFolderChooser,
   Pair,
   PairChoose,
@@ -26,11 +27,13 @@ import { writeText, readText } from "@tauri-apps/plugin-clipboard-manager";
 import { K } from "@/lib/comb";
 import { me } from "@/lib/matchable";
 import { LinkSample } from "@/src/cmd/commands";
+import { useEffect } from "react";
 
 export function Edit({ title, explain }: { title: string; explain: string }) {
   const slot = hook.useSlot();
   const ctx = hook.useContext();
   const lists = ctx.collections;
+  const selected = ctx.selected;
   if (!slot) return;
   return (
     <DataList className={cn(["group", "border rounded-lg"])}>
@@ -48,7 +51,7 @@ export function Edit({ title, explain }: { title: string; explain: string }) {
               name,
             });
           }}
-          check={lists.map((l) => l.name)}
+          check={lists.map((l) => l.name).filter((n) => n !== selected?.name)}
           warning="This list already exists"
         />
       </div>
@@ -58,42 +61,51 @@ export function Edit({ title, explain }: { title: string; explain: string }) {
 
 function TrackPaster() {
   const slot = hook.useSlot();
+  const isreview = hook.useIsReview();
   if (!slot) return;
-  const value = slot.links.map((v) => ({
-    k: v.url,
-    v: v.title_or_msg,
-    s: v.status,
-  }));
+  const entriesurl = slot.entries.map((e) => e.url);
+  const entriesname = slot.entries.map((e) => e.name);
   return (
     <div className="flex flex-col gap-2">
       <div className="flex justify-between items-center">
-        <div className="flex flex-col gap-1">
-          <div className="text-sm font-semibold text-[#262626] dark:text-[#d4d4d4] transition">
-            Web Link
-          </div>
-          <div
-            className={cn([
-              "text-xs transition",
-              "text-[#525252] dark:text-[#a3a3a3]",
-            ])}
-          >
-            Copy the url and click paste button. Non-URL content will be
-            discarded.
-          </div>
-        </div>
+        <Head
+          title="Web Link"
+          explain="Copy the url and click paste button. Non-URL content will be
+            discarded."
+        />
+
         <EntryToolButton
           label="Paste"
           onClick={() => {
             readText().then((r) => {
               if (!r || !isUrl(r)) return;
+              if (entriesurl.some((e) => e === r)) {
+                action.set_slot({
+                  ...slot,
+                  links: [
+                    ...slot.links,
+                    {
+                      url: r,
+                      title_or_msg: "",
+                      status: null,
+                      count: null,
+                      entry_type: "",
+                      tracking: false,
+                    },
+                  ],
+                });
+                return;
+              }
               action.set_slot({
                 ...slot,
                 links: [
                   ...slot.links,
                   {
                     url: r,
-                    title_or_msg: inside(r),
+                    title_or_msg: `Detecting[${inside(r)}]`,
                     status: null,
+                    count: null,
+                    entry_type: "",
                     tracking: false,
                   },
                 ],
@@ -103,37 +115,82 @@ function TrackPaster() {
           }}
         />
       </div>
-      {value.map((v) => (
-        <Pair
-          key={v.k}
-          label={host(v.k)}
-          value={v.v}
-          bantoggle
-          on
-          banTip="Remove"
-          banfn={() => {
-            action.set_slot({
-              ...slot,
-              links: slot.links.filter((f) => f.url !== v.k),
-            });
-          }}
-          verified={
-            v.s
-              ? me(v.s).match({
-                  Ok: K(true),
-                  Err: K(false),
-                })
-              : true
-          }
-          anime={v.s === null}
-        />
-      ))}
+      {slot.links.map((v) => {
+        const verified =
+          !entriesurl.includes(v.url) && !entriesname.includes(v.title_or_msg);
+        return (
+          <Pair
+            key={v.url}
+            label={
+              host(v.url) +
+              (v.entry_type ? `·${v.entry_type}` : "") +
+              (v.count != null ? ` (${v.count} items)` : "")
+            }
+            value={v.title_or_msg + (!verified ? "[Already exists]" : "")}
+            bantoggle
+            on
+            banTip="Remove"
+            banfn={() => {
+              action.set_slot({
+                ...slot,
+                links: slot.links.filter((f) => f.url !== v.url),
+              });
+              action.cancle_review(v.url);
+            }}
+            verified={
+              v.status
+                ? me(v.status).match({
+                    Ok: K(verified),
+                    Err: K(false),
+                  })
+                : isreview || verified
+            }
+            anime={v.status === null}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function Entries() {
+  const slot = hook.useSlot();
+  if (!slot) return;
+  return (
+    <div className="flex flex-col gap-2">
+      <Head title="Entries" />
+      {slot.entries.length > 0 ? (
+        slot.entries.map((v) => (
+          <Pair
+            key={v.path}
+            label={v.path}
+            value={
+              v.musics.length.toString() +
+              (v.musics.length > 1 ? " items" : " item")
+            }
+            bantoggle
+            on
+            banTip="Remove"
+            banfn={() => {
+              action.set_slot({
+                ...slot,
+                entries: slot.entries.filter((f) => f.path !== v.path),
+              });
+            }}
+          />
+        ))
+      ) : (
+        <div className="text-xs text-[#525252] dark:text-[#a3a3a3] transition">
+          No entries
+        </div>
+      )}
     </div>
   );
 }
 
 export function TrackEdit() {
   const slot = hook.useSlot();
+  const mainstate = hook.useState();
   const ytstate = ythook.useState();
   if (!slot) return;
   return (
@@ -175,25 +232,21 @@ export function TrackEdit() {
               folders: slot.folders.filter((f) => f.path !== path),
             });
           }}
+          check={
+            slot.entries
+              .map((e) => e.path)
+              .filter((p): p is string => p !== null) ?? []
+          }
         />
         {ytstate.match({
           exist: () => <TrackPaster />,
           _: () => (
-            <div className="flex flex-col gap-1">
-              <div className="text-sm font-semibold text-[#525252] dark:text-[#a3a3a3] transition">
-                Web Link
-              </div>
-              <div
-                className={cn([
-                  "text-xs transition",
-                  "text-[#525252] dark:text-[#a3a3a3]",
-                ])}
-              >
-                yt-dlp not installed, can not use download feature.
-              </div>
-            </div>
+            <Head title="Web Link" explain="Add web links to your playlist." />
           ),
         })}
+        {mainstate.catch("edit")(() => (
+          <Entries />
+        ))}
       </div>
     </DataList>
   );

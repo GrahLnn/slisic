@@ -54,7 +54,7 @@ export function createActors<A extends Record<string, AsyncFn>>(defs: A) {
   type SendMap = { [K in Keys]: Decorated<K, A[K]> };
 
   const out = {} as { [K in Keys]: Decorated<K, A[K]> } & {
-    send_all(): SendMap;
+    as_act(): SendMap;
   };
 
   for (const k in defs) {
@@ -69,11 +69,10 @@ export function createActors<A extends Record<string, AsyncFn>>(defs: A) {
     out[k] = decorated as any;
   }
 
-  out.send_all = () => {
+  out.as_act = () => {
     const merged = {} as SendMap;
-    for (const k in out) {
-      if (k === "send_all") continue;
-      Object.assign(merged, (out as any)[k].send());
+    for (const k in defs) {
+      merged[k as Keys] = out[k as Keys];
     }
     return merged;
   };

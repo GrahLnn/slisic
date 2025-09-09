@@ -62,6 +62,7 @@ rayon = "1.11.0"
 dashmap = "6.1.0"
 fs2 = "0.4.3"
 regex = "1.11.1"
+chrono = { version = "0.4.41", features = ["clock"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tar = "0.4.44"

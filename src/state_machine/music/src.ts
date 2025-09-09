@@ -1,11 +1,4 @@
-import {
-  setup,
-  assign,
-  enqueueActions,
-  fromCallback,
-  raise,
-  assertEvent,
-} from "xstate";
+import { setup, assign, assertEvent, enqueueActions } from "xstate";
 import {
   InvokeEvt,
   eventHandler,
@@ -14,15 +7,18 @@ import {
   SignalEvt,
   MachineEvt,
 } from "../kit";
-import { Context, Frame, new_frame, new_slot } from "./core";
+import { Context, Frame, into_slot, new_frame, new_slot } from "./core";
 import { payloads, ss, sub_machine, invoker } from "./events";
 import { I, K, B } from "@/lib/comb";
 import { udf, vec } from "@/lib/e";
 import { hideCenterTool, viewCenterTool } from "../centertool";
 import { fileToBlobUrl, pickRandom } from "@/lib/utils";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { AudioAnalyzer } from "@/src/components/audio/analyzer";
 import { station } from "@/src/subpub/buses";
+import { LinkSample, Music } from "@/src/cmd/commands";
+import crab from "@/src/cmd";
+import { AudioEngine } from "@/src/components/audio/engine";
+import { ss as muss } from "../muinfo";
 
 export interface PlayerCtx {
   audio: HTMLAudioElement;
@@ -30,37 +26,34 @@ export interface PlayerCtx {
   audioFrame: Frame;
 }
 
-const analyzeAudio = fromCallback<
-  any,
-  { audio: HTMLAudioElement; analyzer?: AudioAnalyzer }
->(({ input, sendBack, receive }) => {
-  const analyzer = input.analyzer ?? new AudioAnalyzer(2048, 0.8);
-  let stop: null | (() => void) = null;
-  let closed = false;
+function computeLogit(m: Music) {
+  // 你的规则：logit 越高 = 越不想选
+  return m.base_bias + m.fatigue - m.user_boost;
+}
+const incBoost = (v?: number, step = 0.1, max = 0.9) => {
+  const x = Number.isFinite(v) ? (v as number) : 0; // 未定义/NaN 当 0
+  // 加一步并四舍五入到 1 位小数，规避二进制小数误差
+  const y = Math.round((x + step) * 10) / 10;
+  return y > max ? max : y;
+};
+function softminSample(all: Music[], T = 0.8, rng = Math.random): number {
+  const logits = all.map(computeLogit);
+  // softmin = softmax(-logit/T)
+  const invT = 1 / Math.max(T, 1e-6);
+  const scaled = logits.map((v) => -v * invT);
+  const m = Math.max(...scaled);
+  const exps = scaled.map((v) => Math.exp(v - m));
+  const sum = exps.reduce((a, b) => a + b, 0);
+  let r = rng() * sum;
+  for (let i = 0; i < exps.length; i++) {
+    r -= exps[i];
+    if (r <= 0) return i;
+  }
+  return exps.length - 1;
+}
 
-  analyzer.connect(input.audio).then(() => {
-    if (closed) return;
-    stop = analyzer.onFrame((frame) => {
-      if (closed) return;
-      //   sendBack(payloads.update_audio_frame.load(frame));
-      station.audioFrame.set(frame);
-    });
-  });
+const sameTrack = (a?: Music, b?: Music) => !!a && !!b && a.path === b.path;
 
-  receive((evt) => {
-    if (evt?.type === "analyzer.stop") {
-      closed = true;
-      stop?.();
-      analyzer.disconnect();
-    }
-  });
-
-  return () => {
-    closed = true;
-    stop?.();
-    analyzer.disconnect();
-  };
-});
 type Events = UniqueEvts<
   | SignalEvt<typeof ss>
   | InvokeEvt<typeof invoker>
@@ -69,7 +62,7 @@ type Events = UniqueEvts<
 >;
 export const EH = eventHandler<Context, Events>();
 export const src = setup({
-  actors: { ...invoker.send_all(), analyzeAudio },
+  actors: { ...invoker.as_act(), ...sub_machine.as_act() },
   types: {
     context: {} as Context,
     events: {} as Events,
@@ -83,6 +76,7 @@ export const src = setup({
     }),
     clean_slot: assign({
       slot: udf,
+      selected: udf,
     }),
     update_colls: assign({
       collections: EH.whenDone(invoker.load_collections.evt())(I),
@@ -114,7 +108,18 @@ export const src = setup({
             link.url === i.url
               ? {
                   ...link,
-                  title_or_msg: i.r.answer(),
+                  title_or_msg: i.r.match({
+                    Ok: (r) => r.title,
+                    Err: I,
+                  }),
+                  entry_type: i.r.match({
+                    Ok: (r) => r.item_type,
+                    Err: K(""),
+                  }),
+                  count: i.r.match({
+                    Ok: (r) => r.entries_count,
+                    Err: K(null),
+                  }),
                   status: i.r.name(),
                 }
               : link
@@ -127,57 +132,279 @@ export const src = setup({
     }),
     ensure_list: assign({
       flatList: EH.whenDone(payloads.toggle_audio.evt())((i) =>
-        i!.folders.flatMap((f) => f.musics)
+        i!.entries.flatMap((f) => f.musics)
       ),
       selected: EH.whenDone(payloads.toggle_audio.evt())((i) => i || undefined),
     }),
     ensure_play: assign({
       nowPlaying: ({ context }) => {
-        const all = context.flatList;
+        const all: Music[] = context.flatList;
         if (all.length === 0) return;
 
-        let idx = Math.floor(Math.random() * all.length);
-        if (all.length > 1) {
-          idx =
-            (idx + 1 + Math.floor(Math.random() * (all.length - 1))) %
-            all.length;
-        }
-        const mu = all[idx];
-        return mu;
+        const last = context.lastPlay;
+
+        // 1) 从概率计算中排除 lastPlaying
+        const pool = last ? all.filter((m) => !sameTrack(m, last)) : all;
+
+        // 2) 候选集空了（只有一首且正好是 last）：回退到原列表
+        const base = pool.length > 0 ? pool : all;
+
+        // 3) softmin 抽样
+        const idx = softminSample(base, 0.8);
+
+        // 4) 返回抽中的歌
+        return base[idx];
       },
     }),
+    stop_audio: async ({ context, self }) => {
+      const { engine, audio, analyzer } = context;
+      self.send(ss.playx.Signal.analyzerstop);
+      // 先停采样
+      context.__stopSampling?.();
+      context.__stopSampling = undefined;
+      analyzer?.stopSampling();
+
+      // 再淡出并停播，防爆音
+      engine?.fadeOut(25);
+      await new Promise((r) => setTimeout(r, 35));
+      audio.onended = null;
+      audio.pause();
+      audio.currentTime = 0;
+    },
+    clean_judge: assign({
+      nowJudge: udf,
+    }),
+    resume_ctx: ({ context }) =>
+      context.engine?.resume?.() || context.engine?.ctx.resume?.(),
     play_audio: async ({ context, self }) => {
-      const cur_mu = context.nowPlaying;
-      if (!cur_mu) return;
-      const url = await fileToBlobUrl(cur_mu.path);
-      context.audio.crossOrigin = "anonymous";
-      context.audio.src = url;
-      context.audio.play();
-      context.audio.onended = () => self.send(ss.playx.Signal.next);
+      const { engine, analyzer, audio, nowPlaying: cur, selected } = context;
+      if (!engine || !analyzer || !cur) return;
+
+      // 每次播放前先确保接线
+      analyzer.attachTo(engine.ctx);
+      engine.ensureSource(audio);
+      analyzer.setTapFrom(engine.lufs); // 抽在 LUFS 增益之后
+
+      // 停掉旧采样循环（如果有）
+      context.__stopSampling?.();
+      context.__stopSampling = undefined;
+      analyzer.stopSampling();
+
+      // 准备音源
+      const url = await fileToBlobUrl(cur.path);
+      audio.crossOrigin = "anonymous";
+      audio.src = url;
+
+      // 先把淡入通道拉到 0，再设响度
+      engine.fadeOut(1);
+      engine.setLoudnessFromAvgDb(cur.avg_db, selected?.avg_db || -14, 12);
+
+      // 等能播
+      await new Promise<void>((resolve) => {
+        const oncp = () => {
+          audio.removeEventListener("canplay", oncp);
+          resolve();
+        };
+        audio.addEventListener("canplay", oncp, { once: true });
+        if (audio.readyState >= 2) resolve();
+      });
+
+      await audio.play();
+      engine.fadeIn(25);
+
+      // 这时再开采样循环
+      context.__stopSampling = analyzer.startSampling((frame) => {
+        station.audioFrame.set(frame);
+      });
+      self.send(ss.playx.Signal.analyzerstart);
+      audio.onended = () => self.send(ss.playx.Signal.next);
     },
-    stop_audio: ({ context }) => {
-      context.audio.onended = null;
-      context.audio.pause();
-      context.audio.currentTime = 0;
-    },
+    delete: assign({
+      collections: EH.whenDone(payloads.delete.evt())((p, c) => {
+        crab.delete(p.name);
+        return c.collections.filter((f) => f.name !== p.name);
+      }),
+    }),
     clean_audio: assign({
       nowPlaying: udf,
+      lastPlay: udf,
       selected: udf,
+    }),
+    update_parm: ({ context }) => crab.fatigue(context.nowPlaying!),
+    boost_parm: ({ context }) => crab.boost(context.nowPlaying!),
+    update_last: assign({
+      lastPlay: ({ context }) => context.nowPlaying,
+    }),
+    update_list: assign({
+      flatList: ({ context }) =>
+        context.flatList.map((i) =>
+          i.path === context.selected?.name
+            ? { ...i, fatigue: i.fatigue + 0.1 }
+            : i
+        ),
+    }),
+    update_selected: assign({
+      selected: ({ context }) => {
+        const sel = context.selected;
+        const cur = context.nowPlaying;
+        if (!sel || !cur) return sel;
+
+        const targetPath = cur.path;
+
+        return {
+          ...sel,
+          folders: sel.entries.map((fd) => ({
+            ...fd,
+            musics: fd.musics.map((m) =>
+              m.path === targetPath
+                ? { ...m, fatigue: (m.fatigue ?? 0) + 0.1 }
+                : m
+            ),
+          })),
+        };
+      },
+    }),
+    update_coll: assign({
+      collections: ({ context }) =>
+        context.collections.map((c) =>
+          c.name === context.selected?.name ? context.selected : c
+        ),
+    }),
+    unstar: assign({
+      flatList: EH.whenDone(payloads.unstar.evt())((i, c) => {
+        crab.unstar(c.selected!, i);
+        return c.flatList.filter((f) => f.path !== i.path);
+      }),
+      selected: EH.whenDone(payloads.unstar.evt())((i, c) => {
+        const s = c.selected;
+        if (!s) return;
+        return {
+          ...s,
+          entries: s.entries.map((fd) => ({
+            ...fd,
+            musics: fd.musics.filter((m) => m.path !== i.path),
+          })),
+        };
+      }),
+    }),
+    up: assign({
+      flatList: EH.whenDone(payloads.down.evt())((p, c) =>
+        c.flatList.map((i) =>
+          i.path === p.path
+            ? { ...i, user_boost: incBoost(i.user_boost, 0.1, 0.9) }
+            : i
+        )
+      ),
+      selected: EH.whenDone(payloads.down.evt())((i, c) => {
+        const s = c.selected;
+        if (!s) return;
+        return {
+          ...s,
+          entries: s.entries.map((fd) => ({
+            ...fd,
+            musics: fd.musics.map((m) =>
+              m.path === i.path
+                ? { ...m, user_boost: incBoost(i.user_boost, 0.1, 0.9) }
+                : m
+            ),
+          })),
+        };
+      }),
+      nowJudge: K("Up"),
+    }),
+    down: assign({
+      flatList: EH.whenDone(payloads.down.evt())((p, c) =>
+        c.flatList.map((i) =>
+          i.path === p.path ? { ...i, fatigue: i.fatigue + 0.1 } : i
+        )
+      ),
+      selected: EH.whenDone(payloads.down.evt())((i, c) => {
+        const s = c.selected;
+        if (!s) return;
+        return {
+          ...s,
+          entries: s.entries.map((fd) => ({
+            ...fd,
+            musics: fd.musics.map((m) =>
+              m.path === i.path ? { ...m, fatigue: m.fatigue + 0.1 } : m
+            ),
+          })),
+        };
+      }),
+      nowJudge: K("Down"),
     }),
     reset_frame: () => station.audioFrame.set(new_frame()),
     update_audio_frame: ({ event }) => {
       assertEvent(event, payloads.update_audio_frame.evt());
       station.audioFrame.set(event.output);
     },
+    ensure_engine: assign({
+      engine: ({ context }) => context.engine ?? new AudioEngine(),
+    }),
     ensure_analyzer: assign({
       analyzer: ({ context }) =>
         context.analyzer ?? new AudioAnalyzer(2048, 0.8),
+    }),
+    ensure_graph: ({ context }) => {
+      const { engine, analyzer, audio } = context;
+      if (!engine || !analyzer) return;
+
+      // 1) 让 Analyzer 用 Engine 的 AudioContext
+      analyzer.attachTo(engine.ctx);
+
+      // 2) 确保 <audio> 已经挂上
+      engine.ensureSource(audio);
+
+      // 3) 从总线抽头
+      engine.tapForAnalyzer(analyzer);
+    },
+    into_slot: assign({
+      slot: EH.whenDone(payloads.edit_playlist.evt())(into_slot),
+      selected: EH.whenDone(payloads.edit_playlist.evt())(I),
+    }),
+    cancel_review: assign({
+      reviews: EH.whenDone(payloads.cancel_review.evt())((url, c) => {
+        const r = c.reviews.find((r) => r.url === url);
+        r?.actor.send?.(muss.mainx.Signal.cancle); // 子机里处理 CANCEL，自己退出
+        return c.reviews; // 交给 over_review 在 done 时移除
+      }),
     }),
   },
   guards: {
     hasData: ({ context }) => context.collections.length > 0,
     noData: ({ context }) => context.collections.length === 0,
-    is_list_complete: ({ context }) =>
-      (context.slot?.name.trim().length ?? 0) > 0,
+    is_review: ({ context }) => context.reviews.length > 0,
+    is_list_complete: ({ context }) => {
+      const slot = context.slot;
+      if (!slot) return false;
+      console.log(context.reviews);
+      return (
+        context.reviews.length === 0 &&
+        (slot.name.trim().length ?? 0) > 0 &&
+        slot.entries.length + slot.folders.length + slot.links.length > 0
+      );
+    },
+    is_data_diff: ({ context }) => {
+      const slot = context.slot;
+      const selected = context.selected;
+
+      if (!slot || !selected) return false;
+      const entryPaths = new Set(slot.entries.map((e) => e.path));
+      const hasIntersection = slot.folders.some((f) => entryPaths.has(f.path));
+      const entryLink = new Set(slot.entries.map((l) => l.url));
+      const linkHasIntersection = slot.links.some((l) => entryLink.has(l.url));
+      const entryName = new Set(slot.entries.map((l) => l.name));
+      const nameHasIntersection = slot.links.some((l) =>
+        entryName.has(l.title_or_msg)
+      );
+      return (
+        (slot.name.trim() !== selected.name ||
+          slot.links.length + slot.folders.length > 0 ||
+          slot.entries.length !== selected.entries.length) &&
+        !hasIntersection &&
+        !linkHasIntersection &&
+        !nameHasIntersection
+      );
+    },
   },
 });
