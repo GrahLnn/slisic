@@ -1,38 +1,31 @@
-# Tauri + React Modern Template
+# Slisic
 
-A feature-rich Tauri + React development template, integrated with the latest development tools and frameworks.
+A compact music player built around smart shuffle and consistent listening experience.
 
 ## Features
 
-- [Tauri](https://tauri.app/) - Build smaller, faster, and more secure desktop applications
-- [Rsbuild](https://rsbuild.dev/) - High-performance build tool
-- [React 19](https://react.dev/) - Latest version of React
-- [Tailwind CSS v4](https://tailwindcss.com/) - Next generation utility-first CSS framework
-- [Bun](https://bun.sh/) - High-performance JavaScript runtime and package manager
-- [React Scan](https://github.com/react-scan/react-scan) - React application performance analysis tool
-- [shadcn/ui](https://ui.shadcn.com/docs) - Beautifully designed components built with Radix UI and Tailwind CSS
-- [tauri-specta](https://github.com/specta-rs/tauri-specta) - Generate TypeScript bindings for Tauri commands and events
-- [surrealdb](https://surrealdb.com/) - A NoSQL database designed for the next generation of applications
-- [xstate](https://xstate.js.org/) - A state management library for React, using state machines
+- Download and manage media from most major streaming platforms (powered by yt-dlp) or import from local folders.
+- Shuffle playback driven by user-guided probability distributions — randomness tuned to feel natural.
+- Loudness normalization (based on LUFS) for a consistent listening volume across different tracks.
+- Automatically split and name media with embedded chapter information (powered by FFmpeg).
+
+## Technology
+
+- [Tauri](https://tauri.app/) for cross-platform desktop framework
+- [React](https://react.dev/) for UI
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) for media extraction
+- [FFmpeg](https://ffmpeg.org/) for media processing and chapter splitting
 
 ## Getting Started
 
-### Installation
-
-```bash
-bun install
-```
-
 ### Development
 
-Start the development server:
-
 ```bash
+// Clone the repository
+bun install
 bun tauri dev
 ```
 
-Add a shadcn component:
+## License
 
-```bash
-bunx --bun shadcn@latest add [components]
-```
+This project is licensed under the [MIT](./LICENSE) License.

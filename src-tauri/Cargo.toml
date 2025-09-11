@@ -1,9 +1,9 @@
 [package]
 name = "Slisic"
-version = "0.1.0"
-description = "A Tauri App"
+version = "1.0.0"
+description = "A compact music player built around smart shuffle and consistent listening experience."
 authors = ["GrahLnn"]
-license = ""
+license = "MIT"
 repository = ""
 edition = "2021"
 rust-version = "1.85.0"
