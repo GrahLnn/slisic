@@ -167,6 +167,7 @@ export const src = setup({
       const { engine, audio, analyzer } = context;
       self.send(ss.playx.Signal.analyzerstop);
       // 先停采样
+      context.playToken = (context.playToken ?? 0) + 1;
       context.__stopSampling?.();
       context.__stopSampling = undefined;
       analyzer?.stopSampling();
@@ -187,6 +188,9 @@ export const src = setup({
       const { engine, analyzer, audio, nowPlaying: cur, selected } = context;
       if (!engine || !analyzer || !cur) return;
 
+      const token = (context.playToken = (context.playToken ?? 0) + 1);
+      const liveToken = () => self.getSnapshot().context.playToken!;
+
       // 统一接线
       analyzer.attachTo(engine.ctx);
       engine.ensureSource(audio);
@@ -201,6 +205,7 @@ export const src = setup({
 
       // 准备音源
       const url = await fileToBlobUrl(cur.path);
+      if (liveToken() !== token) return;
       audio.crossOrigin = "anonymous";
       audio.src = url;
 
@@ -235,7 +240,7 @@ export const src = setup({
       try {
         await (engine.resume?.() || engine.ctx.resume?.());
       } catch {}
-
+      if (liveToken() !== token) return;
       // 播放
       try {
         await audio.play();
@@ -243,7 +248,7 @@ export const src = setup({
         console.error("[play_audio] play() rejected", err, audio.error);
         return;
       }
-
+      if (liveToken() !== token) return;
       // ------- 关键：等待“时钟真的动起来” -------
       const waitTimebase = (kick = false) =>
         new Promise<boolean>((resolve) => {
@@ -285,6 +290,7 @@ export const src = setup({
 
       // 第一次等待（不 kick）
       let ok = await waitTimebase(false);
+      if (liveToken() !== token) return;
       if (!ok) {
         console.warn("[play_audio] timebase stuck, kicking…");
         // “踢一下”：暂停→微 seek→play
@@ -296,11 +302,13 @@ export const src = setup({
         } catch {}
         try {
           await audio.play();
+          if (liveToken() !== token) return;
         } catch (e) {
           console.error("[play_audio] kick play() rejected", e, audio.error);
           return;
         }
         ok = await waitTimebase(true);
+        if (liveToken() !== token) return;
         if (!ok) {
           console.error(
             "[play_audio] timebase failed after kick; abort sampling"
