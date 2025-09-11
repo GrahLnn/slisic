@@ -1,33 +1,19 @@
-import {
-  cn,
-  formatUrl,
-  host,
-  inside,
-  isUrl,
-  up1st,
-  urlRegex,
-} from "@/lib/utils";
+import { cn, host, inside, isUrl, up1st } from "@/lib/utils";
 import {
   DataList,
   EditHead,
   EntryToolButton,
-  EntryToolButtonSwitch,
   Head,
   MultiFolderChooser,
   Pair,
-  PairChoose,
   PairEdit,
 } from "../uni";
-import { icons, motionIcons } from "@/src/assets/icons";
-import { motion } from "motion/react";
 import { hook, action } from "@/src/state_machine/music";
-import { hook as ythook, action as ytaction } from "@/src/state_machine/ytdlp";
+import { hook as ythook } from "@/src/state_machine/ytdlp";
 import crab from "@/src/cmd";
-import { writeText, readText } from "@tauri-apps/plugin-clipboard-manager";
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { K } from "@/lib/comb";
 import { me } from "@/lib/matchable";
-import { LinkSample } from "@/src/cmd/commands";
-import { useEffect } from "react";
 
 export function Edit({ title, explain }: { title: string; explain: string }) {
   const slot = hook.useSlot();
@@ -89,7 +75,7 @@ function TrackPaster() {
                       title_or_msg: "",
                       status: null,
                       count: null,
-                      entry_type: "",
+                      entry_type: "Unknown",
                       tracking: false,
                     },
                   ],
@@ -105,7 +91,7 @@ function TrackPaster() {
                     title_or_msg: `Detecting[${inside(r)}]`,
                     status: null,
                     count: null,
-                    entry_type: "",
+                    entry_type: "Unknown",
                     tracking: false,
                   },
                 ],
@@ -124,7 +110,8 @@ function TrackPaster() {
             label={
               host(v.url) +
               (v.entry_type ? `·${v.entry_type}` : "") +
-              (v.count != null ? ` (${v.count} items)` : "")
+              (v.count != null ? ` (${v.count} items)` : "") +
+              (v.tracking ? "·tracking" : "")
             }
             value={v.title_or_msg + (!verified ? "[Already exists]" : "")}
             bantoggle
@@ -146,6 +133,26 @@ function TrackPaster() {
                 : isreview || verified
             }
             anime={v.status === null}
+            rightButton={
+              v.entry_type === "WebList"
+                ? [
+                    {
+                      name: v.tracking
+                        ? "Disable Playlist Tracking"
+                        : "Enable Playlist Tracking",
+                      onClick: () =>
+                        action.set_slot({
+                          ...slot,
+                          links: slot.links.map((l) =>
+                            l.url === v.url
+                              ? { ...l, tracking: !l.tracking }
+                              : l
+                          ),
+                        }),
+                    },
+                  ]
+                : undefined
+            }
           />
         );
       })}
@@ -161,23 +168,28 @@ function Entries() {
       <Head title="Entries" />
       {slot.entries.length > 0 ? (
         slot.entries.map((v) => (
-          <Pair
-            key={v.path}
-            label={v.path}
-            value={
-              v.musics.length.toString() +
-              (v.musics.length > 1 ? " items" : " item")
-            }
-            bantoggle
-            on
-            banTip="Remove"
-            banfn={() => {
-              action.set_slot({
-                ...slot,
-                entries: slot.entries.filter((f) => f.path !== v.path),
-              });
-            }}
-          />
+          <div key={v.path} className="flex flex-col gap-1">
+            <Pair
+              label={v.name}
+              value={
+                v.musics.length.toString() +
+                (v.musics.length > 1 ? " items" : " item")
+              }
+              bantoggle
+              on
+              banTip="Remove"
+              banfn={() => {
+                action.set_slot({
+                  ...slot,
+                  entries: slot.entries.filter((f) => f.path !== v.path),
+                });
+              }}
+            />
+            <Pair
+              label={v.url ? `${host(v.url)}/${inside(v.url)}` : v.path}
+              value=""
+            />
+          </div>
         ))
       ) : (
         <div className="text-xs text-[#525252] dark:text-[#a3a3a3] transition">

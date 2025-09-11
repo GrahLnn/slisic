@@ -337,7 +337,7 @@ export const LongPressContextMenuItem = React.forwardRef<
       {/* 背景进度层：左→右浅红填充 */}
       <motion.div
         aria-hidden
-        className="pointer-events-none absolute inset-y-0 left-0 w-full"
+        className="pointer-events-none absolute inset-y-0 left-0 w-full rounded overflow-hidden"
       >
         <motion.div
           className="h-full bg-[#e81123]/15"

@@ -10,7 +10,6 @@ import {
   createActors,
 } from "../kit";
 import { resultx } from "../state";
-import { Result } from "@/lib/result";
 import { ActorDone, machine as muinfoMachine } from "../muinfo";
 import { Frame } from "./core";
 import crab from "@/src/cmd";

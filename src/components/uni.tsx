@@ -53,9 +53,7 @@ export function BackButton({ onClick }: { onClick: () => void }) {
     <div
       className={cn([
         "flex items-center gap-2 cursor-pointer py-2 h-8",
-        // "rounded-lg transition duration-300",
-        // "hover:bg-[#e7eced] dark:hover:bg-[#525252]",
-        "text-[#737373] dark:hover:text-[#a3a3a3] hover:text-[#262626] transition duration-300",
+        "text-[#737373] dark:text-[#d4d4d4] dark:hover:text-[#e5e5e5] hover:text-[#262626] transition duration-300",
       ])}
       onClick={onClick}
     >
@@ -236,6 +234,7 @@ interface PairProps {
   className?: string;
   verified?: boolean;
   anime?: boolean;
+  rightButton?: Array<{ name: string; onClick: () => void }>;
 }
 
 export function Pair({
@@ -251,6 +250,7 @@ export function Pair({
   className,
   verified = true,
   anime = false,
+  rightButton,
 }: PairProps) {
   const [labelIsHover, setLabelIsHover] = useState(false);
   const [valueIsHover, setValueIsHover] = useState(false);
@@ -311,7 +311,7 @@ export function Pair({
                   }}
                   transition={{ duration: 0.2 }}
                 >
-                  <div className="text-xs opacity-0">D</div>
+                  <div className="text-xs opacity-0">_</div>
                 </motion.div>
               </div>
             </div>
@@ -376,6 +376,44 @@ export function Pair({
                   }),
                 false: () => <icons.minus size={12} />,
               })}
+            </AnimatePresence>
+            <AnimatePresence>
+              {valueIsHover && rightButton && (
+                <div className="absolute -top-0.5 right-0 z-50">
+                  <div className="flex items-center">
+                    <motion.div
+                      className="w-6 py-0.5 mask-rol"
+                      initial={{ backdropFilter: "blur(0px)" }}
+                      animate={{
+                        backdropFilter: "blur(1px)",
+                      }}
+                      exit={{
+                        backdropFilter: "blur(0px)",
+                      }}
+                      transition={{ duration: 0.2 }}
+                    >
+                      <div className="text-xs opacity-0">_</div>
+                    </motion.div>
+                    {rightButton.map((v) => (
+                      <motion.div
+                        key={v.name}
+                        className="bg-[#f9f9f9] dark:bg-[#383838] rounded-md shadow px-1 py-0.5 border border-[#d4d4d4] dark:border-[#4a4a4a] cursor-pointer"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        onClick={v.onClick}
+                      >
+                        <div className="flex items-center gap-0.5 whitespace-nowrap">
+                          <div className="text-xs text-[#404040] dark:text-[#a3a3a3] transition">
+                            {v.name}
+                          </div>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </AnimatePresence>
           </motion.div>
           {action && (

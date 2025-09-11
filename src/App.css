@@ -216,6 +216,15 @@ input::-webkit-credentials-auto-fill-button {
   );
 }
 
+@utility mask-rol {
+    mask: linear-gradient(
+      to left,
+      rgba(0, 0, 0, 1) 0%,
+      rgba(0, 0, 0, 0.8) 50%,
+      rgba(0, 0, 0, 0) 100%
+    );
+}
+
 @utility mask-tob {
     mask: linear-gradient(
       to bottom,

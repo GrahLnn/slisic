@@ -50,7 +50,7 @@ pub enum LinkStatus {
 pub struct LinkSample {
     pub url: String,
     pub title_or_msg: String,
-    pub entry_type: String,
+    pub entry_type: EntryType,
     pub count: Option<u32>,
     pub status: Option<LinkStatus>,
     pub tracking: bool,
@@ -88,6 +88,14 @@ pub struct DbMusic {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
+pub enum EntryType {
+    Local,
+    WebList,
+    WebVideo,
+    Unknown,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
 pub struct Entry {
     pub path: Option<String>,
     pub name: String,
@@ -96,6 +104,7 @@ pub struct Entry {
     pub url: Option<String>,
     pub downloaded_ok: Option<bool>,
     pub tracking: Option<bool>,
+    pub entry_type: EntryType,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -107,6 +116,7 @@ pub struct DbEntry {
     pub url: Option<String>,
     pub downloaded_ok: Option<bool>,
     pub tracking: Option<bool>,
+    pub entry_type: EntryType,
 }
 
 impl From<Entry> for DbEntry {
@@ -115,11 +125,11 @@ impl From<Entry> for DbEntry {
             id: DbEntry::record_id(e.name.clone()),
             path: e.path,
             name: e.name,
-            // musics: e.musics,
             url: e.url,
             downloaded_ok: e.downloaded_ok,
             tracking: e.tracking,
             avg_db: e.avg_db,
+            entry_type: e.entry_type,
         }
     }
 }
@@ -142,7 +152,7 @@ impl From<LinkSample> for YtdlpEntry {
         Self {
             id: Uuid::new_v4(),
             url: e.url,
-            title: String::new(),
+            title: e.title_or_msg,
             retries: 0,
             error: None,
             kind: None,
@@ -306,6 +316,7 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
                             .to_string(),
                         musics: Vec::new(),
                         url: None,
+                        entry_type: EntryType::Local,
                         downloaded_ok: Some(true),
                         tracking: None,
                         avg_db: {
@@ -340,6 +351,7 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
                     musics: Vec::new(),
                     name: link.title_or_msg.clone(),
                     url: Some(link.url.clone()),
+                    entry_type: link.entry_type.clone(),
                     downloaded_ok: None,
                     tracking: Some(link.tracking.clone()),
                     avg_db: None,
@@ -423,27 +435,43 @@ pub async fn download_ok(app: &AppHandle, answer: DownloadAnswer) -> Result<(), 
     } else {
         vec![answer.path.clone()]
     };
-    let musics: Vec<Music> = stream::iter(items.into_iter().map(|p| {
-        let p_clone = p.clone();
-        let app_clone = app.clone();
-        async move {
-            let lufs = task::spawn_blocking(move || integrated_lufs(&app_clone, &p_clone))
-                .await
-                .map_err(|e| format!("spawn_blocking panic: {e}"))?
-                .ok()
-                .map(|v| v as f32);
+    let entry_id = DbEntry::record_id(answer.name.clone());
+    let entry = DbEntry::select_record(entry_id.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    let exists_music = entry.musics().await.map_err(|e| e.to_string())?;
+    let exist_paths: HashSet<String> = exists_music.into_iter().map(|m| m.path).collect();
 
-            Ok::<_, String>(Music {
-                path: p.to_string_lossy().into_owned(),
-                title: p.file_stem().unwrap().to_str().unwrap().to_string(),
-                avg_db: lufs,
-                base_bias: 0.0,
-                user_boost: 0.0,
-                fatigue: 0.0,
-                diversity: 0.0,
+    let musics: Vec<Music> = stream::iter(
+        items
+            .into_iter()
+            // 在这里先过滤掉已经存在的
+            .filter(|p| {
+                let key = p.to_string_lossy().to_string();
+                !exist_paths.contains(&key)
             })
-        }
-    }))
+            .map(|p| {
+                let p_clone = p.clone();
+                let app_clone = app.clone();
+                async move {
+                    let lufs = task::spawn_blocking(move || integrated_lufs(&app_clone, &p_clone))
+                        .await
+                        .map_err(|e| format!("spawn_blocking panic: {e}"))?
+                        .ok()
+                        .map(|v| v as f32);
+
+                    Ok::<_, String>(Music {
+                        path: p.to_string_lossy().into_owned(),
+                        title: p.file_stem().unwrap().to_str().unwrap().to_string(),
+                        avg_db: lufs,
+                        base_bias: 0.0,
+                        user_boost: 0.0,
+                        fatigue: 0.0,
+                        diversity: 0.0,
+                    })
+                }
+            }),
+    )
     .buffer_unordered(CONC_LIMIT)
     .try_collect::<Vec<_>>()
     .await?;
@@ -458,11 +486,12 @@ pub async fn download_ok(app: &AppHandle, answer: DownloadAnswer) -> Result<(), 
     };
     let path = answer.path.to_string_lossy().into_owned();
     let musics: Vec<DbMusic> = musics.into_iter().map(DbMusic::from).collect();
+
     let entry_rel_music: Vec<Relation> = musics
         .clone()
         .into_iter()
         .map(|m| Relation {
-            _in: DbEntry::record_id(answer.name.clone()),
+            _in: entry_id.clone(),
             out: DbMusic::record_id(m.path.clone()),
         })
         .collect();
@@ -513,6 +542,7 @@ pub async fn read(name: String) -> Result<Playlist, String> {
             let url = dbe.url.clone();
             let downloaded_ok = dbe.downloaded_ok;
             let tracking = dbe.tracking;
+            let entry_type = dbe.entry_type.clone();
 
             let musics = dbe.musics().await.map_err(|e| e.to_string())?;
 
@@ -524,6 +554,7 @@ pub async fn read(name: String) -> Result<Playlist, String> {
                 url,
                 downloaded_ok,
                 tracking,
+                entry_type,
             })
         })
         .buffer_unordered(CONC_LIMIT)
@@ -570,7 +601,7 @@ pub async fn read_all() -> Result<Vec<Playlist>, String> {
                 let url = dbe.url.clone();
                 let downloaded_ok = dbe.downloaded_ok;
                 let tracking = dbe.tracking;
-
+                let entry_type = dbe.entry_type.clone();
                 let musics = dbe.musics().await.map_err(|e| e.to_string())?;
 
                 Ok::<Entry, String>(Entry {
@@ -581,6 +612,7 @@ pub async fn read_all() -> Result<Vec<Playlist>, String> {
                     url,
                     downloaded_ok,
                     tracking,
+                    entry_type,
                 })
             })
             .buffer_unordered(CONC_LIMIT)
@@ -693,6 +725,7 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
                             .to_string(),
                         musics: Vec::new(),
                         url: None,
+                        entry_type: EntryType::Local,
                         downloaded_ok: Some(true),
                         tracking: None,
                         avg_db: {
@@ -730,6 +763,7 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
                     downloaded_ok: None,
                     tracking: Some(link.tracking.clone()),
                     avg_db: None,
+                    entry_type: link.entry_type.clone(),
                 };
 
                 let db: DbEntry = entry.into();

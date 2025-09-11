@@ -11,11 +11,14 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     process::Stdio,
+    sync::Arc,
+    time::Instant,
 };
 
 use fs2::FileExt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::utils::{config::resolve_save_path, enq::finalize_process};
 use crate::{
     domain::models::music::ProcessMsg,
     utils::{
@@ -25,6 +28,7 @@ use crate::{
 };
 use chrono::TimeZone;
 use futures::stream::{self, StreamExt};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tauri::async_runtime::spawn;
 use tauri::AppHandle;
@@ -37,6 +41,64 @@ use uuid::Uuid;
 const GH_API_LATEST: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 const GH_DL_BASE: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download";
 const GH_SUMS: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS";
+
+fn file_non_empty(p: &Path) -> bool {
+    match fs::metadata(p) {
+        Ok(md) => md.is_file() && md.len() > 0,
+        Err(_) => false,
+    }
+}
+
+fn has_part_siblings(p: &Path) -> bool {
+    // 简单探测常见的临时/未完成后缀
+    let cand = [
+        format!("{}.part", p.to_string_lossy()),
+        format!("{}.tmp", p.to_string_lossy()),
+        format!("{}.download", p.to_string_lossy()),
+    ];
+    cand.into_iter().any(|s| Path::new(&s).exists())
+}
+
+fn ensure_parent_dir(p: &Path) -> io::Result<()> {
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent)
+    } else {
+        Ok(())
+    }
+}
+
+fn dir_nonempty(p: &Path) -> bool {
+    match fs::read_dir(p) {
+        Ok(mut it) => it.next().is_some(),
+        Err(_) => false,
+    }
+}
+
+/// 对章节完整性的保守检查：
+/// - 若给了章节列表，则检查这些目标文件里“有相当一部分已存在”（>= 80%）
+/// - 若没法严格命名匹配，则退化为“目录非空”
+/// 你现有的 split 命名策略如果固定（如 `{index:02d} {chapter}.m4a`），
+/// 这里也可以完全精确检查。
+fn chapters_mostly_ready(chapter_dir: &Path, title: &str, chapters: &[Chapter]) -> bool {
+    if chapters.is_empty() {
+        return dir_nonempty(chapter_dir);
+    }
+    let mut hit = 0usize;
+    for (i, ch) in chapters.iter().enumerate() {
+        // 与 split_audio_by_chapters 的命名保持一致（示例）：
+        let basename = format!("{:02} {}", i + 1, sanitize_segment(&ch.title));
+        // 允许 m4a/flac 两种容器（与 to_flac 配置一致）
+        let cands = [format!("{basename}.m4a"), format!("{basename}.flac")];
+        if cands.iter().any(|name| {
+            let p = chapter_dir.join(name);
+            file_non_empty(&p)
+        }) {
+            hit += 1;
+        }
+    }
+    // 章数多时允许少量缺失；你也可以改成 == chapters.len() 的严格判定
+    hit * 5 >= chapters.len() * 4 // 命中率 >= 80%
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkState {
@@ -576,7 +638,11 @@ pub async fn download_audio(
         .arg("-f")
         .arg("bestaudio")
         .arg("--no-playlist")
-        .arg("--no-part")
+        // .arg("--no-part")
+        .arg("--continue") // ✅ 断点续传
+        .arg("--no-overwrites") // ✅ 不覆盖现有完整文件
+        .arg("-N")
+        .arg("8")
         .arg("-o")
         .arg(&out_tmpl)
         // 打印最终路径 + 兜底路径（有些情况下没有“move”过程）
@@ -959,51 +1025,41 @@ pub fn process_entry<'a>(
                 }
             }
 
-            let to_flac = false;
-            let flac_opts = FlacOpts {
-                compression_level: 8,
-                keep_source: false,
-                copy_metadata: true,
-            };
             let chapters = extract_chapters_json(&v);
-            let whole_path = {
-                let candidate = dir.join(format!("{}.m4a", entry.title));
-                if candidate.exists() {
-                    candidate
-                } else {
-                    download_audio(app.clone(), entry.url.clone(), dir.clone()).await?
-                }
-            };
+            let chapter_dir = dir.join(sanitize_segment(&entry.title));
 
             if let Some(ref chs) = chapters {
-                let mut chapter_dir = dir.clone();
-                chapter_dir.push(sanitize_segment(&entry.title));
-                ProcessMsg {
-                    str: format!("split audio {}", entry.title),
+                let count = fs::read_dir(&chapter_dir).map(|rd| rd.count()).unwrap_or(0);
+                let mut file = None;
+                if count != chs.len() {
+                    let download =
+                        download_audio(app.clone(), entry.url.clone(), dir.clone()).await?;
+                    ProcessMsg {
+                        str: format!("split audio {}", entry.title),
+                    }
+                    .emit(&app)
+                    .ok();
+                    let _outs =
+                        split_audio_by_chapters(&app, &download, chs, &chapter_dir, None).await?;
+                    let _ = std::fs::remove_file(&download);
+                    file = Some(download.to_string_lossy().into_owned());
                 }
-                .emit(&app)
-                .ok();
-                let _outs = split_audio_by_chapters(
-                    &app,
-                    &whole_path,
-                    chs,
-                    &chapter_dir,
-                    if to_flac { Some(flac_opts) } else { None },
-                )
-                .await?;
-                let _ = std::fs::remove_file(&whole_path);
 
                 entry.kind = Some(EntryKind::Single {
-                    file: Some(whole_path.to_string_lossy().into_owned()),
+                    file,
                     chapters: Some(chs.clone()),
                     status: DownloadStatus::Ok,
                 });
             } else {
-                let final_file = if to_flac {
-                    transcode_to_flac(&app, &whole_path, flac_opts).await?
-                } else {
-                    whole_path.clone()
+                let whole_path = {
+                    let candidate = dir.join(format!("{}.m4a", entry.title));
+                    if candidate.exists() {
+                        candidate
+                    } else {
+                        download_audio(app.clone(), entry.url.clone(), dir.clone()).await?
+                    }
                 };
+                let final_file = whole_path.clone();
                 entry.kind = Some(EntryKind::Single {
                     file: Some(final_file.to_string_lossy().into_owned()),
                     chapters: None,
@@ -1227,4 +1283,245 @@ pub async fn test_download_audio(app: tauri::AppHandle) -> Result<Vec<String>, S
     let mut files = Vec::new();
     collect_leaf_files(&root, &mut files);
     Ok(files)
+}
+
+pub fn spawn_resume_on_startup(app: AppHandle, base_save_folder: PathBuf) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = resume_all(&app, &base_save_folder).await {
+            eprintln!("[resume] failed: {e}");
+        }
+    });
+}
+
+fn should_resume_with_reason(st: &WorkState) -> (bool, &'static str) {
+    match st.status {
+        NodeStatus::Pending => (true, "pending"),
+        NodeStatus::Downloading => (true, "downloading"),
+        NodeStatus::Err => (true, "last_run_error"),
+        NodeStatus::Ok => {
+            // Ok 但文件可能被删了：也可恢复
+            let missing = st
+                .children
+                .last()
+                .and_then(|c| c.file.as_ref())
+                .map(|f| !std::path::Path::new(f).exists())
+                .unwrap_or(false);
+            if missing {
+                (true, "ok_but_file_missing")
+            } else {
+                (false, "already_ok")
+            }
+        }
+    }
+}
+
+async fn resume_all(app: &AppHandle, base: &Path) -> Result<(), String> {
+    let t0 = Instant::now();
+
+    let work_root = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("working_entry");
+
+    if !work_root.exists() {
+        println!("[resume] no working_entry dir, nothing to do.");
+        return Ok(());
+    }
+
+    let mut pendings = Vec::new();
+    collect_states(&work_root, &mut pendings)?;
+    println!(
+        "[resume] scanned {} state.json files under {}",
+        pendings.len(),
+        work_root.display()
+    );
+
+    // 统计分布
+    let mut n_pending = 0usize;
+    let mut n_dl = 0usize;
+    let mut n_err = 0usize;
+    let mut n_ok = 0usize;
+    for (_, st) in &pendings {
+        match st.status {
+            NodeStatus::Pending => n_pending += 1,
+            NodeStatus::Downloading => n_dl += 1,
+            NodeStatus::Err => n_err += 1,
+            NodeStatus::Ok => n_ok += 1,
+        }
+    }
+    println!(
+        "[resume] status distribution => pending: {}, downloading: {}, err: {}, ok: {}",
+        n_pending, n_dl, n_err, n_ok
+    );
+
+    // 预筛选并打印将要恢复的节点（含原因）
+    let mut to_resume = Vec::new();
+    for (st_path, st) in &pendings {
+        let (do_resume, why) = should_resume_with_reason(st);
+        if do_resume {
+            println!(
+                "[resume] will resume: id={} title=\"{}\" url={} status={:?} reason={} state={}",
+                st.root_id,
+                st.title,
+                st.url,
+                st.status,
+                why,
+                st_path.display()
+            );
+            to_resume.push((st_path.clone(), st.clone()));
+        } else {
+            println!(
+                "[resume] skip       : id={} title=\"{}\" status={:?} reason={} state={}",
+                st.root_id,
+                st.title,
+                st.status,
+                why,
+                st_path.display()
+            );
+        }
+    }
+    if to_resume.is_empty() {
+        println!("[resume] nothing to resume. elapsed={:?}", t0.elapsed());
+        return Ok(());
+    }
+
+    // 并发上限
+    let concurrency = 8usize;
+    println!(
+        "[resume] start resuming {} nodes with concurrency={}",
+        to_resume.len(),
+        concurrency
+    );
+
+    // 运行期统计
+    let done_ok = AtomicUsize::new(0);
+    let done_err = AtomicUsize::new(0);
+
+    futures::stream::iter(to_resume.into_iter())
+        .map(|(st_path, st)| {
+            let app = app.clone();
+            let base = base.to_path_buf();
+
+            async move {
+                // 日志：入队
+                println!(
+                    "[resume] >> run     : id={} title=\"{}\" status={:?}",
+                    st.root_id, st.title, st.status
+                );
+
+                let mut entry = reconstruct_entry_minimal(&st)?;
+                let start = Instant::now();
+                let res = process_entry(app.clone(), &base, &mut entry, &[], &[]).await;
+
+                match res {
+                    Ok(pr) => {
+                        println!(
+                            "[resume] << success: id={} title=\"{}\" saved_path={} ...",
+                            st.root_id,
+                            entry.title,
+                            pr.saved_path.display()
+                        );
+                        finalize_process(&app, pr).await;
+                        Ok::<_, String>(true)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[resume] <<  failed: id={} title=\"{}\" err={} elapsed={:?}",
+                            st.root_id,
+                            entry.title,
+                            e,
+                            start.elapsed()
+                        );
+                        Err::<bool, String>(e)
+                    }
+                }
+            }
+        })
+        .buffer_unordered(concurrency)
+        .for_each(|r| {
+            // 这里在单线程 executor 上跑 closure，统计安全
+            if r.is_ok() {
+                done_ok.fetch_add(1, Ordering::Relaxed);
+            } else {
+                done_err.fetch_add(1, Ordering::Relaxed);
+            }
+            futures::future::ready(())
+        })
+        .await;
+
+    println!(
+        "[resume] finished. ok={} err={} elapsed={:?}",
+        done_ok.load(Ordering::Relaxed),
+        done_err.load(Ordering::Relaxed),
+        t0.elapsed()
+    );
+
+    Ok(())
+}
+
+fn collect_states(dir: &Path, out: &mut Vec<(PathBuf, WorkState)>) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for e in fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let e = e.map_err(|e| e.to_string())?;
+        let p = e.path();
+        if p.is_dir() {
+            collect_states(&p, out)?; // 递归
+        } else if p.file_name().map(|n| n == "state.json").unwrap_or(false) {
+            if let Some(st) = load_state(&p) {
+                out.push((p, st));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn should_resume(st: &WorkState) -> bool {
+    match st.status {
+        NodeStatus::Pending | NodeStatus::Downloading => true,
+        NodeStatus::Err => true, // 也可策略性重试
+        NodeStatus::Ok => {
+            // 守护：Ok 但文件不存在（例如用户手动删了）→ 也可重跑
+            st.children
+                .last()
+                .and_then(|c| c.file.as_ref())
+                .map(|f| !Path::new(f).exists())
+                .unwrap_or(false)
+        }
+    }
+}
+
+fn reconstruct_entry_minimal(st: &WorkState) -> Result<Entry, String> {
+    Ok(Entry {
+        id: st.root_id,
+        url: st.url.clone(),
+        title: st.title.clone(),
+        retries: 0,
+        error: st.error.clone(),
+        kind: None, // 让 process_entry 自己探测 playlist/single 并填充
+    })
+}
+
+async fn resume_mission(app: &AppHandle, base: &Path, m: &mut Mission) -> Result<(), String> {
+    // 递归地对每个 Entry 调用 process_entry（内部已幂等）
+    for e in &mut m.entries {
+        let _ = process_entry(app.clone(), base, e, &[], &[]).await;
+    }
+    Ok(())
+}
+
+pub fn auto_resume_mission(app: AppHandle) -> Result<()> {
+    let base_folder = resolve_save_path(app.clone()).map_err(anyhow::Error::msg)?;
+    // let base_folder = Arc::new(base_folder);
+    // 1) 每天 09:00 自动更新 yt-dlp
+    spawn_ytdlp_auto_update(app.clone());
+
+    // 2) 启动即尝试恢复未完成任务
+    spawn_resume_on_startup(app.clone(), base_folder);
+
+    // 3) （可选）同时恢复 Mission 树（如果你实现了持久化）
+    // spawn_resume_all_missions(app.clone(), base_save_folder.clone());
+    Ok(())
 }

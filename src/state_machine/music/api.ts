@@ -43,4 +43,5 @@ export const action = {
   down: (music: Music) => actor.send(payloads.down.load(music)),
   delete: (playlist: Playlist) => actor.send(payloads.delete.load(playlist)),
   cancle_review: (url: string) => actor.send(payloads.cancel_review.load(url)),
+  next: () => actor.send(ss.playx.Signal.next),
 };
