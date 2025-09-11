@@ -25,7 +25,3 @@ A compact music player built around smart shuffle and consistent listening exper
 bun install
 bun tauri dev
 ```
-
-## License
-
-This project is licensed under the [MIT](./LICENSE) License.
