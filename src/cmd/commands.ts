@@ -232,12 +232,13 @@ ytdlpVersionChanged: "ytdlp-version-changed"
 
 export type CheckResult = { installed_path: string | null; installed_version: string | null; latest_version: string | null; needs_update: boolean; asset_name: string; download_url: string }
 export type CollectMission = { name: string; folders: FolderSample[]; links: LinkSample[]; entries: Entry[] }
-export type Entry = { path: string | null; name: string; musics: Music[]; avg_db: number | null; url: string | null; downloaded_ok: boolean | null; tracking: boolean | null }
+export type Entry = { path: string | null; name: string; musics: Music[]; avg_db: number | null; url: string | null; downloaded_ok: boolean | null; tracking: boolean | null; entry_type: EntryType }
+export type EntryType = "Local" | "WebList" | "WebVideo" | "Unknown"
 export type FfCheck = { installed_path: string | null; latest_tag: string | null; needs_install: boolean; asset_name: string | null; download_url: string | null; note: string | null }
 export type FolderSample = { path: string; items: string[] }
 export type FullScreenEvent = { is_fullscreen: boolean }
 export type InstallResult = { installed_path: string; installed_version: string }
-export type LinkSample = { url: string; title_or_msg: string; entry_type: string; count: number | null; status: LinkStatus | null; tracking: boolean }
+export type LinkSample = { url: string; title_or_msg: string; entry_type: EntryType; count: number | null; status: LinkStatus | null; tracking: boolean }
 export type LinkStatus = "Ok" | "Err"
 export type MediaInfo = { title: string; item_type: string; entries_count: number | null }
 export type MouseWindowInfo = { mouse_x: number; mouse_y: number; window_x: number; window_y: number; window_width: number; window_height: number; rel_x: number; rel_y: number; pixel_ratio: number }

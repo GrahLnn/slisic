@@ -25,6 +25,24 @@ impl From<ProcessResult> for DownloadAnswer {
 // 全局 Sender
 static DOWNLOAD_TX: OnceLock<mpsc::Sender<Entry>> = OnceLock::new();
 
+pub async fn finalize_process(app: &tauri::AppHandle, result: ProcessResult) {
+    // 清理 working 目录（可容错）
+    if let Err(e) = fs::remove_dir_all(&result.working_path) {
+        eprintln!("[download] cleanup failed: {}", e);
+    }
+
+    // 业务回调（比如写 DB / 通知 UI）
+    match download_ok(app, result.clone().into()).await {
+        Ok(()) => {
+            // 广播事件给前端（ProcessResult #[derive(Event)] 已就绪）
+            result.emit(app).ok();
+        }
+        Err(e) => {
+            eprintln!("[download] download_ok failed: {}", e);
+        }
+    }
+}
+
 /// 在 Tauri setup 里调用：初始化队列 + 启动单个 worker 循环
 pub fn init_global_download_queue(app: tauri::AppHandle, capacity: usize) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<Entry>(capacity);
@@ -39,20 +57,8 @@ pub fn init_global_download_queue(app: tauri::AppHandle, capacity: usize) -> Res
             let res = process_entry(app.clone(), &base_folder, &mut job, &[], &[]).await;
 
             match res {
-                Ok(result) => {
-                    fs::remove_dir_all(&result.working_path).ok();
-                    match download_ok(&app, result.clone().into()).await {
-                        Ok(_) => {
-                            result.emit(&app).ok();
-                        }
-                        Err(e) => {
-                            println!("download error: {}", e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    println!("download error: {}", e);
-                }
+                Ok(result) => finalize_process(&app, result).await,
+                Err(e) => println!("download error: {}", e),
             }
         }
     });

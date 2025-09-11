@@ -8,6 +8,7 @@ import { useIsWindowFocus } from "./state_machine/windowFocus";
 import { station } from "./subpub/buses";
 import { useXState as useCenterToolState } from "./state_machine/centertool";
 import crab from "./cmd";
+import { action } from "./state_machine/music";
 
 interface CtrlButtonProps extends PropsWithChildren {
   icon?: React.ReactNode;
@@ -76,7 +77,11 @@ const RightControls = memo(function RightControlsComponent() {
     "dark:hover:bg-[#373737] hover:bg-[#d4d4d4] opacity-70 hover:opacity-100 rounded-full transition cursor-pointer";
   return (
     <div className={cn(["flex items-center"])}>
-      <CtrlButton label="Search" icon={<icons.magnifler3 size={14} />} />
+      <CtrlButton
+        label="Search"
+        icon={<icons.magnifler3 size={14} />}
+        onClick={action.next}
+      />
       <CtrlButton label="Language" icon={<icons.globe3 size={14} />} />
       <CtrlButton
         label="Update"

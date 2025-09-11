@@ -27,8 +27,8 @@ export interface PlayerCtx {
 }
 
 function computeLogit(m: Music) {
-  // 你的规则：logit 越高 = 越不想选
-  return m.base_bias + m.fatigue - m.user_boost;
+  // 你的规则：logit 越高 = 越不想选，entry 也有疲劳惩罚
+  return (m.base_bias + m.fatigue) * (1 - m.user_boost);
 }
 const incBoost = (v?: number, step = 0.1, max = 0.9) => {
   const x = Number.isFinite(v) ? (v as number) : 0; // 未定义/NaN 当 0
@@ -113,8 +113,15 @@ export const src = setup({
                     Err: I,
                   }),
                   entry_type: i.r.match({
-                    Ok: (r) => r.item_type,
-                    Err: K(""),
+                    Ok: (r) => {
+                      switch (r.item_type) {
+                        case "playlist":
+                          return "WebList";
+                        default:
+                          return "WebVideo";
+                      }
+                    },
+                    Err: K("Unknown"),
                   }),
                   count: i.r.match({
                     Ok: (r) => r.entries_count,
@@ -180,26 +187,33 @@ export const src = setup({
       const { engine, analyzer, audio, nowPlaying: cur, selected } = context;
       if (!engine || !analyzer || !cur) return;
 
-      // 每次播放前先确保接线
+      // 统一接线
       analyzer.attachTo(engine.ctx);
       engine.ensureSource(audio);
-      analyzer.setTapFrom(engine.lufs); // 抽在 LUFS 增益之后
+      analyzer.setTapFrom(engine.lufs);
 
-      // 停掉旧采样循环（如果有）
-      context.__stopSampling?.();
+      // 停旧采样
+      try {
+        context.__stopSampling?.();
+      } catch {}
       context.__stopSampling = undefined;
-      analyzer.stopSampling();
+      analyzer.stopSampling?.();
 
       // 准备音源
       const url = await fileToBlobUrl(cur.path);
       audio.crossOrigin = "anonymous";
       audio.src = url;
 
-      // 先把淡入通道拉到 0，再设响度
-      engine.fadeOut(1);
-      engine.setLoudnessFromAvgDb(cur.avg_db, selected?.avg_db || -14, 12);
+      // 确保可听
+      audio.muted = false;
+      audio.volume = 1;
 
-      // 等能播
+      // 先淡出，再设响度（以 playlist 的 avg_db 做目标；无则 -14）
+      engine.fadeOut(1);
+      const targetLufs = selected?.avg_db ?? -14;
+      engine.setLoudnessFromAvgDb(cur.avg_db, targetLufs, 12);
+
+      // 等 canplay（带 3s 探针日志）
       await new Promise<void>((resolve) => {
         const oncp = () => {
           audio.removeEventListener("canplay", oncp);
@@ -207,18 +221,106 @@ export const src = setup({
         };
         audio.addEventListener("canplay", oncp, { once: true });
         if (audio.readyState >= 2) resolve();
+        setTimeout(() => {
+          if (audio.readyState < 2) {
+            console.warn("[play_audio] canplay timeout", {
+              rs: audio.readyState,
+              src: audio.src,
+            });
+          }
+        }, 3000);
       });
 
-      await audio.play();
-      engine.fadeIn(25);
+      // 先确保 AudioContext 不是 suspended
+      try {
+        await (engine.resume?.() || engine.ctx.resume?.());
+      } catch {}
 
-      // 这时再开采样循环
-      context.__stopSampling = analyzer.startSampling((frame) => {
+      // 播放
+      try {
+        await audio.play();
+      } catch (err) {
+        console.error("[play_audio] play() rejected", err, audio.error);
+        return;
+      }
+
+      // ------- 关键：等待“时钟真的动起来” -------
+      const waitTimebase = (kick = false) =>
+        new Promise<boolean>((resolve) => {
+          let fired = false;
+          const T_DEADLINE = 1600; // 最多等 1.6s
+          const T_POLL = 100; // 100ms 轮询 currentTime
+          const MIN_T = 0.02; // 认为“动起来”的最小时间
+
+          const onPlaying = () => {
+            fired = true;
+            cleanup(true);
+          };
+          const timer = setInterval(() => {
+            if (audio.currentTime > MIN_T) {
+              fired = true;
+              cleanup(true);
+            }
+          }, T_POLL);
+          const to = setTimeout(() => {
+            if (!fired) cleanup(false);
+          }, T_DEADLINE);
+
+          const cleanup = (ok: boolean) => {
+            audio.removeEventListener("playing", onPlaying);
+            clearInterval(timer);
+            clearTimeout(to);
+            resolve(ok);
+          };
+          audio.addEventListener("playing", onPlaying, { once: true });
+
+          // 可选：kick 前先做一次极小 seek，有些浏览器会因此点火时钟
+          if (kick) {
+            try {
+              const t0 = audio.currentTime;
+              audio.currentTime = Math.max(0, t0 + 0.001);
+            } catch {}
+          }
+        });
+
+      // 第一次等待（不 kick）
+      let ok = await waitTimebase(false);
+      if (!ok) {
+        console.warn("[play_audio] timebase stuck, kicking…");
+        // “踢一下”：暂停→微 seek→play
+        try {
+          audio.pause();
+        } catch {}
+        try {
+          audio.currentTime = 0.001;
+        } catch {}
+        try {
+          await audio.play();
+        } catch (e) {
+          console.error("[play_audio] kick play() rejected", e, audio.error);
+          return;
+        }
+        ok = await waitTimebase(true);
+        if (!ok) {
+          console.error(
+            "[play_audio] timebase failed after kick; abort sampling"
+          );
+          return;
+        }
+      }
+
+      // 时钟已走，淡入 & 启动采样
+      engine.fadeIn(25);
+      context.__stopSampling = analyzer.startSampling?.((frame) => {
         station.audioFrame.set(frame);
       });
-      self.send(ss.playx.Signal.analyzerstart);
-      audio.onended = () => self.send(ss.playx.Signal.next);
+
+      // 结束回调
+      audio.onended = () => {
+        self.send(ss.playx.Signal.next);
+      };
     },
+
     delete: assign({
       collections: EH.whenDone(payloads.delete.evt())((p, c) => {
         crab.delete(p.name);
@@ -347,17 +449,30 @@ export const src = setup({
     }),
     ensure_graph: ({ context }) => {
       const { engine, analyzer, audio } = context;
-      if (!engine || !analyzer) return;
+      if (!engine || !analyzer) {
+        console.warn("[ensure_graph] missing engine/analyzer");
+        return;
+      }
+      if (!audio.src || audio.readyState < 2) {
+        console.warn("[ensure_graph] skip: media not ready", {
+          src: audio.src,
+          rs: audio.readyState,
+        });
+        return;
+      }
 
-      // 1) 让 Analyzer 用 Engine 的 AudioContext
       analyzer.attachTo(engine.ctx);
-
-      // 2) 确保 <audio> 已经挂上
       engine.ensureSource(audio);
+      analyzer.setTapFrom(engine.lufs);
 
-      // 3) 从总线抽头
-      engine.tapForAnalyzer(analyzer);
+      console.log("[ensure_graph] ok", {
+        rs: audio.readyState,
+        ctx: engine.ctx.state,
+        lufsGain: engine.lufs.gain.value,
+        fadeGain: engine.fade.gain.value,
+      });
     },
+
     into_slot: assign({
       slot: EH.whenDone(payloads.edit_playlist.evt())(into_slot),
       selected: EH.whenDone(payloads.edit_playlist.evt())(I),
@@ -377,7 +492,6 @@ export const src = setup({
     is_list_complete: ({ context }) => {
       const slot = context.slot;
       if (!slot) return false;
-      console.log(context.reviews);
       return (
         context.reviews.length === 0 &&
         (slot.name.trim().length ?? 0) > 0 &&

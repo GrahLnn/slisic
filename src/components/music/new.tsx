@@ -39,7 +39,7 @@ function YtCheck() {
         exist: () => (
           <div
             className={cn([
-              "text-xs text-[#525252] dark:text-[#e5e5e5] transition",
+              "text-xs text-[#404040] dark:text-[#e5e5e5] transition",
             ])}
           >
             yt-dlp {ytctx.version} is installed.
@@ -47,7 +47,7 @@ function YtCheck() {
         ),
         not_exist: () => (
           <div className="flex gap-2 items-center justify-between w-full pr-4">
-            <div className="text-xs text-[#525252] dark:text-[#e5e5e5] transition">
+            <div className="text-xs text-[#404040] dark:text-[#e5e5e5] transition">
               By use yt-dlp, you can download music from most sites.
             </div>
             <EntryToolButton
@@ -59,7 +59,7 @@ function YtCheck() {
         _: () => (
           <div
             className={cn([
-              "text-xs text-[#525252] dark:text-[#e5e5e5] transition",
+              "text-xs text-[#404040] dark:text-[#e5e5e5] transition",
             ])}
           >
             downloading...
@@ -96,7 +96,7 @@ function FfmpegCheck() {
         exist: () => (
           <div
             className={cn([
-              "text-xs text-[#525252] dark:text-[#e5e5e5] transition",
+              "text-xs text-[#404040] dark:text-[#e5e5e5] transition",
             ])}
           >
             ffmpeg {ytctx.version} is installed.
@@ -104,7 +104,7 @@ function FfmpegCheck() {
         ),
         not_exist: () => (
           <div className="flex gap-2 items-center justify-between w-full pr-4">
-            <div className="text-xs text-[#525252] dark:text-[#e5e5e5] transition">
+            <div className="text-xs text-[#404040] dark:text-[#e5e5e5] transition">
               Using ffmpeg enables support for a wide range of audio
               post-processing capabilities.
             </div>
@@ -117,7 +117,7 @@ function FfmpegCheck() {
         _: () => (
           <div
             className={cn([
-              "text-xs text-[#525252] dark:text-[#e5e5e5] transition",
+              "text-xs text-[#404040] dark:text-[#e5e5e5] transition",
             ])}
           >
             downloading...
@@ -141,7 +141,7 @@ function SaveCheck() {
         <motionIcons.cloudDownload size={12} />
       </div>
       <div className="flex gap-2 items-center justify-between w-full pr-4">
-        <div className="text-xs text-[#525252] dark:text-[#e5e5e5] transition">
+        <div className="text-xs text-[#404040] dark:text-[#e5e5e5] transition">
           Web music will be saved to{" "}
           <span className="font-semibold">{ctx.default_save_path}</span>
         </div>

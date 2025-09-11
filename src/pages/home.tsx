@@ -241,7 +241,7 @@ function Play() {
                       })()}
                     </ContextMenuTrigger>
                     {!isPlaying && (
-                      <ContextMenuContent className="opacity-70">
+                      <ContextMenuContent className="opacity-90">
                         <ContextMenuItem onClick={() => action.edit(i)}>
                           Edit
                         </ContextMenuItem>
