@@ -48,8 +48,10 @@ export interface Context {
   nowPlaying?: Music;
   nowJudge?: "Up" | "Down";
   lastPlay?: Music;
+  playToken?: number;
   __stopOnFrame?: () => void;
   __stopSampling?: () => void;
+  __offPlayEvents?: () => void;
 }
 
 export function new_slot(): CollectMission {
