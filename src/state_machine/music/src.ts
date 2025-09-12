@@ -340,8 +340,11 @@ export const src = setup({
       lastPlay: udf,
       selected: udf,
     }),
-    update_parm: ({ context }) => crab.fatigue(context.nowPlaying!),
+    fatigue_parm: ({ context }) => crab.fatigue(context.nowPlaying!),
     boost_parm: ({ context }) => crab.boost(context.nowPlaying!),
+    cancle_boost_parm: ({ context }) => crab.cancleBoost(context.nowPlaying!),
+    cancle_fatigue_parm: ({ context }) =>
+      crab.cancleFatigue(context.nowPlaying!),
     update_last: assign({
       lastPlay: ({ context }) => context.nowPlaying,
     }),
@@ -398,14 +401,14 @@ export const src = setup({
       }),
     }),
     up: assign({
-      flatList: EH.whenDone(payloads.down.evt())((p, c) =>
+      flatList: EH.whenDone(payloads.up.evt())((p, c) =>
         c.flatList.map((i) =>
           i.path === p.path
             ? { ...i, user_boost: incBoost(i.user_boost, 0.1, 0.9) }
             : i
         )
       ),
-      selected: EH.whenDone(payloads.down.evt())((i, c) => {
+      selected: EH.whenDone(payloads.up.evt())((i, c) => {
         const s = c.selected;
         if (!s) return;
         return {
@@ -442,6 +445,48 @@ export const src = setup({
         };
       }),
       nowJudge: K("Down"),
+    }),
+    cancle_up: assign({
+      flatList: EH.whenDone(payloads.cancle_up.evt())((p, c) =>
+        c.flatList.map((i) =>
+          i.path === p.path ? { ...i, user_boost: i.user_boost - 0.1 } : i
+        )
+      ),
+      selected: EH.whenDone(payloads.cancle_up.evt())((i, c) => {
+        const s = c.selected;
+        if (!s) return;
+        return {
+          ...s,
+          entries: s.entries.map((fd) => ({
+            ...fd,
+            musics: fd.musics.map((m) =>
+              m.path === i.path ? { ...m, user_boost: i.user_boost - 0.1 } : m
+            ),
+          })),
+        };
+      }),
+      nowJudge: udf,
+    }),
+    cancle_down: assign({
+      flatList: EH.whenDone(payloads.cancle_down.evt())((p, c) =>
+        c.flatList.map((i) =>
+          i.path === p.path ? { ...i, fatigue: i.fatigue - 0.1 } : i
+        )
+      ),
+      selected: EH.whenDone(payloads.cancle_down.evt())((i, c) => {
+        const s = c.selected;
+        if (!s) return;
+        return {
+          ...s,
+          entries: s.entries.map((fd) => ({
+            ...fd,
+            musics: fd.musics.map((m) =>
+              m.path === i.path ? { ...m, fatigue: m.fatigue - 0.1 } : m
+            ),
+          })),
+        };
+      }),
+      nowJudge: udf,
     }),
     reset_frame: () => station.audioFrame.set(new_frame()),
     update_audio_frame: ({ event }) => {

@@ -199,6 +199,22 @@ async boost(music: Music) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async cancleBoost(music: Music) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancle_boost", { music }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async cancleFatigue(music: Music) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancle_fatigue", { music }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async unstar(list: Playlist, music: Music) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("unstar", { list, music }) };
