@@ -106,7 +106,7 @@ export const machine = src.createMachine({
                 "reset_frame",
                 "stop_audio",
                 "clean_judge",
-                "update_parm",
+                "fatigue_parm",
                 "update_last",
                 "update_list",
                 "update_selected",
@@ -122,7 +122,13 @@ export const machine = src.createMachine({
               actions: ["up", "boost_parm", "update_coll"],
             },
             down: {
-              actions: ["down", "update_parm", "update_coll"],
+              actions: ["down", "fatigue_parm", "update_coll"],
+            },
+            cancle_up: {
+              actions: ["cancle_up", "cancle_boost_parm", "update_coll"],
+            },
+            cancle_down: {
+              actions: ["cancle_down", "cancle_fatigue_parm", "update_coll"],
             },
           },
         },

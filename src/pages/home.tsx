@@ -88,6 +88,7 @@ const Card: React.FC<GuideCardProps> = ({ content, title, idx, onClick }) => {
 
 function Play() {
   const lists = hook.useList();
+  const ctx = hook.useContext();
   const isPlaying = hook.ussIsPlaying();
   const curPlay = hook.useCurPlay();
   const curList = hook.useCurList();
@@ -176,7 +177,7 @@ function Play() {
                     <ContextMenuTrigger
                       className={cn([
                         isOk
-                          ? "cursor-pointer"
+                          ? "cursor-pointer whitespace-nowrap"
                           : "select-none text-[#404040] dark:text-[#a3a3a3] animate-pulse",
                       ])}
                       onMouseEnter={() => setHoveredKey(i.name)}
@@ -198,7 +199,7 @@ function Play() {
                             {/* 幽灵占位：撑开成两者里最长的宽度，保持命中区域稳定 */}
                             <span
                               aria-hidden
-                              className="invisible block whitespace-pre"
+                              className="invisible block whitespace-nowrap"
                             >
                               {longer}
                             </span>
@@ -207,7 +208,7 @@ function Play() {
                               {showName ? (
                                 <motion.span
                                   key="name"
-                                  className="absolute inset-0 flex items-center justify-center pointer-events-none"
+                                  className="absolute inset-0 flex items-center justify-center pointer-events-none whitespace-nowrap"
                                   initial={{ filter: "blur(6px)", opacity: 0 }}
                                   animate={{ filter: "blur(0px)", opacity: 1 }}
                                   exit={{ filter: "blur(6px)", opacity: 0 }}
@@ -221,7 +222,7 @@ function Play() {
                               ) : (
                                 <motion.span
                                   key="title"
-                                  className="absolute inset-0 flex items-center justify-center pointer-events-none"
+                                  className="absolute inset-0 flex items-center justify-center pointer-events-none whitespace-nowrap"
                                   initial={{ filter: "blur(6px)", opacity: 0 }}
                                   animate={{ filter: "blur(0px)", opacity: 1 }}
                                   exit={{ filter: "blur(6px)", opacity: 0 }}
@@ -240,7 +241,7 @@ function Play() {
                         );
                       })()}
                     </ContextMenuTrigger>
-                    {!isPlaying && (
+                    {(disabled || !isOk) && (
                       <ContextMenuContent className="opacity-90">
                         <ContextMenuItem onClick={() => action.edit(i)}>
                           Edit
@@ -277,34 +278,82 @@ function Play() {
                           height: 0,
                         }}
                       >
-                        <div className="flex items-center gap-4">
-                          <div
+                        <div className="flex items-center">
+                          <motion.div
                             className={cn([
-                              "p-1",
+                              "relative",
+                              "after:content-[''] after:absolute after:-inset-1",
+                              "after:transition-all after:duration-300",
                               "hover:opacity-100 opacity-40",
                               "hover:text-[#468be6]",
                               "transition duration-300",
+                              ctx.nowJudge === "Up" &&
+                                "opacity-100 text-[#468be6]",
+                              ctx.nowJudge === "Down" &&
+                                "pointer-events-none opacity-0",
                             ])}
-                            onClick={() => oneShot(upCtrl)}
+                            onClick={() =>
+                              ctx.nowJudge === "Up"
+                                ? action.cancle_up(curPlay)
+                                : action.up(curPlay)
+                            }
+                            animate={{
+                              width: ctx.nowJudge === "Down" ? 0 : "auto",
+                            }}
                           >
-                            <motionIcons.thumbsUp
-                              initial={{ pathLength: 1 }}
-                              animate={upCtrl}
-                            />
-                          </div>
-                          <div
+                            <AnimatePresence mode="wait">
+                              {ctx.nowJudge === "Up" ? (
+                                <motionIcons.thumbsUpSolid
+                                  initial={{ pathLength: 0 }}
+                                  animate={{ pathLength: 1 }}
+                                  exit={{ pathLength: 0 }}
+                                />
+                              ) : (
+                                <motionIcons.thumbsUp
+                                  initial={{ pathLength: 0 }}
+                                  animate={{ pathLength: 1 }}
+                                  exit={{ pathLength: 0 }}
+                                />
+                              )}
+                            </AnimatePresence>
+                          </motion.div>
+                          <motion.div
+                            initial={{
+                              width: ctx.nowJudge === "Down" ? 0 : 32,
+                            }}
+                            animate={{
+                              width: ctx.nowJudge === "Down" ? 0 : 32,
+                            }}
+                          />
+                          <motion.div
                             className={cn([
                               "p-1 mt-1",
                               "hover:opacity-60 opacity-40",
                               "transition duration-300",
+                              ctx.nowJudge === "Down" && "opacity-80",
+                              ctx.nowJudge === "Up" &&
+                                "pointer-events-none opacity-0",
                             ])}
-                            onClick={() => oneShot(downCtrl)}
+                            onClick={() =>
+                              ctx.nowJudge === "Down"
+                                ? action.cancle_down(curPlay)
+                                : action.down(curPlay)
+                            }
                           >
-                            <motionIcons.thumbsDown
-                              initial={{ pathLength: 1 }}
-                              animate={downCtrl}
-                            />
-                          </div>
+                            {ctx.nowJudge === "Down" ? (
+                              <motionIcons.thumbsDownSolid
+                                initial={{ pathLength: 0 }}
+                                animate={{ pathLength: 1 }}
+                                exit={{ pathLength: 0 }}
+                              />
+                            ) : (
+                              <motionIcons.thumbsDown
+                                initial={{ pathLength: 0 }}
+                                animate={{ pathLength: 1 }}
+                                exit={{ pathLength: 0 }}
+                              />
+                            )}
+                          </motion.div>
                         </div>
                         <div className={cn(["flex items-center"])}>
                           <div
@@ -316,13 +365,13 @@ function Play() {
                             ])}
                             onClick={() => {
                               action.unstar(curPlay);
-                              oneShot(starCtrl);
+                              //   oneShot(starCtrl);
                             }}
                           >
                             <motionIcons.starSlash
                               size={14}
                               initial={{ pathLength: 1 }}
-                              animate={starCtrl}
+                              //   animate={starCtrl}
                             />
                           </div>
                         </div>

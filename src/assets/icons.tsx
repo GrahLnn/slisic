@@ -1988,6 +1988,33 @@ export const motionIcons = {
     );
   },
   /**
+   * @preview ![](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMiIgaGVpZ2h0PSIxMiIgdmlld0JveD0iMCAwIDEyIDEyIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJ3aGl0ZSIvPjxnIGZpbGw9IiMyMTIxMjEiPjxwYXRoIGQ9Im0xMS40NjEsNS4xMTdjLS41MjQtLjcxLTEuMzMxLTEuMTE3LTIuMjEyLTEuMTE3aC0xLjYybC4zODYtMS4yMThjLjMzNi0xLjA2OS0uMTc1LTIuMjM1LTEuMTktMi43MTEtLjMwNC0uMTQyLS42OTQtLjA1NS0uOTA2LjIwNmwtMi44MDIsMy40NDljLS4zOTcuNDg4LS42MTYsMS4xMDQtLjYxNiwxLjczNHYzLjc5YzAsMS41MTcsMS4yMzMsMi43NSwyLjc1LDIuNzVoMy4yMjljMS4yMTUsMCwyLjI3MS0uNzgsMi42MjgtMS45NDFsLjc2OS0yLjVjLjI1OS0uODQzLjEwOC0xLjczMy0uNDE2LTIuNDQyWiIgc3Ryb2tlLXdpZHRoPSIwIj48L3BhdGg+PHBhdGggZD0ibS43NSwxMS41Yy0uNDE0LDAtLjc1LS4zMzYtLjc1LS43NXYtNS41YzAtLjQxNC4zMzYtLjc1Ljc1LS43NXMuNzUuMzM2Ljc1Ljc1djUuNWMwLC40MTQtLjMzNi43NS0uNzUuNzVaIiBzdHJva2Utd2lkdGg9IjAiPjwvcGF0aD48L2c+PC9zdmc+)
+   */
+  thumbsUpSolid({ size, color, className, ...props }: MotionIconProps) {
+    return (
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width={size || 12}
+        height={size || 12}
+        viewBox="0 0 12 12"
+        className={className}
+      >
+        <motion.g fill={color || "currentColor"} {...props}>
+          <motion.path
+            d="m11.461,5.117c-.524-.71-1.331-1.117-2.212-1.117h-1.62l.386-1.218c.336-1.069-.175-2.235-1.19-2.711-.304-.142-.694-.055-.906.206l-2.802,3.449c-.397.488-.616,1.104-.616,1.734v3.79c0,1.517,1.233,2.75,2.75,2.75h3.229c1.215,0,2.271-.78,2.628-1.941l.769-2.5c.259-.843.108-1.733-.416-2.442Z"
+            strokeWidth="0"
+            {...props}
+          />
+          <motion.path
+            d="m.75,11.5c-.414,0-.75-.336-.75-.75v-5.5c0-.414.336-.75.75-.75s.75.336.75.75v5.5c0,.414-.336.75-.75.75Z"
+            strokeWidth="0"
+            {...props}
+          />
+        </motion.g>
+      </svg>
+    );
+  },
+  /**
    *
    * @preview ![](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMiIgaGVpZ2h0PSIxMiIgdmlld0JveD0iMCAwIDEyIDEyIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJ3aGl0ZSIvPjxnIGZpbGw9IiMyMTIxMjEiPjxwYXRoIGQ9Ik03IDcuMjVsMC42NCAyLjAzYTEuNSAxLjUgMCAwIDEtMC44IDEuODFsLTAuMzQgMC4xNi0yLjgtMy40NWEyIDIgMCAwIDEtMC40NS0xLjI2di0zLjc5YTIgMiAwIDAgMSAyLTJoMy4yM2MwLjg4IDAgMS42NSAwLjU3IDEuOTEgMS40MWwwLjc3IDIuNWEyIDIgMCAwIDEtMS45MSAyLjU5aC0yLjI1eiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjEyMTIxIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS13aWR0aD0iMS41Ij48L3BhdGg+PHBhdGggZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjEyMTIxIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS13aWR0aD0iMS41IiBkPSJNMC43NSAxLjI1djUuNSI+PC9wYXRoPjwvZz48L3N2Zz4=)
    */
@@ -2020,6 +2047,36 @@ export const motionIcons = {
             {...props}
           />
         </g>
+      </svg>
+    );
+  },
+  /**
+   *
+   * @preview ![](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMiIgaGVpZ2h0PSIxMiIgdmlld0JveD0iMCAwIDEyIDEyIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJ3aGl0ZSIvPjxnIGZpbGw9IiMyMTIxMjEiPjxwYXRoIGQ9Ik0xMS40NiA2Ljg4YTIuNzMgMi43MyAwIDAgMS0yLjIxIDEuMTJoLTEuNjJsMC4zOCAxLjIyYTIuMjYgMi4yNiAwIDAgMS0xLjE5IDIuNzEgMC43NyAwLjc3IDAgMCAxLTAuOS0wLjIxbC0yLjgtMy40NWEyLjc2IDIuNzYgMCAwIDEtMC42Mi0xLjczdi0zLjc5YTIuNzUgMi43NSAwIDAgMSAyLjc1LTIuNzVoMy4yM2MxLjIyIDAgMi4yNyAwLjc4IDIuNjMgMS45NGwwLjc3IDIuNWEyLjcyIDIuNzIgMCAwIDEtMC40MiAyLjQ0eiIgc3Ryb2tlLXdpZHRoPSIwIiBmaWxsPSIjMjEyMTIxIj48L3BhdGg+PHBhdGggZD0iTTAuNzUgMC41YTAuNzUgMC43NSAwIDAgMC0wLjc1IDAuNzV2NS41YTAuNzUgMC43NSAwIDAgMCAxLjUgMHYtNS41YTAuNzUgMC43NSAwIDAgMC0wLjc1LTAuNzV6IiBmaWxsPSIjMjEyMTIxIiBzdHJva2Utd2lkdGg9IjAiPjwvcGF0aD48L2c+PC9zdmc+)
+   */
+  thumbsDownSolid({ size, color, className, ...props }: MotionIconProps) {
+    return (
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width={size || 12}
+        height={size || 12}
+        viewBox="0 0 12 12"
+        className={className}
+      >
+        <motion.g fill={color || "currentColor"} {...props}>
+          <motion.path
+            d="M11.46 6.88a2.73 2.73 0 0 1-2.21 1.12h-1.62l0.38 1.22a2.26 2.26 0 0 1-1.19 2.71 0.77 0.77 0 0 1-0.9-0.21l-2.8-3.45a2.76 2.76 0 0 1-0.62-1.73v-3.79a2.75 2.75 0 0 1 2.75-2.75h3.23c1.22 0 2.27 0.78 2.63 1.94l0.77 2.5a2.72 2.72 0 0 1-0.42 2.44z"
+            strokeWidth="0"
+            fill={color || "currentColor"}
+            {...props}
+          />
+          <motion.path
+            d="M0.75 0.5a0.75 0.75 0 0 0-0.75 0.75v5.5a0.75 0.75 0 0 0 1.5 0v-5.5a0.75 0.75 0 0 0-0.75-0.75z"
+            fill={color || "currentColor"}
+            strokeWidth="0"
+            {...props}
+          />
+        </motion.g>
       </svg>
     );
   },

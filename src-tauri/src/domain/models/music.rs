@@ -435,6 +435,11 @@ pub async fn download_ok(app: &AppHandle, answer: DownloadAnswer) -> Result<(), 
     } else {
         vec![answer.path.clone()]
     };
+    ProcessMsg {
+        str: "Measuring LUFS".into(),
+    }
+    .emit(app)
+    .ok();
     let entry_id = DbEntry::record_id(answer.name.clone());
     let entry = DbEntry::select_record(entry_id.clone())
         .await
@@ -851,9 +856,27 @@ pub async fn fatigue(music: Music) -> Result<(), String> {
 
 #[tauri::command]
 #[specta::specta]
+pub async fn cancle_fatigue(music: Music) -> Result<(), String> {
+    let mut music: DbMusic = music.into();
+    music.user_boost = (music.user_boost - 0.1).min(0.9);
+    music.update().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn boost(music: Music) -> Result<(), String> {
     let mut music: DbMusic = music.into();
     music.user_boost += 0.1;
+    music.update().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn cancle_boost(music: Music) -> Result<(), String> {
+    let mut music: DbMusic = music.into();
+    music.user_boost -= 0.1;
     music.update().await.map_err(|e| e.to_string())?;
     Ok(())
 }

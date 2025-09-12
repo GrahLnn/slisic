@@ -62,6 +62,8 @@ pub fn run() {
         music::delete,
         music::fatigue,
         music::boost,
+        music::cancle_boost,
+        music::cancle_fatigue,
         music::unstar,
     ];
     let events = collect_events![
