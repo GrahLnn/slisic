@@ -245,7 +245,11 @@ export function eventHandler<
   function take<S extends KeyLike>(
     key?: S
   ): <R>(
-    fn: (ctx: TContext, evt: EvtForKey<TEvents, NormalizeKey<S>>) => R
+    fn: (
+      out: OutputOf<TEvents, NormalizeKey<S>>,
+      ctx: TContext,
+      evt: EvtForKey<TEvents, NormalizeKey<S>>
+    ) => R
   ) => (args: ActionArgs<TContext, TEvents, TEvents>) => R;
 
   function take(key?: string) {
@@ -253,7 +257,7 @@ export function eventHandler<
       ? (fn: any) => (args: any) => {
           const { context, event } = args;
           assertEvent(event, key);
-          return fn(context as TContext, event as any);
+          return fn((event as any).output, context as TContext, event as any);
         }
       : (fn: any) => (args: any) => {
           const { context } = args;

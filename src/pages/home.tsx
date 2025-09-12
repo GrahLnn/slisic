@@ -93,23 +93,9 @@ function Play() {
   const curPlay = hook.useCurPlay();
   const curList = hook.useCurList();
   const isCursorInApp = station.cursorinapp.useSee();
-  const [hoveredKey, setHoveredKey] = useState<string | null>(null); // 记录当前悬停的 item
+  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const upCtrl = useAnimationControls();
-  const downCtrl = useAnimationControls();
-  const starCtrl = useAnimationControls();
-
-  const oneShot = async (ctrl: ReturnType<typeof useAnimationControls>) => {
-    // 立刻重置到 0（无动画）
-    ctrl.set({ pathLength: 0 });
-    // 播放 0 → 1
-    await ctrl.start({
-      pathLength: 1,
-      transition: { duration: 0.3, ease: "easeInOut" },
-    });
-    // 结束后保持在 1（静态）
-  };
 
   const setItemRef = useCallback(
     (key: string): React.RefCallback<HTMLDivElement> =>
@@ -241,7 +227,7 @@ function Play() {
                         );
                       })()}
                     </ContextMenuTrigger>
-                    {(disabled || !isOk) && (
+                    {!disabled && isOk && (
                       <ContextMenuContent className="opacity-90">
                         <ContextMenuItem onClick={() => action.edit(i)}>
                           Edit
@@ -301,7 +287,7 @@ function Play() {
                               width: ctx.nowJudge === "Down" ? 0 : "auto",
                             }}
                           >
-                            <AnimatePresence mode="wait">
+                            <AnimatePresence mode="wait" initial={false}>
                               {ctx.nowJudge === "Up" ? (
                                 <motionIcons.thumbsUpSolid
                                   initial={{ pathLength: 0 }}
@@ -319,10 +305,10 @@ function Play() {
                           </motion.div>
                           <motion.div
                             initial={{
-                              width: ctx.nowJudge === "Down" ? 0 : 32,
+                              width: ctx.nowJudge === "Down" ? 0 : 24,
                             }}
                             animate={{
-                              width: ctx.nowJudge === "Down" ? 0 : 32,
+                              width: ctx.nowJudge === "Down" ? 0 : 24,
                             }}
                           />
                           <motion.div
@@ -334,25 +320,27 @@ function Play() {
                               ctx.nowJudge === "Up" &&
                                 "pointer-events-none opacity-0",
                             ])}
-                            onClick={() =>
+                            onClick={() => {
                               ctx.nowJudge === "Down"
                                 ? action.cancle_down(curPlay)
-                                : action.down(curPlay)
-                            }
+                                : action.down(curPlay);
+                            }}
                           >
-                            {ctx.nowJudge === "Down" ? (
-                              <motionIcons.thumbsDownSolid
-                                initial={{ pathLength: 0 }}
-                                animate={{ pathLength: 1 }}
-                                exit={{ pathLength: 0 }}
-                              />
-                            ) : (
-                              <motionIcons.thumbsDown
-                                initial={{ pathLength: 0 }}
-                                animate={{ pathLength: 1 }}
-                                exit={{ pathLength: 0 }}
-                              />
-                            )}
+                            <AnimatePresence mode="wait" initial={false}>
+                              {ctx.nowJudge === "Down" ? (
+                                <motionIcons.thumbsDownSolid
+                                  initial={{ pathLength: 0 }}
+                                  animate={{ pathLength: 1 }}
+                                  exit={{ pathLength: 0 }}
+                                />
+                              ) : (
+                                <motionIcons.thumbsDown
+                                  initial={{ pathLength: 0 }}
+                                  animate={{ pathLength: 1 }}
+                                  exit={{ pathLength: 0 }}
+                                />
+                              )}
+                            </AnimatePresence>
                           </motion.div>
                         </div>
                         <div className={cn(["flex items-center"])}>

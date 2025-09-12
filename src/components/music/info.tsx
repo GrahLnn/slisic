@@ -14,6 +14,7 @@ import crab from "@/src/cmd";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { K } from "@/lib/comb";
 import { me } from "@/lib/matchable";
+import { udf } from "@/lib/e";
 
 export function Edit({ title, explain }: { title: string; explain: string }) {
   const slot = hook.useSlot();
@@ -171,10 +172,9 @@ function Entries() {
           <div key={v.path} className="flex flex-col gap-1">
             <Pair
               label={v.name}
-              value={
-                v.musics.length.toString() +
-                (v.musics.length > 1 ? " items" : " item")
-              }
+              value={`${v.entry_type}·${v.musics.length.toString()}${
+                v.musics.length > 1 ? " items" : " item"
+              }`}
               bantoggle
               on
               banTip="Remove"
@@ -184,10 +184,10 @@ function Entries() {
                   entries: slot.entries.filter((f) => f.path !== v.path),
                 });
               }}
-            />
-            <Pair
-              label={v.url ? `${host(v.url)}/${inside(v.url)}` : v.path}
-              value=""
+              rightButton={me(v.entry_type).match({
+                WebList: K([{ name: "Update" }, { name: "Reload" }]),
+                _: K([{ name: "Reload" }]),
+              })}
             />
           </div>
         ))

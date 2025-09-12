@@ -221,6 +221,8 @@ export function MultiFolderChooser({
   );
 }
 
+type RightTool = { name: string; onClick?: () => void };
+
 interface PairProps {
   label: string | React.ReactNode;
   value: string;
@@ -234,7 +236,7 @@ interface PairProps {
   className?: string;
   verified?: boolean;
   anime?: boolean;
-  rightButton?: Array<{ name: string; onClick: () => void }>;
+  rightButton?: Array<RightTool> | RightTool;
 }
 
 export function Pair({
@@ -255,7 +257,11 @@ export function Pair({
   const [labelIsHover, setLabelIsHover] = useState(false);
   const [valueIsHover, setValueIsHover] = useState(false);
   const [valueIsCopied, setValueIsCopied] = useState(false);
-
+  const col_right: RightTool[] = rightButton
+    ? Array.isArray(rightButton)
+      ? rightButton
+      : [rightButton]
+    : [];
   return (
     <div className={cn(["flex items-center justify-between gap-8", className])}>
       <div
@@ -394,23 +400,27 @@ export function Pair({
                     >
                       <div className="text-xs opacity-0">_</div>
                     </motion.div>
-                    {rightButton.map((v) => (
-                      <motion.div
-                        key={v.name}
-                        className="bg-[#f9f9f9] dark:bg-[#383838] rounded-md shadow px-1 py-0.5 border border-[#d4d4d4] dark:border-[#4a4a4a] cursor-pointer"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.2 }}
-                        onClick={v.onClick}
-                      >
-                        <div className="flex items-center gap-0.5 whitespace-nowrap">
-                          <div className="text-xs text-[#404040] dark:text-[#a3a3a3] transition">
-                            {v.name}
-                          </div>
-                        </div>
-                      </motion.div>
-                    ))}
+                    <div className="flex">
+                      {col_right.map((v, i) => (
+                        <React.Fragment key={v.name}>
+                          {i > 0 && <div className="w-1 backdrop-blur-[1px]" />}
+                          <motion.div
+                            className="bg-[#f9f9f9] dark:bg-[#383838] rounded-md shadow px-1 py-0.5 border border-[#d4d4d4] dark:border-[#4a4a4a] cursor-pointer"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.2 }}
+                            onClick={v.onClick}
+                          >
+                            <div className="flex items-center gap-0.5 whitespace-nowrap">
+                              <div className="text-xs text-[#404040] dark:text-[#a3a3a3] transition">
+                                {v.name}
+                              </div>
+                            </div>
+                          </motion.div>
+                        </React.Fragment>
+                      ))}
+                    </div>
                   </div>
                 </div>
               )}

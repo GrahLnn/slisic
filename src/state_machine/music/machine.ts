@@ -114,6 +114,14 @@ export const machine = src.createMachine({
               ],
               target: ss.playx.State.next,
             },
+            not_exist: {
+              actions: [
+                "not_exist",
+                "update_coll",
+                "clean_not_exist",
+                raise(ss.playx.Signal.next),
+              ],
+            },
             unstar: {
               actions: ["unstar", "update_coll"],
               target: ss.playx.State.next,
@@ -122,7 +130,12 @@ export const machine = src.createMachine({
               actions: ["up", "boost_parm", "update_coll"],
             },
             down: {
-              actions: ["down", "fatigue_parm", "update_coll"],
+              actions: [
+                "down",
+                "fatigue_parm",
+                "cancle_boost_parm",
+                "update_coll",
+              ],
             },
             cancle_up: {
               actions: ["cancle_up", "cancle_boost_parm", "update_coll"],
