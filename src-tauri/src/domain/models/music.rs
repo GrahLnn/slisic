@@ -105,6 +105,7 @@ pub struct Entry {
     pub downloaded_ok: Option<bool>,
     pub tracking: Option<bool>,
     pub entry_type: EntryType,
+    // pub check_date: Option<NaiveDateTime>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -847,9 +848,18 @@ pub async fn delete(name: String) -> Result<(), String> {
 
 #[tauri::command]
 #[specta::specta]
+pub async fn delete_music(music: Music) -> Result<(), String> {
+    let dbmusic: DbMusic = music.into();
+    dbmusic.delete().await.map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn fatigue(music: Music) -> Result<(), String> {
     let mut music: DbMusic = music.into();
-    music.user_boost = (music.user_boost + 0.1).min(0.9);
+    music.fatigue += 0.1;
     music.update().await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -858,7 +868,7 @@ pub async fn fatigue(music: Music) -> Result<(), String> {
 #[specta::specta]
 pub async fn cancle_fatigue(music: Music) -> Result<(), String> {
     let mut music: DbMusic = music.into();
-    music.user_boost = (music.user_boost - 0.1).min(0.9);
+    music.fatigue -= 0.1;
     music.update().await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -867,7 +877,8 @@ pub async fn cancle_fatigue(music: Music) -> Result<(), String> {
 #[specta::specta]
 pub async fn boost(music: Music) -> Result<(), String> {
     let mut music: DbMusic = music.into();
-    music.user_boost += 0.1;
+
+    music.user_boost = (music.user_boost + 0.1).min(0.9);
     music.update().await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -876,8 +887,25 @@ pub async fn boost(music: Music) -> Result<(), String> {
 #[specta::specta]
 pub async fn cancle_boost(music: Music) -> Result<(), String> {
     let mut music: DbMusic = music.into();
-    music.user_boost -= 0.1;
+    music.user_boost = (music.user_boost - 0.1).min(0.9).max(0.0);
     music.update().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn reset_logits() -> Result<(), String> {
+    println!("reset_logits");
+    let mut musics = DbMusic::select_all().await.map_err(|e| e.to_string())?;
+    for m in musics.iter_mut() {
+        m.fatigue = 0.0;
+        m.user_boost = 0.0;
+        m.diversity = 0.0;
+    }
+    for m in musics.iter_mut() {
+        m.clone().update().await.map_err(|e| e.to_string())?;
+    }
+    println!("reset_logits done");
     Ok(())
 }
 

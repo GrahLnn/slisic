@@ -91,7 +91,8 @@ export function formatUrl(
   return [host, inside ? `${inside}` : ""];
 }
 
-export function host(url: string) {
+export function host(url: string | null) {
+  if (!url) return "";
   const par = formatUrl(url);
   if (typeof par === "string") return par;
   else return par[0];

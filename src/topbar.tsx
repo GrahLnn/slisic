@@ -82,7 +82,11 @@ const RightControls = memo(function RightControlsComponent() {
         icon={<icons.magnifler3 size={14} />}
         onClick={action.next}
       />
-      <CtrlButton label="Language" icon={<icons.globe3 size={14} />} />
+      <CtrlButton
+        label="Language"
+        icon={<icons.globe3 size={14} />}
+        onClick={crab.resetLogits}
+      />
       <CtrlButton
         label="Update"
         icon={<icons.arrowDown size={14} />}

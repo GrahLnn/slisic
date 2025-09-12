@@ -65,6 +65,8 @@ pub fn run() {
         music::cancle_boost,
         music::cancle_fatigue,
         music::unstar,
+        music::reset_logits,
+        music::delete_music,
     ];
     let events = collect_events![
         event::FullScreenEvent,

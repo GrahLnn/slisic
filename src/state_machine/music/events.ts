@@ -79,6 +79,7 @@ export const payloads = collect(
   event<Music>()("down"),
   event<Music>()("cancle_up"),
   event<Music>()("cancle_down"),
+  event<Music>()("not_exist"),
   event<Playlist>()("delete"),
   event<string>()("cancel_review")
 );

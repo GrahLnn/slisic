@@ -203,6 +203,15 @@ export const src = setup({
       context.__stopSampling = undefined;
       analyzer.stopSampling?.();
 
+      const exists = await crab.exists(cur.path);
+      exists.tap((ok) => {
+        if (!ok) {
+          console.warn("[play_audio] file missing", cur.path);
+          self.send(payloads.not_exist.load(cur));
+          return;
+        }
+      });
+
       // 准备音源
       const url = await fileToBlobUrl(cur.path);
       if (liveToken() !== token) return;
@@ -383,6 +392,27 @@ export const src = setup({
           c.name === context.selected?.name ? context.selected : c
         ),
     }),
+    not_exist: assign({
+      flatList: EH.whenDone(payloads.not_exist.evt())((i, c) => {
+        return c.flatList.map((f) =>
+          f.path === i.path ? { ...f, downloaded_ok: false } : f
+        );
+      }),
+      selected: EH.whenDone(payloads.not_exist.evt())((i, c) => {
+        const s = c.selected;
+        if (!s) return;
+        return {
+          ...s,
+          entries: s.entries.map((fd) => ({
+            ...fd,
+            musics: fd.musics.map((m) =>
+              m.path === i.path ? { ...m, downloaded_ok: false } : m
+            ),
+          })),
+        };
+      }),
+    }),
+    clean_not_exist: EH.take(payloads.not_exist.evt())(crab.deleteMusic),
     unstar: assign({
       flatList: EH.whenDone(payloads.unstar.evt())((i, c) => {
         crab.unstar(c.selected!, i);
@@ -428,7 +458,13 @@ export const src = setup({
     down: assign({
       flatList: EH.whenDone(payloads.down.evt())((p, c) =>
         c.flatList.map((i) =>
-          i.path === p.path ? { ...i, fatigue: i.fatigue + 0.1 } : i
+          i.path === p.path
+            ? {
+                ...i,
+                fatigue: i.fatigue + 0.1,
+                user_boost: i.user_boost > 0 ? i.user_boost - 0.1 : 0.0,
+              }
+            : i
         )
       ),
       selected: EH.whenDone(payloads.down.evt())((i, c) => {
@@ -439,7 +475,13 @@ export const src = setup({
           entries: s.entries.map((fd) => ({
             ...fd,
             musics: fd.musics.map((m) =>
-              m.path === i.path ? { ...m, fatigue: m.fatigue + 0.1 } : m
+              m.path === i.path
+                ? {
+                    ...m,
+                    fatigue: m.fatigue + 0.1,
+                    user_boost: i.user_boost > 0 ? i.user_boost - 0.1 : 0.0,
+                  }
+                : m
             ),
           })),
         };
@@ -449,7 +491,9 @@ export const src = setup({
     cancle_up: assign({
       flatList: EH.whenDone(payloads.cancle_up.evt())((p, c) =>
         c.flatList.map((i) =>
-          i.path === p.path ? { ...i, user_boost: i.user_boost - 0.1 } : i
+          i.path === p.path
+            ? { ...i, user_boost: i.user_boost > 0 ? i.user_boost - 0.1 : 0.0 }
+            : i
         )
       ),
       selected: EH.whenDone(payloads.cancle_up.evt())((i, c) => {
@@ -460,7 +504,12 @@ export const src = setup({
           entries: s.entries.map((fd) => ({
             ...fd,
             musics: fd.musics.map((m) =>
-              m.path === i.path ? { ...m, user_boost: i.user_boost - 0.1 } : m
+              m.path === i.path
+                ? {
+                    ...m,
+                    user_boost: i.user_boost > 0 ? i.user_boost - 0.1 : 0.0,
+                  }
+                : m
             ),
           })),
         };
