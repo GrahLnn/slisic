@@ -8,13 +8,7 @@ A compact music player built around smart shuffle and consistent listening exper
 - Shuffle playback driven by user-guided probability distributions — randomness tuned to feel natural.
 - Loudness normalization (based on LUFS) for a consistent listening volume across different tracks.
 - Automatically split and name media with embedded chapter information (powered by FFmpeg).
-
-## Technology
-
-- [Tauri](https://tauri.app/) for cross-platform desktop framework
-- [React](https://react.dev/) for UI
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) for media extraction
-- [FFmpeg](https://ffmpeg.org/) for media processing and chapter splitting
+- Brilliant Music Visualization.
 
 ## Getting Started
 
