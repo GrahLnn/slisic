@@ -96,6 +96,15 @@ export const src = setup({
           })
       ),
     }),
+    add_folder_check: assign({
+      folderReviews: EH.whenDone(payloads.add_folder_check.evt())(
+        (entry, c, _evt, sp) =>
+          c.folderReviews.concat({
+            path: entry.path!,
+            actor: sp(sub_machine.check_folder)({ entry }),
+          })
+      ),
+    }),
     over_review: assign({
       reviews: EH.whenDone(sub_machine.review.evt())((i, c) =>
         c.reviews.filter((r) => r.url !== i.url)
@@ -134,12 +143,32 @@ export const src = setup({
         };
       }),
     }),
+    over_folder_check: assign({
+      folderReviews: EH.whenDone(sub_machine.check_folder.evt())(({ r }, c) =>
+        r.match({
+          Ok: (g) => c.folderReviews.filter((r) => r.path !== g.path),
+          Err: K(c.folderReviews),
+        })
+      ),
+      slot: EH.whenDone(sub_machine.check_folder.evt())(({ r }, c) => {
+        if (!c.slot || r.isErr()) return c.slot;
+        const entry = r.unwrap();
+        return {
+          ...c.slot,
+          entries: c.slot.entries.map((e) =>
+            e.path === entry.path ? entry : e
+          ),
+        };
+      }),
+    }),
     update_single: assign({
       collections: EH.whenDone(payloads.update_single.evt())(I),
     }),
     ensure_list: assign({
       flatList: EH.whenDone(payloads.toggle_audio.evt())((i) =>
-        i!.entries.flatMap((f) => f.musics)
+        i!.entries
+          .flatMap((f) => f.musics)
+          .filter((m) => !i!.exclude.includes(m))
       ),
       selected: EH.whenDone(payloads.toggle_audio.evt())((i) => i || undefined),
     }),
@@ -423,10 +452,7 @@ export const src = setup({
         if (!s) return;
         return {
           ...s,
-          entries: s.entries.map((fd) => ({
-            ...fd,
-            musics: fd.musics.filter((m) => m.path !== i.path),
-          })),
+          exclude: [...s.exclude, i],
         };
       }),
     }),
@@ -590,7 +616,8 @@ export const src = setup({
   guards: {
     hasData: ({ context }) => context.collections.length > 0,
     noData: ({ context }) => context.collections.length === 0,
-    is_review: ({ context }) => context.reviews.length > 0,
+    is_review: ({ context }) =>
+      context.reviews.length > 0 || context.folderReviews.length > 0,
     is_list_complete: ({ context }) => {
       const slot = context.slot;
       if (!slot) return false;
@@ -610,16 +637,21 @@ export const src = setup({
       const entryLink = new Set(slot.entries.map((l) => l.url));
       const linkHasIntersection = slot.links.some((l) => entryLink.has(l.url));
       const entryName = new Set(slot.entries.map((l) => l.name));
-      const nameHasIntersection = slot.links.some((l) =>
-        entryName.has(l.title_or_msg)
+      const entryHasDifference = selected.entries.some(
+        (l) => !entryName.has(l.name)
+      );
+      const excludeTitle = new Set(slot.exclude.map((l) => l.title));
+      const hasDifference = selected.exclude.some(
+        (l) => !excludeTitle.has(l.title)
       );
       return (
-        (slot.name.trim() !== selected.name ||
-          slot.links.length + slot.folders.length > 0 ||
-          slot.entries.length !== selected.entries.length) &&
         !hasIntersection &&
         !linkHasIntersection &&
-        !nameHasIntersection
+        (slot.name.trim() !== selected.name ||
+          slot.links.length + slot.folders.length > 0 ||
+          slot.entries.length !== selected.entries.length ||
+          entryHasDifference ||
+          hasDifference)
       );
     },
   },

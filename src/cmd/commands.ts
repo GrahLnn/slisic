@@ -238,6 +238,22 @@ async deleteMusic(music: Music) : Promise<Result<null, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async recheckFolder(entry: Entry) : Promise<Result<Entry, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("recheck_folder", { entry }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async rmexclude(list: Playlist, music: Music) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rmexclude", { list, music }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -263,7 +279,7 @@ ytdlpVersionChanged: "ytdlp-version-changed"
 /** user-defined types **/
 
 export type CheckResult = { installed_path: string | null; installed_version: string | null; latest_version: string | null; needs_update: boolean; asset_name: string; download_url: string }
-export type CollectMission = { name: string; folders: FolderSample[]; links: LinkSample[]; entries: Entry[] }
+export type CollectMission = { name: string; folders: FolderSample[]; links: LinkSample[]; entries: Entry[]; exclude: Music[] }
 export type Entry = { path: string | null; name: string; musics: Music[]; avg_db: number | null; url: string | null; downloaded_ok: boolean | null; tracking: boolean | null; entry_type: EntryType }
 export type EntryType = "Local" | "WebList" | "WebVideo" | "Unknown"
 export type FfCheck = { installed_path: string | null; latest_tag: string | null; needs_install: boolean; asset_name: string | null; download_url: string | null; note: string | null }
@@ -275,7 +291,7 @@ export type LinkStatus = "Ok" | "Err"
 export type MediaInfo = { title: string; item_type: string; entries_count: number | null }
 export type MouseWindowInfo = { mouse_x: number; mouse_y: number; window_x: number; window_y: number; window_width: number; window_height: number; rel_x: number; rel_y: number; pixel_ratio: number }
 export type Music = { path: string; title: string; avg_db: number | null; base_bias: number; user_boost: number; fatigue: number; diversity: number }
-export type Playlist = { name: string; avg_db: number | null; entries: Entry[] }
+export type Playlist = { name: string; avg_db: number | null; entries: Entry[]; exclude: Music[] }
 export type ProcessMsg = { str: string }
 export type ProcessResult = { working_path: string; saved_path: string; name: string }
 export type YtdlpVersionChanged = { str: string }

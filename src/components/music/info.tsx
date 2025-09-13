@@ -163,6 +163,7 @@ function TrackPaster() {
 
 function Entries() {
   const slot = hook.useSlot();
+  const inProgressFolder = hook.useAllFolderReview();
   if (!slot) return;
   return (
     <div className="flex flex-col gap-2">
@@ -185,8 +186,21 @@ function Entries() {
                 });
               }}
               rightButton={me(v.entry_type).match({
-                WebList: K([{ name: "Update" }, { name: "Reload" }]),
-                _: K([{ name: "Reload" }]),
+                WebList: K([
+                  { name: "Update" },
+                  {
+                    name: "Reload",
+                    onClick: () => action.add_folder_check(v),
+                    inProgress: inProgressFolder.includes(v.path!),
+                  },
+                ]),
+                _: K([
+                  {
+                    name: "Reload",
+                    onClick: () => action.add_folder_check(v),
+                    inProgress: inProgressFolder.includes(v.path!),
+                  },
+                ]),
               })}
             />
           </div>
@@ -194,6 +208,40 @@ function Entries() {
       ) : (
         <div className="text-xs text-[#525252] dark:text-[#a3a3a3] transition">
           No entries
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Exclude() {
+  const slot = hook.useSlot();
+  if (!slot) return;
+  return (
+    <div className="flex flex-col gap-2">
+      <Head title="Entries" />
+      {slot.exclude.length > 0 ? (
+        slot.exclude.map((v) => (
+          <div key={v.path} className="flex flex-col gap-1">
+            <Pair
+              label={v.title}
+              value=""
+              allowEmptyValue
+              bantoggle
+              on
+              banTip="Remove"
+              banfn={() => {
+                action.set_slot({
+                  ...slot,
+                  exclude: slot.exclude.filter((f) => f.path !== v.path),
+                });
+              }}
+            />
+          </div>
+        ))
+      ) : (
+        <div className="text-xs text-[#525252] dark:text-[#a3a3a3] transition">
+          No Exclude
         </div>
       )}
     </div>
@@ -257,7 +305,10 @@ export function TrackEdit() {
           ),
         })}
         {mainstate.catch("edit")(() => (
-          <Entries />
+          <>
+            <Entries />
+            <Exclude />
+          </>
         ))}
       </div>
     </DataList>

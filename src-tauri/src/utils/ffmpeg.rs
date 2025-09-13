@@ -17,9 +17,9 @@ use crate::utils::file::{bin_dir, http, make_executable, remove_quarantine, Inst
 // ========= FFmpeg 下载与安装 =========
 
 const FF_API_LATEST: &str = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest";
-const FF_DL_BASE: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download";
+const FF_DL_BASE: &str = "https://xget.grahlnn.com/gh/BtbN/FFmpeg-Builds/releases/latest/download";
 const FF_SUMS: &str =
-    "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/sha256sums.txt";
+    "https://xget.grahlnn.com/gh/BtbN/FFmpeg-Builds/releases/latest/download/sha256sums.txt";
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
 struct FfAssetSpec {

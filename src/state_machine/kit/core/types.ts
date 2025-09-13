@@ -140,18 +140,6 @@ type NormalizeByType<U extends { type: PropertyKey }> = U extends any
     : never
   : never;
 
-/* —— DuplicateTypeList：基于“归一化 + 剥前缀后的 type”去重 —— */
-type TypesOfTuple<T extends readonly any[]> = T extends readonly [
-  infer H,
-  ...infer R
-]
-  ? [H extends { type: infer K } ? K : never, ...TypesOfTuple<R>]
-  : [];
-
-type DuplicateTypeList<U extends { type: PropertyKey }> = Duplicates<
-  TypesOfTuple<UnionToTuple<NormalizeByType<U>>>
->;
-
 /* —— 宽类型检查也基于归一化后的 type（含剥前缀） —— */
 type BroadKinds<U extends { type: PropertyKey }> = NormalizeByType<U> extends {
   type: infer K;
@@ -171,10 +159,32 @@ type BroadKinds<U extends { type: PropertyKey }> = NormalizeByType<U> extends {
     : never
   : never;
 
+type IsUnion<T, U = T> = (T extends any ? (k: T) => void : never) extends (
+  k: infer I
+) => void
+  ? [U] extends [I]
+    ? false
+    : true
+  : never;
+
 /* —— UniqueEvts：逻辑不变，但内部用的是“剥前缀后”的 NormalizeByType —— */
+type KeysAfterNormalize<U extends { type: PropertyKey }> =
+  NormalizeByType<U> extends { type: infer K } ? K : never;
+
+/** 保留原名：DuplicateTypeList —— 但实现改为浅判重复 */
+type DuplicateTypeList<U extends { type: PropertyKey }> =
+  KeysAfterNormalize<U> extends infer K
+    ? K extends PropertyKey
+      ? IsUnion<Extract<NormalizeByType<U>, { type: K }>> extends true
+        ? K
+        : never
+      : never
+    : never;
+
+/** 保留原名与分支结构：UniqueEvts —— 用新的 DuplicateTypeList 与 BroadKinds */
 export type UniqueEvts<U extends { type: PropertyKey }> = [
   DuplicateTypeList<U>
-] extends [[]]
+] extends [never]
   ? [BroadKinds<U>] extends [never]
     ? U
     : { __ERROR_NON_LITERAL_EVENT_TYPES: BroadKinds<U> }

@@ -18,15 +18,15 @@ import {
 import { I } from "@/lib/comb";
 import crab from "../cmd";
 import { Err, Ok, Result } from "@/lib/result";
-import { MediaInfo } from "../cmd/commands";
+import { Entry, MediaInfo } from "../cmd/commands";
 
 export const ss = defineSS(
   ns("mainx", sst(["idle", "probe_info", "done"], ["cancle"]))
 );
 export const payloads = collect(event<string>()("probe"));
 const invoker = createActors({
-  async look_media({ input }: ActorInput<{ url: string }>) {
-    const a = await crab.lookMedia(input.url);
+  async check_folder({ input }: ActorInput<{ entry: Entry }>) {
+    const a = await crab.recheckFolder(input.entry);
     return a.unwrap();
   },
 });
@@ -37,36 +37,33 @@ type Events = UniqueEvts<
   | PayloadEvt<typeof payloads.infer>
 >;
 
-export type ActorDone = { url: string; r: Result<MediaInfo, string> };
+export type CheckDone = { r: Result<Entry, string> };
 
 type Context = {
-  url?: string;
-  result?: Result<MediaInfo, string>;
+  entry?: Entry;
+  result?: Result<Entry, string>;
 };
 const h = eventHandler<Context, Events>();
 const src = setup({
   actors: invoker.as_act(),
   types: {
-    input: {} as { url: string },
+    input: {} as { entry: Entry },
     context: {} as Context,
     events: {} as Events,
-    output: {} as ActorDone,
+    output: {} as CheckDone,
   },
   actions: {
-    add_url: assign({
-      url: h.whenDone(payloads.probe.evt())(I),
-    }),
     ok: assign({
-      result: h.whenDone(invoker.look_media.evt())(Ok),
+      result: h.whenDone(invoker.check_folder.evt())(Ok),
     }),
   },
   guards: {},
 });
 
-export const machine = src.createMachine({
+export const check_folder_machine = src.createMachine({
   initial: ss.mainx.State.probe_info,
   context: ({ input }) => ({
-    url: input.url,
+    entry: input.entry,
   }),
   on: {
     cancle: godown(ss.mainx.State.done),
@@ -74,9 +71,9 @@ export const machine = src.createMachine({
   states: {
     [ss.mainx.State.probe_info]: {
       invoke: {
-        id: invoker.look_media.name,
-        src: invoker.look_media.name,
-        input: ({ context: { url } }) => ({ url }),
+        id: invoker.check_folder.name,
+        src: invoker.check_folder.name,
+        input: ({ context: { entry } }) => ({ entry }),
         onDone: {
           target: ss.mainx.State.done,
           actions: "ok",
@@ -93,5 +90,5 @@ export const machine = src.createMachine({
       type: "final",
     },
   },
-  output: ({ context }) => ({ url: context.url!, r: context.result! }),
+  output: ({ context }) => ({ r: context.result! }),
 });

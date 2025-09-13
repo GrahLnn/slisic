@@ -221,7 +221,7 @@ export function MultiFolderChooser({
   );
 }
 
-type RightTool = { name: string; onClick?: () => void };
+type RightTool = { name: string; onClick?: () => void; inProgress?: boolean };
 
 interface PairProps {
   label: string | React.ReactNode;
@@ -237,12 +237,14 @@ interface PairProps {
   verified?: boolean;
   anime?: boolean;
   rightButton?: Array<RightTool> | RightTool;
+  allowEmptyValue?: boolean;
 }
 
 export function Pair({
   label,
   value,
   bantoggle,
+  allowEmptyValue = false,
   banTip = "Disable",
   on,
   actionfn,
@@ -380,39 +382,57 @@ export function Pair({
                       </motion.div>
                     ),
                   }),
-                false: () => <icons.minus size={12} />,
+                false: () => !allowEmptyValue && <icons.minus size={12} />,
               })}
             </AnimatePresence>
             <AnimatePresence>
-              {valueIsHover && rightButton && (
+              {rightButton && (
                 <div className="absolute -top-0.5 right-0 z-50">
                   <div className="flex items-center">
-                    <motion.div
-                      className="w-6 py-0.5 mask-rol"
-                      initial={{ backdropFilter: "blur(0px)" }}
-                      animate={{
-                        backdropFilter: "blur(1px)",
-                      }}
-                      exit={{
-                        backdropFilter: "blur(0px)",
-                      }}
-                      transition={{ duration: 0.2 }}
-                    >
-                      <div className="text-xs opacity-0">_</div>
-                    </motion.div>
-                    <div className="flex">
-                      {col_right.map((v, i) => (
+                    {(valueIsHover || col_right.some((v) => v.inProgress)) && (
+                      <motion.div
+                        className="w-6 py-0.5 mask-rol"
+                        initial={{ backdropFilter: "blur(0px)" }}
+                        animate={{
+                          backdropFilter: "blur(1px)",
+                        }}
+                        exit={{
+                          backdropFilter: "blur(0px)",
+                        }}
+                        transition={{ duration: 0.2 }}
+                      >
+                        <div className="text-xs opacity-0">_</div>
+                      </motion.div>
+                    )}
+                    {col_right
+                      .filter((v) => valueIsHover || v.inProgress)
+                      .map((v, i) => (
                         <React.Fragment key={v.name}>
                           {i > 0 && <div className="w-1 backdrop-blur-[1px]" />}
                           <motion.div
-                            className="bg-[#f9f9f9] dark:bg-[#383838] rounded-md shadow px-1 py-0.5 border border-[#d4d4d4] dark:border-[#4a4a4a] cursor-pointer"
+                            className={cn([
+                              "bg-[#f9f9f9] dark:bg-[#383838] rounded-md shadow px-1 py-0.5 border border-[#d4d4d4] dark:border-[#4a4a4a]",
+                              v.inProgress ? "cursor-wait" : "cursor-pointer",
+                            ])}
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
                             transition={{ duration: 0.2 }}
                             onClick={v.onClick}
                           >
-                            <div className="flex items-center gap-0.5 whitespace-nowrap">
+                            <div className="flex items-center gap-0.5 whitespace-nowrap relative">
+                              {v.inProgress && (
+                                <div className="absolute left-0 top-0 flex items-center h-full">
+                                  <div className="backdrop-blur-[1px] text-[#000000] dark:text-[#e5e5e5]">
+                                    <motionIcons.live
+                                      size={12}
+                                      className="animate-spin [animation-duration:5s]"
+                                      fillOpacity={0.4}
+                                    />
+                                  </div>
+                                  <div className="w-6 h-full backdrop-blur-[1px] mask-lor" />
+                                </div>
+                              )}
                               <div className="text-xs text-[#404040] dark:text-[#a3a3a3] transition">
                                 {v.name}
                               </div>
@@ -420,7 +440,6 @@ export function Pair({
                           </motion.div>
                         </React.Fragment>
                       ))}
-                    </div>
                   </div>
                 </div>
               )}

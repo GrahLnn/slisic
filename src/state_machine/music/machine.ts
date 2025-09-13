@@ -14,6 +14,7 @@ export const machine = src.createMachine({
     collections: [],
     flatList: [],
     reviews: [],
+    folderReviews: [],
     audio: new Audio(),
   },
   on: {
@@ -27,6 +28,12 @@ export const machine = src.createMachine({
     },
     [sub_machine.review.evt()]: {
       actions: ["over_review", raise(ss.mainx.Signal.review_check)],
+    },
+    add_folder_check: {
+      actions: ["add_folder_check", raise(ss.mainx.Signal.review_check)],
+    },
+    [sub_machine.check_folder.evt()]: {
+      actions: ["over_folder_check", raise(ss.mainx.Signal.review_check)],
     },
     update_single: {
       actions: "update_single",
