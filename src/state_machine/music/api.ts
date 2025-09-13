@@ -3,7 +3,7 @@ import { machine } from "./machine";
 import { useSelector } from "@xstate/react";
 import { me } from "@/lib/matchable";
 import { MainStateT, payloads, ss } from "./events";
-import { CollectMission, Music, Playlist } from "@/src/cmd/commands";
+import { CollectMission, Entry, Music, Playlist } from "@/src/cmd/commands";
 
 export const actor = createActor(machine);
 export const hook = {
@@ -16,6 +16,8 @@ export const hook = {
   useCurList: () => useSelector(actor, (s) => s.context.selected),
   ussIsPlaying: () => useSelector(actor, (s) => s.matches({ play: "playing" })),
   useIsReview: () => useSelector(actor, (s) => s.context.reviews.length > 0),
+  useAllFolderReview: () =>
+    useSelector(actor, (s) => s.context.folderReviews.map((r) => r.path)),
 };
 /**
  * Active Operation State
@@ -33,6 +35,8 @@ export const action = {
   set_slot: (slot: CollectMission) => actor.send(payloads.set_slot.load(slot)),
   add_new: () => actor.send(ss.mainx.Signal.to_create),
   add_review: (url: string) => actor.send(payloads.add_review_actor.load(url)),
+  add_folder_check: (entry: Entry) =>
+    actor.send(payloads.add_folder_check.load(entry)),
   save: () => actor.send(ss.resultx.Signal.done),
   play: (playlist: Playlist) =>
     actor.send(payloads.toggle_audio.load(playlist)),

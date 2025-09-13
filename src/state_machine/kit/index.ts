@@ -35,6 +35,7 @@ export {
 export {
   eventHandler,
   event,
+  events,
   collect,
   to_string,
   machine,

@@ -117,12 +117,13 @@ pub trait Crud:
     where
         Self: HasId,
     {
-        Self::update_by_id(self.id(), self).await
+        let id = self.clone().id();
+        self.update_by_id(id).await
     }
 
-    async fn update_by_id(id: RecordId, data: Self) -> Result<Self> {
+    async fn update_by_id(self, id: RecordId) -> Result<Self> {
         let db = get_db()?;
-        let updated: Option<Self> = db.update(id).content(data).await?;
+        let updated: Option<Self> = db.update(id).content(self).await?;
         updated.ok_or(DBError::NotFound.into())
     }
 

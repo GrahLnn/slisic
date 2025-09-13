@@ -1,4 +1,4 @@
-import { CollectMission, Music, Playlist } from "@/src/cmd/commands";
+import { CollectMission, Entry, Music, Playlist } from "@/src/cmd/commands";
 import {
   collect,
   defineSS,
@@ -8,6 +8,7 @@ import {
   machine,
   ActorInput,
   createActors,
+  events,
 } from "../kit";
 import { resultx } from "../state";
 import { ActorDone, machine as muinfoMachine } from "../muinfo";
@@ -16,6 +17,8 @@ import crab from "@/src/cmd";
 import { fromCallback } from "xstate";
 import { AudioAnalyzer } from "@/src/components/audio/analyzer";
 import { station } from "@/src/subpub/buses";
+import { check_folder_machine, CheckDone } from "../foldercheck";
+import { Result } from "@/lib/result";
 
 export const analyzeAudio = fromCallback<any, { analyzer: AudioAnalyzer }>(
   ({ input, receive }) => {
@@ -69,24 +72,26 @@ export const ss = defineSS(
 
 export const payloads = collect(
   event<CollectMission>()("set_slot"),
-  event<string>()("add_review_actor"),
+  events<string>()("add_review_actor", "cancel_review"),
   event<Playlist[]>()("update_single"),
   event<Playlist | null>()("toggle_audio"),
+  events<Playlist>()("edit_playlist", "delete"),
   event<Frame>()("update_audio_frame"),
-  event<Playlist>()("edit_playlist"),
-  event<Music>()("unstar"),
-  event<Music>()("up"),
-  event<Music>()("down"),
-  event<Music>()("cancle_up"),
-  event<Music>()("cancle_down"),
-  event<Music>()("not_exist"),
-  event<Playlist>()("delete"),
-  event<string>()("cancel_review")
+  event<Entry>()("add_folder_check"),
+  events<Music>()(
+    "unstar",
+    "up",
+    "down",
+    "cancle_up",
+    "cancle_down",
+    "not_exist"
+  )
 );
 
 export const sub_machine = collect(
   machine<ActorDone>(muinfoMachine)("review"),
-  machine(analyzeAudio)("analyzeAudio")
+  machine(analyzeAudio)("analyzeAudio"),
+  machine<CheckDone>(check_folder_machine)("check_folder")
 );
 
 export const invoker = createActors({

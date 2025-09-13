@@ -2,9 +2,12 @@ mod database;
 mod domain;
 mod utils;
 
-use crate::utils::{
-    enq::init_global_download_queue,
-    ytdlp::{auto_resume_mission, spawn_ytdlp_auto_update},
+use crate::{
+    domain::models::music::fix_cur_data,
+    utils::{
+        enq::init_global_download_queue,
+        ytdlp::{auto_resume_mission, spawn_ytdlp_auto_update},
+    },
 };
 use anyhow::Result;
 use database::{init_db, Crud};
@@ -67,6 +70,8 @@ pub fn run() {
         music::unstar,
         music::reset_logits,
         music::delete_music,
+        music::recheck_folder,
+        music::rmexclude,
     ];
     let events = collect_events![
         event::FullScreenEvent,
@@ -116,15 +121,15 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
             let handle = app.handle().clone();
             let _ = init_global_download_queue(handle.clone(), /*capacity*/ 1024);
             builder.mount_events(app);
-            // spawn_ytdlp_auto_update(handle.clone());
             let _ = auto_resume_mission(handle.clone());
+
             block_in_place(|| {
                 block_on(async move {
                     let local_data_dir = handle.path().app_local_data_dir()?;
                     let db_path = local_data_dir.join(DB_PATH);
                     println!("DB initialized on {}", db_path.display());
                     init_db(db_path).await?;
-
+                    // fix_cur_data().await?;
                     if let Some(window) = handle.get_webview_window("main") {
                         tokio::spawn({
                             let window = window.clone();

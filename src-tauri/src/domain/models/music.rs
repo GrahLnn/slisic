@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use crate::database::enums::table::{Rel, Table};
 use crate::database::{Crud, HasId, Relation};
-use crate::utils::config::resolve_save_path;
 use crate::utils::enq::enqueue;
 use crate::utils::ffmpeg::integrated_lufs;
 use crate::utils::file::all_audio_recursive;
@@ -24,7 +23,7 @@ use uuid::Uuid;
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
 pub struct Collection {
     pub name: String,
-    pub avg_db: Option<f32>,
+    pub exclude: Vec<Music>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
@@ -32,6 +31,7 @@ pub struct Playlist {
     pub name: String,
     pub avg_db: Option<f32>,
     pub entries: Vec<Entry>,
+    pub exclude: Vec<Music>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
@@ -62,6 +62,16 @@ pub struct CollectMission {
     pub folders: Vec<FolderSample>,
     pub links: Vec<LinkSample>,
     pub entries: Vec<Entry>,
+    pub exclude: Vec<Music>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct MusicCtx {
+    pub collection: RecordId, // 关联到 Collection 的外键（RecordId）
+    pub base_bias: f32,
+    pub user_boost: f32,
+    pub fatigue: f32,
+    pub diversity: f32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
@@ -85,6 +95,7 @@ pub struct DbMusic {
     pub user_boost: f32,
     pub fatigue: f32,
     pub diversity: f32,
+    // pub ctxs: Vec<MusicCtx> 没找到必要的场景，再看看，根据核心设计多ctx不太必要
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
@@ -253,6 +264,7 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
         folders,
         links,
         entries: _,
+        exclude: _,
     } = data;
 
     if !folders.is_empty() {
@@ -374,7 +386,10 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
     entries.extend(folder_entries.clone().into_iter().map(|e| e.entry));
     entries.extend(link_entries);
 
-    let col = Collection { name, avg_db: None };
+    let col = Collection {
+        name,
+        exclude: Vec::new(),
+    };
     // ========== 后续数据库操作（保持原子序） ==========
     DbEntry::insert_jump(entries.clone())
         .await
@@ -577,6 +592,7 @@ pub async fn read(name: String) -> Result<Playlist, String> {
     };
     Ok(Playlist {
         name: col.name,
+        exclude: col.exclude,
         avg_db,
         entries,
     })
@@ -635,11 +651,108 @@ pub async fn read_all() -> Result<Vec<Playlist>, String> {
         };
         lists.push(Playlist {
             name: col.name,
+            exclude: col.exclude,
             avg_db,
             entries,
         });
     }
     Ok(lists)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn recheck_folder(app: AppHandle, entry: Entry) -> Result<Entry, String> {
+    let db_entry: DbEntry = entry.clone().into();
+    let entry_id = db_entry.id.clone();
+    let musics = entry.musics.clone();
+    let folder = entry.path.clone();
+    let musics_in_folder =
+        all_audio_recursive(folder.clone().expect("folder is None")).map_err(|e| e.to_string())?;
+    let paths: Vec<String> = musics_in_folder
+        .iter()
+        .map(|m| m.to_string_lossy().into_owned())
+        .collect();
+    let music_paths_set: HashSet<&str> = musics.iter().map(|m| m.path.as_str()).collect();
+    let folder_paths_set: HashSet<&str> = paths.iter().map(|p| p.as_str()).collect();
+
+    // 4) 该添加：文件夹里有，但 musics 里没有 → Vec<String>
+    let to_add_ref: Vec<String> = paths
+        .clone()
+        .into_iter()
+        .filter(|p| !music_paths_set.contains(p.as_str()))
+        .collect();
+
+    // 5) 该移除：musics 里有，但文件夹里没有 → Vec<Music>
+    let to_remove_ref: Vec<Music> = musics
+        .into_iter()
+        .filter(|m| !folder_paths_set.contains(m.path.as_str()))
+        .collect();
+    for rm in to_remove_ref {
+        let music: DbMusic = rm.clone().into();
+        music.delete().await.map_err(|e| e.to_string())?;
+    }
+    let musics: Vec<Music> = stream::iter(to_add_ref.into_iter().map(|p| {
+        // 注意：把可能阻塞/CPU 密集的 lufs 计算放到 spawn_blocking
+        let p_clone = p.clone();
+        {
+            let app_clone = app.clone();
+            async move {
+                let lufs = task::spawn_blocking(move || integrated_lufs(&app_clone, &p_clone))
+                    .await
+                    .map_err(|e| format!("spawn_blocking panic: {e}"))?
+                    .ok()
+                    .map(|v| v as f32);
+
+                Ok::<_, String>(Music {
+                    path: p.clone(),
+                    title: PathBuf::from(p)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                    avg_db: lufs,
+                    base_bias: 0.0,
+                    user_boost: 0.0,
+                    fatigue: 0.0,
+                    diversity: 0.0,
+                })
+            }
+        }
+    }))
+    .buffer_unordered(CONC_LIMIT)
+    .try_collect::<Vec<_>>()
+    .await?;
+    let db_musics: Vec<DbMusic> = musics.into_iter().map(DbMusic::from).collect();
+    DbMusic::insert_jump(db_musics.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    let mu_ids: Vec<RecordId> = db_musics.iter().map(|m| m.clone().id).collect();
+    let entry_rel_music: Vec<Relation> = mu_ids
+        .clone()
+        .into_iter()
+        .map(|m| Relation {
+            _in: entry_id.clone(),
+            out: m,
+        })
+        .collect();
+    DbEntry::insert_relation(Rel::HasMusic, entry_rel_music)
+        .await
+        .map_err(|e| e.to_string())?;
+    let musics = db_entry.musics().await.map_err(|e| e.to_string())?;
+    let mut new_entry = entry.clone();
+    let (sum, count) = musics
+        .iter()
+        .filter_map(|m| m.avg_db)
+        .fold((0.0, 0), |(s, c), v| (s + v, c + 1));
+
+    new_entry.avg_db = if count > 0 {
+        Some(sum / count as f32)
+    } else {
+        None
+    };
+    new_entry.musics = musics;
+    Ok(new_entry)
 }
 
 #[tauri::command]
@@ -650,14 +763,21 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
         folders,
         links,
         entries,
+        exclude,
     } = data;
     let id = Collection::select_record_id("name", &anchor.name)
         .await
         .map_err(|e| e.to_string())?;
     if name != anchor.name {
-        Collection::patch(id.clone(), vec![PatchOp::replace("/name", name)])
-            .await
-            .map_err(|e| e.to_string())?;
+        Collection::patch(
+            id.clone(),
+            vec![
+                PatchOp::replace("/name", name),
+                PatchOp::replace("/exclude", exclude),
+            ],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
     }
     let (_to_add_ref, to_remove_ref) =
         diff_by_key(&entries, &anchor.entries, |e: &Entry| e.path.clone());
@@ -912,23 +1032,50 @@ pub async fn reset_logits() -> Result<(), String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn unstar(list: Playlist, music: Music) -> Result<(), String> {
-    let target = music.path.clone();
-    let music: DbMusic = music.into();
-
-    let entries: Vec<DbEntry> = list
-        .entries
-        .into_iter()
-        .filter(|e| e.musics.iter().any(|m| m.path == target))
-        .map(Into::into)
-        .collect();
-
-    let futs = entries
-        .iter()
-        .map(|e| e.unrelate(music.clone(), Rel::HasMusic));
-
-    futures::future::try_join_all(futs)
+    let col_id = Collection::select_record_id("name", &list.name)
         .await
         .map_err(|e| e.to_string())?;
+    let mut col = Collection::select_record(col_id.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    col.exclude.push(music);
+    col.update_by_id(col_id).await.map_err(|e| e.to_string())?;
 
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn rmexclude(list: Playlist, music: Music) -> Result<(), String> {
+    let col_id = Collection::select_record_id("name", &list.name)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut col = Collection::select_record(col_id.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    col.exclude.retain(|m| m.path != music.path);
+    col.update_by_id(col_id).await.map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+// #[tauri::command]
+// #[specta::specta]
+pub async fn fix_cur_data() -> Result<(), String> {
+    let all_cols = Collection::all_record().await.map_err(|e| e.to_string())?;
+    for col in all_cols {
+        Collection::patch(
+            col,
+            vec![
+                PatchOp::add("/exclude", Vec::<Music>::new()),
+                PatchOp::remove("/avg_db"),
+            ],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    let all = Collection::select_all().await.map_err(|e| e.to_string())?;
+    println!("fix_cur_data {:?}", all);
+    println!("fix_cur_data done");
     Ok(())
 }

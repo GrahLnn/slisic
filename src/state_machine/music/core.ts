@@ -2,12 +2,18 @@ import { Playlist, CollectMission, Music } from "@/src/cmd/commands";
 
 import { Actor, ActorRefFromLogic } from "xstate";
 import { machine } from "../muinfo";
+import { check_folder_machine } from "../foldercheck";
 import { AudioAnalyzer } from "@/src/components/audio/analyzer";
 import { AudioEngine } from "@/src/components/audio/engine";
 
 export interface Review {
   url: string;
   actor: ActorRefFromLogic<typeof machine>;
+}
+
+export interface FolderReview {
+  path: string;
+  actor: ActorRefFromLogic<typeof check_folder_machine>;
 }
 
 export type Frame = {
@@ -41,6 +47,7 @@ export interface Context {
   flatList: Array<Music>;
   slot?: CollectMission;
   reviews: Review[];
+  folderReviews: FolderReview[];
   ref?: any;
   audio: HTMLAudioElement;
   analyzer?: AudioAnalyzer;
@@ -60,6 +67,7 @@ export function new_slot(): CollectMission {
     folders: [],
     links: [],
     entries: [],
+    exclude: [],
   };
 }
 
@@ -69,5 +77,6 @@ export function into_slot(playlist: Playlist): CollectMission {
     entries: playlist.entries,
     folders: [],
     links: [],
+    exclude: playlist.exclude,
   };
 }

@@ -4,11 +4,15 @@ A compact music player built around smart shuffle and consistent listening exper
 
 ## Features
 
-- Download and manage media from most major streaming platforms (powered by yt-dlp) or import from local folders.
-- Shuffle playback driven by user-guided probability distributions — randomness tuned to feel natural.
-- Loudness normalization (based on LUFS) for a consistent listening volume across different tracks.
-- Automatically split and name media with embedded chapter information (powered by FFmpeg).
-- Brilliant Music Visualization.
+- Download from most major streaming platforms (powered by yt-dlp), or import from local folders.
+
+- Loudness normalization (LUFS) for consistent volume across tracks.
+
+- Auto split & naming for media with embedded chapters (via FFmpeg).
+
+- Perceptually balanced, user-guided shuffle: probabilities follow your tastes while smoothing spikes, so nothing is overplayed or forgotten.
+
+- Real-time music visualizer.
 
 ## Getting Started
 
