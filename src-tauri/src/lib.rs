@@ -72,6 +72,7 @@ pub fn run() {
         music::delete_music,
         music::recheck_folder,
         music::rmexclude,
+        music::update_weblist,
     ];
     let events = collect_events![
         event::FullScreenEvent,

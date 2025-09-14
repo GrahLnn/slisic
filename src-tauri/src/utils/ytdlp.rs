@@ -39,9 +39,9 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 const GH_API_LATEST: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
-const GH_DL_BASE: &str = "https://xget.grahlnn.com/gh/yt-dlp/yt-dlp/releases/latest/download";
+const GH_DL_BASE: &str = "https://xget.r2g2.org/gh/yt-dlp/yt-dlp/releases/latest/download";
 const GH_SUMS: &str =
-    "https://xget.grahlnn.com/gh/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS";
+    "https://xget.r2g2.org/gh/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS";
 
 fn file_non_empty(p: &Path) -> bool {
     match fs::metadata(p) {

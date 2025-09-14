@@ -105,6 +105,15 @@ export const src = setup({
           })
       ),
     }),
+    add_weblist_update: assign({
+      updateWeblistReviews: EH.whenDone(payloads.update_web_entry.evt())(
+        (entry, c, _evt, sp) =>
+          c.updateWeblistReviews.concat({
+            url: entry.url!,
+            actor: sp(sub_machine.update_weblist)({ entry }),
+          })
+      ),
+    }),
     over_review: assign({
       reviews: EH.whenDone(sub_machine.review.evt())((i, c) =>
         c.reviews.filter((r) => r.url !== i.url)
@@ -156,6 +165,47 @@ export const src = setup({
         return {
           ...c.slot,
           entries: c.slot.entries.map((e) =>
+            e.path === entry.path ? entry : e
+          ),
+        };
+      }),
+      selected: EH.whenDone(sub_machine.check_folder.evt())(({ r }, c) => {
+        if (!c.selected || r.isErr()) return c.selected;
+        const entry = r.unwrap();
+        return {
+          ...c.selected,
+          entries: c.selected.entries.map((e) =>
+            e.path === entry.path ? entry : e
+          ),
+        };
+      }),
+    }),
+    over_weblist_update: assign({
+      updateWeblistReviews: EH.whenDone(sub_machine.update_weblist.evt())(
+        ({ r }, c) =>
+          r.match({
+            Ok: (entry) => {
+              return c.updateWeblistReviews.filter((r) => r.url !== entry.url);
+            },
+            Err: K(c.updateWeblistReviews),
+          })
+      ),
+      slot: EH.whenDone(sub_machine.update_weblist.evt())(({ r }, c) => {
+        if (!c.slot || r.isErr()) return c.slot;
+        const entry = r.unwrap();
+        return {
+          ...c.slot,
+          entries: c.slot.entries.map((e) =>
+            e.path === entry.path ? entry : e
+          ),
+        };
+      }),
+      selected: EH.whenDone(sub_machine.update_weblist.evt())(({ r }, c) => {
+        if (!c.selected || r.isErr()) return c.selected;
+        const entry = r.unwrap();
+        return {
+          ...c.selected,
+          entries: c.selected.entries.map((e) =>
             e.path === entry.path ? entry : e
           ),
         };
@@ -617,7 +667,9 @@ export const src = setup({
     hasData: ({ context }) => context.collections.length > 0,
     noData: ({ context }) => context.collections.length === 0,
     is_review: ({ context }) =>
-      context.reviews.length > 0 || context.folderReviews.length > 0,
+      context.reviews.length > 0 ||
+      context.folderReviews.length > 0 ||
+      context.updateWeblistReviews.length > 0,
     is_list_complete: ({ context }) => {
       const slot = context.slot;
       if (!slot) return false;

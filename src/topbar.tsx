@@ -9,6 +9,23 @@ import { station } from "./subpub/buses";
 import { useXState as useCenterToolState } from "./state_machine/centertool";
 import crab from "./cmd";
 import { action } from "./state_machine/music";
+import logoUrl from "@/src/assets/logo.png";
+import { platform } from "@tauri-apps/plugin-os";
+import { me } from "@/lib/matchable";
+
+const os = me(platform());
+
+export function Brand() {
+  return (
+    <img
+      src={logoUrl}
+      className="h-6 w-6"
+      alt="App logo"
+      draggable={false}
+      style={{ imageRendering: "auto" }}
+    />
+  );
+}
 
 interface CtrlButtonProps extends PropsWithChildren {
   icon?: React.ReactNode;
@@ -204,8 +221,9 @@ const TopBar = memo(function TopBarComponent() {
               <>
                 <div
                   data-tauri-drag-region
-                  className={cn(["flex justify-start pl-1"])}
+                  className={cn(["flex justify-start pl-1 items-center"])}
                 >
+                  {os.is("windows") && <Brand />}
                   <LeftControls />
                 </div>
                 <div

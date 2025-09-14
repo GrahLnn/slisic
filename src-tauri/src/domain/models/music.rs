@@ -1,11 +1,13 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::database::enums::table::{Rel, Table};
-use crate::database::{Crud, HasId, Relation};
-use crate::utils::enq::enqueue;
+use crate::database::{query_raw, query_take, Crud, HasId, Relation};
+use crate::utils::config::resolve_save_path;
+use crate::utils::enq::{enqueue, finalize_process};
 use crate::utils::ffmpeg::integrated_lufs;
 use crate::utils::file::all_audio_recursive;
-use crate::utils::ytdlp::Entry as YtdlpEntry;
+use crate::utils::ytdlp::{process_entry, Entry as YtdlpEntry};
 use crate::{impl_crud, impl_id, impl_schema};
 use anyhow::Result;
 use futures::{future, stream, StreamExt, TryStreamExt};
@@ -157,6 +159,9 @@ impl DbEntry {
             .collect();
         Ok(musics)
     }
+    pub async fn id(&self) -> Result<RecordId> {
+        DbEntry::select_record_id("name", &self.name).await
+    }
 }
 
 impl From<LinkSample> for YtdlpEntry {
@@ -165,6 +170,19 @@ impl From<LinkSample> for YtdlpEntry {
             id: Uuid::new_v4(),
             url: e.url,
             title: e.title_or_msg,
+            retries: 0,
+            error: None,
+            kind: None,
+        }
+    }
+}
+
+impl From<Entry> for YtdlpEntry {
+    fn from(e: Entry) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            url: e.url.unwrap_or("".to_string()),
+            title: e.name,
             retries: 0,
             error: None,
             kind: None,
@@ -1069,21 +1087,58 @@ pub async fn rmexclude(list: Playlist, music: Music) -> Result<(), String> {
 
 // #[tauri::command]
 // #[specta::specta]
-pub async fn fix_cur_data() -> Result<(), String> {
-    let all_cols = Collection::all_record().await.map_err(|e| e.to_string())?;
-    for col in all_cols {
-        Collection::patch(
-            col,
-            vec![
-                PatchOp::add("/exclude", Vec::<Music>::new()),
-                PatchOp::remove("/avg_db"),
-            ],
-        )
+pub async fn fix_cur_data() -> Result<()> {
+    let cols = Collection::select_all().await?;
+    dbg!(&cols);
+    // for col in cols {
+    //     let id = col.id().await?;
+    //     dbg!(&id);
+    //     let outs = Collection::outs(id, Rel::Collect, Table::Entry).await?;
+    //     dbg!(&outs);
+    //     for out in outs {
+    //         dbg!(out.clone());
+    //         let en = DbEntry::select_record(out).await?;
+    //         dbg!(en);
+    //     }
+    // }
+    for col in cols {
+        if col.name == "Test" {
+            let id = col.id().await?;
+            Collection::delete_record(id).await?;
+        }
+    }
+    let cols = Collection::select_all().await?;
+    dbg!(&cols);
+    // let r = query_raw("select * from collect").await?;
+    // dbg!(r);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn update_weblist(app: tauri::AppHandle, entry: Entry) -> Result<Entry, String> {
+    let base_folder = resolve_save_path(app.clone())?;
+    let base_folder = Arc::new(base_folder);
+    let mut yd: YtdlpEntry = entry.clone().into();
+    if yd.url.is_empty() {
+        Err("url is empty".to_string())?;
+    }
+    let res = process_entry(app.clone(), &base_folder, &mut yd, &[], &[]).await?;
+    finalize_process(&app, res).await;
+    let dbentry = DbEntry::select_record(entry.id().await.map_err(|e| e.to_string())?)
         .await
         .map_err(|e| e.to_string())?;
-    }
-    let all = Collection::select_all().await.map_err(|e| e.to_string())?;
-    println!("fix_cur_data {:?}", all);
-    println!("fix_cur_data done");
-    Ok(())
+    let musics = dbentry.musics().await.map_err(|e| e.to_string())?;
+    let mut new_entry = entry.clone();
+    let (sum, count) = musics
+        .iter()
+        .filter_map(|m| m.avg_db)
+        .fold((0.0f32, 0usize), |(s, c), v| (s + v, c + 1));
+    new_entry.avg_db = if count > 0 {
+        Some(sum / count as f32)
+    } else {
+        None
+    };
+    new_entry.musics = musics;
+    Ok(new_entry)
 }

@@ -15,21 +15,6 @@ import crab from "@/src/cmd";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { K } from "@/lib/comb";
 import { me } from "@/lib/matchable";
-import { udf } from "@/lib/e";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { Button } from "@/components/ui/button";
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
 
 export function Edit({ title, explain }: { title: string; explain: string }) {
   const slot = hook.useSlot();
@@ -63,7 +48,7 @@ export function Edit({ title, explain }: { title: string; explain: string }) {
 
 function TrackPaster() {
   const slot = hook.useSlot();
-  const isreview = hook.useIsReview();
+  const allreview = hook.useAllReview();
   if (!slot) return;
   const entriesurl = slot.entries.map((e) => e.url);
   const entriesname = slot.entries.map((e) => e.name);
@@ -80,7 +65,8 @@ function TrackPaster() {
           label="Paste"
           onClick={() => {
             readText().then((r) => {
-              if (!r || !isUrl(r)) return;
+              if (!r || !isUrl(r) || slot.links.map((l) => l.url).includes(r))
+                return;
               if (entriesurl.some((e) => e === r)) {
                 action.set_slot({
                   ...slot,
@@ -91,7 +77,9 @@ function TrackPaster() {
                       title_or_msg: "",
                       status: null,
                       count: null,
-                      entry_type: "Unknown",
+                      entry_type:
+                        slot.entries.find((e) => e.url === r)?.entry_type ??
+                        "Unknown",
                       tracking: false,
                     },
                   ],
@@ -129,7 +117,7 @@ function TrackPaster() {
               (v.count != null ? ` (${v.count} items)` : "") +
               (v.tracking ? "·tracking" : "")
             }
-            value={v.title_or_msg + (!verified ? "[Already exists]" : "")}
+            value={v.title_or_msg + (verified ? "" : "[Already exists]")}
             bantoggle
             on
             banTip="Remove"
@@ -146,7 +134,7 @@ function TrackPaster() {
                     Ok: K(verified),
                     Err: K(false),
                   })
-                : isreview || verified
+                : allreview.includes(v.url) || verified
             }
             anime={v.status === null}
             rightButton={
@@ -180,6 +168,7 @@ function Entries() {
   const slot = hook.useSlot();
   const list = hook.useList();
   const inProgressFolder = hook.useAllFolderReview();
+  const inProgressWeblist = hook.useAllWeblistReview();
 
   if (!slot) return;
   const allEntry = new Set(
@@ -226,7 +215,11 @@ function Entries() {
               }}
               rightButton={me(v.entry_type).match({
                 WebList: K([
-                  { name: "Update" },
+                  {
+                    name: "Update",
+                    onClick: () => action.add_weblist_update(v),
+                    inProgress: inProgressWeblist.includes(v.url!),
+                  },
                   {
                     name: "Reload",
                     onClick: () => action.add_folder_check(v),
@@ -307,7 +300,12 @@ export function TrackEdit() {
               (f.items.length === 1 ? " item" : " items"),
           }))}
           onChoose={(path) => {
-            if (!slot || !path) return;
+            if (
+              !slot ||
+              !path ||
+              slot.folders.map((f) => f.path).includes(path)
+            )
+              return;
             crab.allAudioRecursive(path).then((r) =>
               r.tap((items) => {
                 if (slot.folders.map((f) => f.path).includes(path)) return;

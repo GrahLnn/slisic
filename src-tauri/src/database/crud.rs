@@ -331,8 +331,14 @@ pub trait Crud:
     }
 
     async fn select_record_id(k: &str, v: &str) -> Result<RecordId> {
-        let sql = QueryKind::select_id_single(Self::TABLE, k, v);
-        let ids: Vec<RecordId> = query_take(sql.as_str(), None).await?;
+        let db = get_db()?;
+        let ids: Vec<RecordId> = db
+            .query("RETURN (SELECT id FROM ONLY type::table($table) WHERE type::field($k) = $v LIMIT 1).id;")
+            .bind(("table", Self::TABLE.as_str()))
+            .bind(("k", k.to_owned()))
+            .bind(("v", v.to_owned()))
+            .await?
+            .take(0)?;
         let id = ids.into_iter().next();
         id.ok_or(DBError::NotFound.into())
     }
