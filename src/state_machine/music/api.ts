@@ -14,9 +14,20 @@ export const hook = {
   useCurPlay: () => useSelector(actor, (s) => s.context.nowPlaying),
   useCurList: () => useSelector(actor, (s) => s.context.selected),
   ussIsPlaying: () => useSelector(actor, (s) => s.matches({ play: "playing" })),
-  useIsReview: () => useSelector(actor, (s) => s.context.reviews.length > 0),
+  useIsReview: () =>
+    useSelector(
+      actor,
+      (s) =>
+        s.context.reviews.length > 0 ||
+        s.context.folderReviews.length > 0 ||
+        s.context.updateWeblistReviews.length > 0
+    ),
+  useAllReview: () =>
+    useSelector(actor, (s) => s.context.reviews.map((r) => r.url)),
   useAllFolderReview: () =>
     useSelector(actor, (s) => s.context.folderReviews.map((r) => r.path)),
+  useAllWeblistReview: () =>
+    useSelector(actor, (s) => s.context.updateWeblistReviews.map((r) => r.url)),
 };
 /**
  * Active Operation State
@@ -36,6 +47,8 @@ export const action = {
   add_review: (url: string) => actor.send(payloads.add_review_actor.load(url)),
   add_folder_check: (entry: Entry) =>
     actor.send(payloads.add_folder_check.load(entry)),
+  add_weblist_update: (entry: Entry) =>
+    actor.send(payloads.update_web_entry.load(entry)),
   save: () => actor.send(ss.resultx.Signal.done),
   play: (playlist: Playlist) =>
     actor.send(payloads.toggle_audio.load(playlist)),

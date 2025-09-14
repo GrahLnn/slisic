@@ -254,6 +254,14 @@ async rmexclude(list: Playlist, music: Music) : Promise<Result<null, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async updateWeblist(entry: Entry) : Promise<Result<Entry, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_weblist", { entry }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 

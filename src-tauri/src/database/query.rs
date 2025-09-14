@@ -133,9 +133,9 @@ impl QueryKind {
     pub fn upsert_set(id: &str, key: &str, value: &str) -> String {
         format!("UPDATE {id} SET {key} = '{value}';")
     }
-    pub fn select_id_single(table: Table, k: &str, v: &str) -> String {
+    pub fn select_id_single(table: Table) -> String {
         format!(
-            "RETURN (SELECT id FROM ONLY {} WHERE {k} = '{v}' LIMIT 1).id;",
+            "RETURN (SELECT id FROM ONLY {} WHERE $k = $v LIMIT 1).id;",
             table.table_name()
         )
     }

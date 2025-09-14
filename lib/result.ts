@@ -61,7 +61,10 @@ export class Result<T, E = Error> {
   unwrap_or(defaultValue?: NonNullable<T>): T | undefined {
     return this.match({
       Ok: (value) => value,
-      Err: () => defaultValue as T, // defaultValue 存在时命中上面的重载
+      Err: (e) => {
+        console.error("unwrap_or error:", e);
+        return defaultValue as T;
+      }, // defaultValue 存在时命中上面的重载
     });
   }
 

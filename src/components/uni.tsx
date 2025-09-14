@@ -258,11 +258,13 @@ export function Pair({
   const [labelIsHover, setLabelIsHover] = useState(false);
   const [valueIsHover, setValueIsHover] = useState(false);
   const [valueIsCopied, setValueIsCopied] = useState(false);
+
   const col_right: RightTool[] = rightButton
     ? Array.isArray(rightButton)
       ? rightButton
       : [rightButton]
     : [];
+  const anyBusy = col_right.some((v) => v.inProgress);
   return (
     <div className={cn(["flex items-center justify-between gap-8", className])}>
       <div
@@ -347,7 +349,7 @@ export function Pair({
               (on || !bantoggle) && verified
                 ? "text-[#404040] dark:text-[#d4d4d4]"
                 : "text-[#525252] dark:text-[#8a8a8a]",
-              !verified && "text-[#ef0202] dark:text-[#a92626]",
+              !verified && "text-[#ef0202] dark:text-[#ff0000]",
             ])}
           >
             <AnimatePresence mode="wait" initial={false}>
@@ -374,7 +376,7 @@ export function Pair({
                         transition={{ duration: 0.2 }}
                         className={cn([
                           !hide && "truncate",
-                          anime && "animate-pulse",
+                          anime && verified && "animate-pulse",
                         ])}
                       >
                         {value}
@@ -385,10 +387,10 @@ export function Pair({
               })}
             </AnimatePresence>
             <AnimatePresence>
-              {rightButton && (
+              {rightButton && verified && (
                 <div className="absolute -top-0.5 right-0 z-50">
                   <div className="flex items-center">
-                    {(valueIsHover || col_right.some((v) => v.inProgress)) && (
+                    {(valueIsHover || anyBusy) && (
                       <motion.div
                         className="w-6 py-0.5 mask-rol"
                         initial={{ backdropFilter: "blur(0px)" }}
@@ -404,10 +406,14 @@ export function Pair({
                       </motion.div>
                     )}
                     {col_right
-                      .filter((v) => valueIsHover || v.inProgress)
+                      .filter((v) => (anyBusy ? v.inProgress : valueIsHover))
                       .map((v, i) => (
                         <React.Fragment key={v.name}>
-                          {i > 0 && <div className="w-1 backdrop-blur-[1px]" />}
+                          {i > 0 && (
+                            <div className="w-1 py-0.5 backdrop-blur-[1px]">
+                              <div className="text-xs opacity-0">_</div>
+                            </div>
+                          )}
                           <motion.div
                             className={cn([
                               "bg-[#f9f9f9] dark:bg-[#383838] rounded-md shadow px-1 py-0.5 border border-[#d4d4d4] dark:border-[#4a4a4a]",
@@ -426,7 +432,7 @@ export function Pair({
                                     <motionIcons.live
                                       size={12}
                                       className="animate-spin [animation-duration:5s]"
-                                      fillOpacity={0.4}
+                                      fillOpacity={0.6}
                                     />
                                   </div>
                                   <div className="w-6 h-full backdrop-blur-[1px] mask-lor" />
@@ -624,7 +630,9 @@ export function PairCombobox({
           onMouseDown={() => setIsKeyboardNavActive(false)}
           onMouseMove={() => setIsKeyboardNavActive(false)}
         >
-          <CommandEmpty>No item found.</CommandEmpty>
+          <CommandEmpty className="py-6 text-center text-sm select-none text-[#404040] dark:text-[#a3a3a3] transition">
+            No item found.
+          </CommandEmpty>
           <CommandGroup>
             <div
               style={{

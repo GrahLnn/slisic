@@ -19,6 +19,7 @@ import { AudioAnalyzer } from "@/src/components/audio/analyzer";
 import { station } from "@/src/subpub/buses";
 import { check_folder_machine, CheckDone } from "../foldercheck";
 import { Result } from "@/lib/result";
+import { update_weblist_machine, UpdateDone } from "../updateweblist";
 
 export const analyzeAudio = fromCallback<any, { analyzer: AudioAnalyzer }>(
   ({ input, receive }) => {
@@ -91,7 +92,8 @@ export const payloads = collect(
 export const sub_machine = collect(
   machine<ActorDone>(muinfoMachine)("review"),
   machine(analyzeAudio)("analyzeAudio"),
-  machine<CheckDone>(check_folder_machine)("check_folder")
+  machine<CheckDone>(check_folder_machine)("check_folder"),
+  machine<UpdateDone>(update_weblist_machine)("update_weblist")
 );
 
 export const invoker = createActors({

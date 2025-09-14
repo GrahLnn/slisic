@@ -5,6 +5,7 @@ import { machine } from "../muinfo";
 import { check_folder_machine } from "../foldercheck";
 import { AudioAnalyzer } from "@/src/components/audio/analyzer";
 import { AudioEngine } from "@/src/components/audio/engine";
+import { update_weblist_machine } from "../updateweblist";
 
 export interface Review {
   url: string;
@@ -14,6 +15,11 @@ export interface Review {
 export interface FolderReview {
   path: string;
   actor: ActorRefFromLogic<typeof check_folder_machine>;
+}
+
+export interface UpdateWeblistReview {
+  url: string;
+  actor: ActorRefFromLogic<typeof update_weblist_machine>;
 }
 
 export type Frame = {
@@ -48,6 +54,7 @@ export interface Context {
   slot?: CollectMission;
   reviews: Review[];
   folderReviews: FolderReview[];
+  updateWeblistReviews: UpdateWeblistReview[];
   ref?: any;
   audio: HTMLAudioElement;
   analyzer?: AudioAnalyzer;

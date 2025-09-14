@@ -351,15 +351,11 @@ function Play() {
                               "hover:text-[#e81123] dark:hover:text-[#e3303f]",
                               "transition duration-300",
                             ])}
-                            onClick={() => {
-                              action.unstar(curPlay);
-                              //   oneShot(starCtrl);
-                            }}
+                            onClick={() => action.unstar(curPlay)}
                           >
                             <motionIcons.starSlash
                               size={14}
                               initial={{ pathLength: 1 }}
-                              //   animate={starCtrl}
                             />
                           </div>
                         </div>
@@ -393,12 +389,19 @@ function Play() {
 }
 
 function Create() {
+  const isReview = hook.useIsReview();
   return (
     <Face>
       <div className="relative flex w-full h-full overflow-hidden">
-        <div className="absolute left-6 top-0 flex items-center gap-2">
+        <div
+          className={cn([
+            "absolute left-6 top-0 flex items-center gap-2 transition",
+            isReview && "opacity-0 pointer-events-none",
+          ])}
+        >
           <BackButton onClick={action.back} />
         </div>
+
         <div className="flex flex-col justify-center items-center w-1/2">
           <motion.div layoutId="musicPlus">
             <labels.musicPlus />
@@ -420,10 +423,16 @@ function Create() {
 }
 
 function Edit() {
+  const isReview = hook.useIsReview();
   return (
     <Face>
       <div className="relative flex w-full h-full overflow-hidden">
-        <div className="absolute left-6 top-0 flex items-center gap-2">
+        <div
+          className={cn([
+            "absolute left-6 top-0 flex items-center gap-2 transition",
+            isReview && "opacity-0 pointer-events-none",
+          ])}
+        >
           <BackButton onClick={action.back} />
         </div>
         <div className="flex flex-col justify-center items-center w-1/2">
