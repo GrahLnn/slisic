@@ -77,7 +77,7 @@ export const payloads = collect(
   event<Playlist | null>()("toggle_audio"),
   events<Playlist>()("edit_playlist", "delete"),
   event<Frame>()("update_audio_frame"),
-  event<Entry>()("add_folder_check"),
+  events<Entry>()("add_folder_check", "update_web_entry"),
   events<Music>()(
     "unstar",
     "up",
