@@ -779,13 +779,21 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
         .await
         .map_err(|e| e.to_string())?;
     }
-    let (_to_add_ref, to_remove_ref) =
+    let (to_add_ref, to_remove_ref) =
         diff_by_key(&entries, &anchor.entries, |e: &Entry| e.path.clone());
     let rm_fut = to_remove_ref
         .into_iter()
         .map(|e| DbEntry::from(e.clone()))
         .map(|p| Collection::unrelate_by_id(id.clone(), p.id, Rel::Collect));
     future::try_join_all(rm_fut)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let add_fut = to_add_ref
+        .into_iter()
+        .map(|e| DbEntry::from(e.clone()))
+        .map(|p| Collection::relate_by_id(id.clone(), p.id, Rel::Collect));
+    future::try_join_all(add_fut)
         .await
         .map_err(|e| e.to_string())?;
 

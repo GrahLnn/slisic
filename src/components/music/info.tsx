@@ -6,6 +6,7 @@ import {
   Head,
   MultiFolderChooser,
   Pair,
+  PairCombobox,
   PairEdit,
 } from "../uni";
 import { hook, action } from "@/src/state_machine/music";
@@ -15,6 +16,20 @@ import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { K } from "@/lib/comb";
 import { me } from "@/lib/matchable";
 import { udf } from "@/lib/e";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Button } from "@/components/ui/button";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 
 export function Edit({ title, explain }: { title: string; explain: string }) {
   const slot = hook.useSlot();
@@ -163,11 +178,35 @@ function TrackPaster() {
 
 function Entries() {
   const slot = hook.useSlot();
+  const list = hook.useList();
   const inProgressFolder = hook.useAllFolderReview();
+
   if (!slot) return;
+  const allEntry = new Set(
+    list.flatMap((f) => f.entries.filter((e) => !slot.entries.includes(e)))
+  );
   return (
     <div className="flex flex-col gap-2">
-      <Head title="Entries" />
+      <div className="flex justify-between items-center">
+        <Head
+          title="Entries"
+          explain="Manage your selected entries, or bring in more from other playlists."
+        />
+        <PairCombobox
+          label="Add Existing"
+          list={[...allEntry].map((e) => e.name)}
+          onChoose={(name) => {
+            const found = [...allEntry].find((e) => e.name === name);
+            if (!found) return; // 或者给个 toast
+
+            action.set_slot({
+              ...slot,
+              entries: [...slot.entries, found], // 或 slot.entries.concat(found)
+            });
+          }}
+          width="480px"
+        />
+      </div>
       {slot.entries.length > 0 ? (
         slot.entries.map((v) => (
           <div key={v.path} className="flex flex-col gap-1">
@@ -219,7 +258,7 @@ function Exclude() {
   if (!slot) return;
   return (
     <div className="flex flex-col gap-2">
-      <Head title="Entries" />
+      <Head title="Exclude" />
       {slot.exclude.length > 0 ? (
         slot.exclude.map((v) => (
           <div key={v.path} className="flex flex-col gap-1">
@@ -304,11 +343,14 @@ export function TrackEdit() {
             <Head title="Web Link" explain="Add web links to your playlist." />
           ),
         })}
+        {mainstate.catch(
+          "edit",
+          "create"
+        )(() => (
+          <Entries />
+        ))}
         {mainstate.catch("edit")(() => (
-          <>
-            <Entries />
-            <Exclude />
-          </>
+          <Exclude />
         ))}
       </div>
     </DataList>

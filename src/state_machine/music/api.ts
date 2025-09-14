@@ -11,7 +11,6 @@ export const hook = {
   useSlot: () => useSelector(actor, (state) => state.context.slot),
   useContext: () => useSelector(actor, (state) => state.context),
   useList: () => useSelector(actor, (state) => state.context.collections),
-  //   useAudioFrame: () => useSelector(actor, (s) => s.context.audioFrame),
   useCurPlay: () => useSelector(actor, (s) => s.context.nowPlaying),
   useCurList: () => useSelector(actor, (s) => s.context.selected),
   ussIsPlaying: () => useSelector(actor, (s) => s.matches({ play: "playing" })),

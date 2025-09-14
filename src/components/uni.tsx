@@ -76,7 +76,6 @@ export function DataList({ children, className }: DataListProps) {
         "overflow-hidden transition duration-300",
         "border-[#e5e5e5] dark:border-[#373737]",
         "bg-[#f7fafc] dark:bg-[#262626] opacity-80",
-        ,
         className,
       ])}
     >
@@ -488,14 +487,12 @@ export function Pair({
 
 type PairComboboxProps = {
   label: string;
-  value?: string; // 选中值（受控）
-  list: string[]; // 选项列表
-  explain?: string;
+  list: string[];
   onChoose: (val: string) => void;
   canAddNew?: boolean;
   onAddNew?: () => void;
-  width?: string; // 可选：触发器宽度
-  height?: string; // 可选：下拉高度
+  width?: string;
+  height?: string;
 };
 
 type Option = { value: string; label: string };
@@ -506,9 +503,7 @@ function useOptions(list: string[]): Option[] {
 
 export function PairCombobox({
   label,
-  value = "",
   list,
-  explain,
   onChoose,
   canAddNew = false,
   onAddNew,
@@ -517,6 +512,7 @@ export function PairCombobox({
 }: PairComboboxProps) {
   const [open, setOpen] = React.useState(false);
   const options = useOptions(list);
+  const [value, setValue] = React.useState("");
 
   // ---- 内部虚拟化命令框（抽出来便于复用/测试） ----
   const VirtualizedCommand: React.FC<{
@@ -644,7 +640,7 @@ export function PairCombobox({
                     key={opt.value}
                     disabled={isKeyboardNavActive}
                     className={cn(
-                      "absolute left-0 top-0 w-full bg-transparent",
+                      "absolute left-0 top-0 w-full bg-transparent whitespace-nowrap truncate",
                       focusedIndex === v.index &&
                         "bg-accent text-accent-foreground",
                       isKeyboardNavActive &&
@@ -664,15 +660,15 @@ export function PairCombobox({
                     }
                     onSelect={onSelectOption}
                   >
-                    <Check
+                    {/* <Check
                       className={cn(
                         "mr-2 h-4 w-4",
                         selectedOption === opt.value
                           ? "opacity-100"
                           : "opacity-0"
                       )}
-                    />
-                    {opt.label}
+                    /> */}
+                    <span className="flex-1 min-w-0 truncate">{opt.label}</span>
                   </CommandItem>
                 );
               })}
@@ -697,49 +693,72 @@ export function PairCombobox({
   };
 
   return (
-    <div className="flex gap-8 items-center justify-between">
-      <div className="flex flex-col gap-1">
-        <div className="text-sm font-semibold text-[#262626] dark:text-[#d4d4d4] transition">
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          role="combobox"
+          aria-expanded={open}
+          ignorecn
+          className={cn(
+            // 布局 & 基础交互
+            "flex items-center justify-between w-fit gap-2 whitespace-nowrap",
+            "rounded-md outline-none",
+            "cursor-pointer transition duration-300 ease-in-out",
+
+            // 尺寸
+            "data-[size=default]:h-9 data-[size=sm]:h-8",
+
+            // padding
+            "pl-2 pr-2.5 py-1",
+
+            // 颜色 & 主题
+            // "bg-[#f1f5f9] dark:bg-[#171717]",
+            // "border border-[#e5e5e5] dark:border-[#262626]",
+            "text-xs text-[#525252] dark:text-[#e5e5e5] hover:text-[#262626] hover:dark:text-[#d4d4d4]",
+
+            // hover 状态
+            "hover:bg-[#e7eced] dark:hover:bg-[#383838]",
+
+            // 状态控制
+            "data-[state=open]:bg-[#f1f5f9] dark:data-[state=open]:bg-[#1a1a1b]",
+            "data-[placeholder]:text-muted-foreground",
+            "aria-invalid:border-destructive",
+
+            // 禁用
+            "disabled:cursor-not-allowed disabled:opacity-50",
+
+            // slot 定制
+            "*:data-[slot=select-value]:line-clamp-1",
+            "*:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2",
+
+            // svg 特殊处理
+            "[&_svg]:pointer-events-none [&_svg]:shrink-0",
+            "[&_svg:not([class*='size-'])]:size-4",
+            "[&_svg:not([class*='text-'])]:text-muted-foreground"
+          )}
+        >
           {label}
-        </div>
-        {explain && (
-          <div className="text-xs text-[#525252] dark:text-[#a3a3a3] transition">
-            {explain}
-          </div>
-        )}
-      </div>
+        </Button>
+      </PopoverTrigger>
 
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button
-            role="combobox"
-            aria-expanded={open}
-            ignorecn
-            className={cn([
-              "data-[placeholder]:text-muted-foreground [&_svg:not([class*='text-'])]:text-muted-foreground aria-invalid:border-destructive dark:hover:bg-input/50 flex w-fit items-center justify-between gap-2 whitespace-nowrap shadow-xs outline-none disabled:cursor-not-allowed disabled:opacity-50 data-[size=default]:h-9 data-[size=sm]:h-8 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-sm text-[#262626]/70 dark:text-[#d4d4d4]/70 transition px-2 py-1 bg-[#f1f5f9] dark:bg-[#171717] rounded-md border border-[#e5e5e5] dark:border-[#262626] data-[state=open]:bg-[#f1f5f9] dark:data-[state=open]:bg-[#1a1a1b]",
-            ])}
-          >
-            {value || "Select..."}
-            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-          </Button>
-        </PopoverTrigger>
-
-        <PopoverContent className="p-0" style={{ width }}>
-          <VirtualizedCommand
-            height={height}
-            options={options}
-            placeholder="Search..."
-            selectedOption={value}
-            canAddNew={canAddNew}
-            onAddNew={onAddNew}
-            onSelectOption={(currentValue) => {
-              onChoose(currentValue);
-              setOpen(false);
-            }}
-          />
-        </PopoverContent>
-      </Popover>
-    </div>
+      <PopoverContent
+        className="p-0 mx-2 bg-[#f7fafc] dark:bg-[#262626] backdrop-blur-md"
+        style={{ width }}
+      >
+        <VirtualizedCommand
+          height={height}
+          options={options}
+          placeholder="Search..."
+          selectedOption={value}
+          canAddNew={canAddNew}
+          onAddNew={onAddNew}
+          onSelectOption={(currentValue) => {
+            onChoose(currentValue);
+            setOpen(false);
+          }}
+        />
+      </PopoverContent>
+    </Popover>
   );
 }
 interface PairChooseProps {
@@ -794,6 +813,7 @@ export function PairChoose({
     </div>
   );
 }
+
 interface PairEditLRProps {
   label: string;
   value: string;
