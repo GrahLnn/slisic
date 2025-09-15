@@ -8,7 +8,7 @@ import { action } from "./state_machine/global/api";
 import { station } from "./subpub/buses";
 import { Provider } from "jotai";
 import { appStore } from "./subpub/core";
-import { AudioVisualizerCanvas } from "./components/audio/canvas";
+import AudioVisualizerCanvas from "./components/audio/canvas";
 import { useEffect } from "react";
 
 function App() {

@@ -4,7 +4,7 @@ import { useIsDark } from "@/src/state_machine/normal";
 import { station } from "@/src/subpub/buses";
 import MeshGradientTauri from "../meshgrad";
 
-export function AudioVisualizerCanvas() {
+export default function AudioVisualizerCanvas() {
   const audioData = station.audioFrame.useSee();
   const { speed } = computeParams(audioData);
   const isDark = useIsDark();
@@ -13,12 +13,12 @@ export function AudioVisualizerCanvas() {
       colors={
         isDark
           ? ["#d4d0c8", "#4b8ca5", "#330953", "#180117"]
-          : ["#bcecf6","#00aaff","#00f7ff","#ffd447","#33cc99","#3399cc"]
+          : ["#bcecf6", "#00aaff", "#00f7ff", "#ffd447", "#33cc99", "#3399cc"]
       }
       speed={speed}
       swirl={0.8}
       distortion={0.8}
-      className="fixed top-0 left-0 w-screen h-screen"
+      className="fixed top-0 left-0 w-full h-full"
     />
   );
 }
