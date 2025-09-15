@@ -11,7 +11,7 @@ export function EmptyPage({ symbol, explain, cta, onClick }: EmptyPageProps) {
   return (
     <div className="flex justify-center items-center flex-col text-center gap-8 overflow-hidden flex-1 z-10">
       {symbol}
-      <p className="text-sm font-medium text-[#171717] dark:text-[#D9D9D9] select-none">
+      <p className="text-sm font-medium text-[#171717] dark:text-[#D9D9D9] select-none cursor-default">
         {explain}
       </p>
       <div className="h-4" />
