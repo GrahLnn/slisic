@@ -28,6 +28,7 @@ export const hook = {
     useSelector(actor, (s) => s.context.folderReviews.map((r) => r.path)),
   useAllWeblistReview: () =>
     useSelector(actor, (s) => s.context.updateWeblistReviews.map((r) => r.url)),
+  useMsg: () => useSelector(actor, (s) => s.context.processMsg),
 };
 /**
  * Active Operation State

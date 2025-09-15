@@ -1,4 +1,9 @@
-import { Playlist, CollectMission, Music } from "@/src/cmd/commands";
+import {
+  Playlist,
+  CollectMission,
+  Music,
+  ProcessMsg,
+} from "@/src/cmd/commands";
 
 import { Actor, ActorRefFromLogic } from "xstate";
 import { machine } from "../muinfo";
@@ -63,6 +68,7 @@ export interface Context {
   nowJudge?: "Up" | "Down";
   lastPlay?: Music;
   playToken?: number;
+  processMsg?: ProcessMsg;
   __stopOnFrame?: () => void;
   __stopSampling?: () => void;
   __offPlayEvents?: () => void;

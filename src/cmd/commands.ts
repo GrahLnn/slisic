@@ -255,9 +255,9 @@ async rmexclude(list: Playlist, music: Music) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async updateWeblist(entry: Entry) : Promise<Result<Entry, string>> {
+async updateWeblist(entry: Entry, playlist: string) : Promise<Result<Entry, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("update_weblist", { entry }) };
+    return { status: "ok", data: await TAURI_INVOKE("update_weblist", { entry, playlist }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -300,8 +300,8 @@ export type MediaInfo = { title: string; item_type: string; entries_count: numbe
 export type MouseWindowInfo = { mouse_x: number; mouse_y: number; window_x: number; window_y: number; window_width: number; window_height: number; rel_x: number; rel_y: number; pixel_ratio: number }
 export type Music = { path: string; title: string; avg_db: number | null; base_bias: number; user_boost: number; fatigue: number; diversity: number }
 export type Playlist = { name: string; avg_db: number | null; entries: Entry[]; exclude: Music[] }
-export type ProcessMsg = { str: string }
-export type ProcessResult = { working_path: string; saved_path: string; name: string }
+export type ProcessMsg = { playlist: string; str: string }
+export type ProcessResult = { working_path: string; saved_path: string; name: string; playlist: string }
 export type YtdlpVersionChanged = { str: string }
 
 /** tauri-specta globals **/

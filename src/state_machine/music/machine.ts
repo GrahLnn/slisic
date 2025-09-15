@@ -53,13 +53,16 @@ export const machine = src.createMachine({
     update_single: {
       actions: "update_single",
     },
+    processMsg: {
+      actions: "set_msg",
+    },
   },
   invoke: {
     src: fromCallback(({ sendBack }) => {
       const pr = lievt("processResult")(() =>
         crab.readAll().then(tap(B(payloads.update_single.load)(sendBack)))
       );
-      const pcmsg = lievt("processMsg")((msg) => console.log(msg.str));
+      const pcmsg = lievt("processMsg")(B(payloads.processMsg.load)(sendBack));
       return () => {
         pr.then(call0);
         pcmsg.then(call0);

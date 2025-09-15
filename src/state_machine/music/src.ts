@@ -1,21 +1,14 @@
-import { setup, assign, assertEvent, enqueueActions } from "xstate";
-import {
-  InvokeEvt,
-  eventHandler,
-  UniqueEvts,
-  PayloadEvt,
-  SignalEvt,
-  MachineEvt,
-} from "../kit";
+import { setup, assign, assertEvent } from "xstate";
+import { eventHandler } from "../kit";
 import { Context, Frame, into_slot, new_frame, new_slot } from "./core";
-import { payloads, ss, sub_machine, invoker } from "./events";
-import { I, K, B } from "@/lib/comb";
+import { payloads, ss, sub_machine, invoker, Events } from "./events";
+import { I, K } from "@/lib/comb";
 import { udf, vec } from "@/lib/e";
 import { hideCenterTool, viewCenterTool } from "../centertool";
-import { fileToBlobUrl, pickRandom } from "@/lib/utils";
+import { fileToBlobUrl } from "@/lib/utils";
 import { AudioAnalyzer } from "@/src/components/audio/analyzer";
 import { station } from "@/src/subpub/buses";
-import { LinkSample, Music } from "@/src/cmd/commands";
+import { Music } from "@/src/cmd/commands";
 import crab from "@/src/cmd";
 import { AudioEngine } from "@/src/components/audio/engine";
 import { ss as muss } from "../muinfo";
@@ -54,12 +47,6 @@ function softminSample(all: Music[], T = 0.8, rng = Math.random): number {
 
 const sameTrack = (a?: Music, b?: Music) => !!a && !!b && a.path === b.path;
 
-type Events = UniqueEvts<
-  | SignalEvt<typeof ss>
-  | InvokeEvt<typeof invoker>
-  | PayloadEvt<typeof payloads.infer>
-  | MachineEvt<typeof sub_machine.infer>
->;
 export const EH = eventHandler<Context, Events>();
 export const src = setup({
   actors: { ...invoker.as_act(), ...sub_machine.as_act() },
@@ -70,6 +57,12 @@ export const src = setup({
   actions: {
     hide_center_tool: hideCenterTool,
     view_center_tool: viewCenterTool,
+    set_msg: assign({
+      processMsg: EH.whenDone(payloads.processMsg.evt())((r) => {
+        console.log(r);
+        return r;
+      }),
+    }),
     clean_ctx: assign({
       collections: vec,
       slot: udf,
@@ -110,7 +103,10 @@ export const src = setup({
         (entry, c, _evt, sp) =>
           c.updateWeblistReviews.concat({
             url: entry.url!,
-            actor: sp(sub_machine.update_weblist)({ entry }),
+            actor: sp(sub_machine.update_weblist)({
+              entry,
+              playlist: c.selected?.name!,
+            }),
           })
       ),
     }),
@@ -213,6 +209,7 @@ export const src = setup({
     }),
     update_single: assign({
       collections: EH.whenDone(payloads.update_single.evt())(I),
+      processMsg: udf,
     }),
     ensure_list: assign({
       flatList: EH.whenDone(payloads.toggle_audio.evt())((i) =>

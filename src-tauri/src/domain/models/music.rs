@@ -17,6 +17,7 @@ use std::collections::HashSet;
 use std::hash::Hash;
 use surrealdb::opt::PatchOp;
 use surrealdb::RecordId;
+use tauri::async_runtime::spawn;
 use tauri::AppHandle;
 use tauri_specta::Event;
 use tokio::task;
@@ -164,12 +165,39 @@ impl DbEntry {
     }
 }
 
-impl From<LinkSample> for YtdlpEntry {
-    fn from(e: LinkSample) -> Self {
-        Self {
+// impl From<LinkSample> for YtdlpEntry {
+//     fn from(e: LinkSample) -> Self {
+//         Self {
+//             id: Uuid::new_v4(),
+//             url: e.url,
+//             title: e.title_or_msg,
+//             retries: 0,
+//             error: None,
+//             kind: None,
+//         }
+//     }
+// }
+
+// impl From<Entry> for YtdlpEntry {
+//     fn from(e: Entry) -> Self {
+//         Self {
+//             id: Uuid::new_v4(),
+//             url: e.url.unwrap_or("".to_string()),
+//             title: e.name,
+//             retries: 0,
+//             error: None,
+//             kind: None,
+//         }
+//     }
+// }
+
+impl LinkSample {
+    pub fn into_ytdlp_entry(self, playlist: String) -> YtdlpEntry {
+        YtdlpEntry {
             id: Uuid::new_v4(),
-            url: e.url,
-            title: e.title_or_msg,
+            url: self.url,
+            playlist,
+            title: self.title_or_msg,
             retries: 0,
             error: None,
             kind: None,
@@ -177,12 +205,13 @@ impl From<LinkSample> for YtdlpEntry {
     }
 }
 
-impl From<Entry> for YtdlpEntry {
-    fn from(e: Entry) -> Self {
-        Self {
+impl Entry {
+    pub fn into_ytdlp_entry(self, playlist: String) -> YtdlpEntry {
+        YtdlpEntry {
             id: Uuid::new_v4(),
-            url: e.url.unwrap_or("".to_string()),
-            title: e.name,
+            url: self.url.unwrap_or("".to_string()),
+            playlist,
+            title: self.name,
             retries: 0,
             error: None,
             kind: None,
@@ -257,6 +286,7 @@ struct EntryPayload {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Type, Event)]
 pub struct ProcessMsg {
+    pub playlist: String,
     pub str: String,
 }
 
@@ -274,9 +304,8 @@ where
 }
 
 const CONC_LIMIT: usize = 8; // 或者 num_cpus::get().min(8)
-#[tauri::command]
-#[specta::specta]
-pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> {
+
+async fn do_create(app: AppHandle, data: CollectMission, col_id: RecordId) -> Result<(), String> {
     let CollectMission {
         name,
         folders,
@@ -285,14 +314,6 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
         exclude: _,
     } = data;
 
-    if !folders.is_empty() {
-        ProcessMsg {
-            str: "Measuring LUFS".into(),
-        }
-        .emit(&app)
-        .ok();
-    }
-
     // ========== 并发处理 folders ==========
     // 每个 folder 内部的音乐条目也用受控并发测量 LUFS
     let folder_entries: Vec<EntryPayload> = stream::iter(folders)
@@ -300,6 +321,7 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
             let FolderSample { path, items } = folder;
             {
                 let app_clone = app.clone(); // Clone the app here instead of moving it
+                let name_clone = name.clone();
                 async move {
                     // 逐文件并发计算
                     let musics: Vec<Music> = stream::iter(items.into_iter().map(|p| {
@@ -307,7 +329,9 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
                         let p_clone = p.clone();
                         {
                             let app_clone = app_clone.clone();
+                            let name_clone = name_clone.clone();
                             async move {
+                                let app_cclone = app_clone.clone();
                                 let lufs = task::spawn_blocking(move || {
                                     integrated_lufs(&app_clone, &p_clone)
                                 })
@@ -315,15 +339,22 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
                                 .map_err(|e| format!("spawn_blocking panic: {e}"))?
                                 .ok()
                                 .map(|v| v as f32);
-
+                                let title = PathBuf::from(p.clone())
+                                    .file_stem()
+                                    .unwrap()
+                                    .to_str()
+                                    .unwrap()
+                                    .to_string();
+                                ProcessMsg {
+                                    playlist: name_clone.clone(),
+                                    str: title.clone()
+                                        + &lufs.map(|v| format!(" ({v}db)")).unwrap_or_default(),
+                                }
+                                .emit(&app_cclone)
+                                .ok();
                                 Ok::<_, String>(Music {
                                     path: p.clone(),
-                                    title: PathBuf::from(p)
-                                        .file_stem()
-                                        .unwrap()
-                                        .to_str()
-                                        .unwrap()
-                                        .to_string(),
+                                    title,
                                     avg_db: lufs,
                                     base_bias: 0.0,
                                     user_boost: 0.0,
@@ -376,21 +407,25 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
     // 既要生成 DbEntry 也要生成下载队列 YtdlpEntry
     let (link_entries, downloads_entry): (Vec<DbEntry>, Vec<YtdlpEntry>) = stream::iter(links)
         .map({
-            move |link| async move {
-                let entry = Entry {
-                    path: None,
-                    musics: Vec::new(),
-                    name: link.title_or_msg.clone(),
-                    url: Some(link.url.clone()),
-                    entry_type: link.entry_type.clone(),
-                    downloaded_ok: None,
-                    tracking: Some(link.tracking.clone()),
-                    avg_db: None,
-                };
+            let name = name.clone();
+            move |link| {
+                let list_name = name.clone();
+                async move {
+                    let entry = Entry {
+                        path: None,
+                        musics: Vec::new(),
+                        name: link.title_or_msg.clone(),
+                        url: Some(link.url.clone()),
+                        entry_type: link.entry_type.clone(),
+                        downloaded_ok: None,
+                        tracking: Some(link.tracking.clone()),
+                        avg_db: None,
+                    };
 
-                let db: DbEntry = entry.into();
-                let ytdlp: YtdlpEntry = link.into();
-                Ok::<(DbEntry, YtdlpEntry), String>((db, ytdlp))
+                    let db: DbEntry = entry.into();
+                    let ytdlp: YtdlpEntry = link.into_ytdlp_entry(list_name);
+                    Ok::<(DbEntry, YtdlpEntry), String>((db, ytdlp))
+                }
             }
         })
         .buffer_unordered(CONC_LIMIT)
@@ -404,10 +439,6 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
     entries.extend(folder_entries.clone().into_iter().map(|e| e.entry));
     entries.extend(link_entries);
 
-    let col = Collection {
-        name,
-        exclude: Vec::new(),
-    };
     // ========== 后续数据库操作（保持原子序） ==========
     DbEntry::insert_jump(entries.clone())
         .await
@@ -421,8 +452,6 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
     DbMusic::insert_jump(db_musics)
         .await
         .map_err(|e| e.to_string())?;
-
-    let col_id = col.create_return_id().await.map_err(|e| e.to_string())?;
 
     let relation: Vec<Relation> = entries
         .iter()
@@ -457,10 +486,45 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
     Ok(())
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> {
+    let CollectMission {
+        name,
+        folders: _,
+        links: _,
+        entries: _,
+        exclude: _,
+    } = data.clone();
+
+    let col = Collection {
+        name,
+        exclude: Vec::new(),
+    };
+
+    let col_id = col.create_return_id().await.map_err(|e| e.to_string())?;
+    let app_for_task = app.clone();
+    spawn(async move {
+        let res = do_create(app_for_task.clone(), data, col_id).await;
+        if let Err(e) = &res {
+            println!("[create] failed: {}", e);
+            ProcessMsg {
+                playlist: "__error__".into(),
+                str: e.clone(),
+            }
+            .emit(&app_for_task)
+            .ok();
+        }
+        res
+    });
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct DownloadAnswer {
     pub path: PathBuf,
     pub name: String,
+    pub playlist: String,
 }
 
 pub async fn download_ok(app: &AppHandle, answer: DownloadAnswer) -> Result<(), String> {
@@ -469,11 +533,7 @@ pub async fn download_ok(app: &AppHandle, answer: DownloadAnswer) -> Result<(), 
     } else {
         vec![answer.path.clone()]
     };
-    ProcessMsg {
-        str: "Measuring LUFS".into(),
-    }
-    .emit(app)
-    .ok();
+
     let entry_id = DbEntry::record_id(answer.name.clone());
     let entry = DbEntry::select_record(entry_id.clone())
         .await
@@ -490,6 +550,7 @@ pub async fn download_ok(app: &AppHandle, answer: DownloadAnswer) -> Result<(), 
                 !exist_paths.contains(&key)
             })
             .map(|p| {
+                let listname = answer.playlist.clone();
                 let p_clone = p.clone();
                 let app_clone = app.clone();
                 async move {
@@ -498,10 +559,18 @@ pub async fn download_ok(app: &AppHandle, answer: DownloadAnswer) -> Result<(), 
                         .map_err(|e| format!("spawn_blocking panic: {e}"))?
                         .ok()
                         .map(|v| v as f32);
+                    let title = p.file_stem().unwrap().to_str().unwrap().to_string();
+
+                    ProcessMsg {
+                        playlist: listname.clone(),
+                        str: title.clone() + &lufs.map(|v| format!(" ({v}db)")).unwrap_or_default(),
+                    }
+                    .emit(app)
+                    .ok();
 
                     Ok::<_, String>(Music {
                         path: p.to_string_lossy().into_owned(),
-                        title: p.file_stem().unwrap().to_str().unwrap().to_string(),
+                        title,
                         avg_db: lufs,
                         base_bias: 0.0,
                         user_boost: 0.0,
@@ -773,9 +842,7 @@ pub async fn recheck_folder(app: AppHandle, entry: Entry) -> Result<Entry, Strin
     Ok(new_entry)
 }
 
-#[tauri::command]
-#[specta::specta]
-pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> Result<(), String> {
+async fn do_update(app: AppHandle, data: CollectMission, anchor: Playlist) -> Result<(), String> {
     let CollectMission {
         name,
         folders,
@@ -790,7 +857,7 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
         Collection::patch(
             id.clone(),
             vec![
-                PatchOp::replace("/name", name),
+                PatchOp::replace("/name", name.clone()),
                 PatchOp::replace("/exclude", exclude),
             ],
         )
@@ -815,14 +882,6 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
         .await
         .map_err(|e| e.to_string())?;
 
-    if !folders.is_empty() {
-        ProcessMsg {
-            str: "Measuring LUFS".into(),
-        }
-        .emit(&app)
-        .ok();
-    }
-
     // ========== 并发处理 folders ==========
     // 每个 folder 内部的音乐条目也用受控并发测量 LUFS
     let folder_entries: Vec<EntryPayload> = stream::iter(folders)
@@ -830,6 +889,7 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
             let FolderSample { path, items } = folder;
             {
                 let app_clone = app.clone(); // Clone the app here instead of moving it
+                let name_clone = name.clone();
                 async move {
                     // 逐文件并发计算
                     let musics: Vec<Music> = stream::iter(items.into_iter().map(|p| {
@@ -837,7 +897,9 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
                         let p_clone = p.clone();
                         {
                             let app_clone = app_clone.clone();
+                            let name_clone = name_clone.clone();
                             async move {
+                                let app_cclone = app_clone.clone();
                                 let lufs = task::spawn_blocking(move || {
                                     integrated_lufs(&app_clone, &p_clone)
                                 })
@@ -845,15 +907,22 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
                                 .map_err(|e| format!("spawn_blocking panic: {e}"))?
                                 .ok()
                                 .map(|v| v as f32);
-
+                                let title = PathBuf::from(p.clone())
+                                    .file_stem()
+                                    .unwrap()
+                                    .to_str()
+                                    .unwrap()
+                                    .to_string();
+                                ProcessMsg {
+                                    playlist: name_clone.clone(),
+                                    str: title.clone()
+                                        + &lufs.map(|v| format!(" ({v}db)")).unwrap_or_default(),
+                                }
+                                .emit(&app_cclone)
+                                .ok();
                                 Ok::<_, String>(Music {
                                     path: p.clone(),
-                                    title: PathBuf::from(p)
-                                        .file_stem()
-                                        .unwrap()
-                                        .to_str()
-                                        .unwrap()
-                                        .to_string(),
+                                    title,
                                     avg_db: lufs,
                                     base_bias: 0.0,
                                     user_boost: 0.0,
@@ -906,21 +975,25 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
     // 既要生成 DbEntry 也要生成下载队列 YtdlpEntry
     let (link_entries, downloads_entry): (Vec<DbEntry>, Vec<YtdlpEntry>) = stream::iter(links)
         .map({
-            move |link| async move {
-                let entry = Entry {
-                    path: None,
-                    musics: Vec::new(),
-                    name: link.title_or_msg.clone(),
-                    url: Some(link.url.clone()),
-                    downloaded_ok: None,
-                    tracking: Some(link.tracking.clone()),
-                    avg_db: None,
-                    entry_type: link.entry_type.clone(),
-                };
+            let name = name.clone();
+            move |link| {
+                let listname = name.clone();
+                async move {
+                    let entry = Entry {
+                        path: None,
+                        musics: Vec::new(),
+                        name: link.title_or_msg.clone(),
+                        url: Some(link.url.clone()),
+                        downloaded_ok: None,
+                        tracking: Some(link.tracking.clone()),
+                        avg_db: None,
+                        entry_type: link.entry_type.clone(),
+                    };
 
-                let db: DbEntry = entry.into();
-                let ytdlp: YtdlpEntry = link.into();
-                Ok::<(DbEntry, YtdlpEntry), String>((db, ytdlp))
+                    let db: DbEntry = entry.into();
+                    let ytdlp: YtdlpEntry = link.into_ytdlp_entry(listname);
+                    Ok::<(DbEntry, YtdlpEntry), String>((db, ytdlp))
+                }
             }
         })
         .buffer_unordered(CONC_LIMIT)
@@ -976,6 +1049,26 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
     for y in downloads_entry {
         enqueue(y).await?;
     }
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> Result<(), String> {
+    let app_for_task = app.clone();
+    spawn(async move {
+        let res = do_update(app_for_task.clone(), data, anchor).await;
+        if let Err(e) = &res {
+            println!("[update] failed: {}", e);
+            ProcessMsg {
+                playlist: "__error__".into(),
+                str: e.clone(),
+            }
+            .emit(&app_for_task)
+            .ok();
+        }
+        res
+    });
     Ok(())
 }
 
@@ -1088,38 +1181,19 @@ pub async fn rmexclude(list: Playlist, music: Music) -> Result<(), String> {
 // #[tauri::command]
 // #[specta::specta]
 pub async fn fix_cur_data() -> Result<()> {
-    let cols = Collection::select_all().await?;
-    dbg!(&cols);
-    // for col in cols {
-    //     let id = col.id().await?;
-    //     dbg!(&id);
-    //     let outs = Collection::outs(id, Rel::Collect, Table::Entry).await?;
-    //     dbg!(&outs);
-    //     for out in outs {
-    //         dbg!(out.clone());
-    //         let en = DbEntry::select_record(out).await?;
-    //         dbg!(en);
-    //     }
-    // }
-    for col in cols {
-        if col.name == "Test" {
-            let id = col.id().await?;
-            Collection::delete_record(id).await?;
-        }
-    }
-    let cols = Collection::select_all().await?;
-    dbg!(&cols);
-    // let r = query_raw("select * from collect").await?;
-    // dbg!(r);
     Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn update_weblist(app: tauri::AppHandle, entry: Entry) -> Result<Entry, String> {
+pub async fn update_weblist(
+    app: tauri::AppHandle,
+    entry: Entry,
+    playlist: String,
+) -> Result<Entry, String> {
     let base_folder = resolve_save_path(app.clone())?;
     let base_folder = Arc::new(base_folder);
-    let mut yd: YtdlpEntry = entry.clone().into();
+    let mut yd: YtdlpEntry = entry.clone().into_ytdlp_entry(playlist.clone());
     if yd.url.is_empty() {
         Err("url is empty".to_string())?;
     }

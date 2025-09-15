@@ -11,7 +11,6 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     process::Stdio,
-    sync::Arc,
     time::Instant,
 };
 
@@ -22,7 +21,7 @@ use crate::utils::{config::resolve_save_path, enq::finalize_process};
 use crate::{
     domain::models::music::ProcessMsg,
     utils::{
-        ffmpeg::{ensure_ffmpeg, transcode_to_flac, FlacOpts},
+        ffmpeg::ensure_ffmpeg,
         file::{bin_dir, http, make_executable, remove_quarantine, InstallResult},
     },
 };
@@ -105,6 +104,7 @@ fn chapters_mostly_ready(chapter_dir: &Path, title: &str, chapters: &[Chapter]) 
 pub struct WorkState {
     pub root_id: Uuid,
     pub url: String,
+    pub playlist: String,
     pub title: String,
     pub status: NodeStatus,  // 根的状态
     pub progress_done: u32,  // 完成叶子数
@@ -767,6 +767,7 @@ pub struct Entry {
     pub id: Uuid,    // 稳定标识：下载器回调、并发更新都靠它
     pub url: String, // playlist/single 都可以有 url
     pub title: String,
+    pub playlist: String,
     pub retries: u32,
     pub error: Option<String>,
     #[serde(flatten)]
@@ -824,6 +825,7 @@ pub struct ProcessResult {
     pub working_path: PathBuf,
     pub saved_path: PathBuf,
     pub name: String,
+    pub playlist: String,
 }
 
 /// 递归处理 entry：展开/下载（每节点一个 JSON 快照：working_entry/<id>/state.json）
@@ -842,7 +844,8 @@ pub fn process_entry<'a>(
         }
 
         ProcessMsg {
-            str: format!("Processing {}", entry.title),
+            playlist: entry.playlist.clone(),
+            str: entry.title.clone(),
         }
         .emit(&app)
         .ok();
@@ -860,9 +863,11 @@ pub fn process_entry<'a>(
         let node_id = entry.id;
         let init_url = entry.url.clone();
         let init_title = entry.title.clone();
+        let playlist = entry.playlist.clone();
         let mut mk_init = move || WorkState {
             root_id: node_id, // 这里记录“本节点”的 id
             url: init_url.clone(),
+            playlist: playlist.clone(),
             title: init_title.clone(),
             status: NodeStatus::Pending,
             progress_done: 0,
@@ -917,6 +922,7 @@ pub fn process_entry<'a>(
                         .to_string();
                     children.push(Entry {
                         id: Uuid::new_v4(),
+                        playlist: entry.clone().playlist,
                         url,
                         title,
                         retries: 0,
@@ -973,6 +979,7 @@ pub fn process_entry<'a>(
                         let _g = WorkGuard::lock(&st_dir).ok();
                         let mut st = load_state(&st_path).unwrap_or_else(|| WorkState {
                             root_id: child.id,
+                            playlist: child.playlist.clone(),
                             url: child.url.clone(),
                             title: child.title.clone(),
                             status: NodeStatus::Pending,
@@ -1016,6 +1023,7 @@ pub fn process_entry<'a>(
                             if Path::new(last).exists() {
                                 let saved_path = PathBuf::from(last);
                                 return Ok(ProcessResult {
+                                    playlist: entry.playlist.clone(),
                                     working_path: st_dir.clone(),
                                     saved_path,
                                     name: entry.title.clone(),
@@ -1036,12 +1044,12 @@ pub fn process_entry<'a>(
                     let download =
                         download_audio(app.clone(), entry.url.clone(), dir.clone()).await?;
                     ProcessMsg {
-                        str: format!("split audio {}", entry.title),
+                        playlist: entry.playlist.clone(),
+                        str: format!("split {}", entry.title),
                     }
                     .emit(&app)
                     .ok();
-                    let _outs =
-                        split_audio_by_chapters(&app, &download, chs, &chapter_dir, None).await?;
+                    let _outs = split_audio_by_chapters(&app, &download, chs, &chapter_dir).await?;
                     let _ = std::fs::remove_file(&download);
                     file = Some(download.to_string_lossy().into_owned());
                 }
@@ -1109,6 +1117,7 @@ pub fn process_entry<'a>(
             }
         };
         Ok(ProcessResult {
+            playlist: entry.playlist.clone(),
             working_path: st_dir,
             saved_path,
             name: entry.title.clone(),
@@ -1144,7 +1153,6 @@ pub async fn split_audio_by_chapters(
     src: &Path,
     chapters: &[Chapter],
     out_dir: &Path,
-    flac: Option<FlacOpts>, // 新增：None => 直接 copy; Some(opts) => 编码为 FLAC
 ) -> Result<Vec<PathBuf>, String> {
     use tokio::process::Command;
 
@@ -1156,12 +1164,8 @@ pub async fn split_audio_by_chapters(
     let mut outs = Vec::with_capacity(chapters.len());
     for ch in chapters {
         // 输出文件名与后缀
-        let fname = if flac.is_some() {
-            format!("{}.flac", sanitize_segment(&ch.title))
-        } else {
-            let ext = src.extension().and_then(|s| s.to_str()).unwrap_or("m4a");
-            format!("{}.{}", sanitize_segment(&ch.title), ext)
-        };
+        let ext = src.extension().and_then(|s| s.to_str()).unwrap_or("m4a");
+        let fname = format!("{}.{}", sanitize_segment(&ch.title), ext);
         let outp = out_dir.join(&fname);
 
         // 组命令
@@ -1179,25 +1183,7 @@ pub async fn split_audio_by_chapters(
             .arg("0:a:0?")
             .arg("-vn");
 
-        if let Some(opts) = flac {
-            // 直接转成 FLAC
-            if opts.copy_metadata {
-                cmd.arg("-map_metadata").arg("0");
-            } else {
-                cmd.arg("-map_metadata").arg("-1");
-            }
-            cmd.arg("-c:a")
-                .arg("flac")
-                .arg("-compression_level")
-                .arg(opts.compression_level.to_string());
-        } else {
-            // 仅分割，不转码（最快，但起点需接近关键帧）
-            cmd.arg("-c").arg("copy");
-            // 可选增强健壮性（避免负时间戳等问题）：
-            // cmd.arg("-avoid_negative_ts").arg("make_zero")
-            //    .arg("-fflags").arg("+genpts")
-            //    .arg("-reset_timestamps").arg("1");
-        }
+        cmd.arg("-c").arg("copy");
 
         cmd.arg(&outp);
         cmd.stdout(Stdio::null());
@@ -1270,6 +1256,7 @@ pub async fn test_download_audio(app: tauri::AppHandle) -> Result<Vec<String>, S
     let url = "https://x.com/i/status/1958162017573020003";
     let mut root = Entry {
         id: Uuid::new_v4(),
+        playlist: String::new(),
         url: url.to_string(),
         title: String::new(),
         retries: 0,
@@ -1497,6 +1484,7 @@ fn should_resume(st: &WorkState) -> bool {
 fn reconstruct_entry_minimal(st: &WorkState) -> Result<Entry, String> {
     Ok(Entry {
         id: st.root_id,
+        playlist: st.playlist.clone(),
         url: st.url.clone(),
         title: st.title.clone(),
         retries: 0,
