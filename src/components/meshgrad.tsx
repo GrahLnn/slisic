@@ -51,6 +51,9 @@ export default function MeshGradientTauri({
   const tokenRef = useRef<symbol | null>(null);
   const teardownTimerRef = useRef<number | null>(null);
 
+  const speedRef = useRef(speed);
+  speedRef.current = speed;
+
   useEffect(() => {
     const wrap = wrapRef.current!;
     const canvas = canvasRef.current!;
@@ -207,7 +210,6 @@ void main() {
 
   fragColor = vec4(color, opacity);
 }
-
     `;
 
     // —— 编译/链接 —— //
@@ -381,7 +383,7 @@ void main() {
         const now = performance.now();
         const dt = (now - t0) / 1000;
         t0 = now;
-        timeVal += dt * speed;
+        timeVal += dt * (speedRef.current ?? 0);
 
         // 更新 a_time
         gl.bindBuffer(gl.ARRAY_BUFFER, vboTime!);
@@ -429,7 +431,7 @@ void main() {
       }, 60); // 跨过 StrictMode 的第二次 effect
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [colors.join(","), speed, distortion, swirl]);
+  }, [colors.join(","), distortion, swirl]); // 甚至只依赖 colors.join(",")
 
   return (
     <div
