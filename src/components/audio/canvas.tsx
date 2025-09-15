@@ -2,13 +2,14 @@ import { MeshGradient } from "@paper-design/shaders-react";
 import { Frame } from "./analyzer";
 import { useIsDark } from "@/src/state_machine/normal";
 import { station } from "@/src/subpub/buses";
+import MeshGradientTauri from "../meshgrad";
 
 export function AudioVisualizerCanvas() {
   const audioData = station.audioFrame.useSee();
   const { speed } = computeParams(audioData);
   const isDark = useIsDark();
   return (
-    <MeshGradient
+    <MeshGradientTauri
       colors={
         isDark
           ? ["#d4d0c8", "#4b8ca5", "#330953", "#180117"]
@@ -17,7 +18,7 @@ export function AudioVisualizerCanvas() {
       speed={speed}
       swirl={0.8}
       distortion={0.8}
-      className="w-full h-full"
+      className="fixed top-0 left-0 w-screen h-screen"
     />
   );
 }

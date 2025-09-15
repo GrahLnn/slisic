@@ -62,17 +62,17 @@ function Core() {
       ])}
     >
       <WindowButton
-        className="group-hover:bg-[#ff5f57]"
+        className="group-hover:bg-[#ff5f57] opacity-50 group-hover:opacity-100"
         icon={<icons.xmarksm size={iconsize} className={iconcn} />}
         onClick={() => appWindow.close()}
       />
       <WindowButton
-        className="group-hover:bg-[#ffbc2e]"
+        className="group-hover:bg-[#ffbc2e] opacity-50 group-hover:opacity-100"
         icon={<icons.minussm size={iconsize} className={iconcn} />}
         onClick={() => appWindow.minimize()}
       />
       <WindowButton
-        className="group-hover:bg-[#27c63f]"
+        className="group-hover:bg-[#27c63f] opacity-50 group-hover:opacity-100"
         icon={
           <icons.caretMaximizeDiagonal2 size={iconsize} className={iconcn} />
         }

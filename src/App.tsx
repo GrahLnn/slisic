@@ -1,5 +1,4 @@
 import "@fontsource/maple-mono";
-import { useEffect } from "react";
 import "./App.css";
 import crab from "./cmd";
 import { Scrollbar } from "./components/scrollbar/scrollbar";
@@ -10,6 +9,7 @@ import { station } from "./subpub/buses";
 import { Provider } from "jotai";
 import { appStore } from "./subpub/core";
 import { AudioVisualizerCanvas } from "./components/audio/canvas";
+import { useEffect } from "react";
 
 function App() {
   useEffect(() => {
@@ -18,15 +18,13 @@ function App() {
   }, []);
   return (
     <Provider store={appStore}>
+      <AudioVisualizerCanvas />
       <div
         className="h-screen flex flex-col overflow-hidden hide-scrollbar"
         onMouseEnter={() => station.cursorinapp.set(true)}
         onMouseLeave={() => station.cursorinapp.set(false)}
       >
         <TopBar />
-        <div className="fixed top-0 left-0 w-full h-full">
-          <AudioVisualizerCanvas />
-        </div>
         <main className="flex-1 flex overflow-hidden hide-scrollbar">
           <Pages />
         </main>
