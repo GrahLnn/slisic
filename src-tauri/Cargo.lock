@@ -17,7 +17,6 @@ name = "Slisic"
 version = "1.0.0"
 dependencies = [
  "anyhow",
- "async-runtime",
  "async-trait",
  "block2 0.6.1",
  "chrono",
@@ -28,6 +27,7 @@ dependencies = [
  "futures-util",
  "hex",
  "inventory",
+ "libc",
  "log",
  "objc2 0.6.2",
  "objc2-app-kit",
@@ -426,12 +426,6 @@ dependencies = [
  "quote",
  "syn 2.0.106",
 ]
-
-[[package]]
-name = "async-runtime"
-version = "0.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47480253cb834453b5c18d7a1fa50afdc6eb330cc90f7788c79368e7d0f61ec9"
 
 [[package]]
 name = "async-stream"
