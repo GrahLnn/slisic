@@ -18,6 +18,7 @@ impl From<ProcessResult> for DownloadAnswer {
         Self {
             path: d.saved_path,
             name: d.name,
+            playlist: d.playlist,
         }
     }
 }

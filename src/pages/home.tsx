@@ -96,6 +96,7 @@ function Play() {
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const process_msg = hook.useMsg();
 
   const setItemRef = useCallback(
     (key: string): React.RefCallback<HTMLDivElement> =>
@@ -195,8 +196,14 @@ function Play() {
                                 <motion.span
                                   key="name"
                                   className="absolute inset-0 flex items-center justify-center pointer-events-none whitespace-nowrap"
-                                  initial={{ filter: "blur(6px)", opacity: 0 }}
-                                  animate={{ filter: "blur(0px)", opacity: 1 }}
+                                  initial={{
+                                    filter: "blur(6px)",
+                                    opacity: 0,
+                                  }}
+                                  animate={{
+                                    filter: "blur(0px)",
+                                    opacity: 1,
+                                  }}
                                   exit={{ filter: "blur(6px)", opacity: 0 }}
                                   transition={{
                                     duration: 0.25,
@@ -223,7 +230,20 @@ function Play() {
                             </AnimatePresence>
                           </span>
                         ) : (
-                          <span>{i.name}</span>
+                          <span
+                            className={cn([
+                              "relative inline-block",
+                              !isOk &&
+                                "select-none text-[#404040] dark:text-[#a3a3a3] animate-pulse",
+                            ])}
+                          >
+                            <span>{i.name}</span>
+                            {process_msg?.playlist === i.name && (
+                              <span className="absolute text-xs ml-1 dark:text-[#d4d4d4] text-[#262626] max-w-2xs whitespace-nowrap truncate">
+                                - {process_msg?.str}
+                              </span>
+                            )}
+                          </span>
                         );
                       })()}
                     </ContextMenuTrigger>

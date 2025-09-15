@@ -25,8 +25,10 @@ export const ss = defineSS(
 );
 export const payloads = collect(event<string>()("probe"));
 const invoker = createActors({
-  async update_weblist({ input }: ActorInput<{ entry: Entry }>) {
-    const a = await crab.updateWeblist(input.entry);
+  async update_weblist({
+    input,
+  }: ActorInput<{ entry: Entry; playlist: string }>) {
+    const a = await crab.updateWeblist(input.entry, input.playlist);
     return a.unwrap();
   },
 });
@@ -41,13 +43,14 @@ export type UpdateDone = { r: Result<Entry, string> };
 
 type Context = {
   entry?: Entry;
+  playlist?: string;
   result?: Result<Entry, string>;
 };
 const h = eventHandler<Context, Events>();
 const src = setup({
   actors: invoker.as_act(),
   types: {
-    input: {} as { entry: Entry },
+    input: {} as { entry: Entry; playlist: string },
     context: {} as Context,
     events: {} as Events,
     output: {} as UpdateDone,
@@ -73,7 +76,10 @@ export const update_weblist_machine = src.createMachine({
       invoke: {
         id: invoker.update_weblist.name,
         src: invoker.update_weblist.name,
-        input: ({ context: { entry } }) => ({ entry }),
+        input: ({ context: { entry, playlist } }) => ({
+          entry,
+          playlist,
+        }),
         onDone: {
           target: ss.mainx.State.done,
           actions: "ok",

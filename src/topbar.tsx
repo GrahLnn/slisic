@@ -10,8 +10,10 @@ import { useXState as useCenterToolState } from "./state_machine/centertool";
 import crab from "./cmd";
 import { action } from "./state_machine/music";
 import logoUrl from "@/src/assets/logo.png";
+import lightLogoUrl from "@/src/assets/logo-light.png";
 import { platform } from "@tauri-apps/plugin-os";
 import { me } from "@/lib/matchable";
+import { useIsDark } from "./state_machine/normal";
 
 const os = me(platform());
 
@@ -19,6 +21,18 @@ export function Brand() {
   return (
     <img
       src={logoUrl}
+      className="h-6 w-6"
+      alt="App logo"
+      draggable={false}
+      style={{ imageRendering: "auto" }}
+    />
+  );
+}
+
+export function LightBrand() {
+  return (
+    <img
+      src={lightLogoUrl}
       className="h-6 w-6"
       alt="App logo"
       draggable={false}
@@ -148,6 +162,7 @@ const MiddleControls = memo(function MiddleControlsComponent() {
 
 const TopBar = memo(function TopBarComponent() {
   const windowFocused = useIsWindowFocus();
+  const isDark = useIsDark();
   const allowBarInteraction = station.allowBarInteraction.useSee();
 
   // useEffect(() => {
@@ -223,7 +238,7 @@ const TopBar = memo(function TopBarComponent() {
                   data-tauri-drag-region
                   className={cn(["flex justify-start pl-1 items-center"])}
                 >
-                  {os.is("windows") && <Brand />}
+                  {os.is("windows") && (isDark ? <Brand /> : <LightBrand />)}
                   <LeftControls />
                 </div>
                 <div

@@ -1,4 +1,10 @@
-import { CollectMission, Entry, Music, Playlist } from "@/src/cmd/commands";
+import {
+  CollectMission,
+  Entry,
+  Music,
+  Playlist,
+  ProcessMsg,
+} from "@/src/cmd/commands";
 import {
   collect,
   defineSS,
@@ -9,6 +15,11 @@ import {
   ActorInput,
   createActors,
   events,
+  InvokeEvt,
+  MachineEvt,
+  PayloadEvt,
+  SignalEvt,
+  UniqueEvts,
 } from "../kit";
 import { resultx } from "../state";
 import { ActorDone, machine as muinfoMachine } from "../muinfo";
@@ -86,7 +97,8 @@ export const payloads = collect(
     "cancle_up",
     "cancle_down",
     "not_exist"
-  )
+  ),
+  event<ProcessMsg>()("processMsg")
 );
 
 export const sub_machine = collect(
@@ -119,3 +131,9 @@ export const invoker = createActors({
 
 export type MainStateT = keyof typeof ss.mainx.State;
 export type ResultStateT = keyof typeof resultx.State;
+export type Events = UniqueEvts<
+  | SignalEvt<typeof ss>
+  | InvokeEvt<typeof invoker>
+  | PayloadEvt<typeof payloads.infer>
+  | MachineEvt<typeof sub_machine.infer>
+>;
