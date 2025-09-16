@@ -239,9 +239,8 @@ export const src = setup({
         return base[idx];
       },
     }),
-    stop_audio: async ({ context, self }) => {
+    stop_audio: async ({ context }) => {
       const { engine, audio, analyzer } = context;
-      self.send(ss.playx.Signal.analyzerstop);
       // 先停采样
       context.playToken = (context.playToken ?? 0) + 1;
       context.__stopSampling?.();
@@ -404,9 +403,7 @@ export const src = setup({
 
       // 时钟已走，淡入 & 启动采样
       engine.fadeIn(25);
-      context.__stopSampling = analyzer.startSampling?.((frame) => {
-        station.audioFrame.set(frame);
-      });
+      context.__stopSampling = analyzer.startSampling?.(station.audioFrame.set);
 
       // 结束回调
       audio.onended = () => {
@@ -611,10 +608,6 @@ export const src = setup({
       nowJudge: udf,
     }),
     reset_frame: () => station.audioFrame.set(new_frame()),
-    update_audio_frame: ({ event }) => {
-      assertEvent(event, payloads.update_audio_frame.evt());
-      station.audioFrame.set(event.output);
-    },
     ensure_engine: assign({
       engine: ({ context }) => context.engine ?? new AudioEngine(),
     }),

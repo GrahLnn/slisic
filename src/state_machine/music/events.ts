@@ -25,35 +25,8 @@ import { resultx } from "../state";
 import { ActorDone, machine as muinfoMachine } from "../muinfo";
 import { Frame } from "./core";
 import crab from "@/src/cmd";
-import { fromCallback } from "xstate";
-import { AudioAnalyzer } from "@/src/components/audio/analyzer";
-import { station } from "@/src/subpub/buses";
 import { check_folder_machine, CheckDone } from "../foldercheck";
-import { Result } from "@/lib/result";
 import { update_weblist_machine, UpdateDone } from "../updateweblist";
-
-export const analyzeAudio = fromCallback<any, { analyzer: AudioAnalyzer }>(
-  ({ input, receive }) => {
-    let stop: null | (() => void) = null;
-
-    const start = () => {
-      if (stop) stop();
-      stop = input.analyzer.onFrame((f) => station.audioFrame.set(f));
-    };
-
-    receive((evt) => {
-      if (evt?.type === "analyzerstart") start();
-      if (evt?.type === "analyzerstop") {
-        stop?.();
-        stop = null;
-      }
-    });
-
-    return () => {
-      stop?.();
-    };
-  }
-);
 
 export const ss = defineSS(
   ns("resultx", resultx),
@@ -73,13 +46,7 @@ export const ss = defineSS(
       ["run", "unmount", "back", "AFTER_DELETE", "review_check"]
     )
   ),
-  ns(
-    "playx",
-    sst(
-      ["stop", "playing", "next"],
-      ["next", "play", "analyzerstart", "analyzerstop"]
-    )
-  )
+  ns("playx", sst(["stop", "playing", "next"], ["next", "play"]))
 );
 
 export const payloads = collect(
@@ -103,7 +70,6 @@ export const payloads = collect(
 
 export const sub_machine = collect(
   machine<ActorDone>(muinfoMachine)("review"),
-  machine(analyzeAudio)("analyzeAudio"),
   machine<CheckDone>(check_folder_machine)("check_folder"),
   machine<UpdateDone>(update_weblist_machine)("update_weblist")
 );
