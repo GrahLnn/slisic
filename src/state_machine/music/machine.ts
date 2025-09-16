@@ -105,18 +105,8 @@ export const machine = src.createMachine({
       },
       states: {
         [ss.playx.State.playing]: {
-          invoke: {
-            id: sub_machine.analyzeAudio.id,
-            src: sub_machine.analyzeAudio.id,
-            input: ({ context }) => ({
-              analyzer: context.analyzer!,
-            }),
-          },
           entry: ["ensure_analyzer", "play_audio"],
           on: {
-            [payloads.update_audio_frame.evt()]: {
-              actions: "update_audio_frame",
-            },
             toggle_audio: {
               actions: [
                 "reset_frame",
