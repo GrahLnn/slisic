@@ -23,6 +23,9 @@ function App() {
         className="h-screen flex flex-col overflow-hidden hide-scrollbar"
         onMouseEnter={() => station.cursorinapp.set(true)}
         onMouseLeave={() => station.cursorinapp.set(false)}
+        onContextMenu={
+          !import.meta.env.DEV ? (e) => e.preventDefault() : undefined
+        }
       >
         <TopBar />
         <main className="flex-1 flex overflow-hidden hide-scrollbar">
