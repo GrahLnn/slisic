@@ -23,15 +23,11 @@ const FF_SUMS: &str =
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
 struct FfAssetSpec {
-    asset_name: &'static str,   // 压缩包名
-    install_name: &'static str, // bin 下落地名：ffmpeg 或 ffmpeg.exe
-}
-
-#[derive(Clone, Copy)]
-pub struct FlacOpts {
-    pub compression_level: u8, // 0..12，12 最省空间但最慢
-    pub keep_source: bool,     // 转码后是否保留源文件
-    pub copy_metadata: bool,   // 是否复制源文件元数据
+    // 对 Win/Linux 仍然用 asset_name + 基础 BASE 拼 URL
+    asset_name: Option<&'static str>,
+    // macOS 直接给完整 URL
+    direct_url: Option<&'static str>,
+    install_name: &'static str, // "ffmpeg" or "ffmpeg.exe"
 }
 
 // 选择平台对应的 FFmpeg 构建（BtbN 命名规范）
@@ -41,26 +37,41 @@ fn ffmpeg_select_asset() -> Option<FfAssetSpec> {
     match (os, arch) {
         // Windows
         ("windows", "x86_64") | ("windows", "x86") | ("windows", "aarch64") => Some(FfAssetSpec {
-            asset_name: "ffmpeg-master-latest-win64-gpl.zip", // BtbN 主要分发 win64
+            asset_name: Some("ffmpeg-master-latest-win64-gpl.zip"),
             install_name: "ffmpeg.exe",
+            direct_url: None,
         }),
-        // Linux x86_64
         ("linux", "x86_64") => Some(FfAssetSpec {
-            asset_name: "ffmpeg-master-latest-linux64-gpl.tar.xz",
+            asset_name: Some("ffmpeg-master-latest-linux64-gpl.tar.xz"),
             install_name: "ffmpeg",
+            direct_url: None,
         }),
-        // Linux aarch64
         ("linux", "aarch64") => Some(FfAssetSpec {
-            asset_name: "ffmpeg-master-latest-linuxarm64-gpl.tar.xz",
+            asset_name: Some("ffmpeg-master-latest-linuxarm64-gpl.tar.xz"),
             install_name: "ffmpeg",
+            direct_url: None,
         }),
-        // Linux armhf (armv7)
         ("linux", "arm") | ("linux", "armv7") => Some(FfAssetSpec {
-            asset_name: "ffmpeg-master-latest-linuxarmhf-gpl.tar.xz",
+            asset_name: Some("ffmpeg-master-latest-linuxarmhf-gpl.tar.xz"),
             install_name: "ffmpeg",
+            direct_url: None,
         }),
         // macOS：建议 Homebrew；如需内置下载，你可以换成第三方构建源
-        ("macos", _) => None,
+        ("macos", "aarch64") => Some(FfAssetSpec {
+            asset_name: None,
+            direct_url: Some(
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip",
+            ),
+            install_name: "ffmpeg",
+        }),
+        // Intel
+        ("macos", "x86_64") => Some(FfAssetSpec {
+            asset_name: None,
+            // Evermeet 提供 zip 最新快照
+            direct_url: Some("https://evermeet.cx/ffmpeg/get/zip"),
+            install_name: "ffmpeg",
+        }),
+
         _ => None,
     }
 }
@@ -140,8 +151,14 @@ pub async fn ffmpeg_check_update(app: tauri::AppHandle) -> Result<FfCheck, Strin
         installed_path: installed.clone(),
         latest_tag,
         needs_install: installed.is_none(),
-        asset_name: Some(spec.asset_name.into()),
-        download_url: Some(format!("{FF_DL_BASE}/{}", spec.asset_name)),
+        asset_name: spec.asset_name.map(|s| s.to_string()),
+        download_url: if let Some(url) = spec.direct_url {
+            Some(url.to_string())
+        } else if let Some(name) = spec.asset_name {
+            Some(format!("{FF_DL_BASE}/{}", name))
+        } else {
+            None
+        },
         note: None,
     })
 }
@@ -193,26 +210,45 @@ async fn ffmpeg_fetch_sum(asset: &str) -> Result<Option<String>, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn ffmpeg_download_and_install(app: tauri::AppHandle) -> Result<InstallResult, String> {
-    // macOS 简单提示
-    if std::env::consts::OS == "macos" {
-        return Err(
-            "macOS 建议用 Homebrew 安装：brew install ffmpeg（如需内置包，请换成你信任的二进制源）"
-                .into(),
-        );
-    }
+    use std::path::Path;
 
+    // 统一通过选择器拿到 spec（Win/Linux 走 BtbN，macOS 走直链）
     let spec = ffmpeg_select_asset().ok_or("当前平台未内置 FFmpeg 构建映射")?;
-    let url = format!("{FF_DL_BASE}/{}", spec.asset_name);
 
-    // 取校验（可选，如果拿不到就跳过校验）
-    let expect = ffmpeg_fetch_sum(spec.asset_name).await.ok().flatten();
+    // 拼下载 URL：优先 direct_url（macOS），否则用 BtbN 的 BASE+asset_name
+    let url = if let Some(dir) = spec.direct_url {
+        dir.to_string()
+    } else if let Some(name) = spec.asset_name {
+        format!("{FF_DL_BASE}/{}", name)
+    } else {
+        return Err("未找到可用的下载 URL".into());
+    };
 
-    // 下载到缓存
+    // 校验：仅对 BtbN（asset_name 有值）尝试获取 sha256；直链源（macOS）先跳过
+    let expect = if let Some(name) = spec.asset_name {
+        ffmpeg_fetch_sum(name).await.ok().flatten()
+    } else {
+        None
+    };
+
+    // 生成临时文件名（优先 asset_name，否则从 URL 截取文件名，再不行用固定名）
+    let tmp_name = if let Some(name) = spec.asset_name {
+        name.to_string()
+    } else {
+        Path::new(&url)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("ffmpeg_download")
+            .to_string()
+    };
+
+    // 下载到缓存目录
     let tmp = app
         .path()
         .app_cache_dir()
         .map_err(|e| e.to_string())?
-        .join(format!("{}.tmp", spec.asset_name));
+        .join(format!("{tmp_name}.tmp"));
+
     {
         let cli = http().await.map_err(|e| e.to_string())?;
         let resp = cli
@@ -223,13 +259,12 @@ pub async fn ffmpeg_download_and_install(app: tauri::AppHandle) -> Result<Instal
             .map_err(|e| e.to_string())?;
         resp.error_for_status_ref().map_err(|e| e.to_string())?;
         let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+
         if let Some(exp) = expect {
-            let got = {
-                use sha2::{Digest, Sha256};
-                let mut h = Sha256::new();
-                h.update(&bytes);
-                hex::encode(h.finalize())
-            };
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(&bytes);
+            let got = hex::encode(h.finalize());
             if got != exp {
                 return Err(format!("sha256 mismatch: expected {exp}, got {got}"));
             }
@@ -245,40 +280,35 @@ pub async fn ffmpeg_download_and_install(app: tauri::AppHandle) -> Result<Instal
     extract_and_place_ffmpeg(&tmp, &final_path).await?;
 
     make_executable(&final_path).map_err(|e| e.to_string())?;
-    remove_quarantine(&final_path);
+    remove_quarantine(&final_path); // macOS 有效，其它平台是 no-op 也无妨
 
-    // 用 latest tag 作为“版本号”；拿不到就写 unknown
-    #[derive(Deserialize)]
-    struct R {
-        tag_name: String,
-    }
-    let ver = http()
-        .await
-        .ok()
-        .and_then(|cli| {
-            futures::executor::block_on(async move {
-                cli.get(FF_API_LATEST)
-                    .send()
-                    .await
-                    .ok()?
-                    .error_for_status()
-                    .ok()?
-                    .json::<R>()
-                    .await
-                    .ok()
-            })
-        })
-        .map(|r| r.tag_name)
-        .unwrap_or_else(|| "unknown".into());
+    // 统一用实际安装的 ffmpeg -version 解析版本号，更通用
+    let ver = {
+        let out = Command::new(&final_path)
+            .arg("-version")
+            .output()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            "unknown".to_string()
+        } else {
+            let s = String::from_utf8_lossy(&out.stdout);
+            // 典型第一行：ffmpeg version n7.1-...；我们取第二个词当版本
+            s.lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(2))
+                .unwrap_or("unknown")
+                .to_string()
+        }
+    };
 
-    // 记录到原有 InstallResult 结构里
     Ok(InstallResult {
         installed_path: final_path,
         installed_version: ver,
     })
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn unpack_zip(archive: &Path, tmpdir: &Path) -> Result<(), String> {
     let mut z = zip::ZipArchive::new(std::fs::File::open(archive).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
@@ -314,19 +344,44 @@ pub async fn extract_and_place_ffmpeg(archive: &Path, dest_exec: &Path) -> Resul
     }
     fs::create_dir_all(&tmpdir).map_err(|e| e.to_string())?;
 
-    // 编译期根据平台选择
-    #[cfg(target_os = "windows")]
-    unpack_zip(archive, &tmpdir)?;
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    unpack_tar_xz(archive, &tmpdir)?;
-
-    // 找 ffmpeg 可执行文件
-    let wanted = if cfg!(windows) {
-        "ffmpeg.exe"
+    // === 按扩展名选择解压器 ===
+    let name = archive.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    if name.ends_with(".zip") {
+        // macOS/Windows: zip 包
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        {
+            unpack_zip(archive, &tmpdir)?;
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            return Err("zip 解压在当前平台未实现".into());
+        }
+    } else if name.ends_with(".tar.xz") || name.ends_with(".txz") {
+        // Linux: tar.xz 包
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            unpack_tar_xz(archive, &tmpdir)?;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            return Err("tar.xz 解压在当前平台未实现".into());
+        }
     } else {
-        "ffmpeg"
-    };
+        // 兜底（有些直链末尾可能没有扩展名，尝试 zip 解）
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        {
+            if let Err(e) = unpack_zip(archive, &tmpdir) {
+                return Err(format!("无法识别压缩格式，且 zip 解压失败：{e}"));
+            }
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            return Err("无法识别压缩格式（既不是 zip 也不是 tar.xz）".into());
+        }
+    }
+
+    // === 以下保持不变：递归寻找 ffmpeg 可执行并复制 ===
+    let wanted = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
     let mut found = None;
     fn walk_find(dir: &Path, name: &str, out: &mut Option<PathBuf>) {
         if out.is_some() {
@@ -353,6 +408,7 @@ pub async fn extract_and_place_ffmpeg(archive: &Path, dest_exec: &Path) -> Resul
     let _ = fs::remove_file(archive);
     Ok(())
 }
+
 
 // 一个简易自检命令（可选）：返回 `ffmpeg -version` 的前几行
 #[tauri::command]
@@ -426,59 +482,6 @@ fn unique_flac_path(orig: &Path) -> PathBuf {
         }
     }
     parent.join(format!("{stem}.{}.flac", uuid::Uuid::new_v4()))
-}
-
-pub async fn transcode_to_flac(
-    app: &tauri::AppHandle,
-    src: &Path,
-    opts: FlacOpts,
-) -> Result<PathBuf, String> {
-    use tokio::process::Command;
-
-    let ffmpeg = ensure_ffmpeg(&app).map_err(|e| e.to_string())?;
-    let out = unique_flac_path(src);
-
-    // 精简稳妥参数：
-    // -map 0:a:0? 只取第一条音轨（大多数音乐够用）
-    // -map_metadata 0 复制元数据（可开关）
-    // -vn 去视频轨
-    // -c:a flac -compression_level N
-    let mut cmd = Command::new(&ffmpeg);
-    cmd.arg("-y")
-        .arg("-nostdin")
-        .arg("-i")
-        .arg(src)
-        .arg("-map")
-        .arg("0:a:0?")
-        .arg("-vn")
-        .arg("-c:a")
-        .arg("flac")
-        .arg("-compression_level")
-        .arg(opts.compression_level.to_string());
-
-    if opts.copy_metadata {
-        cmd.arg("-map_metadata").arg("0");
-    } else {
-        cmd.arg("-map_metadata").arg("-1");
-    }
-
-    cmd.arg(&out);
-    cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::null());
-
-    let status = cmd
-        .status()
-        .await
-        .map_err(|e| format!("ffmpeg 执行失败: {e}"))?;
-    if !status.success() {
-        return Err(format!("ffmpeg 转码失败：{}", out.display()));
-    }
-
-    if !opts.keep_source {
-        let _ = std::fs::remove_file(src);
-    }
-
-    Ok(out)
 }
 
 pub fn integrated_lufs<P: AsRef<Path>>(app: &tauri::AppHandle, path: P) -> Result<f64> {
