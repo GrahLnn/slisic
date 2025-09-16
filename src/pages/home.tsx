@@ -175,6 +175,11 @@ function Play() {
                         if (disabled || !isOk) return;
                         action.play(i);
                       }}
+                      onContextMenu={(e) => {
+                        if (isPlaying || disabled || !isOk) {
+                          e.preventDefault();
+                        }
+                      }}
                     >
                       {(() => {
                         const alt = curPlay?.title ?? i.name;
@@ -247,7 +252,7 @@ function Play() {
                         );
                       })()}
                     </ContextMenuTrigger>
-                    {!disabled && isOk && (
+                    {!isPlaying && !disabled && isOk && (
                       <ContextMenuContent className="opacity-90">
                         <ContextMenuItem onClick={() => action.edit(i)}>
                           Edit

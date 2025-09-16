@@ -215,7 +215,7 @@ export const src = setup({
       flatList: EH.whenDone(payloads.toggle_audio.evt())((i) =>
         i!.entries
           .flatMap((f) => f.musics)
-          .filter((m) => !i!.exclude.includes(m))
+          .filter((m) => !i?.exclude.map((e) => e.path).includes(m.path))
       ),
       selected: EH.whenDone(payloads.toggle_audio.evt())((i) => i || undefined),
     }),
