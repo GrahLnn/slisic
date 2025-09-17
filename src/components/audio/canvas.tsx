@@ -27,15 +27,7 @@ function computeParams(a: Frame) {
   const { volume, bass, mid, treble, bassPeak, volumePeak, intensityBurst } = a;
 
   // 全零/无信号：固定速度
-  if (
-    !volume &&
-    !bass &&
-    !mid &&
-    !treble &&
-    !bassPeak &&
-    !volumePeak &&
-    !intensityBurst
-  ) {
+  if (!bass && !mid && !treble && !bassPeak && !intensityBurst) {
     return 0.3;
   }
 
