@@ -96,6 +96,21 @@ export function event<T>() {
     ({ __kind: "payload", type: name, output: undefined as T } as const);
 }
 
+export function events<T>() {
+  return <const N extends readonly string[]>(...names: N) =>
+    names.map((name) => ({
+      __kind: "payload" as const,
+      type: name,
+      output: undefined as T,
+    })) as {
+      readonly [K in keyof N]: {
+        readonly __kind: "payload";
+        readonly type: N[K];
+        readonly output: T;
+      };
+    };
+}
+
 /** 构造一个 machine-done 事件“原型”（随后交给 collect 形成工厂） */
 export function machine<O, L extends AnyActorLogic = AnyActorLogic>(
   machine: L
@@ -119,40 +134,81 @@ type SendAllDict<E extends readonly MachineEvent<any>[]> = {
     ? L
     : never;
 };
-export function collect<const E extends readonly PayloadEvent[]>(
-  ...events: E
-): PayloadMap<E> & { infer: E };
+/* -------------------------------------------------------
+ * 类型工具：拍扁一层嵌套的 tuple，并在 tuple 上做过滤
+ * -----------------------------------------------------*/
+type Flatten1<A extends readonly unknown[]> = A extends readonly [
+  infer H,
+  ...infer R
+]
+  ? H extends readonly unknown[]
+    ? [...H, ...Flatten1<R>]
+    : [H, ...Flatten1<R>]
+  : [];
 
+type FilterTuple<T extends readonly unknown[], Pred> = T extends readonly [
+  infer H,
+  ...infer R
+]
+  ? H extends Pred
+    ? [H, ...FilterTuple<R, Pred>]
+    : [...FilterTuple<R, Pred>]
+  : [];
+
+/* -------------------------------------------------------
+ * 统一重载：接受“混合 + 可嵌套数组”的任何组合
+ *   - A 为原始参数 tuple
+ *   - F = Flatten1<A> 为拍扁后的 tuple（仍保留字面量顺序）
+ *   - FP / FM 分别为仅 payload / machine 的子 tuple
+ * -----------------------------------------------------*/
 export function collect<
-  const E extends readonly ME[],
-  ME extends MachineEvent<any>
+  const A extends readonly (
+    | PayloadEvent
+    | MachineEvent<any>
+    | readonly (PayloadEvent | MachineEvent<any>)[]
+  )[],
+  const F extends readonly (PayloadEvent | MachineEvent<any>)[] = Flatten1<A>,
+  const FP extends readonly PayloadEvent[] = FilterTuple<F, PayloadEvent>,
+  const FM extends readonly MachineEvent<any>[] = FilterTuple<
+    F,
+    MachineEvent<any>
+  >
 >(
-  ...events: E
-): MachineMap<E> & {
-  infer: E;
-  /** 返回形如 { [event.id]: event.machine, ... } 的字典 */
-  as_act: () => SendAllDict<E>;
-};
+  ...args: A
+): PayloadMap<FP> &
+  MachineMap<FM> & {
+    infer: F;
+  } & (FM extends readonly [] ? {} : { as_act: () => SendAllDict<FM> });
 
-/** 实现：根据 __kind 分支构造不同的字典 */
+/* -------------------------------------------------------
+ * 实现签名（保持与之前一致，但把参数也写成“可夹杂数组”）
+ * -----------------------------------------------------*/
 export function collect(
-  ...events: readonly (PayloadEvent | MachineEvent<any>)[]
+  ...args: readonly (
+    | PayloadEvent
+    | MachineEvent<any>
+    | readonly (PayloadEvent | MachineEvent<any>)[]
+  )[]
 ) {
+  // 运行时拍扁一层（与类型层面的 Flatten1 对齐）
+  const events: readonly (PayloadEvent | MachineEvent<any>)[] = args.flatMap(
+    (a) => (Array.isArray(a) ? (a as any) : [a as any])
+  );
+
   const methods = Object.assign(
     {},
     ...events.map((e) => {
-      if (e.__kind === "machine") {
-        const key = (e.type as string).startsWith(DONE_PREFIX)
-          ? (e.type as string).slice(DONE_PREFIX.length)
-          : (e.type as string);
+      if ((e as any).__kind === "machine") {
+        const t = (e as any).type as string;
+        const key = t.startsWith(DONE_PREFIX) ? t.slice(DONE_PREFIX.length) : t;
         return {
-          [key]: { evt: () => e.type, id: key, machine: (e as any).machine },
+          [key]: { evt: () => t, id: key, machine: (e as any).machine },
         };
       }
       return {
-        [e.type]: {
-          load: (p: any) => ({ type: e.type, output: p }),
-          evt: () => e.type,
+        [(e as any).type]: {
+          load: (p: any) => ({ type: (e as any).type, output: p }),
+          evt: () => (e as any).type,
         },
       };
     })
@@ -168,11 +224,7 @@ export function collect(
 
   const as_act = () => Object.fromEntries(machineEntries);
 
-  return {
-    ...(methods as any),
-    infer: events as any,
-    as_act,
-  };
+  return { ...(methods as any), infer: events as any, as_act };
 }
 
 /* -----------------------------------------------------------------------------
@@ -245,7 +297,11 @@ export function eventHandler<
   function take<S extends KeyLike>(
     key?: S
   ): <R>(
-    fn: (ctx: TContext, evt: EvtForKey<TEvents, NormalizeKey<S>>) => R
+    fn: (
+      out: OutputOf<TEvents, NormalizeKey<S>>,
+      ctx: TContext,
+      evt: EvtForKey<TEvents, NormalizeKey<S>>
+    ) => R
   ) => (args: ActionArgs<TContext, TEvents, TEvents>) => R;
 
   function take(key?: string) {
@@ -253,7 +309,7 @@ export function eventHandler<
       ? (fn: any) => (args: any) => {
           const { context, event } = args;
           assertEvent(event, key);
-          return fn(context as TContext, event as any);
+          return fn((event as any).output, context as TContext, event as any);
         }
       : (fn: any) => (args: any) => {
           const { context } = args;
