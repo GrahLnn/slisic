@@ -1,8 +1,7 @@
-import { setup, assign, assertEvent, enqueueActions } from "xstate";
+import { setup, assign, enqueueActions } from "xstate";
 import { eventHandler } from "../kit";
 import {
   Context,
-  Frame,
   into_slot,
   new_frame,
   new_slot,
@@ -253,9 +252,13 @@ export const src = setup({
               console.warn("[tap] create failed:", e);
             }
           }
-          context.tap?.start((f) => station.audioFrame.set(f));
+          context.tap?.start(station.audioFrame.set);
         },
         onend: () => self.send(ss.playx.Signal.next),
+        onstop: () => {
+          station.audioFrame.set(new_frame());
+          context.tap?.stop();
+        },
       });
 
       enqueue.assign({ nowPlaying: choose, audio: sound });
@@ -462,8 +465,6 @@ export const src = setup({
       }),
       nowJudge: udf,
     }),
-    reset_frame: () => station.audioFrame.set(new_frame()),
-
     into_slot: assign({
       slot: EH.whenDone(payloads.edit_playlist.evt())(into_slot),
       selected: EH.whenDone(payloads.edit_playlist.evt())(I),

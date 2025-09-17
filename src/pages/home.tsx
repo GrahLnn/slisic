@@ -390,21 +390,23 @@ function Play() {
                 </motion.div>
               );
             })}
-            <motion.div
-              className={cn([
-                "text-2xl font-cinzel text-[#0a0a0a] dark:text-[#fafafa] transition cursor-pointer snap-center",
-                "whitespace-nowrap",
-                isPlaying && "opacity-0 pointer-events-none select-none",
-              ])}
-              onClick={() => {
-                if (isPlaying) return;
-                action.add_new();
-              }}
-              tabIndex={isPlaying ? -1 : 0}
-              aria-disabled={isPlaying || undefined}
-            >
-              Add List
-            </motion.div>
+            {!isPlaying && (
+              <motion.div
+                className={cn([
+                  "text-2xl font-cinzel text-[#0a0a0a] dark:text-[#fafafa] transition cursor-pointer snap-center",
+                  "whitespace-nowrap",
+                  // isPlaying && "opacity-0 pointer-events-none select-none",
+                ])}
+                onClick={() => {
+                  if (isPlaying) return;
+                  action.add_new();
+                }}
+                tabIndex={isPlaying ? -1 : 0}
+                aria-disabled={isPlaying || undefined}
+              >
+                Add List
+              </motion.div>
+            )}
             <div aria-hidden className="shrink-0 h-[50vh] snap-none" />
           </div>
         </div>
