@@ -165,32 +165,6 @@ impl DbEntry {
     }
 }
 
-// impl From<LinkSample> for YtdlpEntry {
-//     fn from(e: LinkSample) -> Self {
-//         Self {
-//             id: Uuid::new_v4(),
-//             url: e.url,
-//             title: e.title_or_msg,
-//             retries: 0,
-//             error: None,
-//             kind: None,
-//         }
-//     }
-// }
-
-// impl From<Entry> for YtdlpEntry {
-//     fn from(e: Entry) -> Self {
-//         Self {
-//             id: Uuid::new_v4(),
-//             url: e.url.unwrap_or("".to_string()),
-//             title: e.name,
-//             retries: 0,
-//             error: None,
-//             kind: None,
-//         }
-//     }
-// }
-
 impl LinkSample {
     pub fn into_ytdlp_entry(self, playlist: String) -> YtdlpEntry {
         YtdlpEntry {
@@ -368,15 +342,17 @@ async fn do_create(app: AppHandle, data: CollectMission, col_id: RecordId) -> Re
                     .try_collect::<Vec<_>>()
                     .await?;
 
-                    let entry = Entry {
+                    let name = PathBuf::from(path.clone())
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_string();
+
+                    let entry = DbEntry {
+                        id: DbEntry::record_id(name.clone()),
                         path: Some(path.clone()),
-                        name: PathBuf::from(path)
-                            .file_name()
-                            .unwrap()
-                            .to_str()
-                            .unwrap()
-                            .to_string(),
-                        musics: Vec::new(),
+                        name,
                         url: None,
                         entry_type: EntryType::Local,
                         downloaded_ok: Some(true),
@@ -936,14 +912,16 @@ async fn do_update(app: AppHandle, data: CollectMission, anchor: Playlist) -> Re
                     .try_collect::<Vec<_>>()
                     .await?;
 
+                    let name = PathBuf::from(path.clone())
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_string();
+
                     let entry = Entry {
                         path: Some(path.clone()),
-                        name: PathBuf::from(path)
-                            .file_name()
-                            .unwrap()
-                            .to_str()
-                            .unwrap()
-                            .to_string(),
+                        name,
                         musics: Vec::new(),
                         url: None,
                         entry_type: EntryType::Local,

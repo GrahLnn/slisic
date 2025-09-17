@@ -248,6 +248,14 @@ function Play() {
                                 - {process_msg?.str}
                               </span>
                             )}
+                            {!isOk && (
+                              <span className="absolute text-xs ml-1 bottom-0 text-[#404040] dark:text-[#a3a3a3]">
+                                {
+                                  i.entries.filter((f) => !f.downloaded_ok)
+                                    .length
+                                }
+                              </span>
+                            )}
                           </span>
                         );
                       })()}
