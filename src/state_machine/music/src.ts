@@ -1,25 +1,23 @@
 import { setup, assign, assertEvent, enqueueActions } from "xstate";
 import { eventHandler } from "../kit";
-import { Context, Frame, into_slot, new_frame, new_slot } from "./core";
+import {
+  Context,
+  Frame,
+  into_slot,
+  new_frame,
+  new_slot,
+  createHowlerTap,
+} from "./core";
 import { payloads, ss, sub_machine, invoker, Events } from "./events";
 import { I, K } from "@/lib/comb";
 import { udf, vec } from "@/lib/e";
 import { hideCenterTool, viewCenterTool } from "../centertool";
-import { fileToBlobUrl } from "@/lib/utils";
-import { AudioAnalyzer } from "@/src/components/audio/analyzer";
 import { station } from "@/src/subpub/buses";
 import { Music } from "@/src/cmd/commands";
 import crab from "@/src/cmd";
-import { AudioEngine } from "@/src/components/audio/engine";
 import { ss as muss } from "../muinfo";
 import { Howl, Howler } from "howler";
 import { convertFileSrc } from "@tauri-apps/api/core";
-
-export interface PlayerCtx {
-  audio: HTMLAudioElement;
-  analyzer?: AudioAnalyzer;
-  audioFrame: Frame;
-}
 
 function computeLogit(m: Music) {
   // 你的规则：logit 越高 = 越不想选，entry 也有疲劳惩罚
@@ -226,38 +224,48 @@ export const src = setup({
       if (all.length === 0) return;
 
       const last = context.lastPlay;
-
-      // 1) 从概率计算中排除 lastPlaying
       const pool = last ? all.filter((m) => !sameTrack(m, last)) : all;
-
-      // 2) 候选集空了（只有一首且正好是 last）：回退到原列表
       const base = pool.length > 0 ? pool : all;
-
-      // 3) softmin 抽样
       const idx = softminSample(base, 0.8);
-
       const choose = base[idx];
-      enqueue.assign({
-        nowPlaying: choose,
-        audio: new Howl({
-          src: convertFileSrc(choose.path),
-          // volume: global_avg_lufs / this_avg_lufs,
-          onend: () => {
-            self.send(ss.playx.Signal.next);
-          },
-        }),
+
+      try {
+        context.audio?.stop();
+      } catch {}
+
+      // 简单 LUFS → 线性音量（0..1）
+      const globalLUFS = context.selected?.avg_db ?? -14;
+      const thisLUFS = choose.avg_db ?? globalLUFS;
+      const volume = Math.max(
+        0,
+        Math.min(1, Math.pow(10, (globalLUFS - thisLUFS) / 20))
+      );
+
+      const sound = new Howl({
+        src: convertFileSrc(choose.path),
+        volume,
+        onplay: () => {
+          // 懒创建 tap（只在需要且 ctx 已就绪时）
+          if (!context.tap && Howler.usingWebAudio) {
+            try {
+              (context as any).tap = createHowlerTap(2048, 0.8);
+            } catch (e) {
+              console.warn("[tap] create failed:", e);
+            }
+          }
+          context.tap?.start((f) => station.audioFrame.set(f));
+        },
+        onend: () => self.send(ss.playx.Signal.next),
       });
+
+      enqueue.assign({ nowPlaying: choose, audio: sound });
     }),
-    stop_audio: ({ context }) => {
-      context.audio?.stop();
-    },
+
+    stop_audio: ({ context }) => context.audio?.stop(),
     clean_judge: assign({
       nowJudge: udf,
     }),
-    play_audio: ({ context }) => {
-      context.audio?.play();
-    },
-
+    play_audio: ({ context }) => context.audio?.play(),
     delete: assign({
       collections: EH.whenDone(payloads.delete.evt())((p, c) => {
         crab.delete(p.name);
