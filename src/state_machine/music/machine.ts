@@ -16,7 +16,6 @@ export const machine = src.createMachine({
     reviews: [],
     folderReviews: [],
     updateWeblistReviews: [],
-    audio: new Audio(),
   },
   on: {
     unmount: {
@@ -105,7 +104,7 @@ export const machine = src.createMachine({
       },
       states: {
         [ss.playx.State.playing]: {
-          entry: ["ensure_analyzer", "play_audio"],
+          entry: ["play_audio"],
           on: {
             toggle_audio: {
               actions: [
@@ -162,10 +161,10 @@ export const machine = src.createMachine({
         },
         [ss.playx.State.next]: {
           entry: [
-            "ensure_engine",
-            "resume_ctx",
-            "ensure_analyzer",
-            "ensure_graph",
+            // "ensure_engine",
+            // "resume_ctx",
+            // "ensure_analyzer",
+            // "ensure_graph",
             "ensure_play",
             raise(ss.playx.Signal.to_playing),
           ],
@@ -174,14 +173,7 @@ export const machine = src.createMachine({
         [ss.playx.State.stop]: {
           on: {
             toggle_audio: {
-              actions: [
-                "ensure_engine",
-                "resume_ctx",
-                "ensure_analyzer",
-                "ensure_graph",
-                "ensure_list",
-                "ensure_play",
-              ],
+              actions: ["ensure_list", "ensure_play"],
               target: ss.playx.State.playing,
             },
             edit_playlist: {

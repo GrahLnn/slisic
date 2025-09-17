@@ -1,4 +1,4 @@
-import { setup, assign, assertEvent } from "xstate";
+import { setup, assign, assertEvent, enqueueActions } from "xstate";
 import { eventHandler } from "../kit";
 import { Context, Frame, into_slot, new_frame, new_slot } from "./core";
 import { payloads, ss, sub_machine, invoker, Events } from "./events";
@@ -12,6 +12,8 @@ import { Music } from "@/src/cmd/commands";
 import crab from "@/src/cmd";
 import { AudioEngine } from "@/src/components/audio/engine";
 import { ss as muss } from "../muinfo";
+import { Howl, Howler } from "howler";
+import { convertFileSrc } from "@tauri-apps/api/core";
 
 export interface PlayerCtx {
   audio: HTMLAudioElement;
@@ -219,196 +221,41 @@ export const src = setup({
       ),
       selected: EH.whenDone(payloads.toggle_audio.evt())((i) => i || undefined),
     }),
-    ensure_play: assign({
-      nowPlaying: ({ context }) => {
-        const all: Music[] = context.flatList;
-        if (all.length === 0) return;
+    ensure_play: enqueueActions(({ context, enqueue, self }) => {
+      const all: Music[] = context.flatList;
+      if (all.length === 0) return;
 
-        const last = context.lastPlay;
+      const last = context.lastPlay;
 
-        // 1) 从概率计算中排除 lastPlaying
-        const pool = last ? all.filter((m) => !sameTrack(m, last)) : all;
+      // 1) 从概率计算中排除 lastPlaying
+      const pool = last ? all.filter((m) => !sameTrack(m, last)) : all;
 
-        // 2) 候选集空了（只有一首且正好是 last）：回退到原列表
-        const base = pool.length > 0 ? pool : all;
+      // 2) 候选集空了（只有一首且正好是 last）：回退到原列表
+      const base = pool.length > 0 ? pool : all;
 
-        // 3) softmin 抽样
-        const idx = softminSample(base, 0.8);
+      // 3) softmin 抽样
+      const idx = softminSample(base, 0.8);
 
-        // 4) 返回抽中的歌
-        return base[idx];
-      },
+      const choose = base[idx];
+      enqueue.assign({
+        nowPlaying: choose,
+        audio: new Howl({
+          src: convertFileSrc(choose.path),
+          // volume: global_avg_lufs / this_avg_lufs,
+          onend: () => {
+            self.send(ss.playx.Signal.next);
+          },
+        }),
+      });
     }),
-    stop_audio: async ({ context }) => {
-      const { engine, audio, analyzer } = context;
-      // 先停采样
-      context.playToken = (context.playToken ?? 0) + 1;
-      context.__stopSampling?.();
-      context.__stopSampling = undefined;
-      analyzer?.stopSampling();
-
-      // 再淡出并停播，防爆音
-      engine?.fadeOut(25);
-      await new Promise((r) => setTimeout(r, 35));
-      audio.onended = null;
-      audio.pause();
-      audio.currentTime = 0;
+    stop_audio: ({ context }) => {
+      context.audio?.stop();
     },
     clean_judge: assign({
       nowJudge: udf,
     }),
-    resume_ctx: ({ context }) =>
-      context.engine?.resume?.() || context.engine?.ctx.resume?.(),
-    play_audio: async ({ context, self }) => {
-      const { engine, analyzer, audio, nowPlaying: cur, selected } = context;
-      if (!engine || !analyzer || !cur) return;
-
-      const token = (context.playToken = (context.playToken ?? 0) + 1);
-      const liveToken = () => self.getSnapshot().context.playToken!;
-
-      // 统一接线
-      analyzer.attachTo(engine.ctx);
-      engine.ensureSource(audio);
-      analyzer.setTapFrom(engine.lufs);
-
-      // 停旧采样
-      try {
-        context.__stopSampling?.();
-      } catch {}
-      context.__stopSampling = undefined;
-      analyzer.stopSampling?.();
-
-      const exists = await crab.exists(cur.path);
-      exists.tap((ok) => {
-        if (!ok) {
-          console.warn("[play_audio] file missing", cur.path);
-          self.send(payloads.not_exist.load(cur));
-          return;
-        }
-      });
-
-      // 准备音源
-      const url = await fileToBlobUrl(cur.path);
-      if (liveToken() !== token) return;
-      audio.crossOrigin = "anonymous";
-      audio.src = url;
-
-      // 确保可听
-      audio.muted = false;
-      audio.volume = 1;
-
-      // 先淡出，再设响度（以 playlist 的 avg_db 做目标；无则 -14）
-      engine.fadeOut(1);
-      const targetLufs = selected?.avg_db ?? -14;
-      engine.setLoudnessFromAvgDb(cur.avg_db, targetLufs, 12);
-
-      // 等 canplay（带 3s 探针日志）
-      await new Promise<void>((resolve) => {
-        const oncp = () => {
-          audio.removeEventListener("canplay", oncp);
-          resolve();
-        };
-        audio.addEventListener("canplay", oncp, { once: true });
-        if (audio.readyState >= 2) resolve();
-        setTimeout(() => {
-          if (audio.readyState < 2) {
-            console.warn("[play_audio] canplay timeout", {
-              rs: audio.readyState,
-              src: audio.src,
-            });
-          }
-        }, 3000);
-      });
-
-      // 先确保 AudioContext 不是 suspended
-      try {
-        await (engine.resume?.() || engine.ctx.resume?.());
-      } catch {}
-      if (liveToken() !== token) return;
-      // 播放
-      try {
-        await audio.play();
-      } catch (err) {
-        console.error("[play_audio] play() rejected", err, audio.error);
-        return;
-      }
-      if (liveToken() !== token) return;
-      // ------- 关键：等待“时钟真的动起来” -------
-      const waitTimebase = (kick = false) =>
-        new Promise<boolean>((resolve) => {
-          let fired = false;
-          const T_DEADLINE = 1600; // 最多等 1.6s
-          const T_POLL = 100; // 100ms 轮询 currentTime
-          const MIN_T = 0.02; // 认为“动起来”的最小时间
-
-          const onPlaying = () => {
-            fired = true;
-            cleanup(true);
-          };
-          const timer = setInterval(() => {
-            if (audio.currentTime > MIN_T) {
-              fired = true;
-              cleanup(true);
-            }
-          }, T_POLL);
-          const to = setTimeout(() => {
-            if (!fired) cleanup(false);
-          }, T_DEADLINE);
-
-          const cleanup = (ok: boolean) => {
-            audio.removeEventListener("playing", onPlaying);
-            clearInterval(timer);
-            clearTimeout(to);
-            resolve(ok);
-          };
-          audio.addEventListener("playing", onPlaying, { once: true });
-
-          // 可选：kick 前先做一次极小 seek，有些浏览器会因此点火时钟
-          if (kick) {
-            try {
-              const t0 = audio.currentTime;
-              audio.currentTime = Math.max(0, t0 + 0.001);
-            } catch {}
-          }
-        });
-
-      // 第一次等待（不 kick）
-      let ok = await waitTimebase(false);
-      if (liveToken() !== token) return;
-      if (!ok) {
-        console.warn("[play_audio] timebase stuck, kicking…");
-        // “踢一下”：暂停→微 seek→play
-        try {
-          audio.pause();
-        } catch {}
-        try {
-          audio.currentTime = 0.001;
-        } catch {}
-        try {
-          await audio.play();
-          if (liveToken() !== token) return;
-        } catch (e) {
-          console.error("[play_audio] kick play() rejected", e, audio.error);
-          return;
-        }
-        ok = await waitTimebase(true);
-        if (liveToken() !== token) return;
-        if (!ok) {
-          console.error(
-            "[play_audio] timebase failed after kick; abort sampling"
-          );
-          return;
-        }
-      }
-
-      // 时钟已走，淡入 & 启动采样
-      engine.fadeIn(25);
-      context.__stopSampling = analyzer.startSampling?.(station.audioFrame.set);
-
-      // 结束回调
-      audio.onended = () => {
-        self.send(ss.playx.Signal.next);
-      };
+    play_audio: ({ context }) => {
+      context.audio?.play();
     },
 
     delete: assign({
@@ -608,38 +455,6 @@ export const src = setup({
       nowJudge: udf,
     }),
     reset_frame: () => station.audioFrame.set(new_frame()),
-    ensure_engine: assign({
-      engine: ({ context }) => context.engine ?? new AudioEngine(),
-    }),
-    ensure_analyzer: assign({
-      analyzer: ({ context }) =>
-        context.analyzer ?? new AudioAnalyzer(2048, 0.8),
-    }),
-    ensure_graph: ({ context }) => {
-      const { engine, analyzer, audio } = context;
-      if (!engine || !analyzer) {
-        console.warn("[ensure_graph] missing engine/analyzer");
-        return;
-      }
-      if (!audio.src || audio.readyState < 2) {
-        console.warn("[ensure_graph] skip: media not ready", {
-          src: audio.src,
-          rs: audio.readyState,
-        });
-        return;
-      }
-
-      analyzer.attachTo(engine.ctx);
-      engine.ensureSource(audio);
-      analyzer.setTapFrom(engine.lufs);
-
-      console.log("[ensure_graph] ok", {
-        rs: audio.readyState,
-        ctx: engine.ctx.state,
-        lufsGain: engine.lufs.gain.value,
-        fadeGain: engine.fade.gain.value,
-      });
-    },
 
     into_slot: assign({
       slot: EH.whenDone(payloads.edit_playlist.evt())(into_slot),
