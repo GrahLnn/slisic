@@ -1173,14 +1173,22 @@ pub async fn rmexclude(list: Playlist, music: Music) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     col.exclude.retain(|m| m.path != music.path);
+    col.exclude.push(music);
     col.update_by_id(col_id).await.map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
-// #[tauri::command]
-// #[specta::specta]
 pub async fn fix_cur_data() -> Result<()> {
+    let all_cols = Collection::select_all().await?;
+    for col in all_cols {
+        let id = col.id().await?;
+        let mut n_col = col.clone();
+        let mut seen = HashSet::new();
+        n_col.exclude.retain(|m| seen.insert(m.path.clone()));
+
+        n_col.update_by_id(id).await?;
+    }
     Ok(())
 }
 
