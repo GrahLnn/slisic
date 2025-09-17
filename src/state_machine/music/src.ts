@@ -6,6 +6,7 @@ import {
   new_frame,
   new_slot,
   createHowlerTap,
+  Frame,
 } from "./core";
 import { payloads, ss, sub_machine, invoker, Events } from "./events";
 import { I, K } from "@/lib/comb";
@@ -17,6 +18,66 @@ import crab from "@/src/cmd";
 import { ss as muss } from "../muinfo";
 import { Howl, Howler } from "howler";
 import { convertFileSrc } from "@tauri-apps/api/core";
+
+let activeFrameDecay: { cancel: () => void } | null = null;
+
+export function decayAudioFrame(duration = 300) {
+  // 取消上一次的衰减，避免并发
+  activeFrameDecay?.cancel?.();
+
+  const startFrame = station.audioFrame.get(); // 读取当前帧
+  const t0 = performance.now();
+
+  // s(t) = (1 - p)^3, p ∈ [0,1]，从 1 平滑到 0（ease-out cubic 的反函数）
+  const scaleAt = (p: number) => {
+    const clamped = Math.min(1, Math.max(0, p));
+    const s = Math.pow(1 - clamped, 3);
+    return s;
+  };
+
+  let raf = 0;
+  let cancelled = false;
+  const cancel = () => {
+    cancelled = true;
+    if (raf) cancelAnimationFrame(raf);
+  };
+  activeFrameDecay = { cancel };
+
+  const tick = () => {
+    if (cancelled) return;
+
+    const now = performance.now();
+    const p = (now - t0) / duration;
+
+    if (p >= 1) {
+      // 结束：重置为全 0 的结构体
+      station.audioFrame.set(new_frame());
+      activeFrameDecay = null;
+      return;
+    }
+
+    const s = scaleAt(p);
+
+    // 逐字段缩放
+    const next: Frame = {
+      ...startFrame,
+      frequencyNorm: startFrame.frequencyNorm.map((v) => v * s),
+      volume: startFrame.volume * s,
+      bass: startFrame.bass * s,
+      mid: startFrame.mid * s,
+      treble: startFrame.treble * s,
+      bassPeak: startFrame.bassPeak * s,
+      volumePeak: startFrame.volumePeak * s,
+      intensityBurst: startFrame.intensityBurst * s,
+    };
+
+    station.audioFrame.set(next);
+    raf = requestAnimationFrame(tick);
+  };
+
+  raf = requestAnimationFrame(tick);
+  return cancel; // 需要时可手动取消
+}
 
 function computeLogit(m: Music) {
   // 你的规则：logit 越高 = 越不想选，entry 也有疲劳惩罚
@@ -256,8 +317,8 @@ export const src = setup({
         },
         onend: () => self.send(ss.playx.Signal.next),
         onstop: () => {
-          station.audioFrame.set(new_frame());
           context.tap?.stop();
+          decayAudioFrame();
         },
       });
 
