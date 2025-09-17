@@ -67,6 +67,7 @@ export const update_weblist_machine = src.createMachine({
   initial: ss.mainx.State.probe_info,
   context: ({ input }) => ({
     entry: input.entry,
+    playlist: input.playlist,
   }),
   on: {
     cancle: godown(ss.mainx.State.done),
