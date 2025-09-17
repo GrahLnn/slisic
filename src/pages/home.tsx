@@ -1,18 +1,5 @@
-import {
-  AnimatePresence,
-  motion,
-  LayoutGroup,
-  useAnimationControls,
-} from "motion/react";
-import { SpotlightSection } from "../components/arc_scroll";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { labels } from "../components/labels";
 import { cn } from "@/lib/utils";
 import { motionIcons } from "../assets/icons";
@@ -20,31 +7,15 @@ import { action, hook } from "../state_machine/music";
 import { K } from "@/lib/comb";
 import { EmptyPage } from "../components/empty";
 import { New } from "../components/music/new";
-import { BackButton, ListSeparator } from "../components/uni";
+import { BackButton } from "../components/uni";
 import { station } from "@/src/subpub/buses";
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
-  ContextMenuShortcut,
   ContextMenuTrigger,
   LongPressContextMenuItem,
 } from "@/components/ui/context-menu";
-
-interface GuideCardProps {
-  content: React.ReactNode;
-  title: string;
-  idx: number;
-  rotation?: number;
-  zIndex: number;
-  onClick?: () => void;
-}
-
-interface GuideItem {
-  title: string;
-  content: React.ReactNode;
-  fn?: () => void;
-}
 
 export function Face({ children }: { children: React.ReactNode }) {
   return (
@@ -53,38 +24,6 @@ export function Face({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
-
-const Card: React.FC<GuideCardProps> = ({ content, title, idx, onClick }) => {
-  const formattedIdx = String(idx).padStart(2, "0");
-
-  return (
-    <motion.div
-      className={"group relative hover:z-50 select-none"}
-      whileHover={{ scale: 1.2, rotate: 0, y: 0 }}
-      whileTap={{ scale: 0.95 }}
-      onClick={onClick}
-    >
-      <div
-        className={cn([
-          "duration-250 flex h-[240px] w-[200px] flex-col items-center justify-between rounded-xl  transition-all group-hover:shadow-xl dark:border dark:border-white/5 dark:bg-[#1A1A1A]",
-          "bg-white p-1 shadow-lg ring ring-[#DEDEDE]/50 dark:ring-[#333333]/50",
-        ])}
-      >
-        <div className="h-4" />
-        {content}
-        <div className="w-full self-end p-2">
-          <div className="text-xs text-[#DEDEDE] dark:text-[#828282]">
-            {formattedIdx}
-          </div>
-          <div className="text-md font-medium text-[#262626] dark:text-[#D9D9D9] dark:group-hover:text-white">
-            {title}
-          </div>
-        </div>
-        <div className="absolute top-24 h-10 w-full bg-transparent md:top-36" />
-      </div>
-    </motion.div>
-  );
-};
 
 function Play() {
   const lists = hook.useList();
