@@ -107,17 +107,11 @@ export const machine = src.createMachine({
           entry: ["play_audio"],
           on: {
             toggle_audio: {
-              actions: [
-                "reset_frame",
-                "stop_audio",
-                "clean_judge",
-                "clean_audio",
-              ],
+              actions: ["stop_audio", "clean_judge", "clean_audio"],
               target: ss.playx.State.stop,
             },
             next: {
               actions: [
-                "reset_frame",
                 "stop_audio",
                 "clean_judge",
                 "fatigue_parm",
