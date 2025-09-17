@@ -1,5 +1,5 @@
 import { MeshGradient } from "@paper-design/shaders-react";
-import { Frame } from "./analyzer";
+import { Frame } from "@/src/state_machine/music/core";
 import { useIsDark } from "@/src/state_machine/normal";
 import { station } from "@/src/subpub/buses";
 import MeshGradientTauri from "../meshgrad";

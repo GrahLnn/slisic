@@ -160,14 +160,7 @@ export const machine = src.createMachine({
           },
         },
         [ss.playx.State.next]: {
-          entry: [
-            // "ensure_engine",
-            // "resume_ctx",
-            // "ensure_analyzer",
-            // "ensure_graph",
-            "ensure_play",
-            raise(ss.playx.Signal.to_playing),
-          ],
+          entry: ["ensure_play", raise(ss.playx.Signal.to_playing)],
           on: ss.playx.transfer.pick("to_playing"),
         },
         [ss.playx.State.stop]: {
