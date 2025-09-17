@@ -11,6 +11,7 @@ import { check_folder_machine } from "../foldercheck";
 import { AudioAnalyzer } from "@/src/components/audio/analyzer";
 import { AudioEngine } from "@/src/components/audio/engine";
 import { update_weblist_machine } from "../updateweblist";
+import { Howl, Howler } from "howler";
 
 export interface Review {
   url: string;
@@ -61,17 +62,12 @@ export interface Context {
   folderReviews: FolderReview[];
   updateWeblistReviews: UpdateWeblistReview[];
   ref?: any;
-  audio: HTMLAudioElement;
-  analyzer?: AudioAnalyzer;
-  engine?: AudioEngine;
+  audio?: Howl;
   nowPlaying?: Music;
   nowJudge?: "Up" | "Down";
   lastPlay?: Music;
   playToken?: number;
   processMsg?: ProcessMsg;
-  __stopOnFrame?: () => void;
-  __stopSampling?: () => void;
-  __offPlayEvents?: () => void;
 }
 
 export function new_slot(): CollectMission {
