@@ -105,7 +105,7 @@ function TrackPaster() {
           }}
         />
       </div>
-      {slot.links.map((v) => {
+      {[...slot.links].reverse().map((v) => {
         const verified =
           !entriesurl.includes(v.url) && !entriesname.includes(v.title_or_msg);
         return (

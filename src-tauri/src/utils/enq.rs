@@ -11,7 +11,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 use tauri_specta::Event;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 impl From<ProcessResult> for DownloadAnswer {
     fn from(d: ProcessResult) -> Self {
@@ -44,25 +44,41 @@ pub async fn finalize_process(app: &tauri::AppHandle, result: ProcessResult) {
     }
 }
 
-/// 在 Tauri setup 里调用：初始化队列 + 启动单个 worker 循环
 pub fn init_global_download_queue(app: tauri::AppHandle, capacity: usize) -> Result<()> {
-    let (tx, mut rx) = mpsc::channel::<Entry>(capacity);
+    let (tx, rx) = mpsc::channel::<Entry>(capacity);
     // 全局注册
     let _ = DOWNLOAD_TX.set(tx);
+
     let base_folder = resolve_save_path(app.clone()).map_err(anyhow::Error::msg)?;
     let base_folder = Arc::new(base_folder);
 
-    // 单 worker 循环（需要多 worker 就开多个 spawn）
-    tauri::async_runtime::spawn(async move {
-        while let Some(mut job) = rx.recv().await {
-            let res = process_entry(app.clone(), &base_folder, &mut job, &[], &[]).await;
+    // 把 Receiver 包一层，便于多 worker 共享
+    let rx = Arc::new(Mutex::new(rx));
 
-            match res {
-                Ok(result) => finalize_process(&app, result).await,
-                Err(e) => println!("download error: {}", e),
+    for _ in 0..4 {
+        let app = app.clone();
+        let base = base_folder.clone();
+        let rx_arc = rx.clone();
+
+        tauri::async_runtime::spawn(async move {
+            loop {
+                // 只在拿任务时持锁，拿到就立刻放
+                let mut guard = rx_arc.lock().await;
+                let mut job = match guard.recv().await {
+                    Some(j) => j,
+                    None => break, // 所有 sender 都 drop 时退出
+                };
+                drop(guard);
+
+                let res = process_entry(app.clone(), &base, &mut job, &[], &[]).await;
+                match res {
+                    Ok(result) => finalize_process(&app, result).await,
+                    Err(e) => eprintln!("download error: {e}"),
+                }
             }
-        }
-    });
+        });
+    }
+
     Ok(())
 }
 

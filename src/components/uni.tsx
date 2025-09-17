@@ -201,7 +201,7 @@ export function MultiFolderChooser({
           }}
         />
       </div>
-      {value.map((v) => {
+      {[...value].reverse().map((v) => {
         const verified = !check?.includes(v.k);
         return (
           <Pair
