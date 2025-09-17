@@ -191,7 +191,7 @@ function Play() {
                             {/* 幽灵占位：撑开成两者里最长的宽度，保持命中区域稳定 */}
                             <span
                               aria-hidden
-                              className="invisible block whitespace-nowrap"
+                              className="invisible block whitespace-nowrap max-w-[66vw] truncate"
                             >
                               {longer}
                             </span>
@@ -200,7 +200,7 @@ function Play() {
                               {showName ? (
                                 <motion.span
                                   key="name"
-                                  className="absolute inset-0 flex items-center justify-center pointer-events-none whitespace-nowrap"
+                                  className="absolute inset-0 flex items-center justify-center pointer-events-none whitespace-nowrap max-w-[66vw] truncate"
                                   initial={{
                                     filter: "blur(6px)",
                                     opacity: 0,
@@ -220,7 +220,7 @@ function Play() {
                               ) : (
                                 <motion.span
                                   key="title"
-                                  className="absolute inset-0 flex items-center justify-center pointer-events-none whitespace-nowrap"
+                                  className="absolute inset-0 flex items-center justify-center pointer-events-none whitespace-nowrap max-w-[66vw] truncate"
                                   initial={{ filter: "blur(6px)", opacity: 0 }}
                                   animate={{ filter: "blur(0px)", opacity: 1 }}
                                   exit={{ filter: "blur(6px)", opacity: 0 }}
