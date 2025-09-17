@@ -5,7 +5,7 @@ import {
   ProcessMsg,
 } from "@/src/cmd/commands";
 
-import { Actor, ActorRefFromLogic } from "xstate";
+import { ActorRefFromLogic } from "xstate";
 import { machine } from "../muinfo";
 import { check_folder_machine } from "../foldercheck";
 import { update_weblist_machine } from "../updateweblist";

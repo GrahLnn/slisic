@@ -1,19 +1,11 @@
-import {
-  createMachine,
-  setup,
-  assign,
-  createActor,
-  fromPromise,
-  spawnChild,
-  stopChild,
-} from "xstate";
+import { setup, createActor } from "xstate";
 import { useSelector } from "@xstate/react";
 
 import { sst } from "./kit";
 import { Matchable, me } from "@/lib/matchable";
 import { action as musicAction } from "./music/api";
 
-const { State, Signal, transfer } = sst(["home"]);
+const { State, Signal } = sst(["home"]);
 type StateType = keyof typeof State;
 
 const src = setup({
