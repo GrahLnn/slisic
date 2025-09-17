@@ -53,6 +53,10 @@ function bandMean(norm: Float32Array, lo: number, hi: number) {
   return acc / n;
 }
 
+function round2(x: number) {
+  return Math.round(x * 100) / 100;
+}
+
 export function createHowlerTap(fftSize = 2048, smoothing = 0.8): HowlerTap {
   if (!Howler.usingWebAudio)
     throw new Error("当前是 HTML5 Audio 回退，无法取帧。");
@@ -122,14 +126,14 @@ export function createHowlerTap(fftSize = 2048, smoothing = 0.8): HowlerTap {
       lastVolume = volume;
 
       onframe({
-        frequencyNorm: freqNorm.slice(), // 若你要零拷贝，可直接传引用，但注意消费侧不要改写
-        volume,
+        frequencyNorm: freqNorm.slice(),
+        volume: round2(volume),
         bass,
         mid,
         treble,
         bassPeak,
-        volumePeak,
-        intensityBurst,
+        volumePeak: round2(volumePeak),
+        intensityBurst: round2(intensityBurst),
       });
 
       raf = requestAnimationFrame(tick);
