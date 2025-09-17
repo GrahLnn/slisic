@@ -381,7 +381,11 @@ pub async fn extract_and_place_ffmpeg(archive: &Path, dest_exec: &Path) -> Resul
     }
 
     // === 以下保持不变：递归寻找 ffmpeg 可执行并复制 ===
-    let wanted = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let wanted = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
     let mut found = None;
     fn walk_find(dir: &Path, name: &str, out: &mut Option<PathBuf>) {
         if out.is_some() {
@@ -408,7 +412,6 @@ pub async fn extract_and_place_ffmpeg(archive: &Path, dest_exec: &Path) -> Resul
     let _ = fs::remove_file(archive);
     Ok(())
 }
-
 
 // 一个简易自检命令（可选）：返回 `ffmpeg -version` 的前几行
 #[tauri::command]
