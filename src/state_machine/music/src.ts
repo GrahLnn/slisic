@@ -19,6 +19,59 @@ import { ss as muss } from "../muinfo";
 import { Howl, Howler } from "howler";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
+let installed = false;
+let postGain: GainNode | null = null;
+
+export function ensureHowlerPostGain() {
+  if (installed) return postGain!;
+  if (!Howler.usingWebAudio)
+    throw new Error("HTML5 Audio 回退，无法插入增益节点。");
+
+  const ctx = Howler.ctx as AudioContext;
+  const master = Howler.masterGain as GainNode;
+
+  // 1) 构建 limiter（防爆音，参数可按口味调）
+  const limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -1; // 约等于硬限幅
+  limiter.knee.value = 0;
+  limiter.ratio.value = 20;
+  limiter.attack.value = 0.003;
+  limiter.release.value = 0.1;
+
+  // 2) 后级增益（>1）
+  postGain = ctx.createGain();
+  postGain.gain.value = 1;
+
+  // 3) 重新布线：master → limiter → postGain → destination
+  try {
+    master.disconnect();
+  } catch {}
+  master.connect(limiter);
+  limiter.connect(postGain);
+  postGain.connect(ctx.destination);
+
+  installed = true;
+  return postGain!;
+}
+
+export function setPostGainLinear(g: number) {
+  if (!installed) return;
+  if (!postGain) return;
+  postGain.gain.value = Math.max(0, g); // 可以 >1
+}
+
+export function resetPostGain() {
+  setPostGainLinear(1);
+}
+
+// 可选：如果你的 analyser 想看“增益之后”的信号：
+export function tapAfterBoost(analyser: AnalyserNode) {
+  if (!postGain) return;
+  try {
+    postGain.connect(analyser);
+  } catch {}
+}
+
 let activeFrameDecay: { cancel: () => void } | null = null;
 
 export function decayAudioFrame(duration = 300) {
@@ -293,19 +346,33 @@ export const src = setup({
         context.audio?.stop();
       } catch {}
 
-      // 简单 LUFS → 线性音量（0..1）
-      const globalLUFS = context.selected?.avg_db ?? -14;
-      const thisLUFS = choose.avg_db ?? globalLUFS;
-      const volume = Math.max(
-        0,
-        Math.min(1, Math.pow(10, (globalLUFS - thisLUFS) / 20))
-      );
+      // LUFS → 线性倍率 s
+      const target = context.selected?.avg_db ?? -14;
+      const cur = choose.avg_db ?? target;
+      const s = Math.pow(10, (target - cur) / 20); // 可能 >1
+
+      // 拆分：Howler 的 volume ≤ 1；剩余用 postGain 扛
+      const howlerVol = Math.min(1, s);
+      const extra = s / howlerVol; // >=1
 
       const sound = new Howl({
         src: convertFileSrc(choose.path),
-        volume,
-        onplay: () => {
-          // 懒创建 tap（只在需要且 ctx 已就绪时）
+        volume: howlerVol, // 0..1
+        onplay: async () => {
+          // 1) 确保 AudioContext 恢复（某些浏览器策略需要）
+          try {
+            await (Howler.ctx as AudioContext | null)?.resume?.();
+          } catch {}
+
+          // 2) 安装后级增益链（此时 ctx 一定存在）
+          try {
+            ensureHowlerPostGain();
+            setPostGainLinear(extra); // 设置 >1 的增益
+          } catch (e) {
+            console.warn("[postGain] install failed:", e);
+          }
+
+          // 3) 懒创建 tap，并启动采样
           if (!context.tap && Howler.usingWebAudio) {
             try {
               (context as any).tap = createHowlerTap(2048, 0.8);
@@ -314,9 +381,16 @@ export const src = setup({
             }
           }
           context.tap?.start(station.audioFrame.set);
+
+          // 如果你希望频谱看“增益之后”的信号：
+          // tapAfterBoost(context.tap!.analyser);
         },
-        onend: () => self.send(ss.playx.Signal.next),
+        onend: () => {
+          resetPostGain(); // 复位，避免影响下一首/系统声音
+          self.send(ss.playx.Signal.next);
+        },
         onstop: () => {
+          resetPostGain();
           context.tap?.stop();
           decayAudioFrame();
         },
