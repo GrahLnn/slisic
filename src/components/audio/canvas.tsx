@@ -54,11 +54,11 @@ function computeParams(a: Frame) {
   // —— 归一化/合成 —— //
   const clamp01 = (x: number) => (x < 0 ? 0 : x);
 
-  const v = clamp01(volume);
+  //   const v = clamp01(volume);
   const b = clamp01(bass);
   const m = clamp01(mid);
   const t = clamp01(treble);
-  const vp = clamp01(volumePeak);
+  //   const vp = clamp01(volumePeak);
   const bp = clamp01(bassPeak);
 
   // 频谱倾斜：高频多 → 更快，低频多 → 更慢
@@ -66,10 +66,10 @@ function computeParams(a: Frame) {
   const tilt = (t - b) * 0.5 + 0.5;
 
   // 峰值：综合整体峰值与低频踢点
-  const peaks = clamp01(0.6 * vp + 0.4 * bp);
+  const peaks = clamp01(0.4 * bp);
 
   // 基础原始速度（0..1）
-  let speedRaw = W_VOL * v + W_TILT * tilt + W_PEAK * peaks + W_MID * m;
+  let speedRaw = W_TILT * tilt + W_PEAK * peaks + W_MID * m;
 
   // 脉冲瞬时增益
   const burst = Math.min(BURST_CLAMP, intensityBurst * BURST_GAIN);
