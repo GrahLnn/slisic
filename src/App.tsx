@@ -43,11 +43,11 @@ async function checkUpdate() {
 
     console.log("update installed");
     toast.success("Already up to date", {
-      description: `Version 1.0.0 has been ready`,
+      description: `Version ${update.version} has been ready`,
       duration: Infinity,
       action: {
         label: "Restart",
-        onClick: () => console.log("restart"),
+        onClick: relaunch,
       },
     });
   }
