@@ -1,0 +1,48 @@
+name: Auto Publish (Cargo.toml version)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src-tauri/Cargo.toml"
+  workflow_dispatch: {}
+
+jobs:
+  publish:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            args: ""
+          - os: windows-latest
+            args: ""
+    runs-on: ${{ matrix.os }}
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install deps (bun)
+        run: bun install --frozen-lockfile
+
+      - name: Build & Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tauriScript: bunx tauri
+          tagName: v__VERSION__
+          releaseName: v__VERSION__
+          releaseBody: "See assets to download."
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}

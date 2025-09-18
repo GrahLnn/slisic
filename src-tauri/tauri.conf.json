@@ -56,10 +56,10 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFRTI2NTJBQTZDODNGQzkKUldUSlA4aW1LbVhpdmlZUVJJcHBJQW1abW9hOWJkTjQ4NkhIQTdOT21Gd2hLc1c2SURCbTROKysK"
-    },
-    "endpoints": [
-      "https://github.com/GrahLnn/slisic/releases/latest/download/latest.json"
-    ]
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFRTI2NTJBQTZDODNGQzkKUldUSlA4aW1LbVhpdmlZUVJJcHBJQW1abW9hOWJkTjQ4NkhIQTdOT21Gd2hLc1c2SURCbTROKysK",
+      "endpoints": [
+        "https://github.com/GrahLnn/slisic/releases/latest/download/latest.json"
+      ]
+    }
   }
 }
