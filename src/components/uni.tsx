@@ -428,7 +428,7 @@ export function Pair({
                             <div className="flex items-center gap-0.5 whitespace-nowrap relative">
                               {v.inProgress && (
                                 <div className="absolute left-0 top-0 flex items-center h-full">
-                                  <div className="backdrop-blur-[1px] text-[#000000] dark:text-[#e5e5e5]">
+                                  <div className="backdrop-blur-[1px] text-[#dbab0a] dark:text-[#dbab0a]">
                                     <motionIcons.live
                                       size={12}
                                       className="animate-spin [animation-duration:5s]"
