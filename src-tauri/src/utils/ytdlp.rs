@@ -864,6 +864,7 @@ pub fn process_entry<'a>(
         let init_url = entry.url.clone();
         let init_title = entry.title.clone();
         let playlist = entry.playlist.clone();
+        let listname = entry.playlist.clone();
         let mut mk_init = move || WorkState {
             root_id: node_id, // 这里记录“本节点”的 id
             url: init_url.clone(),
@@ -907,8 +908,13 @@ pub fn process_entry<'a>(
         if is_playlist {
             // ---------- playlist ----------
             let mut children = Vec::new();
+            let list_title = v.get("title").and_then(|x| x.as_str()).unwrap_or("");
             if let Some(arr) = v.get("entries").and_then(|x| x.as_array()) {
-                println!("Playlist has {} children", arr.len());
+                println!(
+                    "[DownloadAudio] Playlist {} has {} children",
+                    list_title,
+                    arr.len()
+                );
                 for it in arr {
                     let url = it
                         .get("url")
@@ -1303,6 +1309,45 @@ fn should_resume_with_reason(st: &WorkState) -> (bool, &'static str) {
     }
 }
 
+/// 扫描 working_entry 下所有 state.json
+fn collect_all_states(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for e in fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let p = e.map_err(|e| e.to_string())?.path();
+        if p.is_dir() {
+            collect_all_states(&p, out)?;
+        } else if p.file_name().map(|n| n == "state.json").unwrap_or(false) {
+            out.push(p);
+        }
+    }
+    Ok(())
+}
+
+/// 过滤出“根”state.json：即其任一祖先目录**不**含 state.json
+fn filter_roots_only(mut all: Vec<PathBuf>) -> Vec<PathBuf> {
+    // 浅的在前（不是必须，但便于调试）
+    all.sort_by_key(|p| p.components().count());
+    let set: std::collections::HashSet<_> = all.iter().cloned().collect();
+
+    all.into_iter()
+        .filter(|p| {
+            // 从“自己的父目录的父目录”开始，避免把自己当祖先
+            let mut cur = p.parent().and_then(|d| d.parent());
+            while let Some(dir) = cur {
+                let anc = dir.join("state.json");
+                if set.contains(&anc) {
+                    // 祖先目录里有 state.json，说明它不是根
+                    return false;
+                }
+                cur = dir.parent();
+            }
+            true
+        })
+        .collect()
+}
+
 async fn resume_all(app: &AppHandle, base: &Path) -> Result<(), String> {
     let t0 = Instant::now();
 
@@ -1343,32 +1388,30 @@ async fn resume_all(app: &AppHandle, base: &Path) -> Result<(), String> {
         n_pending, n_dl, n_err, n_ok
     );
 
-    // 预筛选并打印将要恢复的节点（含原因）
-    let mut to_resume = Vec::new();
-    for (st_path, st) in &pendings {
-        let (do_resume, why) = should_resume_with_reason(st);
-        if do_resume {
-            println!(
-                "[resume] will resume: id={} title=\"{}\" url={} status={:?} reason={} state={}",
-                st.root_id,
-                st.title,
-                st.url,
-                st.status,
-                why,
-                st_path.display()
-            );
-            to_resume.push((st_path.clone(), st.clone()));
-        } else {
-            println!(
-                "[resume] skip       : id={} title=\"{}\" status={:?} reason={} state={}",
-                st.root_id,
-                st.title,
-                st.status,
-                why,
-                st_path.display()
-            );
+    let mut all = Vec::new();
+    collect_all_states(&work_root, &mut all)?;
+
+    // 仅保留根
+    let root_states = filter_roots_only(all);
+
+    // 读取并筛选“需要恢复”的根
+    let mut to_resume: Vec<(PathBuf, WorkState)> = Vec::new();
+    for st_path in root_states {
+        if let Some(st) = load_state(&st_path) {
+            let (do_resume, why) = should_resume_with_reason(&st);
+            if do_resume {
+                println!(
+                    "[resume] will resume root: id={} title=\"{}\" reason={} state={}",
+                    st.root_id,
+                    st.title,
+                    why,
+                    st_path.display()
+                );
+                to_resume.push((st_path, st));
+            }
         }
     }
+
     if to_resume.is_empty() {
         println!("[resume] nothing to resume. elapsed={:?}", t0.elapsed());
         return Ok(());

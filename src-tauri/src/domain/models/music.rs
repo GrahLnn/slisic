@@ -7,7 +7,7 @@ use crate::utils::config::resolve_save_path;
 use crate::utils::enq::{enqueue, finalize_process};
 use crate::utils::ffmpeg::integrated_lufs;
 use crate::utils::file::all_audio_recursive;
-use crate::utils::ytdlp::{process_entry, Entry as YtdlpEntry};
+use crate::utils::ytdlp::{process_entry, Entry as YtdlpEntry, ProcessResult};
 use crate::{impl_crud, impl_id, impl_schema};
 use anyhow::Result;
 use futures::{future, stream, StreamExt, TryStreamExt};
@@ -348,6 +348,15 @@ async fn do_create(app: AppHandle, data: CollectMission, col_id: RecordId) -> Re
                         .to_str()
                         .unwrap()
                         .to_string();
+
+                    ProcessResult {
+                        working_path: PathBuf::from(path.clone()),
+                        saved_path: PathBuf::from(path.clone()),
+                        playlist: name_clone.clone(),
+                        name: name.clone(),
+                    }
+                    .emit(&app_clone)
+                    .ok();
 
                     let entry = DbEntry {
                         id: DbEntry::record_id(name.clone()),
@@ -918,6 +927,15 @@ async fn do_update(app: AppHandle, data: CollectMission, anchor: Playlist) -> Re
                         .to_str()
                         .unwrap()
                         .to_string();
+
+                    ProcessResult {
+                        working_path: PathBuf::from(path.clone()),
+                        saved_path: PathBuf::from(path.clone()),
+                        playlist: name_clone.clone(),
+                        name: name.clone(),
+                    }
+                    .emit(&app_clone)
+                    .ok();
 
                     let entry = Entry {
                         path: Some(path.clone()),
