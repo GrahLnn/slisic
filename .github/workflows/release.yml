@@ -1,10 +1,10 @@
-name: Auto Publish (Cargo.toml version)
+name: Auto Publish
 
 on:
   push:
     branches: [main]
     paths:
-      - "src-tauri/Cargo.toml"
+      - "src-tauri/tauri.conf.json"
   workflow_dispatch: {}
 
 jobs:
