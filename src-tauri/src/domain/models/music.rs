@@ -299,43 +299,36 @@ async fn do_create(app: AppHandle, data: CollectMission, col_id: RecordId) -> Re
                 async move {
                     // 逐文件并发计算
                     let musics: Vec<Music> = stream::iter(items.into_iter().map(|p| {
-                        // 注意：把可能阻塞/CPU 密集的 lufs 计算放到 spawn_blocking
-                        let p_clone = p.clone();
-                        {
-                            let app_clone = app_clone.clone();
-                            let name_clone = name_clone.clone();
-                            async move {
-                                let app_cclone = app_clone.clone();
-                                let lufs = task::spawn_blocking(move || {
-                                    integrated_lufs(&app_clone, &p_clone)
-                                })
+                        let app_clone = app_clone.clone();
+                        let name_clone = name_clone.clone();
+                        async move {
+                            let app_cclone = app_clone.clone();
+                            let lufs = integrated_lufs(&app_cclone, p.clone())
                                 .await
-                                .map_err(|e| format!("spawn_blocking panic: {e}"))?
                                 .ok()
                                 .map(|v| v as f32);
-                                let title = PathBuf::from(p.clone())
-                                    .file_stem()
-                                    .unwrap()
-                                    .to_str()
-                                    .unwrap()
-                                    .to_string();
-                                ProcessMsg {
-                                    playlist: name_clone.clone(),
-                                    str: title.clone()
-                                        + &lufs.map(|v| format!(" ({v}db)")).unwrap_or_default(),
-                                }
-                                .emit(&app_cclone)
-                                .ok();
-                                Ok::<_, String>(Music {
-                                    path: p.clone(),
-                                    title,
-                                    avg_db: lufs,
-                                    base_bias: 0.0,
-                                    user_boost: 0.0,
-                                    fatigue: 0.0,
-                                    diversity: 0.0,
-                                })
+                            let title = PathBuf::from(p.clone())
+                                .file_stem()
+                                .unwrap()
+                                .to_str()
+                                .unwrap()
+                                .to_string();
+                            ProcessMsg {
+                                playlist: name_clone.clone(),
+                                str: title.clone()
+                                    + &lufs.map(|v| format!(" ({v}db)")).unwrap_or_default(),
                             }
+                            .emit(&app_cclone)
+                            .ok();
+                            Ok::<_, String>(Music {
+                                path: p.clone(),
+                                title,
+                                avg_db: lufs,
+                                base_bias: 0.0,
+                                user_boost: 0.0,
+                                fatigue: 0.0,
+                                diversity: 0.0,
+                            })
                         }
                     }))
                     .buffer_unordered(CONC_LIMIT)
@@ -536,12 +529,10 @@ pub async fn download_ok(app: &AppHandle, answer: DownloadAnswer) -> Result<(), 
             })
             .map(|p| {
                 let listname = answer.playlist.clone();
-                let p_clone = p.clone();
                 let app_clone = app.clone();
                 async move {
-                    let lufs = task::spawn_blocking(move || integrated_lufs(&app_clone, &p_clone))
+                    let lufs = integrated_lufs(&app_clone, p.clone())
                         .await
-                        .map_err(|e| format!("spawn_blocking panic: {e}"))?
                         .ok()
                         .map(|v| v as f32);
                     let title = p.file_stem().unwrap().to_str().unwrap().to_string();
@@ -765,13 +756,11 @@ pub async fn recheck_folder(app: AppHandle, entry: Entry) -> Result<Entry, Strin
     }
     let musics: Vec<Music> = stream::iter(to_add_ref.into_iter().map(|p| {
         // 注意：把可能阻塞/CPU 密集的 lufs 计算放到 spawn_blocking
-        let p_clone = p.clone();
         {
             let app_clone = app.clone();
             async move {
-                let lufs = task::spawn_blocking(move || integrated_lufs(&app_clone, &p_clone))
+                let lufs = integrated_lufs(&app_clone, p.clone())
                     .await
-                    .map_err(|e| format!("spawn_blocking panic: {e}"))?
                     .ok()
                     .map(|v| v as f32);
 
@@ -879,19 +868,15 @@ async fn do_update(app: AppHandle, data: CollectMission, anchor: Playlist) -> Re
                     // 逐文件并发计算
                     let musics: Vec<Music> = stream::iter(items.into_iter().map(|p| {
                         // 注意：把可能阻塞/CPU 密集的 lufs 计算放到 spawn_blocking
-                        let p_clone = p.clone();
                         {
                             let app_clone = app_clone.clone();
                             let name_clone = name_clone.clone();
                             async move {
                                 let app_cclone = app_clone.clone();
-                                let lufs = task::spawn_blocking(move || {
-                                    integrated_lufs(&app_clone, &p_clone)
-                                })
-                                .await
-                                .map_err(|e| format!("spawn_blocking panic: {e}"))?
-                                .ok()
-                                .map(|v| v as f32);
+                                let lufs = integrated_lufs(&app_cclone, p.clone())
+                                    .await
+                                    .ok()
+                                    .map(|v| v as f32);
                                 let title = PathBuf::from(p.clone())
                                     .file_stem()
                                     .unwrap()

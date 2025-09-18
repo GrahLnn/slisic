@@ -15,7 +15,8 @@ use tokio::process::Command;
 
 use crate::utils::file::{bin_dir, http, make_executable, remove_quarantine, InstallResult};
 // ========= FFmpeg 下载与安装 =========
-
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const FF_API_LATEST: &str = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest";
 const FF_DL_BASE: &str = "https://xget.r2g2.org/gh/BtbN/FFmpeg-Builds/releases/latest/download";
 const FF_SUMS: &str =
@@ -284,11 +285,16 @@ pub async fn ffmpeg_download_and_install(app: tauri::AppHandle) -> Result<Instal
 
     // 统一用实际安装的 ffmpeg -version 解析版本号，更通用
     let ver = {
-        let out = Command::new(&final_path)
-            .arg("-version")
-            .output()
-            .await
-            .map_err(|e| e.to_string())?;
+        let mut cmd = Command::new(&final_path);
+        cmd.arg("-version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let out = cmd.output().await.map_err(|e| e.to_string())?;
         if !out.status.success() {
             "unknown".to_string()
         } else {
@@ -421,11 +427,16 @@ pub async fn ffmpeg_version(app: tauri::AppHandle) -> Result<String, String> {
     if !p.exists() {
         return Err("ffmpeg not installed".into());
     }
-    let out = Command::new(&p)
-        .arg("-version")
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new(&p);
+    cmd.arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().await.map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -441,12 +452,16 @@ pub async fn ffmpeg_check_exists(app: tauri::AppHandle) -> Result<Option<Install
         return Ok(None);
     }
 
-    // 尝试读取版本
-    let out = Command::new(&path)
-        .arg("-version")
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new(&path);
+    cmd.arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().await.map_err(|e| e.to_string())?;
 
     if !out.status.success() {
         // 可执行存在但无法运行（缺依赖/损坏），按“不存在”处理更稳妥
@@ -487,10 +502,10 @@ fn unique_flac_path(orig: &Path) -> PathBuf {
     parent.join(format!("{stem}.{}.flac", uuid::Uuid::new_v4()))
 }
 
-pub fn integrated_lufs<P: AsRef<Path>>(app: &tauri::AppHandle, path: P) -> Result<f64> {
+pub async fn integrated_lufs<P: AsRef<Path>>(app: &tauri::AppHandle, path: P) -> Result<f64> {
     let ffmpeg = ensure_ffmpeg(&app)?;
-    let output = std::process::Command::new(&ffmpeg)
-        .arg("-hide_banner")
+    let mut cmd = Command::new(&ffmpeg);
+    cmd.arg("-hide_banner")
         .arg("-nostats")
         .arg("-i")
         .arg(path.as_ref()) // 直接传 OsStr，跨平台安全
@@ -499,10 +514,14 @@ pub fn integrated_lufs<P: AsRef<Path>>(app: &tauri::AppHandle, path: P) -> Resul
         .arg("-f")
         .arg("null")
         .arg("-") // 丢到黑洞，不写输出
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .with_context(|| "spawn ffmpeg failed")?;
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd.output().await.with_context(|| "spawn ffmpeg failed")?;
 
     let log = String::from_utf8_lossy(&output.stderr);
 
