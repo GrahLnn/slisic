@@ -137,26 +137,26 @@ function TrackPaster() {
                 : allreview.includes(v.url) || verified
             }
             anime={v.status === null}
-            rightButton={
-              v.entry_type === "WebList"
-                ? [
-                    {
-                      name: v.tracking
-                        ? "Disable Playlist Tracking"
-                        : "Enable Playlist Tracking",
-                      onClick: () =>
-                        action.set_slot({
-                          ...slot,
-                          links: slot.links.map((l) =>
-                            l.url === v.url
-                              ? { ...l, tracking: !l.tracking }
-                              : l
-                          ),
-                        }),
-                    },
-                  ]
-                : undefined
-            }
+            // rightButton={
+            //   v.entry_type === "WebList"
+            //     ? [
+            //         {
+            //           name: v.tracking
+            //             ? "Disable Playlist Tracking"
+            //             : "Enable Playlist Tracking",
+            //           onClick: () =>
+            //             action.set_slot({
+            //               ...slot,
+            //               links: slot.links.map((l) =>
+            //                 l.url === v.url
+            //                   ? { ...l, tracking: !l.tracking }
+            //                   : l
+            //               ),
+            //             }),
+            //         },
+            //       ]
+            //     : undefined
+            // }
           />
         );
       })}
