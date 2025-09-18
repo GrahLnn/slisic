@@ -574,8 +574,6 @@ pub async fn flat_data(app: tauri::AppHandle, url: String) -> Result<serde_json:
         return Err("yt-dlp not found, please install/download first".into());
     }
     let output = Command::new(&exe)
-        .env("YTDLP_NO_UPDATE", "1")
-        .arg("--force-ipv4")
         .arg("-J")
         .arg("--skip-download")
         .arg("--flat-playlist")
@@ -638,7 +636,6 @@ pub async fn download_audio(
         .env("YTDLP_NO_UPDATE", "1")
         // 让文件名尽量可被 Windows 接受（可选）
         .arg("--windows-filenames")
-        .arg("--force-ipv4")
         .arg("-f")
         .arg("bestaudio")
         .arg("--no-playlist")
