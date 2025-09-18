@@ -28,10 +28,12 @@ function YtCheck() {
           exist: () => <icons.check3 size={10} />,
           not_exist: () => <icons.plus size={12} />,
           _: () => (
-            <motionIcons.live
-              size={12}
-              className="animate-spin [animation-duration:5s]"
-            />
+            <div className="text-[#dbab0a]">
+              <motionIcons.live
+                size={12}
+                className="animate-spin [animation-duration:5s]"
+              />
+            </div>
           ),
         })}
       </div>
@@ -85,10 +87,12 @@ function FfmpegCheck() {
           exist: () => <icons.check3 size={10} />,
           not_exist: () => <icons.plus size={12} />,
           _: () => (
-            <motionIcons.live
-              size={12}
-              className="animate-spin [animation-duration:5s]"
-            />
+            <div className="text-[#dbab0a] dark:text-[#ffc402]">
+              <motionIcons.live
+                size={12}
+                className="animate-spin [animation-duration:5s]"
+              />
+            </div>
           ),
         })}
       </div>
