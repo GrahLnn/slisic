@@ -22,6 +22,17 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 let installed = false;
 let postGain: GainNode | null = null;
 
+function db2lin(db: number) {
+  return Math.pow(10, db / 20);
+}
+
+function computeSafeBoost(curLufs: number, targetLufs: number, maxBoostDb = 4) {
+  const rawBoostDb = targetLufs - curLufs; // 可能很大
+  const appliedBoostDb = Math.min(rawBoostDb, maxBoostDb);
+  const effectiveTarget = curLufs + appliedBoostDb; // 把目标自适应下调
+  return { s: db2lin(appliedBoostDb), effectiveTarget };
+}
+
 export function ensureHowlerPostGain() {
   if (installed) return postGain!;
   if (!Howler.usingWebAudio)
@@ -30,24 +41,63 @@ export function ensureHowlerPostGain() {
   const ctx = Howler.ctx as AudioContext;
   const master = Howler.masterGain as GainNode;
 
-  // 1) 构建 limiter（防爆音，参数可按口味调）
-  const limiter = ctx.createDynamicsCompressor();
-  limiter.threshold.value = -1; // 约等于硬限幅
-  limiter.knee.value = 0;
-  limiter.ratio.value = 20;
-  limiter.attack.value = 0.003;
-  limiter.release.value = 0.1;
+  // ===== 1) HPF：切超低（25~35Hz）
+  const hpf = ctx.createBiquadFilter();
+  hpf.type = "highpass";
+  hpf.frequency.value = 30; // 25~35 之间按口味调
+  hpf.Q.value = 0.707;
 
-  // 2) 后级增益（>1）
+  // ===== 2) LowShelf：轻削 60~120Hz
+  const lowShelf = ctx.createBiquadFilter();
+  lowShelf.type = "lowshelf";
+  lowShelf.frequency.value = 90; // 60~120
+  lowShelf.gain.value = -4; // -3~-6dB
+
+  // ===== 3) GentleComp：预压，减轻硬限负担
+  const gentle = ctx.createDynamicsCompressor();
+  gentle.threshold.value = -18; // -24~-12 之间
+  gentle.knee.value = 6; // 软一点
+  gentle.ratio.value = 3; // 2~4:1
+  gentle.attack.value = 0.006; // 5~10ms
+  gentle.release.value = 0.25; // 200~300ms
+
+  // ===== 4) Limiter：硬限（仍是压缩器近似）
+  const limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -1; // ceiling（模拟）
+  limiter.knee.value = 1;
+  limiter.ratio.value = 20;
+  limiter.attack.value = 0.003; // 快速抓峰
+  limiter.release.value = 0.18; // 稍长，减“喘息/泵感”
+
+  // ===== 5) SoftClip：软削波（tanh 曲线）
+  const softClip = ctx.createWaveShaper();
+  softClip.curve = buildSoftClipCurve(4096, 0.9); // 0.8~0.95 强度
+  softClip.oversample = "4x"; // 减少高频折叠
+
+  function buildSoftClipCurve(len: number, drive: number) {
+    const curve = new Float32Array(len);
+    for (let i = 0; i < len; i++) {
+      const x = (i / (len - 1)) * 2 - 1; // [-1,1]
+      const y = Math.tanh(x * (1 / (1 - 1e-3)) * drive);
+      curve[i] = y;
+    }
+    return curve;
+  }
+
+  // ===== 6) postGain：最后补一点点（默认 1.0）
   postGain = ctx.createGain();
   postGain.gain.value = 1;
 
-  // 3) 重新布线：master → limiter → postGain → destination
+  // 重新布线
   try {
     master.disconnect();
   } catch {}
-  master.connect(limiter);
-  limiter.connect(postGain);
+  master.connect(hpf);
+  hpf.connect(lowShelf);
+  lowShelf.connect(gentle);
+  gentle.connect(limiter);
+  limiter.connect(softClip);
+  softClip.connect(postGain);
   postGain.connect(ctx.destination);
 
   installed = true;
@@ -58,6 +108,14 @@ export function setPostGainLinear(g: number) {
   if (!installed) return;
   if (!postGain) return;
   postGain.gain.value = Math.max(0, g); // 可以 >1
+}
+
+export function setPostGainLinearSmooth(g: number, t = 0.04) {
+  if (!installed || !postGain) return;
+  const ctx = Howler.ctx as AudioContext;
+  const now = ctx.currentTime;
+  const p = postGain.gain;
+  p.setTargetAtTime(Math.max(0, g), now, t); // ~40ms 平滑
 }
 
 export function resetPostGain() {
@@ -171,10 +229,7 @@ export const src = setup({
     hide_center_tool: hideCenterTool,
     view_center_tool: viewCenterTool,
     set_msg: assign({
-      processMsg: EH.whenDone(payloads.processMsg.evt())((r) => {
-        console.log(r);
-        return r;
-      }),
+      processMsg: EH.whenDone(payloads.processMsg.evt())(I),
     }),
     clean_ctx: assign({
       collections: vec,
@@ -349,7 +404,7 @@ export const src = setup({
       // LUFS → 线性倍率 s
       const target = context.selected?.avg_db ?? -14;
       const cur = choose.avg_db ?? target;
-      const s = Math.pow(10, (target - cur) / 20); // 可能 >1
+      const { s } = computeSafeBoost(cur, target, 4);
 
       // 拆分：Howler 的 volume ≤ 1；剩余用 postGain 扛
       const howlerVol = Math.min(1, s);
@@ -367,7 +422,7 @@ export const src = setup({
           // 2) 安装后级增益链（此时 ctx 一定存在）
           try {
             ensureHowlerPostGain();
-            setPostGainLinear(extra); // 设置 >1 的增益
+            setPostGainLinearSmooth(extra); // 设置 >1 的增益
           } catch (e) {
             console.warn("[postGain] install failed:", e);
           }
