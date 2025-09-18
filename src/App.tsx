@@ -10,11 +10,49 @@ import { Provider } from "jotai";
 import { appStore } from "./subpub/core";
 import AudioVisualizerCanvas from "./components/audio/canvas";
 import { useEffect } from "react";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { Toaster } from "@/components/ui/sonner";
+import { toast } from "sonner";
+
+async function checkUpdate() {
+  const update = await check();
+  if (update) {
+    console.log(
+      `found update ${update.version} from ${update.date} with notes ${update.body}`
+    );
+    let downloaded = 0;
+    let contentLength = 0;
+    // alternatively we could also call update.download() and update.install() separately
+    await update.downloadAndInstall((event) => {
+      switch (event.event) {
+        case "Started":
+          contentLength = event.data.contentLength!;
+          console.log(`started downloading ${event.data.contentLength} bytes`);
+          break;
+        case "Progress":
+          downloaded += event.data.chunkLength;
+          console.log(`downloaded ${downloaded} from ${contentLength}`);
+          break;
+        case "Finished":
+          console.log("download finished");
+          break;
+      }
+    });
+
+    console.log("update installed");
+    toast.success("Restart to apply update");
+  } else {
+    console.log("No update found");
+    toast.error("No update found");
+  }
+}
 
 function App() {
   useEffect(() => {
     crab.appReady();
     action.run();
+    checkUpdate();
   }, []);
   return (
     <Provider store={appStore}>
@@ -87,6 +125,7 @@ function App() {
             />
           </filter>
         </svg>
+        <Toaster />
       </div>
     </Provider>
   );
