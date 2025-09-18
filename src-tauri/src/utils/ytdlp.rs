@@ -37,6 +37,9 @@ use tokio::process::Command;
 use tokio::time::sleep;
 use uuid::Uuid;
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 const GH_API_LATEST: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 const GH_DL_BASE: &str = "https://xget.r2g2.org/gh/yt-dlp/yt-dlp/releases/latest/download";
 const GH_SUMS: &str =
@@ -573,11 +576,19 @@ pub async fn flat_data(app: tauri::AppHandle, url: String) -> Result<serde_json:
     if !exe.exists() {
         return Err("yt-dlp not found, please install/download first".into());
     }
-    let output = Command::new(&exe)
-        .arg("-J")
+    let mut cmd = Command::new(&exe);
+    cmd.arg("-J")
         .arg("--skip-download")
         .arg("--flat-playlist")
         .arg(&url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd
         .output()
         .await
         .map_err(|e| format!("execute yt-dlp failed: {e}"))?;
@@ -628,10 +639,8 @@ pub async fn download_audio(
         .join("%(title)s.%(ext)s")
         .to_string_lossy()
         .to_string();
-
-    let output = Command::new(&exe)
-        // 关键：强制 UTF-8 输出，避免 GBK/本地代码页造成的乱码
-        .env("PYTHONIOENCODING", "utf-8")
+    let mut cmd = Command::new(&exe);
+    cmd.env("PYTHONIOENCODING", "utf-8")
         // 可选：禁用 yt-dlp 自更新
         .env("YTDLP_NO_UPDATE", "1")
         // 让文件名尽量可被 Windows 接受（可选）
@@ -652,6 +661,14 @@ pub async fn download_audio(
         .arg("--print")
         .arg("before_dl:filepath")
         .arg(&url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd
         .output()
         .await
         .map_err(|e| format!("execute yt-dlp failed: {e}"))?;
@@ -1187,13 +1204,17 @@ pub async fn split_audio_by_chapters(
             .arg(format!("{}", ch.end))
             .arg("-map")
             .arg("0:a:0?")
-            .arg("-vn");
-
-        cmd.arg("-c").arg("copy");
-
-        cmd.arg(&outp);
-        cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::null());
+            .arg("-vn")
+            .arg("-c")
+            .arg("copy")
+            .arg(&outp)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
 
         let output = cmd
             .output()
