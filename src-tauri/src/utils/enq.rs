@@ -49,15 +49,11 @@ pub fn init_global_download_queue(app: tauri::AppHandle, capacity: usize) -> Res
     // 全局注册
     let _ = DOWNLOAD_TX.set(tx);
 
-    let base_folder = resolve_save_path(app.clone()).map_err(anyhow::Error::msg)?;
-    let base_folder = Arc::new(base_folder);
-
     // 把 Receiver 包一层，便于多 worker 共享
     let rx = Arc::new(Mutex::new(rx));
 
     for _ in 0..4 {
         let app = app.clone();
-        let base = base_folder.clone();
         let rx_arc = rx.clone();
 
         tauri::async_runtime::spawn(async move {
@@ -69,8 +65,14 @@ pub fn init_global_download_queue(app: tauri::AppHandle, capacity: usize) -> Res
                     None => break, // 所有 sender 都 drop 时退出
                 };
                 drop(guard);
-
-                let res = process_entry(app.clone(), &base, &mut job, &[], &[]).await;
+                let base_folder = match resolve_save_path(app.clone()) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("resolve_save_path error: {e}");
+                        return;
+                    }
+                };
+                let res = process_entry(app.clone(), &base_folder, &mut job, &[], &[]).await;
                 match res {
                     Ok(result) => finalize_process(&app, result).await,
                     Err(e) => eprintln!("download error: {e}"),
