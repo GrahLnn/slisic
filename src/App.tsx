@@ -24,16 +24,14 @@ async function checkUpdate() {
     );
     let downloaded = 0;
     let contentLength = 0;
-    // alternatively we could also call update.download() and update.install() separately
-    await update.downloadAndInstall((event) => {
-      switch (event.event) {
+
+    await update.download((e) => {
+      switch (e.event) {
         case "Started":
-          contentLength = event.data.contentLength!;
-          console.log(`started downloading ${event.data.contentLength} bytes`);
+          contentLength = e.data.contentLength!;
           break;
         case "Progress":
-          downloaded += event.data.chunkLength;
-          console.log(`downloaded ${downloaded} from ${contentLength}`);
+          downloaded += e.data.chunkLength;
           break;
         case "Finished":
           console.log("download finished");
@@ -47,7 +45,10 @@ async function checkUpdate() {
       duration: Infinity,
       action: {
         label: "Restart",
-        onClick: relaunch,
+        onClick: async () => {
+          await update.install();
+          await relaunch();
+        },
       },
     });
   }
