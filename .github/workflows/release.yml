@@ -8,7 +8,41 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  detect-version:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.chk.outputs.changed }}
+      new_version: ${{ steps.chk.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - id: chk
+        run: |
+          # 当前 commit 的版本
+          NEW_V=$(jq -r '.version // empty' src-tauri/tauri.conf.json)
+
+          # 上一个 commit 的版本
+          if git show HEAD^:src-tauri/tauri.conf.json >/dev/null 2>&1; then
+            OLD_V=$(git show HEAD^:src-tauri/tauri.conf.json | jq -r '.version // empty')
+          else
+            OLD_V=""
+          fi
+
+          echo "Old version: $OLD_V"
+          echo "New version: $NEW_V"
+
+          if [ "$NEW_V" != "$OLD_V" ] && [ -n "$NEW_V" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "new_version=$NEW_V" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
   publish:
+    needs: detect-version
+    if: needs.detect-version.outputs.changed == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -46,3 +80,10 @@ jobs:
           releaseBody: "See assets to download."
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+  no-change:
+    needs: detect-version
+    if: needs.detect-version.outputs.changed != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "version not changed"
