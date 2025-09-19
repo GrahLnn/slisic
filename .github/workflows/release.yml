@@ -50,7 +50,7 @@ jobs:
           - os: macos-14
             args: ""
           - os: windows-latest
-            args: ""
+            args: "-b nsis"
     runs-on: ${{ matrix.os }}
     permissions: { contents: write }
     steps:

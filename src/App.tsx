@@ -15,7 +15,6 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { useIsDark } from "./state_machine/normal";
-import { Button } from "@/components/ui/button";
 
 async function checkUpdate() {
   const update = await check();
