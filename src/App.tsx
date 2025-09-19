@@ -115,7 +115,7 @@ function Filter() {
       <svg className="invisible h-0 w-0" aria-hidden="true">
         <filter
           id="filter"
-          color-interpolation-filters="linearRGB"
+          colorInterpolationFilters="linearRGB"
           filterUnits="objectBoundingBox"
           primitiveUnits="userSpaceOnUse"
         >
