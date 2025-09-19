@@ -15,6 +15,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { useIsDark } from "./state_machine/normal";
+import { Button } from "@/components/ui/button";
 
 async function checkUpdate() {
   const update = await check();
@@ -174,23 +175,16 @@ function App() {
 
         <Toaster
           toastOptions={{
-            // 给所有 toast 都加内联样式（同样权重最高）
             style: {
               background: isDark
                 ? "rgba(0, 0, 0, 0.2)"
                 : "rgba(255, 255, 255, 0.2)",
-              backdropFilter: "blur(4px)",
-              border: isDark
-                ? "1px solid rgb(0 0 0 / 0.1)"
-                : "1px solid rgb(255 255 255 / 0.1)",
-              boxShadow:
-                "inset 2px 2px 1px 0 rgba(255, 255, 255, 0.3),inset -2px -2px 2px 1px rgba(255, 255, 255, 0.3),0 4px 8px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.2)",
-              color: "rgba(255, 255, 255, 0.8)",
+              backdropFilter: "url(#filter) blur(4px)",
+              border: "none",
               transition: "all 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.5)",
             },
             classNames: {
-              toast: "gl",
-              actionButton: "opacity-70 hover:opacity-100 transition",
+              actionButton: "lg-btn-action gl",
             },
           }}
         />
