@@ -115,6 +115,9 @@ pub struct WorkState {
     pub error: Option<String>,
     pub updated_ms: u64,
     pub children: Vec<ChildLeaf>, // 只记录叶子（或也可存中间节点，按需）
+
+    #[serde(default)] // 兼容旧文件
+    pub base_save_dir: Option<PathBuf>, // 只要求根有；子节点可为 None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -855,10 +858,12 @@ pub fn process_entry<'a>(
 ) -> Pin<Box<dyn Future<Output = Result<ProcessResult, String>> + Send + 'a>> {
     Box::pin(async move {
         // ===== 1) 计算保存目录（不含当前 entry.title）=====
+        let is_root = ancestors_ids.is_empty();
         let mut dir = base_save_folder.to_path_buf();
         for t in ancestors_titles {
             dir.push(sanitize_segment(t));
         }
+        let base_dir_for_this = base_save_folder.to_path_buf();
 
         ProcessMsg {
             playlist: entry.playlist.clone(),
@@ -893,11 +898,20 @@ pub fn process_entry<'a>(
             error: None,
             updated_ms: now_ms(),
             children: vec![],
+            base_save_dir: if is_root {
+                Some(base_dir_for_this.clone())
+            } else {
+                None
+            },
         };
 
         {
             let _guard = WorkGuard::lock(&st_dir)?;
             let mut st = load_state(&st_path).unwrap_or_else(&mut mk_init);
+            if is_root && st.base_save_dir.is_none() {
+                st.base_save_dir = Some(base_save_folder.to_path_buf());
+            }
+
             st.status = NodeStatus::Downloading;
             st.url = entry.url.clone();
             if !entry.title.is_empty() {
@@ -971,6 +985,14 @@ pub fn process_entry<'a>(
                 save_state(&st_path, &mut st)?;
             }
 
+            let parent_id = entry.id;
+            let parent_playlist = entry.playlist.clone();
+            let parent_url = entry.url.clone();
+            let parent_title = entry.title.clone();
+
+            // 读一次父 state，拿到它原有的 base_save_dir（如果有的话）
+            let parent_base_save_dir = load_state(&st_path).and_then(|s| s.base_save_dir.clone());
+
             // 递归并发处理每个 child
             let concurrency_limit = 16; // 并发上限，可调整
             stream::iter(children.into_iter())
@@ -998,20 +1020,31 @@ pub fn process_entry<'a>(
                 .for_each(|(res, child)| {
                     let st_dir = st_dir.clone();
                     let st_path = st_path.clone();
+                    let parent_base_save_dir = parent_base_save_dir.clone();
+                    let parent_playlist = parent_playlist.clone();
+                    let parent_url = parent_url.clone();
+                    let parent_title = parent_title.clone();
+                    let parent_id = parent_id;
+
                     async move {
                         let _g = WorkGuard::lock(&st_dir).ok();
+
+                        // ✅ 兜底时用“父”的默认，而不是 child
                         let mut st = load_state(&st_path).unwrap_or_else(|| WorkState {
-                            root_id: child.id,
-                            playlist: child.playlist.clone(),
-                            url: child.url.clone(),
-                            title: child.title.clone(),
+                            root_id: parent_id,
+                            playlist: parent_playlist.clone(),
+                            url: parent_url.clone(),
+                            title: parent_title.clone(),
                             status: NodeStatus::Pending,
                             progress_done: 0,
                             progress_total: 0,
                             error: None,
                             updated_ms: now_ms(),
                             children: vec![],
+                            // ✅ 保留父的 base_save_dir（不要覆盖成 None）
+                            base_save_dir: parent_base_save_dir.clone(),
                         });
+
                         match res {
                             Ok(_child_result) => {
                                 st.progress_done = st.progress_done.saturating_add(1);
@@ -1451,20 +1484,25 @@ async fn resume_all(app: &AppHandle, base: &Path) -> Result<(), String> {
     let done_err = AtomicUsize::new(0);
 
     futures::stream::iter(to_resume.into_iter())
-        .map(|(st_path, st)| {
+        .map(|(_st_path, st)| {
             let app = app.clone();
-            let base = base.to_path_buf();
+            // ✅ 为每个“根”决定它的 base（优先 state.json 里的）
+            let base_for_this: PathBuf = st
+                .base_save_dir
+                .clone()
+                .unwrap_or_else(|| base.to_path_buf());
 
             async move {
-                // 日志：入队
                 println!(
-                    "[resume] >> run     : id={} title=\"{}\" status={:?}",
-                    st.root_id, st.title, st.status
+                    "[resume] >> run     : id={} title=\"{}\" using base_dir={}",
+                    st.root_id,
+                    st.title,
+                    base_for_this.display()
                 );
 
                 let mut entry = reconstruct_entry_minimal(&st)?;
                 let start = Instant::now();
-                let res = process_entry(app.clone(), &base, &mut entry, &[], &[]).await;
+                let res = process_entry(app.clone(), &base_for_this, &mut entry, &[], &[]).await;
 
                 match res {
                     Ok(pr) => {
@@ -1492,7 +1530,7 @@ async fn resume_all(app: &AppHandle, base: &Path) -> Result<(), String> {
         })
         .buffer_unordered(concurrency)
         .for_each(|r| {
-            // 这里在单线程 executor 上跑 closure，统计安全
+            // 统计不变
             if r.is_ok() {
                 done_ok.fetch_add(1, Ordering::Relaxed);
             } else {
