@@ -296,22 +296,45 @@ body,
   inset: 0;
 }
 
-.lg-btn {
-  /* width: 50vmin;
-  height: 20vmin; */
-  /* border-radius: 10.2vmin 9.8vmin 10.2vmin 9.8vmin; */
+.lg-btn-action {
   background: rgba(255, 255, 255, 0.05);
   backdrop-filter: blur(4px);
-  box-shadow: inset 2px 2px 1px 0 rgba(255, 255, 255, 0.3),
+  /* box-shadow: inset 2px 2px 1px 0 rgba(255, 255, 255, 0.3),
     inset -2px -2px 2px 1px rgba(255, 255, 255, 0.3),
-    0 4px 8px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.2);
-  color: rgba(255, 255, 255, 0.8);
-  font-size: 5vmin;
+    0 4px 8px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.2); */
   transition: all 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.5);
-  cursor: pointer;
+}
+
+@media (prefers-color-scheme: dark) {
+  .lg-btn-action {
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(4px);
+    /* box-shadow: inset 2px 2px 1px 0 rgba(0, 0, 0, 0.3),
+      inset -2px -2px 2px 1px rgba(0, 0, 0, 0.3), 0 4px 8px 0 rgba(0, 0, 0, 0.2),
+      0 6px 20px 0 rgba(0, 0, 0, 0.2); */
+    transition: all 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.5);
+  }
 }
 
 .gl {
   backdrop-filter: url(#filter);
   -webkit-backdrop-filter: blur(3px);
+}
+
+button[data-button].lg-btn-action,
+[data-sonner-toast][data-styled="true"] button[data-button].lg-btn-action {
+  background: none !important;
+  background-color: transparent !important;
+  color: #525252 !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  button[data-button].lg-btn-action,
+  [data-sonner-toast][data-styled="true"] button[data-button].lg-btn-action {
+    background: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background-color: transparent !important;
+    color: #e5e5e5 !important;
+  }
 }
