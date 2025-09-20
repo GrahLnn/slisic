@@ -1,5 +1,8 @@
 name: Auto Publish
 
+permissions:
+  contents: write
+
 on:
   push:
     branches: [main]
@@ -15,48 +18,43 @@ jobs:
       new_version: ${{ steps.chk.outputs.new_version }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
+        with: { fetch-depth: 0 }
       - id: chk
         run: |
           set -euo pipefail
-
-          # 确保拿到全部 tag（若 checkout 未设 fetch-depth: 0，这里补拉）
           git fetch --tags --force >/dev/null 2>&1 || true
-
-          # 读取当前文件中的新版本
           NEW_V="$(jq -r '.version // empty' src-tauri/tauri.conf.json)"
-
-          # 读取最新 tag（按语义化版本降序）
-          # 方式A：最常用、对轻量/附注 tag 都可靠
           LAST_TAG="$(git tag -l --sort=-v:refname | head -n1 || true)"
-          # 方式B（备选）：基于最近打的 tag 的 commit
-          # LAST_TAG="$(git describe --tags --abbrev=0 "$(git rev-list --tags --max-count=1)" 2>/dev/null || true)"
+          OLD_V=""; [ -n "${LAST_TAG:-}" ] && OLD_V="${LAST_TAG#v}"
+          echo "changed=$([ -n "$NEW_V" ] && [ "$NEW_V" != "$OLD_V" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "new_version=$NEW_V" >> "$GITHUB_OUTPUT"
 
-          # 去掉可能的 'v' 前缀得到旧版本号
-          if [ -n "${LAST_TAG:-}" ]; then
-          OLD_V="${LAST_TAG#v}"
-          else
-          OLD_V=""
+  prepare-release:
+    needs: detect-version
+    if: needs.detect-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.mk.outputs.release_id }}
+      tag: v${{ needs.detect-version.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - id: mk
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="v${{ needs.detect-version.outputs.new_version }}"
+          # 已存在就复用；不存在就创建（可改成 --draft/--prerelease）
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --notes "Auto release"
           fi
-
-          echo "Latest tag: ${LAST_TAG:-<none>}"
-          echo "Old version (from tag): ${OLD_V:-<empty>}"
-          echo "New version (from tauri.conf.json): ${NEW_V:-<empty>}"
-
-          # 输出给后续 steps 使用
-          if [ -n "${NEW_V:-}" ] && [ "${NEW_V}" != "${OLD_V}" ]; then
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          echo "new_version=${NEW_V}" >> "$GITHUB_OUTPUT"
-          echo "old_version=${OLD_V}" >> "$GITHUB_OUTPUT"
-          else
-          echo "changed=false" >> "$GITHUB_OUTPUT"
-          echo "old_version=${OLD_V}" >> "$GITHUB_OUTPUT"
-          fi
+          # 取 release id 输出给后续 job
+          RID="$(gh release view "$TAG" --json id -q .id)"
+          echo "release_id=$RID" >> "$GITHUB_OUTPUT"
 
   publish:
-    needs: detect-version
+    needs: [detect-version, prepare-release]
     if: needs.detect-version.outputs.changed == 'true'
     strategy:
       fail-fast: false
@@ -67,32 +65,24 @@ jobs:
           - os: windows-latest
             args: "-b nsis"
     runs-on: ${{ matrix.os }}
-    permissions: { contents: write }
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
+        with: { bun-version: latest }
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-
       - name: Install deps (bun)
         run: bun install --frozen-lockfile
-
-      - name: Build & Release
+      - name: Build & Upload to existing release
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tauriScript: bunx tauri
-          tagName: v__VERSION__
-          releaseName: v__VERSION__
-          releaseBody: "See assets to download."
+          # 只上传，不再创建（关键：用 releaseId）
+          releaseId: ${{ needs.prepare-release.outputs.release_id }}
           includeUpdaterJson: true
           args: ${{ matrix.args }}
 
