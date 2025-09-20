@@ -291,8 +291,6 @@ export function TrackEdit() {
         <EditHead title="Tracks" explain="Add tracks to your playlist." />
         <div />
         <MultiFolderChooser
-          label="Local Folder"
-          explain="Select the folder that contains your music files."
           value={slot.folders.map((f) => ({
             k: f.path,
             v:
@@ -338,7 +336,10 @@ export function TrackEdit() {
         {ytstate.match({
           exist: () => <TrackPaster />,
           _: () => (
-            <Head title="Web Link" explain="Add web links to your playlist." />
+            <Head
+              title="Web Link"
+              explain="yt-dlp is required to download online media."
+            />
           ),
         })}
         {mainstate.catch(
