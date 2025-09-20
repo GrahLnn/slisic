@@ -7,7 +7,7 @@ actor.subscribe((snapshot) => {
       ? snapshot.value
       : JSON.stringify(snapshot.value);
 
-  console.log(state, snapshot.context);
+  console.log(`[ffmpeg] ${state}`, snapshot.context);
 });
 export * from "./api";
 export * from "./events";
