@@ -432,7 +432,7 @@ export function Pair({
                                     <motionIcons.live
                                       size={12}
                                       className="animate-spin [animation-duration:5s]"
-                                      fillOpacity={0.6}
+                                      fillOpacity={0.9}
                                     />
                                   </div>
                                   <div className="w-6 h-full backdrop-blur-[1px] mask-lor" />
