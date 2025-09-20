@@ -2,7 +2,6 @@ name: Auto Publish
 
 permissions:
   contents: write
-
 on:
   push:
     branches: [main]
@@ -18,30 +17,10 @@ jobs:
       new_version: ${{ steps.chk.outputs.new_version }}
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - id: chk
-        run: |
-          set -euo pipefail
-          git fetch --tags --force >/dev/null 2>&1 || true
-          NEW_V="$(jq -r '.version // empty' src-tauri/tauri.conf.json)"
-          LAST_TAG="$(git tag -l --sort=-v:refname | head -n1 || true)"
-          OLD_V=""; [ -n "${LAST_TAG:-}" ] && OLD_V="${LAST_TAG#v}"
-          echo "changed=$([ -n "$NEW_V" ] && [ "$NEW_V" != "$OLD_V" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "new_version=$NEW_V" >> "$GITHUB_OUTPUT"
+        with:
+          fetch-depth: 0
 
-  prepare-release:
-    needs: detect-version
-    if: needs.detect-version.outputs.changed == 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      release_id: ${{ steps.mk.outputs.release_id }}
-      tag: v${{ needs.detect-version.outputs.new_version }}
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - id: mk
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - id: chk
         run: |
           set -euo pipefail
           TAG="v${{ needs.detect-version.outputs.new_version }}"
@@ -54,7 +33,7 @@ jobs:
           echo "release_id=$RID" >> "$GITHUB_OUTPUT"
 
   publish:
-    needs: [detect-version, prepare-release]
+    needs: detect-version
     if: needs.detect-version.outputs.changed == 'true'
     strategy:
       fail-fast: false
@@ -65,24 +44,32 @@ jobs:
           - os: windows-latest
             args: "-b nsis"
     runs-on: ${{ matrix.os }}
+    permissions: { contents: write }
     steps:
       - uses: actions/checkout@v4
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
-        with: { bun-version: latest }
+        with:
+          bun-version: latest
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
       - name: Install deps (bun)
         run: bun install --frozen-lockfile
-      - name: Build & Upload to existing release
+
+      - name: Build & Release
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          # 只上传，不再创建（关键：用 releaseId）
-          releaseId: ${{ needs.prepare-release.outputs.release_id }}
+          tauriScript: bunx tauri
+          tagName: v__VERSION__
+          releaseName: v__VERSION__
+          releaseBody: "See assets to download."
           includeUpdaterJson: true
           args: ${{ matrix.args }}
 
