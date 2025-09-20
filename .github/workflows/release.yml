@@ -2,6 +2,7 @@ name: Auto Publish
 
 permissions:
   contents: write
+
 on:
   push:
     branches: [main]
@@ -13,27 +14,55 @@ jobs:
   detect-version:
     runs-on: ubuntu-latest
     outputs:
-      changed: ${{ steps.chk.outputs.changed }}
-      new_version: ${{ steps.chk.outputs.new_version }}
+      changed: ${{ steps.out.outputs.changed }}
+      new_version: ${{ steps.out.outputs.new_version }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - id: chk
+      - id: out
+        run: |
+          set -euo pipefail
+          # 读取 tauri.conf.json 的 version
+          NEW_V="$(jq -r '.version // empty' src-tauri/tauri.conf.json)"
+          if [ -z "$NEW_V" ]; then
+            echo "new_version=" >> "$GITHUB_OUTPUT"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # 找最新 tag（语义化版本排序）
+          LAST_TAG="$(git tag -l --sort=-v:refname | head -n1 || true)"
+          LAST_V="${LAST_TAG#v}"
+          if [ "$LAST_V" != "$NEW_V" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "new_version=$NEW_V" >> "$GITHUB_OUTPUT"
+
+  create-release:
+    needs: detect-version
+    if: needs.detect-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.gh.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: gh
+        env:
+          GH_TOKEN: ${{ github.token }} # 关键：给 gh 授权
         run: |
           set -euo pipefail
           TAG="v${{ needs.detect-version.outputs.new_version }}"
-          # 已存在就复用；不存在就创建（可改成 --draft/--prerelease）
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --title "$TAG" --notes "Auto release"
           fi
-          # 取 release id 输出给后续 job
           RID="$(gh release view "$TAG" --json id -q .id)"
           echo "release_id=$RID" >> "$GITHUB_OUTPUT"
 
   publish:
-    needs: detect-version
+    needs: [detect-version, create-release]
     if: needs.detect-version.outputs.changed == 'true'
     strategy:
       fail-fast: false
