@@ -47,6 +47,7 @@ import { Check, ChevronsUpDown, Plus } from "lucide-react";
 import * as React from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Result } from "@/lib/result";
+import { hook as ffmpeghook } from "@/src/state_machine/ffmpeg";
 
 export function BackButton({ onClick }: { onClick: () => void }) {
   return (
@@ -170,9 +171,7 @@ export function Head({ title, explain }: { title: string; explain?: string }) {
 }
 
 interface MultiFolderChooserProps {
-  label: string;
   value: Array<{ k: string; v: string }>;
-  explain?: string;
   warning?: string;
   check?: string[];
   onChoose?: (val: string | null) => void;
@@ -180,26 +179,40 @@ interface MultiFolderChooserProps {
 }
 
 export function MultiFolderChooser({
-  label,
   value,
-  explain,
   check,
   onChoose,
   ondelete,
 }: MultiFolderChooserProps) {
+  const ffmpeg = ffmpeghook.useState();
   return (
     <div className="flex flex-col gap-2">
       <div className="flex justify-between items-center">
-        <Head title={label} explain={explain} />
-        <EntryToolButton
-          label="Select"
-          onClick={() => {
-            onChoose &&
-              open({ directory: true }).then((path) => {
-                onChoose(path);
-              });
-          }}
-        />
+        {ffmpeg.match({
+          exist: () => (
+            <>
+              <Head
+                title="Local Folder"
+                explain="Select the folder that contains your music files."
+              />
+              <EntryToolButton
+                label="Select"
+                onClick={() => {
+                  onChoose &&
+                    open({ directory: true }).then((path) => {
+                      onChoose(path);
+                    });
+                }}
+              />
+            </>
+          ),
+          _: () => (
+            <Head
+              title="Local Folder"
+              explain="Audio analysis needs ffmpeg installed."
+            />
+          ),
+        })}
       </div>
       {[...value].reverse().map((v) => {
         const verified = !check?.includes(v.k);

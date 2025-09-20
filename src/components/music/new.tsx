@@ -166,6 +166,8 @@ function SaveCheck() {
 
 export function New() {
   const state = hook.useState();
+  const ytstate = ythook.useState();
+  const ffmpeg = ffhook.useState();
 
   return (
     <div className={cn(["flex flex-col gap-4 mb-32"])}>
@@ -192,33 +194,42 @@ export function New() {
         <SaveCheck />
         <ListSeparator />
         <TrackEdit />
-        {state.catch(
-          "create",
-          "edit"
-        )((r: ResultStateT) =>
-          me(r).match({
-            ok: () => (
-              <>
-                <div className="h-4" />
-                <div className="flex gap-4 items-center justify-center">
-                  <EntryToolButton
-                    icon={<icons.check3 size={12} />}
-                    label="Save"
-                    onClick={action.save}
-                  />
-                </div>
-              </>
-            ),
-            err: () => (
-              <>
-                <div className="h-2" />
-                <div className="text-xs text-[#525252] dark:text-[#d4d4d4] w-full px-4">
-                  Notice: List Name are required and at least one item must be
-                  included..
-                </div>
-              </>
-            ),
-          })
+        {ffmpeg.is("exist") ? (
+          state.catch(
+            "create",
+            "edit"
+          )((r: ResultStateT) =>
+            me(r).match({
+              ok: () => (
+                <>
+                  <div className="h-4" />
+                  <div className="flex gap-4 items-center justify-center">
+                    <EntryToolButton
+                      icon={<icons.check3 size={12} />}
+                      label="Save"
+                      onClick={action.save}
+                    />
+                  </div>
+                </>
+              ),
+              err: () => (
+                <>
+                  <div className="h-2" />
+                  <div className="text-xs text-[#525252] dark:text-[#d4d4d4] w-full px-4">
+                    Notice: List Name are required and at least one item must be
+                    included..
+                  </div>
+                </>
+              ),
+            })
+          )
+        ) : (
+          <>
+            <div className="h-2" />
+            <div className="text-xs text-[#525252] dark:text-[#d4d4d4] w-full px-4">
+              Notice: ffmpeg is required to support audio analysis.
+            </div>
+          </>
         )}
       </div>
     </div>
