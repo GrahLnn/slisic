@@ -11,7 +11,6 @@ export const machine = src.createMachine({
 
   states: {
     [ss.mainx.State.idle]: {
-      entry: () => console.log("updater idle"),
       on: {
         run: ss.mainx.State.check,
       },
