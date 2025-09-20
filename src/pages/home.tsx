@@ -194,14 +194,17 @@ function Play() {
                       )}
                     </ContextMenuTrigger>
                     {!isPlaying && !disabled && isOk && (
-                      <ContextMenuContent className="opacity-90">
-                        <ContextMenuItem onClick={() => action.edit(i)}>
+                      <ContextMenuContent className="bg-[rgba(255, 255, 255, 0.05)] gl border-none gl-shadow">
+                        <ContextMenuItem
+                          className="focus:bg-accent/30 flex justify-between items-center dark:text-[#e5e5e5] transition"
+                          onClick={() => action.edit(i)}
+                        >
                           Edit
                         </ContextMenuItem>
                         <LongPressContextMenuItem
                           durationMs={2000}
                           onConfirm={() => action.delete(i)}
-                          className="text-[#e81123] focus:text-[#e81123] data-[highlighted]:text-[#e81123]"
+                          className="focus:bg-accent/30 text-[#e81123] focus:text-[#e81123] data-[highlighted]:text-[#e81123]"
                         >
                           Delete
                         </LongPressContextMenuItem>
