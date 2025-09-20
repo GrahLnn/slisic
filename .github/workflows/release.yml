@@ -16,28 +16,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - id: chk
         run: |
-          # 当前 commit 的版本
-          NEW_V=$(jq -r '.version // empty' src-tauri/tauri.conf.json)
+          set -euo pipefail
 
-          # 上一个 commit 的版本
-          if git show HEAD^:src-tauri/tauri.conf.json >/dev/null 2>&1; then
-            OLD_V=$(git show HEAD^:src-tauri/tauri.conf.json | jq -r '.version // empty')
+          # 确保拿到全部 tag（若 checkout 未设 fetch-depth: 0，这里补拉）
+          git fetch --tags --force >/dev/null 2>&1 || true
+
+          # 读取当前文件中的新版本
+          NEW_V="$(jq -r '.version // empty' src-tauri/tauri.conf.json)"
+
+          # 读取最新 tag（按语义化版本降序）
+          # 方式A：最常用、对轻量/附注 tag 都可靠
+          LAST_TAG="$(git tag -l --sort=-v:refname | head -n1 || true)"
+          # 方式B（备选）：基于最近打的 tag 的 commit
+          # LAST_TAG="$(git describe --tags --abbrev=0 "$(git rev-list --tags --max-count=1)" 2>/dev/null || true)"
+
+          # 去掉可能的 'v' 前缀得到旧版本号
+          if [ -n "${LAST_TAG:-}" ]; then
+          OLD_V="${LAST_TAG#v}"
           else
-            OLD_V=""
+          OLD_V=""
           fi
 
-          echo "Old version: $OLD_V"
-          echo "New version: $NEW_V"
+          echo "Latest tag: ${LAST_TAG:-<none>}"
+          echo "Old version (from tag): ${OLD_V:-<empty>}"
+          echo "New version (from tauri.conf.json): ${NEW_V:-<empty>}"
 
-          if [ "$NEW_V" != "$OLD_V" ] && [ -n "$NEW_V" ]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "new_version=$NEW_V" >> $GITHUB_OUTPUT
+          # 输出给后续 steps 使用
+          if [ -n "${NEW_V:-}" ] && [ "${NEW_V}" != "${OLD_V}" ]; then
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "new_version=${NEW_V}" >> "$GITHUB_OUTPUT"
+          echo "old_version=${OLD_V}" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=false" >> $GITHUB_OUTPUT
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          echo "old_version=${OLD_V}" >> "$GITHUB_OUTPUT"
           fi
 
   publish:
