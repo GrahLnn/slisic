@@ -1,5 +1,3 @@
-// MeshGradientTauri_V6.tsx
-"use client";
 import React, { useEffect, useRef } from "react";
 
 type Props = {

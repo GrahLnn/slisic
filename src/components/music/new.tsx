@@ -174,7 +174,6 @@ export function New() {
           title={state.match({
             create: K("Create a New Playlist"),
             edit: K("Edit Playlist"),
-            saving: K("Saving Playlist"),
             _: K(""),
           })}
           explain={state.match({

@@ -21,6 +21,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 
 let installed = false;
 let postGain: GainNode | null = null;
+let switching = false;
 
 function db2lin(db: number) {
   return Math.pow(10, db / 20);
@@ -131,6 +132,26 @@ export function tapAfterBoost(analyser: AnalyserNode) {
 }
 
 let activeFrameDecay: { cancel: () => void } | null = null;
+
+function hardStop(h?: Howl, opts?: { keepTap?: boolean }) {
+  if (!h) return;
+  try {
+    h.stop();
+  } catch {}
+  try {
+    h.off();
+  } catch {} // 移除所有监听器，防多次 next
+  // 重要：真正释放缓冲与全局缓存
+  try {
+    h.unload();
+  } catch {}
+  if (!opts?.keepTap) {
+    try {
+      station && decayAudioFrame();
+    } catch {}
+  }
+  // 这里不操作 postGain，让 onend/onstop 统一 reset
+}
 
 export function decayAudioFrame(duration = 300) {
   // 取消上一次的衰减，避免并发
@@ -383,11 +404,13 @@ export const src = setup({
       flatList: EH.whenDone(payloads.toggle_audio.evt())((i) =>
         i!.entries
           .flatMap((f) => f.musics)
-          .filter((m) => !i?.exclude.map((e) => e.path).includes(m.path))
+          .filter((m) => !i?.exclude.map((e) => e.title).includes(m.title))
       ),
       selected: EH.whenDone(payloads.toggle_audio.evt())((i) => i || undefined),
     }),
-    ensure_play: enqueueActions(({ context, enqueue, self }) => {
+    ensure_play: enqueueActions(async ({ context, enqueue, self }) => {
+      if (switching) return; // 防重入
+      switching = true;
       const all: Music[] = context.flatList;
       if (all.length === 0) return;
 
@@ -397,10 +420,7 @@ export const src = setup({
       const idx = softminSample(base, 0.8);
       const choose = base[idx];
 
-      try {
-        context.audio?.stop();
-      } catch {}
-
+      hardStop(context.audio);
       // LUFS → 线性倍率 s
       const target = context.selected?.avg_db ?? -14;
       const cur = choose.avg_db ?? target;
@@ -441,17 +461,32 @@ export const src = setup({
           // tapAfterBoost(context.tap!.analyser);
         },
         onend: () => {
-          resetPostGain(); // 复位，避免影响下一首/系统声音
+          resetPostGain();
+          try {
+            sound.off();
+          } catch {}
+          try {
+            sound.unload();
+          } catch {}
           self.send(ss.playx.Signal.next);
         },
         onstop: () => {
           resetPostGain();
+          try {
+            sound.off();
+          } catch {}
+          try {
+            sound.unload();
+          } catch {}
           context.tap?.stop();
           decayAudioFrame();
         },
       });
 
       enqueue.assign({ nowPlaying: choose, audio: sound });
+      setTimeout(() => {
+        switching = false;
+      }, 0);
     }),
 
     stop_audio: ({ context }) => context.audio?.stop(),
@@ -696,9 +731,9 @@ export const src = setup({
       const entryHasDifference = selected.entries.some(
         (l) => !entryName.has(l.name)
       );
-      const excludeTitle = new Set(slot.exclude.map((l) => l.title));
+      const excludeTitle = new Set(slot.exclude.map((l) => l.path));
       const hasDifference = selected.exclude.some(
-        (l) => !excludeTitle.has(l.title)
+        (l) => !excludeTitle.has(l.path)
       );
       return (
         !hasIntersection &&
