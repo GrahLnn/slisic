@@ -456,8 +456,6 @@ export default function Home() {
     play: () => <Play />,
     new_guide: () => <Guide />,
     create: () => <Create />,
-    saving: () => <Create />,
-    updating: () => <Create />,
     edit: () => <Edit />,
     _: K(null),
   });

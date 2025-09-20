@@ -14,9 +14,11 @@ import { useEffect } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { useIsDark } from "./state_machine/normal";
 import Filter from "./components/svg_filter";
+import { useDisableReloadInProd } from "./hooks/useDisableReloadInProd";
 
 function App() {
   const isDark = useIsDark();
+  useDisableReloadInProd();
   useEffect(() => {
     crab.appReady();
     action.run();

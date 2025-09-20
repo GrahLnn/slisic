@@ -821,38 +821,10 @@ async fn do_update(app: AppHandle, data: CollectMission, anchor: Playlist) -> Re
         name,
         folders,
         links,
-        entries,
-        exclude,
+        entries: _,
+        exclude: _,
     } = data;
     let id = Collection::select_record_id("name", &anchor.name)
-        .await
-        .map_err(|e| e.to_string())?;
-    if name != anchor.name {
-        Collection::patch(
-            id.clone(),
-            vec![
-                PatchOp::replace("/name", name.clone()),
-                PatchOp::replace("/exclude", exclude),
-            ],
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    }
-    let (to_add_ref, to_remove_ref) =
-        diff_by_key(&entries, &anchor.entries, |e: &Entry| e.path.clone());
-    let rm_fut = to_remove_ref
-        .into_iter()
-        .map(|e| DbEntry::from(e.clone()))
-        .map(|p| Collection::unrelate_by_id(id.clone(), p.id, Rel::Collect));
-    future::try_join_all(rm_fut)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let add_fut = to_add_ref
-        .into_iter()
-        .map(|e| DbEntry::from(e.clone()))
-        .map(|p| Collection::relate_by_id(id.clone(), p.id, Rel::Collect));
-    future::try_join_all(add_fut)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -1037,6 +1009,43 @@ async fn do_update(app: AppHandle, data: CollectMission, anchor: Playlist) -> Re
 #[specta::specta]
 pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> Result<(), String> {
     let app_for_task = app.clone();
+    let CollectMission {
+        name,
+        folders: _,
+        links: _,
+        entries,
+        exclude,
+    } = data.clone();
+    let id = Collection::select_record_id("name", &anchor.name)
+        .await
+        .map_err(|e| e.to_string())?;
+    if name != anchor.name {
+        Collection::patch(id.clone(), vec![PatchOp::replace("/name", name.clone())])
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if exclude.len() != anchor.exclude.len() {
+        Collection::patch(id.clone(), vec![PatchOp::replace("/exclude", exclude)])
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let (to_add_ref, to_remove_ref) =
+        diff_by_key(&entries, &anchor.entries, |e: &Entry| e.path.clone());
+    let rm_fut = to_remove_ref
+        .into_iter()
+        .map(|e| DbEntry::from(e.clone()))
+        .map(|p| Collection::unrelate_by_id(id.clone(), p.id, Rel::Collect));
+    future::try_join_all(rm_fut)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let add_fut = to_add_ref
+        .into_iter()
+        .map(|e| DbEntry::from(e.clone()))
+        .map(|p| Collection::relate_by_id(id.clone(), p.id, Rel::Collect));
+    future::try_join_all(add_fut)
+        .await
+        .map_err(|e| e.to_string())?;
     spawn(async move {
         let res = do_update(app_for_task.clone(), data, anchor).await;
         if let Err(e) = &res {
