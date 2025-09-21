@@ -24,6 +24,7 @@ function App() {
     action.run();
     updater.run();
   }, []);
+
   return (
     <Provider store={appStore}>
       <Filter />
