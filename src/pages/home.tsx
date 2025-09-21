@@ -196,8 +196,8 @@ function Play() {
                     {!isPlaying && !disabled && isOk && (
                       <ContextMenuContent
                         className={cn([
-                          "bg-[rgba(255, 255, 255, 0.05)] border-none gl-shadow",
-                          os.is("macos") ? "backdrop-blur-[3px]" : "gl",
+                          "bg-[rgba(255, 255, 255, 0.05)] border-none",
+                          os.is("macos") ? "backdrop-blur-[3px] shadow-md" : "gl gl-shadow",
                         ])}
                       >
                         <ContextMenuItem
