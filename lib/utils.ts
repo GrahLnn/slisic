@@ -1,6 +1,10 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { readFile } from "@tauri-apps/plugin-fs";
+import { platform } from "@tauri-apps/plugin-os";
+import { me } from "./matchable";
+
+export const os = me(platform());
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));

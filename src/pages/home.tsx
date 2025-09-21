@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { labels } from "../components/labels";
-import { cn } from "@/lib/utils";
+import { cn, os } from "@/lib/utils";
 import { motionIcons } from "../assets/icons";
 import { action, hook } from "../state_machine/music";
 import { K } from "@/lib/comb";
@@ -194,7 +194,12 @@ function Play() {
                       )}
                     </ContextMenuTrigger>
                     {!isPlaying && !disabled && isOk && (
-                      <ContextMenuContent className="bg-[rgba(255, 255, 255, 0.05)] gl border-none gl-shadow">
+                      <ContextMenuContent
+                        className={cn([
+                          "bg-[rgba(255, 255, 255, 0.05)] border-none gl-shadow",
+                          os.is("macos") ? "backdrop-blur-[3px]" : "gl",
+                        ])}
+                      >
                         <ContextMenuItem
                           className="focus:bg-accent/30 flex justify-between items-center dark:text-[#e5e5e5] transition"
                           onClick={() => action.edit(i)}
