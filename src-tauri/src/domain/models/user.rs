@@ -18,8 +18,10 @@ pub struct DbUser {
 
 impl_crud!(DbUser, Table::User);
 impl_id!(DbUser, id);
-impl_schema!(User, "DEFINE INDEX unique_id ON TABLE user FIELDS id UNIQUE;");
-
+impl_schema!(
+    User,
+    "DEFINE INDEX unique_id ON TABLE user FIELDS id UNIQUE;"
+);
 
 impl DbUser {
     pub async fn into_model(self) -> Result<User, Error> {

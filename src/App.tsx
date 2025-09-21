@@ -7,6 +7,10 @@ import crab from "./cmd";
 import Input from "./components/Input";
 import { Scrollbar } from "./components/scrollbar/scrollbar";
 import TopBar from "./topbar";
+import { Toaster } from "@/components/ui/sonner";
+import { action as updater } from "./state_machine/updater";
+import { Provider } from "jotai";
+import { appStore } from "./subpub/core";
 
 const GreetForm = memo(function GreetForm() {
   const [greetMsg, setGreetMsg] = useState("");
@@ -93,45 +97,49 @@ const GreetForm = memo(function GreetForm() {
 function App() {
   useEffect(() => {
     crab.appReady();
+    updater.run();
   }, []);
   return (
-    <div className="h-screen flex flex-col overflow-hidden hide-scrollbar">
-      <TopBar />
-      <main className="flex-1 flex overflow-hidden hide-scrollbar">
-        <div className="flex justify-center flex-col text-center gap-4 flex-1">
-          <h1>Welcome to Tauri + React</h1>
+    <Provider store={appStore}>
+      <div className="h-screen flex flex-col overflow-hidden hide-scrollbar">
+        <TopBar />
+        <main className="flex-1 flex overflow-hidden hide-scrollbar">
+          <div className="flex justify-center flex-col text-center gap-4 flex-1">
+            <h1>Welcome to Tauri + React</h1>
 
-          <div className="flex justify-center">
-            <a href="https://vitejs.dev" target="_blank" rel="noreferrer">
-              <img
-                src="/rsbuild.svg"
-                className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#FFD700]"
-                alt="Vite logo"
-              />
-            </a>
-            <a href="https://tauri.app" target="_blank" rel="noreferrer">
-              <img
-                src="/tauri.svg"
-                className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#24c8db]"
-                alt="Tauri logo"
-              />
-            </a>
-            <a href="https://reactjs.org" target="_blank" rel="noreferrer">
-              <img
-                src={reactLogo}
-                className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#61dafb]"
-                alt="React logo"
-              />
-            </a>
+            <div className="flex justify-center">
+              <a href="https://vitejs.dev" target="_blank" rel="noreferrer">
+                <img
+                  src="/rsbuild.svg"
+                  className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#FFD700]"
+                  alt="Vite logo"
+                />
+              </a>
+              <a href="https://tauri.app" target="_blank" rel="noreferrer">
+                <img
+                  src="/tauri.svg"
+                  className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#24c8db]"
+                  alt="Tauri logo"
+                />
+              </a>
+              <a href="https://reactjs.org" target="_blank" rel="noreferrer">
+                <img
+                  src={reactLogo}
+                  className="h-24 p-6 transition-[filter] duration-[0.75s] will-change-[filter] hover:drop-shadow-[0_0_2em_#61dafb]"
+                  alt="React logo"
+                />
+              </a>
+            </div>
+            <p style={{ fontFamily: '"Maple Mono", monospace' }}>
+              Click on the Tauri, Rsbuild, and React logos to learn more.
+            </p>
+            <GreetForm />
           </div>
-          <p style={{ fontFamily: '"Maple Mono", monospace' }}>
-            Click on the Tauri, Rsbuild, and React logos to learn more.
-          </p>
-          <GreetForm />
-        </div>
-      </main>
-      <Scrollbar />
-    </div>
+        </main>
+        <Scrollbar />
+        <Toaster />
+      </div>
+    </Provider>
   );
 }
 

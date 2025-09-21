@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "tauri-react-template",
-  "version": "0.0.1",
-  "identifier": "com.tauri.dev",
+  "productName": "",
+  "version": "",
+  "identifier": "",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:3000",
@@ -51,6 +51,15 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE4QTk2Nzk3Q0FEQ0I0RTMKUldUanROektsMmVwR0F1ZWE4Y1ozY3E4WEhjbWN2cHFXVnl2dXV3dTBGemFzVFY4WGlqd0s3Wm4K",
+      "endpoints": [
+        "https://github.com/{}/{}/releases/latest/download/latest.json"
+      ]
+    }
   }
 }
