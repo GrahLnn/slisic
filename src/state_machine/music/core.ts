@@ -11,7 +11,7 @@ import { check_folder_machine } from "../foldercheck";
 import { update_weblist_machine } from "../updateweblist";
 import { Howl, Howler } from "howler";
 
-interface HowlerTap {
+export interface HowlerTap {
   analyser: AnalyserNode;
   start: (onframe: (f: Frame) => void) => void;
   stop: () => void;

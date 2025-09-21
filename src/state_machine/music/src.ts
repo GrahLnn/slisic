@@ -7,6 +7,7 @@ import {
   new_slot,
   createHowlerTap,
   Frame,
+  HowlerTap,
 } from "./core";
 import { payloads, ss, sub_machine, invoker, Events } from "./events";
 import { I, K } from "@/lib/comb";
@@ -133,7 +134,7 @@ export function tapAfterBoost(analyser: AnalyserNode) {
 
 let activeFrameDecay: { cancel: () => void } | null = null;
 
-function hardStop(h?: Howl, opts?: { keepTap?: boolean }) {
+function hardStop(h?: Howl, tap?: HowlerTap, opts?: { keepTap?: boolean }) {
   if (!h) return;
   try {
     h.stop();
@@ -146,6 +147,9 @@ function hardStop(h?: Howl, opts?: { keepTap?: boolean }) {
     h.unload();
   } catch {}
   if (!opts?.keepTap) {
+    try {
+      tap?.stop();
+    } catch {}
     try {
       station && decayAudioFrame();
     } catch {}
@@ -420,7 +424,7 @@ export const src = setup({
       const idx = softminSample(base, 0.8);
       const choose = base[idx];
 
-      hardStop(context.audio);
+      hardStop(context.audio, context.tap);
       // LUFS → 线性倍率 s
       const target = context.selected?.avg_db ?? -14;
       const cur = choose.avg_db ?? target;
@@ -459,6 +463,7 @@ export const src = setup({
 
           // 如果你希望频谱看“增益之后”的信号：
           // tapAfterBoost(context.tap!.analyser);
+          switching = false;
         },
         onend: () => {
           resetPostGain();
@@ -484,9 +489,6 @@ export const src = setup({
       });
 
       enqueue.assign({ nowPlaying: choose, audio: sound });
-      setTimeout(() => {
-        switching = false;
-      }, 0);
     }),
 
     stop_audio: ({ context }) => context.audio?.stop(),

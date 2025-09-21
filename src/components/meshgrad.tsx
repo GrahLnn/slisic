@@ -98,212 +98,212 @@ export default function MeshGradientTauri({
     `;
 
     const FRAG = `#version 300 es
-precision mediump float;
+        precision mediump float;
 
-in vec2 v_uv;
-in float v_time;
-in float v_aspect;
+        in vec2 v_uv;
+        in float v_time;
+        in float v_aspect;
 
-out vec4 fragColor;
+        out vec4 fragColor;
 
-uniform sampler2D u_colorsTex; // 10×1 颜色表（RGBA，A=0 表示未使用）
+        uniform sampler2D u_colorsTex; // 10×1 颜色表（RGBA，A=0 表示未使用）
 
-// ========== 复杂漩涡（哈密顿流场推进）的可调参数（JS 侧用 uniform1f 设） ==========
-uniform float SWIRL_GAIN;     // 总体流场强度（建议 0.8~1.2）
-uniform float SWIRL_DT;       // 单步 dt，步长（0.015~0.035）
-uniform float SWIRL_STEPS;    // 推进步数（1~3，向下取整）
-uniform float CORE_SIGMA;     // 涡核半径（0.2~0.6）
-uniform float CORE_STRENGTH;  // 涡核强度（0.5~2.0）
-uniform float CORE_COUNT;     // 涡核个数（1~6，向下取整）
-uniform float CORE_SPIN;      // 叠加一点基础角速度（0.0~1.2）
+        // ========== 复杂漩涡（哈密顿流场推进）的可调参数（JS 侧用 uniform1f 设） ==========
+        uniform float SWIRL_GAIN;     // 总体流场强度（建议 0.8~1.2）
+        uniform float SWIRL_DT;       // 单步 dt，步长（0.015~0.035）
+        uniform float SWIRL_STEPS;    // 推进步数（1~3，向下取整）
+        uniform float CORE_SIGMA;     // 涡核半径（0.2~0.6）
+        uniform float CORE_STRENGTH;  // 涡核强度（0.5~2.0）
+        uniform float CORE_COUNT;     // 涡核个数（1~6，向下取整）
+        uniform float CORE_SPIN;      // 叠加一点基础角速度（0.0~1.2）
 
-// ========== 与原库一致的基本常量（若要热调可改成 uniform） ==========
-const int   MAXN          = 10;
-const float U_DISTORTION  = 0.8;   // 扭曲强度（域扭曲1）
-const float U_SWIRL       = 0.35;  // 基础角速度系数（供 CORE_SPIN 使用）
+        // ========== 与原库一致的基本常量（若要热调可改成 uniform） ==========
+        const int   MAXN          = 10;
+        const float U_DISTORTION  = 0.8;   // 扭曲强度（域扭曲1）
+        const float U_SWIRL       = 0.35;  // 基础角速度系数（供 CORE_SPIN 使用）
 
-// ========== 柔和混色内核（“长程”一些，防硬边&掉黑） ==========
-const float KERNEL_TYPE = 0.6;   // 0=纯幂律, 1=纯高斯；这里 60% 高斯 + 40% 幂律
-const float KERNEL_P    = 3.3;   // 幂律指数（备选）
-const float KERNEL_BETA = 14.0;  // 高斯β：越小衰减越慢→更柔
-const float KERNEL_R0   = 0.03;  // 最小半径钳制：避免核在中心过尖
+        // ========== 柔和混色内核（“长程”一些，防硬边&掉黑） ==========
+        const float KERNEL_TYPE = 0.6;   // 0=纯幂律, 1=纯高斯；这里 60% 高斯 + 40% 幂律
+        const float KERNEL_P    = 3.3;   // 幂律指数（备选）
+        const float KERNEL_BETA = 14.0;  // 高斯β：越小衰减越慢→更柔
+        const float KERNEL_R0   = 0.03;  // 最小半径钳制：避免核在中心过尖
 
-// ====== 工具 ======
-mat2 rot(float a){ float s=sin(a), c=cos(a); return mat2(c,-s,s,c); }
+        // ====== 工具 ======
+        mat2 rot(float a){ float s=sin(a), c=cos(a); return mat2(c,-s,s,c); }
 
-// cover：方形域等比覆盖（裁切短边，避免非正方形拉伸）
-vec2 toSquareUV(vec2 uv, float ar) {
-  vec2 c = uv - 0.5;
-  if (ar > 1.0) c.x *= ar;
-  else          c.y *= (1.0 / max(ar, 1e-6));
-  return c + 0.5;
-}
+        // cover：方形域等比覆盖（裁切短边，避免非正方形拉伸）
+        vec2 toSquareUV(vec2 uv, float ar) {
+        vec2 c = uv - 0.5;
+        if (ar > 1.0) c.x *= ar;
+        else          c.y *= (1.0 / max(ar, 1e-6));
+        return c + 0.5;
+        }
 
-// 颜色表采样（固定 10 格）
-vec4 getColorFromTex(int i){
-  float u = (float(i) + 0.5) / 10.0;
-  return texture(u_colorsTex, vec2(u, 0.5));
-}
+        // 颜色表采样（固定 10 格）
+        vec4 getColorFromTex(int i){
+        float u = (float(i) + 0.5) / 10.0;
+        return texture(u_colorsTex, vec2(u, 0.5));
+        }
 
-// 彩点轨迹（与你原库一致的频率/相位）
-vec2 getPosition(int i, float t) {
-  float a = float(i) * 0.37;
-  float b = 0.6 + mod(float(i), 3.0) * 0.3;
-  float c = 0.8 + mod(float(i + 1), 4.0) * 0.25;
-  float x = sin(t * b + a);
-  float y = cos(t * c + a * 1.5);
-  return 0.5 + 0.5 * vec2(x, y);
-}
+        // 彩点轨迹（与你原库一致的频率/相位）
+        vec2 getPosition(int i, float t) {
+        float a = float(i) * 0.37;
+        float b = 0.6 + mod(float(i), 3.0) * 0.3;
+        float c = 0.8 + mod(float(i + 1), 4.0) * 0.25;
+        float x = sin(t * b + a);
+        float y = cos(t * c + a * 1.5);
+        return 0.5 + 0.5 * vec2(x, y);
+        }
 
-// 轻度抖动降带
-float hash12(vec2 p){
-  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-  p3 += dot(p3, p3.yzx + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
-}
+        // 轻度抖动降带
+        float hash12(vec2 p){
+        vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+        p3 += dot(p3, p3.yzx + 33.33);
+        return fract((p3.x + p3.y) * p3.z);
+        }
 
-// 轻量 Hopf 振子：给每个涡核不同相位/频率（核中心随时间游走）
-vec2 hopfCenter(float k, float t) {
-  float wx = 0.6 + 0.17*k;
-  float wy = 0.9 + 0.13*k;
-  float px = 1.2 + 0.31*k;
-  float py = 0.7 + 0.19*k;
-  return 0.5 + 0.32 * vec2(sin(wx*t + px), cos(wy*t + py));
-}
+        // 轻量 Hopf 振子：给每个涡核不同相位/频率（核中心随时间游走）
+        vec2 hopfCenter(float k, float t) {
+        float wx = 0.6 + 0.17*k;
+        float wy = 0.9 + 0.13*k;
+        float px = 1.2 + 0.31*k;
+        float py = 0.7 + 0.19*k;
+        return 0.5 + 0.32 * vec2(sin(wx*t + px), cos(wy*t + py));
+        }
 
-// 速度场：v = ∇⊥ψ + 残留角速度；把 center 作为参数传入
-vec2 swirlVelocity(vec2 pp, float t, float centerVal) {
-  int   N    = int(clamp(floor(CORE_COUNT + 0.001), 1.0, 6.0));
-  float sig2 = max(CORE_SIGMA, 0.05); sig2 *= sig2;
+        // 速度场：v = ∇⊥ψ + 残留角速度；把 center 作为参数传入
+        vec2 swirlVelocity(vec2 pp, float t, float centerVal) {
+        int   N    = int(clamp(floor(CORE_COUNT + 0.001), 1.0, 6.0));
+        float sig2 = max(CORE_SIGMA, 0.05); sig2 *= sig2;
 
-  // ∇ψ 累积（高斯核的梯度）
-  vec2 grad = vec2(0.0);
-  for (int i = 0; i < 6; ++i) {
-    if (i >= N) break;
-    vec2 ci = hopfCenter(float(i), t);
-    vec2 d  = pp - ci;
-    float r2 = dot(d, d);
-    float e  = exp(-r2 / sig2);
-    grad += (-2.0 / sig2) * d * e * CORE_STRENGTH;
-  }
+        // ∇ψ 累积（高斯核的梯度）
+        vec2 grad = vec2(0.0);
+        for (int i = 0; i < 6; ++i) {
+            if (i >= N) break;
+            vec2 ci = hopfCenter(float(i), t);
+            vec2 d  = pp - ci;
+            float r2 = dot(d, d);
+            float e  = exp(-r2 / sig2);
+            grad += (-2.0 / sig2) * d * e * CORE_STRENGTH;
+        }
 
-  // ∇⊥ψ（梯度旋转 90°）
-  vec2 v = vec2(grad.y, -grad.x);
+        // ∇⊥ψ（梯度旋转 90°）
+        vec2 v = vec2(grad.y, -grad.x);
 
-  // 残留角速度：避免全局停滞（保留一点原本的“随半径增加”）
-  float R   = length(pp - 0.5);
-  float ang = 3.0 * U_SWIRL * R;
-  v += CORE_SPIN * ang * vec2(-(pp.y - 0.5), (pp.x - 0.5));
+        // 残留角速度：避免全局停滞（保留一点原本的“随半径增加”）
+        float R   = length(pp - 0.5);
+        float ang = 3.0 * U_SWIRL * R;
+        v += CORE_SPIN * ang * vec2(-(pp.y - 0.5), (pp.x - 0.5));
 
-  // 中心衰减 + 总体增益
-  return v * (SWIRL_GAIN * centerVal);
-}
+        // 中心衰减 + 总体增益
+        return v * (SWIRL_GAIN * centerVal);
+        }
 
-// 简单 hash：输入 (i, t) → [0,1]
-float randCoeff(float i, float t) {
-  return fract(sin(i*37.0 + t*0.73) * 43758.5453);
-}
+        // 简单 hash：输入 (i, t) → [0,1]
+        float randCoeff(float i, float t) {
+        return fract(sin(i*37.0 + t*0.73) * 43758.5453);
+        }
 
-void main() {
-  // 方形域坐标 + 时间（与原库一致：0.5 倍缩放 + firstFrameOffset）
-  vec2 shape_uv = toSquareUV(v_uv, v_aspect);
-  const float firstFrameOffset = 41.5;
-  float t = 0.5 * (v_time + firstFrameOffset);
+        void main() {
+        // 方形域坐标 + 时间（与原库一致：0.5 倍缩放 + firstFrameOffset）
+        vec2 shape_uv = toSquareUV(v_uv, v_aspect);
+        const float firstFrameOffset = 41.5;
+        float t = 0.5 * (v_time + firstFrameOffset);
 
-  // 半径与中心（用于边缘衰减）
-  float radius = smoothstep(0.0, 1.0, length(shape_uv - 0.5));
-  float center = 1.0 - radius;
+        // 半径与中心（用于边缘衰减）
+        float radius = smoothstep(0.0, 1.0, length(shape_uv - 0.5));
+        float center = 1.0 - radius;
 
-  // ========== 域扭曲 1：原始扭曲（保持你原来的观感） ==========
-  float GAIN = 0.45 * U_DISTORTION;   // 总体强度，原来≈1.0，先降
-  float lfo  = 0.65 + 0.35*sin(0.11*t);     // 低频摆动（拍频）
-  float tw   = t + 0.23*sin(0.07*t) * cos(0.033*t); // 时间扭曲（缓慢相位弯折）
+        // ========== 域扭曲 1：原始扭曲（保持你原来的观感） ==========
+        float GAIN = 0.45 * U_DISTORTION;   // 总体强度，原来≈1.0，先降
+        float lfo  = 0.65 + 0.35*sin(0.11*t);     // 低频摆动（拍频）
+        float tw   = t + 0.23*sin(0.07*t) * cos(0.033*t); // 时间扭曲（缓慢相位弯折）
 
-  for (float i = 1.0; i <= 2.0; i++) {
-    // 位相仍然随 uv 平滑变换，但频率慢慢“呼吸”
-    float sy = smoothstep(0.0, 1.0, shape_uv.y);
-    float sx = smoothstep(0.0, 1.0, shape_uv.x);
+        for (float i = 1.0; i <= 2.0; i++) {
+            // 位相仍然随 uv 平滑变换，但频率慢慢“呼吸”
+            float sy = smoothstep(0.0, 1.0, shape_uv.y);
+            float sx = smoothstep(0.0, 1.0, shape_uv.x);
 
-    float k = (GAIN * center / i) * lfo;
+            float k = (GAIN * center / i) * lfo;
 
-    float px = sin(tw + i * (0.38 + 0.05*lfo) * sy);
-    float qx = cos(0.2*tw + i * (2.2 + 0.25*lfo) * sy);
+            float px = sin(tw + i * (0.38 + 0.05*lfo) * sy);
+            float qx = cos(0.2*tw + i * (2.2 + 0.25*lfo) * sy);
 
-    float py = cos(tw + i * (1.9 + 0.15*lfo) * sx);
+            float py = cos(tw + i * (1.9 + 0.15*lfo) * sx);
 
-    shape_uv.x += k * px * qx;
-    shape_uv.y += k * py;
-  }
+            shape_uv.x += k * px * qx;
+            shape_uv.y += k * py;
+        }
 
-  // ========== 域扭曲 2：复杂漩涡（哈密顿流场推进，RK2） ==========
-  vec2 p = shape_uv;
-  float steps = clamp(floor(SWIRL_STEPS + 0.001), 0.0, 4.0);
-  float dt    = SWIRL_DT;
+        // ========== 域扭曲 2：复杂漩涡（哈密顿流场推进，RK2） ==========
+        vec2 p = shape_uv;
+        float steps = clamp(floor(SWIRL_STEPS + 0.001), 0.0, 4.0);
+        float dt    = SWIRL_DT;
 
-  for (int s = 0; s < 4; ++s) {
-    if (float(s) >= steps) break;
-    vec2 k1 = swirlVelocity(p, t, center);
-    vec2 k2 = swirlVelocity(p + 0.5 * dt * k1, t + 0.5 * dt, center);
-    p += dt * k2;
-  }
+        for (int s = 0; s < 4; ++s) {
+            if (float(s) >= steps) break;
+            vec2 k1 = swirlVelocity(p, t, center);
+            vec2 k2 = swirlVelocity(p + 0.5 * dt * k1, t + 0.5 * dt, center);
+            p += dt * k2;
+        }
 
-  // 关键改动①：推进后坐标软夹回画布，避免 UV 出界→大片变黑
-  vec2 uvR = clamp(p, 0.0, 1.0);
+        // 关键改动①：推进后坐标软夹回画布，避免 UV 出界→大片变黑
+        vec2 uvR = clamp(p, 0.0, 1.0);
 
-  // ========== 颜色混合 ==========
-  vec3  color   = vec3(0.0);
-  float opacity = 0.0;
-  float total   = 0.0;
+        // ========== 颜色混合 ==========
+        vec3  color   = vec3(0.0);
+        float opacity = 0.0;
+        float total   = 0.0;
 
-  // 关键改动②：先算“调色板平均色”，作为背景权重使用，杜绝掉黑
-  vec3 avgColor = vec3(0.0);
-  float aSum = 0.0;
-  for (int i = 0; i < MAXN; ++i) {
-    vec4 ci0 = getColorFromTex(i);
-    if (ci0.a <= 0.0001) continue;
-    avgColor += ci0.rgb * ci0.a;
-    aSum += ci0.a;
-  }
-  avgColor /= max(aSum, 1e-6);
+        // 关键改动②：先算“调色板平均色”，作为背景权重使用，杜绝掉黑
+        vec3 avgColor = vec3(0.0);
+        float aSum = 0.0;
+        for (int i = 0; i < MAXN; ++i) {
+            vec4 ci0 = getColorFromTex(i);
+            if (ci0.a <= 0.0001) continue;
+            avgColor += ci0.rgb * ci0.a;
+            aSum += ci0.a;
+        }
+        avgColor /= max(aSum, 1e-6);
 
-  // 正式累加各彩点
-  for (int i = 0; i < MAXN; i++) {
-    vec4 ci = getColorFromTex(i);
-    if (ci.a <= 0.0001) continue;
+        // 正式累加各彩点
+        for (int i = 0; i < MAXN; i++) {
+            vec4 ci = getColorFromTex(i);
+            if (ci.a <= 0.0001) continue;
 
-    vec2 pos = getPosition(i, t);
-    vec3 cf  = ci.rgb * ci.a;
-    float of = ci.a;
+            vec2 pos = getPosition(i, t);
+            vec3 cf  = ci.rgb * ci.a;
+            float of = ci.a;
 
-    vec2  dvec = uvR - pos;
-    float dist = length(dvec);
+            vec2  dvec = uvR - pos;
+            float dist = length(dvec);
 
-    // 关键改动③：柔化核（高斯+幂律混合，带最小半径）
-    float d_clamped = max(dist, KERNEL_R0);
-    float w_pow   = 1.0 / (pow(d_clamped, max(KERNEL_P, 0.0001)) + 1e-3);
-    float w_gauss = exp(-KERNEL_BETA * (dist*dist));
-    float w       = mix(w_pow, w_gauss, clamp(KERNEL_TYPE, 0.0, 1.0));
+            // 关键改动③：柔化核（高斯+幂律混合，带最小半径）
+            float d_clamped = max(dist, KERNEL_R0);
+            float w_pow   = 1.0 / (pow(d_clamped, max(KERNEL_P, 0.0001)) + 1e-3);
+            float w_gauss = exp(-KERNEL_BETA * (dist*dist));
+            float w       = mix(w_pow, w_gauss, clamp(KERNEL_TYPE, 0.0, 1.0));
 
-    color   += cf * w;
-    opacity += of * w;
-    total   += w;
-  }
+            color   += cf * w;
+            opacity += of * w;
+            total   += w;
+        }
 
-  // 背景权重（建议 0.12~0.20）
-  float w_bg = 0.18;
-  color += avgColor * w_bg;
-  total += w_bg;
+        // 背景权重（建议 0.12~0.20）
+        float w_bg = 0.18;
+        color += avgColor * w_bg;
+        total += w_bg;
 
-  // 归一化
-  color   /= max(total, 1e-5);
-  opacity /= max(total, 1e-5);
+        // 归一化
+        color   /= max(total, 1e-5);
+        opacity /= max(total, 1e-5);
 
-  // 抖动，减少 banding
-  color += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
+        // 抖动，减少 banding
+        color += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
 
-  fragColor = vec4(color, opacity);
-}
-`;
+        fragColor = vec4(color, opacity);
+        }
+        `;
 
     // —— 编译/链接 —— //
     const compile = (src: string, type: number) => {
@@ -460,11 +460,14 @@ void main() {
         const vs = compile(VERT, gl.VERTEX_SHADER);
         const fs = compile(FRAG, gl.FRAGMENT_SHADER);
         prog = link(vs, fs);
+        gl.deleteShader(vs);
+        gl.deleteShader(fs);
       } catch (e) {
         console.error("[MeshGL] program build failed:", e);
         hardDestroy();
         return;
       }
+
       gl.useProgram(prog);
       const U = (n: string) => gl!.getUniformLocation(prog!, n);
       gl.uniform1f(U("SWIRL_GAIN"), 0.9);
@@ -501,8 +504,6 @@ void main() {
         ]);
         gl.bufferSubData(gl.ARRAY_BUFFER, 0, tv);
 
-        gl.bufferSubData(gl.ARRAY_BUFFER, 0, tv);
-
         gl.viewport(0, 0, canvas.width, canvas.height);
         gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT);
@@ -516,6 +517,18 @@ void main() {
 
     const onResize = () => fit();
     window.addEventListener("resize", onResize);
+
+    const onCtxLost = (e: Event) => {
+      e.preventDefault(); // 告诉浏览器我们自己恢复
+      alive = false;
+      cancelAnimationFrame(raf);
+    };
+    const onCtxRestored = () => {
+      hardDestroy();
+      start();
+    };
+    canvas.addEventListener("webglcontextlost", onCtxLost, { passive: false });
+    canvas.addEventListener("webglcontextrestored", onCtxRestored);
 
     // 避免 0×0：下一帧启动
     requestAnimationFrame(start);
