@@ -22,7 +22,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 
 let installed = false;
 let postGain: GainNode | null = null;
-let switching = false;
+// let switching = false;
 
 function db2lin(db: number) {
   return Math.pow(10, db / 20);
@@ -413,8 +413,8 @@ export const src = setup({
       selected: EH.whenDone(payloads.toggle_audio.evt())((i) => i || undefined),
     }),
     ensure_play: enqueueActions(async ({ context, enqueue, self }) => {
-      if (switching) return; // 防重入
-      switching = true;
+      //   if (switching) return; // 防重入
+      //   switching = true;
       const all: Music[] = context.flatList;
       if (all.length === 0) return;
 
@@ -463,7 +463,7 @@ export const src = setup({
 
           // 如果你希望频谱看“增益之后”的信号：
           // tapAfterBoost(context.tap!.analyser);
-          switching = false;
+          //   switching = false;
         },
         onend: () => {
           resetPostGain();
