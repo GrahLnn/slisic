@@ -471,7 +471,7 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
         name,
         folders: _,
         links: _,
-        entries: _,
+        entries,
         exclude: _,
     } = data.clone();
 
@@ -481,6 +481,13 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
     };
 
     let col_id = col.create_return_id().await.map_err(|e| e.to_string())?;
+    let add_fut = entries
+        .into_iter()
+        .map(|e| DbEntry::from(e.clone()))
+        .map(|p| Collection::relate_by_id(col_id.clone(), p.id, Rel::Collect));
+    future::try_join_all(add_fut)
+        .await
+        .map_err(|e| e.to_string())?;
     let app_for_task = app.clone();
     spawn(async move {
         let res = do_create(app_for_task.clone(), data, col_id).await;

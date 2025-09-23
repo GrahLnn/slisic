@@ -251,7 +251,7 @@ const TopBar = memo(function TopBarComponent() {
                   data-tauri-drag-region
                   className={cn(["flex justify-end"])}
                 >
-                  {/* <RightControls /> */}
+                  <RightControls />
                 </div>
               </>
             )}
