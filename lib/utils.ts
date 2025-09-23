@@ -5,6 +5,7 @@ import { platform } from "@tauri-apps/plugin-os";
 import { me } from "./matchable";
 
 export const os = me(platform());
+export const app_state = me(!import.meta.env.DEV ? "pub" : "dev");
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
