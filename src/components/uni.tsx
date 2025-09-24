@@ -54,7 +54,7 @@ export function BackButton({ onClick }: { onClick: () => void }) {
     <div
       className={cn([
         "flex items-center gap-2 cursor-pointer py-2 h-8",
-        "text-[#737373] dark:text-[#d4d4d4] dark:hover:text-[#e5e5e5] hover:text-[#262626] transition duration-300",
+        "text-[#525252] dark:text-[#d4d4d4] dark:hover:text-[#e5e5e5] hover:text-[#262626] transition duration-300",
       ])}
       onClick={onClick}
     >
@@ -638,7 +638,7 @@ export function PairCombobox({
         <CommandInput onValueChange={handleSearch} placeholder={placeholder} />
         <CommandList
           ref={parentRef}
-          className="hide-scrollbar"
+          className={cn(["hide-scrollbar"])}
           style={{ height, width: "100%", overflow: "auto" }}
           onMouseDown={() => setIsKeyboardNavActive(false)}
           onMouseMove={() => setIsKeyboardNavActive(false)}
@@ -763,7 +763,11 @@ export function PairCombobox({
       </PopoverTrigger>
 
       <PopoverContent
-        className="p-0 mx-2 bg-[#f7fafc] dark:bg-[#262626] backdrop-blur-md"
+        className={cn([
+          "p-0 mx-2",
+          "shadow-lg rounded-md",
+          "bg-popover/70 backdrop-filter backdrop-blur-[16px]",
+        ])}
         style={{ width }}
       >
         <VirtualizedCommand
