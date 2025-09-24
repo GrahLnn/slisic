@@ -171,8 +171,11 @@ function Entries() {
   const inProgressWeblist = hook.useAllWeblistReview();
 
   if (!slot) return;
+  console.log(slot.entries.length);
   const allEntry = new Set(
-    list.flatMap((f) => f.entries.filter((e) => !slot.entries.includes(e)))
+    list.flatMap((f) =>
+      f.entries.filter((e) => !slot.entries.map((e) => e.name).includes(e.name))
+    )
   );
   return (
     <div className="flex flex-col gap-2">
@@ -190,7 +193,7 @@ function Entries() {
 
             action.set_slot({
               ...slot,
-              entries: [...slot.entries, found], // 或 slot.entries.concat(found)
+              entries: [found, ...slot.entries], // 或 slot.entries.concat(found)
             });
           }}
           width="480px"
