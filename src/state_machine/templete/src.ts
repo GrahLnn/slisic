@@ -11,7 +11,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 
 export const EH = eventHandler<Context, Events>();
 export const src = setup({
-  actors: invoker.as_act(),
+  actors: { ...invoker.as_act(), ...machines.as_act() },
   types: {
     context: {} as Context,
     events: {} as Events,

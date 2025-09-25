@@ -15,9 +15,7 @@ import {
   UniqueEvts,
 } from "../kit";
 import { resultx } from "../state";
-import { createMachine } from "xstate";
-
-const sub_mc = createMachine({});
+import { sub_mc } from "./submachine/example";
 
 export const ss = defineSS(
   ns("resultx", resultx),
