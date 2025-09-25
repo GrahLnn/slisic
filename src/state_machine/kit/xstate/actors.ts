@@ -7,7 +7,7 @@ export type Decorated<K extends string, F extends AsyncFn> = ReturnType<
 > & {
   __src__: F; // 仅类型标记；运行时可写为 undefined
   send(): { [P in K]: Decorated<K, F> };
-  evt(): WithPrefix<K>;
+  evt: WithPrefix<K>;
   name: K;
 };
 
@@ -63,7 +63,7 @@ export function createActors<A extends Record<string, AsyncFn>>(defs: A) {
 
     decorated.send = () => ({ [k]: decorated } as any);
     (decorated as any).__src__ = defs[k];
-    decorated.evt = () => `xstate.done.actor.${k}` as const;
+    decorated.evt = `xstate.done.actor.${k}` as const;
     decorated.name = k;
 
     out[k] = decorated as any;

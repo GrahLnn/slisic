@@ -3,6 +3,7 @@ import { machine } from "./machine";
 import { useSelector } from "@xstate/react";
 import { me } from "@/lib/matchable";
 import { MainStateT, payloads, ss } from "./state";
+import { B } from "@/lib/comb";
 
 export const actor = createActor(machine);
 export const hook = {
@@ -18,7 +19,6 @@ export const move = {};
  * Passive Operation State
  */
 export const action = {
-  update_save_path: (path: string) =>
-    actor.send(payloads.new_save_path.load(path)),
+  update_save_path: B(payloads.new_save_path.load)(actor.send),
   run: () => actor.send(ss.mainx.Signal.run),
 };

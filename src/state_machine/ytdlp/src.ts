@@ -29,8 +29,8 @@ export const src = setup({
   },
   actions: {
     check_exists: assign({
-      path: eh.whenDone(invoker.check_exists.evt())((r) => r?.installed_path),
-      version: eh.whenDone(invoker.check_exists.evt())(
+      path: eh.whenDone(invoker.check_exists.evt)((r) => r?.installed_path),
+      version: eh.whenDone(invoker.check_exists.evt)(
         (r) => r?.installed_version
       ),
     }),
@@ -39,7 +39,7 @@ export const src = setup({
       version: udf,
     }),
     new_version: assign({
-      version: eh.whenDone(payloads.new_version.evt())(I),
+      version: eh.whenDone(payloads.new_version.evt)(I),
     }),
   },
   guards: {

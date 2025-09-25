@@ -54,7 +54,7 @@ const src = setup({
   },
   actions: {
     ok: assign({
-      result: h.whenDone(invoker.check_folder.evt())(Ok),
+      result: h.whenDone(invoker.check_folder.evt)(Ok),
     }),
   },
   guards: {},

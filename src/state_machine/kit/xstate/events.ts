@@ -64,7 +64,7 @@ type PayloadMapFromUnion<U extends PayloadEvent> = {
       payload: Extract<U, { type: K }>["output"]
     ) => Extract<U, { type: K }>;
     /** 仅获取事件名（便于在 switch / on: {...} 中复用） */
-    evt: () => K;
+    evt: K;
   };
 };
 type PayloadMap<E extends readonly PayloadEvent[]> = PayloadMapFromUnion<
@@ -75,7 +75,7 @@ type PayloadMap<E extends readonly PayloadEvent[]> = PayloadMapFromUnion<
 type MachineMapFromUnion<U extends MachineEvent<any>> = {
   [K in U["type"] & WithPrefix<string> as StripPrefix<K>]: {
     /** 完整事件名（含前缀） */
-    evt: () => K;
+    evt: K;
     /** 去前缀后的 id，便于在 XState 内部作为 actorId 使用 */
     id: StripPrefix<K>;
     /** 该分支对应的机器逻辑 L（精确拿回） */
@@ -202,13 +202,13 @@ export function collect(
         const t = (e as any).type as string;
         const key = t.startsWith(DONE_PREFIX) ? t.slice(DONE_PREFIX.length) : t;
         return {
-          [key]: { evt: () => t, id: key, machine: (e as any).machine },
+          [key]: { evt: t, id: key, machine: (e as any).machine },
         };
       }
       return {
         [(e as any).type]: {
           load: (p: any) => ({ type: (e as any).type, output: p }),
-          evt: () => (e as any).type,
+          evt: (e as any).type,
         },
       };
     })

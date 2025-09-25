@@ -26,13 +26,13 @@ export const machine = src.createMachine({
     add_review_actor: {
       actions: ["add_review_actor", raise(ss.mainx.Signal.review_check)],
     },
-    [sub_machine.review.evt()]: {
+    [sub_machine.review.evt]: {
       actions: ["over_review", raise(ss.mainx.Signal.review_check)],
     },
     add_folder_check: {
       actions: ["add_folder_check", raise(ss.mainx.Signal.review_check)],
     },
-    [sub_machine.check_folder.evt()]: {
+    [sub_machine.check_folder.evt]: {
       actions: [
         "over_folder_check",
         "update_coll",
@@ -42,7 +42,7 @@ export const machine = src.createMachine({
     update_web_entry: {
       actions: ["add_weblist_update", raise(ss.mainx.Signal.review_check)],
     },
-    [sub_machine.update_weblist.evt()]: {
+    [sub_machine.update_weblist.evt]: {
       actions: [
         "over_weblist_update",
         "update_coll",

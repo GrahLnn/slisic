@@ -254,7 +254,7 @@ export const src = setup({
     hide_center_tool: hideCenterTool,
     view_center_tool: viewCenterTool,
     set_msg: assign({
-      processMsg: EH.whenDone(payloads.processMsg.evt())(I),
+      processMsg: EH.whenDone(payloads.processMsg.evt)(I),
     }),
     clean_ctx: assign({
       collections: vec,
@@ -265,25 +265,24 @@ export const src = setup({
       selected: udf,
     }),
     update_colls: assign({
-      collections: EH.whenDone(invoker.load_collections.evt())(I),
+      collections: EH.whenDone(invoker.load_collections.evt)(I),
     }),
     new_slot: assign({
       slot: new_slot,
     }),
     edit_slot: assign({
-      slot: EH.whenDone(payloads.set_slot.evt())(I),
+      slot: EH.whenDone(payloads.set_slot.evt)(I),
     }),
     add_review_actor: assign({
-      reviews: EH.whenDone(payloads.add_review_actor.evt())(
-        (url, c, _evt, sp) =>
-          c.reviews.concat({
-            url,
-            actor: sp(sub_machine.review)({ url }),
-          })
+      reviews: EH.whenDone(payloads.add_review_actor.evt)((url, c, _evt, sp) =>
+        c.reviews.concat({
+          url,
+          actor: sp(sub_machine.review)({ url }),
+        })
       ),
     }),
     add_folder_check: assign({
-      folderReviews: EH.whenDone(payloads.add_folder_check.evt())(
+      folderReviews: EH.whenDone(payloads.add_folder_check.evt)(
         (entry, c, _evt, sp) =>
           c.folderReviews.concat({
             path: entry.path!,
@@ -292,7 +291,7 @@ export const src = setup({
       ),
     }),
     add_weblist_update: assign({
-      updateWeblistReviews: EH.whenDone(payloads.update_web_entry.evt())(
+      updateWeblistReviews: EH.whenDone(payloads.update_web_entry.evt)(
         (entry, c, _evt, sp) =>
           c.updateWeblistReviews.concat({
             url: entry.url!,
@@ -304,10 +303,10 @@ export const src = setup({
       ),
     }),
     over_review: assign({
-      reviews: EH.whenDone(sub_machine.review.evt())((i, c) =>
+      reviews: EH.whenDone(sub_machine.review.evt)((i, c) =>
         c.reviews.filter((r) => r.url !== i.url)
       ),
-      slot: EH.whenDone(sub_machine.review.evt())((i, c) => {
+      slot: EH.whenDone(sub_machine.review.evt)((i, c) => {
         if (!c.slot) return;
         return {
           ...c.slot,
@@ -342,13 +341,13 @@ export const src = setup({
       }),
     }),
     over_folder_check: assign({
-      folderReviews: EH.whenDone(sub_machine.check_folder.evt())(({ r }, c) =>
+      folderReviews: EH.whenDone(sub_machine.check_folder.evt)(({ r }, c) =>
         r.match({
           Ok: (g) => c.folderReviews.filter((r) => r.path !== g.path),
           Err: K(c.folderReviews),
         })
       ),
-      slot: EH.whenDone(sub_machine.check_folder.evt())(({ r }, c) => {
+      slot: EH.whenDone(sub_machine.check_folder.evt)(({ r }, c) => {
         if (!c.slot || r.isErr()) return c.slot;
         const entry = r.unwrap();
         return {
@@ -358,7 +357,7 @@ export const src = setup({
           ),
         };
       }),
-      selected: EH.whenDone(sub_machine.check_folder.evt())(({ r }, c) => {
+      selected: EH.whenDone(sub_machine.check_folder.evt)(({ r }, c) => {
         if (!c.selected || r.isErr()) return c.selected;
         const entry = r.unwrap();
         return {
@@ -370,7 +369,7 @@ export const src = setup({
       }),
     }),
     over_weblist_update: assign({
-      updateWeblistReviews: EH.whenDone(sub_machine.update_weblist.evt())(
+      updateWeblistReviews: EH.whenDone(sub_machine.update_weblist.evt)(
         ({ r }, c) =>
           r.match({
             Ok: (entry) => {
@@ -379,7 +378,7 @@ export const src = setup({
             Err: K(c.updateWeblistReviews),
           })
       ),
-      slot: EH.whenDone(sub_machine.update_weblist.evt())(({ r }, c) => {
+      slot: EH.whenDone(sub_machine.update_weblist.evt)(({ r }, c) => {
         if (!c.slot || r.isErr()) return c.slot;
         const entry = r.unwrap();
         return {
@@ -389,7 +388,7 @@ export const src = setup({
           ),
         };
       }),
-      selected: EH.whenDone(sub_machine.update_weblist.evt())(({ r }, c) => {
+      selected: EH.whenDone(sub_machine.update_weblist.evt)(({ r }, c) => {
         if (!c.selected || r.isErr()) return c.selected;
         const entry = r.unwrap();
         return {
@@ -401,16 +400,16 @@ export const src = setup({
       }),
     }),
     update_single: assign({
-      collections: EH.whenDone(payloads.update_single.evt())(I),
+      collections: EH.whenDone(payloads.update_single.evt)(I),
       processMsg: udf,
     }),
     ensure_list: assign({
-      flatList: EH.whenDone(payloads.toggle_audio.evt())((i) =>
+      flatList: EH.whenDone(payloads.toggle_audio.evt)((i) =>
         i!.entries
           .flatMap((f) => f.musics)
           .filter((m) => !i?.exclude.map((e) => e.title).includes(m.title))
       ),
-      selected: EH.whenDone(payloads.toggle_audio.evt())((i) => i || undefined),
+      selected: EH.whenDone(payloads.toggle_audio.evt)((i) => i || undefined),
     }),
     ensure_play: enqueueActions(async ({ context, enqueue, self }) => {
       //   if (switching) return; // 防重入
@@ -497,7 +496,7 @@ export const src = setup({
     }),
     play_audio: ({ context }) => context.audio?.play(),
     delete: assign({
-      collections: EH.whenDone(payloads.delete.evt())((p, c) => {
+      collections: EH.whenDone(payloads.delete.evt)((p, c) => {
         crab.delete(p.name);
         return c.collections.filter((f) => f.name !== p.name);
       }),
@@ -551,12 +550,12 @@ export const src = setup({
         ),
     }),
     not_exist: assign({
-      flatList: EH.whenDone(payloads.not_exist.evt())((i, c) => {
+      flatList: EH.whenDone(payloads.not_exist.evt)((i, c) => {
         return c.flatList.map((f) =>
           f.path === i.path ? { ...f, downloaded_ok: false } : f
         );
       }),
-      selected: EH.whenDone(payloads.not_exist.evt())((i, c) => {
+      selected: EH.whenDone(payloads.not_exist.evt)((i, c) => {
         const s = c.selected;
         if (!s) return;
         return {
@@ -570,13 +569,13 @@ export const src = setup({
         };
       }),
     }),
-    clean_not_exist: EH.take(payloads.not_exist.evt())(crab.deleteMusic),
+    clean_not_exist: EH.take(payloads.not_exist.evt)(crab.deleteMusic),
     unstar: assign({
-      flatList: EH.whenDone(payloads.unstar.evt())((i, c) => {
+      flatList: EH.whenDone(payloads.unstar.evt)((i, c) => {
         crab.unstar(c.selected!, i);
         return c.flatList.filter((f) => f.path !== i.path);
       }),
-      selected: EH.whenDone(payloads.unstar.evt())((i, c) => {
+      selected: EH.whenDone(payloads.unstar.evt)((i, c) => {
         const s = c.selected;
         if (!s) return;
         return {
@@ -586,14 +585,14 @@ export const src = setup({
       }),
     }),
     up: assign({
-      flatList: EH.whenDone(payloads.up.evt())((p, c) =>
+      flatList: EH.whenDone(payloads.up.evt)((p, c) =>
         c.flatList.map((i) =>
           i.path === p.path
             ? { ...i, user_boost: incBoost(i.user_boost, 0.1, 0.9) }
             : i
         )
       ),
-      selected: EH.whenDone(payloads.up.evt())((i, c) => {
+      selected: EH.whenDone(payloads.up.evt)((i, c) => {
         const s = c.selected;
         if (!s) return;
         return {
@@ -611,7 +610,7 @@ export const src = setup({
       nowJudge: K("Up"),
     }),
     down: assign({
-      flatList: EH.whenDone(payloads.down.evt())((p, c) =>
+      flatList: EH.whenDone(payloads.down.evt)((p, c) =>
         c.flatList.map((i) =>
           i.path === p.path
             ? {
@@ -622,7 +621,7 @@ export const src = setup({
             : i
         )
       ),
-      selected: EH.whenDone(payloads.down.evt())((i, c) => {
+      selected: EH.whenDone(payloads.down.evt)((i, c) => {
         const s = c.selected;
         if (!s) return;
         return {
@@ -644,14 +643,14 @@ export const src = setup({
       nowJudge: K("Down"),
     }),
     cancle_up: assign({
-      flatList: EH.whenDone(payloads.cancle_up.evt())((p, c) =>
+      flatList: EH.whenDone(payloads.cancle_up.evt)((p, c) =>
         c.flatList.map((i) =>
           i.path === p.path
             ? { ...i, user_boost: i.user_boost > 0 ? i.user_boost - 0.1 : 0.0 }
             : i
         )
       ),
-      selected: EH.whenDone(payloads.cancle_up.evt())((i, c) => {
+      selected: EH.whenDone(payloads.cancle_up.evt)((i, c) => {
         const s = c.selected;
         if (!s) return;
         return {
@@ -672,12 +671,12 @@ export const src = setup({
       nowJudge: udf,
     }),
     cancle_down: assign({
-      flatList: EH.whenDone(payloads.cancle_down.evt())((p, c) =>
+      flatList: EH.whenDone(payloads.cancle_down.evt)((p, c) =>
         c.flatList.map((i) =>
           i.path === p.path ? { ...i, fatigue: i.fatigue - 0.1 } : i
         )
       ),
-      selected: EH.whenDone(payloads.cancle_down.evt())((i, c) => {
+      selected: EH.whenDone(payloads.cancle_down.evt)((i, c) => {
         const s = c.selected;
         if (!s) return;
         return {
@@ -693,11 +692,11 @@ export const src = setup({
       nowJudge: udf,
     }),
     into_slot: assign({
-      slot: EH.whenDone(payloads.edit_playlist.evt())(into_slot),
-      selected: EH.whenDone(payloads.edit_playlist.evt())(I),
+      slot: EH.whenDone(payloads.edit_playlist.evt)(into_slot),
+      selected: EH.whenDone(payloads.edit_playlist.evt)(I),
     }),
     cancel_review: assign({
-      reviews: EH.whenDone(payloads.cancel_review.evt())((url, c) => {
+      reviews: EH.whenDone(payloads.cancel_review.evt)((url, c) => {
         const r = c.reviews.find((r) => r.url === url);
         r?.actor.send?.(muss.mainx.Signal.cancle); // 子机里处理 CANCEL，自己退出
         return c.reviews; // 交给 over_review 在 done 时移除

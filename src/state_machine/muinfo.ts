@@ -54,10 +54,10 @@ const src = setup({
   },
   actions: {
     add_url: assign({
-      url: h.whenDone(payloads.probe.evt())(I),
+      url: h.whenDone(payloads.probe.evt)(I),
     }),
     ok: assign({
-      result: h.whenDone(invoker.look_media.evt())(Ok),
+      result: h.whenDone(invoker.look_media.evt)(Ok),
     }),
   },
   guards: {},
