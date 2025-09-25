@@ -28,10 +28,10 @@ export const src = setup({
   },
   actions: {
     init: assign({
-      default_save_path: EH.whenDone(invoker.resolve_save_path.evt())(I),
+      default_save_path: EH.whenDone(invoker.resolve_save_path.evt)(I),
     }),
     update_save_path: assign({
-      new_path: EH.whenDone(payloads.new_save_path.evt())(I),
+      new_path: EH.whenDone(payloads.new_save_path.evt)(I),
     }),
     reset_new_path: assign({
       new_path: udf,

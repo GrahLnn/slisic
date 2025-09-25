@@ -11,4 +11,3 @@ actor.subscribe((snapshot) => {
 });
 export * from "./api";
 export * from "./events";
-export { actor } from "./api";

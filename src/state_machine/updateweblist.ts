@@ -57,7 +57,7 @@ const src = setup({
   },
   actions: {
     ok: assign({
-      result: h.whenDone(invoker.update_weblist.evt())(Ok),
+      result: h.whenDone(invoker.update_weblist.evt)(Ok),
     }),
   },
   guards: {},

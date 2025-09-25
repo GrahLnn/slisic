@@ -1,9 +1,9 @@
-import { Actor, createActor } from "xstate";
+import { createActor } from "xstate";
 import { machine } from "./machine";
 import { useSelector } from "@xstate/react";
 import { me } from "@/lib/matchable";
 import { MainStateT, payloads, ss } from "./events";
-import { CollectMission, Entry, Music, Playlist } from "@/src/cmd/commands";
+import { B } from "@/lib/comb";
 
 export const actor = createActor(machine);
 export const hook = {
@@ -30,12 +30,6 @@ export const hook = {
     useSelector(actor, (s) => s.context.updateWeblistReviews.map((r) => r.url)),
   useMsg: () => useSelector(actor, (s) => s.context.processMsg),
 };
-/**
- * Active Operation State
- */
-export const move = {
-  // create: () => actor.send(ss.mainx.Signal.to_create),
-};
 
 /**
  * Passive Operation State
@@ -43,24 +37,21 @@ export const move = {
 export const action = {
   run: () => actor.send(ss.mainx.Signal.run),
   back: () => actor.send(ss.mainx.Signal.back),
-  set_slot: (slot: CollectMission) => actor.send(payloads.set_slot.load(slot)),
+
+  set_slot: B(payloads.set_slot.load)(actor.send),
   add_new: () => actor.send(ss.mainx.Signal.to_create),
-  add_review: (url: string) => actor.send(payloads.add_review_actor.load(url)),
-  add_folder_check: (entry: Entry) =>
-    actor.send(payloads.add_folder_check.load(entry)),
-  add_weblist_update: (entry: Entry) =>
-    actor.send(payloads.update_web_entry.load(entry)),
+  add_review: B(payloads.add_review_actor.load)(actor.send),
+  add_folder_check: B(payloads.add_folder_check.load)(actor.send),
+  add_weblist_update: B(payloads.update_web_entry.load)(actor.send),
   save: () => actor.send(ss.resultx.Signal.done),
-  play: (playlist: Playlist) =>
-    actor.send(payloads.toggle_audio.load(playlist)),
-  edit: (playlist: Playlist) =>
-    actor.send(payloads.edit_playlist.load(playlist)),
-  unstar: (music: Music) => actor.send(payloads.unstar.load(music)),
-  up: (music: Music) => actor.send(payloads.up.load(music)),
-  down: (music: Music) => actor.send(payloads.down.load(music)),
-  cancle_up: (music: Music) => actor.send(payloads.cancle_up.load(music)),
-  cancle_down: (music: Music) => actor.send(payloads.cancle_down.load(music)),
-  delete: (playlist: Playlist) => actor.send(payloads.delete.load(playlist)),
-  cancle_review: (url: string) => actor.send(payloads.cancel_review.load(url)),
+  play: B(payloads.toggle_audio.load)(actor.send),
+  edit: B(payloads.edit_playlist.load)(actor.send),
+  unstar: B(payloads.unstar.load)(actor.send),
+  up: B(payloads.up.load)(actor.send),
+  down: B(payloads.down.load)(actor.send),
+  cancle_up: B(payloads.cancle_up.load)(actor.send),
+  cancle_down: B(payloads.cancle_down.load)(actor.send),
+  delete: B(payloads.delete.load)(actor.send),
+  cancle_review: B(payloads.cancel_review.load)(actor.send),
   next: () => actor.send(ss.playx.Signal.next),
 };
