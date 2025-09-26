@@ -17,14 +17,17 @@ export type ToSignal<T extends readonly string[]> = `to_${T[number]}`;
 
 /** 仅基于状态自动生成的 transfer 键集合（运行时可扩，类型上保持保守） */
 export type TransferBase<TState extends readonly string[]> = {
-  [K in Lowercase<ToSignal<TState>>]: { target: TState[number] };
+  [K in Lowercase<ToSignal<TState>>]: {
+    // 由键 K 反推目标状态字面量
+    target: K extends `to_${infer S}` ? S & TState[number] : never;
+  };
 };
 
 export type TransferMap<TState extends readonly string[]> =
   TransferBase<TState> & {
-    pick: <K extends keyof TransferBase<TState>>(
+    pick<K extends keyof TransferBase<TState>>(
       ...keys: K[]
-    ) => Pick<TransferBase<TState>, K>;
+    ): Pick<TransferBase<TState>, K>;
   };
 
 export type StateSignalResult<

@@ -91,12 +91,12 @@ type MachineMap<E extends readonly MachineEvent<any>[]> = MachineMapFromUnion<
  * ---------------------------------------------------------------------------*/
 
 /** 构造一个 payload 事件“原型”（随后交给 collect 形成工厂） */
-export function event<T>() {
-  return <const N extends string>(name: N) =>
-    ({ __kind: "payload", type: name, output: undefined as T } as const);
-}
+// export function event<T>() {
+//   return <const N extends string>(name: N) =>
+//     ({ __kind: "payload", type: name, output: undefined as T } as const);
+// }
 
-export function events<T>() {
+export function event<T>() {
   return <const N extends readonly string[]>(...names: N) =>
     names.map((name) => ({
       __kind: "payload" as const,

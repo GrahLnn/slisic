@@ -2,14 +2,14 @@ import { createActor } from "xstate";
 import { machine } from "./machine";
 import { useSelector } from "@xstate/react";
 import { me } from "@/lib/matchable";
-import { MainStateT, ss } from "./events";
+import { MainStateT, payloads, sig } from "./events";
 
 export const actor = createActor(machine);
 export const hook = {
-  useState: () => useSelector(actor, (state) => me(state.value as MainStateT)),
-  useContext: () => useSelector(actor, (state) => state.context),
+  useState: () => useSelector(actor, (shot) => me(shot.value as MainStateT)),
+  useContext: () => useSelector(actor, (shot) => shot.context),
 };
 
 export const action = {
-  run: () => actor.send(ss.mainx.Signal.run),
+  run: () => actor.send(sig.mainx.run),
 };

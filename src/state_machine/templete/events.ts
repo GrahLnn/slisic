@@ -7,7 +7,6 @@ import {
   machine,
   ActorInput,
   createActors,
-  events,
   InvokeEvt,
   MachineEvt,
   PayloadEvt,

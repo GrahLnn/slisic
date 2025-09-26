@@ -42,35 +42,47 @@ export function sst<
   const Signal = {} as SignalMap<ToSignal<TState> | TExtra[number]>;
   const transferBase = {} as TransferBase<TState>;
 
-  // 1) 根据状态生成 to_xxx
+  // 1) 生成 to_* 信号与 transferBase
   for (const s of states) {
     const type = `to_${s}` as ToSignal<TState>;
-    const key = type.toLowerCase() as Lowercase<ToSignal<TState>>;
+    const key = type.toLowerCase() as Lowercase<typeof type>;
     (Signal as any)[key] = createSignal(type);
     (transferBase as any)[key] = { target: s };
   }
 
-  // 2) 额外信号
+  // 2) 额外信号仅进 Signal（不写入 transferBase）
   if (extra_signals) {
     for (const s of extra_signals) {
       const type = s as TExtra[number];
       const key = type.toLowerCase() as Lowercase<typeof type>;
       (Signal as any)[key] = createSignal(type);
-      (transferBase as any)[key] = { target: s };
     }
   }
 
-  // 3) pick
-  function pick<K extends keyof typeof transferBase>(
-    ...keys: K[]
-  ): Pick<typeof transferBase, K> {
+  // 3) pick / one
+  function pick<K extends keyof typeof transferBase>(...keys: K[]) {
     return Object.fromEntries(keys.map((k) => [k, transferBase[k]])) as Pick<
       typeof transferBase,
       K
     >;
   }
+  function one<K extends keyof typeof transferBase>(key: K) {
+    return { [key]: transferBase[key] } as Pick<typeof transferBase, K>;
+  }
 
-  const transfer = Object.assign(transferBase, { pick }) as TransferMap<TState>;
+  // 4) Proxy：属性访问返回映射对象；__raw 返回裸表；其余透传
+  const transfer = new Proxy({} as any, {
+    get(_t, p: PropertyKey) {
+      if (p === "pick") return pick;
+      if (p === "one") return one;
+      if (p === "__raw") return transferBase;
+      if (typeof p === "string" && p in transferBase) {
+        const k = p as keyof typeof transferBase;
+        return { [k]: transferBase[k] }; // 关键：返回 Pick 形状
+      }
+      return (transferBase as any)[p];
+    },
+  }) as TransferMap<TState>;
 
   return { State, Signal, transfer };
 }
