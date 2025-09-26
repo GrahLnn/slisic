@@ -9,14 +9,7 @@ export const hook = {
   useState: () => useSelector(actor, (state) => me(state.value as MainStateT)),
   useContext: () => useSelector(actor, (state) => state.context),
 };
-/**
- * Active Operation State
- */
-export const move = {};
 
-/**
- * Passive Operation State
- */
 export const action = {
   run: () => actor.send(ss.mainx.Signal.run),
 };

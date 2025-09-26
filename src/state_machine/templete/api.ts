@@ -11,7 +11,4 @@ export const hook = {
   useContext: () => useSelector(actor, (state) => state.context),
 };
 
-/**
- * Passive Operation State
- */
 export const action = {};

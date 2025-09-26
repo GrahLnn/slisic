@@ -9,6 +9,11 @@ import {
   machine,
   createActors,
   ActorInput,
+  InvokeEvt,
+  UniqueEvts,
+  PayloadEvt,
+  SignalEvt,
+  MachineEvt,
 } from "../kit";
 import { resultx } from "../state";
 import { Err, Ok, Result } from "@/lib/result";
@@ -69,3 +74,9 @@ export const machines = collect();
 
 export type MainStateT = keyof typeof ss.mainx.State;
 export type ResultStateT = keyof typeof resultx.State;
+export type Events = UniqueEvts<
+  | SignalEvt<typeof ss>
+  | InvokeEvt<typeof invoker>
+  | PayloadEvt<typeof payloads.infer>
+  | MachineEvt<typeof machines.infer>
+>;
