@@ -14,12 +14,14 @@ import {
   machine,
   ActorInput,
   createActors,
-  events,
   InvokeEvt,
   MachineEvt,
   PayloadEvt,
   SignalEvt,
   UniqueEvts,
+  allSignal,
+  allState,
+  allTransfer,
 } from "../kit";
 import { resultx } from "../state";
 import { ActorDone, machine as muinfoMachine } from "../muinfo";
@@ -48,16 +50,18 @@ export const ss = defineSS(
   ),
   ns("playx", sst(["stop", "playing", "next"], ["next", "play"]))
 );
-
+export const state = allState(ss);
+export const sig = allSignal(ss);
+export const transfer = allTransfer(ss);
 export const payloads = collect(
   event<CollectMission>()("set_slot"),
-  events<string>()("add_review_actor", "cancel_review"),
+  event<string>()("add_review_actor", "cancel_review"),
   event<Playlist[]>()("update_single"),
   event<Playlist | null>()("toggle_audio"),
-  events<Playlist>()("edit_playlist", "delete"),
+  event<Playlist>()("edit_playlist", "delete"),
   event<Frame>()("update_audio_frame"),
-  events<Entry>()("add_folder_check", "update_web_entry"),
-  events<Music>()(
+  event<Entry>()("add_folder_check", "update_web_entry"),
+  event<Music>()(
     "unstar",
     "up",
     "down",

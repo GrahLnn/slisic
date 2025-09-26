@@ -1,39 +1,30 @@
 import { useSelector } from "@xstate/react";
 import { createActor, createMachine, fromCallback } from "xstate";
-import { ss } from "./kit";
+import { defineSS, ns, sst, allState, allSignal, allTransfer } from "./kit";
 
-const { State, Signal } = ss({
-  states: ["focused", "blurred"],
-  signals: ["FOCUS", "BLUR"],
-});
+const ss = defineSS(ns("x", sst(["focused", "blurred"])));
+export const state = allState(ss);
+export const sig = allSignal(ss);
+export const transfer = allTransfer(ss);
 
-export const windowFocusMachine = createMachine({
-  id: "windowFocus",
-  initial: State.focused,
+export const mac = createMachine({
+  initial: state.x.focused,
   states: {
-    [State.focused]: {
-      on: {
-        [Signal.blur.into()]: {
-          target: State.blurred,
-        },
-      },
+    [state.x.focused]: {
+      on: transfer.x.to_blurred,
     },
-    [State.blurred]: {
-      on: {
-        [Signal.focus.into()]: {
-          target: State.focused,
-        },
-      },
+    [state.x.blurred]: {
+      on: transfer.x.to_focused,
     },
   },
 
   invoke: {
     src: fromCallback(({ sendBack }) => {
       function handleFocus() {
-        sendBack(Signal.focus);
+        sendBack(sig.x.to_focused);
       }
       function handleBlur() {
-        sendBack(Signal.blur);
+        sendBack(sig.x.to_blurred);
       }
 
       window.addEventListener("focus", handleFocus);
@@ -47,11 +38,9 @@ export const windowFocusMachine = createMachine({
   },
 });
 
-const windowFocusActor = createActor(windowFocusMachine);
-windowFocusActor.start();
+const actor = createActor(mac);
+actor.start();
 
 export function useIsWindowFocus(): boolean {
-  return useSelector(windowFocusActor, (machineState) =>
-    machineState.matches(State.focused)
-  );
+  return useSelector(actor, (shot) => shot.matches(state.x.focused));
 }
