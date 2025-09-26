@@ -7,8 +7,8 @@ import { B } from "@/lib/comb";
 
 export const actor = createActor(machine);
 export const hook = {
-  useState: () => useSelector(actor, (state) => me(state.value as MainStateT)),
-  useContext: () => useSelector(actor, (state) => state.context),
+  useState: () => useSelector(actor, (shot) => me(shot.value as MainStateT)),
+  useContext: () => useSelector(actor, (shot) => shot.context),
 };
 
 export const action = {};

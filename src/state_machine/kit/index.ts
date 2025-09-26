@@ -49,4 +49,4 @@ export {
 } from "./xstate/invoke";
 
 // compose
-export { ns, defineSS } from "./compose/ns";
+export { ns, defineSS, allState, allSignal, allTransfer } from "./compose/ns";

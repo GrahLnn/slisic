@@ -14,6 +14,9 @@ import {
   PayloadEvt,
   SignalEvt,
   MachineEvt,
+  allSignal,
+  allState,
+  allTransfer,
 } from "../kit";
 import { resultx } from "../state";
 import { Err, Ok, Result } from "@/lib/result";
@@ -26,6 +29,9 @@ export const ss = defineSS(
   ns("resultx", resultx),
   ns("mainx", sst(["idle", "check"], ["run", "unmount"]))
 );
+export const state = allState(ss);
+export const sig = allSignal(ss);
+export const transfer = allTransfer(ss);
 export const invoker = createActors({
   async checkUpdate() {
     console.log("check update");

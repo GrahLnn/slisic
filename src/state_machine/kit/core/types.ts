@@ -5,11 +5,12 @@ import { MachineEvent, PayloadEvent } from "../xstate/events";
 /** 状态名映射：{ idle: "idle", ... } */
 export type StateMap<T extends readonly string[]> = { [K in T[number]]: K };
 
+export type Signal<T extends string> = { type: T; evt: T };
+
 /** 信号名映射（小写键）：{ to_idle: {type:"to_idle", into(): "to_idle"} } */
-export type SignalMap<T extends string> = Record<
-  Lowercase<T>,
-  { type: T; into(): T }
->;
+export type SignalMap<T extends string> = {
+  [K in T as Lowercase<K>]: Signal<K>;
+};
 
 /** 自动生成的跳转信号名： "to_idle" | "to_loading" ... */
 export type ToSignal<T extends readonly string[]> = `to_${T[number]}`;

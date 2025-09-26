@@ -22,8 +22,7 @@ export function ss<
   const Signal = {} as SignalMap<TSignal[number]>;
   for (const sig of cfg.signals) {
     const key = sig.toLowerCase() as Lowercase<TSignal[number]>;
-    // 这里的 sig 仍是 TSignal[number] 的字面量联合，不会被报错信息污染
-    Signal[key] = createSignal(sig);
+    (Signal as any)[key] = createSignal(sig);
   }
 
   const transfer = { pick: () => ({}) } as unknown as TransferMap<TState>;
@@ -47,7 +46,7 @@ export function sst<
   for (const s of states) {
     const type = `to_${s}` as ToSignal<TState>;
     const key = type.toLowerCase() as Lowercase<ToSignal<TState>>;
-    Signal[key] = createSignal(type);
+    (Signal as any)[key] = createSignal(type);
     (transferBase as any)[key] = { target: s };
   }
 
@@ -56,7 +55,7 @@ export function sst<
     for (const s of extra_signals) {
       const type = s as TExtra[number];
       const key = type.toLowerCase() as Lowercase<typeof type>;
-      Signal[key] = createSignal(type);
+      (Signal as any)[key] = createSignal(type);
       (transferBase as any)[key] = { target: s };
     }
   }

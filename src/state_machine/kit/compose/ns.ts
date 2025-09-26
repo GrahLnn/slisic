@@ -66,5 +66,35 @@ export function defineSS<const T extends readonly any[]>(
   return Object.assign({}, ...sss) as IntersectTuple<T>;
 }
 
+/* ---------- 提取整体 State / Signal 视图 ---------- */
+type AllState<T> = {
+  readonly [K in keyof T]: T[K] extends { State: infer S } ? S : never;
+};
+type AllSignal<T> = {
+  readonly [K in keyof T]: T[K] extends { Signal: infer G } ? G : never;
+};
+
+type AllTransfer<T> = {
+  readonly [K in keyof T]: T[K] extends { transfer: infer T } ? T : never;
+};
+
+export function allState<T extends Record<string, SstShape>>(ss: T) {
+  const out: any = {};
+  for (const k in ss) out[k] = (ss as any)[k].State;
+  return out as AllState<T>;
+}
+
+export function allSignal<T extends Record<string, SstShape>>(ss: T) {
+  const out: any = {};
+  for (const k in ss) out[k] = (ss as any)[k].Signal;
+  return out as AllSignal<T>;
+}
+
+export function allTransfer<T extends Record<string, SstShape>>(ss: T) {
+  const out: any = {};
+  for (const k in ss) out[k] = (ss as any)[k].transfer;
+  return out as AllTransfer<T>;
+}
+
 /* 少量类型导出（可按需） */
 export type { SstShape, DecorateUnique, IntersectTuple };
