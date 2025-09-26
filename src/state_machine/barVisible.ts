@@ -1,48 +1,39 @@
 import { useSelector } from "@xstate/react";
 import { createActor, createMachine } from "xstate";
-import { ss } from "./kit";
+import { defineSS, ns, sst, allState, allSignal, allTransfer } from "./kit";
 
-const { State, Signal } = ss({
-  states: ["visible", "hidden"],
-  signals: ["VISIBLE", "HIDE"],
-});
+const ss = defineSS(ns("main", sst(["visible", "hidden"])));
+export const state = allState(ss);
+export const sig = allSignal(ss);
+export const transfer = allTransfer(ss);
 
-export const visibilityMachine = createMachine({
-  id: "visibility",
-  initial: State.visible,
+export const mac = createMachine({
+  initial: state.main.visible,
   states: {
-    [State.visible]: {
-      on: {
-        [Signal.hide.into()]: {
-          target: State.hidden,
-        },
-      },
+    [state.main.visible]: {
+      on: transfer.main.to_hidden,
     },
-    [State.hidden]: {
-      on: {
-        [Signal.visible.into()]: {
-          target: State.visible,
-        },
-      },
+    [state.main.hidden]: {
+      on: transfer.main.to_visible,
     },
   },
 });
 
-const visibilityActor = createActor(visibilityMachine);
+const actor = createActor(mac);
 
-visibilityActor.start();
+actor.start();
 
 export function toggleVisibility(shouldVisible: boolean) {
   switch (shouldVisible) {
     case true:
-      visibilityActor.send(Signal.visible);
+      actor.send(sig.main.to_visible);
       break;
     case false:
-      visibilityActor.send(Signal.hide);
+      actor.send(sig.main.to_hidden);
       break;
   }
 }
 
 export function useIsBarVisible() {
-  return useSelector(visibilityActor, (state) => state.matches(State.visible));
+  return useSelector(actor, (shot) => shot.matches(state.main.visible));
 }

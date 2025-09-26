@@ -5,25 +5,29 @@ import { MachineEvent, PayloadEvent } from "../xstate/events";
 /** 状态名映射：{ idle: "idle", ... } */
 export type StateMap<T extends readonly string[]> = { [K in T[number]]: K };
 
+export type Signal<T extends string> = { type: T; evt: T };
+
 /** 信号名映射（小写键）：{ to_idle: {type:"to_idle", into(): "to_idle"} } */
-export type SignalMap<T extends string> = Record<
-  Lowercase<T>,
-  { type: T; into(): T }
->;
+export type SignalMap<T extends string> = {
+  [K in T as Lowercase<K>]: Signal<K>;
+};
 
 /** 自动生成的跳转信号名： "to_idle" | "to_loading" ... */
 export type ToSignal<T extends readonly string[]> = `to_${T[number]}`;
 
 /** 仅基于状态自动生成的 transfer 键集合（运行时可扩，类型上保持保守） */
 export type TransferBase<TState extends readonly string[]> = {
-  [K in Lowercase<ToSignal<TState>>]: { target: TState[number] };
+  [K in Lowercase<ToSignal<TState>>]: {
+    // 由键 K 反推目标状态字面量
+    target: K extends `to_${infer S}` ? S & TState[number] : never;
+  };
 };
 
 export type TransferMap<TState extends readonly string[]> =
   TransferBase<TState> & {
-    pick: <K extends keyof TransferBase<TState>>(
+    pick<K extends keyof TransferBase<TState>>(
       ...keys: K[]
-    ) => Pick<TransferBase<TState>, K>;
+    ): Pick<TransferBase<TState>, K>;
   };
 
 export type StateSignalResult<

@@ -35,7 +35,6 @@ export {
 export {
   eventHandler,
   event,
-  events,
   collect,
   to_string,
   machine,
@@ -49,4 +48,4 @@ export {
 } from "./xstate/invoke";
 
 // compose
-export { ns, defineSS } from "./compose/ns";
+export { ns, defineSS, allState, allSignal, allTransfer } from "./compose/ns";
