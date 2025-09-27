@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+
 type Ok<T> = { ok: true; value: T };
 type Err<E> = { ok: false; error: E };
 type RawResult<T, E = Error> = Ok<T> | Err<E>;
@@ -39,6 +41,7 @@ export class Result<T, E = Error> {
       Ok: (value) => value,
       Err: (error) => {
         console.error("unwrap error:", error);
+        toast.error(`${error}`);
         throw new Error(`${error}`);
       },
     });

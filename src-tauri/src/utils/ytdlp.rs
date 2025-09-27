@@ -39,7 +39,6 @@ use uuid::Uuid;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
 const GH_API_LATEST: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 const GH_DL_BASE: &str = "https://xget.r2g2.org/gh/yt-dlp/yt-dlp/releases/latest/download";
 const GH_SUMS: &str =
