@@ -1,7 +1,8 @@
 import { type } from "arktype";
-import { K } from "./comb";
+import { call0, I, K } from "./comb";
 import { isEqual } from "lodash";
 
+type Nil = null | undefined;
 type ToRecordKey<T> = T extends boolean
   ? `${T}` // 把 true/false 变成 "true"/"false"
   : T extends string | number
@@ -26,7 +27,11 @@ type RequireDefault<T extends string | number | boolean, R> =
 
 type MatchableEnum<T extends string | number | boolean> = {
   __recognizer__: "enum";
-  value: T;
+  value: T | Nil;
+  value_or(fallback: T): T;
+  value_or<F>(fallback: F): T | F;
+  value_or_else(fallback: () => T): T;
+  value_or_else<F>(fallback: () => F): T | F;
   match<R>(handlers: RequireDefault<T, R>): R;
   is(v: T): v is T;
   not(v: T): v is T;
@@ -37,11 +42,17 @@ type MatchableEnum<T extends string | number | boolean> = {
 };
 
 function matchableEnum<T extends string | number | boolean>(
-  value: T
+  value: T | Nil
 ): MatchableEnum<T> {
   return {
     __recognizer__: "enum",
     value,
+    value_or(fallback: T): T {
+      return value ?? fallback;
+    },
+    value_or_else(fallback: () => T): T {
+      return value ?? fallback();
+    },
     match<R>(h: RequireDefault<T, R>): R {
       // 运行时：boolean 转成 "true"/"false"
       const k = (
@@ -53,10 +64,10 @@ function matchableEnum<T extends string | number | boolean>(
       ) as Handler<R>;
       return handler(value);
     },
-    is: (v: T): v is T => v === value,
-    not: (v: T): v is T => v !== value,
+    is: (v: T): v is T => value === v,
+    not: (v: T): v is T => value !== v,
     in(arr: Array<T>): boolean {
-      return arr.includes(value);
+      return value ? arr.includes(value) : false;
     },
     not_in(arr: Array<T>): boolean {
       return !this.in(arr);
@@ -89,7 +100,8 @@ type MatchableUnion<T extends Record<string, any>> = {
   [K in VariantTag<T>]: {
     __recognizer__: "union";
     tag: K;
-    value: Extract<T, Record<K, any>>[K];
+    value: Extract<T, Record<K, any>>[K] | Nil;
+
     match<R>(h: DefaultHandlers<T, R>): R;
     is<L extends VariantTag<T>>(
       l: L
@@ -161,6 +173,8 @@ function matchableUnion<T extends Record<string, any>>(
 const emptyMatchable = {
   __recognizer__: "empty",
   value: null,
+  value_or: I,
+  value_or_else: call0,
   match: K(null),
   is: K(false),
   not: K(false),
