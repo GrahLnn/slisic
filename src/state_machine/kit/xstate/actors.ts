@@ -1,5 +1,5 @@
 import { fromPromise } from "xstate";
-import { AsyncFn, Awaited, WithPrefix, AnyEvt } from "../core/types";
+import { AsyncFn, Awaited, WithPrefix, AnyEvt, Signal } from "../core/types";
 
 /* 装饰后的 actor 构造器类型 */
 export type Decorated<K extends string, F extends AsyncFn> = ReturnType<
@@ -78,4 +78,58 @@ export function createActors<A extends Record<string, AsyncFn>>(defs: A) {
   };
 
   return out;
+}
+
+export function createSender<A extends { send: (evt: any) => any }>(actor: A) {
+  // 机器事件联合与其 type 联合
+  type AppEvent = Parameters<A["send"]>[0];
+  type AppEventType = AppEvent extends { type: infer T }
+    ? Extract<T, string>
+    : never;
+
+  // 仅 {type} 事件的 type 联合（无 payload）
+  type HasOnlyType<E> = E extends { type: any }
+    ? Exclude<keyof E, "type"> extends never
+      ? true
+      : false
+    : false;
+  type SimpleEventType = AppEvent extends infer E
+    ? E extends { type: infer T }
+      ? HasOnlyType<E> extends true
+        ? Extract<T, string>
+        : never
+      : never
+    : never;
+
+  // 规范化：Signal/SignalLike -> AppEvent
+  function normalizeToEvent(x: AppEvent | Signal<AppEventType>): AppEvent {
+    const o = x as any;
+    if (
+      o &&
+      typeof o === "object" &&
+      "type" in o &&
+      typeof o.type === "string"
+    ) {
+      return "evt" in o && o.evt === o.type
+        ? ({ type: o.type } as AppEvent)
+        : (o as AppEvent);
+    }
+    return x as AppEvent;
+  }
+
+  // 发送器：既可发完整机器事件，也可发纯信号
+  function send<E extends AppEvent>(evt: E): void;
+  function send<T extends AppEventType>(sig: Signal<T>): void;
+  function send(x: any): void {
+    actor.send(normalizeToEvent(x));
+  }
+
+  // 仅允许“无 payload”的信号
+  const sendSig = <T extends SimpleEventType>(s: Signal<T>) =>
+    actor.send({ type: s.type } as AppEvent);
+
+  // 仅发送完整机器事件（显式）
+  const sendEvent = <E extends AppEvent>(e: E) => actor.send(e);
+
+  return send;
 }

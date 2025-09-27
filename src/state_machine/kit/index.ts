@@ -17,12 +17,14 @@ export type {
   SignalEvt,
   PayloadEvt,
   MachineEvt,
+  Signal,
 } from "./core/types";
 export { ss, sst } from "./core/sst";
 
 // xstate helpers
 export {
   createActors,
+  createSender,
   type Decorated,
   type DoneEvt,
   type DoneEventOf,
