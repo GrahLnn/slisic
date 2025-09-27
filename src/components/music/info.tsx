@@ -171,7 +171,6 @@ function Entries() {
   const inProgressWeblist = hook.useAllWeblistReview();
 
   if (!slot) return;
-  console.log(slot.entries.length);
   const allEntry = new Set(
     list.flatMap((f) =>
       f.entries.filter((e) => !slot.entries.map((e) => e.name).includes(e.name))

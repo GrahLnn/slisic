@@ -20,7 +20,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const FF_API_LATEST: &str = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest";
 const FF_DL_BASE: &str = "https://xget.r2g2.org/gh/BtbN/FFmpeg-Builds/releases/latest/download";
 const FF_SUMS: &str =
-    "https://xget.r2g2.org/gh/BtbN/FFmpeg-Builds/releases/latest/download/sha256sums.txt";
+    "https://xget.r2g2.org/gh/BtbN/FFmpeg-Builds/releases/latest/download/sha256sums.sha256";
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
 struct FfAssetSpec {
