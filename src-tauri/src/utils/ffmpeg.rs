@@ -536,3 +536,120 @@ pub async fn integrated_lufs<P: AsRef<Path>>(app: &tauri::AppHandle, path: P) ->
     let i: f64 = caps[1].parse().context("parse LUFS number failed")?;
     Ok(i)
 }
+
+pub async fn trim_leading_zero<P: AsRef<Path>>(app: &tauri::AppHandle, path: P) -> Result<()> {
+    let ffmpeg = ensure_ffmpeg(&app)?;
+    let path = path.as_ref();
+
+    // 1) silencedetect
+    let mut cmd = Command::new(&ffmpeg);
+    cmd.arg("-hide_banner")
+        .arg("-nostats")
+        .arg("-i")
+        .arg(path)
+        .arg("-af")
+        .arg("silencedetect=noise=-60dB:d=0.5")
+        .arg("-f")
+        .arg("null")
+        .arg("-")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let out = cmd
+        .output()
+        .await
+        .context("spawn ffmpeg(silencedetect) failed")?;
+    let log = String::from_utf8_lossy(&out.stderr);
+
+    // 2) 仅当第一段确实从 0 开始时才裁
+    let re_start0 = Regex::new(
+        r"(?m)^\s*\[(?:Parsed_)?silencedetect(?:_\d+)?[^\]]*\]\s*silence_start:\s*0(?:\.0+)?\s*$",
+    )
+    .unwrap();
+    let start0_pos = if let Some(m) = re_start0.find(&log) {
+        m.end()
+    } else {
+        return Ok(());
+    };
+
+    let re_end = Regex::new(
+        r"(?m)^\s*\[(?:Parsed_)?silencedetect(?:_\d+)?[^\]]*\]\s*silence_end:\s*([0-9]+(?:\.[0-9]+)?)\b"
+    ).unwrap();
+    let tail = &log[start0_pos..];
+    let cut_time = if let Some(caps) = re_end.captures(tail) {
+        caps[1].to_string()
+    } else {
+        return Ok(());
+    };
+
+    // 3) 生成临时输出路径：<stem>.trim.tmp.<ext>
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+    let tmp_name = if ext.is_empty() {
+        format!("{stem}.trim.tmp")
+    } else {
+        format!("{stem}.trim.tmp.{ext}")
+    };
+    let tmp_path = path.with_file_name(tmp_name);
+
+    // 4) 容器/格式推断：尽量保持与源一致；m4a/mp4 明确用 mp4 容器更稳
+    let mut cmd2 = Command::new(&ffmpeg);
+    cmd2.arg("-hide_banner")
+        .arg("-nostats")
+        .arg("-y") // 覆盖临时文件
+        .arg("-ss")
+        .arg(&cut_time)
+        .arg("-i")
+        .arg(path)
+        .arg("-c")
+        .arg("copy")
+        .arg("-map")
+        .arg("0:a")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        cmd2.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    // 针对常见扩展名设置容器/flags
+    match ext.to_ascii_lowercase().as_str() {
+        "m4a" | "mp4" => {
+            cmd2.arg("-movflags").arg("+faststart");
+            // 可显式指定：cmd2.arg("-f").arg("mp4");
+        }
+        "aac" => {
+            cmd2.arg("-f").arg("adts");
+        } // aac 原始流
+        "opus" => { /* ogg/webm 需区分，这里不强制 */ }
+        _ => {}
+    }
+
+    cmd2.arg(&tmp_path);
+
+    let out2 = cmd2.output().await.context("spawn ffmpeg(cut) failed")?;
+    if !out2.status.success() {
+        let stderr_s = String::from_utf8_lossy(&out2.stderr);
+        // 打印详细错误，便于定位容器/编解码问题
+        eprintln!("[ffmpeg cut stderr]\n{stderr_s}");
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(anyhow::anyhow!("ffmpeg cut failed"));
+    }
+
+    // 5) 覆盖原文件（Windows 先删后改名）
+    #[cfg(windows)]
+    {
+        let _ = tokio::fs::remove_file(path).await;
+    }
+    tokio::fs::rename(&tmp_path, path)
+        .await
+        .context("replace original with trimmed file failed")?;
+
+    Ok(())
+}

@@ -5,7 +5,7 @@ use crate::database::enums::table::{Rel, Table};
 use crate::database::{query_raw, query_take, Crud, HasId, Relation};
 use crate::utils::config::resolve_save_path;
 use crate::utils::enq::{enqueue, finalize_process};
-use crate::utils::ffmpeg::integrated_lufs;
+use crate::utils::ffmpeg::{integrated_lufs, trim_leading_zero};
 use crate::utils::file::all_audio_recursive;
 use crate::utils::ytdlp::{process_entry, Entry as YtdlpEntry, ProcessResult};
 use crate::{impl_crud, impl_id, impl_schema};
@@ -20,6 +20,7 @@ use surrealdb::RecordId;
 use tauri::async_runtime::spawn;
 use tauri::AppHandle;
 use tauri_specta::Event;
+use tokio::sync::mpsc;
 use tokio::task;
 use uuid::Uuid;
 
@@ -303,6 +304,9 @@ async fn do_create(app: AppHandle, data: CollectMission, col_id: RecordId) -> Re
                         let name_clone = name_clone.clone();
                         async move {
                             let app_cclone = app_clone.clone();
+                            trim_leading_zero(&app_cclone, p.clone())
+                                .await
+                                .map_err(|e| e.to_string())?;
                             let lufs = integrated_lufs(&app_cclone, p.clone())
                                 .await
                                 .ok()
@@ -525,7 +529,6 @@ pub async fn download_ok(app: &AppHandle, answer: DownloadAnswer) -> Result<(), 
         .map_err(|e| e.to_string())?;
     let exists_music = entry.musics().await.map_err(|e| e.to_string())?;
     let exist_paths: HashSet<String> = exists_music.into_iter().map(|m| m.path).collect();
-
     let musics: Vec<Music> = stream::iter(
         items
             .into_iter()
@@ -538,6 +541,9 @@ pub async fn download_ok(app: &AppHandle, answer: DownloadAnswer) -> Result<(), 
                 let listname = answer.playlist.clone();
                 let app_clone = app.clone();
                 async move {
+                    trim_leading_zero(&app_clone, p.clone())
+                        .await
+                        .map_err(|e| e.to_string())?;
                     let lufs = integrated_lufs(&app_clone, p.clone())
                         .await
                         .ok()
@@ -766,6 +772,9 @@ pub async fn recheck_folder(app: AppHandle, entry: Entry) -> Result<Entry, Strin
         {
             let app_clone = app.clone();
             async move {
+                trim_leading_zero(&app_clone, p.clone())
+                    .await
+                    .map_err(|e| e.to_string())?;
                 let lufs = integrated_lufs(&app_clone, p.clone())
                     .await
                     .ok()
@@ -852,6 +861,9 @@ async fn do_update(app: AppHandle, data: CollectMission, anchor: Playlist) -> Re
                             let name_clone = name_clone.clone();
                             async move {
                                 let app_cclone = app_clone.clone();
+                                trim_leading_zero(&app_cclone, p.clone())
+                                    .await
+                                    .map_err(|e| e.to_string())?;
                                 let lufs = integrated_lufs(&app_cclone, p.clone())
                                     .await
                                     .ok()
@@ -1175,17 +1187,47 @@ pub async fn rmexclude(list: Playlist, music: Music) -> Result<(), String> {
 
     Ok(())
 }
+use std::io::{self, Write};
 
-pub async fn fix_cur_data() -> Result<()> {
-    let all_cols = Collection::select_all().await?;
-    for col in all_cols {
-        let id = col.id().await?;
-        let mut n_col = col.clone();
-        let mut seen = HashSet::new();
-        n_col.exclude.retain(|m| seen.insert(m.path.clone()));
+pub async fn fix_cur_data(app: tauri::AppHandle) -> Result<()> {
+    let all_musics = DbMusic::select_all().await?;
+    let all_paths: Vec<_> = all_musics.into_iter().map(|m| m.path).collect();
+    let total = all_paths.len();
 
-        n_col.update_by_id(id).await?;
-    }
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+
+    // 单独打印任务：避免多任务争抢 stdout
+    let printer = tokio::spawn(async move {
+        let mut done = 0usize;
+        while let Some(msg) = rx.recv().await {
+            done += 1;
+            // 清行+回车到行首再写，避免残留字符
+            print!("\x1b[2K\r[{}/{}] {}", done, total, msg);
+            let _ = io::stdout().flush();
+        }
+        println!();
+    });
+
+    let app = Arc::new(app);
+
+    // 并发处理，完成后发一次进度消息
+    stream::iter(all_paths.into_iter().map(|path| {
+        let app = Arc::clone(&app);
+        let tx = tx.clone();
+        async move {
+            let res = trim_leading_zero(&app, &path).await;
+            // 打印内容尽量短；需要路径就 to_string_lossy
+            let _ = tx.send(path);
+            res
+        }
+    }))
+    .buffer_unordered(8)
+    .for_each(|_res| async {}) // 如需统计错误，可在此处理 _res
+    .await;
+
+    drop(tx); // 关闭通道以结束打印任务
+    let _ = printer.await;
+
     Ok(())
 }
 

@@ -133,7 +133,7 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
                     let db_path = local_data_dir.join(DB_PATH);
                     println!("DB initialized on {}", db_path.display());
                     init_db(db_path).await?;
-                    // fix_cur_data().await?;
+                    // fix_cur_data(handle.clone()).await?;
                     if let Some(window) = handle.get_webview_window("main") {
                         tokio::spawn({
                             let window = window.clone();
