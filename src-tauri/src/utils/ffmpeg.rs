@@ -568,24 +568,64 @@ pub async fn trim_leading_zero<P: AsRef<Path>>(app: &tauri::AppHandle, path: P) 
 
     // 2) 仅当第一段确实从 0 开始时才裁
     let re_start0 = Regex::new(
-        r"(?m)^\s*\[(?:Parsed_)?silencedetect(?:_\d+)?[^\]]*\]\s*silence_start:\s*0(?:\.0+)?\s*$",
+        r"(?m)^\s*\[(?:Parsed_)?silencedetect(?:_\d+)?[^\]]*\]\s*silence_start:\s*0(\.?\d*)?\s*$",
     )
     .unwrap();
-    let start0_pos = if let Some(m) = re_start0.find(&log) {
+    let start0 = if let Some(m) = re_start0.find(&log) {
         m.end()
     } else {
         return Ok(());
     };
+    let tail = &log[start0..];
 
+    // 2) 通用的 start/end 行（后续要解析同秒粘连）
+    let re_start_any = Regex::new(
+    r"(?m)^\s*\[(?:Parsed_)?silencedetect(?:_\d+)?[^\]]*\]\s*silence_start:\s*([0-9]+(?:\.[0-9]+)?)\s*$"
+).unwrap();
     let re_end = Regex::new(
-        r"(?m)^\s*\[(?:Parsed_)?silencedetect(?:_\d+)?[^\]]*\]\s*silence_end:\s*([0-9]+(?:\.[0-9]+)?)\b"
-    ).unwrap();
-    let tail = &log[start0_pos..];
-    let cut_time = if let Some(caps) = re_end.captures(tail) {
-        caps[1].to_string()
+    r"(?m)^\s*\[(?:Parsed_)?silencedetect(?:_\d+)?[^\]]*\]\s*silence_end:\s*([0-9]+(?:\.[0-9]+)?)\b"
+).unwrap();
+
+    // 3) 找到首个 end（E1）；若无，跳过
+    let first_end_m = if let Some(m) = re_end.find(tail) {
+        m
     } else {
         return Ok(());
     };
+    let first_end_t: f64 = re_end.captures(&tail[first_end_m.start()..]).unwrap()[1]
+        .parse()
+        .unwrap();
+
+    // 4) 找 E1 之后的下一个 start（S2）
+    let next_start_m = re_start_any
+        .find_iter(tail)
+        .find(|m| m.start() > first_end_m.start());
+
+    let cut_time: f64 = if let Some(s2m) = next_start_m {
+        let s2_caps = re_start_any.captures(&tail[s2m.start()..]).unwrap();
+        let s2_t: f64 = s2_caps[1].parse().unwrap();
+
+        // 判定“同秒/近邻”：同一整数秒，或时间差 <= 1.0s
+        let same_sec = first_end_t.floor() == s2_t.floor();
+        let close_enough = (s2_t - first_end_t) <= 1.0;
+
+        if same_sec || close_enough {
+            // 推进到 S2 之后的下一个 end（E2）；若不存在，仍用 E1
+            if let Some(e2m) = re_end.find_iter(tail).find(|m| m.start() > s2m.start()) {
+                let e2_caps = re_end.captures(&tail[e2m.start()..]).unwrap();
+                e2_caps[1].parse::<f64>().unwrap_or(first_end_t)
+            } else {
+                first_end_t
+            }
+        } else {
+            first_end_t
+        }
+    } else {
+        first_end_t
+    };
+
+    // 5) cut_time 用于 -ss
+    let cut_time_str = format!("{cut_time:.6}");
 
     // 3) 生成临时输出路径：<stem>.trim.tmp.<ext>
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
@@ -603,7 +643,7 @@ pub async fn trim_leading_zero<P: AsRef<Path>>(app: &tauri::AppHandle, path: P) 
         .arg("-nostats")
         .arg("-y") // 覆盖临时文件
         .arg("-ss")
-        .arg(&cut_time)
+        .arg(&cut_time_str)
         .arg("-i")
         .arg(path)
         .arg("-c")

@@ -11,10 +11,15 @@ use crate::utils::ytdlp::{process_entry, Entry as YtdlpEntry, ProcessResult};
 use crate::{impl_crud, impl_id, impl_schema};
 use anyhow::Result;
 use futures::{future, stream, StreamExt, TryStreamExt};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashSet;
 use std::hash::Hash;
+use std::{
+    io::{self, Write},
+    path::Path,
+};
 use surrealdb::opt::PatchOp;
 use surrealdb::RecordId;
 use tauri::async_runtime::spawn;
@@ -1200,10 +1205,9 @@ pub async fn rmexclude(list: Playlist, music: Music) -> Result<(), String> {
 
     Ok(())
 }
-use std::{io, path::Path};
 
-const SRC_ROOT: &str = r"D:\tmp";
-const DST_ROOT: &str = r"D:\Slisic";
+// const SRC_ROOT: &str = r"D:\tmp";
+// const DST_ROOT: &str = r"D:\Slisic";
 
 pub async fn transfer_music_from_folder(src: &str, dst: &str) -> Result<()> {
     let all_musics = DbMusic::select_all().await?;
@@ -1264,9 +1268,50 @@ pub async fn transfer_music_from_folder(src: &str, dst: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn fix_cur_data(app: tauri::AppHandle) -> Result<()> {
-    // 1) 拉取全部音乐记录
+pub async fn trim_zero(app: tauri::AppHandle) -> Result<()> {
+    let all_musics = DbMusic::select_all().await?;
+    let all_paths: Vec<_> = all_musics.into_iter().map(|m| m.path).collect();
+    let total = all_paths.len();
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+
+    // 单独打印任务：避免多任务争抢 stdout
+    let printer = tokio::spawn(async move {
+        let mut done = 0usize;
+        while let Some(msg) = rx.recv().await {
+            done += 1;
+            // 清行+回车到行首再写，避免残留字符
+            print!("\x1b[2K\r[{}/{}] {}", done, total, msg);
+            let _ = io::stdout().flush();
+        }
+        println!();
+    });
+
+    let app = Arc::new(app);
+
+    // 并发处理，完成后发一次进度消息
+    stream::iter(all_paths.into_iter().map(|path| {
+        let app = Arc::clone(&app);
+        let tx = tx.clone();
+        async move {
+            let res = trim_leading_zero(&app, &path).await;
+            // 打印内容尽量短；需要路径就 to_string_lossy
+            let _ = tx.send(path);
+            res
+        }
+    }))
+    .buffer_unordered(8)
+    .for_each(|_res| async {}) // 如需统计错误，可在此处理 _res
+    .await;
+
+    drop(tx); // 关闭通道以结束打印任务
+    let _ = printer.await;
+
     Ok(())
+}
+
+pub async fn fix_cur_data(app: tauri::AppHandle) -> Result<()> {
+    trim_zero(app).await
 }
 
 #[tauri::command]
