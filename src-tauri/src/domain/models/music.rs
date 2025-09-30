@@ -166,6 +166,19 @@ impl DbEntry {
     }
 }
 
+impl DbMusic {
+    pub async fn entries(&self) -> Result<Vec<DbEntry>> {
+        let ins = DbMusic::ins(self.id.clone(), Rel::HasMusic, Table::Entry).await?;
+        let entries_fut = ins.into_iter().map(|t| DbEntry::select_record(t));
+        let entries: Vec<DbEntry> = future::try_join_all(entries_fut)
+            .await?
+            .iter()
+            .map(|e| e.clone().into())
+            .collect();
+        Ok(entries)
+    }
+}
+
 impl LinkSample {
     pub fn into_ytdlp_entry(self, playlist: String) -> YtdlpEntry {
         YtdlpEntry {
@@ -1187,47 +1200,72 @@ pub async fn rmexclude(list: Playlist, music: Music) -> Result<(), String> {
 
     Ok(())
 }
-use std::io::{self, Write};
+use std::{io, path::Path};
+
+const SRC_ROOT: &str = r"D:\tmp";
+const DST_ROOT: &str = r"D:\Slisic";
+
+pub async fn transfer_music_from_folder(src: &str, dst: &str) -> Result<()> {
+    let all_musics = DbMusic::select_all().await?;
+
+    let src_root = Path::new(src);
+
+    let to_move: Vec<DbMusic> = all_musics
+        .into_iter()
+        .filter_map(|mut m| {
+            let p = PathBuf::from(&m.path);
+            if !p.starts_with(src_root) {
+                return None;
+            }
+            let rel = p.strip_prefix(src_root).ok()?;
+            let dst = Path::new(dst).join(rel);
+            m.path = dst.to_string_lossy().into_owned();
+            Some(m)
+        })
+        .collect();
+    dbg!(to_move.len());
+    let mut rel_entries = Vec::new();
+    let mut entry_rel_music = Vec::new();
+    let mut new_musics = Vec::new();
+    for m in &to_move {
+        let entry = m.entries().await?;
+        rel_entries.extend(entry.clone());
+
+        let mut nm = Music::from(m.clone());
+        nm.path = nm.path.replace(src, dst);
+        let new_mu = DbMusic::from(nm);
+        new_musics.push(new_mu.clone());
+
+        entry_rel_music.extend(entry.into_iter().map(|e| Relation {
+            _in: e.id.clone(),
+            out: new_mu.id.clone(),
+        }));
+    }
+
+    // 去重：将 e.id 换成你的唯一键（如 path / hash）
+    let mut seen = HashSet::new();
+    rel_entries.retain(|e| seen.insert(e.id.clone()));
+    for e in &mut rel_entries {
+        if let Some(p) = e.path.as_mut() {
+            if p.starts_with(src) {
+                *p = p.replacen(src, dst, 1); // 仅替换前缀一次
+            }
+        }
+    }
+
+    for e in rel_entries {
+        e.update().await?;
+    }
+    DbMusic::insert_jump(new_musics).await?;
+    DbEntry::insert_relation(Rel::HasMusic, entry_rel_music).await?;
+    for m in to_move {
+        m.delete().await?;
+    }
+    Ok(())
+}
 
 pub async fn fix_cur_data(app: tauri::AppHandle) -> Result<()> {
-    let all_musics = DbMusic::select_all().await?;
-    let all_paths: Vec<_> = all_musics.into_iter().map(|m| m.path).collect();
-    let total = all_paths.len();
-
-    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-
-    // 单独打印任务：避免多任务争抢 stdout
-    let printer = tokio::spawn(async move {
-        let mut done = 0usize;
-        while let Some(msg) = rx.recv().await {
-            done += 1;
-            // 清行+回车到行首再写，避免残留字符
-            print!("\x1b[2K\r[{}/{}] {}", done, total, msg);
-            let _ = io::stdout().flush();
-        }
-        println!();
-    });
-
-    let app = Arc::new(app);
-
-    // 并发处理，完成后发一次进度消息
-    stream::iter(all_paths.into_iter().map(|path| {
-        let app = Arc::clone(&app);
-        let tx = tx.clone();
-        async move {
-            let res = trim_leading_zero(&app, &path).await;
-            // 打印内容尽量短；需要路径就 to_string_lossy
-            let _ = tx.send(path);
-            res
-        }
-    }))
-    .buffer_unordered(8)
-    .for_each(|_res| async {}) // 如需统计错误，可在此处理 _res
-    .await;
-
-    drop(tx); // 关闭通道以结束打印任务
-    let _ = printer.await;
-
+    // 1) 拉取全部音乐记录
     Ok(())
 }
 
