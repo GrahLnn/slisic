@@ -44,6 +44,7 @@ function App() {
         <Scrollbar />
 
         <Toaster
+          closeButton
           toastOptions={{
             style: {
               background: isDark

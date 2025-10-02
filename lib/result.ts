@@ -41,7 +41,7 @@ export class Result<T, E = Error> {
       Ok: (value) => value,
       Err: (error) => {
         console.error("unwrap error:", error);
-        toast.error(`${error}`);
+        toast.error(`${error}`, { duration: Infinity });
         throw new Error(`${error}`);
       },
     });

@@ -1310,8 +1310,18 @@ pub async fn trim_zero(app: tauri::AppHandle) -> Result<()> {
     Ok(())
 }
 
+async fn rm_unfinish_entry() -> Result<()> {
+    let all_entries = DbEntry::select_all().await?;
+    for e in all_entries {
+        if matches!(e.downloaded_ok, Some(false) | None) {
+            e.delete().await?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn fix_cur_data(app: tauri::AppHandle) -> Result<()> {
-    trim_zero(app).await
+    rm_unfinish_entry().await
 }
 
 #[tauri::command]
