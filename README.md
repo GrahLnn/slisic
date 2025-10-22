@@ -14,6 +14,7 @@ A feature-rich Tauri + React development template, integrated with the latest de
 - [tauri-specta](https://github.com/specta-rs/tauri-specta) - Generate TypeScript bindings for Tauri commands and events
 - [surrealdb](https://surrealdb.com/) - A NoSQL database designed for the next generation of applications
 - [xstate](https://xstate.js.org/) - A state management library for React, using state machines
+- [arktype](https://arktype.dev/) - A type system for JavaScript and TypeScript
 
 ## Getting Started
 
