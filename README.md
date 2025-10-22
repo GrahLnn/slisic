@@ -22,6 +22,7 @@ A feature-rich Tauri + React development template, integrated with the latest de
 
 ```bash
 bun install
+bunx tauri signer generate -w .tauri/myapp.key
 ```
 
 ### Development
