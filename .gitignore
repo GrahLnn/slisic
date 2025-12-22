@@ -12,5 +12,6 @@ dist/
 !.vscode/extensions.json
 .idea
 
+target/
 src/cmd/commands.ts
 ~/*
