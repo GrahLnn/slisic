@@ -15,6 +15,7 @@ A feature-rich Tauri + React development template, integrated with the latest de
 - [surrealdb](https://surrealdb.com/) - A NoSQL database designed for the next generation of applications
 - [xstate](https://xstate.js.org/) - A state management library for React, using state machines
 - [arktype](https://arktype.dev/) - A type system for JavaScript and TypeScript
+- [Effect](https://effect-ts.github.io/) - A functional programming library for TypeScript
 
 ## Getting Started
 
