@@ -16,19 +16,6 @@ use tokio::task::block_in_place;
 use tokio::time::sleep;
 use utils::event::{self, WINDOW_READY};
 
-#[cfg(target_os = "macos")]
-use std::cell::RefCell;
-#[cfg(target_os = "macos")]
-use utils::macos_titlebar::FullscreenStateManager;
-#[cfg(target_os = "macos")]
-thread_local! {
-    static MAIN_WINDOW_OBSERVER: RefCell<Option<FullscreenStateManager>> = RefCell::new(None);
-}
-#[cfg(target_os = "windows")]
-use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
-#[cfg(target_os = "windows")]
-use windows::core::Interface;
-
 const DB_PATH: &str = "surreal.db";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -37,6 +24,7 @@ pub fn run() {
         utils::file::exists,
         utils::core::app_ready,
         utils::window::get_mouse_and_window_position,
+        utils::window::create_window,
         greet,
         clean,
     ];
@@ -99,86 +87,15 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
                                 if !window.is_visible().unwrap_or(true) {
                                     // This happens if the JS bundle crashes and hence doesn't send ready event.
                                     println!(
-										"Window did not emit `app_ready` event fast enough. Showing window..."
-									);
+                                        "Window did not emit `app_ready` event fast enough. Showing window..."
+                                    );
                                     window.show().expect("Main window should show");
                                     WINDOW_READY.store(true, Ordering::SeqCst);
                                 }
                             }
                         });
 
-                        #[cfg(target_os = "windows")]
-                        {
-                            window.set_decorations(false).unwrap();
-                            window
-                                .with_webview(|webview| unsafe {
-                                    let core = webview.controller().CoreWebView2().unwrap();
-                                    let settings = core.Settings().unwrap();
-                                    let s4: ICoreWebView2Settings4 = settings.cast().unwrap(); // 提升到 Settings4
-                                    s4.SetIsGeneralAutofillEnabled(false).unwrap();
-                                    s4.SetIsPasswordAutosaveEnabled(false).unwrap();
-                                })
-                                .expect("disable autofill");
-                        }
-                        #[cfg(target_os = "macos")]
-                        {
-                            use objc2::MainThreadMarker;
-                            use utils::macos_titlebar;
-                            macos_titlebar::setup_custom_macos_titlebar(&window);
-
-                            // Manage the FullscreenObserver's lifetime.
-                            // This is a bit tricky because you need to store it somewhere
-                            // so it doesn't get dropped immediately.
-                            // One way is to put it in Tauri's state management if you have complex needs,
-                            // or for a single main window, you might 'leak' it if it needs to live
-                            // for the duration of the app and its Drop impl handles cleanup.
-                            // A better way is to have a struct that holds it and is managed by Tauri's state.
-                            if let Some(mtm) = MainThreadMarker::new() {
-                                // Get MTM for the observer
-                                if let Some(observer) =
-                                    macos_titlebar::FullscreenStateManager::new(&window, mtm)
-                                {
-                                    // How to store `observer`?
-                                    // Option 1: Put it in Tauri's managed state
-                                    MAIN_WINDOW_OBSERVER.with(|cell| {
-                                        let mut observer_ref = cell.borrow_mut();
-                                        *observer_ref = Some(observer);
-                                    });
-                                // Option 2: If you absolutely must leak it (less ideal, but works for app lifetime objects)
-                                // std::mem::forget(observer);
-                                // println!("Fullscreen observer created and forgotten (will live for app duration).");
-                                } else {
-                                    eprintln!("Failed to create FullscreenObserver.");
-                                }
-                            } else {
-                                eprintln!(
-                                    "Failed to get MainThreadMarker for FullscreenObserver setup."
-                                );
-                            }
-
-                            // Example: Listening for window events to re-hide traffic lights if needed (alternative to FullscreenObserver for other events)
-                            let window_clone = window.clone();
-                            window.on_window_event(move |event| {
-                                match event {
-                                    tauri::WindowEvent::Resized(_) => { // Or other relevant events
-                                         // This is a more generic way, but NSWindowDidExitFullScreenNotification is more specific
-                                         // For instance, if some other action makes them reappear.
-                                         // #[cfg(target_os = "macos")]
-                                         // {
-                                         //     if let Some(mtm) = MainThreadMarker::new() {
-                                         //         let ns_window_ptr = window_clone.ns_window().unwrap_or(std::ptr::null_mut()) as *mut objc2_app_kit::NSWindow;
-                                         //         if !ns_window_ptr.is_null() {
-                                         //             if let Some(ns_window_id) = unsafe { Id::retain(ns_window_ptr) } {
-                                         //                 // unsafe { macos_titlebar::hide_native_traffic_lights(&ns_window_id, mtm); }
-                                         //             }
-                                         //         }
-                                         //     }
-                                         // }
-                                    }
-                                    _ => {}
-                                }
-                            });
-                        }
+                        utils::window::apply_window_setup(&window, true);
                     }
                     Ok(())
                 })

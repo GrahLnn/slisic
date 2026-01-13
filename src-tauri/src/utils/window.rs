@@ -1,6 +1,22 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use specta::Type;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{LogicalSize, Size};
+use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+#[cfg(target_os = "macos")]
+use super::macos_titlebar::FullscreenStateManager;
+#[cfg(target_os = "macos")]
+use std::cell::RefCell;
+#[cfg(target_os = "macos")]
+thread_local! {
+    static MAIN_WINDOW_OBSERVER: RefCell<Option<FullscreenStateManager>> = RefCell::new(None);
+}
+
+#[cfg(target_os = "windows")]
+use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
+#[cfg(target_os = "windows")]
+use windows::core::Interface;
 
 #[derive(Serialize, Type)]
 pub struct MouseWindowInfo {
@@ -55,4 +71,83 @@ pub fn get_mouse_and_window_position(app: AppHandle) -> Result<MouseWindowInfo, 
         rel_y,
         pixel_ratio,
     })
+}
+
+#[derive(Serialize, Deserialize, Type)]
+pub struct CreateWindowOptions {
+    width: Option<f64>,
+    height: Option<f64>,
+}
+
+pub fn apply_window_setup(window: &WebviewWindow, is_main: bool) {
+    #[cfg(not(target_os = "macos"))]
+    let _ = is_main;
+    #[cfg(target_os = "windows")]
+    {
+        window.set_decorations(false).unwrap();
+        window
+            .with_webview(|webview| unsafe {
+                let core = webview.controller().CoreWebView2().unwrap();
+                let settings = core.Settings().unwrap();
+                let s4: ICoreWebView2Settings4 = settings.cast().unwrap(); // 提升到 Settings4
+                s4.SetIsGeneralAutofillEnabled(false).unwrap();
+                s4.SetIsPasswordAutosaveEnabled(false).unwrap();
+            })
+            .expect("disable autofill");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use super::macos_titlebar;
+        use objc2::MainThreadMarker;
+
+        macos_titlebar::setup_custom_macos_titlebar(window);
+
+        if is_main {
+            if let Some(mtm) = MainThreadMarker::new() {
+                if let Some(observer) = macos_titlebar::FullscreenStateManager::new(window, mtm) {
+                    MAIN_WINDOW_OBSERVER.with(|cell| {
+                        let mut observer_ref = cell.borrow_mut();
+                        *observer_ref = Some(observer);
+                    });
+                } else {
+                    eprintln!("Failed to create FullscreenObserver.");
+                }
+            } else {
+                eprintln!("Failed to get MainThreadMarker for FullscreenObserver setup.");
+            }
+        }
+
+        window.on_window_event(|event| {
+            let _ = matches!(event, tauri::WindowEvent::Resized(_));
+        });
+    }
+}
+
+fn next_graph_label(app: &tauri::AppHandle) -> String {
+    for index in 1.. {
+        let label = format!("graph-{index}");
+        if app.get_webview_window(&label).is_none() {
+            return label;
+        }
+    }
+    unreachable!("graph window label overflow")
+}
+
+#[specta::specta]
+#[tauri::command]
+pub async fn create_window(app: tauri::AppHandle, options: Option<CreateWindowOptions>) {
+    let label = next_graph_label(&app);
+    let window = WebviewWindowBuilder::new(&app, label, WebviewUrl::App("index.html".into()))
+        .title("Graph")
+        .build()
+        .unwrap();
+
+    if let Some(options) = options {
+        if let (Some(width), Some(height)) = (options.width, options.height) {
+            let _ = window.set_size(Size::Logical(LogicalSize::new(width, height)));
+        }
+    }
+
+    apply_window_setup(&window, false);
 }

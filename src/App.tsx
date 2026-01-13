@@ -1,7 +1,8 @@
 import { cn } from "@/lib/utils";
+import "./App.css";
 import "@fontsource/maple-mono";
 import { memo, useEffect, useState } from "react";
-import "./App.css";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import reactLogo from "./assets/react.svg";
 import crab from "./cmd";
 import Input from "./components/Input";
@@ -9,6 +10,13 @@ import { Scrollbar } from "./components/scrollbar/scrollbar";
 import TopBar from "./topbar";
 import { Toaster } from "@/components/ui/sonner";
 import { action as updater } from "./state_machine/updater";
+import { Matchable, me } from "@/lib/matchable";
+
+type WindowType = "main";
+
+function which_window(windowLabel: string): Matchable<WindowType> {
+  return me("main");
+}
 
 const GreetForm = memo(function GreetForm() {
   const [greetMsg, setGreetMsg] = useState("");
@@ -128,21 +136,32 @@ function Content() {
   );
 }
 
-function App() {
-  useEffect(() => {
-    crab.appReady();
-    updater.run();
-  }, []);
+function Base({ children }: { children: React.ReactNode }) {
   return (
-    <div className="h-screen flex flex-col overflow-hidden hide-scrollbar">
+    <div className="min-h-screen flex flex-col overflow-hidden hide-scrollbar">
       <TopBar />
       <main className="flex-1 flex overflow-hidden hide-scrollbar">
-        <Content />
+        {children}
       </main>
       <Scrollbar />
       <Toaster />
     </div>
   );
+}
+
+function App() {
+  const window = which_window(WebviewWindow.getCurrent().label);
+  useEffect(() => {
+    crab.appReady();
+    updater.run();
+  }, []);
+  return window.match({
+    main: () => (
+      <Base>
+        <Content />
+      </Base>
+    ),
+  });
 }
 
 export default App;

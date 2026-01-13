@@ -7,7 +7,7 @@ import ReactDOM from "react-dom";
 import { useIsWindowFocus } from "../state_machine/windowFocus";
 import { events } from "../cmd/commands";
 
-const appWindow = new Window("main");
+const appWindow = Window.getCurrent();
 
 const windowsControlsPortal = document.createElement("div");
 windowsControlsPortal.id = "windows-controls-portal";

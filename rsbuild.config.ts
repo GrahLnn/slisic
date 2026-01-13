@@ -1,11 +1,13 @@
 import { defineConfig } from "@rsbuild/core";
 import { pluginReact } from "@rsbuild/plugin-react";
 import { pluginBabel } from "@rsbuild/plugin-babel";
+import { pluginSass } from "@rsbuild/plugin-sass";
 
 const isDev = process.env.NODE_ENV !== "production";
 export default defineConfig({
   plugins: [
     pluginReact(),
+    pluginSass(),
     pluginBabel({
       include: /\.(?:jsx|tsx)$/,
       babelLoaderOptions(opts) {
