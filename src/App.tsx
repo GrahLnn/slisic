@@ -138,10 +138,17 @@ function Content() {
 
 function Base({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen flex flex-col overflow-hidden hide-scrollbar">
+    <div className="min-h-screen overflow-hidden hide-scrollbar">
       <TopBar />
-      <main className="flex-1 flex overflow-hidden hide-scrollbar">
+      <main
+        className={cn(
+          "fixed top-0 left-0 h-screen w-full overflow-y-auto",
+          "flex-1 flex flex-col hide-scrollbar"
+        )}
+      >
+        <div className="min-h-8" />
         {children}
+        <div className="min-h-64" />
       </main>
       <Scrollbar />
       <Toaster />
