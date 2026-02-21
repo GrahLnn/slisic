@@ -1,3 +1,2 @@
-import { crab } from "./commandAdapter";
-
-export default crab;
+export * from "./commandAdapter";
+export * from "./commands";

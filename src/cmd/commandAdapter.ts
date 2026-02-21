@@ -4,21 +4,22 @@ import {
   makeLievt,
   type Result as SpectaResult,
 } from "./commands";
-import { Ok, Err, type Result } from "@/lib/result";
+import { Ok, Err, type Result } from "@grahlnn/fn";
 
 type AwaitedRet<F extends (...args: any) => any> = Awaited<ReturnType<F>>;
 
 type SpectaData<R> = R extends { status: "ok"; data: infer D } ? D : never;
 type SpectaError<R> = R extends { status: "error"; error: infer E } ? E : never;
 
-type CmdRawResult<K extends CommandKey> = AwaitedRet<CommandsType[K]> extends {
-  status: "ok" | "error";
-}
-  ? Result<
-      SpectaData<AwaitedRet<CommandsType[K]>>,
-      SpectaError<AwaitedRet<CommandsType[K]>>
-    >
-  : AwaitedRet<CommandsType[K]>;
+type CmdRawResult<K extends CommandKey> =
+  AwaitedRet<CommandsType[K]> extends {
+    status: "ok" | "error";
+  }
+    ? Result<
+        SpectaData<AwaitedRet<CommandsType[K]>>,
+        SpectaError<AwaitedRet<CommandsType[K]>>
+      >
+    : AwaitedRet<CommandsType[K]>;
 
 type CommandsType = typeof commands;
 type CommandKey = keyof CommandsType;
@@ -40,7 +41,7 @@ function isSpectaResult<T, E>(x: any): x is SpectaResult<T, E> {
   );
 }
 
-export const crab = new Proxy(
+const crabProxy = new Proxy(
   {} as {
     [K in CommandKey]: (
       ...a: Parameters<CommandsType[K]>
@@ -57,7 +58,9 @@ export const crab = new Proxy(
         return isSpectaResult(r) ? toResult<T, E>(r) : r;
       };
     },
-  }
+  },
 );
 
-export const lievt = makeLievt(events);
+const evt = makeLievt(events);
+
+export const crab = Object.assign(crabProxy, { evt });

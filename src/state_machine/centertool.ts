@@ -1,6 +1,6 @@
 import { createMachine, createActor } from "xstate";
 import { sst } from "./kit";
-import { Matchable, me } from "@/lib/matchable";
+import { ME, me } from "@grahlnn/fn";
 import { useSelector } from "@xstate/react";
 
 const { State, Signal, transfer } = sst(["view", "hide"]);
@@ -41,6 +41,6 @@ export function viewCenterTool() {
   actor.send({ type: "to_view" });
 }
 
-export function useXState(): Matchable<StateType> {
+export function useXState(): ME<StateType> {
   return useSelector(actor, (state) => me(state.value as StateType));
 }

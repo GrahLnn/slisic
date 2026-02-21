@@ -16,6 +16,7 @@ A feature-rich Tauri + React development template, integrated with the latest de
 - [xstate](https://xstate.js.org/) - A state management library for React, using state machines
 - [arktype](https://arktype.dev/) - A type system for JavaScript and TypeScript
 - [Effect](https://www.effect.institute/) - A functional programming library for TypeScript
+- [React Doctor](https://github.com/millionco/react-doctor) - One command scans your codebase for security, performance, correctness, and architecture issues, then outputs a 0–100 score with actionable diagnostics.
 
 ## Getting Started
 

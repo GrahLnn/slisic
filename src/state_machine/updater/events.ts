@@ -1,5 +1,5 @@
 import {} from "@/src/cmd/commands";
-import crab from "@/src/cmd";
+import { crab } from "@/src/cmd";
 import {
   collect,
   defineSS,
@@ -19,7 +19,7 @@ import {
   allTransfer,
 } from "../kit";
 import { resultx } from "../state";
-import { Err, Ok, Result } from "@/lib/result";
+import { Err, Ok, Result } from "@grahlnn/fn";
 import { createMachine } from "xstate";
 import { check } from "@tauri-apps/plugin-updater";
 import { toast } from "sonner";
@@ -27,7 +27,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 
 export const ss = defineSS(
   ns("resultx", resultx),
-  ns("mainx", sst(["idle", "check"], ["run", "unmount"]))
+  ns("mainx", sst(["idle", "check"], ["run", "unmount"])),
 );
 export const state = allState(ss);
 export const sig = allSignal(ss);
@@ -38,7 +38,7 @@ export const invoker = createActors({
     const update = await check();
     if (update) {
       console.log(
-        `found update ${update.version} from ${update.date} with notes ${update.body}`
+        `found update ${update.version} from ${update.date} with notes ${update.body}`,
       );
       let downloaded = 0;
       let contentLength = 0;

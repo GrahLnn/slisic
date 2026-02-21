@@ -1,7 +1,7 @@
 import { createActor } from "xstate";
 import { machine } from "./machine";
 import { useSelector } from "@xstate/react";
-import { me } from "@/lib/matchable";
+import { me } from "@grahlnn/fn";
 import { MainStateT, payloads, sig } from "./events";
 
 export const actor = createActor(machine);

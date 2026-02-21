@@ -4,7 +4,7 @@ import App from "./App";
 import WindowsControlsPortal from "./windowctrl/windows";
 import MacOSControlsPortal from "./windowctrl/macos";
 import { platform } from "@tauri-apps/plugin-os";
-import { me } from "@/lib/matchable";
+import { me } from "@grahlnn/fn";
 
 const os = me(platform());
 
@@ -19,6 +19,6 @@ if (rootEl) {
         _: () => null,
       })}
       <App />
-    </React.StrictMode>
+    </React.StrictMode>,
   );
 }

@@ -4,17 +4,17 @@ import "@fontsource/maple-mono";
 import { memo, useEffect, useState } from "react";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import reactLogo from "./assets/react.svg";
-import crab from "./cmd";
+import { crab } from "./cmd";
 import Input from "./components/Input";
 import { Scrollbar } from "./components/scrollbar/scrollbar";
 import TopBar from "./topbar";
 import { Toaster } from "@/components/ui/sonner";
 import { action as updater } from "./state_machine/updater";
-import { Matchable, me } from "@/lib/matchable";
+import { ME, me } from "@grahlnn/fn";
 
 type WindowType = "main";
 
-function which_window(windowLabel: string): Matchable<WindowType> {
+function which_window(windowLabel: string): ME<WindowType> {
   return me("main");
 }
 
@@ -62,7 +62,7 @@ const GreetForm = memo(function GreetForm() {
             "text-base font-medium text-[#0f0f0f] bg-white",
             "shadow-[0_2px_2px_rgba(0,0,0,0.2)] transition-[border-color] duration-[0.25s]",
             "outline-none",
-            "dark:text-white dark:bg-[#0f0f0f98] dark:border-[#171717]"
+            "dark:text-white dark:bg-[#0f0f0f98] dark:border-[#171717]",
           )}
         />
         <button
@@ -73,7 +73,7 @@ const GreetForm = memo(function GreetForm() {
             "text-base font-medium",
             "shadow-[0_2px_2px_rgba(0,0,0,0.2)] transition-[border-color] duration-[0.25s]",
             "hover:border-[#396cd8] active:border-[#396cd8] active:bg-[#e8e8e8]",
-            "dark:text-white dark:bg-[#0f0f0f98] dark:active:bg-[#0f0f0f69]"
+            "dark:text-white dark:bg-[#0f0f0f98] dark:active:bg-[#0f0f0f69]",
           )}
           type="submit"
         >
@@ -87,7 +87,7 @@ const GreetForm = memo(function GreetForm() {
             "text-base font-medium",
             "shadow-[0_2px_2px_rgba(0,0,0,0.2)] transition-[border-color] duration-[0.25s]",
             "hover:border-[#396cd8] active:border-[#396cd8] active:bg-[#e8e8e8]",
-            "dark:text-white dark:bg-[#0f0f0f98] dark:active:bg-[#0f0f0f69]"
+            "dark:text-white dark:bg-[#0f0f0f98] dark:active:bg-[#0f0f0f69]",
           )}
           type="reset"
           onClick={clean}
@@ -143,12 +143,11 @@ function Base({ children }: { children: React.ReactNode }) {
       <main
         className={cn(
           "fixed top-0 left-0 h-screen w-full overflow-y-auto",
-          "flex-1 flex flex-col hide-scrollbar"
+          "flex-1 flex flex-col hide-scrollbar",
         )}
       >
         <div className="min-h-8" />
         {children}
-        <div className="min-h-64" />
       </main>
       <Scrollbar />
       <Toaster />
