@@ -13,4 +13,4 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run React Doctor
-        uses: millionco/react-doctor@v1
+        uses: millionco/react-doctor@main
