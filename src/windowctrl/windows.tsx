@@ -2,16 +2,10 @@ import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
 import { Window } from "@tauri-apps/api/window";
 import type React from "react";
-import {
-  type KeyboardEvent,
-  type PropsWithChildren,
-  useCallback,
-  useEffect,
-  useState,
-  memo,
-} from "react";
+import { type KeyboardEvent, type PropsWithChildren, memo } from "react";
 import ReactDOM from "react-dom";
 import { useIsWindowFocus } from "../state_machine/windowFocus";
+import { useIsWindowMaximized } from "../state_machine/windowMaximized";
 
 const appWindow = Window.getCurrent();
 
@@ -65,7 +59,7 @@ const WindowsButton = memo(function WindowsButton({
           color
             ? "hover:bg-(--hover-bg-color) hover:text-(--hover-text-color)"
             : "hover:bg-black/5 dark:hover:bg-white/5",
-          className
+          className,
         )}
         style={{
           ...(color
@@ -85,24 +79,7 @@ const WindowsButton = memo(function WindowsButton({
 });
 
 const WindowsControlsCore = memo(function WindowsControlsCore() {
-  const [maximized, setMaximized] = useState(false);
-
-  const getWindowState = useCallback(async () => {
-    const isMaximized = await Window.getCurrent().isMaximized();
-    setMaximized(isMaximized);
-  }, []);
-
-  useEffect(() => {
-    getWindowState().catch(console.error);
-
-    const unlisten = Window.getCurrent().onResized(() => {
-      getWindowState().catch(console.error);
-    });
-
-    return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
-    };
-  }, [getWindowState]);
+  const maximized = useIsWindowMaximized();
   const windowFocused = useIsWindowFocus();
 
   return (
@@ -151,7 +128,7 @@ function WindowsControlsPortal() {
     >
       <WindowsControlsCore />
     </div>,
-    windowsControlsPortal
+    windowsControlsPortal,
   );
 }
 

@@ -6,7 +6,6 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import reactLogo from "./assets/react.svg";
 import { crab } from "./cmd";
 import Input from "./components/Input";
-import { Scrollbar } from "./components/scrollbar/scrollbar";
 import TopBar from "./topbar";
 import { Toaster } from "@/components/ui/sonner";
 import { action as updater } from "./state_machine/updater";
@@ -149,7 +148,6 @@ function Base({ children }: { children: React.ReactNode }) {
         <div className="min-h-8" />
         {children}
       </main>
-      <Scrollbar />
       <Toaster />
     </div>
   );
