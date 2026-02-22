@@ -40,8 +40,8 @@ async getMouseAndWindowPosition() : Promise<Result<MouseWindowInfo, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async createWindow(options: CreateWindowOptions | null) : Promise<void> {
-    await TAURI_INVOKE("create_window", { options });
+async createWindow(name: WindowName, options: CreateWindowOptions | null) : Promise<void> {
+    await TAURI_INVOKE("create_window", { name, options });
 },
 async greet(name: string) : Promise<Result<string, string>> {
     try {
@@ -79,6 +79,7 @@ fullScreenEvent: "full-screen-event"
 export type CreateWindowOptions = { width: number | null; height: number | null }
 export type FullScreenEvent = { is_fullscreen: boolean }
 export type MouseWindowInfo = { mouse_x: number; mouse_y: number; window_x: number; window_y: number; window_width: number; window_height: number; rel_x: number; rel_y: number; pixel_ratio: number }
+export type WindowName = "Main"
 
 /** tauri-specta globals **/
 

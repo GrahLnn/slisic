@@ -8,6 +8,7 @@ use tauri::{WebviewUrl, WebviewWindowBuilder};
 use super::macos_titlebar::FullscreenStateManager;
 #[cfg(target_os = "macos")]
 use std::cell::RefCell;
+use std::fmt;
 #[cfg(target_os = "macos")]
 thread_local! {
     static MAIN_WINDOW_OBSERVER: RefCell<Option<FullscreenStateManager>> = RefCell::new(None);
@@ -124,9 +125,28 @@ pub fn apply_window_setup(window: &WebviewWindow, is_main: bool) {
     }
 }
 
-fn next_graph_label(app: &tauri::AppHandle) -> String {
+#[derive(Serialize, Deserialize, Type, Clone, Copy)]
+pub enum WindowName {
+    Main,
+}
+
+impl WindowName {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            WindowName::Main => "main",
+        }
+    }
+}
+
+impl fmt::Display for WindowName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+fn next_label(name: WindowName, app: &tauri::AppHandle) -> String {
     for index in 1.. {
-        let label = format!("graph-{index}");
+        let label = format!("{name}-{index}");
         if app.get_webview_window(&label).is_none() {
             return label;
         }
@@ -136,10 +156,14 @@ fn next_graph_label(app: &tauri::AppHandle) -> String {
 
 #[specta::specta]
 #[tauri::command]
-pub async fn create_window(app: tauri::AppHandle, options: Option<CreateWindowOptions>) {
-    let label = next_graph_label(&app);
+pub async fn create_window(
+    app: tauri::AppHandle,
+    name: WindowName,
+    options: Option<CreateWindowOptions>,
+) {
+    let label = next_label(name, &app);
     let window = WebviewWindowBuilder::new(&app, label, WebviewUrl::App("index.html".into()))
-        .title("Graph")
+        .title(name.as_str())
         .build()
         .unwrap();
 

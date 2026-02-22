@@ -4,17 +4,16 @@ import "@fontsource/maple-mono";
 import { memo, useEffect, useState } from "react";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import reactLogo from "./assets/react.svg";
-import { crab } from "./cmd";
+import { crab, WindowName } from "./cmd";
 import Input from "./components/Input";
 import TopBar from "./topbar";
 import { Toaster } from "@/components/ui/sonner";
 import { action as updater } from "./state_machine/updater";
 import { ME, me } from "@grahlnn/fn";
 
-type WindowType = "main";
-
-function which_window(windowLabel: string): ME<WindowType> {
-  return me("main");
+function which_window(): ME<WindowName> {
+  const window = WebviewWindow.getCurrent().label;
+  return me("Main");
 }
 
 const GreetForm = memo(function GreetForm() {
@@ -154,7 +153,7 @@ function Base({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
-  const window = which_window(WebviewWindow.getCurrent().label);
+  const window = which_window();
   useEffect(() => {
     crab.appReady();
     updater.run();
