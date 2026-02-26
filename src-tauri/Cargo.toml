@@ -8,6 +8,9 @@ repository = ""
 edition = "2021"
 rust-version = "1.89.0"
 
+[workspace]
+members = ["crates/app-database"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]

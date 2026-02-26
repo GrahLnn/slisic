@@ -1,5 +1,4 @@
-use crate::database::enums::table::Table;
-use crate::{impl_crud, impl_schema, impl_string_id};
+use crate::{impl_crud, impl_schema};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
@@ -8,8 +7,7 @@ pub struct User {
     pub id: String,
 }
 
-impl_crud!(User, Table::User);
-impl_string_id!(User, id);
+impl_crud!(User);
 impl_schema!(
     User,
     "DEFINE INDEX unique_id ON TABLE user FIELDS id UNIQUE;"

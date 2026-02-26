@@ -4,7 +4,7 @@ use anyhow::Result;
 use surrealdb::types::{SurrealValue, Value};
 use surrealdb::IndexedResults;
 
-use super::get_db;
+use crate::connection::get_db;
 
 pub struct TxStmt {
     pub sql: String,

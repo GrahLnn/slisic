@@ -2,10 +2,10 @@ mod domain;
 mod utils;
 
 pub use app_database::database;
-pub use app_database::{impl_crud, impl_id, impl_schema, impl_string_id};
+pub use app_database::{declare_relation, impl_crud, impl_id, impl_schema};
 
 use anyhow::Result;
-use database::{init_db, Repo};
+use database::{init_db_with_options, InitDbOptions, Repo};
 use domain::models::user::User;
 use specta_typescript::{formatter::prettier, Typescript};
 use std::sync::atomic::Ordering;
@@ -79,7 +79,10 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
                     std::fs::create_dir_all(&local_data_dir)?;
                     let db_path = local_data_dir.join(DB_PATH);
                     println!("DB initialized on {}", db_path.display());
-                    init_db(db_path).await?;
+                    let db_options = InitDbOptions::default()
+                        .versioned(false)
+                        .changefeed_gc_interval(None);
+                    init_db_with_options(db_path, db_options).await?;
 
                     if let Some(window) = handle.get_webview_window("main") {
                         tokio::spawn({

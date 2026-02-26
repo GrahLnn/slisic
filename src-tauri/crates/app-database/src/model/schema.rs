@@ -10,13 +10,13 @@ pub trait SchemaDef {
 #[macro_export]
 macro_rules! impl_schema {
     ($ty:ty, $ddl:expr) => {
-        impl $crate::database::schema::SchemaDef for $ty {
+        impl $crate::model::schema::SchemaDef for $ty {
             const SCHEMA: &'static str = $ddl;
         }
 
         inventory::submit! {
-            $crate::database::schema::SchemaItem {
-                ddl: < $ty as $crate::database::schema::SchemaDef >::SCHEMA,
+            $crate::model::schema::SchemaItem {
+                ddl: < $ty as $crate::model::schema::SchemaDef >::SCHEMA,
             }
         }
     };

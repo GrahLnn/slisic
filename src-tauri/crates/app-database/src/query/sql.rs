@@ -2,7 +2,8 @@ use anyhow::Result;
 use surrealdb::types::SurrealValue;
 use surrealdb::IndexedResults;
 
-use super::get_db;
+use crate::connection::get_db;
+use crate::error::DBError;
 
 pub struct RawSql;
 
@@ -15,7 +16,9 @@ impl RawSql {
 
     pub async fn query_checked(sql: &str) -> Result<IndexedResults> {
         let result = Self::query_unchecked(sql).await?;
-        Ok(result.check()?)
+        result
+            .check()
+            .map_err(|err| DBError::QueryResponse(err.to_string()).into())
     }
 
     pub async fn query_take_typed<T>(sql: &str, idx: Option<usize>) -> Result<Vec<T>>
