@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use serde_json::Value;
-use surrealdb::RecordId;
+use surrealdb::types::{RecordId, ToSql};
 
 use super::enums::table::{Rel, Table, TableName};
 
@@ -58,7 +58,7 @@ impl QueryKind {
         format!("SELECT * FROM {table_name}:{start}..={end};")
     }
     pub fn replace(id: RecordId, data: Value) -> String {
-        format!("UPDATE {id} REPLACE {data};")
+        format!("UPDATE {} REPLACE {data};", id.to_sql())
     }
     pub fn pagin<T: TableName>(
         table: T,
@@ -96,6 +96,7 @@ impl QueryKind {
             Order::Desc => "<",
         };
         let table_name = table.table_name();
+        let in_id = in_id.to_sql();
         match cursor {
             Some(cursor) => format!(
                 "SELECT * FROM {table_name} WHERE {order_key} {than} {cursor} AND in={in_id} ORDER BY {order_key} {} LIMIT {count};",
@@ -149,29 +150,39 @@ impl QueryKind {
         format!(
             "RETURN (SELECT {k} FROM [{}]).{k};",
             ids.iter()
-                .map(|id| id.to_string())
+                .map(ToSql::to_sql)
                 .collect::<Vec<String>>()
                 .join(",")
         )
     }
     pub fn relate(self_id: RecordId, target_id: RecordId, rel: Rel) -> String {
-        format!("RELATE {self_id}->{rel}->{target_id} SET created_at = time::now();")
+        format!(
+            "RELATE {}->{rel}->{} SET created_at = time::now();",
+            self_id.to_sql(),
+            target_id.to_sql()
+        )
     }
     pub fn unrelate(self_id: RecordId, target_id: RecordId, rel: Rel) -> String {
-        format!("DELETE {self_id}->{rel} WHERE out={target_id} RETURN NONE;")
+        format!(
+            "DELETE {}->{rel} WHERE out={} RETURN NONE;",
+            self_id.to_sql(),
+            target_id.to_sql()
+        )
     }
     pub fn unrelate_all(self_id: RecordId, rel: Rel) -> String {
-        format!("DELETE {self_id}->{rel};")
+        format!("DELETE {}->{rel};", self_id.to_sql())
     }
     pub fn rel_outs(in_id: RecordId, rel: Rel, out_table: Table) -> String {
-        format!("RETURN {in_id}->{rel}->{out_table};")
+        format!("RETURN {}->{rel}->{out_table};", in_id.to_sql())
     }
     pub fn rel_ins(out_id: RecordId, rel: Rel, in_table: Table) -> String {
-        format!("RETURN {out_id}<-{rel}<-{in_table};")
+        format!("RETURN {}<-{rel}<-{in_table};", out_id.to_sql())
     }
     pub fn rel_id(self_id: RecordId, rel: Rel, target_id: RecordId) -> String {
         format!(
-            "RETURN (SELECT * FROM ONLY {rel} WHERE in={self_id} AND out={target_id} LIMIT 1).id;"
+            "RETURN (SELECT * FROM ONLY {rel} WHERE in={} AND out={} LIMIT 1).id;",
+            self_id.to_sql(),
+            target_id.to_sql()
         )
     }
     pub fn create_return_id(table: Table) -> String {

@@ -1,7 +1,6 @@
-use tauri::ipc::InvokeError;
 use thiserror::Error;
 
-#[derive(Debug, Error, specta::Type)]
+#[derive(Debug, Error)]
 pub enum DBError {
     #[error("Database error: {0}")]
     SurrealError(String),
@@ -9,12 +8,6 @@ pub enum DBError {
     NotInitialized,
     #[error("Record not found")]
     NotFound,
-}
-
-impl From<DBError> for InvokeError {
-    fn from(err: DBError) -> Self {
-        InvokeError::from(err.to_string())
-    }
 }
 
 impl From<surrealdb::Error> for DBError {

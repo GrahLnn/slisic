@@ -4,26 +4,27 @@ use super::{get_db, query_return, QueryKind};
 
 use anyhow::Result;
 use serde::Serialize;
-use surrealdb::opt::auth::Namespace;
 use surrealdb::opt::auth::Record;
+use surrealdb::types::SurrealValue;
 
-#[derive(Serialize)]
-struct RootCredentials<'a> {
-    user: &'a str,
-    pass: &'a str,
+#[derive(Serialize, SurrealValue)]
+struct RootCredentials {
+    user: String,
+    pass: String,
 }
 
-fn root_user(pass: &str) -> Record<'_, RootCredentials<'_>> {
+fn root_user(pass: &str) -> Record<RootCredentials> {
     Record {
-        namespace: "app",
-        database: "app",
-        access: "account",
-        params: RootCredentials { user: "root", pass },
+        namespace: "app".to_owned(),
+        database: "app".to_owned(),
+        access: "account".to_owned(),
+        params: RootCredentials {
+            user: "root".to_owned(),
+            pass: pass.to_owned(),
+        },
     }
 }
 
-#[tauri::command]
-#[specta::specta]
 pub async fn ensure_root_user(pass: &str) -> Result<()> {
     let db = get_db()?;
 

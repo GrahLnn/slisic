@@ -1,8 +1,8 @@
-use crate::database::{get_db, DBError, HasId, QueryKind};
+use crate::database::{get_db, DBError, QueryKind};
 
 use anyhow::Result;
 use std::fmt;
-use surrealdb::RecordId;
+use surrealdb::types::RecordId;
 
 pub trait TableName {
     fn table_name(&self) -> &str;

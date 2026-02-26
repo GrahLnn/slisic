@@ -1,11 +1,12 @@
-mod database;
 mod domain;
 mod utils;
 
+pub use app_database::database;
+pub use app_database::{impl_crud, impl_id, impl_schema, impl_string_id};
+
 use anyhow::Result;
-use database::{init_db, Crud};
-use domain::models::user::DbUser;
-use futures::future;
+use database::{init_db, Repo};
+use domain::models::user::User;
 use specta_typescript::{formatter::prettier, Typescript};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -75,6 +76,7 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
             block_in_place(|| {
                 block_on(async move {
                     let local_data_dir = handle.path().app_local_data_dir()?;
+                    std::fs::create_dir_all(&local_data_dir)?;
                     let db_path = local_data_dir.join(DB_PATH);
                     println!("DB initialized on {}", db_path.display());
                     init_db(db_path).await?;
@@ -108,31 +110,25 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
 #[tauri::command]
 #[specta::specta]
 async fn greet(name: &str) -> Result<String, String> {
-    let _ = DbUser::insert_jump(vec![DbUser {
-        id: DbUser::record_id(name),
-    }])
-    .await
-    .map_err(|e| e.to_string())?;
-    let dbusers = DbUser::select_all().await.map_err(|e| e.to_string())?;
-
-    let futures = dbusers.into_iter().map(|u| u.into_model());
-    let users = future::try_join_all(futures)
+    let _ = Repo::<User>::insert_jump_string_id(vec![User::from_id(name)])
+        .await
+        .map_err(|e| e.to_string())?;
+    let users = Repo::<User>::select_all_string_id()
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(format!(
-        "Hello, {}! You've been greeted from Rust!",
-        users
-            .iter()
-            .map(|u| u.id.as_str())
-            .collect::<Vec<&str>>()
-            .join(", ")
-    ))
+    let ids = users
+        .iter()
+        .map(|u| u.id.as_str())
+        .collect::<Vec<&str>>()
+        .join(", ");
+
+    Ok(format!("Hello, {}! You've been greeted from Rust!", ids))
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn clean() -> Result<String, String> {
-    DbUser::clean().await.map_err(|e| e.to_string())?;
+    Repo::<User>::clean().await.map_err(|e| e.to_string())?;
     Ok("message cleaned".to_string())
 }

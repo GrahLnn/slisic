@@ -2,7 +2,6 @@ import { cn } from "@/lib/utils";
 import "./App.css";
 import "@fontsource/maple-mono";
 import { memo, useEffect, useState } from "react";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import reactLogo from "./assets/react.svg";
 import { crab, WindowName } from "./cmd";
 import Input from "./components/Input";
@@ -12,7 +11,6 @@ import { action as updater } from "./state_machine/updater";
 import { ME, me } from "@grahlnn/fn";
 
 function which_window(): ME<WindowName> {
-  const window = WebviewWindow.getCurrent().label;
   return me("Main");
 }
 
@@ -159,11 +157,12 @@ function App() {
     updater.run();
   }, []);
   return window.match({
-    main: () => (
+    Main: () => (
       <Base>
         <Content />
       </Base>
     ),
+    _: () => null,
   });
 }
 

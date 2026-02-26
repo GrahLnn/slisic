@@ -1,38 +1,22 @@
 use crate::database::enums::table::Table;
-use crate::database::{Crud, HasId};
-use crate::{impl_crud, impl_id, impl_schema};
-use anyhow::Error;
+use crate::{impl_crud, impl_schema, impl_string_id};
 use serde::{Deserialize, Serialize};
-use specta::Type;
-use surrealdb::RecordId;
+use surrealdb::types::SurrealValue;
 
-#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+#[derive(Debug, Serialize, Deserialize, Clone, SurrealValue)]
 pub struct User {
     pub id: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DbUser {
-    pub id: RecordId,
-}
-
-impl_crud!(DbUser, Table::User);
-impl_id!(DbUser, id);
+impl_crud!(User, Table::User);
+impl_string_id!(User, id);
 impl_schema!(
     User,
     "DEFINE INDEX unique_id ON TABLE user FIELDS id UNIQUE;"
 );
 
-impl DbUser {
-    pub async fn into_model(self) -> Result<User, Error> {
-        Ok(User {
-            id: self.id.key().to_string(),
-        })
-    }
-
-    pub async fn from_model(model: User) -> Result<Self, Error> {
-        Ok(Self {
-            id: RecordId::from((Self::TABLE.as_str(), model.id)),
-        })
+impl User {
+    pub fn from_id(id: impl Into<String>) -> Self {
+        Self { id: id.into() }
     }
 }
