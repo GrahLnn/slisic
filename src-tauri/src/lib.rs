@@ -78,6 +78,16 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_shell::init())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                let label = window.label().to_string();
+                let app = window.app_handle();
+                if utils::window::should_exit_on_window_close(&app, &label) {
+                    utils::window::close_all_prewarm_main_windows(&app);
+                    app.exit(0);
+                }
+            }
+        })
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             let handle = app.handle().clone();

@@ -27,6 +27,52 @@ static PREWARM_MAIN_PENDING: LazyLock<Mutex<Vec<String>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 static PREWARM_MAIN_READY: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
+fn is_prewarm_main_label(label: &str) -> bool {
+    label.starts_with(PREWARM_MAIN_PREFIX)
+}
+
+pub fn is_non_prewarm_main_label(label: &str) -> bool {
+    label == "main" || (label.starts_with("main-") && !is_prewarm_main_label(label))
+}
+
+pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
+    if !is_non_prewarm_main_label(closing_label) {
+        return false;
+    }
+
+    let main_window_count = app
+        .webview_windows()
+        .keys()
+        .filter(|label| is_non_prewarm_main_label(label))
+        .count();
+
+    main_window_count <= 1
+}
+
+pub fn close_all_prewarm_main_windows(app: &AppHandle) {
+    let labels = app
+        .webview_windows()
+        .keys()
+        .filter(|label| is_prewarm_main_label(label))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for label in labels {
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.close();
+        }
+    }
+
+    PREWARM_MAIN_PENDING
+        .lock()
+        .expect("prewarm pending list should be lockable")
+        .clear();
+    PREWARM_MAIN_READY
+        .lock()
+        .expect("prewarm ready list should be lockable")
+        .clear();
+}
+
 #[derive(Serialize, Type)]
 pub struct MouseWindowInfo {
     mouse_x: i32,
