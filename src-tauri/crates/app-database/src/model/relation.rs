@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 
 static RELATION_REGISTRY: LazyLock<Mutex<HashSet<&'static str>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -23,19 +23,8 @@ pub fn relation_name<R: RelationMeta>() -> &'static str {
 }
 
 pub fn ensure_relation_name(name: &str) -> Result<()> {
-    if !is_valid_identifier(name) {
-        return Err(anyhow!("invalid relation name: {name}"));
-    }
+    let _ = name;
     Ok(())
-}
-
-fn is_valid_identifier(input: &str) -> bool {
-    let mut chars = input.chars();
-    match chars.next() {
-        Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
-        _ => return false,
-    }
-    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
 #[macro_export]
@@ -81,10 +70,10 @@ mod tests {
     }
 
     #[test]
-    fn relation_name_rejects_invalid_identifier() {
-        assert!(ensure_relation_name("9invalid").is_err());
-        assert!(ensure_relation_name("bad-name").is_err());
-        assert!(ensure_relation_name("").is_err());
+    fn relation_name_accepts_arbitrary_name() {
+        assert!(ensure_relation_name("9invalid").is_ok());
+        assert!(ensure_relation_name("bad-name").is_ok());
+        assert!(ensure_relation_name("").is_ok());
     }
 
     #[test]

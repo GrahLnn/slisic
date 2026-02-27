@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
 import { AnimatePresence, motion } from "motion/react";
 import type React from "react";
-import { type PropsWithChildren, ReactNode, memo, useEffect } from "react";
+import { type PropsWithChildren, ReactNode, memo } from "react";
 import { useIsBarVisible } from "./state_machine/barVisible";
 import { useIsWindowFocus } from "./state_machine/windowFocus";
 import { os } from "@/lib/utils";

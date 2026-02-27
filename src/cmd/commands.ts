@@ -58,6 +58,70 @@ async clean() : Promise<Result<string, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async templateBootstrap() : Promise<Result<TemplateDashboard, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("template_bootstrap") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async templateSnapshot() : Promise<Result<TemplateDashboard, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("template_snapshot") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async templateCreateMember(input: NewMemberInput) : Promise<Result<TemplateDashboard, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("template_create_member", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async templateCreateTask(input: NewTaskInput) : Promise<Result<TemplateDashboard, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("template_create_task", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async templateAssignTask(input: AssignTaskInput) : Promise<Result<TemplateDashboard, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("template_assign_task", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async templateUnassignTask(input: UnassignTaskInput) : Promise<Result<TemplateDashboard, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("template_unassign_task", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async templateBulkSetStatus(input: BulkStatusInput) : Promise<Result<TemplateDashboard, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("template_bulk_set_status", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async templateReset() : Promise<Result<TemplateDashboard, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("template_reset") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -76,9 +140,19 @@ fullScreenEvent: "full-screen-event"
 
 /** user-defined types **/
 
+export type AssignTaskInput = { task_id: string; member_id: string }
+export type BulkStatusInput = { task_ids: string[]; status: string }
 export type CreateWindowOptions = { width: number | null; height: number | null }
+export type DemoStats = { total_members: number; total_tasks: number; todo_tasks: number; doing_tasks: number; done_tasks: number }
 export type FullScreenEvent = { is_fullscreen: boolean }
+export type Member = { id: string; name: string; role: string; created_at: number }
 export type MouseWindowInfo = { mouse_x: number; mouse_y: number; window_x: number; window_y: number; window_width: number; window_height: number; rel_x: number; rel_y: number; pixel_ratio: number }
+export type NewMemberInput = { id: string; name: string; role: string }
+export type NewTaskInput = { id: string; title: string; notes: string; status: string; priority: number }
+export type Task = { id: string; title: string; notes: string; status: string; priority: number; owner_id: string | null; created_at: number; updated_at: number }
+export type TaskAssignmentView = { task_id: string; member_id: string }
+export type TemplateDashboard = { members: Member[]; tasks: Task[]; assignments: TaskAssignmentView[]; stats: DemoStats }
+export type UnassignTaskInput = { task_id: string }
 export type WindowName = "Main"
 
 /** tauri-specta globals **/

@@ -2,14 +2,14 @@ use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use app_database::connection::init_db;
+use app_database::connection::{get_db, init_db};
 use app_database::graph::GraphRepo;
 use app_database::model::relation::relation_name;
 use app_database::repository::Repo;
 use app_database::tx::{run_tx, TxStmt};
 use app_database::{declare_relation, impl_crud, impl_id};
 use serde::{Deserialize, Serialize};
-use surrealdb::types::{RecordId, SurrealValue};
+use surrealdb::types::{RecordId, SurrealValue, Table};
 use tokio::runtime::Runtime;
 use tokio::sync::OnceCell;
 
@@ -174,20 +174,89 @@ fn graph_relation_roundtrip_passes() {
 }
 
 #[test]
-fn graph_relation_with_invalid_name_fails() {
+fn graph_relation_name_is_bound_as_identifier() {
     let _guard = acquire_test_lock();
     run_async(async {
         ensure_db().await;
 
-        let err = GraphRepo::relate_by_id(
-            RecordId::new("it_record_user", "x"),
-            RecordId::new("it_record_user", "y"),
-            "bad-name",
+        Repo::<ItRecordUser>::clean()
+            .await
+            .expect("clean should succeed");
+
+        let x = ItRecordUser {
+            id: RecordId::new("it_record_user", "x"),
+            name: "X".to_owned(),
+        };
+        let y = ItRecordUser {
+            id: RecordId::new("it_record_user", "y"),
+            name: "Y".to_owned(),
+        };
+        Repo::<ItRecordUser>::create_by_id("x", x.clone())
+            .await
+            .expect("create x should succeed");
+        Repo::<ItRecordUser>::create_by_id("y", y.clone())
+            .await
+            .expect("create y should succeed");
+
+        GraphRepo::relate_by_id(
+            x.id.clone(),
+            y.id.clone(),
+            "bad-name; DELETE it_record_user RETURN NONE;",
         )
         .await
-        .expect_err("invalid relation should fail");
+        .expect("relation name should be treated as bound identifier");
 
-        assert!(err.to_string().contains("invalid relation name"));
+        let selected_x = Repo::<ItRecordUser>::select("x")
+            .await
+            .expect("x should still exist");
+        let selected_y = Repo::<ItRecordUser>::select("y")
+            .await
+            .expect("y should still exist");
+        assert_eq!(selected_x.name, "X");
+        assert_eq!(selected_y.name, "Y");
+    });
+}
+
+#[test]
+fn delete_target_string_bind_fails_but_table_bind_passes() {
+    let _guard = acquire_test_lock();
+    run_async(async {
+        ensure_db().await;
+
+        Repo::<ItRecordUser>::clean()
+            .await
+            .expect("clean should succeed");
+
+        Repo::<ItRecordUser>::create_by_id(
+            "z",
+            ItRecordUser {
+                id: RecordId::new("it_record_user", "z"),
+                name: "Z".to_owned(),
+            },
+        )
+        .await
+        .expect("seed record should be created");
+
+        let db = get_db().expect("db should be initialized");
+
+        let bad_res = db
+            .query("DELETE $target RETURN NONE;")
+            .bind(("target", "it_record_user".to_owned()))
+            .await
+            .expect("query should execute");
+        let bad_err = bad_res
+            .check()
+            .expect_err("string bind should fail for DELETE target");
+        assert!(bad_err
+            .to_string()
+            .contains("Cannot execute DELETE statement using value"));
+
+        db.query("DELETE $target RETURN NONE;")
+            .bind(("target", Table::from("it_record_user")))
+            .await
+            .expect("query should execute")
+            .check()
+            .expect("table bind should pass for DELETE target");
     });
 }
 

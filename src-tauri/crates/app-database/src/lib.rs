@@ -6,6 +6,7 @@ pub mod graph;
 pub mod model;
 pub mod query;
 pub mod repository;
+pub mod serde_utils;
 pub mod tx;
 
 pub use auth::*;
@@ -18,4 +19,5 @@ pub use model::schema::*;
 pub use query::builder::*;
 pub use query::sql::*;
 pub use repository::*;
+pub use serde_utils::id::*;
 pub use tx::*;

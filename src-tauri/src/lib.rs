@@ -7,15 +7,13 @@ pub use app_database::{declare_relation, impl_crud, impl_id, impl_schema};
 use anyhow::Result;
 use database::{init_db_with_options, InitDbOptions, Repo};
 use domain::models::user::User;
-use specta_typescript::{formatter::prettier, Typescript};
-use std::sync::atomic::Ordering;
-use std::time::Duration;
+use domain::template;
+use specta_typescript::{formatter::prettier, BigIntExportBehavior, Typescript};
 use tauri::async_runtime::block_on;
 use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events, Builder};
 use tokio::task::block_in_place;
-use tokio::time::sleep;
-use utils::event::{self, WINDOW_READY};
+use utils::event;
 
 const DB_PATH: &str = "surreal.db";
 
@@ -28,6 +26,14 @@ pub fn run() {
         utils::window::create_window,
         greet,
         clean,
+        template::template_bootstrap,
+        template::template_snapshot,
+        template::template_create_member,
+        template::template_create_task,
+        template::template_assign_task,
+        template::template_unassign_task,
+        template::template_bulk_set_status,
+        template::template_reset,
     ];
     let events = collect_events![event::FullScreenEvent];
 
@@ -36,8 +42,11 @@ pub fn run() {
     #[cfg(debug_assertions)]
     builder
         .export(
-            Typescript::default().formatter(prettier).header(
-                r#"/* eslint-disable */
+            Typescript::default()
+                .bigint(BigIntExportBehavior::Number)
+                .formatter(prettier)
+                .header(
+                    r#"/* eslint-disable */
 
 export type EventsShape<T extends Record<string, any>> = {
   [K in keyof T]: __EventObj__<T[K]> & {
@@ -54,7 +63,7 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
   };
 }
 "#,
-            ),
+                ),
             "../src/cmd/commands.ts",
         )
         .expect("Failed to export typescript bindings");
@@ -85,23 +94,9 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
                     init_db_with_options(db_path, db_options).await?;
 
                     if let Some(window) = handle.get_webview_window("main") {
-                        tokio::spawn({
-                            let window = window.clone();
-                            async move {
-                                sleep(Duration::from_secs(5)).await;
-                                if !window.is_visible().unwrap_or(true) {
-                                    // This happens if the JS bundle crashes and hence doesn't send ready event.
-                                    println!(
-                                        "Window did not emit `app_ready` event fast enough. Showing window..."
-                                    );
-                                    window.show().expect("Main window should show");
-                                    WINDOW_READY.store(true, Ordering::SeqCst);
-                                }
-                            }
-                        });
-
                         utils::window::apply_window_setup(&window, true);
                     }
+                    utils::window::ensure_main_window_prewarm(&handle);
                     Ok(())
                 })
             })

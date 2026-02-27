@@ -5,13 +5,12 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
 use surrealdb::opt::PatchOp;
-use surrealdb::types::{RecordId, RecordIdKey, ToSql};
+use surrealdb::types::{RecordId, RecordIdKey, Table};
 
 use crate::connection::get_db;
 use crate::error::DBError;
 use crate::model::meta::{HasId, ModelMeta};
 use crate::query::builder::QueryKind;
-use crate::query::query_take;
 
 fn struct_field_names<T: Serialize>(data: &T) -> Result<Vec<String>> {
     let value = serde_json::to_value(data)?;
@@ -21,13 +20,35 @@ fn struct_field_names<T: Serialize>(data: &T) -> Result<Vec<String>> {
     }
 }
 
-fn is_valid_identifier(input: &str) -> bool {
-    let mut chars = input.chars();
-    match chars.next() {
-        Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
-        _ => return false,
+fn strip_null_fields(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            let null_keys = map
+                .iter()
+                .filter_map(|(key, value)| {
+                    if value.is_null() {
+                        Some(key.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            for key in null_keys {
+                map.remove(&key);
+            }
+
+            for nested in map.values_mut() {
+                strip_null_fields(nested);
+            }
+        }
+        Value::Array(items) => {
+            for nested in items {
+                strip_null_fields(nested);
+            }
+        }
+        _ => {}
     }
-    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
 fn extract_string_id<T: Serialize>(data: &T) -> Result<String> {
@@ -70,6 +91,7 @@ where
         let db = get_db()?;
         let created: Option<RecordId> = db
             .query(QueryKind::create_return_id(T::table_name()))
+            .bind(("table", Table::from(T::table_name())))
             .bind(("data", data))
             .await?
             .check()?
@@ -128,6 +150,8 @@ where
         let db = get_db()?;
         let records: Vec<T> = db
             .query(QueryKind::limit(T::table_name(), count))
+            .bind(("table", Table::from(T::table_name())))
+            .bind(("count", count))
             .await?
             .check()?
             .take(0)?;
@@ -177,6 +201,7 @@ where
             let chunk_clone = chunk.to_vec();
             let inserted: Vec<T> = db
                 .query(QueryKind::insert(T::table_name()))
+                .bind(("table", Table::from(T::table_name())))
                 .bind(("data", chunk_clone))
                 .await?
                 .check()?
@@ -201,6 +226,7 @@ where
             let chunk_clone = chunk.to_vec();
             let inserted: Vec<T> = db
                 .query(QueryKind::insert_replace(T::table_name(), keys.clone()))
+                .bind(("table", Table::from(T::table_name())))
                 .bind(("data", chunk_clone))
                 .await?
                 .check()?
@@ -228,15 +254,19 @@ where
 
     pub async fn delete_record(id: RecordId) -> Result<()> {
         let db = get_db()?;
-        let sql = format!("DELETE {} RETURN NONE;", id.to_sql());
-        db.query(sql).await?.check()?;
+        db.query(QueryKind::delete_record())
+            .bind(("record", id))
+            .await?
+            .check()?;
         Ok(())
     }
 
     pub async fn clean() -> Result<()> {
         let db = get_db()?;
-        let sql = format!("DELETE {} RETURN NONE;", T::table_name());
-        let result = db.query(sql).await?;
+        let result = db
+            .query(QueryKind::delete_table())
+            .bind(("table", Table::from(T::table_name())))
+            .await?;
         if let Err(err) = result.check() {
             let message = err.to_string();
             if !message.contains("does not exist") {
@@ -248,15 +278,10 @@ where
 
     pub async fn select_record_id(k: &str, v: &str) -> Result<RecordId> {
         let db = get_db()?;
-        if !is_valid_identifier(k) {
-            return Err(DBError::InvalidIdentifier(k.to_owned()).into());
-        }
-        let sql = format!(
-            "RETURN (SELECT id FROM ONLY {} WHERE {k} = $v LIMIT 1).id;",
-            T::table_name()
-        );
         let ids: Vec<RecordId> = db
-            .query(sql)
+            .query(QueryKind::select_id_single(T::table_name()))
+            .bind(("table", Table::from(T::table_name())))
+            .bind(("k", k.to_owned()))
             .bind(("v", v.to_owned()))
             .await?
             .check()?
@@ -266,8 +291,14 @@ where
     }
 
     pub async fn all_record() -> Result<Vec<RecordId>> {
-        let sql = QueryKind::all_id(T::table_name());
-        query_take(sql.as_str(), None).await
+        let db = get_db()?;
+        let mut result = db
+            .query(QueryKind::all_id(T::table_name()))
+            .bind(("table", Table::from(T::table_name())))
+            .await?
+            .check()?;
+        let ids: Vec<RecordId> = result.take(0)?;
+        Ok(ids)
     }
 }
 
@@ -283,6 +314,7 @@ where
         if let Value::Object(map) = &mut content {
             map.remove("id");
         }
+        strip_null_fields(&mut content);
         let record = RecordId::new(table, id.clone());
         let _: Option<surrealdb::types::Value> = db.upsert(record).content(content).await?;
 
@@ -291,30 +323,35 @@ where
 
     pub async fn select_by_string_id(id: &str) -> Result<T> {
         let db = get_db()?;
-        let table = T::table_name();
-        let sql = format!(
-            "RETURN (SELECT *, type::string(record::id(id)) AS id FROM ONLY type::record('{table}', $id));"
-        );
-        let mut result = db.query(sql).bind(("id", id.to_owned())).await?.check()?;
+        let record = RecordId::new(T::table_name(), id.to_owned());
+        let mut result = db
+            .query(QueryKind::select_by_string_id())
+            .bind(("record", record))
+            .await?
+            .check()?;
         let row: Option<T> = result.take(0)?;
         row.ok_or(DBError::NotFound.into())
     }
 
     pub async fn select_all_string_id() -> Result<Vec<T>> {
         let db = get_db()?;
-        let table = T::table_name();
-        let sql = format!("SELECT *, type::string(record::id(id)) AS id FROM {table};");
-        let mut result = db.query(sql).await?.check()?;
+        let mut result = db
+            .query(QueryKind::select_all_string_id())
+            .bind(("table", Table::from(T::table_name())))
+            .await?
+            .check()?;
         let rows: Vec<T> = result.take(0)?;
         Ok(rows)
     }
 
     pub async fn select_limit_string_id(count: i64) -> Result<Vec<T>> {
         let db = get_db()?;
-        let table = T::table_name();
-        let sql =
-            format!("SELECT *, type::string(record::id(id)) AS id FROM {table} LIMIT $count;");
-        let mut result = db.query(sql).bind(("count", count)).await?.check()?;
+        let mut result = db
+            .query(QueryKind::select_limit_string_id())
+            .bind(("table", Table::from(T::table_name())))
+            .bind(("count", count))
+            .await?
+            .check()?;
         let rows: Vec<T> = result.take(0)?;
         Ok(rows)
     }
@@ -340,7 +377,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_string_id, is_valid_identifier};
+    use super::extract_string_id;
     use crate::model::meta::ModelMeta;
     use serde::{Deserialize, Serialize};
     use surrealdb::types::SurrealValue;
@@ -418,19 +455,6 @@ mod tests {
             <CustomTableModel as ModelMeta>::table_name(),
             "custom_users"
         );
-    }
-
-    #[test]
-    fn identifier_validation_accepts_safe_names() {
-        assert!(is_valid_identifier("name"));
-        assert!(is_valid_identifier("_created_at"));
-    }
-
-    #[test]
-    fn identifier_validation_rejects_unsafe_names() {
-        assert!(!is_valid_identifier("1name"));
-        assert!(!is_valid_identifier("name;DROP"));
-        assert!(!is_valid_identifier("bad-name"));
     }
 }
 

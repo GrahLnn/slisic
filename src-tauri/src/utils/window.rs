@@ -9,6 +9,7 @@ use super::macos_titlebar::FullscreenStateManager;
 #[cfg(target_os = "macos")]
 use std::cell::RefCell;
 use std::fmt;
+use std::sync::{LazyLock, Mutex};
 #[cfg(target_os = "macos")]
 thread_local! {
     static MAIN_WINDOW_OBSERVER: RefCell<Option<FullscreenStateManager>> = RefCell::new(None);
@@ -18,6 +19,13 @@ thread_local! {
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
 #[cfg(target_os = "windows")]
 use windows::core::Interface;
+
+const PREWARM_MAIN_PREFIX: &str = "main-prewarm-";
+const PREWARM_MAIN_TARGET: usize = 1;
+
+static PREWARM_MAIN_PENDING: LazyLock<Mutex<Vec<String>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+static PREWARM_MAIN_READY: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 #[derive(Serialize, Type)]
 pub struct MouseWindowInfo {
@@ -154,6 +162,128 @@ fn next_label(name: WindowName, app: &tauri::AppHandle) -> String {
     unreachable!("graph window label overflow")
 }
 
+fn next_prewarm_main_label(app: &tauri::AppHandle) -> String {
+    for index in 1.. {
+        let label = format!("{PREWARM_MAIN_PREFIX}{index}");
+        if app.get_webview_window(&label).is_none() {
+            return label;
+        }
+    }
+    unreachable!("prewarm window label overflow")
+}
+
+fn build_window(
+    app: &tauri::AppHandle,
+    label: String,
+    title: &str,
+    visible: bool,
+) -> Result<WebviewWindow, String> {
+    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
+        .title(title)
+        .visible(visible);
+
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    {
+        if let Ok(app_local_data_dir) = app.path().app_local_data_dir() {
+            let webview_data_dir = app_local_data_dir.join("webview-profile");
+            let _ = std::fs::create_dir_all(&webview_data_dir);
+            builder = builder.data_directory(webview_data_dir);
+        }
+    }
+
+    builder.build().map_err(|error| error.to_string())
+}
+
+fn apply_window_options(window: &WebviewWindow, options: Option<&CreateWindowOptions>) {
+    if let Some(options) = options {
+        if let (Some(width), Some(height)) = (options.width, options.height) {
+            let _ = window.set_size(Size::Logical(LogicalSize::new(width, height)));
+        }
+    }
+}
+
+fn prune_labels(app: &tauri::AppHandle, labels: &mut Vec<String>) {
+    labels.retain(|label| app.get_webview_window(label).is_some());
+}
+
+fn take_ready_main_window(app: &tauri::AppHandle) -> Option<WebviewWindow> {
+    let mut ready = PREWARM_MAIN_READY
+        .lock()
+        .expect("prewarm ready list should be lockable");
+    prune_labels(app, &mut ready);
+
+    while let Some(label) = ready.pop() {
+        if let Some(window) = app.get_webview_window(&label) {
+            return Some(window);
+        }
+    }
+
+    None
+}
+
+pub fn mark_main_window_ready(label: &str) -> bool {
+    if !label.starts_with(PREWARM_MAIN_PREFIX) {
+        return false;
+    }
+
+    let mut pending = PREWARM_MAIN_PENDING
+        .lock()
+        .expect("prewarm pending list should be lockable");
+    if let Some(index) = pending.iter().position(|value| value == label) {
+        pending.swap_remove(index);
+    }
+    drop(pending);
+
+    let mut ready = PREWARM_MAIN_READY
+        .lock()
+        .expect("prewarm ready list should be lockable");
+    if !ready.iter().any(|value| value == label) {
+        ready.push(label.to_string());
+    }
+
+    true
+}
+
+pub fn ensure_main_window_prewarm(app: &tauri::AppHandle) {
+    let pending_len = {
+        let mut pending = PREWARM_MAIN_PENDING
+            .lock()
+            .expect("prewarm pending list should be lockable");
+        prune_labels(app, &mut pending);
+        pending.len()
+    };
+
+    let ready_len = {
+        let mut ready = PREWARM_MAIN_READY
+            .lock()
+            .expect("prewarm ready list should be lockable");
+        prune_labels(app, &mut ready);
+        ready.len()
+    };
+
+    let total = pending_len + ready_len;
+    if total >= PREWARM_MAIN_TARGET {
+        return;
+    }
+
+    for _ in total..PREWARM_MAIN_TARGET {
+        let label = next_prewarm_main_label(app);
+        match build_window(app, label.clone(), WindowName::Main.as_str(), false) {
+            Ok(window) => {
+                apply_window_setup(&window, false);
+                PREWARM_MAIN_PENDING
+                    .lock()
+                    .expect("prewarm pending list should be lockable")
+                    .push(label);
+            }
+            Err(error) => {
+                eprintln!("Failed to prewarm main window: {error}");
+                break;
+            }
+        }
+    }
+}
+
 #[specta::specta]
 #[tauri::command]
 pub async fn create_window(
@@ -161,17 +291,28 @@ pub async fn create_window(
     name: WindowName,
     options: Option<CreateWindowOptions>,
 ) {
-    let label = next_label(name, &app);
-    let window = WebviewWindowBuilder::new(&app, label, WebviewUrl::App("index.html".into()))
-        .title(name.as_str())
-        .build()
-        .unwrap();
-
-    if let Some(options) = options {
-        if let (Some(width), Some(height)) = (options.width, options.height) {
-            let _ = window.set_size(Size::Logical(LogicalSize::new(width, height)));
+    if matches!(name, WindowName::Main) {
+        if let Some(window) = take_ready_main_window(&app) {
+            apply_window_options(&window, options.as_ref());
+            let _ = window.show();
+            let _ = window.set_focus();
+            ensure_main_window_prewarm(&app);
+            return;
         }
     }
 
-    apply_window_setup(&window, false);
+    let label = next_label(name, &app);
+    match build_window(&app, label, name.as_str(), true) {
+        Ok(window) => {
+            apply_window_options(&window, options.as_ref());
+            apply_window_setup(&window, false);
+
+            if matches!(name, WindowName::Main) {
+                ensure_main_window_prewarm(&app);
+            }
+        }
+        Err(error) => {
+            eprintln!("Failed to create window: {error}");
+        }
+    }
 }

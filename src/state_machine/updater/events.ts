@@ -22,7 +22,7 @@ import { resultx } from "../state";
 import { Err, Ok, Result } from "@grahlnn/fn";
 import { createMachine } from "xstate";
 import { check } from "@tauri-apps/plugin-updater";
-import { toast } from "sonner";
+import { sileo } from "sileo";
 import { relaunch } from "@tauri-apps/plugin-process";
 
 export const ss = defineSS(
@@ -58,11 +58,12 @@ export const invoker = createActors({
       });
 
       console.log("update installed");
-      toast.success("Already up to date", {
+      sileo.success({
+        title: "Already up to date",
         description: `Version ${update.version} has been ready`,
-        duration: Infinity,
-        action: {
-          label: "Restart",
+        duration: null,
+        button: {
+          title: "Restart",
           onClick: async () => {
             await update.install();
             await relaunch();
