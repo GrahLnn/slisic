@@ -23,6 +23,7 @@ pub fn run() {
         utils::file::exists,
         utils::core::app_ready,
         utils::window::get_mouse_and_window_position,
+        utils::window::get_window_kind,
         utils::window::create_window,
         greet,
         clean,
@@ -83,7 +84,7 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
                 let label = window.label().to_string();
                 let app = window.app_handle();
                 if utils::window::should_exit_on_window_close(&app, &label) {
-                    utils::window::close_all_prewarm_main_windows(&app);
+                    utils::window::close_all_prewarm_windows(&app);
                     app.exit(0);
                 }
             }
@@ -106,7 +107,7 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
                     if let Some(window) = handle.get_webview_window("main") {
                         utils::window::apply_window_setup(&window, true);
                     }
-                    utils::window::ensure_main_window_prewarm(&handle);
+                    utils::window::ensure_prewarm_for_existing_windows(&handle);
                     Ok(())
                 })
             })

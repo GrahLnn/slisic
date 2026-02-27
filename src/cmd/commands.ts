@@ -40,6 +40,9 @@ async getMouseAndWindowPosition() : Promise<Result<MouseWindowInfo, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getWindowKind() : Promise<WindowKindInfo> {
+    return await TAURI_INVOKE("get_window_kind");
+},
 async createWindow(name: WindowName, options: CreateWindowOptions | null) : Promise<void> {
     await TAURI_INVOKE("create_window", { name, options });
 },
@@ -154,6 +157,7 @@ export type Task = { id: Id; title: string; notes: string; status: string; prior
 export type TaskAssignmentView = { task_id: string; member_id: string }
 export type TemplateDashboard = { members: Member[]; tasks: Task[]; assignments: TaskAssignmentView[]; stats: DemoStats }
 export type UnassignTaskInput = { task_id: string }
+export type WindowKindInfo = { window: WindowName | null; is_prewarm: boolean; label: string; is_primary_main: boolean }
 export type WindowName = "Main"
 
 /** tauri-specta globals **/

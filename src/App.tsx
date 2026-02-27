@@ -2,13 +2,14 @@ import { cn } from "@/lib/utils";
 import "./App.css";
 import "sileo/styles.css";
 import "@fontsource/maple-mono";
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 import Input from "./components/Input";
 import TopBar from "./topbar";
-import { crab } from "./cmd";
 import { type DemoStats, type TaskStatus } from "./cmd/templateApp";
 import { Toaster } from "sileo";
 import { action, hook } from "./flow/template_board";
+import { me } from "@grahlnn/fn";
+import { useAppBootstrap } from "./flow/bootstrap";
 
 const statusOptions: TaskStatus[] = ["todo", "doing", "done"];
 
@@ -106,11 +107,6 @@ function TemplateBoard() {
       status,
     });
   }
-
-  useEffect(() => {
-    void crab.appReady();
-    action.run();
-  }, []);
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 md:px-8 pb-10 pt-4">
@@ -482,11 +478,15 @@ function Base({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
-  return (
-    <Base>
-      <TemplateBoard />
-    </Base>
-  );
+  const appWindow = useAppBootstrap();
+
+  return me(appWindow.window).match({
+    Main: () => (
+      <Base>
+        <TemplateBoard />
+      </Base>
+    ),
+  });
 }
 
 export default App;

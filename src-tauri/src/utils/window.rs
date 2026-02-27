@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::HashSet;
 use tauri::{AppHandle, Manager, WebviewWindow};
 use tauri::{LogicalSize, Size};
 use tauri::{WebviewUrl, WebviewWindowBuilder};
@@ -20,40 +21,88 @@ use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
 #[cfg(target_os = "windows")]
 use windows::core::Interface;
 
-const PREWARM_MAIN_PREFIX: &str = "main-prewarm-";
-const PREWARM_MAIN_TARGET: usize = 1;
+const PREWARM_TARGET_PER_WINDOW: usize = 1;
 
 static PREWARM_MAIN_PENDING: LazyLock<Mutex<Vec<String>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 static PREWARM_MAIN_READY: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
-fn is_prewarm_main_label(label: &str) -> bool {
-    label.starts_with(PREWARM_MAIN_PREFIX)
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct WindowKindInfo {
+    pub window: Option<WindowName>,
+    pub is_prewarm: bool,
+    pub label: String,
+    pub is_primary_main: bool,
 }
 
-pub fn is_non_prewarm_main_label(label: &str) -> bool {
-    label == "main" || (label.starts_with("main-") && !is_prewarm_main_label(label))
+fn prewarm_prefix(name: WindowName) -> String {
+    format!("{}-prewarm-", name.as_str())
+}
+
+fn is_prewarm_label_for(name: WindowName, label: &str) -> bool {
+    let prefix = prewarm_prefix(name);
+    label.starts_with(&prefix)
+}
+
+fn is_window_label_for(name: WindowName, label: &str) -> bool {
+    if label == name.as_str() {
+        return true;
+    }
+
+    let window_prefix = format!("{}-", name.as_str());
+    label.starts_with(&window_prefix) && !is_prewarm_label_for(name, label)
+}
+
+pub fn window_kind_from_label(label: &str) -> (Option<WindowName>, bool) {
+    for name in WindowName::ALL {
+        if is_window_label_for(name, label) {
+            return (Some(name), false);
+        }
+
+        if is_prewarm_label_for(name, label) {
+            return (Some(name), true);
+        }
+    }
+
+    (None, false)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_window_kind(window: WebviewWindow) -> WindowKindInfo {
+    let label = window.label().to_string();
+    let (window, is_prewarm) = window_kind_from_label(&label);
+    WindowKindInfo {
+        window,
+        is_prewarm,
+        is_primary_main: label == "main",
+        label,
+    }
+}
+
+pub fn is_non_prewarm_window_label(label: &str) -> bool {
+    matches!(window_kind_from_label(label), (Some(_), false))
 }
 
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
-    if !is_non_prewarm_main_label(closing_label) {
+    if !is_non_prewarm_window_label(closing_label) {
         return false;
     }
 
     let main_window_count = app
         .webview_windows()
         .keys()
-        .filter(|label| is_non_prewarm_main_label(label))
+        .filter(|label| is_non_prewarm_window_label(label))
         .count();
 
     main_window_count <= 1
 }
 
-pub fn close_all_prewarm_main_windows(app: &AppHandle) {
+pub fn close_all_prewarm_windows(app: &AppHandle) {
     let labels = app
         .webview_windows()
         .keys()
-        .filter(|label| is_prewarm_main_label(label))
+        .filter(|label| matches!(window_kind_from_label(label), (Some(_), true)))
         .cloned()
         .collect::<Vec<_>>();
 
@@ -179,16 +228,22 @@ pub fn apply_window_setup(window: &WebviewWindow, is_main: bool) {
     }
 }
 
-#[derive(Serialize, Deserialize, Type, Clone, Copy)]
+#[derive(Serialize, Deserialize, Type, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WindowName {
     Main,
 }
 
 impl WindowName {
+    pub const ALL: [WindowName; 1] = [WindowName::Main];
+
     pub const fn as_str(&self) -> &'static str {
         match self {
             WindowName::Main => "main",
         }
+    }
+
+    pub const fn prewarm_target(&self) -> usize {
+        PREWARM_TARGET_PER_WINDOW
     }
 }
 
@@ -208,9 +263,10 @@ fn next_label(name: WindowName, app: &tauri::AppHandle) -> String {
     unreachable!("graph window label overflow")
 }
 
-fn next_prewarm_main_label(app: &tauri::AppHandle) -> String {
+fn next_prewarm_label(name: WindowName, app: &tauri::AppHandle) -> String {
+    let prefix = prewarm_prefix(name);
     for index in 1.. {
-        let label = format!("{PREWARM_MAIN_PREFIX}{index}");
+        let label = format!("{prefix}{index}");
         if app.get_webview_window(&label).is_none() {
             return label;
         }
@@ -252,13 +308,17 @@ fn prune_labels(app: &tauri::AppHandle, labels: &mut Vec<String>) {
     labels.retain(|label| app.get_webview_window(label).is_some());
 }
 
-fn take_ready_main_window(app: &tauri::AppHandle) -> Option<WebviewWindow> {
+fn take_ready_window(app: &tauri::AppHandle, name: WindowName) -> Option<WebviewWindow> {
     let mut ready = PREWARM_MAIN_READY
         .lock()
         .expect("prewarm ready list should be lockable");
     prune_labels(app, &mut ready);
 
-    while let Some(label) = ready.pop() {
+    while let Some(index) = ready
+        .iter()
+        .position(|label| is_prewarm_label_for(name, label))
+    {
+        let label = ready.swap_remove(index);
         if let Some(window) = app.get_webview_window(&label) {
             return Some(window);
         }
@@ -267,8 +327,8 @@ fn take_ready_main_window(app: &tauri::AppHandle) -> Option<WebviewWindow> {
     None
 }
 
-pub fn mark_main_window_ready(label: &str) -> bool {
-    if !label.starts_with(PREWARM_MAIN_PREFIX) {
+pub fn mark_window_ready(label: &str) -> bool {
+    if !matches!(window_kind_from_label(label), (Some(_), true)) {
         return false;
     }
 
@@ -290,13 +350,16 @@ pub fn mark_main_window_ready(label: &str) -> bool {
     true
 }
 
-pub fn ensure_main_window_prewarm(app: &tauri::AppHandle) {
+pub fn ensure_window_prewarm(app: &tauri::AppHandle, name: WindowName) {
     let pending_len = {
         let mut pending = PREWARM_MAIN_PENDING
             .lock()
             .expect("prewarm pending list should be lockable");
         prune_labels(app, &mut pending);
-        pending.len()
+        pending
+            .iter()
+            .filter(|label| is_prewarm_label_for(name, label))
+            .count()
     };
 
     let ready_len = {
@@ -304,17 +367,20 @@ pub fn ensure_main_window_prewarm(app: &tauri::AppHandle) {
             .lock()
             .expect("prewarm ready list should be lockable");
         prune_labels(app, &mut ready);
-        ready.len()
+        ready
+            .iter()
+            .filter(|label| is_prewarm_label_for(name, label))
+            .count()
     };
 
     let total = pending_len + ready_len;
-    if total >= PREWARM_MAIN_TARGET {
+    if total >= name.prewarm_target() {
         return;
     }
 
-    for _ in total..PREWARM_MAIN_TARGET {
-        let label = next_prewarm_main_label(app);
-        match build_window(app, label.clone(), WindowName::Main.as_str(), false) {
+    for _ in total..name.prewarm_target() {
+        let label = next_prewarm_label(name, app);
+        match build_window(app, label.clone(), name.as_str(), false) {
             Ok(window) => {
                 apply_window_setup(&window, false);
                 PREWARM_MAIN_PENDING
@@ -330,6 +396,25 @@ pub fn ensure_main_window_prewarm(app: &tauri::AppHandle) {
     }
 }
 
+pub fn ensure_prewarm_for_existing_windows(app: &tauri::AppHandle) {
+    let windows = app.webview_windows();
+    let existing_names = windows
+        .keys()
+        .filter_map(|label| {
+            let (name, is_prewarm) = window_kind_from_label(label);
+            if is_prewarm {
+                None
+            } else {
+                name
+            }
+        })
+        .collect::<HashSet<_>>();
+
+    for name in existing_names {
+        ensure_window_prewarm(app, name);
+    }
+}
+
 #[specta::specta]
 #[tauri::command]
 pub async fn create_window(
@@ -337,14 +422,12 @@ pub async fn create_window(
     name: WindowName,
     options: Option<CreateWindowOptions>,
 ) {
-    if matches!(name, WindowName::Main) {
-        if let Some(window) = take_ready_main_window(&app) {
-            apply_window_options(&window, options.as_ref());
-            let _ = window.show();
-            let _ = window.set_focus();
-            ensure_main_window_prewarm(&app);
-            return;
-        }
+    if let Some(window) = take_ready_window(&app, name) {
+        apply_window_options(&window, options.as_ref());
+        let _ = window.show();
+        let _ = window.set_focus();
+        ensure_window_prewarm(&app, name);
+        return;
     }
 
     let label = next_label(name, &app);
@@ -352,10 +435,7 @@ pub async fn create_window(
         Ok(window) => {
             apply_window_options(&window, options.as_ref());
             apply_window_setup(&window, false);
-
-            if matches!(name, WindowName::Main) {
-                ensure_main_window_prewarm(&app);
-            }
+            ensure_window_prewarm(&app, name);
         }
         Err(error) => {
             eprintln!("Failed to create window: {error}");
