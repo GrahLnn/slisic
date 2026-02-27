@@ -4,7 +4,7 @@ import { Window } from "@tauri-apps/api/window";
 import type React from "react";
 import { type PropsWithChildren, useEffect, useState } from "react";
 import ReactDOM from "react-dom";
-import { useIsWindowFocus } from "../state_machine/windowFocus";
+import { useIsWindowFocus } from "../flow/windowFocus";
 import { events } from "../cmd/commands";
 
 const appWindow = Window.getCurrent();
@@ -97,7 +97,7 @@ function MacOSControlsPortal() {
     >
       <Core />
     </div>,
-    windowsControlsPortal
+    windowsControlsPortal,
   );
 }
 

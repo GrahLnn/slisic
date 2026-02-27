@@ -8,7 +8,7 @@ import TopBar from "./topbar";
 import { crab } from "./cmd";
 import { type DemoStats, type TaskStatus } from "./cmd/templateApp";
 import { Toaster } from "sileo";
-import { action, hook } from "./state_machine/template_board";
+import { action, hook } from "./flow/template_board";
 
 const statusOptions: TaskStatus[] = ["todo", "doing", "done"];
 

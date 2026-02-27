@@ -51,18 +51,26 @@ fn strip_null_fields(value: &mut Value) {
     }
 }
 
-fn extract_string_id<T: Serialize>(data: &T) -> Result<String> {
+fn extract_record_id_key<T: Serialize>(data: &T) -> Result<RecordIdKey> {
     let value = serde_json::to_value(data)?;
     match value {
         Value::Object(map) => match map.get("id") {
-            Some(Value::String(id)) if !id.is_empty() => Ok(id.clone()),
+            Some(Value::String(id)) if !id.is_empty() => Ok(RecordIdKey::String(id.clone())),
+            Some(Value::Number(id)) => match id.as_i64() {
+                Some(id) => Ok(RecordIdKey::Number(id)),
+                None => Err(DBError::InvalidModel(format!(
+                    "model `{}` has `id` but numeric id is out of i64 range",
+                    std::any::type_name::<T>()
+                ))
+                .into()),
+            },
             Some(_) => Err(DBError::InvalidModel(format!(
-                "model `{}` has `id` but it is not a non-empty string",
+                "model `{}` has `id` but it is not a non-empty string or i64 number",
                 std::any::type_name::<T>()
             ))
             .into()),
             None => Err(DBError::InvalidModel(format!(
-                "model `{}` does not contain an `id` string field",
+                "model `{}` does not contain an `id` string or i64 field",
                 std::any::type_name::<T>()
             ))
             .into()),
@@ -306,26 +314,19 @@ impl<T> Repo<T>
 where
     T: ModelMeta,
 {
-    pub async fn upsert_by_string_id(data: T) -> Result<T> {
+    pub async fn upsert_by_id_value(data: T) -> Result<T> {
         let db = get_db()?;
         let table = T::table_name();
-        let id = extract_string_id(&data)?;
+        let key = extract_record_id_key(&data)?;
         let mut content = serde_json::to_value(&data)?;
         if let Value::Object(map) = &mut content {
             map.remove("id");
         }
         strip_null_fields(&mut content);
-        let record = RecordId::new(table, id.clone());
-        let _: Option<surrealdb::types::Value> = db.upsert(record).content(content).await?;
-
-        Self::select_by_string_id(&id).await
-    }
-
-    pub async fn select_by_string_id(id: &str) -> Result<T> {
-        let db = get_db()?;
-        let record = RecordId::new(T::table_name(), id.to_owned());
+        let record = RecordId::new(table, key);
+        let _: Option<surrealdb::types::Value> = db.upsert(record.clone()).content(content).await?;
         let mut result = db
-            .query(QueryKind::select_by_string_id())
+            .query(QueryKind::select_by_id())
             .bind(("record", record))
             .await?
             .check()?;
@@ -333,10 +334,26 @@ where
         row.ok_or(DBError::NotFound.into())
     }
 
-    pub async fn select_all_string_id() -> Result<Vec<T>> {
+    pub async fn select_by_id_value<K>(id: K) -> Result<T>
+    where
+        RecordIdKey: From<K>,
+        K: Send,
+    {
+        let db = get_db()?;
+        let record = RecordId::new(T::table_name(), id);
+        let mut result = db
+            .query(QueryKind::select_by_id())
+            .bind(("record", record))
+            .await?
+            .check()?;
+        let row: Option<T> = result.take(0)?;
+        row.ok_or(DBError::NotFound.into())
+    }
+
+    pub async fn select_all_id() -> Result<Vec<T>> {
         let db = get_db()?;
         let mut result = db
-            .query(QueryKind::select_all_string_id())
+            .query(QueryKind::select_all_id())
             .bind(("table", Table::from(T::table_name())))
             .await?
             .check()?;
@@ -344,10 +361,10 @@ where
         Ok(rows)
     }
 
-    pub async fn select_limit_string_id(count: i64) -> Result<Vec<T>> {
+    pub async fn select_limit_id(count: i64) -> Result<Vec<T>> {
         let db = get_db()?;
         let mut result = db
-            .query(QueryKind::select_limit_string_id())
+            .query(QueryKind::select_limit_id())
             .bind(("table", Table::from(T::table_name())))
             .bind(("count", count))
             .await?
@@ -356,7 +373,7 @@ where
         Ok(rows)
     }
 
-    pub async fn insert_jump_string_id(data: Vec<T>) -> Result<Vec<T>> {
+    pub async fn insert_jump_by_id_value(data: Vec<T>) -> Result<Vec<T>> {
         if data.is_empty() {
             return Ok(vec![]);
         }
@@ -366,7 +383,7 @@ where
 
         for chunk in data.chunks(chunk_size) {
             for row in chunk.iter().cloned() {
-                let inserted = Self::upsert_by_string_id(row).await?;
+                let inserted = Self::upsert_by_id_value(row).await?;
                 inserted_all.push(inserted);
             }
         }
@@ -377,10 +394,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::extract_string_id;
+    use super::extract_record_id_key;
     use crate::model::meta::ModelMeta;
     use serde::{Deserialize, Serialize};
-    use surrealdb::types::SurrealValue;
+    use surrealdb::types::{RecordIdKey, SurrealValue};
 
     #[derive(Serialize)]
     struct GoodModel {
@@ -394,6 +411,11 @@ mod tests {
 
     #[derive(Serialize)]
     struct BadIdType {
+        id: bool,
+    }
+
+    #[derive(Serialize)]
+    struct NumberIdType {
         id: i64,
     }
 
@@ -411,34 +433,50 @@ mod tests {
     crate::impl_crud!(CustomTableModel, "custom_users");
 
     #[test]
-    fn extract_string_id_succeeds_for_valid_model() {
+    fn extract_id_succeeds_for_valid_model() {
         let model = GoodModel {
             id: "u1".to_owned(),
         };
-        assert_eq!(extract_string_id(&model).expect("expected id"), "u1");
+        assert_eq!(
+            extract_record_id_key(&model).expect("expected id"),
+            RecordIdKey::String("u1".to_owned())
+        );
     }
 
     #[test]
-    fn extract_string_id_fails_when_id_missing() {
+    fn extract_number_id_succeeds_for_valid_model() {
+        let model = NumberIdType { id: 42 };
+        assert_eq!(
+            extract_record_id_key(&model).expect("expected id"),
+            RecordIdKey::Number(42)
+        );
+    }
+
+    #[test]
+    fn extract_id_fails_when_id_missing() {
         let model = MissingId {
             name: "alice".to_owned(),
         };
-        let err = extract_string_id(&model).expect_err("expected missing id error");
+        let err = extract_record_id_key(&model).expect_err("expected missing id error");
         assert!(err.to_string().contains("does not contain an `id`"));
     }
 
     #[test]
-    fn extract_string_id_fails_when_id_not_string() {
-        let model = BadIdType { id: 123 };
-        let err = extract_string_id(&model).expect_err("expected bad id type error");
-        assert!(err.to_string().contains("not a non-empty string"));
+    fn extract_id_fails_when_id_not_string_or_number() {
+        let model = BadIdType { id: true };
+        let err = extract_record_id_key(&model).expect_err("expected bad id type error");
+        assert!(err
+            .to_string()
+            .contains("not a non-empty string or i64 number"));
     }
 
     #[test]
-    fn extract_string_id_fails_when_id_empty() {
+    fn extract_id_fails_when_id_empty() {
         let model = GoodModel { id: String::new() };
-        let err = extract_string_id(&model).expect_err("expected empty id error");
-        assert!(err.to_string().contains("not a non-empty string"));
+        let err = extract_record_id_key(&model).expect_err("expected empty id error");
+        assert!(err
+            .to_string()
+            .contains("not a non-empty string or i64 number"));
     }
 
     #[test]

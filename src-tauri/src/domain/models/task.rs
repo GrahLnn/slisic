@@ -1,5 +1,5 @@
 use crate::{impl_crud, impl_schema};
-use app_database::{deserialize_string_or_record_id, serialize_string_id};
+use appdb::Id;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,11 +11,7 @@ pub const STATUS_DONE: &str = "done";
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, SurrealValue)]
 pub struct Task {
-    #[serde(
-        deserialize_with = "deserialize_string_or_record_id",
-        serialize_with = "serialize_string_id"
-    )]
-    pub id: String,
+    pub id: Id,
     pub title: String,
     pub notes: String,
     pub status: String,
@@ -34,7 +30,7 @@ impl Task {
     }
 
     pub fn new(
-        id: impl Into<String>,
+        id: impl Into<Id>,
         title: impl Into<String>,
         notes: impl Into<String>,
         status: impl Into<String>,
@@ -59,7 +55,7 @@ impl_schema!(
     Task,
     r#"
 DEFINE TABLE task SCHEMAFULL;
-DEFINE FIELD id ON TABLE task TYPE string;
+DEFINE FIELD id ON TABLE task TYPE string | int;
 DEFINE FIELD title ON TABLE task TYPE string;
 DEFINE FIELD notes ON TABLE task TYPE string;
 DEFINE FIELD status ON TABLE task TYPE string;

@@ -1,8 +1,8 @@
 mod domain;
 mod utils;
 
-pub use app_database::database;
-pub use app_database::{declare_relation, impl_crud, impl_id, impl_schema};
+pub use appdb::database;
+pub use appdb::{declare_relation, impl_crud, impl_id, impl_schema};
 
 use anyhow::Result;
 use database::{init_db_with_options, InitDbOptions, Repo};
@@ -108,17 +108,17 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
 #[tauri::command]
 #[specta::specta]
 async fn greet(name: &str) -> Result<String, String> {
-    let _ = Repo::<User>::insert_jump_string_id(vec![User::from_id(name)])
+    let _ = Repo::<User>::insert_jump_by_id_value(vec![User::from_id(name)])
         .await
         .map_err(|e| e.to_string())?;
-    let users = Repo::<User>::select_all_string_id()
+    let users = Repo::<User>::select_all_id()
         .await
         .map_err(|e| e.to_string())?;
 
     let ids = users
         .iter()
-        .map(|u| u.id.as_str())
-        .collect::<Vec<&str>>()
+        .map(|u| u.id.to_string())
+        .collect::<Vec<String>>()
         .join(", ");
 
     Ok(format!("Hello, {}! You've been greeted from Rust!", ids))

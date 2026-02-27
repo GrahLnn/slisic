@@ -1,10 +1,11 @@
 use crate::{impl_crud, impl_schema};
+use appdb::Id;
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue)]
 pub struct User {
-    pub id: String,
+    pub id: Id,
 }
 
 impl_crud!(User);
@@ -14,7 +15,7 @@ impl_schema!(
 );
 
 impl User {
-    pub fn from_id(id: impl Into<String>) -> Self {
+    pub fn from_id(id: impl Into<Id>) -> Self {
         Self { id: id.into() }
     }
 }

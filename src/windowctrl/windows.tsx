@@ -4,8 +4,8 @@ import { Window } from "@tauri-apps/api/window";
 import type React from "react";
 import { type KeyboardEvent, type PropsWithChildren, memo } from "react";
 import ReactDOM from "react-dom";
-import { useIsWindowFocus } from "../state_machine/windowFocus";
-import { useIsWindowMaximized } from "../state_machine/windowMaximized";
+import { useIsWindowFocus } from "../flow/windowFocus";
+import { useIsWindowMaximized } from "../flow/windowMaximized";
 
 const appWindow = Window.getCurrent();
 

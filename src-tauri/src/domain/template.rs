@@ -93,8 +93,11 @@ fn record_key_to_string(key: RecordIdKey) -> String {
     }
 }
 
-fn to_record_id<T: ModelMeta>(id: &str) -> RecordId {
-    T::record_id(id.to_owned())
+fn to_record_id<T: ModelMeta, K>(id: K) -> RecordId
+where
+    RecordIdKey: From<K>,
+{
+    T::record_id(id)
 }
 
 async fn clear_relation_table() -> Result<()> {
@@ -173,11 +176,15 @@ async fn collect_assignments(tasks: &[Task]) -> Result<Vec<TaskAssignmentView>> 
     let mut links = Vec::new();
 
     for task in tasks {
-        let member_records =
-            GraphRepo::outs(to_record_id::<Task>(&task.id), rel, Member::table_name()).await?;
+        let member_records = GraphRepo::outs(
+            to_record_id::<Task, _>(task.id.clone()),
+            rel,
+            Member::table_name(),
+        )
+        .await?;
         for member in member_records {
             links.push(TaskAssignmentView {
-                task_id: task.id.clone(),
+                task_id: task.id.to_string(),
                 member_id: record_key_to_string(member.key),
             });
         }
@@ -208,10 +215,10 @@ fn build_stats(members: &[Member], tasks: &[Task]) -> DemoStats {
 async fn build_dashboard() -> Result<TemplateDashboard> {
     normalize_task_owner_id_nulls().await?;
 
-    let mut members = Repo::<Member>::select_all_string_id().await?;
+    let mut members = Repo::<Member>::select_all_id().await?;
     members.sort_by(|left, right| left.name.cmp(&right.name));
 
-    let mut tasks = Repo::<Task>::select_all_string_id().await?;
+    let mut tasks = Repo::<Task>::select_all_id().await?;
     tasks.sort_by(|left, right| {
         right
             .priority
@@ -231,12 +238,12 @@ async fn build_dashboard() -> Result<TemplateDashboard> {
 }
 
 async fn set_task_assignment(task_id: &str, member_id: &str) -> Result<()> {
-    let _ = Repo::<Task>::select_by_string_id(task_id).await?;
-    let _ = Repo::<Member>::select_by_string_id(member_id).await?;
+    let _ = Repo::<Task>::select_by_id_value(task_id).await?;
+    let _ = Repo::<Member>::select_by_id_value(member_id).await?;
 
     let now = now_timestamp_ms();
-    let task_record = to_record_id::<Task>(task_id);
-    let member_record = to_record_id::<Member>(member_id);
+    let task_record = to_record_id::<Task, _>(task_id);
+    let member_record = to_record_id::<Member, _>(member_id);
     let relation = Table::from(relation_name::<TaskAssignment>());
 
     let statements = vec![
@@ -262,10 +269,10 @@ async fn set_task_assignment(task_id: &str, member_id: &str) -> Result<()> {
 }
 
 async fn clear_task_assignment(task_id: &str) -> Result<()> {
-    let _ = Repo::<Task>::select_by_string_id(task_id).await?;
+    let _ = Repo::<Task>::select_by_id_value(task_id).await?;
 
     let now = now_timestamp_ms();
-    let task_record = to_record_id::<Task>(task_id);
+    let task_record = to_record_id::<Task, _>(task_id);
     let relation = Table::from(relation_name::<TaskAssignment>());
 
     let statements = vec![
@@ -296,7 +303,7 @@ async fn set_many_task_status(task_ids: Vec<String>, status: &str) -> Result<()>
             continue;
         }
 
-        let record = to_record_id::<Task>(&id);
+        let record = to_record_id::<Task, _>(id);
         statements.push(
             TxStmt::new(
                 "UPDATE $task MERGE { status: $status, updated_at: $updated_at } RETURN NONE;",
@@ -326,7 +333,7 @@ async fn bootstrap_demo() -> Result<TemplateDashboard> {
     ];
 
     for member in members {
-        let _ = Repo::<Member>::upsert_by_string_id(member).await?;
+        let _ = Repo::<Member>::upsert_by_id_value(member).await?;
     }
 
     let tasks = [
@@ -354,7 +361,7 @@ async fn bootstrap_demo() -> Result<TemplateDashboard> {
     ];
 
     for task in tasks {
-        let _ = Repo::<Task>::upsert_by_string_id(task).await?;
+        let _ = Repo::<Task>::upsert_by_id_value(task).await?;
     }
 
     set_task_assignment("landing-revamp", "mila").await?;
@@ -392,7 +399,7 @@ pub async fn template_create_member(
         }
 
         let member = Member::new(input.id.trim(), input.name.trim(), input.role.trim());
-        let _ = Repo::<Member>::upsert_by_string_id(member).await?;
+        let _ = Repo::<Member>::upsert_by_id_value(member).await?;
         build_dashboard().await
     }
     .await
@@ -423,7 +430,7 @@ pub async fn template_create_task(
             status,
             input.priority,
         );
-        let _ = Repo::<Task>::upsert_by_string_id(task).await?;
+        let _ = Repo::<Task>::upsert_by_id_value(task).await?;
         build_dashboard().await
     }
     .await

@@ -2,12 +2,12 @@ use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use app_database::connection::{get_db, init_db};
-use app_database::graph::GraphRepo;
-use app_database::model::relation::relation_name;
-use app_database::repository::Repo;
-use app_database::tx::{run_tx, TxStmt};
-use app_database::{declare_relation, impl_crud, impl_id};
+use appdb::connection::{get_db, init_db};
+use appdb::graph::GraphRepo;
+use appdb::model::relation::relation_name;
+use appdb::repository::Repo;
+use appdb::tx::{run_tx, TxStmt};
+use appdb::{declare_relation, impl_crud, impl_id};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::{RecordId, SurrealValue, Table};
 use tokio::runtime::Runtime;
@@ -24,6 +24,11 @@ struct ItStringUser {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+struct ItNumberUser {
+    id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 struct ItRecordUser {
     id: RecordId,
     name: String,
@@ -35,6 +40,7 @@ struct ItNoId {
 }
 
 impl_crud!(ItStringUser, "it_string_user");
+impl_crud!(ItNumberUser, "it_number_user");
 impl_crud!(ItRecordUser, "it_record_user");
 impl_crud!(ItNoId, "it_no_id");
 impl_id!(ItRecordUser, id);
@@ -45,7 +51,7 @@ fn test_db_path() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock before epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("app_database_it_{}_{}", std::process::id(), nanos))
+    std::env::temp_dir().join(format!("appdb_it_{}_{}", std::process::id(), nanos))
 }
 
 fn run_async<T>(fut: impl std::future::Future<Output = T>) -> T {
@@ -67,7 +73,7 @@ async fn ensure_db() {
 }
 
 #[test]
-fn string_id_repo_roundtrip_passes() {
+fn id_repo_roundtrip_passes() {
     let _guard = acquire_test_lock();
     run_async(async {
         ensure_db().await;
@@ -76,16 +82,16 @@ fn string_id_repo_roundtrip_passes() {
             .await
             .expect("clean should succeed");
 
-        let inserted = Repo::<ItStringUser>::upsert_by_string_id(ItStringUser {
+        let inserted = Repo::<ItStringUser>::upsert_by_id_value(ItStringUser {
             id: "alice".to_owned(),
         })
         .await
-        .expect("upsert_by_string_id should succeed");
+        .expect("upsert_by_id_value should succeed");
         assert_eq!(inserted.id, "alice");
 
-        let selected = Repo::<ItStringUser>::select_by_string_id("alice")
+        let selected = Repo::<ItStringUser>::select_by_id_value("alice")
             .await
-            .expect("select_by_string_id should succeed");
+            .expect("select_by_id_value should succeed");
         assert_eq!(selected.id, "alice");
     });
 }
@@ -96,13 +102,13 @@ fn select_missing_record_fails() {
     run_async(async {
         ensure_db().await;
 
-        let _ = Repo::<ItStringUser>::upsert_by_string_id(ItStringUser {
+        let _ = Repo::<ItStringUser>::upsert_by_id_value(ItStringUser {
             id: "seed".to_owned(),
         })
         .await
         .expect("seed insert should succeed");
 
-        let err = Repo::<ItStringUser>::select_by_string_id("missing")
+        let err = Repo::<ItStringUser>::select_by_id_value("missing")
             .await
             .expect_err("missing record should fail");
         assert!(err.to_string().contains("Record not found"), "{err}");
@@ -110,19 +116,42 @@ fn select_missing_record_fails() {
 }
 
 #[test]
-fn upsert_string_id_without_id_field_fails() {
+fn number_id_repo_roundtrip_passes() {
     let _guard = acquire_test_lock();
     run_async(async {
         ensure_db().await;
 
-        let err = Repo::<ItNoId>::upsert_by_string_id(ItNoId {
+        Repo::<ItNumberUser>::clean()
+            .await
+            .expect("clean should succeed");
+
+        let inserted = Repo::<ItNumberUser>::upsert_by_id_value(ItNumberUser { id: 42 })
+            .await
+            .expect("upsert_by_id_value should succeed");
+        assert_eq!(inserted.id, 42);
+
+        let selected = Repo::<ItNumberUser>::select_all_id()
+            .await
+            .expect("select_all_id should succeed");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, 42);
+    });
+}
+
+#[test]
+fn upsert_id_without_id_field_fails() {
+    let _guard = acquire_test_lock();
+    run_async(async {
+        ensure_db().await;
+
+        let err = Repo::<ItNoId>::upsert_by_id_value(ItNoId {
             name: "alice".to_owned(),
         })
         .await
         .expect_err("missing `id` field should fail");
         assert!(err
             .to_string()
-            .contains("does not contain an `id` string field"));
+            .contains("does not contain an `id` string or i64 field"));
     });
 }
 

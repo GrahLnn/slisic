@@ -134,14 +134,14 @@ impl QueryKind {
     pub fn delete_table() -> String {
         "DELETE $table RETURN NONE;".to_owned()
     }
-    pub fn select_by_string_id() -> String {
-        "RETURN (SELECT *, type::string(record::id(id)) AS id FROM ONLY $record);".to_owned()
+    pub fn select_by_id() -> String {
+        "RETURN (SELECT *, record::id(id) AS id FROM ONLY $record);".to_owned()
     }
-    pub fn select_all_string_id() -> String {
-        "SELECT *, type::string(record::id(id)) AS id FROM $table;".to_owned()
+    pub fn select_all_id() -> String {
+        "SELECT *, record::id(id) AS id FROM $table;".to_owned()
     }
-    pub fn select_limit_string_id() -> String {
-        "SELECT *, type::string(record::id(id)) AS id FROM $table LIMIT $count;".to_owned()
+    pub fn select_limit_id() -> String {
+        "SELECT *, record::id(id) AS id FROM $table LIMIT $count;".to_owned()
     }
 }
 
