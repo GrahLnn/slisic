@@ -3,7 +3,6 @@ mod domain;
 mod utils;
 
 use domain::music;
-use specta_typescript::Typescript;
 use tauri::async_runtime::block_on;
 use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events, Builder};
@@ -71,7 +70,7 @@ pub fn run() {
     #[cfg(debug_assertions)]
     builder
         .export(
-            Typescript::default().header(
+            specta_typescript::Typescript::default().header(
                 r#"// @ts-nocheck
 /* eslint-disable */
 
