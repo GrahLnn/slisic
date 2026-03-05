@@ -2,12 +2,8 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "enables the default permissions",
-  "windows": ["main"],
+  "windows": ["main", "main-*"],
   "permissions": [
-    {
-      "identifier": "fs:scope",
-      "allow": [{ "path": "**/*" }]
-    },
     "core:default",
     "core:window:allow-close",
     "core:window:allow-create",
@@ -17,11 +13,9 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-start-dragging",
     "shell:allow-open",
+    "clipboard-manager:allow-write-text",
     "dialog:default",
     "dialog:allow-open",
-    "fs:allow-open",
-    "fs:allow-read-file",
-    "clipboard-manager:allow-read-text",
-    "clipboard-manager:allow-write-text"
+    "fs:default"
   ]
 }

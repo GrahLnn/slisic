@@ -1,14 +1,19 @@
 import { AnimatePresence, motion } from "motion/react";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
-import { labels } from "../components/labels";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { labels } from "@/src/components/labels";
 import { cn, os } from "@/lib/utils";
-import { motionIcons } from "../assets/icons";
-import { action, hook } from "../state_machine/music";
-import { K } from "@/lib/comb";
-import { EmptyPage } from "../components/empty";
-import { New } from "../components/music/new";
-import { BackButton } from "../components/uni";
-import { station } from "@/src/subpub/buses";
+import { motionIcons } from "@/src/assets/icons";
+import { action, hook } from "@/src/flow/music";
+import { EmptyPage } from "@/src/components/empty";
+import { New } from "@/src/components/music/new";
+import { BackButton } from "@/src/components/uni";
+import { useCursorInApp } from "@/src/flow/cursorInApp";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -19,7 +24,7 @@ import {
 
 export function Face({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex-1 flex flex-col items-center justify-start select-none overflow-hidden">
+    <div className="flex flex-1 flex-col items-center justify-start overflow-hidden select-none">
       {children}
     </div>
   );
@@ -28,14 +33,15 @@ export function Face({ children }: { children: React.ReactNode }) {
 function Play() {
   const lists = hook.useList();
   const ctx = hook.useContext();
-  const isPlaying = hook.ussIsPlaying();
+  const isPlaying = hook.useIsPlaying();
   const curPlay = hook.useCurPlay();
   const curList = hook.useCurList();
-  const isCursorInApp = station.cursorinapp.useSee();
+  const isCursorInApp = useCursorInApp();
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const process_msg = hook.useMsg();
+  const didInitCenterRef = useRef(false);
+  const processMsg = hook.useMsg();
 
   const setItemRef = useCallback(
     (key: string): React.RefCallback<HTMLDivElement> =>
@@ -43,334 +49,323 @@ function Play() {
         if (el) itemRefs.current[key] = el;
         else delete itemRefs.current[key];
       },
-    []
+    [],
   );
 
   useLayoutEffect(() => {
-    if (!curList) return;
-    const key = curList.name;
+    const key = curList?.name ?? null;
+    if (key == null) {
+      if (didInitCenterRef.current || lists.length === 0) return;
+      didInitCenterRef.current = true;
+      // Entering play page without selection: center the first visible playlist (top -> bottom).
+      const firstKey = lists[0].name;
+      const firstEl = itemRefs.current[firstKey];
+      if (!firstEl || !containerRef.current) return;
+      requestAnimationFrame(() =>
+        firstEl.scrollIntoView({ block: "center", behavior: "auto" }),
+      );
+      return;
+    }
+
     const el = itemRefs.current[key];
     const wrap = containerRef.current;
     if (!el || !wrap) return;
 
     requestAnimationFrame(() =>
-      el.scrollIntoView({ block: "center", behavior: "smooth" })
+      el.scrollIntoView({ block: "center", behavior: "smooth" }),
     );
-  }, [curList]);
+  }, [curList, lists]);
 
   return (
-    <>
-      <Face>
-        <div className={cn(["flex flex-col z-10 w-full h-full"])}>
-          <div
-            ref={containerRef}
-            className={cn([
-              "h-screen w-screen snap-y snap-mandatory flex flex-col items-center gap-8",
-              isPlaying ? "overflow-hidden" : "overflow-y-scroll",
-            ])}
-          >
-            <div aria-hidden className="shrink-0 h-[100vh] snap-none" />
-            {lists.map((i) => {
-              const isCurrent = i.name === curList?.name;
-              const disabled = isPlaying && !isCurrent;
+    <Face>
+      <div className="z-10 flex h-full w-full flex-col">
+        <div
+          ref={containerRef}
+          className={cn([
+            "h-screen w-screen snap-y snap-mandatory flex flex-col items-center gap-8",
+            isPlaying ? "overflow-hidden" : "overflow-y-scroll",
+          ])}
+        >
+          <div aria-hidden className="h-[100vh] shrink-0 snap-none" />
 
-              // 当前且正在播放时，未 hover 显示 curPlay.title；hover 显示自己的 name
-              const shouldSwap = isPlaying && isCurrent;
-              const showName = shouldSwap ? hoveredKey === i.name : true;
-              const isOk = i.entries.every((f) => f.downloaded_ok);
+          {lists.map((playlist) => {
+            const isCurrent = playlist.name === curList?.name;
+            const disabled = isPlaying && !isCurrent;
+            const shouldSwap = isPlaying && isCurrent;
+            const showName = shouldSwap ? hoveredKey === playlist.name : true;
+            const isOk = playlist.entries.every((entry) => entry.downloaded_ok);
 
-              const alt = curPlay?.title ?? i.name;
-              const longer = (alt?.length ?? 0) >= i.name.length ? alt : i.name;
+            const alt = curPlay?.title ?? playlist.name;
+            const longer =
+              (alt?.length ?? 0) >= playlist.name.length ? alt : playlist.name;
 
-              return (
-                <motion.div
-                  key={i.name}
-                  ref={setItemRef(i.name)} // 这里和 useLayoutEffect 里取的 key 对应
-                  className={cn([
-                    "snap-center text-2xl font-cinzel text-[#0a0a0a] dark:text-[#fafafa] transition focus:outline-none flex flex-col items-center",
-                    disabled && "pointer-events-none select-none", // 不可交互+不可选中
-                  ])}
-                  initial={false} // 避免每次 re-render 都回到 initial
-                  animate={
-                    disabled
-                      ? { filter: "blur(6px)", opacity: 0 }
-                      : { filter: "blur(0px)", opacity: 1 }
-                  }
-                  transition={{ duration: 0.3, ease: "easeOut" }}
-                  // 无障碍/键盘：禁用态不可聚焦
-                  tabIndex={disabled ? -1 : 0}
-                  aria-disabled={disabled || undefined}
-                >
-                  {/* 文字切换区：仅在 shouldSwap 时做有进有出的切换，否则直接显示 name */}
-                  <ContextMenu>
-                    <ContextMenuTrigger
-                      className={cn([
-                        isOk
-                          ? "cursor-pointer whitespace-nowrap"
-                          : "select-none text-[#404040] dark:text-[#a3a3a3] animate-pulse",
-                      ])}
-                      onMouseEnter={() => setHoveredKey(i.name)}
-                      onMouseLeave={() =>
-                        setHoveredKey((k) => (k === i.name ? null : k))
+            return (
+              <motion.div
+                key={playlist.name}
+                ref={setItemRef(playlist.name)}
+                className={cn([
+                  "snap-center text-2xl font-cinzel text-[#0a0a0a] dark:text-[#fafafa] transition focus:outline-none flex flex-col items-center",
+                  disabled && "pointer-events-none select-none",
+                ])}
+                initial={false}
+                animate={
+                  disabled
+                    ? { filter: "blur(6px)", opacity: 0 }
+                    : { filter: "blur(0px)", opacity: 1 }
+                }
+                transition={{ duration: 0.3, ease: "easeOut" }}
+                tabIndex={disabled ? -1 : 0}
+                aria-disabled={disabled || undefined}
+              >
+                <ContextMenu>
+                  <ContextMenuTrigger
+                    className={cn([
+                      isOk
+                        ? "cursor-pointer whitespace-nowrap"
+                        : "select-none text-[#404040] dark:text-[#a3a3a3] animate-pulse",
+                    ])}
+                    onMouseEnter={() => setHoveredKey(playlist.name)}
+                    onMouseLeave={() =>
+                      setHoveredKey((key) =>
+                        key === playlist.name ? null : key,
+                      )
+                    }
+                    onClick={() => {
+                      if (disabled || !isOk) return;
+                      void action.play(playlist);
+                    }}
+                    onContextMenu={(event) => {
+                      if (isPlaying || disabled || !isOk) {
+                        event.preventDefault();
                       }
-                      onClick={() => {
-                        if (disabled || !isOk) return;
-                        action.play(i);
-                      }}
-                      onContextMenu={(e) => {
-                        if (isPlaying || disabled || !isOk) {
-                          e.preventDefault();
-                        }
-                      }}
-                    >
-                      {shouldSwap ? (
-                        <span className="relative inline-block">
-                          {/* 幽灵占位：撑开成两者里最长的宽度，保持命中区域稳定 */}
-                          <span
-                            aria-hidden
-                            className="invisible block whitespace-nowrap max-w-[66vw]"
-                          >
-                            {longer}
-                          </span>
-
-                          <AnimatePresence mode="wait" initial={false}>
-                            {showName ? (
-                              <motion.span
-                                key="name"
-                                // 绝对定位容器负责：顶层铺满 + 垂直居中 + 禁点透
-                                className="absolute inset-0 flex items-center pointer-events-none overflow-hidden"
-                                initial={{ filter: "blur(6px)", opacity: 0 }}
-                                animate={{ filter: "blur(0px)", opacity: 1 }}
-                                exit={{ filter: "blur(6px)", opacity: 0 }}
-                                transition={{
-                                  duration: 0.25,
-                                  ease: "easeOut",
-                                }}
-                              >
-                                {/* 真正截断的元素：宽度受外层幽灵占位约束，居中显示 */}
-                                <span className="mx-auto whitespace-nowrap truncate max-w-[66vw]">
-                                  {i.name}
-                                </span>
-                              </motion.span>
-                            ) : (
-                              <motion.span
-                                key="title"
-                                className="absolute inset-0 flex items-center pointer-events-none overflow-hidden"
-                                initial={{ filter: "blur(6px)", opacity: 0 }}
-                                animate={{ filter: "blur(0px)", opacity: 1 }}
-                                exit={{ filter: "blur(6px)", opacity: 0 }}
-                                transition={{
-                                  duration: 0.25,
-                                  ease: "easeOut",
-                                }}
-                              >
-                                <span className="mx-auto whitespace-nowrap truncate max-w-[66vw]">
-                                  {alt}
-                                </span>
-                              </motion.span>
-                            )}
-                          </AnimatePresence>
-                        </span>
-                      ) : (
-                        <span
-                          className={cn([
-                            "relative inline-block",
-                            !isOk &&
-                              "select-none text-[#404040] dark:text-[#a3a3a3] animate-pulse",
-                          ])}
-                        >
-                          <span>{i.name}</span>
-                          {process_msg?.playlist === i.name && (
-                            <span className="absolute text-xs ml-1 dark:text-[#d4d4d4] text-[#262626] max-w-2xs whitespace-nowrap truncate">
-                              - {process_msg?.str}
-                            </span>
-                          )}
-                          {!isOk && (
-                            <span className="absolute text-xs ml-1 bottom-0 text-[#404040] dark:text-[#a3a3a3]">
-                              {i.entries.filter((f) => !f.downloaded_ok).length}
-                            </span>
-                          )}
-                        </span>
-                      )}
-                    </ContextMenuTrigger>
-                    {!isPlaying && !disabled && isOk && (
-                      <ContextMenuContent
-                        className={cn([
-                          "bg-[rgba(255, 255, 255, 0.05)] border-none",
-                          os.is("macos")
-                            ? "backdrop-blur-[3px] shadow-md"
-                            : "gl gl-shadow",
-                        ])}
-                      >
-                        <ContextMenuItem
-                          className="focus:bg-accent/30 flex justify-between items-center dark:text-[#e5e5e5] transition"
-                          onClick={() => action.edit(i)}
-                        >
-                          Edit
-                        </ContextMenuItem>
-                        <LongPressContextMenuItem
-                          durationMs={2000}
-                          onConfirm={() => action.delete(i)}
-                          className="focus:bg-accent/30 text-[#e81123] focus:text-[#e81123] data-[highlighted]:text-[#e81123]"
-                        >
-                          Delete
-                        </LongPressContextMenuItem>
-                      </ContextMenuContent>
-                    )}
-                  </ContextMenu>
-                  <AnimatePresence>
-                    {curPlay && isPlaying && isCursorInApp && isCurrent && (
-                      <div>
+                    }}
+                  >
+                    {shouldSwap ? (
+                      <span className="relative inline-block">
                         <span
                           aria-hidden
-                          className="invisible block whitespace-nowrap max-w-[66vw] h-0"
+                          className="invisible block max-w-[66vw] whitespace-nowrap"
                         >
                           {longer}
                         </span>
-                        <motion.div
-                          className={cn([
-                            "flex justify-between w-full gap-4 min-w-24",
-                          ])}
-                          initial={{
-                            filter: "blur(6px)",
-                            opacity: 0,
-                            height: 0,
-                          }}
-                          animate={{
-                            filter: "blur(0px)",
-                            opacity: 1,
-                            height: "auto",
-                          }}
-                          exit={{
-                            filter: "blur(6px)",
-                            opacity: 0,
-                            height: 0,
-                          }}
-                        >
-                          <div className="flex items-center">
-                            <motion.div
-                              className={cn([
-                                "relative",
-                                "after:content-[''] after:absolute after:-inset-1",
-                                "after:transition-all after:duration-300",
-                                "hover:opacity-100 opacity-40",
-                                "hover:text-[#468be6]",
-                                "transition duration-300",
-                                ctx.nowJudge === "Up" &&
-                                  "opacity-100 text-[#468be6]",
-                                ctx.nowJudge === "Down" &&
-                                  "pointer-events-none opacity-0",
-                              ])}
-                              onClick={() =>
-                                ctx.nowJudge === "Up"
-                                  ? action.cancle_up(curPlay)
-                                  : action.up(curPlay)
-                              }
-                              animate={{
-                                width: ctx.nowJudge === "Down" ? 0 : "auto",
-                              }}
+
+                        <AnimatePresence mode="wait" initial={false}>
+                          {showName ? (
+                            <motion.span
+                              key="name"
+                              className="pointer-events-none absolute inset-0 flex items-center overflow-hidden"
+                              initial={{ filter: "blur(6px)", opacity: 0 }}
+                              animate={{ filter: "blur(0px)", opacity: 1 }}
+                              exit={{ filter: "blur(6px)", opacity: 0 }}
+                              transition={{ duration: 0.25, ease: "easeOut" }}
                             >
-                              <AnimatePresence mode="wait" initial={false}>
-                                {ctx.nowJudge === "Up" ? (
-                                  <motionIcons.thumbsUpSolid
-                                    initial={{ pathLength: 0 }}
-                                    animate={{ pathLength: 1 }}
-                                    exit={{ pathLength: 0 }}
-                                  />
-                                ) : (
-                                  <motionIcons.thumbsUp
-                                    initial={{ pathLength: 0 }}
-                                    animate={{ pathLength: 1 }}
-                                    exit={{ pathLength: 0 }}
-                                  />
-                                )}
-                              </AnimatePresence>
-                            </motion.div>
-                            <motion.div
-                              initial={{
-                                width: ctx.nowJudge === "Down" ? 0 : 24,
-                              }}
-                              animate={{
-                                width: ctx.nowJudge === "Down" ? 0 : 24,
-                              }}
-                            />
-                            <motion.div
-                              className={cn([
-                                "p-1 mt-1",
-                                "hover:opacity-60 opacity-40",
-                                "transition duration-300",
-                                ctx.nowJudge === "Down" && "opacity-80",
-                                ctx.nowJudge === "Up" &&
-                                  "pointer-events-none opacity-0",
-                              ])}
-                              onClick={() => {
-                                ctx.nowJudge === "Down"
-                                  ? action.cancle_down(curPlay)
-                                  : action.down(curPlay);
-                              }}
+                              <span className="mx-auto max-w-[66vw] truncate whitespace-nowrap">
+                                {playlist.name}
+                              </span>
+                            </motion.span>
+                          ) : (
+                            <motion.span
+                              key="title"
+                              className="pointer-events-none absolute inset-0 flex items-center overflow-hidden"
+                              initial={{ filter: "blur(6px)", opacity: 0 }}
+                              animate={{ filter: "blur(0px)", opacity: 1 }}
+                              exit={{ filter: "blur(6px)", opacity: 0 }}
+                              transition={{ duration: 0.25, ease: "easeOut" }}
                             >
-                              <AnimatePresence mode="wait" initial={false}>
-                                {ctx.nowJudge === "Down" ? (
-                                  <motionIcons.thumbsDownSolid
-                                    initial={{ pathLength: 0 }}
-                                    animate={{ pathLength: 1 }}
-                                    exit={{ pathLength: 0 }}
-                                  />
-                                ) : (
-                                  <motionIcons.thumbsDown
-                                    initial={{ pathLength: 0 }}
-                                    animate={{ pathLength: 1 }}
-                                    exit={{ pathLength: 0 }}
-                                  />
-                                )}
-                              </AnimatePresence>
-                            </motion.div>
-                          </div>
-                          <div className={cn(["flex items-center"])}>
-                            <div
-                              className={cn([
-                                "p-1 mt-[2px]",
-                                "hover:opacity-60 opacity-40",
-                                "hover:text-[#e81123] dark:hover:text-[#e3303f]",
-                                "transition duration-300",
-                              ])}
-                              onClick={() => action.unstar(curPlay)}
-                            >
-                              <motionIcons.starSlash
-                                size={14}
-                                initial={{ pathLength: 1 }}
-                              />
-                            </div>
-                          </div>
-                        </motion.div>
-                      </div>
+                              <span className="mx-auto max-w-[66vw] truncate whitespace-nowrap">
+                                {alt}
+                              </span>
+                            </motion.span>
+                          )}
+                        </AnimatePresence>
+                      </span>
+                    ) : (
+                      <span className="relative inline-block">
+                        <span>{playlist.name}</span>
+                        {processMsg?.playlist === playlist.name ? (
+                          <span className="absolute ml-1 max-w-2xs truncate whitespace-nowrap text-xs text-[#262626] dark:text-[#d4d4d4]">
+                            - {processMsg.str}
+                          </span>
+                        ) : null}
+                        {!isOk ? (
+                          <span className="absolute bottom-0 ml-1 text-xs text-[#404040] dark:text-[#a3a3a3]">
+                            {
+                              playlist.entries.filter(
+                                (entry) => !entry.downloaded_ok,
+                              ).length
+                            }
+                          </span>
+                        ) : null}
+                      </span>
                     )}
-                  </AnimatePresence>
-                </motion.div>
-              );
-            })}
-            {!isPlaying && (
-              <motion.div
-                className={cn([
-                  "text-2xl font-cinzel text-[#0a0a0a] dark:text-[#fafafa] transition cursor-pointer snap-center",
-                  "whitespace-nowrap",
-                  // isPlaying && "opacity-0 pointer-events-none select-none",
-                ])}
-                onClick={() => {
-                  if (isPlaying) return;
-                  action.add_new();
-                }}
-                tabIndex={isPlaying ? -1 : 0}
-                aria-disabled={isPlaying || undefined}
-              >
-                Add List
+                  </ContextMenuTrigger>
+                  {!isPlaying && !disabled && isOk ? (
+                    <ContextMenuContent
+                      className={cn([
+                        "bg-[rgba(255, 255, 255, 0.05)] border-none",
+                        os.is("macos")
+                          ? "backdrop-blur-[3px] shadow-md"
+                          : "gl gl-shadow",
+                      ])}
+                    >
+                      <ContextMenuItem
+                        className="focus:bg-accent/30 flex items-center justify-between transition dark:text-[#e5e5e5]"
+                        onClick={() => action.edit(playlist)}
+                      >
+                        Edit
+                      </ContextMenuItem>
+                      <LongPressContextMenuItem
+                        durationMs={2000}
+                        onConfirm={() => void action.delete(playlist)}
+                        className="focus:bg-accent/30 text-[#e81123] focus:text-[#e81123] data-[highlighted]:text-[#e81123]"
+                      >
+                        Delete
+                      </LongPressContextMenuItem>
+                    </ContextMenuContent>
+                  ) : null}
+                </ContextMenu>
+
+                <AnimatePresence>
+                  {curPlay && isPlaying && isCursorInApp && isCurrent ? (
+                    <div>
+                      <span
+                        aria-hidden
+                        className="invisible block h-0 max-w-[66vw] whitespace-nowrap"
+                      >
+                        {longer}
+                      </span>
+                      <motion.div
+                        className="flex w-full min-w-24 justify-between gap-4"
+                        initial={{ filter: "blur(6px)", opacity: 0, height: 0 }}
+                        animate={{
+                          filter: "blur(0px)",
+                          opacity: 1,
+                          height: "auto",
+                        }}
+                        exit={{ filter: "blur(6px)", opacity: 0, height: 0 }}
+                      >
+                        <div className="flex items-center">
+                          <motion.div
+                            className={cn([
+                              "relative transition duration-300 hover:text-[#468be6]",
+                              "hover:opacity-100 opacity-40",
+                              ctx.nowJudge === "Up" &&
+                                "text-[#468be6] opacity-100",
+                              ctx.nowJudge === "Down" &&
+                                "pointer-events-none opacity-0",
+                            ])}
+                            onClick={() =>
+                              ctx.nowJudge === "Up"
+                                ? void action.cancleUp(curPlay)
+                                : void action.up(curPlay)
+                            }
+                            animate={{
+                              width: ctx.nowJudge === "Down" ? 0 : "auto",
+                            }}
+                          >
+                            <AnimatePresence mode="wait" initial={false}>
+                              {ctx.nowJudge === "Up" ? (
+                                <motionIcons.thumbsUpSolid
+                                  initial={{ pathLength: 0 }}
+                                  animate={{ pathLength: 1 }}
+                                  exit={{ pathLength: 0 }}
+                                />
+                              ) : (
+                                <motionIcons.thumbsUp
+                                  initial={{ pathLength: 0 }}
+                                  animate={{ pathLength: 1 }}
+                                  exit={{ pathLength: 0 }}
+                                />
+                              )}
+                            </AnimatePresence>
+                          </motion.div>
+
+                          <motion.div
+                            initial={{
+                              width: ctx.nowJudge === "Down" ? 0 : 24,
+                            }}
+                            animate={{
+                              width: ctx.nowJudge === "Down" ? 0 : 24,
+                            }}
+                          />
+
+                          <motion.div
+                            className={cn([
+                              "mt-1 p-1 transition duration-300",
+                              "hover:opacity-60 opacity-40",
+                              ctx.nowJudge === "Down" && "opacity-80",
+                              ctx.nowJudge === "Up" &&
+                                "pointer-events-none opacity-0",
+                            ])}
+                            onClick={() => {
+                              if (ctx.nowJudge === "Down") {
+                                void action.cancleDown(curPlay);
+                              } else {
+                                void action.down(curPlay);
+                              }
+                            }}
+                          >
+                            <AnimatePresence mode="wait" initial={false}>
+                              {ctx.nowJudge === "Down" ? (
+                                <motionIcons.thumbsDownSolid
+                                  initial={{ pathLength: 0 }}
+                                  animate={{ pathLength: 1 }}
+                                  exit={{ pathLength: 0 }}
+                                />
+                              ) : (
+                                <motionIcons.thumbsDown
+                                  initial={{ pathLength: 0 }}
+                                  animate={{ pathLength: 1 }}
+                                  exit={{ pathLength: 0 }}
+                                />
+                              )}
+                            </AnimatePresence>
+                          </motion.div>
+                        </div>
+
+                        <div className="flex items-center">
+                          <div
+                            className={cn([
+                              "mt-[2px] p-1 transition duration-300",
+                              "hover:opacity-60 opacity-40",
+                              "hover:text-[#e81123] dark:hover:text-[#e3303f]",
+                            ])}
+                            onClick={() => void action.unstar(curPlay)}
+                          >
+                            <motionIcons.starSlash
+                              size={14}
+                              initial={{ pathLength: 1 }}
+                            />
+                          </div>
+                        </div>
+                      </motion.div>
+                    </div>
+                  ) : null}
+                </AnimatePresence>
               </motion.div>
-            )}
-            <div aria-hidden className="shrink-0 h-[50vh] snap-none" />
-          </div>
+            );
+          })}
+
+          {!isPlaying ? (
+            <motion.div
+              className={cn([
+                "snap-center cursor-pointer whitespace-nowrap text-2xl font-cinzel text-[#0a0a0a] transition dark:text-[#fafafa]",
+              ])}
+              onClick={() => {
+                if (isPlaying) return;
+                action.addNew();
+              }}
+              tabIndex={isPlaying ? -1 : 0}
+              aria-disabled={isPlaying || undefined}
+            >
+              Add List
+            </motion.div>
+          ) : null}
+
+          <div aria-hidden className="h-[50vh] shrink-0 snap-none" />
         </div>
-      </Face>
-    </>
+      </div>
+    </Face>
   );
 }
 
@@ -378,23 +373,23 @@ function Create() {
   const isReview = hook.useIsReview();
   return (
     <Face>
-      <div className="relative flex w-full h-full overflow-hidden">
+      <div className="relative flex h-full w-full overflow-hidden">
         <div
           className={cn([
             "absolute left-6 top-0 flex items-center gap-2 transition",
-            isReview && "opacity-0 pointer-events-none",
+            isReview && "pointer-events-none opacity-0",
           ])}
         >
           <BackButton onClick={action.back} />
         </div>
 
-        <div className="flex flex-col justify-center items-center w-1/2">
+        <div className="flex w-1/2 flex-col items-center justify-center">
           <motion.div layoutId="musicPlus">
             <labels.musicPlus />
           </motion.div>
         </div>
 
-        <div className="w-1/2 py-4 px-6 overflow-y-auto">
+        <div className="w-1/2 overflow-y-auto px-6 py-4">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -412,22 +407,23 @@ function Edit() {
   const isReview = hook.useIsReview();
   return (
     <Face>
-      <div className="relative flex w-full h-full overflow-hidden">
+      <div className="relative flex h-full w-full overflow-hidden">
         <div
           className={cn([
             "absolute left-6 top-0 flex items-center gap-2 transition",
-            isReview && "opacity-0 pointer-events-none",
+            isReview && "pointer-events-none opacity-0",
           ])}
         >
           <BackButton onClick={action.back} />
         </div>
-        <div className="flex flex-col justify-center items-center w-1/2">
+
+        <div className="flex w-1/2 flex-col items-center justify-center">
           <motion.div layoutId="musicPlus">
             <labels.musicPlus />
           </motion.div>
         </div>
 
-        <div className="w-1/2 py-4 px-6 overflow-y-auto">
+        <div className="w-1/2 overflow-y-auto px-6 py-4">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -451,19 +447,62 @@ function Guide() {
       }
       explain="You don’t have any play list yet. Let’s add your first one!"
       cta="Add First List"
-      onClick={action.add_new}
+      onClick={action.addNew}
+    />
+  );
+}
+
+function Booting() {
+  const blockerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    blockerRef.current?.focus();
+  }, []);
+
+  return (
+    <div
+      ref={blockerRef}
+      tabIndex={0}
+      aria-busy="true"
+      className="fixed inset-0 z-[100] bg-transparent outline-none"
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+      onKeyDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+      onFocusCapture={(event) => {
+        if (event.target !== blockerRef.current) {
+          blockerRef.current?.focus();
+        }
+      }}
     />
   );
 }
 
 export default function Home() {
+  const ctx = hook.useContext();
   const state = hook.useState();
+
+  if (!ctx.initialized) {
+    return <Booting />;
+  }
 
   return state.match({
     play: () => <Play />,
     new_guide: () => <Guide />,
     create: () => <Create />,
     edit: () => <Edit />,
-    _: K(null),
+    _: () => null,
   });
 }

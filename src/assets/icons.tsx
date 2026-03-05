@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { motion, AnimationProps } from "motion/react";
 
 export interface IconProps {

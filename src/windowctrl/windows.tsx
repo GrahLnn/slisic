@@ -2,18 +2,12 @@ import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
 import { Window } from "@tauri-apps/api/window";
 import type React from "react";
-import {
-  type KeyboardEvent,
-  type PropsWithChildren,
-  useCallback,
-  useEffect,
-  useState,
-  memo,
-} from "react";
+import { type KeyboardEvent, type PropsWithChildren, memo } from "react";
 import ReactDOM from "react-dom";
-import { useIsWindowFocus } from "../state_machine/windowFocus";
+import { useIsWindowFocus } from "../flow/windowFocus";
+import { useIsWindowMaximized } from "../flow/windowMaximized";
 
-const appWindow = new Window("main");
+const appWindow = Window.getCurrent();
 
 const windowsControlsPortal = document.createElement("div");
 windowsControlsPortal.id = "windows-controls-portal";
@@ -56,16 +50,16 @@ const WindowsButton = memo(function WindowsButton({
         onClick={onClick}
         onKeyDown={handleKeyDown}
         className={cn(
-          "h-8 w-[46px] flex items-center justify-center",
+          "h-8 w-11.5 flex items-center justify-center",
           "opacity-60 hover:opacity-100",
           // isWindowFocused ? "opacity-60" : "opacity-30",
           "text-[#090909] dark:text-[#f6f6f6]",
           "transition-all",
           "pointer-events-auto",
           color
-            ? "hover:bg-[var(--hover-bg-color)] hover:text-[var(--hover-text-color)]"
+            ? "hover:bg-(--hover-bg-color) hover:text-(--hover-text-color)"
             : "hover:bg-black/5 dark:hover:bg-white/5",
-          className
+          className,
         )}
         style={{
           ...(color
@@ -85,30 +79,13 @@ const WindowsButton = memo(function WindowsButton({
 });
 
 const WindowsControlsCore = memo(function WindowsControlsCore() {
-  const [maximized, setMaximized] = useState(false);
-
-  const getWindowState = useCallback(async () => {
-    const isMaximized = await Window.getCurrent().isMaximized();
-    setMaximized(isMaximized);
-  }, []);
-
-  useEffect(() => {
-    getWindowState().catch(console.error);
-
-    const unlisten = Window.getCurrent().onResized(() => {
-      getWindowState().catch(console.error);
-    });
-
-    return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
-    };
-  }, [getWindowState]);
+  const maximized = useIsWindowMaximized();
   const windowFocused = useIsWindowFocus();
 
   return (
     <div
       className={cn([
-        "flex items-center z-[9999] relative transition duration-300",
+        "flex items-center z-9999 relative transition duration-300",
       ])}
     >
       <WindowsButton
@@ -151,9 +128,8 @@ function WindowsControlsPortal() {
     >
       <WindowsControlsCore />
     </div>,
-    windowsControlsPortal
+    windowsControlsPortal,
   );
 }
 
 export default WindowsControlsPortal;
-

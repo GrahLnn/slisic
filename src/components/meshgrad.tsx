@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { memo, useEffect, useRef } from "react";
 
 type Props = {
   colors?: string[];
@@ -32,7 +32,7 @@ function hexToRGBA(s: string): [number, number, number, number] {
   return [1, 1, 1, 1];
 }
 
-export default function MeshGradientTauri({
+const MeshGradientTauri = memo(function MeshGradientTauri({
   colors = ["#bcecf6", "#00aaff", "#00f7ff", "#ffd447", "#33cc99", "#3399cc"],
   speed = 0.12,
   distortion = 0.8,
@@ -50,7 +50,11 @@ export default function MeshGradientTauri({
   const teardownTimerRef = useRef<number | null>(null);
 
   const speedRef = useRef(speed);
-  speedRef.current = speed;
+  const speedTargetRef = useRef(speed);
+
+  useEffect(() => {
+    speedTargetRef.current = speed;
+  }, [speed]);
 
   useEffect(() => {
     const wrap = wrapRef.current!;
@@ -411,7 +415,7 @@ export default function MeshGradientTauri({
       gl.bufferData(
         gl.ARRAY_BUFFER,
         new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]),
-        gl.STATIC_DRAW
+        gl.STATIC_DRAW,
       );
       gl.enableVertexAttribArray(0);
       gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
@@ -451,7 +455,7 @@ export default function MeshGradientTauri({
         0,
         gl.RGBA,
         gl.UNSIGNED_BYTE,
-        data
+        data,
       );
       // 不设置 sampler 的 location，默认 0 → TEXTURE0
 
@@ -487,7 +491,10 @@ export default function MeshGradientTauri({
         const now = performance.now();
         const dt = (now - t0) / 1000;
         t0 = now;
-        timeVal += dt * (speedRef.current ?? 0);
+        // Smooth speed transitions in RAF, without forcing React re-renders.
+        const target = speedTargetRef.current ?? 0;
+        speedRef.current += (target - speedRef.current) * 0.08;
+        timeVal += dt * speedRef.current;
 
         // 更新 a_time
         gl.bindBuffer(gl.ARRAY_BUFFER, vboTime!);
@@ -565,4 +572,6 @@ export default function MeshGradientTauri({
       <canvas ref={canvasRef} />
     </div>
   );
-}
+});
+
+export default MeshGradientTauri;

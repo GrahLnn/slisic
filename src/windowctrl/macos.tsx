@@ -1,13 +1,14 @@
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
+import type { FullScreenEvent } from "@/src/cmd/commands";
 import { Window } from "@tauri-apps/api/window";
 import type React from "react";
 import { type PropsWithChildren, useEffect, useState } from "react";
 import ReactDOM from "react-dom";
-import { useIsWindowFocus } from "../state_machine/windowFocus";
-import { events } from "../cmd/commands";
+import { useIsWindowFocus } from "../flow/windowFocus";
+import { crab } from "../cmd/commandAdapter";
 
-const appWindow = new Window("main");
+const appWindow = Window.getCurrent();
 
 const windowsControlsPortal = document.createElement("div");
 windowsControlsPortal.id = "windows-controls-portal";
@@ -37,16 +38,23 @@ function WindowButton({ className, onClick, icon }: WindowButtonProps) {
   );
 }
 
+function isFullScreenEvent(payload: unknown): payload is FullScreenEvent {
+  if (!payload || typeof payload !== "object") return false;
+  const value = payload as Partial<FullScreenEvent>;
+  return typeof value.is_fullscreen === "boolean";
+}
+
 function Core() {
   const is_fullscreen = useState<boolean>(false);
   const windowFocused = useIsWindowFocus();
   useEffect(() => {
-    const unlisten = events.fullScreenEvent.listen((event) => {
-      is_fullscreen[1](event.payload.is_fullscreen);
+    const unlisten = crab.evt("fullScreenEvent")((payload: unknown) => {
+      if (!isFullScreenEvent(payload)) return;
+      is_fullscreen[1](payload.is_fullscreen);
     });
 
     return () => {
-      unlisten.then((f) => f());
+      void unlisten.then((f: () => void) => f()).catch(() => undefined);
     };
   }, []);
   const iconcn =
@@ -62,17 +70,17 @@ function Core() {
       ])}
     >
       <WindowButton
-        className="group-hover:bg-[#ff5f57] opacity-50 group-hover:opacity-100"
+        className="group-hover:bg-[#ff5f57]"
         icon={<icons.xmarksm size={iconsize} className={iconcn} />}
         onClick={() => appWindow.close()}
       />
       <WindowButton
-        className="group-hover:bg-[#ffbc2e] opacity-50 group-hover:opacity-100"
+        className="group-hover:bg-[#ffbc2e]"
         icon={<icons.minussm size={iconsize} className={iconcn} />}
         onClick={() => appWindow.minimize()}
       />
       <WindowButton
-        className="group-hover:bg-[#27c63f] opacity-50 group-hover:opacity-100"
+        className="group-hover:bg-[#27c63f]"
         icon={
           <icons.caretMaximizeDiagonal2 size={iconsize} className={iconcn} />
         }
@@ -97,7 +105,7 @@ function MacOSControlsPortal() {
     >
       <Core />
     </div>,
-    windowsControlsPortal
+    windowsControlsPortal,
   );
 }
 
