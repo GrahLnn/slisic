@@ -4,7 +4,7 @@ import type {
   AssignTaskInput,
   BulkStatusInput,
   UnassignTaskInput,
-} from "@/src/cmd/templateApp";
+} from "./core";
 import { to_string } from "../kit";
 import {
   defaultMemberInput,

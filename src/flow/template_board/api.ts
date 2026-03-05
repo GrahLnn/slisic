@@ -1,13 +1,13 @@
+import { useSelector } from "@xstate/react";
+import { createActor } from "xstate";
+import { createSender } from "../kit";
+import { machine } from "./machine";
 import type {
   AssignTaskInput,
   BulkStatusInput,
   TaskStatus,
   UnassignTaskInput,
-} from "@/src/cmd/templateApp";
-import { useSelector } from "@xstate/react";
-import { createActor } from "xstate";
-import { createSender } from "../kit";
-import { machine } from "./machine";
+} from "./core";
 import { type MainStateT, payloads, sig } from "./events";
 
 export const actor = createActor(machine);
@@ -41,7 +41,8 @@ export const action = {
     send(payloads.set_bulk_status.load(value)),
   toggleTaskSelection: (taskId: string) =>
     send(payloads.toggle_task_selection.load(taskId)),
-  assignTask: (input: AssignTaskInput) => send(payloads.assign_task.load(input)),
+  assignTask: (input: AssignTaskInput) =>
+    send(payloads.assign_task.load(input)),
   unassignTask: (input: UnassignTaskInput) =>
     send(payloads.unassign_task.load(input)),
   setStatus: (input: BulkStatusInput) => send(payloads.set_status.load(input)),

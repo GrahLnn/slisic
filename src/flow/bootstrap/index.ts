@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { type WindowKindInfo, type WindowName, crab } from "../../cmd";
+import { type WindowName, crab } from "../../cmd";
 import { action as templateAction } from "../template_board";
 import {
   action as updaterAction,

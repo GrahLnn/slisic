@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use surrealdb::types::{SurrealValue, Value};
 use surrealdb::IndexedResults;
 
@@ -34,11 +34,16 @@ impl TxRunner {
         let mut last_response: Option<IndexedResults> = None;
 
         for stmt in stmts {
+            let sql_for_error = stmt.sql.clone();
             let mut query = tx.query(&stmt.sql);
             for (k, v) in stmt.bindings {
                 query = query.bind((k, v));
             }
-            let response = query.await?.check()?;
+            let response = query
+                .await
+                .map_err(|e| anyhow!("tx query failed: `{sql_for_error}`: {e}"))?
+                .check()
+                .map_err(|e| anyhow!("tx response check failed: `{sql_for_error}`: {e}"))?;
             last_response = Some(response);
         }
 

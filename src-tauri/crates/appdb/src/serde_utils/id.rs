@@ -23,7 +23,6 @@ fn record_key_to_id(key: RecordIdKey) -> Result<Id, String> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Type)]
-#[serde(untagged)]
 pub enum Id {
     String(String),
     Number(i64),

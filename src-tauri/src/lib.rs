@@ -8,7 +8,7 @@ use anyhow::Result;
 use database::{init_db_with_options, InitDbOptions, Repo};
 use domain::models::user::User;
 use domain::template;
-use specta_typescript::{formatter::prettier, BigIntExportBehavior, Typescript};
+use specta_typescript::{BigIntExportBehavior, Typescript};
 use tauri::async_runtime::block_on;
 use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events, Builder};
@@ -45,7 +45,6 @@ pub fn run() {
         .export(
             Typescript::default()
                 .bigint(BigIntExportBehavior::Number)
-                .formatter(prettier)
                 .header(
                     r#"/* eslint-disable */
 

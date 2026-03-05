@@ -1,13 +1,6 @@
-import { crab } from "@/src/cmd";
-import {
-  templateApi,
-  type AssignTaskInput,
-  type BulkStatusInput,
-  type TaskStatus,
-  type TemplateDashboard,
-  type UnassignTaskInput,
-} from "@/src/cmd/templateApp";
 import type { Result } from "@grahlnn/fn";
+import { crab } from "@/src/cmd";
+import type { TemplateDashboard } from "@/src/cmd/commands";
 import {
   collect,
   createActors,
@@ -24,7 +17,14 @@ import {
   allTransfer,
   type ActorInput,
 } from "../kit";
-import type { OperationResult, PendingOperation } from "./core";
+import type {
+  AssignTaskInput,
+  BulkStatusInput,
+  OperationResult,
+  PendingOperation,
+  TaskStatus,
+  UnassignTaskInput,
+} from "./core";
 
 async function expectDashboard(
   promise: Promise<Result<TemplateDashboard, string>>,
@@ -67,12 +67,12 @@ export const invoker = createActors({
       case "snapshot":
         return {
           kind: "dashboard",
-          dashboard: await expectDashboard(templateApi.snapshot()),
+          dashboard: await expectDashboard(crab.templateSnapshot()),
         };
       case "bootstrap":
         return {
           kind: "dashboard",
-          dashboard: await expectDashboard(templateApi.bootstrap()),
+          dashboard: await expectDashboard(crab.templateBootstrap()),
           clearSelection: true,
           success: {
             title: "Demo data loaded",
@@ -81,7 +81,7 @@ export const invoker = createActors({
       case "reset":
         return {
           kind: "dashboard",
-          dashboard: await expectDashboard(templateApi.reset()),
+          dashboard: await expectDashboard(crab.templateReset()),
           clearSelection: true,
           success: {
             title: "Template data reset",
@@ -90,7 +90,9 @@ export const invoker = createActors({
       case "create_member":
         return {
           kind: "dashboard",
-          dashboard: await expectDashboard(templateApi.createMember(input.input)),
+          dashboard: await expectDashboard(
+            crab.templateCreateMember(input.input),
+          ),
           resetMemberInput: true,
           success: {
             title: "Member added",
@@ -99,7 +101,9 @@ export const invoker = createActors({
       case "create_task":
         return {
           kind: "dashboard",
-          dashboard: await expectDashboard(templateApi.createTask(input.input)),
+          dashboard: await expectDashboard(
+            crab.templateCreateTask(input.input),
+          ),
           resetTaskInput: true,
           success: {
             title: "Task added",
@@ -108,12 +112,16 @@ export const invoker = createActors({
       case "assign_task":
         return {
           kind: "dashboard",
-          dashboard: await expectDashboard(templateApi.assignTask(input.input)),
+          dashboard: await expectDashboard(
+            crab.templateAssignTask(input.input),
+          ),
         };
       case "unassign_task":
         return {
           kind: "dashboard",
-          dashboard: await expectDashboard(templateApi.unassignTask(input.input)),
+          dashboard: await expectDashboard(
+            crab.templateUnassignTask(input.input),
+          ),
         };
       case "bulk_status":
         if (input.input.task_ids.length === 0) {
@@ -123,7 +131,9 @@ export const invoker = createActors({
         }
         return {
           kind: "dashboard",
-          dashboard: await expectDashboard(templateApi.bulkSetStatus(input.input)),
+          dashboard: await expectDashboard(
+            crab.templateBulkSetStatus(input.input),
+          ),
           clearSelection: true,
         };
       case "open_window":

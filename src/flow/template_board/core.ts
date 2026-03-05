@@ -1,13 +1,27 @@
-import type { MouseWindowInfo } from "@/src/cmd";
 import type {
   AssignTaskInput,
-  BulkStatusInput,
+  BulkStatusInput as CmdBulkStatusInput,
+  MouseWindowInfo,
   NewMemberInput,
-  NewTaskInput,
-  TaskStatus,
+  NewTaskInput as CmdNewTaskInput,
   TemplateDashboard,
   UnassignTaskInput,
-} from "@/src/cmd/templateApp";
+} from "@/src/cmd/commands";
+
+export type TaskStatus = "todo" | "doing" | "done";
+export type {
+  AssignTaskInput,
+  MouseWindowInfo,
+  NewMemberInput,
+  TemplateDashboard,
+  UnassignTaskInput,
+};
+export type NewTaskInput = Omit<CmdNewTaskInput, "status"> & {
+  status: TaskStatus;
+};
+export type BulkStatusInput = Omit<CmdBulkStatusInput, "status"> & {
+  status: TaskStatus;
+};
 
 export interface ToastMessage {
   title: string;

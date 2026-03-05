@@ -20,4 +20,5 @@ pub use query::builder::*;
 pub use query::sql::*;
 pub use repository::*;
 pub use serde_utils::id::*;
+pub use surrealdb::types::{RecordId, Table};
 pub use tx::*;

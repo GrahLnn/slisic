@@ -16,11 +16,6 @@ thread_local! {
     static MAIN_WINDOW_OBSERVER: RefCell<Option<FullscreenStateManager>> = RefCell::new(None);
 }
 
-#[cfg(target_os = "windows")]
-use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
-#[cfg(target_os = "windows")]
-use windows::core::Interface;
-
 const PREWARM_TARGET_PER_WINDOW: usize = 1;
 
 static PREWARM_MAIN_PENDING: LazyLock<Mutex<Vec<String>>> =
@@ -188,16 +183,7 @@ pub fn apply_window_setup(window: &WebviewWindow, is_main: bool) {
     let _ = is_main;
     #[cfg(target_os = "windows")]
     {
-        window.set_decorations(false).unwrap();
-        window
-            .with_webview(|webview| unsafe {
-                let core = webview.controller().CoreWebView2().unwrap();
-                let settings = core.Settings().unwrap();
-                let s4: ICoreWebView2Settings4 = settings.cast().unwrap(); // 提升到 Settings4
-                s4.SetIsGeneralAutofillEnabled(false).unwrap();
-                s4.SetIsPasswordAutosaveEnabled(false).unwrap();
-            })
-            .expect("disable autofill");
+        let _ = window.set_decorations(false);
     }
 
     #[cfg(target_os = "macos")]

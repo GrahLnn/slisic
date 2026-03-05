@@ -5,9 +5,10 @@ import "@fontsource/maple-mono";
 import { useMemo } from "react";
 import Input from "./components/Input";
 import TopBar from "./topbar";
-import { type DemoStats, type TaskStatus } from "./cmd/templateApp";
+import type { DemoStats } from "./cmd/commands";
 import { Toaster } from "sileo";
 import { action, hook } from "./flow/template_board";
+import type { TaskStatus } from "./flow/template_board/core";
 import { me } from "@grahlnn/fn";
 import { useAppBootstrap } from "./flow/bootstrap";
 

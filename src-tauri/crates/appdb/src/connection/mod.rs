@@ -8,7 +8,6 @@ use std::time::Duration;
 use surrealdb::engine::local::{Db, SurrealKv};
 use surrealdb::opt::Config;
 use surrealdb::Surreal;
-use sysinfo::{Pid, System};
 use tokio::sync::OnceCell;
 
 pub type DbHandle = Arc<Surreal<Db>>;
@@ -75,38 +74,6 @@ fn is_schema_already_defined_error(message: &str) -> bool {
     lower.contains("already exists") || lower.contains("already defined")
 }
 
-fn is_process_running(pid: u32) -> bool {
-    let mut sys = System::new();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-    sys.process(Pid::from_u32(pid)).is_some()
-}
-
-fn clear_stale_lock_if_needed(path: &PathBuf) -> Result<bool> {
-    if !path.is_dir() {
-        return Ok(false);
-    }
-
-    let lock_path = path.join("LOCK");
-    if !lock_path.exists() {
-        return Ok(false);
-    }
-
-    let lock_pid = fs::read_to_string(&lock_path).ok();
-    let lock_pid = lock_pid.as_deref().map(str::trim).unwrap_or_default();
-    let is_live_owner = lock_pid
-        .parse::<u32>()
-        .ok()
-        .map(is_process_running)
-        .unwrap_or(false);
-
-    if is_live_owner {
-        return Ok(false);
-    }
-
-    fs::remove_file(&lock_path)?;
-    Ok(true)
-}
-
 async fn open_db(path: PathBuf, options: &InitDbOptions) -> Result<Surreal<Db>> {
     let config = Config::new()
         .set_ast_payload(options.ast_payload)
@@ -131,16 +98,7 @@ pub async fn init_db(path: PathBuf) -> Result<()> {
 
 pub async fn init_db_with_options(path: PathBuf, options: InitDbOptions) -> Result<()> {
     fs::create_dir_all(&path)?;
-    let db = match open_db(path.clone(), &options).await {
-        Ok(db) => db,
-        Err(first_err) => {
-            if clear_stale_lock_if_needed(&path)? {
-                open_db(path, &options).await?
-            } else {
-                return Err(first_err.into());
-            }
-        }
-    };
+    let db = open_db(path, &options).await?;
     db.use_ns("app").use_db("app").await?;
 
     DB.set(Arc::new(db))
