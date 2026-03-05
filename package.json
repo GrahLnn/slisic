@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "rsbuild dev",
     "build": "rsbuild build",
-    "preview": "rsbuild preview"
+    "preview": "rsbuild preview",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "check:all": "bun run typecheck && bun run build && bun run rust:check"
   },
   "dependencies": {
     "@fontsource/maple-mono": "^5.2.6",

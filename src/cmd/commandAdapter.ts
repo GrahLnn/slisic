@@ -1,4 +1,4 @@
-import { commands, events, makeLievt } from "./commands";
+import { commands, events, makeLiveEvent } from "./commands";
 import { Err, Ok, type Result } from "@grahlnn/fn";
 
 type AwaitedRet<F extends (...args: any[]) => any> = Awaited<ReturnType<F>>;
@@ -71,6 +71,6 @@ const crabProxy = new Proxy(
   },
 );
 
-const evt = makeLievt(events);
+const evt = makeLiveEvent(events);
 
 export const crab = Object.assign(crabProxy, { evt });

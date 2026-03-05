@@ -35,6 +35,13 @@ Start the development server:
 bun tauri dev
 ```
 
+Quality gates:
+
+```bash
+bun run typecheck
+bun run check:all
+```
+
 Add a shadcn component:
 
 ```bash

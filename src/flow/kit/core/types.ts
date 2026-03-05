@@ -32,7 +32,7 @@ export type TransferMap<TState extends readonly string[]> =
 
 export type StateSignalResult<
   TState extends readonly string[],
-  TSignal extends string
+  TSignal extends string,
 > = {
   State: StateMap<TState>;
   Signal: SignalMap<TSignal>;
@@ -53,7 +53,7 @@ export type StripPrefix<S extends string> = S extends `${Prefix}${infer R}`
 
 export type PathValue<T, P extends readonly string[]> = P extends [
   infer H,
-  ...infer Rest
+  ...infer Rest,
 ]
   ? H extends keyof T
     ? Rest extends string[]
@@ -74,8 +74,8 @@ export type ElemNoSpaceTuple<T extends readonly string[]> = {
 type NoSpace<S extends string> = S extends `${string} ${string}`
   ? "States containing spaces are not accepted."
   : S extends `${string}.${string}`
-  ? "States containing dots are not accepted."
-  : S;
+    ? "States containing dots are not accepted."
+    : S;
 
 export type SignalEvt<T, Key extends PropertyKey = "Signal"> = ValueOf<{
   [P in keyof T]: T[P] extends Record<Key, infer S>
@@ -95,26 +95,26 @@ type UnionToIntersection<U> = (
   ? I
   : never;
 
-type LastInUnion<U> = UnionToIntersection<
-  U extends unknown ? (x: U) => 0 : never
-> extends (x: infer L) => 0
-  ? L
-  : never;
+type LastInUnion<U> =
+  UnionToIntersection<U extends unknown ? (x: U) => 0 : never> extends (
+    x: infer L,
+  ) => 0
+    ? L
+    : never;
 
 type UnionToTuple<U, Last = LastInUnion<U>> = [U] extends [never]
   ? []
   : [...UnionToTuple<Exclude<U, Last>>, Last];
 
 // ===== 小工具：相等 / 包含 / 求元组中重复 =====
-type IsEqual<X, Y> = (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y
-  ? 1
-  : 2
-  ? true
-  : false;
+type IsEqual<X, Y> =
+  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2
+    ? true
+    : false;
 
 type Includes<T extends readonly any[], U> = T extends readonly [
   infer H,
-  ...infer R
+  ...infer R,
 ]
   ? IsEqual<H, U> extends true
     ? true
@@ -124,7 +124,7 @@ type Includes<T extends readonly any[], U> = T extends readonly [
 type Duplicates<
   T extends readonly any[],
   Seen extends readonly any[] = [],
-  Out extends readonly any[] = []
+  Out extends readonly any[] = [],
 > = T extends readonly [infer H, ...infer R]
   ? Includes<Seen, H> extends true
     ? Duplicates<R, Seen, Includes<Out, H> extends true ? Out : [...Out, H]>
@@ -145,26 +145,27 @@ type NormalizeByType<U extends { type: PropertyKey }> = U extends any
   : never;
 
 /* —— 宽类型检查也基于归一化后的 type（含剥前缀） —— */
-type BroadKinds<U extends { type: PropertyKey }> = NormalizeByType<U> extends {
-  type: infer K;
-}
-  ? K extends string
-    ? string extends K
-      ? "string"
-      : never
-    : K extends number
-    ? number extends K
-      ? "number"
-      : never
-    : K extends symbol
-    ? symbol extends K
-      ? "symbol"
-      : never
-    : never
-  : never;
+type BroadKinds<U extends { type: PropertyKey }> =
+  NormalizeByType<U> extends {
+    type: infer K;
+  }
+    ? K extends string
+      ? string extends K
+        ? "string"
+        : never
+      : K extends number
+        ? number extends K
+          ? "number"
+          : never
+        : K extends symbol
+          ? symbol extends K
+            ? "symbol"
+            : never
+          : never
+    : never;
 
 type IsUnion<T, U = T> = (T extends any ? (k: T) => void : never) extends (
-  k: infer I
+  k: infer I,
 ) => void
   ? [U] extends [I]
     ? false
@@ -187,7 +188,7 @@ type DuplicateTypeList<U extends { type: PropertyKey }> =
 
 /** 保留原名与分支结构：UniqueEvts —— 用新的 DuplicateTypeList 与 BroadKinds */
 export type UniqueEvts<U extends { type: PropertyKey }> = [
-  DuplicateTypeList<U>
+  DuplicateTypeList<U>,
 ] extends [never]
   ? [BroadKinds<U>] extends [never]
     ? U
@@ -209,7 +210,6 @@ type E_OK =
   | { type: "c"; output: boolean };
 
 type Check_OK = UniqueEvts<E_OK>; // 应该就是 E_OK 本身
-const T_OK: DuplicateTypeList<E_OK> extends [] ? true : never = true; // ✅ 通过
 
 // 2) ❌ 有重复：'a' 出现两次
 type E_DUP =
@@ -217,21 +217,21 @@ type E_DUP =
   | { type: "a"; output: string }
   | { type: "b"; output: boolean };
 
-// @ts-expect-error 重复的 type 应报错
+// 预期：重复 type 会报错
 type Check_DUP = UniqueEvts<E_DUP>;
 /* 也可用断言触发报错： */
-// @ts-expect-error DuplicateTypeList 应非空
-const T_DUP: DuplicateTypeList<E_DUP> extends [] ? true : never = true;
+// 预期：DuplicateTypeList 应非空
+type T_DUP = DuplicateTypeList<E_DUP>;
 
 // 3) ❌ 非字面量：包含 type: string
 type E_BROAD =
   | { type: string; output: number }
   | { type: "b"; output: boolean };
 
-// @ts-expect-error 非字面量 type 应报错（__ERROR_NON_LITERAL_EVENT_TYPES: 'string'）
+// 预期：非字面量 type 会报错（__ERROR_NON_LITERAL_EVENT_TYPES: 'string'）
 type Check_BROAD = UniqueEvts<E_BROAD>;
-// @ts-expect-error BroadTypes 应为 'string' 而非 never
-const T_BROAD: [BroadTypes<E_BROAD>] extends [never] ? true : never = true;
+// 预期：BroadTypes 应为 'string' 而非 never
+type T_BROAD = BroadTypes<E_BROAD>;
 
 // 4) ❌ 既有重复又有非字面量
 type E_MIXED =
@@ -240,19 +240,18 @@ type E_MIXED =
   | { type: number; output: 3 } // 非字面量
   | { type: "y"; output: 4 };
 
-// @ts-expect-error 同时应提示重复和非字面量
+// 预期：同时提示重复和非字面量
 type Check_MIXED = UniqueEvts<E_MIXED>;
-// @ts-expect-error DuplicateTypeList 应非空（包含 'x'）
-const T_MIXED_DUP: DuplicateTypeList<E_MIXED> extends [] ? true : never = true;
-// @ts-expect-error BroadTypes 应为 'number'
-const T_MIXED_BROAD: [BroadTypes<E_MIXED>] extends [never] ? true : never =
-  true;
+// 预期：DuplicateTypeList 应非空（包含 'x'）
+type T_MIXED_DUP = DuplicateTypeList<E_MIXED>;
+// 预期：BroadTypes 应为 'number'
+type T_MIXED_BROAD = BroadTypes<E_MIXED>;
 
 // 5) ✅ 从“注册表对象”推导（设计层面也避免重名）
 const registry = {
   prepare_save_path: (s: string) =>
-    ({ type: "prepare_save_path", output: s } as const),
-  ping: (n: number) => ({ type: "ping", output: n } as const),
+    ({ type: "prepare_save_path", output: s }) as const,
+  ping: (n: number) => ({ type: "ping", output: n }) as const,
 };
 type EventsFromRegistry = ReturnType<(typeof registry)[keyof typeof registry]>;
 type Check_REGISTRY = UniqueEvts<EventsFromRegistry>; // ✅ 通过

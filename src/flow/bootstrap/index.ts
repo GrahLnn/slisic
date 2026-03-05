@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { type WindowName, crab } from "../../cmd";
-import { action as templateAction } from "../template_board";
+import {
+  action as templateAction,
+  ensureStarted as ensureTemplateStarted,
+} from "../template_board";
 import {
   action as updaterAction,
   ensureStarted as ensureUpdaterStarted,
@@ -23,6 +26,7 @@ export function useAppBootstrap(): AppWindowMeta {
 
   useEffect(() => {
     void crab.appReady();
+    ensureTemplateStarted();
     templateAction.run();
 
     let disposed = false;

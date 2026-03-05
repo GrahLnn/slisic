@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
 import { AnimatePresence, motion } from "motion/react";
 import type React from "react";
-import { type PropsWithChildren, ReactNode, memo } from "react";
+import { type PropsWithChildren, type ReactNode, memo } from "react";
 import { useIsBarVisible } from "./flow/barVisible";
 import { useIsWindowFocus } from "./flow/windowFocus";
 import { os } from "@/lib/utils";
@@ -38,6 +38,7 @@ const CtrlButton = memo(function CtrlButtonComp({
           !isVisible && "opacity-0 pointer-events-none",
           className,
         ])}
+        aria-label={label}
         onClick={onClick}
       >
         <div className={cn(["flex items-center gap-1"])}>
@@ -66,13 +67,9 @@ export const LeftControls = memo(function LeftControlsComponent() {
 });
 
 const RightControls = memo(function RightControlsComponent() {
-  const isVisible = useIsBarVisible();
-
-  const checkcn =
-    "dark:hover:bg-[#373737] hover:bg-[#d4d4d4] opacity-70 hover:opacity-100 rounded-full transition cursor-pointer";
   return (
     <div className={cn(["flex items-center"])}>
-      <CtrlButton label="Search" icon={<icons.magnifler3 size={14} />} />
+      <CtrlButton label="Search" icon={<icons.magnifier3 size={14} />} />
       <CtrlButton label="Language" icon={<icons.globe3 size={14} />} />
       <CtrlButton label="Update" icon={<icons.arrowDown size={14} />} />
 
@@ -86,18 +83,19 @@ const RightControls = memo(function RightControlsComponent() {
 });
 
 const MiddleControls = memo(function MiddleControlsComponent() {
-  const middleTools: ReactNode[] = [];
+  const middleTools: Array<{ key: string; node: ReactNode }> = [];
+  const middleTool = middleTools[0];
   return (
     <AnimatePresence>
-      {middleTools && (
+      {middleTool && (
         <motion.div
-          key={middleTools?.key || "tool"}
+          key={middleTool.key}
           initial={{ opacity: 0, y: 2 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -2 }}
           transition={{ duration: 0.2 }}
         >
-          {middleTools?.node}
+          {middleTool.node}
         </motion.div>
       )}
     </AnimatePresence>

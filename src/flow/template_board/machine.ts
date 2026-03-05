@@ -18,9 +18,9 @@ import { invoker, payloads, sig, ss } from "./events";
 import { src } from "./src";
 
 function setPending(pending: PendingOperation) {
-  return assign<Context, any>({
+  return assign({
     pending: () => pending,
-  });
+  }) as any;
 }
 
 function handleSuccess(output: OperationResult) {
@@ -239,14 +239,16 @@ export const machine = src.createMachine({
         onDone: {
           target: ss.mainx.State.idle,
           actions: [
-            assign(({ context, event }) =>
-              applyResult(
-                context as Context,
-                (event as unknown as { output: OperationResult }).output,
-              ),
-            ),
-            ({ event }) =>
-              handleSuccess((event as { output: OperationResult }).output),
+            assign(({ context, event }) => {
+              const output = (event as unknown as { output: OperationResult })
+                .output;
+              return applyResult(context as Context, output);
+            }),
+            ({ event }) => {
+              const output = (event as unknown as { output: OperationResult })
+                .output;
+              handleSuccess(output);
+            },
           ],
         },
         onError: {

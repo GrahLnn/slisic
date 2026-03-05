@@ -1,6 +1,6 @@
 import type { Result } from "@grahlnn/fn";
-import { crab } from "@/src/cmd";
-import type { TemplateDashboard } from "@/src/cmd/commands";
+import { crab } from "../../cmd";
+import type { TemplateDashboard } from "../../cmd/commands";
 import {
   collect,
   createActors,

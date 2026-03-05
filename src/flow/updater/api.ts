@@ -2,7 +2,7 @@ import { createActor } from "xstate";
 import { machine } from "./machine";
 import { useSelector } from "@xstate/react";
 import { me } from "@grahlnn/fn";
-import { MainStateT, payloads, sig } from "./events";
+import { MainStateT, sig } from "./events";
 
 export const actor = createActor(machine);
 let started = false;
@@ -21,5 +21,8 @@ export const hook = {
 };
 
 export const action = {
-  run: () => actor.send(sig.mainx.run),
+  run: () => {
+    ensureStarted();
+    actor.send(sig.mainx.run);
+  },
 };

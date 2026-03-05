@@ -7,7 +7,7 @@ import { actor } from "./api";
 //       ? snapshot.value
 //       : JSON.stringify(snapshot.value);
 
-//   console.log(`[templete] ${state}`, snapshot.context);
+//   console.log(`[template] ${state}`, snapshot.context);
 // });
 export * from "./api";
 export * from "./events";

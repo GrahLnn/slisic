@@ -6,7 +6,7 @@ import type {
   NewTaskInput as CmdNewTaskInput,
   TemplateDashboard,
   UnassignTaskInput,
-} from "@/src/cmd/commands";
+} from "../../cmd/commands";
 
 export type TaskStatus = "todo" | "doing" | "done";
 export type {

@@ -5,7 +5,7 @@ import "@fontsource/maple-mono";
 import { useMemo } from "react";
 import Input from "./components/Input";
 import TopBar from "./topbar";
-import type { DemoStats } from "./cmd/commands";
+import type { DemoStats, Id } from "./cmd/commands";
 import { Toaster } from "sileo";
 import { action, hook } from "./flow/template_board";
 import type { TaskStatus } from "./flow/template_board/core";
@@ -34,6 +34,16 @@ const statColors = [
   "from-lime-500/20 via-lime-500/5 to-transparent",
   "from-emerald-500/20 via-emerald-500/5 to-transparent",
 ];
+
+function idToString(id: Id): string {
+  return "String" in id ? id.String : String(id.Number);
+}
+
+function toTaskStatus(value: string): TaskStatus {
+  return statusOptions.includes(value as TaskStatus)
+    ? (value as TaskStatus)
+    : "todo";
+}
 
 function StatsPanel({ stats }: { stats: DemoStats }) {
   const cards = [
@@ -86,7 +96,7 @@ function TemplateBoard() {
   const memberMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const member of dashboard?.members ?? []) {
-      map.set(member.id, `${member.name} (${member.role})`);
+      map.set(idToString(member.id), `${member.name} (${member.role})`);
     }
     return map;
   }, [dashboard?.members]);
@@ -354,13 +364,15 @@ function TemplateBoard() {
           <div className="space-y-3">
             {dashboard?.tasks.length ? (
               dashboard.tasks.map((task) => {
+                const taskId = idToString(task.id);
+                const taskStatus = toTaskStatus(task.status);
                 const assignedMemberId =
-                  assignmentMap.get(task.id) ?? task.owner_id ?? "";
-                const selected = selectedTaskIds.includes(task.id);
+                  assignmentMap.get(taskId) ?? task.owner_id ?? "";
+                const selected = selectedTaskIds.includes(taskId);
 
                 return (
                   <article
-                    key={task.id}
+                    key={taskId}
                     className={cn(
                       "rounded-xl border p-3 md:p-4",
                       "border-white/20 dark:border-white/10",
@@ -372,7 +384,7 @@ function TemplateBoard() {
                         <input
                           type="checkbox"
                           checked={selected}
-                          onChange={() => action.toggleTaskSelection(task.id)}
+                          onChange={() => action.toggleTaskSelection(taskId)}
                           className="mt-1 size-4 accent-cyan-500"
                         />
                         <div>
@@ -380,7 +392,7 @@ function TemplateBoard() {
                             {task.title}
                           </h3>
                           <p className="text-xs opacity-70 font-mono mt-1">
-                            {task.id}
+                            {taskId}
                           </p>
                           <p className="text-sm opacity-80 mt-1">
                             {task.notes}
@@ -391,10 +403,10 @@ function TemplateBoard() {
                         <span
                           className={cn(
                             "rounded-full border px-2.5 py-1 text-xs",
-                            statusStyles[task.status],
+                            statusStyles[taskStatus],
                           )}
                         >
-                          {statusLabels[task.status]}
+                          {statusLabels[taskStatus]}
                         </span>
                         <span className="rounded-full border border-white/20 px-2.5 py-1 text-xs opacity-80">
                           P{task.priority}
@@ -409,12 +421,12 @@ function TemplateBoard() {
                           const memberId = event.currentTarget.value;
                           if (memberId) {
                             action.assignTask({
-                              task_id: task.id,
+                              task_id: taskId,
                               member_id: memberId,
                             });
                           } else {
                             action.unassignTask({
-                              task_id: task.id,
+                              task_id: taskId,
                             });
                           }
                         }}
@@ -422,23 +434,26 @@ function TemplateBoard() {
                       >
                         <option value="">Unassigned</option>
                         {dashboard.members.map((member) => (
-                          <option key={member.id} value={member.id}>
-                            {memberMap.get(member.id)}
+                          <option
+                            key={idToString(member.id)}
+                            value={idToString(member.id)}
+                          >
+                            {memberMap.get(idToString(member.id))}
                           </option>
                         ))}
                       </select>
 
                       {statusOptions.map((status) => (
                         <button
-                          key={`${task.id}-${status}`}
+                          key={`${taskId}-${status}`}
                           type="button"
                           className={cn(
                             "rounded-lg border px-3 py-2 text-xs transition",
-                            task.status === status
+                            taskStatus === status
                               ? "border-cyan-500/40 bg-cyan-500/10"
                               : "border-white/20 dark:border-white/10 hover:bg-white/5",
                           )}
-                          onClick={() => setStatus([task.id], status)}
+                          onClick={() => setStatus([taskId], status)}
                           disabled={loading}
                         >
                           {statusLabels[status]}

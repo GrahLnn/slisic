@@ -3,22 +3,15 @@ import {
   defineSS,
   ns,
   sst,
-  event,
-  machine,
   createActors,
-  ActorInput,
   InvokeEvt,
   UniqueEvts,
-  PayloadEvt,
   SignalEvt,
-  MachineEvt,
   allSignal,
   allState,
   allTransfer,
 } from "../kit";
 import { resultx } from "../state";
-import { Err, Ok, Result } from "@grahlnn/fn";
-import { createMachine } from "xstate";
 import { check } from "@tauri-apps/plugin-updater";
 import { sileo } from "sileo";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -30,24 +23,24 @@ export const ss = defineSS(
 export const state = allState(ss);
 export const sig = allSignal(ss);
 export const transfer = allTransfer(ss);
+
+export type UpdateCheckResult =
+  | { kind: "available"; version: string }
+  | { kind: "up_to_date" };
+
 export const invoker = createActors({
-  async checkUpdate() {
+  async checkUpdate(): Promise<UpdateCheckResult> {
     console.log("check update");
     const update = await check();
     if (update) {
       console.log(
         `found update ${update.version} from ${update.date} with notes ${update.body}`,
       );
-      let downloaded = 0;
-      let contentLength = 0;
 
       await update.download((e) => {
         switch (e.event) {
           case "Started":
-            contentLength = e.data.contentLength!;
-            break;
           case "Progress":
-            downloaded += e.data.chunkLength;
             break;
           case "Finished":
             console.log("download finished");
@@ -55,10 +48,10 @@ export const invoker = createActors({
         }
       });
 
-      console.log("update installed");
+      console.log("update downloaded");
       sileo.success({
-        title: "Already up to date",
-        description: `Version ${update.version} has been ready`,
+        title: "Update ready",
+        description: `Version ${update.version} has been downloaded`,
         duration: null,
         button: {
           title: "Restart",
@@ -68,10 +61,11 @@ export const invoker = createActors({
           },
         },
       });
-      return;
+      return { kind: "available", version: update.version };
     }
+
     console.log("no update found");
-    throw new Error(`no update found`);
+    return { kind: "up_to_date" };
   },
 });
 export const payloads = collect();
@@ -80,8 +74,5 @@ export const machines = collect();
 export type MainStateT = keyof typeof ss.mainx.State;
 export type ResultStateT = keyof typeof resultx.State;
 export type Events = UniqueEvts<
-  | SignalEvt<typeof ss>
-  | InvokeEvt<typeof invoker>
-  | PayloadEvt<typeof payloads.infer>
-  | MachineEvt<typeof machines.infer>
+  SignalEvt<typeof ss> | InvokeEvt<typeof invoker>
 >;
