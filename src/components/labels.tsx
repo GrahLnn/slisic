@@ -1,4 +1,4 @@
-import { me } from "@/lib/matchable";
+import { me } from "@grahlnn/fn";
 import { cn } from "@/lib/utils";
 import { motionIcons } from "../assets/icons";
 
@@ -101,7 +101,7 @@ export const labels = {
       </svg>
     </Wrapper>
   ),
-  prase: ({ withHover = false }: { withHover?: boolean }) => (
+  prase: (_: { withHover?: boolean }) => (
     <div
       className={cn([
         "flex h-8 w-9/12 items-center justify-center md:h-10 md:w-8/12 md:textLg",

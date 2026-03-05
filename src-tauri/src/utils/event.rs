@@ -4,11 +4,6 @@ use std::sync::atomic::AtomicBool;
 use tauri_specta::Event;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Type, Event)]
-pub struct ImportEvent {
-    pub done: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Type, Event)]
 pub struct FullScreenEvent {
     pub is_fullscreen: bool,
 }

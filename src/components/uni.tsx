@@ -1,53 +1,15 @@
 import { cn } from "@/lib/utils";
-import { useState, useRef, useEffect, memo } from "react";
+import { me } from "@grahlnn/fn";
 import {
-  IconProps,
   icons,
   motionIcons,
+  type IconProps,
   type MotionIconProps,
 } from "@/src/assets/icons";
-import {
-  motion,
-  AnimatePresence,
-  useAnimation,
-  AnimationProps,
-} from "motion/react";
-import { me } from "@/lib/matchable";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { useVirtualizer } from "@tanstack/react-virtual";
-import { Button } from "@/components/ui/button";
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { Check, ChevronsUpDown, Plus } from "lucide-react";
-import * as React from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Result } from "@/lib/result";
-import { hook as ffmpeghook } from "@/src/state_machine/ffmpeg";
+import { AnimatePresence, motion, type AnimationProps } from "motion/react";
+import type React from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 export function BackButton({ onClick }: { onClick: () => void }) {
   return (
@@ -176,6 +138,7 @@ interface MultiFolderChooserProps {
   check?: string[];
   onChoose?: (val: string | null) => void;
   ondelete?: (val: string) => void;
+  enabled?: boolean;
 }
 
 export function MultiFolderChooser({
@@ -183,36 +146,33 @@ export function MultiFolderChooser({
   check,
   onChoose,
   ondelete,
+  enabled = true,
 }: MultiFolderChooserProps) {
-  const ffmpeg = ffmpeghook.useState();
   return (
     <div className="flex flex-col gap-2">
       <div className="flex justify-between items-center">
-        {ffmpeg.match({
-          exist: () => (
-            <>
-              <Head
-                title="Local Folder"
-                explain="Select the folder that contains your music files."
-              />
-              <EntryToolButton
-                label="Select"
-                onClick={() => {
-                  onChoose &&
-                    open({ directory: true }).then((path) => {
-                      onChoose(path);
-                    });
-                }}
-              />
-            </>
-          ),
-          _: () => (
+        {enabled ? (
+          <>
             <Head
               title="Local Folder"
-              explain="Audio analysis needs ffmpeg installed."
+              explain="Select the folder that contains your music files."
             />
-          ),
-        })}
+            <EntryToolButton
+              label="Select"
+              onClick={() => {
+                onChoose &&
+                  open({ directory: true }).then((path) => {
+                    onChoose(typeof path === "string" ? path : null);
+                  });
+              }}
+            />
+          </>
+        ) : (
+          <Head
+            title="Local Folder"
+            explain="Audio analysis needs ffmpeg installed."
+          />
+        )}
       </div>
       {[...value].reverse().map((v) => {
         const verified = !check?.includes(v.k);
@@ -241,7 +201,7 @@ interface PairProps {
   bantoggle?: boolean;
   banTip?: string;
   on?: boolean;
-  actionfn?: () => Promise<Result<any, string>>;
+  actionfn?: () => Promise<{ tap?: (fn: () => void) => unknown }>;
   banfn?: () => void;
   action?: (props: MotionIconProps | IconProps) => React.ReactNode;
   hide?: boolean;
@@ -272,12 +232,13 @@ export function Pair({
   const [valueIsHover, setValueIsHover] = useState(false);
   const [valueIsCopied, setValueIsCopied] = useState(false);
 
-  const col_right: RightTool[] = rightButton
+  const colRight: RightTool[] = rightButton
     ? Array.isArray(rightButton)
       ? rightButton
       : [rightButton]
     : [];
-  const anyBusy = col_right.some((v) => v.inProgress);
+  const anyBusy = colRight.some((v) => v.inProgress);
+
   return (
     <div className={cn(["flex items-center justify-between gap-8", className])}>
       <div
@@ -340,6 +301,7 @@ export function Pair({
           )}
         </AnimatePresence>
       </div>
+
       <div
         className="relative"
         onMouseEnter={() => setValueIsHover(true)}
@@ -349,7 +311,7 @@ export function Pair({
           className={cn(["flex items-center", action && "cursor-pointer"])}
           onClick={() => {
             actionfn?.().then((r) => {
-              r.tap(() => {
+              r.tap?.(() => {
                 setValueIsCopied(true);
                 setTimeout(() => setValueIsCopied(false), 1000);
               });
@@ -418,10 +380,10 @@ export function Pair({
                         <div className="text-xs opacity-0">_</div>
                       </motion.div>
                     )}
-                    {col_right
+                    {colRight
                       .filter((v) => (anyBusy ? v.inProgress : valueIsHover))
                       .map((v, i) => (
-                        <React.Fragment key={v.name}>
+                        <div key={v.name} className="contents">
                           {i > 0 && (
                             <div className="w-1 py-0.5 backdrop-blur-[1px]">
                               <div className="text-xs opacity-0">_</div>
@@ -456,7 +418,7 @@ export function Pair({
                               </div>
                             </div>
                           </motion.div>
-                        </React.Fragment>
+                        </div>
                       ))}
                   </div>
                 </div>
@@ -488,7 +450,7 @@ export function Pair({
                         initial: { pathLength: 0 },
                         animate: { pathLength: 1 },
                         exit: { pathLength: 0 },
-                        transition: { duration: 0.3 },
+                        transition: { duration: 0.3 } as AnimationProps["transition"],
                         className:
                           "text-[#262626] dark:text-[#a3a3a3] transition ml-1",
                       })
@@ -517,7 +479,7 @@ type PairComboboxProps = {
 type Option = { value: string; label: string };
 
 function useOptions(list: string[]): Option[] {
-  return React.useMemo(() => list.map((v) => ({ value: v, label: v })), [list]);
+  return useMemo(() => list.map((v) => ({ value: v, label: v })), [list]);
 }
 
 export function PairCombobox({
@@ -529,369 +491,159 @@ export function PairCombobox({
   width = "240px",
   height = "320px",
 }: PairComboboxProps) {
-  const [open, setOpen] = React.useState(false);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [focusedIndex, setFocusedIndex] = useState(0);
   const options = useOptions(list);
-  const [value, setValue] = React.useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
 
-  // ---- 内部虚拟化命令框（抽出来便于复用/测试） ----
-  const VirtualizedCommand: React.FC<{
-    height: string;
-    options: Option[];
-    placeholder: string;
-    selectedOption: string;
-    onSelectOption: (option: string) => void;
-    canAddNew?: boolean;
-    onAddNew?: () => void;
-  }> = ({
-    height,
-    options,
-    placeholder,
-    selectedOption,
-    onSelectOption,
-    canAddNew,
-    onAddNew,
-  }) => {
-    const [filteredOptions, setFilteredOptions] =
-      React.useState<Option[]>(options);
-    const [focusedIndex, setFocusedIndex] = React.useState(0);
-    const [isKeyboardNavActive, setIsKeyboardNavActive] = React.useState(false);
-    const parentRef = React.useRef<HTMLDivElement | null>(null);
-
-    // 选项变化时同步过滤结果
-    React.useEffect(() => setFilteredOptions(options), [options]);
-
-    const virtualizer = useVirtualizer({
-      count: filteredOptions.length,
-      getScrollElement: () => parentRef.current,
-      estimateSize: () => 36, // 单项高度，确保与样式一致
-      overscan: 8,
-    });
-
-    const virtualOptions = virtualizer.getVirtualItems();
-
-    const scrollToIndex = (index: number) => {
-      virtualizer.scrollToIndex(index, { align: "center" });
-    };
-
-    const handleSearch = (search: string) => {
-      setIsKeyboardNavActive(false);
-      const key = (search ?? "").toLowerCase(); // 修复：避免 ?? []
-      // 同时匹配 value 和 label
-      setFilteredOptions(
-        options.filter((opt) =>
-          (opt.value + " " + opt.label).toLowerCase().includes(key)
-        )
-      );
-      // 搜索后把焦点回到第一项
-      setFocusedIndex(0);
-      scrollToIndex(0);
-    };
-
-    const handleKeyDown = (event: React.KeyboardEvent) => {
-      switch (event.key) {
-        case "ArrowDown": {
-          event.preventDefault();
-          setIsKeyboardNavActive(true);
-          setFocusedIndex((prev) => {
-            const newIndex =
-              prev === -1 ? 0 : Math.min(prev + 1, filteredOptions.length - 1);
-            scrollToIndex(newIndex);
-            return newIndex;
-          });
-          break;
-        }
-        case "ArrowUp": {
-          event.preventDefault();
-          setIsKeyboardNavActive(true);
-          setFocusedIndex((prev) => {
-            const newIndex =
-              prev === -1 ? filteredOptions.length - 1 : Math.max(prev - 1, 0);
-            scrollToIndex(newIndex);
-            return newIndex;
-          });
-          break;
-        }
-        case "Enter": {
-          event.preventDefault();
-          if (filteredOptions[focusedIndex]) {
-            onSelectOption(filteredOptions[focusedIndex].value);
-          }
-          break;
-        }
-        default:
-          break;
-      }
-    };
-
-    // 初选滚到可见
-    React.useEffect(() => {
-      if (!selectedOption) return;
-      const idx = filteredOptions.findIndex((o) => o.value === selectedOption);
-      if (idx >= 0) {
-        setFocusedIndex(idx);
-        virtualizer.scrollToIndex(idx, { align: "center" });
-      }
-    }, [selectedOption, filteredOptions, virtualizer]);
-
-    return (
-      <Command shouldFilter={false} onKeyDown={handleKeyDown}>
-        <CommandInput onValueChange={handleSearch} placeholder={placeholder} />
-        <CommandList
-          ref={parentRef}
-          className={cn(["hide-scrollbar"])}
-          style={{ height, width: "100%", overflow: "auto" }}
-          onMouseDown={() => setIsKeyboardNavActive(false)}
-          onMouseMove={() => setIsKeyboardNavActive(false)}
-        >
-          <CommandEmpty className="py-6 text-center text-sm select-none text-[#404040] dark:text-[#a3a3a3] transition">
-            No item found.
-          </CommandEmpty>
-          <CommandGroup>
-            <div
-              style={{
-                height: `${virtualizer.getTotalSize()}px`,
-                width: "100%",
-                position: "relative",
-              }}
-            >
-              {virtualOptions.map((v) => {
-                const opt = filteredOptions[v.index];
-                return (
-                  <CommandItem
-                    key={opt.value}
-                    disabled={isKeyboardNavActive}
-                    className={cn(
-                      "absolute left-0 top-0 w-full bg-transparent whitespace-nowrap truncate",
-                      focusedIndex === v.index &&
-                        "bg-accent text-accent-foreground",
-                      isKeyboardNavActive &&
-                        focusedIndex !== v.index &&
-                        "aria-selected:bg-transparent aria-selected:text-primary"
-                    )}
-                    style={{
-                      height: `${v.size}px`,
-                      transform: `translateY(${v.start}px)`,
-                    }}
-                    value={opt.value}
-                    onMouseEnter={() =>
-                      !isKeyboardNavActive && setFocusedIndex(v.index)
-                    }
-                    onMouseLeave={() =>
-                      !isKeyboardNavActive && setFocusedIndex(-1)
-                    }
-                    onSelect={onSelectOption}
-                  >
-                    {/* <Check
-                      className={cn(
-                        "mr-2 h-4 w-4",
-                        selectedOption === opt.value
-                          ? "opacity-100"
-                          : "opacity-0"
-                      )}
-                    /> */}
-                    <span className="flex-1 min-w-0 truncate">{opt.label}</span>
-                  </CommandItem>
-                );
-              })}
-            </div>
-
-            {canAddNew && (
-              <div className="sticky bottom-0 mt-1 border-t bg-background">
-                <CommandItem
-                  value="__add_new__"
-                  onSelect={() => onAddNew?.()}
-                  className="flex items-center gap-2"
-                >
-                  <Plus className="h-4 w-4" />
-                  Add New
-                </CommandItem>
-              </div>
-            )}
-          </CommandGroup>
-        </CommandList>
-      </Command>
+  const filtered = useMemo(() => {
+    const key = query.trim().toLowerCase();
+    if (!key) return options;
+    return options.filter((opt) =>
+      `${opt.value} ${opt.label}`.toLowerCase().includes(key),
     );
+  }, [options, query]);
+
+  useEffect(() => {
+    if (!open) {
+      setQuery("");
+      setFocusedIndex(0);
+      return;
+    }
+
+    const onPointerDown = (event: MouseEvent) => {
+      const node = rootRef.current;
+      if (!node) return;
+      if (!(event.target instanceof Node)) return;
+      if (!node.contains(event.target)) {
+        setOpen(false);
+      }
+    };
+
+    window.addEventListener("mousedown", onPointerDown);
+    return () => window.removeEventListener("mousedown", onPointerDown);
+  }, [open]);
+
+  useEffect(() => {
+    if (focusedIndex >= filtered.length) {
+      setFocusedIndex(Math.max(0, filtered.length - 1));
+    }
+  }, [filtered.length, focusedIndex]);
+
+  const selectOption = (value: string) => {
+    onChoose(value);
+    setOpen(false);
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          role="combobox"
-          aria-expanded={open}
-          ignorecn
-          className={cn(
-            // 布局 & 基础交互
-            "flex items-center justify-between w-fit gap-2 whitespace-nowrap",
-            "rounded-md outline-none",
-            "cursor-pointer transition duration-300 ease-in-out",
-
-            // 尺寸
-            "data-[size=default]:h-9 data-[size=sm]:h-8",
-
-            // padding
-            "pl-2 pr-2.5 py-1",
-
-            // 颜色 & 主题
-            // "bg-[#f1f5f9] dark:bg-[#171717]",
-            // "border border-[#e5e5e5] dark:border-[#262626]",
-            "text-xs text-[#525252] dark:text-[#e5e5e5] hover:text-[#262626] hover:dark:text-[#d4d4d4]",
-
-            // hover 状态
-            "hover:bg-[#e7eced] dark:hover:bg-[#383838]",
-
-            // 状态控制
-            "data-[state=open]:bg-[#f1f5f9] dark:data-[state=open]:bg-[#1a1a1b]",
-            "data-[placeholder]:text-muted-foreground",
-            "aria-invalid:border-destructive",
-
-            // 禁用
-            "disabled:cursor-not-allowed disabled:opacity-50",
-
-            // slot 定制
-            "*:data-[slot=select-value]:line-clamp-1",
-            "*:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2",
-
-            // svg 特殊处理
-            "[&_svg]:pointer-events-none [&_svg]:shrink-0",
-            "[&_svg:not([class*='size-'])]:size-4",
-            "[&_svg:not([class*='text-'])]:text-muted-foreground"
-          )}
-        >
-          {label}
-        </Button>
-      </PopoverTrigger>
-
-      <PopoverContent
-        className={cn([
-          "p-0 mx-2",
-          "shadow-lg rounded-md",
-          "bg-popover/70 backdrop-filter backdrop-blur-[16px]",
-        ])}
-        style={{ width }}
+    <div className="relative" ref={rootRef}>
+      <button
+        type="button"
+        role="combobox"
+        aria-expanded={open}
+        className={cn(
+          "flex items-center justify-between w-fit gap-2 whitespace-nowrap",
+          "rounded-md outline-none",
+          "cursor-pointer transition duration-300 ease-in-out",
+          "data-[size=default]:h-9 data-[size=sm]:h-8",
+          "pl-2 pr-2.5 py-1",
+          "text-xs text-[#525252] dark:text-[#e5e5e5] hover:text-[#262626] hover:dark:text-[#d4d4d4]",
+          "hover:bg-[#e7eced] dark:hover:bg-[#383838]",
+          open && "bg-[#f1f5f9] dark:bg-[#1a1a1b]",
+        )}
+        onClick={() => setOpen((v) => !v)}
       >
-        <VirtualizedCommand
-          height={height}
-          options={options}
-          placeholder="Search..."
-          selectedOption={value}
-          canAddNew={canAddNew}
-          onAddNew={onAddNew}
-          onSelectOption={(currentValue) => {
-            onChoose(currentValue);
-            setOpen(false);
-          }}
-        />
-      </PopoverContent>
-    </Popover>
-  );
-}
-interface PairChooseProps {
-  label: string;
-  value: string;
-  list: string[];
-  explain?: string;
-  onChoose?: (val: string) => void;
-  canAddNew?: boolean;
-  onAddNew?: (val: string) => void;
-}
+        {label}
+      </button>
 
-export function PairChoose({
-  label,
-  value,
-  list,
-  explain,
-  onChoose,
-  canAddNew = false,
-  onAddNew,
-}: PairChooseProps) {
-  return (
-    <div className="flex gap-8 items-center justify-between">
-      <div className="flex flex-col gap-1">
-        <div className="text-sm font-semibold text-[#262626] dark:text-[#d4d4d4] transition ">
-          {label}
-        </div>
-        <div className="text-xs text-[#525252] dark:text-[#a3a3a3] transition">
-          {explain}
-        </div>
-      </div>
-
-      <Select onValueChange={onChoose}>
-        <SelectTrigger
-          className={cn([
-            "text-sm text-[#262626] dark:text-[#d4d4d4] transition px-2 py-1",
-            "bg-[#f1f5f9] dark:bg-[#171717] rounded-md border border-[#e5e5e5] dark:border-[#262626]",
-            "data-[state=open]:bg-[#f1f5f9] dark:data-[state=open]:bg-[#1a1a1b]",
-          ])}
-        >
-          <SelectValue placeholder={value} />
-        </SelectTrigger>
-        <SelectContent className="max-h-64">
-          {list.map((l) => (
-            <SelectItem key={l} value={l}>
-              {l}
-            </SelectItem>
-          ))}
-          {canAddNew && <InputItem label="Add New" onCheck={onAddNew} />}
-        </SelectContent>
-      </Select>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            className={cn([
+              "absolute right-0 top-full z-[120] p-0 mx-2 mt-1",
+              "shadow-lg rounded-md",
+              "bg-popover/70 backdrop-filter backdrop-blur-[16px]",
+            ])}
+            style={{ width }}
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.15 }}
+          >
+            <div className="border-b border-[#d4d4d4]/60 dark:border-[#4a4a4a]/60 px-2 py-1">
+              <input
+                className="w-full bg-transparent text-xs text-[#404040] dark:text-[#d4d4d4] outline-none"
+                placeholder="Search..."
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    setFocusedIndex((i) =>
+                      Math.min(i + 1, Math.max(filtered.length - 1, 0)),
+                    );
+                  }
+                  if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    setFocusedIndex((i) => Math.max(i - 1, 0));
+                  }
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    const next = filtered[focusedIndex];
+                    if (next) selectOption(next.value);
+                  }
+                }}
+              />
+            </div>
+            <div
+              className={cn(["hide-scrollbar overflow-auto"])}
+              style={{ height, width: "100%" }}
+            >
+              {filtered.length === 0 ? (
+                <div className="py-6 text-center text-sm select-none text-[#404040] dark:text-[#a3a3a3] transition">
+                  No item found.
+                </div>
+              ) : (
+                filtered.map((opt, index) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    className={cn([
+                      "w-full truncate bg-transparent px-2 py-1.5 text-left text-sm transition",
+                      index === focusedIndex
+                        ? "bg-accent text-accent-foreground"
+                        : "text-[#404040] hover:bg-accent/60 dark:text-[#d4d4d4]",
+                    ])}
+                    onMouseEnter={() => setFocusedIndex(index)}
+                    onClick={() => selectOption(opt.value)}
+                  >
+                    <span className="flex-1 min-w-0 truncate">{opt.label}</span>
+                  </button>
+                ))
+              )}
+              {canAddNew && (
+                <div className="sticky bottom-0 mt-1 border-t border-[#d4d4d4]/60 bg-[#f5f5f580] dark:border-[#4a4a4a]/60 dark:bg-[#171717cc]">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 px-2 py-1.5 text-sm text-[#404040] dark:text-[#d4d4d4]"
+                    onClick={() => {
+                      onAddNew?.();
+                      setOpen(false);
+                    }}
+                  >
+                    + Add New
+                  </button>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-interface PairEditLRProps {
-  label: string;
-  value: string;
-  onChange?: (val: string) => void;
-  explain?: string;
-  warning?: string;
-  allowSpace?: boolean;
-  upper?: boolean;
-}
-
-export function PairEditLR({
-  label,
-  value,
-  onChange,
-  explain,
-  warning,
-  allowSpace = false,
-  upper = false,
-}: PairEditLRProps) {
-  return (
-    <div className="flex gap-8 items-center justify-between">
-      <div className="flex flex-col gap-1">
-        <div className="text-sm font-semibold text-[#262626] dark:text-[#d4d4d4] transition ">
-          {label}
-        </div>
-        <div className="text-xs text-[#525252] dark:text-[#a3a3a3] transition">
-          {explain}
-        </div>
-      </div>
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => {
-          const v = e.target.value;
-          if (upper) v.toUpperCase();
-          if (v.trim() !== "" || value.trim() !== "" || allowSpace) {
-            onChange?.(v);
-          }
-        }}
-        // onBlur={() => {
-        //   const v = value.trim();
-        //   onChange?.(v);
-        // }}
-        className={cn([
-          "text-sm text-[#262626] dark:text-[#d4d4d4] transition px-2 py-1",
-          "bg-[#f1f5f9] dark:bg-[#171717] rounded-md border border-[#e5e5e5] dark:border-[#262626]",
-          "focus:outline-none focus:ring-0",
-          warning ? "border-[#df2837] dark:border-[#df2837]" : "",
-        ])}
-      />
-    </div>
-  );
-}
 interface EntryToolButtonProps {
   icon?: React.ReactNode;
   label: string;
@@ -931,102 +683,53 @@ export function EntryToolButton({
   );
 }
 
-interface EntryToolButtonSwitchProps extends EntryToolButtonProps {
-  option?: string[];
-}
-
-export function EntryToolButtonSwitch({
-  icon,
-  label,
-  onClick,
-}: EntryToolButtonSwitchProps) {
-  const [turn, setTurn] = useState(0);
-
-  const handleClick = () => {
-    setTurn(turn + 1);
-    onClick?.();
-  };
-
-  return (
-    <div
-      className="flex items-center gap-1 cursor-pointer transition duration-300 ease-in-out group hover:bg-[#e7eced] dark:hover:bg-[#383838] rounded-md pl-2 pr-2.5 py-1"
-      onClick={handleClick}
-    >
-      {icon && (
-        <motion.div
-          animate={{ rotate: turn * 360, transition: { duration: 0.5 } }}
-        >
-          {icon}
-        </motion.div>
-      )}
-      <div className="text-xs text-[#525252] group-hover:text-[#262626] dark:text-[#a3a3a3] group-hover:dark:text-[#d4d4d4] transition">
-        {label}
-      </div>
-    </div>
-  );
-}
-
-export function ItemEditTitle({ title }: { title: string }) {
-  return (
-    <div className="text-sm font-semibold text-[#404040] dark:text-[#d4d4d4] transition">
-      {title}
-    </div>
-  );
-}
-
-interface ItemEditContentProps {
-  content: string;
-  onChange?: (val: string) => void;
-  className?: string;
-  holder?: string;
-  onBlur?: () => void;
-}
-
 export function ItemEditContent({
   content,
   onChange,
   className,
   holder,
   onBlur,
-}: ItemEditContentProps) {
+}: {
+  content: string;
+  onChange?: (val: string) => void;
+  className?: string;
+  holder?: string;
+  onBlur?: () => void;
+}) {
   const [value, setValue] = useState(content);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
-  // 每次 value 变化都 resize
   useEffect(() => {
-    resizeTextArea();
+    const el = textAreaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const style = window.getComputedStyle(el);
+    const borderTop = parseFloat(style.borderTopWidth);
+    const borderBottom = parseFloat(style.borderBottomWidth);
+    const newHeight = Math.ceil(el.scrollHeight) + borderTop + borderBottom;
+    el.style.height = `${newHeight}px`;
   }, [value]);
 
-  // 父组件 content 变化同步本地
   useEffect(() => {
     setValue(content);
   }, [content]);
 
-  // 挂载和窗口 resize 时也要 resize
   useEffect(() => {
-    resizeTextArea();
-    window.addEventListener("resize", resizeTextArea);
-    return () => window.removeEventListener("resize", resizeTextArea);
-    // eslint-disable-next-line
+    const resize = () => {
+      const el = textAreaRef.current;
+      if (!el) return;
+      el.style.height = "auto";
+      const style = window.getComputedStyle(el);
+      const borderTop = parseFloat(style.borderTopWidth);
+      const borderBottom = parseFloat(style.borderBottomWidth);
+      const newHeight = Math.ceil(el.scrollHeight) + borderTop + borderBottom;
+      el.style.height = `${newHeight}px`;
+    };
+
+    resize();
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
   }, []);
-
-  function resizeTextArea() {
-    const el = textAreaRef.current;
-    if (!el) return;
-
-    // 1) 先自动高度
-    el.style.height = "auto";
-
-    // 2) 读取计算样式里的 border 宽度，避免硬编码 2
-    const style = window.getComputedStyle(el);
-    const borderTop = parseFloat(style.borderTopWidth);
-    const borderBottom = parseFloat(style.borderBottomWidth);
-
-    // 3) 用 Math.ceil 消除 scrollHeight 的截断误差
-    const newHeight = Math.ceil(el.scrollHeight) + borderTop + borderBottom;
-
-    el.style.height = `${newHeight}px`;
-  }
 
   return (
     <textarea
@@ -1054,99 +757,6 @@ export function ItemEditContent({
   );
 }
 
-interface EditKVProps {
-  k: string;
-  v: string;
-  holderK: string;
-  holderV: string;
-  canDelete?: boolean;
-  onChangeK?: (val: string) => void;
-  onChangeV?: (val: string) => void;
-  onDelete?: () => void;
-  onBlur?: () => void;
-}
-
-export function EditKV({
-  k,
-  v,
-  holderK,
-  holderV,
-  onChangeK,
-  onChangeV,
-  onDelete,
-  onBlur,
-  canDelete = true,
-}: EditKVProps) {
-  return (
-    <>
-      <div className="flex items-start gap-1">
-        <div className="flex items-center gap-1 w-full">
-          {canDelete && (
-            <div
-              className={cn([
-                "p-1 rounded-full transition duration-300 cursor-pointer",
-                "hover:bg-[#e7eced] dark:hover:bg-[#383838]",
-                "text-[#525252] dark:text-[#a3a3a3]",
-                "hover:text-[#262626] dark:hover:text-[#d4d4d4]",
-              ])}
-              onClick={onDelete}
-            >
-              <icons.xmark size={12} />
-            </div>
-          )}
-          <ItemEditContent
-            content={k}
-            className="w-full"
-            holder={holderK}
-            onChange={onChangeK}
-            onBlur={onBlur}
-          />
-        </div>
-      </div>
-      <ItemEditContent
-        content={v}
-        holder={holderV}
-        onChange={onChangeV}
-        onBlur={onBlur}
-      />
-    </>
-  );
-}
-
-interface CardToolItemProps {
-  icon?: React.ReactNode;
-  label: string;
-  onClick?: () => void;
-}
-
-export const ToolItem = memo(function CardToolItemComp({
-  icon,
-  label,
-  onClick,
-}: CardToolItemProps) {
-  return (
-    <DropdownMenuItem
-      onClick={onClick}
-      className="opacity-70 hover:opacity-100 transition"
-    >
-      <IconsItem icon={icon} text={label} />
-    </DropdownMenuItem>
-  );
-});
-
-interface IconsItemProps {
-  icon?: React.ReactNode;
-  text: string;
-}
-function IconsItem({ icon, text }: IconsItemProps) {
-  return (
-    <div className="flex items-center gap-2">
-      {icon}
-      <span>{text}</span>
-    </div>
-  );
-}
-
 export function EditHead({
   title,
   explain,
@@ -1163,111 +773,6 @@ export function EditHead({
         {explain}
       </div>
     </div>
-  );
-}
-
-interface InputItemProps {
-  label: string;
-  className?: string;
-  onCheck?: (t: string) => void;
-  placeholder?: string;
-}
-
-export function InputItem({
-  label,
-  className,
-  onCheck,
-  placeholder,
-}: InputItemProps) {
-  const [editing, setEditing] = useState(false);
-  const [text, setText] = useState("");
-
-  const ref = useRef<HTMLInputElement>(null);
-
-  return (
-    <motion.div
-      className={cn([
-        "group relative flex h-8 w-full items-center overflow-hidden rounded text-sm",
-        "dark:text-[#e5e5e5] opacity-70 dark:opacity-60 hover:opacity-90 transition",
-        "hover:bg-accent transition-colors",
-        editing && "cursor-text opacity-100 bg-accent",
-      ])}
-      onClick={() => {
-        if (!editing) {
-          setEditing(true);
-          setTimeout(() => ref.current?.focus(), 100);
-        } else {
-          ref.current?.focus();
-        }
-      }}
-      layout
-    >
-      <AnimatePresence initial={false}>
-        {editing ? (
-          <motion.div
-            initial={{ y: -10, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 10, opacity: 0 }}
-            transition={{ staggerChildren: 0.1 }}
-            key={0}
-            className="absolute left-0 flex w-full items-center justify-between"
-          >
-            <input
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              className="ml-2 w-4/6 cursor-text bg-transparent outline-none"
-              ref={ref}
-              placeholder={placeholder}
-              onKeyDown={(e) => {
-                e.stopPropagation();
-              }}
-            />
-            <div className="absolute right-0 mr-2 flex items-center gap-x-1 cursor-default">
-              <button
-                className="rounded bg-neutral-300 p-[3px] text-neutral-700 hover:bg-neutral-400/50 dark:bg-neutral-600 dark:text-neutral-100 dark:hover:bg-neutral-500 cursor-pointer"
-                onClick={() => {
-                  setEditing(false);
-                  setText("");
-                  onCheck?.(text.trim());
-                }}
-              >
-                <icons.check3 size={12} />
-              </button>
-              <button
-                className="rounded bg-neutral-300 p-[3px] text-neutral-700 hover:bg-neutral-400/50 dark:bg-neutral-600 dark:text-neutral-100 dark:hover:bg-neutral-500 cursor-pointer"
-                onClick={() => {
-                  setEditing(false);
-                  setText("");
-                }}
-              >
-                <icons.xmark size={12} />
-              </button>
-            </div>
-          </motion.div>
-        ) : (
-          <motion.button
-            initial={{ y: -10, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 10, opacity: 0 }}
-            key={1}
-            className="absolute right-0 flex w-full items-center"
-            onClick={() => {
-              setEditing(true);
-              setTimeout(() => ref.current?.focus(), 100);
-            }}
-          >
-            <span className="ml-2">{label}</span>
-            {/* < className="absolute right-0 mr-2 text-base" /> */}
-          </motion.button>
-        )}
-      </AnimatePresence>
-      <div
-        className={cn(
-          "pointer-events-none absolute left-0 h-full w-full",
-          editing ? "block" : "hidden group-hover:block"
-        )}
-      />
-    </motion.div>
   );
 }
 
