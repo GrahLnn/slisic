@@ -8,7 +8,6 @@ use anyhow::Result;
 use database::{init_db_with_options, InitDbOptions, Repo};
 use domain::models::user::User;
 use domain::template;
-use specta_typescript::{BigIntExportBehavior, Typescript};
 use tauri::async_runtime::block_on;
 use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events, Builder};
@@ -43,8 +42,8 @@ pub fn run() {
     #[cfg(debug_assertions)]
     builder
         .export(
-            Typescript::default()
-                .bigint(BigIntExportBehavior::Number)
+            specta_typescript::Typescript::default()
+                .bigint(specta_typescript::BigIntExportBehavior::Number)
                 .header(
                     r#"/* eslint-disable */
 
