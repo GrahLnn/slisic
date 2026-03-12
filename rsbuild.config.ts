@@ -18,7 +18,7 @@ export default defineConfig({
   tools: {
     rspack: {
       watchOptions: {
-        ignored: ["**/src-tauri/**"],
+        ignored: ["**/src-tauri/**", "**/.bg-shell/**", "**/.tauri/**"],
       },
     },
   },
