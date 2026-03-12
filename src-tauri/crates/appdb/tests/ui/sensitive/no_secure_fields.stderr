@@ -1,0 +1,5 @@
+error: Sensitive requires at least one #[secure] field
+ --> tests/ui/sensitive/no_secure_fields.rs:5:8
+  |
+5 | struct PlainRecord {
+  |        ^^^^^^^^^^^

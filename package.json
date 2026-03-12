@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@fontsource/maple-mono": "^5.2.6",
-    "@grahlnn/fn": "^0.1.3",
+    "@grahlnn/fn": "^0.1.8",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@tailwindcss/postcss": "^4.2.1",
     "@tauri-apps/api": "^2.10.1",
@@ -32,7 +32,7 @@
     "aspipes": "^1.0.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "effect": "^4.0.0-beta.27",
+    "effect": "^4.0.0-beta.31",
     "gsap": "^3.14.2",
     "liquid-glass-react": "^1.1.1",
     "lodash": "^4.17.23",
@@ -53,16 +53,16 @@
   },
   "devDependencies": {
     "@rsbuild/core": "^1.7.3",
-    "@rsbuild/plugin-babel": "^1.1.1",
-    "@rsbuild/plugin-react": "^1.4.5",
-    "@rsbuild/plugin-sass": "^1.5.0",
+    "@rsbuild/plugin-babel": "^1.1.2",
+    "@rsbuild/plugin-react": "^1.4.6",
+    "@rsbuild/plugin-sass": "^1.5.1",
     "@tauri-apps/cli": "^2.10.1",
-    "@types/node": "^22.19.13",
+    "@types/node": "^22.19.15",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "babel-plugin-react-compiler": "^19.1.0-rc.1-rc-af1b7da-20250421",
     "eslint-plugin-react-hooks": "^6.1.1",
-    "sass": "^1.97.3",
+    "sass": "^1.98.0",
     "typescript": "^5.9.3"
   }
 }

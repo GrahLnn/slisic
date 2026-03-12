@@ -1,0 +1,5 @@
+error: #[secure] currently supports only String and Option<String>
+ --> tests/ui/sensitive/unsupported_secure_type.rs:7:18
+  |
+7 |     pub counter: u32,
+  |                  ^^^
