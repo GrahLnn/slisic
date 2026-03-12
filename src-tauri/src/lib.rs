@@ -23,6 +23,7 @@ pub fn run() {
         utils::core::app_ready,
         utils::window::get_mouse_and_window_position,
         utils::window::get_window_kind,
+        utils::window::request_window_prewarm,
         utils::window::create_window,
         greet,
         clean,
@@ -113,7 +114,6 @@ export function makeLiveEvent<T extends Record<string, any>>(ev: EventsShape<T>)
                     if let Some(window) = handle.get_webview_window("main") {
                         utils::window::apply_window_setup(&window, true);
                     }
-                    utils::window::ensure_prewarm_for_existing_windows(&handle);
                     Ok(())
                 })
             })

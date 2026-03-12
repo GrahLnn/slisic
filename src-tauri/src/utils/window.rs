@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::HashSet;
 use tauri::{AppHandle, Manager, WebviewWindow};
 use tauri::{LogicalSize, Size};
 use tauri::{WebviewUrl, WebviewWindowBuilder};
@@ -18,9 +17,9 @@ thread_local! {
 
 const PREWARM_TARGET_PER_WINDOW: usize = 1;
 
-static PREWARM_MAIN_PENDING: LazyLock<Mutex<Vec<String>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
-static PREWARM_MAIN_READY: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+static PREWARM_PENDING: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+static PREWARM_READY: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+static PREWARM_ENABLED: LazyLock<Mutex<Vec<WindowName>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct WindowKindInfo {
@@ -107,13 +106,17 @@ pub fn close_all_prewarm_windows(app: &AppHandle) {
         }
     }
 
-    PREWARM_MAIN_PENDING
+    PREWARM_PENDING
         .lock()
         .expect("prewarm pending list should be lockable")
         .clear();
-    PREWARM_MAIN_READY
+    PREWARM_READY
         .lock()
         .expect("prewarm ready list should be lockable")
+        .clear();
+    PREWARM_ENABLED
+        .lock()
+        .expect("prewarm enabled list should be lockable")
         .clear();
 }
 
@@ -295,7 +298,7 @@ fn prune_labels(app: &tauri::AppHandle, labels: &mut Vec<String>) {
 }
 
 fn take_ready_window(app: &tauri::AppHandle, name: WindowName) -> Option<WebviewWindow> {
-    let mut ready = PREWARM_MAIN_READY
+    let mut ready = PREWARM_READY
         .lock()
         .expect("prewarm ready list should be lockable");
     prune_labels(app, &mut ready);
@@ -318,7 +321,7 @@ pub fn mark_window_ready(label: &str) -> bool {
         return false;
     }
 
-    let mut pending = PREWARM_MAIN_PENDING
+    let mut pending = PREWARM_PENDING
         .lock()
         .expect("prewarm pending list should be lockable");
     if let Some(index) = pending.iter().position(|value| value == label) {
@@ -326,7 +329,7 @@ pub fn mark_window_ready(label: &str) -> bool {
     }
     drop(pending);
 
-    let mut ready = PREWARM_MAIN_READY
+    let mut ready = PREWARM_READY
         .lock()
         .expect("prewarm ready list should be lockable");
     if !ready.iter().any(|value| value == label) {
@@ -336,9 +339,31 @@ pub fn mark_window_ready(label: &str) -> bool {
     true
 }
 
+fn enable_window_prewarm(name: WindowName) {
+    let mut enabled = PREWARM_ENABLED
+        .lock()
+        .expect("prewarm enabled list should be lockable");
+
+    if !enabled.iter().any(|value| *value == name) {
+        enabled.push(name);
+    }
+}
+
+fn should_prewarm_window(name: WindowName) -> bool {
+    PREWARM_ENABLED
+        .lock()
+        .expect("prewarm enabled list should be lockable")
+        .iter()
+        .any(|value| *value == name)
+}
+
 pub fn ensure_window_prewarm(app: &tauri::AppHandle, name: WindowName) {
+    if !should_prewarm_window(name) {
+        return;
+    }
+
     let pending_len = {
-        let mut pending = PREWARM_MAIN_PENDING
+        let mut pending = PREWARM_PENDING
             .lock()
             .expect("prewarm pending list should be lockable");
         prune_labels(app, &mut pending);
@@ -349,7 +374,7 @@ pub fn ensure_window_prewarm(app: &tauri::AppHandle, name: WindowName) {
     };
 
     let ready_len = {
-        let mut ready = PREWARM_MAIN_READY
+        let mut ready = PREWARM_READY
             .lock()
             .expect("prewarm ready list should be lockable");
         prune_labels(app, &mut ready);
@@ -369,7 +394,7 @@ pub fn ensure_window_prewarm(app: &tauri::AppHandle, name: WindowName) {
         match build_window(app, label.clone(), name.as_str(), false) {
             Ok(window) => {
                 apply_window_setup(&window, false);
-                PREWARM_MAIN_PENDING
+                PREWARM_PENDING
                     .lock()
                     .expect("prewarm pending list should be lockable")
                     .push(label);
@@ -382,23 +407,11 @@ pub fn ensure_window_prewarm(app: &tauri::AppHandle, name: WindowName) {
     }
 }
 
-pub fn ensure_prewarm_for_existing_windows(app: &tauri::AppHandle) {
-    let windows = app.webview_windows();
-    let existing_names = windows
-        .keys()
-        .filter_map(|label| {
-            let (name, is_prewarm) = window_kind_from_label(label);
-            if is_prewarm {
-                None
-            } else {
-                name
-            }
-        })
-        .collect::<HashSet<_>>();
-
-    for name in existing_names {
-        ensure_window_prewarm(app, name);
-    }
+#[specta::specta]
+#[tauri::command]
+pub fn request_window_prewarm(app: AppHandle, name: WindowName) {
+    enable_window_prewarm(name);
+    ensure_window_prewarm(&app, name);
 }
 
 #[specta::specta]
@@ -408,6 +421,8 @@ pub async fn create_window(
     name: WindowName,
     options: Option<CreateWindowOptions>,
 ) {
+    enable_window_prewarm(name);
+
     if let Some(window) = take_ready_window(&app, name) {
         apply_window_options(&window, options.as_ref());
         let _ = window.show();

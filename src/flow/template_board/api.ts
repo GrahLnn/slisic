@@ -9,6 +9,10 @@ import type {
   UnassignTaskInput,
 } from "./core";
 import { type MainStateT, payloads, sig } from "./events";
+import {
+  selectTemplateBoardState,
+  selectTemplateBoardViewModel,
+} from "./selectors";
 
 export const actor = createActor(machine);
 const send = createSender(actor);
@@ -29,8 +33,24 @@ function sendSafe(evt: unknown) {
 }
 
 export const hook = {
-  useState: () => useSelector(actor, (shot) => shot.value as MainStateT),
-  useContext: () => useSelector(actor, (shot) => shot.context),
+  useState: () =>
+    useSelector(
+      actor,
+      selectTemplateBoardState.project,
+      selectTemplateBoardState.compare,
+    ) as MainStateT,
+  useViewModel: () =>
+    useSelector(
+      actor,
+      selectTemplateBoardViewModel.project,
+      selectTemplateBoardViewModel.compare,
+    ),
+  useContext: () =>
+    useSelector(
+      actor,
+      selectTemplateBoardViewModel.project,
+      selectTemplateBoardViewModel.compare,
+    ),
 };
 
 export const action = {

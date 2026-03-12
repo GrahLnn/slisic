@@ -1,4 +1,4 @@
-import type { Result } from "@grahlnn/fn";
+import { me, type Result } from "@grahlnn/fn";
 import { crab } from "../../cmd";
 import type { TemplateDashboard } from "../../cmd/commands";
 import {
@@ -29,11 +29,12 @@ import type {
 async function expectDashboard(
   promise: Promise<Result<TemplateDashboard, string>>,
 ): Promise<TemplateDashboard> {
-  const result = await promise;
-  if (result.isErr()) {
-    throw new Error(result.unwrap_err());
-  }
-  return result.unwrap();
+  return (await promise).match({
+    Ok: (dashboard) => dashboard,
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
 }
 
 export const ss = defineSS(
@@ -63,80 +64,65 @@ export const invoker = createActors({
   async executePending({
     input,
   }: ActorInput<PendingOperation>): Promise<OperationResult> {
-    switch (input.kind) {
-      case "snapshot":
-        return {
-          kind: "dashboard",
-          dashboard: await expectDashboard(crab.templateSnapshot()),
-        };
-      case "bootstrap":
-        return {
-          kind: "dashboard",
-          dashboard: await expectDashboard(crab.templateBootstrap()),
-          clearSelection: true,
-          success: {
-            title: "Demo data loaded",
-          },
-        };
-      case "reset":
-        return {
-          kind: "dashboard",
-          dashboard: await expectDashboard(crab.templateReset()),
-          clearSelection: true,
-          success: {
-            title: "Template data reset",
-          },
-        };
-      case "create_member":
-        return {
-          kind: "dashboard",
-          dashboard: await expectDashboard(
-            crab.templateCreateMember(input.input),
-          ),
-          resetMemberInput: true,
-          success: {
-            title: "Member added",
-          },
-        };
-      case "create_task":
-        return {
-          kind: "dashboard",
-          dashboard: await expectDashboard(
-            crab.templateCreateTask(input.input),
-          ),
-          resetTaskInput: true,
-          success: {
-            title: "Task added",
-          },
-        };
-      case "assign_task":
-        return {
-          kind: "dashboard",
-          dashboard: await expectDashboard(
-            crab.templateAssignTask(input.input),
-          ),
-        };
-      case "unassign_task":
-        return {
-          kind: "dashboard",
-          dashboard: await expectDashboard(
-            crab.templateUnassignTask(input.input),
-          ),
-        };
-      case "bulk_status":
-        if (input.input.task_ids.length === 0) {
+    return me(input).match("kind", {
+      snapshot: async () => ({
+        kind: "dashboard",
+        dashboard: await expectDashboard(crab.templateSnapshot()),
+      }),
+      bootstrap: async () => ({
+        kind: "dashboard",
+        dashboard: await expectDashboard(crab.templateBootstrap()),
+        clearSelection: true,
+        success: {
+          title: "Demo data loaded",
+        },
+      }),
+      reset: async () => ({
+        kind: "dashboard",
+        dashboard: await expectDashboard(crab.templateReset()),
+        clearSelection: true,
+        success: {
+          title: "Template data reset",
+        },
+      }),
+      create_member: async ({ input }) => ({
+        kind: "dashboard",
+        dashboard: await expectDashboard(crab.templateCreateMember(input)),
+        resetMemberInput: true,
+        success: {
+          title: "Member added",
+        },
+      }),
+      create_task: async ({ input }) => ({
+        kind: "dashboard",
+        dashboard: await expectDashboard(crab.templateCreateTask(input)),
+        resetTaskInput: true,
+        success: {
+          title: "Task added",
+        },
+      }),
+      assign_task: async ({ input }) => ({
+        kind: "dashboard",
+        dashboard: await expectDashboard(crab.templateAssignTask(input)),
+      }),
+      unassign_task: async ({ input }) => ({
+        kind: "dashboard",
+        dashboard: await expectDashboard(crab.templateUnassignTask(input)),
+      }),
+      bulk_status: async ({ input }) => {
+        if (input.task_ids.length === 0) {
           return {
             kind: "noop",
           };
         }
+
         return {
           kind: "dashboard",
-          dashboard: await expectDashboard(
-            crab.templateBulkSetStatus(input.input),
-          ),
+          dashboard: await expectDashboard(crab.templateBulkSetStatus(input)),
           clearSelection: true,
         };
-      case "open_window":
+      },
+      open_window: async () => {
         await crab.createWindow("Main", {
           width: 1000,
           height: 720,
@@ -147,19 +133,17 @@ export const invoker = createActors({
             title: "New window opened",
           },
         };
-      case "capture_mouse": {
-        const result = await crab.getMouseAndWindowPosition();
-        if (result.isErr()) {
-          throw new Error(result.unwrap_err());
-        }
-        return {
-          kind: "mouse",
-          mouseInfo: result.unwrap(),
-        };
-      }
-    }
-
-    throw new Error("Unknown pending operation");
+      },
+      capture_mouse: async () => ({
+        kind: "mouse",
+        mouseInfo: (await crab.getMouseAndWindowPosition()).match({
+          Ok: (mouseInfo) => mouseInfo,
+          Err: (error) => {
+            throw new Error(error);
+          },
+        }),
+      }),
+    });
   },
 });
 

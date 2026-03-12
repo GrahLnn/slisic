@@ -7,10 +7,18 @@ import { createSender } from "../kit";
 
 export const actor = createActor(machine);
 const send = createSender(actor);
+type ActorSnapshot = ReturnType<(typeof actor)["getSnapshot"]>;
+const selectMainState = me.select(
+  (shot: { value: unknown }) => shot.value as MainStateT,
+  me.eq.strict<MainStateT>(),
+);
+const selectContext = me.select((shot: { context: ActorSnapshot["context"] }) => shot.context);
 
 export const hook = {
-  useState: () => useSelector(actor, (shot) => me(shot.value as MainStateT)),
-  useContext: () => useSelector(actor, (shot) => shot.context),
+  useState: () =>
+    me(useSelector(actor, selectMainState.project, selectMainState.compare)),
+  useContext: () =>
+    useSelector(actor, selectContext.project, selectContext.compare),
 };
 
 export const action = {};

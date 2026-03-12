@@ -11,6 +11,7 @@ import { action, hook } from "./flow/template_board";
 import type { TaskStatus } from "./flow/template_board/core";
 import { me } from "@grahlnn/fn";
 import { useAppBootstrap } from "./flow/bootstrap";
+import { shouldRenderMainWindow } from "./flow/bootstrap/logic";
 
 const statusOptions: TaskStatus[] = ["todo", "doing", "done"];
 
@@ -35,8 +36,20 @@ const statColors = [
   "from-emerald-500/20 via-emerald-500/5 to-transparent",
 ];
 
-function idToString(id: Id): string {
-  return "String" in id ? id.String : String(id.Number);
+function idToString(id: Id | string | number): string {
+  if (typeof id === "string" || typeof id === "number") {
+    return String(id);
+  }
+
+  if ("String" in id) {
+    return id.String;
+  }
+
+  if ("Number" in id) {
+    return String(id.Number);
+  }
+
+  throw new TypeError(`Unsupported id shape: ${JSON.stringify(id)}`);
 }
 
 function toTaskStatus(value: string): TaskStatus {
@@ -90,7 +103,7 @@ function TemplateBoard() {
     bulkStatus,
     selectedTaskIds,
     mouseInfo,
-  } = hook.useContext();
+  } = hook.useViewModel();
   const loading = state === "loading";
 
   const memberMap = useMemo(() => {
@@ -496,12 +509,16 @@ function Base({ children }: { children: React.ReactNode }) {
 function App() {
   const appWindow = useAppBootstrap();
 
-  return me(appWindow.window).match({
-    Main: () => (
+  if (shouldRenderMainWindow(appWindow)) {
+    return (
       <Base>
         <TemplateBoard />
       </Base>
-    ),
+    );
+  }
+
+  return me(appWindow.window).match({
+    Main: () => null,
   });
 }
 

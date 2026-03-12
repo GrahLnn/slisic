@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { type WindowName, crab } from "../../cmd";
+import { crab } from "../../cmd";
 import {
   action as templateAction,
   ensureStarted as ensureTemplateStarted,
@@ -8,21 +8,14 @@ import {
   action as updaterAction,
   ensureStarted as ensureUpdaterStarted,
 } from "../updater";
-
-export interface AppWindowMeta {
-  window: WindowName | null;
-  isPrewarm: boolean;
-  label: string;
-  isPrimaryMain: boolean;
-}
+import {
+  initialAppWindowMeta,
+  shouldRunUpdater,
+  type AppWindowMeta,
+} from "./logic";
 
 export function useAppBootstrap(): AppWindowMeta {
-  const [appWindow, setAppWindow] = useState<AppWindowMeta>({
-    window: null,
-    isPrewarm: false,
-    label: "",
-    isPrimaryMain: false,
-  });
+  const [appWindow, setAppWindow] = useState<AppWindowMeta>(initialAppWindowMeta);
 
   useEffect(() => {
     void crab.appReady();
@@ -42,23 +35,23 @@ export function useAppBootstrap(): AppWindowMeta {
           isPrewarm: windowKind.is_prewarm,
           label: windowKind.label,
           isPrimaryMain: windowKind.is_primary_main,
+          status: "ready",
         };
         setAppWindow(nextWindow);
 
-        if (nextWindow.window === "Main" && nextWindow.isPrimaryMain) {
+        if (shouldRunUpdater(nextWindow)) {
           ensureUpdaterStarted();
           updaterAction.run();
         }
       })
-      .catch(() => {
+      .catch((error) => {
         if (disposed) {
           return;
         }
+        console.error("Failed to resolve window kind", error);
         setAppWindow({
-          window: null,
-          isPrewarm: false,
-          label: "",
-          isPrimaryMain: false,
+          ...initialAppWindowMeta,
+          status: "error",
         });
       });
 

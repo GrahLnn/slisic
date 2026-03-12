@@ -7,58 +7,19 @@ import type {
 } from "./core";
 import { to_string } from "../kit";
 import {
-  defaultMemberInput,
-  defaultTaskInput,
   initialContext,
   type Context,
   type OperationResult,
   type PendingOperation,
 } from "./core";
 import { invoker, payloads, sig, ss } from "./events";
+import { applyOperationResult, getSuccessToast } from "./logic";
 import { src } from "./src";
 
 function setPending(pending: PendingOperation) {
   return assign({
     pending: () => pending,
   }) as any;
-}
-
-function handleSuccess(output: OperationResult) {
-  if (output.kind === "dashboard" && output.success) {
-    sileo.success(output.success);
-    return;
-  }
-
-  if (output.kind === "window") {
-    sileo.success(output.success);
-  }
-}
-
-function applyResult(context: Context, output: OperationResult): Context {
-  const next = { ...context, pending: null };
-
-  switch (output.kind) {
-    case "dashboard":
-      return {
-        ...next,
-        dashboard: output.dashboard,
-        selectedTaskIds: output.clearSelection ? [] : context.selectedTaskIds,
-        memberInput: output.resetMemberInput
-          ? { ...defaultMemberInput }
-          : context.memberInput,
-        taskInput: output.resetTaskInput
-          ? { ...defaultTaskInput }
-          : context.taskInput,
-      };
-    case "mouse":
-      return {
-        ...next,
-        mouseInfo: output.mouseInfo,
-      };
-    case "window":
-    case "noop":
-      return next;
-  }
 }
 
 export const machine = src.createMachine({
@@ -242,12 +203,15 @@ export const machine = src.createMachine({
             assign(({ context, event }) => {
               const output = (event as unknown as { output: OperationResult })
                 .output;
-              return applyResult(context as Context, output);
+              return applyOperationResult(context as Context, output);
             }),
             ({ event }) => {
               const output = (event as unknown as { output: OperationResult })
                 .output;
-              handleSuccess(output);
+              const toast = getSuccessToast(output);
+              if (toast) {
+                sileo.success(toast);
+              }
             },
           ],
         },

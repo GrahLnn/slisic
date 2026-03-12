@@ -26,6 +26,10 @@ export const machine = createMachine({
 });
 
 const actor = createActor(machine);
+const selectState = me.select(
+  (state: { value: unknown }) => state.value as StateType,
+  me.eq.strict<StateType>(),
+);
 
 actor.start();
 
@@ -42,5 +46,5 @@ export function viewCenterTool() {
 }
 
 export function useXState(): ME<StateType> {
-  return useSelector(actor, (state) => me(state.value as StateType));
+  return me(useSelector(actor, selectState.project, selectState.compare));
 }
