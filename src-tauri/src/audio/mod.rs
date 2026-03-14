@@ -1,3 +1,4 @@
+use crate::domain::music::normalization::{self, PlaybackNormalization};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use rodio::cpal;
@@ -43,9 +44,16 @@ pub struct AudioEnded {
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct AudioPlayRequest {
     pub path: String,
-    pub target_lufs: Option<f32>,
-    pub track_lufs: Option<f32>,
-    pub track_true_peak_dbtp: Option<f32>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedAudioPlayRequest {
+    path: String,
+    gain_db: f32,
+    target_lufs: f32,
+    integrated_lufs: Option<f32>,
+    has_canonical_loudness: bool,
+    track_true_peak_dbtp: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -132,6 +140,10 @@ pub struct AudioPlayAck {
     pub path: String,
     pub duration_ms: Option<u32>,
     pub gain: f32,
+    pub gain_db: f32,
+    pub target_lufs: f32,
+    pub integrated_lufs: Option<f32>,
+    pub has_canonical_loudness: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -287,7 +299,7 @@ impl Drop for FfmpegPcmSource {
 
 enum EngineCmd {
     Play {
-        req: AudioPlayRequest,
+        req: ResolvedAudioPlayRequest,
         respond: oneshot::Sender<Result<AudioPlayAck, String>>,
     },
     Pause {
@@ -310,7 +322,7 @@ fn engine_slot() -> &'static Mutex<Option<Sender<EngineCmd>>> {
     ENGINE_TX.get_or_init(|| Mutex::new(None))
 }
 
-const DEFAULT_TARGET_LUFS: f32 = -16.0;
+const DEFAULT_TARGET_LUFS: f32 = normalization::PLAYBACK_TARGET_LUFS;
 const MAX_GAIN_DB: f32 = 3.0;
 const MIN_GAIN_DB: f32 = -18.0;
 const OUTPUT_TRUE_PEAK_CEIL_DBTP: f32 = -2.0;
@@ -370,6 +382,7 @@ fn compute_gain_db(
     gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB)
 }
 
+#[allow(dead_code)]
 fn compute_gain_linear(
     target_lufs: Option<f32>,
     track_lufs: Option<f32>,
@@ -1150,7 +1163,7 @@ fn handle_play(
     app: &AppHandle,
     backend: &Result<AudioBackend, String>,
     state: &mut PlayerState,
-    req: AudioPlayRequest,
+    req: ResolvedAudioPlayRequest,
 ) -> Result<AudioPlayAck, String> {
     let backend = backend.as_ref().map_err(|e| e.clone())?;
     let path = Path::new(&req.path);
@@ -1158,18 +1171,17 @@ fn handle_play(
         return Err(format!("audio file not found: {}", req.path));
     }
 
-    let gain_db = compute_gain_db(req.target_lufs, req.track_lufs, req.track_true_peak_dbtp);
     let (source, duration_ms) = catch_engine("ffmpeg-stream-open", || {
         open_ffmpeg_stream(
             app,
             path,
-            gain_db,
+            req.gain_db,
             req.track_true_peak_dbtp,
             backend.output_channels,
             backend.output_sample_rate,
         )
     })?;
-    let gain = compute_gain_linear(req.target_lufs, req.track_lufs, req.track_true_peak_dbtp);
+    let gain = db_to_linear(req.gain_db);
 
     let sink = Player::connect_new(backend.device_sink.mixer());
     sink.append(source);
@@ -1188,6 +1200,10 @@ fn handle_play(
         path: req.path,
         duration_ms,
         gain,
+        gain_db: req.gain_db,
+        target_lufs: req.target_lufs,
+        integrated_lufs: req.integrated_lufs,
+        has_canonical_loudness: req.has_canonical_loudness,
     })
 }
 
@@ -1250,8 +1266,22 @@ where
 #[tauri::command]
 #[specta::specta]
 pub async fn audio_play(app: AppHandle, req: AudioPlayRequest) -> Result<AudioPlayAck, String> {
+    let PlaybackNormalization {
+        target_lufs,
+        integrated_lufs,
+        true_peak_dbtp,
+    } = normalization::resolve_playback_normalization(&app, &req.path).await?;
+    let resolved = ResolvedAudioPlayRequest {
+        path: req.path.clone(),
+        gain_db: compute_gain_db(Some(target_lufs), integrated_lufs, true_peak_dbtp),
+        target_lufs,
+        integrated_lufs,
+        has_canonical_loudness: integrated_lufs.is_some(),
+        track_true_peak_dbtp: true_peak_dbtp,
+    };
+
     send_cmd(app, |respond| EngineCmd::Play {
-        req: req.clone(),
+        req: resolved.clone(),
         respond,
     })
     .await
@@ -1396,7 +1426,7 @@ pub async fn audio_debug_pipeline_probe(
 mod tests {
     use super::{
         analyze_probe_stats, build_playback_filter, compute_gain_db, compute_gain_linear,
-        run_audio_debug_probe_with_binary, sanitize_pcm_sample, PlayerState,
+        run_audio_debug_probe_with_binary, sanitize_pcm_sample, AudioPlayAck, PlayerState,
     };
     use std::fs::{self, File};
     use std::io::Write;
@@ -1416,6 +1446,47 @@ mod tests {
     fn compute_gain_should_not_boost_without_true_peak() {
         let gain_db = compute_gain_db(Some(-16.0), Some(-24.0), None);
         assert_eq!(gain_db, 0.0);
+    }
+
+    #[test]
+    fn compute_gain_should_not_boost_without_canonical_loudness_even_when_true_peak_exists() {
+        let gain_db = compute_gain_db(Some(-16.0), None, Some(-1.0));
+        assert_eq!(gain_db, 0.0);
+    }
+
+    #[test]
+    fn compute_gain_should_keep_safety_floor_when_canonical_loudness_is_missing() {
+        let gain_db = compute_gain_db(Some(-16.0), None, None);
+        assert_eq!(gain_db, 0.0);
+        let filter = build_playback_filter(gain_db, None);
+        assert!(filter.contains("alimiter="));
+    }
+
+    #[test]
+    fn audio_play_ack_should_expose_canonical_plan_presence() {
+        let canonical = AudioPlayAck {
+            path: "canonical.flac".to_string(),
+            duration_ms: Some(1_000),
+            gain: 1.0,
+            gain_db: 0.0,
+            target_lufs: -18.0,
+            integrated_lufs: Some(-18.0),
+            has_canonical_loudness: true,
+        };
+        assert!(canonical.has_canonical_loudness);
+        assert_eq!(canonical.integrated_lufs, Some(-18.0));
+
+        let missing = AudioPlayAck {
+            path: "legacy.flac".to_string(),
+            duration_ms: None,
+            gain: 1.0,
+            gain_db: 0.0,
+            target_lufs: -18.0,
+            integrated_lufs: None,
+            has_canonical_loudness: false,
+        };
+        assert!(!missing.has_canonical_loudness);
+        assert_eq!(missing.integrated_lufs, None);
     }
 
     #[test]

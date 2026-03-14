@@ -192,13 +192,17 @@ pub async fn resolve_playback_normalization(
 ) -> Result<PlaybackNormalization, String> {
     let _ = app;
     let music = current_music_by_path(path).await?;
-    let integrated_lufs = music.integrated_lufs;
+    let (integrated_lufs, true_peak_dbtp) = if is_analysis_fresh(&music) {
+        (music.integrated_lufs, music.true_peak_dbtp)
+    } else {
+        (None, None)
+    };
     let target_lufs = PLAYBACK_TARGET_LUFS;
 
     Ok(PlaybackNormalization {
         target_lufs,
         integrated_lufs,
-        true_peak_dbtp: music.true_peak_dbtp,
+        true_peak_dbtp,
     })
 }
 
@@ -677,16 +681,23 @@ mod tests {
             .cloned()
             .unwrap_or_else(|| super::default_music(path.to_string()));
 
+        let (integrated_lufs, true_peak_dbtp) = if super::is_analysis_fresh(&music) {
+            (music.integrated_lufs, music.true_peak_dbtp)
+        } else {
+            (None, None)
+        };
+
         Ok(PlaybackNormalization {
             target_lufs: PLAYBACK_TARGET_LUFS,
-            integrated_lufs: music.integrated_lufs,
-            true_peak_dbtp: music.true_peak_dbtp,
+            integrated_lufs,
+            true_peak_dbtp,
         })
     }
 
     #[tokio::test]
     async fn playback_normalization_ignores_legacy_avg_db() {
         let mut music = sample_music();
+        music.avg_db = Some(-12.0);
         music.integrated_lufs = None;
         music.true_peak_dbtp = None;
 
@@ -721,6 +732,45 @@ mod tests {
 
         assert_eq!(integrated_lufs, None);
         assert_eq!(true_peak_dbtp, None);
+    }
+
+    #[tokio::test]
+    async fn playback_normalization_ignores_status_incomplete_canonical_values() {
+        let mut music = sample_music();
+        music.avg_db = Some(-12.0);
+        music.integrated_lufs = Some(-24.0);
+        music.true_peak_dbtp = Some(-1.0);
+        music.normalization_status = Some(NormalizationStatus::Pending);
+
+        let path = music.path.clone();
+        let store = Arc::new(TestStore {
+            data: Mutex::new(LibraryData {
+                schema_version: 2,
+                playlists: vec![Playlist {
+                    name: "list".to_string(),
+                    avg_db: None,
+                    entries: vec![crate::domain::music::types::Entry {
+                        path: Some("C:/music".to_string()),
+                        name: "entry".to_string(),
+                        musics: vec![music],
+                        avg_db: None,
+                        url: None,
+                        downloaded_ok: Some(true),
+                        tracking: Some(false),
+                        entry_type: crate::domain::music::types::EntryType::Local,
+                    }],
+                    exclude: vec![],
+                }],
+            }),
+        });
+        let _guard = set_repository_for_tests(Arc::new(LibraryRepo::new_for_tests(store)));
+
+        let resolved = resolve_playback_normalization_for_tests(&path)
+            .await
+            .expect("resolve normalization");
+
+        assert_eq!(resolved.integrated_lufs, None);
+        assert_eq!(resolved.true_peak_dbtp, None);
     }
 
     #[tokio::test]

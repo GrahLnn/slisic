@@ -32,6 +32,7 @@ export const commands = {
 	audioDebugPipelineProbe: (req: AudioDebugProbeRequest) => typedError<AudioDebugProbeResult, string>(__TAURI_INVOKE("audio_debug_pipeline_probe", { req })),
 	exists: (path: string) => typedError<boolean, string>(__TAURI_INVOKE("exists", { path })),
 	allAudioRecursive: (folder: string) => typedError<string[], string>(__TAURI_INVOKE("all_audio_recursive", { folder })),
+	collectImportFolderEntries: (folder: string) => typedError<ImportFolderEntry[], string>(__TAURI_INVOKE("collect_import_folder_entries", { folder })),
 	resolveSavePath: () => typedError<string, string>(__TAURI_INVOKE("resolve_save_path")),
 	updateSavePath: (newPath: string) => typedError<null, string>(__TAURI_INVOKE("update_save_path", { newPath })),
 	appReady: () => __TAURI_INVOKE<void>("app_ready"),
@@ -72,6 +73,7 @@ export const commands = {
 	recheckFolder: (entry: Entry) => typedError<Entry, string>(__TAURI_INVOKE("recheck_folder", { entry })),
 	rmexclude: (list: Playlist, music: Music) => typedError<null, string>(__TAURI_INVOKE("rmexclude", { list, music })),
 	updateWeblist: (entry: Entry, playlist: string) => typedError<Entry, string>(__TAURI_INVOKE("update_weblist", { entry, playlist })),
+	bootstrapNormalization: () => typedError<number, string>(__TAURI_INVOKE("bootstrap_normalization")),
 };
 
 /** Events */
@@ -156,13 +158,13 @@ export type AudioPlayAck = {
 	path: string,
 	duration_ms: number | null,
 	gain: number,
+	gain_db: number,
+	target_lufs: number,
+	integrated_lufs: number | null,
 };
 
 export type AudioPlayRequest = {
 	path: string,
-	target_lufs: number | null,
-	track_lufs: number | null,
-	track_true_peak_dbtp: number | null,
 };
 
 export type AudioState = {
@@ -234,6 +236,13 @@ export type FullScreenEvent = {
 	is_fullscreen: boolean,
 };
 
+export type ImportFolderEntry = {
+	path: string,
+	items: string[],
+	url: string | null,
+	entry_type: EntryType,
+};
+
 export type InstallResult = {
 	installed_path: string,
 	installed_version: string,
@@ -272,12 +281,23 @@ export type Music = {
 	path: string,
 	title: string,
 	avg_db: number | null,
+	integrated_lufs: number | null,
 	true_peak_dbtp: number | null,
+	loudness_range_lu: number | null,
+	loudness_threshold_lufs: number | null,
+	analyzed_at_ms: number | null,
+	analysis_version: number | null,
+	source_mtime_ms: number | null,
+	source_size_bytes: number | null,
+	normalization_status: NormalizationStatus | null,
+	normalization_error: string | null,
 	base_bias: number,
 	user_boost: number,
 	fatigue: number,
 	diversity: number,
 };
+
+export type NormalizationStatus = "Pending" | "Ready" | "Failed";
 
 export type Playlist = {
 	name: string,
