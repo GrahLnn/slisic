@@ -4,8 +4,8 @@ use super::db_schema::{
 };
 use super::store::SnapshotStore;
 use super::types::{
-    entry_key, recompute_entry_avg, recompute_playlist_avg, Entry, EntryType, LibraryData, Music,
-    Playlist,
+    entry_key, recompute_entry_avg, recompute_playlist_avg, Entry, EntryType, LibraryData,
+    Music, NormalizationStatus, Playlist, MUSIC_LIBRARY_SCHEMA_VERSION,
 };
 use appdb::{get_db, init_db, run_tx, RecordId, Table, TxStmt};
 use async_trait::async_trait;
@@ -47,7 +47,16 @@ struct AssetRow {
     path: String,
     title: String,
     avg_db: Option<f32>,
+    integrated_lufs: Option<f32>,
     true_peak_dbtp: Option<f32>,
+    loudness_range_lu: Option<f32>,
+    loudness_threshold_lufs: Option<f32>,
+    analyzed_at_ms: Option<i64>,
+    analysis_version: Option<u32>,
+    source_mtime_ms: Option<i64>,
+    source_size_bytes: Option<i64>,
+    normalization_status: Option<String>,
+    normalization_error: Option<String>,
     base_bias: f32,
     user_boost: f32,
     fatigue: f32,
@@ -153,6 +162,26 @@ impl SurrealStore {
             "weblist" => EntryType::WebList,
             "webvideo" => EntryType::WebVideo,
             _ => EntryType::Unknown,
+        }
+    }
+
+    fn encode_normalization_status(status: &Option<NormalizationStatus>) -> Option<String> {
+        status.as_ref().map(|status| {
+            match status {
+                NormalizationStatus::Pending => "pending",
+                NormalizationStatus::Ready => "ready",
+                NormalizationStatus::Failed => "failed",
+            }
+            .to_string()
+        })
+    }
+
+    fn decode_normalization_status(status: Option<&str>) -> Option<NormalizationStatus> {
+        match status {
+            Some("pending") => Some(NormalizationStatus::Pending),
+            Some("ready") => Some(NormalizationStatus::Ready),
+            Some("failed") => Some(NormalizationStatus::Failed),
+            _ => None,
         }
     }
 
@@ -361,7 +390,16 @@ impl SnapshotStore for SurrealStore {
                         path: $path,\
                         title: $title,\
                         avg_db: $avg_db,\
+                        integrated_lufs: $integrated_lufs,\
                         true_peak_dbtp: $true_peak_dbtp,\
+                        loudness_range_lu: $loudness_range_lu,\
+                        loudness_threshold_lufs: $loudness_threshold_lufs,\
+                        analyzed_at_ms: $analyzed_at_ms,\
+                        analysis_version: $analysis_version,\
+                        source_mtime_ms: $source_mtime_ms,\
+                        source_size_bytes: $source_size_bytes,\
+                        normalization_status: $normalization_status,\
+                        normalization_error: $normalization_error,\
                         base_bias: $base_bias,\
                         user_boost: $user_boost,\
                         fatigue: $fatigue,\
@@ -374,7 +412,19 @@ impl SnapshotStore for SurrealStore {
                 .bind("path", music.path)
                 .bind("title", music.title)
                 .bind("avg_db", music.avg_db)
+                .bind("integrated_lufs", music.integrated_lufs)
                 .bind("true_peak_dbtp", music.true_peak_dbtp)
+                .bind("loudness_range_lu", music.loudness_range_lu)
+                .bind("loudness_threshold_lufs", music.loudness_threshold_lufs)
+                .bind("analyzed_at_ms", music.analyzed_at_ms)
+                .bind("analysis_version", music.analysis_version)
+                .bind("source_mtime_ms", music.source_mtime_ms)
+                .bind("source_size_bytes", music.source_size_bytes)
+                .bind(
+                    "normalization_status",
+                    Self::encode_normalization_status(&music.normalization_status),
+                )
+                .bind("normalization_error", music.normalization_error)
                 .bind("base_bias", music.base_bias)
                 .bind("user_boost", music.user_boost)
                 .bind("fatigue", music.fatigue)
@@ -441,7 +491,7 @@ impl SnapshotStore for SurrealStore {
             .bind("table", TABLE_META.to_string())
             .bind("id", META_KEY_STORAGE.to_string())
             .bind("key", META_KEY_STORAGE.to_string())
-            .bind("schema_version", 1_i64)
+            .bind("schema_version", MUSIC_LIBRARY_SCHEMA_VERSION as i64)
             .bind("updated_at", now),
         );
 
@@ -459,7 +509,7 @@ impl SnapshotStore for SurrealStore {
 
         if playlist_rows.is_empty() {
             return Ok(LibraryData {
-                schema_version: 1,
+                schema_version: MUSIC_LIBRARY_SCHEMA_VERSION,
                 playlists: Vec::new(),
             });
         }
@@ -475,7 +525,7 @@ impl SnapshotStore for SurrealStore {
 
         let asset_rows = self
             .query_rows::<AssetRow>(
-                "SELECT record::id(id) AS rid, path, title, avg_db, true_peak_dbtp, base_bias, user_boost, fatigue, diversity FROM type::table($table);",
+                "SELECT record::id(id) AS rid, path, title, avg_db, integrated_lufs, true_peak_dbtp, loudness_range_lu, loudness_threshold_lufs, analyzed_at_ms, analysis_version, source_mtime_ms, source_size_bytes, normalization_status, normalization_error, base_bias, user_boost, fatigue, diversity FROM type::table($table);",
                 TABLE_ASSET,
             )
             .await?;
@@ -556,16 +606,28 @@ impl SnapshotStore for SurrealStore {
                     let Some(asset_row) = asset_map.get(&asset_id) else {
                         continue;
                     };
-                    musics.push(Music {
+                    let music = Music {
                         path: asset_row.path.clone(),
                         title: asset_row.title.clone(),
                         avg_db: asset_row.avg_db,
+                        integrated_lufs: asset_row.integrated_lufs,
                         true_peak_dbtp: asset_row.true_peak_dbtp,
+                        loudness_range_lu: asset_row.loudness_range_lu,
+                        loudness_threshold_lufs: asset_row.loudness_threshold_lufs,
+                        analyzed_at_ms: asset_row.analyzed_at_ms,
+                        analysis_version: asset_row.analysis_version,
+                        source_mtime_ms: asset_row.source_mtime_ms,
+                        source_size_bytes: asset_row.source_size_bytes,
+                        normalization_status: Self::decode_normalization_status(
+                            asset_row.normalization_status.as_deref(),
+                        ),
+                        normalization_error: asset_row.normalization_error.clone(),
                         base_bias: asset_row.base_bias,
                         user_boost: asset_row.user_boost,
                         fatigue: asset_row.fatigue,
                         diversity: asset_row.diversity,
-                    });
+                    };
+                    musics.push(music);
                 }
 
                 let mut entry = Entry {
@@ -590,16 +652,28 @@ impl SnapshotStore for SurrealStore {
                 let Some(asset_row) = asset_map.get(&asset_id) else {
                     continue;
                 };
-                exclude.push(Music {
+                let music = Music {
                     path: asset_row.path.clone(),
                     title: asset_row.title.clone(),
                     avg_db: asset_row.avg_db,
+                    integrated_lufs: asset_row.integrated_lufs,
                     true_peak_dbtp: asset_row.true_peak_dbtp,
+                    loudness_range_lu: asset_row.loudness_range_lu,
+                    loudness_threshold_lufs: asset_row.loudness_threshold_lufs,
+                    analyzed_at_ms: asset_row.analyzed_at_ms,
+                    analysis_version: asset_row.analysis_version,
+                    source_mtime_ms: asset_row.source_mtime_ms,
+                    source_size_bytes: asset_row.source_size_bytes,
+                    normalization_status: Self::decode_normalization_status(
+                        asset_row.normalization_status.as_deref(),
+                    ),
+                    normalization_error: asset_row.normalization_error.clone(),
                     base_bias: asset_row.base_bias,
                     user_boost: asset_row.user_boost,
                     fatigue: asset_row.fatigue,
                     diversity: asset_row.diversity,
-                });
+                };
+                exclude.push(music);
             }
 
             let mut playlist = Playlist {
@@ -613,7 +687,7 @@ impl SnapshotStore for SurrealStore {
         }
 
         Ok(LibraryData {
-            schema_version: 1,
+            schema_version: MUSIC_LIBRARY_SCHEMA_VERSION,
             playlists,
         })
     }
@@ -730,7 +804,16 @@ impl SnapshotStore for SurrealStore {
                         path: $path,\
                         title: $title,\
                         avg_db: $avg_db,\
+                        integrated_lufs: $integrated_lufs,\
                         true_peak_dbtp: $true_peak_dbtp,\
+                        loudness_range_lu: $loudness_range_lu,\
+                        loudness_threshold_lufs: $loudness_threshold_lufs,\
+                        analyzed_at_ms: $analyzed_at_ms,\
+                        analysis_version: $analysis_version,\
+                        source_mtime_ms: $source_mtime_ms,\
+                        source_size_bytes: $source_size_bytes,\
+                        normalization_status: $normalization_status,\
+                        normalization_error: $normalization_error,\
                         base_bias: $base_bias,\
                         user_boost: $user_boost,\
                         fatigue: $fatigue,\
@@ -743,7 +826,19 @@ impl SnapshotStore for SurrealStore {
                 .bind("path", music.path)
                 .bind("title", music.title)
                 .bind("avg_db", music.avg_db)
+                .bind("integrated_lufs", music.integrated_lufs)
                 .bind("true_peak_dbtp", music.true_peak_dbtp)
+                .bind("loudness_range_lu", music.loudness_range_lu)
+                .bind("loudness_threshold_lufs", music.loudness_threshold_lufs)
+                .bind("analyzed_at_ms", music.analyzed_at_ms)
+                .bind("analysis_version", music.analysis_version)
+                .bind("source_mtime_ms", music.source_mtime_ms)
+                .bind("source_size_bytes", music.source_size_bytes)
+                .bind(
+                    "normalization_status",
+                    Self::encode_normalization_status(&music.normalization_status),
+                )
+                .bind("normalization_error", music.normalization_error)
                 .bind("base_bias", music.base_bias)
                 .bind("user_boost", music.user_boost)
                 .bind("fatigue", music.fatigue)
@@ -802,7 +897,7 @@ impl SnapshotStore for SurrealStore {
             .bind("table", TABLE_META.to_string())
             .bind("id", META_KEY_STORAGE.to_string())
             .bind("key", META_KEY_STORAGE.to_string())
-            .bind("schema_version", data.schema_version as i64)
+            .bind("schema_version", MUSIC_LIBRARY_SCHEMA_VERSION as i64)
             .bind("updated_at", now),
         );
 
@@ -822,14 +917,25 @@ fn now_timestamp_ms() -> i64 {
 mod tests {
     use super::SurrealStore;
     use crate::domain::music::store::SnapshotStore;
-    use crate::domain::music::types::{Entry, EntryType, LibraryData, Music, Playlist};
+    use crate::domain::music::types::{
+        Entry, EntryType, LibraryData, Music, Playlist, MUSIC_LIBRARY_SCHEMA_VERSION,
+    };
 
     fn sample_music(path: &str, title: &str, avg_db: Option<f32>) -> Music {
         Music {
             path: path.to_string(),
             title: title.to_string(),
             avg_db,
+            integrated_lufs: None,
             true_peak_dbtp: None,
+            loudness_range_lu: None,
+            loudness_threshold_lufs: None,
+            analyzed_at_ms: None,
+            analysis_version: None,
+            source_mtime_ms: None,
+            source_size_bytes: None,
+            normalization_status: None,
+            normalization_error: None,
             base_bias: 0.1,
             user_boost: 0.2,
             fatigue: 0.3,
@@ -875,7 +981,7 @@ mod tests {
         };
 
         LibraryData {
-            schema_version: 1,
+            schema_version: MUSIC_LIBRARY_SCHEMA_VERSION,
             playlists: vec![playlist],
         }
     }
@@ -955,6 +1061,34 @@ mod tests {
         assert_eq!(loaded.playlists[0].name, "contemporary-renamed");
         assert!(loaded.playlists[0].exclude.is_empty());
         assert_eq!(loaded.playlists[0].entries.len(), 2);
+    }
+
+    #[test]
+    fn sample_music_fixture_keeps_legacy_avg_db_out_of_canonical_fields() {
+        let music = sample_music("C:\\music\\legacy\\fixture.flac", "fixture", Some(-16.2));
+
+        assert_eq!(music.avg_db, Some(-16.2));
+        assert_eq!(music.integrated_lufs, None);
+        assert_eq!(music.true_peak_dbtp, None);
+        assert_eq!(music.loudness_range_lu, None);
+    }
+
+    #[test]
+    fn sample_data_legacy_fixture_stays_non_canonical_across_store_boundary() {
+        let data = sample_data();
+        let playlist = &data.playlists[0];
+
+        for music in playlist
+            .entries
+            .iter()
+            .flat_map(|entry| entry.musics.iter())
+            .chain(playlist.exclude.iter())
+        {
+            assert!(music.avg_db.is_some(), "fixture should retain legacy avg_db");
+            assert_eq!(music.integrated_lufs, None);
+            assert_eq!(music.true_peak_dbtp, None);
+            assert_eq!(music.loudness_range_lu, None);
+        }
     }
 
     #[test]
