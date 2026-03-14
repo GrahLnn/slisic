@@ -918,7 +918,8 @@ mod tests {
     use super::SurrealStore;
     use crate::domain::music::store::SnapshotStore;
     use crate::domain::music::types::{
-        Entry, EntryType, LibraryData, Music, Playlist, MUSIC_LIBRARY_SCHEMA_VERSION,
+        Entry, EntryType, LibraryData, Music, NormalizationStatus, Playlist,
+        MUSIC_LIBRARY_SCHEMA_VERSION,
     };
 
     fn sample_music(path: &str, title: &str, avg_db: Option<f32>) -> Music {
@@ -983,6 +984,28 @@ mod tests {
         LibraryData {
             schema_version: MUSIC_LIBRARY_SCHEMA_VERSION,
             playlists: vec![playlist],
+        }
+    }
+
+    fn canonical_music(path: &str, title: &str) -> Music {
+        Music {
+            path: path.to_string(),
+            title: title.to_string(),
+            avg_db: None,
+            integrated_lufs: Some(-18.5),
+            true_peak_dbtp: Some(-1.2),
+            loudness_range_lu: Some(4.2),
+            loudness_threshold_lufs: Some(-28.0),
+            analyzed_at_ms: Some(123),
+            analysis_version: Some(1),
+            source_mtime_ms: Some(456),
+            source_size_bytes: Some(789),
+            normalization_status: Some(NormalizationStatus::Ready),
+            normalization_error: None,
+            base_bias: 0.1,
+            user_boost: 0.2,
+            fatigue: 0.3,
+            diversity: 0.4,
         }
     }
 
@@ -1089,6 +1112,65 @@ mod tests {
             assert_eq!(music.true_peak_dbtp, None);
             assert_eq!(music.loudness_range_lu, None);
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn save_data_persists_successful_analysis_descriptor_set_and_fresh_metadata() {
+        let db_dir = std::env::current_dir()
+            .expect("current dir")
+            .join("target")
+            .join(format!(
+                "slisic_music_store_successful_analysis_test_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+
+        if db_dir.exists() {
+            let _ = std::fs::remove_dir_all(&db_dir);
+        }
+
+        let store = SurrealStore::open(db_dir)
+            .await
+            .expect("open surreal store");
+
+        let canonical = canonical_music("C:\\music\\canonical\\fresh.flac", "fresh");
+        let data = LibraryData {
+            schema_version: MUSIC_LIBRARY_SCHEMA_VERSION,
+            playlists: vec![Playlist {
+                name: "canonical".to_string(),
+                avg_db: Some(-99.0),
+                entries: vec![Entry {
+                    path: Some("C:\\music\\canonical".to_string()),
+                    name: "folder".to_string(),
+                    musics: vec![canonical.clone()],
+                    avg_db: None,
+                    url: None,
+                    downloaded_ok: Some(true),
+                    tracking: Some(false),
+                    entry_type: EntryType::Local,
+                }],
+                exclude: vec![],
+            }],
+        };
+
+        store.save_data(&data).await.expect("save data");
+
+        let loaded = store.load_data().await.expect("load data");
+        let music = &loaded.playlists[0].entries[0].musics[0];
+
+        assert_eq!(music.integrated_lufs, canonical.integrated_lufs);
+        assert_eq!(music.true_peak_dbtp, canonical.true_peak_dbtp);
+        assert_eq!(music.loudness_range_lu, canonical.loudness_range_lu);
+        assert_eq!(music.normalization_status, Some(NormalizationStatus::Ready));
+        assert_eq!(music.analysis_version, canonical.analysis_version);
+        assert_eq!(music.source_mtime_ms, canonical.source_mtime_ms);
+        assert_eq!(music.source_size_bytes, canonical.source_size_bytes);
+        assert_eq!(music.analyzed_at_ms, canonical.analyzed_at_ms);
+        assert_eq!(music.normalization_error, None);
+        assert_eq!(music.avg_db, None);
     }
 
     #[test]
