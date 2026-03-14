@@ -2,22 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { crab } from "@/src/cmd/commandAdapter";
 import type {
   AudioDebugSpectrogram,
-  AudioDebugSpectrogramRequest,
   AudioState,
-  Music,
 } from "@/src/cmd/commands";
 import { hook } from "@/src/flow/music";
-import { derivePlaylistTargetLufs } from "@/src/flow/music/logic";
-
-function playableTracksFromList(
-  list: ReturnType<typeof hook.useCurList>,
-): Music[] {
-  if (!list) return [];
-  const excluded = new Set(list.exclude.map((item) => item.path));
-  return list.entries
-    .flatMap((entry) => entry.musics)
-    .filter((music) => !excluded.has(music.path));
-}
+import {
+  buildSpectrogramRequest,
+  deriveOverlayTargetLufs,
+} from "./dev_spectrogram_overlay.logic";
 
 function formatMs(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -52,8 +43,7 @@ export default function DevSpectrogramOverlay() {
   const [error, setError] = useState<string | null>(null);
   const reqTokenRef = useRef(0);
 
-  const tracks = useMemo(() => playableTracksFromList(curList), [curList]);
-  const target = useMemo(() => derivePlaylistTargetLufs(tracks, -18), [tracks]);
+  const target = useMemo(() => deriveOverlayTargetLufs(curList, -18), [curList]);
 
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -94,14 +84,7 @@ export default function DevSpectrogramOverlay() {
     const token = ++reqTokenRef.current;
     const width = Math.max(960, Math.floor(window.innerWidth * 0.98));
     const height = Math.max(220, Math.floor(window.innerHeight * 0.46));
-    const request: AudioDebugSpectrogramRequest = {
-      path: curPlay.path,
-      target_lufs: target,
-      track_lufs: curPlay.avg_db ?? target,
-      track_true_peak_dbtp: curPlay.true_peak_dbtp ?? null,
-      width,
-      height,
-    };
+    const request = buildSpectrogramRequest(curPlay, target, { width, height });
 
     setLoading(true);
     setError(null);
