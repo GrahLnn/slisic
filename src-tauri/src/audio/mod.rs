@@ -414,6 +414,22 @@ fn build_playback_filter(gain_db: f32, track_true_peak_dbtp: Option<f32>) -> Str
     }
 }
 
+fn ensure_debug_mode_available(command_name: &str) -> Result<(), String> {
+    if cfg!(debug_assertions) {
+        Ok(())
+    } else {
+        Err(format!("{command_name} is available in debug mode only"))
+    }
+}
+
+fn ensure_audio_file_exists(path: &str) -> Result<PathBuf, String> {
+    let input = PathBuf::from(path);
+    if !input.exists() {
+        return Err(format!("audio file not found: {path}"));
+    }
+    Ok(input)
+}
+
 fn clamp_spectrogram_size(size: Option<u32>, fallback: u32, min: u32, max: u32) -> u32 {
     size.unwrap_or(fallback).clamp(min, max)
 }
@@ -1317,28 +1333,22 @@ pub async fn audio_debug_spectrogram(
     app: AppHandle,
     req: AudioDebugSpectrogramRequest,
 ) -> Result<AudioDebugSpectrogram, String> {
-    if !cfg!(debug_assertions) {
-        return Err("audio_debug_spectrogram is available in debug mode only".to_string());
-    }
-
-    let input = Path::new(&req.path);
-    if !input.exists() {
-        return Err(format!("audio file not found: {}", req.path));
-    }
+    ensure_debug_mode_available("audio_debug_spectrogram")?;
+    let input = ensure_audio_file_exists(&req.path)?;
 
     let width = clamp_spectrogram_size(req.width, 1400, 640, 4096);
     let height = clamp_spectrogram_size(req.height, 260, 120, 1024);
     let gain_db = compute_gain_db(req.target_lufs, req.track_lufs, req.track_true_peak_dbtp);
     let playback_filter = build_playback_filter(gain_db, req.track_true_peak_dbtp);
     let ffmpeg = crate::utils::ffmpeg::ensure_ffmpeg(&app)?;
-    let mut duration_ms = open_decoder(input).ok().and_then(|(_, duration)| duration);
+    let mut duration_ms = open_decoder(input.as_path()).ok().and_then(|(_, duration)| duration);
     if duration_ms.is_none() {
-        duration_ms = probe_duration_ms_with_ffprobe(&ffmpeg, input);
+        duration_ms = probe_duration_ms_with_ffprobe(&ffmpeg, input.as_path());
     }
     let ffmpeg_raw = ffmpeg.clone();
     let ffmpeg_processed = ffmpeg;
-    let raw_path = input.to_path_buf();
-    let processed_path = input.to_path_buf();
+    let raw_path = input.clone();
+    let processed_path = input;
     let raw_filter = spectrogram_filter_chain(None, width, height);
     let processed_filter = spectrogram_filter_chain(Some(&playback_filter), width, height);
 
@@ -1381,14 +1391,8 @@ pub async fn audio_debug_pipeline_probe(
     app: AppHandle,
     req: AudioDebugProbeRequest,
 ) -> Result<AudioDebugProbeResult, String> {
-    if !cfg!(debug_assertions) {
-        return Err("audio_debug_pipeline_probe is available in debug mode only".to_string());
-    }
-
-    let input = Path::new(&req.path);
-    if !input.exists() {
-        return Err(format!("audio file not found: {}", req.path));
-    }
+    ensure_debug_mode_available("audio_debug_pipeline_probe")?;
+    let input = ensure_audio_file_exists(&req.path)?;
 
     let offset_ms = req.offset_ms.unwrap_or(0);
     let capture_ms = clamp_debug_probe_capture_ms(req.capture_ms);
@@ -1402,7 +1406,7 @@ pub async fn audio_debug_pipeline_probe(
     output_root.push("debug");
     output_root.push("audio-probe");
 
-    let input_for_block = input.to_path_buf();
+    let input_for_block = input;
     let filter_for_block = playback_filter.clone();
     let output_root_for_block = output_root;
     tokio::task::spawn_blocking(move || {
@@ -1426,7 +1430,8 @@ pub async fn audio_debug_pipeline_probe(
 mod tests {
     use super::{
         analyze_probe_stats, build_playback_filter, compute_gain_db, compute_gain_linear,
-        run_audio_debug_probe_with_binary, sanitize_pcm_sample, AudioPlayAck, PlayerState,
+        ensure_audio_file_exists, ensure_debug_mode_available, run_audio_debug_probe_with_binary,
+        run_ffmpeg_spectrogram_png, sanitize_pcm_sample, AudioPlayAck, PlayerState,
     };
     use std::fs::{self, File};
     use std::io::Write;
@@ -1460,6 +1465,72 @@ mod tests {
         assert_eq!(gain_db, 0.0);
         let filter = build_playback_filter(gain_db, None);
         assert!(filter.contains("alimiter="));
+    }
+
+    #[test]
+    fn debug_mode_guard_returns_explicit_command_error() {
+        if cfg!(debug_assertions) {
+            assert_eq!(ensure_debug_mode_available("audio_debug_pipeline_probe"), Ok(()));
+        } else {
+            let err = ensure_debug_mode_available("audio_debug_pipeline_probe").unwrap_err();
+            assert_eq!(err, "audio_debug_pipeline_probe is available in debug mode only");
+        }
+    }
+
+    #[test]
+    fn missing_audio_file_returns_explicit_error() {
+        let missing = temp_wav_path("missing");
+        let err = ensure_audio_file_exists(missing.to_string_lossy().as_ref()).unwrap_err();
+        assert!(err.starts_with("audio file not found: "));
+        assert!(err.contains(missing.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn spectrogram_generation_depends_only_on_explicit_request_descriptors() {
+        let Some(ffmpeg) = find_ffmpeg_binary() else {
+            return;
+        };
+
+        let path = temp_wav_path("spectrogram-contract");
+        write_sine_wav(&path, 48_000, 2, 16, 1, 440.0, 0.35).expect("create test wav");
+
+        let low_gain_filter =
+            build_playback_filter(compute_gain_db(Some(-18.0), Some(-24.0), Some(-1.0)), Some(-1.0));
+        let unity_filter =
+            build_playback_filter(compute_gain_db(Some(-18.0), None, Some(-1.0)), Some(-1.0));
+
+        let boosted = run_ffmpeg_spectrogram_png(ffmpeg.as_path(), path.as_path(), &super::spectrogram_filter_chain(Some(&low_gain_filter), 640, 260)).expect("boosted spectrogram");
+        let unity = run_ffmpeg_spectrogram_png(ffmpeg.as_path(), path.as_path(), &super::spectrogram_filter_chain(Some(&unity_filter), 640, 260)).expect("unity spectrogram");
+
+        assert_ne!(low_gain_filter, unity_filter);
+        assert_ne!(boosted, unity);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn debug_probe_surfaces_ffmpeg_processing_failures_explicitly() {
+        let missing_ffmpeg = temp_wav_path("missing-ffmpeg");
+        let input = temp_wav_path("probe-processing");
+        write_silence_wav(&input, 48_000, 2, 16, 1).expect("create test wav");
+        let output_root = std::env::temp_dir().join("ransic-probe-missing-ffmpeg");
+
+        let err = run_audio_debug_probe_with_binary(
+            missing_ffmpeg.as_path(),
+            output_root.as_path(),
+            input.as_path(),
+            0.0,
+            &build_playback_filter(0.0, None),
+            48_000,
+            2,
+            0,
+            250,
+        )
+        .unwrap_err();
+
+        assert!(!err.trim().is_empty());
+
+        let _ = std::fs::remove_file(input);
     }
 
     #[test]
@@ -1836,6 +1907,55 @@ mod tests {
             let to_write = remaining.min(chunk.len());
             file.write_all(&chunk[..to_write])?;
             remaining -= to_write;
+        }
+
+        file.flush()?;
+        Ok(())
+    }
+
+    fn write_sine_wav(
+        path: &Path,
+        sample_rate: u32,
+        channels: u16,
+        bits_per_sample: u16,
+        duration_secs: u32,
+        frequency_hz: f32,
+        amplitude: f32,
+    ) -> Result<(), std::io::Error> {
+        let mut file = File::create(path)?;
+        let total_frames = sample_rate.saturating_mul(duration_secs);
+        let bytes_per_sample = (bits_per_sample / 8) as u32;
+        let data_size = total_frames
+            .saturating_mul(channels as u32)
+            .saturating_mul(bytes_per_sample);
+        let riff_chunk_size = 36u32.saturating_add(data_size);
+        let byte_rate = sample_rate
+            .saturating_mul(channels as u32)
+            .saturating_mul(bytes_per_sample);
+        let block_align = channels.saturating_mul(bits_per_sample / 8);
+
+        file.write_all(b"RIFF")?;
+        file.write_all(&riff_chunk_size.to_le_bytes())?;
+        file.write_all(b"WAVE")?;
+        file.write_all(b"fmt ")?;
+        file.write_all(&16u32.to_le_bytes())?;
+        file.write_all(&1u16.to_le_bytes())?;
+        file.write_all(&channels.to_le_bytes())?;
+        file.write_all(&sample_rate.to_le_bytes())?;
+        file.write_all(&byte_rate.to_le_bytes())?;
+        file.write_all(&block_align.to_le_bytes())?;
+        file.write_all(&bits_per_sample.to_le_bytes())?;
+        file.write_all(b"data")?;
+        file.write_all(&data_size.to_le_bytes())?;
+
+        let max_i16 = i16::MAX as f32;
+        for frame in 0..total_frames {
+            let t = frame as f32 / sample_rate as f32;
+            let sample = (2.0 * std::f32::consts::PI * frequency_hz * t).sin() * amplitude;
+            let quantized = (sample.clamp(-1.0, 1.0) * max_i16).round() as i16;
+            for _ in 0..channels {
+                file.write_all(&quantized.to_le_bytes())?;
+            }
         }
 
         file.flush()?;
