@@ -145,31 +145,35 @@ async fn persist_analysis_failure(path: &str, error: String) -> Result<(), Strin
     let path = path.to_string();
     repository()?
         .update_music_by_path(&path, move |music| {
-            let analyzed_at_ms = now_timestamp_ms();
-            music.integrated_lufs = None;
-            music.avg_db = None;
-            music.true_peak_dbtp = None;
-            music.loudness_range_lu = None;
-            music.loudness_threshold_lufs = None;
-            music.analyzed_at_ms = Some(analyzed_at_ms);
-            music.analysis_version = Some(MUSIC_ANALYSIS_VERSION);
-            music.normalization_status = Some(NormalizationStatus::Failed);
-            music.normalization_error = Some(error.clone());
-
-            match source_fingerprint(Path::new(&music.path)) {
-                Ok((mtime_ms, size_bytes)) => {
-                    music.source_mtime_ms = Some(mtime_ms);
-                    music.source_size_bytes = Some(size_bytes);
-                }
-                Err(_) => {
-                    music.source_mtime_ms = None;
-                    music.source_size_bytes = None;
-                }
-            }
-
-            sync_legacy_loudness_fields(music);
+            apply_analysis_failure(music, error.clone());
         })
         .await
+}
+
+fn apply_analysis_failure(music: &mut Music, error: String) {
+    let analyzed_at_ms = now_timestamp_ms();
+    music.integrated_lufs = None;
+    music.avg_db = None;
+    music.true_peak_dbtp = None;
+    music.loudness_range_lu = None;
+    music.loudness_threshold_lufs = None;
+    music.analyzed_at_ms = Some(analyzed_at_ms);
+    music.analysis_version = Some(MUSIC_ANALYSIS_VERSION);
+    music.normalization_status = Some(NormalizationStatus::Failed);
+    music.normalization_error = Some(error);
+
+    match source_fingerprint(Path::new(&music.path)) {
+        Ok((mtime_ms, size_bytes)) => {
+            music.source_mtime_ms = Some(mtime_ms);
+            music.source_size_bytes = Some(size_bytes);
+        }
+        Err(_) => {
+            music.source_mtime_ms = None;
+            music.source_size_bytes = None;
+        }
+    }
+
+    sync_legacy_loudness_fields(music);
 }
 
 async fn current_music_by_path(path: &str) -> Result<Music, String> {
@@ -656,5 +660,30 @@ mod tests {
         assert_eq!(failed.loudness_range_lu, None);
         assert_eq!(failed.loudness_threshold_lufs, None);
         assert_eq!(failed.avg_db, None);
+    }
+
+    #[test]
+    fn persist_analysis_failure_applies_failed_state_without_tauri_runtime() {
+        let mut music = sample_music();
+        music.integrated_lufs = Some(-16.0);
+        music.true_peak_dbtp = Some(-0.5);
+        music.loudness_range_lu = Some(4.0);
+        music.loudness_threshold_lufs = Some(-26.0);
+
+        super::apply_analysis_failure(
+            &mut music,
+            "audio file not found: C:/music/missing.flac".to_string(),
+        );
+
+        assert_eq!(music.normalization_status, Some(NormalizationStatus::Failed));
+        assert!(music
+            .normalization_error
+            .as_deref()
+            .is_some_and(|msg| msg.contains("audio file not found")));
+        assert_eq!(music.integrated_lufs, None);
+        assert_eq!(music.true_peak_dbtp, None);
+        assert_eq!(music.loudness_range_lu, None);
+        assert_eq!(music.loudness_threshold_lufs, None);
+        assert_eq!(music.avg_db, None);
     }
 }
