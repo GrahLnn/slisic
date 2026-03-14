@@ -2,67 +2,97 @@ mod audio;
 mod domain;
 mod utils;
 
+use anyhow::Result;
+
+use audio::{
+    audio_debug_pipeline_probe, audio_debug_spectrogram, audio_pause, audio_play, audio_resume,
+    audio_status, audio_stop, AudioEnded, AudioState,
+};
 use domain::music;
+use music::{
+    boost, bootstrap_normalization, cancle_boost, cancle_fatigue, create, delete,
+    delete_music, fatigue, read, read_all, recheck_folder, reset_logits, rmexclude, unstar,
+    update_weblist, ProcessMsg,
+};
+use specta_typescript::BigIntExportBehavior;
 use tauri::async_runtime::block_on;
 use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events, Builder};
 use tokio::task::block_in_place;
+use utils::config::{resolve_save_path, update_save_path};
+use utils::core::app_ready;
+use utils::event::FullScreenEvent;
+use utils::ffmpeg::{
+    ffmpeg_check_exists, ffmpeg_check_update, ffmpeg_download_and_install, ffmpeg_version,
+};
+use utils::file::{all_audio_recursive, collect_import_folder_entries, exists};
+use utils::window::{create_window, get_mouse_and_window_position, get_window_kind};
+use utils::ytdlp::{
+    check_exists, github_ok, look_media, spawn_ytdlp_auto_update, test_download_audio,
+    ytdlp_check_update, ytdlp_download_and_install, ProcessResult, YtdlpVersionChanged,
+};
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri_plugin_updater::UpdaterExt;
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    run_app().expect("error while running tauri application");
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+fn run_app() -> Result<()> {
     let commands = collect_commands![
-        audio::audio_play,
-        audio::audio_pause,
-        audio::audio_resume,
-        audio::audio_stop,
-        audio::audio_status,
-        audio::audio_debug_spectrogram,
-        audio::audio_debug_pipeline_probe,
-        utils::file::exists,
-        utils::file::all_audio_recursive,
-        utils::config::resolve_save_path,
-        utils::config::update_save_path,
-        utils::core::app_ready,
-        utils::window::get_window_kind,
-        utils::window::create_window,
-        utils::window::get_mouse_and_window_position,
-        utils::ytdlp::ytdlp_download_and_install,
-        utils::ytdlp::ytdlp_check_update,
-        utils::ytdlp::check_exists,
-        utils::ytdlp::github_ok,
-        utils::ytdlp::look_media,
-        utils::ytdlp::test_download_audio,
-        utils::ffmpeg::ffmpeg_check_update,
-        utils::ffmpeg::ffmpeg_download_and_install,
-        utils::ffmpeg::ffmpeg_version,
-        utils::ffmpeg::ffmpeg_check_exists,
-        music::create,
-        music::read,
-        music::read_all,
+        audio_play,
+        audio_pause,
+        audio_resume,
+        audio_stop,
+        audio_status,
+        audio_debug_spectrogram,
+        audio_debug_pipeline_probe,
+        exists,
+        all_audio_recursive,
+        collect_import_folder_entries,
+        resolve_save_path,
+        update_save_path,
+        app_ready,
+        get_window_kind,
+        create_window,
+        get_mouse_and_window_position,
+        ytdlp_download_and_install,
+        ytdlp_check_update,
+        check_exists,
+        github_ok,
+        look_media,
+        test_download_audio,
+        ffmpeg_check_update,
+        ffmpeg_download_and_install,
+        ffmpeg_version,
+        ffmpeg_check_exists,
+        create,
+        read,
+        read_all,
         music::update,
-        music::delete,
-        music::fatigue,
-        music::boost,
-        music::cancle_boost,
-        music::cancle_fatigue,
-        music::unstar,
-        music::reset_logits,
-        music::delete_music,
-        music::recheck_folder,
-        music::rmexclude,
-        music::update_weblist,
+        delete,
+        fatigue,
+        boost,
+        cancle_boost,
+        cancle_fatigue,
+        unstar,
+        reset_logits,
+        delete_music,
+        recheck_folder,
+        rmexclude,
+        update_weblist,
+        bootstrap_normalization,
     ];
 
     let events = collect_events![
-        audio::AudioState,
-        audio::AudioEnded,
-        utils::event::FullScreenEvent,
-        utils::ytdlp::ProcessResult,
-        utils::ytdlp::YtdlpVersionChanged,
-        music::types::ProcessMsg,
+        AudioState,
+        AudioEnded,
+        FullScreenEvent,
+        ProcessResult,
+        YtdlpVersionChanged,
+        ProcessMsg,
     ];
 
     let builder: Builder = Builder::new().commands(commands).events(events);
@@ -70,8 +100,10 @@ pub fn run() {
     #[cfg(debug_assertions)]
     builder
         .export(
-            specta_typescript::Typescript::default().header(
-                r#"// @ts-nocheck
+            specta_typescript::Typescript::default()
+                .bigint(BigIntExportBehavior::Number)
+                .header(
+                    r#"// @ts-nocheck
 /* eslint-disable */
 
 export type EventsShape<T extends Record<string, any>> = {
@@ -89,7 +121,7 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
   };
 }
 "#,
-            ),
+                ),
             "../src/cmd/commands.ts",
         )
         .expect("Failed to export typescript bindings");
@@ -125,7 +157,7 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
                         utils::window::apply_window_setup(&window, true);
                     }
                     utils::window::ensure_prewarm_for_existing_windows(&handle);
-                    utils::ytdlp::spawn_ytdlp_auto_update(handle.clone());
+                    spawn_ytdlp_auto_update(handle.clone());
 
                     Ok::<(), String>(())
                 })
@@ -134,8 +166,9 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!())?;
+
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -160,3 +193,16 @@ async fn update(app: tauri::AppHandle) -> tauri_plugin_updater::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::run_app;
+
+    #[test]
+    fn default_rust_test_surface_uses_fallible_runner_boundary() {
+        let runner = run_app;
+
+        let _ = runner;
+    }
+}
+
