@@ -241,4 +241,32 @@ describe("music logic", () => {
 
 		expect(derivePlaylistTargetLufs(tracks, -18)).toBe(-18);
 	});
+
+	test("derivePlaylistTargetLufs should ignore legacy-only tracks in mixed playlists", () => {
+		const canonicalTracks = [
+			{ ...music("canonical-a", 0), integrated_lufs: -24 },
+			{ ...music("canonical-b", 0), integrated_lufs: -20 },
+			{ ...music("canonical-c", 0), integrated_lufs: -17 },
+		];
+		const mixedTracks = [
+			...canonicalTracks,
+			{ ...music("legacy-a", 0), avg_db: -30, integrated_lufs: null },
+			{ ...music("legacy-b", 0), avg_db: -8, integrated_lufs: null },
+		];
+
+		expect(derivePlaylistTargetLufs(mixedTracks, -18)).toBe(
+			derivePlaylistTargetLufs(canonicalTracks, -18),
+		);
+	});
+
+	test("derivePlaylistTargetLufs should discard invalid canonical values without legacy fallback", () => {
+		const tracks = [
+			{ ...music("invalid-nan", 0), integrated_lufs: Number.NaN, avg_db: -24 },
+			{ ...music("invalid-hot", 0), integrated_lufs: -4, avg_db: -20 },
+			{ ...music("invalid-cold", 0), integrated_lufs: -44, avg_db: -16 },
+			{ ...music("legacy-only", 0), integrated_lufs: null, avg_db: -12 },
+		];
+
+		expect(derivePlaylistTargetLufs(tracks, -18)).toBe(-18);
+	});
 });
