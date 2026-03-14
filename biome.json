@@ -1,5 +1,8 @@
 {
   "linter": {
-    "ignore": ["src/cmd/commands.ts"]
+    "enabled": true
+  },
+  "files": {
+    "includes": ["**", "!src/cmd/commands.ts"]
   }
 }

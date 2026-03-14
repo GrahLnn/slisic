@@ -1,11 +1,13 @@
 {
   "name": "slisic",
   "private": true,
+  "type": "module",
   "version": "1.0.0",
   "scripts": {
     "dev": "rsbuild dev",
     "build": "rsbuild build",
     "preview": "rsbuild preview",
+    "lint": "bunx --no-install @biomejs/biome check src/flow/music/logic.ts src/flow/music/logic.test.ts src/flow/music/playbackCoordinator.ts src/flow/music/playbackCoordinator.test.ts src/flow/music/store.ts src/flow/music/store.interaction.test.ts --files-ignore-unknown=true",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
     "check:all": "bun run typecheck && bun run build && bun run rust:check",
@@ -61,6 +63,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "babel-plugin-react-compiler": "^19.1.0-rc.1-rc-af1b7da-20250421",
+    "bun-types": "^1.3.10",
     "eslint-plugin-react-hooks": "^6.1.1",
     "sass": "^1.97.3",
     "typescript": "^5.9.3"
