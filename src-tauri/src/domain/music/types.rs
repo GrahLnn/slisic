@@ -4,6 +4,9 @@ use std::collections::HashSet;
 use std::path::Path;
 use tauri_specta::Event;
 
+pub const MUSIC_LIBRARY_SCHEMA_VERSION: u32 = 2;
+pub const MUSIC_ANALYSIS_VERSION: u32 = 1;
+
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
 pub struct Playlist {
     pub name: String,
@@ -47,12 +50,29 @@ pub struct CollectMission {
 pub struct Music {
     pub path: String,
     pub title: String,
+    // Legacy compatibility field. New playback should use integrated_lufs.
     pub avg_db: Option<f32>,
+    pub integrated_lufs: Option<f32>,
     pub true_peak_dbtp: Option<f32>,
+    pub loudness_range_lu: Option<f32>,
+    pub loudness_threshold_lufs: Option<f32>,
+    pub analyzed_at_ms: Option<i64>,
+    pub analysis_version: Option<u32>,
+    pub source_mtime_ms: Option<i64>,
+    pub source_size_bytes: Option<i64>,
+    pub normalization_status: Option<NormalizationStatus>,
+    pub normalization_error: Option<String>,
     pub base_bias: f32,
     pub user_boost: f32,
     pub fatigue: f32,
     pub diversity: f32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq)]
+pub enum NormalizationStatus {
+    Pending,
+    Ready,
+    Failed,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq, Hash)]
@@ -118,7 +138,16 @@ pub fn default_music(path: String) -> Music {
         title: path_to_title(&path),
         path,
         avg_db: None,
+        integrated_lufs: None,
         true_peak_dbtp: None,
+        loudness_range_lu: None,
+        loudness_threshold_lufs: None,
+        analyzed_at_ms: None,
+        analysis_version: None,
+        source_mtime_ms: None,
+        source_size_bytes: None,
+        normalization_status: None,
+        normalization_error: None,
         base_bias: 0.0,
         user_boost: 0.0,
         fatigue: 0.0,
@@ -130,7 +159,16 @@ pub fn merge_music_with_template(path: String, template: Option<&Music>) -> Musi
     let mut base = default_music(path.clone());
     if let Some(m) = template {
         base.avg_db = m.avg_db;
+        base.integrated_lufs = m.integrated_lufs;
         base.true_peak_dbtp = m.true_peak_dbtp;
+        base.loudness_range_lu = m.loudness_range_lu;
+        base.loudness_threshold_lufs = m.loudness_threshold_lufs;
+        base.analyzed_at_ms = m.analyzed_at_ms;
+        base.analysis_version = m.analysis_version;
+        base.source_mtime_ms = m.source_mtime_ms;
+        base.source_size_bytes = m.source_size_bytes;
+        base.normalization_status = m.normalization_status.clone();
+        base.normalization_error = m.normalization_error.clone();
         base.base_bias = m.base_bias;
         base.user_boost = m.user_boost;
         base.fatigue = m.fatigue;
@@ -140,6 +178,31 @@ pub fn merge_music_with_template(path: String, template: Option<&Music>) -> Musi
         base.title = path_to_title(&path);
     }
     base
+}
+
+pub fn music_loudness_lufs(music: &Music) -> Option<f32> {
+    music.integrated_lufs
+}
+
+pub fn canonical_mean_lufs<I>(values: I) -> Option<f32>
+where
+    I: IntoIterator<Item = f32>,
+{
+    let (sum, count) = values
+        .into_iter()
+        .fold((0.0f32, 0usize), |(sum, count), value| {
+            (sum + value, count + 1)
+        });
+
+    if count == 0 {
+        None
+    } else {
+        Some(sum / count as f32)
+    }
+}
+
+pub fn sync_legacy_loudness_fields(music: &mut Music) {
+    let _ = music;
 }
 
 pub fn entry_key(entry: &Entry) -> String {
@@ -159,34 +222,26 @@ pub fn dedup_entries(mut entries: Vec<Entry>) -> Vec<Entry> {
 }
 
 pub fn recompute_entry_avg(entry: &mut Entry) {
-    let (sum, count) = entry
-        .musics
-        .iter()
-        .filter_map(|m| m.avg_db)
-        .fold((0.0f32, 0usize), |(s, c), v| (s + v, c + 1));
-    entry.avg_db = if count == 0 {
-        None
-    } else {
-        Some(sum / count as f32)
-    };
+    entry.avg_db = canonical_mean_lufs(entry.musics.iter().filter_map(music_loudness_lufs));
 }
 
 pub fn recompute_playlist_avg(playlist: &mut Playlist) {
-    let (sum, count) = playlist
-        .entries
-        .iter()
-        .filter_map(|e| e.avg_db)
-        .fold((0.0f32, 0usize), |(s, c), v| (s + v, c + 1));
-    playlist.avg_db = if count == 0 {
-        None
-    } else {
-        Some(sum / count as f32)
-    };
+    playlist.avg_db = canonical_mean_lufs(
+        playlist
+            .entries
+            .iter()
+            .flat_map(|entry| entry.musics.iter())
+            .filter_map(music_loudness_lufs),
+    );
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{dedup_entries, sanitize_name, Entry, EntryType};
+    use super::{
+        canonical_mean_lufs, dedup_entries, merge_music_with_template, music_loudness_lufs,
+        recompute_entry_avg, recompute_playlist_avg, sanitize_name, Entry, EntryType, Music,
+        NormalizationStatus, Playlist,
+    };
 
     #[test]
     fn sanitize_name_should_replace_illegal_chars() {
@@ -217,5 +272,226 @@ mod tests {
         };
         let out = dedup_entries(vec![entry_a, entry_b]);
         assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn merge_music_with_template_should_not_promote_legacy_avg_db() {
+        let merged = merge_music_with_template(
+            "fresh.flac".to_string(),
+            Some(&Music {
+                path: "legacy.flac".to_string(),
+                title: "legacy".to_string(),
+                avg_db: Some(-14.5),
+                integrated_lufs: None,
+                true_peak_dbtp: None,
+                loudness_range_lu: None,
+                loudness_threshold_lufs: None,
+                analyzed_at_ms: Some(1),
+                analysis_version: Some(1),
+                source_mtime_ms: Some(2),
+                source_size_bytes: Some(3),
+                normalization_status: Some(NormalizationStatus::Ready),
+                normalization_error: None,
+                base_bias: 0.0,
+                user_boost: 0.0,
+                fatigue: 0.0,
+                diversity: 0.0,
+            }),
+        );
+
+        assert_eq!(merged.avg_db, Some(-14.5));
+        assert_eq!(merged.integrated_lufs, None);
+        assert_eq!(music_loudness_lufs(&merged), None);
+    }
+
+    #[test]
+    fn canonical_mean_lufs_returns_none_for_empty_sets() {
+        assert_eq!(canonical_mean_lufs(Vec::<f32>::new()), None);
+    }
+
+    #[test]
+    fn recompute_entry_avg_should_ignore_legacy_only_tracks_and_null_when_no_canonical_tracks() {
+        let mut entry = Entry {
+            path: Some("entry".to_string()),
+            name: "entry".to_string(),
+            musics: vec![
+                Music {
+                    path: "legacy.flac".to_string(),
+                    title: "legacy".to_string(),
+                    avg_db: Some(-9.0),
+                    integrated_lufs: None,
+                    true_peak_dbtp: None,
+                    loudness_range_lu: None,
+                    loudness_threshold_lufs: None,
+                    analyzed_at_ms: None,
+                    analysis_version: None,
+                    source_mtime_ms: None,
+                    source_size_bytes: None,
+                    normalization_status: Some(NormalizationStatus::Ready),
+                    normalization_error: None,
+                    base_bias: 0.0,
+                    user_boost: 0.0,
+                    fatigue: 0.0,
+                    diversity: 0.0,
+                },
+                Music {
+                    path: "canonical.flac".to_string(),
+                    title: "canonical".to_string(),
+                    avg_db: Some(-1.0),
+                    integrated_lufs: Some(-18.0),
+                    true_peak_dbtp: Some(-1.0),
+                    loudness_range_lu: Some(6.0),
+                    loudness_threshold_lufs: None,
+                    analyzed_at_ms: Some(1),
+                    analysis_version: Some(1),
+                    source_mtime_ms: Some(2),
+                    source_size_bytes: Some(3),
+                    normalization_status: Some(NormalizationStatus::Ready),
+                    normalization_error: None,
+                    base_bias: 0.0,
+                    user_boost: 0.0,
+                    fatigue: 0.0,
+                    diversity: 0.0,
+                },
+            ],
+            avg_db: Some(-99.0),
+            url: None,
+            downloaded_ok: Some(true),
+            tracking: Some(false),
+            entry_type: EntryType::Local,
+        };
+
+        recompute_entry_avg(&mut entry);
+        assert_eq!(entry.avg_db, Some(-18.0));
+
+        entry.musics[1].integrated_lufs = None;
+        recompute_entry_avg(&mut entry);
+        assert_eq!(entry.avg_db, None);
+    }
+
+    #[test]
+    fn recompute_playlist_avg_should_average_canonical_tracks_only_across_entries() {
+        let mut playlist = Playlist {
+            name: "mix".to_string(),
+            avg_db: Some(-99.0),
+            entries: vec![
+                Entry {
+                    path: Some("entry-a".to_string()),
+                    name: "entry-a".to_string(),
+                    musics: vec![
+                        Music {
+                            path: "a.flac".to_string(),
+                            title: "a".to_string(),
+                            avg_db: Some(-4.0),
+                            integrated_lufs: Some(-20.0),
+                            true_peak_dbtp: Some(-1.0),
+                            loudness_range_lu: Some(5.0),
+                            loudness_threshold_lufs: None,
+                            analyzed_at_ms: Some(1),
+                            analysis_version: Some(1),
+                            source_mtime_ms: Some(2),
+                            source_size_bytes: Some(3),
+                            normalization_status: Some(NormalizationStatus::Ready),
+                            normalization_error: None,
+                            base_bias: 0.0,
+                            user_boost: 0.0,
+                            fatigue: 0.0,
+                            diversity: 0.0,
+                        },
+                        Music {
+                            path: "legacy.flac".to_string(),
+                            title: "legacy".to_string(),
+                            avg_db: Some(-6.0),
+                            integrated_lufs: None,
+                            true_peak_dbtp: None,
+                            loudness_range_lu: None,
+                            loudness_threshold_lufs: None,
+                            analyzed_at_ms: None,
+                            analysis_version: None,
+                            source_mtime_ms: None,
+                            source_size_bytes: None,
+                            normalization_status: Some(NormalizationStatus::Ready),
+                            normalization_error: None,
+                            base_bias: 0.0,
+                            user_boost: 0.0,
+                            fatigue: 0.0,
+                            diversity: 0.0,
+                        },
+                    ],
+                    avg_db: None,
+                    url: None,
+                    downloaded_ok: Some(true),
+                    tracking: Some(false),
+                    entry_type: EntryType::Local,
+                },
+                Entry {
+                    path: Some("entry-b".to_string()),
+                    name: "entry-b".to_string(),
+                    musics: vec![Music {
+                        path: "b.flac".to_string(),
+                        title: "b".to_string(),
+                        avg_db: Some(-8.0),
+                        integrated_lufs: Some(-14.0),
+                        true_peak_dbtp: Some(-1.5),
+                        loudness_range_lu: Some(4.0),
+                        loudness_threshold_lufs: None,
+                        analyzed_at_ms: Some(1),
+                        analysis_version: Some(1),
+                        source_mtime_ms: Some(2),
+                        source_size_bytes: Some(3),
+                        normalization_status: Some(NormalizationStatus::Ready),
+                        normalization_error: None,
+                        base_bias: 0.0,
+                        user_boost: 0.0,
+                        fatigue: 0.0,
+                        diversity: 0.0,
+                    }],
+                    avg_db: None,
+                    url: None,
+                    downloaded_ok: Some(true),
+                    tracking: Some(false),
+                    entry_type: EntryType::Local,
+                },
+            ],
+            exclude: vec![Music {
+                path: "excluded.flac".to_string(),
+                title: "excluded".to_string(),
+                avg_db: Some(-30.0),
+                integrated_lufs: Some(-30.0),
+                true_peak_dbtp: Some(-1.0),
+                loudness_range_lu: Some(2.0),
+                loudness_threshold_lufs: None,
+                analyzed_at_ms: Some(1),
+                analysis_version: Some(1),
+                source_mtime_ms: Some(2),
+                source_size_bytes: Some(3),
+                normalization_status: Some(NormalizationStatus::Ready),
+                normalization_error: None,
+                base_bias: 0.0,
+                user_boost: 0.0,
+                fatigue: 0.0,
+                diversity: 0.0,
+            }],
+        };
+
+        for entry in &mut playlist.entries {
+            recompute_entry_avg(entry);
+        }
+        recompute_playlist_avg(&mut playlist);
+
+        assert_eq!(playlist.entries[0].avg_db, Some(-20.0));
+        assert_eq!(playlist.entries[1].avg_db, Some(-14.0));
+        assert_eq!(playlist.avg_db, Some(-17.0));
+
+        playlist.entries[0].musics[0].integrated_lufs = None;
+        playlist.entries[1].musics[0].integrated_lufs = None;
+        for entry in &mut playlist.entries {
+            recompute_entry_avg(entry);
+        }
+        recompute_playlist_avg(&mut playlist);
+
+        assert_eq!(playlist.entries[0].avg_db, None);
+        assert_eq!(playlist.entries[1].avg_db, None);
+        assert_eq!(playlist.avg_db, None);
     }
 }
