@@ -161,6 +161,7 @@ export type AudioPlayAck = {
 	gain_db: number,
 	target_lufs: number,
 	integrated_lufs: number | null,
+	has_canonical_loudness: boolean,
 };
 
 export type AudioPlayRequest = {

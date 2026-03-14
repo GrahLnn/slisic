@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { AudioPlayAck } from "@/src/cmd/commands";
 import {
 	avoidRecentlyPlayed,
 	canPersistMission,
@@ -268,5 +269,19 @@ describe("music logic", () => {
 		];
 
 		expect(derivePlaylistTargetLufs(tracks, -18)).toBe(-18);
+	});
+
+	test("AudioPlayAck TS contract exposes canonical loudness presence for playback acknowledgments", () => {
+		const ack: AudioPlayAck = {
+			path: "track.mp3",
+			duration_ms: 1234,
+			gain: 0.75,
+			gain_db: -2.5,
+			target_lufs: -18,
+			integrated_lufs: -20,
+			has_canonical_loudness: true,
+		};
+
+		expect(ack.has_canonical_loudness).toBeTrue();
 	});
 });
