@@ -2,7 +2,7 @@ use super::store::SnapshotStore;
 use super::store_surreal::SurrealStore;
 use super::types::{
     dedup_entries, entry_key, recompute_entry_avg, recompute_playlist_avg, Entry, LibraryData,
-    Music, Playlist,
+    Music, Playlist, MUSIC_LIBRARY_SCHEMA_VERSION,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,6 +11,12 @@ use tauri::Manager;
 use tokio::sync::Mutex;
 
 static REPOSITORY: std::sync::OnceLock<Arc<LibraryRepo>> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+static TEST_REPOSITORY: std::sync::Mutex<Option<Arc<LibraryRepo>>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) struct RepoTestGuard;
 
 pub struct LibraryRepo {
     store: Arc<dyn SnapshotStore>,
@@ -23,6 +29,11 @@ impl LibraryRepo {
             store,
             write_lock: Mutex::new(()),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_tests(store: Arc<dyn SnapshotStore>) -> Self {
+        Self::new(store)
     }
 
     pub fn engine_name(&self) -> &'static str {
@@ -160,6 +171,40 @@ impl LibraryRepo {
         .await
     }
 
+    pub async fn update_music_batch(&self, musics: Vec<Music>) -> Result<(), String> {
+        if musics.is_empty() {
+            return Ok(());
+        }
+
+        let updates = musics
+            .into_iter()
+            .map(|music| (music.path.clone(), music))
+            .collect::<HashMap<_, _>>();
+
+        self.mutate(|data| {
+            for playlist in &mut data.playlists {
+                for entry in &mut playlist.entries {
+                    for music in &mut entry.musics {
+                        if let Some(updated) = updates.get(&music.path) {
+                            *music = updated.clone();
+                        }
+                    }
+                    recompute_entry_avg(entry);
+                }
+
+                for music in &mut playlist.exclude {
+                    if let Some(updated) = updates.get(&music.path) {
+                        *music = updated.clone();
+                    }
+                }
+
+                recompute_playlist_avg(playlist);
+            }
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn remove_music_by_path(&self, path: &str) -> Result<(), String> {
         self.mutate(|data| {
             for playlist in &mut data.playlists {
@@ -235,9 +280,32 @@ impl LibraryRepo {
 }
 
 pub fn repository() -> Result<&'static Arc<LibraryRepo>, String> {
+    #[cfg(test)]
+    {
+        let guard = TEST_REPOSITORY.lock().expect("test repo lock");
+        if let Some(repo) = guard.as_ref() {
+            let repo_ptr = repo as *const Arc<LibraryRepo>;
+            drop(guard);
+            return Ok(unsafe { &*repo_ptr });
+        }
+    }
+
     REPOSITORY
         .get()
         .ok_or_else(|| "repository not initialized".to_string())
+}
+
+#[cfg(test)]
+pub(crate) fn set_repository_for_tests(repo: Arc<LibraryRepo>) -> RepoTestGuard {
+    *TEST_REPOSITORY.lock().expect("test repo lock") = Some(repo);
+    RepoTestGuard
+}
+
+#[cfg(test)]
+impl Drop for RepoTestGuard {
+    fn drop(&mut self) {
+        *TEST_REPOSITORY.lock().expect("test repo lock") = None;
+    }
 }
 
 pub async fn init_repository(app: &AppHandle) -> Result<(), String> {
@@ -297,7 +365,7 @@ async fn bootstrap_from_legacy_json_if_needed(
 }
 
 fn prepare_legacy_data_for_store(mut data: LibraryData) -> LibraryData {
-    data.schema_version = 1;
+    data.schema_version = MUSIC_LIBRARY_SCHEMA_VERSION;
     for playlist in &mut data.playlists {
         let entries = std::mem::take(&mut playlist.entries);
         playlist.entries = dedup_entries(entries);
@@ -354,7 +422,9 @@ fn same_entry_slot(existing: &Entry, incoming: &Entry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::prepare_legacy_data_for_store;
-    use crate::domain::music::types::{Entry, EntryType, LibraryData, Music, Playlist};
+    use crate::domain::music::types::{
+        Entry, EntryType, LibraryData, Music, Playlist, MUSIC_LIBRARY_SCHEMA_VERSION,
+    };
 
     #[test]
     fn prepare_legacy_data_should_dedup_entries_and_recompute_avg() {
@@ -362,7 +432,16 @@ mod tests {
             path: "a.flac".to_string(),
             title: "a".to_string(),
             avg_db: Some(-10.0),
+            integrated_lufs: Some(-10.0),
             true_peak_dbtp: None,
+            loudness_range_lu: None,
+            loudness_threshold_lufs: None,
+            analyzed_at_ms: None,
+            analysis_version: None,
+            source_mtime_ms: None,
+            source_size_bytes: None,
+            normalization_status: None,
+            normalization_error: None,
             base_bias: 0.0,
             user_boost: 0.0,
             fatigue: 0.0,
@@ -372,7 +451,16 @@ mod tests {
             path: "b.flac".to_string(),
             title: "b".to_string(),
             avg_db: Some(-20.0),
+            integrated_lufs: Some(-20.0),
             true_peak_dbtp: None,
+            loudness_range_lu: None,
+            loudness_threshold_lufs: None,
+            analyzed_at_ms: None,
+            analysis_version: None,
+            source_mtime_ms: None,
+            source_size_bytes: None,
+            normalization_status: None,
+            normalization_error: None,
             base_bias: 0.0,
             user_boost: 0.0,
             fatigue: 0.0,
@@ -411,10 +499,174 @@ mod tests {
         };
 
         let prepared = prepare_legacy_data_for_store(data);
-        assert_eq!(prepared.schema_version, 1);
+        assert_eq!(prepared.schema_version, MUSIC_LIBRARY_SCHEMA_VERSION);
         assert_eq!(prepared.playlists.len(), 1);
         assert_eq!(prepared.playlists[0].entries.len(), 1);
         assert_eq!(prepared.playlists[0].entries[0].avg_db, Some(-10.0));
         assert_eq!(prepared.playlists[0].avg_db, Some(-10.0));
+    }
+
+    #[test]
+    fn prepare_legacy_data_should_null_playlist_avg_when_only_excluded_tracks_are_canonical() {
+        let data = LibraryData {
+            schema_version: 999,
+            playlists: vec![Playlist {
+                name: "test".to_string(),
+                avg_db: Some(-99.0),
+                entries: vec![Entry {
+                    path: Some("a.flac".to_string()),
+                    name: "A".to_string(),
+                    musics: vec![Music {
+                        path: "a.flac".to_string(),
+                        title: "a".to_string(),
+                        avg_db: Some(-10.0),
+                        integrated_lufs: None,
+                        true_peak_dbtp: None,
+                        loudness_range_lu: None,
+                        loudness_threshold_lufs: None,
+                        analyzed_at_ms: None,
+                        analysis_version: None,
+                        source_mtime_ms: None,
+                        source_size_bytes: None,
+                        normalization_status: Some(crate::domain::music::types::NormalizationStatus::Ready),
+                        normalization_error: None,
+                        base_bias: 0.0,
+                        user_boost: 0.0,
+                        fatigue: 0.0,
+                        diversity: 0.0,
+                    }],
+                    avg_db: Some(-10.0),
+                    url: None,
+                    downloaded_ok: Some(true),
+                    tracking: Some(false),
+                    entry_type: EntryType::Local,
+                }],
+                exclude: vec![Music {
+                    path: "excluded.flac".to_string(),
+                    title: "excluded".to_string(),
+                    avg_db: Some(-30.0),
+                    integrated_lufs: Some(-30.0),
+                    true_peak_dbtp: Some(-1.0),
+                    loudness_range_lu: Some(2.0),
+                    loudness_threshold_lufs: None,
+                    analyzed_at_ms: Some(1),
+                    analysis_version: Some(1),
+                    source_mtime_ms: Some(2),
+                    source_size_bytes: Some(3),
+                    normalization_status: Some(crate::domain::music::types::NormalizationStatus::Ready),
+                    normalization_error: None,
+                    base_bias: 0.0,
+                    user_boost: 0.0,
+                    fatigue: 0.0,
+                    diversity: 0.0,
+                }],
+            }],
+        };
+
+        let prepared = prepare_legacy_data_for_store(data);
+        assert_eq!(prepared.playlists[0].entries[0].avg_db, None);
+        assert_eq!(prepared.playlists[0].avg_db, None);
+    }
+
+    #[test]
+    fn prepare_legacy_data_does_not_promote_avg_db_into_canonical_fields() {
+        let data = LibraryData {
+            schema_version: 1,
+            playlists: vec![Playlist {
+                name: "test".to_string(),
+                avg_db: Some(-99.0),
+                entries: vec![Entry {
+                    path: Some("a.flac".to_string()),
+                    name: "A".to_string(),
+                    musics: vec![Music {
+                        path: "a.flac".to_string(),
+                        title: "a".to_string(),
+                        avg_db: Some(-10.0),
+                        integrated_lufs: None,
+                        true_peak_dbtp: None,
+                        loudness_range_lu: None,
+                        loudness_threshold_lufs: None,
+                        analyzed_at_ms: None,
+                        analysis_version: None,
+                        source_mtime_ms: None,
+                        source_size_bytes: None,
+                        normalization_status: Some(crate::domain::music::types::NormalizationStatus::Ready),
+                        normalization_error: None,
+                        base_bias: 0.0,
+                        user_boost: 0.0,
+                        fatigue: 0.0,
+                        diversity: 0.0,
+                    }],
+                    avg_db: Some(-10.0),
+                    url: None,
+                    downloaded_ok: Some(true),
+                    tracking: Some(false),
+                    entry_type: EntryType::Local,
+                }],
+                exclude: vec![],
+            }],
+        };
+
+        let prepared = prepare_legacy_data_for_store(data);
+        let entry = &prepared.playlists[0].entries[0];
+        let music = &entry.musics[0];
+
+        assert_eq!(music.integrated_lufs, None);
+        assert_eq!(entry.avg_db, None);
+        assert_eq!(prepared.playlists[0].avg_db, None);
+    }
+
+    #[test]
+    fn prepare_legacy_data_keeps_canonical_analysis_metadata_for_fresh_rows() {
+        let data = LibraryData {
+            schema_version: 1,
+            playlists: vec![Playlist {
+                name: "test".to_string(),
+                avg_db: Some(-99.0),
+                entries: vec![Entry {
+                    path: Some("a.flac".to_string()),
+                    name: "A".to_string(),
+                    musics: vec![Music {
+                        path: "a.flac".to_string(),
+                        title: "a".to_string(),
+                        avg_db: Some(-10.0),
+                        integrated_lufs: Some(-18.5),
+                        true_peak_dbtp: Some(-1.2),
+                        loudness_range_lu: Some(4.2),
+                        loudness_threshold_lufs: Some(-28.0),
+                        analyzed_at_ms: Some(123),
+                        analysis_version: Some(1),
+                        source_mtime_ms: Some(456),
+                        source_size_bytes: Some(789),
+                        normalization_status: Some(crate::domain::music::types::NormalizationStatus::Ready),
+                        normalization_error: None,
+                        base_bias: 0.0,
+                        user_boost: 0.0,
+                        fatigue: 0.0,
+                        diversity: 0.0,
+                    }],
+                    avg_db: Some(-10.0),
+                    url: None,
+                    downloaded_ok: Some(true),
+                    tracking: Some(false),
+                    entry_type: EntryType::Local,
+                }],
+                exclude: vec![],
+            }],
+        };
+
+        let prepared = prepare_legacy_data_for_store(data);
+        let music = &prepared.playlists[0].entries[0].musics[0];
+
+        assert_eq!(music.integrated_lufs, Some(-18.5));
+        assert_eq!(music.true_peak_dbtp, Some(-1.2));
+        assert_eq!(music.loudness_range_lu, Some(4.2));
+        assert_eq!(music.loudness_threshold_lufs, Some(-28.0));
+        assert_eq!(music.analyzed_at_ms, Some(123));
+        assert_eq!(music.analysis_version, Some(1));
+        assert_eq!(music.source_mtime_ms, Some(456));
+        assert_eq!(music.source_size_bytes, Some(789));
+        assert_eq!(music.normalization_status, Some(crate::domain::music::types::NormalizationStatus::Ready));
+        assert_eq!(music.normalization_error, None);
     }
 }

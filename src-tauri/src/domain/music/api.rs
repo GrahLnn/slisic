@@ -1,5 +1,6 @@
 use super::service;
 use super::types::{CollectMission, Entry, Music, Playlist};
+use crate::domain::music::normalization;
 use tauri::AppHandle;
 
 #[tauri::command]
@@ -76,8 +77,8 @@ pub async fn delete_music(music: Music) -> Result<(), String> {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn recheck_folder(entry: Entry) -> Result<Entry, String> {
-    service::recheck_folder(entry).await
+pub async fn recheck_folder(app: AppHandle, entry: Entry) -> Result<Entry, String> {
+    service::recheck_folder(app, entry).await
 }
 
 #[tauri::command]
@@ -94,4 +95,12 @@ pub async fn update_weblist(
     playlist: String,
 ) -> Result<Entry, String> {
     service::update_weblist(app, entry, playlist).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn bootstrap_normalization(app: AppHandle) -> Result<u32, String> {
+    normalization::bootstrap_library_normalization(&app)
+        .await
+        .map(|count| count as u32)
 }

@@ -403,6 +403,8 @@ mod tests {
     use crate::domain::music::store::SnapshotStore;
     use crate::domain::music::types::{Entry, EntryType, LibraryData, Playlist};
     use async_trait::async_trait;
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -424,6 +426,115 @@ mod tests {
         async fn save_data(&self, data: &LibraryData) -> Result<(), String> {
             *self.data.lock().await = data.clone();
             Ok(())
+        }
+    }
+
+    struct TempAudioDir {
+        root: PathBuf,
+    }
+
+    impl TempAudioDir {
+        fn new(label: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "slisic-normalization-test-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("duration")
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&root).expect("create temp dir");
+            Self { root }
+        }
+
+        fn write_file(&self, relative: &str, contents: &[u8]) -> PathBuf {
+            let path = self.root.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create parent dir");
+            }
+            std::fs::write(&path, contents).expect("write temp file");
+            path
+        }
+
+        fn path(&self) -> &Path {
+            &self.root
+        }
+    }
+
+    impl Drop for TempAudioDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn fingerprint(path: &Path) -> (i64, i64) {
+        super::source_fingerprint(path).expect("fingerprint")
+    }
+
+    fn canonical_music(path: &Path, integrated_lufs: f32) -> Music {
+        let mut music = sample_music();
+        let (mtime_ms, size_bytes) = fingerprint(path);
+        music.path = path.to_string_lossy().to_string();
+        music.title = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("track")
+            .to_string();
+        music.avg_db = None;
+        music.integrated_lufs = Some(integrated_lufs);
+        music.true_peak_dbtp = Some(-1.0);
+        music.loudness_range_lu = Some(4.5);
+        music.loudness_threshold_lufs = Some(-28.0);
+        music.analyzed_at_ms = Some(100);
+        music.analysis_version = Some(super::MUSIC_ANALYSIS_VERSION);
+        music.source_mtime_ms = Some(mtime_ms);
+        music.source_size_bytes = Some(size_bytes);
+        music.normalization_status = Some(NormalizationStatus::Ready);
+        music.normalization_error = None;
+        music
+    }
+
+    fn legacy_music(path: &Path) -> Music {
+        let mut music = sample_music();
+        music.path = path.to_string_lossy().to_string();
+        music.title = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("track")
+            .to_string();
+        music.avg_db = Some(-12.0);
+        music.integrated_lufs = None;
+        music.true_peak_dbtp = None;
+        music.loudness_range_lu = None;
+        music.loudness_threshold_lufs = None;
+        music.analyzed_at_ms = None;
+        music.analysis_version = None;
+        music.source_mtime_ms = None;
+        music.source_size_bytes = None;
+        music.normalization_status = Some(NormalizationStatus::Pending);
+        music.normalization_error = None;
+        music
+    }
+
+    fn playlist_entry(name: &str, folder: &Path, musics: Vec<Music>) -> Entry {
+        Entry {
+            path: Some(folder.to_string_lossy().to_string()),
+            name: name.to_string(),
+            musics,
+            avg_db: None,
+            url: None,
+            downloaded_ok: Some(true),
+            tracking: Some(false),
+            entry_type: EntryType::Local,
+        }
+    }
+
+    fn playlist_fixture(entries: Vec<Entry>, exclude: Vec<Music>) -> Playlist {
+        Playlist {
+            name: "library".to_string(),
+            avg_db: None,
+            entries,
+            exclude,
         }
     }
 
@@ -641,12 +752,15 @@ mod tests {
                 }],
             }),
         });
-        let _guard = set_repository_for_tests(Arc::new(LibraryRepo::new_for_tests(store.clone())));
+        let repo = Arc::new(LibraryRepo::new_for_tests(store.clone()));
+        let _guard = set_repository_for_tests(repo.clone());
 
         let error_message = "audio file not found: C:/music/missing.flac".to_string();
-        super::persist_analysis_failure(&music.path, error_message.clone())
-            .await
-            .expect("persist failure");
+        repo.update_music_by_path(&music.path, |saved_music| {
+            super::apply_analysis_failure(saved_music, error_message.clone());
+        })
+        .await
+        .expect("persist failure");
 
         let saved = store.load_data().await.expect("load data");
         let failed = &saved.playlists[0].entries[0].musics[0];
@@ -685,5 +799,134 @@ mod tests {
         assert_eq!(music.loudness_range_lu, None);
         assert_eq!(music.loudness_threshold_lufs, None);
         assert_eq!(music.avg_db, None);
+    }
+
+    #[test]
+    fn bootstrap_queues_legacy_rows_and_skips_fresh_canonical_rows() {
+        let temp = TempAudioDir::new("bootstrap");
+        let legacy_path = temp.write_file("legacy.flac", b"legacy");
+        let ready_path = temp.write_file("ready.flac", b"ready");
+
+        let queued = super::collect_stale_paths(&[playlist_fixture(
+            vec![playlist_entry(
+                "entry",
+                temp.path(),
+                vec![legacy_music(&legacy_path), canonical_music(&ready_path, -18.0)],
+            )],
+            vec![],
+        )]);
+
+        assert_eq!(queued, vec![legacy_path.to_string_lossy().to_string()]);
+    }
+
+    #[test]
+    fn fingerprint_changes_invalidate_prior_analysis() {
+        let temp = TempAudioDir::new("fingerprint");
+        let path = temp.write_file("track.flac", b"before");
+        let mut music = canonical_music(&path, -18.0);
+        assert!(is_analysis_fresh(&music));
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(&path, b"before-but-longer").expect("rewrite file");
+
+        assert!(!is_analysis_fresh(&music));
+
+        let (mtime_ms, size_bytes) = fingerprint(&path);
+        music.source_mtime_ms = Some(mtime_ms);
+        music.source_size_bytes = Some(size_bytes);
+        assert!(is_analysis_fresh(&music));
+    }
+
+    #[tokio::test]
+    async fn update_music_batch_propagates_one_canonical_result_to_shared_paths() {
+        let temp = TempAudioDir::new("shared");
+        let shared_path = temp.write_file("shared.flac", b"shared");
+        let shared_string = shared_path.to_string_lossy().to_string();
+
+        let mut source = canonical_music(&shared_path, -21.0);
+        source.integrated_lufs = None;
+        source.true_peak_dbtp = None;
+        source.loudness_range_lu = None;
+        source.analysis_version = None;
+        source.source_mtime_ms = None;
+        source.source_size_bytes = None;
+        source.normalization_status = Some(NormalizationStatus::Pending);
+
+        let store = Arc::new(TestStore {
+            data: Mutex::new(LibraryData {
+                schema_version: 2,
+                playlists: vec![playlist_fixture(
+                    vec![
+                        playlist_entry("entry-a", temp.path(), vec![source.clone()]),
+                        playlist_entry("entry-b", temp.path(), vec![source.clone()]),
+                    ],
+                    vec![source.clone()],
+                )],
+            }),
+        });
+        let _guard = set_repository_for_tests(Arc::new(LibraryRepo::new_for_tests(store.clone())));
+
+        let analyzed = canonical_music(&shared_path, -16.5);
+        crate::domain::music::repo::repository()
+            .expect("repo")
+            .update_music_batch(vec![analyzed.clone()])
+            .await
+            .expect("batch update");
+
+        let saved = store.load_data().await.expect("load data");
+        let mut observed = Vec::new();
+        for playlist in &saved.playlists {
+            for entry in &playlist.entries {
+                for music in &entry.musics {
+                    if music.path == shared_string {
+                        observed.push(music.integrated_lufs);
+                        assert_eq!(music.true_peak_dbtp, analyzed.true_peak_dbtp);
+                        assert_eq!(music.loudness_range_lu, analyzed.loudness_range_lu);
+                        assert_eq!(music.analysis_version, analyzed.analysis_version);
+                    }
+                }
+            }
+            for music in &playlist.exclude {
+                if music.path == shared_string {
+                    observed.push(music.integrated_lufs);
+                }
+            }
+        }
+
+        assert_eq!(observed, vec![Some(-16.5), Some(-16.5), Some(-16.5)]);
+    }
+
+    #[test]
+    fn folder_recheck_only_marks_new_or_stale_files_for_analysis() {
+        let temp = TempAudioDir::new("recheck");
+        let keep_path = temp.write_file("keep.flac", b"keep");
+        let stale_path = temp.write_file("stale.flac", b"stale");
+        let new_path = temp.write_file("new.flac", b"new");
+
+        let mut stale_music = canonical_music(&stale_path, -19.0);
+        stale_music.analysis_version = Some(super::MUSIC_ANALYSIS_VERSION - 1);
+
+        let updated = Entry {
+            path: Some(temp.path().to_string_lossy().to_string()),
+            name: "folder".to_string(),
+            musics: vec![
+                canonical_music(&keep_path, -18.0),
+                stale_music,
+                super::default_music(new_path.to_string_lossy().to_string()),
+            ],
+            avg_db: None,
+            url: None,
+            downloaded_ok: Some(true),
+            tracking: Some(false),
+            entry_type: EntryType::Local,
+        };
+
+        let stale = super::stale_music_paths(&updated.musics);
+        let stale_set = stale.into_iter().collect::<HashSet<_>>();
+
+        assert!(!stale_set.contains(&keep_path.to_string_lossy().to_string()));
+        assert!(stale_set.contains(&stale_path.to_string_lossy().to_string()));
+        assert!(stale_set.contains(&new_path.to_string_lossy().to_string()));
+        assert_eq!(stale_set.len(), 2);
     }
 }

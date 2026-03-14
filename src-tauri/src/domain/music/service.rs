@@ -1,3 +1,4 @@
+use super::normalization;
 use super::repo::repository;
 use super::types::{
     dedup_entries, default_music, entry_key, merge_music_with_template, path_to_title,
@@ -11,12 +12,24 @@ use std::path::Path;
 use tauri::AppHandle;
 use tauri_specta::Event;
 
+fn can_refresh_file_loudness(entry: &Entry) -> bool {
+    matches!(entry.entry_type, EntryType::Local) && entry.url.is_none()
+}
+
 pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> {
     let repo = repository()?;
     let music_index = load_music_index_if_needed(&repo, &data).await?;
     let (playlist, pending) = build_playlist_from_mission(data, &music_index)?;
     let playlist_name = playlist.name.clone();
+    let analysis_paths = playlist_music_paths(&playlist);
     repo.create_playlist(playlist).await?;
+    normalization::analyze_paths_blocking(
+        &app,
+        analysis_paths,
+        &playlist_name,
+        "Analyzing loudness",
+    )
+    .await?;
     spawn_downloads(app, playlist_name, pending);
     Ok(())
 }
@@ -34,7 +47,15 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
     let music_index = load_music_index_if_needed(&repo, &data).await?;
     let (playlist, pending) = build_playlist_from_mission(data, &music_index)?;
     let playlist_name = playlist.name.clone();
+    let analysis_paths = playlist_music_paths(&playlist);
     repo.replace_playlist(&anchor.name, playlist).await?;
+    normalization::analyze_paths_blocking(
+        &app,
+        analysis_paths,
+        &playlist_name,
+        "Analyzing loudness",
+    )
+    .await?;
     spawn_downloads(app, playlist_name, pending);
     Ok(())
 }
@@ -91,7 +112,7 @@ pub async fn rmexclude(list: Playlist, music: Music) -> Result<(), String> {
     repository()?.remove_exclude(&list.name, &music.path).await
 }
 
-pub async fn recheck_folder(entry: Entry) -> Result<Entry, String> {
+pub async fn recheck_folder(app: AppHandle, entry: Entry) -> Result<Entry, String> {
     let folder = entry
         .path
         .clone()
@@ -125,6 +146,13 @@ pub async fn recheck_folder(entry: Entry) -> Result<Entry, String> {
     recompute_entry_avg(&mut updated);
 
     repo.update_entry_everywhere(updated.clone()).await?;
+    normalization::analyze_paths_blocking(
+        &app,
+        normalization::stale_music_paths(&updated.musics),
+        &updated.name,
+        "Analyzing loudness",
+    )
+    .await?;
     Ok(updated)
 }
 
@@ -137,6 +165,13 @@ pub async fn update_weblist(
     repository()?
         .upsert_entry_in_playlist(&playlist, outcome.entry.clone())
         .await?;
+    normalization::analyze_paths_blocking(
+        &app,
+        entry_music_paths(&outcome.entry),
+        &playlist,
+        "Analyzing loudness",
+    )
+    .await?;
 
     ProcessResult {
         working_path: outcome.working_path.to_string_lossy().to_string(),
@@ -178,6 +213,13 @@ fn spawn_downloads(app: AppHandle, playlist_name: String, pending: Vec<Entry>) {
                             .upsert_entry_in_playlist(&playlist_name, entry.clone())
                             .await;
                     }
+                    let _ = normalization::analyze_paths_blocking(
+                        &app,
+                        entry_music_paths(&entry),
+                        &playlist_name,
+                        "Analyzing loudness",
+                    )
+                    .await;
                     ProcessResult {
                         working_path: working_path.to_string_lossy().to_string(),
                         saved_path: saved_path.to_string_lossy().to_string(),
@@ -203,6 +245,25 @@ fn spawn_downloads(app: AppHandle, playlist_name: String, pending: Vec<Entry>) {
             }
         }
     });
+}
+
+fn playlist_music_paths(playlist: &Playlist) -> Vec<String> {
+    let mut paths = Vec::new();
+    for entry in &playlist.entries {
+        paths.extend(entry_music_paths(entry));
+    }
+    for music in &playlist.exclude {
+        paths.push(music.path.clone());
+    }
+    paths
+}
+
+fn entry_music_paths(entry: &Entry) -> Vec<String> {
+    entry
+        .musics
+        .iter()
+        .map(|music| music.path.clone())
+        .collect()
 }
 
 fn build_playlist_from_mission(
@@ -279,6 +340,16 @@ fn normalize_existing_entry(entry: Entry, music_index: &HashMap<String, Music>) 
         } else {
             let mut base = merge_music_with_template(music.path.clone(), Some(&music));
             base.avg_db = music.avg_db;
+            base.integrated_lufs = music.integrated_lufs;
+            base.true_peak_dbtp = music.true_peak_dbtp;
+            base.loudness_range_lu = music.loudness_range_lu;
+            base.loudness_threshold_lufs = music.loudness_threshold_lufs;
+            base.analyzed_at_ms = music.analyzed_at_ms;
+            base.analysis_version = music.analysis_version;
+            base.source_mtime_ms = music.source_mtime_ms;
+            base.source_size_bytes = music.source_size_bytes;
+            base.normalization_status = music.normalization_status.clone();
+            base.normalization_error = music.normalization_error.clone();
             base
         };
         musics.push(merged);
@@ -378,7 +449,11 @@ async fn load_music_index_if_needed(
     repo: &std::sync::Arc<super::repo::LibraryRepo>,
     mission: &CollectMission,
 ) -> Result<HashMap<String, Music>, String> {
-    if mission.folders.is_empty() {
+    let needs_index = !mission.folders.is_empty()
+        || mission.entries.iter().any(can_refresh_file_loudness)
+        || mission.exclude.iter().any(|music| !music.path.trim().is_empty());
+
+    if !needs_index {
         return Ok(HashMap::new());
     }
     repo.music_index().await
