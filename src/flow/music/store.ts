@@ -99,15 +99,14 @@ export function deriveRefreshPatch(
 
 	const refreshedNowPlaying =
 		selectedListName && prev.nowPlaying
-			? playlists
+			? (playlists
 					.find((playlist) => playlist.name === selectedListName)
-					?.entries
-					.flatMap((entry) => entry.musics)
+					?.entries.flatMap((entry) => entry.musics)
 					.find((music) => music.path === prev.nowPlaying?.path) ??
 				playlists
 					.find((playlist) => playlist.name === selectedListName)
 					?.exclude.find((music) => music.path === prev.nowPlaying?.path) ??
-				prev.nowPlaying
+				prev.nowPlaying)
 			: null;
 
 	return {
