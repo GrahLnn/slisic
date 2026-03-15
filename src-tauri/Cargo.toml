@@ -7,6 +7,7 @@ license = "MIT"
 repository = ""
 edition = "2021"
 rust-version = "1.89.0"
+default-run = "Slisic"
 
 
 [lib]
