@@ -97,10 +97,23 @@ export function deriveRefreshPatch(
 				? "new_guide"
 				: "play";
 
+	const refreshedNowPlaying =
+		selectedListName && prev.nowPlaying
+			? playlists
+					.find((playlist) => playlist.name === selectedListName)
+					?.entries
+					.flatMap((entry) => entry.musics)
+					.find((music) => music.path === prev.nowPlaying?.path) ??
+				playlists
+					.find((playlist) => playlist.name === selectedListName)
+					?.exclude.find((music) => music.path === prev.nowPlaying?.path) ??
+				prev.nowPlaying
+			: null;
+
 	return {
 		playlists,
 		selectedListName,
-		nowPlaying: selectedListName ? prev.nowPlaying : null,
+		nowPlaying: refreshedNowPlaying,
 		mode,
 	};
 }

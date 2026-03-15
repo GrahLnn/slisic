@@ -259,4 +259,144 @@ describe("music interaction guards", () => {
 		expect(entry.downloaded_ok).toBe(true);
 		expect(entry.musics.map((music) => music.path)).toEqual(imported.items);
 	});
+
+	test("deriveRefreshPatch keeps legacy-only playback stale until re-scan and preserves canonical reload state", () => {
+		const legacyOnly: Music = {
+			...makeMusic("C:/audio/legacy.flac"),
+			avg_db: -14,
+		};
+		const canonicalReady: Music = {
+			...makeMusic("C:/audio/canonical.flac"),
+			integrated_lufs: -18.4,
+			true_peak_dbtp: -1.1,
+			loudness_range_lu: 4.7,
+			analyzed_at_ms: 111,
+			analysis_version: 1,
+			source_mtime_ms: 222,
+			source_size_bytes: 333,
+			normalization_status: "Ready",
+		};
+
+		const staleReload = deriveRefreshPatch(
+			{
+				...baseState,
+				selectedListName: "legacy",
+				nowPlaying: legacyOnly,
+			},
+			[
+				{
+					name: "legacy",
+					avg_db: null,
+					entries: [
+						{
+							path: "C:/audio",
+							name: "legacy-entry",
+							musics: [legacyOnly],
+							avg_db: null,
+							url: null,
+							downloaded_ok: true,
+							tracking: false,
+							entry_type: "Local",
+						},
+					],
+					exclude: [],
+				},
+			],
+		);
+
+		expect(staleReload.mode).toBe("play");
+		expect(staleReload.nowPlaying?.avg_db).toBe(-14);
+		expect(staleReload.nowPlaying?.integrated_lufs).toBeNull();
+		expect(staleReload.nowPlaying?.normalization_status).toBeNull();
+
+		const canonicalReload = deriveRefreshPatch(
+			{
+				...baseState,
+				selectedListName: "canonical",
+				nowPlaying: canonicalReady,
+			},
+			[
+				{
+					name: "canonical",
+					avg_db: -18.4,
+					entries: [
+						{
+							path: "C:/audio",
+							name: "canonical-entry",
+							musics: [canonicalReady],
+							avg_db: -18.4,
+							url: null,
+							downloaded_ok: true,
+							tracking: false,
+							entry_type: "Local",
+						},
+					],
+					exclude: [],
+				},
+			],
+		);
+
+		expect(canonicalReload.nowPlaying?.integrated_lufs).toBe(-18.4);
+		expect(canonicalReload.nowPlaying?.true_peak_dbtp).toBe(-1.1);
+		expect(canonicalReload.nowPlaying?.normalization_status).toBe("Ready");
+	});
+
+	test("deriveRefreshPatch refreshes nowPlaying from playlist data after canonical re-scan", () => {
+		const staleNowPlaying: Music = {
+			...makeMusic("C:/audio/propagation.flac"),
+			avg_db: -14,
+			integrated_lufs: null,
+			true_peak_dbtp: null,
+			loudness_range_lu: null,
+			normalization_status: null,
+		};
+
+		const refreshedCanonical: Music = {
+			...staleNowPlaying,
+			avg_db: -17.4,
+			integrated_lufs: -17.4,
+			true_peak_dbtp: -0.9,
+			loudness_range_lu: 5.6,
+			analyzed_at_ms: 777,
+			analysis_version: 1,
+			source_mtime_ms: 888,
+			source_size_bytes: 999,
+			normalization_status: "Ready",
+			normalization_error: null,
+		};
+
+		const refreshed = deriveRefreshPatch(
+			{
+				...baseState,
+				selectedListName: "rescanned",
+				nowPlaying: staleNowPlaying,
+			},
+			[
+				{
+					name: "rescanned",
+					avg_db: -17.4,
+					entries: [
+						{
+							path: "C:/audio",
+							name: "rescanned-entry",
+							musics: [refreshedCanonical],
+							avg_db: -17.4,
+							url: null,
+							downloaded_ok: true,
+							tracking: false,
+							entry_type: "Local",
+						},
+					],
+					exclude: [],
+				},
+			],
+		);
+
+		expect(refreshed.nowPlaying).toEqual(refreshedCanonical);
+		expect(refreshed.nowPlaying).not.toBe(staleNowPlaying);
+		expect(refreshed.nowPlaying?.avg_db).toBe(-17.4);
+		expect(refreshed.nowPlaying?.integrated_lufs).toBe(-17.4);
+		expect(refreshed.nowPlaying?.true_peak_dbtp).toBe(-0.9);
+		expect(refreshed.nowPlaying?.normalization_status).toBe("Ready");
+	});
 });
