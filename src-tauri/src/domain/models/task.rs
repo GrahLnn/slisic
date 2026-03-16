@@ -1,5 +1,4 @@
-use crate::{impl_crud, impl_schema};
-use appdb::Id;
+use appdb::{Id, Store, impl_schema};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,7 +8,7 @@ pub const STATUS_TODO: &str = "todo";
 pub const STATUS_DOING: &str = "doing";
 pub const STATUS_DONE: &str = "done";
 
-#[derive(Debug, Serialize, Deserialize, Clone, Type, SurrealValue)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type, SurrealValue, Store)]
 pub struct Task {
     pub id: Id,
     pub title: String,
@@ -50,7 +49,6 @@ impl Task {
     }
 }
 
-impl_crud!(Task);
 impl_schema!(
     Task,
     r#"
