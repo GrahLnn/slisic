@@ -453,6 +453,7 @@ function Guide() {
 }
 
 function Booting() {
+  const ctx = hook.useContext();
   const blockerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -464,7 +465,7 @@ function Booting() {
       ref={blockerRef}
       tabIndex={0}
       aria-busy="true"
-      className="fixed inset-0 z-[100] bg-transparent outline-none"
+      className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-3 bg-[rgba(255,255,255,0.72)] dark:bg-[rgba(10,10,10,0.82)] outline-none"
       onPointerDown={(event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -486,7 +487,19 @@ function Booting() {
           blockerRef.current?.focus();
         }
       }}
-    />
+    >
+      <motion.div
+        initial={{ filter: "blur(6px)", opacity: 0 }}
+        animate={{ filter: "blur(0px)", opacity: 1 }}
+        className="font-cinzel text-lg text-[#0a0a0a] dark:text-[#fafafa]"
+      >
+        Preparing Music Library
+      </motion.div>
+      <div className="max-w-[60vw] text-center text-xs text-[#404040] dark:text-[#d4d4d4]">
+        {ctx.processMsg?.str ??
+          "Checking playlists, downloads, and loudness metadata."}
+      </div>
+    </div>
   );
 }
 

@@ -30,6 +30,22 @@ struct AssetSpec {
     direct_url: Option<&'static str>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+pub struct LoudnessMetadata {
+    pub integrated_lufs: f32,
+    pub true_peak_dbtp: f32,
+    pub loudness_range_lu: f32,
+    pub loudness_threshold_lufs: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct LoudnormJson {
+    input_i: String,
+    input_tp: String,
+    input_lra: String,
+    input_thresh: String,
+}
+
 fn select_asset() -> Option<AssetSpec> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
@@ -395,14 +411,26 @@ pub async fn integrated_lufs<P: AsRef<Path>>(
     app: &tauri::AppHandle,
     path: P,
 ) -> Result<f64, String> {
+    Ok(analyze_loudness(app, path).await?.integrated_lufs as f64)
+}
+
+pub async fn analyze_loudness<P: AsRef<Path>>(
+    app: &tauri::AppHandle,
+    path: P,
+) -> Result<LoudnessMetadata, String> {
     let ffmpeg = ensure_ffmpeg(app)?;
     let mut cmd = Command::new(ffmpeg);
     cmd.arg("-hide_banner")
         .arg("-nostats")
+        .arg("-threads")
+        .arg("1")
         .arg("-i")
         .arg(path.as_ref())
+        .arg("-vn")
+        .arg("-sn")
+        .arg("-dn")
         .arg("-filter:a")
-        .arg("ebur128=peak=true")
+        .arg("loudnorm=I=-18:TP=-2:LRA=11:print_format=json")
         .arg("-f")
         .arg("null")
         .arg("-")
@@ -416,13 +444,26 @@ pub async fn integrated_lufs<P: AsRef<Path>>(
     }
 
     let output = cmd.output().await.map_err(|e| e.to_string())?;
-    let log = String::from_utf8_lossy(&output.stderr);
-    let summary = log.split("Summary:").nth(1).unwrap_or(&log);
-    let re = Regex::new(r"(?m)^\s*I:\s*(-?\d+(?:\.\d+)?)\s*LUFS\s*$").map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
 
-    let Some(captures) = re.captures(summary) else {
-        return Err("integrated LUFS not found".to_string());
+    let log = String::from_utf8_lossy(&output.stderr);
+    let json_re = Regex::new(r#"(?s)\{\s*"input_i"\s*:.*?\}"#).map_err(|e| e.to_string())?;
+    let Some(json_match) = json_re.find(&log) else {
+        return Err("loudnorm analysis json not found".to_string());
     };
 
-    captures[1].parse::<f64>().map_err(|e| e.to_string())
+    let parsed: LoudnormJson =
+        serde_json::from_str(json_match.as_str()).map_err(|e| e.to_string())?;
+
+    Ok(LoudnessMetadata {
+        integrated_lufs: parsed.input_i.parse::<f32>().map_err(|e| e.to_string())?,
+        true_peak_dbtp: parsed.input_tp.parse::<f32>().map_err(|e| e.to_string())?,
+        loudness_range_lu: parsed.input_lra.parse::<f32>().map_err(|e| e.to_string())?,
+        loudness_threshold_lufs: parsed
+            .input_thresh
+            .parse::<f32>()
+            .map_err(|e| e.to_string())?,
+    })
 }

@@ -249,7 +249,7 @@ function Entries() {
   );
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="relative z-10 flex flex-col gap-2">
       <div className="flex items-center justify-between">
         <Head
           title="Entries"
@@ -354,7 +354,7 @@ export function TrackEdit() {
   if (!slot) return null;
 
   return (
-    <DataList className="group rounded-lg border">
+    <DataList className="group rounded-lg border overflow-visible">
       <div className="flex flex-col gap-4 px-2">
         <EditHead title="Tracks" explain="Add tracks to your playlist." />
         <div />

@@ -3,7 +3,8 @@ use crate::domain::music::types::{
 };
 use crate::utils::config::resolve_save_path;
 use crate::utils::file::{
-    all_audio_recursive_inner, bin_dir, http, make_executable, remove_quarantine, InstallResult,
+    all_audio_recursive_inner, bin_dir, http, make_executable, remove_quarantine,
+    write_entry_metadata, EntryMetadata, InstallResult,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -503,7 +504,7 @@ pub async fn download_entry_for_library(
         .arg("--yes-playlist")
         .arg("-o")
         .arg(output_template)
-        .arg(url)
+        .arg(&url)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -542,6 +543,15 @@ pub async fn download_entry_for_library(
         }
     }
     let downloaded_count = musics.len();
+    let resolved_entry_type = if entry.entry_type == EntryType::Unknown {
+        if downloaded_count > 1 {
+            EntryType::WebList
+        } else {
+            EntryType::WebVideo
+        }
+    } else {
+        entry.entry_type.clone()
+    };
 
     let mut updated_entry = Entry {
         path: Some(working_dir.to_string_lossy().to_string()),
@@ -551,18 +561,18 @@ pub async fn download_entry_for_library(
         url: entry.url.clone(),
         downloaded_ok: Some(false),
         tracking: entry.tracking.or(Some(false)),
-        entry_type: if entry.entry_type == EntryType::Unknown {
-            if downloaded_count > 1 {
-                EntryType::WebList
-            } else {
-                EntryType::WebVideo
-            }
-        } else {
-            entry.entry_type.clone()
-        },
+        entry_type: resolved_entry_type.clone(),
     };
     recompute_entry_avg(&mut updated_entry);
     updated_entry.downloaded_ok = Some(!updated_entry.musics.is_empty());
+
+    write_entry_metadata(
+        &working_dir,
+        &EntryMetadata {
+            url: url.to_string(),
+            entry_type: resolved_entry_type,
+        },
+    )?;
 
     let saved_path = if updated_entry.musics.len() == 1 {
         PathBuf::from(updated_entry.musics[0].path.clone())

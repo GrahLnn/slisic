@@ -450,7 +450,9 @@ export function Pair({
                         initial: { pathLength: 0 },
                         animate: { pathLength: 1 },
                         exit: { pathLength: 0 },
-                        transition: { duration: 0.3 } as AnimationProps["transition"],
+                        transition: {
+                          duration: 0.3,
+                        } as AnimationProps["transition"],
                         className:
                           "text-[#262626] dark:text-[#a3a3a3] transition ml-1",
                       })

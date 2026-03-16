@@ -12,6 +12,14 @@ pub async fn app_ready(window: WebviewWindow) {
         return;
     }
 
-    let _ = window.show();
+    if let Err(error) = window.unminimize() {
+        eprintln!("[app_ready] failed to unminimize window `{label}`: {error}");
+    }
+    if let Err(error) = window.show() {
+        eprintln!("[app_ready] failed to show window `{label}`: {error}");
+    }
+    if let Err(error) = window.set_focus() {
+        eprintln!("[app_ready] failed to focus window `{label}`: {error}");
+    }
     WINDOW_READY.store(true, Ordering::SeqCst);
 }

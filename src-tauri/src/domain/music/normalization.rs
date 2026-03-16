@@ -520,6 +520,14 @@ mod tests {
         music
     }
 
+    fn failed_music(path: &Path, error: &str) -> Music {
+        let mut music = legacy_music(path);
+        music.avg_db = None;
+        music.normalization_status = Some(NormalizationStatus::Failed);
+        music.normalization_error = Some(error.to_string());
+        music
+    }
+
     fn playlist_entry(name: &str, folder: &Path, musics: Vec<Music>) -> Entry {
         Entry {
             path: Some(folder.to_string_lossy().to_string()),
@@ -945,6 +953,90 @@ mod tests {
 
         assert_eq!(observed, vec![Some(-16.5), Some(-16.5), Some(-16.5)]);
     }
+
+    #[tokio::test]
+	async fn cross_stack_regression_fixtures_cover_stale_ready_reload_change_and_failed_states() {
+		let temp = TempAudioDir::new("cross-stack");
+		let legacy_path = temp.write_file("legacy.flac", b"legacy");
+		let canonical_path = temp.write_file("canonical.flac", b"canonical");
+		let failed_path = temp.write_file("failed.flac", b"failed");
+
+		let legacy = legacy_music(&legacy_path);
+		let canonical = canonical_music(&canonical_path, -18.6);
+		let failed = failed_music(&failed_path, "ffmpeg failed");
+
+		let store = Arc::new(TestStore {
+			data: Mutex::new(LibraryData {
+				schema_version: 2,
+				playlists: vec![playlist_fixture(
+					vec![playlist_entry(
+						"entry",
+						temp.path(),
+						vec![legacy.clone(), canonical.clone(), failed.clone()],
+					)],
+					vec![],
+				)],
+			}),
+		});
+		let repo = Arc::new(LibraryRepo::new_for_tests(store.clone()));
+		let _guard = set_repository_for_tests(repo.clone());
+
+		let queued_before = super::collect_stale_paths(&repo.snapshot().await.expect("snapshot"));
+		assert!(queued_before.contains(&legacy.path));
+		assert!(!queued_before.contains(&canonical.path));
+		assert!(queued_before.contains(&failed.path));
+
+		let legacy_resolved = resolve_playback_normalization_for_tests(&legacy.path)
+			.await
+			.expect("resolve legacy playback");
+		assert_eq!(legacy_resolved.integrated_lufs, None);
+		assert_eq!(legacy_resolved.true_peak_dbtp, None);
+
+		let failed_resolved = resolve_playback_normalization_for_tests(&failed.path)
+			.await
+			.expect("resolve failed playback");
+		assert_eq!(failed_resolved.integrated_lufs, None);
+		assert_eq!(failed_resolved.true_peak_dbtp, None);
+
+		let canonical_resolved = resolve_playback_normalization_for_tests(&canonical.path)
+			.await
+			.expect("resolve canonical playback");
+		assert_eq!(canonical_resolved.integrated_lufs, Some(-18.6));
+		assert_eq!(canonical_resolved.true_peak_dbtp, canonical.true_peak_dbtp);
+
+		let rescanned = canonical_music(&legacy_path, -17.4);
+		repo.update_music_batch(vec![rescanned.clone()])
+			.await
+			.expect("persist rescanned track");
+
+		let rescanned_playback = resolve_playback_normalization_for_tests(&legacy.path)
+			.await
+			.expect("resolve rescanned playback");
+		assert_eq!(rescanned_playback.integrated_lufs, Some(-17.4));
+		assert_eq!(rescanned_playback.true_peak_dbtp, rescanned.true_peak_dbtp);
+
+		let saved = store.load_data().await.expect("saved data");
+		let rescanned_saved = saved.playlists[0].entries[0]
+			.musics
+			.iter()
+			.find(|music| music.path == legacy.path)
+			.expect("rescanned music");
+		assert_eq!(rescanned_saved.integrated_lufs, Some(-17.4));
+		assert_eq!(rescanned_saved.true_peak_dbtp, rescanned.true_peak_dbtp);
+		assert_eq!(rescanned_saved.loudness_range_lu, rescanned.loudness_range_lu);
+		assert_eq!(rescanned_saved.normalization_status, Some(NormalizationStatus::Ready));
+
+		let queued_after_reload = super::collect_stale_paths(&repo.snapshot().await.expect("snapshot reload"));
+		assert!(!queued_after_reload.contains(&legacy.path));
+		assert!(!queued_after_reload.contains(&canonical.path));
+		assert!(queued_after_reload.contains(&failed.path));
+
+		std::thread::sleep(std::time::Duration::from_millis(5));
+		std::fs::write(&canonical_path, b"canonical changed").expect("rewrite canonical file");
+
+		let queued_after_change = super::collect_stale_paths(&repo.snapshot().await.expect("snapshot after change"));
+		assert!(queued_after_change.contains(&canonical.path));
+	}
 
     #[test]
     fn folder_recheck_only_marks_new_or_stale_files_for_analysis() {

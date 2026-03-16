@@ -83,6 +83,51 @@ describe("dev spectrogram overlay logic", () => {
 		);
 	});
 
+	test("cross-stack fixtures stay degraded or canonical across debug payload preparation", () => {
+		const legacyRequest = buildSpectrogramRequest(
+			music("legacy.mp3", {
+				avg_db: -11,
+				integrated_lufs: null,
+				true_peak_dbtp: null,
+				normalization_status: null,
+			}),
+			-18,
+			{ width: 900, height: 400 },
+		);
+		expect(legacyRequest.track_lufs).toBeNull();
+		expect(legacyRequest.track_true_peak_dbtp).toBeNull();
+
+		const canonicalTrack = music("canonical.mp3", {
+			integrated_lufs: -19.2,
+			true_peak_dbtp: -0.8,
+			loudness_range_lu: 5.1,
+			normalization_status: "Ready",
+			analysis_version: 1,
+			source_mtime_ms: 100,
+			source_size_bytes: 200,
+		});
+		const canonicalRequest = buildSpectrogramRequest(canonicalTrack, -18.5, {
+			width: 900,
+			height: 400,
+		});
+		expect(canonicalRequest.track_lufs).toBe(-19.2);
+		expect(canonicalRequest.track_true_peak_dbtp).toBe(-0.8);
+
+		const failedRequest = buildSpectrogramRequest(
+			music("failed.mp3", {
+				avg_db: -13,
+				integrated_lufs: null,
+				true_peak_dbtp: null,
+				normalization_status: "Failed",
+				normalization_error: "ffmpeg failed",
+			}),
+			-18,
+			{ width: 900, height: 400 },
+		);
+		expect(failedRequest.track_lufs).toBeNull();
+		expect(failedRequest.track_true_peak_dbtp).toBeNull();
+	});
+
 	test("ENABLE_DEV_SPECTROGRAM_OVERLAY stays behind an explicit DEV gate", () => {
 		expect(ENABLE_DEV_SPECTROGRAM_OVERLAY).toBe(
 			import.meta.env.DEV &&
