@@ -1,4 +1,7 @@
-use crate::database::{get_db, relation_name, run_tx, GraphRepo, ModelMeta, Repo, TxStmt};
+use appdb::graph::GraphRepo;
+use appdb::model::meta::ModelMeta;
+use appdb::prelude::{get_db, relation_name, run_tx, RecordId, Table, TxStmt};
+use appdb::repository::Repo;
 use crate::domain::models::member::Member;
 use crate::domain::models::task::{Task, STATUS_DOING, STATUS_DONE, STATUS_TODO};
 use crate::domain::relations::TaskAssignment;
@@ -7,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
-use surrealdb::types::{RecordId, RecordIdKey, Table, ToSql};
+use surrealdb::types::{RecordIdKey, ToSql};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct NewMemberInput {
@@ -135,8 +138,8 @@ async fn clear_relation_table() -> Result<()> {
 
 async fn clear_all() -> Result<()> {
     clear_relation_table().await?;
-    Repo::<Task>::clean().await?;
-    Repo::<Member>::clean().await?;
+    Repo::<Task>::delete_all().await?;
+    Repo::<Member>::delete_all().await?;
     Ok(())
 }
 
@@ -215,10 +218,10 @@ fn build_stats(members: &[Member], tasks: &[Task]) -> DemoStats {
 async fn build_dashboard() -> Result<TemplateDashboard> {
     normalize_task_owner_id_nulls().await?;
 
-    let mut members = Repo::<Member>::select_all_id().await?;
+    let mut members = Repo::<Member>::list().await?;
     members.sort_by(|left, right| left.name.cmp(&right.name));
 
-    let mut tasks = Repo::<Task>::select_all_id().await?;
+    let mut tasks = Repo::<Task>::list().await?;
     tasks.sort_by(|left, right| {
         right
             .priority
@@ -238,8 +241,8 @@ async fn build_dashboard() -> Result<TemplateDashboard> {
 }
 
 async fn set_task_assignment(task_id: &str, member_id: &str) -> Result<()> {
-    let _ = Repo::<Task>::select_by_id_value(task_id).await?;
-    let _ = Repo::<Member>::select_by_id_value(member_id).await?;
+    let _ = Repo::<Task>::get(task_id).await?;
+    let _ = Repo::<Member>::get(member_id).await?;
 
     let now = now_timestamp_ms();
     let task_record = to_record_id::<Task, _>(task_id);
@@ -269,7 +272,7 @@ async fn set_task_assignment(task_id: &str, member_id: &str) -> Result<()> {
 }
 
 async fn clear_task_assignment(task_id: &str) -> Result<()> {
-    let _ = Repo::<Task>::select_by_id_value(task_id).await?;
+    let _ = Repo::<Task>::get(task_id).await?;
 
     let now = now_timestamp_ms();
     let task_record = to_record_id::<Task, _>(task_id);
@@ -333,7 +336,7 @@ async fn bootstrap_demo() -> Result<TemplateDashboard> {
     ];
 
     for member in members {
-        let _ = Repo::<Member>::upsert_by_id_value(member).await?;
+        let _ = Repo::<Member>::save(member).await?;
     }
 
     let tasks = [
@@ -361,7 +364,7 @@ async fn bootstrap_demo() -> Result<TemplateDashboard> {
     ];
 
     for task in tasks {
-        let _ = Repo::<Task>::upsert_by_id_value(task).await?;
+        let _ = Repo::<Task>::save(task).await?;
     }
 
     set_task_assignment("landing-revamp", "mila").await?;
@@ -399,7 +402,7 @@ pub async fn template_create_member(
         }
 
         let member = Member::new(input.id.trim(), input.name.trim(), input.role.trim());
-        let _ = Repo::<Member>::upsert_by_id_value(member).await?;
+        let _ = Repo::<Member>::save(member).await?;
         build_dashboard().await
     }
     .await
@@ -430,7 +433,7 @@ pub async fn template_create_task(
             status,
             input.priority,
         );
-        let _ = Repo::<Task>::upsert_by_id_value(task).await?;
+        let _ = Repo::<Task>::save(task).await?;
         build_dashboard().await
     }
     .await

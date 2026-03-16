@@ -461,3 +461,216 @@ async fn load_music_index_if_needed(
     }
     repo.music_index().await
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::build_playlist_from_mission;
+    use crate::domain::music::types::{
+        CollectMission, Entry, EntryType, FolderSample, LinkSample, LinkStatus, Music,
+        NormalizationStatus,
+    };
+    use std::collections::HashMap;
+
+    fn music(path: &str) -> Music {
+        Music {
+            path: path.to_string(),
+            title: path.to_string(),
+            avg_db: None,
+            integrated_lufs: None,
+            true_peak_dbtp: None,
+            loudness_range_lu: None,
+            loudness_threshold_lufs: None,
+            analyzed_at_ms: None,
+            analysis_version: None,
+            source_mtime_ms: None,
+            source_size_bytes: None,
+            normalization_status: None,
+            normalization_error: None,
+            base_bias: 0.0,
+            user_boost: 0.0,
+            fatigue: 0.0,
+            diversity: 0.0,
+        }
+    }
+
+    fn canonical_music(path: &str, integrated_lufs: f32) -> Music {
+        Music {
+            integrated_lufs: Some(integrated_lufs),
+            true_peak_dbtp: Some(-1.0),
+            loudness_range_lu: Some(4.0),
+            analyzed_at_ms: Some(10),
+            analysis_version: Some(1),
+            source_mtime_ms: Some(20),
+            source_size_bytes: Some(30),
+            normalization_status: Some(NormalizationStatus::Ready),
+            ..music(path)
+        }
+    }
+
+    fn entry(path: Option<&str>, name: &str, url: Option<&str>, musics: Vec<Music>) -> Entry {
+        Entry {
+            path: path.map(str::to_string),
+            name: name.to_string(),
+            musics,
+            avg_db: None,
+            url: url.map(str::to_string),
+            downloaded_ok: Some(true),
+            tracking: Some(false),
+            entry_type: if url.is_some() {
+                EntryType::WebList
+            } else {
+                EntryType::Local
+            },
+        }
+    }
+
+    #[test]
+    fn build_playlist_from_mission_true_positive_merges_canonical_index_and_tracks_pending_links() {
+        let mission = CollectMission {
+            name: "  Focus / Mix  ".to_string(),
+            folders: vec![],
+            entries: vec![entry(
+                Some("C:/music/a.flac"),
+                "legacy-a",
+                None,
+                vec![music("C:/music/a.flac")],
+            )],
+            links: vec![LinkSample {
+                url: "https://example.com/list".to_string(),
+                title_or_msg: "Web Mix".to_string(),
+                entry_type: EntryType::WebList,
+                count: Some(2),
+                status: Some(LinkStatus::Ok),
+                tracking: true,
+            }],
+            exclude: vec![],
+        };
+
+        let playlist = build_playlist_from_mission(
+            mission,
+            &HashMap::from([(
+                "C:/music/a.flac".to_string(),
+                canonical_music("C:/music/a.flac", -18.5),
+            )]),
+        )
+        .expect("mission should normalize");
+
+        assert_eq!(playlist.0.name, "Focus _ Mix");
+        assert_eq!(playlist.0.entries.len(), 2);
+        assert_eq!(playlist.0.entries[0].musics[0].integrated_lufs, Some(-18.5));
+        assert_eq!(playlist.1.len(), 1);
+        assert_eq!(playlist.1[0].url.as_deref(), Some("https://example.com/list"));
+        assert_eq!(playlist.1[0].downloaded_ok, Some(false));
+    }
+
+    #[test]
+    fn build_playlist_from_mission_true_negative_keeps_distinct_entries_with_same_name_but_different_paths() {
+        let mission = CollectMission {
+            name: "same-name".to_string(),
+            folders: vec![],
+            entries: vec![
+                entry(
+                    Some("C:/music/a.flac"),
+                    "duplicate-name",
+                    None,
+                    vec![music("C:/music/a.flac")],
+                ),
+                entry(
+                    Some("C:/music/b.flac"),
+                    "duplicate-name",
+                    None,
+                    vec![music("C:/music/b.flac")],
+                ),
+            ],
+            links: vec![],
+            exclude: vec![],
+        };
+
+        let playlist = build_playlist_from_mission(mission, &HashMap::new())
+            .expect("same-name entries should coexist");
+
+        assert_eq!(playlist.0.entries.len(), 2);
+        assert_eq!(playlist.0.entries[0].path.as_deref(), Some("C:/music/a.flac"));
+        assert_eq!(playlist.0.entries[1].path.as_deref(), Some("C:/music/b.flac"));
+    }
+
+    #[test]
+    fn build_playlist_from_mission_false_positive_does_not_leak_index_metadata_across_paths() {
+        let mission = CollectMission {
+            name: "no-cross-path".to_string(),
+            folders: vec![],
+            entries: vec![entry(
+                Some("C:/music/b.flac"),
+                "same-title",
+                None,
+                vec![music("C:/music/b.flac")],
+            )],
+            links: vec![],
+            exclude: vec![],
+        };
+
+        let playlist = build_playlist_from_mission(
+            mission,
+            &HashMap::from([(
+                "C:/music/a.flac".to_string(),
+                canonical_music("C:/music/a.flac", -17.0),
+            )]),
+        )
+        .expect("unrelated path should stay untouched");
+
+        assert_eq!(playlist.0.entries[0].musics[0].integrated_lufs, None);
+        assert_eq!(playlist.0.entries[0].musics[0].path, "C:/music/b.flac");
+    }
+
+    #[test]
+    fn build_playlist_from_mission_false_negative_preserves_canonical_exclude_and_dedups_duplicate_rows() {
+        let mission = CollectMission {
+            name: "exclude".to_string(),
+            folders: vec![FolderSample {
+                path: "C:/folder".to_string(),
+                items: vec!["C:/folder/track.flac".to_string()],
+            }],
+            entries: vec![],
+            links: vec![],
+            exclude: vec![
+                Music {
+                    user_boost: 0.4,
+                    ..music("C:/folder/track.flac")
+                },
+                Music {
+                    user_boost: 0.1,
+                    ..music("C:/folder/track.flac")
+                },
+            ],
+        };
+
+        let playlist = build_playlist_from_mission(
+            mission,
+            &HashMap::from([(
+                "C:/folder/track.flac".to_string(),
+                Music {
+                    user_boost: 0.7,
+                    fatigue: 0.2,
+                    integrated_lufs: Some(-16.0),
+                    true_peak_dbtp: Some(-0.8),
+                    loudness_range_lu: Some(5.0),
+                    analyzed_at_ms: Some(100),
+                    analysis_version: Some(1),
+                    source_mtime_ms: Some(200),
+                    source_size_bytes: Some(300),
+                    normalization_status: Some(NormalizationStatus::Ready),
+                    normalization_error: None,
+                    ..music("C:/folder/track.flac")
+                },
+            )]),
+        )
+        .expect("exclude normalization should preserve canonical metadata");
+
+        assert_eq!(playlist.0.exclude.len(), 1);
+        assert_eq!(playlist.0.exclude[0].integrated_lufs, Some(-16.0));
+        assert_eq!(playlist.0.exclude[0].user_boost, 0.7);
+        assert_eq!(playlist.0.entries.len(), 1);
+        assert_eq!(playlist.0.entries[0].avg_db, Some(-16.0));
+    }
+}

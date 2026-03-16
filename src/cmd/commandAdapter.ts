@@ -39,6 +39,12 @@ function isSpectaResult<T, E>(value: unknown): value is SpectaResult<T, E> {
   return status === "ok" || status === "error";
 }
 
+export function normalizeCommandValue<T, E>(
+  value: unknown,
+): Result<T, E> | unknown {
+  return isSpectaResult<T, E>(value) ? toResult<T, E>(value) : value;
+}
+
 const crabProxy = new Proxy(
   {} as {
     [K in CommandKey]: (
@@ -65,7 +71,9 @@ const crabProxy = new Proxy(
         const value: Raw = await (cmd as (...a: unknown[]) => Promise<Raw>)(
           ...args,
         );
-        return isSpectaResult<T, E>(value) ? toResult<T, E>(value) : value;
+        return normalizeCommandValue<T, E>(value) as CmdRawResult<
+          Extract<typeof prop, CommandKey>
+        >;
       };
     },
   },

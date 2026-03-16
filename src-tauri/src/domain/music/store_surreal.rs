@@ -1,4 +1,3 @@
-use super::db_schema::{REL_ENTRY_ASSET, REL_PLAYLIST_ENTRY, REL_PLAYLIST_EXCLUDE};
 use super::store::SnapshotStore;
 use super::types::{
     entry_key, recompute_entry_avg, recompute_playlist_avg, Entry, EntryType, LibraryData, Music,
@@ -6,7 +5,9 @@ use super::types::{
 };
 use appdb::model::meta::ModelMeta;
 use appdb::model::relation::relation_name;
-use appdb::prelude::{init_db, query_bound_take, Id, RawSqlStmt, RecordId, Table, TxStmt};
+use appdb::prelude::{
+    get_db, init_db, query_bound_take, Id, RawSqlStmt, RecordId, Table, TxStmt,
+};
 use appdb::{run_tx, Relation, Store};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -15,9 +16,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use surrealdb::types::SurrealValue;
-
-#[cfg(test)]
-use super::db_schema::{TABLE_ASSET, TABLE_ENTRY, TABLE_META, TABLE_PLAYLIST};
 
 const META_KEY_STORAGE: &str = "storage";
 
@@ -104,7 +102,25 @@ struct RelRow {
 impl SurrealStore {
     pub async fn open(db_dir: PathBuf) -> Result<Self, String> {
         init_db(db_dir).await.map_err(|e| e.to_string())?;
+        Self::ensure_runtime_indexes().await?;
         Ok(Self)
+    }
+
+    async fn ensure_runtime_indexes() -> Result<(), String> {
+        let db = get_db().map_err(|e| e.to_string())?;
+        db.query(format!(
+            "DEFINE INDEX IF NOT EXISTS music_playlist_entry_order ON TABLE {} FIELDS in, order_index;\
+             DEFINE INDEX IF NOT EXISTS music_entry_asset_order ON TABLE {} FIELDS in, order_index;\
+             DEFINE INDEX IF NOT EXISTS music_playlist_exclude_order ON TABLE {} FIELDS in, order_index;",
+            relation_name::<MusicPlaylistEntryRel>(),
+            relation_name::<MusicEntryAssetRel>(),
+            relation_name::<MusicPlaylistExcludeRel>(),
+        ))
+        .await
+        .map_err(|e| e.to_string())?
+        .check()
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     async fn load_rel_rows(&self, table: &str) -> Result<Vec<RelRow>, String> {
@@ -631,9 +647,15 @@ impl SnapshotStore for SurrealStore {
         let entry_rows = MusicEntry::list().await.map_err(|e| e.to_string())?;
         let asset_rows = MusicAsset::list().await.map_err(|e| e.to_string())?;
 
-        let playlist_entry_rows = self.load_rel_rows(REL_PLAYLIST_ENTRY).await?;
-        let entry_asset_rows = self.load_rel_rows(REL_ENTRY_ASSET).await?;
-        let playlist_exclude_rows = self.load_rel_rows(REL_PLAYLIST_EXCLUDE).await?;
+        let playlist_entry_rows = self
+            .load_rel_rows(relation_name::<MusicPlaylistEntryRel>())
+            .await?;
+        let entry_asset_rows = self
+            .load_rel_rows(relation_name::<MusicEntryAssetRel>())
+            .await?;
+        let playlist_exclude_rows = self
+            .load_rel_rows(relation_name::<MusicPlaylistExcludeRel>())
+            .await?;
 
         let entry_map: HashMap<String, MusicEntry> = entry_rows
             .into_iter()
@@ -1265,7 +1287,7 @@ mod tests {
     #[test]
     fn clear_music_tables_delete_sql_should_use_bound_table() {
         let stmt = super::TxStmt::new("DELETE $table RETURN NONE;")
-            .bind("table", super::Table::from(super::TABLE_PLAYLIST));
+            .bind("table", super::Table::from(MusicPlaylist::table_name()));
         assert_eq!(stmt.sql, "DELETE $table RETURN NONE;");
         assert!(stmt.bindings.contains_key("table"));
     }
@@ -1293,10 +1315,10 @@ mod tests {
 
     #[test]
     fn appdb_music_models_true_positive_register_expected_table_names() {
-        assert_eq!(MusicPlaylist::table_name(), super::TABLE_PLAYLIST);
-        assert_eq!(MusicEntry::table_name(), super::TABLE_ENTRY);
-        assert_eq!(MusicAsset::table_name(), super::TABLE_ASSET);
-        assert_eq!(MusicMeta::table_name(), super::TABLE_META);
+        assert_eq!(MusicPlaylist::table_name(), "music_playlist");
+        assert_eq!(MusicEntry::table_name(), "music_entry");
+        assert_eq!(MusicAsset::table_name(), "music_asset");
+        assert_eq!(MusicMeta::table_name(), "music_meta");
     }
 
     #[test]
@@ -1317,15 +1339,15 @@ mod tests {
     fn appdb_music_relations_true_positive_register_expected_relation_names() {
         assert_eq!(
             relation_name::<MusicPlaylistEntryRel>(),
-            super::REL_PLAYLIST_ENTRY
+            "music_playlist_entry"
         );
         assert_eq!(
             relation_name::<MusicEntryAssetRel>(),
-            super::REL_ENTRY_ASSET
+            "music_entry_asset"
         );
         assert_eq!(
             relation_name::<MusicPlaylistExcludeRel>(),
-            super::REL_PLAYLIST_EXCLUDE
+            "music_playlist_exclude"
         );
     }
 }

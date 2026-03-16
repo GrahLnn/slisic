@@ -1,5 +1,4 @@
 pub mod api;
-mod db_schema;
 pub mod normalization;
 pub mod repo;
 pub mod service;

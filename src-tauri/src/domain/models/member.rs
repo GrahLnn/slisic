@@ -1,4 +1,4 @@
-use appdb::{Id, Store, impl_schema};
+use appdb::{Id, Store};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,14 +29,3 @@ impl Member {
         }
     }
 }
-
-impl_schema!(
-    Member,
-    r#"
-DEFINE TABLE member SCHEMAFULL;
-DEFINE FIELD id ON TABLE member TYPE string | int;
-DEFINE FIELD name ON TABLE member TYPE string;
-DEFINE FIELD role ON TABLE member TYPE string;
-DEFINE FIELD created_at ON TABLE member TYPE int;
-"#
-);

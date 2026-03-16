@@ -1,4 +1,4 @@
-use appdb::{Id, Store, impl_schema};
+use appdb::{Id, Store};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -48,18 +48,3 @@ impl Task {
         }
     }
 }
-
-impl_schema!(
-    Task,
-    r#"
-DEFINE TABLE task SCHEMAFULL;
-DEFINE FIELD id ON TABLE task TYPE string | int;
-DEFINE FIELD title ON TABLE task TYPE string;
-DEFINE FIELD notes ON TABLE task TYPE string;
-DEFINE FIELD status ON TABLE task TYPE string;
-DEFINE FIELD priority ON TABLE task TYPE int;
-DEFINE FIELD owner_id ON TABLE task TYPE option<string>;
-DEFINE FIELD created_at ON TABLE task TYPE int;
-DEFINE FIELD updated_at ON TABLE task TYPE int;
-"#
-);

@@ -1073,11 +1073,6 @@ export const action = {
 			});
 		}
 
-		// Keep playback continuous: schedule the next track immediately after stop.
-		if (shouldSwitch && isPlaybackContextActive(epoch, list.name)) {
-			scheduleNextPlayback(epoch);
-		}
-
 		const result = await crab.unstar(list, music);
 		if (result.isErr()) {
 			sileo.error({
@@ -1086,6 +1081,10 @@ export const action = {
 			});
 			await refreshLists();
 			return;
+		}
+
+		if (shouldSwitch && isPlaybackContextActive(epoch, list.name)) {
+			scheduleNextPlayback(epoch);
 		}
 	},
 	async installYtdlp() {
@@ -1151,6 +1150,22 @@ const MODE = {
 	edit: me<UiMode>("edit"),
 	new_guide: me<UiMode>("new_guide"),
 } as const;
+
+export const __testing = {
+	getState,
+	replaceState(next: MusicState) {
+		state = next;
+	},
+	reset() {
+		listeners.clear();
+		recentByList.clear();
+		for (const unsub of unsubs.splice(0)) {
+			unsub();
+		}
+		state = { ...initialState };
+		started = false;
+	},
+};
 
 export const hook = {
 	useState: () =>

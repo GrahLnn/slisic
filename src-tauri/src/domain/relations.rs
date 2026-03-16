@@ -1,5 +1,5 @@
 use appdb::model::relation::relation_name;
-use appdb::{Relation, impl_schema};
+use appdb::Relation;
 
 #[derive(Debug, Clone, Copy, Relation)]
 #[relation(name = "sign_in")]
@@ -7,16 +7,6 @@ pub struct SignIn;
 
 #[derive(Debug, Clone, Copy, Relation)]
 pub struct TaskAssignment;
-
-pub struct TaskAssignmentSchema;
-
-impl_schema!(
-    TaskAssignmentSchema,
-    r#"
-DEFINE TABLE task_assignment TYPE RELATION IN task OUT member;
-DEFINE INDEX task_assignment_unique ON TABLE task_assignment FIELDS in, out UNIQUE;
-"#
-);
 
 #[cfg(test)]
 mod tests {
