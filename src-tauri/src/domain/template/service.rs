@@ -1,19 +1,18 @@
-use appdb::model::meta::ModelMeta;
-use appdb::prelude::{query_bound_checked, relation_name, Crud, GraphCrud, HasId, RawSqlStmt};
 use crate::domain::models::member::Member;
 use crate::domain::models::task::{Task, STATUS_DOING, STATUS_DONE, STATUS_TODO};
 use crate::domain::relations::TaskAssignment;
 use anyhow::{anyhow, Result};
+use appdb::model::meta::ModelMeta;
+use appdb::prelude::{query_bound_checked, relation_name, Crud, GraphRepo, HasId, RawSqlStmt};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
+use surrealdb::opt::PatchOp;
 use surrealdb::types::{RecordIdKey, Table, ToSql};
 
 use super::input::{
     AssignTaskInput, BulkStatusInput, DemoStats, NewMemberInput, NewTaskInput, TaskAssignmentView,
     TemplateDashboard, UnassignTaskInput,
 };
-
-const TASK_ASSIGNMENT_RELATION: &str = "task_assignment";
 
 fn now_timestamp_ms() -> i64 {
     SystemTime::now()
@@ -92,47 +91,11 @@ async fn clear_all() -> Result<()> {
     Ok(())
 }
 
-async fn normalize_task_owner_id_nulls() -> Result<()> {
-    let mut last_error: Option<anyhow::Error> = None;
-
-    let attempts = [
-        RawSqlStmt::new("UPDATE $table SET owner_id = NONE WHERE owner_id IS NULL RETURN NONE;")
-            .bind("table", Table::from(Task::table_name())),
-        RawSqlStmt::new("UPDATE $table UNSET owner_id WHERE owner_id IS NULL RETURN NONE;")
-            .bind("table", Table::from(Task::table_name())),
-        RawSqlStmt::new("DELETE $table WHERE owner_id IS NULL RETURN NONE;")
-            .bind("table", Table::from(Task::table_name())),
-    ];
-
-    for query in attempts {
-        match query_bound_checked(query).await {
-            Ok(_) => return Ok(()),
-            Err(err) => {
-                let message = err.to_string();
-                if message.contains("does not exist") {
-                    return Ok(());
-                }
-                last_error = Some(err.into());
-            }
-        }
-    }
-
-    match last_error {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
-}
-
 async fn collect_assignments(tasks: &[Task]) -> Result<Vec<TaskAssignmentView>> {
     let mut links = Vec::new();
 
     for task in tasks {
-        let member_records = appdb::graph::out_ids(
-            task.id(),
-            TASK_ASSIGNMENT_RELATION,
-            Member::table_name(),
-        )
-        .await?;
+        let member_records = TaskAssignment::out_ids(task, Member::table_name()).await?;
         for member in member_records {
             links.push(TaskAssignmentView {
                 task_id: task.id.to_string(),
@@ -164,8 +127,6 @@ fn build_stats(members: &[Member], tasks: &[Task]) -> DemoStats {
 }
 
 async fn build_dashboard() -> Result<TemplateDashboard> {
-    normalize_task_owner_id_nulls().await?;
-
     let mut members = Member::list().await?;
     members.sort_by(|left, right| left.name.cmp(&right.name));
 
@@ -189,41 +150,36 @@ async fn build_dashboard() -> Result<TemplateDashboard> {
 }
 
 async fn set_task_assignment(task_id: &str, member_id: &str) -> Result<()> {
-    let _ = Task::get(task_id).await?;
-    let _ = Member::get(member_id).await?;
-
-    let now = now_timestamp_ms();
     let task = Task::get(task_id).await?;
     let member = Member::get(member_id).await?;
+    let now = now_timestamp_ms();
 
-    Task::merge(
+    Task::patch(
         task.id(),
-        serde_json::json!({
-            "owner_id": member_id,
-            "updated_at": now,
-        }),
+        vec![
+            PatchOp::replace("/owner_id", member_id.to_owned()),
+            PatchOp::replace("/updated_at", now),
+        ],
     )
     .await?;
-    task.unrelate::<TaskAssignment, _>(&member).await.ok();
-    appdb::graph::GraphRepo::unrelate_all(task.id(), TASK_ASSIGNMENT_RELATION).await?;
-    task.relate::<TaskAssignment, _>(&member).await?;
+    GraphRepo::unrelate_all(task.id(), relation_name::<TaskAssignment>()).await?;
+    TaskAssignment::relate(&task, &member).await?;
     Ok(())
 }
 
 async fn clear_task_assignment(task_id: &str) -> Result<()> {
     let task = Task::get(task_id).await?;
-
     let now = now_timestamp_ms();
 
-    Task::merge(
+    Task::patch(
         task.id(),
-        serde_json::json!({
-            "owner_id": serde_json::Value::Null,
-            "updated_at": now,
-        }),
+        vec![
+            PatchOp::remove("/owner_id"),
+            PatchOp::replace("/updated_at", now),
+        ],
     )
     .await?;
-    appdb::graph::GraphRepo::unrelate_all(task.id(), TASK_ASSIGNMENT_RELATION).await?;
+    GraphRepo::unrelate_all(task.id(), relation_name::<TaskAssignment>()).await?;
     Ok(())
 }
 
@@ -242,12 +198,12 @@ async fn set_many_task_status(task_ids: Vec<String>, status: &str) -> Result<()>
         }
 
         let task = Task::get(id).await?;
-        Task::merge(
+        Task::patch(
             task.id(),
-            serde_json::json!({
-                "status": normalized,
-                "updated_at": now,
-            }),
+            vec![
+                PatchOp::replace("/status", normalized.clone()),
+                PatchOp::replace("/updated_at", now),
+            ],
         )
         .await?;
     }
@@ -264,9 +220,7 @@ async fn bootstrap_demo() -> Result<TemplateDashboard> {
         Member::new("sofia", "Sofia Park", "Operations"),
     ];
 
-    for member in members {
-        let _ = member.save().await?;
-    }
+    let _ = Member::save_many(members.into_iter().collect()).await?;
 
     let tasks = [
         Task::new(
@@ -292,9 +246,7 @@ async fn bootstrap_demo() -> Result<TemplateDashboard> {
         ),
     ];
 
-    for task in tasks {
-        let _ = task.save().await?;
-    }
+    let _ = Task::save_many(tasks.into_iter().collect()).await?;
 
     set_task_assignment("landing-revamp", "mila").await?;
     set_task_assignment("billing-audit", "liam").await?;
