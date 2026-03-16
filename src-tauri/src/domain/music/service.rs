@@ -17,7 +17,7 @@ fn can_refresh_file_loudness(entry: &Entry) -> bool {
 }
 
 pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> {
-    let repo = repository()?;
+    let repo = repository().await?;
     let music_index = load_music_index_if_needed(&repo, &data).await?;
     let (playlist, pending) = build_playlist_from_mission(data, &music_index)?;
     let playlist_name = playlist.name.clone();
@@ -35,15 +35,15 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
 }
 
 pub async fn read(name: String) -> Result<Playlist, String> {
-    repository()?.read_playlist(&name).await
+    repository().await?.read_playlist(&name).await
 }
 
 pub async fn read_all() -> Result<Vec<Playlist>, String> {
-    repository()?.snapshot().await
+    repository().await?.snapshot().await
 }
 
 pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> Result<(), String> {
-    let repo = repository()?;
+    let repo = repository().await?;
     let music_index = load_music_index_if_needed(&repo, &data).await?;
     let (playlist, pending) = build_playlist_from_mission(data, &music_index)?;
     let playlist_name = playlist.name.clone();
@@ -61,15 +61,16 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
 }
 
 pub async fn delete(name: String) -> Result<(), String> {
-    repository()?.delete_playlist(&name).await
+    repository().await?.delete_playlist(&name).await
 }
 
 pub async fn delete_music(music: Music) -> Result<(), String> {
-    repository()?.remove_music_by_path(&music.path).await
+    repository().await?.remove_music_by_path(&music.path).await
 }
 
 pub async fn fatigue(music: Music) -> Result<(), String> {
-    repository()?
+    repository()
+        .await?
         .update_music_by_path(&music.path, |m| {
             m.fatigue += 0.1;
         })
@@ -77,7 +78,8 @@ pub async fn fatigue(music: Music) -> Result<(), String> {
 }
 
 pub async fn cancle_fatigue(music: Music) -> Result<(), String> {
-    repository()?
+    repository()
+        .await?
         .update_music_by_path(&music.path, |m| {
             m.fatigue = (m.fatigue - 0.1).max(0.0);
         })
@@ -85,7 +87,8 @@ pub async fn cancle_fatigue(music: Music) -> Result<(), String> {
 }
 
 pub async fn boost(music: Music) -> Result<(), String> {
-    repository()?
+    repository()
+        .await?
         .update_music_by_path(&music.path, |m| {
             m.user_boost = (m.user_boost + 0.1).min(0.9);
         })
@@ -93,7 +96,8 @@ pub async fn boost(music: Music) -> Result<(), String> {
 }
 
 pub async fn cancle_boost(music: Music) -> Result<(), String> {
-    repository()?
+    repository()
+        .await?
         .update_music_by_path(&music.path, |m| {
             m.user_boost = (m.user_boost - 0.1).max(0.0);
         })
@@ -101,15 +105,18 @@ pub async fn cancle_boost(music: Music) -> Result<(), String> {
 }
 
 pub async fn reset_logits() -> Result<(), String> {
-    repository()?.reset_logits().await
+    repository().await?.reset_logits().await
 }
 
 pub async fn unstar(list: Playlist, music: Music) -> Result<(), String> {
-    repository()?.add_exclude(&list.name, music).await
+    repository().await?.add_exclude(&list.name, music).await
 }
 
 pub async fn rmexclude(list: Playlist, music: Music) -> Result<(), String> {
-    repository()?.remove_exclude(&list.name, &music.path).await
+    repository()
+        .await?
+        .remove_exclude(&list.name, &music.path)
+        .await
 }
 
 pub async fn recheck_folder(app: AppHandle, entry: Entry) -> Result<Entry, String> {
@@ -118,7 +125,7 @@ pub async fn recheck_folder(app: AppHandle, entry: Entry) -> Result<Entry, Strin
         .clone()
         .ok_or_else(|| "folder path is missing".to_string())?;
 
-    let repo = repository()?;
+    let repo = repository().await?;
     let index = repo.music_index().await?;
 
     let items = all_audio_recursive_inner(Path::new(&folder))?;
@@ -162,7 +169,8 @@ pub async fn update_weblist(
     playlist: String,
 ) -> Result<Entry, String> {
     let outcome = ytdlp::download_entry_for_library(app.clone(), &playlist, &entry).await?;
-    repository()?
+    repository()
+        .await?
         .upsert_entry_in_playlist(&playlist, outcome.entry.clone())
         .await?;
     normalization::analyze_paths_blocking(
@@ -208,7 +216,7 @@ fn spawn_downloads(app: AppHandle, playlist_name: String, pending: Vec<Entry>) {
                     saved_path,
                     name,
                 }) => {
-                    if let Ok(repo) = repository() {
+                    if let Ok(repo) = repository().await {
                         let _ = repo
                             .upsert_entry_in_playlist(&playlist_name, entry.clone())
                             .await;
@@ -232,7 +240,7 @@ fn spawn_downloads(app: AppHandle, playlist_name: String, pending: Vec<Entry>) {
                 Err(error) => {
                     let mut failed = entry.clone();
                     failed.downloaded_ok = Some(false);
-                    if let Ok(repo) = repository() {
+                    if let Ok(repo) = repository().await {
                         let _ = repo.upsert_entry_in_playlist(&playlist_name, failed).await;
                     }
                     ProcessMsg {
@@ -462,7 +470,6 @@ async fn load_music_index_if_needed(
     repo.music_index().await
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::build_playlist_from_mission;
@@ -560,12 +567,16 @@ mod tests {
         assert_eq!(playlist.0.entries.len(), 2);
         assert_eq!(playlist.0.entries[0].musics[0].integrated_lufs, Some(-18.5));
         assert_eq!(playlist.1.len(), 1);
-        assert_eq!(playlist.1[0].url.as_deref(), Some("https://example.com/list"));
+        assert_eq!(
+            playlist.1[0].url.as_deref(),
+            Some("https://example.com/list")
+        );
         assert_eq!(playlist.1[0].downloaded_ok, Some(false));
     }
 
     #[test]
-    fn build_playlist_from_mission_true_negative_keeps_distinct_entries_with_same_name_but_different_paths() {
+    fn build_playlist_from_mission_true_negative_keeps_distinct_entries_with_same_name_but_different_paths(
+    ) {
         let mission = CollectMission {
             name: "same-name".to_string(),
             folders: vec![],
@@ -591,8 +602,14 @@ mod tests {
             .expect("same-name entries should coexist");
 
         assert_eq!(playlist.0.entries.len(), 2);
-        assert_eq!(playlist.0.entries[0].path.as_deref(), Some("C:/music/a.flac"));
-        assert_eq!(playlist.0.entries[1].path.as_deref(), Some("C:/music/b.flac"));
+        assert_eq!(
+            playlist.0.entries[0].path.as_deref(),
+            Some("C:/music/a.flac")
+        );
+        assert_eq!(
+            playlist.0.entries[1].path.as_deref(),
+            Some("C:/music/b.flac")
+        );
     }
 
     #[test]
@@ -624,7 +641,8 @@ mod tests {
     }
 
     #[test]
-    fn build_playlist_from_mission_false_negative_preserves_canonical_exclude_and_dedups_duplicate_rows() {
+    fn build_playlist_from_mission_false_negative_preserves_canonical_exclude_and_dedups_duplicate_rows(
+    ) {
         let mission = CollectMission {
             name: "exclude".to_string(),
             folders: vec![FolderSample {

@@ -627,15 +627,6 @@ export const action = {
 			await ensureEvents();
 			await crab.appReady();
 			await refreshTools();
-
-			const bootstrap = await crab.bootstrapNormalization();
-			if (bootstrap.isErr()) {
-				sileo.error({
-					title: "Normalization update skipped",
-					description: bootstrap.unwrap_err(),
-				});
-			}
-
 			await refreshLists();
 			patchState({ initialized: true, processMsg: null });
 		} catch (error) {

@@ -30,7 +30,7 @@ pub struct PlaybackNormalization {
 }
 
 pub async fn bootstrap_library_normalization(app: &AppHandle) -> Result<usize, String> {
-    let repo = repository()?;
+    let repo = repository().await?;
     let snapshot = repo.snapshot().await?;
     let stale = collect_stale_paths(&snapshot);
     analyze_paths_blocking(
@@ -48,7 +48,7 @@ pub async fn analyze_paths_blocking(
     playlist: &str,
     label: &str,
 ) -> Result<usize, String> {
-    let index = repository()?.music_index().await?;
+    let index = repository().await?.music_index().await?;
     let mut queue = paths_to_music_queue(paths, &index);
     let total = queue.len();
     if total == 0 {
@@ -143,7 +143,8 @@ pub fn stale_music_paths(musics: &[Music]) -> Vec<String> {
 
 async fn persist_analysis_failure(path: &str, error: String) -> Result<(), String> {
     let path = path.to_string();
-    repository()?
+    repository()
+        .await?
         .update_music_by_path(&path, move |music| {
             apply_analysis_failure(music, error.clone());
         })
@@ -177,7 +178,7 @@ fn apply_analysis_failure(music: &mut Music, error: String) {
 }
 
 async fn current_music_by_path(path: &str) -> Result<Music, String> {
-    let repo = repository()?;
+    let repo = repository().await?;
     Ok(repo
         .music_index()
         .await?
@@ -280,7 +281,8 @@ async fn flush_analysis_batch(batch: &mut Vec<Music>) -> Result<(), String> {
         return Ok(());
     }
 
-    repository()?
+    repository()
+        .await?
         .update_music_batch(std::mem::take(batch))
         .await
 }
@@ -681,7 +683,7 @@ mod tests {
     async fn resolve_playback_normalization_for_tests(
         path: &str,
     ) -> Result<PlaybackNormalization, String> {
-        let repo = crate::domain::music::repo::repository()?;
+        let repo = crate::domain::music::repo::repository().await?;
         let music = repo
             .music_index()
             .await?
@@ -935,6 +937,7 @@ mod tests {
 
         let analyzed = canonical_music(&shared_path, -16.5);
         crate::domain::music::repo::repository()
+            .await
             .expect("repo")
             .update_music_batch(vec![analyzed.clone()])
             .await

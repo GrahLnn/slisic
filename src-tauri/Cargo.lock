@@ -9439,8 +9439,3 @@ checksum = "29ce2c8a9384ad323cf564b67da86e21d3cfdff87908bc1223ed5c99bc792713"
 dependencies = [
  "zune-core",
 ]
-
-[[patch.unused]]
-name = "surrealkv"
-version = "0.20.2"
-source = "git+https://github.com/lukas-hradecky/surrealkv.git?rev=fa032486d260ca6dbe111a7cca274ee6e7671cc4#fa032486d260ca6dbe111a7cca274ee6e7671cc4"

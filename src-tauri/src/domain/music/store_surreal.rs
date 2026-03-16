@@ -5,9 +5,7 @@ use super::types::{
 };
 use appdb::model::meta::ModelMeta;
 use appdb::model::relation::relation_name;
-use appdb::prelude::{
-    get_db, init_db, query_bound_take, Id, RawSqlStmt, RecordId, Table, TxStmt,
-};
+use appdb::prelude::{get_db, init_db, query_bound_take, Id, RawSqlStmt, RecordId, Table, TxStmt};
 use appdb::{run_tx, Relation, Store};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -1341,10 +1339,7 @@ mod tests {
             relation_name::<MusicPlaylistEntryRel>(),
             "music_playlist_entry"
         );
-        assert_eq!(
-            relation_name::<MusicEntryAssetRel>(),
-            "music_entry_asset"
-        );
+        assert_eq!(relation_name::<MusicEntryAssetRel>(), "music_entry_asset");
         assert_eq!(
             relation_name::<MusicPlaylistExcludeRel>(),
             "music_playlist_exclude"

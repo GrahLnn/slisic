@@ -19,7 +19,6 @@ const impl = {
 	checkExists: async () => Ok<null, string>(null),
 	ffmpegCheckExists: async () => Ok<null, string>(null),
 	resolveSavePath: async () => Ok<string, string>("C:/music"),
-	bootstrapNormalization: async () => Ok<number, string>(0),
 	readAll: async () => Ok<Playlist[], string>([]),
 	create: async (_data: CollectMission) => Ok<null, string>(null),
 	update: async (_data: CollectMission, _anchor: Playlist) =>
@@ -86,7 +85,6 @@ const crab = {
 	checkExists: () => impl.checkExists(),
 	ffmpegCheckExists: () => impl.ffmpegCheckExists(),
 	resolveSavePath: () => impl.resolveSavePath(),
-	bootstrapNormalization: () => impl.bootstrapNormalization(),
 	readAll: () => impl.readAll(),
 	create: (data: CollectMission) => impl.create(data),
 	update: (data: CollectMission, anchor: Playlist) => impl.update(data, anchor),
@@ -238,7 +236,6 @@ beforeEach(() => {
 	impl.checkExists = async () => Ok<null, string>(null);
 	impl.ffmpegCheckExists = async () => Ok<null, string>(null);
 	impl.resolveSavePath = async () => Ok<string, string>("C:/music");
-	impl.bootstrapNormalization = async () => Ok<number, string>(0);
 	impl.readAll = async () => Ok<Playlist[], string>([]);
 	impl.create = async (_data: CollectMission) => Ok<null, string>(null);
 	impl.update = async (_data: CollectMission, _anchor: Playlist) =>
@@ -251,10 +248,8 @@ beforeEach(() => {
 });
 
 describe("music store action contracts", () => {
-	test("run_false_negative_guard_bootstrap_error_does_not_block_read_all_sync", async () => {
+	test("run_true_negative_does_not_trigger_bootstrap_normalization_and_still_reads_lists", async () => {
 		const playlist = makePlaylist("ambient");
-		impl.bootstrapNormalization = async () =>
-			Err<string, number>("bootstrap failed");
 		impl.readAll = async () => Ok<Playlist[], string>([playlist]);
 
 		await action.run();
@@ -264,10 +259,7 @@ describe("music store action contracts", () => {
 		expect(state.loading).toBe(false);
 		expect(state.playlists).toEqual([playlist]);
 		expect(playbackLog.markActive).toBe(1);
-		expect(toastLog.error).toContainEqual({
-			title: "Normalization update skipped",
-			description: "bootstrap failed",
-		});
+		expect(toastLog.error).toEqual([]);
 	});
 
 	test("save_true_positive_create_persists_slot_and_reloads_lists", async () => {

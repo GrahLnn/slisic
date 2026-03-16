@@ -15,10 +15,8 @@ use music::{
     ProcessMsg,
 };
 use specta_typescript::BigIntExportBehavior;
-use tauri::async_runtime::block_on;
 use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events, Builder};
-use tokio::task::block_in_place;
 use utils::config::{resolve_save_path, update_save_path};
 use utils::core::app_ready;
 use utils::event::FullScreenEvent;
@@ -148,21 +146,13 @@ export function makeLievt<T extends Record<string, any>>(ev: EventsShape<T>) {
         .setup(move |app| {
             let handle = app.handle().clone();
             builder.mount_events(app);
+            domain::music::repo::install_repository_app(handle.clone());
 
-            block_in_place(|| {
-                block_on(async move {
-                    domain::music::repo::init_repository(&handle).await?;
-
-                    if let Some(window) = handle.get_webview_window("main") {
-                        utils::window::apply_window_setup(&window, true);
-                    }
-                    utils::window::ensure_prewarm_for_existing_windows(&handle);
-                    spawn_ytdlp_auto_update(handle.clone());
-
-                    Ok::<(), String>(())
-                })
-            })
-            .map_err(|error| anyhow::anyhow!(error))?;
+            if let Some(window) = handle.get_webview_window("main") {
+                utils::window::apply_window_setup(&window, true);
+            }
+            utils::window::ensure_prewarm_for_existing_windows(&handle);
+            spawn_ytdlp_auto_update(handle.clone());
 
             Ok(())
         })

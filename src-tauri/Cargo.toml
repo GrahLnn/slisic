@@ -82,6 +82,3 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
-
-[patch.crates-io]
-surrealkv = { git = "https://github.com/lukas-hradecky/surrealkv.git", rev = "fa032486d260ca6dbe111a7cca274ee6e7671cc4" }
