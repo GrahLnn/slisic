@@ -447,12 +447,7 @@ function Guide() {
 }
 
 export default function Home() {
-	const ctx = hook.useContext();
 	const state = hook.useState();
-
-	if (!ctx.initialized) {
-		return null;
-	}
 
 	return state.match({
 		play: () => <Play />,

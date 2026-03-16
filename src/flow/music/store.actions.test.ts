@@ -272,7 +272,6 @@ describe("music store action contracts", () => {
 		await action.run();
 
 		const state = __testing.getState();
-		expect(state.initialized).toBe(true);
 		expect(state.loading).toBe(false);
 		expect(state.playlists).toEqual([playlist]);
 		expect(playbackLog.markActive).toBe(1);

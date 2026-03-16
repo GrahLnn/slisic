@@ -47,7 +47,6 @@ const baseState: MusicState = {
 	ytdlp: null,
 	ffmpeg: null,
 	savePath: null,
-	initialized: true,
 	linkReviews: [],
 	folderReviews: [],
 	weblistReviews: [],

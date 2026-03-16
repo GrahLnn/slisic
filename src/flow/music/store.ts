@@ -41,7 +41,6 @@ export interface MusicState {
 	ytdlp: InstallResult | null;
 	ffmpeg: InstallResult | null;
 	savePath: string | null;
-	initialized: boolean;
 	linkReviews: string[];
 	folderReviews: string[];
 	weblistReviews: string[];
@@ -181,7 +180,6 @@ const initialState: MusicState = {
 	ytdlp: null,
 	ffmpeg: null,
 	savePath: null,
-	initialized: false,
 	linkReviews: [],
 	folderReviews: [],
 	weblistReviews: [],
@@ -628,7 +626,7 @@ export const action = {
 			await crab.appReady();
 			await refreshTools();
 			await refreshLists();
-			patchState({ initialized: true, processMsg: null });
+			patchState({ processMsg: null });
 		} catch (error) {
 			sileo.error({
 				title: "Initialization failed",
