@@ -169,7 +169,7 @@ export function applyOptimisticEditSave(
 }
 
 const initialState: MusicState = {
-	mode: "play",
+	mode: "new_guide",
 	loading: false,
 	playlists: [],
 	selectedListName: null,

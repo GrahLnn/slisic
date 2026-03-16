@@ -265,6 +265,13 @@ beforeEach(() => {
 });
 
 describe("music store action contracts", () => {
+	test("initial_true_negative_empty_state_starts_in_new_guide_without_waiting_for_refresh", () => {
+		const state = __testing.getState();
+
+		expect(state.mode).toBe("new_guide");
+		expect(state.playlists).toEqual([]);
+	});
+
 	test("run_true_negative_does_not_trigger_bootstrap_normalization_and_still_reads_lists", async () => {
 		const playlist = makePlaylist("ambient");
 		impl.readAll = async () => Ok<Playlist[], string>([playlist]);
