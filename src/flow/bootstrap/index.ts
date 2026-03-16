@@ -10,6 +10,7 @@ import {
 } from "../updater";
 import {
   initialAppWindowMeta,
+  shouldRequestWindowPrewarm,
   shouldRunUpdater,
   type AppWindowMeta,
 } from "./logic";
@@ -38,6 +39,10 @@ export function useAppBootstrap(): AppWindowMeta {
           status: "ready",
         };
         setAppWindow(nextWindow);
+
+        if (shouldRequestWindowPrewarm(nextWindow)) {
+          void crab.requestWindowPrewarm("Main");
+        }
 
         if (shouldRunUpdater(nextWindow)) {
           ensureUpdaterStarted();

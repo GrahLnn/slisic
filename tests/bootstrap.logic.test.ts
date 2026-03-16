@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   initialAppWindowMeta,
+  shouldRequestWindowPrewarm,
   shouldRenderMainWindow,
   shouldRunUpdater,
   type AppWindowMeta,
@@ -59,6 +60,39 @@ describe("shouldRunUpdater", () => {
           status: "ready",
           window: "Main",
           isPrimaryMain: false,
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("shouldRequestWindowPrewarm", () => {
+  test("requests prewarm for visible main windows only", () => {
+    expect(
+      shouldRequestWindowPrewarm(
+        createMeta({
+          status: "ready",
+          window: "Main",
+          isPrewarm: false,
+        }),
+      ),
+    ).toBe(true);
+
+    expect(
+      shouldRequestWindowPrewarm(
+        createMeta({
+          status: "ready",
+          window: "Main",
+          isPrewarm: true,
+        }),
+      ),
+    ).toBe(false);
+
+    expect(
+      shouldRequestWindowPrewarm(
+        createMeta({
+          status: "ready",
+          window: null,
         }),
       ),
     ).toBe(false);
