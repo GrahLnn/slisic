@@ -29,8 +29,8 @@ const impl = {
 	recheckFolder: async (entry: Entry) => Ok<Entry, string>(entry),
 	updateWeblist: async (entry: Entry, _playlist: string) =>
 		Ok<Entry, string>(entry),
-	collectImportFolderEntries: async () => Ok<never[], string>([]),
-	lookMedia: async () =>
+	collectImportFolderEntries: async (_path: string) => Ok<never[], string>([]),
+	lookMedia: async (_url: string) =>
 		Ok<{ title: string; item_type: string; entries_count: number | null }, string>({
 			title: "sample",
 			item_type: "playlist",
@@ -77,9 +77,8 @@ const impl = {
 };
 
 const crab = {
-	evt(event: string) {
-		return async (handler: (payload: unknown) => void) => {
-			void handler;
+	evt(_event: string) {
+		return async (_handler: (payload: unknown) => void) => {
 			return () => {};
 		};
 	},
@@ -108,7 +107,10 @@ const crab = {
 	ytdlpDownloadAndInstall: () => impl.ytdlpDownloadAndInstall(),
 	ffmpegDownloadAndInstall: () => impl.ffmpegDownloadAndInstall(),
 	updateSavePath: (path: string) => impl.updateSavePath(path),
-	audioPlay: () => impl.audioPlay(),
+	audioPlay: (req: { path: string }) => {
+		void req;
+		return impl.audioPlay();
+	},
 };
 
 mock.module("@/src/cmd", () => ({ crab }));

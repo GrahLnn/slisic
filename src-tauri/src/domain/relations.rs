@@ -1,4 +1,3 @@
-use appdb::model::relation::relation_name;
 use appdb::Relation;
 
 #[derive(Debug, Clone, Copy, Relation)]

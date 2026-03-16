@@ -411,10 +411,12 @@ fn same_entry_slot(existing: &Entry, incoming: &Entry) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{prepare_legacy_data_for_store, same_entry_slot};
+    use super::{prepare_legacy_data_for_store, same_entry_slot, LibraryRepo};
+    use crate::domain::music::store::SnapshotStore;
     use crate::domain::music::types::{
         Entry, EntryType, LibraryData, Music, Playlist, MUSIC_LIBRARY_SCHEMA_VERSION,
     };
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn prepare_legacy_data_should_dedup_entries_and_recompute_avg() {
@@ -726,5 +728,113 @@ mod tests {
         let incoming = sample_entry("name-only", None, None);
 
         assert!(same_entry_slot(&existing, &incoming));
+    }
+
+    #[derive(Debug)]
+    struct TestStore {
+        data: Mutex<LibraryData>,
+    }
+
+    impl TestStore {
+        fn new(data: LibraryData) -> Self {
+            Self {
+                data: Mutex::new(data),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SnapshotStore for TestStore {
+        fn engine_name(&self) -> &'static str {
+            "test"
+        }
+
+        async fn load_data(&self) -> Result<LibraryData, String> {
+            Ok(self.data.lock().expect("test store lock").clone())
+        }
+
+        async fn save_data(&self, data: &LibraryData) -> Result<(), String> {
+            *self.data.lock().expect("test store lock") = data.clone();
+            Ok(())
+        }
+    }
+
+    fn sample_track(path: &str) -> Music {
+        Music {
+            path: path.to_string(),
+            title: path.to_string(),
+            avg_db: None,
+            integrated_lufs: None,
+            true_peak_dbtp: None,
+            loudness_range_lu: None,
+            loudness_threshold_lufs: None,
+            analyzed_at_ms: None,
+            analysis_version: None,
+            source_mtime_ms: None,
+            source_size_bytes: None,
+            normalization_status: None,
+            normalization_error: None,
+            base_bias: 0.0,
+            user_boost: 0.0,
+            fatigue: 0.0,
+            diversity: 0.0,
+        }
+    }
+
+    #[tokio::test]
+    async fn add_exclude_true_positive_adds_missing_music_once() {
+        let music = sample_track("C:/music/a.flac");
+        let repo = LibraryRepo::new_for_tests(Arc::new(TestStore::new(LibraryData {
+            schema_version: MUSIC_LIBRARY_SCHEMA_VERSION,
+            playlists: vec![Playlist {
+                name: "focus".to_string(),
+                avg_db: None,
+                entries: vec![],
+                exclude: vec![],
+            }],
+        })));
+
+        repo.add_exclude("focus", music.clone()).await.expect("first add");
+        repo.add_exclude("focus", music.clone()).await.expect("second add");
+
+        let snapshot = repo.snapshot().await.expect("snapshot");
+        assert_eq!(snapshot[0].exclude, vec![music]);
+    }
+
+    #[tokio::test]
+    async fn add_exclude_true_negative_errors_for_missing_playlist() {
+        let repo = LibraryRepo::new_for_tests(Arc::new(TestStore::new(LibraryData {
+            schema_version: MUSIC_LIBRARY_SCHEMA_VERSION,
+            playlists: vec![],
+        })));
+
+        let error = repo
+            .add_exclude("missing", sample_track("C:/music/a.flac"))
+            .await
+            .expect_err("missing playlist should fail");
+
+        assert_eq!(error, "playlist not found: missing");
+    }
+
+    #[tokio::test]
+    async fn remove_exclude_false_positive_guard_only_removes_target_path() {
+        let keep = sample_track("C:/music/keep.flac");
+        let drop = sample_track("C:/music/drop.flac");
+        let repo = LibraryRepo::new_for_tests(Arc::new(TestStore::new(LibraryData {
+            schema_version: MUSIC_LIBRARY_SCHEMA_VERSION,
+            playlists: vec![Playlist {
+                name: "focus".to_string(),
+                avg_db: None,
+                entries: vec![],
+                exclude: vec![keep.clone(), drop],
+            }],
+        })));
+
+        repo.remove_exclude("focus", "C:/music/drop.flac")
+            .await
+            .expect("remove exclude");
+
+        let snapshot = repo.snapshot().await.expect("snapshot");
+        assert_eq!(snapshot[0].exclude, vec![keep]);
     }
 }

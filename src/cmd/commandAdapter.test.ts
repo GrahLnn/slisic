@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 const impl = {
-	create: async () => ({ status: "ok" as const, data: { saved: true } }),
+	resolveSavePath: async () => ({ status: "ok" as const, data: "C:/music" }),
 	readAll: async () => ({ status: "error" as const, error: "db offline" }),
 	appReady: async () => undefined,
 };
@@ -18,7 +18,9 @@ const events = {
 function makeLievt<T extends Record<string, any>>(ev: T) {
 	return function lievt<K extends keyof T>(key: K) {
 		return (handler: (payload: any) => void) => {
-			const obj = ev[key] as { listen: (cb: (event: { payload: any }) => void) => Promise<() => void> };
+			const obj = ev[key] as {
+				listen: (cb: (event: { payload: any }) => void) => Promise<() => void>;
+			};
 			return obj.listen((event) => handler(event.payload));
 		};
 	};
@@ -26,7 +28,7 @@ function makeLievt<T extends Record<string, any>>(ev: T) {
 
 mock.module("./commands", () => ({
 	commands: {
-		create: () => impl.create(),
+		resolveSavePath: () => impl.resolveSavePath(),
 		readAll: () => impl.readAll(),
 		appReady: () => impl.appReady(),
 	},
@@ -37,16 +39,16 @@ mock.module("./commands", () => ({
 const { crab } = await import("./commandAdapter");
 
 beforeEach(() => {
-	impl.create = async () => ({ status: "ok" as const, data: { saved: true } });
+	impl.resolveSavePath = async () => ({ status: "ok" as const, data: "C:/music" });
 	impl.readAll = async () => ({ status: "error" as const, error: "db offline" });
 	impl.appReady = async () => undefined;
 });
 
 describe("command adapter", () => {
 	test("true_positive_wraps_specta_ok_result_into_ok_variant", async () => {
-		const result = await crab.create({} as never);
+		const result = await crab.resolveSavePath();
 		expect(result.isOk()).toBe(true);
-		expect(result.unwrap()).toEqual({ saved: true });
+		expect(result.unwrap()).toBe("C:/music");
 	});
 
 	test("true_negative_wraps_specta_error_result_into_err_variant", async () => {
