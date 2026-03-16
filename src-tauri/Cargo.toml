@@ -14,11 +14,6 @@ default-run = "Slisic"
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-[[bin]]
-name = "domain_tests"
-path = "src/domain_tests.rs"
-test = false
-
 [build-dependencies]
 tauri-build = { version = "2.5.6", features = [] }
 
