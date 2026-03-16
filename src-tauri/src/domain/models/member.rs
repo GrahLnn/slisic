@@ -1,11 +1,11 @@
-use crate::{impl_crud, impl_schema};
 use appdb::Id;
+use appdb::Store;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::time::{SystemTime, UNIX_EPOCH};
-use surrealdb::types::SurrealValue;
+use surrealdb_types::SurrealValue;
 
-#[derive(Debug, Serialize, Deserialize, Clone, Type, SurrealValue)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type, SurrealValue, Store)]
 pub struct Member {
     pub id: Id,
     pub name: String,
@@ -31,11 +31,3 @@ impl Member {
     }
 }
 
-impl_crud!(Member);
-impl_schema!(
-    Member,
-    r#"
-DEFINE TABLE member SCHEMALESS;
-DEFINE INDEX member_unique_id ON TABLE member FIELDS id UNIQUE;
-"#
-);

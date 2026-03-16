@@ -3,6 +3,7 @@ import "./App.css";
 import "sileo/styles.css";
 import "@fontsource/maple-mono";
 import { useMemo } from "react";
+import { useTheme } from "next-themes";
 import Input from "./components/Input";
 import TopBar from "./topbar";
 import type { DemoStats, Id } from "./cmd/commands";
@@ -489,6 +490,8 @@ function TemplateBoard() {
 }
 
 function Base({ children }: { children: React.ReactNode }) {
+  const { resolvedTheme } = useTheme();
+
   return (
     <div className="min-h-screen overflow-hidden hide-scrollbar">
       <TopBar />
@@ -501,7 +504,10 @@ function Base({ children }: { children: React.ReactNode }) {
         <div className="min-h-8" />
         {children}
       </main>
-      <Toaster position="bottom-right" />
+      <Toaster
+        position="bottom-right"
+        theme={resolvedTheme === "dark" ? "dark" : "light"}
+      />
     </div>
   );
 }

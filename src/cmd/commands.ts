@@ -86,7 +86,12 @@ export type FullScreenEvent = {
 	is_fullscreen: boolean,
 };
 
-export type Id = { String: string } | { Number: number };
+// Application-facing id type that accepts either string or integer ids.
+export type Id = 
+// String record key.
+{ String: string } | 
+// Integer record key.
+{ Number: number };
 
 export type Member = {
 	id: Id,

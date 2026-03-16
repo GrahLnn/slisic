@@ -1,16 +1,19 @@
-use crate::database::{get_db, relation_name, run_tx, GraphRepo, ModelMeta, Repo, TxStmt};
+use appdb::model::meta::ModelMeta;
+use appdb::prelude::{query_bound_checked, relation_name, Crud, GraphCrud, HasId, RawSqlStmt};
 use crate::domain::models::member::Member;
 use crate::domain::models::task::{Task, STATUS_DOING, STATUS_DONE, STATUS_TODO};
 use crate::domain::relations::TaskAssignment;
 use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
-use surrealdb::types::{RecordId, RecordIdKey, Table, ToSql};
+use surrealdb::types::{RecordIdKey, Table, ToSql};
 
 use super::input::{
     AssignTaskInput, BulkStatusInput, DemoStats, NewMemberInput, NewTaskInput, TaskAssignmentView,
     TemplateDashboard, UnassignTaskInput,
 };
+
+const TASK_ASSIGNMENT_RELATION: &str = "task_assignment";
 
 fn now_timestamp_ms() -> i64 {
     SystemTime::now()
@@ -40,37 +43,21 @@ fn record_key_to_string(key: RecordIdKey) -> String {
     }
 }
 
-fn to_record_id<T: ModelMeta, K>(id: K) -> RecordId
-where
-    RecordIdKey: From<K>,
-{
-    T::record_id(id)
-}
-
 async fn clear_relation_table() -> Result<()> {
-    let db = get_db()?;
-    let response = db
-        .query("DELETE $rel RETURN NONE;")
-        .bind(("rel", Table::from(relation_name::<TaskAssignment>())))
-        .await?;
+    let rel = relation_name::<TaskAssignment>();
+    let result = query_bound_checked(
+        RawSqlStmt::new("DELETE $table RETURN NONE;").bind("table", Table::from(rel)),
+    )
+    .await;
 
-    if let Err(err) = response.check() {
+    if let Err(err) = result {
         let message = err.to_string();
         if message.contains("does not exist") {
             return Ok(());
         }
 
         if message.contains("not a relation but expected a RELATION") {
-            let rel = relation_name::<TaskAssignment>();
-            let task_table = Task::table_name();
-            let member_table = Member::table_name();
-            let unique_index = format!("{rel}_unique");
-            let rebuild = format!(
-                "REMOVE TABLE {rel};\
-                 DEFINE TABLE {rel} TYPE RELATION IN {task_table} OUT {member_table};\
-                 DEFINE INDEX {unique_index} ON TABLE {rel} FIELDS in, out UNIQUE;"
-            );
-            db.query(rebuild).await?.check()?;
+            rebuild_task_assignment_relation(rel).await?;
             return Ok(());
         }
 
@@ -80,27 +67,45 @@ async fn clear_relation_table() -> Result<()> {
     Ok(())
 }
 
+async fn rebuild_task_assignment_relation(rel: &str) -> Result<()> {
+    let rel_name = rel.to_owned();
+    let unique_index = format!("{rel_name}_unique");
+    query_bound_checked(
+        RawSqlStmt::new(
+            "REMOVE TABLE $rel;\
+             DEFINE TABLE $rel TYPE RELATION IN $task_table OUT $member_table;\
+             DEFINE INDEX $index ON TABLE $rel FIELDS in, out UNIQUE;",
+        )
+        .bind("rel", Table::from(rel_name))
+        .bind("task_table", Table::from(Task::table_name()))
+        .bind("member_table", Table::from(Member::table_name()))
+        .bind("index", Table::from(unique_index)),
+    )
+    .await?;
+    Ok(())
+}
+
 async fn clear_all() -> Result<()> {
     clear_relation_table().await?;
-    Repo::<Task>::clean().await?;
-    Repo::<Member>::clean().await?;
+    Task::delete_all().await?;
+    Member::delete_all().await?;
     Ok(())
 }
 
 async fn normalize_task_owner_id_nulls() -> Result<()> {
-    let db = get_db()?;
-    let table = Table::from(Task::table_name());
     let mut last_error: Option<anyhow::Error> = None;
 
     let attempts = [
-        "UPDATE $table SET owner_id = NONE WHERE owner_id IS NULL RETURN NONE;",
-        "UPDATE $table UNSET owner_id WHERE owner_id IS NULL RETURN NONE;",
-        "DELETE $table WHERE owner_id IS NULL RETURN NONE;",
+        RawSqlStmt::new("UPDATE $table SET owner_id = NONE WHERE owner_id IS NULL RETURN NONE;")
+            .bind("table", Table::from(Task::table_name())),
+        RawSqlStmt::new("UPDATE $table UNSET owner_id WHERE owner_id IS NULL RETURN NONE;")
+            .bind("table", Table::from(Task::table_name())),
+        RawSqlStmt::new("DELETE $table WHERE owner_id IS NULL RETURN NONE;")
+            .bind("table", Table::from(Task::table_name())),
     ];
 
     for query in attempts {
-        let response = db.query(query).bind(("table", table.clone())).await?;
-        match response.check() {
+        match query_bound_checked(query).await {
             Ok(_) => return Ok(()),
             Err(err) => {
                 let message = err.to_string();
@@ -119,13 +124,12 @@ async fn normalize_task_owner_id_nulls() -> Result<()> {
 }
 
 async fn collect_assignments(tasks: &[Task]) -> Result<Vec<TaskAssignmentView>> {
-    let rel = relation_name::<TaskAssignment>();
     let mut links = Vec::new();
 
     for task in tasks {
-        let member_records = GraphRepo::outs(
-            to_record_id::<Task, _>(task.id.clone()),
-            rel,
+        let member_records = appdb::graph::out_ids(
+            task.id(),
+            TASK_ASSIGNMENT_RELATION,
             Member::table_name(),
         )
         .await?;
@@ -162,10 +166,10 @@ fn build_stats(members: &[Member], tasks: &[Task]) -> DemoStats {
 async fn build_dashboard() -> Result<TemplateDashboard> {
     normalize_task_owner_id_nulls().await?;
 
-    let mut members = Repo::<Member>::select_all_id().await?;
+    let mut members = Member::list().await?;
     members.sort_by(|left, right| left.name.cmp(&right.name));
 
-    let mut tasks = Repo::<Task>::select_all_id().await?;
+    let mut tasks = Task::list().await?;
     tasks.sort_by(|left, right| {
         right
             .priority
@@ -185,53 +189,41 @@ async fn build_dashboard() -> Result<TemplateDashboard> {
 }
 
 async fn set_task_assignment(task_id: &str, member_id: &str) -> Result<()> {
-    let _ = Repo::<Task>::select_by_id_value(task_id).await?;
-    let _ = Repo::<Member>::select_by_id_value(member_id).await?;
+    let _ = Task::get(task_id).await?;
+    let _ = Member::get(member_id).await?;
 
     let now = now_timestamp_ms();
-    let task_record = to_record_id::<Task, _>(task_id);
-    let member_record = to_record_id::<Member, _>(member_id);
-    let relation = Table::from(relation_name::<TaskAssignment>());
+    let task = Task::get(task_id).await?;
+    let member = Member::get(member_id).await?;
 
-    let statements = vec![
-        TxStmt::new(
-            "UPDATE $task MERGE { owner_id: $owner_id, updated_at: $updated_at } RETURN NONE;",
-        )
-        .bind("task", task_record.clone())
-        .bind("owner_id", member_id.to_owned())
-        .bind("updated_at", now),
-        TxStmt::new("DELETE $rel WHERE in = $task RETURN NONE;")
-            .bind("rel", relation.clone())
-            .bind("task", task_record.clone()),
-        TxStmt::new(
-            "INSERT RELATION INTO $rel [{ in: $task, out: $member, created_at: time::now() }] RETURN NONE;",
-        )
-        .bind("rel", relation)
-        .bind("task", task_record)
-        .bind("member", member_record),
-    ];
-
-    let _ = run_tx(statements).await?;
+    Task::merge(
+        task.id(),
+        serde_json::json!({
+            "owner_id": member_id,
+            "updated_at": now,
+        }),
+    )
+    .await?;
+    task.unrelate::<TaskAssignment, _>(&member).await.ok();
+    appdb::graph::GraphRepo::unrelate_all(task.id(), TASK_ASSIGNMENT_RELATION).await?;
+    task.relate::<TaskAssignment, _>(&member).await?;
     Ok(())
 }
 
 async fn clear_task_assignment(task_id: &str) -> Result<()> {
-    let _ = Repo::<Task>::select_by_id_value(task_id).await?;
+    let task = Task::get(task_id).await?;
 
     let now = now_timestamp_ms();
-    let task_record = to_record_id::<Task, _>(task_id);
-    let relation = Table::from(relation_name::<TaskAssignment>());
 
-    let statements = vec![
-        TxStmt::new("UPDATE $task MERGE { owner_id: NONE, updated_at: $updated_at } RETURN NONE;")
-            .bind("task", task_record.clone())
-            .bind("updated_at", now),
-        TxStmt::new("DELETE $rel WHERE in = $task RETURN NONE;")
-            .bind("rel", relation)
-            .bind("task", task_record),
-    ];
-
-    let _ = run_tx(statements).await?;
+    Task::merge(
+        task.id(),
+        serde_json::json!({
+            "owner_id": serde_json::Value::Null,
+            "updated_at": now,
+        }),
+    )
+    .await?;
+    appdb::graph::GraphRepo::unrelate_all(task.id(), TASK_ASSIGNMENT_RELATION).await?;
     Ok(())
 }
 
@@ -243,30 +235,23 @@ async fn set_many_task_status(task_ids: Vec<String>, status: &str) -> Result<()>
     let normalized = normalize_status(status)?.to_owned();
     let now = now_timestamp_ms();
     let mut seen = HashSet::new();
-    let mut statements = Vec::new();
 
     for id in task_ids {
         if id.trim().is_empty() || !seen.insert(id.clone()) {
             continue;
         }
 
-        let record = to_record_id::<Task, _>(id);
-        statements.push(
-            TxStmt::new(
-                "UPDATE $task MERGE { status: $status, updated_at: $updated_at } RETURN NONE;",
-            )
-            .bind("task", record)
-            .bind("status", normalized.clone())
-            .bind("updated_at", now),
-        );
+        let task = Task::get(id).await?;
+        Task::merge(
+            task.id(),
+            serde_json::json!({
+                "status": normalized,
+                "updated_at": now,
+            }),
+        )
+        .await?;
     }
 
-    if statements.is_empty() {
-        return Ok(());
-    }
-
-    statements.push(TxStmt::new("RETURN $count;").bind("count", statements.len() as i64));
-    let _ = run_tx(statements).await?;
     Ok(())
 }
 
@@ -280,7 +265,7 @@ async fn bootstrap_demo() -> Result<TemplateDashboard> {
     ];
 
     for member in members {
-        let _ = Repo::<Member>::upsert_by_id_value(member).await?;
+        let _ = member.save().await?;
     }
 
     let tasks = [
@@ -308,7 +293,7 @@ async fn bootstrap_demo() -> Result<TemplateDashboard> {
     ];
 
     for task in tasks {
-        let _ = Repo::<Task>::upsert_by_id_value(task).await?;
+        let _ = task.save().await?;
     }
 
     set_task_assignment("landing-revamp", "mila").await?;
@@ -337,7 +322,7 @@ pub async fn create_member(input: NewMemberInput) -> Result<TemplateDashboard> {
     }
 
     let member = Member::new(input.id.trim(), input.name.trim(), input.role.trim());
-    let _ = Repo::<Member>::upsert_by_id_value(member).await?;
+    let _ = member.save().await?;
     build_dashboard().await
 }
 
@@ -360,7 +345,7 @@ pub async fn create_task(input: NewTaskInput) -> Result<TemplateDashboard> {
         status,
         input.priority,
     );
-    let _ = Repo::<Task>::upsert_by_id_value(task).await?;
+    let _ = task.save().await?;
     build_dashboard().await
 }
 

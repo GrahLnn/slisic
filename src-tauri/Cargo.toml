@@ -9,7 +9,7 @@ edition = "2021"
 rust-version = "1.89.0"
 
 [workspace]
-members = ["crates/appdb", "crates/appdb-macros"]
+members = []
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -32,22 +32,18 @@ specta = "2.0.0-rc.23"
 specta-typescript = "0.0.10"
 tauri-specta = { git = "https://github.com/specta-rs/tauri-specta.git", rev = "b7cd99b786bd437acdbf2c11ae3e2c955b611a51", features = ["derive", "typescript"] }
 tauri-plugin-os = "2"
-surrealdb = { version = "3.0.2", features = ["kv-surrealkv"] }
-surrealdb-types = "3.0.2"
-appdb = { path = "crates/appdb" }
+appdb = "0.1.7"
 anyhow = "1.0.102"
 async-trait = "0.1.89"
-once_cell = "1.21.3"
-futures = "0.3.32"
-thiserror = "2.0.18"
+inventory = "0.3.22"
+surrealdb = { version = "3.0.4", features = ["kv-surrealkv"] }
+surrealdb-types = "3.0.4"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
-inventory = "0.3.22"
 windows = "0.62.2"
 webview2-com = "0.38.2"
 tauri-plugin-process = "2"
-sha2 = "0.10.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
@@ -63,6 +59,3 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
-
-[patch.crates-io]
-surrealkv = { git = "https://github.com/lukas-hradecky/surrealkv.git", rev = "fa032486d260ca6dbe111a7cca274ee6e7671cc4" }

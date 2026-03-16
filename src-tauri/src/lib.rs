@@ -1,11 +1,10 @@
 mod domain;
 mod utils;
 
-pub use appdb::database;
-pub use appdb::{declare_relation, impl_crud, impl_id, impl_schema};
+pub use appdb::{impl_schema, Relation};
 
 use anyhow::Result;
-use database::{init_db_with_options, InitDbOptions, Repo};
+use appdb::prelude::{init_db_with_options, Crud, InitDbOptions};
 use domain::models::user::User;
 use domain::template;
 use tauri::async_runtime::block_on;
@@ -125,10 +124,10 @@ export function makeLiveEvent<T extends Record<string, any>>(ev: EventsShape<T>)
 #[tauri::command]
 #[specta::specta]
 async fn greet(name: &str) -> Result<String, String> {
-    let _ = Repo::<User>::insert_jump_by_id_value(vec![User::from_id(name)])
+    let _ = User::save_many(vec![User::from_id(name)])
         .await
         .map_err(|e| e.to_string())?;
-    let users = Repo::<User>::select_all_id()
+    let users = User::list()
         .await
         .map_err(|e| e.to_string())?;
 
@@ -144,6 +143,6 @@ async fn greet(name: &str) -> Result<String, String> {
 #[tauri::command]
 #[specta::specta]
 async fn clean() -> Result<String, String> {
-    Repo::<User>::clean().await.map_err(|e| e.to_string())?;
+    User::delete_all().await.map_err(|e| e.to_string())?;
     Ok("message cleaned".to_string())
 }
