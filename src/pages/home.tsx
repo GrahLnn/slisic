@@ -1,11 +1,5 @@
 import { AnimatePresence, motion } from "motion/react";
-import {
-	useCallback,
-	useEffect,
-	useLayoutEffect,
-	useRef,
-	useState,
-} from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { labels } from "@/src/components/labels";
 import { cn, os } from "@/lib/utils";
 import { motionIcons } from "@/src/assets/icons";
@@ -21,7 +15,6 @@ import {
 	ContextMenuTrigger,
 	LongPressContextMenuItem,
 } from "@/components/ui/context-menu";
-import { deriveBootingCopy } from "./home.booting";
 
 export function Face({ children }: { children: React.ReactNode }) {
 	return (
@@ -453,63 +446,12 @@ function Guide() {
 	);
 }
 
-function Booting() {
-	const ctx = hook.useContext();
-	const blockerRef = useRef<HTMLDivElement>(null);
-	const copy = deriveBootingCopy(ctx.processMsg);
-
-	useEffect(() => {
-		blockerRef.current?.focus();
-	}, []);
-
-	return (
-		<div
-			ref={blockerRef}
-			tabIndex={0}
-			aria-busy="true"
-			className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-3 bg-[rgba(255,255,255,0.72)] dark:bg-[rgba(10,10,10,0.82)] outline-none"
-			onPointerDown={(event) => {
-				event.preventDefault();
-				event.stopPropagation();
-			}}
-			onClick={(event) => {
-				event.preventDefault();
-				event.stopPropagation();
-			}}
-			onContextMenu={(event) => {
-				event.preventDefault();
-				event.stopPropagation();
-			}}
-			onKeyDown={(event) => {
-				event.preventDefault();
-				event.stopPropagation();
-			}}
-			onFocusCapture={(event) => {
-				if (event.target !== blockerRef.current) {
-					blockerRef.current?.focus();
-				}
-			}}
-		>
-			<motion.div
-				initial={{ filter: "blur(6px)", opacity: 0 }}
-				animate={{ filter: "blur(0px)", opacity: 1 }}
-				className="font-cinzel text-lg text-[#0a0a0a] dark:text-[#fafafa]"
-			>
-				{copy.title}
-			</motion.div>
-			<div className="max-w-[60vw] text-center text-xs text-[#404040] dark:text-[#d4d4d4]">
-				{copy.description}
-			</div>
-		</div>
-	);
-}
-
 export default function Home() {
 	const ctx = hook.useContext();
 	const state = hook.useState();
 
 	if (!ctx.initialized) {
-		return <Booting />;
+		return null;
 	}
 
 	return state.match({
