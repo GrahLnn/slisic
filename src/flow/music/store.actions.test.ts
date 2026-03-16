@@ -1,6 +1,11 @@
 import { Err, Ok } from "@grahlnn/fn";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import type { CollectMission, Entry, Music, Playlist } from "@/src/cmd/commands";
+import type {
+	CollectMission,
+	Entry,
+	Music,
+	Playlist,
+} from "@/src/cmd/commands";
 
 const toastLog = {
 	error: [] as Array<{ title: string; description?: string }>,
@@ -30,7 +35,10 @@ const impl = {
 		Ok<Entry, string>(entry),
 	collectImportFolderEntries: async (_path: string) => Ok<never[], string>([]),
 	lookMedia: async (_url: string) =>
-		Ok<{ title: string; item_type: string; entries_count: number | null }, string>({
+		Ok<
+			{ title: string; item_type: string; entries_count: number | null },
+			string
+		>({
 			title: "sample",
 			item_type: "playlist",
 			entries_count: 1,
@@ -184,7 +192,11 @@ function makeMusic(path: string): Music {
 	};
 }
 
-function makeEntry(name: string, path: string, patch: Partial<Entry> = {}): Entry {
+function makeEntry(
+	name: string,
+	path: string,
+	patch: Partial<Entry> = {},
+): Entry {
 	return {
 		path,
 		name,
@@ -198,7 +210,11 @@ function makeEntry(name: string, path: string, patch: Partial<Entry> = {}): Entr
 	};
 }
 
-function makePlaylist(name: string, entries: Entry[] = [], exclude: Music[] = []): Playlist {
+function makePlaylist(
+	name: string,
+	entries: Entry[] = [],
+	exclude: Music[] = [],
+): Playlist {
 	return {
 		name,
 		avg_db: null,
@@ -241,7 +257,8 @@ beforeEach(() => {
 	impl.update = async (_data: CollectMission, _anchor: Playlist) =>
 		Ok<null, string>(null);
 	impl.audioStop = async () => Ok<null, string>(null);
-	impl.unstar = async (_list: Playlist, _music: Music) => Ok<null, string>(null);
+	impl.unstar = async (_list: Playlist, _music: Music) =>
+		Ok<null, string>(null);
 	impl.recheckFolder = async (entry: Entry) => Ok<Entry, string>(entry);
 	impl.updateWeblist = async (entry: Entry, _playlist: string) =>
 		Ok<Entry, string>(entry);
@@ -291,8 +308,12 @@ describe("music store action contracts", () => {
 	});
 
 	test("save_false_positive_guard_update_error_rolls_back_optimistic_edit_after_refresh", async () => {
-		const original = makePlaylist("focus", [makeEntry("alpha", "C:/music/alpha")]);
-		const mission = makeMission("renamed", [makeEntry("beta", "C:/music/beta")]);
+		const original = makePlaylist("focus", [
+			makeEntry("alpha", "C:/music/alpha"),
+		]);
+		const mission = makeMission("renamed", [
+			makeEntry("beta", "C:/music/beta"),
+		]);
 
 		__testing.replaceState({
 			...__testing.getState(),
