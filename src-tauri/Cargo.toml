@@ -59,6 +59,7 @@ tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-os = "2"
+surrealdb = { version = "3.0.4", features = ["kv-surrealkv"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 zip = { version = "8.2.0", default-features = false, features = ["deflate"] }

@@ -1,36 +1,43 @@
-use super::db_schema::{
-    REL_ENTRY_ASSET, REL_PLAYLIST_ENTRY, REL_PLAYLIST_EXCLUDE, TABLE_ASSET, TABLE_ENTRY,
-    TABLE_META, TABLE_PLAYLIST,
-};
+use super::db_schema::{REL_ENTRY_ASSET, REL_PLAYLIST_ENTRY, REL_PLAYLIST_EXCLUDE};
 use super::store::SnapshotStore;
 use super::types::{
-    entry_key, recompute_entry_avg, recompute_playlist_avg, Entry, EntryType, LibraryData,
-    Music, NormalizationStatus, Playlist, MUSIC_LIBRARY_SCHEMA_VERSION,
+    entry_key, recompute_entry_avg, recompute_playlist_avg, Entry, EntryType, LibraryData, Music,
+    NormalizationStatus, Playlist, MUSIC_LIBRARY_SCHEMA_VERSION,
 };
-use appdb::{get_db, init_db, run_tx, RecordId, Table, TxStmt};
+use appdb::model::meta::ModelMeta;
+use appdb::model::relation::relation_name;
+use appdb::prelude::{init_db, query_bound_take, Id, RawSqlStmt, RecordId, Table, TxStmt};
+use appdb::{run_tx, Relation, Store};
 use async_trait::async_trait;
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use surrealdb::types::SurrealValue;
+
+#[cfg(test)]
+use super::db_schema::{TABLE_ASSET, TABLE_ENTRY, TABLE_META, TABLE_PLAYLIST};
 
 const META_KEY_STORAGE: &str = "storage";
 
 #[derive(Debug, Clone)]
 pub struct SurrealStore;
 
-#[derive(Debug, Deserialize)]
-struct PlaylistRow {
-    rid: String,
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Store)]
+struct MusicPlaylist {
+    id: Id,
+    #[unique]
     name: String,
     avg_db: Option<f32>,
     order_index: Option<i64>,
+    updated_at: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct EntryRow {
-    rid: String,
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Store)]
+struct MusicEntry {
+    id: Id,
+    #[unique]
     entry_key_norm: String,
     path: Option<String>,
     name: String,
@@ -39,11 +46,13 @@ struct EntryRow {
     downloaded_ok: Option<bool>,
     tracking: Option<bool>,
     entry_type: String,
+    updated_at: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct AssetRow {
-    rid: String,
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Store)]
+struct MusicAsset {
+    id: Id,
+    #[unique]
     path: String,
     title: String,
     avg_db: Option<f32>,
@@ -61,9 +70,31 @@ struct AssetRow {
     user_boost: f32,
     fatigue: f32,
     diversity: f32,
+    updated_at: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Store)]
+struct MusicMeta {
+    id: Id,
+    #[unique]
+    key: String,
+    schema_version: i64,
+    updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, Relation)]
+#[relation(name = "music_playlist_entry")]
+struct MusicPlaylistEntryRel;
+
+#[derive(Debug, Clone, Copy, Relation)]
+#[relation(name = "music_entry_asset")]
+struct MusicEntryAssetRel;
+
+#[derive(Debug, Clone, Copy, Relation)]
+#[relation(name = "music_playlist_exclude")]
+struct MusicPlaylistExcludeRel;
+
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 struct RelRow {
     in_id: String,
     out_id: String,
@@ -76,31 +107,16 @@ impl SurrealStore {
         Ok(Self)
     }
 
-    async fn query_rows<T>(&self, sql: &str, table: &str) -> Result<Vec<T>, String>
-    where
-        T: DeserializeOwned,
-    {
-        let db = get_db().map_err(|e| e.to_string())?;
-        let mut result = db
-            .query(sql)
-            .bind(("table", table.to_string()))
-            .await
-            .map_err(|e| e.to_string())?
-            .check()
-            .map_err(|e| e.to_string())?;
-
-        let rows: Vec<serde_json::Value> = result.take(0).map_err(|e| e.to_string())?;
-        rows.into_iter()
-            .map(|row| serde_json::from_value(row).map_err(|e| e.to_string()))
-            .collect()
-    }
-
     async fn load_rel_rows(&self, table: &str) -> Result<Vec<RelRow>, String> {
-        self.query_rows::<RelRow>(
-            "SELECT record::id(in) AS in_id, record::id(out) AS out_id, order_index FROM type::table($table);",
-            table,
+        query_bound_take(
+            RawSqlStmt::new(
+                "SELECT record::id(in) AS in_id, record::id(out) AS out_id, order_index FROM type::table($table);",
+            )
+            .bind("table", Table::from(table)),
+            None,
         )
         .await
+        .map_err(|e| e.to_string())
     }
 
     fn hash_key(prefix: &str, input: &str) -> String {
@@ -128,6 +144,7 @@ impl SurrealStore {
         Self::hash_key("asset", path)
     }
 
+    #[cfg(test)]
     fn record_key_from_rid(expected_table: &str, rid: &str) -> Result<String, String> {
         if let Some((table, id)) = rid.split_once(':') {
             if table != expected_table {
@@ -185,6 +202,93 @@ impl SurrealStore {
         }
     }
 
+    fn playlist_record(
+        id: String,
+        playlist: Playlist,
+        order_index: i64,
+        updated_at: i64,
+    ) -> MusicPlaylist {
+        MusicPlaylist {
+            id: Id::from(id),
+            name: playlist.name,
+            avg_db: playlist.avg_db,
+            order_index: Some(order_index),
+            updated_at,
+        }
+    }
+
+    fn entry_record(id: String, entry: Entry, updated_at: i64) -> MusicEntry {
+        MusicEntry {
+            id: Id::from(id),
+            entry_key_norm: entry_key(&entry),
+            path: entry.path,
+            name: entry.name,
+            avg_db: entry.avg_db,
+            url: entry.url,
+            downloaded_ok: entry.downloaded_ok,
+            tracking: entry.tracking,
+            entry_type: Self::encode_entry_type(&entry.entry_type).to_string(),
+            updated_at,
+        }
+    }
+
+    fn asset_record(id: String, music: Music, updated_at: i64) -> MusicAsset {
+        MusicAsset {
+            id: Id::from(id),
+            path: music.path,
+            title: music.title,
+            avg_db: music.avg_db,
+            integrated_lufs: music.integrated_lufs,
+            true_peak_dbtp: music.true_peak_dbtp,
+            loudness_range_lu: music.loudness_range_lu,
+            loudness_threshold_lufs: music.loudness_threshold_lufs,
+            analyzed_at_ms: music.analyzed_at_ms,
+            analysis_version: music.analysis_version,
+            source_mtime_ms: music.source_mtime_ms,
+            source_size_bytes: music.source_size_bytes,
+            normalization_status: Self::encode_normalization_status(&music.normalization_status),
+            normalization_error: music.normalization_error,
+            base_bias: music.base_bias,
+            user_boost: music.user_boost,
+            fatigue: music.fatigue,
+            diversity: music.diversity,
+            updated_at,
+        }
+    }
+
+    fn meta_record(updated_at: i64) -> MusicMeta {
+        MusicMeta {
+            id: Id::from(META_KEY_STORAGE),
+            key: META_KEY_STORAGE.to_string(),
+            schema_version: MUSIC_LIBRARY_SCHEMA_VERSION as i64,
+            updated_at,
+        }
+    }
+
+    fn decode_asset_row(asset_row: &MusicAsset) -> Music {
+        Music {
+            path: asset_row.path.clone(),
+            title: asset_row.title.clone(),
+            avg_db: asset_row.avg_db,
+            integrated_lufs: asset_row.integrated_lufs,
+            true_peak_dbtp: asset_row.true_peak_dbtp,
+            loudness_range_lu: asset_row.loudness_range_lu,
+            loudness_threshold_lufs: asset_row.loudness_threshold_lufs,
+            analyzed_at_ms: asset_row.analyzed_at_ms,
+            analysis_version: asset_row.analysis_version,
+            source_mtime_ms: asset_row.source_mtime_ms,
+            source_size_bytes: asset_row.source_size_bytes,
+            normalization_status: Self::decode_normalization_status(
+                asset_row.normalization_status.as_deref(),
+            ),
+            normalization_error: asset_row.normalization_error.clone(),
+            base_bias: asset_row.base_bias,
+            user_boost: asset_row.user_boost,
+            fatigue: asset_row.fatigue,
+            diversity: asset_row.diversity,
+        }
+    }
+
     fn push_rel(
         map: &mut HashMap<String, Vec<(i64, String)>>,
         in_id: String,
@@ -218,13 +322,13 @@ impl SurrealStore {
     async fn clear_music_tables(&self) -> Result<(), String> {
         let mut statements = Vec::with_capacity(7);
         for table in [
-            REL_PLAYLIST_ENTRY,
-            REL_ENTRY_ASSET,
-            REL_PLAYLIST_EXCLUDE,
-            TABLE_PLAYLIST,
-            TABLE_ENTRY,
-            TABLE_ASSET,
-            TABLE_META,
+            relation_name::<MusicPlaylistEntryRel>(),
+            relation_name::<MusicEntryAssetRel>(),
+            relation_name::<MusicPlaylistExcludeRel>(),
+            MusicPlaylist::table_name(),
+            MusicEntry::table_name(),
+            MusicAsset::table_name(),
+            MusicMeta::table_name(),
         ] {
             statements
                 .push(TxStmt::new("DELETE $table RETURN NONE;").bind("table", Table::from(table)));
@@ -241,12 +345,7 @@ impl SnapshotStore for SurrealStore {
     }
 
     async fn replace_playlist(&self, anchor: &str, playlist: Playlist) -> Result<(), String> {
-        let playlist_rows = self
-            .query_rows::<PlaylistRow>(
-                "SELECT record::id(id) AS rid, name, avg_db, order_index FROM type::table($table);",
-                TABLE_PLAYLIST,
-            )
-            .await?;
+        let playlist_rows = MusicPlaylist::list().await.map_err(|e| e.to_string())?;
 
         let Some(anchor_row) = playlist_rows.iter().find(|row| row.name == anchor) else {
             return Err(format!("playlist not found: {anchor}"));
@@ -255,12 +354,12 @@ impl SnapshotStore for SurrealStore {
         if playlist.name != anchor
             && playlist_rows
                 .iter()
-                .any(|row| row.name == playlist.name && row.rid != anchor_row.rid)
+                .any(|row| row.name == playlist.name && row.id != anchor_row.id)
         {
             return Err(format!("playlist already exists: {}", playlist.name));
         }
 
-        let anchor_playlist_id = Self::record_key_from_rid(TABLE_PLAYLIST, &anchor_row.rid)?;
+        let anchor_playlist_id = anchor_row.id.to_string();
         let target_playlist_id = Self::playlist_id(&playlist.name);
         let order_index = anchor_row.order_index.unwrap_or(0);
         let now = now_timestamp_ms();
@@ -306,6 +405,12 @@ impl SnapshotStore for SurrealStore {
         let rel_playlist_exclude = Self::dedup_relation_edges(rel_playlist_exclude);
 
         let mut statements = Vec::new();
+        let playlist_row = Self::playlist_record(
+            target_playlist_id.clone(),
+            playlist.clone(),
+            order_index,
+            now,
+        );
 
         statements.push(
             TxStmt::new(
@@ -316,12 +421,12 @@ impl SnapshotStore for SurrealStore {
                     updated_at: $updated_at\
                 } RETURN NONE;",
             )
-            .bind("table", TABLE_PLAYLIST.to_string())
-            .bind("id", target_playlist_id.clone())
-            .bind("name", playlist.name.clone())
-            .bind("avg_db", playlist.avg_db)
-            .bind("order_index", order_index)
-            .bind("updated_at", now),
+            .bind("table", MusicPlaylist::table_name().to_string())
+            .bind("id", playlist_row.id.clone())
+            .bind("name", playlist_row.name.clone())
+            .bind("avg_db", playlist_row.avg_db)
+            .bind("order_index", playlist_row.order_index)
+            .bind("updated_at", playlist_row.updated_at),
         );
 
         let mut playlist_relation_cleanup_ids = vec![target_playlist_id.clone()];
@@ -332,13 +437,22 @@ impl SnapshotStore for SurrealStore {
         for playlist_id in playlist_relation_cleanup_ids {
             statements.push(
                 TxStmt::new("DELETE $rel WHERE in = $in RETURN NONE;")
-                    .bind("rel", Table::from(REL_PLAYLIST_ENTRY))
-                    .bind("in", RecordId::new(TABLE_PLAYLIST, playlist_id.clone())),
+                    .bind("rel", Table::from(relation_name::<MusicPlaylistEntryRel>()))
+                    .bind(
+                        "in",
+                        RecordId::new(MusicPlaylist::table_name(), playlist_id.clone()),
+                    ),
             );
             statements.push(
                 TxStmt::new("DELETE $rel WHERE in = $in RETURN NONE;")
-                    .bind("rel", Table::from(REL_PLAYLIST_EXCLUDE))
-                    .bind("in", RecordId::new(TABLE_PLAYLIST, playlist_id)),
+                    .bind(
+                        "rel",
+                        Table::from(relation_name::<MusicPlaylistExcludeRel>()),
+                    )
+                    .bind(
+                        "in",
+                        RecordId::new(MusicPlaylist::table_name(), playlist_id),
+                    ),
             );
         }
 
@@ -346,12 +460,16 @@ impl SnapshotStore for SurrealStore {
         for entry_id in &entry_ids {
             statements.push(
                 TxStmt::new("DELETE $rel WHERE in = $in RETURN NONE;")
-                    .bind("rel", Table::from(REL_ENTRY_ASSET))
-                    .bind("in", RecordId::new(TABLE_ENTRY, entry_id.clone())),
+                    .bind("rel", Table::from(relation_name::<MusicEntryAssetRel>()))
+                    .bind(
+                        "in",
+                        RecordId::new(MusicEntry::table_name(), entry_id.clone()),
+                    ),
             );
         }
 
         for (entry_id, entry) in entry_rows {
+            let entry_row = Self::entry_record(entry_id, entry, now);
             statements.push(
                 TxStmt::new(
                     "UPSERT type::record($table, $id) MERGE {\
@@ -366,24 +484,22 @@ impl SnapshotStore for SurrealStore {
                         updated_at: $updated_at\
                     } RETURN NONE;",
                 )
-                .bind("table", TABLE_ENTRY.to_string())
-                .bind("id", entry_id)
-                .bind("entry_key_norm", entry_key(&entry))
-                .bind("path", entry.path)
-                .bind("name", entry.name)
-                .bind("avg_db", entry.avg_db)
-                .bind("url", entry.url)
-                .bind("downloaded_ok", entry.downloaded_ok)
-                .bind("tracking", entry.tracking)
-                .bind(
-                    "entry_type",
-                    Self::encode_entry_type(&entry.entry_type).to_string(),
-                )
-                .bind("updated_at", now),
+                .bind("table", MusicEntry::table_name().to_string())
+                .bind("id", entry_row.id.clone())
+                .bind("entry_key_norm", entry_row.entry_key_norm.clone())
+                .bind("path", entry_row.path.clone())
+                .bind("name", entry_row.name.clone())
+                .bind("avg_db", entry_row.avg_db)
+                .bind("url", entry_row.url.clone())
+                .bind("downloaded_ok", entry_row.downloaded_ok)
+                .bind("tracking", entry_row.tracking)
+                .bind("entry_type", entry_row.entry_type.clone())
+                .bind("updated_at", entry_row.updated_at),
             );
         }
 
         for (asset_id, music) in asset_rows {
+            let asset_row = Self::asset_record(asset_id, music, now);
             statements.push(
                 TxStmt::new(
                     "UPSERT type::record($table, $id) MERGE {\
@@ -407,29 +523,29 @@ impl SnapshotStore for SurrealStore {
                         updated_at: $updated_at\
                     } RETURN NONE;",
                 )
-                .bind("table", TABLE_ASSET.to_string())
-                .bind("id", asset_id)
-                .bind("path", music.path)
-                .bind("title", music.title)
-                .bind("avg_db", music.avg_db)
-                .bind("integrated_lufs", music.integrated_lufs)
-                .bind("true_peak_dbtp", music.true_peak_dbtp)
-                .bind("loudness_range_lu", music.loudness_range_lu)
-                .bind("loudness_threshold_lufs", music.loudness_threshold_lufs)
-                .bind("analyzed_at_ms", music.analyzed_at_ms)
-                .bind("analysis_version", music.analysis_version)
-                .bind("source_mtime_ms", music.source_mtime_ms)
-                .bind("source_size_bytes", music.source_size_bytes)
+                .bind("table", MusicAsset::table_name().to_string())
+                .bind("id", asset_row.id.clone())
+                .bind("path", asset_row.path.clone())
+                .bind("title", asset_row.title.clone())
+                .bind("avg_db", asset_row.avg_db)
+                .bind("integrated_lufs", asset_row.integrated_lufs)
+                .bind("true_peak_dbtp", asset_row.true_peak_dbtp)
+                .bind("loudness_range_lu", asset_row.loudness_range_lu)
+                .bind("loudness_threshold_lufs", asset_row.loudness_threshold_lufs)
+                .bind("analyzed_at_ms", asset_row.analyzed_at_ms)
+                .bind("analysis_version", asset_row.analysis_version)
+                .bind("source_mtime_ms", asset_row.source_mtime_ms)
+                .bind("source_size_bytes", asset_row.source_size_bytes)
                 .bind(
                     "normalization_status",
-                    Self::encode_normalization_status(&music.normalization_status),
+                    asset_row.normalization_status.clone(),
                 )
-                .bind("normalization_error", music.normalization_error)
-                .bind("base_bias", music.base_bias)
-                .bind("user_boost", music.user_boost)
-                .bind("fatigue", music.fatigue)
-                .bind("diversity", music.diversity)
-                .bind("updated_at", now),
+                .bind("normalization_error", asset_row.normalization_error.clone())
+                .bind("base_bias", asset_row.base_bias)
+                .bind("user_boost", asset_row.user_boost)
+                .bind("fatigue", asset_row.fatigue)
+                .bind("diversity", asset_row.diversity)
+                .bind("updated_at", asset_row.updated_at),
             );
         }
 
@@ -438,9 +554,9 @@ impl SnapshotStore for SurrealStore {
                 TxStmt::new(
                     "INSERT RELATION INTO $rel [{ in: $in, out: $out, order_index: $order_index, updated_at: $updated_at }] RETURN NONE;",
                 )
-                .bind("rel", Table::from(REL_PLAYLIST_ENTRY))
-                .bind("in", RecordId::new(TABLE_PLAYLIST, in_id))
-                .bind("out", RecordId::new(TABLE_ENTRY, out_id))
+                .bind("rel", Table::from(relation_name::<MusicPlaylistEntryRel>()))
+                .bind("in", RecordId::new(MusicPlaylist::table_name(), in_id))
+                .bind("out", RecordId::new(MusicEntry::table_name(), out_id))
                 .bind("order_index", order_index)
                 .bind("updated_at", now),
             );
@@ -451,9 +567,9 @@ impl SnapshotStore for SurrealStore {
                 TxStmt::new(
                     "INSERT RELATION INTO $rel [{ in: $in, out: $out, order_index: $order_index, updated_at: $updated_at }] RETURN NONE;",
                 )
-                .bind("rel", Table::from(REL_ENTRY_ASSET))
-                .bind("in", RecordId::new(TABLE_ENTRY, in_id))
-                .bind("out", RecordId::new(TABLE_ASSET, out_id))
+                .bind("rel", Table::from(relation_name::<MusicEntryAssetRel>()))
+                .bind("in", RecordId::new(MusicEntry::table_name(), in_id))
+                .bind("out", RecordId::new(MusicAsset::table_name(), out_id))
                 .bind("order_index", order_index)
                 .bind("updated_at", now),
             );
@@ -464,9 +580,9 @@ impl SnapshotStore for SurrealStore {
                 TxStmt::new(
                     "INSERT RELATION INTO $rel [{ in: $in, out: $out, order_index: $order_index, updated_at: $updated_at }] RETURN NONE;",
                 )
-                .bind("rel", Table::from(REL_PLAYLIST_EXCLUDE))
-                .bind("in", RecordId::new(TABLE_PLAYLIST, in_id))
-                .bind("out", RecordId::new(TABLE_ASSET, out_id))
+                .bind("rel", Table::from(relation_name::<MusicPlaylistExcludeRel>()))
+                .bind("in", RecordId::new(MusicPlaylist::table_name(), in_id))
+                .bind("out", RecordId::new(MusicAsset::table_name(), out_id))
                 .bind("order_index", order_index)
                 .bind("updated_at", now),
             );
@@ -475,11 +591,12 @@ impl SnapshotStore for SurrealStore {
         if anchor_playlist_id != target_playlist_id {
             statements.push(
                 TxStmt::new("DELETE type::record($table, $id) RETURN NONE;")
-                    .bind("table", TABLE_PLAYLIST.to_string())
+                    .bind("table", MusicPlaylist::table_name().to_string())
                     .bind("id", anchor_playlist_id),
             );
         }
 
+        let meta_row = Self::meta_record(now);
         statements.push(
             TxStmt::new(
                 "UPSERT type::record($table, $id) MERGE {\
@@ -488,11 +605,11 @@ impl SnapshotStore for SurrealStore {
                     updated_at: $updated_at\
                 } RETURN NONE;",
             )
-            .bind("table", TABLE_META.to_string())
-            .bind("id", META_KEY_STORAGE.to_string())
-            .bind("key", META_KEY_STORAGE.to_string())
-            .bind("schema_version", MUSIC_LIBRARY_SCHEMA_VERSION as i64)
-            .bind("updated_at", now),
+            .bind("table", MusicMeta::table_name().to_string())
+            .bind("id", meta_row.id)
+            .bind("key", meta_row.key)
+            .bind("schema_version", meta_row.schema_version)
+            .bind("updated_at", meta_row.updated_at),
         );
 
         run_tx(statements).await.map_err(|e| e.to_string())?;
@@ -500,12 +617,7 @@ impl SnapshotStore for SurrealStore {
     }
 
     async fn load_data(&self) -> Result<LibraryData, String> {
-        let mut playlist_rows = self
-            .query_rows::<PlaylistRow>(
-                "SELECT record::id(id) AS rid, name, avg_db, order_index FROM type::table($table) ORDER BY order_index ASC;",
-                TABLE_PLAYLIST,
-            )
-            .await?;
+        let mut playlist_rows = MusicPlaylist::list().await.map_err(|e| e.to_string())?;
 
         if playlist_rows.is_empty() {
             return Ok(LibraryData {
@@ -516,36 +628,25 @@ impl SnapshotStore for SurrealStore {
 
         playlist_rows.sort_by_key(|row| row.order_index.unwrap_or(0));
 
-        let entry_rows = self
-            .query_rows::<EntryRow>(
-                "SELECT record::id(id) AS rid, entry_key_norm, path, name, avg_db, url, downloaded_ok, tracking, entry_type FROM type::table($table);",
-                TABLE_ENTRY,
-            )
-            .await?;
-
-        let asset_rows = self
-            .query_rows::<AssetRow>(
-                "SELECT record::id(id) AS rid, path, title, avg_db, integrated_lufs, true_peak_dbtp, loudness_range_lu, loudness_threshold_lufs, analyzed_at_ms, analysis_version, source_mtime_ms, source_size_bytes, normalization_status, normalization_error, base_bias, user_boost, fatigue, diversity FROM type::table($table);",
-                TABLE_ASSET,
-            )
-            .await?;
+        let entry_rows = MusicEntry::list().await.map_err(|e| e.to_string())?;
+        let asset_rows = MusicAsset::list().await.map_err(|e| e.to_string())?;
 
         let playlist_entry_rows = self.load_rel_rows(REL_PLAYLIST_ENTRY).await?;
         let entry_asset_rows = self.load_rel_rows(REL_ENTRY_ASSET).await?;
         let playlist_exclude_rows = self.load_rel_rows(REL_PLAYLIST_EXCLUDE).await?;
 
-        let entry_map: HashMap<String, EntryRow> = entry_rows
+        let entry_map: HashMap<String, MusicEntry> = entry_rows
             .into_iter()
             .map(|row| {
-                let key = row.rid.clone();
+                let key = row.id.to_string();
                 (key, row)
             })
             .collect();
 
-        let asset_map: HashMap<String, AssetRow> = asset_rows
+        let asset_map: HashMap<String, MusicAsset> = asset_rows
             .into_iter()
             .map(|row| {
-                let key = row.rid.clone();
+                let key = row.id.to_string();
                 (key, row)
             })
             .collect();
@@ -582,7 +683,7 @@ impl SnapshotStore for SurrealStore {
 
         let mut playlists = Vec::with_capacity(playlist_rows.len());
         for playlist_row in playlist_rows {
-            let playlist_id = playlist_row.rid.clone();
+            let playlist_id = playlist_row.id.to_string();
 
             let mut entry_edges = playlist_entries.remove(&playlist_id).unwrap_or_default();
             entry_edges.sort_by_key(|(order, _)| *order);
@@ -596,7 +697,7 @@ impl SnapshotStore for SurrealStore {
                 let _entry_key_norm = entry_row.entry_key_norm.clone();
 
                 let mut asset_edges = entry_assets
-                    .get(&entry_row.rid)
+                    .get(&entry_row.id.to_string())
                     .cloned()
                     .unwrap_or_default();
                 asset_edges.sort_by_key(|(order, _)| *order);
@@ -606,28 +707,7 @@ impl SnapshotStore for SurrealStore {
                     let Some(asset_row) = asset_map.get(&asset_id) else {
                         continue;
                     };
-                    let music = Music {
-                        path: asset_row.path.clone(),
-                        title: asset_row.title.clone(),
-                        avg_db: asset_row.avg_db,
-                        integrated_lufs: asset_row.integrated_lufs,
-                        true_peak_dbtp: asset_row.true_peak_dbtp,
-                        loudness_range_lu: asset_row.loudness_range_lu,
-                        loudness_threshold_lufs: asset_row.loudness_threshold_lufs,
-                        analyzed_at_ms: asset_row.analyzed_at_ms,
-                        analysis_version: asset_row.analysis_version,
-                        source_mtime_ms: asset_row.source_mtime_ms,
-                        source_size_bytes: asset_row.source_size_bytes,
-                        normalization_status: Self::decode_normalization_status(
-                            asset_row.normalization_status.as_deref(),
-                        ),
-                        normalization_error: asset_row.normalization_error.clone(),
-                        base_bias: asset_row.base_bias,
-                        user_boost: asset_row.user_boost,
-                        fatigue: asset_row.fatigue,
-                        diversity: asset_row.diversity,
-                    };
-                    musics.push(music);
+                    musics.push(Self::decode_asset_row(asset_row));
                 }
 
                 let mut entry = Entry {
@@ -652,28 +732,7 @@ impl SnapshotStore for SurrealStore {
                 let Some(asset_row) = asset_map.get(&asset_id) else {
                     continue;
                 };
-                let music = Music {
-                    path: asset_row.path.clone(),
-                    title: asset_row.title.clone(),
-                    avg_db: asset_row.avg_db,
-                    integrated_lufs: asset_row.integrated_lufs,
-                    true_peak_dbtp: asset_row.true_peak_dbtp,
-                    loudness_range_lu: asset_row.loudness_range_lu,
-                    loudness_threshold_lufs: asset_row.loudness_threshold_lufs,
-                    analyzed_at_ms: asset_row.analyzed_at_ms,
-                    analysis_version: asset_row.analysis_version,
-                    source_mtime_ms: asset_row.source_mtime_ms,
-                    source_size_bytes: asset_row.source_size_bytes,
-                    normalization_status: Self::decode_normalization_status(
-                        asset_row.normalization_status.as_deref(),
-                    ),
-                    normalization_error: asset_row.normalization_error.clone(),
-                    base_bias: asset_row.base_bias,
-                    user_boost: asset_row.user_boost,
-                    fatigue: asset_row.fatigue,
-                    diversity: asset_row.diversity,
-                };
-                exclude.push(music);
+                exclude.push(Self::decode_asset_row(asset_row));
             }
 
             let mut playlist = Playlist {
@@ -747,6 +806,7 @@ impl SnapshotStore for SurrealStore {
         let mut statements = Vec::new();
 
         for (playlist_id, playlist, order_index) in playlist_rows {
+            let playlist_row = Self::playlist_record(playlist_id, playlist, order_index, now);
             statements.push(
                 TxStmt::new(
                     "UPSERT type::record($table, $id) MERGE {\
@@ -756,16 +816,17 @@ impl SnapshotStore for SurrealStore {
                         updated_at: $updated_at\
                     } RETURN NONE;",
                 )
-                .bind("table", TABLE_PLAYLIST.to_string())
-                .bind("id", playlist_id)
-                .bind("name", playlist.name)
-                .bind("avg_db", playlist.avg_db)
-                .bind("order_index", order_index)
-                .bind("updated_at", now),
+                .bind("table", MusicPlaylist::table_name().to_string())
+                .bind("id", playlist_row.id.clone())
+                .bind("name", playlist_row.name.clone())
+                .bind("avg_db", playlist_row.avg_db)
+                .bind("order_index", playlist_row.order_index)
+                .bind("updated_at", playlist_row.updated_at),
             );
         }
 
         for (entry_id, entry) in entry_rows {
+            let entry_row = Self::entry_record(entry_id, entry, now);
             statements.push(
                 TxStmt::new(
                     "UPSERT type::record($table, $id) MERGE {\
@@ -780,24 +841,22 @@ impl SnapshotStore for SurrealStore {
                         updated_at: $updated_at\
                     } RETURN NONE;",
                 )
-                .bind("table", TABLE_ENTRY.to_string())
-                .bind("id", entry_id)
-                .bind("entry_key_norm", entry_key(&entry))
-                .bind("path", entry.path)
-                .bind("name", entry.name)
-                .bind("avg_db", entry.avg_db)
-                .bind("url", entry.url)
-                .bind("downloaded_ok", entry.downloaded_ok)
-                .bind("tracking", entry.tracking)
-                .bind(
-                    "entry_type",
-                    Self::encode_entry_type(&entry.entry_type).to_string(),
-                )
-                .bind("updated_at", now),
+                .bind("table", MusicEntry::table_name().to_string())
+                .bind("id", entry_row.id.clone())
+                .bind("entry_key_norm", entry_row.entry_key_norm.clone())
+                .bind("path", entry_row.path.clone())
+                .bind("name", entry_row.name.clone())
+                .bind("avg_db", entry_row.avg_db)
+                .bind("url", entry_row.url.clone())
+                .bind("downloaded_ok", entry_row.downloaded_ok)
+                .bind("tracking", entry_row.tracking)
+                .bind("entry_type", entry_row.entry_type.clone())
+                .bind("updated_at", entry_row.updated_at),
             );
         }
 
         for (asset_id, music) in asset_rows {
+            let asset_row = Self::asset_record(asset_id, music, now);
             statements.push(
                 TxStmt::new(
                     "UPSERT type::record($table, $id) MERGE {\
@@ -821,29 +880,29 @@ impl SnapshotStore for SurrealStore {
                         updated_at: $updated_at\
                     } RETURN NONE;",
                 )
-                .bind("table", TABLE_ASSET.to_string())
-                .bind("id", asset_id)
-                .bind("path", music.path)
-                .bind("title", music.title)
-                .bind("avg_db", music.avg_db)
-                .bind("integrated_lufs", music.integrated_lufs)
-                .bind("true_peak_dbtp", music.true_peak_dbtp)
-                .bind("loudness_range_lu", music.loudness_range_lu)
-                .bind("loudness_threshold_lufs", music.loudness_threshold_lufs)
-                .bind("analyzed_at_ms", music.analyzed_at_ms)
-                .bind("analysis_version", music.analysis_version)
-                .bind("source_mtime_ms", music.source_mtime_ms)
-                .bind("source_size_bytes", music.source_size_bytes)
+                .bind("table", MusicAsset::table_name().to_string())
+                .bind("id", asset_row.id.clone())
+                .bind("path", asset_row.path.clone())
+                .bind("title", asset_row.title.clone())
+                .bind("avg_db", asset_row.avg_db)
+                .bind("integrated_lufs", asset_row.integrated_lufs)
+                .bind("true_peak_dbtp", asset_row.true_peak_dbtp)
+                .bind("loudness_range_lu", asset_row.loudness_range_lu)
+                .bind("loudness_threshold_lufs", asset_row.loudness_threshold_lufs)
+                .bind("analyzed_at_ms", asset_row.analyzed_at_ms)
+                .bind("analysis_version", asset_row.analysis_version)
+                .bind("source_mtime_ms", asset_row.source_mtime_ms)
+                .bind("source_size_bytes", asset_row.source_size_bytes)
                 .bind(
                     "normalization_status",
-                    Self::encode_normalization_status(&music.normalization_status),
+                    asset_row.normalization_status.clone(),
                 )
-                .bind("normalization_error", music.normalization_error)
-                .bind("base_bias", music.base_bias)
-                .bind("user_boost", music.user_boost)
-                .bind("fatigue", music.fatigue)
-                .bind("diversity", music.diversity)
-                .bind("updated_at", now),
+                .bind("normalization_error", asset_row.normalization_error.clone())
+                .bind("base_bias", asset_row.base_bias)
+                .bind("user_boost", asset_row.user_boost)
+                .bind("fatigue", asset_row.fatigue)
+                .bind("diversity", asset_row.diversity)
+                .bind("updated_at", asset_row.updated_at),
             );
         }
 
@@ -852,9 +911,9 @@ impl SnapshotStore for SurrealStore {
                 TxStmt::new(
                     "INSERT RELATION INTO $rel [{ in: $in, out: $out, order_index: $order_index, updated_at: $updated_at }] RETURN NONE;",
                 )
-                .bind("rel", Table::from(REL_PLAYLIST_ENTRY))
-                .bind("in", RecordId::new(TABLE_PLAYLIST, in_id))
-                .bind("out", RecordId::new(TABLE_ENTRY, out_id))
+                .bind("rel", Table::from(relation_name::<MusicPlaylistEntryRel>()))
+                .bind("in", RecordId::new(MusicPlaylist::table_name(), in_id))
+                .bind("out", RecordId::new(MusicEntry::table_name(), out_id))
                 .bind("order_index", order_index)
                 .bind("updated_at", now),
             );
@@ -865,9 +924,9 @@ impl SnapshotStore for SurrealStore {
                 TxStmt::new(
                     "INSERT RELATION INTO $rel [{ in: $in, out: $out, order_index: $order_index, updated_at: $updated_at }] RETURN NONE;",
                 )
-                .bind("rel", Table::from(REL_ENTRY_ASSET))
-                .bind("in", RecordId::new(TABLE_ENTRY, in_id))
-                .bind("out", RecordId::new(TABLE_ASSET, out_id))
+                .bind("rel", Table::from(relation_name::<MusicEntryAssetRel>()))
+                .bind("in", RecordId::new(MusicEntry::table_name(), in_id))
+                .bind("out", RecordId::new(MusicAsset::table_name(), out_id))
                 .bind("order_index", order_index)
                 .bind("updated_at", now),
             );
@@ -878,14 +937,15 @@ impl SnapshotStore for SurrealStore {
                 TxStmt::new(
                     "INSERT RELATION INTO $rel [{ in: $in, out: $out, order_index: $order_index, updated_at: $updated_at }] RETURN NONE;",
                 )
-                .bind("rel", Table::from(REL_PLAYLIST_EXCLUDE))
-                .bind("in", RecordId::new(TABLE_PLAYLIST, in_id))
-                .bind("out", RecordId::new(TABLE_ASSET, out_id))
+                .bind("rel", Table::from(relation_name::<MusicPlaylistExcludeRel>()))
+                .bind("in", RecordId::new(MusicPlaylist::table_name(), in_id))
+                .bind("out", RecordId::new(MusicAsset::table_name(), out_id))
                 .bind("order_index", order_index)
                 .bind("updated_at", now),
             );
         }
 
+        let meta_row = Self::meta_record(now);
         statements.push(
             TxStmt::new(
                 "UPSERT type::record($table, $id) MERGE {\
@@ -894,11 +954,11 @@ impl SnapshotStore for SurrealStore {
                     updated_at: $updated_at\
                 } RETURN NONE;",
             )
-            .bind("table", TABLE_META.to_string())
-            .bind("id", META_KEY_STORAGE.to_string())
-            .bind("key", META_KEY_STORAGE.to_string())
-            .bind("schema_version", MUSIC_LIBRARY_SCHEMA_VERSION as i64)
-            .bind("updated_at", now),
+            .bind("table", MusicMeta::table_name().to_string())
+            .bind("id", meta_row.id)
+            .bind("key", meta_row.key)
+            .bind("schema_version", meta_row.schema_version)
+            .bind("updated_at", meta_row.updated_at),
         );
 
         run_tx(statements).await.map_err(|e| e.to_string())?;
@@ -1113,7 +1173,10 @@ mod tests {
             .flat_map(|entry| entry.musics.iter())
             .chain(playlist.exclude.iter())
         {
-            assert!(music.avg_db.is_some(), "fixture should retain legacy avg_db");
+            assert!(
+                music.avg_db.is_some(),
+                "fixture should retain legacy avg_db"
+            );
             assert_eq!(music.integrated_lufs, None);
             assert_eq!(music.true_peak_dbtp, None);
             assert_eq!(music.loudness_range_lu, None);
@@ -1238,16 +1301,31 @@ mod tests {
 
     #[test]
     fn appdb_music_models_true_negative_limit_unique_lookup_to_business_keys() {
-        assert_eq!(<MusicPlaylist as UniqueLookupMeta>::lookup_fields(), &["name"]);
-        assert_eq!(<MusicEntry as UniqueLookupMeta>::lookup_fields(), &["entry_key_norm"]);
+        assert_eq!(
+            <MusicPlaylist as UniqueLookupMeta>::lookup_fields(),
+            &["name"]
+        );
+        assert_eq!(
+            <MusicEntry as UniqueLookupMeta>::lookup_fields(),
+            &["entry_key_norm"]
+        );
         assert_eq!(<MusicAsset as UniqueLookupMeta>::lookup_fields(), &["path"]);
         assert_eq!(<MusicMeta as UniqueLookupMeta>::lookup_fields(), &["key"]);
     }
 
     #[test]
     fn appdb_music_relations_true_positive_register_expected_relation_names() {
-        assert_eq!(relation_name::<MusicPlaylistEntryRel>(), super::REL_PLAYLIST_ENTRY);
-        assert_eq!(relation_name::<MusicEntryAssetRel>(), super::REL_ENTRY_ASSET);
-        assert_eq!(relation_name::<MusicPlaylistExcludeRel>(), super::REL_PLAYLIST_EXCLUDE);
+        assert_eq!(
+            relation_name::<MusicPlaylistEntryRel>(),
+            super::REL_PLAYLIST_ENTRY
+        );
+        assert_eq!(
+            relation_name::<MusicEntryAssetRel>(),
+            super::REL_ENTRY_ASSET
+        );
+        assert_eq!(
+            relation_name::<MusicPlaylistExcludeRel>(),
+            super::REL_PLAYLIST_EXCLUDE
+        );
     }
 }

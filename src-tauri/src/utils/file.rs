@@ -154,9 +154,13 @@ fn collect_import_entry(
     }))
 }
 
-pub fn collect_import_folder_entries_inner(folder: &Path) -> Result<Vec<ImportFolderEntry>, String> {
+pub fn collect_import_folder_entries_inner(
+    folder: &Path,
+) -> Result<Vec<ImportFolderEntry>, String> {
     if let Some(metadata) = read_entry_metadata(folder)? {
-        return Ok(collect_import_entry(folder, Some(metadata))?.into_iter().collect());
+        return Ok(collect_import_entry(folder, Some(metadata))?
+            .into_iter()
+            .collect());
     }
 
     let mut entries = Vec::new();
@@ -178,7 +182,9 @@ pub fn collect_import_folder_entries_inner(folder: &Path) -> Result<Vec<ImportFo
     }
 
     if !entries.is_empty() {
-        entries.sort_by(|a, b| folder_entry_name(Path::new(&a.path)).cmp(&folder_entry_name(Path::new(&b.path))));
+        entries.sort_by(|a, b| {
+            folder_entry_name(Path::new(&a.path)).cmp(&folder_entry_name(Path::new(&b.path)))
+        });
         return Ok(entries);
     }
 

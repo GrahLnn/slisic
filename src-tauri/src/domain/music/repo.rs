@@ -406,17 +406,7 @@ fn replace_if_exists(entries: &mut [Entry], incoming: &Entry) -> bool {
 }
 
 fn same_entry_slot(existing: &Entry, incoming: &Entry) -> bool {
-    match (&existing.path, &incoming.path) {
-        (Some(a), Some(b)) => return a == b,
-        _ => {}
-    }
-
-    match (&existing.url, &incoming.url) {
-        (Some(a), Some(b)) => return a == b,
-        _ => {}
-    }
-
-    existing.name == incoming.name
+    entry_key(existing) == entry_key(incoming)
 }
 
 #[cfg(test)]
@@ -528,7 +518,9 @@ mod tests {
                         analysis_version: None,
                         source_mtime_ms: None,
                         source_size_bytes: None,
-                        normalization_status: Some(crate::domain::music::types::NormalizationStatus::Ready),
+                        normalization_status: Some(
+                            crate::domain::music::types::NormalizationStatus::Ready,
+                        ),
                         normalization_error: None,
                         base_bias: 0.0,
                         user_boost: 0.0,
@@ -553,7 +545,9 @@ mod tests {
                     analysis_version: Some(1),
                     source_mtime_ms: Some(2),
                     source_size_bytes: Some(3),
-                    normalization_status: Some(crate::domain::music::types::NormalizationStatus::Ready),
+                    normalization_status: Some(
+                        crate::domain::music::types::NormalizationStatus::Ready,
+                    ),
                     normalization_error: None,
                     base_bias: 0.0,
                     user_boost: 0.0,
@@ -590,7 +584,9 @@ mod tests {
                         analysis_version: None,
                         source_mtime_ms: None,
                         source_size_bytes: None,
-                        normalization_status: Some(crate::domain::music::types::NormalizationStatus::Ready),
+                        normalization_status: Some(
+                            crate::domain::music::types::NormalizationStatus::Ready,
+                        ),
                         normalization_error: None,
                         base_bias: 0.0,
                         user_boost: 0.0,
@@ -638,7 +634,9 @@ mod tests {
                         analysis_version: Some(1),
                         source_mtime_ms: Some(456),
                         source_size_bytes: Some(789),
-                        normalization_status: Some(crate::domain::music::types::NormalizationStatus::Ready),
+                        normalization_status: Some(
+                            crate::domain::music::types::NormalizationStatus::Ready,
+                        ),
                         normalization_error: None,
                         base_bias: 0.0,
                         user_boost: 0.0,
@@ -666,15 +664,14 @@ mod tests {
         assert_eq!(music.analysis_version, Some(1));
         assert_eq!(music.source_mtime_ms, Some(456));
         assert_eq!(music.source_size_bytes, Some(789));
-        assert_eq!(music.normalization_status, Some(crate::domain::music::types::NormalizationStatus::Ready));
+        assert_eq!(
+            music.normalization_status,
+            Some(crate::domain::music::types::NormalizationStatus::Ready)
+        );
         assert_eq!(music.normalization_error, None);
     }
 
-    fn sample_entry(
-        name: &str,
-        path: Option<&str>,
-        url: Option<&str>,
-    ) -> Entry {
+    fn sample_entry(name: &str, path: Option<&str>, url: Option<&str>) -> Entry {
         Entry {
             path: path.map(str::to_string),
             name: name.to_string(),

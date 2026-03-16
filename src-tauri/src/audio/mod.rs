@@ -1341,7 +1341,9 @@ pub async fn audio_debug_spectrogram(
     let gain_db = compute_gain_db(req.target_lufs, req.track_lufs, req.track_true_peak_dbtp);
     let playback_filter = build_playback_filter(gain_db, req.track_true_peak_dbtp);
     let ffmpeg = crate::utils::ffmpeg::ensure_ffmpeg(&app)?;
-    let mut duration_ms = open_decoder(input.as_path()).ok().and_then(|(_, duration)| duration);
+    let mut duration_ms = open_decoder(input.as_path())
+        .ok()
+        .and_then(|(_, duration)| duration);
     if duration_ms.is_none() {
         duration_ms = probe_duration_ms_with_ffprobe(&ffmpeg, input.as_path());
     }
@@ -1470,10 +1472,16 @@ mod tests {
     #[test]
     fn debug_mode_guard_returns_explicit_command_error() {
         if cfg!(debug_assertions) {
-            assert_eq!(ensure_debug_mode_available("audio_debug_pipeline_probe"), Ok(()));
+            assert_eq!(
+                ensure_debug_mode_available("audio_debug_pipeline_probe"),
+                Ok(())
+            );
         } else {
             let err = ensure_debug_mode_available("audio_debug_pipeline_probe").unwrap_err();
-            assert_eq!(err, "audio_debug_pipeline_probe is available in debug mode only");
+            assert_eq!(
+                err,
+                "audio_debug_pipeline_probe is available in debug mode only"
+            );
         }
     }
 
@@ -1494,13 +1502,25 @@ mod tests {
         let path = temp_wav_path("spectrogram-contract");
         write_sine_wav(&path, 48_000, 2, 16, 1, 440.0, 0.35).expect("create test wav");
 
-        let low_gain_filter =
-            build_playback_filter(compute_gain_db(Some(-18.0), Some(-24.0), Some(-1.0)), Some(-1.0));
+        let low_gain_filter = build_playback_filter(
+            compute_gain_db(Some(-18.0), Some(-24.0), Some(-1.0)),
+            Some(-1.0),
+        );
         let unity_filter =
             build_playback_filter(compute_gain_db(Some(-18.0), None, Some(-1.0)), Some(-1.0));
 
-        let boosted = run_ffmpeg_spectrogram_png(ffmpeg.as_path(), path.as_path(), &super::spectrogram_filter_chain(Some(&low_gain_filter), 640, 260)).expect("boosted spectrogram");
-        let unity = run_ffmpeg_spectrogram_png(ffmpeg.as_path(), path.as_path(), &super::spectrogram_filter_chain(Some(&unity_filter), 640, 260)).expect("unity spectrogram");
+        let boosted = run_ffmpeg_spectrogram_png(
+            ffmpeg.as_path(),
+            path.as_path(),
+            &super::spectrogram_filter_chain(Some(&low_gain_filter), 640, 260),
+        )
+        .expect("boosted spectrogram");
+        let unity = run_ffmpeg_spectrogram_png(
+            ffmpeg.as_path(),
+            path.as_path(),
+            &super::spectrogram_filter_chain(Some(&unity_filter), 640, 260),
+        )
+        .expect("unity spectrogram");
 
         assert_ne!(low_gain_filter, unity_filter);
         assert_ne!(boosted, unity);

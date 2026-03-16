@@ -451,7 +451,10 @@ async fn load_music_index_if_needed(
 ) -> Result<HashMap<String, Music>, String> {
     let needs_index = !mission.folders.is_empty()
         || mission.entries.iter().any(can_refresh_file_loudness)
-        || mission.exclude.iter().any(|music| !music.path.trim().is_empty());
+        || mission
+            .exclude
+            .iter()
+            .any(|music| !music.path.trim().is_empty());
 
     if !needs_index {
         return Ok(HashMap::new());

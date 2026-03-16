@@ -1,49 +1,21 @@
 use appdb::impl_schema;
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub const TABLE_PLAYLIST: &str = "music_playlist";
+#[cfg_attr(not(test), allow(dead_code))]
 pub const TABLE_ENTRY: &str = "music_entry";
+#[cfg_attr(not(test), allow(dead_code))]
 pub const TABLE_ASSET: &str = "music_asset";
+#[cfg_attr(not(test), allow(dead_code))]
 pub const TABLE_META: &str = "music_meta";
 
 pub const REL_PLAYLIST_ENTRY: &str = "music_playlist_entry";
 pub const REL_ENTRY_ASSET: &str = "music_entry_asset";
 pub const REL_PLAYLIST_EXCLUDE: &str = "music_playlist_exclude";
 
-pub struct MusicPlaylistSchema;
-pub struct MusicEntrySchema;
-pub struct MusicAssetSchema;
-pub struct MusicMetaSchema;
 pub struct MusicPlaylistEntrySchema;
 pub struct MusicEntryAssetSchema;
 pub struct MusicPlaylistExcludeSchema;
-
-impl_schema!(
-    MusicPlaylistSchema,
-    r#"
-DEFINE INDEX music_playlist_unique_name ON TABLE music_playlist FIELDS name UNIQUE;
-"#
-);
-
-impl_schema!(
-    MusicEntrySchema,
-    r#"
-DEFINE INDEX music_entry_unique_key ON TABLE music_entry FIELDS entry_key_norm UNIQUE;
-"#
-);
-
-impl_schema!(
-    MusicAssetSchema,
-    r#"
-DEFINE INDEX music_asset_unique_path ON TABLE music_asset FIELDS path UNIQUE;
-"#
-);
-
-impl_schema!(
-    MusicMetaSchema,
-    r#"
-DEFINE INDEX music_meta_unique_key ON TABLE music_meta FIELDS key UNIQUE;
-"#
-);
 
 impl_schema!(
     MusicPlaylistEntrySchema,
