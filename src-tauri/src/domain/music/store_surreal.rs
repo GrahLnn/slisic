@@ -916,11 +916,17 @@ fn now_timestamp_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::SurrealStore;
+    use super::{
+        MusicAsset, MusicEntry, MusicEntryAssetRel, MusicMeta, MusicPlaylist,
+        MusicPlaylistEntryRel, MusicPlaylistExcludeRel,
+    };
     use crate::domain::music::store::SnapshotStore;
     use crate::domain::music::types::{
         Entry, EntryType, LibraryData, Music, NormalizationStatus, Playlist,
         MUSIC_LIBRARY_SCHEMA_VERSION,
     };
+    use appdb::model::meta::{ModelMeta, UniqueLookupMeta};
+    use appdb::model::relation::relation_name;
 
     fn sample_music(path: &str, title: &str, avg_db: Option<f32>) -> Music {
         Music {
@@ -1220,5 +1226,28 @@ mod tests {
         let key = SurrealStore::record_key_from_rid("music_playlist", "abc123")
             .expect("plain key should be accepted");
         assert_eq!(key, "abc123");
+    }
+
+    #[test]
+    fn appdb_music_models_true_positive_register_expected_table_names() {
+        assert_eq!(MusicPlaylist::table_name(), super::TABLE_PLAYLIST);
+        assert_eq!(MusicEntry::table_name(), super::TABLE_ENTRY);
+        assert_eq!(MusicAsset::table_name(), super::TABLE_ASSET);
+        assert_eq!(MusicMeta::table_name(), super::TABLE_META);
+    }
+
+    #[test]
+    fn appdb_music_models_true_negative_limit_unique_lookup_to_business_keys() {
+        assert_eq!(<MusicPlaylist as UniqueLookupMeta>::lookup_fields(), &["name"]);
+        assert_eq!(<MusicEntry as UniqueLookupMeta>::lookup_fields(), &["entry_key_norm"]);
+        assert_eq!(<MusicAsset as UniqueLookupMeta>::lookup_fields(), &["path"]);
+        assert_eq!(<MusicMeta as UniqueLookupMeta>::lookup_fields(), &["key"]);
+    }
+
+    #[test]
+    fn appdb_music_relations_true_positive_register_expected_relation_names() {
+        assert_eq!(relation_name::<MusicPlaylistEntryRel>(), super::REL_PLAYLIST_ENTRY);
+        assert_eq!(relation_name::<MusicEntryAssetRel>(), super::REL_ENTRY_ASSET);
+        assert_eq!(relation_name::<MusicPlaylistExcludeRel>(), super::REL_PLAYLIST_EXCLUDE);
     }
 }

@@ -421,7 +421,7 @@ fn same_entry_slot(existing: &Entry, incoming: &Entry) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::prepare_legacy_data_for_store;
+    use super::{prepare_legacy_data_for_store, same_entry_slot};
     use crate::domain::music::types::{
         Entry, EntryType, LibraryData, Music, Playlist, MUSIC_LIBRARY_SCHEMA_VERSION,
     };
@@ -668,5 +668,66 @@ mod tests {
         assert_eq!(music.source_size_bytes, Some(789));
         assert_eq!(music.normalization_status, Some(crate::domain::music::types::NormalizationStatus::Ready));
         assert_eq!(music.normalization_error, None);
+    }
+
+    fn sample_entry(
+        name: &str,
+        path: Option<&str>,
+        url: Option<&str>,
+    ) -> Entry {
+        Entry {
+            path: path.map(str::to_string),
+            name: name.to_string(),
+            musics: vec![],
+            avg_db: None,
+            url: url.map(str::to_string),
+            downloaded_ok: Some(true),
+            tracking: Some(false),
+            entry_type: if url.is_some() {
+                EntryType::WebList
+            } else {
+                EntryType::Local
+            },
+        }
+    }
+
+    #[test]
+    fn same_entry_slot_true_positive_matches_same_path_identity() {
+        let existing = sample_entry("alpha", Some("C:/music/alpha"), None);
+        let incoming = sample_entry("alpha renamed", Some("C:/music/alpha"), None);
+
+        assert!(same_entry_slot(&existing, &incoming));
+    }
+
+    #[test]
+    fn same_entry_slot_true_positive_matches_same_url_identity() {
+        let existing = sample_entry("daily mix", None, Some("https://example.com/list"));
+        let incoming = sample_entry("daily mix reloaded", None, Some("https://example.com/list"));
+
+        assert!(same_entry_slot(&existing, &incoming));
+    }
+
+    #[test]
+    fn same_entry_slot_true_negative_rejects_distinct_name_only_entries() {
+        let existing = sample_entry("alpha", None, None);
+        let incoming = sample_entry("beta", None, None);
+
+        assert!(!same_entry_slot(&existing, &incoming));
+    }
+
+    #[test]
+    fn same_entry_slot_false_positive_guard_rejects_same_name_with_different_identity() {
+        let existing = sample_entry("duplicate-title", Some("C:/music/one"), None);
+        let incoming = sample_entry("duplicate-title", Some("C:/music/two"), None);
+
+        assert!(!same_entry_slot(&existing, &incoming));
+    }
+
+    #[test]
+    fn same_entry_slot_false_negative_guard_keeps_name_only_identity_when_no_stronger_key_exists() {
+        let existing = sample_entry("name-only", None, None);
+        let incoming = sample_entry("name-only", None, None);
+
+        assert!(same_entry_slot(&existing, &incoming));
     }
 }
