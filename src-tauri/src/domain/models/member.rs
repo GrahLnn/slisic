@@ -40,6 +40,5 @@ DEFINE FIELD id ON TABLE member TYPE string | int;
 DEFINE FIELD name ON TABLE member TYPE string;
 DEFINE FIELD role ON TABLE member TYPE string;
 DEFINE FIELD created_at ON TABLE member TYPE int;
-DEFINE INDEX member_unique_id ON TABLE member FIELDS id UNIQUE;
 "#
 );

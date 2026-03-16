@@ -63,6 +63,5 @@ DEFINE FIELD priority ON TABLE task TYPE int;
 DEFINE FIELD owner_id ON TABLE task TYPE option<string>;
 DEFINE FIELD created_at ON TABLE task TYPE int;
 DEFINE FIELD updated_at ON TABLE task TYPE int;
-DEFINE INDEX task_unique_id ON TABLE task FIELDS id UNIQUE;
 "#
 );

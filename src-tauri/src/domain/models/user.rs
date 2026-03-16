@@ -1,4 +1,4 @@
-use crate::{impl_crud, impl_schema};
+use crate::impl_crud;
 use appdb::Id;
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
@@ -9,10 +9,6 @@ pub struct User {
 }
 
 impl_crud!(User);
-impl_schema!(
-    User,
-    "DEFINE INDEX unique_id ON TABLE user FIELDS id UNIQUE;"
-);
 
 impl User {
     pub fn from_id(id: impl Into<Id>) -> Self {
