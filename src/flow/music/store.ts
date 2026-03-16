@@ -192,6 +192,7 @@ let started = false;
 const unsubs: Array<() => void> = [];
 const recentByList = new Map<string, string[]>();
 const playback = new PlaybackCoordinator();
+let runVersion = 0;
 
 function recentWindowSize(trackCount: number): number {
 	if (trackCount <= 1) return 0;
@@ -220,6 +221,10 @@ function subscribe(listener: () => void) {
 
 function getState() {
 	return state;
+}
+
+function isCurrentRun(version: number) {
+	return version === runVersion;
 }
 
 function bumpPlaybackEpoch(): number {
@@ -365,13 +370,16 @@ async function applyNextFatigue(music: Music | null | undefined) {
 	}));
 }
 
-async function refreshLists() {
+async function refreshLists(version?: number) {
 	const result = await crab.readAll();
 	if (result.isErr()) {
 		throw new Error(result.unwrap_err());
 	}
 
 	const playlists = result.unwrap();
+	if (version != null && !isCurrentRun(version)) {
+		return;
+	}
 	const validNames = new Set(playlists.map((playlist) => playlist.name));
 	for (const name of recentByList.keys()) {
 		if (!validNames.has(name)) {
@@ -385,12 +393,15 @@ async function refreshLists() {
 	}));
 }
 
-async function refreshTools() {
+async function refreshTools(version?: number) {
 	const [ytdlp, ffmpeg, savePath] = await Promise.all([
 		crab.checkExists(),
 		crab.ffmpegCheckExists(),
 		crab.resolveSavePath(),
 	]);
+	if (version != null && !isCurrentRun(version)) {
+		return;
+	}
 
 	patchState({
 		ytdlp: ytdlp.isErr() ? null : (ytdlp.unwrap() ?? null),
@@ -473,39 +484,46 @@ function scheduleNextPlayback(epoch: number) {
 async function ensureEvents() {
 	if (started) return;
 	started = true;
+	try {
+		const audioEnded = await crab.evt("audioEnded")((payload) => {
+			const path =
+				payload &&
+				typeof payload === "object" &&
+				"path" in payload &&
+				typeof (payload as { path?: unknown }).path === "string"
+					? (payload as { path: string }).path
+					: null;
+			if (!path) return;
+			const snapshot = getState();
+			if (!shouldHandleAudioEnded(snapshot, path)) return;
+			void applyNextFatigue(snapshot.nowPlaying);
+			const epoch = bumpPlaybackEpoch();
+			scheduleNextPlayback(epoch);
+		});
+		unsubs.push(audioEnded);
 
-	const audioEnded = await crab.evt("audioEnded")((payload) => {
-		const path =
-			payload &&
-			typeof payload === "object" &&
-			"path" in payload &&
-			typeof (payload as { path?: unknown }).path === "string"
-				? (payload as { path: string }).path
-				: null;
-		if (!path) return;
-		const snapshot = getState();
-		if (!shouldHandleAudioEnded(snapshot, path)) return;
-		void applyNextFatigue(snapshot.nowPlaying);
-		const epoch = bumpPlaybackEpoch();
-		scheduleNextPlayback(epoch);
-	});
-	unsubs.push(audioEnded);
+		const processMsg = await crab.evt("processMsg")((payload) => {
+			patchState({ processMsg: payload as ProcessMsg });
+		});
+		unsubs.push(processMsg);
 
-	const processMsg = await crab.evt("processMsg")((payload) => {
-		patchState({ processMsg: payload as ProcessMsg });
-	});
-	unsubs.push(processMsg);
+		const processResult = await crab.evt("processResult")(async () => {
+			await refreshLists();
+			patchState({ processMsg: null });
+		});
+		unsubs.push(processResult);
 
-	const processResult = await crab.evt("processResult")(async () => {
-		await refreshLists();
-		patchState({ processMsg: null });
-	});
-	unsubs.push(processResult);
-
-	const ytdlpChanged = await crab.evt("ytdlpVersionChanged")(async () => {
-		await refreshTools();
-	});
-	unsubs.push(ytdlpChanged);
+		const ytdlpChanged = await crab.evt("ytdlpVersionChanged")(async () => {
+			await refreshTools();
+		});
+		unsubs.push(ytdlpChanged);
+	} catch (error) {
+		for (const unsub of unsubs.splice(0)) {
+			unsub();
+		}
+		started = false;
+		throw error;
+	}
 }
 
 async function safeStop() {
@@ -619,21 +637,30 @@ async function persistSlot() {
 
 export const action = {
 	async run() {
+		const version = ++runVersion;
 		playback.markActive();
 		patchState({ loading: true });
 		try {
 			await ensureEvents();
 			await crab.appReady();
-			await refreshTools();
-			await refreshLists();
+			await refreshTools(version);
+			await refreshLists(version);
+			if (!isCurrentRun(version)) {
+				return;
+			}
 			patchState({ processMsg: null });
 		} catch (error) {
+			if (!isCurrentRun(version)) {
+				return;
+			}
 			sileo.error({
 				title: "Initialization failed",
 				description: error instanceof Error ? error.message : String(error),
 			});
 		} finally {
-			patchState({ loading: false });
+			if (isCurrentRun(version)) {
+				patchState({ loading: false });
+			}
 		}
 	},
 	async next() {
@@ -1115,6 +1142,7 @@ export const action = {
 		patchState({ savePath: path });
 	},
 	async dispose() {
+		runVersion += 1;
 		playback.markDisposed();
 		patchState({ playbackEpoch: playback.getEpoch() });
 		await playback.interruptCurrent();

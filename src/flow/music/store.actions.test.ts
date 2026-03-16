@@ -20,6 +20,7 @@ const playbackLog = {
 };
 
 const impl = {
+	evt: async (_event: string, _handler: (payload: unknown) => void) => () => {},
 	appReady: async () => undefined,
 	checkExists: async () => Ok<null, string>(null),
 	ffmpegCheckExists: async () => Ok<null, string>(null),
@@ -84,9 +85,9 @@ const impl = {
 };
 
 const crab = {
-	evt(_event: string) {
-		return async (_handler: (payload: unknown) => void) => {
-			return () => {};
+	evt(event: string) {
+		return async (handler: (payload: unknown) => void) => {
+			return impl.evt(event, handler);
 		};
 	},
 	appReady: () => impl.appReady(),
@@ -239,6 +240,16 @@ async function flush() {
 	await Promise.resolve();
 }
 
+async function waitUntil(predicate: () => boolean) {
+	for (let i = 0; i < 20; i += 1) {
+		if (predicate()) {
+			return;
+		}
+		await flush();
+	}
+	throw new Error("condition not reached in time");
+}
+
 beforeEach(() => {
 	toastLog.error.length = 0;
 	toastLog.success.length = 0;
@@ -249,6 +260,8 @@ beforeEach(() => {
 	__testing.reset();
 
 	impl.appReady = async () => undefined;
+	impl.evt =
+		async (_event: string, _handler: (payload: unknown) => void) => () => {};
 	impl.checkExists = async () => Ok<null, string>(null);
 	impl.ffmpegCheckExists = async () => Ok<null, string>(null);
 	impl.resolveSavePath = async () => Ok<string, string>("C:/music");
@@ -282,6 +295,74 @@ describe("music store action contracts", () => {
 		expect(state.loading).toBe(false);
 		expect(state.playlists).toEqual([playlist]);
 		expect(playbackLog.markActive).toBe(1);
+		expect(toastLog.error).toEqual([]);
+	});
+
+	test("run_false_positive_guard_ignores_stale_slow_bootstrap_result_after_newer_run_finishes", async () => {
+		let appReadyCalls = 0;
+		let readAllCalls = 0;
+		let releaseFirstRun!: () => void;
+
+		impl.appReady = async () => {
+			appReadyCalls += 1;
+			if (appReadyCalls === 1) {
+				await new Promise<void>((resolve) => {
+					releaseFirstRun = () => resolve();
+				});
+			}
+		};
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			if (readAllCalls === 1) {
+				return Ok<Playlist[], string>([makePlaylist("focus")]);
+			}
+			return Ok<Playlist[], string>([]);
+		};
+
+		const firstRun = action.run();
+		await waitUntil(() => appReadyCalls === 1);
+		const secondRun = action.run();
+		await secondRun;
+		releaseFirstRun();
+		await firstRun;
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("play");
+		expect(state.playlists).toEqual([makePlaylist("focus")]);
+		expect(state.loading).toBe(false);
+		expect(toastLog.error).toEqual([]);
+	});
+
+	test("run_false_negative_guard_retries_event_registration_after_partial_listener_failure", async () => {
+		let evtCalls = 0;
+
+		impl.evt = async (_event: string, _handler: (payload: unknown) => void) => {
+			evtCalls += 1;
+			if (evtCalls === 2) {
+				throw new Error("listen failed");
+			}
+			return () => {};
+		};
+
+		await action.run();
+		expect(toastLog.error).toContainEqual({
+			title: "Initialization failed",
+			description: "listen failed",
+		});
+
+		toastLog.error.length = 0;
+		impl.evt = async (_event: string, _handler: (payload: unknown) => void) => {
+			evtCalls += 1;
+			return () => {};
+		};
+		impl.readAll = async () =>
+			Ok<Playlist[], string>([makePlaylist("retry-ok")]);
+
+		await action.run();
+
+		const state = __testing.getState();
+		expect(evtCalls).toBeGreaterThanOrEqual(6);
+		expect(state.playlists).toEqual([makePlaylist("retry-ok")]);
 		expect(toastLog.error).toEqual([]);
 	});
 
