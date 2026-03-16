@@ -358,6 +358,12 @@ impl SnapshotStore for SurrealStore {
         "surreal"
     }
 
+    async fn load_playlist_names(&self) -> Result<Vec<String>, String> {
+        let mut playlist_rows = MusicPlaylist::list().await.map_err(|e| e.to_string())?;
+        playlist_rows.sort_by_key(|row| row.order_index.unwrap_or(0));
+        Ok(playlist_rows.into_iter().map(|row| row.name).collect())
+    }
+
     async fn replace_playlist(&self, anchor: &str, playlist: Playlist) -> Result<(), String> {
         let playlist_rows = MusicPlaylist::list().await.map_err(|e| e.to_string())?;
 

@@ -47,6 +47,10 @@ impl LibraryRepo {
         Ok(self.store.load_data().await?.playlists)
     }
 
+    pub async fn playlist_names(&self) -> Result<Vec<String>, String> {
+        self.store.load_playlist_names().await
+    }
+
     pub async fn music_index(&self) -> Result<HashMap<String, Music>, String> {
         let data = self.store.load_data().await?;
         let mut index = HashMap::new();
@@ -493,6 +497,31 @@ mod tests {
 
         let snapshot = repo.snapshot().await.expect("snapshot");
         assert_eq!(snapshot[0].exclude, vec![music]);
+    }
+
+    #[tokio::test]
+    async fn playlist_names_true_positive_reads_names_in_store_order() {
+        let repo = LibraryRepo::new_for_tests(Arc::new(TestStore::new(LibraryData {
+            schema_version: MUSIC_LIBRARY_SCHEMA_VERSION,
+            playlists: vec![
+                Playlist {
+                    name: "focus".to_string(),
+                    avg_db: None,
+                    entries: vec![],
+                    exclude: vec![],
+                },
+                Playlist {
+                    name: "ambient".to_string(),
+                    avg_db: None,
+                    entries: vec![],
+                    exclude: vec![],
+                },
+            ],
+        })));
+
+        let names = repo.playlist_names().await.expect("playlist names");
+
+        assert_eq!(names, vec!["focus".to_string(), "ambient".to_string()]);
     }
 
     #[tokio::test]

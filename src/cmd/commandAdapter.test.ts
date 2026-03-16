@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 const impl = {
 	resolveSavePath: async () => ({ status: "ok" as const, data: "C:/music" }),
+	playlistNames: async () => ({ status: "ok" as const, data: ["focus"] }),
 	readAll: async () => ({ status: "error" as const, error: "db offline" }),
 	appReady: async () => undefined,
 };
@@ -29,6 +30,7 @@ function makeLievt<T extends Record<string, any>>(ev: T) {
 mock.module("./commands", () => ({
 	commands: {
 		resolveSavePath: () => impl.resolveSavePath(),
+		playlistNames: () => impl.playlistNames(),
 		readAll: () => impl.readAll(),
 		appReady: () => impl.appReady(),
 	},
@@ -40,6 +42,7 @@ const { crab } = await import("./commandAdapter");
 
 beforeEach(() => {
 	impl.resolveSavePath = async () => ({ status: "ok" as const, data: "C:/music" });
+	impl.playlistNames = async () => ({ status: "ok" as const, data: ["focus"] });
 	impl.readAll = async () => ({ status: "error" as const, error: "db offline" });
 	impl.appReady = async () => undefined;
 });
@@ -55,6 +58,12 @@ describe("command adapter", () => {
 		const result = await crab.readAll();
 		expect(result.isErr()).toBe(true);
 		expect(result.unwrap_err()).toBe("db offline");
+	});
+
+	test("false_negative_guard_wraps_string_array_results_without_shape_loss", async () => {
+		const result = await crab.playlistNames();
+		expect(result.isOk()).toBe(true);
+		expect(result.unwrap()).toEqual(["focus"]);
 	});
 
 	test("false_positive_guard_leaves_non_specta_commands_unwrapped", async () => {

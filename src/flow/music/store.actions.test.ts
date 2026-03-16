@@ -25,6 +25,7 @@ const impl = {
 	checkExists: async () => Ok<null, string>(null),
 	ffmpegCheckExists: async () => Ok<null, string>(null),
 	resolveSavePath: async () => Ok<string, string>("C:/music"),
+	playlistNames: async () => Ok<string[], string>([]),
 	readAll: async () => Ok<Playlist[], string>([]),
 	create: async (_data: CollectMission) => Ok<null, string>(null),
 	update: async (_data: CollectMission, _anchor: Playlist) =>
@@ -94,6 +95,7 @@ const crab = {
 	checkExists: () => impl.checkExists(),
 	ffmpegCheckExists: () => impl.ffmpegCheckExists(),
 	resolveSavePath: () => impl.resolveSavePath(),
+	playlistNames: () => impl.playlistNames(),
 	readAll: () => impl.readAll(),
 	create: (data: CollectMission) => impl.create(data),
 	update: (data: CollectMission, anchor: Playlist) => impl.update(data, anchor),
@@ -265,6 +267,7 @@ beforeEach(() => {
 	impl.checkExists = async () => Ok<null, string>(null);
 	impl.ffmpegCheckExists = async () => Ok<null, string>(null);
 	impl.resolveSavePath = async () => Ok<string, string>("C:/music");
+	impl.playlistNames = async () => Ok<string[], string>([]);
 	impl.readAll = async () => Ok<Playlist[], string>([]);
 	impl.create = async (_data: CollectMission) => Ok<null, string>(null);
 	impl.update = async (_data: CollectMission, _anchor: Playlist) =>
@@ -287,6 +290,7 @@ describe("music store action contracts", () => {
 
 	test("run_true_negative_does_not_trigger_bootstrap_normalization_and_still_reads_lists", async () => {
 		const playlist = makePlaylist("ambient");
+		impl.playlistNames = async () => Ok<string[], string>(["ambient"]);
 		impl.readAll = async () => Ok<Playlist[], string>([playlist]);
 
 		await action.run();
@@ -300,6 +304,7 @@ describe("music store action contracts", () => {
 
 	test("run_false_positive_guard_ignores_stale_slow_bootstrap_result_after_newer_run_finishes", async () => {
 		let appReadyCalls = 0;
+		let playlistNameCalls = 0;
 		let readAllCalls = 0;
 		let releaseFirstRun!: () => void;
 
@@ -310,6 +315,13 @@ describe("music store action contracts", () => {
 					releaseFirstRun = () => resolve();
 				});
 			}
+		};
+		impl.playlistNames = async () => {
+			playlistNameCalls += 1;
+			if (playlistNameCalls === 1) {
+				return Ok<string[], string>([]);
+			}
+			return Ok<string[], string>(["focus"]);
 		};
 		impl.readAll = async () => {
 			readAllCalls += 1;
@@ -355,6 +367,7 @@ describe("music store action contracts", () => {
 			evtCalls += 1;
 			return () => {};
 		};
+		impl.playlistNames = async () => Ok<string[], string>(["retry-ok"]);
 		impl.readAll = async () =>
 			Ok<Playlist[], string>([makePlaylist("retry-ok")]);
 
@@ -364,6 +377,69 @@ describe("music store action contracts", () => {
 		expect(evtCalls).toBeGreaterThanOrEqual(6);
 		expect(state.playlists).toEqual([makePlaylist("retry-ok")]);
 		expect(toastLog.error).toEqual([]);
+	});
+
+	test("run_true_positive_probes_names_first_and_switches_to_play_before_full_snapshot_hydrates", async () => {
+		const playlist = makePlaylist("focus");
+		let releaseReadAll!: () => void;
+		let readAllStarted = false;
+
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => {
+			readAllStarted = true;
+			await new Promise<void>((resolve) => {
+				releaseReadAll = resolve;
+			});
+			return Ok<Playlist[], string>([playlist]);
+		};
+
+		const run = action.run();
+
+		await waitUntil(() => {
+			const state = __testing.getState();
+			return (
+				readAllStarted &&
+				state.mode === "play" &&
+				state.playlists.map((item) => item.name).join(",") === "focus" &&
+				state.playlists[0]?.entries.length === 0
+			);
+		});
+
+		releaseReadAll();
+		await run;
+
+		const state = __testing.getState();
+		expect(state.playlists).toEqual([playlist]);
+		expect(state.loading).toBe(false);
+	});
+
+	test("run_true_negative_probes_empty_names_and_stays_in_new_guide_until_empty_snapshot_confirms_it", async () => {
+		let releaseReadAll!: () => void;
+		let readAllStarted = false;
+
+		impl.playlistNames = async () => Ok<string[], string>([]);
+		impl.readAll = async () => {
+			readAllStarted = true;
+			await new Promise<void>((resolve) => {
+				releaseReadAll = resolve;
+			});
+			return Ok<Playlist[], string>([]);
+		};
+
+		const run = action.run();
+
+		await waitUntil(() => {
+			const state = __testing.getState();
+			return readAllStarted && state.mode === "new_guide" && state.playlists.length === 0;
+		});
+
+		releaseReadAll();
+		await run;
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("new_guide");
+		expect(state.playlists).toEqual([]);
+		expect(state.loading).toBe(false);
 	});
 
 	test("save_true_positive_create_persists_slot_and_reloads_lists", async () => {

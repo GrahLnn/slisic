@@ -116,6 +116,30 @@ export function deriveRefreshPatch(
 	};
 }
 
+export function buildPlaylistPlaceholders(names: string[]): Playlist[] {
+	return names.map((name) => ({
+		name,
+		avg_db: null,
+		entries: [],
+		exclude: [],
+	}));
+}
+
+export function deriveProbePatch(
+	prev: Pick<MusicState, "mode">,
+	playlistNames: string[],
+): Pick<MusicState, "playlists" | "mode"> {
+	return {
+		playlists: buildPlaylistPlaceholders(playlistNames),
+		mode:
+			prev.mode === "create" || prev.mode === "edit"
+				? prev.mode
+				: playlistNames.length === 0
+					? "new_guide"
+					: "play",
+	};
+}
+
 export function buildPostSavePatch(
 	hasData: boolean,
 	idleEpoch: number,
@@ -393,6 +417,22 @@ async function refreshLists(version?: number) {
 	}));
 }
 
+async function probePlaylistNames(version?: number) {
+	const result = await crab.playlistNames();
+	if (result.isErr()) {
+		throw new Error(result.unwrap_err());
+	}
+
+	if (version != null && !isCurrentRun(version)) {
+		return;
+	}
+
+	setState((prev) => ({
+		...prev,
+		...deriveProbePatch(prev, result.unwrap()),
+	}));
+}
+
 async function refreshTools(version?: number) {
 	const [ytdlp, ffmpeg, savePath] = await Promise.all([
 		crab.checkExists(),
@@ -642,9 +682,12 @@ export const action = {
 		patchState({ loading: true });
 		try {
 			await ensureEvents();
-			await crab.appReady();
-			await refreshTools(version);
+			const ready = crab.appReady();
+			const tools = refreshTools(version);
+			await probePlaylistNames(version);
+			await ready;
 			await refreshLists(version);
+			await tools;
 			if (!isCurrentRun(version)) {
 				return;
 			}

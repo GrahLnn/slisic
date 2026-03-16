@@ -42,6 +42,10 @@ pub async fn read_all() -> Result<Vec<Playlist>, String> {
     repository().await?.snapshot().await
 }
 
+pub async fn playlist_names() -> Result<Vec<String>, String> {
+    repository().await?.playlist_names().await
+}
+
 pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> Result<(), String> {
     let repo = repository().await?;
     let music_index = load_music_index_if_needed(&repo, &data).await?;

@@ -7,6 +7,16 @@ pub trait SnapshotStore: Send + Sync {
 
     async fn load_data(&self) -> Result<LibraryData, String>;
 
+    async fn load_playlist_names(&self) -> Result<Vec<String>, String> {
+        Ok(self
+            .load_data()
+            .await?
+            .playlists
+            .into_iter()
+            .map(|playlist| playlist.name)
+            .collect())
+    }
+
     async fn save_data(&self, data: &LibraryData) -> Result<(), String>;
 
     async fn replace_playlist(&self, anchor: &str, playlist: Playlist) -> Result<(), String> {

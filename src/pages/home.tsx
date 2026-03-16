@@ -36,6 +36,20 @@ function Play() {
 	const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
 	const didInitCenterRef = useRef(false);
 	const processMsg = hook.useMsg();
+	const displayLists =
+		lists.length > 0
+			? lists.map((playlist) => ({
+					name: playlist.name,
+					playlist,
+					isHydrated: true,
+				}))
+			: ctx.loading
+				? ctx.playlists.map((playlist) => ({
+						name: playlist.name,
+						playlist: null,
+						isHydrated: false,
+					}))
+				: [];
 
 	const setItemRef = useCallback(
 		(key: string): React.RefCallback<HTMLDivElement> =>
@@ -49,10 +63,10 @@ function Play() {
 	useLayoutEffect(() => {
 		const key = curList?.name ?? null;
 		if (key == null) {
-			if (didInitCenterRef.current || lists.length === 0) return;
+			if (didInitCenterRef.current || displayLists.length === 0) return;
 			didInitCenterRef.current = true;
 			// Entering play page without selection: center the first visible playlist (top -> bottom).
-			const firstKey = lists[0].name;
+			const firstKey = displayLists[0].name;
 			const firstEl = itemRefs.current[firstKey];
 			if (!firstEl || !containerRef.current) return;
 			requestAnimationFrame(() =>
@@ -68,7 +82,7 @@ function Play() {
 		requestAnimationFrame(() =>
 			el.scrollIntoView({ block: "center", behavior: "smooth" }),
 		);
-	}, [curList, lists]);
+	}, [curList, displayLists]);
 
 	return (
 		<Face>
@@ -82,21 +96,24 @@ function Play() {
 				>
 					<div aria-hidden className="h-[100vh] shrink-0 snap-none" />
 
-					{lists.map((playlist) => {
-						const isCurrent = playlist.name === curList?.name;
-						const disabled = isPlaying && !isCurrent;
+					{displayLists.map(({ name, playlist, isHydrated }) => {
+						const isCurrent = name === curList?.name;
+						const disabled =
+							(isPlaying && !isCurrent) || (!isHydrated && ctx.loading);
 						const shouldSwap = isPlaying && isCurrent;
-						const showName = shouldSwap ? hoveredKey === playlist.name : true;
-						const isOk = playlist.entries.every((entry) => entry.downloaded_ok);
+						const showName = shouldSwap ? hoveredKey === name : true;
+						const isOk = playlist
+							? playlist.entries.every((entry) => entry.downloaded_ok)
+							: true;
 
-						const alt = curPlay?.title ?? playlist.name;
+						const alt = curPlay?.title ?? name;
 						const longer =
-							(alt?.length ?? 0) >= playlist.name.length ? alt : playlist.name;
+							(alt?.length ?? 0) >= name.length ? alt : name;
 
 						return (
 							<motion.div
-								key={playlist.name}
-								ref={setItemRef(playlist.name)}
+								key={name}
+								ref={setItemRef(name)}
 								className={cn([
 									"snap-center text-2xl font-cinzel text-[#0a0a0a] dark:text-[#fafafa] transition focus:outline-none flex flex-col items-center",
 									disabled && "pointer-events-none select-none",
@@ -118,14 +135,14 @@ function Play() {
 												? "cursor-pointer whitespace-nowrap"
 												: "select-none text-[#404040] dark:text-[#a3a3a3] animate-pulse",
 										])}
-										onMouseEnter={() => setHoveredKey(playlist.name)}
+										onMouseEnter={() => setHoveredKey(name)}
 										onMouseLeave={() =>
 											setHoveredKey((key) =>
-												key === playlist.name ? null : key,
+												key === name ? null : key,
 											)
 										}
 										onClick={() => {
-											if (disabled || !isOk) return;
+											if (disabled || !isOk || !playlist) return;
 											void action.play(playlist);
 										}}
 										onContextMenu={(event) => {
@@ -145,8 +162,8 @@ function Play() {
 
 												<AnimatePresence mode="wait" initial={false}>
 													{showName ? (
-														<motion.span
-															key="name"
+													<motion.span
+														key="name"
 															className="pointer-events-none absolute inset-0 flex items-center overflow-hidden"
 															initial={{ filter: "blur(6px)", opacity: 0 }}
 															animate={{ filter: "blur(0px)", opacity: 1 }}
@@ -154,7 +171,7 @@ function Play() {
 															transition={{ duration: 0.25, ease: "easeOut" }}
 														>
 															<span className="mx-auto max-w-[66vw] truncate whitespace-nowrap">
-																{playlist.name}
+																{name}
 															</span>
 														</motion.span>
 													) : (
@@ -175,13 +192,13 @@ function Play() {
 											</span>
 										) : (
 											<span className="relative inline-block">
-												<span>{playlist.name}</span>
-												{processMsg?.playlist === playlist.name ? (
+												<span>{name}</span>
+												{processMsg?.playlist === name ? (
 													<span className="absolute ml-1 max-w-2xs truncate whitespace-nowrap text-xs text-[#262626] dark:text-[#d4d4d4]">
 														- {processMsg.str}
 													</span>
 												) : null}
-												{!isOk ? (
+												{playlist && !isOk ? (
 													<span className="absolute bottom-0 ml-1 text-xs text-[#404040] dark:text-[#a3a3a3]">
 														{
 															playlist.entries.filter(
@@ -193,7 +210,7 @@ function Play() {
 											</span>
 										)}
 									</ContextMenuTrigger>
-									{!isPlaying && !disabled && isOk ? (
+									{!isPlaying && !disabled && isOk && playlist ? (
 										<ContextMenuContent
 											className={cn([
 												"bg-[rgba(255, 255, 255, 0.05)] border-none",

@@ -23,6 +23,12 @@ pub async fn read_all() -> Result<Vec<Playlist>, String> {
 
 #[tauri::command]
 #[specta::specta]
+pub async fn playlist_names() -> Result<Vec<String>, String> {
+    service::playlist_names().await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> Result<(), String> {
     service::update(app, data, anchor).await
 }

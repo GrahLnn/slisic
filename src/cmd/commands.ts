@@ -60,6 +60,7 @@ export const commands = {
 } | null, string>(__TAURI_INVOKE("ffmpeg_check_exists")),
 	create: (data: CollectMission) => typedError<null, string>(__TAURI_INVOKE("create", { data })),
 	read: (name: string) => typedError<Playlist, string>(__TAURI_INVOKE("read", { name })),
+	playlistNames: () => typedError<string[], string>(__TAURI_INVOKE("playlist_names")),
 	readAll: () => typedError<Playlist[], string>(__TAURI_INVOKE("read_all")),
 	update: (data: CollectMission, anchor: Playlist) => typedError<null, string>(__TAURI_INVOKE("update", { data, anchor })),
 	delete: (name: string) => typedError<null, string>(__TAURI_INVOKE("delete", { name })),

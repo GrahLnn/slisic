@@ -7,8 +7,10 @@ import type {
 } from "@/src/cmd/commands";
 import {
 	applyOptimisticEditSave,
+	buildPlaylistPlaceholders,
 	buildOptimisticPlaylistFromSlot,
 	buildPostSavePatch,
+	deriveProbePatch,
 	deriveRefreshPatch,
 	hasPlaybackContext,
 	type MusicState,
@@ -205,6 +207,34 @@ describe("music interaction guards", () => {
 			[],
 		);
 		expect(emptyPlay.mode).toBe("new_guide");
+	});
+
+	test("deriveProbePatch true_positive_promotes_non_empty_names_to_play_with_placeholders", () => {
+		const patch = deriveProbePatch({ mode: "new_guide" }, ["focus", "ambient"]);
+
+		expect(patch.mode).toBe("play");
+		expect(patch.playlists).toEqual(buildPlaylistPlaceholders(["focus", "ambient"]));
+	});
+
+	test("deriveProbePatch true_negative_keeps_empty_probe_in_new_guide", () => {
+		const patch = deriveProbePatch({ mode: "play" }, []);
+
+		expect(patch.mode).toBe("new_guide");
+		expect(patch.playlists).toEqual([]);
+	});
+
+	test("deriveProbePatch false_positive_guard_does_not_knock_edit_mode_back_to_play", () => {
+		const patch = deriveProbePatch({ mode: "edit" }, ["focus"]);
+
+		expect(patch.mode).toBe("edit");
+		expect(patch.playlists).toEqual(buildPlaylistPlaceholders(["focus"]));
+	});
+
+	test("deriveProbePatch false_negative_guard_does_not_knock_create_mode_back_to_new_guide", () => {
+		const patch = deriveProbePatch({ mode: "create" }, []);
+
+		expect(patch.mode).toBe("create");
+		expect(patch.playlists).toEqual([]);
 	});
 
 	test("buildOptimisticPlaylistFromSlot should project slot to playlist shape", () => {
