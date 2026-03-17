@@ -1394,6 +1394,123 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("ownerIdentity_false_negative_guard_same_shape_refresh_only_carries_forward_matching_owner_identity", async () => {
+		const sharedUrl = "https://example.com/shared-shape-refresh";
+		const sharedName = "shared-refresh";
+		const canonical = withEntryMaterialization(
+			makeEntry(sharedName, "C:/music/canonical", {
+				url: sharedUrl,
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			}),
+			{
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 21,
+				lastError: null,
+			},
+		);
+		const sibling = withEntryMaterialization(
+			makeEntry(sharedName, "C:/music/sibling", {
+				url: sharedUrl,
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			}),
+			{
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 22,
+				lastError: null,
+			},
+		);
+		const unrelated = withEntryMaterialization(
+			makeEntry("different", "C:/music/different", {
+				url: "https://example.com/different",
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			}),
+			{
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 23,
+				lastError: null,
+			},
+		);
+
+		impl.readAll = async () =>
+			Ok<Playlist[], string>([
+				makePlaylist("focus", [
+					makeEntry(sharedName, "C:/music/canonical", {
+						url: sharedUrl,
+						entry_type: "WebList",
+						downloaded_ok: true,
+						musics: [makeMusic("C:/music/canonical/downloaded.flac")],
+					}),
+					makeEntry(sharedName, "C:/music/sibling", {
+						url: sharedUrl,
+						entry_type: "WebList",
+						downloaded_ok: false,
+						musics: [],
+					}),
+					makeEntry("different", "C:/music/different", {
+						url: "https://example.com/different",
+						entry_type: "WebList",
+						downloaded_ok: true,
+						musics: [makeMusic("C:/music/different/downloaded.flac")],
+					}),
+				]),
+			]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			selectedListName: null,
+			slot: null,
+			entrySessionId: 144,
+			playlists: [makePlaylist("focus", [canonical, sibling, unrelated])],
+		});
+
+		await __testing.readAll();
+
+		const entries = __testing.getState().playlists[0]?.entries ?? [];
+		expect(entries[0]).toMatchObject({
+			url: sharedUrl,
+			name: sharedName,
+			path: "C:/music/canonical",
+			materialization: {
+				phase: "persisted",
+				settled: "succeeded",
+				ownerSessionId: 21,
+				lastError: null,
+			},
+		});
+		expect(entries[1]).toMatchObject({
+			url: sharedUrl,
+			name: sharedName,
+			path: "C:/music/sibling",
+			materialization: {
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 22,
+				lastError: null,
+			},
+		});
+		expect(entries[2]).toMatchObject({
+			url: "https://example.com/different",
+			name: "different",
+			path: "C:/music/different",
+			materialization: {
+				phase: "persisted",
+				settled: "succeeded",
+				ownerSessionId: 23,
+				lastError: null,
+			},
+		});
+	});
+
 	test("ownerIdentity_false_negative_guard_displaced_late_settlement_cannot_overwrite_replacement_owner_layer", async () => {
 		const sharedUrl = "https://example.com/displaced";
 		const displacedOwner = withEntryMaterialization(

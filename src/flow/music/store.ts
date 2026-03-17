@@ -1170,24 +1170,28 @@ function carryForwardPersistedMaterializationOwnership(
 		const previousPlaylist = previousPlaylists.find(
 			(item) => item.name === playlist.name,
 		);
-		const previousMaterializationByIdentity = new Map<string, WebMaterializationState>();
+		const previousMaterializationByOwnerIdentity = new Map<
+			string,
+			WebMaterializationState
+		>();
 		for (const entry of previousPlaylist?.entries ?? []) {
-			const entryIdentity = derivePersistedOwnerMaterializationKey(entry);
+			const entryIdentity = derivePersistedOwnerIdentity(entry);
 			const materialization = getEntryMaterialization(entry);
 			if (!entryIdentity || !materialization) {
 				continue;
 			}
-			previousMaterializationByIdentity.set(entryIdentity, materialization);
+			previousMaterializationByOwnerIdentity.set(entryIdentity, materialization);
 		}
 
 		let changed = false;
 		const entries = playlist.entries.map((entry) => {
-			const entryIdentity = derivePersistedOwnerMaterializationKey(entry);
+			const entryIdentity = derivePersistedOwnerIdentity(entry);
 			if (!entryIdentity) {
 				return entry;
 			}
 
-			const previousMaterialization = previousMaterializationByIdentity.get(entryIdentity);
+			const previousMaterialization =
+				previousMaterializationByOwnerIdentity.get(entryIdentity);
 			const nextMaterialization = deriveEntryOwnedMaterialization(
 				entry,
 				previousMaterialization?.ownerSessionId ?? defaultOwnerSessionId,
@@ -1203,7 +1207,8 @@ function carryForwardPersistedMaterializationOwnership(
 			}
 
 			if (
-				nextMaterialization.ownerSessionId === previousMaterialization.ownerSessionId &&
+				nextMaterialization.ownerSessionId ===
+					previousMaterialization.ownerSessionId &&
 				nextMaterialization.phase === previousMaterialization.phase &&
 				nextMaterialization.settled === previousMaterialization.settled &&
 				nextMaterialization.lastError === previousMaterialization.lastError
@@ -1216,7 +1221,9 @@ function carryForwardPersistedMaterializationOwnership(
 		});
 
 		if (!changed) {
-			return previousPlaylist === playlist ? playlist : { ...playlist, entries };
+			return previousPlaylist === playlist
+				? playlist
+				: { ...playlist, entries };
 		}
 
 		return { ...playlist, entries };
@@ -1286,6 +1293,10 @@ function derivePersistedOwnerMaterializationKey(entry: Entry): string | null {
 		return `url:${entry.url}`;
 	}
 	return null;
+}
+
+function derivePersistedOwnerIdentity(entry: Entry): string | null {
+	return derivePersistedOwnerMaterializationKey(entry);
 }
 
 function deriveWebMaterializationPhase(
