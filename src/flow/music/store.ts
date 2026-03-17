@@ -571,7 +571,7 @@ export function settlePlaybackAck(
 		selectedListName: snapshot.selectedListName,
 		playbackListName: payload.listName,
 		confirmedPlaying: confirmedTrack,
-		nowPlaying: snapshot.requestedPlaying ?? confirmedTrack,
+		nowPlaying: confirmedTrack,
 	};
 }
 
@@ -1320,7 +1320,7 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 				playbackListName: list.name,
 				requestedPlaying: chosen,
 				confirmedPlaying: null,
-				nowPlaying: chosen,
+				nowPlaying: snapshot.confirmedPlaying,
 				nowJudge: null,
 				playbackSessionId: sessionId,
 			});

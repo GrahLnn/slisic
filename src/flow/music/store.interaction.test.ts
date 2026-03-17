@@ -388,6 +388,69 @@ describe("music interaction guards", () => {
 			selectedListName: "contemporary",
 			playbackListName: "contemporary",
 			confirmedPlaying: baseState.confirmedPlaying,
+			nowPlaying: baseState.confirmedPlaying,
+		});
+	});
+
+	test("settlePlaybackAck promotes canonical nowPlaying from backend-confirmed playback facts instead of optimistic request state", () => {
+		const requested = {
+			path: "C:/audio/b.flac",
+			title: "B",
+			avg_db: null,
+			integrated_lufs: null,
+			true_peak_dbtp: null,
+			loudness_range_lu: null,
+			loudness_threshold_lufs: null,
+			analyzed_at_ms: null,
+			analysis_version: null,
+			source_mtime_ms: null,
+			source_size_bytes: null,
+			normalization_status: null,
+			normalization_error: null,
+			base_bias: 0,
+			user_boost: 0,
+			fatigue: 0,
+			diversity: 0,
+		};
+
+		const state = {
+			...baseState,
+			playlists: [
+				{
+					...baseState.playlists[0],
+					entries: [
+						{
+							...baseEntry,
+							musics: baseConfirmedPlaying
+								? [baseConfirmedPlaying, requested]
+								: [requested],
+						},
+					],
+				},
+			],
+			requestedPlaying: requested,
+			nowPlaying: requested,
+		};
+
+		const patch = settlePlaybackAck(state, {
+			sessionId: 3,
+			listName: "contemporary",
+			ack: {
+				session_id: 3,
+				path: "C:/audio/b.flac",
+				duration_ms: 1500,
+				gain: 1,
+				gain_db: 0,
+				target_lufs: -18,
+				integrated_lufs: -18,
+				has_canonical_loudness: true,
+			},
+		});
+
+		expect(patch).toEqual({
+			selectedListName: "contemporary",
+			playbackListName: "contemporary",
+			confirmedPlaying: requested,
 			nowPlaying: requested,
 		});
 	});

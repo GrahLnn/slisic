@@ -2740,7 +2740,7 @@ describe("music store action contracts", () => {
 		expect(state.playbackListName).toBe("focus");
 		expect(state.requestedPlaying == null || state.requestedPlaying.path.startsWith("C:/music/focus/")).toBe(true);
 		expect(state.confirmedPlaying).toBeNull();
-		expect(state.nowPlaying == null || state.nowPlaying.path === state.requestedPlaying?.path).toBe(true);
+		expect(state.nowPlaying).toBeNull();
 		expect(state.playbackSessionId).toBeGreaterThan(0);
 	});
 
