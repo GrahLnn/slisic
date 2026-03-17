@@ -1242,7 +1242,7 @@ describe("music store action contracts", () => {
 		state = __testing.getState();
 		expect(state.mode).toBe("edit");
 		expect(state.slot?.entries).toEqual([draftUpdate]);
-		expect(state.playlists).toEqual([persistedPlaylist]);
+		expect(state.playlists).toEqual([refreshedPlaylist]);
 
 		await saveDraftAndWaitForReload();
 
@@ -1251,7 +1251,7 @@ describe("music store action contracts", () => {
 		expect(updateCalls[0]?.mission.entries).toEqual([draftUpdate]);
 		expect(updateCalls[0]?.anchor).toEqual(persistedPlaylist);
 		expect(state.mode).toBe("play");
-		expect(state.playlists).toEqual([refreshedPlaylist]);
+		expect(state.playlists).toEqual([persistedPlaylist]);
 	});
 
 	test("reloadEntry_false_negative_guard_post_slot_replacement_completion_only_clears_review_state_without_restoring_old_draft", async () => {
@@ -1303,6 +1303,125 @@ describe("music store action contracts", () => {
 				makePlaylist("focus", [entry]),
 				makePlaylist("replacement", [replacement]),
 			]);
+	});
+
+	test("reloadEntry_false_negative_guard_post_back_completion_only_clears_review_state_without_restoring_closed_draft", async () => {
+		const entry = makeEntry("folder", "C:/music/folder");
+		const updated = {
+			...entry,
+			musics: [makeMusic("C:/music/folder/new.flac")],
+		};
+
+		let release!: () => void;
+		impl.recheckFolder =
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve(Ok<Entry, string>(updated));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			routeResolved: true,
+			startupRoute: "hydrated_editing",
+			playlists: [makePlaylist("focus", [entry])],
+			selectedListName: "focus",
+			slot: makeMission("focus", [entry]),
+			folderReviews: [],
+		});
+
+		const pending = action.reloadEntry(entry);
+		await waitUntil(() => __testing.getState().folderReviews.includes(entry.path ?? ""));
+
+		release();
+		await pending;
+
+		const backPending = action.back();
+		await backPending;
+		expect(__testing.getState().mode).toBe("play");
+		expect(__testing.getState().slot).toBeNull();
+		expect(__testing.getState().selectedListName).toBeNull();
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("play");
+		expect(state.routeResolved).toBe(true);
+		expect(state.startupRoute).toBe("hydrated_playlists");
+		expect(state.slot).toBeNull();
+		expect(state.selectedListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.folderReviews).toEqual([]);
+		expect(state.playlists).toEqual([makePlaylist("focus", [entry])]);
+	});
+
+	test("reloadEntry_false_negative_guard_post_save_completion_only_clears_review_state_without_restoring_closed_draft", async () => {
+		const persisted = makeEntry("folder", "C:/music/folder", {
+			musics: [makeMusic("C:/music/folder/original.flac")],
+		});
+		const updated = {
+			...persisted,
+			musics: [makeMusic("C:/music/folder/reloaded.flac")],
+		};
+		const persistedPlaylist = makePlaylist("focus", [persisted]);
+		const refreshedPlaylist = makePlaylist("focus", [updated]);
+		let releaseReload!: () => void;
+		let releaseSave!: () => void;
+
+		impl.recheckFolder =
+			() =>
+				new Promise((resolve) => {
+					releaseReload = () => resolve(Ok<Entry, string>(updated));
+				});
+		impl.update = async () => {
+			await new Promise<void>((resolve) => {
+				releaseSave = resolve;
+			});
+			return Ok<null, string>(null);
+		};
+		impl.readAll = async () => Ok<Playlist[], string>([persistedPlaylist]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			routeResolved: true,
+			startupRoute: "hydrated_editing",
+			playlists: [persistedPlaylist],
+			selectedListName: "focus",
+			slot: makeMission("focus", [persisted]),
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+			folderReviews: [],
+		});
+
+		const pendingReload = action.reloadEntry(persisted);
+		await waitUntil(() => __testing.getState().folderReviews.includes(persisted.path ?? ""));
+
+		releaseReload();
+		await pendingReload;
+
+		const pendingSave = action.save();
+		await waitUntil(() => __testing.getState().mode === "play");
+		expect(__testing.getState().slot).toBeNull();
+		expect(__testing.getState().selectedListName).toBeNull();
+
+		let state = __testing.getState();
+		expect(state.mode).toBe("play");
+		expect(state.routeResolved).toBe(true);
+		expect(state.startupRoute).toBe("hydrated_playlists");
+		expect(state.slot).toBeNull();
+		expect(state.selectedListName).toBeNull();
+		expect(state.folderReviews).toEqual([]);
+		expect(state.playlists).toEqual([persistedPlaylist]);
+
+		releaseSave();
+		await pendingSave;
+		await flush();
+
+		state = __testing.getState();
+		expect(state.mode).toBe("play");
+		expect(state.slot).toBeNull();
+		expect(state.selectedListName).toBeNull();
+		expect(state.folderReviews).toEqual([]);
+		expect(state.playlists).toEqual([persistedPlaylist]);
 	});
 
 	test("updateWeblist_true_positive_replaces_entry_and_clears_review_flag", async () => {
@@ -1534,7 +1653,7 @@ describe("music store action contracts", () => {
 		expect(updateCalls[0]?.mission.entries).toEqual([draftUpdate]);
 		expect(updateCalls[0]?.anchor).toEqual(persistedPlaylist);
 		expect(state.mode).toBe("play");
-		expect(state.playlists).toEqual([refreshedPlaylist]);
+		expect(state.playlists).toEqual([persistedPlaylist]);
 	});
 
 		test("updateWeblist_false_negative_guard_post_slot_replacement_completion_only_clears_review_state_without_restoring_old_draft", async () => {
@@ -1595,6 +1714,141 @@ describe("music store action contracts", () => {
 			expect(state.selectedListName).toBe("replacement");
 		expect(state.weblistReviews).toEqual([]);
 			expect(state.playlists).toEqual([optimisticPersisted]);
+	});
+
+	test("updateWeblist_false_negative_guard_post_back_completion_only_clears_review_state_without_restoring_closed_draft", async () => {
+		const persisted = makeEntry("remote", "C:/music/remote", {
+			url: "https://example.com/list",
+			entry_type: "WebList",
+			downloaded_ok: false,
+			musics: [],
+		});
+		const updated = {
+			...persisted,
+			downloaded_ok: true,
+			musics: [makeMusic("C:/music/remote/downloaded.flac")],
+		};
+		const persistedPlaylist = makePlaylist("focus", [persisted]);
+		const refreshedPlaylist = makePlaylist("focus", [updated]);
+		let releaseUpdate!: () => void;
+		impl.updateWeblist =
+			() =>
+				new Promise((resolve) => {
+					releaseUpdate = () => resolve(Ok<Entry, string>(updated));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			routeResolved: true,
+			startupRoute: "hydrated_editing",
+			playlists: [persistedPlaylist],
+			selectedListName: "focus",
+			slot: makeMission("focus", [persisted]),
+			weblistReviews: [],
+		});
+
+		const pendingUpdate = action.updateWeblist(persisted);
+		await waitUntil(() => {
+			const url = persisted.url;
+			return !!url && __testing.getState().weblistReviews.includes(url);
+		});
+
+		releaseUpdate();
+		await pendingUpdate;
+
+		const backPending = action.back();
+		await backPending;
+		expect(__testing.getState().mode).toBe("play");
+		expect(__testing.getState().slot).toBeNull();
+		expect(__testing.getState().selectedListName).toBeNull();
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("play");
+		expect(state.routeResolved).toBe(true);
+		expect(state.startupRoute).toBe("hydrated_playlists");
+		expect(state.slot).toBeNull();
+		expect(state.selectedListName).toBeNull();
+		expect(state.weblistReviews).toEqual([]);
+		expect(state.playlists).toEqual([refreshedPlaylist]);
+	});
+
+	test("updateWeblist_false_negative_guard_post_save_completion_only_clears_review_state_without_restoring_closed_draft", async () => {
+		const persisted = makeEntry("remote", "C:/music/remote", {
+			url: "https://example.com/list",
+			entry_type: "WebList",
+			downloaded_ok: false,
+			musics: [],
+		});
+		const updated = {
+			...persisted,
+			downloaded_ok: true,
+			musics: [makeMusic("C:/music/remote/downloaded.flac")],
+		};
+		const persistedPlaylist = makePlaylist("focus", [persisted]);
+		const refreshedPlaylist = makePlaylist("focus", [updated]);
+		let releaseUpdate!: () => void;
+		let releaseSave!: () => void;
+
+		impl.updateWeblist =
+			() =>
+				new Promise((resolve) => {
+					releaseUpdate = () => resolve(Ok<Entry, string>(updated));
+				});
+		impl.update = async () => {
+			await new Promise<void>((resolve) => {
+				releaseSave = resolve;
+			});
+			return Ok<null, string>(null);
+		};
+		impl.readAll = async () => Ok<Playlist[], string>([persistedPlaylist]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			routeResolved: true,
+			startupRoute: "hydrated_editing",
+			playlists: [persistedPlaylist],
+			selectedListName: "focus",
+			slot: makeMission("focus", [persisted]),
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+			weblistReviews: [],
+		});
+
+		const pendingUpdate = action.updateWeblist(persisted);
+		await waitUntil(() => {
+			const url = persisted.url;
+			return !!url && __testing.getState().weblistReviews.includes(url);
+		});
+
+		releaseUpdate();
+		await pendingUpdate;
+
+		const pendingSave = action.save();
+		await waitUntil(() => __testing.getState().mode === "play");
+		expect(__testing.getState().slot).toBeNull();
+		expect(__testing.getState().selectedListName).toBeNull();
+
+		let state = __testing.getState();
+		expect(state.mode).toBe("play");
+		expect(state.routeResolved).toBe(true);
+		expect(state.startupRoute).toBe("hydrated_playlists");
+		expect(state.slot).toBeNull();
+		expect(state.selectedListName).toBeNull();
+		expect(state.weblistReviews).toEqual([]);
+		expect(state.playlists).toEqual([refreshedPlaylist]);
+
+		releaseSave();
+		await pendingSave;
+		await flush();
+
+		state = __testing.getState();
+		expect(state.mode).toBe("play");
+		expect(state.slot).toBeNull();
+		expect(state.selectedListName).toBeNull();
+		expect(state.weblistReviews).toEqual([]);
+		expect(state.playlists).toEqual([refreshedPlaylist]);
 	});
 
 	test("addLink_false_positive_guard_clears_review_flag_without_reintroducing_removed_link", async () => {

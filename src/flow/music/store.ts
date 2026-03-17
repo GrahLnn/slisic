@@ -543,6 +543,23 @@ export function deriveBackTransition(
 	};
 }
 
+function canMutateSettledEntry(
+	current: MusicState,
+	expectedMode: UiMode,
+	expectedSessionId: number,
+	entryIdentity: string | null,
+): boolean {
+	return (
+		entryIdentity != null &&
+		isEditingWorkspace(current.mode) &&
+		current.mode === expectedMode &&
+		current.entrySessionId === expectedSessionId &&
+		current.slot?.entries.some(
+			(item) => deriveEntryIdentity(item) === entryIdentity,
+		) === true
+	);
+}
+
 function trimmedName(name: string): string {
 	const v = name.trim();
 	return v.length > 0 ? v : name;
@@ -1427,13 +1444,12 @@ export const action = {
 						: replaceEntryByIdentity(slot.entries, entryIdentity, next),
 			}),
 			(current) =>
-				entryIdentity != null &&
-				isEditingWorkspace(current.mode) &&
-				current.mode === workspaceMode &&
-				current.entrySessionId === entrySessionId &&
-				current.slot?.entries.some(
-					(item) => deriveEntryIdentity(item) === entryIdentity,
-				) === true,
+				canMutateSettledEntry(
+					current,
+					workspaceMode,
+					entrySessionId,
+					entryIdentity,
+				),
 		);
 	},
 	async updateWeblist(entry: Entry) {
@@ -1471,13 +1487,12 @@ export const action = {
 						: replaceEntryByIdentity(slot.entries, entryIdentity, next),
 			}),
 			(current) =>
-				entryIdentity != null &&
-				isEditingWorkspace(current.mode) &&
-				current.mode === workspaceMode &&
-				current.entrySessionId === snapshot.entrySessionId &&
-				current.slot?.entries.some(
-					(item) => deriveEntryIdentity(item) === entryIdentity,
-				) === true,
+				canMutateSettledEntry(
+					current,
+					workspaceMode,
+					snapshot.entrySessionId,
+					entryIdentity,
+				),
 		);
 	},
 	async up(music: Music) {
