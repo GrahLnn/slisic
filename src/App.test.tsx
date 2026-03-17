@@ -1,14 +1,13 @@
 import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as ReactModule from "react";
+import {
+	canRenderApp as realCanRenderApp,
+	canStartApp as realCanStartApp,
+	type BootstrapAppEntryState,
+} from "./bootstrap/appEntryMachine";
 
-type BootstrapState =
-	| { status: "window_pending" }
-	| { status: "prewarm_blocked"; info: { label: string } }
-	| { status: "bootstrap_error_fallback"; reason: string }
-	| { status: "startup_allowed"; info: null };
-
-let bootstrapState: BootstrapState = { status: "window_pending" };
+let bootstrapState: BootstrapAppEntryState = { status: "window_pending" };
 const ensureUpdaterStarted = mock(() => undefined);
 const updaterRun = mock(() => undefined);
 const musicRun = mock(async () => undefined);
@@ -22,10 +21,8 @@ mock.module("./pages/pages", () => ({
 }));
 mock.module("./bootstrap", () => ({
 	useBootstrapAppEntryState: () => bootstrapState,
-	canRenderApp: (state: BootstrapState) => state.status !== "prewarm_blocked",
-	canStartApp: (state: BootstrapState) =>
-		state.status === "startup_allowed" ||
-		state.status === "bootstrap_error_fallback",
+	canRenderApp: realCanRenderApp,
+	canStartApp: realCanStartApp,
 }));
 mock.module("./flow/music", () => ({
 	action: {
@@ -123,16 +120,35 @@ describe("App bootstrap boundary", () => {
 	test("confirmed prewarm returns null from App.tsx and suppresses startup work", async () => {
 		bootstrapState = {
 			status: "prewarm_blocked",
-			info: { label: "main-prewarm-1" },
+			info: {
+				window: "Main",
+				label: "main-prewarm-1",
+				is_prewarm: true,
+				is_primary_main: false,
+			},
 		};
 
-		renderToStaticMarkup(<App />);
-		const html = "";
+		const html = renderToStaticMarkup(<App />);
 
 		expect(html).toBe("");
 		expect(ensureUpdaterStarted).not.toHaveBeenCalled();
 		expect(updaterRun).not.toHaveBeenCalled();
 		expect(musicRun).not.toHaveBeenCalled();
+	});
+
+	test("startup allowed starts work and renders through App.tsx", async () => {
+		bootstrapState = {
+			status: "startup_allowed",
+			info: null,
+		};
+
+		const html = renderToStaticMarkup(<App />);
+
+		expect(html).toContain("data-testid=\"topbar\"");
+		expect(html).toContain("data-testid=\"pages\"");
+		expect(ensureUpdaterStarted).toHaveBeenCalledTimes(1);
+		expect(updaterRun).toHaveBeenCalledTimes(1);
+		expect(musicRun).toHaveBeenCalledTimes(1);
 	});
 
 	test("bootstrap failure falls open through App.tsx and resumes startup work", async () => {

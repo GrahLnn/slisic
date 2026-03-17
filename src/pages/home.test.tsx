@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import React, { type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { MusicState } from "@/src/flow/music/store";
 
-function projectWorkspaceScreen(snapshot: {
+function realProjectWorkspaceScreen(snapshot: {
 	routeResolved: boolean;
-	mode: "play" | "create" | "edit" | "new_guide";
+	mode: MusicState["mode"];
 }) {
 	if (!snapshot.routeResolved) {
 		return "unresolved";
@@ -22,7 +23,7 @@ function projectWorkspaceScreen(snapshot: {
 }
 
 let routeResolved = false;
-let workspaceScreen: ReturnType<typeof projectWorkspaceScreen> = "play";
+let mode: MusicState["mode"] = "play";
 
 mock.module("motion/react", () => ({
 	AnimatePresence: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -95,6 +96,7 @@ mock.module("@/src/flow/music", () => ({
 	hook: {
 		useContext: () => ({
 			routeResolved,
+			mode,
 			loading: false,
 			playlists: [],
 			nowJudge: null,
@@ -122,14 +124,14 @@ mock.module("sileo", () => ({
 	Toaster: () => <div />,
 }));
 mock.module("@/src/flow/music/store", () => ({
-	projectWorkspaceScreen: () => workspaceScreen,
+	projectWorkspaceScreen: realProjectWorkspaceScreen,
 }));
 
 const { default: Home, shouldRenderHomeRoute } = await import("./home");
 
 beforeEach(() => {
 	routeResolved = false;
-	workspaceScreen = "play";
+	mode = "play";
 });
 
 describe("Home route gating", () => {
@@ -139,7 +141,7 @@ describe("Home route gating", () => {
 	});
 
 	test("unresolved route renders null even if the real workspace projection resolves to edit", async () => {
-		workspaceScreen = "edit";
+		mode = "edit";
 		const html = renderToStaticMarkup(<Home />);
 
 		expect(html).toBe("");
@@ -147,11 +149,20 @@ describe("Home route gating", () => {
 
 	test("resolved guide route renders guide content through the production workspace projection", async () => {
 		routeResolved = true;
-		workspaceScreen = "guide";
+		mode = "new_guide";
 		const html = renderToStaticMarkup(<Home />);
 
 		expect(html).toContain(
 			"You don’t have any play list yet. Let’s add your first one!",
 		);
+	});
+
+	test("resolved create route renders create workspace through the production projection", async () => {
+		routeResolved = true;
+		mode = "create";
+		const html = renderToStaticMarkup(<Home />);
+
+		expect(html).toContain("new-form");
+		expect(html).toContain("back");
 	});
 });
