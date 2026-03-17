@@ -281,7 +281,7 @@ describe("music interaction guards", () => {
 				slot: null,
 				ffmpeg: installedFfmpeg,
 			}),
-		).toEqual({ allowed: false, reason: "missing_slot" });
+		).toEqual({ allowed: false, visible: false, reason: "missing_slot" });
 
 		expect(
 			deriveSaveAffordance({
@@ -295,7 +295,7 @@ describe("music interaction guards", () => {
 				},
 				ffmpeg: null,
 			}),
-		).toEqual({ allowed: false, reason: "missing_ffmpeg" });
+		).toEqual({ allowed: false, visible: false, reason: "missing_ffmpeg" });
 
 		expect(
 			deriveSaveAffordance({
@@ -310,7 +310,7 @@ describe("music interaction guards", () => {
 				ffmpeg: installedFfmpeg,
 				savePath: null,
 			}),
-		).toEqual({ allowed: false, reason: "missing_save_path" });
+		).toEqual({ allowed: false, visible: false, reason: "missing_save_path" });
 
 		expect(
 			deriveSaveAffordance({
@@ -327,7 +327,7 @@ describe("music interaction guards", () => {
 				ffmpeg: installedFfmpeg,
 				savePath: "C:/music",
 			}),
-		).toEqual({ allowed: false, reason: "duplicate_name" });
+		).toEqual({ allowed: false, visible: false, reason: "duplicate_name" });
 
 		expect(
 			deriveSaveAffordance({
@@ -342,7 +342,7 @@ describe("music interaction guards", () => {
 				ffmpeg: installedFfmpeg,
 				savePath: "C:/music",
 			}),
-		).toEqual({ allowed: false, reason: "invalid_mission" });
+		).toEqual({ allowed: false, visible: false, reason: "invalid_mission" });
 
 		expect(
 			deriveSaveAffordance({
@@ -358,7 +358,7 @@ describe("music interaction guards", () => {
 				savePath: "C:/music",
 				linkReviews: ["https://example.com"],
 			}),
-		).toEqual({ allowed: false, reason: "review_in_progress" });
+		).toEqual({ allowed: false, visible: true, reason: "review_in_progress" });
 
 		expect(
 			deriveSaveAffordance({
@@ -375,7 +375,7 @@ describe("music interaction guards", () => {
 				ffmpeg: installedFfmpeg,
 				savePath: "C:/music",
 			}),
-		).toEqual({ allowed: true, reason: "review_in_progress" });
+		).toEqual({ allowed: true, visible: true, reason: "review_in_progress" });
 	});
 
 	test("deriveBackTransition clears transient editor and playback state toward play or guide", () => {

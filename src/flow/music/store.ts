@@ -71,6 +71,7 @@ export interface MusicState {
 
 export interface SaveAffordance {
 	allowed: boolean;
+	visible: boolean;
 	reason:
 		| "missing_slot"
 		| "missing_ffmpeg"
@@ -263,15 +264,15 @@ export function deriveSaveAffordance(
 	>,
 ): SaveAffordance {
 	if (!snapshot.slot) {
-		return { allowed: false, reason: "missing_slot" };
+		return { allowed: false, visible: false, reason: "missing_slot" };
 	}
 
 	if (!snapshot.ffmpeg) {
-		return { allowed: false, reason: "missing_ffmpeg" };
+		return { allowed: false, visible: false, reason: "missing_ffmpeg" };
 	}
 
 	if (!snapshot.savePath) {
-		return { allowed: false, reason: "missing_save_path" };
+		return { allowed: false, visible: false, reason: "missing_save_path" };
 	}
 
 	const normalizedName = snapshot.slot.name.trim().toLowerCase();
@@ -279,19 +280,19 @@ export function deriveSaveAffordance(
 		.filter((playlist) => playlist.name !== snapshot.selectedListName)
 		.some((playlist) => playlist.name.trim().toLowerCase() === normalizedName);
 	if (duplicate) {
-		return { allowed: false, reason: "duplicate_name" };
+		return { allowed: false, visible: false, reason: "duplicate_name" };
 	}
 
 	const persistCheck = canPersistMission(snapshot.slot);
 	if (!persistCheck.ok) {
-		return { allowed: false, reason: "invalid_mission" };
+		return { allowed: false, visible: false, reason: "invalid_mission" };
 	}
 
 	if (!canExitWorkspace(snapshot)) {
-		return { allowed: false, reason: "review_in_progress" };
+		return { allowed: false, visible: true, reason: "review_in_progress" };
 	}
 
-	return { allowed: true, reason: "review_in_progress" };
+	return { allowed: true, visible: true, reason: "review_in_progress" };
 }
 
 export function shouldHandleAudioEnded(
