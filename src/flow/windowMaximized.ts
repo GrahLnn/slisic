@@ -45,9 +45,37 @@ export const mac = createMachine({
   },
 });
 
-const actor = createActor(mac);
-actor.start();
+const windowActors = new Map<string, ReturnType<typeof createActor<typeof mac>>>();
+
+function getCurrentWindowLabel() {
+  return (window as unknown as {
+    __TAURI_INTERNALS__?: {
+      metadata?: {
+        currentWindow?: {
+          label?: string;
+        };
+      };
+    };
+  }).__TAURI_INTERNALS__?.metadata?.currentWindow?.label ?? "main";
+}
+
+function createWindowMaximizedActor() {
+  const actor = createActor(mac);
+  actor.start();
+  return actor;
+}
+
+export function getWindowMaximizedActor(windowLabel = getCurrentWindowLabel()) {
+  const existingActor = windowActors.get(windowLabel);
+  if (existingActor) {
+    return existingActor;
+  }
+
+  const actor = createWindowMaximizedActor();
+  windowActors.set(windowLabel, actor);
+  return actor;
+}
 
 export function useIsWindowMaximized(): boolean {
-  return useSelector(actor, (shot) => shot.matches(state.x.maximized));
+  return useSelector(getWindowMaximizedActor(), (shot) => shot.matches(state.x.maximized));
 }

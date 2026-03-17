@@ -38,9 +38,37 @@ export const mac = createMachine({
   },
 });
 
-const actor = createActor(mac);
-actor.start();
+const windowActors = new Map<string, ReturnType<typeof createActor<typeof mac>>>();
+
+function getCurrentWindowLabel() {
+  return (window as unknown as {
+    __TAURI_INTERNALS__?: {
+      metadata?: {
+        currentWindow?: {
+          label?: string;
+        };
+      };
+    };
+  }).__TAURI_INTERNALS__?.metadata?.currentWindow?.label ?? "main";
+}
+
+function createWindowFocusActor() {
+  const actor = createActor(mac);
+  actor.start();
+  return actor;
+}
+
+export function getWindowFocusActor(windowLabel = getCurrentWindowLabel()) {
+  const existingActor = windowActors.get(windowLabel);
+  if (existingActor) {
+    return existingActor;
+  }
+
+  const actor = createWindowFocusActor();
+  windowActors.set(windowLabel, actor);
+  return actor;
+}
 
 export function useIsWindowFocus(): boolean {
-  return useSelector(actor, (shot) => shot.matches(state.x.focused));
+  return useSelector(getWindowFocusActor(), (shot) => shot.matches(state.x.focused));
 }
