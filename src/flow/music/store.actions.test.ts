@@ -704,7 +704,7 @@ describe("music store action contracts", () => {
 				}
 			).materialization,
 		).toEqual({
-			phase: "analyzing",
+			phase: "persisted",
 			settled: "succeeded",
 			ownerSessionId: 0,
 			lastError: null,
@@ -799,9 +799,31 @@ describe("music store action contracts", () => {
 					materialization?: { phase: string };
 				}).materialization?.phase ?? null
 			);
+		const entrySnapshot = () =>
+			__testing.getState().playlists[0]?.entries[0] as Entry & {
+				materialization?: {
+					phase: string;
+					settled: string;
+					ownerSessionId: number;
+					lastError: string | null;
+				};
+			};
 
 		expect(phaseOf()).toBe("pending");
-		for (const expectedPhase of ["downloading", "analyzing", "ready", "failed"]) {
+		handlers.get("processResult")?.(undefined);
+		await flush();
+		expect(phaseOf()).toBe("downloading");
+
+		handlers.get("processResult")?.(undefined);
+		await flush();
+		expect(entrySnapshot().materialization).toEqual({
+			phase: "persisted",
+			settled: "succeeded",
+			ownerSessionId: 0,
+			lastError: null,
+		});
+
+		for (const expectedPhase of ["ready", "failed"]) {
 			handlers.get("processResult")?.(undefined);
 			await flush();
 			expect(phaseOf()).toBe(expectedPhase);
@@ -856,19 +878,9 @@ describe("music store action contracts", () => {
 			lastError: null,
 		});
 
-		expect(ready.entries[0]).toMatchObject({
-			downloaded_ok: true,
-			entry_type: "WebList",
-			musics: [
-				{
-					normalization_status: "Ready",
-					integrated_lufs: -18,
-					analysis_version: 1,
-				},
-			],
-		});
-
-		expect(failed.entries[0]).toMatchObject({
+		handlers.get("processResult")?.(undefined);
+		await flush();
+		expect(entrySnapshot()).toMatchObject({
 			downloaded_ok: true,
 			entry_type: "WebList",
 			musics: [
@@ -876,6 +888,12 @@ describe("music store action contracts", () => {
 					normalization_status: "Failed",
 				},
 			],
+			materialization: {
+				phase: "failed",
+				settled: "failed",
+				ownerSessionId: 0,
+				lastError: null,
+			},
 		});
 	});
 

@@ -1204,6 +1204,19 @@ function deriveWebMaterializationPhase(
 		return "downloading";
 	}
 
+	const hasAnalysisFacts = entry.musics.some(
+		(music) =>
+			music.analyzed_at_ms != null ||
+			music.analysis_version != null ||
+			music.integrated_lufs != null ||
+			music.normalization_status === "Pending" ||
+			music.normalization_status === "Ready" ||
+			music.normalization_status === "Failed",
+	);
+	if (!hasAnalysisFacts) {
+		return "persisted";
+	}
+
 	const hasAnalyzingMusic = entry.musics.some(
 		(music) =>
 			music.normalization_status === "Pending" || music.analyzed_at_ms == null,
