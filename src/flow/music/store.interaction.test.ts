@@ -392,6 +392,53 @@ describe("music interaction guards", () => {
 		});
 	});
 
+	test("settlePlaybackAck rejects backend acknowledgement when canonical active playback cannot be proven from backend facts", () => {
+		const requested = {
+			path: "C:/audio/b.flac",
+			title: "B",
+			avg_db: null,
+			integrated_lufs: null,
+			true_peak_dbtp: null,
+			loudness_range_lu: null,
+			loudness_threshold_lufs: null,
+			analyzed_at_ms: null,
+			analysis_version: null,
+			source_mtime_ms: null,
+			source_size_bytes: null,
+			normalization_status: null,
+			normalization_error: null,
+			base_bias: 0,
+			user_boost: 0,
+			fatigue: 0,
+			diversity: 0,
+		};
+
+		const pendingOnlyState = {
+			...baseState,
+			requestedPlaying: requested,
+			confirmedPlaying: null,
+			nowPlaying: requested,
+			playlists: [makePlaylist("contemporary")],
+		};
+
+		expect(
+			settlePlaybackAck(pendingOnlyState, {
+				sessionId: 3,
+				listName: "contemporary",
+				ack: {
+					session_id: 3,
+					path: "C:/audio/missing.flac",
+					duration_ms: 1234,
+					gain: 1,
+					gain_db: 0,
+					target_lufs: -18,
+					integrated_lufs: -18,
+					has_canonical_loudness: true,
+				},
+			}),
+		).toBeNull();
+	});
+
 	test("clearPlaybackSession only clears the matching live playback session", () => {
 		expect(clearPlaybackSession(baseState, 3)).toEqual({
 			selectedListName: null,

@@ -2701,4 +2701,47 @@ describe("music store action contracts", () => {
 		expect(state.selectedListName).toBeNull();
 	});
 
+	test("play_false_positive_guard_requested_intent_does_not_become_canonical_active_playback_without_backend_ack_fact", async () => {
+		const first = makeMusic("C:/music/focus/a.flac");
+		const second = makeMusic("C:/music/focus/b.flac");
+		const playlist = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [first, second] },
+		]);
+
+		impl.audioPlay = async () =>
+			Ok({
+				session_id: 11,
+				path: "C:/music/focus/missing.flac",
+				duration_ms: 1000,
+				gain: 1,
+				gain_db: 0,
+				target_lufs: -18,
+				integrated_lufs: -18,
+				has_canonical_loudness: true,
+			});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: null,
+			playbackListName: null,
+			requestedPlaying: null,
+			confirmedPlaying: null,
+			nowPlaying: null,
+			playbackSessionId: null,
+		});
+
+		await action.play(playlist);
+
+		const state = __testing.getState();
+		expect(state.selectedListName).toBe("focus");
+		expect(state.playbackListName).toBe("focus");
+		expect(state.requestedPlaying == null || state.requestedPlaying.path.startsWith("C:/music/focus/")).toBe(true);
+		expect(state.confirmedPlaying).toBeNull();
+		expect(state.nowPlaying == null || state.nowPlaying.path === state.requestedPlaying?.path).toBe(true);
+		expect(state.playbackSessionId).toBeGreaterThan(0);
+	});
+
 });
