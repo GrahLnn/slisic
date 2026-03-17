@@ -30,11 +30,11 @@ describe("commandAdapter Specta contract", () => {
 
 	test("false positive guard: non Specta status should pass through unchanged", () => {
 		const raw = {
-			status: "pending",
+			status: "pending" as const,
 			data: 7,
 		};
 
-		expect(normalizeCommandValue<number, string>(raw)).toBe(raw);
+		expect(normalizeCommandValue<number, string, typeof raw>(raw)).toBe(raw);
 	});
 
 	test("false negative guard: raw primitive should not be wrapped", () => {

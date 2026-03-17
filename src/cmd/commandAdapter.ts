@@ -1,4 +1,4 @@
-import { commands, events, makeLievt } from "./commands";
+import { commands, events, makeLiveEvent } from "./commands";
 import { Err, Ok, type Result } from "@grahlnn/fn";
 
 type AwaitedRet<F extends (...args: any[]) => any> = Awaited<ReturnType<F>>;
@@ -39,10 +39,10 @@ function isSpectaResult<T, E>(value: unknown): value is SpectaResult<T, E> {
   return status === "ok" || status === "error";
 }
 
-export function normalizeCommandValue<T, E>(
-  value: unknown,
-): Result<T, E> | unknown {
-  return isSpectaResult<T, E>(value) ? toResult<T, E>(value) : value;
+export function normalizeCommandValue<T, E, Raw = never>(
+	value: T | SpectaResult<T, E> | Raw | null,
+) {
+	return isSpectaResult<T, E>(value) ? toResult<T, E>(value) : value;
 }
 
 const crabProxy = new Proxy(
@@ -71,14 +71,12 @@ const crabProxy = new Proxy(
         const value: Raw = await (cmd as (...a: unknown[]) => Promise<Raw>)(
           ...args,
         );
-        return normalizeCommandValue<T, E>(value) as CmdRawResult<
-          Extract<typeof prop, CommandKey>
-        >;
+		return normalizeCommandValue<T, E>(value);
       };
     },
   },
 );
 
-const evt = makeLievt(events);
+const evt = makeLiveEvent(events);
 
 export const crab = Object.assign(crabProxy, { evt });

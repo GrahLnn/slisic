@@ -326,6 +326,13 @@ function withEntryOperation(
 	};
 }
 
+function expectPlaylistLike(actual: Playlist[] | undefined, expected: Playlist[]) {
+	expect(actual).toHaveLength(expected.length);
+	actual?.forEach((playlist, index) => {
+		expect(playlist).toMatchObject(expected[index]!);
+	});
+}
+
 function makeDraftLink(
 	patch: Partial<DraftLinkState> & Pick<DraftLinkState, "url">,
 ): DraftLinkState {
@@ -643,13 +650,13 @@ describe("music store action contracts", () => {
 		};
 
 		await action.run();
-		expect(__testing.getState().playlists).toEqual([pending]);
+		expectPlaylistLike(__testing.getState().playlists, [pending]);
 
 		handlers.get("processResult")?.(undefined);
 		await flush();
 
 		const state = __testing.getState();
-		expect(state.playlists).toEqual([downloaded]);
+		expectPlaylistLike(state.playlists, [downloaded]);
 
 		handlers.get("processMsg")?.({
 			playlist: "focus",
@@ -658,11 +665,156 @@ describe("music store action contracts", () => {
 		await flush();
 
 		const analyzing = __testing.getState();
-		expect(analyzing.playlists).toEqual([downloaded]);
+		expectPlaylistLike(analyzing.playlists, [downloaded]);
 		expect(analyzing.processMsg).toEqual({
 			playlist: "focus",
 			str: "Analyzing loudness 1/1: a.mp3",
 		});
+		expect(
+			(
+				analyzing.playlists[0]?.entries[0] as Entry & {
+					materialization?: {
+						phase: string;
+						settled: string;
+						ownerSessionId: number;
+						lastError: string | null;
+					};
+				}
+			).materialization,
+		).toEqual({
+			phase: "analyzing",
+			settled: "succeeded",
+			ownerSessionId: 0,
+			lastError: null,
+		});
+	});
+
+	test("webMaterialization_true_positive_projects_entry_owned_pending_downloading_persisted_analyzing_ready_and_failed_phases", async () => {
+		const handlers = new Map<string, (payload: unknown) => void>();
+		const pending = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus", {
+					url: "https://example.com/list",
+					entry_type: "WebList",
+					downloaded_ok: false,
+					musics: [],
+				}),
+			},
+		]);
+		const downloading = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus", {
+					url: "https://example.com/list",
+					entry_type: "WebList",
+					downloaded_ok: false,
+					musics: [makeMusic("C:/music/focus/chunk.mp3")],
+				}),
+			},
+		]);
+		const persisted = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus", {
+					url: "https://example.com/list",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [makeMusic("C:/music/focus/a.mp3")],
+				}),
+			},
+		]);
+		const ready = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus", {
+					url: "https://example.com/list",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic("C:/music/focus/a.mp3"),
+							integrated_lufs: -18,
+							analysis_version: 1,
+							normalization_status: "Ready",
+						},
+					],
+				}),
+			},
+		]);
+		const failed = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus", {
+					url: "https://example.com/list",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic("C:/music/focus/a.mp3"),
+							normalization_status: "Failed",
+						},
+					],
+				}),
+			},
+		]);
+		let readAllCalls = 0;
+
+		impl.evt = async (event: string, handler: (payload: unknown) => void) => {
+			handlers.set(event, handler);
+			return () => {
+				handlers.delete(event);
+			};
+		};
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			const snapshots = [pending, downloading, persisted, ready, failed];
+			return Ok<Playlist[], string>([
+				snapshots[Math.min(readAllCalls - 1, snapshots.length - 1)]!,
+			]);
+		};
+
+		await action.run();
+		const phaseOf = () =>
+			(
+				(__testing.getState().playlists[0]?.entries[0] as Entry & {
+					materialization?: { phase: string };
+				}).materialization?.phase ?? null
+			);
+
+		expect(phaseOf()).toBe("pending");
+		for (const expectedPhase of ["downloading", "analyzing", "ready", "failed"]) {
+			handlers.get("processResult")?.(undefined);
+			await flush();
+			expect(phaseOf()).toBe(expectedPhase);
+		}
+
+		__testing.replaceState({
+			...__testing.getState(),
+			playlists: [
+				{
+					...persisted,
+					entries: persisted.entries.map((entry) => ({
+						...entry,
+						materialization: {
+							phase: "persisted",
+							settled: "succeeded",
+							ownerSessionId: 0,
+							lastError: null,
+						},
+					})),
+				},
+			],
+		});
+		handlers.get("processMsg")?.({
+			playlist: "focus",
+			str: "Analyzing loudness 1/1: a.mp3",
+		});
+		await flush();
+		expect(__testing.getState().processMsg?.str).toContain("Analyzing loudness");
+		expect(
+			(
+				(__testing.getState().playlists[0]?.entries[0] as Entry & {
+					materialization?: { phase: string };
+				}).materialization?.phase ?? null
+			),
+		).toBe("persisted");
 	});
 
 	test("addNew_true_positive_enters_create_with_fresh_slot_and_cleared_transient_state", async () => {
@@ -1377,9 +1529,9 @@ describe("music store action contracts", () => {
 		expect(updateCalls).toHaveLength(1);
 		expect(updateCalls[0]?.mission.entries).toHaveLength(1);
 		expect(updateCalls[0]?.mission.entries[0]).toMatchObject(draftUpdate);
-		expect(updateCalls[0]?.anchor).toEqual(persistedPlaylist);
+		expect(updateCalls[0]?.anchor).toMatchObject(persistedPlaylist);
 		expect(state.mode).toBe("play");
-		expect(state.playlists).toEqual([refreshedPlaylist]);
+		expectPlaylistLike(state.playlists, [refreshedPlaylist]);
 	});
 
 	test("reloadEntry_false_negative_guard_post_slot_replacement_completion_only_clears_review_state_without_restoring_old_draft", async () => {
@@ -1836,9 +1988,9 @@ describe("music store action contracts", () => {
 		expect(updateCalls).toHaveLength(1);
 		expect(updateCalls[0]?.mission.entries).toHaveLength(1);
 		expect(updateCalls[0]?.mission.entries[0]).toMatchObject(draftUpdate);
-		expect(updateCalls[0]?.anchor).toEqual(persistedPlaylist);
+		expect(updateCalls[0]?.anchor).toMatchObject(persistedPlaylist);
 		expect(state.mode).toBe("play");
-		expect(state.playlists).toEqual([refreshedPlaylist]);
+		expectPlaylistLike(state.playlists, [refreshedPlaylist]);
 	});
 
 		test("updateWeblist_false_negative_guard_post_slot_replacement_completion_only_clears_review_state_without_restoring_old_draft", async () => {
@@ -2048,7 +2200,7 @@ describe("music store action contracts", () => {
 		expect(state.slot).toBeNull();
 		expect(state.selectedListName).toBeNull();
 		expect(state.weblistReviews).toEqual([]);
-		expect(state.playlists).toEqual([persistedPlaylist]);
+		expectPlaylistLike(state.playlists, [persistedPlaylist]);
 	});
 
 	test("addLink_false_positive_guard_clears_review_flag_without_reintroducing_removed_link", async () => {

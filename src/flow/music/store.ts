@@ -63,6 +63,21 @@ export interface DraftEntryOperationState {
 	ownerSessionId: number;
 }
 
+export type WebMaterializationPhase =
+	| "pending"
+	| "downloading"
+	| "persisted"
+	| "analyzing"
+	| "ready"
+	| "failed";
+
+export interface WebMaterializationState {
+	phase: WebMaterializationPhase;
+	ownerSessionId: number;
+	settled: "idle" | "succeeded" | "failed";
+	lastError: string | null;
+}
+
 export interface DraftLinkState {
 	url: string;
 	title_or_msg: string;
@@ -79,6 +94,7 @@ export interface DraftMissionState extends Omit<CollectMission, "links"> {
 
 type DraftOperationEntry = Entry & {
 	draftOperation?: DraftEntryOperationState | null;
+	materialization?: WebMaterializationState | null;
 };
 
 type MusicStateLike = MusicState & {
@@ -1071,8 +1087,25 @@ function setDraftEntryOperation(
 	return next;
 }
 
+function setEntryMaterialization(
+	entry: Entry,
+	materialization: WebMaterializationState | null,
+): Entry {
+	const next: DraftOperationEntry = {
+		...(entry as DraftOperationEntry),
+	};
+
+	if (materialization) {
+		next.materialization = materialization;
+	} else {
+		delete next.materialization;
+	}
+
+	return next;
+}
+
 function cloneEntryWithoutDraftOperation(entry: Entry): Entry {
-	return setDraftEntryOperation(entry, null);
+	return setEntryMaterialization(setDraftEntryOperation(entry, null), null);
 }
 
 function cloneLinkWithoutDraftOperation(link: DraftLinkState): DraftLinkState {
@@ -1101,6 +1134,75 @@ function setDraftLinkOperation(
 
 function deriveEntryIdentity(entry: Entry): string | null {
 	return entry.url ?? entry.path ?? null;
+}
+
+function deriveWebMaterializationPhase(entry: Entry): WebMaterializationPhase | null {
+	if (entry.entry_type !== "WebList" && entry.entry_type !== "WebVideo") {
+		return null;
+	}
+
+	if (entry.downloaded_ok !== true) {
+		return entry.musics.length > 0 ? "downloading" : "pending";
+	}
+
+	const hasReadyMusic = entry.musics.some(
+		(music) =>
+			music.normalization_status === "Ready" ||
+			(music.integrated_lufs != null && music.analysis_version != null),
+	);
+	if (hasReadyMusic) {
+		return "ready";
+	}
+
+	const hasFailedMusic = entry.musics.some(
+		(music) => music.normalization_status === "Failed",
+	);
+	if (hasFailedMusic) {
+		return "failed";
+	}
+
+	const hasPersistedMusic = entry.musics.length > 0;
+	if (!hasPersistedMusic) {
+		return "downloading";
+	}
+
+	const hasAnalyzingMusic = entry.musics.some(
+		(music) =>
+			music.normalization_status === "Pending" ||
+			music.analyzed_at_ms == null,
+	);
+	return hasAnalyzingMusic ? "analyzing" : "persisted";
+}
+
+function deriveEntryOwnedMaterialization(
+	entry: Entry,
+	ownerSessionId: number,
+	lastError: string | null = null,
+): WebMaterializationState | null {
+	const phase = deriveWebMaterializationPhase(entry);
+	if (!phase) return null;
+	return {
+		phase,
+		ownerSessionId,
+		settled:
+			phase === "ready" || phase === "persisted" || phase === "analyzing"
+				? "succeeded"
+				: phase === "failed"
+					? "failed"
+					: "idle",
+		lastError,
+	};
+}
+
+function syncEntryOwnedMaterialization(
+	entry: Entry,
+	ownerSessionId: number,
+	lastError: string | null = null,
+): Entry {
+	return setEntryMaterialization(
+		entry,
+		deriveEntryOwnedMaterialization(entry, ownerSessionId, lastError),
+	);
 }
 
 function isEditingWorkspace(mode: UiMode): boolean {
@@ -1245,7 +1347,13 @@ async function refreshLists(version?: number) {
 		throw new Error(result.unwrap_err());
 	}
 
-	const playlists = result.unwrap();
+	const ownerSessionId = getState().entrySessionId;
+	const playlists = result.unwrap().map((playlist) => ({
+		...playlist,
+		entries: playlist.entries.map((entry) =>
+			syncEntryOwnedMaterialization(entry, ownerSessionId),
+		),
+	}));
 	if (version != null && !isCurrentRun(version)) {
 		return;
 	}
@@ -1953,12 +2061,15 @@ export const action = {
 						: replaceEntryByIdentity(
 								slot.entries,
 								entryIdentity,
-								setDraftEntryOperation(
-									next,
-									settleDraftOperation(
-										createDraftOperation("folder_reload", key, entrySessionId),
-										"succeeded",
+								syncEntryOwnedMaterialization(
+									setDraftEntryOperation(
+										next,
+										settleDraftOperation(
+											createDraftOperation("folder_reload", key, entrySessionId),
+											"succeeded",
+										),
 									),
+									entrySessionId,
 								),
 							),
 			}),
@@ -2029,16 +2140,19 @@ export const action = {
 						: replaceEntryByIdentity(
 								slot.entries,
 								entryIdentity,
-								setDraftEntryOperation(
-									next,
-									settleDraftOperation(
-										createDraftOperation(
-											"weblist_update",
-											key,
-											snapshot.entrySessionId,
+								syncEntryOwnedMaterialization(
+									setDraftEntryOperation(
+										next,
+										settleDraftOperation(
+											createDraftOperation(
+												"weblist_update",
+												key,
+												snapshot.entrySessionId,
+											),
+											"succeeded",
 										),
-										"succeeded",
 									),
+									snapshot.entrySessionId,
 								),
 							),
 			}),
