@@ -208,8 +208,7 @@ pub struct MouseWindowInfo {
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_mouse_and_window_position(app: AppHandle) -> Result<MouseWindowInfo, String> {
-    let window = app.get_webview_window("main").ok_or("未找到窗口 main")?;
+pub fn get_mouse_and_window_position(window: WebviewWindow) -> Result<MouseWindowInfo, String> {
 
     // ① 鼠标位置
     let cursor = window

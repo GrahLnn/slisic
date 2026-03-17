@@ -125,4 +125,40 @@ describe("template_board executePending TP/FP/TN/FN", () => {
 
     await expect(expectDashboard(Promise.resolve(Ok(dashboard)))).resolves.toEqual(dashboard);
   });
+
+  test("capture_mouse delegates to the caller-owned window command path", async () => {
+    let calls = 0;
+    const mouseInfo = createMouseInfo();
+
+    const result = await execute(
+      {
+        kind: "capture_mouse",
+      },
+      createGateway({
+        getMouseAndWindowPosition: async () => {
+          calls += 1;
+          return Ok(mouseInfo);
+        },
+      }),
+    );
+
+    expect(calls).toBe(1);
+    expect(result).toEqual({
+      kind: "mouse",
+      mouseInfo,
+    });
+  });
+
+  test("capture_mouse surfaces command failures instead of fabricating mouse info", async () => {
+    await expect(
+      execute(
+        {
+          kind: "capture_mouse",
+        },
+        createGateway({
+          getMouseAndWindowPosition: async () => Err("wrong window binding"),
+        }),
+      ),
+    ).rejects.toThrow("wrong window binding");
+  });
 });
