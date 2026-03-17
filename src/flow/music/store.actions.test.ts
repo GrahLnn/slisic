@@ -442,6 +442,62 @@ describe("music store action contracts", () => {
 		expect(state.loading).toBe(false);
 	});
 
+	test("processResult_false_negative_guard_refreshes_downloaded_playlist_before_loudness_analysis_finishes", async () => {
+		const handlers = new Map<string, (payload: unknown) => void>();
+		const pending = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus"),
+				url: "https://example.com/list",
+				entry_type: "WebList",
+				downloaded_ok: false,
+			},
+		]);
+		const downloaded = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus"),
+				url: "https://example.com/list",
+				entry_type: "WebList",
+				downloaded_ok: true,
+				musics: [makeMusic("C:/music/focus/a.mp3")],
+			},
+		]);
+		let readAllCalls = 0;
+
+		impl.evt = async (event: string, handler: (payload: unknown) => void) => {
+			handlers.set(event, handler);
+			return () => {
+				handlers.delete(event);
+			};
+		};
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			return Ok<Playlist[], string>(readAllCalls === 1 ? [pending] : [downloaded]);
+		};
+
+		await action.run();
+		expect(__testing.getState().playlists).toEqual([pending]);
+
+		handlers.get("processResult")?.(undefined);
+		await flush();
+
+		const state = __testing.getState();
+		expect(state.playlists).toEqual([downloaded]);
+
+		handlers.get("processMsg")?.({
+			playlist: "focus",
+			str: "Analyzing loudness 1/1: a.mp3",
+		});
+		await flush();
+
+		const analyzing = __testing.getState();
+		expect(analyzing.playlists).toEqual([downloaded]);
+		expect(analyzing.processMsg).toEqual({
+			playlist: "focus",
+			str: "Analyzing loudness 1/1: a.mp3",
+		});
+	});
+
 	test("save_true_positive_create_persists_slot_and_reloads_lists", async () => {
 		const entry = makeEntry("alpha", "C:/music/alpha");
 		const mission = makeMission("fresh", [entry]);
@@ -460,6 +516,7 @@ describe("music store action contracts", () => {
 		impl.readAll = async () => Ok<Playlist[], string>([playlist]);
 
 		await action.save();
+		await flush();
 
 		const state = __testing.getState();
 		expect(calls).toHaveLength(1);
@@ -468,6 +525,73 @@ describe("music store action contracts", () => {
 		expect(state.slot).toBeNull();
 		expect(state.playlists).toEqual([playlist]);
 		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
+	});
+
+	test("save_false_negative_guard_create_switches_to_play_immediately_before_backend_finishes", async () => {
+		const entry = makeEntry("alpha", "C:/music/alpha");
+		const mission = makeMission("fresh", [entry]);
+		const playlist = makePlaylist("fresh", [entry]);
+		let releaseCreate!: () => void;
+		let createStarted = false;
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			slot: mission,
+		});
+		impl.create = async () => {
+			createStarted = true;
+			await new Promise<void>((resolve) => {
+				releaseCreate = resolve;
+			});
+			return Ok<null, string>(null);
+		};
+		impl.readAll = async () => Ok<Playlist[], string>([playlist]);
+
+		const saving = action.save();
+
+		await waitUntil(() => {
+			const state = __testing.getState();
+			return (
+				createStarted &&
+				state.mode === "play" &&
+				state.loading === false &&
+				state.slot === null &&
+				state.playlists[0]?.name === "fresh"
+			);
+		});
+
+		releaseCreate();
+		await saving;
+		await flush();
+
+		const state = __testing.getState();
+		expect(state.playlists).toEqual([playlist]);
+		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
+	});
+
+	test("save_false_positive_guard_create_error_rolls_back_optimistic_playlist_after_refresh", async () => {
+		const entry = makeEntry("alpha", "C:/music/alpha");
+		const mission = makeMission("fresh", [entry]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			slot: mission,
+		});
+		impl.create = async () => Err<string, null>("write failed");
+		impl.readAll = async () => Ok<Playlist[], string>([]);
+
+		await action.save();
+		await flush();
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("new_guide");
+		expect(state.playlists).toEqual([]);
+		expect(toastLog.error).toContainEqual({
+			title: "Save failed",
+			description: "write failed",
+		});
 	});
 
 	test("save_false_positive_guard_update_error_rolls_back_optimistic_edit_after_refresh", async () => {

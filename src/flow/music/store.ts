@@ -662,17 +662,30 @@ async function persistSlot() {
 	}
 
 	patchState({ loading: true });
-	try {
+	const optimisticPlaylist = buildOptimisticPlaylistFromSlot(slot);
+	const optimisticPlaylists = [...snapshot.playlists, optimisticPlaylist];
+	const idleEpoch = bumpPlaybackEpoch();
+	void playback.interruptCurrent();
+	patchState({
+		...buildPostSavePatch(optimisticPlaylists.length > 0, idleEpoch),
+		playlists: optimisticPlaylists,
+		loading: false,
+	});
+
+	void (async () => {
 		const result = await crab.create(slot);
-		if (result.isErr()) throw new Error(result.unwrap_err());
-		const idleEpoch = bumpPlaybackEpoch();
-		await playback.interruptCurrent();
+		if (result.isErr()) {
+			sileo.error({
+				title: "Save failed",
+				description: result.unwrap_err(),
+			});
+			await refreshLists();
+			return;
+		}
+
 		await refreshLists();
-		patchState(buildPostSavePatch(getState().playlists.length > 0, idleEpoch));
 		sileo.success({ title: "Playlist saved" });
-	} finally {
-		patchState({ loading: false });
-	}
+	})();
 }
 
 export const action = {

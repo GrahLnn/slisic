@@ -355,7 +355,23 @@ fn replace_if_exists(entries: &mut [Entry], incoming: &Entry) -> bool {
 }
 
 fn same_entry_slot(existing: &Entry, incoming: &Entry) -> bool {
-    entry_key(existing) == entry_key(incoming)
+    if let (Some(existing_url), Some(incoming_url)) = (&existing.url, &incoming.url) {
+        if existing_url == incoming_url {
+            return true;
+        }
+    }
+
+    if let (Some(existing_path), Some(incoming_path)) = (&existing.path, &incoming.path) {
+        if existing_path == incoming_path {
+            return true;
+        }
+    }
+
+    existing.path.is_none()
+        && incoming.path.is_none()
+        && existing.url.is_none()
+        && incoming.url.is_none()
+        && existing.name == incoming.name
 }
 
 #[cfg(test)]
@@ -522,6 +538,48 @@ mod tests {
         let names = repo.playlist_names().await.expect("playlist names");
 
         assert_eq!(names, vec!["focus".to_string(), "ambient".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn upsert_entry_false_negative_guard_replaces_pending_web_entry_after_download_by_url_identity(
+    ) {
+        let pending = Entry {
+            path: None,
+            name: "mix".to_string(),
+            musics: vec![],
+            avg_db: None,
+            url: Some("https://example.com/list".to_string()),
+            downloaded_ok: Some(false),
+            tracking: Some(false),
+            entry_type: EntryType::WebList,
+        };
+        let downloaded = Entry {
+            path: Some("C:/music/mix".to_string()),
+            name: "mix".to_string(),
+            musics: vec![sample_track("C:/music/mix/a.flac")],
+            avg_db: None,
+            url: Some("https://example.com/list".to_string()),
+            downloaded_ok: Some(true),
+            tracking: Some(false),
+            entry_type: EntryType::WebList,
+        };
+        let repo = LibraryRepo::new_for_tests(Arc::new(TestStore::new(LibraryData {
+            schema_version: MUSIC_LIBRARY_SCHEMA_VERSION,
+            playlists: vec![Playlist {
+                name: "focus".to_string(),
+                avg_db: None,
+                entries: vec![pending],
+                exclude: vec![],
+            }],
+        })));
+
+        repo.upsert_entry_in_playlist("focus", downloaded.clone())
+            .await
+            .expect("replace pending web entry");
+
+        let snapshot = repo.snapshot().await.expect("snapshot");
+        assert_eq!(snapshot[0].entries.len(), 1);
+        assert_eq!(snapshot[0].entries[0], downloaded);
     }
 
     #[tokio::test]

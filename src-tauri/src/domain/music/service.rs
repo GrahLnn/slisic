@@ -177,6 +177,13 @@ pub async fn update_weblist(
         .await?
         .upsert_entry_in_playlist(&playlist, outcome.entry.clone())
         .await?;
+    emit_download_persisted(
+        &app,
+        &playlist,
+        &outcome.working_path,
+        &outcome.saved_path,
+        &outcome.name,
+    );
     normalization::analyze_paths_blocking(
         &app,
         entry_music_paths(&outcome.entry),
@@ -184,17 +191,32 @@ pub async fn update_weblist(
         "Analyzing loudness",
     )
     .await?;
-
-    ProcessResult {
-        working_path: outcome.working_path.to_string_lossy().to_string(),
-        saved_path: outcome.saved_path.to_string_lossy().to_string(),
-        name: outcome.name,
-        playlist,
-    }
-    .emit(&app)
-    .ok();
+    emit_download_persisted(
+        &app,
+        &playlist,
+        &outcome.working_path,
+        &outcome.saved_path,
+        &outcome.name,
+    );
 
     Ok(outcome.entry)
+}
+
+fn emit_download_persisted(
+    app: &AppHandle,
+    playlist: &str,
+    working_path: &std::path::Path,
+    saved_path: &std::path::Path,
+    name: &str,
+) {
+    ProcessResult {
+        working_path: working_path.to_string_lossy().to_string(),
+        saved_path: saved_path.to_string_lossy().to_string(),
+        name: name.to_string(),
+        playlist: playlist.to_string(),
+    }
+    .emit(app)
+    .ok();
 }
 
 fn spawn_downloads(app: AppHandle, playlist_name: String, pending: Vec<Entry>) {
@@ -225,6 +247,13 @@ fn spawn_downloads(app: AppHandle, playlist_name: String, pending: Vec<Entry>) {
                             .upsert_entry_in_playlist(&playlist_name, entry.clone())
                             .await;
                     }
+                    emit_download_persisted(
+                        &app,
+                        &playlist_name,
+                        &working_path,
+                        &saved_path,
+                        &name,
+                    );
                     let _ = normalization::analyze_paths_blocking(
                         &app,
                         entry_music_paths(&entry),
@@ -232,14 +261,13 @@ fn spawn_downloads(app: AppHandle, playlist_name: String, pending: Vec<Entry>) {
                         "Analyzing loudness",
                     )
                     .await;
-                    ProcessResult {
-                        working_path: working_path.to_string_lossy().to_string(),
-                        saved_path: saved_path.to_string_lossy().to_string(),
-                        name,
-                        playlist: playlist_name.clone(),
-                    }
-                    .emit(&app)
-                    .ok();
+                    emit_download_persisted(
+                        &app,
+                        &playlist_name,
+                        &working_path,
+                        &saved_path,
+                        &name,
+                    );
                 }
                 Err(error) => {
                     let mut failed = entry.clone();
