@@ -27,6 +27,7 @@ let mode: MusicState["mode"] = "play";
 let requestedTitle: string | null = null;
 let confirmedTitle: string | null = null;
 let currentListName: string | null = null;
+let selectedListName: string | null = null;
 let playlistNames: string[] = [];
 let isPlaying = false;
 
@@ -144,6 +145,15 @@ mock.module("@/src/flow/music", () => ({
 					exclude: [],
 				}
 				: null,
+			useSelectedList: () =>
+				selectedListName
+					? {
+						name: selectedListName,
+						avg_db: null,
+						entries: [],
+						exclude: [],
+					}
+					: null,
 		useMsg: () => null,
 		useIsReview: () => false,
 	},
@@ -170,6 +180,7 @@ beforeEach(() => {
 	requestedTitle = null;
 	confirmedTitle = null;
 	currentListName = null;
+	selectedListName = null;
 	playlistNames = [];
 	isPlaying = false;
 });
@@ -244,12 +255,14 @@ describe("Home route gating", () => {
 		requestedTitle = "requested-track";
 		confirmedTitle = "confirmed-track";
 		currentListName = "focus";
+		selectedListName = "browsed";
 		isPlaying = true;
 		playlistNames = ["focus", "browsed", "ambient"];
 
 		const html = renderToStaticMarkup(<Home />);
 
 		expect(html).toContain("focus");
+		expect(html).toContain(">browsed<");
 		expect(html).toContain("requested-track");
 		expect(html).toContain("aria-disabled=\"true\"");
 	});

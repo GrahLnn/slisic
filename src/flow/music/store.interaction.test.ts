@@ -618,7 +618,45 @@ describe("music interaction guards", () => {
 		);
 
 		expect(refreshed.selectedListName).toBe("browsed");
+		expect(refreshed.playbackListName).toBe("contemporary");
 		expect(refreshed.nowPlaying?.path).toBe("C:/audio/a.flac");
+	});
+
+	test("settlePlaybackAck preserves browsed UI focus while anchoring confirmed playback to playback-owned list", () => {
+		const contemporaryPlaylist = baseState.playlists.at(0);
+		if (!contemporaryPlaylist) throw new Error("expected base playlist");
+
+		const settled = settlePlaybackAck(
+			{
+				...baseState,
+				selectedListName: "browsed",
+				playbackListName: "contemporary",
+				playlists: [contemporaryPlaylist, makePlaylist("browsed")],
+				confirmedPlaying: null,
+				nowPlaying: baseState.nowPlaying,
+			},
+			{
+				sessionId: 3,
+				listName: "contemporary",
+				ack: {
+					path: "C:/audio/a.flac",
+					duration_ms: null,
+					gain: 1,
+					gain_db: 0,
+					target_lufs: -18,
+					integrated_lufs: -18,
+					has_canonical_loudness: true,
+					session_id: 3,
+				},
+			},
+		);
+
+		expect(settled).toEqual({
+			selectedListName: "browsed",
+			playbackListName: "contemporary",
+			confirmedPlaying: baseState.confirmedPlaying,
+			nowPlaying: baseState.requestedPlaying,
+		});
 	});
 
 	test("shouldHandleAudioEnded only accepts backend-carried session identity for the live session", () => {

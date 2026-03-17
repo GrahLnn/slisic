@@ -568,7 +568,7 @@ export function settlePlaybackAck(
 	if (!confirmedTrack) return null;
 
 	return {
-		selectedListName: payload.listName,
+		selectedListName: snapshot.selectedListName,
 		playbackListName: payload.listName,
 		confirmedPlaying: confirmedTrack,
 		nowPlaying: snapshot.requestedPlaying ?? confirmedTrack,
@@ -1159,6 +1159,10 @@ function currentList(input = state): Playlist | null {
 			(playlist) => playlist.name === input.selectedListName,
 		) ?? null
 	);
+}
+
+function playbackOwnedCurrentList(input = state): Playlist | null {
+	return derivePlaybackOwnedList(input);
 }
 
 function playableTracks(list: Playlist): Music[] {
@@ -2229,6 +2233,8 @@ export const hook = {
 	useConfirmedPlay: () =>
 		useMusicSelector((snapshot) => snapshot.confirmedPlaying),
 	useCurList: () =>
+		useMusicSelector((snapshot) => playbackOwnedCurrentList(snapshot)),
+	useSelectedList: () =>
 		useMusicSelector((snapshot) =>
 			snapshot.selectedListName
 				? (snapshot.playlists.find(
