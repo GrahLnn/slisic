@@ -7,19 +7,19 @@ import type {
 } from "@/src/cmd/commands";
 import {
 	applyOptimisticEditSave,
-	buildPlaylistPlaceholders,
 	buildOptimisticPlaylistFromSlot,
+	buildPlaylistPlaceholders,
 	buildPostSavePatch,
 	canExitWorkspace,
-	deriveSaveAffordance,
 	deriveBackTransition,
-	deriveRouteResolution,
 	deriveProbePatch,
 	deriveRefreshPatch,
+	deriveRouteResolution,
+	deriveSaveAffordance,
 	hasPlaybackContext,
 	type MusicState,
-	projectWorkspaceScreen,
 	mapImportFolderEntryToEntry,
+	projectWorkspaceScreen,
 	shouldAdvanceOnUnstar,
 	shouldHandleAudioEnded,
 } from "./store";
@@ -224,19 +224,39 @@ describe("music interaction guards", () => {
 
 	test("projectWorkspaceScreen exposes canonical guide play create and edit projections", () => {
 		expect(
-			projectWorkspaceScreen({ ...baseState, routeResolved: false, mode: "edit" }),
+			projectWorkspaceScreen({
+				...baseState,
+				routeResolved: false,
+				mode: "edit",
+			}),
 		).toBe("unresolved");
 		expect(
-			projectWorkspaceScreen({ ...baseState, routeResolved: true, mode: "new_guide" }),
+			projectWorkspaceScreen({
+				...baseState,
+				routeResolved: true,
+				mode: "new_guide",
+			}),
 		).toBe("guide");
 		expect(
-			projectWorkspaceScreen({ ...baseState, routeResolved: true, mode: "play" }),
+			projectWorkspaceScreen({
+				...baseState,
+				routeResolved: true,
+				mode: "play",
+			}),
 		).toBe("play");
 		expect(
-			projectWorkspaceScreen({ ...baseState, routeResolved: true, mode: "create" }),
+			projectWorkspaceScreen({
+				...baseState,
+				routeResolved: true,
+				mode: "create",
+			}),
 		).toBe("create");
 		expect(
-			projectWorkspaceScreen({ ...baseState, routeResolved: true, mode: "edit" }),
+			projectWorkspaceScreen({
+				...baseState,
+				routeResolved: true,
+				mode: "edit",
+			}),
 		).toBe("edit");
 	});
 
@@ -244,12 +264,12 @@ describe("music interaction guards", () => {
 		expect(canExitWorkspace({ ...baseState, linkReviews: ["https://a"] })).toBe(
 			false,
 		);
-		expect(canExitWorkspace({ ...baseState, folderReviews: ["C:/folder"] })).toBe(
-			false,
-		);
-		expect(canExitWorkspace({ ...baseState, weblistReviews: ["https://b"] })).toBe(
-			false,
-		);
+		expect(
+			canExitWorkspace({ ...baseState, folderReviews: ["C:/folder"] }),
+		).toBe(false);
+		expect(
+			canExitWorkspace({ ...baseState, weblistReviews: ["https://b"] }),
+		).toBe(false);
 		expect(canExitWorkspace(baseState)).toBe(true);
 	});
 
@@ -401,7 +421,9 @@ describe("music interaction guards", () => {
 	});
 
 	test("deriveRouteResolution projects unresolved, guide, and play states coherently", () => {
-		expect(deriveRouteResolution({ routeResolved: false, mode: "play" })).toEqual({
+		expect(
+			deriveRouteResolution({ routeResolved: false, mode: "play" }),
+		).toEqual({
 			kind: "startup_unresolved",
 			routeResolved: false,
 			mode: "play",
@@ -415,7 +437,9 @@ describe("music interaction guards", () => {
 			mode: "new_guide",
 		});
 
-		expect(deriveRouteResolution({ routeResolved: true, mode: "play" })).toEqual({
+		expect(
+			deriveRouteResolution({ routeResolved: true, mode: "play" }),
+		).toEqual({
 			kind: "startup_probed_nonempty",
 			routeResolved: true,
 			mode: "play",
@@ -430,7 +454,9 @@ describe("music interaction guards", () => {
 
 		expect(patch.mode).toBe("play");
 		expect(patch.routeResolved).toBe(true);
-		expect(patch.playlists).toEqual(buildPlaylistPlaceholders(["focus", "ambient"]));
+		expect(patch.playlists).toEqual(
+			buildPlaylistPlaceholders(["focus", "ambient"]),
+		);
 	});
 
 	test("deriveProbePatch true_negative_keeps_empty_probe_in_new_guide", () => {
@@ -442,24 +468,25 @@ describe("music interaction guards", () => {
 	});
 
 	test("deriveProbePatch false_positive_guard_does_not_knock_edit_mode_back_to_play", () => {
-		const patch = deriveProbePatch({ mode: "edit", routeResolved: true }, ["focus"]);
+		const patch = deriveProbePatch({ mode: "edit", routeResolved: true }, [
+			"focus",
+		]);
 
 		expect(patch.mode).toBe("edit");
 		expect(patch.playlists).toEqual(buildPlaylistPlaceholders(["focus"]));
 	});
 
 	test("deriveProbePatch false_negative_guard_does_not_knock_create_mode_back_to_new_guide", () => {
-		const patch = deriveProbePatch(
-			{ mode: "create", routeResolved: true },
-			[],
-		);
+		const patch = deriveProbePatch({ mode: "create", routeResolved: true }, []);
 
 		expect(patch.mode).toBe("create");
 		expect(patch.playlists).toEqual([]);
 	});
 
 	test("deriveProbePatch keeps unresolved editor route projection while hydrating names-first data", () => {
-		const patch = deriveProbePatch({ mode: "edit", routeResolved: false }, ["focus"]);
+		const patch = deriveProbePatch({ mode: "edit", routeResolved: false }, [
+			"focus",
+		]);
 
 		expect(patch.mode).toBe("edit");
 		expect(patch.routeResolved).toBe(false);
@@ -468,7 +495,12 @@ describe("music interaction guards", () => {
 
 	test("deriveRefreshPatch preserves unresolved editor route projection during hydration", () => {
 		const patch = deriveRefreshPatch(
-			{ mode: "create", routeResolved: false, selectedListName: "missing", nowPlaying: null },
+			{
+				mode: "create",
+				routeResolved: false,
+				selectedListName: "missing",
+				nowPlaying: null,
+			},
 			[],
 		);
 

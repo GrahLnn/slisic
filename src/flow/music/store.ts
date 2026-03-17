@@ -147,15 +147,15 @@ function resolveHydratedRoute(
 
 	return hasPlaylists
 		? {
-			kind: "hydrated_playlists",
-			routeResolved: true,
-			mode: "play",
-		}
+				kind: "hydrated_playlists",
+				routeResolved: true,
+				mode: "play",
+			}
 		: {
-			kind: "hydrated_empty",
-			routeResolved: true,
-			mode: "new_guide",
-		};
+				kind: "hydrated_empty",
+				routeResolved: true,
+				mode: "new_guide",
+			};
 }
 
 function resolveProbeRoute(
@@ -172,15 +172,15 @@ function resolveProbeRoute(
 
 	return hasPlaylistNames
 		? {
-			kind: "startup_probed_nonempty",
-			routeResolved: true,
-			mode: "play",
-		}
+				kind: "startup_probed_nonempty",
+				routeResolved: true,
+				mode: "play",
+			}
 		: {
-			kind: "startup_probed_empty",
-			routeResolved: true,
-			mode: "new_guide",
-		};
+				kind: "startup_probed_empty",
+				routeResolved: true,
+				mode: "new_guide",
+			};
 }
 
 export function shouldAdvanceOnUnstar(
@@ -205,7 +205,10 @@ export function hasPlaybackContext(
 }
 
 export function canExitWorkspace(
-	snapshot: Pick<MusicState, "linkReviews" | "folderReviews" | "weblistReviews">,
+	snapshot: Pick<
+		MusicState,
+		"linkReviews" | "folderReviews" | "weblistReviews"
+	>,
 ): boolean {
 	return (
 		snapshot.linkReviews.length === 0 &&
@@ -271,7 +274,10 @@ export function shouldHandleAudioEnded(
 }
 
 export function deriveRefreshPatch(
-	prev: Pick<MusicState, "mode" | "routeResolved" | "selectedListName" | "nowPlaying">,
+	prev: Pick<
+		MusicState,
+		"mode" | "routeResolved" | "selectedListName" | "nowPlaying"
+	>,
 	playlists: Playlist[],
 ): Pick<
 	MusicState,
@@ -372,6 +378,37 @@ export function buildPostSavePatch(
 }
 
 export function deriveWorkspaceEntryPatch(
+	kind: "create",
+): Pick<
+	MusicState,
+	| "mode"
+	| "routeResolved"
+	| "slot"
+	| "selectedListName"
+	| "nowPlaying"
+	| "nowJudge"
+	| "processMsg"
+	| "linkReviews"
+	| "folderReviews"
+	| "weblistReviews"
+>;
+export function deriveWorkspaceEntryPatch(
+	kind: "edit",
+	playlist: Playlist,
+): Pick<
+	MusicState,
+	| "mode"
+	| "routeResolved"
+	| "slot"
+	| "selectedListName"
+	| "nowPlaying"
+	| "nowJudge"
+	| "processMsg"
+	| "linkReviews"
+	| "folderReviews"
+	| "weblistReviews"
+>;
+export function deriveWorkspaceEntryPatch(
 	kind: "create" | "edit",
 	playlist?: Playlist,
 ): Pick<
@@ -387,11 +424,14 @@ export function deriveWorkspaceEntryPatch(
 	| "folderReviews"
 	| "weblistReviews"
 > {
+	const editPlaylist = playlist as Playlist;
+
 	return {
 		mode: kind,
 		routeResolved: true,
-		slot: kind === "create" ? defaultMission() : missionFromPlaylist(playlist!),
-		selectedListName: kind === "edit" ? playlist!.name : null,
+		slot:
+			kind === "create" ? defaultMission() : missionFromPlaylist(editPlaylist),
+		selectedListName: kind === "edit" ? editPlaylist.name : null,
 		nowPlaying: null,
 		nowJudge: null,
 		processMsg: null,
@@ -934,7 +974,8 @@ async function persistSlot() {
 		if (affordance.reason === "missing_save_path") {
 			sileo.error({
 				title: "Cannot save",
-				description: "Choose where downloaded web music should be saved before saving.",
+				description:
+					"Choose where downloaded web music should be saved before saving.",
 			});
 			return;
 		}
