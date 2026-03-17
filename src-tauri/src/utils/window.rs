@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Manager, WebviewWindow};
 use tauri::{LogicalSize, Size};
@@ -116,26 +116,31 @@ fn should_exit_on_window_close_after_visible_user_count(
     visible_user_window_count_before_close.saturating_sub(1) == 0
 }
 
-fn prepared_window_inventory() -> &'static Mutex<HashSet<WindowName>> {
-    static PREPARED_WINDOWS: OnceLock<Mutex<HashSet<WindowName>>> = OnceLock::new();
-    PREPARED_WINDOWS.get_or_init(|| Mutex::new(HashSet::new()))
+#[derive(Debug, Clone)]
+struct PreparedWindowState {
+    label: String,
 }
 
-fn mark_window_prepared(name: WindowName) {
+fn prepared_window_inventory() -> &'static Mutex<HashMap<WindowName, PreparedWindowState>> {
+    static PREPARED_WINDOWS: OnceLock<Mutex<HashMap<WindowName, PreparedWindowState>>> = OnceLock::new();
+    PREPARED_WINDOWS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn reserve_prepared_window(name: WindowName, label: String) {
     let mut inventory = prepared_window_inventory()
         .lock()
         .expect("prepared window inventory poisoned");
-    inventory.insert(name);
+    inventory.insert(name, PreparedWindowState { label });
 }
 
 fn discard_prepared_window(name: WindowName) -> bool {
     let mut inventory = prepared_window_inventory()
         .lock()
         .expect("prepared window inventory poisoned");
-    inventory.remove(&name)
+    inventory.remove(&name).is_some()
 }
 
-fn take_prepared_window(name: WindowName) -> bool {
+fn take_prepared_window(name: WindowName) -> Option<PreparedWindowState> {
     let mut inventory = prepared_window_inventory()
         .lock()
         .expect("prepared window inventory poisoned");
@@ -155,9 +160,17 @@ fn prepared_window_targets() -> Vec<WindowName> {
     let inventory = prepared_window_inventory()
         .lock()
         .expect("prepared window inventory poisoned");
-    let mut prepared = inventory.iter().copied().collect::<Vec<_>>();
+    let mut prepared = inventory.keys().copied().collect::<Vec<_>>();
     prepared.sort_by_key(WindowName::as_str);
     prepared
+}
+
+#[cfg(test)]
+fn prepared_window_label(name: WindowName) -> Option<String> {
+    let inventory = prepared_window_inventory()
+        .lock()
+        .expect("prepared window inventory poisoned");
+    inventory.get(&name).map(|state| state.label.clone())
 }
 
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
@@ -361,7 +374,14 @@ pub async fn create_window(
     name: WindowName,
     options: Option<CreateWindowOptions>,
 ) {
-    let _ = take_prepared_window(name);
+    if let Some(prepared_window) = take_prepared_window(name) {
+        if let Some(window) = app.get_webview_window(&prepared_window.label) {
+            apply_window_options(&window, options.as_ref());
+            activate_window(&window);
+            return;
+        }
+    }
+
     let label = next_label(name, &app);
     match build_window(&app, label, name.as_str(), true) {
         Ok(window) => {
@@ -377,8 +397,36 @@ pub async fn create_window(
 
 #[specta::specta]
 #[tauri::command]
-pub fn prewarm_window(name: WindowName) {
-    mark_window_prepared(name);
+pub fn prewarm_window(app: tauri::AppHandle, name: WindowName) {
+    if app.get_webview_window(name.as_str()).is_some() {
+        return;
+    }
+
+    let already_prepared_label = {
+        let inventory = prepared_window_inventory()
+            .lock()
+            .expect("prepared window inventory poisoned");
+        inventory.get(&name).map(|state| state.label.clone())
+    };
+
+    if let Some(label) = already_prepared_label {
+        if app.get_webview_window(&label).is_some() {
+            return;
+        }
+
+        let _ = discard_prepared_window(name);
+    }
+
+    let label = format!("{}-prewarm", name.as_str());
+    match build_window(&app, label.clone(), name.as_str(), false) {
+        Ok(window) => {
+            apply_window_setup(&window, false);
+            reserve_prepared_window(name, label);
+        }
+        Err(error) => {
+            eprintln!("Failed to prewarm window: {error}");
+        }
+    }
 }
 
 #[specta::specta]
@@ -392,7 +440,8 @@ mod tests {
     use super::{
         classify_window_identity, classify_window_labels, discard_prepared_window,
         is_main_user_window_instance_label,
-        is_user_window_label, mark_window_prepared, prepared_window_targets,
+        is_user_window_label, prepared_window_label, prepared_window_targets,
+        reserve_prepared_window,
         reset_prepared_window_inventory, should_exit_on_window_close_with_count,
         should_label_resolve_as_user_window, take_prepared_window, window_kind_from_label,
         window_kind_info_for_label, WindowName,
@@ -553,11 +602,11 @@ mod tests {
     fn typed_prewarm_targets_are_keyed_by_window_enum() {
         reset_prepared_window_inventory();
 
-        mark_window_prepared(WindowName::Main);
+        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
         assert_eq!(prepared_window_targets(), vec![WindowName::Main]);
 
-        mark_window_prepared(WindowName::Main);
+        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
         assert_eq!(prepared_window_targets(), vec![WindowName::Main]);
     }
@@ -565,7 +614,7 @@ mod tests {
     #[test]
     fn discarded_prepared_targets_are_removed_from_inventory() {
         reset_prepared_window_inventory();
-        mark_window_prepared(WindowName::Main);
+        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
         assert!(discard_prepared_window(WindowName::Main));
         assert!(prepared_window_targets().is_empty());
@@ -574,13 +623,35 @@ mod tests {
     #[test]
     fn discarded_prepared_targets_stay_absent_during_future_open_flow() {
         reset_prepared_window_inventory();
-        mark_window_prepared(WindowName::Main);
+        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
         assert!(discard_prepared_window(WindowName::Main));
 
         let consumed_prepared_target = take_prepared_window(WindowName::Main);
 
-        assert!(!consumed_prepared_target);
+        assert!(consumed_prepared_target.is_none());
         assert!(prepared_window_targets().is_empty());
+    }
+
+    #[test]
+    fn prewarm_creates_real_hidden_backend_window_state() {
+        reset_prepared_window_inventory();
+
+        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
+
+        let prepared = prepared_window_targets();
+        assert_eq!(prepared, vec![WindowName::Main]);
+        assert_eq!(prepared_window_label(WindowName::Main).as_deref(), Some("main-prewarm"));
+        assert!(take_prepared_window(WindowName::Main).is_some());
+        assert!(prepared_window_targets().is_empty());
+    }
+
+    #[test]
+    fn taking_prepared_window_consumes_authoritative_backend_state_once() {
+        reset_prepared_window_inventory();
+        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
+
+        assert!(take_prepared_window(WindowName::Main).is_some());
+        assert!(take_prepared_window(WindowName::Main).is_none());
     }
 }
