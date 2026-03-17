@@ -688,6 +688,10 @@ function deriveEntryIdentity(entry: Entry): string | null {
 	return entry.url ?? entry.path ?? null;
 }
 
+function isEditingWorkspace(mode: UiMode): boolean {
+	return mode === "create" || mode === "edit";
+}
+
 function replaceEntryByIdentity(
 	entries: Entry[],
 	identity: string,
@@ -1395,6 +1399,7 @@ export const action = {
 		const key = entry.path;
 		const { entrySessionId } = getState();
 		const entryIdentity = deriveEntryIdentity(entry);
+		const workspaceMode = getState().mode;
 		setState((prev) => ({
 			...prev,
 			folderReviews: addUnique(prev.folderReviews, key),
@@ -1419,6 +1424,8 @@ export const action = {
 					: replaceEntryByIdentity(slot.entries, entryIdentity, next),
 		}), (current) =>
 			entryIdentity != null &&
+			isEditingWorkspace(current.mode) &&
+			current.mode === workspaceMode &&
 			current.entrySessionId === entrySessionId &&
 			current.slot?.entries.some(
 				(item) => deriveEntryIdentity(item) === entryIdentity,
@@ -1431,6 +1438,7 @@ export const action = {
 
 		const key = entry.url;
 		const entryIdentity = deriveEntryIdentity(entry);
+		const workspaceMode = snapshot.mode;
 		setState((prev) => ({
 			...prev,
 			weblistReviews: addUnique(prev.weblistReviews, key),
@@ -1455,6 +1463,8 @@ export const action = {
 					: replaceEntryByIdentity(slot.entries, entryIdentity, next),
 		}), (current) =>
 			entryIdentity != null &&
+			isEditingWorkspace(current.mode) &&
+			current.mode === workspaceMode &&
 			current.entrySessionId === snapshot.entrySessionId &&
 			current.slot?.entries.some(
 				(item) => deriveEntryIdentity(item) === entryIdentity,

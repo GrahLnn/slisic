@@ -1254,6 +1254,57 @@ describe("music store action contracts", () => {
 		expect(state.playlists).toEqual([refreshedPlaylist]);
 	});
 
+	test("reloadEntry_false_negative_guard_post_slot_replacement_completion_only_clears_review_state_without_restoring_old_draft", async () => {
+		const entry = makeEntry("folder", "C:/music/folder");
+		const updated = {
+			...entry,
+			musics: [makeMusic("C:/music/folder/new.flac")],
+		};
+			const replacement = makeEntry("replacement", "C:/music/replacement");
+
+		let release!: () => void;
+		impl.recheckFolder =
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve(Ok<Entry, string>(updated));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			routeResolved: true,
+			startupRoute: "hydrated_editing",
+				playlists: [makePlaylist("focus", [entry]), makePlaylist("replacement", [replacement])],
+			selectedListName: "focus",
+			slot: makeMission("focus", [entry]),
+			folderReviews: [],
+		});
+
+		const pending = action.reloadEntry(entry);
+		await waitUntil(() => __testing.getState().folderReviews.includes(entry.path ?? ""));
+
+			await action.edit(makePlaylist("replacement", [replacement]));
+			expect(__testing.getState().mode).toBe("edit");
+			expect(__testing.getState().selectedListName).toBe("replacement");
+			expect(__testing.getState().folderReviews).toEqual([]);
+
+		release();
+		await pending;
+
+		const state = __testing.getState();
+			expect(state.mode).toBe("edit");
+			expect(state.routeResolved).toBe(true);
+			expect(state.startupRoute).toBe("hydrated_editing");
+			expect(state.selectedListName).toBe("replacement");
+			expect(state.nowPlaying).toBeNull();
+			expect(state.slot).toEqual(makeMission("replacement", [replacement]));
+		expect(state.folderReviews).toEqual([]);
+			expect(state.playlists).toEqual([
+				makePlaylist("focus", [entry]),
+				makePlaylist("replacement", [replacement]),
+			]);
+	});
+
 	test("updateWeblist_true_positive_replaces_entry_and_clears_review_flag", async () => {
 		const entry = makeEntry("remote", "C:/music/remote", {
 			url: "https://example.com/list",
@@ -1484,6 +1535,66 @@ describe("music store action contracts", () => {
 		expect(updateCalls[0]?.anchor).toEqual(persistedPlaylist);
 		expect(state.mode).toBe("play");
 		expect(state.playlists).toEqual([refreshedPlaylist]);
+	});
+
+		test("updateWeblist_false_negative_guard_post_slot_replacement_completion_only_clears_review_state_without_restoring_old_draft", async () => {
+		const persisted = makeEntry("remote", "C:/music/remote", {
+			url: "https://example.com/list",
+			entry_type: "WebList",
+			downloaded_ok: false,
+			musics: [],
+		});
+		const updated = {
+			...persisted,
+			downloaded_ok: true,
+			musics: [makeMusic("C:/music/remote/downloaded.flac")],
+		};
+		const optimisticPersisted = makePlaylist("focus", [persisted]);
+		let releaseUpdate!: () => void;
+		impl.updateWeblist =
+			() =>
+				new Promise((resolve) => {
+					releaseUpdate = () => resolve(Ok<Entry, string>(updated));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			routeResolved: true,
+			startupRoute: "hydrated_editing",
+			playlists: [optimisticPersisted],
+			selectedListName: "focus",
+			slot: makeMission("focus", [persisted]),
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+			weblistReviews: [],
+		});
+
+		const pendingUpdate = action.updateWeblist(persisted);
+		await waitUntil(() => {
+			const url = persisted.url;
+			return !!url && __testing.getState().weblistReviews.includes(url);
+		});
+
+			await action.edit(makePlaylist("replacement", [
+				makeEntry("replacement", "C:/music/replacement"),
+			]));
+			expect(__testing.getState().mode).toBe("edit");
+			expect(__testing.getState().selectedListName).toBe("replacement");
+
+		releaseUpdate();
+		await pendingUpdate;
+
+		let state = __testing.getState();
+			expect(state.mode).toBe("edit");
+			expect(state.routeResolved).toBe(true);
+			expect(state.startupRoute).toBe("hydrated_editing");
+			expect(state.slot).toEqual(
+				makeMission("replacement", [makeEntry("replacement", "C:/music/replacement")]),
+			);
+			expect(state.selectedListName).toBe("replacement");
+		expect(state.weblistReviews).toEqual([]);
+			expect(state.playlists).toEqual([optimisticPersisted]);
 	});
 
 	test("addLink_false_positive_guard_clears_review_flag_without_reintroducing_removed_link", async () => {
