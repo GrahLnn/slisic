@@ -17,18 +17,8 @@ thread_local! {
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct WindowKindInfo {
     pub window: Option<WindowName>,
-    pub is_prewarm: bool,
     pub label: String,
     pub is_primary_main: bool,
-}
-
-fn prewarm_prefix(name: WindowName) -> String {
-    format!("{}-prewarm-", name.as_str())
-}
-
-fn is_prewarm_label_for(name: WindowName, label: &str) -> bool {
-    let prefix = prewarm_prefix(name);
-    label.starts_with(&prefix)
 }
 
 fn is_window_label_for(name: WindowName, label: &str) -> bool {
@@ -37,42 +27,37 @@ fn is_window_label_for(name: WindowName, label: &str) -> bool {
     }
 
     let window_prefix = format!("{}-", name.as_str());
-    label.starts_with(&window_prefix) && !is_prewarm_label_for(name, label)
+    label.starts_with(&window_prefix)
 }
 
-pub fn window_kind_from_label(label: &str) -> (Option<WindowName>, bool) {
+pub fn window_kind_from_label(label: &str) -> Option<WindowName> {
     for name in WindowName::ALL {
         if is_window_label_for(name, label) {
-            return (Some(name), false);
-        }
-
-        if is_prewarm_label_for(name, label) {
-            return (Some(name), true);
+            return Some(name);
         }
     }
 
-    (None, false)
+    None
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn get_window_kind(window: WebviewWindow) -> WindowKindInfo {
     let label = window.label().to_string();
-    let (window, is_prewarm) = window_kind_from_label(&label);
+    let window = window_kind_from_label(&label);
     WindowKindInfo {
         window,
-        is_prewarm,
         is_primary_main: label == "main",
         label,
     }
 }
 
-pub fn is_non_prewarm_window_label(label: &str) -> bool {
-    matches!(window_kind_from_label(label), (Some(_), false))
+pub fn is_user_window_label(label: &str) -> bool {
+    window_kind_from_label(label).is_some()
 }
 
 pub fn should_label_resolve_as_user_window(label: &str) -> bool {
-    is_non_prewarm_window_label(label)
+    is_user_window_label(label)
 }
 
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
@@ -285,27 +270,24 @@ pub async fn create_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        is_non_prewarm_window_label, should_label_resolve_as_user_window, window_kind_from_label,
-        WindowName,
-    };
+    use super::{is_user_window_label, should_label_resolve_as_user_window, window_kind_from_label, WindowName};
 
     #[test]
     fn visible_main_labels_resolve_as_user_windows() {
-        assert_eq!(window_kind_from_label("main"), (Some(WindowName::Main), false));
-        assert_eq!(window_kind_from_label("main-1"), (Some(WindowName::Main), false));
+        assert_eq!(window_kind_from_label("main"), Some(WindowName::Main));
+        assert_eq!(window_kind_from_label("main-1"), Some(WindowName::Main));
     }
 
     #[test]
-    fn support_labels_never_resolve_as_visible_user_windows() {
-        assert_eq!(window_kind_from_label("main-prewarm-1"), (Some(WindowName::Main), true));
-        assert!(!should_label_resolve_as_user_window("main-prewarm-1"));
-        assert!(!is_non_prewarm_window_label("main-prewarm-1"));
+    fn repeated_main_labels_stay_user_windows_without_support_identity() {
+        assert_eq!(window_kind_from_label("main-2"), Some(WindowName::Main));
+        assert!(should_label_resolve_as_user_window("main-2"));
+        assert!(is_user_window_label("main-2"));
     }
 
     #[test]
     fn unknown_labels_do_not_resolve_as_user_windows() {
         assert!(!should_label_resolve_as_user_window("unknown"));
-        assert!(!is_non_prewarm_window_label("unknown"));
+        assert!(!is_user_window_label("unknown"));
     }
 }

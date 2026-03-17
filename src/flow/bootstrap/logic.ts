@@ -4,7 +4,6 @@ export type AppBootstrapStatus = "pending" | "ready" | "error";
 
 export interface AppWindowMeta {
   window: WindowName | null;
-  isPrewarm: boolean;
   label: string;
   isPrimaryMain: boolean;
   status: AppBootstrapStatus;
@@ -12,7 +11,6 @@ export interface AppWindowMeta {
 
 export const initialAppWindowMeta: AppWindowMeta = {
   window: null,
-  isPrewarm: false,
   label: "",
   isPrimaryMain: false,
   status: "pending",
@@ -24,16 +22,12 @@ export function shouldRenderMainWindow(meta: AppWindowMeta): boolean {
     case "error":
       return true;
     case "ready":
-      if (meta.isPrewarm) {
-        return false;
-      }
-
       return meta.window === null || meta.window === "Main";
   }
 }
 
 export function shouldRunUpdater(meta: AppWindowMeta): boolean {
-  return !meta.isPrewarm && meta.window === "Main" && meta.isPrimaryMain;
+  return meta.window === "Main" && meta.isPrimaryMain;
 }
 
 export function shouldRequestWindowPrewarm(meta: AppWindowMeta): boolean {

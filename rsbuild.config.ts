@@ -4,6 +4,7 @@ import { pluginBabel } from "@rsbuild/plugin-babel";
 import { pluginSass } from "@rsbuild/plugin-sass";
 
 const isDev = process.env.NODE_ENV !== "production";
+const disableReactScan = process.env.PUBLIC_DISABLE_REACT_SCAN === "1";
 export default defineConfig({
   plugins: [
     pluginReact(),
@@ -23,7 +24,7 @@ export default defineConfig({
     },
   },
   html: {
-    tags: isDev
+    tags: isDev && !disableReactScan
       ? [
           {
             tag: "script",

@@ -34,11 +34,10 @@ describe("shouldRenderMainWindow", () => {
       shouldRenderMainWindow(
         createMeta({
           status: "ready",
-          window: "Main",
-          isPrewarm: true,
+          window: null,
         }),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 
@@ -63,27 +62,26 @@ describe("shouldRunUpdater", () => {
         }),
       ),
     ).toBe(false);
+
+    expect(
+      shouldRunUpdater(
+        createMeta({
+          status: "ready",
+          window: null,
+          isPrimaryMain: true,
+        }),
+      ),
+    ).toBe(false);
   });
 });
 
 describe("shouldRequestWindowPrewarm", () => {
-  test("never requests support-window prewarm replenishment", () => {
+  test("never requests additional hidden-window preparation", () => {
     expect(
       shouldRequestWindowPrewarm(
         createMeta({
           status: "ready",
           window: "Main",
-          isPrewarm: false,
-        }),
-      ),
-    ).toBe(false);
-
-    expect(
-      shouldRequestWindowPrewarm(
-        createMeta({
-          status: "ready",
-          window: "Main",
-          isPrewarm: true,
         }),
       ),
     ).toBe(false);

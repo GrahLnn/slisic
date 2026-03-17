@@ -154,7 +154,6 @@ export type UnassignTaskInput = {
 
 export type WindowKindInfo = {
 	window: WindowName | null,
-	is_prewarm: boolean,
 	label: string,
 	is_primary_main: boolean,
 };
