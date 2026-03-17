@@ -23,3 +23,12 @@ A compact music player built around smart shuffle and consistent listening exper
 bun install
 bun tauri dev
 ```
+
+### Validation
+
+```bash
+bun test ./src/flow/music
+bun run typecheck
+bun run build
+bun run rust:check
+```

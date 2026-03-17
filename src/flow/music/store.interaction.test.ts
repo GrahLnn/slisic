@@ -477,10 +477,13 @@ describe("music interaction guards", () => {
 		expect(nonEmpty.routeResolved).toBe(true);
 		expect(nonEmpty.startupRoute).toBe("startup_probed_nonempty");
 		expect(
-			deriveRouteResolution({
-				mode: nonEmpty.mode,
-				routeResolved: nonEmpty.routeResolved,
-			}, { kind: nonEmpty.startupRoute }),
+			deriveRouteResolution(
+				{
+					mode: nonEmpty.mode,
+					routeResolved: nonEmpty.routeResolved,
+				},
+				{ kind: nonEmpty.startupRoute },
+			),
 		).toEqual({
 			kind: "startup_probed_nonempty",
 			routeResolved: true,
@@ -494,10 +497,13 @@ describe("music interaction guards", () => {
 		expect(empty.routeResolved).toBe(true);
 		expect(empty.startupRoute).toBe("startup_probed_empty");
 		expect(
-			deriveRouteResolution({
-				mode: empty.mode,
-				routeResolved: empty.routeResolved,
-			}, { kind: empty.startupRoute }),
+			deriveRouteResolution(
+				{
+					mode: empty.mode,
+					routeResolved: empty.routeResolved,
+				},
+				{ kind: empty.startupRoute },
+			),
 		).toEqual({
 			kind: "startup_probed_empty",
 			routeResolved: true,

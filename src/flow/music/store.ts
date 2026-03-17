@@ -101,7 +101,7 @@ export function deriveRouteResolution(
 				routeSnapshot.kind === "startup_unresolved"
 					? "unresolved"
 					: routeSnapshot.kind === "startup_probed_empty" ||
-						  routeSnapshot.kind === "startup_probed_nonempty"
+							routeSnapshot.kind === "startup_probed_nonempty"
 						? "probed"
 						: "hydrated",
 		};
@@ -520,7 +520,8 @@ export function deriveBackTransition(
 	return {
 		mode: snapshot.playlists.length > 0 ? "play" : "new_guide",
 		routeResolved: snapshot.routeResolved,
-		startupRoute: snapshot.playlists.length > 0 ? "hydrated_playlists" : "hydrated_empty",
+		startupRoute:
+			snapshot.playlists.length > 0 ? "hydrated_playlists" : "hydrated_empty",
 		selectedListName: null,
 		nowPlaying: null,
 		nowJudge: null,
