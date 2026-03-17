@@ -1111,6 +1111,86 @@ describe("music store action contracts", () => {
 		);
 	});
 
+	test("reloadEntry_false_negative_guard_updates_only_the_same_live_entry_identity", async () => {
+		const original = makeEntry("folder", "C:/music/folder");
+		const replacement = makeEntry("folder", "C:/music/folder", {
+			url: "https://example.com/replacement",
+			entry_type: "WebList",
+		});
+		const updated = {
+			...original,
+			musics: [makeMusic("C:/music/folder/new.flac")],
+		};
+
+		let release!: () => void;
+		impl.recheckFolder =
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve(Ok<Entry, string>(updated));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			slot: makeMission("focus", [original]),
+			folderReviews: [],
+		});
+
+		const pending = action.reloadEntry(original);
+		await waitUntil(() => __testing.getState().folderReviews.includes(original.path ?? ""));
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			slot: makeMission("focus", [replacement]),
+		});
+
+		release();
+		await pending;
+
+		const state = __testing.getState();
+		expect(state.folderReviews).toEqual([]);
+		expect(state.slot?.entries).toEqual([replacement]);
+	});
+
+	test("reloadEntry_false_positive_guard_does_not_recreate_removed_entry", async () => {
+		const entry = makeEntry("folder", "C:/music/folder");
+		const updated = {
+			...entry,
+			musics: [makeMusic("C:/music/folder/new.flac")],
+		};
+
+		let release!: () => void;
+		impl.recheckFolder =
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve(Ok<Entry, string>(updated));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			slot: makeMission("focus", [entry]),
+			folderReviews: [],
+		});
+
+		const pending = action.reloadEntry(entry);
+		await waitUntil(() => __testing.getState().folderReviews.includes(entry.path ?? ""));
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			slot: makeMission("focus", []),
+		});
+
+		release();
+		await pending;
+
+		const state = __testing.getState();
+		expect(state.folderReviews).toEqual([]);
+		expect(state.slot?.entries).toEqual([]);
+	});
+
 	test("updateWeblist_true_positive_replaces_entry_and_clears_review_flag", async () => {
 		const entry = makeEntry("remote", "C:/music/remote", {
 			url: "https://example.com/list",
@@ -1183,6 +1263,102 @@ describe("music store action contracts", () => {
 		expect(state.slot).toEqual(
 			makeMission("fresh", [makeEntry("other", "C:/music/other")]),
 		);
+	});
+
+	test("updateWeblist_false_negative_guard_updates_only_the_same_live_entry_identity", async () => {
+		const entry = makeEntry("remote", "C:/music/remote", {
+			url: "https://example.com/list",
+			entry_type: "WebList",
+		});
+		const replacement = makeEntry("remote", "C:/music/remote", {
+			url: "https://example.com/replacement",
+			entry_type: "WebList",
+		});
+		const updated = {
+			...entry,
+			musics: [makeMusic("C:/music/remote/new.flac")],
+		};
+
+		let release!: () => void;
+		impl.updateWeblist =
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve(Ok<Entry, string>(updated));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			slot: makeMission("focus", [entry]),
+			weblistReviews: [],
+		});
+
+		const pending = action.updateWeblist(entry);
+		await waitUntil(() => {
+			const url = entry.url;
+			return !!url && __testing.getState().weblistReviews.includes(url);
+		});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			slot: makeMission("focus", [replacement]),
+		});
+
+		release();
+		await pending;
+
+		const state = __testing.getState();
+		expect(state.weblistReviews).toEqual([]);
+		expect(state.slot?.entries).toEqual([replacement]);
+	});
+
+	test("updateWeblist_false_positive_guard_does_not_recreate_removed_entry", async () => {
+		const entry = makeEntry("remote", "C:/music/remote", {
+			url: "https://example.com/list",
+			entry_type: "WebList",
+		});
+		const updated = {
+			...entry,
+			musics: [makeMusic("C:/music/remote/new.flac")],
+		};
+
+		let release!: () => void;
+		impl.updateWeblist =
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve(Ok<Entry, string>(updated));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			slot: makeMission("focus", [entry]),
+			weblistReviews: [],
+		});
+
+		const pending = action.updateWeblist(entry);
+		await waitUntil(() => {
+			const url = entry.url;
+			return !!url && __testing.getState().weblistReviews.includes(url);
+		});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			slot: makeMission("focus", []),
+		});
+
+		release();
+		await pending;
+
+		const state = __testing.getState();
+		expect(state.weblistReviews).toEqual([]);
+		expect(state.slot?.entries).toEqual([]);
 	});
 
 	test("addLink_false_positive_guard_clears_review_flag_without_reintroducing_removed_link", async () => {

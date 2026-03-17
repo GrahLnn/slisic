@@ -59,6 +59,7 @@ const baseState: MusicState = {
 	linkReviews: [],
 	folderReviews: [],
 	weblistReviews: [],
+	entrySessionId: 3,
 	playbackEpoch: 3,
 };
 

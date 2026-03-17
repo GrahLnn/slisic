@@ -66,6 +66,7 @@ export interface MusicState {
 	linkReviews: string[];
 	folderReviews: string[];
 	weblistReviews: string[];
+	entrySessionId: number;
 	playbackEpoch: number;
 }
 
@@ -405,6 +406,7 @@ export function buildPostSavePatch(
 	| "nowJudge"
 	| "slot"
 	| "processMsg"
+	| "entrySessionId"
 	| "playbackEpoch"
 > {
 	return {
@@ -416,6 +418,7 @@ export function buildPostSavePatch(
 		nowJudge: null,
 		slot: null,
 		processMsg: null,
+		entrySessionId: idleEpoch,
 		playbackEpoch: idleEpoch,
 	};
 }
@@ -435,6 +438,7 @@ export function deriveWorkspaceEntryPatch(
 	| "linkReviews"
 	| "folderReviews"
 	| "weblistReviews"
+	| "entrySessionId"
 >;
 export function deriveWorkspaceEntryPatch(
 	kind: "edit",
@@ -452,6 +456,7 @@ export function deriveWorkspaceEntryPatch(
 	| "linkReviews"
 	| "folderReviews"
 	| "weblistReviews"
+	| "entrySessionId"
 >;
 export function deriveWorkspaceEntryPatch(
 	kind: "create" | "edit",
@@ -469,6 +474,7 @@ export function deriveWorkspaceEntryPatch(
 	| "linkReviews"
 	| "folderReviews"
 	| "weblistReviews"
+	| "entrySessionId"
 > {
 	const editPlaylist = playlist as Playlist;
 
@@ -485,6 +491,7 @@ export function deriveWorkspaceEntryPatch(
 		linkReviews: [],
 		folderReviews: [],
 		weblistReviews: [],
+		entrySessionId: state.entrySessionId + 1,
 	};
 }
 
@@ -502,6 +509,7 @@ export function deriveBackTransition(
 		| "linkReviews"
 		| "folderReviews"
 		| "weblistReviews"
+	| "entrySessionId"
 	>,
 ): Pick<
 	MusicState,
@@ -516,6 +524,7 @@ export function deriveBackTransition(
 	| "linkReviews"
 	| "folderReviews"
 	| "weblistReviews"
+	| "entrySessionId"
 > {
 	return {
 		mode: snapshot.playlists.length > 0 ? "play" : "new_guide",
@@ -530,6 +539,7 @@ export function deriveBackTransition(
 		linkReviews: [],
 		folderReviews: [],
 		weblistReviews: [],
+		entrySessionId: snapshot.entrySessionId + 1,
 	};
 }
 
@@ -578,6 +588,7 @@ const initialState: MusicState = {
 	linkReviews: [],
 	folderReviews: [],
 	weblistReviews: [],
+	entrySessionId: 0,
 	playbackEpoch: 0,
 };
 
@@ -673,21 +684,37 @@ function removeValue(items: string[], value: string): string[] {
 	return items.filter((item) => item !== value);
 }
 
-function replaceEntryByKey(entries: Entry[], next: Entry): Entry[] {
-	const nextKey = entryKey(next);
-	return entries.map((item) =>
-		entryKey(item) === nextKey || item.path === next.path ? next : item,
-	);
+function deriveEntryIdentity(entry: Entry): string | null {
+	return entry.url ?? entry.path ?? null;
+}
+
+function replaceEntryByIdentity(
+	entries: Entry[],
+	identity: string,
+	next: Entry,
+): Entry[] {
+	let matched = false;
+	const updatedEntries = entries.map((item) => {
+		if (deriveEntryIdentity(item) !== identity) {
+			return item;
+		}
+
+		matched = true;
+		return next;
+	});
+
+	return matched ? updatedEntries : entries;
 }
 
 function settleReviewMutation(
 	key: string,
 	reviewKey: "linkReviews" | "folderReviews" | "weblistReviews",
 	mutateSlot: (slot: CollectMission) => CollectMission,
+	shouldMutate?: (prev: MusicState) => boolean,
 ) {
 	setState((prev) => {
 		const reviews = removeValue(prev[reviewKey], key);
-		if (!prev.slot) {
+		if (!prev.slot || (shouldMutate && !shouldMutate(prev))) {
 			return {
 				...prev,
 				[reviewKey]: reviews,
@@ -1366,6 +1393,8 @@ export const action = {
 		if (!entry.path) return;
 
 		const key = entry.path;
+		const { entrySessionId } = getState();
+		const entryIdentity = deriveEntryIdentity(entry);
 		setState((prev) => ({
 			...prev,
 			folderReviews: addUnique(prev.folderReviews, key),
@@ -1384,8 +1413,16 @@ export const action = {
 		const next = result.unwrap();
 		settleReviewMutation(key, "folderReviews", (slot) => ({
 			...slot,
-			entries: replaceEntryByKey(slot.entries, next),
-		}));
+			entries:
+				entryIdentity == null
+					? slot.entries
+					: replaceEntryByIdentity(slot.entries, entryIdentity, next),
+		}), (current) =>
+			entryIdentity != null &&
+			current.entrySessionId === entrySessionId &&
+			current.slot?.entries.some(
+				(item) => deriveEntryIdentity(item) === entryIdentity,
+			) === true);
 	},
 	async updateWeblist(entry: Entry) {
 		const snapshot = getState();
@@ -1393,6 +1430,7 @@ export const action = {
 		if (!playlist || !entry.url) return;
 
 		const key = entry.url;
+		const entryIdentity = deriveEntryIdentity(entry);
 		setState((prev) => ({
 			...prev,
 			weblistReviews: addUnique(prev.weblistReviews, key),
@@ -1411,8 +1449,16 @@ export const action = {
 		const next = result.unwrap();
 		settleReviewMutation(key, "weblistReviews", (slot) => ({
 			...slot,
-			entries: replaceEntryByKey(slot.entries, next),
-		}));
+			entries:
+				entryIdentity == null
+					? slot.entries
+					: replaceEntryByIdentity(slot.entries, entryIdentity, next),
+		}), (current) =>
+			entryIdentity != null &&
+			current.entrySessionId === snapshot.entrySessionId &&
+			current.slot?.entries.some(
+				(item) => deriveEntryIdentity(item) === entryIdentity,
+			) === true);
 	},
 	async up(music: Music) {
 		const result = await crab.boost(music);
