@@ -123,7 +123,7 @@ export function makeLiveEvent<T extends Record<string, any>>(ev: EventsShape<T>)
         .on_page_load(|window, _payload| {
             let label = window.label().to_string();
             eprintln!("startup: page load finished for {label}");
-            utils::window::mark_prewarm_window_ready(&window.app_handle(), &label);
+            utils::window::record_prewarm_window_page_load(&window.app_handle(), &label);
             let _ = window.emit(STARTUP_READY_EVENT, ());
         })
         .run(tauri::generate_context!())

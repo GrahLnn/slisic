@@ -217,6 +217,23 @@ fn record_prewarm_timing_event(name: WindowName, phase: PrewarmPhase, label: &st
     session.events.push(event);
 }
 
+fn maybe_record_hidden_page_load_timing(label: &str) {
+    let Some(name) = window_kind_from_label(label) else {
+        return;
+    };
+
+    if should_label_resolve_as_user_window(label) {
+        return;
+    }
+
+    record_prewarm_timing_event(
+        name,
+        PrewarmPhase::HiddenPageLoadReady,
+        label,
+        "hidden prewarm window reported page-load readiness",
+    );
+}
+
 #[cfg(test)]
 fn reset_prewarm_timing_sessions() {
     let mut sessions = prewarm_timing_sessions()
@@ -243,6 +260,10 @@ pub fn record_renderer_bootstrap_ready(window: WebviewWindow) {
     let Some(name) = window_kind_from_label(&label) else {
         return;
     };
+
+    if !should_label_resolve_as_user_window(&label) {
+        let _ = mark_prepared_window_ready(name, &label);
+    }
 
     record_prewarm_timing_event(
         name,
@@ -637,27 +658,12 @@ pub fn prewarm_window(app: tauri::AppHandle, name: WindowName) {
     }
 }
 
-pub fn mark_prewarm_window_ready(app: &AppHandle, label: &str) {
-    let Some(name) = window_kind_from_label(label) else {
-        return;
-    };
-
-    if should_label_resolve_as_user_window(label) {
-        return;
-    }
-
+pub fn record_prewarm_window_page_load(app: &AppHandle, label: &str) {
     if app.get_webview_window(label).is_none() {
         return;
     }
 
-    if mark_prepared_window_ready(name, label) {
-        record_prewarm_timing_event(
-            name,
-            PrewarmPhase::HiddenPageLoadReady,
-            label,
-            "hidden prewarm window reported page-load readiness",
-        );
-    }
+    maybe_record_hidden_page_load_timing(label);
 }
 
 #[specta::specta]
@@ -679,7 +685,7 @@ pub fn discard_prewarm_window(app: tauri::AppHandle, name: WindowName) -> bool {
 mod tests {
     use super::{
         classify_window_identity, classify_window_labels, discard_prepared_window,
-        discard_prepared_window_state,
+        discard_prepared_window_state, maybe_record_hidden_page_load_timing,
         is_main_user_window_instance_label,
         is_user_window_label, mark_prepared_window_ready, prewarm_timing_events,
         prepared_window_label, prepared_window_readiness, prepared_window_targets,
@@ -1018,6 +1024,36 @@ mod tests {
                 PrewarmPhase::RendererBootstrapResolved,
             ]
         );
+    }
+
+    #[test]
+    fn page_load_timing_does_not_make_hidden_window_consumable() {
+        reset_prepared_window_inventory();
+        reset_prewarm_timing_sessions();
+        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
+        start_prewarm_timing_session(WindowName::Main, "main-prewarm", "prewarm command triggered");
+
+        maybe_record_hidden_page_load_timing("main-prewarm");
+
+        assert_eq!(prepared_window_readiness(WindowName::Main), Some(PreparedWindowReadiness::Created));
+        assert!(take_prepared_window(WindowName::Main).is_none());
+        let phases = prewarm_timing_events(WindowName::Main)
+            .into_iter()
+            .map(|event| event.phase)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            phases,
+            vec![PrewarmPhase::Triggered, PrewarmPhase::HiddenPageLoadReady]
+        );
+    }
+
+    #[test]
+    fn renderer_bootstrap_ready_makes_matching_hidden_window_consumable() {
+        reset_prepared_window_inventory();
+        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
+
+        assert!(mark_prepared_window_ready(WindowName::Main, "main-prewarm"));
+        assert_eq!(prepared_window_readiness(WindowName::Main), Some(PreparedWindowReadiness::Ready));
     }
 
     #[test]
