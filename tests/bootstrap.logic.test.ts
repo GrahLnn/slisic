@@ -35,6 +35,20 @@ describe("shouldRenderMainWindow", () => {
         createMeta({
           status: "ready",
           window: null,
+          isUserWindow: false,
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  test("renders repeated visible main windows because they remain user windows", () => {
+    expect(
+      shouldRenderMainWindow(
+        createMeta({
+          status: "ready",
+          window: "Main",
+          isPrimaryMain: false,
+          isUserWindow: true,
         }),
       ),
     ).toBe(true);

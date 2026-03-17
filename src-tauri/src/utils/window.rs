@@ -19,6 +19,16 @@ pub struct WindowKindInfo {
     pub window: Option<WindowName>,
     pub label: String,
     pub is_primary_main: bool,
+    pub is_user_window: bool,
+}
+
+fn window_kind_info_for_label(label: &str) -> WindowKindInfo {
+    WindowKindInfo {
+        window: window_kind_from_label(label),
+        label: label.to_string(),
+        is_primary_main: label == "main",
+        is_user_window: should_label_resolve_as_user_window(label),
+    }
 }
 
 fn is_window_label_for(name: WindowName, label: &str) -> bool {
@@ -43,21 +53,27 @@ pub fn window_kind_from_label(label: &str) -> Option<WindowName> {
 #[tauri::command]
 #[specta::specta]
 pub fn get_window_kind(window: WebviewWindow) -> WindowKindInfo {
-    let label = window.label().to_string();
-    let window = window_kind_from_label(&label);
-    WindowKindInfo {
-        window,
-        is_primary_main: label == "main",
-        label,
-    }
+    window_kind_info_for_label(window.label())
 }
 
+#[allow(dead_code)]
 pub fn is_user_window_label(label: &str) -> bool {
-    window_kind_from_label(label).is_some()
+    should_label_resolve_as_user_window(label)
 }
 
 pub fn should_label_resolve_as_user_window(label: &str) -> bool {
-    is_user_window_label(label)
+    match window_kind_from_label(label) {
+        Some(WindowName::Main) => label == WindowName::Main.as_str() || is_main_user_window_instance_label(label),
+        None => false,
+    }
+}
+
+fn is_main_user_window_instance_label(label: &str) -> bool {
+    let Some(suffix) = label.strip_prefix("main-") else {
+        return false;
+    };
+
+    !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit())
 }
 
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
@@ -65,13 +81,20 @@ pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool
         return false;
     }
 
-    let main_window_count = app
-        .webview_windows()
-        .keys()
-        .filter(|label| should_label_resolve_as_user_window(label))
-        .count();
+    let main_window_count = visible_user_window_count(app);
 
     main_window_count <= 1
+}
+
+pub fn visible_user_window_count(app: &AppHandle) -> usize {
+    app.webview_windows()
+        .values()
+        .filter(|window| {
+            let label = window.label();
+            should_label_resolve_as_user_window(label)
+                && window.is_visible().unwrap_or(false)
+        })
+        .count()
 }
 
 #[derive(Serialize, Type)]
@@ -270,7 +293,10 @@ pub async fn create_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_user_window_label, should_label_resolve_as_user_window, window_kind_from_label, WindowName};
+    use super::{
+        is_main_user_window_instance_label, is_user_window_label, should_label_resolve_as_user_window,
+        window_kind_from_label, window_kind_info_for_label, WindowName,
+    };
 
     #[test]
     fn visible_main_labels_resolve_as_user_windows() {
@@ -289,5 +315,43 @@ mod tests {
     fn unknown_labels_do_not_resolve_as_user_windows() {
         assert!(!should_label_resolve_as_user_window("unknown"));
         assert!(!is_user_window_label("unknown"));
+    }
+
+    #[test]
+    fn startup_window_kind_marks_primary_main_as_user_window() {
+        let info = window_kind_info_for_label("main");
+
+        assert_eq!(info.window, Some(WindowName::Main));
+        assert!(info.is_primary_main);
+        assert!(info.is_user_window);
+    }
+
+    #[test]
+    fn repeated_open_window_labels_remain_non_primary_user_windows() {
+        let info = window_kind_info_for_label("main-3");
+
+        assert_eq!(info.window, Some(WindowName::Main));
+        assert!(!info.is_primary_main);
+        assert!(info.is_user_window);
+    }
+
+    #[test]
+    fn support_like_labels_never_resolve_as_visible_user_windows() {
+        for label in ["main-prewarm-1", "support-main", "prewarm-main"] {
+            let info = window_kind_info_for_label(label);
+
+            assert_eq!(window_kind_from_label(label), Some(WindowName::Main).filter(|_| label.starts_with("main-")));
+            assert!(!info.is_primary_main);
+            assert!(!info.is_user_window);
+        }
+    }
+
+    #[test]
+    fn only_numeric_main_suffixes_count_as_user_window_instances() {
+        assert!(is_main_user_window_instance_label("main-1"));
+        assert!(is_main_user_window_instance_label("main-42"));
+        assert!(!is_main_user_window_instance_label("main-prewarm-1"));
+        assert!(!is_main_user_window_instance_label("main-secondary"));
+        assert!(!is_main_user_window_instance_label("support-main-1"));
     }
 }

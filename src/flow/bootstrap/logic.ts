@@ -6,6 +6,7 @@ export interface AppWindowMeta {
   window: WindowName | null;
   label: string;
   isPrimaryMain: boolean;
+  isUserWindow: boolean;
   status: AppBootstrapStatus;
 }
 
@@ -13,6 +14,7 @@ export const initialAppWindowMeta: AppWindowMeta = {
   window: null,
   label: "",
   isPrimaryMain: false,
+  isUserWindow: true,
   status: "pending",
 };
 
@@ -22,7 +24,7 @@ export function shouldRenderMainWindow(meta: AppWindowMeta): boolean {
     case "error":
       return true;
     case "ready":
-      return meta.window === null || meta.window === "Main";
+      return meta.isUserWindow && (meta.window === null || meta.window === "Main");
   }
 }
 

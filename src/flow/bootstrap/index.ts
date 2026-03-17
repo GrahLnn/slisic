@@ -31,6 +31,7 @@ export function useAppBootstrap(): AppWindowMeta {
           window: windowKind.window,
           label: windowKind.label,
           isPrimaryMain: windowKind.is_primary_main,
+          isUserWindow: windowKind.is_user_window,
           status: "ready",
         };
         setAppWindow(nextWindow);

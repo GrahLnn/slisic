@@ -156,6 +156,7 @@ export type WindowKindInfo = {
 	window: WindowName | null,
 	label: string,
 	is_primary_main: boolean,
+	is_user_window: boolean,
 };
 
 export type WindowName = "Main";
