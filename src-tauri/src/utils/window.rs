@@ -116,9 +116,16 @@ fn should_exit_on_window_close_after_visible_user_count(
     visible_user_window_count_before_close.saturating_sub(1) == 0
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreparedWindowReadiness {
+    Created,
+    Ready,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PreparedWindowState {
     label: String,
+    readiness: PreparedWindowReadiness,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,7 +143,30 @@ fn reserve_prepared_window(name: WindowName, label: String) {
     let mut inventory = prepared_window_inventory()
         .lock()
         .expect("prepared window inventory poisoned");
-    inventory.insert(name, PreparedWindowState { label });
+    inventory.insert(
+        name,
+        PreparedWindowState {
+            label,
+            readiness: PreparedWindowReadiness::Created,
+        },
+    );
+}
+
+fn mark_prepared_window_ready(name: WindowName, label: &str) -> bool {
+    let mut inventory = prepared_window_inventory()
+        .lock()
+        .expect("prepared window inventory poisoned");
+
+    let Some(state) = inventory.get_mut(&name) else {
+        return false;
+    };
+
+    if state.label != label {
+        return false;
+    }
+
+    state.readiness = PreparedWindowReadiness::Ready;
+    true
 }
 
 #[cfg(test)]
@@ -169,7 +199,15 @@ fn take_prepared_window(name: WindowName) -> Option<PreparedWindowState> {
     let mut inventory = prepared_window_inventory()
         .lock()
         .expect("prepared window inventory poisoned");
-    inventory.remove(&name)
+    let should_take = inventory
+        .get(&name)
+        .is_some_and(|state| state.readiness == PreparedWindowReadiness::Ready);
+
+    if should_take {
+        return inventory.remove(&name);
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -196,6 +234,14 @@ fn prepared_window_label(name: WindowName) -> Option<String> {
         .lock()
         .expect("prepared window inventory poisoned");
     inventory.get(&name).map(|state| state.label.clone())
+}
+
+#[cfg(test)]
+fn prepared_window_readiness(name: WindowName) -> Option<PreparedWindowReadiness> {
+    let inventory = prepared_window_inventory()
+        .lock()
+        .expect("prepared window inventory poisoned");
+    inventory.get(&name).map(|state| state.readiness)
 }
 
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
@@ -453,6 +499,22 @@ pub fn prewarm_window(app: tauri::AppHandle, name: WindowName) {
     }
 }
 
+pub fn mark_prewarm_window_ready(app: &AppHandle, label: &str) {
+    let Some(name) = window_kind_from_label(label) else {
+        return;
+    };
+
+    if should_label_resolve_as_user_window(label) {
+        return;
+    }
+
+    if app.get_webview_window(label).is_none() {
+        return;
+    }
+
+    let _ = mark_prepared_window_ready(name, label);
+}
+
 #[specta::specta]
 #[tauri::command]
 pub fn discard_prewarm_window(app: tauri::AppHandle, name: WindowName) -> bool {
@@ -474,11 +536,13 @@ mod tests {
         classify_window_identity, classify_window_labels, discard_prepared_window,
         discard_prepared_window_state,
         is_main_user_window_instance_label,
-        is_user_window_label, prepared_window_label, prepared_window_targets,
-        reserve_prepared_window,
+        is_user_window_label, mark_prepared_window_ready, prepared_window_label,
+        prepared_window_readiness, prepared_window_targets, reserve_prepared_window,
         reset_prepared_window_inventory, should_exit_on_window_close_with_count,
         should_label_resolve_as_user_window, take_prepared_window, window_kind_from_label,
-        window_kind_info_for_label, PreparedWindowDisposition, WindowName,
+        window_kind_info_for_label, PreparedWindowDisposition, PreparedWindowReadiness,
+        PreparedWindowState,
+        WindowName,
     };
 
     #[test]
@@ -704,8 +768,9 @@ mod tests {
         let prepared = prepared_window_targets();
         assert_eq!(prepared, vec![WindowName::Main]);
         assert_eq!(prepared_window_label(WindowName::Main).as_deref(), Some("main-prewarm"));
-        assert!(take_prepared_window(WindowName::Main).is_some());
-        assert!(prepared_window_targets().is_empty());
+        assert_eq!(prepared_window_readiness(WindowName::Main), Some(PreparedWindowReadiness::Created));
+        assert!(take_prepared_window(WindowName::Main).is_none());
+        assert_eq!(prepared_window_targets(), vec![WindowName::Main]);
     }
 
     #[test]
@@ -713,7 +778,47 @@ mod tests {
         reset_prepared_window_inventory();
         reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
+        assert!(mark_prepared_window_ready(WindowName::Main, "main-prewarm"));
+
         assert!(take_prepared_window(WindowName::Main).is_some());
         assert!(take_prepared_window(WindowName::Main).is_none());
+    }
+
+    #[test]
+    fn merely_created_hidden_window_does_not_count_as_consumable_prewarm_inventory() {
+        reset_prepared_window_inventory();
+        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
+
+        assert_eq!(prepared_window_readiness(WindowName::Main), Some(PreparedWindowReadiness::Created));
+        assert!(take_prepared_window(WindowName::Main).is_none());
+        assert_eq!(prepared_window_targets(), vec![WindowName::Main]);
+    }
+
+    #[test]
+    fn ready_hidden_window_becomes_consumable_for_next_visible_open_flow() {
+        reset_prepared_window_inventory();
+        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
+
+        assert!(mark_prepared_window_ready(WindowName::Main, "main-prewarm"));
+        assert_eq!(prepared_window_readiness(WindowName::Main), Some(PreparedWindowReadiness::Ready));
+
+        let consumed = take_prepared_window(WindowName::Main);
+        assert_eq!(
+            consumed,
+            Some(PreparedWindowState {
+                label: "main-prewarm".to_string(),
+                readiness: PreparedWindowReadiness::Ready,
+            })
+        );
+        assert!(prepared_window_targets().is_empty());
+    }
+
+    #[test]
+    fn readiness_updates_only_for_matching_hidden_inventory_label() {
+        reset_prepared_window_inventory();
+        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
+
+        assert!(!mark_prepared_window_ready(WindowName::Main, "main-1"));
+        assert_eq!(prepared_window_readiness(WindowName::Main), Some(PreparedWindowReadiness::Created));
     }
 }
