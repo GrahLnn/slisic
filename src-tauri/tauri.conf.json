@@ -22,8 +22,9 @@
         "resizable": true,
         "fullscreen": false,
         "alwaysOnTop": false,
-        "focus": false,
+        "focus": true,
         "visible": false,
+        "acceptFirstMouse": true,
         "dragDropEnabled": true,
         "decorations": true,
         "center": true

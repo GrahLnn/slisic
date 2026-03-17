@@ -78,6 +78,10 @@ pub fn is_non_prewarm_window_label(label: &str) -> bool {
     matches!(window_kind_from_label(label), (Some(_), false))
 }
 
+fn can_window_trigger_prewarm(label: &str) -> bool {
+    is_non_prewarm_window_label(label)
+}
+
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
     if !is_non_prewarm_window_label(closing_label) {
         return false;
@@ -271,7 +275,9 @@ fn build_window(
 ) -> Result<WebviewWindow, String> {
     let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
         .title(title)
-        .visible(visible);
+        .visible(visible)
+        .focused(visible)
+        .accept_first_mouse(true);
 
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     {
@@ -283,6 +289,20 @@ fn build_window(
     }
 
     builder.build().map_err(|error| error.to_string())
+}
+
+pub fn activate_window(window: &WebviewWindow) {
+    let label = window.label().to_string();
+
+    if let Err(error) = window.unminimize() {
+        eprintln!("Failed to unminimize window {label}: {error}");
+    }
+    if let Err(error) = window.show() {
+        eprintln!("Failed to show window {label}: {error}");
+    }
+    if let Err(error) = window.set_focus() {
+        eprintln!("Failed to focus window {label}: {error}");
+    }
 }
 
 fn apply_window_options(window: &WebviewWindow, options: Option<&CreateWindowOptions>) {
@@ -409,7 +429,11 @@ pub fn ensure_window_prewarm(app: &tauri::AppHandle, name: WindowName) {
 
 #[specta::specta]
 #[tauri::command]
-pub fn request_window_prewarm(app: AppHandle, name: WindowName) {
+pub fn request_window_prewarm(window: WebviewWindow, app: AppHandle, name: WindowName) {
+    if !can_window_trigger_prewarm(window.label()) {
+        return;
+    }
+
     enable_window_prewarm(name);
     ensure_window_prewarm(&app, name);
 }
@@ -417,17 +441,23 @@ pub fn request_window_prewarm(app: AppHandle, name: WindowName) {
 #[specta::specta]
 #[tauri::command]
 pub async fn create_window(
+    window: WebviewWindow,
     app: tauri::AppHandle,
     name: WindowName,
     options: Option<CreateWindowOptions>,
 ) {
-    enable_window_prewarm(name);
+    let should_replenish_prewarm = can_window_trigger_prewarm(window.label());
+
+    if should_replenish_prewarm {
+        enable_window_prewarm(name);
+    }
 
     if let Some(window) = take_ready_window(&app, name) {
         apply_window_options(&window, options.as_ref());
-        let _ = window.show();
-        let _ = window.set_focus();
-        ensure_window_prewarm(&app, name);
+        activate_window(&window);
+        if should_replenish_prewarm {
+            ensure_window_prewarm(&app, name);
+        }
         return;
     }
 
@@ -436,10 +466,26 @@ pub async fn create_window(
         Ok(window) => {
             apply_window_options(&window, options.as_ref());
             apply_window_setup(&window, false);
-            ensure_window_prewarm(&app, name);
+            activate_window(&window);
+            if should_replenish_prewarm {
+                ensure_window_prewarm(&app, name);
+            }
         }
         Err(error) => {
             eprintln!("Failed to create window: {error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::can_window_trigger_prewarm;
+
+    #[test]
+    fn only_formally_visible_windows_can_trigger_prewarm() {
+        assert!(can_window_trigger_prewarm("main"));
+        assert!(can_window_trigger_prewarm("main-1"));
+        assert!(!can_window_trigger_prewarm("main-prewarm-1"));
+        assert!(!can_window_trigger_prewarm("unknown"));
     }
 }
