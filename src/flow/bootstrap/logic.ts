@@ -17,6 +17,11 @@ export interface InteractiveShellState {
   ownershipResolved: boolean;
 }
 
+export interface StartupReadySubscriptionState {
+  tauriInternalsReady: boolean;
+  currentWindowLabel: string | null | undefined;
+}
+
 export const initialAppWindowMeta: AppWindowMeta = {
   window: null,
   label: "",
@@ -98,4 +103,10 @@ export function shouldRunUpdater(meta: AppWindowMeta): boolean {
 
 export function shouldRequestWindowPrewarm(_meta: AppWindowMeta): boolean {
   return false;
+}
+
+export function shouldSubscribeToStartupReady(
+  state: StartupReadySubscriptionState,
+): boolean {
+  return state.tauriInternalsReady && typeof state.currentWindowLabel === "string" && state.currentWindowLabel.length > 0;
 }

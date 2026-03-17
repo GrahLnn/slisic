@@ -4,6 +4,7 @@ import {
   getHomepagePrewarmTarget,
   getInteractiveShellState,
   initialAppWindowMeta,
+  shouldSubscribeToStartupReady,
   resolveHomepageEffectWindow,
   resolveMainRouteWindow,
   shouldRequestWindowPrewarm,
@@ -448,6 +449,29 @@ describe("getPlatform", () => {
 
   test("startup ready event name stays stable for native and renderer startup tracing", () => {
     expect(startupReadyEvent).toBe("factory://startup-ready");
+  });
+
+  test("startup ready subscription waits for current window metadata", () => {
+    expect(
+      shouldSubscribeToStartupReady({
+        tauriInternalsReady: true,
+        currentWindowLabel: "main",
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldSubscribeToStartupReady({
+        tauriInternalsReady: true,
+        currentWindowLabel: "",
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldSubscribeToStartupReady({
+        tauriInternalsReady: false,
+        currentWindowLabel: "main",
+      }),
+    ).toBe(false);
   });
 });
 

@@ -7,7 +7,7 @@ import { me } from "@grahlnn/fn";
 import { getPlatform } from "@/lib/utils";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppBootstrap } from "./flow/bootstrap";
-import { getInteractiveShellState } from "./flow/bootstrap/logic";
+import { getInteractiveShellState, shouldSubscribeToStartupReady } from "./flow/bootstrap/logic";
 
 const os = me(getPlatform());
 const startupReadyEvent = "factory://startup-ready";
@@ -18,10 +18,22 @@ function signalStartupReady() {
   }
 
   const tauriWindow = window as typeof window & {
-    __TAURI_INTERNALS__?: unknown;
+    __TAURI_INTERNALS__?: {
+      metadata?: {
+        currentWindow?: {
+          label?: string;
+        };
+      };
+    };
   };
 
-  if (!tauriWindow.__TAURI_INTERNALS__) {
+  const currentWindowLabel = tauriWindow.__TAURI_INTERNALS__?.metadata?.currentWindow?.label;
+  if (
+    !shouldSubscribeToStartupReady({
+      tauriInternalsReady: Boolean(tauriWindow.__TAURI_INTERNALS__),
+      currentWindowLabel,
+    })
+  ) {
     return;
   }
 
