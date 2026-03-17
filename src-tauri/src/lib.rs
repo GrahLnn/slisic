@@ -22,7 +22,6 @@ pub fn run() {
         utils::core::app_ready,
         utils::window::get_mouse_and_window_position,
         utils::window::get_window_kind,
-        utils::window::request_window_prewarm,
         utils::window::create_window,
         greet,
         clean,
@@ -90,7 +89,6 @@ export function makeLiveEvent<T extends Record<string, any>>(ev: EventsShape<T>)
                 let label = window.label().to_string();
                 let app = window.app_handle();
                 if utils::window::should_exit_on_window_close(&app, &label) {
-                    utils::window::close_all_prewarm_windows(&app);
                     app.exit(0);
                 }
             }

@@ -24,6 +24,10 @@ export function shouldRenderMainWindow(meta: AppWindowMeta): boolean {
     case "error":
       return true;
     case "ready":
+      if (meta.isPrewarm) {
+        return false;
+      }
+
       return meta.window === null || meta.window === "Main";
   }
 }
@@ -33,5 +37,5 @@ export function shouldRunUpdater(meta: AppWindowMeta): boolean {
 }
 
 export function shouldRequestWindowPrewarm(meta: AppWindowMeta): boolean {
-  return !meta.isPrewarm && meta.window === "Main";
+  return false;
 }

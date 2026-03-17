@@ -29,7 +29,7 @@ describe("shouldRenderMainWindow", () => {
     ).toBe(true);
   });
 
-  test("still renders prewarm windows that are shown as main windows", () => {
+  test("does not treat support windows as user-facing main windows", () => {
     expect(
       shouldRenderMainWindow(
         createMeta({
@@ -38,7 +38,7 @@ describe("shouldRenderMainWindow", () => {
           isPrewarm: true,
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 
@@ -67,7 +67,7 @@ describe("shouldRunUpdater", () => {
 });
 
 describe("shouldRequestWindowPrewarm", () => {
-  test("requests prewarm for visible main windows only", () => {
+  test("never requests support-window prewarm replenishment", () => {
     expect(
       shouldRequestWindowPrewarm(
         createMeta({
@@ -76,7 +76,7 @@ describe("shouldRequestWindowPrewarm", () => {
           isPrewarm: false,
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
 
     expect(
       shouldRequestWindowPrewarm(

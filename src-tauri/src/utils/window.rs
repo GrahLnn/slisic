@@ -9,18 +9,10 @@ use super::macos_titlebar::FullscreenStateManager;
 #[cfg(target_os = "macos")]
 use std::cell::RefCell;
 use std::fmt;
-use std::sync::{LazyLock, Mutex};
 #[cfg(target_os = "macos")]
 thread_local! {
     static MAIN_WINDOW_OBSERVER: RefCell<Option<FullscreenStateManager>> = RefCell::new(None);
 }
-
-const PREWARM_ENABLED: bool = false;
-const PREWARM_TARGET_PER_WINDOW: usize = 1;
-
-static PREWARM_PENDING: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
-static PREWARM_READY: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
-static PREWARM_ENABLED: LazyLock<Mutex<Vec<WindowName>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct WindowKindInfo {
@@ -79,50 +71,22 @@ pub fn is_non_prewarm_window_label(label: &str) -> bool {
     matches!(window_kind_from_label(label), (Some(_), false))
 }
 
-fn can_window_trigger_prewarm(label: &str) -> bool {
+pub fn should_label_resolve_as_user_window(label: &str) -> bool {
     is_non_prewarm_window_label(label)
 }
 
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
-    if !is_non_prewarm_window_label(closing_label) {
+    if !should_label_resolve_as_user_window(closing_label) {
         return false;
     }
 
     let main_window_count = app
         .webview_windows()
         .keys()
-        .filter(|label| is_non_prewarm_window_label(label))
+        .filter(|label| should_label_resolve_as_user_window(label))
         .count();
 
     main_window_count <= 1
-}
-
-pub fn close_all_prewarm_windows(app: &AppHandle) {
-    let labels = app
-        .webview_windows()
-        .keys()
-        .filter(|label| matches!(window_kind_from_label(label), (Some(_), true)))
-        .cloned()
-        .collect::<Vec<_>>();
-
-    for label in labels {
-        if let Some(window) = app.get_webview_window(&label) {
-            let _ = window.close();
-        }
-    }
-
-    PREWARM_PENDING
-        .lock()
-        .expect("prewarm pending list should be lockable")
-        .clear();
-    PREWARM_READY
-        .lock()
-        .expect("prewarm ready list should be lockable")
-        .clear();
-    PREWARM_ENABLED
-        .lock()
-        .expect("prewarm enabled list should be lockable")
-        .clear();
 }
 
 #[derive(Serialize, Type)]
@@ -235,10 +199,6 @@ impl WindowName {
             WindowName::Main => "main",
         }
     }
-
-    pub const fn prewarm_target(&self) -> usize {
-        PREWARM_TARGET_PER_WINDOW
-    }
 }
 
 impl fmt::Display for WindowName {
@@ -255,17 +215,6 @@ fn next_label(name: WindowName, app: &tauri::AppHandle) -> String {
         }
     }
     unreachable!("graph window label overflow")
-}
-
-fn next_prewarm_label(name: WindowName, app: &tauri::AppHandle) -> String {
-    let prefix = prewarm_prefix(name);
-    for index in 1.. {
-        let label = format!("{prefix}{index}");
-        if app.get_webview_window(&label).is_none() {
-            return label;
-        }
-    }
-    unreachable!("prewarm window label overflow")
 }
 
 fn build_window(
@@ -314,186 +263,19 @@ fn apply_window_options(window: &WebviewWindow, options: Option<&CreateWindowOpt
     }
 }
 
-fn prune_labels(app: &tauri::AppHandle, labels: &mut Vec<String>) {
-    labels.retain(|label| app.get_webview_window(label).is_some());
-}
-
-fn take_ready_window(app: &tauri::AppHandle, name: WindowName) -> Option<WebviewWindow> {
-    let mut ready = PREWARM_READY
-        .lock()
-        .expect("prewarm ready list should be lockable");
-    prune_labels(app, &mut ready);
-
-    while let Some(index) = ready
-        .iter()
-        .position(|label| is_prewarm_label_for(name, label))
-    {
-        let label = ready.swap_remove(index);
-        if let Some(window) = app.get_webview_window(&label) {
-            return Some(window);
-        }
-    }
-
-    None
-}
-
-pub fn mark_window_ready(label: &str) -> bool {
-    if !matches!(window_kind_from_label(label), (Some(_), true)) {
-        return false;
-    }
-
-    let mut pending = PREWARM_PENDING
-        .lock()
-        .expect("prewarm pending list should be lockable");
-    if let Some(index) = pending.iter().position(|value| value == label) {
-        pending.swap_remove(index);
-    }
-    drop(pending);
-
-    let mut ready = PREWARM_READY
-        .lock()
-        .expect("prewarm ready list should be lockable");
-    if !ready.iter().any(|value| value == label) {
-        ready.push(label.to_string());
-    }
-
-    true
-}
-
-fn enable_window_prewarm(name: WindowName) {
-    let mut enabled = PREWARM_ENABLED
-        .lock()
-        .expect("prewarm enabled list should be lockable");
-
-    if !enabled.iter().any(|value| *value == name) {
-        enabled.push(name);
-    }
-}
-
-fn should_prewarm_window(name: WindowName) -> bool {
-    PREWARM_ENABLED
-        .lock()
-        .expect("prewarm enabled list should be lockable")
-        .iter()
-        .any(|value| *value == name)
-}
-
-pub fn ensure_window_prewarm(app: &tauri::AppHandle, name: WindowName) {
-    if !PREWARM_ENABLED {
-        return;
-    }
-
-    if !should_prewarm_window(name) {
-        return;
-    }
-
-    let pending_len = {
-        let mut pending = PREWARM_PENDING
-            .lock()
-            .expect("prewarm pending list should be lockable");
-        prune_labels(app, &mut pending);
-        pending
-            .iter()
-            .filter(|label| is_prewarm_label_for(name, label))
-            .count()
-    };
-
-    let ready_len = {
-        let mut ready = PREWARM_READY
-            .lock()
-            .expect("prewarm ready list should be lockable");
-        prune_labels(app, &mut ready);
-        ready
-            .iter()
-            .filter(|label| is_prewarm_label_for(name, label))
-            .count()
-    };
-
-    let total = pending_len + ready_len;
-    if total >= name.prewarm_target() {
-        return;
-    }
-
-    for _ in total..name.prewarm_target() {
-        let label = next_prewarm_label(name, app);
-        match build_window(app, label.clone(), name.as_str(), false) {
-            Ok(window) => {
-                apply_window_setup(&window, false);
-                PREWARM_PENDING
-                    .lock()
-                    .expect("prewarm pending list should be lockable")
-                    .push(label);
-            }
-            Err(error) => {
-                eprintln!("Failed to prewarm main window: {error}");
-                break;
-            }
-        }
-    }
-}
-
-#[specta::specta]
-#[tauri::command]
-pub fn request_window_prewarm(window: WebviewWindow, app: AppHandle, name: WindowName) {
-    if !PREWARM_ENABLED {
-        return;
-    }
-
-    if !can_window_trigger_prewarm(window.label()) {
-        return;
-    }
-
-    enable_window_prewarm(name);
-    ensure_window_prewarm(&app, name);
-}
-
 #[specta::specta]
 #[tauri::command]
 pub async fn create_window(
-    window: WebviewWindow,
     app: tauri::AppHandle,
     name: WindowName,
     options: Option<CreateWindowOptions>,
 ) {
-    if !PREWARM_ENABLED {
-        let label = next_label(name, &app);
-        match build_window(&app, label, name.as_str(), true) {
-            Ok(window) => {
-                apply_window_options(&window, options.as_ref());
-                apply_window_setup(&window, false);
-                activate_window(&window);
-            }
-            Err(error) => {
-                eprintln!("Failed to create window: {error}");
-            }
-        }
-        return;
-    }
-
-    let should_replenish_prewarm = can_window_trigger_prewarm(window.label());
-
-    if should_replenish_prewarm {
-        enable_window_prewarm(name);
-    }
-
-    if let Some(window) = take_ready_window(&app, name) {
-        apply_window_options(&window, options.as_ref());
-        activate_window(&window);
-        if should_replenish_prewarm {
-            ensure_window_prewarm(&app, name);
-        }
-        return;
-    }
-
     let label = next_label(name, &app);
     match build_window(&app, label, name.as_str(), true) {
         Ok(window) => {
             apply_window_options(&window, options.as_ref());
             apply_window_setup(&window, false);
             activate_window(&window);
-            if should_replenish_prewarm {
-                ensure_window_prewarm(&app, name);
-            }
         }
         Err(error) => {
             eprintln!("Failed to create window: {error}");
@@ -503,13 +285,27 @@ pub async fn create_window(
 
 #[cfg(test)]
 mod tests {
-    use super::can_window_trigger_prewarm;
+    use super::{
+        is_non_prewarm_window_label, should_label_resolve_as_user_window, window_kind_from_label,
+        WindowName,
+    };
 
     #[test]
-    fn only_formally_visible_windows_can_trigger_prewarm() {
-        assert!(can_window_trigger_prewarm("main"));
-        assert!(can_window_trigger_prewarm("main-1"));
-        assert!(!can_window_trigger_prewarm("main-prewarm-1"));
-        assert!(!can_window_trigger_prewarm("unknown"));
+    fn visible_main_labels_resolve_as_user_windows() {
+        assert_eq!(window_kind_from_label("main"), (Some(WindowName::Main), false));
+        assert_eq!(window_kind_from_label("main-1"), (Some(WindowName::Main), false));
+    }
+
+    #[test]
+    fn support_labels_never_resolve_as_visible_user_windows() {
+        assert_eq!(window_kind_from_label("main-prewarm-1"), (Some(WindowName::Main), true));
+        assert!(!should_label_resolve_as_user_window("main-prewarm-1"));
+        assert!(!is_non_prewarm_window_label("main-prewarm-1"));
+    }
+
+    #[test]
+    fn unknown_labels_do_not_resolve_as_user_windows() {
+        assert!(!should_label_resolve_as_user_window("unknown"));
+        assert!(!is_non_prewarm_window_label("unknown"));
     }
 }
