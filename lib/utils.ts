@@ -4,7 +4,52 @@ import { me } from "@grahlnn/fn";
 import { platform } from "@tauri-apps/plugin-os";
 
 export const app_state = me(!import.meta.env.DEV ? "pub" : "dev");
-export const os = me(platform());
+
+export type OsName = "windows" | "macos" | "linux" | "android" | "ios" | "unknown";
+
+export function getPlatform(): OsName {
+  if (typeof window !== "undefined") {
+    const tauriOs = (window as typeof window & {
+      __TAURI_OS_PLUGIN_INTERNALS__?: {
+        platform?: string;
+      };
+    }).__TAURI_OS_PLUGIN_INTERNALS__;
+
+    if (typeof tauriOs?.platform === "string") {
+      return tauriOs.platform as OsName;
+    }
+  }
+
+  const userAgent = typeof navigator === "undefined" ? "" : navigator.userAgent.toLowerCase();
+
+  if (userAgent.includes("windows")) {
+    return "windows";
+  }
+
+  if (userAgent.includes("mac os") || userAgent.includes("macintosh")) {
+    return "macos";
+  }
+
+  if (userAgent.includes("android")) {
+    return "android";
+  }
+
+  if (userAgent.includes("iphone") || userAgent.includes("ipad") || userAgent.includes("ios")) {
+    return "ios";
+  }
+
+  if (userAgent.includes("linux")) {
+    return "linux";
+  }
+
+  try {
+    return platform() as OsName;
+  } catch {
+    return "unknown";
+  }
+}
+
+export const os = me(getPlatform());
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));

@@ -3,10 +3,10 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import WindowsControlsPortal from "./windowctrl/windows";
 import MacOSControlsPortal from "./windowctrl/macos";
-import { platform } from "@tauri-apps/plugin-os";
 import { me } from "@grahlnn/fn";
+import { getPlatform } from "@/lib/utils";
 
-const os = me(platform());
+const os = me(getPlatform());
 
 const rootEl = document.getElementById("root");
 if (rootEl) {

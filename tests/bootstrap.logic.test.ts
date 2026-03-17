@@ -6,6 +6,7 @@ import {
   shouldRunUpdater,
   type AppWindowMeta,
 } from "../src/flow/bootstrap/logic";
+import { getPlatform } from "../lib/utils";
 
 function createMeta(overrides: Partial<AppWindowMeta> = {}): AppWindowMeta {
   return {
@@ -108,5 +109,46 @@ describe("shouldRequestWindowPrewarm", () => {
         }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("getPlatform", () => {
+  test("falls back to user agent when Tauri OS internals are not ready yet", () => {
+    const originalNavigator = globalThis.navigator;
+    const originalWindow = globalThis.window;
+    const windowStub = (originalWindow ?? {}) as typeof window & {
+      __TAURI_OS_PLUGIN_INTERNALS__?: { platform?: string };
+    };
+    const originalInternals = windowStub.__TAURI_OS_PLUGIN_INTERNALS__;
+
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: windowStub,
+    });
+
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: {
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      },
+    });
+
+    delete windowStub.__TAURI_OS_PLUGIN_INTERNALS__;
+
+    expect(getPlatform()).toBe("windows");
+
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: originalNavigator,
+    });
+
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: originalWindow,
+    });
+
+    if (originalInternals) {
+      windowStub.__TAURI_OS_PLUGIN_INTERNALS__ = originalInternals;
+    }
   });
 });
