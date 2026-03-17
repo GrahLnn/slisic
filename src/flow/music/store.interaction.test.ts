@@ -289,7 +289,7 @@ describe("music interaction guards", () => {
 
 	test("settlePlaybackAck only accepts the matching live playback session", () => {
 		const ack = {
-			session_id: 3n,
+			session_id: 3,
 			path: "C:/audio/a.flac",
 			duration_ms: 1234,
 			gain: 1,
@@ -370,7 +370,7 @@ describe("music interaction guards", () => {
 			sessionId: 3,
 			listName: "contemporary",
 			ack: {
-				session_id: 3n,
+				session_id: 3,
 				path: "C:/audio/a.flac",
 				duration_ms: 1234,
 				gain: 1,
@@ -446,7 +446,7 @@ describe("music interaction guards", () => {
 				sessionId: 3,
 				listName: "contemporary",
 				ack: {
-					session_id: 3n,
+					session_id: 3,
 					path: "C:/audio/a.flac",
 					duration_ms: 1234,
 					gain: 1,
@@ -463,7 +463,7 @@ describe("music interaction guards", () => {
 				sessionId: 4,
 				listName: "contemporary",
 				ack: {
-					session_id: 4n,
+					session_id: 4,
 					path: "C:/audio/b.flac",
 					duration_ms: 1500,
 					gain: 1,

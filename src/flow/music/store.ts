@@ -82,8 +82,8 @@ interface PlaybackSessionSnapshot {
 	nowPlaying: Music | null;
 }
 
-function toPlaybackContractSessionId(sessionId: number): bigint {
-	return BigInt(sessionId);
+function toPlaybackContractSessionId(sessionId: number): number {
+	return sessionId;
 }
 
 export interface SaveAffordance {
@@ -1089,10 +1089,7 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 
 		yield* Effect.sync(() => {
 			if (!isPlaybackContextActive(epoch, list.name)) return;
-			const sessionId =
-				typeof playResult.unwrap().session_id === "bigint"
-					? Number(playResult.unwrap().session_id)
-					: nextPlaybackSessionId();
+			const sessionId = playResult.unwrap().session_id;
 			const ackPatch = settlePlaybackAck(getState(), {
 				sessionId,
 				listName: list.name,
@@ -1131,8 +1128,8 @@ async function ensureEvents() {
 				payload &&
 				typeof payload === "object" &&
 				"session_id" in payload &&
-				typeof (payload as { session_id?: unknown }).session_id === "bigint"
-					? Number((payload as { session_id: bigint }).session_id)
+				typeof (payload as { session_id?: unknown }).session_id === "number"
+					? (payload as { session_id: number }).session_id
 					: null;
 			if (!path) return;
 			const snapshot = getState();

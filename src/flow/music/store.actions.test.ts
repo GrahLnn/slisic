@@ -69,7 +69,7 @@ const impl = {
 	audioPlay: async () =>
 		Ok<
 			{
-				session_id: bigint;
+				session_id: number;
 				path: string;
 				duration_ms: number | null;
 				gain: number;
@@ -80,7 +80,7 @@ const impl = {
 			},
 			string
 		>({
-			session_id: 1n,
+			session_id: 1,
 			path: "track.mp3",
 			duration_ms: 1000,
 			gain: 1,
@@ -122,7 +122,7 @@ const crab = {
 	ytdlpDownloadAndInstall: () => impl.ytdlpDownloadAndInstall(),
 	ffmpegDownloadAndInstall: () => impl.ffmpegDownloadAndInstall(),
 	updateSavePath: (path: string) => impl.updateSavePath(path),
-	audioPlay: (req: { session_id: bigint; path: string }) => {
+	audioPlay: (req: { session_id: number; path: string }) => {
 		impl.audioPlay = async () =>
 			Ok({
 				session_id: req.session_id,
@@ -2005,12 +2005,12 @@ describe("music store action contracts", () => {
 
 
 	test("play_true_positive_threads_request_session_identity_through_backend_ack_contract", async () => {
-		const request = { session_id: 41n, path: "C:/music/focus/a.flac" };
+		const request = { session_id: 41, path: "C:/music/focus/a.flac" };
 		const result = await crab.audioPlay(request);
 
 		expect(result.isOk()).toBe(true);
 		expect(result.unwrap().session_id).toBe(request.session_id);
-		expect(typeof result.unwrap().session_id).toBe("bigint");
+		expect(typeof result.unwrap().session_id).toBe("number");
 	});
 
 	test("play_false_positive_guard_stale_ack_like_restart_does_not_preserve_replaced_session_identity", async () => {

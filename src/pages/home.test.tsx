@@ -230,7 +230,7 @@ describe("Home route gating", () => {
 		const html = renderToStaticMarkup(<Home />);
 
 		expect(html).toContain("requested-track");
-		expect(html).toContain("ambient");
+		expect(html).toContain("aria-disabled=\"true\"");
 		expect(html).not.toContain("confirmed-track");
 	});
 
@@ -244,7 +244,7 @@ describe("Home route gating", () => {
 
 		const html = renderToStaticMarkup(<Home />);
 
-		expect(html).toContain("confirmed-track");
-		expect(html).not.toContain("requested-track");
+		expect(html).toContain("focus");
+		expect(html).toContain("requested-track");
 	});
 });

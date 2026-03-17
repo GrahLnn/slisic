@@ -273,7 +273,7 @@ describe("music logic", () => {
 
 	test("AudioPlayAck TS contract exposes canonical loudness presence for playback acknowledgments", () => {
 		const ack: AudioPlayAck = {
-			session_id: 1n,
+			session_id: 1,
 			path: "track.mp3",
 			duration_ms: 1234,
 			gain: 0.75,
@@ -288,15 +288,15 @@ describe("music logic", () => {
 
 	test("AudioPlayRequest and AudioEnded TS contracts expose playback session identity", () => {
 		const request = {
-			session_id: 2n,
+			session_id: 2,
 			path: "track.mp3",
 		};
 		const ended = {
-			session_id: 2n,
+			session_id: 2,
 			path: "track.mp3",
 		};
 
-		expect(request.session_id).toBe(2n);
-		expect(ended.session_id).toBe(2n);
+		expect(request.session_id).toBe(2);
+		expect(ended.session_id).toBe(2);
 	});
 });

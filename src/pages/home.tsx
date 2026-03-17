@@ -45,17 +45,18 @@ function Play() {
 	const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
 	const didInitCenterRef = useRef(false);
 	const processMsg = hook.useMsg();
-	const hasImmediatePlaybackContext =
-		ctx.mode === "play" && !!curList && !!requestedPlay;
+	const hasPlaybackSurface = ctx.mode === "play" && !!curList;
 	const displayLists =
 		lists.length > 0
 			? lists.map((playlist) => ({
 					name: playlist.name,
 					playlist,
 					isHydrated: true,
-					projectedTitle:
-						playlist.name === curList?.name ? requestedPlay?.title ?? null : null,
-					confirmedTitle:
+					historicalTitle:
+						playlist.name === curList?.name
+							? requestedPlay?.title ?? confirmedPlay?.title ?? null
+							: null,
+					activeTitle:
 						playlist.name === curList?.name ? confirmedPlay?.title ?? null : null,
 				}))
 			: ctx.loading
@@ -63,8 +64,8 @@ function Play() {
 						name: playlist.name,
 						playlist: null,
 						isHydrated: false,
-						projectedTitle: null,
-						confirmedTitle: null,
+						historicalTitle: null,
+						activeTitle: null,
 					}))
 				: [];
 
@@ -114,17 +115,17 @@ function Play() {
 					<div aria-hidden className="h-[100vh] shrink-0 snap-none" />
 
 					{displayLists.map(
-						({ name, playlist, isHydrated, projectedTitle, confirmedTitle }) => {
+						({ name, playlist, isHydrated, historicalTitle, activeTitle }) => {
 						const isCurrent = name === curList?.name;
 						const disabled =
-							(hasImmediatePlaybackContext && !isCurrent) || (!isHydrated && ctx.loading);
-						const shouldSwap = hasImmediatePlaybackContext && isCurrent && !confirmedTitle;
+							(hasPlaybackSurface && !isCurrent) || (!isHydrated && ctx.loading);
+						const shouldSwap = hasPlaybackSurface && isCurrent;
 						const showName = shouldSwap ? hoveredKey === name : true;
 						const isOk = playlist
 							? playlist.entries.every((entry) => entry.downloaded_ok)
 							: true;
 
-						const alt = projectedTitle ?? name;
+						const alt = historicalTitle ?? name;
 						const longer =
 							(alt?.length ?? 0) >= name.length ? alt : name;
 
@@ -216,13 +217,13 @@ function Play() {
 														- {processMsg.str}
 													</span>
 												) : null}
-												{isCurrent && confirmedTitle ? (
+												{isCurrent && activeTitle ? (
 													<span className="absolute ml-1 max-w-2xs truncate whitespace-nowrap text-xs text-[#262626] dark:text-[#d4d4d4]">
-														- {confirmedTitle}
+														- {activeTitle}
 													</span>
-												) : isCurrent && projectedTitle && !confirmedTitle ? (
+												) : isCurrent && historicalTitle ? (
 													<span className="absolute ml-1 max-w-2xs truncate whitespace-nowrap text-xs text-[#525252] dark:text-[#a3a3a3]">
-														- {projectedTitle}
+														- {historicalTitle}
 													</span>
 												) : null}
 												{playlist && !isOk ? (
