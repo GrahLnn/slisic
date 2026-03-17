@@ -1694,6 +1694,215 @@ describe("music store action contracts", () => {
 		expect(state.playlists).toEqual([makePlaylist("server", [entry])]);
 	});
 
+	test("saveBoundary_true_negative_guard_refresh_does_not_clear_optimistic_exit_context_before_matching_reconcile", async () => {
+		const entry = makeEntry("alpha", "C:/music/alpha");
+		const mission = makeMission("fresh", [entry]);
+		let releaseCreate!: () => void;
+		let readAllCalls = 0;
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			routeResolved: true,
+			slot: mission,
+			selectedListName: "stale",
+			playbackListName: "stale",
+			nowPlaying: makeMusic("C:/music/stale/a.flac"),
+			processMsg: { playlist: "stale", str: "processing" },
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+		});
+
+		impl.create = async () => {
+			await new Promise<void>((resolve) => {
+				releaseCreate = resolve;
+			});
+			return Ok<null, string>(null);
+		};
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			return Ok<Playlist[], string>(
+				readAllCalls === 1 ? [] : [makePlaylist("server", [entry])],
+			);
+		};
+
+		const saving = action.save();
+
+		await waitUntil(() => __testing.getState().slot === null);
+		await refresh();
+
+		let state = __testing.getState();
+		expect(state.mode).toBe("new_guide");
+		expect(state.routeResolved).toBe(true);
+		expect(state.slot).toBeNull();
+		expect(state.playlists).toEqual([]);
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.processMsg).toBeNull();
+
+		releaseCreate();
+		await saving;
+		await flush();
+
+		state = __testing.getState();
+		expect(state.mode).toBe("play");
+		expect(state.routeResolved).toBe(true);
+		expect(state.slot).toBeNull();
+		expect(state.playlists).toEqual([makePlaylist("server", [entry])]);
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.processMsg).toBeNull();
+		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
+	});
+
+	test("saveBoundary_true_negative_guard_process_result_does_not_rebind_optimistic_exit_context_before_matching_reconcile", async () => {
+		const entry = makeEntry("alpha", "C:/music/alpha");
+		const mission = makeMission("fresh", [entry]);
+		const handlers = new Map<string, (payload: unknown) => void>();
+		let releaseCreate!: () => void;
+		let readAllCalls = 0;
+
+		impl.evt = async (event: string, handler: (payload: unknown) => void) => {
+			handlers.set(event, handler);
+			return () => {
+				handlers.delete(event);
+			};
+		};
+		impl.playlistNames = async () => Ok<string[], string>([]);
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			return Ok<Playlist[], string>(
+				readAllCalls <= 2 ? [] : [makePlaylist("server", [entry])],
+			);
+		};
+
+		await action.run();
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			routeResolved: true,
+			slot: mission,
+			selectedListName: "stale",
+			playbackListName: "stale",
+			nowPlaying: makeMusic("C:/music/stale/a.flac"),
+			processMsg: { playlist: "stale", str: "processing" },
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+		});
+
+		impl.create = async () => {
+			await new Promise<void>((resolve) => {
+				releaseCreate = resolve;
+			});
+			return Ok<null, string>(null);
+		};
+
+		const saving = action.save();
+		await waitUntil(() => __testing.getState().slot === null);
+
+		handlers.get("processMsg")?.({ playlist: "server", str: "late process" });
+		handlers.get("processResult")?.(undefined);
+		await flush();
+
+		let state = __testing.getState();
+		expect(state.mode).toBe("new_guide");
+		expect(state.routeResolved).toBe(true);
+		expect(state.slot).toBeNull();
+		expect(state.playlists).toEqual([]);
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.processMsg).toBeNull();
+
+		releaseCreate();
+		await saving;
+		await flush();
+
+		state = __testing.getState();
+		expect(state.playlists).toEqual([makePlaylist("server", [entry])]);
+		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
+	});
+
+	test("saveBoundary_true_negative_guard_materialization_events_do_not_rebind_optimistic_exit_context_before_matching_reconcile", async () => {
+		const persistedEntry = withEntryMaterialization(
+			makeEntry("alpha", "C:/music/alpha", {
+				url: "https://example.com/list",
+				entry_type: "WebList",
+				downloaded_ok: false,
+			}),
+			{
+				phase: "pending",
+				ownerSessionId: 22,
+				settled: "idle",
+				lastError: null,
+			},
+		);
+		const mission = makeMission("fresh", [persistedEntry]);
+		let releaseCreate!: () => void;
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			routeResolved: true,
+			slot: mission,
+			selectedListName: "stale",
+			playbackListName: "stale",
+			nowPlaying: makeMusic("C:/music/stale/a.flac"),
+			processMsg: { playlist: "stale", str: "processing" },
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+		});
+
+		impl.create = async () => {
+			await new Promise<void>((resolve) => {
+				releaseCreate = resolve;
+			});
+			return Ok<null, string>(null);
+		};
+		impl.readAll = async () => Ok<Playlist[], string>([]);
+
+		const saving = action.save();
+		await waitUntil(() => __testing.getState().slot === null);
+
+		await action.updateWeblist(persistedEntry);
+
+		let state = __testing.getState();
+		expect(state.mode).toBe("play");
+		expect(state.routeResolved).toBe(true);
+		expect(state.slot).toBeNull();
+		expectPlaylistLike(state.playlists, [
+			makePlaylist("fresh", [
+				withEntryMaterialization(persistedEntry, {
+					phase: "pending",
+					ownerSessionId: 22,
+					settled: "idle",
+					lastError: null,
+				}),
+			]),
+		]);
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.processMsg).toBeNull();
+
+		releaseCreate();
+		await saving;
+		await flush();
+
+		state = __testing.getState();
+		expect(state.mode).toBe("new_guide");
+		expect(state.routeResolved).toBe(true);
+		expect(state.slot).toBeNull();
+		expect(state.playlists).toEqual([]);
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.processMsg).toBeNull();
+		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
+	});
+
 	test("save_false_positive_guard_update_error_rolls_back_optimistic_edit_after_refresh", async () => {
 		const original = makePlaylist("focus", [
 			makeEntry("alpha", "C:/music/alpha"),
