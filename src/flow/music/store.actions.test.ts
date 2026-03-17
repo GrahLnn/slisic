@@ -2269,6 +2269,202 @@ describe("music store action contracts", () => {
 		expect(state.processMsg).toBeNull();
 	});
 
+	test("saveBoundary_false_negative_guard_matching_refresh_materialization_and_process_result_only_settle_the_intended_saved_owner_once", async () => {
+		const eventHandlers = {
+			processMsg: null as ((payload: unknown) => void) | null,
+			processResult: null as ((payload: unknown) => void) | null,
+		};
+		const savedEntryPending = withEntryMaterialization(
+			makeEntry("saved remote", "C:/music/saved-remote", {
+				url: "https://example.com/saved",
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			}),
+			{
+				phase: "pending",
+				ownerSessionId: 27,
+				settled: "idle",
+				lastError: null,
+			},
+		);
+		const unrelatedEntryPending = withEntryMaterialization(
+			makeEntry("other remote", "C:/music/other-remote", {
+				url: "https://example.com/other",
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			}),
+			{
+				phase: "pending",
+				ownerSessionId: 41,
+				settled: "idle",
+				lastError: null,
+			},
+		);
+		const savedReadyMusic = {
+			...makeMusic("C:/music/saved-remote/ready.flac"),
+			normalization_status: "Ready" as const,
+			integrated_lufs: -18,
+			analysis_version: 1,
+			analyzed_at_ms: 123,
+		};
+		const unrelatedReadyMusic = {
+			...makeMusic("C:/music/other-remote/ready.flac"),
+			normalization_status: "Ready" as const,
+			integrated_lufs: -16,
+			analysis_version: 1,
+			analyzed_at_ms: 999,
+		};
+		const savedEntryReady = makeEntry("saved remote", "C:/music/saved-remote", {
+			url: "https://example.com/saved",
+			entry_type: "WebList",
+			downloaded_ok: true,
+			musics: [savedReadyMusic],
+		});
+		const unrelatedEntryReady = makeEntry(
+			"other remote",
+			"C:/music/other-remote",
+			{
+				url: "https://example.com/other",
+				entry_type: "WebList",
+				downloaded_ok: true,
+				musics: [unrelatedReadyMusic],
+			},
+		);
+		const mission = makeMission("fresh", [savedEntryPending]);
+		let releaseCreate!: () => void;
+		let readAllCalls = 0;
+
+		impl.evt = async (event: string, handler: (payload: unknown) => void) => {
+			if (event === "processMsg") eventHandlers.processMsg = handler;
+			if (event === "processResult") eventHandlers.processResult = handler;
+			return () => {};
+		};
+		impl.create = async () => {
+			await new Promise<void>((resolve) => {
+				releaseCreate = resolve;
+			});
+			return Ok<null, string>(null);
+		};
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			return Ok<Playlist[], string>(
+				readAllCalls === 1
+					? [makePlaylist("other", [unrelatedEntryPending])]
+					: [
+						makePlaylist("other", [unrelatedEntryReady]),
+						makePlaylist("fresh", [savedEntryReady]),
+					],
+			);
+		};
+		impl.updateWeblist = async (entry: Entry) => {
+			if (entry.url === unrelatedEntryPending.url) {
+				return Ok<Entry, string>(unrelatedEntryReady);
+			}
+			return Ok<Entry, string>(savedEntryReady);
+		};
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			routeResolved: true,
+			startupRoute: "hydrated_editing",
+			slot: mission,
+			playlists: [makePlaylist("other", [unrelatedEntryPending])],
+			selectedListName: "stale",
+			playbackListName: "stale",
+			nowPlaying: makeMusic("C:/music/stale/a.flac"),
+			processMsg: { playlist: "stale", str: "processing" },
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+		});
+
+		const saving = action.save();
+		await waitUntil(() => __testing.getState().slot === null);
+		await refresh();
+
+		let state = __testing.getState();
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.name).toBe("other");
+		expect(
+			(
+				state.playlists[0]?.entries[0] as {
+					materialization?: { phase: string };
+				}
+			).materialization?.phase,
+		).toBe("pending");
+
+		await action.updateWeblist(unrelatedEntryPending);
+		state = __testing.getState();
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.name).toBe("other");
+		expect(
+			(
+				state.playlists[0]?.entries[0] as {
+					materialization?: { phase: string };
+				}
+			).materialization?.phase,
+		).toBe("pending");
+		expect(state.processMsg).toBeNull();
+
+		eventHandlers.processMsg?.({ playlist: "other", str: "other processing" });
+		await eventHandlers.processResult?.({});
+
+		state = __testing.getState();
+		expect(state.playlists).toHaveLength(2);
+		expect(state.playlists[0]?.name).toBe("other");
+		expect(state.playlists[1]?.name).toBe("fresh");
+		expect(
+			(
+				state.playlists[0]?.entries[0] as {
+					materialization?: { phase: string };
+				}
+			).materialization?.phase,
+		).toBe("ready");
+		expect(
+			(
+				state.playlists[1]?.entries[0] as {
+					materialization?: { phase: string };
+				}
+			).materialization?.phase,
+		).toBe("ready");
+		expect(state.mode).toBe("play");
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.processMsg).toBeNull();
+
+		releaseCreate();
+		await saving;
+		await flush();
+
+		state = __testing.getState();
+		expect(state.playlists).toHaveLength(2);
+		expect(state.playlists[0]?.name).toBe("other");
+		expect(state.playlists[1]?.name).toBe("fresh");
+		expect(
+			(
+				state.playlists[0]?.entries[0] as {
+					materialization?: { phase: string };
+				}
+			).materialization?.phase,
+		).toBe("ready");
+		expect(
+			(
+				state.playlists[1]?.entries[0] as {
+					materialization?: { phase: string };
+				}
+			).materialization?.phase,
+		).toBe("ready");
+		expect(state.mode).toBe("play");
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.processMsg).toBeNull();
+		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
+	});
+
 
 	test("save_false_positive_guard_update_error_rolls_back_optimistic_edit_after_refresh", async () => {
 		const original = makePlaylist("focus", [
