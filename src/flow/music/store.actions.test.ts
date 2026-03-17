@@ -326,6 +326,28 @@ function withEntryOperation(
 	};
 }
 
+function withEntryMaterialization(
+	entry: Entry,
+	materialization: {
+		phase: string;
+		settled: "idle" | "succeeded" | "failed";
+		ownerSessionId: number;
+		lastError: string | null;
+	},
+): Entry & {
+	materialization: {
+		phase: string;
+		settled: "idle" | "succeeded" | "failed";
+		ownerSessionId: number;
+		lastError: string | null;
+	};
+} {
+	return {
+		...entry,
+		materialization,
+	};
+}
+
 function expectPlaylistLike(actual: Playlist[] | undefined, expected: Playlist[]) {
 	expect(actual).toHaveLength(expected.length);
 	actual?.forEach((playlist, index) => {
@@ -815,6 +837,88 @@ describe("music store action contracts", () => {
 				}).materialization?.phase ?? null
 			),
 		).toBe("persisted");
+	});
+
+	test("updateWeblist_false_positive_guard_stale_completion_does_not_mutate_replacement_persisted_owner_entry", async () => {
+		const original = makeEntry("remote", "C:/music/remote", {
+			url: "https://example.com/list",
+			entry_type: "WebList",
+			downloaded_ok: false,
+			musics: [],
+		});
+		const replacement = makeEntry("remote replacement", "C:/music/replacement", {
+			url: "https://example.com/list-replacement",
+			entry_type: "WebList",
+			downloaded_ok: false,
+			musics: [],
+		});
+		const settledOriginal = {
+			...original,
+			downloaded_ok: true,
+			musics: [makeMusic("C:/music/remote/downloaded.flac")],
+		};
+
+		let release!: () => void;
+		impl.updateWeblist =
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve(Ok<Entry, string>(settledOriginal));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			slot: makeMission("focus", [original]),
+			playlists: [makePlaylist("focus", [original])],
+			weblistReviews: [],
+			entrySessionId: 2,
+		});
+
+		const pending = action.updateWeblist(original);
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) => item.url === original.url && hasPendingEntryOperation(item, "weblist_update"),
+					) ?? false,
+		);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			selectedListName: null,
+			slot: null,
+			playlists: [
+				makePlaylist("focus", [
+					withEntryMaterialization(replacement, {
+						phase: "pending",
+						settled: "idle",
+						ownerSessionId: 7,
+						lastError: null,
+					}),
+				]),
+			],
+		});
+
+		release();
+		await pending;
+
+		const state = __testing.getState();
+		expect(state.slot).toBeNull();
+		expect(state.weblistReviews).toEqual([]);
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.entries).toHaveLength(1);
+		expect(state.playlists[0]?.entries[0]).toMatchObject({
+			...replacement,
+			materialization: {
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 7,
+				lastError: null,
+			},
+		});
 	});
 
 	test("addNew_true_positive_enters_create_with_fresh_slot_and_cleared_transient_state", async () => {

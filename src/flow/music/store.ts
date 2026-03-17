@@ -1070,6 +1070,10 @@ function getDraftEntryOperation(entry: Entry): DraftEntryOperationState | null {
 	return (entry as DraftOperationEntry).draftOperation ?? null;
 }
 
+function getEntryMaterialization(entry: Entry): WebMaterializationState | null {
+	return (entry as DraftOperationEntry).materialization ?? null;
+}
+
 function setDraftEntryOperation(
 	entry: Entry,
 	operation: DraftEntryOperationState | null,
@@ -1085,6 +1089,38 @@ function setDraftEntryOperation(
 	}
 
 	return next;
+}
+
+function setPlaylistEntryMaterializationByIdentity(
+	playlists: Playlist[],
+	playlistName: string,
+	entryIdentity: string,
+	materialization: WebMaterializationState | null,
+): Playlist[] {
+	return playlists.map((playlist) => {
+		if (playlist.name !== playlistName) {
+			return playlist;
+		}
+
+		let entryMatched = false;
+		const entries = playlist.entries.map((entry) => {
+			if (deriveEntryIdentity(entry) !== entryIdentity) {
+				return entry;
+			}
+
+			entryMatched = true;
+			return setEntryMaterialization(entry, materialization);
+		});
+
+		if (!entryMatched) {
+			return playlist;
+		}
+
+		return {
+			...playlist,
+			entries,
+		};
+	});
 }
 
 function setEntryMaterialization(
@@ -2090,6 +2126,7 @@ export const action = {
 		const key = entry.url;
 		const entryIdentity = deriveEntryIdentity(entry);
 		const workspaceMode = snapshot.mode;
+		const persistedMaterialization = getEntryMaterialization(entry);
 		patchSlot((slot) => ({
 			...slot,
 			entries: slot.entries.map((item) =>
@@ -2108,6 +2145,21 @@ export const action = {
 
 		const result = await crab.updateWeblist(entry, playlist);
 		if (result.isErr()) {
+			if (
+				entryIdentity != null &&
+				persistedMaterialization &&
+				!isEditingWorkspace(getState().mode)
+			) {
+				setState((prev) => ({
+					...prev,
+					playlists: setPlaylistEntryMaterializationByIdentity(
+						prev.playlists,
+						playlist,
+						entryIdentity,
+						persistedMaterialization,
+					),
+				}));
+			}
 			settleReviewMutation((slot) => ({
 				...slot,
 				entries: slot.entries.map((item) =>
@@ -2131,6 +2183,24 @@ export const action = {
 		}
 
 		const next = result.unwrap();
+		if (
+			entryIdentity != null &&
+			persistedMaterialization &&
+			!isEditingWorkspace(getState().mode)
+		) {
+			const settledMaterialization = getEntryMaterialization(
+				syncEntryOwnedMaterialization(next, persistedMaterialization.ownerSessionId),
+			);
+			setState((prev) => ({
+				...prev,
+				playlists: setPlaylistEntryMaterializationByIdentity(
+					prev.playlists,
+					playlist,
+					entryIdentity,
+					settledMaterialization,
+				),
+			}));
+		}
 		settleReviewMutation(
 			(slot) => ({
 				...slot,
