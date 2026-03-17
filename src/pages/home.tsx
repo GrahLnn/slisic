@@ -36,6 +36,7 @@ function Play() {
 	const ctx = hook.useContext();
 	const isPlaying = hook.useIsPlaying();
 	const curPlay = hook.useCurPlay();
+	const requestedPlay = hook.useRequestedPlay();
 	const confirmedPlay = hook.useConfirmedPlay();
 	const curList = hook.useCurList();
 	const isCursorInApp = useCursorInApp();
@@ -44,6 +45,8 @@ function Play() {
 	const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
 	const didInitCenterRef = useRef(false);
 	const processMsg = hook.useMsg();
+	const hasImmediatePlaybackContext =
+		ctx.mode === "play" && !!curList && !!requestedPlay;
 	const displayLists =
 		lists.length > 0
 			? lists.map((playlist) => ({
@@ -51,7 +54,7 @@ function Play() {
 					playlist,
 					isHydrated: true,
 					projectedTitle:
-						playlist.name === curList?.name ? confirmedPlay?.title ?? null : null,
+						playlist.name === curList?.name ? requestedPlay?.title ?? null : null,
 					confirmedTitle:
 						playlist.name === curList?.name ? confirmedPlay?.title ?? null : null,
 				}))
@@ -114,8 +117,8 @@ function Play() {
 						({ name, playlist, isHydrated, projectedTitle, confirmedTitle }) => {
 						const isCurrent = name === curList?.name;
 						const disabled =
-							(isPlaying && !isCurrent) || (!isHydrated && ctx.loading);
-						const shouldSwap = isPlaying && isCurrent;
+							(hasImmediatePlaybackContext && !isCurrent) || (!isHydrated && ctx.loading);
+						const shouldSwap = hasImmediatePlaybackContext && isCurrent && !confirmedTitle;
 						const showName = shouldSwap ? hoveredKey === name : true;
 						const isOk = playlist
 							? playlist.entries.every((entry) => entry.downloaded_ok)
@@ -213,7 +216,11 @@ function Play() {
 														- {processMsg.str}
 													</span>
 												) : null}
-												{isCurrent && projectedTitle && !confirmedTitle ? (
+												{isCurrent && confirmedTitle ? (
+													<span className="absolute ml-1 max-w-2xs truncate whitespace-nowrap text-xs text-[#262626] dark:text-[#d4d4d4]">
+														- {confirmedTitle}
+													</span>
+												) : isCurrent && projectedTitle && !confirmedTitle ? (
 													<span className="absolute ml-1 max-w-2xs truncate whitespace-nowrap text-xs text-[#525252] dark:text-[#a3a3a3]">
 														- {projectedTitle}
 													</span>

@@ -126,6 +126,10 @@ mock.module("@/src/flow/music", () => ({
 			requestedTitle
 				? { path: `C:/music/${requestedTitle}.flac`, title: requestedTitle }
 				: null,
+		useRequestedPlay: () =>
+			requestedTitle
+				? { path: `C:/music/${requestedTitle}.flac`, title: requestedTitle }
+				: null,
 		useConfirmedPlay: () =>
 			confirmedTitle
 				? { path: `C:/music/${confirmedTitle}.flac`, title: confirmedTitle }
@@ -210,8 +214,23 @@ describe("Home route gating", () => {
 
 		const html = renderToStaticMarkup(<Home />);
 
-		expect(html).not.toContain("requested-track");
+		expect(html).toContain("requested-track");
 		expect(html).toContain("focus");
+		expect(html).not.toContain("confirmed-track");
+	});
+
+	test("play route consumer enters immediate playback list context before confirmation", async () => {
+		routeResolved = true;
+		mode = "play";
+		requestedTitle = "requested-track";
+		confirmedTitle = null;
+		currentListName = "focus";
+		playlistNames = ["focus", "ambient"];
+
+		const html = renderToStaticMarkup(<Home />);
+
+		expect(html).toContain("requested-track");
+		expect(html).toContain("ambient");
 		expect(html).not.toContain("confirmed-track");
 	});
 
