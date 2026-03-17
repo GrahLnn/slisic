@@ -29,6 +29,21 @@ import { PlaybackCoordinator } from "./playbackCoordinator";
 type UiMode = "play" | "create" | "edit" | "new_guide";
 type Judge = "Up" | "Down" | null;
 
+export type StartupRouteKind =
+	| "startup_unresolved"
+	| "startup_probed_empty"
+	| "startup_probed_nonempty"
+	| "hydrated_empty"
+	| "hydrated_playlists"
+	| "hydrated_editing"
+	| "startup_failed";
+
+export interface StartupRouteResolution {
+	kind: StartupRouteKind;
+	routeResolved: boolean;
+	mode: UiMode;
+}
+
 export interface MusicState {
 	mode: UiMode;
 	routeResolved: boolean;
@@ -46,6 +61,90 @@ export interface MusicState {
 	folderReviews: string[];
 	weblistReviews: string[];
 	playbackEpoch: number;
+}
+
+export function deriveRouteResolution(
+	snapshot: Pick<MusicState, "mode" | "routeResolved">,
+): StartupRouteResolution {
+	if (!snapshot.routeResolved) {
+		return {
+			kind: "startup_unresolved",
+			routeResolved: false,
+			mode: snapshot.mode,
+		};
+	}
+
+	if (snapshot.mode === "create" || snapshot.mode === "edit") {
+		return {
+			kind: "hydrated_editing",
+			routeResolved: true,
+			mode: snapshot.mode,
+		};
+	}
+
+	if (snapshot.mode === "new_guide") {
+		return {
+			kind: "startup_probed_empty",
+			routeResolved: true,
+			mode: snapshot.mode,
+		};
+	}
+
+	return {
+		kind: "startup_probed_nonempty",
+		routeResolved: true,
+		mode: snapshot.mode,
+	};
+}
+
+function resolveHydratedRoute(
+	prev: Pick<MusicState, "mode" | "routeResolved">,
+	hasPlaylists: boolean,
+): StartupRouteResolution {
+	if (prev.mode === "create" || prev.mode === "edit") {
+		return {
+			kind: prev.routeResolved ? "hydrated_editing" : "startup_unresolved",
+			routeResolved: prev.routeResolved,
+			mode: prev.mode,
+		};
+	}
+
+	return hasPlaylists
+		? {
+			kind: "hydrated_playlists",
+			routeResolved: true,
+			mode: "play",
+		}
+		: {
+			kind: "hydrated_empty",
+			routeResolved: true,
+			mode: "new_guide",
+		};
+}
+
+function resolveProbeRoute(
+	prev: Pick<MusicState, "mode" | "routeResolved">,
+	hasPlaylistNames: boolean,
+): StartupRouteResolution {
+	if (prev.mode === "create" || prev.mode === "edit") {
+		return {
+			kind: prev.routeResolved ? "hydrated_editing" : "startup_unresolved",
+			routeResolved: prev.routeResolved,
+			mode: prev.mode,
+		};
+	}
+
+	return hasPlaylistNames
+		? {
+			kind: "startup_probed_nonempty",
+			routeResolved: true,
+			mode: "play",
+		}
+		: {
+			kind: "startup_probed_empty",
+			routeResolved: true,
+			mode: "new_guide",
+		};
 }
 
 export function shouldAdvanceOnUnstar(
@@ -81,7 +180,7 @@ export function shouldHandleAudioEnded(
 }
 
 export function deriveRefreshPatch(
-	prev: Pick<MusicState, "mode" | "selectedListName" | "nowPlaying">,
+	prev: Pick<MusicState, "mode" | "routeResolved" | "selectedListName" | "nowPlaying">,
 	playlists: Playlist[],
 ): Pick<
 	MusicState,
@@ -93,12 +192,7 @@ export function deriveRefreshPatch(
 			? prev.selectedListName
 			: null;
 
-	const mode: UiMode =
-		prev.mode === "create" || prev.mode === "edit"
-			? prev.mode
-			: playlists.length === 0
-				? "new_guide"
-				: "play";
+	const route = resolveHydratedRoute(prev, playlists.length > 0);
 
 	const refreshedNowPlaying =
 		selectedListName && prev.nowPlaying
@@ -116,8 +210,8 @@ export function deriveRefreshPatch(
 		playlists,
 		selectedListName,
 		nowPlaying: refreshedNowPlaying,
-		mode,
-		routeResolved: true,
+		mode: route.mode,
+		routeResolved: route.routeResolved,
 	};
 }
 
@@ -131,18 +225,15 @@ export function buildPlaylistPlaceholders(names: string[]): Playlist[] {
 }
 
 export function deriveProbePatch(
-	prev: Pick<MusicState, "mode">,
+	prev: Pick<MusicState, "mode" | "routeResolved">,
 	playlistNames: string[],
 ): Pick<MusicState, "playlists" | "mode" | "routeResolved"> {
+	const route = resolveProbeRoute(prev, playlistNames.length > 0);
+
 	return {
 		playlists: buildPlaylistPlaceholders(playlistNames),
-		mode:
-			prev.mode === "create" || prev.mode === "edit"
-				? prev.mode
-				: playlistNames.length === 0
-					? "new_guide"
-					: "play",
-		routeResolved: true,
+		mode: route.mode,
+		routeResolved: route.routeResolved,
 	};
 }
 

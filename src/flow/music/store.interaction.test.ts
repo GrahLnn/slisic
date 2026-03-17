@@ -10,6 +10,7 @@ import {
 	buildPlaylistPlaceholders,
 	buildOptimisticPlaylistFromSlot,
 	buildPostSavePatch,
+	deriveRouteResolution,
 	deriveProbePatch,
 	deriveRefreshPatch,
 	hasPlaybackContext,
@@ -212,8 +213,33 @@ describe("music interaction guards", () => {
 		expect(emptyPlay.mode).toBe("new_guide");
 	});
 
+	test("deriveRouteResolution projects unresolved, guide, and play states coherently", () => {
+		expect(deriveRouteResolution({ routeResolved: false, mode: "play" })).toEqual({
+			kind: "startup_unresolved",
+			routeResolved: false,
+			mode: "play",
+		});
+
+		expect(
+			deriveRouteResolution({ routeResolved: true, mode: "new_guide" }),
+		).toEqual({
+			kind: "startup_probed_empty",
+			routeResolved: true,
+			mode: "new_guide",
+		});
+
+		expect(deriveRouteResolution({ routeResolved: true, mode: "play" })).toEqual({
+			kind: "startup_probed_nonempty",
+			routeResolved: true,
+			mode: "play",
+		});
+	});
+
 	test("deriveProbePatch true_positive_promotes_non_empty_names_to_play_with_placeholders", () => {
-		const patch = deriveProbePatch({ mode: "new_guide" }, ["focus", "ambient"]);
+		const patch = deriveProbePatch(
+			{ mode: "new_guide", routeResolved: false },
+			["focus", "ambient"],
+		);
 
 		expect(patch.mode).toBe("play");
 		expect(patch.routeResolved).toBe(true);
@@ -221,7 +247,7 @@ describe("music interaction guards", () => {
 	});
 
 	test("deriveProbePatch true_negative_keeps_empty_probe_in_new_guide", () => {
-		const patch = deriveProbePatch({ mode: "play" }, []);
+		const patch = deriveProbePatch({ mode: "play", routeResolved: false }, []);
 
 		expect(patch.mode).toBe("new_guide");
 		expect(patch.routeResolved).toBe(true);
@@ -229,17 +255,40 @@ describe("music interaction guards", () => {
 	});
 
 	test("deriveProbePatch false_positive_guard_does_not_knock_edit_mode_back_to_play", () => {
-		const patch = deriveProbePatch({ mode: "edit" }, ["focus"]);
+		const patch = deriveProbePatch({ mode: "edit", routeResolved: true }, ["focus"]);
 
 		expect(patch.mode).toBe("edit");
 		expect(patch.playlists).toEqual(buildPlaylistPlaceholders(["focus"]));
 	});
 
 	test("deriveProbePatch false_negative_guard_does_not_knock_create_mode_back_to_new_guide", () => {
-		const patch = deriveProbePatch({ mode: "create" }, []);
+		const patch = deriveProbePatch(
+			{ mode: "create", routeResolved: true },
+			[],
+		);
 
 		expect(patch.mode).toBe("create");
 		expect(patch.playlists).toEqual([]);
+	});
+
+	test("deriveProbePatch keeps unresolved editor route projection while hydrating names-first data", () => {
+		const patch = deriveProbePatch({ mode: "edit", routeResolved: false }, ["focus"]);
+
+		expect(patch.mode).toBe("edit");
+		expect(patch.routeResolved).toBe(false);
+		expect(patch.playlists).toEqual(buildPlaylistPlaceholders(["focus"]));
+	});
+
+	test("deriveRefreshPatch preserves unresolved editor route projection during hydration", () => {
+		const patch = deriveRefreshPatch(
+			{ mode: "create", routeResolved: false, selectedListName: "missing", nowPlaying: null },
+			[],
+		);
+
+		expect(patch.mode).toBe("create");
+		expect(patch.routeResolved).toBe(false);
+		expect(patch.selectedListName).toBeNull();
+		expect(patch.nowPlaying).toBeNull();
 	});
 
 	test("buildOptimisticPlaylistFromSlot should project slot to playlist shape", () => {

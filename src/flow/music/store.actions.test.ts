@@ -418,6 +418,42 @@ describe("music store action contracts", () => {
 		expect(state.loading).toBe(false);
 	});
 
+	test("run_true_positive_preserves_unresolved_edit_route_until_hydration_reconciles_placeholder_lists", async () => {
+		const hydrated = makePlaylist("focus", [makeEntry("alpha", "C:/music/alpha")]);
+		let releaseReadAll!: () => void;
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			routeResolved: false,
+			selectedListName: "focus",
+			slot: makeMission("focus", [makeEntry("draft", "C:/music/draft")]),
+		});
+
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => {
+			await new Promise<void>((resolve) => {
+				releaseReadAll = resolve;
+			});
+			return Ok<Playlist[], string>([hydrated]);
+		};
+
+		const run = action.run();
+
+		await waitUntil(() => __testing.getState().playlists.map((item) => item.name).join(",") === "focus");
+		expect(__testing.getState().routeResolved).toBe(false);
+		expect(__testing.getState().mode).toBe("edit");
+		expect(__testing.getState().playlists[0]?.entries).toEqual([]);
+
+		releaseReadAll();
+		await run;
+
+		const state = __testing.getState();
+		expect(state.routeResolved).toBe(false);
+		expect(state.mode).toBe("edit");
+		expect(state.playlists).toEqual([hydrated]);
+	});
+
 	test("run_true_negative_probes_empty_names_and_stays_in_new_guide_until_empty_snapshot_confirms_it", async () => {
 		let releaseReadAll!: () => void;
 		let readAllStarted = false;
