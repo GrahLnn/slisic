@@ -2012,7 +2012,9 @@ describe("music store action contracts", () => {
 
 		const state = __testing.getState();
 		expect(state.playbackSessionId).toBeNull();
+		expect(state.confirmedPlaying).toBeNull();
 		expect(state.nowPlaying).toBeNull();
 		expect(state.selectedListName).toBeNull();
 	});
+
 });

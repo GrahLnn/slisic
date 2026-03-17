@@ -71,6 +71,25 @@ const baseState: MusicState = {
 		},
 	],
 	selectedListName: "contemporary",
+	confirmedPlaying: {
+		path: "C:/audio/a.flac",
+		title: "A",
+		avg_db: -18,
+		integrated_lufs: -18,
+		true_peak_dbtp: -2,
+		loudness_range_lu: null,
+		loudness_threshold_lufs: null,
+		analyzed_at_ms: null,
+		analysis_version: null,
+		source_mtime_ms: null,
+		source_size_bytes: null,
+		normalization_status: null,
+		normalization_error: null,
+		base_bias: 0,
+		user_boost: 0,
+		fatigue: 0,
+		diversity: 0,
+	},
 	nowPlaying: {
 		path: "C:/audio/a.flac",
 		title: "A",
@@ -227,7 +246,7 @@ describe("music interaction guards", () => {
 		).toBe(false);
 		expect(
 			shouldHandleAudioEnded(
-				{ ...baseState, nowPlaying: null },
+				{ ...baseState, confirmedPlaying: null, nowPlaying: null },
 				{ path: "C:/audio/a.flac", sessionId: 3 },
 			),
 		).toBe(false);
@@ -264,6 +283,7 @@ describe("music interaction guards", () => {
 			}),
 		).toEqual({
 			selectedListName: "contemporary",
+			confirmedPlaying: baseState.confirmedPlaying,
 				nowPlaying: baseState.nowPlaying,
 		});
 
@@ -283,14 +303,147 @@ describe("music interaction guards", () => {
 		).toBeNull();
 	});
 
+	test("settlePlaybackAck keeps confirmed playback unchanged until matching acknowledgement arrives", () => {
+		const requested = {
+			path: "C:/audio/b.flac",
+			title: "B",
+			avg_db: -17,
+			integrated_lufs: -17,
+			true_peak_dbtp: -1,
+			loudness_range_lu: null,
+			loudness_threshold_lufs: null,
+			analyzed_at_ms: null,
+			analysis_version: null,
+			source_mtime_ms: null,
+			source_size_bytes: null,
+			normalization_status: null,
+			normalization_error: null,
+			base_bias: 0,
+			user_boost: 0,
+			fatigue: 0,
+			diversity: 0,
+		};
+		const state = {
+			...baseState,
+			playlists: [
+				{
+					...baseState.playlists[0],
+					entries: [
+						{
+							...baseState.playlists[0]!.entries[0]!,
+							musics: [baseState.nowPlaying!, requested],
+						},
+					],
+				},
+			],
+			nowPlaying: requested,
+		};
+
+		const patch = settlePlaybackAck(state, {
+			sessionId: 3,
+			listName: "contemporary",
+			ack: {
+				path: "C:/audio/a.flac",
+				duration_ms: 1234,
+				gain: 1,
+				gain_db: 0,
+				target_lufs: -18,
+				integrated_lufs: -18,
+				has_canonical_loudness: true,
+			},
+		});
+
+		expect(patch).toEqual({
+			selectedListName: "contemporary",
+			confirmedPlaying: baseState.confirmedPlaying,
+			nowPlaying: baseState.nowPlaying,
+		});
+	});
+
 	test("clearPlaybackSession only clears the matching live playback session", () => {
 		expect(clearPlaybackSession(baseState, 3)).toEqual({
 			selectedListName: null,
+			confirmedPlaying: null,
 			nowPlaying: null,
 			nowJudge: null,
 			playbackSessionId: null,
 		});
 		expect(clearPlaybackSession(baseState, 2)).toBeNull();
+	});
+
+	test("settlePlaybackAck keeps replacement session requested track while stale ack is suppressed", () => {
+		const requestedReplacement = {
+			path: "C:/audio/b.flac",
+			title: "B",
+			avg_db: null,
+			integrated_lufs: null,
+			true_peak_dbtp: null,
+			loudness_range_lu: null,
+			loudness_threshold_lufs: null,
+			analyzed_at_ms: null,
+			analysis_version: null,
+			source_mtime_ms: null,
+			source_size_bytes: null,
+			normalization_status: null,
+			normalization_error: null,
+			base_bias: 0,
+			user_boost: 0,
+			fatigue: 0,
+			diversity: 0,
+		};
+		const replacementState = {
+			...baseState,
+			playbackSessionId: 4,
+			playbackEpoch: 4,
+			playlists: [
+				{
+					...baseState.playlists[0],
+					entries: [
+						{
+							...baseState.playlists[0]!.entries[0]!,
+							musics: [baseState.confirmedPlaying!, requestedReplacement],
+						},
+					],
+				},
+			],
+			nowPlaying: requestedReplacement,
+		};
+
+		expect(
+			settlePlaybackAck(replacementState, {
+				sessionId: 3,
+				listName: "contemporary",
+				ack: {
+					path: "C:/audio/a.flac",
+					duration_ms: 1234,
+					gain: 1,
+					gain_db: 0,
+					target_lufs: -18,
+					integrated_lufs: -18,
+					has_canonical_loudness: true,
+				},
+			}),
+		).toBeNull();
+
+		expect(
+			settlePlaybackAck(replacementState, {
+				sessionId: 4,
+				listName: "contemporary",
+				ack: {
+					path: "C:/audio/b.flac",
+					duration_ms: 1500,
+					gain: 1,
+					gain_db: 0,
+					target_lufs: -18,
+					integrated_lufs: -18,
+					has_canonical_loudness: true,
+				},
+			}),
+		).toEqual({
+			selectedListName: "contemporary",
+			confirmedPlaying: requestedReplacement,
+			nowPlaying: requestedReplacement,
+		});
 	});
 
 	test("deriveRefreshPatch should preserve edit/create mode and clear impossible playback context", () => {

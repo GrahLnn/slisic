@@ -57,6 +57,7 @@ export interface MusicState {
 	loading: boolean;
 	playlists: Playlist[];
 	selectedListName: string | null;
+	confirmedPlaying: Music | null;
 	nowPlaying: Music | null;
 	nowJudge: Judge;
 	slot: CollectMission | null;
@@ -75,6 +76,7 @@ export interface MusicState {
 interface PlaybackSessionSnapshot {
 	playbackSessionId: number | null;
 	selectedListName: string | null;
+	confirmedPlaying: Music | null;
 	nowPlaying: Music | null;
 }
 
@@ -307,7 +309,11 @@ export function deriveSaveAffordance(
 export function shouldHandleAudioEnded(
 	snapshot: Pick<
 		MusicState,
-		"mode" | "playbackSessionId" | "selectedListName" | "nowPlaying"
+		| "mode"
+		| "playbackSessionId"
+		| "selectedListName"
+		| "confirmedPlaying"
+		| "nowPlaying"
 	>,
 	payload: { sessionId: number | null; path: string },
 ): boolean {
@@ -316,7 +322,7 @@ export function shouldHandleAudioEnded(
 		snapshot.playbackSessionId != null &&
 		snapshot.playbackSessionId === payload.sessionId &&
 		!!snapshot.selectedListName &&
-		snapshot.nowPlaying?.path === payload.path
+		(snapshot.confirmedPlaying ?? snapshot.nowPlaying)?.path === payload.path
 	);
 }
 
@@ -326,11 +332,12 @@ export function settlePlaybackAck(
 		| "mode"
 		| "playbackSessionId"
 		| "selectedListName"
+		| "confirmedPlaying"
 		| "nowPlaying"
 		| "playlists"
 	>,
 	payload: { sessionId: number | null; listName: string | null; ack: AudioPlayAck },
-): Pick<MusicState, "selectedListName" | "nowPlaying"> | null {
+): Pick<MusicState, "selectedListName" | "confirmedPlaying" | "nowPlaying"> | null {
 	if (snapshot.mode !== "play") return null;
 	if (snapshot.playbackSessionId == null) return null;
 	if (snapshot.playbackSessionId !== payload.sessionId) return null;
@@ -350,6 +357,7 @@ export function settlePlaybackAck(
 
 	return {
 		selectedListName: payload.listName,
+		confirmedPlaying: confirmedTrack,
 		nowPlaying: confirmedTrack,
 	};
 }
@@ -359,13 +367,18 @@ export function clearPlaybackSession(
 	sessionId: number | null,
 ): Pick<
 	MusicState,
-	"selectedListName" | "nowPlaying" | "nowJudge" | "playbackSessionId"
+	| "selectedListName"
+	| "confirmedPlaying"
+	| "nowPlaying"
+	| "nowJudge"
+	| "playbackSessionId"
 > | null {
 	if (snapshot.playbackSessionId == null) return null;
 	if (snapshot.playbackSessionId !== sessionId) return null;
 
 	return {
 		selectedListName: null,
+		confirmedPlaying: null,
 		nowPlaying: null,
 		nowJudge: null,
 		playbackSessionId: null,
@@ -660,6 +673,7 @@ const initialState: MusicState = {
 	loading: false,
 	playlists: [],
 	selectedListName: null,
+	confirmedPlaying: null,
 	nowPlaying: null,
 	nowJudge: null,
 	slot: null,
@@ -885,10 +899,15 @@ function updateMusicEverywhere(path: string, updater: (music: Music) => Music) {
 			prev.nowPlaying?.path === path
 				? updater(prev.nowPlaying)
 				: prev.nowPlaying;
+		const confirmedPlaying =
+			prev.confirmedPlaying?.path === path
+				? updater(prev.confirmedPlaying)
+				: prev.confirmedPlaying;
 
 		return {
 			...prev,
 			playlists,
+			confirmedPlaying,
 			nowPlaying,
 		};
 	});
@@ -970,7 +989,7 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 		const all = playableTracks(list);
 		if (all.length === 0) {
 			yield* Effect.sync(() =>
-				patchState({ nowPlaying: null, nowJudge: null }),
+				patchState({ confirmedPlaying: null, nowPlaying: null, nowJudge: null }),
 			);
 			return;
 		}
@@ -995,6 +1014,7 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 			if (!isPlaybackContextActive(epoch, list.name)) return;
 				patchState({
 					selectedListName: list.name,
+					confirmedPlaying: null,
 					nowPlaying: chosen,
 					nowJudge: null,
 					playbackSessionId: nextPlaybackSessionId(),
@@ -1016,10 +1036,12 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 					patchState({
 						...(clearPatch ?? {
 							selectedListName: null,
+							confirmedPlaying: null,
 							nowPlaying: null,
 							nowJudge: null,
 							playbackSessionId: null,
 						}),
+						confirmedPlaying: previousNowPlaying,
 						nowPlaying: previousNowPlaying,
 					});
 				sileo.error({
@@ -1079,7 +1101,7 @@ async function ensureEvents() {
 			if (!shouldHandleAudioEnded(snapshot, { path, sessionId })) return;
 			void applyNextFatigue(snapshot.nowPlaying);
 			const epoch = bumpPlaybackEpoch();
-			patchState({ playbackSessionId: null, selectedListName: null, nowPlaying: null, nowJudge: null });
+			patchState({ playbackSessionId: null, selectedListName: null, confirmedPlaying: null, nowPlaying: null, nowJudge: null });
 			scheduleNextPlayback(epoch);
 		});
 		unsubs.push(audioEnded);
@@ -1114,6 +1136,7 @@ async function safeStop() {
 	bumpPlaybackEpoch();
 	patchState({
 		selectedListName: null,
+		confirmedPlaying: null,
 		nowPlaying: null,
 		nowJudge: null,
 		playbackSessionId: null,
@@ -1138,6 +1161,7 @@ async function startPlayByList(name: string) {
 	patchState({
 		selectedListName: name,
 		mode: "play",
+		confirmedPlaying: null,
 		nowPlaying: null,
 		nowJudge: null,
 		playbackSessionId: nextPlaybackSessionId(),
@@ -1216,6 +1240,7 @@ async function persistSlot() {
 			playlists: optimisticPlaylists,
 			loading: false,
 				playbackSessionId: null,
+				confirmedPlaying: null,
 		});
 
 		void (async () => {
@@ -1244,6 +1269,7 @@ async function persistSlot() {
 		playlists: optimisticPlaylists,
 		loading: false,
 		playbackSessionId: null,
+		confirmedPlaying: null,
 	});
 
 	void (async () => {
@@ -1666,6 +1692,10 @@ export const action = {
 				prev.nowPlaying && prev.nowPlaying.path === music.path
 					? null
 					: prev.nowPlaying,
+			confirmedPlaying:
+				prev.confirmedPlaying && prev.confirmedPlaying.path === music.path
+					? null
+					: prev.confirmedPlaying,
 			nowJudge: null,
 			playbackEpoch: epoch,
 			playbackSessionId: null,
@@ -1789,6 +1819,8 @@ export const hook = {
 	useContext: () => useMusicSelector((snapshot) => snapshot),
 	useList: () => useMusicSelector((snapshot) => snapshot.playlists),
 	useCurPlay: () => useMusicSelector((snapshot) => snapshot.nowPlaying),
+	useConfirmedPlay: () =>
+		useMusicSelector((snapshot) => snapshot.confirmedPlaying),
 	useCurList: () =>
 		useMusicSelector((snapshot) =>
 			snapshot.selectedListName
@@ -1802,7 +1834,7 @@ export const hook = {
 	useJudge: () => useMusicSelector((snapshot) => snapshot.nowJudge),
 	useIsPlaying: () =>
 		useMusicSelector(
-			(snapshot) => !!snapshot.selectedListName && !!snapshot.nowPlaying,
+			(snapshot) => !!snapshot.selectedListName && !!snapshot.confirmedPlaying,
 		),
 	useIsReview: () =>
 		useMusicSelector(
