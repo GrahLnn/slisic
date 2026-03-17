@@ -833,10 +833,50 @@ describe("music store action contracts", () => {
 		expect(
 			(
 				(__testing.getState().playlists[0]?.entries[0] as Entry & {
-					materialization?: { phase: string };
+					materialization?: {
+						phase: string;
+						settled: string;
+						lastError: string | null;
+					};
 				}).materialization?.phase ?? null
 			),
 		).toBe("persisted");
+		const analyzingEntry = __testing.getState().playlists[0]?.entries[0] as Entry & {
+			materialization?: {
+				phase: string;
+				settled: string;
+				ownerSessionId: number;
+				lastError: string | null;
+			};
+		};
+		expect(analyzingEntry.materialization).toEqual({
+			phase: "persisted",
+			settled: "succeeded",
+			ownerSessionId: 0,
+			lastError: null,
+		});
+
+		expect(ready.entries[0]).toMatchObject({
+			downloaded_ok: true,
+			entry_type: "WebList",
+			musics: [
+				{
+					normalization_status: "Ready",
+					integrated_lufs: -18,
+					analysis_version: 1,
+				},
+			],
+		});
+
+		expect(failed.entries[0]).toMatchObject({
+			downloaded_ok: true,
+			entry_type: "WebList",
+			musics: [
+				{
+					normalization_status: "Failed",
+				},
+			],
+		});
 	});
 
 	test("updateWeblist_false_positive_guard_stale_completion_does_not_mutate_replacement_persisted_owner_entry", async () => {
