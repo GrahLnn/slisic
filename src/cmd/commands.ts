@@ -38,6 +38,7 @@ export const commands = {
 	getWindowKind: () => __TAURI_INVOKE<WindowKindInfo>("get_window_kind"),
 	prewarmWindow: (name: WindowName) => __TAURI_INVOKE<void>("prewarm_window", { name }),
 	discardPrewarmWindow: (name: WindowName) => __TAURI_INVOKE<boolean>("discard_prewarm_window", { name }),
+	recordRendererBootstrapReady: () => __TAURI_INVOKE<void>("record_renderer_bootstrap_ready"),
 	createWindow: (name: WindowName, options: {
 	width: number | null,
 	height: number | null,

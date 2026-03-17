@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { shouldRequestWindowPrewarm, type AppWindowMeta } from "../src/flow/bootstrap/logic";
+import { commands } from "../src/cmd/commands";
 
 function createMeta(overrides: Partial<AppWindowMeta> = {}): AppWindowMeta {
   return {
@@ -13,6 +14,10 @@ function createMeta(overrides: Partial<AppWindowMeta> = {}): AppWindowMeta {
 }
 
 describe("TemplateBoard prewarm effect", () => {
+  test("renderer diagnostics command stays available for bootstrap timing evidence", () => {
+    expect(typeof commands.recordRendererBootstrapReady).toBe("function");
+  });
+
   test("gates prewarm eligibility to the true primary visible main window", () => {
     expect(
       shouldRequestWindowPrewarm(

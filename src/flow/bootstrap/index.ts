@@ -35,6 +35,9 @@ export function useAppBootstrap(): AppWindowMeta {
           status: "ready",
         };
         setAppWindow(nextWindow);
+        void crab.recordRendererBootstrapReady().catch((error) => {
+          console.error("Failed to record renderer bootstrap ready", error);
+        });
 
         if (shouldRunUpdater(nextWindow)) {
           ensureUpdaterStarted();

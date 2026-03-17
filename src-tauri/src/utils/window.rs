@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 use tauri::{AppHandle, Manager, WebviewWindow};
 use tauri::{LogicalSize, Size};
 use tauri::{WebviewUrl, WebviewWindowBuilder};
@@ -122,6 +123,34 @@ enum PreparedWindowReadiness {
     Ready,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PrewarmPhase {
+    Triggered,
+    HiddenWindowCreated,
+    HiddenPageLoadReady,
+    ConsumedForVisibleWindow,
+    VisibleShowRequested,
+    VisibleFocusRequested,
+    RendererBootstrapResolved,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct PrewarmTimingEvent {
+    pub name: WindowName,
+    pub phase: PrewarmPhase,
+    pub label: String,
+    pub elapsed_ms: u128,
+    pub is_user_window: bool,
+    pub details: String,
+}
+
+#[derive(Debug, Clone)]
+struct PrewarmTimingSession {
+    started_at: Instant,
+    events: Vec<PrewarmTimingEvent>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PreparedWindowState {
     label: String,
@@ -137,6 +166,90 @@ struct PreparedWindowDisposition {
 fn prepared_window_inventory() -> &'static Mutex<HashMap<WindowName, PreparedWindowState>> {
     static PREPARED_WINDOWS: OnceLock<Mutex<HashMap<WindowName, PreparedWindowState>>> = OnceLock::new();
     PREPARED_WINDOWS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn prewarm_timing_sessions() -> &'static Mutex<HashMap<WindowName, PrewarmTimingSession>> {
+    static PREWARM_TIMING_SESSIONS: OnceLock<Mutex<HashMap<WindowName, PrewarmTimingSession>>> = OnceLock::new();
+    PREWARM_TIMING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn start_prewarm_timing_session(name: WindowName, label: &str, details: impl Into<String>) {
+    let mut sessions = prewarm_timing_sessions()
+        .lock()
+        .expect("prewarm timing sessions poisoned");
+
+    let mut session = PrewarmTimingSession {
+        started_at: Instant::now(),
+        events: Vec::new(),
+    };
+    session.events.push(PrewarmTimingEvent {
+        name,
+        phase: PrewarmPhase::Triggered,
+        label: label.to_string(),
+        elapsed_ms: 0,
+        is_user_window: should_label_resolve_as_user_window(label),
+        details: details.into(),
+    });
+    sessions.insert(name, session);
+}
+
+fn record_prewarm_timing_event(name: WindowName, phase: PrewarmPhase, label: &str, details: impl Into<String>) {
+    let mut sessions = prewarm_timing_sessions()
+        .lock()
+        .expect("prewarm timing sessions poisoned");
+
+    let Some(session) = sessions.get_mut(&name) else {
+        return;
+    };
+
+    let event = PrewarmTimingEvent {
+        name,
+        phase,
+        label: label.to_string(),
+        elapsed_ms: session.started_at.elapsed().as_millis(),
+        is_user_window: should_label_resolve_as_user_window(label),
+        details: details.into(),
+    };
+    eprintln!(
+        "prewarm-timing name={name} phase={phase:?} label={} elapsed_ms={} is_user_window={} details={}",
+        event.label, event.elapsed_ms, event.is_user_window, event.details
+    );
+    session.events.push(event);
+}
+
+#[cfg(test)]
+fn reset_prewarm_timing_sessions() {
+    let mut sessions = prewarm_timing_sessions()
+        .lock()
+        .expect("prewarm timing sessions poisoned");
+    sessions.clear();
+}
+
+#[cfg(test)]
+fn prewarm_timing_events(name: WindowName) -> Vec<PrewarmTimingEvent> {
+    let sessions = prewarm_timing_sessions()
+        .lock()
+        .expect("prewarm timing sessions poisoned");
+    sessions
+        .get(&name)
+        .map(|session| session.events.clone())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn record_renderer_bootstrap_ready(window: WebviewWindow) {
+    let label = window.label().to_string();
+    let Some(name) = window_kind_from_label(&label) else {
+        return;
+    };
+
+    record_prewarm_timing_event(
+        name,
+        PrewarmPhase::RendererBootstrapResolved,
+        &label,
+        "renderer reported bootstrap-ready",
+    );
 }
 
 fn reserve_prepared_window(name: WindowName, label: String) {
@@ -446,8 +559,26 @@ pub async fn create_window(
 ) {
     if let Some(prepared_window) = take_prepared_window(name) {
         if let Some(window) = app.get_webview_window(&prepared_window.label) {
+            record_prewarm_timing_event(
+                name,
+                PrewarmPhase::ConsumedForVisibleWindow,
+                &prepared_window.label,
+                "consuming prepared hidden window for visible open",
+            );
             apply_window_options(&window, options.as_ref());
+            record_prewarm_timing_event(
+                name,
+                PrewarmPhase::VisibleShowRequested,
+                &prepared_window.label,
+                "requesting show for consumed prepared window",
+            );
             activate_window(&window);
+            record_prewarm_timing_event(
+                name,
+                PrewarmPhase::VisibleFocusRequested,
+                &prepared_window.label,
+                "activation calls finished for consumed prepared window",
+            );
             return;
         }
     }
@@ -488,10 +619,17 @@ pub fn prewarm_window(app: tauri::AppHandle, name: WindowName) {
     }
 
     let label = format!("{}-prewarm", name.as_str());
+    start_prewarm_timing_session(name, &label, "prewarm command triggered");
     match build_window(&app, label.clone(), name.as_str(), false) {
         Ok(window) => {
             apply_window_setup(&window, false);
             reserve_prepared_window(name, label);
+            record_prewarm_timing_event(
+                name,
+                PrewarmPhase::HiddenWindowCreated,
+                window.label(),
+                "hidden prewarm window created",
+            );
         }
         Err(error) => {
             eprintln!("Failed to prewarm window: {error}");
@@ -512,7 +650,14 @@ pub fn mark_prewarm_window_ready(app: &AppHandle, label: &str) {
         return;
     }
 
-    let _ = mark_prepared_window_ready(name, label);
+    if mark_prepared_window_ready(name, label) {
+        record_prewarm_timing_event(
+            name,
+            PrewarmPhase::HiddenPageLoadReady,
+            label,
+            "hidden prewarm window reported page-load readiness",
+        );
+    }
 }
 
 #[specta::specta]
@@ -536,12 +681,13 @@ mod tests {
         classify_window_identity, classify_window_labels, discard_prepared_window,
         discard_prepared_window_state,
         is_main_user_window_instance_label,
-        is_user_window_label, mark_prepared_window_ready, prepared_window_label,
-        prepared_window_readiness, prepared_window_targets, reserve_prepared_window,
+        is_user_window_label, mark_prepared_window_ready, prewarm_timing_events,
+        prepared_window_label, prepared_window_readiness, prepared_window_targets,
+        record_prewarm_timing_event, reset_prewarm_timing_sessions, reserve_prepared_window,
         reset_prepared_window_inventory, should_exit_on_window_close_with_count,
         should_label_resolve_as_user_window, take_prepared_window, window_kind_from_label,
         window_kind_info_for_label, PreparedWindowDisposition, PreparedWindowReadiness,
-        PreparedWindowState,
+        PreparedWindowState, PrewarmPhase, WindowName, start_prewarm_timing_session,
         WindowName,
     };
 
@@ -820,5 +966,81 @@ mod tests {
 
         assert!(!mark_prepared_window_ready(WindowName::Main, "main-1"));
         assert_eq!(prepared_window_readiness(WindowName::Main), Some(PreparedWindowReadiness::Created));
+    }
+
+    #[test]
+    fn timing_diagnostics_record_end_to_end_prewarm_progression() {
+        reset_prewarm_timing_sessions();
+
+        start_prewarm_timing_session(WindowName::Main, "main-prewarm", "prewarm command triggered");
+        record_prewarm_timing_event(
+            WindowName::Main,
+            PrewarmPhase::HiddenWindowCreated,
+            "main-prewarm",
+            "hidden prewarm window created",
+        );
+        record_prewarm_timing_event(
+            WindowName::Main,
+            PrewarmPhase::HiddenPageLoadReady,
+            "main-prewarm",
+            "hidden prewarm window reported page-load readiness",
+        );
+        record_prewarm_timing_event(
+            WindowName::Main,
+            PrewarmPhase::ConsumedForVisibleWindow,
+            "main-prewarm",
+            "consuming prepared hidden window for visible open",
+        );
+        record_prewarm_timing_event(
+            WindowName::Main,
+            PrewarmPhase::VisibleShowRequested,
+            "main-prewarm",
+            "requesting show for consumed prepared window",
+        );
+        record_prewarm_timing_event(
+            WindowName::Main,
+            PrewarmPhase::RendererBootstrapResolved,
+            "main-prewarm",
+            "renderer reported bootstrap-ready",
+        );
+
+        let events = prewarm_timing_events(WindowName::Main);
+        let phases = events.into_iter().map(|event| event.phase).collect::<Vec<_>>();
+
+        assert_eq!(
+            phases,
+            vec![
+                PrewarmPhase::Triggered,
+                PrewarmPhase::HiddenWindowCreated,
+                PrewarmPhase::HiddenPageLoadReady,
+                PrewarmPhase::ConsumedForVisibleWindow,
+                PrewarmPhase::VisibleShowRequested,
+                PrewarmPhase::RendererBootstrapResolved,
+            ]
+        );
+    }
+
+    #[test]
+    fn timing_diagnostics_mark_visible_user_phases_after_consumption() {
+        reset_prewarm_timing_sessions();
+
+        start_prewarm_timing_session(WindowName::Main, "main-prewarm", "prewarm command triggered");
+        record_prewarm_timing_event(
+            WindowName::Main,
+            PrewarmPhase::ConsumedForVisibleWindow,
+            "main-prewarm",
+            "consuming prepared hidden window for visible open",
+        );
+        record_prewarm_timing_event(
+            WindowName::Main,
+            PrewarmPhase::RendererBootstrapResolved,
+            "main-1",
+            "renderer reported bootstrap-ready",
+        );
+
+        let events = prewarm_timing_events(WindowName::Main);
+        assert_eq!(events[1].is_user_window, false);
+        assert_eq!(events[2].is_user_window, true);
+        assert_eq!(events[2].label, "main-1");
     }
 }

@@ -26,6 +26,7 @@ pub fn run() {
         utils::window::get_window_kind,
         utils::window::prewarm_window,
         utils::window::discard_prewarm_window,
+        utils::window::record_renderer_bootstrap_ready,
         utils::window::create_window,
         greet,
         clean,
