@@ -618,6 +618,38 @@ export function clearPlaybackSession(
 	};
 }
 
+export function clearEndedPlaybackForFallback(
+	snapshot: Pick<
+		MusicState,
+		| "selectedListName"
+		| "playbackListName"
+		| "requestedPlaying"
+		| "confirmedPlaying"
+		| "nowPlaying"
+		| "nowJudge"
+		| "playbackSessionId"
+	>,
+): Pick<
+	MusicState,
+	| "selectedListName"
+	| "playbackListName"
+	| "requestedPlaying"
+	| "confirmedPlaying"
+	| "nowPlaying"
+	| "nowJudge"
+	| "playbackSessionId"
+> {
+	return {
+		selectedListName: snapshot.selectedListName,
+		playbackListName: snapshot.playbackListName,
+		requestedPlaying: null,
+		confirmedPlaying: null,
+		nowPlaying: null,
+		nowJudge: null,
+		playbackSessionId: null,
+	};
+}
+
 export function deriveRefreshPatch(
 	prev: Pick<
 		MusicState,
@@ -1589,15 +1621,7 @@ async function ensureEvents() {
 			if (!shouldHandleAudioEnded(snapshot, { path, sessionId })) return;
 			void applyNextFatigue(snapshot.nowPlaying);
 			const epoch = bumpPlaybackEpoch();
-			patchState({
-				playbackSessionId: null,
-				selectedListName: null,
-				playbackListName: null,
-				requestedPlaying: null,
-				confirmedPlaying: null,
-				nowPlaying: null,
-				nowJudge: null,
-			});
+			patchState(clearEndedPlaybackForFallback(snapshot));
 			scheduleNextPlayback(epoch);
 		});
 		unsubs.push(audioEnded);

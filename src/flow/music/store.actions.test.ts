@@ -3229,6 +3229,86 @@ describe("music store action contracts", () => {
 		expect(state.playlists[0]?.exclude).toEqual([music]);
 	});
 
+	test("audioEnded_true_positive_preserves_playback_context_long_enough_to_schedule_auto_next", async () => {
+		const first = makeMusic("C:/music/focus/a.flac");
+		const second = makeMusic("C:/music/focus/b.flac");
+		const playlist = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [first, second] },
+		]);
+		const eventHandlers = new Map<string, (payload: unknown) => void>();
+
+		impl.evt = async (event, handler) => {
+			eventHandlers.set(event, handler);
+			return () => {
+				eventHandlers.delete(event);
+			};
+		};
+
+		await action.run();
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: "focus",
+			playbackListName: "focus",
+			requestedPlaying: first,
+			confirmedPlaying: first,
+			nowPlaying: first,
+			playbackSessionId: 9,
+		});
+
+		eventHandlers.get("audioEnded")?.({ path: first.path, session_id: 9 });
+
+		const state = __testing.getState();
+		expect(playbackLog.replaceWith).toHaveLength(1);
+		expect(playbackLog.replaceWith[0]?.epoch).toBeGreaterThan(0);
+		expect(state.selectedListName).toBe("focus");
+		expect(state.playbackListName).toBe("focus");
+		expect(state.playbackSessionId).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+	});
+
+	test("audioEnded_true_negative_no_next_fallback_keeps_list_interactable", async () => {
+		const music = makeMusic("C:/music/focus/a.flac");
+		const playlist = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [music] },
+		]);
+		const eventHandlers = new Map<string, (payload: unknown) => void>();
+
+		impl.evt = async (event, handler) => {
+			eventHandlers.set(event, handler);
+			return () => {
+				eventHandlers.delete(event);
+			};
+		};
+
+		await action.run();
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: "focus",
+			playbackListName: "focus",
+			requestedPlaying: music,
+			confirmedPlaying: music,
+			nowPlaying: music,
+			playbackSessionId: 11,
+		});
+
+		eventHandlers.get("audioEnded")?.({ path: music.path, session_id: 11 });
+
+		const state = __testing.getState();
+		expect(playbackLog.replaceWith).toHaveLength(1);
+		expect(state.selectedListName).toBe("focus");
+		expect(state.playbackListName).toBe("focus");
+		expect(state.requestedPlaying).toBeNull();
+		expect(state.confirmedPlaying).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.playbackSessionId).toBeNull();
+	});
+
 	test("play_true_positive_creates_a_fresh_playback_session_identity_for_each_start_attempt", async () => {
 		const first = makeMusic("C:/music/focus/a.flac");
 		const second = makeMusic("C:/music/focus/b.flac");

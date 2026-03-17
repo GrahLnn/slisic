@@ -13,6 +13,7 @@ import {
 	buildPlaylistPlaceholders,
 	buildPostSavePatch,
 	canExitWorkspace,
+	clearEndedPlaybackForFallback,
 	clearPlaybackSession,
 	deriveBackTransition,
 	derivePlaybackOwnedList,
@@ -739,6 +740,34 @@ describe("music interaction guards", () => {
 				sessionId: 4,
 			}),
 		).toBe(false);
+	});
+
+	test("clearEndedPlaybackForFallback keeps playback-owned list context while clearing active track/session", () => {
+		expect(clearEndedPlaybackForFallback(baseState)).toEqual({
+			selectedListName: "contemporary",
+			playbackListName: "contemporary",
+			requestedPlaying: null,
+			confirmedPlaying: null,
+			nowPlaying: null,
+			nowJudge: null,
+			playbackSessionId: null,
+		});
+
+		expect(
+			clearEndedPlaybackForFallback({
+				...baseState,
+				playbackListName: null,
+				selectedListName: "browsed",
+			}),
+		).toEqual({
+			selectedListName: "browsed",
+			playbackListName: null,
+			requestedPlaying: null,
+			confirmedPlaying: null,
+			nowPlaying: null,
+			nowJudge: null,
+			playbackSessionId: null,
+		});
 	});
 
 	test("deriveRefreshPatch should preserve edit/create mode and clear impossible playback context", () => {
