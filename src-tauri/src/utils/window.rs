@@ -121,6 +121,12 @@ struct PreparedWindowState {
     label: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreparedWindowDisposition {
+    label: String,
+    removed_from_inventory: bool,
+}
+
 fn prepared_window_inventory() -> &'static Mutex<HashMap<WindowName, PreparedWindowState>> {
     static PREPARED_WINDOWS: OnceLock<Mutex<HashMap<WindowName, PreparedWindowState>>> = OnceLock::new();
     PREPARED_WINDOWS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -133,11 +139,30 @@ fn reserve_prepared_window(name: WindowName, label: String) {
     inventory.insert(name, PreparedWindowState { label });
 }
 
+#[cfg(test)]
 fn discard_prepared_window(name: WindowName) -> bool {
     let mut inventory = prepared_window_inventory()
         .lock()
         .expect("prepared window inventory poisoned");
     inventory.remove(&name).is_some()
+}
+
+fn discard_prepared_window_state(name: WindowName) -> Option<PreparedWindowDisposition> {
+    let mut inventory = prepared_window_inventory()
+        .lock()
+        .expect("prepared window inventory poisoned");
+
+    if let Some(state) = inventory.remove(&name) {
+        return Some(PreparedWindowDisposition {
+            label: state.label,
+            removed_from_inventory: true,
+        });
+    }
+
+    Some(PreparedWindowDisposition {
+        label: format!("{}-prewarm", name.as_str()),
+        removed_from_inventory: false,
+    })
 }
 
 fn take_prepared_window(name: WindowName) -> Option<PreparedWindowState> {
@@ -413,7 +438,7 @@ pub fn prewarm_window(app: tauri::AppHandle, name: WindowName) {
             return;
         }
 
-        let _ = discard_prepared_window(name);
+        let _ = discard_prepared_window_state(name);
     }
 
     let label = format!("{}-prewarm", name.as_str());
@@ -430,20 +455,30 @@ pub fn prewarm_window(app: tauri::AppHandle, name: WindowName) {
 
 #[specta::specta]
 #[tauri::command]
-pub fn discard_prewarm_window(name: WindowName) -> bool {
-    discard_prepared_window(name)
+pub fn discard_prewarm_window(app: tauri::AppHandle, name: WindowName) -> bool {
+    let Some(disposition) = discard_prepared_window_state(name) else {
+        return false;
+    };
+
+    if let Some(window) = app.get_webview_window(&disposition.label) {
+        let _ = window.close();
+        return true;
+    }
+
+    disposition.removed_from_inventory
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         classify_window_identity, classify_window_labels, discard_prepared_window,
+        discard_prepared_window_state,
         is_main_user_window_instance_label,
         is_user_window_label, prepared_window_label, prepared_window_targets,
         reserve_prepared_window,
         reset_prepared_window_inventory, should_exit_on_window_close_with_count,
         should_label_resolve_as_user_window, take_prepared_window, window_kind_from_label,
-        window_kind_info_for_label, WindowName,
+        window_kind_info_for_label, PreparedWindowDisposition, WindowName,
     };
 
     #[test]
@@ -617,6 +652,34 @@ mod tests {
 
         assert!(discard_prepared_window(WindowName::Main));
         assert!(prepared_window_targets().is_empty());
+    }
+
+    #[test]
+    fn authoritative_discard_returns_existing_inventory_label() {
+        reset_prepared_window_inventory();
+        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
+
+        assert_eq!(
+            discard_prepared_window_state(WindowName::Main),
+            Some(PreparedWindowDisposition {
+                label: "main-prewarm".to_string(),
+                removed_from_inventory: true,
+            })
+        );
+        assert!(prepared_window_targets().is_empty());
+    }
+
+    #[test]
+    fn authoritative_discard_targets_canonical_label_even_without_inventory_entry() {
+        reset_prepared_window_inventory();
+
+        assert_eq!(
+            discard_prepared_window_state(WindowName::Main),
+            Some(PreparedWindowDisposition {
+                label: "main-prewarm".to_string(),
+                removed_from_inventory: false,
+            })
+        );
     }
 
     #[test]
