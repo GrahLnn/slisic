@@ -62,8 +62,16 @@ export function resolveMainRouteWindow(meta: AppWindowMeta): WindowName | null {
   return meta.window === "Main" ? meta.window : null;
 }
 
-export function getHomepagePrewarmTarget(meta: AppWindowMeta): WindowName | null {
+export function resolveHomepageEffectWindow(meta: AppWindowMeta): WindowName | null {
+  if (!meta.isPrimaryMain) {
+    return null;
+  }
+
   return resolveMainRouteWindow(meta);
+}
+
+export function getHomepagePrewarmTarget(meta: AppWindowMeta): WindowName | null {
+  return resolveHomepageEffectWindow(meta);
 }
 
 export function shouldRenderMainWindow(meta: AppWindowMeta): boolean {

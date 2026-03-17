@@ -4,6 +4,7 @@ import {
   getHomepagePrewarmTarget,
   getInteractiveShellState,
   initialAppWindowMeta,
+  resolveHomepageEffectWindow,
   resolveMainRouteWindow,
   shouldRequestWindowPrewarm,
   shouldRenderMainWindow,
@@ -241,7 +242,9 @@ describe("shouldRequestWindowPrewarm", () => {
     });
 
     expect(getHomepagePrewarmTarget(primaryMain)).toBe(resolveMainRouteWindow(primaryMain));
-    expect(getHomepagePrewarmTarget(secondaryMain)).toBe(resolveMainRouteWindow(secondaryMain));
+    expect(resolveMainRouteWindow(secondaryMain)).toBe("Main");
+    expect(resolveHomepageEffectWindow(secondaryMain)).toBeNull();
+    expect(getHomepagePrewarmTarget(secondaryMain)).toBe(resolveHomepageEffectWindow(secondaryMain));
   });
 
   test("homepage prewarm target follows the authoritative resolved window identity", () => {
@@ -265,7 +268,7 @@ describe("shouldRequestWindowPrewarm", () => {
           isUserWindow: true,
         }),
       ),
-    ).toBe("Main");
+    ).toBeNull();
 
     expect(
       getHomepagePrewarmTarget(
@@ -300,7 +303,7 @@ describe("shouldRequestWindowPrewarm", () => {
           isUserWindow: true,
         }),
       ),
-    ).toBe("Main");
+    ).toBeNull();
 
     expect(
       shouldRequestWindowPrewarm(
@@ -347,6 +350,20 @@ describe("shouldRequestWindowPrewarm", () => {
         }),
       ),
     ).toBe(false);
+  });
+
+  test("secondary visible main windows still render the app shell without gaining homepage target eligibility", () => {
+    const secondaryMain = createMeta({
+      status: "ready",
+      window: "Main",
+      isPrimaryMain: false,
+      isUserWindow: true,
+    });
+
+    expect(resolveMainRouteWindow(secondaryMain)).toBe("Main");
+    expect(getHomepagePrewarmTarget(secondaryMain)).toBeNull();
+    expect(shouldRenderMainWindow(secondaryMain)).toBe(true);
+    expect(shouldRequestWindowPrewarm(secondaryMain)).toBe(false);
   });
 });
 
