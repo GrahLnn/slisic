@@ -15,6 +15,7 @@ import { action, hook } from "@/src/flow/music";
 import { entryKey } from "@/src/flow/music/logic";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
+import { sileo } from "sileo";
 
 export function Edit({ title, explain }: { title: string; explain: string }) {
   const slot = hook.useSlot();
@@ -167,37 +168,46 @@ function TrackPaster() {
         <EntryToolButton
           label="Paste"
           onClick={() => {
-            readText().then((text) => {
-              if (
-                !text ||
-                !isUrl(text) ||
-                slot.links.some((item) => item.url === text)
-              ) {
-                return;
-              }
+            void readText()
+              .then((rawText) => {
+                const text = rawText.trim();
+                if (
+                  !text ||
+                  !isUrl(text) ||
+                  slot.links.some((item) => item.url === text)
+                ) {
+                  return;
+                }
 
-              if (entriesUrl.some((url) => url === text)) {
-                action.setSlot({
-                  ...slot,
-                  links: [
-                    ...slot.links,
-                    {
-                      url: text,
-                      title_or_msg: "",
-                      status: null,
-                      count: null,
-                      entry_type:
-                        slot.entries.find((entry) => entry.url === text)
-                          ?.entry_type ?? "Unknown",
-                      tracking: false,
-                    },
-                  ],
+                if (entriesUrl.some((url) => url === text)) {
+                  action.setSlot({
+                    ...slot,
+                    links: [
+                      ...slot.links,
+                      {
+                        url: text,
+                        title_or_msg: "",
+                        status: null,
+                        count: null,
+                        entry_type:
+                          slot.entries.find((entry) => entry.url === text)
+                            ?.entry_type ?? "Unknown",
+                        tracking: false,
+                      },
+                    ],
+                  });
+                  return;
+                }
+
+                void action.addLink(text);
+              })
+              .catch((error) => {
+                sileo.error({
+                  title: "Paste failed",
+                  description:
+                    error instanceof Error ? error.message : String(error),
                 });
-                return;
-              }
-
-              void action.addLink(text);
-            });
+              });
           }}
         />
       </div>
