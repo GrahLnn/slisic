@@ -29,6 +29,10 @@ export function shouldRenderMainWindow(meta: AppWindowMeta): boolean {
 }
 
 export function shouldRunUpdater(meta: AppWindowMeta): boolean {
+  if (import.meta.env.DEV) {
+    return false;
+  }
+
   return meta.status === "ready" && meta.isUserWindow && meta.window === "Main" && meta.isPrimaryMain;
 }
 

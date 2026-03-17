@@ -60,6 +60,12 @@ describe("shouldRenderMainWindow", () => {
 
 describe("shouldRunUpdater", () => {
   test("runs only for the primary visible main window", () => {
+    const originalDev = import.meta.env.DEV;
+    Object.defineProperty(import.meta.env, "DEV", {
+      configurable: true,
+      value: false,
+    });
+
     expect(
       shouldRunUpdater(
         createMeta({
@@ -110,6 +116,34 @@ describe("shouldRunUpdater", () => {
         }),
       ),
     ).toBe(false);
+
+    Object.defineProperty(import.meta.env, "DEV", {
+      configurable: true,
+      value: originalDev,
+    });
+  });
+
+  test("does not run updater during dev validation startup", () => {
+    const originalDev = import.meta.env.DEV;
+    Object.defineProperty(import.meta.env, "DEV", {
+      configurable: true,
+      value: true,
+    });
+
+    expect(
+      shouldRunUpdater(
+        createMeta({
+          status: "ready",
+          window: "Main",
+          isPrimaryMain: true,
+        }),
+      ),
+    ).toBe(false);
+
+    Object.defineProperty(import.meta.env, "DEV", {
+      configurable: true,
+      value: originalDev,
+    });
   });
 });
 
