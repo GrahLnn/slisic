@@ -85,13 +85,11 @@ fn is_main_user_window_instance_label(label: &str) -> bool {
 }
 
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
-    if !should_label_resolve_as_user_window(closing_label) {
-        return false;
-    }
+    should_exit_on_window_close_with_count(closing_label, visible_user_window_count(app))
+}
 
-    let main_window_count = visible_user_window_count(app);
-
-    main_window_count <= 1
+fn should_exit_on_window_close_with_count(closing_label: &str, visible_user_window_count: usize) -> bool {
+    should_label_resolve_as_user_window(closing_label) && visible_user_window_count <= 1
 }
 
 pub fn visible_user_window_count(app: &AppHandle) -> usize {
@@ -303,8 +301,8 @@ pub async fn create_window(
 mod tests {
     use super::{
         classify_window_labels, is_main_user_window_instance_label, is_user_window_label,
-        should_label_resolve_as_user_window, window_kind_from_label, window_kind_info_for_label,
-        WindowName,
+        should_exit_on_window_close_with_count, should_label_resolve_as_user_window,
+        window_kind_from_label, window_kind_info_for_label, WindowName,
     };
 
     #[test]
@@ -390,5 +388,31 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(visible_user_labels, vec!["main", "main-1"]);
+    }
+
+    #[test]
+    fn closing_one_of_multiple_user_windows_does_not_exit() {
+        assert!(!should_exit_on_window_close_with_count("main-1", 2));
+        assert!(!should_exit_on_window_close_with_count("main", 3));
+    }
+
+    #[test]
+    fn closing_last_user_window_exits() {
+        assert!(should_exit_on_window_close_with_count("main", 1));
+        assert!(should_exit_on_window_close_with_count("main-1", 1));
+    }
+
+    #[test]
+    fn closing_support_or_prewarm_window_never_exits() {
+        for label in ["main-prewarm-1", "support-main", "prewarm-main", "unknown"] {
+            assert!(
+                !should_exit_on_window_close_with_count(label, 1),
+                "label {label} should not participate in exit accounting"
+            );
+            assert!(
+                !should_exit_on_window_close_with_count(label, 3),
+                "label {label} should not participate in exit accounting"
+            );
+        }
     }
 }
