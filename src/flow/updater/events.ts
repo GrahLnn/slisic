@@ -24,18 +24,14 @@ export const state = allState(ss);
 export const sig = allSignal(ss);
 export const transfer = allTransfer(ss);
 
-export type UpdateCheckResult =
-  | { kind: "available"; version: string }
-  | { kind: "up_to_date" };
+export type UpdateCheckResult = { kind: "available"; version: string } | { kind: "up_to_date" };
 
 export const invoker = createActors({
   async checkUpdate(): Promise<UpdateCheckResult> {
     console.log("check update");
     const update = await check();
     if (update) {
-      console.log(
-        `found update ${update.version} from ${update.date} with notes ${update.body}`,
-      );
+      console.log(`found update ${update.version} from ${update.date} with notes ${update.body}`);
 
       await update.download((e) => {
         switch (e.event) {
@@ -73,6 +69,4 @@ export const machines = collect();
 
 export type MainStateT = keyof typeof ss.mainx.State;
 export type ResultStateT = keyof typeof resultx.State;
-export type Events = UniqueEvts<
-  SignalEvt<typeof ss> | InvokeEvt<typeof invoker>
->;
+export type Events = UniqueEvts<SignalEvt<typeof ss> | InvokeEvt<typeof invoker>>;

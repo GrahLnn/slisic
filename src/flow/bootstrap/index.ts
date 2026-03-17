@@ -4,10 +4,7 @@ import {
   action as templateAction,
   ensureStarted as ensureTemplateStarted,
 } from "../template_board";
-import {
-  action as updaterAction,
-  ensureStarted as ensureUpdaterStarted,
-} from "../updater";
+import { action as updaterAction, ensureStarted as ensureUpdaterStarted } from "../updater";
 import {
   initialAppWindowMeta,
   shouldRequestWindowPrewarm,

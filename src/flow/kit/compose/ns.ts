@@ -13,12 +13,8 @@ export function ns<const N extends string, S extends SstShape>(name: N, ss: S) {
 
 /* 从“值”里提键（不依赖索引签名） */
 type ItemVal<I> = I[keyof I];
-type StateKeysOfItem<I> = ItemVal<I> extends { State: infer ST }
-  ? keyof ST & string
-  : never;
-type SignalKeysOfItem<I> = ItemVal<I> extends { Signal: infer SG }
-  ? keyof SG & string
-  : never;
+type StateKeysOfItem<I> = ItemVal<I> extends { State: infer ST } ? keyof ST & string : never;
+type SignalKeysOfItem<I> = ItemVal<I> extends { Signal: infer SG } ? keyof SG & string : never;
 
 /* 冲突检查 */
 type CheckItem<I, PS extends string, PG extends string> =
@@ -41,28 +37,23 @@ type CheckItem<I, PS extends string, PG extends string> =
 type DecorateUnique<
   T extends readonly any[],
   PS extends string = never,
-  PG extends string = never
+  PG extends string = never,
 > = T extends readonly [infer I, ...infer R]
   ? I extends Record<string, SstShape>
     ? [
         I & CheckItem<I, PS, PG>,
-        ...DecorateUnique<R, PS | StateKeysOfItem<I>, PG | SignalKeysOfItem<I>>
+        ...DecorateUnique<R, PS | StateKeysOfItem<I>, PG | SignalKeysOfItem<I>>,
       ]
     : never
   : [];
 
 /* 交叉合并 */
-type IntersectTuple<T extends readonly any[]> = T extends readonly [
-  infer A,
-  ...infer R
-]
+type IntersectTuple<T extends readonly any[]> = T extends readonly [infer A, ...infer R]
   ? A & IntersectTuple<R>
   : {};
 
 /* defineSS：T 只承接实参元组，唯一性检查通过 & DecorateUnique<T> 完成 */
-export function defineSS<const T extends readonly any[]>(
-  ...sss: T & DecorateUnique<T>
-) {
+export function defineSS<const T extends readonly any[]>(...sss: T & DecorateUnique<T>) {
   return Object.assign({}, ...sss) as IntersectTuple<T>;
 }
 

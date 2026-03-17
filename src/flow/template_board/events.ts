@@ -1,10 +1,6 @@
 import { me, type Result } from "@grahlnn/fn";
 import { crab } from "../../cmd";
-import type {
-  MouseWindowInfo,
-  NewMemberInput,
-  TemplateDashboard,
-} from "../../cmd/commands";
+import type { MouseWindowInfo, NewMemberInput, TemplateDashboard } from "../../cmd/commands";
 import {
   collect,
   createActors,
@@ -34,9 +30,7 @@ export interface TemplateBoardGateway {
   templateSnapshot(): Promise<Result<TemplateDashboard, string>>;
   templateBootstrap(): Promise<Result<TemplateDashboard, string>>;
   templateReset(): Promise<Result<TemplateDashboard, string>>;
-  templateCreateMember(
-    input: NewMemberInput,
-  ): Promise<Result<TemplateDashboard, string>>;
+  templateCreateMember(input: NewMemberInput): Promise<Result<TemplateDashboard, string>>;
   templateCreateTask(
     input: BulkStatusInput extends { status: infer S }
       ? Omit<Parameters<typeof crab.templateCreateTask>[0], "status"> & {
@@ -44,19 +38,16 @@ export interface TemplateBoardGateway {
         }
       : Parameters<typeof crab.templateCreateTask>[0],
   ): Promise<Result<TemplateDashboard, string>>;
-  templateAssignTask(
-    input: AssignTaskInput,
-  ): Promise<Result<TemplateDashboard, string>>;
-  templateUnassignTask(
-    input: UnassignTaskInput,
-  ): Promise<Result<TemplateDashboard, string>>;
-  templateBulkSetStatus(
-    input: BulkStatusInput,
-  ): Promise<Result<TemplateDashboard, string>>;
-  createWindow(name: "Main", options: {
-    width: number;
-    height: number;
-  }): Promise<void>;
+  templateAssignTask(input: AssignTaskInput): Promise<Result<TemplateDashboard, string>>;
+  templateUnassignTask(input: UnassignTaskInput): Promise<Result<TemplateDashboard, string>>;
+  templateBulkSetStatus(input: BulkStatusInput): Promise<Result<TemplateDashboard, string>>;
+  createWindow(
+    name: "Main",
+    options: {
+      width: number;
+      height: number;
+    },
+  ): Promise<void>;
   getMouseAndWindowPosition(): Promise<Result<MouseWindowInfo, string>>;
 }
 
@@ -72,9 +63,7 @@ export async function expectDashboard(
 }
 
 export function createExecutePending(gateway: TemplateBoardGateway = crab) {
-  return async ({
-    input,
-  }: ActorInput<PendingOperation>): Promise<OperationResult> => {
+  return async ({ input }: ActorInput<PendingOperation>): Promise<OperationResult> => {
     return me(input).match("kind", {
       snapshot: async () => ({
         kind: "dashboard",
@@ -204,7 +193,5 @@ export const payloads = collect(
 
 export type MainStateT = keyof typeof ss.mainx.State;
 export type Events = UniqueEvts<
-  | SignalEvt<typeof ss>
-  | InvokeEvt<typeof invoker>
-  | PayloadEvt<typeof payloads.infer>
+  SignalEvt<typeof ss> | InvokeEvt<typeof invoker> | PayloadEvt<typeof payloads.infer>
 >;

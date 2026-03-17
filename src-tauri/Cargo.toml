@@ -24,13 +24,16 @@ tauri-build = { version = "2.5.6", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.10.3", features = [ "macos-private-api", "protocol-asset"] }
+tauri = { version = "2.10.3", features = ["macos-private-api", "protocol-asset"] }
 tauri-plugin-log = "2.8.0"
 tauri-plugin-shell = "2"
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
 specta = "2.0.0-rc.23"
 specta-typescript = "0.0.10"
-tauri-specta = { git = "https://github.com/specta-rs/tauri-specta.git", rev = "b7cd99b786bd437acdbf2c11ae3e2c955b611a51", features = ["derive", "typescript"] }
+tauri-specta = { git = "https://github.com/specta-rs/tauri-specta.git", rev = "b7cd99b786bd437acdbf2c11ae3e2c955b611a51", features = [
+  "derive",
+  "typescript",
+] }
 tauri-plugin-os = "2"
 appdb = "0.1.7"
 anyhow = "1.0.102"

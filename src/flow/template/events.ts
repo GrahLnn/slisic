@@ -21,7 +21,7 @@ import { sub_mc } from "./submachine/example";
 
 export const ss = defineSS(
   ns("resultx", resultx),
-  ns("mainx", sst(["idle", "loading", "view"], ["run", "unmount", "back"]))
+  ns("mainx", sst(["idle", "loading", "view"], ["run", "unmount", "back"])),
 );
 export const state = allState(ss);
 export const sig = allSignal(ss);

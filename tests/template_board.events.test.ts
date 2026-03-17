@@ -1,10 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Err, Ok } from "@grahlnn/fn";
-import type {
-  MouseWindowInfo,
-  NewMemberInput,
-  TemplateDashboard,
-} from "../src/cmd/commands";
+import type { MouseWindowInfo, NewMemberInput, TemplateDashboard } from "../src/cmd/commands";
 import {
   createExecutePending,
   expectDashboard,
@@ -47,9 +43,7 @@ function createMouseInfo(): MouseWindowInfo {
   };
 }
 
-function createGateway(
-  overrides: Partial<TemplateBoardGateway> = {},
-): TemplateBoardGateway {
+function createGateway(overrides: Partial<TemplateBoardGateway> = {}): TemplateBoardGateway {
   const dashboard = createDashboard();
   return {
     templateSnapshot: async () => Ok(dashboard),
@@ -121,16 +115,14 @@ describe("template_board executePending TP/FP/TN/FN", () => {
   });
 
   test("FP: backend Err is surfaced as a thrown failure instead of false success", async () => {
-    await expect(
-      expectDashboard(Promise.resolve(Err("backend failed"))),
-    ).rejects.toThrow("backend failed");
+    await expect(expectDashboard(Promise.resolve(Err("backend failed")))).rejects.toThrow(
+      "backend failed",
+    );
   });
 
   test("FN: backend Ok is accepted as success instead of false failure", async () => {
     const dashboard = createDashboard();
 
-    await expect(
-      expectDashboard(Promise.resolve(Ok(dashboard))),
-    ).resolves.toEqual(dashboard);
+    await expect(expectDashboard(Promise.resolve(Ok(dashboard)))).resolves.toEqual(dashboard);
   });
 });

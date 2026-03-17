@@ -15,7 +15,7 @@ export function goto(state: string) {
 /* xstate 子状态机快速包裹器 */
 export function invokeState<
   S extends string,
-  A extends string | readonly string[] | undefined = undefined
+  A extends string | readonly string[] | undefined = undefined,
 >(src: S, actions?: A) {
   return {
     [src]: {

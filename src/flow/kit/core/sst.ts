@@ -11,7 +11,7 @@ import { createSignal } from "./signal";
 
 export function ss<
   const TState extends readonly string[],
-  const TSignal extends readonly string[] = []
+  const TSignal extends readonly string[] = [],
 >(cfg: {
   states: TState & ElemNoSpaceTuple<TState>;
   signals: TSignal & ElemNoSpaceTuple<TSignal>;
@@ -31,10 +31,10 @@ export function ss<
 
 export function sst<
   const TState extends readonly string[],
-  const TExtra extends readonly string[] = []
+  const TExtra extends readonly string[] = [],
 >(
   states: ElemNoSpaceTuple<TState>,
-  extra_signals?: ElemNoSpaceTuple<TExtra>
+  extra_signals?: ElemNoSpaceTuple<TExtra>,
 ): StateSignalResult<TState, ToSignal<TState> | TExtra[number]> {
   const State = {} as StateMap<TState>;
   for (const s of states) (State as any)[s] = s;

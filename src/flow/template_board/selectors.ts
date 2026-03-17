@@ -9,12 +9,7 @@ type SelectorShot = {
 
 export type TemplateBoardViewModel = Pick<
   Context,
-  | "dashboard"
-  | "memberInput"
-  | "taskInput"
-  | "bulkStatus"
-  | "selectedTaskIds"
-  | "mouseInfo"
+  "dashboard" | "memberInput" | "taskInput" | "bulkStatus" | "selectedTaskIds" | "mouseInfo"
 >;
 
 export const selectTemplateBoardState = me.select(

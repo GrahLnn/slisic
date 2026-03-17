@@ -16,25 +16,15 @@ export function getSuccessToast(output: OperationResult): ToastMessage | null {
   });
 }
 
-export function applyOperationResult(
-  context: Context,
-  output: OperationResult,
-): Context {
+export function applyOperationResult(context: Context, output: OperationResult): Context {
   const next = { ...context, pending: null };
 
   return me(output).match("kind", {
-    dashboard: ({
-      dashboard,
-      clearSelection,
-      resetMemberInput,
-      resetTaskInput,
-    }) => ({
+    dashboard: ({ dashboard, clearSelection, resetMemberInput, resetTaskInput }) => ({
       ...next,
       dashboard,
       selectedTaskIds: clearSelection ? [] : context.selectedTaskIds,
-      memberInput: resetMemberInput
-        ? { ...defaultMemberInput }
-        : context.memberInput,
+      memberInput: resetMemberInput ? { ...defaultMemberInput } : context.memberInput,
       taskInput: resetTaskInput ? { ...defaultTaskInput } : context.taskInput,
     }),
     mouse: ({ mouseInfo }) => ({

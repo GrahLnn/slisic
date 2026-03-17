@@ -1,17 +1,19 @@
 {
   "name": "react-tauri",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "version": "1.0.0",
   "scripts": {
     "dev": "rsbuild dev",
     "build": "rsbuild build",
     "preview": "rsbuild preview",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
     "lint": "oxlint .",
     "lint:fix": "oxlint . --fix",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
-    "check:all": "bun run lint && bun run typecheck && bun run build && bun run rust:check"
+    "check:all": "bun run fmt:check && bun run lint && bun run typecheck && bun run build && bun run rust:check"
   },
   "dependencies": {
     "@fontsource/maple-mono": "^5.2.6",
@@ -63,6 +65,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "babel-plugin-react-compiler": "^19.1.0-rc.1-rc-af1b7da-20250421",
+    "oxfmt": "^0.41.0",
     "oxlint": "^1.56.0",
     "sass": "^1.98.0",
     "typescript": "^5.9.3"

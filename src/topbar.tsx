@@ -179,22 +179,13 @@ const TopBar = memo(function TopBarComponent() {
           >
             {allowBarInteraction && (
               <>
-                <div
-                  data-tauri-drag-region
-                  className={cn(["flex justify-start pl-1"])}
-                >
+                <div data-tauri-drag-region className={cn(["flex justify-start pl-1"])}>
                   <LeftControls />
                 </div>
-                <div
-                  data-tauri-drag-region
-                  className={cn(["flex justify-center"])}
-                >
+                <div data-tauri-drag-region className={cn(["flex justify-center"])}>
                   <MiddleControls />
                 </div>
-                <div
-                  data-tauri-drag-region
-                  className={cn(["flex justify-end"])}
-                >
+                <div data-tauri-drag-region className={cn(["flex justify-end"])}>
                   <RightControls />
                 </div>
               </>

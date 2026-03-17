@@ -23,17 +23,11 @@ export type TransferBase<TState extends readonly string[]> = {
   };
 };
 
-export type TransferMap<TState extends readonly string[]> =
-  TransferBase<TState> & {
-    pick<K extends keyof TransferBase<TState>>(
-      ...keys: K[]
-    ): Pick<TransferBase<TState>, K>;
-  };
+export type TransferMap<TState extends readonly string[]> = TransferBase<TState> & {
+  pick<K extends keyof TransferBase<TState>>(...keys: K[]): Pick<TransferBase<TState>, K>;
+};
 
-export type StateSignalResult<
-  TState extends readonly string[],
-  TSignal extends string,
-> = {
+export type StateSignalResult<TState extends readonly string[], TSignal extends string> = {
   State: StateMap<TState>;
   Signal: SignalMap<TSignal>;
   transfer: TransferMap<TState>;
@@ -47,14 +41,9 @@ export type Awaited<T> = T extends Promise<infer R> ? R : T;
 export type AnyEvt = { type: string };
 export type Prefix = "xstate.done.actor.";
 export type WithPrefix<S extends string> = `${Prefix}${S}`;
-export type StripPrefix<S extends string> = S extends `${Prefix}${infer R}`
-  ? R
-  : S;
+export type StripPrefix<S extends string> = S extends `${Prefix}${infer R}` ? R : S;
 
-export type PathValue<T, P extends readonly string[]> = P extends [
-  infer H,
-  ...infer Rest,
-]
+export type PathValue<T, P extends readonly string[]> = P extends [infer H, ...infer Rest]
   ? H extends keyof T
     ? Rest extends string[]
       ? PathValue<T[H], Rest>
@@ -63,10 +52,7 @@ export type PathValue<T, P extends readonly string[]> = P extends [
   : T;
 
 /* 事件工具：抽取匹配 type 的事件 */
-export type EvtOf<E extends AnyEvt, T extends E["type"]> = Extract<
-  E,
-  { type: T }
->;
+export type EvtOf<E extends AnyEvt, T extends E["type"]> = Extract<E, { type: T }>;
 
 export type ElemNoSpaceTuple<T extends readonly string[]> = {
   [K in keyof T]: T[K] extends string ? NoSpace<T[K]> : T[K];
@@ -89,16 +75,14 @@ export type PayloadEvt<T extends readonly PayloadEvent[]> = T[number];
 export type MachineEvt<T extends readonly MachineEvent[]> = T[number];
 
 // ===== 基础：Union -> Intersection / Last / Union -> Tuple =====
-type UnionToIntersection<U> = (
-  U extends unknown ? (arg: U) => 0 : never
-) extends (arg: infer I) => 0
+type UnionToIntersection<U> = (U extends unknown ? (arg: U) => 0 : never) extends (
+  arg: infer I,
+) => 0
   ? I
   : never;
 
 type LastInUnion<U> =
-  UnionToIntersection<U extends unknown ? (x: U) => 0 : never> extends (
-    x: infer L,
-  ) => 0
+  UnionToIntersection<U extends unknown ? (x: U) => 0 : never> extends (x: infer L) => 0
     ? L
     : never;
 
@@ -108,14 +92,9 @@ type UnionToTuple<U, Last = LastInUnion<U>> = [U] extends [never]
 
 // ===== 小工具：相等 / 包含 / 求元组中重复 =====
 type IsEqual<X, Y> =
-  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2
-    ? true
-    : false;
+  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true : false;
 
-type Includes<T extends readonly any[], U> = T extends readonly [
-  infer H,
-  ...infer R,
-]
+type Includes<T extends readonly any[], U> = T extends readonly [infer H, ...infer R]
   ? IsEqual<H, U> extends true
     ? true
     : Includes<R, U>
@@ -164,9 +143,7 @@ type BroadKinds<U extends { type: PropertyKey }> =
           : never
     : never;
 
-type IsUnion<T, U = T> = (T extends any ? (k: T) => void : never) extends (
-  k: infer I,
-) => void
+type IsUnion<T, U = T> = (T extends any ? (k: T) => void : never) extends (k: infer I) => void
   ? [U] extends [I]
     ? false
     : true
@@ -187,9 +164,7 @@ type DuplicateTypeList<U extends { type: PropertyKey }> =
     : never;
 
 /** 保留原名与分支结构：UniqueEvts —— 用新的 DuplicateTypeList 与 BroadKinds */
-export type UniqueEvts<U extends { type: PropertyKey }> = [
-  DuplicateTypeList<U>,
-] extends [never]
+export type UniqueEvts<U extends { type: PropertyKey }> = [DuplicateTypeList<U>] extends [never]
   ? [BroadKinds<U>] extends [never]
     ? U
     : { __ERROR_NON_LITERAL_EVENT_TYPES: BroadKinds<U> }
@@ -224,9 +199,7 @@ type Check_DUP = UniqueEvts<E_DUP>;
 type T_DUP = DuplicateTypeList<E_DUP>;
 
 // 3) ❌ 非字面量：包含 type: string
-type E_BROAD =
-  | { type: string; output: number }
-  | { type: "b"; output: boolean };
+type E_BROAD = { type: string; output: number } | { type: "b"; output: boolean };
 
 // 预期：非字面量 type 会报错（__ERROR_NON_LITERAL_EVENT_TYPES: 'string'）
 type Check_BROAD = UniqueEvts<E_BROAD>;
@@ -249,8 +222,7 @@ type T_MIXED_BROAD = BroadTypes<E_MIXED>;
 
 // 5) ✅ 从“注册表对象”推导（设计层面也避免重名）
 const registry = {
-  prepare_save_path: (s: string) =>
-    ({ type: "prepare_save_path", output: s }) as const,
+  prepare_save_path: (s: string) => ({ type: "prepare_save_path", output: s }) as const,
   ping: (n: number) => ({ type: "ping", output: n }) as const,
 };
 type EventsFromRegistry = ReturnType<(typeof registry)[keyof typeof registry]>;

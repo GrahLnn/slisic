@@ -22,10 +22,8 @@ export function ensureStarted() {
 }
 
 export const hook = {
-  useState: () =>
-    me(useSelector(actor, selectMainState.project, selectMainState.compare)),
-  useContext: () =>
-    useSelector(actor, selectContext.project, selectContext.compare),
+  useState: () => me(useSelector(actor, selectMainState.project, selectMainState.compare)),
+  useContext: () => useSelector(actor, selectContext.project, selectContext.compare),
 };
 
 export const action = {

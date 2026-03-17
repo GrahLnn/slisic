@@ -49,8 +49,7 @@ function Core() {
       unlisten.then((f) => f());
     };
   }, []);
-  const iconcn =
-    "opacity-0 group-hover:opacity-60 transition-opacity duration-300 mx-auto my-auto";
+  const iconcn = "opacity-0 group-hover:opacity-60 transition-opacity duration-300 mx-auto my-auto";
   const iconsize = 8;
   return (
     <div
@@ -73,9 +72,7 @@ function Core() {
       />
       <WindowButton
         className="group-hover:bg-[#27c63f]"
-        icon={
-          <icons.caretMaximizeDiagonal2 size={iconsize} className={iconcn} />
-        }
+        icon={<icons.caretMaximizeDiagonal2 size={iconsize} className={iconcn} />}
         onClick={() => {
           appWindow.setFullscreen(true);
           is_fullscreen[1](true);

@@ -34,7 +34,7 @@ type MachineEntry<L extends AnyActorLogic = AnyActorLogic> = {
 
 // 改写 BoundChild：吃一个 MachineEntry，而不是 (logic, id)
 export type BoundChild = <L extends AnyActorLogic>(
-  mc: MachineEntry<L>
+  mc: MachineEntry<L>,
 ) => (input: MaybeOptional<InputFrom<L>>) => ActorRefFrom<L>;
 
 /* -----------------------------------------------------------------------------
@@ -60,16 +60,12 @@ type MachineOf<T> = T extends MachineEvent<infer L> ? L : never;
 type PayloadMapFromUnion<U extends PayloadEvent> = {
   [K in U["type"] & string]: {
     /** 生成该事件的值（确保 output 的类型精确） */
-    load: (
-      payload: Extract<U, { type: K }>["output"]
-    ) => Extract<U, { type: K }>;
+    load: (payload: Extract<U, { type: K }>["output"]) => Extract<U, { type: K }>;
     /** 仅获取事件名（便于在 switch / on: {...} 中复用） */
     evt: K;
   };
 };
-type PayloadMap<E extends readonly PayloadEvent[]> = PayloadMapFromUnion<
-  E[number]
->;
+type PayloadMap<E extends readonly PayloadEvent[]> = PayloadMapFromUnion<E[number]>;
 
 /** 把 machine-事件联合变为「以去前缀键为名」的字典：含 evt/id/machine */
 type MachineMapFromUnion<U extends MachineEvent<any>> = {
@@ -82,9 +78,7 @@ type MachineMapFromUnion<U extends MachineEvent<any>> = {
     machine: MachineOf<Extract<U, { type: K }>>;
   };
 };
-type MachineMap<E extends readonly MachineEvent<any>[]> = MachineMapFromUnion<
-  E[number]
->;
+type MachineMap<E extends readonly MachineEvent<any>[]> = MachineMapFromUnion<E[number]>;
 
 /* -----------------------------------------------------------------------------
  * 2) 工厂函数（payload / machine）
@@ -112,16 +106,14 @@ export function event<T>() {
 }
 
 /** 构造一个 machine-done 事件“原型”（随后交给 collect 形成工厂） */
-export function machine<O, L extends AnyActorLogic = AnyActorLogic>(
-  machine: L
-) {
+export function machine<O, L extends AnyActorLogic = AnyActorLogic>(machine: L) {
   return <const N extends string>(name: N) =>
     ({
       __kind: "machine",
       type: `${DONE_PREFIX}${name}`,
       machine,
       output: undefined as O,
-    } as const);
+    }) as const;
 }
 
 /* -----------------------------------------------------------------------------
@@ -137,19 +129,13 @@ type SendAllDict<E extends readonly MachineEvent<any>[]> = {
 /* -------------------------------------------------------
  * 类型工具：拍扁一层嵌套的 tuple，并在 tuple 上做过滤
  * -----------------------------------------------------*/
-type Flatten1<A extends readonly unknown[]> = A extends readonly [
-  infer H,
-  ...infer R
-]
+type Flatten1<A extends readonly unknown[]> = A extends readonly [infer H, ...infer R]
   ? H extends readonly unknown[]
     ? [...H, ...Flatten1<R>]
     : [H, ...Flatten1<R>]
   : [];
 
-type FilterTuple<T extends readonly unknown[], Pred> = T extends readonly [
-  infer H,
-  ...infer R
-]
+type FilterTuple<T extends readonly unknown[], Pred> = T extends readonly [infer H, ...infer R]
   ? H extends Pred
     ? [H, ...FilterTuple<R, Pred>]
     : [...FilterTuple<R, Pred>]
@@ -169,10 +155,7 @@ export function collect<
   )[],
   const F extends readonly (PayloadEvent | MachineEvent<any>)[] = Flatten1<A>,
   const FP extends readonly PayloadEvent[] = FilterTuple<F, PayloadEvent>,
-  const FM extends readonly MachineEvent<any>[] = FilterTuple<
-    F,
-    MachineEvent<any>
-  >
+  const FM extends readonly MachineEvent<any>[] = FilterTuple<F, MachineEvent<any>>,
 >(
   ...args: A
 ): PayloadMap<FP> &
@@ -191,8 +174,8 @@ export function collect(
   )[]
 ) {
   // 运行时拍扁一层（与类型层面的 Flatten1 对齐）
-  const events: readonly (PayloadEvent | MachineEvent<any>)[] = args.flatMap(
-    (a) => (Array.isArray(a) ? (a as any) : [a as any])
+  const events: readonly (PayloadEvent | MachineEvent<any>)[] = args.flatMap((a) =>
+    Array.isArray(a) ? (a as any) : [a as any],
   );
 
   const methods = Object.assign(
@@ -211,7 +194,7 @@ export function collect(
           evt: (e as any).type,
         },
       };
-    })
+    }),
   );
 
   const machineEntries = events.flatMap((e) => {
@@ -244,64 +227,59 @@ export function collect(
 export function eventHandler<
   TContext extends MachineContext,
   TEvents extends AnyEventObject,
-  TActor extends ProvidedActor = ProvidedActor
+  TActor extends ProvidedActor = ProvidedActor,
 >() {
   // 类型友好的重载：S 可为裸键或带前缀键
-  function whenDone<
-    S extends DoneKeys<TEvents> | `${Prefix}${DoneKeys<TEvents>}`
-  >(
-    key: S
+  function whenDone<S extends DoneKeys<TEvents> | `${Prefix}${DoneKeys<TEvents>}`>(
+    key: S,
   ): <R>(
     fn: (
       out: OutputOf<TEvents, NormalizeKey<S>>,
       ctx: TContext,
       evt: EvtForKey<TEvents, NormalizeKey<S>>,
-      sp: BoundChild
+      sp: BoundChild,
       //   spawn: Spawner<TActor>
-    ) => R
+    ) => R,
   ) => (args: AssignArgs<TContext, TEvents, TEvents, TActor>) => R;
 
   function whenDone(key: string) {
-    return (fn: any) =>
-      (args: AssignArgs<TContext, TEvents, TEvents, TActor>) => {
-        const { context, event, spawn } = args;
+    return (fn: any) => (args: AssignArgs<TContext, TEvents, TEvents, TActor>) => {
+      const { context, event, spawn } = args;
 
-        // 收敛 XState 的 spawn（避免处处重复泛型与可选项声明）
-        type SpawnFn = <L extends AnyActorLogic>(
-          src: L,
-          options?: {
-            id?: string;
-            systemId?: string;
-            input?: InputFrom<L>;
-            syncSnapshot?: boolean;
-          }
-        ) => ActorRefFrom<L>;
-        const doSpawn = spawn as unknown as SpawnFn;
+      // 收敛 XState 的 spawn（避免处处重复泛型与可选项声明）
+      type SpawnFn = <L extends AnyActorLogic>(
+        src: L,
+        options?: {
+          id?: string;
+          systemId?: string;
+          input?: InputFrom<L>;
+          syncSnapshot?: boolean;
+        },
+      ) => ActorRefFrom<L>;
+      const doSpawn = spawn as unknown as SpawnFn;
 
-        const sp = (<L extends AnyActorLogic>(mc: MachineEntry<L>) =>
-          (input: MaybeOptional<InputFrom<L>>): ActorRefFrom<L> =>
-            doSpawn(mc.machine, {
-              id: mc.id,
-              /** 当前传入的input并不会到machine里去做验证，所以这里不再报错，手工保证合法性，除非machine调用给出了泛型typeof mc.machine */
-              input: input as InputFrom<L>,
-            })) as BoundChild;
+      const sp = (<L extends AnyActorLogic>(mc: MachineEntry<L>) =>
+        (input: MaybeOptional<InputFrom<L>>): ActorRefFrom<L> =>
+          doSpawn(mc.machine, {
+            id: mc.id,
+            /** 当前传入的input并不会到machine里去做验证，所以这里不再报错，手工保证合法性，除非machine调用给出了泛型typeof mc.machine */
+            input: input as InputFrom<L>,
+          })) as BoundChild;
 
-        assertEvent(event, key);
-        return fn((event as any).output, context, event as any, sp);
-      };
+      assertEvent(event, key);
+      return fn((event as any).output, context, event as any, sp);
+    };
   }
   type KeyLike = DoneKeys<TEvents> | `${Prefix}${DoneKeys<TEvents>}`;
-  function take(): <R>(
-    fn: (ctx: TContext) => R
-  ) => (args: ActionArgs<TContext, any, any>) => R;
+  function take(): <R>(fn: (ctx: TContext) => R) => (args: ActionArgs<TContext, any, any>) => R;
   function take<S extends KeyLike>(
-    key?: S
+    key?: S,
   ): <R>(
     fn: (
       out: OutputOf<TEvents, NormalizeKey<S>>,
       ctx: TContext,
-      evt: EvtForKey<TEvents, NormalizeKey<S>>
-    ) => R
+      evt: EvtForKey<TEvents, NormalizeKey<S>>,
+    ) => R,
   ) => (args: ActionArgs<TContext, TEvents, TEvents>) => R;
 
   function take(key?: string) {
@@ -329,12 +307,12 @@ export function to_string(e: unknown): string {
   return e instanceof Error
     ? e.message
     : typeof e === "string"
-    ? e
-    : (() => {
-        try {
-          return JSON.stringify(e);
-        } catch {
-          return String(e);
-        }
-      })();
+      ? e
+      : (() => {
+          try {
+            return JSON.stringify(e);
+          } catch {
+            return String(e);
+          }
+        })();
 }

@@ -38,6 +38,7 @@ bun tauri dev
 Quality gates:
 
 ```bash
+bun run fmt:check
 bun run typecheck
 bun run check:all
 ```

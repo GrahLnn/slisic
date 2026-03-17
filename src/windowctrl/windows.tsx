@@ -62,9 +62,7 @@ const WindowsButton = memo(function WindowsButton({
           className,
         )}
         style={{
-          ...(color
-            ? ({ "--hover-bg-color": color } as React.CSSProperties)
-            : {}),
+          ...(color ? ({ "--hover-bg-color": color } as React.CSSProperties) : {}),
           ...(emphasizeColor
             ? ({ "--hover-text-color": emphasizeColor } as React.CSSProperties)
             : {}),
@@ -83,26 +81,12 @@ const WindowsControlsCore = memo(function WindowsControlsCore() {
   const windowFocused = useIsWindowFocus();
 
   return (
-    <div
-      className={cn([
-        "flex items-center z-9999 relative transition duration-300",
-      ])}
-    >
-      <WindowsButton
-        onClick={() => appWindow.minimize()}
-        isWindowFocused={windowFocused}
-      >
+    <div className={cn(["flex items-center z-9999 relative transition duration-300"])}>
+      <WindowsButton onClick={() => appWindow.minimize()} isWindowFocused={windowFocused}>
         <icons.minus size={14} />
       </WindowsButton>
-      <WindowsButton
-        onClick={() => appWindow.toggleMaximize()}
-        isWindowFocused={windowFocused}
-      >
-        {maximized ? (
-          <icons.stacksquare size={14} />
-        ) : (
-          <icons.square size={14} />
-        )}
+      <WindowsButton onClick={() => appWindow.toggleMaximize()} isWindowFocused={windowFocused}>
+        {maximized ? <icons.stacksquare size={14} /> : <icons.square size={14} />}
       </WindowsButton>
       <WindowsButton
         onClick={() => appWindow.close()}

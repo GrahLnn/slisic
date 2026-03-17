@@ -15,10 +15,8 @@ const selectMainState = me.select(
 const selectContext = me.select((shot: { context: ActorSnapshot["context"] }) => shot.context);
 
 export const hook = {
-  useState: () =>
-    me(useSelector(actor, selectMainState.project, selectMainState.compare)),
-  useContext: () =>
-    useSelector(actor, selectContext.project, selectContext.compare),
+  useState: () => me(useSelector(actor, selectMainState.project, selectMainState.compare)),
+  useContext: () => useSelector(actor, selectContext.project, selectContext.compare),
 };
 
 export const action = {};

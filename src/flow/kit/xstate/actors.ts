@@ -2,9 +2,7 @@ import { fromPromise } from "xstate";
 import { AsyncFn, Awaited, WithPrefix, AnyEvt, Signal } from "../core/types";
 
 /* 装饰后的 actor 构造器类型 */
-export type Decorated<K extends string, F extends AsyncFn> = ReturnType<
-  typeof fromPromise<F>
-> & {
+export type Decorated<K extends string, F extends AsyncFn> = ReturnType<typeof fromPromise<F>> & {
   __src__: F; // 仅类型标记；运行时可写为 undefined
   send(): { [P in K]: Decorated<K, F> };
   evt: WithPrefix<K>;
@@ -15,8 +13,8 @@ export type Decorated<K extends string, F extends AsyncFn> = ReturnType<
 type SrcOf<T> = T extends { __src__: (...a: any) => Promise<any> }
   ? T["__src__"]
   : T extends (...a: any) => Promise<any>
-  ? T
-  : never;
+    ? T
+    : never;
 
 /* 生成 done 事件类型 */
 export type DoneEvt<K extends string, R> = { type: K; output: R };
@@ -61,7 +59,7 @@ export function createActors<A extends Record<string, AsyncFn>>(defs: A) {
     const builder = fromPromise(defs[k]);
     const decorated = builder as Decorated<typeof k, (typeof defs)[typeof k]>;
 
-    decorated.send = () => ({ [k]: decorated } as any);
+    decorated.send = () => ({ [k]: decorated }) as any;
     (decorated as any).__src__ = defs[k];
     decorated.evt = `xstate.done.actor.${k}` as const;
     decorated.name = k;
@@ -83,9 +81,7 @@ export function createActors<A extends Record<string, AsyncFn>>(defs: A) {
 export function createSender<A extends { send: (evt: any) => any }>(actor: A) {
   // 机器事件联合与其 type 联合
   type AppEvent = Parameters<A["send"]>[0];
-  type AppEventType = AppEvent extends { type: infer T }
-    ? Extract<T, string>
-    : never;
+  type AppEventType = AppEvent extends { type: infer T } ? Extract<T, string> : never;
 
   // 仅 {type} 事件的 type 联合（无 payload）
   type HasOnlyType<E> = E extends { type: any }
@@ -104,15 +100,8 @@ export function createSender<A extends { send: (evt: any) => any }>(actor: A) {
   // 规范化：Signal/SignalLike -> AppEvent
   function normalizeToEvent(x: AppEvent | Signal<AppEventType>): AppEvent {
     const o = x as any;
-    if (
-      o &&
-      typeof o === "object" &&
-      "type" in o &&
-      typeof o.type === "string"
-    ) {
-      return "evt" in o && o.evt === o.type
-        ? ({ type: o.type } as AppEvent)
-        : (o as AppEvent);
+    if (o && typeof o === "object" && "type" in o && typeof o.type === "string") {
+      return "evt" in o && o.evt === o.type ? ({ type: o.type } as AppEvent) : (o as AppEvent);
     }
     return x as AppEvent;
   }

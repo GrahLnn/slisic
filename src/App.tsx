@@ -18,8 +18,7 @@ const statusOptions: TaskStatus[] = ["todo", "doing", "done"];
 
 const statusStyles: Record<TaskStatus, string> = {
   todo: "bg-slate-500/10 text-slate-700 dark:text-slate-200 border-slate-500/30",
-  doing:
-    "bg-amber-500/10 text-amber-700 dark:text-amber-200 border-amber-500/30",
+  doing: "bg-amber-500/10 text-amber-700 dark:text-amber-200 border-amber-500/30",
   done: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-200 border-emerald-500/30",
 };
 
@@ -54,9 +53,7 @@ function idToString(id: Id | string | number): string {
 }
 
 function toTaskStatus(value: string): TaskStatus {
-  return statusOptions.includes(value as TaskStatus)
-    ? (value as TaskStatus)
-    : "todo";
+  return statusOptions.includes(value as TaskStatus) ? (value as TaskStatus) : "todo";
 }
 
 function StatsPanel({ stats }: { stats: DemoStats }) {
@@ -85,9 +82,7 @@ function StatsPanel({ stats }: { stats: DemoStats }) {
               statColors[index % statColors.length],
             )}
           />
-          <p className="text-xs uppercase tracking-[0.14em] opacity-70">
-            {card.label}
-          </p>
+          <p className="text-xs uppercase tracking-[0.14em] opacity-70">{card.label}</p>
           <p className="text-2xl font-semibold mt-1">{card.value}</p>
         </div>
       ))}
@@ -97,14 +92,8 @@ function StatsPanel({ stats }: { stats: DemoStats }) {
 
 function TemplateBoard() {
   const state = hook.useState();
-  const {
-    dashboard,
-    memberInput,
-    taskInput,
-    bulkStatus,
-    selectedTaskIds,
-    mouseInfo,
-  } = hook.useViewModel();
+  const { dashboard, memberInput, taskInput, bulkStatus, selectedTaskIds, mouseInfo } =
+    hook.useViewModel();
   const loading = state === "loading";
 
   const memberMap = useMemo(() => {
@@ -146,12 +135,8 @@ function TemplateBoard() {
         <div className="absolute inset-0 -z-10 pointer-events-none bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.18),transparent_50%),radial-gradient(circle_at_top_left,rgba(59,130,246,0.16),transparent_45%)]" />
         <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.16em] opacity-70">
-              Template App
-            </p>
-            <h1 className="text-2xl md:text-3xl font-semibold mt-1">
-              Team Ops Board
-            </h1>
+            <p className="text-xs uppercase tracking-[0.16em] opacity-70">Template App</p>
+            <h1 className="text-2xl md:text-3xl font-semibold mt-1">Team Ops Board</h1>
             <p className="opacity-75 mt-1 text-sm md:text-base">
               展示 CRUD、关系、事务、窗口命令与实时统计的一套完整模板。
             </p>
@@ -204,9 +189,7 @@ function TemplateBoard() {
       <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-4 mt-4">
         <section className="rounded-xl border border-white/20 dark:border-white/10 bg-[var(--card-bg)] p-4 space-y-5">
           <div>
-            <h2 className="text-sm uppercase tracking-[0.14em] opacity-70 mb-2">
-              Create Member
-            </h2>
+            <h2 className="text-sm uppercase tracking-[0.14em] opacity-70 mb-2">Create Member</h2>
             <div className="space-y-2">
               <Input
                 value={memberInput.id}
@@ -247,9 +230,7 @@ function TemplateBoard() {
           </div>
 
           <div>
-            <h2 className="text-sm uppercase tracking-[0.14em] opacity-70 mb-2">
-              Create Task
-            </h2>
+            <h2 className="text-sm uppercase tracking-[0.14em] opacity-70 mb-2">Create Task</h2>
             <div className="space-y-2">
               <Input
                 value={taskInput.id}
@@ -316,15 +297,11 @@ function TemplateBoard() {
           </div>
 
           <div>
-            <h2 className="text-sm uppercase tracking-[0.14em] opacity-70 mb-2">
-              Bulk Status
-            </h2>
+            <h2 className="text-sm uppercase tracking-[0.14em] opacity-70 mb-2">Bulk Status</h2>
             <div className="flex gap-2">
               <select
                 value={bulkStatus}
-                onChange={(event) =>
-                  action.setBulkStatus(event.currentTarget.value as TaskStatus)
-                }
+                onChange={(event) => action.setBulkStatus(event.currentTarget.value as TaskStatus)}
                 className="app-select flex-1 rounded-lg border border-white/20 dark:border-white/10 bg-transparent px-3 py-2"
               >
                 {statusOptions.map((status) => (
@@ -342,9 +319,7 @@ function TemplateBoard() {
                 Apply
               </button>
             </div>
-            <p className="text-xs opacity-70 mt-2">
-              Selected tasks: {selectedTaskIds.length}
-            </p>
+            <p className="text-xs opacity-70 mt-2">Selected tasks: {selectedTaskIds.length}</p>
           </div>
 
           {mouseInfo ? (
@@ -354,8 +329,8 @@ function TemplateBoard() {
                 cursor: ({mouseInfo.mouse_x}, {mouseInfo.mouse_y})
               </p>
               <p>
-                window: ({mouseInfo.window_x}, {mouseInfo.window_y}) /{" "}
-                {mouseInfo.window_width}x{mouseInfo.window_height}
+                window: ({mouseInfo.window_x}, {mouseInfo.window_y}) / {mouseInfo.window_width}x
+                {mouseInfo.window_height}
               </p>
               <p>
                 relative: ({mouseInfo.rel_x}, {mouseInfo.rel_y}) @{" "}
@@ -367,12 +342,8 @@ function TemplateBoard() {
 
         <section className="rounded-xl border border-white/20 dark:border-white/10 bg-[var(--card-bg)] p-4">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm uppercase tracking-[0.14em] opacity-70">
-              Task Board
-            </h2>
-            <p className="text-xs opacity-70">
-              {loading ? "syncing..." : "ready"}
-            </p>
+            <h2 className="text-sm uppercase tracking-[0.14em] opacity-70">Task Board</h2>
+            <p className="text-xs opacity-70">{loading ? "syncing..." : "ready"}</p>
           </div>
 
           <div className="space-y-3">
@@ -380,8 +351,7 @@ function TemplateBoard() {
               dashboard.tasks.map((task) => {
                 const taskId = idToString(task.id);
                 const taskStatus = toTaskStatus(task.status);
-                const assignedMemberId =
-                  assignmentMap.get(taskId) ?? task.owner_id ?? "";
+                const assignedMemberId = assignmentMap.get(taskId) ?? task.owner_id ?? "";
                 const selected = selectedTaskIds.includes(taskId);
 
                 return (
@@ -402,15 +372,9 @@ function TemplateBoard() {
                           className="mt-1 size-4 accent-cyan-500"
                         />
                         <div>
-                          <h3 className="text-base font-medium">
-                            {task.title}
-                          </h3>
-                          <p className="text-xs opacity-70 font-mono mt-1">
-                            {taskId}
-                          </p>
-                          <p className="text-sm opacity-80 mt-1">
-                            {task.notes}
-                          </p>
+                          <h3 className="text-base font-medium">{task.title}</h3>
+                          <p className="text-xs opacity-70 font-mono mt-1">{taskId}</p>
+                          <p className="text-sm opacity-80 mt-1">{task.notes}</p>
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -448,10 +412,7 @@ function TemplateBoard() {
                       >
                         <option value="">Unassigned</option>
                         {dashboard.members.map((member) => (
-                          <option
-                            key={idToString(member.id)}
-                            value={idToString(member.id)}
-                          >
+                          <option key={idToString(member.id)} value={idToString(member.id)}>
                             {memberMap.get(idToString(member.id))}
                           </option>
                         ))}
@@ -504,10 +465,7 @@ function Base({ children }: { children: React.ReactNode }) {
         <div className="min-h-8" />
         {children}
       </main>
-      <Toaster
-        position="bottom-right"
-        theme={resolvedTheme === "dark" ? "dark" : "light"}
-      />
+      <Toaster position="bottom-right" theme={resolvedTheme === "dark" ? "dark" : "light"} />
     </div>
   );
 }

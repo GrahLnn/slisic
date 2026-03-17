@@ -1,17 +1,8 @@
 import { sileo } from "sileo";
 import { assign } from "xstate";
-import type {
-  AssignTaskInput,
-  BulkStatusInput,
-  UnassignTaskInput,
-} from "./core";
+import type { AssignTaskInput, BulkStatusInput, UnassignTaskInput } from "./core";
 import { to_string } from "../kit";
-import {
-  initialContext,
-  type Context,
-  type OperationResult,
-  type PendingOperation,
-} from "./core";
+import { initialContext, type Context, type OperationResult, type PendingOperation } from "./core";
 import { invoker, payloads, sig, ss } from "./events";
 import { applyOperationResult, getSuccessToast } from "./logic";
 import { src } from "./src";
@@ -85,10 +76,7 @@ export const machine = src.createMachine({
     [payloads.set_task_priority.evt]: {
       actions: assign({
         taskInput: ({ context, event }) => {
-          const value = Math.max(
-            1,
-            Math.trunc((event as { output: number }).output || 1),
-          );
+          const value = Math.max(1, Math.trunc((event as { output: number }).output || 1));
           return {
             ...context.taskInput,
             priority: value,
@@ -98,8 +86,7 @@ export const machine = src.createMachine({
     },
     [payloads.set_bulk_status.evt]: {
       actions: assign({
-        bulkStatus: ({ event }) =>
-          (event as { output: Context["bulkStatus"] }).output,
+        bulkStatus: ({ event }) => (event as { output: Context["bulkStatus"] }).output,
       }),
     },
     [payloads.toggle_task_selection.evt]: {
@@ -171,8 +158,7 @@ export const machine = src.createMachine({
         [payloads.set_status.evt]: [
           {
             guard: ({ event }) =>
-              (event as { output: { task_ids: string[] } }).output.task_ids
-                .length > 0,
+              (event as { output: { task_ids: string[] } }).output.task_ids.length > 0,
             target: ss.mainx.State.loading,
             actions: assign({
               pending: ({ event }) => ({
@@ -201,13 +187,11 @@ export const machine = src.createMachine({
           target: ss.mainx.State.idle,
           actions: [
             assign(({ context, event }) => {
-              const output = (event as unknown as { output: OperationResult })
-                .output;
+              const output = (event as unknown as { output: OperationResult }).output;
               return applyOperationResult(context as Context, output);
             }),
             ({ event }) => {
-              const output = (event as unknown as { output: OperationResult })
-                .output;
+              const output = (event as unknown as { output: OperationResult }).output;
               const toast = getSuccessToast(output);
               if (toast) {
                 sileo.success(toast);
