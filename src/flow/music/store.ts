@@ -1127,6 +1127,7 @@ function setPlaylistEntryMaterializationByIdentity(
 	playlists: Playlist[],
 	playlistName: string,
 	entryIdentity: string,
+	ownerSessionId: number,
 	materialization: WebMaterializationState | null,
 ): Playlist[] {
 	return playlists.map((playlist) => {
@@ -1137,6 +1138,11 @@ function setPlaylistEntryMaterializationByIdentity(
 		let entryMatched = false;
 		const entries = playlist.entries.map((entry) => {
 			if (deriveEntryIdentity(entry) !== entryIdentity) {
+				return entry;
+			}
+
+			const currentMaterialization = getEntryMaterialization(entry);
+			if (currentMaterialization?.ownerSessionId !== ownerSessionId) {
 				return entry;
 			}
 
@@ -2198,6 +2204,7 @@ export const action = {
 						prev.playlists,
 						playlist,
 						entryIdentity,
+						persistedMaterialization.ownerSessionId,
 						persistedMaterialization,
 					),
 				}));
@@ -2242,6 +2249,7 @@ export const action = {
 					prev.playlists,
 					playlist,
 					entryIdentity,
+					persistedMaterialization.ownerSessionId,
 					settledMaterialization,
 				),
 			}));
