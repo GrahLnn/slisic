@@ -5,7 +5,11 @@ import { useEffect } from "react";
 import { Toaster } from "sileo";
 import TopBar from "./topbar";
 import Pages from "./pages/pages";
-import { useBootstrapDecision } from "./bootstrap";
+import {
+	canRenderApp,
+	canStartApp,
+	useBootstrapAppEntryState,
+} from "./bootstrap";
 import { action as musicAction } from "./flow/music";
 import {
   action as updaterAction,
@@ -18,10 +22,12 @@ import Filter from "./components/svg_filter";
 import { setCursorInApp } from "./flow/cursorInApp";
 
 function App() {
-  const bootstrap = useBootstrapDecision();
+  const bootstrap = useBootstrapAppEntryState();
+  const shouldStartApp = canStartApp(bootstrap);
+  const shouldRenderApp = canRenderApp(bootstrap);
 
   useEffect(() => {
-    if (!bootstrap.shouldStartApp) {
+    if (!shouldStartApp) {
       return;
     }
 
@@ -31,9 +37,9 @@ function App() {
     return () => {
       void musicAction.dispose();
     };
-  }, [bootstrap.shouldStartApp]);
+  }, [shouldStartApp]);
 
-  if (!bootstrap.shouldRenderApp) {
+  if (!shouldRenderApp) {
     return null;
   }
 

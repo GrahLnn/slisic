@@ -1,16 +1,30 @@
 import { useEffect, useState } from "react";
 import { crab } from "@/src/cmd";
 import {
-  deriveBootstrapDecision,
+  canRenderApp,
+  canStartApp,
+  deriveBootstrapAppEntryState,
+  type BootstrapAppEntryState,
   type BootstrapDecision,
   type BootstrapWindowState,
-} from "./logic";
+} from "./appEntryMachine";
+
+export { canRenderApp, canStartApp } from "./appEntryMachine";
 
 function stringifyReason(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 export function useBootstrapDecision(): BootstrapDecision {
+  const appEntryState = useBootstrapAppEntryState();
+  return {
+    shouldRenderApp: canRenderApp(appEntryState),
+    shouldStartApp: canStartApp(appEntryState),
+    isConfirmedPrewarm: appEntryState.status === "prewarm_blocked",
+  };
+}
+
+export function useBootstrapAppEntryState(): BootstrapAppEntryState {
   const [windowState, setWindowState] = useState<BootstrapWindowState>({
     status: "pending",
   });
@@ -41,6 +55,6 @@ export function useBootstrapDecision(): BootstrapDecision {
     };
   }, []);
 
-  return deriveBootstrapDecision(windowState);
+  return deriveBootstrapAppEntryState(windowState);
 }
 

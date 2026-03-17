@@ -16,6 +16,12 @@ import {
 	LongPressContextMenuItem,
 } from "@/components/ui/context-menu";
 
+export function shouldRenderHomeRoute(
+	ctx: Pick<ReturnType<typeof hook.useContext>, "routeResolved">,
+): boolean {
+	return ctx.routeResolved;
+}
+
 export function Face({ children }: { children: React.ReactNode }) {
 	return (
 		<div className="flex flex-1 flex-col items-center justify-start overflow-hidden select-none">
@@ -466,7 +472,7 @@ function Guide() {
 export default function Home() {
 	const ctx = hook.useContext();
 	const state = hook.useState();
-	if (!ctx.routeResolved) {
+	if (!shouldRenderHomeRoute(ctx)) {
 		return null;
 	}
 
