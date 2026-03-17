@@ -123,6 +123,10 @@ const baseState: MusicState = {
 	playbackSessionId: 3,
 };
 
+const baseEntry = baseState.playlists[0]?.entries[0];
+const baseNowPlaying = baseState.nowPlaying;
+const baseConfirmedPlaying = baseState.confirmedPlaying;
+
 const installedFfmpeg = {
 	installed_path: "ffmpeg",
 	installed_version: "7.0.0",
@@ -284,7 +288,7 @@ describe("music interaction guards", () => {
 		).toEqual({
 			selectedListName: "contemporary",
 			confirmedPlaying: baseState.confirmedPlaying,
-				nowPlaying: baseState.nowPlaying,
+			nowPlaying: baseState.nowPlaying,
 		});
 
 		expect(
@@ -330,8 +334,10 @@ describe("music interaction guards", () => {
 					...baseState.playlists[0],
 					entries: [
 						{
-							...baseState.playlists[0]!.entries[0]!,
-							musics: [baseState.nowPlaying!, requested],
+							...baseEntry,
+							musics: baseNowPlaying
+								? [baseNowPlaying, requested]
+								: [requested],
 						},
 					],
 				},
@@ -400,8 +406,10 @@ describe("music interaction guards", () => {
 					...baseState.playlists[0],
 					entries: [
 						{
-							...baseState.playlists[0]!.entries[0]!,
-							musics: [baseState.confirmedPlaying!, requestedReplacement],
+							...baseEntry,
+							musics: baseConfirmedPlaying
+								? [baseConfirmedPlaying, requestedReplacement]
+								: [requestedReplacement],
 						},
 					],
 				},

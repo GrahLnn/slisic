@@ -4,8 +4,8 @@ import { useSyncExternalStore } from "react";
 import { sileo } from "sileo";
 import { crab } from "@/src/cmd";
 import type {
-	CollectMission,
 	AudioPlayAck,
+	CollectMission,
 	Entry,
 	EntryType,
 	ImportFolderEntry,
@@ -336,8 +336,15 @@ export function settlePlaybackAck(
 		| "nowPlaying"
 		| "playlists"
 	>,
-	payload: { sessionId: number | null; listName: string | null; ack: AudioPlayAck },
-): Pick<MusicState, "selectedListName" | "confirmedPlaying" | "nowPlaying"> | null {
+	payload: {
+		sessionId: number | null;
+		listName: string | null;
+		ack: AudioPlayAck;
+	},
+): Pick<
+	MusicState,
+	"selectedListName" | "confirmedPlaying" | "nowPlaying"
+> | null {
 	if (snapshot.mode !== "play") return null;
 	if (snapshot.playbackSessionId == null) return null;
 	if (snapshot.playbackSessionId !== payload.sessionId) return null;
@@ -989,7 +996,11 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 		const all = playableTracks(list);
 		if (all.length === 0) {
 			yield* Effect.sync(() =>
-				patchState({ confirmedPlaying: null, nowPlaying: null, nowJudge: null }),
+				patchState({
+					confirmedPlaying: null,
+					nowPlaying: null,
+					nowJudge: null,
+				}),
 			);
 			return;
 		}
@@ -1012,13 +1023,13 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 
 		yield* Effect.sync(() => {
 			if (!isPlaybackContextActive(epoch, list.name)) return;
-				patchState({
-					selectedListName: list.name,
-					confirmedPlaying: null,
-					nowPlaying: chosen,
-					nowJudge: null,
-					playbackSessionId: nextPlaybackSessionId(),
-				});
+			patchState({
+				selectedListName: list.name,
+				confirmedPlaying: null,
+				nowPlaying: chosen,
+				nowJudge: null,
+				playbackSessionId: nextPlaybackSessionId(),
+			});
 		});
 
 		const playResult = yield* Effect.promise(() =>
@@ -1032,18 +1043,21 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 		if (playResult.isErr()) {
 			yield* Effect.sync(() => {
 				if (!isPlaybackContextActive(epoch, list.name)) return;
-					const clearPatch = clearPlaybackSession(getState(), nextPlaybackSessionId());
-					patchState({
-						...(clearPatch ?? {
-							selectedListName: null,
-							confirmedPlaying: null,
-							nowPlaying: null,
-							nowJudge: null,
-							playbackSessionId: null,
-						}),
-						confirmedPlaying: previousNowPlaying,
-						nowPlaying: previousNowPlaying,
-					});
+				const clearPatch = clearPlaybackSession(
+					getState(),
+					nextPlaybackSessionId(),
+				);
+				patchState({
+					...(clearPatch ?? {
+						selectedListName: null,
+						confirmedPlaying: null,
+						nowPlaying: null,
+						nowJudge: null,
+						playbackSessionId: null,
+					}),
+					confirmedPlaying: previousNowPlaying,
+					nowPlaying: previousNowPlaying,
+				});
 				sileo.error({
 					title: "Play failed",
 					description: playResult.unwrap_err(),
@@ -1054,17 +1068,17 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 
 		yield* Effect.sync(() => {
 			if (!isPlaybackContextActive(epoch, list.name)) return;
-				const sessionId = nextPlaybackSessionId();
-				const ackPatch = settlePlaybackAck(getState(), {
-					sessionId,
-					listName: list.name,
-					ack: playResult.unwrap(),
-				});
-				if (!ackPatch) return;
-				patchState({
-					...ackPatch,
-					nowJudge: null,
-				});
+			const sessionId = nextPlaybackSessionId();
+			const ackPatch = settlePlaybackAck(getState(), {
+				sessionId,
+				listName: list.name,
+				ack: playResult.unwrap(),
+			});
+			if (!ackPatch) return;
+			patchState({
+				...ackPatch,
+				nowJudge: null,
+			});
 			recentByList.set(
 				list.name,
 				pushRecentPath(recent, chosen.path, recentWindowSize(all.length)),
@@ -1101,7 +1115,13 @@ async function ensureEvents() {
 			if (!shouldHandleAudioEnded(snapshot, { path, sessionId })) return;
 			void applyNextFatigue(snapshot.nowPlaying);
 			const epoch = bumpPlaybackEpoch();
-			patchState({ playbackSessionId: null, selectedListName: null, confirmedPlaying: null, nowPlaying: null, nowJudge: null });
+			patchState({
+				playbackSessionId: null,
+				selectedListName: null,
+				confirmedPlaying: null,
+				nowPlaying: null,
+				nowJudge: null,
+			});
 			scheduleNextPlayback(epoch);
 		});
 		unsubs.push(audioEnded);
@@ -1239,8 +1259,8 @@ async function persistSlot() {
 			...buildPostSavePatch(optimisticPlaylists.length > 0, idleEpoch),
 			playlists: optimisticPlaylists,
 			loading: false,
-				playbackSessionId: null,
-				confirmedPlaying: null,
+			playbackSessionId: null,
+			confirmedPlaying: null,
 		});
 
 		void (async () => {
