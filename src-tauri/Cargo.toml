@@ -35,7 +35,7 @@ tauri-specta = { git = "https://github.com/specta-rs/tauri-specta.git", rev = "b
   "typescript",
 ] }
 tauri-plugin-os = "2"
-appdb = "0.1.7"
+appdb = "0.1.8"
 anyhow = "1.0.102"
 async-trait = "0.1.89"
 inventory = "0.3.22"

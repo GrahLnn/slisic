@@ -209,9 +209,9 @@ dependencies = [
 
 [[package]]
 name = "appdb"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a883d2c3cef731ba3b32bf0e97b841365b48df96c7ec3e83efdd59c22927fe4"
+checksum = "b7667722d8b35bff202f1102cdfe6aff571f80bd1a22c712c279967072e4e882"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -232,9 +232,9 @@ dependencies = [
 
 [[package]]
 name = "appdb-macros"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "295a3127136a3381c8ba79b63699e4486a084452f88df033bce6efd284752e6d"
+checksum = "57b68ff2e48ef79c3b9dc982db0556751773f8afdf1658c79533fd9c4fb3475e"
 dependencies = [
  "proc-macro2",
  "quote",
