@@ -69,6 +69,7 @@ const impl = {
 	audioPlay: async () =>
 		Ok<
 			{
+				session_id: bigint;
 				path: string;
 				duration_ms: number | null;
 				gain: number;
@@ -79,6 +80,7 @@ const impl = {
 			},
 			string
 		>({
+			session_id: 1n,
 			path: "track.mp3",
 			duration_ms: 1000,
 			gain: 1,
@@ -120,8 +122,18 @@ const crab = {
 	ytdlpDownloadAndInstall: () => impl.ytdlpDownloadAndInstall(),
 	ffmpegDownloadAndInstall: () => impl.ffmpegDownloadAndInstall(),
 	updateSavePath: (path: string) => impl.updateSavePath(path),
-	audioPlay: (req: { path: string }) => {
-		void req;
+	audioPlay: (req: { session_id: bigint; path: string }) => {
+		impl.audioPlay = async () =>
+			Ok({
+				session_id: req.session_id,
+				path: "track.mp3",
+				duration_ms: 1000,
+				gain: 1,
+				gain_db: 0,
+				target_lufs: -18,
+				integrated_lufs: -18,
+				has_canonical_loudness: true,
+			});
 		return impl.audioPlay();
 	},
 };
@@ -1986,9 +1998,18 @@ describe("music store action contracts", () => {
 			expect(firstState.nowPlaying == null || firstState.nowPlaying.path.startsWith("C:/music/focus/") || firstState.nowPlaying.path === "track.mp3").toBe(true);
 			await action.play(playlist);
 			const secondState = __testing.getState();
-			expect(secondState.playbackSessionId == null || secondState.playbackSessionId > 0).toBe(true);
+			expect(secondState.playbackSessionId).not.toBe(firstState.playbackSessionId);
 			expect(secondState.selectedListName == null || secondState.selectedListName === "focus").toBe(true);
 			expect(secondState.nowPlaying == null || secondState.nowPlaying.path === "track.mp3").toBe(true);
+	});
+
+	test("play_true_positive_threads_request_session_identity_through_backend_ack_contract", async () => {
+		const request = { session_id: 41n, path: "C:/music/focus/a.flac" };
+		const result = await crab.audioPlay(request);
+
+		expect(result.isOk()).toBe(true);
+		expect(result.unwrap().session_id).toBe(request.session_id);
+		expect(typeof result.unwrap().session_id).toBe("bigint");
 	});
 
 	test("play_false_positive_guard_stale_ack_like_restart_does_not_preserve_replaced_session_identity", async () => {

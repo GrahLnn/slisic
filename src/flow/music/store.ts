@@ -80,6 +80,10 @@ interface PlaybackSessionSnapshot {
 	nowPlaying: Music | null;
 }
 
+function toPlaybackContractSessionId(sessionId: number): bigint {
+	return BigInt(sessionId);
+}
+
 export interface SaveAffordance {
 	allowed: boolean;
 	visible: boolean;
@@ -1023,17 +1027,19 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 
 		yield* Effect.sync(() => {
 			if (!isPlaybackContextActive(epoch, list.name)) return;
+			const sessionId = nextPlaybackSessionId();
 			patchState({
 				selectedListName: list.name,
 				confirmedPlaying: null,
 				nowPlaying: chosen,
 				nowJudge: null,
-				playbackSessionId: nextPlaybackSessionId(),
+				playbackSessionId: sessionId,
 			});
 		});
 
 		const playResult = yield* Effect.promise(() =>
 			crab.audioPlay({
+				session_id: toPlaybackContractSessionId(nextPlaybackSessionId()),
 				path: chosen.path,
 			}),
 		);
@@ -1068,7 +1074,10 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 
 		yield* Effect.sync(() => {
 			if (!isPlaybackContextActive(epoch, list.name)) return;
-			const sessionId = nextPlaybackSessionId();
+			const sessionId =
+				typeof playResult.unwrap().session_id === "bigint"
+					? Number(playResult.unwrap().session_id)
+					: nextPlaybackSessionId();
 			const ackPatch = settlePlaybackAck(getState(), {
 				sessionId,
 				listName: list.name,
@@ -1106,9 +1115,9 @@ async function ensureEvents() {
 			const sessionId =
 				payload &&
 				typeof payload === "object" &&
-				"sessionId" in payload &&
-				typeof (payload as { sessionId?: unknown }).sessionId === "number"
-					? (payload as { sessionId: number }).sessionId
+				"session_id" in payload &&
+				typeof (payload as { session_id?: unknown }).session_id === "bigint"
+					? Number((payload as { session_id: bigint }).session_id)
 					: null;
 			if (!path) return;
 			const snapshot = getState();

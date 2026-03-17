@@ -270,6 +270,7 @@ describe("music interaction guards", () => {
 
 	test("settlePlaybackAck only accepts the matching live playback session", () => {
 		const ack = {
+			session_id: 3n,
 			path: "C:/audio/a.flac",
 			duration_ms: 1234,
 			gain: 1,
@@ -349,6 +350,7 @@ describe("music interaction guards", () => {
 			sessionId: 3,
 			listName: "contemporary",
 			ack: {
+				session_id: 3n,
 				path: "C:/audio/a.flac",
 				duration_ms: 1234,
 				gain: 1,
@@ -422,6 +424,7 @@ describe("music interaction guards", () => {
 				sessionId: 3,
 				listName: "contemporary",
 				ack: {
+					session_id: 3n,
 					path: "C:/audio/a.flac",
 					duration_ms: 1234,
 					gain: 1,
@@ -438,6 +441,7 @@ describe("music interaction guards", () => {
 				sessionId: 4,
 				listName: "contemporary",
 				ack: {
+					session_id: 4n,
 					path: "C:/audio/b.flac",
 					duration_ms: 1500,
 					gain: 1,
@@ -452,6 +456,21 @@ describe("music interaction guards", () => {
 			confirmedPlaying: requestedReplacement,
 			nowPlaying: requestedReplacement,
 		});
+	});
+
+	test("shouldHandleAudioEnded only accepts backend-carried session identity for the live session", () => {
+		expect(
+			shouldHandleAudioEnded(baseState, {
+				path: "C:/audio/a.flac",
+				sessionId: 3,
+			}),
+		).toBe(true);
+		expect(
+			shouldHandleAudioEnded(baseState, {
+				path: "C:/audio/a.flac",
+				sessionId: 4,
+			}),
+		).toBe(false);
 	});
 
 	test("deriveRefreshPatch should preserve edit/create mode and clear impossible playback context", () => {

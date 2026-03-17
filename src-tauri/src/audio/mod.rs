@@ -38,16 +38,19 @@ pub struct AudioState {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq, Event)]
 pub struct AudioEnded {
+    pub session_id: u64,
     pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct AudioPlayRequest {
+    pub session_id: u64,
     pub path: String,
 }
 
 #[derive(Debug, Clone)]
 struct ResolvedAudioPlayRequest {
+    session_id: u64,
     path: String,
     gain_db: f32,
     target_lufs: f32,
@@ -137,6 +140,7 @@ struct AudioDebugProbeMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct AudioPlayAck {
+    pub session_id: u64,
     pub path: String,
     pub duration_ms: Option<u32>,
     pub gain: f32,
@@ -156,6 +160,7 @@ pub struct AudioStatus {
 }
 
 struct PlayerState {
+    session_id: Option<u64>,
     sink: Option<Player>,
     path: Option<String>,
     started_at: Option<Instant>,
@@ -168,6 +173,7 @@ struct PlayerState {
 impl PlayerState {
     fn new() -> Self {
         Self {
+            session_id: None,
             sink: None,
             path: None,
             started_at: None,
@@ -182,6 +188,7 @@ impl PlayerState {
         if let Some(sink) = self.sink.take() {
             sink.stop();
         }
+        self.session_id = None;
         self.path = None;
         self.started_at = None;
         self.paused_started_at = None;
@@ -1132,8 +1139,8 @@ fn emit_state_and_maybe_end(app: &AppHandle, state: &mut PlayerState) {
     .ok();
 
     if sink_empty {
-        if let Some(path) = state.path.clone() {
-            AudioEnded { path }.emit(app).ok();
+        if let (Some(session_id), Some(path)) = (state.session_id, state.path.clone()) {
+            AudioEnded { session_id, path }.emit(app).ok();
         }
         state.clear();
     }
@@ -1204,6 +1211,7 @@ fn handle_play(
     sink.play();
 
     state.clear();
+    state.session_id = Some(req.session_id);
     state.path = Some(req.path.clone());
     state.started_at = Some(Instant::now());
     state.paused_started_at = None;
@@ -1213,6 +1221,7 @@ fn handle_play(
     state.sink = Some(sink);
 
     Ok(AudioPlayAck {
+        session_id: req.session_id,
         path: req.path,
         duration_ms,
         gain,
@@ -1288,6 +1297,7 @@ pub async fn audio_play(app: AppHandle, req: AudioPlayRequest) -> Result<AudioPl
         true_peak_dbtp,
     } = normalization::resolve_playback_normalization(&app, &req.path).await?;
     let resolved = ResolvedAudioPlayRequest {
+        session_id: req.session_id,
         path: req.path.clone(),
         gain_db: compute_gain_db(Some(target_lufs), integrated_lufs, true_peak_dbtp),
         target_lufs,
@@ -1556,6 +1566,7 @@ mod tests {
     #[test]
     fn audio_play_ack_should_expose_canonical_plan_presence() {
         let canonical = AudioPlayAck {
+            session_id: 1,
             path: "canonical.flac".to_string(),
             duration_ms: Some(1_000),
             gain: 1.0,
@@ -1568,6 +1579,7 @@ mod tests {
         assert_eq!(canonical.integrated_lufs, Some(-18.0));
 
         let missing = AudioPlayAck {
+            session_id: 2,
             path: "legacy.flac".to_string(),
             duration_ms: None,
             gain: 1.0,
