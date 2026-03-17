@@ -12,6 +12,7 @@ import {
 	buildPostSavePatch,
 	canExitWorkspace,
 	clearPlaybackSession,
+	derivePlaybackOwnedList,
 	deriveBackTransition,
 	deriveProbePatch,
 	deriveRefreshPatch,
@@ -71,6 +72,7 @@ const baseState: MusicState = {
 		},
 	],
 	selectedListName: "contemporary",
+	playbackListName: "contemporary",
 	requestedPlaying: {
 		path: "C:/audio/a.flac",
 		title: "A",
@@ -307,6 +309,7 @@ describe("music interaction guards", () => {
 			}),
 		).toEqual({
 			selectedListName: "contemporary",
+			playbackListName: "contemporary",
 			confirmedPlaying: baseState.confirmedPlaying,
 			nowPlaying: baseState.nowPlaying,
 		});
@@ -383,6 +386,7 @@ describe("music interaction guards", () => {
 
 		expect(patch).toEqual({
 			selectedListName: "contemporary",
+			playbackListName: "contemporary",
 			confirmedPlaying: baseState.confirmedPlaying,
 			nowPlaying: requested,
 		});
@@ -391,6 +395,7 @@ describe("music interaction guards", () => {
 	test("clearPlaybackSession only clears the matching live playback session", () => {
 		expect(clearPlaybackSession(baseState, 3)).toEqual({
 			selectedListName: null,
+			playbackListName: null,
 			requestedPlaying: null,
 			confirmedPlaying: null,
 			nowPlaying: null,
@@ -482,6 +487,7 @@ describe("music interaction guards", () => {
 			}),
 		).toEqual({
 			selectedListName: "contemporary",
+			playbackListName: "contemporary",
 			confirmedPlaying: requestedReplacement,
 			nowPlaying: requestedReplacement,
 		});
@@ -520,12 +526,49 @@ describe("music interaction guards", () => {
 		expect(clearPlaybackSession(acknowledgedReplacement, 3)).toBeNull();
 		expect(clearPlaybackSession(acknowledgedReplacement, 4)).toEqual({
 			selectedListName: null,
+			playbackListName: null,
 			requestedPlaying: null,
 			confirmedPlaying: null,
 			nowPlaying: null,
 			nowJudge: null,
 			playbackSessionId: null,
 		});
+	});
+
+	test("derivePlaybackOwnedList keeps playback-owned context separate from browsed UI focus", () => {
+		const playbackOwned = derivePlaybackOwnedList({
+			...baseState,
+			selectedListName: "browsed",
+			playbackListName: "contemporary",
+			playlists: [
+				baseState.playlists[0]!,
+				makePlaylist("browsed"),
+			],
+			confirmedPlaying: baseState.confirmedPlaying,
+			nowPlaying: baseState.nowPlaying,
+		});
+
+		expect(playbackOwned?.name).toBe("contemporary");
+	});
+
+	test("deriveRefreshPatch preserves playback-owned now-playing context when UI focus browses elsewhere", () => {
+		const refreshed = deriveRefreshPatch(
+			{
+				...baseState,
+				selectedListName: "browsed",
+				playbackListName: "contemporary",
+				nowPlaying: baseState.nowPlaying,
+			},
+			[
+				{
+					...baseState.playlists[0]!,
+				},
+				makePlaylist("browsed"),
+			],
+		);
+
+		expect(refreshed.selectedListName).toBe("browsed");
+		expect(refreshed.nowPlaying?.path).toBe("C:/audio/a.flac");
 	});
 
 	test("shouldHandleAudioEnded only accepts backend-carried session identity for the live session", () => {
@@ -552,7 +595,7 @@ describe("music interaction guards", () => {
 		expect(keepPlay.nowPlaying?.path).toBe("C:/audio/a.flac");
 
 		const lostSelection = deriveRefreshPatch(
-			{ ...baseState, selectedListName: "missing" },
+			{ ...baseState, selectedListName: "missing", playbackListName: null },
 			playlists,
 		);
 		expect(lostSelection.mode).toBe("play");
@@ -926,6 +969,7 @@ describe("music interaction guards", () => {
 				mode: "create",
 				routeResolved: false,
 				selectedListName: "missing",
+				playbackListName: null,
 				nowPlaying: null,
 			},
 			[],

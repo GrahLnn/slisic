@@ -94,6 +94,7 @@ export interface MusicState {
 	loading: boolean;
 	playlists: Playlist[];
 	selectedListName: string | null;
+	playbackListName: string | null;
 	requestedPlaying: Music | null;
 	confirmedPlaying: Music | null;
 	nowPlaying: Music | null;
@@ -114,9 +115,52 @@ export interface MusicState {
 interface PlaybackSessionSnapshot {
 	playbackSessionId: number | null;
 	selectedListName: string | null;
+	playbackListName: string | null;
 	requestedPlaying: Music | null;
 	confirmedPlaying: Music | null;
 	nowPlaying: Music | null;
+	playlists: Playlist[];
+}
+
+export function derivePlaybackOwnedList(
+	snapshot: Pick<
+		MusicState,
+		| "playlists"
+		| "selectedListName"
+		| "playbackListName"
+		| "requestedPlaying"
+		| "confirmedPlaying"
+		| "nowPlaying"
+	>,
+): Playlist | null {
+	if (snapshot.playbackListName) {
+		const playbackOwnedList =
+			snapshot.playlists.find(
+				(playlist) => playlist.name === snapshot.playbackListName,
+			) ?? null;
+		if (playbackOwnedList) return playbackOwnedList;
+	}
+
+	const activeTrack = snapshot.confirmedPlaying ?? snapshot.nowPlaying ?? snapshot.requestedPlaying;
+	if (!activeTrack) {
+		return snapshot.selectedListName
+			? snapshot.playlists.find((playlist) => playlist.name === snapshot.selectedListName) ?? null
+			: null;
+	}
+
+	for (const playlist of snapshot.playlists) {
+		const containsTrack =
+			playlist.entries.some((entry) =>
+				entry.musics.some((music) => music.path === activeTrack.path),
+			) || playlist.exclude.some((music) => music.path === activeTrack.path);
+		if (containsTrack) {
+			return playlist;
+		}
+	}
+
+	return snapshot.selectedListName
+		? snapshot.playlists.find((playlist) => playlist.name === snapshot.selectedListName) ?? null
+		: null;
 }
 
 function toPlaybackContractSessionId(sessionId: number): number {
@@ -485,6 +529,7 @@ export function settlePlaybackAck(
 		| "mode"
 		| "playbackSessionId"
 		| "selectedListName"
+		| "playbackListName"
 		| "requestedPlaying"
 		| "confirmedPlaying"
 		| "nowPlaying"
@@ -497,17 +542,16 @@ export function settlePlaybackAck(
 	},
 ): Pick<
 	MusicState,
-	"selectedListName" | "confirmedPlaying" | "nowPlaying"
+	"selectedListName" | "playbackListName" | "confirmedPlaying" | "nowPlaying"
 > | null {
 	if (snapshot.mode !== "play") return null;
 	if (snapshot.playbackSessionId == null) return null;
 	if (snapshot.playbackSessionId !== payload.sessionId) return null;
-	if (!payload.listName || snapshot.selectedListName !== payload.listName) {
+	const playbackOwnedList = derivePlaybackOwnedList(snapshot);
+	if (!payload.listName || playbackOwnedList?.name !== payload.listName) {
 		return null;
 	}
-	const playlist = snapshot.playlists.find(
-		(item) => item.name === payload.listName,
-	);
+	const playlist = playbackOwnedList;
 	const confirmedTrack =
 		playlist?.entries
 			.flatMap((entry) => entry.musics)
@@ -518,6 +562,7 @@ export function settlePlaybackAck(
 
 	return {
 		selectedListName: payload.listName,
+		playbackListName: payload.listName,
 		confirmedPlaying: confirmedTrack,
 		nowPlaying: snapshot.requestedPlaying ?? confirmedTrack,
 	};
@@ -529,6 +574,7 @@ export function clearPlaybackSession(
 ): Pick<
 	MusicState,
 	| "selectedListName"
+	| "playbackListName"
 	| "requestedPlaying"
 	| "confirmedPlaying"
 	| "nowPlaying"
@@ -540,6 +586,7 @@ export function clearPlaybackSession(
 
 	return {
 		selectedListName: null,
+		playbackListName: null,
 		requestedPlaying: null,
 		confirmedPlaying: null,
 		nowPlaying: null,
@@ -551,13 +598,18 @@ export function clearPlaybackSession(
 export function deriveRefreshPatch(
 	prev: Pick<
 		MusicState,
-		"mode" | "routeResolved" | "selectedListName" | "nowPlaying"
+		| "mode"
+		| "routeResolved"
+		| "selectedListName"
+		| "playbackListName"
+		| "nowPlaying"
 	>,
 	playlists: Playlist[],
 ): Pick<
 	MusicState,
 	| "playlists"
 	| "selectedListName"
+	| "playbackListName"
 	| "nowPlaying"
 	| "mode"
 	| "routeResolved"
@@ -576,6 +628,7 @@ export function deriveRefreshPatch(
 		return {
 			playlists,
 			selectedListName,
+			playbackListName: null,
 			nowPlaying: null,
 			mode: route.mode,
 			routeResolved: route.routeResolved,
@@ -588,15 +641,23 @@ export function deriveRefreshPatch(
 		playlists.some((playlist) => playlist.name === prev.selectedListName)
 			? prev.selectedListName
 			: null;
+	const playbackOwnedList = derivePlaybackOwnedList({
+		playlists,
+		selectedListName,
+		playbackListName: prev.playbackListName,
+		requestedPlaying: null,
+		confirmedPlaying: null,
+		nowPlaying: prev.nowPlaying,
+	});
 
 	const refreshedNowPlaying =
-		selectedListName && prev.nowPlaying
+		playbackOwnedList && prev.nowPlaying
 			? (playlists
-					.find((playlist) => playlist.name === selectedListName)
+					.find((playlist) => playlist.name === playbackOwnedList.name)
 					?.entries.flatMap((entry) => entry.musics)
 					.find((music) => music.path === prev.nowPlaying?.path) ??
 				playlists
-					.find((playlist) => playlist.name === selectedListName)
+					.find((playlist) => playlist.name === playbackOwnedList.name)
 					?.exclude.find((music) => music.path === prev.nowPlaying?.path) ??
 				prev.nowPlaying)
 			: null;
@@ -604,6 +665,7 @@ export function deriveRefreshPatch(
 	return {
 		playlists,
 		selectedListName,
+		playbackListName: playbackOwnedList?.name ?? null,
 		nowPlaying: refreshedNowPlaying,
 		mode: route.mode,
 		routeResolved: route.routeResolved,
@@ -643,6 +705,7 @@ export function buildPostSavePatch(
 	| "routeResolved"
 	| "startupRoute"
 	| "selectedListName"
+	| "playbackListName"
 	| "nowPlaying"
 	| "nowJudge"
 	| "slot"
@@ -655,6 +718,7 @@ export function buildPostSavePatch(
 		routeResolved: true,
 		startupRoute: hasData ? "hydrated_playlists" : "hydrated_empty",
 		selectedListName: null,
+		playbackListName: null,
 		nowPlaying: null,
 		nowJudge: null,
 		slot: null,
@@ -673,6 +737,7 @@ export function deriveWorkspaceEntryPatch(
 	| "startupRoute"
 	| "slot"
 	| "selectedListName"
+	| "playbackListName"
 	| "nowPlaying"
 	| "nowJudge"
 	| "processMsg"
@@ -688,6 +753,7 @@ export function deriveWorkspaceEntryPatch(
 	| "startupRoute"
 	| "slot"
 	| "selectedListName"
+	| "playbackListName"
 	| "nowPlaying"
 	| "nowJudge"
 	| "processMsg"
@@ -703,6 +769,7 @@ export function deriveWorkspaceEntryPatch(
 	| "startupRoute"
 	| "slot"
 	| "selectedListName"
+	| "playbackListName"
 	| "nowPlaying"
 	| "nowJudge"
 	| "processMsg"
@@ -722,6 +789,7 @@ export function deriveWorkspaceEntryPatch(
 				? defaultMission()
 				: cloneMissionWithoutDraftOperations(missionFromPlaylist(editPlaylist)),
 		selectedListName: kind === "edit" ? editPlaylist.name : null,
+		playbackListName: null,
 		nowPlaying: null,
 		nowJudge: null,
 		processMsg: null,
@@ -739,6 +807,7 @@ export function deriveBackTransition(
 		| "playlists"
 		| "routeResolved"
 		| "selectedListName"
+		| "playbackListName"
 		| "nowPlaying"
 		| "nowJudge"
 		| "slot"
@@ -754,6 +823,7 @@ export function deriveBackTransition(
 	| "routeResolved"
 	| "startupRoute"
 	| "selectedListName"
+	| "playbackListName"
 	| "nowPlaying"
 	| "nowJudge"
 	| "slot"
@@ -769,6 +839,7 @@ export function deriveBackTransition(
 		startupRoute:
 			snapshot.playlists.length > 0 ? "hydrated_playlists" : "hydrated_empty",
 		selectedListName: null,
+		playbackListName: null,
 		nowPlaying: null,
 		nowJudge: null,
 		slot: null,
@@ -832,6 +903,7 @@ const initialState: MusicState = {
 	loading: false,
 	playlists: [],
 	selectedListName: null,
+	playbackListName: null,
 	requestedPlaying: null,
 	confirmedPlaying: null,
 	nowPlaying: null,
@@ -1234,6 +1306,7 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 			const sessionId = nextPlaybackSessionId();
 			patchState({
 				selectedListName: list.name,
+				playbackListName: list.name,
 				requestedPlaying: chosen,
 				confirmedPlaying: null,
 				nowPlaying: chosen,
@@ -1260,6 +1333,7 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 				patchState({
 					...(clearPatch ?? {
 						selectedListName: null,
+						playbackListName: null,
 						requestedPlaying: null,
 						confirmedPlaying: null,
 						nowPlaying: null,
@@ -1330,6 +1404,7 @@ async function ensureEvents() {
 			patchState({
 				playbackSessionId: null,
 				selectedListName: null,
+				playbackListName: null,
 				requestedPlaying: null,
 				confirmedPlaying: null,
 				nowPlaying: null,
@@ -1369,6 +1444,7 @@ async function safeStop() {
 	bumpPlaybackEpoch();
 	patchState({
 		selectedListName: null,
+		playbackListName: null,
 		requestedPlaying: null,
 		confirmedPlaying: null,
 		nowPlaying: null,
@@ -1394,6 +1470,7 @@ async function startPlayByList(name: string) {
 
 	patchState({
 		selectedListName: name,
+		playbackListName: name,
 		mode: "play",
 		requestedPlaying: null,
 		confirmedPlaying: null,
