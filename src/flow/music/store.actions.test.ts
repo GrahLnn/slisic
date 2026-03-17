@@ -879,6 +879,157 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("webMaterialization_false_negative_guard_persisted_entry_stays_not_ready_until_backend_ready_fact_arrives_and_failure_preserves_last_truthful_phase", async () => {
+		const handlers = new Map<string, (payload: unknown) => void>();
+		const persisted = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus", {
+					url: "https://example.com/list",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic("C:/music/focus/a.mp3"),
+							normalization_status: null,
+							analyzed_at_ms: 123,
+							analysis_version: null,
+							integrated_lufs: null,
+						},
+					],
+				}),
+			},
+		]);
+		const analyzing = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus", {
+					url: "https://example.com/list",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic("C:/music/focus/a.mp3"),
+							normalization_status: "Pending",
+							analyzed_at_ms: null,
+							analysis_version: null,
+							integrated_lufs: null,
+						},
+					],
+				}),
+			},
+		]);
+		const ready = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus", {
+					url: "https://example.com/list",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic("C:/music/focus/a.mp3"),
+							normalization_status: "Ready",
+							analyzed_at_ms: 456,
+							analysis_version: 1,
+							integrated_lufs: -18,
+						},
+					],
+				}),
+			},
+		]);
+		const failedAfterPersisted = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus", {
+					url: "https://example.com/list",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic("C:/music/focus/a.mp3"),
+							normalization_status: "Failed",
+							analyzed_at_ms: 123,
+							analysis_version: null,
+							integrated_lufs: null,
+						},
+					],
+				}),
+			},
+		]);
+		let readAllCalls = 0;
+
+		impl.evt = async (event: string, handler: (payload: unknown) => void) => {
+			handlers.set(event, handler);
+			return () => {
+				handlers.delete(event);
+			};
+		};
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			const snapshots = [persisted, analyzing, ready, failedAfterPersisted];
+			return Ok<Playlist[], string>([
+				snapshots[Math.min(readAllCalls - 1, snapshots.length - 1)]!,
+			]);
+		};
+
+		await action.run();
+		const materialization = () =>
+			(
+				__testing.getState().playlists[0]?.entries[0] as Entry & {
+					materialization?: {
+						phase: string;
+						settled: string;
+						ownerSessionId: number;
+						lastError: string | null;
+					};
+				}
+			).materialization;
+
+		expect(materialization()).toEqual({
+			phase: "persisted",
+			settled: "succeeded",
+			ownerSessionId: 0,
+			lastError: null,
+		});
+
+		handlers.get("processMsg")?.({
+			playlist: "focus",
+			str: "Analyzing loudness 1/1: a.mp3",
+		});
+		await flush();
+		expect(materialization()).toEqual({
+			phase: "persisted",
+			settled: "succeeded",
+			ownerSessionId: 0,
+			lastError: null,
+		});
+
+		handlers.get("processResult")?.(undefined);
+		await flush();
+		expect(materialization()).toEqual({
+			phase: "analyzing",
+			settled: "succeeded",
+			ownerSessionId: 0,
+			lastError: null,
+		});
+
+		handlers.get("processResult")?.(undefined);
+		await flush();
+		expect(materialization()).toEqual({
+			phase: "ready",
+			settled: "succeeded",
+			ownerSessionId: 0,
+			lastError: null,
+		});
+
+		handlers.get("processResult")?.(undefined);
+		await flush();
+		expect(materialization()).toEqual({
+			phase: "failed",
+			settled: "failed",
+			ownerSessionId: 0,
+			lastError: null,
+		});
+	});
+
 	test("updateWeblist_false_positive_guard_stale_completion_does_not_mutate_replacement_persisted_owner_entry", async () => {
 		const original = makeEntry("remote", "C:/music/remote", {
 			url: "https://example.com/list",
