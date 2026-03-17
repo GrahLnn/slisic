@@ -68,6 +68,14 @@ pub fn should_label_resolve_as_user_window(label: &str) -> bool {
     }
 }
 
+#[cfg(test)]
+fn classify_window_labels<'a>(labels: impl IntoIterator<Item = &'a str>) -> Vec<WindowKindInfo> {
+    labels
+        .into_iter()
+        .map(window_kind_info_for_label)
+        .collect()
+}
+
 fn is_main_user_window_instance_label(label: &str) -> bool {
     let Some(suffix) = label.strip_prefix("main-") else {
         return false;
@@ -294,8 +302,9 @@ pub async fn create_window(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_main_user_window_instance_label, is_user_window_label, should_label_resolve_as_user_window,
-        window_kind_from_label, window_kind_info_for_label, WindowName,
+        classify_window_labels, is_main_user_window_instance_label, is_user_window_label,
+        should_label_resolve_as_user_window, window_kind_from_label, window_kind_info_for_label,
+        WindowName,
     };
 
     #[test]
@@ -353,5 +362,33 @@ mod tests {
         assert!(!is_main_user_window_instance_label("main-prewarm-1"));
         assert!(!is_main_user_window_instance_label("main-secondary"));
         assert!(!is_main_user_window_instance_label("support-main-1"));
+    }
+
+    #[test]
+    fn startup_and_repeated_open_labels_classify_as_exactly_one_primary_user_window() {
+        let infos = classify_window_labels(["main", "main-1", "main-2"]);
+
+        assert_eq!(infos.len(), 3);
+        assert_eq!(infos.iter().filter(|info| info.is_primary_main).count(), 1);
+        assert!(infos.iter().all(|info| info.is_user_window));
+    }
+
+    #[test]
+    fn support_and_prewarm_labels_never_classify_as_user_windows_in_mixed_enumeration() {
+        let infos = classify_window_labels([
+            "main",
+            "main-prewarm-1",
+            "support-main",
+            "prewarm-main",
+            "main-1",
+        ]);
+
+        let visible_user_labels = infos
+            .iter()
+            .filter(|info| info.is_user_window)
+            .map(|info| info.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(visible_user_labels, vec!["main", "main-1"]);
     }
 }
