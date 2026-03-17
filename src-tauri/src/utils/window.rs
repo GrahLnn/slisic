@@ -15,6 +15,7 @@ thread_local! {
     static MAIN_WINDOW_OBSERVER: RefCell<Option<FullscreenStateManager>> = RefCell::new(None);
 }
 
+const PREWARM_ENABLED: bool = false;
 const PREWARM_TARGET_PER_WINDOW: usize = 1;
 
 static PREWARM_PENDING: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
@@ -378,6 +379,10 @@ fn should_prewarm_window(name: WindowName) -> bool {
 }
 
 pub fn ensure_window_prewarm(app: &tauri::AppHandle, name: WindowName) {
+    if !PREWARM_ENABLED {
+        return;
+    }
+
     if !should_prewarm_window(name) {
         return;
     }
@@ -430,6 +435,10 @@ pub fn ensure_window_prewarm(app: &tauri::AppHandle, name: WindowName) {
 #[specta::specta]
 #[tauri::command]
 pub fn request_window_prewarm(window: WebviewWindow, app: AppHandle, name: WindowName) {
+    if !PREWARM_ENABLED {
+        return;
+    }
+
     if !can_window_trigger_prewarm(window.label()) {
         return;
     }
@@ -446,6 +455,21 @@ pub async fn create_window(
     name: WindowName,
     options: Option<CreateWindowOptions>,
 ) {
+    if !PREWARM_ENABLED {
+        let label = next_label(name, &app);
+        match build_window(&app, label, name.as_str(), true) {
+            Ok(window) => {
+                apply_window_options(&window, options.as_ref());
+                apply_window_setup(&window, false);
+                activate_window(&window);
+            }
+            Err(error) => {
+                eprintln!("Failed to create window: {error}");
+            }
+        }
+        return;
+    }
+
     let should_replenish_prewarm = can_window_trigger_prewarm(window.label());
 
     if should_replenish_prewarm {
