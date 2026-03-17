@@ -57,6 +57,7 @@ export interface MusicState {
 	loading: boolean;
 	playlists: Playlist[];
 	selectedListName: string | null;
+	requestedPlaying: Music | null;
 	confirmedPlaying: Music | null;
 	nowPlaying: Music | null;
 	nowJudge: Judge;
@@ -76,6 +77,7 @@ export interface MusicState {
 interface PlaybackSessionSnapshot {
 	playbackSessionId: number | null;
 	selectedListName: string | null;
+	requestedPlaying: Music | null;
 	confirmedPlaying: Music | null;
 	nowPlaying: Music | null;
 }
@@ -336,6 +338,7 @@ export function settlePlaybackAck(
 		| "mode"
 		| "playbackSessionId"
 		| "selectedListName"
+		| "requestedPlaying"
 		| "confirmedPlaying"
 		| "nowPlaying"
 		| "playlists"
@@ -369,7 +372,7 @@ export function settlePlaybackAck(
 	return {
 		selectedListName: payload.listName,
 		confirmedPlaying: confirmedTrack,
-		nowPlaying: confirmedTrack,
+		nowPlaying: snapshot.requestedPlaying ?? confirmedTrack,
 	};
 }
 
@@ -379,6 +382,7 @@ export function clearPlaybackSession(
 ): Pick<
 	MusicState,
 	| "selectedListName"
+	| "requestedPlaying"
 	| "confirmedPlaying"
 	| "nowPlaying"
 	| "nowJudge"
@@ -389,6 +393,7 @@ export function clearPlaybackSession(
 
 	return {
 		selectedListName: null,
+		requestedPlaying: null,
 		confirmedPlaying: null,
 		nowPlaying: null,
 		nowJudge: null,
@@ -684,6 +689,7 @@ const initialState: MusicState = {
 	loading: false,
 	playlists: [],
 	selectedListName: null,
+	requestedPlaying: null,
 	confirmedPlaying: null,
 	nowPlaying: null,
 	nowJudge: null,
@@ -910,6 +916,10 @@ function updateMusicEverywhere(path: string, updater: (music: Music) => Music) {
 			prev.nowPlaying?.path === path
 				? updater(prev.nowPlaying)
 				: prev.nowPlaying;
+		const requestedPlaying =
+			prev.requestedPlaying?.path === path
+				? updater(prev.requestedPlaying)
+				: prev.requestedPlaying;
 		const confirmedPlaying =
 			prev.confirmedPlaying?.path === path
 				? updater(prev.confirmedPlaying)
@@ -918,6 +928,7 @@ function updateMusicEverywhere(path: string, updater: (music: Music) => Music) {
 		return {
 			...prev,
 			playlists,
+			requestedPlaying,
 			confirmedPlaying,
 			nowPlaying,
 		};
@@ -1001,6 +1012,7 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 		if (all.length === 0) {
 			yield* Effect.sync(() =>
 				patchState({
+					requestedPlaying: null,
 					confirmedPlaying: null,
 					nowPlaying: null,
 					nowJudge: null,
@@ -1030,6 +1042,7 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 			const sessionId = nextPlaybackSessionId();
 			patchState({
 				selectedListName: list.name,
+				requestedPlaying: chosen,
 				confirmedPlaying: null,
 				nowPlaying: chosen,
 				nowJudge: null,
@@ -1056,11 +1069,13 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 				patchState({
 					...(clearPatch ?? {
 						selectedListName: null,
+						requestedPlaying: null,
 						confirmedPlaying: null,
 						nowPlaying: null,
 						nowJudge: null,
 						playbackSessionId: null,
 					}),
+					requestedPlaying: previousNowPlaying,
 					confirmedPlaying: previousNowPlaying,
 					nowPlaying: previousNowPlaying,
 				});
@@ -1127,6 +1142,7 @@ async function ensureEvents() {
 			patchState({
 				playbackSessionId: null,
 				selectedListName: null,
+			requestedPlaying: null,
 				confirmedPlaying: null,
 				nowPlaying: null,
 				nowJudge: null,
@@ -1165,6 +1181,7 @@ async function safeStop() {
 	bumpPlaybackEpoch();
 	patchState({
 		selectedListName: null,
+		requestedPlaying: null,
 		confirmedPlaying: null,
 		nowPlaying: null,
 		nowJudge: null,
@@ -1190,6 +1207,7 @@ async function startPlayByList(name: string) {
 	patchState({
 		selectedListName: name,
 		mode: "play",
+		requestedPlaying: null,
 		confirmedPlaying: null,
 		nowPlaying: null,
 		nowJudge: null,
@@ -1268,6 +1286,7 @@ async function persistSlot() {
 			...buildPostSavePatch(optimisticPlaylists.length > 0, idleEpoch),
 			playlists: optimisticPlaylists,
 			loading: false,
+			requestedPlaying: null,
 			playbackSessionId: null,
 			confirmedPlaying: null,
 		});
@@ -1297,6 +1316,7 @@ async function persistSlot() {
 		...buildPostSavePatch(optimisticPlaylists.length > 0, idleEpoch),
 		playlists: optimisticPlaylists,
 		loading: false,
+		requestedPlaying: null,
 		playbackSessionId: null,
 		confirmedPlaying: null,
 	});
@@ -1717,6 +1737,10 @@ export const action = {
 						}
 					: playlist,
 			),
+			requestedPlaying:
+				prev.requestedPlaying && prev.requestedPlaying.path === music.path
+					? null
+					: prev.requestedPlaying,
 			nowPlaying:
 				prev.nowPlaying && prev.nowPlaying.path === music.path
 					? null
@@ -1848,6 +1872,8 @@ export const hook = {
 	useContext: () => useMusicSelector((snapshot) => snapshot),
 	useList: () => useMusicSelector((snapshot) => snapshot.playlists),
 	useCurPlay: () => useMusicSelector((snapshot) => snapshot.nowPlaying),
+	useRequestedPlay: () =>
+		useMusicSelector((snapshot) => snapshot.requestedPlaying),
 	useConfirmedPlay: () =>
 		useMusicSelector((snapshot) => snapshot.confirmedPlaying),
 	useCurList: () =>

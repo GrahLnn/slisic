@@ -2003,6 +2003,7 @@ describe("music store action contracts", () => {
 			expect(secondState.nowPlaying == null || secondState.nowPlaying.path === "track.mp3").toBe(true);
 	});
 
+
 	test("play_true_positive_threads_request_session_identity_through_backend_ack_contract", async () => {
 		const request = { session_id: 41n, path: "C:/music/focus/a.flac" };
 		const result = await crab.audioPlay(request);

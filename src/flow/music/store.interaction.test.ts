@@ -71,6 +71,25 @@ const baseState: MusicState = {
 		},
 	],
 	selectedListName: "contemporary",
+	requestedPlaying: {
+		path: "C:/audio/a.flac",
+		title: "A",
+		avg_db: -18,
+		integrated_lufs: -18,
+		true_peak_dbtp: -2,
+		loudness_range_lu: null,
+		loudness_threshold_lufs: null,
+		analyzed_at_ms: null,
+		analysis_version: null,
+		source_mtime_ms: null,
+		source_size_bytes: null,
+		normalization_status: null,
+		normalization_error: null,
+		base_bias: 0,
+		user_boost: 0,
+		fatigue: 0,
+		diversity: 0,
+	},
 	confirmedPlaying: {
 		path: "C:/audio/a.flac",
 		title: "A",
@@ -343,6 +362,7 @@ describe("music interaction guards", () => {
 					],
 				},
 			],
+			requestedPlaying: requested,
 			nowPlaying: requested,
 		};
 
@@ -364,13 +384,14 @@ describe("music interaction guards", () => {
 		expect(patch).toEqual({
 			selectedListName: "contemporary",
 			confirmedPlaying: baseState.confirmedPlaying,
-			nowPlaying: baseState.nowPlaying,
+			nowPlaying: requested,
 		});
 	});
 
 	test("clearPlaybackSession only clears the matching live playback session", () => {
 		expect(clearPlaybackSession(baseState, 3)).toEqual({
 			selectedListName: null,
+			requestedPlaying: null,
 			confirmedPlaying: null,
 			nowPlaying: null,
 			nowJudge: null,

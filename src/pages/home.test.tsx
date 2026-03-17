@@ -24,6 +24,10 @@ function realProjectWorkspaceScreen(snapshot: {
 
 let routeResolved = false;
 let mode: MusicState["mode"] = "play";
+let requestedTitle: string | null = null;
+let confirmedTitle: string | null = null;
+let currentListName: string | null = null;
+let playlistNames: string[] = [];
 
 mock.module("motion/react", () => ({
 	AnimatePresence: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -98,17 +102,43 @@ mock.module("@/src/flow/music", () => ({
 			routeResolved,
 			mode,
 			loading: false,
-			playlists: [],
+			playlists: playlistNames.map((name) => ({
+				name,
+				avg_db: null,
+				entries: [],
+				exclude: [],
+			})),
 			nowJudge: null,
 			processMsg: null,
 		}),
 		useState: () => ({
 			match: (_handlers: Record<string, () => ReactNode>) => null,
 		}),
-		useList: () => [],
+		useList: () =>
+			playlistNames.map((name) => ({
+				name,
+				avg_db: null,
+				entries: [],
+				exclude: [],
+			})),
 		useIsPlaying: () => false,
-		useCurPlay: () => null,
-		useCurList: () => null,
+		useCurPlay: () =>
+			requestedTitle
+				? { path: `C:/music/${requestedTitle}.flac`, title: requestedTitle }
+				: null,
+		useConfirmedPlay: () =>
+			confirmedTitle
+				? { path: `C:/music/${confirmedTitle}.flac`, title: confirmedTitle }
+				: null,
+		useCurList: () =>
+			currentListName
+				? {
+					name: currentListName,
+					avg_db: null,
+					entries: [],
+					exclude: [],
+				}
+				: null,
 		useMsg: () => null,
 		useIsReview: () => false,
 	},
@@ -132,6 +162,10 @@ const { default: Home, shouldRenderHomeRoute } = await import("./home");
 beforeEach(() => {
 	routeResolved = false;
 	mode = "play";
+	requestedTitle = null;
+	confirmedTitle = null;
+	currentListName = null;
+	playlistNames = [];
 });
 
 describe("Home route gating", () => {
@@ -164,5 +198,19 @@ describe("Home route gating", () => {
 
 		expect(html).toContain("new-form");
 		expect(html).toContain("back");
+	});
+
+	test("play route consumer surfaces requested playback title before confirmed playback exists", async () => {
+		routeResolved = true;
+		mode = "play";
+		requestedTitle = "requested-track";
+		confirmedTitle = null;
+		currentListName = "focus";
+		playlistNames = ["focus"];
+
+		const html = renderToStaticMarkup(<Home />);
+
+		expect(html).toContain("requested-track");
+		expect(html).not.toContain("confirmed-track");
 	});
 });

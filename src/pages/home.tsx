@@ -36,6 +36,7 @@ function Play() {
 	const ctx = hook.useContext();
 	const isPlaying = hook.useIsPlaying();
 	const curPlay = hook.useCurPlay();
+	const confirmedPlay = hook.useConfirmedPlay();
 	const curList = hook.useCurList();
 	const isCursorInApp = useCursorInApp();
 	const [hoveredKey, setHoveredKey] = useState<string | null>(null);
@@ -49,12 +50,18 @@ function Play() {
 					name: playlist.name,
 					playlist,
 					isHydrated: true,
+					projectedTitle:
+						playlist.name === curList?.name ? curPlay?.title ?? null : null,
+					confirmedTitle:
+						playlist.name === curList?.name ? confirmedPlay?.title ?? null : null,
 				}))
 			: ctx.loading
 				? ctx.playlists.map((playlist) => ({
 						name: playlist.name,
 						playlist: null,
 						isHydrated: false,
+						projectedTitle: null,
+						confirmedTitle: null,
 					}))
 				: [];
 
@@ -103,7 +110,8 @@ function Play() {
 				>
 					<div aria-hidden className="h-[100vh] shrink-0 snap-none" />
 
-					{displayLists.map(({ name, playlist, isHydrated }) => {
+					{displayLists.map(
+						({ name, playlist, isHydrated, projectedTitle, confirmedTitle }) => {
 						const isCurrent = name === curList?.name;
 						const disabled =
 							(isPlaying && !isCurrent) || (!isHydrated && ctx.loading);
@@ -113,7 +121,7 @@ function Play() {
 							? playlist.entries.every((entry) => entry.downloaded_ok)
 							: true;
 
-						const alt = curPlay?.title ?? name;
+						const alt = projectedTitle ?? name;
 						const longer =
 							(alt?.length ?? 0) >= name.length ? alt : name;
 
@@ -203,6 +211,11 @@ function Play() {
 												{processMsg?.playlist === name ? (
 													<span className="absolute ml-1 max-w-2xs truncate whitespace-nowrap text-xs text-[#262626] dark:text-[#d4d4d4]">
 														- {processMsg.str}
+													</span>
+												) : null}
+												{isCurrent && projectedTitle && !confirmedTitle ? (
+													<span className="absolute ml-1 max-w-2xs truncate whitespace-nowrap text-xs text-[#525252] dark:text-[#a3a3a3]">
+														- {projectedTitle}
 													</span>
 												) : null}
 												{playlist && !isOk ? (
@@ -362,7 +375,8 @@ function Play() {
 								</AnimatePresence>
 							</motion.div>
 						);
-					})}
+						},
+					)}
 
 					{!isPlaying ? (
 						<motion.div
