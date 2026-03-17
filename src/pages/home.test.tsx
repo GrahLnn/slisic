@@ -28,6 +28,7 @@ let requestedTitle: string | null = null;
 let confirmedTitle: string | null = null;
 let currentListName: string | null = null;
 let playlistNames: string[] = [];
+let isPlaying = false;
 
 mock.module("motion/react", () => ({
 	AnimatePresence: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -121,7 +122,7 @@ mock.module("@/src/flow/music", () => ({
 				entries: [],
 				exclude: [],
 			})),
-		useIsPlaying: () => false,
+		useIsPlaying: () => isPlaying,
 		useCurPlay: () =>
 			requestedTitle
 				? { path: `C:/music/${requestedTitle}.flac`, title: requestedTitle }
@@ -170,6 +171,7 @@ beforeEach(() => {
 	confirmedTitle = null;
 	currentListName = null;
 	playlistNames = [];
+	isPlaying = false;
 });
 
 describe("Home route gating", () => {
@@ -225,13 +227,31 @@ describe("Home route gating", () => {
 		requestedTitle = "requested-track";
 		confirmedTitle = null;
 		currentListName = "focus";
+		isPlaying = true;
 		playlistNames = ["focus", "ambient"];
 
 		const html = renderToStaticMarkup(<Home />);
 
 		expect(html).toContain("requested-track");
+		expect(html).toContain(">ambient<");
 		expect(html).toContain("aria-disabled=\"true\"");
 		expect(html).not.toContain("confirmed-track");
+	});
+
+	test("play route consumer keeps the active playback title while focused browsing lists stay non-interactive", async () => {
+		routeResolved = true;
+		mode = "play";
+		requestedTitle = "requested-track";
+		confirmedTitle = "confirmed-track";
+		currentListName = "focus";
+		isPlaying = true;
+		playlistNames = ["focus", "browsed", "ambient"];
+
+		const html = renderToStaticMarkup(<Home />);
+
+		expect(html).toContain("focus");
+		expect(html).toContain("requested-track");
+		expect(html).toContain("aria-disabled=\"true\"");
 	});
 
 	test("play route consumer surfaces confirmed playback title once confirmation exists", async () => {
