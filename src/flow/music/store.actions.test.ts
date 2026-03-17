@@ -1226,6 +1226,176 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("ownerIdentity_false_negative_guard_read_refresh_keeps_canonical_persisted_owner_identity_after_optimistic_exit", async () => {
+		const sharedUrl = "https://example.com/shared-refresh";
+		const canonical = withEntryMaterialization(
+			makeEntry("canonical", "C:/music/canonical", {
+				url: sharedUrl,
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			}),
+			{
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 11,
+				lastError: null,
+			},
+		);
+		const sibling = withEntryMaterialization(
+			makeEntry("sibling", "C:/music/sibling", {
+				url: sharedUrl,
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			}),
+			{
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 19,
+				lastError: null,
+			},
+		);
+		impl.readAll = async () =>
+			Ok<Playlist[], string>([
+				makePlaylist("focus", [
+					makeEntry("canonical", "C:/music/canonical", {
+						url: sharedUrl,
+						entry_type: "WebList",
+						downloaded_ok: true,
+						musics: [makeMusic("C:/music/canonical/downloaded.flac")],
+					}),
+					makeEntry("sibling", "C:/music/sibling", {
+						url: sharedUrl,
+						entry_type: "WebList",
+						downloaded_ok: false,
+						musics: [],
+					}),
+				]),
+			]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			selectedListName: null,
+			slot: null,
+			entrySessionId: 88,
+			playlists: [makePlaylist("focus", [canonical, sibling])],
+		});
+
+		await __testing.readAll();
+
+		const entries = __testing.getState().playlists[0]?.entries ?? [];
+		expect(entries[0]).toMatchObject({
+			url: sharedUrl,
+			path: "C:/music/canonical",
+			materialization: {
+				phase: "persisted",
+				settled: "succeeded",
+				ownerSessionId: 11,
+				lastError: null,
+			},
+		});
+		expect(entries[1]).toMatchObject({
+			url: sharedUrl,
+			path: "C:/music/sibling",
+			materialization: {
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 19,
+				lastError: null,
+			},
+		});
+	});
+
+	test("ownerIdentity_false_negative_guard_displaced_late_settlement_cannot_overwrite_replacement_owner_layer", async () => {
+		const sharedUrl = "https://example.com/displaced";
+		const displacedOwner = withEntryMaterialization(
+			makeEntry("displaced", "C:/music/displaced", {
+				url: sharedUrl,
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			}),
+			{
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 11,
+				lastError: null,
+			},
+		);
+		const replacementOwner = withEntryMaterialization(
+			makeEntry("replacement", "C:/music/replacement", {
+				url: sharedUrl,
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			}),
+			{
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 29,
+				lastError: null,
+			},
+		);
+		let release!: () => void;
+		impl.updateWeblist =
+			() =>
+				new Promise((resolve) => {
+					release = () =>
+						resolve(
+							Ok<Entry, string>({
+								...displacedOwner,
+								downloaded_ok: true,
+								musics: [makeMusic("C:/music/displaced/downloaded.flac")],
+							}),
+						);
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			slot: makeMission("focus", [displacedOwner]),
+			playlists: [makePlaylist("focus", [displacedOwner])],
+			entrySessionId: 2,
+		});
+
+		const pending = action.updateWeblist(displacedOwner);
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) => item.url === sharedUrl && hasPendingEntryOperation(item, "weblist_update"),
+					) ?? false,
+		);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			selectedListName: null,
+			slot: null,
+			entrySessionId: 99,
+			playlists: [makePlaylist("focus", [replacementOwner])],
+		});
+
+		release();
+		await pending;
+
+		const state = __testing.getState();
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.entries[0]).toMatchObject({
+			...replacementOwner,
+			materialization: {
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 29,
+				lastError: null,
+			},
+		});
+	});
+
 	test("webMaterialization_false_negative_guard_update_after_reedit_ignores_removed_persisted_owner_entry", async () => {
 		const original = makeEntry("remote", "C:/music/remote", {
 			url: "https://example.com/list",

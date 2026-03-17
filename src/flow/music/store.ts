@@ -1161,6 +1161,68 @@ function setPlaylistEntryMaterializationByIdentity(
 	});
 }
 
+function carryForwardPersistedMaterializationOwnership(
+	playlists: Playlist[],
+	previousPlaylists: Playlist[],
+	defaultOwnerSessionId: number,
+): Playlist[] {
+	return playlists.map((playlist) => {
+		const previousPlaylist = previousPlaylists.find(
+			(item) => item.name === playlist.name,
+		);
+		const previousMaterializationByIdentity = new Map<string, WebMaterializationState>();
+		for (const entry of previousPlaylist?.entries ?? []) {
+			const entryIdentity = derivePersistedOwnerMaterializationKey(entry);
+			const materialization = getEntryMaterialization(entry);
+			if (!entryIdentity || !materialization) {
+				continue;
+			}
+			previousMaterializationByIdentity.set(entryIdentity, materialization);
+		}
+
+		let changed = false;
+		const entries = playlist.entries.map((entry) => {
+			const entryIdentity = derivePersistedOwnerMaterializationKey(entry);
+			if (!entryIdentity) {
+				return entry;
+			}
+
+			const previousMaterialization = previousMaterializationByIdentity.get(entryIdentity);
+			const nextMaterialization = deriveEntryOwnedMaterialization(
+				entry,
+				previousMaterialization?.ownerSessionId ?? defaultOwnerSessionId,
+				previousMaterialization?.lastError ?? null,
+			);
+			if (!nextMaterialization) {
+				return entry;
+			}
+
+			if (!previousMaterialization) {
+				changed = true;
+				return setEntryMaterialization(entry, nextMaterialization);
+			}
+
+			if (
+				nextMaterialization.ownerSessionId === previousMaterialization.ownerSessionId &&
+				nextMaterialization.phase === previousMaterialization.phase &&
+				nextMaterialization.settled === previousMaterialization.settled &&
+				nextMaterialization.lastError === previousMaterialization.lastError
+			) {
+				return setEntryMaterialization(entry, previousMaterialization);
+			}
+
+			changed = true;
+			return setEntryMaterialization(entry, nextMaterialization);
+		});
+
+		if (!changed) {
+			return previousPlaylist === playlist ? playlist : { ...playlist, entries };
+		}
+
+		return { ...playlist, entries };
+	});
+}
+
 function setEntryMaterialization(
 	entry: Entry,
 	materialization: WebMaterializationState | null,
@@ -1208,6 +1270,19 @@ function setDraftLinkOperation(
 
 function deriveEntryIdentity(entry: Entry): string | null {
 	return entry.url ?? entry.path ?? null;
+}
+
+function derivePersistedOwnerMaterializationKey(entry: Entry): string | null {
+	if (entry.path) {
+		return `path:${entry.path}`;
+	}
+	if (entry.url && entry.name) {
+		return `url-name:${entry.url}::${entry.name}`;
+	}
+	if (entry.url) {
+		return `url:${entry.url}`;
+	}
+	return null;
 }
 
 function deriveWebMaterializationPhase(
@@ -1435,13 +1510,13 @@ async function refreshLists(version?: number) {
 		throw new Error(result.unwrap_err());
 	}
 
+	const previousPlaylists = getState().playlists;
 	const ownerSessionId = getState().entrySessionId;
-	const playlists = result.unwrap().map((playlist) => ({
-		...playlist,
-		entries: playlist.entries.map((entry) =>
-			syncEntryOwnedMaterialization(entry, ownerSessionId),
-		),
-	}));
+	const playlists = carryForwardPersistedMaterializationOwnership(
+		result.unwrap(),
+		previousPlaylists,
+		ownerSessionId,
+	);
 	if (version != null && !isCurrentRun(version)) {
 		return;
 	}
@@ -2456,6 +2531,9 @@ const MODE = {
 
 export const __testing = {
 	getState,
+	readAll() {
+		return refreshLists();
+	},
 	replaceState(next: MusicState) {
 		state = next;
 	},
