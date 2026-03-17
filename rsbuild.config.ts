@@ -5,7 +5,15 @@ import { pluginSass } from "@rsbuild/plugin-sass";
 
 const isDev = process.env.NODE_ENV !== "production";
 const disableReactScan = process.env.PUBLIC_DISABLE_REACT_SCAN === "1";
+const reactProcessEnvNodeEnv = JSON.stringify(
+  process.env.NODE_ENV ?? (isDev ? "development" : "production"),
+);
 export default defineConfig({
+  source: {
+    define: {
+      "process.env.NODE_ENV": reactProcessEnvNodeEnv,
+    },
+  },
   plugins: [
     pluginReact(),
     pluginSass(),

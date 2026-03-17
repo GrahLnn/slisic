@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import rsbuildConfig from "../rsbuild.config";
 import {
   initialAppWindowMeta,
   shouldRequestWindowPrewarm,
@@ -250,5 +251,14 @@ describe("getPlatform", () => {
 
   test("startup ready event name stays stable for native and renderer startup tracing", () => {
     expect(startupReadyEvent).toBe("factory://startup-ready");
+  });
+});
+
+describe("rsbuild react runtime defines", () => {
+  test("defines process.env.NODE_ENV so browser React runtime does not read an undefined process global", () => {
+    const definedNodeEnv = rsbuildConfig.source?.define?.["process.env.NODE_ENV"];
+
+    expect(typeof definedNodeEnv).toBe("string");
+    expect(JSON.parse(definedNodeEnv as string)).toBeString();
   });
 });
