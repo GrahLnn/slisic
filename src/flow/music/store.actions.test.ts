@@ -961,6 +961,133 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("webMaterialization_false_negative_guard_update_after_reedit_ignores_removed_persisted_owner_entry", async () => {
+		const original = makeEntry("remote", "C:/music/remote", {
+			url: "https://example.com/list",
+			entry_type: "WebList",
+			downloaded_ok: false,
+			musics: [],
+		});
+		const settledOriginal = {
+			...original,
+			downloaded_ok: true,
+			musics: [makeMusic("C:/music/remote/downloaded.flac")],
+		};
+		const other = makePlaylist("other", [makeEntry("local", "C:/music/local")]);
+
+		let release!: () => void;
+		impl.updateWeblist =
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve(Ok<Entry, string>(settledOriginal));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			slot: makeMission("focus", [original]),
+			playlists: [makePlaylist("focus", [original]), other],
+			weblistReviews: [],
+			entrySessionId: 2,
+		});
+
+		const pending = action.updateWeblist(original);
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) =>
+							item.url === original.url && hasPendingEntryOperation(item, "weblist_update"),
+					) ?? false,
+		);
+
+		await action.back();
+		await action.edit(other);
+
+		release();
+		await pending;
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("edit");
+		expect(state.selectedListName).toBe("other");
+		expect(state.slot?.name).toBe("other");
+		expect(state.slot?.entries).toEqual([makeEntry("local", "C:/music/local")]);
+		expect(state.playlists).toEqual([makePlaylist("focus", [original]), other]);
+	});
+
+	test("webMaterialization_false_positive_guard_update_after_reedit_does_not_mutate_replacement_persisted_owner_entry", async () => {
+		const original = makeEntry("remote", "C:/music/remote", {
+			url: "https://example.com/list",
+			entry_type: "WebList",
+			downloaded_ok: false,
+			musics: [],
+		});
+		const replacementPersisted = withEntryMaterialization(
+			makeEntry("replacement", "C:/music/replacement", {
+				url: "https://example.com/list-replacement",
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			}),
+			{
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 9,
+				lastError: null,
+			},
+		);
+		const settledOriginal = {
+			...original,
+			downloaded_ok: true,
+			musics: [makeMusic("C:/music/remote/downloaded.flac")],
+		};
+
+		let release!: () => void;
+		impl.updateWeblist =
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve(Ok<Entry, string>(settledOriginal));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			slot: makeMission("focus", [original]),
+			playlists: [makePlaylist("focus", [original])],
+			weblistReviews: [],
+			entrySessionId: 2,
+		});
+
+		const pending = action.updateWeblist(original);
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) =>
+							item.url === original.url && hasPendingEntryOperation(item, "weblist_update"),
+					) ?? false,
+		);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			selectedListName: null,
+			slot: null,
+			playlists: [makePlaylist("focus", [replacementPersisted])],
+		});
+
+		release();
+		await pending;
+
+		const state = __testing.getState();
+		expect(state.slot).toBeNull();
+		expect(state.playlists).toEqual([makePlaylist("focus", [replacementPersisted])]);
+	});
+
 	test("addNew_true_positive_enters_create_with_fresh_slot_and_cleared_transient_state", async () => {
 		__testing.replaceState({
 			...__testing.getState(),

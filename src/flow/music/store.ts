@@ -1172,7 +1172,9 @@ function deriveEntryIdentity(entry: Entry): string | null {
 	return entry.url ?? entry.path ?? null;
 }
 
-function deriveWebMaterializationPhase(entry: Entry): WebMaterializationPhase | null {
+function deriveWebMaterializationPhase(
+	entry: Entry,
+): WebMaterializationPhase | null {
 	if (entry.entry_type !== "WebList" && entry.entry_type !== "WebVideo") {
 		return null;
 	}
@@ -1204,8 +1206,7 @@ function deriveWebMaterializationPhase(entry: Entry): WebMaterializationPhase | 
 
 	const hasAnalyzingMusic = entry.musics.some(
 		(music) =>
-			music.normalization_status === "Pending" ||
-			music.analyzed_at_ms == null,
+			music.normalization_status === "Pending" || music.analyzed_at_ms == null,
 	);
 	return hasAnalyzingMusic ? "analyzing" : "persisted";
 }
@@ -2101,7 +2102,11 @@ export const action = {
 									setDraftEntryOperation(
 										next,
 										settleDraftOperation(
-											createDraftOperation("folder_reload", key, entrySessionId),
+											createDraftOperation(
+												"folder_reload",
+												key,
+												entrySessionId,
+											),
 											"succeeded",
 										),
 									),
@@ -2189,7 +2194,10 @@ export const action = {
 			!isEditingWorkspace(getState().mode)
 		) {
 			const settledMaterialization = getEntryMaterialization(
-				syncEntryOwnedMaterialization(next, persistedMaterialization.ownerSessionId),
+				syncEntryOwnedMaterialization(
+					next,
+					persistedMaterialization.ownerSessionId,
+				),
 			);
 			setState((prev) => ({
 				...prev,
@@ -2387,12 +2395,11 @@ export const action = {
 };
 
 function useMusicSelector<T>(selector: (state: MusicState) => T): T {
-	const getSnapshot = useMemo(() => createStableSnapshotSelector(selector), [selector]);
-	return useSyncExternalStore(
-		subscribe,
-		getSnapshot,
-		getSnapshot,
+	const getSnapshot = useMemo(
+		() => createStableSnapshotSelector(selector),
+		[selector],
 	);
+	return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 const MODE = {
