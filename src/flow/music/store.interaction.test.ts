@@ -437,6 +437,7 @@ describe("music interaction guards", () => {
 					],
 				},
 			],
+			requestedPlaying: requestedReplacement,
 			nowPlaying: requestedReplacement,
 		};
 
@@ -476,6 +477,47 @@ describe("music interaction guards", () => {
 			selectedListName: "contemporary",
 			confirmedPlaying: requestedReplacement,
 			nowPlaying: requestedReplacement,
+		});
+	});
+
+	test("clearPlaybackSession ignores stale displaced session settlement after replacement acknowledgement", () => {
+		const requestedReplacement = {
+			path: "C:/audio/b.flac",
+			title: "B",
+			avg_db: null,
+			integrated_lufs: null,
+			true_peak_dbtp: null,
+			loudness_range_lu: null,
+			loudness_threshold_lufs: null,
+			analyzed_at_ms: null,
+			analysis_version: null,
+			source_mtime_ms: null,
+			source_size_bytes: null,
+			normalization_status: null,
+			normalization_error: null,
+			base_bias: 0,
+			user_boost: 0,
+			fatigue: 0,
+			diversity: 0,
+		};
+
+		const acknowledgedReplacement = {
+			...baseState,
+			playbackSessionId: 4,
+			playbackEpoch: 4,
+			requestedPlaying: requestedReplacement,
+			confirmedPlaying: requestedReplacement,
+			nowPlaying: requestedReplacement,
+		};
+
+		expect(clearPlaybackSession(acknowledgedReplacement, 3)).toBeNull();
+		expect(clearPlaybackSession(acknowledgedReplacement, 4)).toEqual({
+			selectedListName: null,
+			requestedPlaying: null,
+			confirmedPlaying: null,
+			nowPlaying: null,
+			nowJudge: null,
+			playbackSessionId: null,
 		});
 	});
 
