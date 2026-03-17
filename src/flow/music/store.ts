@@ -606,6 +606,7 @@ export function clearPlaybackSession(
 > | null {
 	if (snapshot.playbackSessionId == null) return null;
 	if (snapshot.playbackSessionId !== sessionId) return null;
+	if (!snapshot.confirmedPlaying) return null;
 
 	return {
 		selectedListName: null,

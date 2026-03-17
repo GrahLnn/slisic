@@ -527,6 +527,39 @@ describe("music interaction guards", () => {
 		expect(clearPlaybackSession(baseState, liveSessionId + 1)).toBeNull();
 	});
 
+	test("clearPlaybackSession only clears acknowledged playback from matching backend transport settlement facts", () => {
+		const pendingOnlyState = {
+			...baseState,
+			confirmedPlaying: null,
+			nowPlaying: baseState.requestedPlaying,
+		};
+
+		expect(clearPlaybackSession(pendingOnlyState, 3)).toBeNull();
+		expect(clearPlaybackSession(baseState, 3)).toEqual({
+			selectedListName: null,
+			playbackListName: null,
+			requestedPlaying: null,
+			confirmedPlaying: null,
+			nowPlaying: null,
+			nowJudge: null,
+			playbackSessionId: null,
+		});
+	});
+
+	test("shouldHandleAudioEnded still accepts matching backend ended facts while ack-confirmed playback is live", () => {
+		const endedReadyState = {
+			...baseState,
+			requestedPlaying: null,
+		};
+
+		expect(
+			shouldHandleAudioEnded(endedReadyState, {
+				path: "C:/audio/a.flac",
+				sessionId: 3,
+			}),
+		).toBe(true);
+	});
+
 	test("settlePlaybackAck keeps replacement session requested track while stale ack is suppressed", () => {
 		const requestedReplacement = {
 			path: "C:/audio/b.flac",

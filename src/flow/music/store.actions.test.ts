@@ -4700,6 +4700,7 @@ describe("music store action contracts", () => {
 		});
 
 		eventHandlers.get("audioEnded")?.({ path: first.path, session_id: 9 });
+		await flush();
 
 		const state = __testing.getState();
 		expect(playbackLog.replaceWith).toHaveLength(1);
@@ -4739,6 +4740,7 @@ describe("music store action contracts", () => {
 		});
 
 		eventHandlers.get("audioEnded")?.({ path: music.path, session_id: 11 });
+		await flush();
 
 		const state = __testing.getState();
 		expect(playbackLog.replaceWith).toHaveLength(1);
