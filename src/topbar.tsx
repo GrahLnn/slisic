@@ -27,7 +27,6 @@ const CtrlButton = memo(function CtrlButtonComp({
   const isVisible = useIsBarVisible();
   return (
     <div data-tauri-drag-region={!isVisible}>
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: <explanation> */}
       <div
         className={cn([
           "rounded-md cursor-default h-8 flex items-center justify-center",

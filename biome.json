@@ -1,5 +1,0 @@
-{
-  "linter": {
-    "ignore": ["src/cmd/commands.ts"]
-  }
-}

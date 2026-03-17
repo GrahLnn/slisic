@@ -7,7 +7,6 @@ interface IconProps {
 export const logos = {
   tauri({ color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         width="206"
         height="231"
@@ -53,7 +52,6 @@ export const icons = {
    */
   minus({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -80,7 +78,6 @@ export const icons = {
    */
   square({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -107,7 +104,6 @@ export const icons = {
    */
   stacksquare({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -140,7 +136,6 @@ export const icons = {
    */
   xmark({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -168,7 +163,6 @@ export const icons = {
    */
   pin({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -203,7 +197,6 @@ export const icons = {
    */
   lang({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -234,7 +227,6 @@ export const icons = {
    */
   sliders({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -266,7 +258,6 @@ export const icons = {
    */
   sliders2({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -301,7 +292,6 @@ export const icons = {
    */
   barsFilter({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -330,7 +320,6 @@ export const icons = {
    */
   globe3({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -360,7 +349,6 @@ export const icons = {
    */
   cloudRefresh({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -389,7 +377,6 @@ export const icons = {
    */
   magnifier3({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -418,7 +405,6 @@ export const icons = {
    */
   menuBars({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -450,7 +436,6 @@ export const icons = {
    */
   tableCols2({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -478,7 +463,6 @@ export const icons = {
    */
   gridCircle({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}
@@ -508,7 +492,6 @@ export const icons = {
    */
   arrowDown({ size, color, className }: IconProps) {
     return (
-      // biome-ignore lint/a11y/noSvgWithoutTitle: <explanation>
       <svg
         xmlns="http://www.w3.org/2000/svg"
         width={size || 18}

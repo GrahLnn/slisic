@@ -151,12 +151,10 @@ h1 {
 }
 
 .trim-ex {
-    /* biome-ignore lint/correctness/noUnknownProperty: <explanation> */
     text-box: ex alphabetic;
 }
 
 .trim-cap {
-    /* biome-ignore lint/correctness/noUnknownProperty: <explanation> */
     text-box: cap alphabetic;
 }
 
