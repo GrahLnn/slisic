@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type {
 	Entry,
 	ImportFolderEntry,
@@ -26,6 +28,8 @@ import {
 	shouldAdvanceOnUnstar,
 	shouldHandleAudioEnded,
 } from "./store";
+
+const { __testing, hook } = await import("./store");
 
 const baseState: MusicState = {
 	mode: "play",
@@ -1322,5 +1326,73 @@ describe("music interaction guards", () => {
 		expect(refreshed.nowPlaying?.integrated_lufs).toBe(-17.4);
 		expect(refreshed.nowPlaying?.true_peak_dbtp).toBe(-0.9);
 		expect(refreshed.nowPlaying?.normalization_status).toBe("Ready");
+	});
+
+	test("store testing boundary exposes stable selector snapshots until canonical state changes", () => {
+		const initialState = __testing.getState();
+		let firstContext: MusicState | undefined;
+		let secondContext: MusicState | undefined;
+		let firstReviews: string[] | undefined;
+		let secondReviews: string[] | undefined;
+
+		function StableHookProbe() {
+			firstContext = hook.useContext();
+			secondContext = hook.useContext();
+			firstReviews = hook.useAllReview();
+			secondReviews = hook.useAllReview();
+			return null;
+		}
+
+		renderToStaticMarkup(React.createElement(StableHookProbe));
+
+		expect(firstContext).toBe(initialState);
+		expect(secondContext).toBe(firstContext);
+		expect(firstReviews).toBe(initialState.linkReviews);
+		expect(secondReviews).toBe(firstReviews);
+
+		__testing.replaceState({
+			...initialState,
+			mode: "edit",
+			linkReviews: ["https://example.com/list"],
+			slot: {
+				name: "focus",
+				folders: [],
+				links: [
+					{
+						url: "https://example.com/list",
+						title_or_msg: "Sample",
+						status: "Ok",
+						count: 1,
+						entry_type: "WebList",
+						tracking: false,
+						operation: {
+							kind: "link_review",
+							key: "https://example.com/list",
+							inProgress: true,
+							settled: "idle",
+							ownerSessionId: initialState.entrySessionId,
+						},
+					},
+				],
+				entries: [],
+				exclude: [],
+			},
+		});
+
+		let nextContext: MusicState | undefined;
+		let nextReviews: string[] | undefined;
+
+		function NextHookProbe() {
+			nextContext = hook.useContext();
+			nextReviews = hook.useAllReview();
+			return null;
+		}
+
+		renderToStaticMarkup(React.createElement(NextHookProbe));
+
+		expect(nextContext).not.toBe(firstContext);
+		expect(nextContext?.mode).toBe("edit");
+		expect(nextReviews).not.toBe(firstReviews);
+		expect(nextReviews).toEqual(["https://example.com/list"]);
 	});
 });

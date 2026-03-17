@@ -1,6 +1,6 @@
 import { me } from "@grahlnn/fn";
 import { Effect } from "effect";
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { sileo } from "sileo";
 import { crab } from "@/src/cmd";
 import type {
@@ -963,6 +963,25 @@ function subscribe(listener: () => void) {
 
 function getState() {
 	return state;
+}
+
+type SelectorCache<T> = {
+	version: MusicState;
+	value: T;
+};
+
+function createStableSnapshotSelector<T>(selector: (state: MusicState) => T) {
+	let cache: SelectorCache<T> | null = null;
+	return () => {
+		const snapshot = getState();
+		if (cache && cache.version === snapshot) {
+			return cache.value;
+		}
+
+		const value = selector(snapshot);
+		cache = { version: snapshot, value };
+		return value;
+	};
 }
 
 function isCurrentRun(version: number) {
@@ -2184,10 +2203,11 @@ export const action = {
 };
 
 function useMusicSelector<T>(selector: (state: MusicState) => T): T {
+	const getSnapshot = useMemo(() => createStableSnapshotSelector(selector), [selector]);
 	return useSyncExternalStore(
 		subscribe,
-		() => selector(getState()),
-		() => selector(getState()),
+		getSnapshot,
+		getSnapshot,
 	);
 }
 
