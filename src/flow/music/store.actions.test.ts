@@ -1308,6 +1308,92 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("ownerIdentity_false_negative_guard_same_url_same_name_sibling_refresh_keeps_original_owner_layer", async () => {
+		const sharedUrl = "https://example.com/shared-shape";
+		const sharedName = "shared-shape";
+		const canonical = withEntryMaterialization(
+			makeEntry(sharedName, "C:/music/canonical", {
+				url: sharedUrl,
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			}),
+			{
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 41,
+				lastError: null,
+			},
+		);
+		const sibling = withEntryMaterialization(
+			makeEntry(sharedName, "C:/music/sibling", {
+				url: sharedUrl,
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			}),
+			{
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 53,
+				lastError: null,
+			},
+		);
+
+		impl.readAll = async () =>
+			Ok<Playlist[], string>([
+				makePlaylist("focus", [
+					makeEntry(sharedName, "C:/music/canonical", {
+						url: sharedUrl,
+						entry_type: "WebList",
+						downloaded_ok: true,
+						musics: [makeMusic("C:/music/canonical/downloaded.flac")],
+					}),
+					makeEntry(sharedName, "C:/music/sibling", {
+						url: sharedUrl,
+						entry_type: "WebList",
+						downloaded_ok: false,
+						musics: [],
+					}),
+				]),
+			]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			selectedListName: null,
+			slot: null,
+			entrySessionId: 144,
+			playlists: [makePlaylist("focus", [canonical, sibling])],
+		});
+
+		await __testing.readAll();
+
+		const entries = __testing.getState().playlists[0]?.entries ?? [];
+		expect(entries[0]).toMatchObject({
+			url: sharedUrl,
+			name: sharedName,
+			path: "C:/music/canonical",
+			materialization: {
+				phase: "persisted",
+				settled: "succeeded",
+				ownerSessionId: 41,
+				lastError: null,
+			},
+		});
+		expect(entries[1]).toMatchObject({
+			url: sharedUrl,
+			name: sharedName,
+			path: "C:/music/sibling",
+			materialization: {
+				phase: "pending",
+				settled: "idle",
+				ownerSessionId: 53,
+				lastError: null,
+			},
+		});
+	});
+
 	test("ownerIdentity_false_negative_guard_displaced_late_settlement_cannot_overwrite_replacement_owner_layer", async () => {
 		const sharedUrl = "https://example.com/displaced";
 		const displacedOwner = withEntryMaterialization(

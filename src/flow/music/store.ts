@@ -1273,6 +1273,9 @@ function deriveEntryIdentity(entry: Entry): string | null {
 }
 
 function derivePersistedOwnerMaterializationKey(entry: Entry): string | null {
+	if (entry.url && entry.path) {
+		return `url-path:${entry.url}::${entry.path}`;
+	}
 	if (entry.path) {
 		return `path:${entry.path}`;
 	}
