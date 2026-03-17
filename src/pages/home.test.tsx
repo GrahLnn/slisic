@@ -2,8 +2,27 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import React, { type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+function projectWorkspaceScreen(snapshot: {
+	routeResolved: boolean;
+	mode: "play" | "create" | "edit" | "new_guide";
+}) {
+	if (!snapshot.routeResolved) {
+		return "unresolved";
+	}
+
+	if (snapshot.mode === "create") {
+		return "create";
+	}
+
+	if (snapshot.mode === "edit") {
+		return "edit";
+	}
+
+	return snapshot.mode === "new_guide" ? "guide" : "play";
+}
+
 let routeResolved = false;
-let mode: "play" | "create" | "edit" | "new_guide" = "play";
+let workspaceScreen: ReturnType<typeof projectWorkspaceScreen> = "play";
 
 mock.module("motion/react", () => ({
 	AnimatePresence: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -20,8 +39,11 @@ mock.module("@/src/components/labels", () => ({
 	labels: { musicPlus: () => <div>music-plus</div> },
 }));
 mock.module("@/lib/utils", () => ({
-	cn: (value: unknown) =>
-		Array.isArray(value) ? value.filter(Boolean).join(" ") : String(value ?? ""),
+	cn: (...values: unknown[]) =>
+		values
+			.flatMap((value) => (Array.isArray(value) ? value : [value]))
+			.filter(Boolean)
+			.join(" "),
 	os: { is: () => false },
 }));
 mock.module("@/src/assets/icons", () => ({
@@ -46,7 +68,10 @@ mock.module("@/src/components/uni", () => ({
 		</button>
 	),
 }));
-mock.module("@/src/flow/cursorInApp", () => ({ useCursorInApp: () => false }));
+mock.module("@/src/flow/cursorInApp", () => ({
+	useCursorInApp: () => false,
+	setCursorInApp: () => undefined,
+}));
 mock.module("@/components/ui/context-menu", () => ({
 	ContextMenu: ({ children }: { children: ReactNode }) => <>{children}</>,
 	ContextMenuContent: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -76,10 +101,7 @@ mock.module("@/src/flow/music", () => ({
 			processMsg: null,
 		}),
 		useState: () => ({
-			match: (handlers: Record<string, () => ReactNode>) => {
-				const key = mode;
-				return (handlers[key] ?? handlers._)();
-			},
+			match: (_handlers: Record<string, () => ReactNode>) => null,
 		}),
 		useList: () => [],
 		useIsPlaying: () => false,
@@ -89,12 +111,25 @@ mock.module("@/src/flow/music", () => ({
 		useIsReview: () => false,
 	},
 }));
+mock.module("sileo", () => ({
+	sileo: {
+		alert: () => undefined,
+		error: () => undefined,
+		success: () => undefined,
+		warning: () => undefined,
+		promise: () => undefined,
+	},
+	Toaster: () => <div />,
+}));
+mock.module("@/src/flow/music/store", () => ({
+	projectWorkspaceScreen: () => workspaceScreen,
+}));
 
 const { default: Home, shouldRenderHomeRoute } = await import("./home");
 
 beforeEach(() => {
 	routeResolved = false;
-	mode = "play";
+	workspaceScreen = "play";
 });
 
 describe("Home route gating", () => {
@@ -103,16 +138,16 @@ describe("Home route gating", () => {
 		expect(shouldRenderHomeRoute({ routeResolved: true })).toBe(true);
 	});
 
-	test("unresolved route renders null even if stale mode is play", async () => {
-		mode = "play";
+	test("unresolved route renders null even if the real workspace projection resolves to edit", async () => {
+		workspaceScreen = "edit";
 		const html = renderToStaticMarkup(<Home />);
 
 		expect(html).toBe("");
 	});
 
-	test("resolved guide route renders guide content", async () => {
+	test("resolved guide route renders guide content through the production workspace projection", async () => {
 		routeResolved = true;
-		mode = "new_guide";
+		workspaceScreen = "guide";
 		const html = renderToStaticMarkup(<Home />);
 
 		expect(html).toContain(

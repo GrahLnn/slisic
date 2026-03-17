@@ -21,6 +21,58 @@ import { ENABLE_DEV_SPECTROGRAM_OVERLAY } from "./components/audio/dev_spectrogr
 import Filter from "./components/svg_filter";
 import { setCursorInApp } from "./flow/cursorInApp";
 
+export interface AppShellProps {
+	FilterComponent?: React.ComponentType;
+	AudioVisualizerComponent?: React.ComponentType;
+	DevSpectrogramOverlayComponent?: React.ComponentType;
+	TopBarComponent?: React.ComponentType;
+	PagesComponent?: React.ComponentType;
+	ToasterComponent?: React.ComponentType<{
+		position?:
+			| "top-left"
+			| "top-center"
+			| "top-right"
+			| "bottom-left"
+			| "bottom-center"
+			| "bottom-right";
+	}>;
+	enableDevSpectrogramOverlay?: boolean;
+}
+
+export function AppShell({
+	FilterComponent = Filter,
+	AudioVisualizerComponent = AudioVisualizerCanvas,
+	DevSpectrogramOverlayComponent = DevSpectrogramOverlay,
+	TopBarComponent = TopBar,
+	PagesComponent = Pages,
+	ToasterComponent = Toaster,
+	enableDevSpectrogramOverlay = ENABLE_DEV_SPECTROGRAM_OVERLAY,
+}: AppShellProps) {
+	return (
+		<>
+			<FilterComponent />
+			<AudioVisualizerComponent />
+			{enableDevSpectrogramOverlay ? <DevSpectrogramOverlayComponent /> : null}
+			<div
+				className="flex h-screen flex-col overflow-hidden hide-scrollbar"
+				onMouseEnter={() => setCursorInApp(true)}
+				onMouseLeave={() => setCursorInApp(false)}
+				onContextMenu={
+					!import.meta.env.DEV
+						? (event) => event.preventDefault()
+						: undefined
+				}
+			>
+				<TopBarComponent />
+				<main className="flex flex-1 overflow-hidden hide-scrollbar">
+					<PagesComponent />
+				</main>
+				<ToasterComponent position="bottom-right" />
+			</div>
+		</>
+	);
+}
+
 function App() {
   const bootstrap = useBootstrapAppEntryState();
   const shouldStartApp = canStartApp(bootstrap);
@@ -43,27 +95,7 @@ function App() {
     return null;
   }
 
-  return (
-    <>
-      <Filter />
-      <AudioVisualizerCanvas />
-      {ENABLE_DEV_SPECTROGRAM_OVERLAY ? <DevSpectrogramOverlay /> : null}
-      <div
-        className="flex h-screen flex-col overflow-hidden hide-scrollbar"
-        onMouseEnter={() => setCursorInApp(true)}
-        onMouseLeave={() => setCursorInApp(false)}
-        onContextMenu={
-          !import.meta.env.DEV ? (event) => event.preventDefault() : undefined
-        }
-      >
-        <TopBar />
-        <main className="flex flex-1 overflow-hidden hide-scrollbar">
-          <Pages />
-        </main>
-        <Toaster position="bottom-right" />
-      </div>
-    </>
-  );
+  return <AppShell />;
 }
 
 export default App;

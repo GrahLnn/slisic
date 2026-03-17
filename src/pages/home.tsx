@@ -15,6 +15,7 @@ import {
 	ContextMenuTrigger,
 	LongPressContextMenuItem,
 } from "@/components/ui/context-menu";
+import { projectWorkspaceScreen } from "@/src/flow/music/store";
 
 export function shouldRenderHomeRoute(
 	ctx: Pick<ReturnType<typeof hook.useContext>, "routeResolved">,
@@ -471,16 +472,15 @@ function Guide() {
 
 export default function Home() {
 	const ctx = hook.useContext();
-	const state = hook.useState();
 	if (!shouldRenderHomeRoute(ctx)) {
 		return null;
 	}
 
-	return state.match({
-		play: () => <Play />,
-		new_guide: () => <Guide />,
-		create: () => <Create />,
-		edit: () => <Edit />,
-		_: () => null,
-	});
+	return {
+		play: <Play />,
+		guide: <Guide />,
+		create: <Create />,
+		edit: <Edit />,
+		unresolved: null,
+	}[projectWorkspaceScreen(ctx)] ?? null;
 }
