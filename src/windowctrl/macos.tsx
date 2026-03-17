@@ -38,24 +38,27 @@ function WindowButton({ className, onClick, icon }: WindowButtonProps) {
 }
 
 function Core() {
-  const is_fullscreen = useState<boolean>(false);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const windowFocused = useIsWindowFocus();
+
   useEffect(() => {
     const unlisten = events.fullScreenEvent.listen((event) => {
-      is_fullscreen[1](event.payload.is_fullscreen);
+      setIsFullscreen(event.payload.is_fullscreen);
     });
 
     return () => {
       unlisten.then((f) => f());
     };
   }, []);
+
   const iconcn = "opacity-0 group-hover:opacity-60 transition-opacity duration-300 mx-auto my-auto";
   const iconsize = 8;
+
   return (
     <div
       className={cn([
         "group flex items-center h-8 mx-4 gap-2",
-        is_fullscreen[0] && "opacity-0",
+        isFullscreen && "opacity-0",
         !windowFocused && "opacity-30 hover:opacity-100",
         "transition-all duration-300",
       ])}
@@ -75,7 +78,7 @@ function Core() {
         icon={<icons.caretMaximizeDiagonal2 size={iconsize} className={iconcn} />}
         onClick={() => {
           appWindow.setFullscreen(true);
-          is_fullscreen[1](true);
+          setIsFullscreen(true);
         }}
       />
     </div>
