@@ -152,12 +152,12 @@ export type AudioDebugSpectrogramRequest = {
 };
 
 export type AudioEnded = {
-	session_id: bigint,
+	session_id: number,
 	path: string,
 };
 
 export type AudioPlayAck = {
-	session_id: bigint,
+	session_id: number,
 	path: string,
 	duration_ms: number | null,
 	gain: number,
@@ -168,7 +168,7 @@ export type AudioPlayAck = {
 };
 
 export type AudioPlayRequest = {
-	session_id: bigint,
+	session_id: number,
 	path: string,
 };
 
