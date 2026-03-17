@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import rsbuildConfig from "../rsbuild.config";
 import {
+  getHomepagePrewarmTarget,
   initialAppWindowMeta,
   shouldRequestWindowPrewarm,
   shouldRenderMainWindow,
@@ -149,6 +150,65 @@ describe("shouldRunUpdater", () => {
 });
 
 describe("shouldRequestWindowPrewarm", () => {
+  test("homepage prewarm target follows the authoritative resolved window identity", () => {
+    expect(
+      getHomepagePrewarmTarget(
+        createMeta({
+          status: "ready",
+          window: "Main",
+          isPrimaryMain: true,
+          isUserWindow: true,
+        }),
+      ),
+    ).toBe("Main");
+
+    expect(
+      getHomepagePrewarmTarget(
+        createMeta({
+          status: "ready",
+          window: "Main",
+          isPrimaryMain: false,
+          isUserWindow: true,
+        }),
+      ),
+    ).toBeNull();
+
+    expect(
+      getHomepagePrewarmTarget(
+        createMeta({
+          status: "ready",
+          window: null,
+          isPrimaryMain: true,
+          isUserWindow: false,
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  test("homepage prewarm stays disabled until a true primary main window resolves", () => {
+    expect(getHomepagePrewarmTarget(createMeta())).toBeNull();
+    expect(
+      getHomepagePrewarmTarget(
+        createMeta({
+          status: "error",
+          window: "Main",
+          isPrimaryMain: true,
+          isUserWindow: true,
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      getHomepagePrewarmTarget(
+        createMeta({
+          status: "ready",
+          window: "Main",
+          isPrimaryMain: false,
+          isUserWindow: true,
+        }),
+      ),
+    ).toBeNull();
+  });
+
   test("never requests additional hidden-window preparation", () => {
     expect(
       shouldRequestWindowPrewarm(

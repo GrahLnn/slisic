@@ -6,6 +6,7 @@ import {
 } from "../template_board";
 import { action as updaterAction, ensureStarted as ensureUpdaterStarted } from "../updater";
 import {
+  getHomepagePrewarmTarget,
   initialAppWindowMeta,
   shouldRunUpdater,
   type AppWindowMeta,
@@ -35,6 +36,11 @@ export function useAppBootstrap(): AppWindowMeta {
           status: "ready",
         };
         setAppWindow(nextWindow);
+
+        const homepagePrewarmTarget = getHomepagePrewarmTarget(nextWindow);
+        if (homepagePrewarmTarget) {
+          void crab.prewarmWindow(homepagePrewarmTarget);
+        }
 
         if (shouldRunUpdater(nextWindow)) {
           ensureUpdaterStarted();

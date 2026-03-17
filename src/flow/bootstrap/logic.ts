@@ -18,13 +18,29 @@ export const initialAppWindowMeta: AppWindowMeta = {
   status: "pending",
 };
 
+export function resolveMainRouteWindow(meta: AppWindowMeta): WindowName | null {
+  if (meta.status !== "ready" || !meta.isUserWindow) {
+    return null;
+  }
+
+  return meta.window === "Main" ? meta.window : null;
+}
+
+export function getHomepagePrewarmTarget(meta: AppWindowMeta): WindowName | null {
+  if (!meta.isPrimaryMain) {
+    return null;
+  }
+
+  return resolveMainRouteWindow(meta);
+}
+
 export function shouldRenderMainWindow(meta: AppWindowMeta): boolean {
   switch (meta.status) {
     case "pending":
     case "error":
       return true;
     case "ready":
-      return meta.isUserWindow && (meta.window === null || meta.window === "Main");
+      return resolveMainRouteWindow(meta) === "Main";
   }
 }
 
@@ -37,5 +53,5 @@ export function shouldRunUpdater(meta: AppWindowMeta): boolean {
 }
 
 export function shouldRequestWindowPrewarm(meta: AppWindowMeta): boolean {
-  return false;
+  return getHomepagePrewarmTarget(meta) !== null;
 }
