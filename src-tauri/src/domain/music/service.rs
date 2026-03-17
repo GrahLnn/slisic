@@ -155,8 +155,6 @@ pub async fn recheck_folder(app: AppHandle, entry: Entry) -> Result<Entry, Strin
         entry_type: EntryType::Local,
     };
     recompute_entry_avg(&mut updated);
-
-    repo.update_entry_everywhere(updated.clone()).await?;
     normalization::analyze_paths_blocking(
         &app,
         normalization::stale_music_paths(&updated.musics),
@@ -173,17 +171,6 @@ pub async fn update_weblist(
     playlist: String,
 ) -> Result<Entry, String> {
     let outcome = ytdlp::download_entry_for_library(app.clone(), &playlist, &entry).await?;
-    repository()
-        .await?
-        .upsert_entry_in_playlist(&playlist, outcome.entry.clone())
-        .await?;
-    emit_download_persisted(
-        &app,
-        &playlist,
-        &outcome.working_path,
-        &outcome.saved_path,
-        &outcome.name,
-    );
     normalization::analyze_paths_blocking(
         &app,
         entry_music_paths(&outcome.entry),
@@ -505,11 +492,16 @@ async fn load_music_index_if_needed(
 #[cfg(test)]
 mod tests {
     use super::build_playlist_from_mission;
+    use crate::domain::music::repo::{set_repository_for_tests, LibraryRepo};
+    use crate::domain::music::store::SnapshotStore;
     use crate::domain::music::types::{
         CollectMission, Entry, EntryType, FolderSample, LinkSample, LinkStatus, Music,
-        NormalizationStatus,
+        LibraryData, NormalizationStatus, Playlist, MUSIC_LIBRARY_SCHEMA_VERSION,
     };
+    use async_trait::async_trait;
     use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     fn music(path: &str) -> Music {
         Music {
@@ -561,6 +553,36 @@ mod tests {
             } else {
                 EntryType::Local
             },
+        }
+    }
+
+    #[derive(Default)]
+    struct TestStore {
+        data: Mutex<LibraryData>,
+    }
+
+    #[async_trait]
+    impl SnapshotStore for TestStore {
+        fn engine_name(&self) -> &'static str {
+            "test"
+        }
+
+        async fn load_data(&self) -> Result<LibraryData, String> {
+            Ok(self.data.lock().await.clone())
+        }
+
+        async fn save_data(&self, data: &LibraryData) -> Result<(), String> {
+            *self.data.lock().await = data.clone();
+            Ok(())
+        }
+    }
+
+    fn playlist(name: &str, entries: Vec<Entry>) -> Playlist {
+        Playlist {
+            name: name.to_string(),
+            avg_db: None,
+            entries,
+            exclude: vec![],
         }
     }
 
@@ -723,4 +745,5 @@ mod tests {
         assert_eq!(playlist.0.entries.len(), 1);
         assert_eq!(playlist.0.entries[0].avg_db, Some(-16.0));
     }
+
 }

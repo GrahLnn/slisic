@@ -287,6 +287,11 @@ beforeEach(() => {
 		Ok<Entry, string>(entry);
 });
 
+async function saveDraftAndWaitForReload() {
+	await action.save();
+	await flush();
+}
+
 describe("music store action contracts", () => {
 	test("initial_true_negative_empty_state_keeps_route_unresolved_before_first_probe", () => {
 		const state = __testing.getState();
@@ -1191,6 +1196,64 @@ describe("music store action contracts", () => {
 		expect(state.slot?.entries).toEqual([]);
 	});
 
+	test("reloadEntry_false_negative_guard_keeps_persisted_truth_unchanged_until_save_and_converges_on_save", async () => {
+		const persisted = makeEntry("folder", "C:/music/folder", {
+			musics: [makeMusic("C:/music/folder/original.flac")],
+		});
+		const draftUpdate = {
+			...persisted,
+			musics: [makeMusic("C:/music/folder/reloaded.flac")],
+		};
+		const persistedPlaylist = makePlaylist("focus", [persisted]);
+		const refreshedPlaylist = makePlaylist("focus", [draftUpdate]);
+		const updateCalls: Array<{ mission: CollectMission; anchor: Playlist }> = [];
+		let readAllCalls = 0;
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			routeResolved: true,
+			playlists: [persistedPlaylist],
+			selectedListName: "focus",
+			slot: makeMission("focus", [persisted]),
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+		});
+		impl.recheckFolder = async () => Ok<Entry, string>(draftUpdate);
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			return Ok<Playlist[], string>(
+				readAllCalls === 1 ? [persistedPlaylist] : [refreshedPlaylist],
+			);
+		};
+		impl.update = async (mission: CollectMission, anchor: Playlist) => {
+			updateCalls.push({ mission, anchor });
+			return Ok<null, string>(null);
+		};
+
+		await action.reloadEntry(persisted);
+
+		let state = __testing.getState();
+		expect(state.slot?.entries).toEqual([draftUpdate]);
+		expect(state.playlists).toEqual([persistedPlaylist]);
+
+		await refresh();
+
+		state = __testing.getState();
+		expect(state.mode).toBe("edit");
+		expect(state.slot?.entries).toEqual([draftUpdate]);
+		expect(state.playlists).toEqual([persistedPlaylist]);
+
+		await saveDraftAndWaitForReload();
+
+		state = __testing.getState();
+		expect(updateCalls).toHaveLength(1);
+		expect(updateCalls[0]?.mission.entries).toEqual([draftUpdate]);
+		expect(updateCalls[0]?.anchor).toEqual(persistedPlaylist);
+		expect(state.mode).toBe("play");
+		expect(state.playlists).toEqual([refreshedPlaylist]);
+	});
+
 	test("updateWeblist_true_positive_replaces_entry_and_clears_review_flag", async () => {
 		const entry = makeEntry("remote", "C:/music/remote", {
 			url: "https://example.com/list",
@@ -1359,6 +1422,68 @@ describe("music store action contracts", () => {
 		const state = __testing.getState();
 		expect(state.weblistReviews).toEqual([]);
 		expect(state.slot?.entries).toEqual([]);
+	});
+
+	test("updateWeblist_false_negative_guard_keeps_persisted_truth_unchanged_until_save_and_converges_on_save", async () => {
+		const persisted = makeEntry("remote", "C:/music/remote", {
+			url: "https://example.com/list",
+			entry_type: "WebList",
+			downloaded_ok: false,
+			musics: [],
+		});
+		const draftUpdate = {
+			...persisted,
+			downloaded_ok: true,
+			musics: [makeMusic("C:/music/remote/downloaded.flac")],
+		};
+		const persistedPlaylist = makePlaylist("focus", [persisted]);
+		const refreshedPlaylist = makePlaylist("focus", [draftUpdate]);
+		const updateCalls: Array<{ mission: CollectMission; anchor: Playlist }> = [];
+		let readAllCalls = 0;
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			routeResolved: true,
+			playlists: [persistedPlaylist],
+			selectedListName: "focus",
+			slot: makeMission("focus", [persisted]),
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+		});
+		impl.updateWeblist = async () => Ok<Entry, string>(draftUpdate);
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			return Ok<Playlist[], string>(
+				readAllCalls === 1 ? [persistedPlaylist] : [refreshedPlaylist],
+			);
+		};
+		impl.update = async (mission: CollectMission, anchor: Playlist) => {
+			updateCalls.push({ mission, anchor });
+			return Ok<null, string>(null);
+		};
+
+		await action.updateWeblist(persisted);
+
+		let state = __testing.getState();
+		expect(state.slot?.entries).toEqual([draftUpdate]);
+		expect(state.playlists).toEqual([persistedPlaylist]);
+
+		await refresh();
+
+		state = __testing.getState();
+		expect(state.mode).toBe("edit");
+		expect(state.slot?.entries).toEqual([draftUpdate]);
+		expect(state.playlists).toEqual([persistedPlaylist]);
+
+		await saveDraftAndWaitForReload();
+
+		state = __testing.getState();
+		expect(updateCalls).toHaveLength(1);
+		expect(updateCalls[0]?.mission.entries).toEqual([draftUpdate]);
+		expect(updateCalls[0]?.anchor).toEqual(persistedPlaylist);
+		expect(state.mode).toBe("play");
+		expect(state.playlists).toEqual([refreshedPlaylist]);
 	});
 
 	test("addLink_false_positive_guard_clears_review_flag_without_reintroducing_removed_link", async () => {
