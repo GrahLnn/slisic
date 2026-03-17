@@ -1142,7 +1142,7 @@ async function ensureEvents() {
 			patchState({
 				playbackSessionId: null,
 				selectedListName: null,
-			requestedPlaying: null,
+				requestedPlaying: null,
 				confirmedPlaying: null,
 				nowPlaying: null,
 				nowJudge: null,
