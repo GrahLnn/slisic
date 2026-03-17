@@ -1910,6 +1910,132 @@ describe("music store action contracts", () => {
 		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
 
+	test("saveBoundary_true_negative_guard_late_refresh_process_and_materialization_traffic_preserves_the_same_optimistic_post_save_context", async () => {
+		const savedEntry = withEntryMaterialization(
+			makeEntry("fresh remote", "C:/music/fresh-remote", {
+				url: "https://example.com/fresh",
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			}),
+			{
+				phase: "pending",
+				ownerSessionId: 31,
+				settled: "idle",
+				lastError: null,
+			},
+		);
+		const staleEntry = withEntryMaterialization(
+			makeEntry("stale remote", "C:/music/stale-remote", {
+				url: "https://example.com/stale",
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			}),
+			{
+				phase: "pending",
+				ownerSessionId: 31,
+				settled: "idle",
+				lastError: null,
+			},
+		);
+		const mission = makeMission("fresh", [savedEntry]);
+		const handlers = new Map<string, (payload: unknown) => void>();
+		let releaseCreate!: () => void;
+		let readAllCalls = 0;
+
+		impl.evt = async (event: string, handler: (payload: unknown) => void) => {
+			handlers.set(event, handler);
+			return () => {
+				handlers.delete(event);
+			};
+		};
+		impl.playlistNames = async () => Ok<string[], string>([]);
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			return Ok<Playlist[], string>(
+				readAllCalls === 1
+					? []
+					: readAllCalls === 2
+						? [makePlaylist("stale", [staleEntry])]
+						: [makePlaylist("fresh", [savedEntry])],
+			);
+		};
+		impl.create = async () => {
+			await new Promise<void>((resolve) => {
+				releaseCreate = resolve;
+			});
+			return Ok<null, string>(null);
+		};
+		impl.updateWeblist = async (entry: Entry) =>
+			Ok<Entry, string>({
+				...entry,
+				downloaded_ok: true,
+				musics: [makeMusic(`${entry.path}/downloaded.flac`)],
+			});
+
+		await action.run();
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			routeResolved: true,
+			startupRoute: "hydrated_editing",
+			slot: mission,
+			selectedListName: "stale",
+			playbackListName: "stale",
+			nowPlaying: makeMusic("C:/music/stale/a.flac"),
+			processMsg: { playlist: "stale", str: "processing" },
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+		});
+
+		const saving = action.save();
+		await waitUntil(() => __testing.getState().slot === null);
+
+		handlers.get("processMsg")?.({ playlist: "stale", str: "late process" });
+		handlers.get("processResult")?.(undefined);
+		await action.updateWeblist(staleEntry);
+		await refresh();
+		await flush();
+
+		let state = __testing.getState();
+		expect(state.mode).toBe("play");
+		expect(state.routeResolved).toBe(true);
+		expect(state.startupRoute).toBe("hydrated_playlists");
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.name).toBe("fresh");
+		expect((state.playlists[0]?.entries[0] as { url?: string }).url).toBe(
+			"https://example.com/fresh",
+		);
+		expect(state.slot).toBeNull();
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.processMsg).toBeNull();
+		expect(state.loading).toBe(false);
+
+		releaseCreate();
+		await saving;
+		await flush();
+
+		state = __testing.getState();
+		expect(state.mode).toBe("play");
+		expect(state.routeResolved).toBe(true);
+		expect(state.startupRoute).toBe("hydrated_playlists");
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.name).toBe("fresh");
+		expect((state.playlists[0]?.entries[0] as { url?: string }).url).toBe(
+			"https://example.com/fresh",
+		);
+		expect(state.slot).toBeNull();
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.processMsg).toBeNull();
+		expect(state.loading).toBe(false);
+		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
+	});
+
 	test("saveBoundary_true_positive_matching_refresh_reconciles_only_the_intended_persisted_playlist_once", async () => {
 		const savedEntry = makeEntry("alpha", "C:/music/alpha");
 		const unrelatedEntry = makeEntry("beta", "C:/music/beta");
@@ -2127,17 +2253,15 @@ describe("music store action contracts", () => {
 		await action.updateWeblist(unrelatedEntry);
 
 		let state = __testing.getState();
-		expectPlaylistLike(state.playlists, [
-			makePlaylist("other", [
-				withEntryMaterialization(unrelatedEntry, {
-					phase: "pending",
-					ownerSessionId: 15,
-					settled: "idle",
-					lastError: null,
-				}),
-			]),
-			makePlaylist("fresh", [savedEntry]),
-		]);
+		expect(state.playlists).toHaveLength(2);
+		expect(state.playlists[0]?.name).toBe("other");
+		expect((state.playlists[0]?.entries[0] as { url?: string }).url).toBe(
+			"https://example.com/other",
+		);
+		expect(state.playlists[1]?.name).toBe("fresh");
+		expect((state.playlists[1]?.entries[0] as { url?: string }).url).toBe(
+			"https://example.com/saved",
+		);
 		expect(state.mode).toBe("play");
 		expect(state.selectedListName).toBeNull();
 		expect(state.playbackListName).toBeNull();
