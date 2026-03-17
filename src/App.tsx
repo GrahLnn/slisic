@@ -2,17 +2,23 @@ import { cn } from "@/lib/utils";
 import "./App.css";
 import "sileo/styles.css";
 import "@fontsource/maple-mono";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useTheme } from "next-themes";
 import Input from "./components/Input";
 import TopBar from "./topbar";
 import type { DemoStats, Id } from "./cmd/commands";
+import { crab } from "./cmd";
 import { Toaster } from "sileo";
 import { action, hook } from "./flow/template_board";
 import type { TaskStatus } from "./flow/template_board/core";
 import { me } from "@grahlnn/fn";
 import { useAppBootstrap } from "./flow/bootstrap";
-import { getInteractiveShellState, shouldRenderMainWindow } from "./flow/bootstrap/logic";
+import {
+  getInteractiveShellState,
+  shouldRenderMainWindow,
+  shouldRequestWindowPrewarm,
+  type AppWindowMeta,
+} from "./flow/bootstrap/logic";
 
 const statusOptions: TaskStatus[] = ["todo", "doing", "done"];
 
@@ -90,7 +96,22 @@ function StatsPanel({ stats }: { stats: DemoStats }) {
   );
 }
 
-function TemplateBoard() {
+export function useTemplateBoardPrewarm(appWindow: AppWindowMeta) {
+  const hasPrewarmedRef = useRef(false);
+
+  useEffect(() => {
+    if (hasPrewarmedRef.current || !shouldRequestWindowPrewarm(appWindow)) {
+      return;
+    }
+
+    hasPrewarmedRef.current = true;
+    void crab.prewarmWindow("Main");
+  }, [appWindow]);
+}
+
+function TemplateBoard({ appWindow }: { appWindow: AppWindowMeta }) {
+  useTemplateBoardPrewarm(appWindow);
+
   const state = hook.useState();
   const { dashboard, memberInput, taskInput, bulkStatus, selectedTaskIds, mouseInfo } =
     hook.useViewModel();
@@ -477,7 +498,7 @@ function App() {
   if (shouldRenderMainWindow(appWindow)) {
     return (
       <Base showTopBar={shellState.showWindowControls}>
-        <TemplateBoard />
+        <TemplateBoard appWindow={appWindow} />
       </Base>
     );
   }

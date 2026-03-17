@@ -102,7 +102,7 @@ export function shouldRunUpdater(meta: AppWindowMeta): boolean {
 }
 
 export function shouldRequestWindowPrewarm(_meta: AppWindowMeta): boolean {
-  return false;
+  return resolveHomepageEffectWindow(_meta) === "Main";
 }
 
 export function shouldSubscribeToStartupReady(

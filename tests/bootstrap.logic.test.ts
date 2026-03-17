@@ -315,7 +315,7 @@ describe("shouldRequestWindowPrewarm", () => {
           isUserWindow: true,
         }),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   test("never requests additional hidden-window preparation", () => {
@@ -327,7 +327,7 @@ describe("shouldRequestWindowPrewarm", () => {
           isPrimaryMain: true,
         }),
       ),
-    ).toBe(false);
+    ).toBe(true);
 
     expect(
       shouldRequestWindowPrewarm(
@@ -365,6 +365,41 @@ describe("shouldRequestWindowPrewarm", () => {
     expect(getHomepagePrewarmTarget(secondaryMain)).toBeNull();
     expect(shouldRenderMainWindow(secondaryMain)).toBe(true);
     expect(shouldRequestWindowPrewarm(secondaryMain)).toBe(false);
+  });
+
+  test("requests prewarm only for the resolved true primary visible main window", () => {
+    expect(
+      shouldRequestWindowPrewarm(
+        createMeta({
+          status: "ready",
+          window: "Main",
+          isPrimaryMain: true,
+          isUserWindow: true,
+        }),
+      ),
+    ).toBe(true);
+
+    expect(
+      shouldRequestWindowPrewarm(
+        createMeta({
+          status: "ready",
+          window: "Main",
+          isPrimaryMain: false,
+          isUserWindow: true,
+        }),
+      ),
+    ).toBe(false);
+
+    expect(
+      shouldRequestWindowPrewarm(
+        createMeta({
+          status: "ready",
+          window: null,
+          isPrimaryMain: true,
+          isUserWindow: false,
+        }),
+      ),
+    ).toBe(false);
   });
 });
 
