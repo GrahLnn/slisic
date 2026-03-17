@@ -24,12 +24,34 @@ pub struct WindowKindInfo {
     pub is_user_window: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowIdentity {
+    window: Option<WindowName>,
+    is_primary_main: bool,
+    is_user_window: bool,
+}
+
+fn classify_window_identity(label: &str) -> WindowIdentity {
+    let window = window_kind_from_label(label);
+    let is_primary_main = label == WindowName::Main.as_str();
+    let is_user_window = matches!(window, Some(WindowName::Main))
+        && (is_primary_main || is_main_user_window_instance_label(label));
+
+    WindowIdentity {
+        window,
+        is_primary_main,
+        is_user_window,
+    }
+}
+
 fn window_kind_info_for_label(label: &str) -> WindowKindInfo {
+    let identity = classify_window_identity(label);
+
     WindowKindInfo {
-        window: window_kind_from_label(label),
+        window: identity.window,
         label: label.to_string(),
-        is_primary_main: label == "main",
-        is_user_window: should_label_resolve_as_user_window(label),
+        is_primary_main: identity.is_primary_main,
+        is_user_window: identity.is_user_window,
     }
 }
 
@@ -64,10 +86,7 @@ pub fn is_user_window_label(label: &str) -> bool {
 }
 
 pub fn should_label_resolve_as_user_window(label: &str) -> bool {
-    match window_kind_from_label(label) {
-        Some(WindowName::Main) => label == WindowName::Main.as_str() || is_main_user_window_instance_label(label),
-        None => false,
-    }
+    classify_window_identity(label).is_user_window
 }
 
 #[cfg(test)]
@@ -84,6 +103,17 @@ fn is_main_user_window_instance_label(label: &str) -> bool {
     };
 
     !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit())
+}
+
+fn should_exit_on_window_close_after_visible_user_count(
+    closing_label: &str,
+    visible_user_window_count_before_close: usize,
+) -> bool {
+    if !should_label_resolve_as_user_window(closing_label) {
+        return false;
+    }
+
+    visible_user_window_count_before_close.saturating_sub(1) == 0
 }
 
 fn prepared_window_inventory() -> &'static Mutex<HashSet<WindowName>> {
@@ -131,11 +161,12 @@ fn prepared_window_targets() -> Vec<WindowName> {
 }
 
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
-    should_exit_on_window_close_with_count(closing_label, visible_user_window_count(app))
+    should_exit_on_window_close_after_visible_user_count(closing_label, visible_user_window_count(app))
 }
 
+#[cfg(test)]
 fn should_exit_on_window_close_with_count(closing_label: &str, visible_user_window_count: usize) -> bool {
-    should_label_resolve_as_user_window(closing_label) && visible_user_window_count <= 1
+    should_exit_on_window_close_after_visible_user_count(closing_label, visible_user_window_count)
 }
 
 pub fn visible_user_window_count(app: &AppHandle) -> usize {
@@ -359,7 +390,8 @@ pub fn discard_prewarm_window(name: WindowName) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_window_labels, discard_prepared_window, is_main_user_window_instance_label,
+        classify_window_identity, classify_window_labels, discard_prepared_window,
+        is_main_user_window_instance_label,
         is_user_window_label, mark_window_prepared, prepared_window_targets,
         reset_prepared_window_inventory, should_exit_on_window_close_with_count,
         should_label_resolve_as_user_window, take_prepared_window, window_kind_from_label,
@@ -433,6 +465,38 @@ mod tests {
     }
 
     #[test]
+    fn reopen_sequences_never_promote_secondary_labels_to_primary_main() {
+        let infos = classify_window_labels(["main", "main-1", "main-2", "main-1", "main-3"]);
+
+        assert_eq!(infos.iter().filter(|info| info.is_primary_main).count(), 1);
+        assert!(infos
+            .iter()
+            .filter(|info| info.label != "main")
+            .all(|info| !info.is_primary_main && info.is_user_window));
+    }
+
+    #[test]
+    fn authoritative_label_classification_stays_stable_across_known_cases() {
+        let cases = [
+            ("main", Some(WindowName::Main), true, true),
+            ("main-1", Some(WindowName::Main), false, true),
+            ("main-99", Some(WindowName::Main), false, true),
+            ("main-prewarm-1", Some(WindowName::Main), false, false),
+            ("support-main", None, false, false),
+            ("prewarm-main", None, false, false),
+            ("unknown", None, false, false),
+        ];
+
+        for (label, expected_window, expected_primary, expected_user) in cases {
+            let identity = classify_window_identity(label);
+
+            assert_eq!(identity.window, expected_window, "wrong window kind for {label}");
+            assert_eq!(identity.is_primary_main, expected_primary, "wrong primary classification for {label}");
+            assert_eq!(identity.is_user_window, expected_user, "wrong user-window classification for {label}");
+        }
+    }
+
+    #[test]
     fn support_and_prewarm_labels_never_classify_as_user_windows_in_mixed_enumeration() {
         let infos = classify_window_labels([
             "main",
@@ -461,6 +525,14 @@ mod tests {
     fn closing_last_user_window_exits() {
         assert!(should_exit_on_window_close_with_count("main", 1));
         assert!(should_exit_on_window_close_with_count("main-1", 1));
+    }
+
+    #[test]
+    fn reopen_close_accounting_only_exits_when_last_visible_user_window_closes() {
+        assert!(!should_exit_on_window_close_with_count("main-2", 3));
+        assert!(!should_exit_on_window_close_with_count("main-1", 2));
+        assert!(should_exit_on_window_close_with_count("main", 1));
+        assert!(should_exit_on_window_close_with_count("main-3", 1));
     }
 
     #[test]
