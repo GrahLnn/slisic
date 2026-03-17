@@ -54,7 +54,7 @@ function Play() {
 					isHydrated: true,
 					historicalTitle:
 						playlist.name === curList?.name
-							? requestedPlay?.title ?? confirmedPlay?.title ?? null
+							? confirmedPlay?.title ?? requestedPlay?.title ?? null
 							: null,
 					activeTitle:
 						playlist.name === curList?.name ? confirmedPlay?.title ?? null : null,

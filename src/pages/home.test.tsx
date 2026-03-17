@@ -217,7 +217,7 @@ describe("Home route gating", () => {
 		expect(html).toContain("back");
 	});
 
-	test("play route consumer hides requested playback title until confirmed playback exists", async () => {
+	test("play route consumer uses the requested title before confirmation exists", async () => {
 		routeResolved = true;
 		mode = "play";
 		requestedTitle = "requested-track";
@@ -230,6 +230,21 @@ describe("Home route gating", () => {
 		expect(html).toContain("requested-track");
 		expect(html).toContain("focus");
 		expect(html).not.toContain("confirmed-track");
+	});
+
+	test("play route consumer prefers confirmed playback title once confirmation exists even if requested intent diverges", async () => {
+		routeResolved = true;
+		mode = "play";
+		requestedTitle = "requested-track";
+		confirmedTitle = "confirmed-track";
+		currentListName = "focus";
+		playlistNames = ["focus"];
+
+		const html = renderToStaticMarkup(<Home />);
+
+		expect(html).toContain("focus");
+		expect(html).toContain("confirmed-track");
+		expect(html).not.toContain("requested-track");
 	});
 
 	test("play route consumer enters immediate playback list context before confirmation", async () => {
