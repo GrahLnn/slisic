@@ -168,6 +168,20 @@ describe("shouldRequestWindowPrewarm", () => {
       ),
     ).toBe(false);
   });
+
+  test("does not depend on automatic timing heuristics for any bootstrap state", () => {
+    expect(shouldRequestWindowPrewarm(createMeta())).toBe(false);
+    expect(
+      shouldRequestWindowPrewarm(
+        createMeta({
+          status: "error",
+          window: "Main",
+          isPrimaryMain: true,
+          isUserWindow: true,
+        }),
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("getPlatform", () => {

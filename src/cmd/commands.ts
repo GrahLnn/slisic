@@ -36,6 +36,8 @@ export const commands = {
 	appReady: () => __TAURI_INVOKE<void>("app_ready"),
 	getMouseAndWindowPosition: () => typedError<MouseWindowInfo, string>(__TAURI_INVOKE("get_mouse_and_window_position")),
 	getWindowKind: () => __TAURI_INVOKE<WindowKindInfo>("get_window_kind"),
+	prewarmWindow: (name: WindowName) => __TAURI_INVOKE<void>("prewarm_window", { name }),
+	discardPrewarmWindow: (name: WindowName) => __TAURI_INVOKE<boolean>("discard_prewarm_window", { name }),
 	createWindow: (name: WindowName, options: {
 	width: number | null,
 	height: number | null,

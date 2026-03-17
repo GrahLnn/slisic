@@ -24,6 +24,8 @@ pub fn run() {
         utils::core::app_ready,
         utils::window::get_mouse_and_window_position,
         utils::window::get_window_kind,
+        utils::window::prewarm_window,
+        utils::window::discard_prewarm_window,
         utils::window::create_window,
         greet,
         clean,

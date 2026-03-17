@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Manager, WebviewWindow};
 use tauri::{LogicalSize, Size};
 use tauri::{WebviewUrl, WebviewWindowBuilder};
@@ -82,6 +84,50 @@ fn is_main_user_window_instance_label(label: &str) -> bool {
     };
 
     !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit())
+}
+
+fn prepared_window_inventory() -> &'static Mutex<HashSet<WindowName>> {
+    static PREPARED_WINDOWS: OnceLock<Mutex<HashSet<WindowName>>> = OnceLock::new();
+    PREPARED_WINDOWS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn mark_window_prepared(name: WindowName) {
+    let mut inventory = prepared_window_inventory()
+        .lock()
+        .expect("prepared window inventory poisoned");
+    inventory.insert(name);
+}
+
+fn discard_prepared_window(name: WindowName) -> bool {
+    let mut inventory = prepared_window_inventory()
+        .lock()
+        .expect("prepared window inventory poisoned");
+    inventory.remove(&name)
+}
+
+fn take_prepared_window(name: WindowName) -> bool {
+    let mut inventory = prepared_window_inventory()
+        .lock()
+        .expect("prepared window inventory poisoned");
+    inventory.remove(&name)
+}
+
+#[cfg(test)]
+fn reset_prepared_window_inventory() {
+    let mut inventory = prepared_window_inventory()
+        .lock()
+        .expect("prepared window inventory poisoned");
+    inventory.clear();
+}
+
+#[cfg(test)]
+fn prepared_window_targets() -> Vec<WindowName> {
+    let inventory = prepared_window_inventory()
+        .lock()
+        .expect("prepared window inventory poisoned");
+    let mut prepared = inventory.iter().copied().collect::<Vec<_>>();
+    prepared.sort_by_key(WindowName::as_str);
+    prepared
 }
 
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
@@ -284,6 +330,7 @@ pub async fn create_window(
     name: WindowName,
     options: Option<CreateWindowOptions>,
 ) {
+    let _ = take_prepared_window(name);
     let label = next_label(name, &app);
     match build_window(&app, label, name.as_str(), true) {
         Ok(window) => {
@@ -297,12 +344,26 @@ pub async fn create_window(
     }
 }
 
+#[specta::specta]
+#[tauri::command]
+pub fn prewarm_window(name: WindowName) {
+    mark_window_prepared(name);
+}
+
+#[specta::specta]
+#[tauri::command]
+pub fn discard_prewarm_window(name: WindowName) -> bool {
+    discard_prepared_window(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_window_labels, is_main_user_window_instance_label, is_user_window_label,
-        should_exit_on_window_close_with_count, should_label_resolve_as_user_window,
-        window_kind_from_label, window_kind_info_for_label, WindowName,
+        classify_window_labels, discard_prepared_window, is_main_user_window_instance_label,
+        is_user_window_label, mark_window_prepared, prepared_window_targets,
+        reset_prepared_window_inventory, should_exit_on_window_close_with_count,
+        should_label_resolve_as_user_window, take_prepared_window, window_kind_from_label,
+        window_kind_info_for_label, WindowName,
     };
 
     #[test]
@@ -414,5 +475,40 @@ mod tests {
                 "label {label} should not participate in exit accounting"
             );
         }
+    }
+
+    #[test]
+    fn typed_prewarm_targets_are_keyed_by_window_enum() {
+        reset_prepared_window_inventory();
+
+        mark_window_prepared(WindowName::Main);
+
+        assert_eq!(prepared_window_targets(), vec![WindowName::Main]);
+
+        mark_window_prepared(WindowName::Main);
+
+        assert_eq!(prepared_window_targets(), vec![WindowName::Main]);
+    }
+
+    #[test]
+    fn discarded_prepared_targets_are_removed_from_inventory() {
+        reset_prepared_window_inventory();
+        mark_window_prepared(WindowName::Main);
+
+        assert!(discard_prepared_window(WindowName::Main));
+        assert!(prepared_window_targets().is_empty());
+    }
+
+    #[test]
+    fn discarded_prepared_targets_stay_absent_during_future_open_flow() {
+        reset_prepared_window_inventory();
+        mark_window_prepared(WindowName::Main);
+
+        assert!(discard_prepared_window(WindowName::Main));
+
+        let consumed_prepared_target = take_prepared_window(WindowName::Main);
+
+        assert!(!consumed_prepared_target);
+        assert!(prepared_window_targets().is_empty());
     }
 }
