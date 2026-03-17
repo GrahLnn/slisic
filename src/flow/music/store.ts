@@ -1180,7 +1180,10 @@ function carryForwardPersistedMaterializationOwnership(
 			if (!entryIdentity || !materialization) {
 				continue;
 			}
-			previousMaterializationByOwnerIdentity.set(entryIdentity, materialization);
+			previousMaterializationByOwnerIdentity.set(
+				entryIdentity,
+				materialization,
+			);
 		}
 
 		let changed = false;
