@@ -6,6 +6,8 @@ import MacOSControlsPortal from "./windowctrl/macos";
 import { me } from "@grahlnn/fn";
 import { getPlatform } from "@/lib/utils";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useAppBootstrap } from "./flow/bootstrap";
+import { getInteractiveShellState } from "./flow/bootstrap/logic";
 
 const os = me(getPlatform());
 const startupReadyEvent = "factory://startup-ready";
@@ -47,16 +49,27 @@ function signalStartupReady() {
 
 signalStartupReady();
 
+function WindowControlsRoot() {
+  const appWindow = useAppBootstrap();
+  const shellState = getInteractiveShellState(appWindow);
+
+  if (!shellState.showWindowControls) {
+    return null;
+  }
+
+  return os.match({
+    windows: () => <WindowsControlsPortal />,
+    macos: () => <MacOSControlsPortal />,
+    _: () => null,
+  });
+}
+
 const rootEl = document.getElementById("root");
 if (rootEl) {
   const root = ReactDOM.createRoot(rootEl);
   root.render(
     <React.StrictMode>
-      {os.match({
-        windows: () => <WindowsControlsPortal />,
-        macos: () => <MacOSControlsPortal />,
-        _: () => null,
-      })}
+      <WindowControlsRoot />
       <App />
     </React.StrictMode>,
   );

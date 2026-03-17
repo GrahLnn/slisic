@@ -12,7 +12,7 @@ import { action, hook } from "./flow/template_board";
 import type { TaskStatus } from "./flow/template_board/core";
 import { me } from "@grahlnn/fn";
 import { useAppBootstrap } from "./flow/bootstrap";
-import { shouldRenderMainWindow } from "./flow/bootstrap/logic";
+import { getInteractiveShellState, shouldRenderMainWindow } from "./flow/bootstrap/logic";
 
 const statusOptions: TaskStatus[] = ["todo", "doing", "done"];
 
@@ -450,12 +450,12 @@ function TemplateBoard() {
   );
 }
 
-function Base({ children }: { children: React.ReactNode }) {
+function Base({ children, showTopBar }: { children: React.ReactNode; showTopBar: boolean }) {
   const { resolvedTheme } = useTheme();
 
   return (
     <div className="min-h-screen overflow-hidden hide-scrollbar">
-      <TopBar />
+      {showTopBar ? <TopBar /> : null}
       <main
         className={cn(
           "fixed top-0 left-0 h-screen w-full overflow-y-auto",
@@ -472,10 +472,11 @@ function Base({ children }: { children: React.ReactNode }) {
 
 function App() {
   const appWindow = useAppBootstrap();
+  const shellState = getInteractiveShellState(appWindow);
 
   if (shouldRenderMainWindow(appWindow)) {
     return (
-      <Base>
+      <Base showTopBar={shellState.showWindowControls}>
         <TemplateBoard />
       </Base>
     );

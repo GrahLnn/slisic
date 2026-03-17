@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import rsbuildConfig from "../rsbuild.config";
 import {
   getHomepagePrewarmTarget,
+  getInteractiveShellState,
   initialAppWindowMeta,
   shouldRequestWindowPrewarm,
   shouldRenderMainWindow,
@@ -57,6 +58,79 @@ describe("shouldRenderMainWindow", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  test("does not render the main content for ready non-user windows", () => {
+    expect(
+      shouldRenderMainWindow(
+        createMeta({
+          status: "ready",
+          window: "Main",
+          isUserWindow: false,
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("getInteractiveShellState", () => {
+  test("keeps bootstrap pending usable without assigning window ownership", () => {
+    expect(getInteractiveShellState(createMeta())).toEqual({
+      kind: "fallback",
+      showShell: true,
+      showWindowControls: false,
+      ownershipResolved: false,
+    });
+  });
+
+  test("keeps bootstrap errors usable without leaking wrong-window ownership", () => {
+    expect(
+      getInteractiveShellState(
+        createMeta({
+          status: "error",
+        }),
+      ),
+    ).toEqual({
+      kind: "fallback",
+      showShell: true,
+      showWindowControls: false,
+      ownershipResolved: false,
+    });
+  });
+
+  test("mounts the interactive shell and controls only for ready user windows", () => {
+    expect(
+      getInteractiveShellState(
+        createMeta({
+          status: "ready",
+          window: "Main",
+          isPrimaryMain: true,
+          isUserWindow: true,
+        }),
+      ),
+    ).toEqual({
+      kind: "resolved",
+      showShell: true,
+      showWindowControls: true,
+      ownershipResolved: true,
+    });
+  });
+
+  test("blocks shell and controls for ready non-user windows", () => {
+    expect(
+      getInteractiveShellState(
+        createMeta({
+          status: "ready",
+          window: null,
+          isUserWindow: false,
+        }),
+      ),
+    ).toEqual({
+      kind: "blocked",
+      showShell: false,
+      showWindowControls: false,
+      ownershipResolved: true,
+    });
   });
 });
 
