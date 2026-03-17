@@ -5,6 +5,7 @@ import { sileo } from "sileo";
 import { crab } from "@/src/cmd";
 import type {
 	CollectMission,
+	AudioPlayAck,
 	Entry,
 	EntryType,
 	ImportFolderEntry,
@@ -68,6 +69,13 @@ export interface MusicState {
 	weblistReviews: string[];
 	entrySessionId: number;
 	playbackEpoch: number;
+	playbackSessionId: number | null;
+}
+
+interface PlaybackSessionSnapshot {
+	playbackSessionId: number | null;
+	selectedListName: string | null;
+	nowPlaying: Music | null;
 }
 
 export interface SaveAffordance {
@@ -297,14 +305,71 @@ export function deriveSaveAffordance(
 }
 
 export function shouldHandleAudioEnded(
-	snapshot: Pick<MusicState, "mode" | "selectedListName" | "nowPlaying">,
-	endedPath: string,
+	snapshot: Pick<
+		MusicState,
+		"mode" | "playbackSessionId" | "selectedListName" | "nowPlaying"
+	>,
+	payload: { sessionId: number | null; path: string },
 ): boolean {
 	return (
 		snapshot.mode === "play" &&
+		snapshot.playbackSessionId != null &&
+		snapshot.playbackSessionId === payload.sessionId &&
 		!!snapshot.selectedListName &&
-		snapshot.nowPlaying?.path === endedPath
+		snapshot.nowPlaying?.path === payload.path
 	);
+}
+
+export function settlePlaybackAck(
+	snapshot: Pick<
+		MusicState,
+		| "mode"
+		| "playbackSessionId"
+		| "selectedListName"
+		| "nowPlaying"
+		| "playlists"
+	>,
+	payload: { sessionId: number | null; listName: string | null; ack: AudioPlayAck },
+): Pick<MusicState, "selectedListName" | "nowPlaying"> | null {
+	if (snapshot.mode !== "play") return null;
+	if (snapshot.playbackSessionId == null) return null;
+	if (snapshot.playbackSessionId !== payload.sessionId) return null;
+	if (!payload.listName || snapshot.selectedListName !== payload.listName) {
+		return null;
+	}
+	const playlist = snapshot.playlists.find(
+		(item) => item.name === payload.listName,
+	);
+	const confirmedTrack =
+		playlist?.entries
+			.flatMap((entry) => entry.musics)
+			.find((music) => music.path === payload.ack.path) ??
+		playlist?.exclude.find((music) => music.path === payload.ack.path) ??
+		null;
+	if (!confirmedTrack) return null;
+
+	return {
+		selectedListName: payload.listName,
+		nowPlaying: confirmedTrack,
+	};
+}
+
+export function clearPlaybackSession(
+	snapshot: PlaybackSessionSnapshot,
+	sessionId: number | null,
+): Pick<
+	MusicState,
+	"selectedListName" | "nowPlaying" | "nowJudge" | "playbackSessionId"
+> | null {
+	if (snapshot.playbackSessionId == null) return null;
+	if (snapshot.playbackSessionId !== sessionId) return null;
+
+	return {
+		selectedListName: null,
+		nowPlaying: null,
+		nowJudge: null,
+		playbackSessionId: null,
+	};
 }
 
 export function deriveRefreshPatch(
@@ -607,6 +672,7 @@ const initialState: MusicState = {
 	weblistReviews: [],
 	entrySessionId: 0,
 	playbackEpoch: 0,
+	playbackSessionId: null,
 };
 
 const listeners = new Set<() => void>();
@@ -654,6 +720,10 @@ function bumpPlaybackEpoch(): number {
 	const epoch = playback.bumpEpoch();
 	patchState({ playbackEpoch: epoch });
 	return epoch;
+}
+
+function nextPlaybackSessionId(): number {
+	return playback.getEpoch() + 1;
 }
 
 function isPlaybackContextActive(epoch: number, expectedListName?: string) {
@@ -923,7 +993,12 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 
 		yield* Effect.sync(() => {
 			if (!isPlaybackContextActive(epoch, list.name)) return;
-			patchState({ nowPlaying: chosen, nowJudge: null });
+				patchState({
+					selectedListName: list.name,
+					nowPlaying: chosen,
+					nowJudge: null,
+					playbackSessionId: nextPlaybackSessionId(),
+				});
 		});
 
 		const playResult = yield* Effect.promise(() =>
@@ -937,7 +1012,16 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 		if (playResult.isErr()) {
 			yield* Effect.sync(() => {
 				if (!isPlaybackContextActive(epoch, list.name)) return;
-				patchState({ nowPlaying: previousNowPlaying, nowJudge: null });
+					const clearPatch = clearPlaybackSession(getState(), nextPlaybackSessionId());
+					patchState({
+						...(clearPatch ?? {
+							selectedListName: null,
+							nowPlaying: null,
+							nowJudge: null,
+							playbackSessionId: null,
+						}),
+						nowPlaying: previousNowPlaying,
+					});
 				sileo.error({
 					title: "Play failed",
 					description: playResult.unwrap_err(),
@@ -948,7 +1032,17 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 
 		yield* Effect.sync(() => {
 			if (!isPlaybackContextActive(epoch, list.name)) return;
-			patchState({ nowPlaying: chosen, nowJudge: null });
+				const sessionId = nextPlaybackSessionId();
+				const ackPatch = settlePlaybackAck(getState(), {
+					sessionId,
+					listName: list.name,
+					ack: playResult.unwrap(),
+				});
+				if (!ackPatch) return;
+				patchState({
+					...ackPatch,
+					nowJudge: null,
+				});
 			recentByList.set(
 				list.name,
 				pushRecentPath(recent, chosen.path, recentWindowSize(all.length)),
@@ -973,11 +1067,19 @@ async function ensureEvents() {
 				typeof (payload as { path?: unknown }).path === "string"
 					? (payload as { path: string }).path
 					: null;
+			const sessionId =
+				payload &&
+				typeof payload === "object" &&
+				"sessionId" in payload &&
+				typeof (payload as { sessionId?: unknown }).sessionId === "number"
+					? (payload as { sessionId: number }).sessionId
+					: null;
 			if (!path) return;
 			const snapshot = getState();
-			if (!shouldHandleAudioEnded(snapshot, path)) return;
+			if (!shouldHandleAudioEnded(snapshot, { path, sessionId })) return;
 			void applyNextFatigue(snapshot.nowPlaying);
 			const epoch = bumpPlaybackEpoch();
+			patchState({ playbackSessionId: null, selectedListName: null, nowPlaying: null, nowJudge: null });
 			scheduleNextPlayback(epoch);
 		});
 		unsubs.push(audioEnded);
@@ -1014,6 +1116,7 @@ async function safeStop() {
 		selectedListName: null,
 		nowPlaying: null,
 		nowJudge: null,
+		playbackSessionId: null,
 	});
 	await playback.interruptCurrent();
 	const stopped = await crab.audioStop();
@@ -1037,6 +1140,7 @@ async function startPlayByList(name: string) {
 		mode: "play",
 		nowPlaying: null,
 		nowJudge: null,
+		playbackSessionId: nextPlaybackSessionId(),
 	});
 	const epoch = bumpPlaybackEpoch();
 	scheduleNextPlayback(epoch);
@@ -1111,6 +1215,7 @@ async function persistSlot() {
 			...buildPostSavePatch(optimisticPlaylists.length > 0, idleEpoch),
 			playlists: optimisticPlaylists,
 			loading: false,
+				playbackSessionId: null,
 		});
 
 		void (async () => {
@@ -1138,6 +1243,7 @@ async function persistSlot() {
 		...buildPostSavePatch(optimisticPlaylists.length > 0, idleEpoch),
 		playlists: optimisticPlaylists,
 		loading: false,
+		playbackSessionId: null,
 	});
 
 	void (async () => {
@@ -1562,6 +1668,7 @@ export const action = {
 					: prev.nowPlaying,
 			nowJudge: null,
 			playbackEpoch: epoch,
+			playbackSessionId: null,
 		}));
 
 		await playback.interruptCurrent();

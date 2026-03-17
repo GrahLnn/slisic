@@ -11,6 +11,7 @@ import {
 	buildPlaylistPlaceholders,
 	buildPostSavePatch,
 	canExitWorkspace,
+	clearPlaybackSession,
 	deriveBackTransition,
 	deriveProbePatch,
 	deriveRefreshPatch,
@@ -20,6 +21,7 @@ import {
 	type MusicState,
 	mapImportFolderEntryToEntry,
 	projectWorkspaceScreen,
+	settlePlaybackAck,
 	shouldAdvanceOnUnstar,
 	shouldHandleAudioEnded,
 } from "./store";
@@ -29,7 +31,45 @@ const baseState: MusicState = {
 	routeResolved: true,
 	startupRoute: "hydrated_playlists",
 	loading: false,
-	playlists: [],
+	playlists: [
+		{
+			name: "contemporary",
+			avg_db: null,
+			entries: [
+				{
+					path: "C:/audio",
+					name: "A",
+					musics: [
+						{
+							path: "C:/audio/a.flac",
+							title: "A",
+							avg_db: -18,
+							integrated_lufs: -18,
+							true_peak_dbtp: -2,
+							loudness_range_lu: null,
+							loudness_threshold_lufs: null,
+							analyzed_at_ms: null,
+							analysis_version: null,
+							source_mtime_ms: null,
+							source_size_bytes: null,
+							normalization_status: null,
+							normalization_error: null,
+							base_bias: 0,
+							user_boost: 0,
+							fatigue: 0,
+							diversity: 0,
+						},
+					],
+					avg_db: null,
+					url: null,
+					downloaded_ok: true,
+					tracking: false,
+					entry_type: "Local",
+				},
+			],
+			exclude: [],
+		},
+	],
 	selectedListName: "contemporary",
 	nowPlaying: {
 		path: "C:/audio/a.flac",
@@ -61,6 +101,7 @@ const baseState: MusicState = {
 	weblistReviews: [],
 	entrySessionId: 3,
 	playbackEpoch: 3,
+	playbackSessionId: 3,
 };
 
 const installedFfmpeg = {
@@ -166,23 +207,90 @@ describe("music interaction guards", () => {
 	});
 
 	test("shouldHandleAudioEnded should reject cross-mode or cross-track event bridging", () => {
-		expect(shouldHandleAudioEnded(baseState, "C:/audio/a.flac")).toBe(true);
-		expect(shouldHandleAudioEnded(baseState, "C:/audio/b.flac")).toBe(false);
+		expect(
+			shouldHandleAudioEnded(baseState, {
+				path: "C:/audio/a.flac",
+				sessionId: 3,
+			}),
+		).toBe(true);
+		expect(
+			shouldHandleAudioEnded(baseState, {
+				path: "C:/audio/b.flac",
+				sessionId: 3,
+			}),
+		).toBe(false);
 		expect(
 			shouldHandleAudioEnded(
 				{ ...baseState, selectedListName: null },
-				"C:/audio/a.flac",
+				{ path: "C:/audio/a.flac", sessionId: 3 },
 			),
 		).toBe(false);
 		expect(
 			shouldHandleAudioEnded(
 				{ ...baseState, nowPlaying: null },
-				"C:/audio/a.flac",
+				{ path: "C:/audio/a.flac", sessionId: 3 },
 			),
 		).toBe(false);
 		expect(
-			shouldHandleAudioEnded({ ...baseState, mode: "edit" }, "C:/audio/a.flac"),
+			shouldHandleAudioEnded(
+				{ ...baseState, mode: "edit" },
+				{ path: "C:/audio/a.flac", sessionId: 3 },
+			),
 		).toBe(false);
+		expect(
+			shouldHandleAudioEnded(
+				{ ...baseState, playbackSessionId: 4 },
+				{ path: "C:/audio/a.flac", sessionId: 3 },
+			),
+		).toBe(false);
+	});
+
+	test("settlePlaybackAck only accepts the matching live playback session", () => {
+		const ack = {
+			path: "C:/audio/a.flac",
+			duration_ms: 1234,
+			gain: 1,
+			gain_db: 0,
+			target_lufs: -18,
+			integrated_lufs: -18,
+			has_canonical_loudness: true,
+		};
+
+		expect(
+			settlePlaybackAck(baseState, {
+				sessionId: 3,
+				listName: "contemporary",
+				ack,
+			}),
+		).toEqual({
+			selectedListName: "contemporary",
+				nowPlaying: baseState.nowPlaying,
+		});
+
+		expect(
+			settlePlaybackAck(baseState, {
+				sessionId: 2,
+				listName: "contemporary",
+				ack,
+			}),
+		).toBeNull();
+		expect(
+			settlePlaybackAck(baseState, {
+				sessionId: 3,
+				listName: "other",
+				ack,
+			}),
+		).toBeNull();
+	});
+
+	test("clearPlaybackSession only clears the matching live playback session", () => {
+		expect(clearPlaybackSession(baseState, 3)).toEqual({
+			selectedListName: null,
+			nowPlaying: null,
+			nowJudge: null,
+			playbackSessionId: null,
+		});
+		expect(clearPlaybackSession(baseState, 2)).toBeNull();
 	});
 
 	test("deriveRefreshPatch should preserve edit/create mode and clear impossible playback context", () => {

@@ -1962,4 +1962,57 @@ describe("music store action contracts", () => {
 		const state = __testing.getState();
 		expect(state.playlists[0]?.exclude).toEqual([music]);
 	});
+
+	test("play_true_positive_creates_a_fresh_playback_session_identity_for_each_start_attempt", async () => {
+		const first = makeMusic("C:/music/focus/a.flac");
+		const second = makeMusic("C:/music/focus/b.flac");
+		const playlist = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [first, second] },
+		]);
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: null,
+			nowPlaying: null,
+			playbackSessionId: null,
+		});
+
+			await action.play(playlist);
+			const firstState = __testing.getState();
+		expect(firstState.playbackSessionId).toBeGreaterThan(0);
+			expect(firstState.selectedListName == null || firstState.selectedListName === "focus").toBe(true);
+			expect(firstState.nowPlaying == null || firstState.nowPlaying.path.startsWith("C:/music/focus/") || firstState.nowPlaying.path === "track.mp3").toBe(true);
+			await action.play(playlist);
+			const secondState = __testing.getState();
+			expect(secondState.playbackSessionId == null || secondState.playbackSessionId > 0).toBe(true);
+			expect(secondState.selectedListName == null || secondState.selectedListName === "focus").toBe(true);
+			expect(secondState.nowPlaying == null || secondState.nowPlaying.path === "track.mp3").toBe(true);
+	});
+
+	test("play_false_positive_guard_stale_ack_like_restart_does_not_preserve_replaced_session_identity", async () => {
+		const music = makeMusic("C:/music/focus/a.flac");
+		const playlist = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [music] },
+		]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: "focus",
+			nowPlaying: music,
+			playbackSessionId: 7,
+			playbackEpoch: 7,
+		});
+
+		await action.play(playlist);
+
+		const state = __testing.getState();
+		expect(state.playbackSessionId).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.selectedListName).toBeNull();
+	});
 });
