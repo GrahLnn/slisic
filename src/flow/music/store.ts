@@ -509,7 +509,7 @@ export function deriveBackTransition(
 		| "linkReviews"
 		| "folderReviews"
 		| "weblistReviews"
-	| "entrySessionId"
+		| "entrySessionId"
 	>,
 ): Pick<
 	MusicState,
@@ -1416,20 +1416,25 @@ export const action = {
 		}
 
 		const next = result.unwrap();
-		settleReviewMutation(key, "folderReviews", (slot) => ({
-			...slot,
-			entries:
-				entryIdentity == null
-					? slot.entries
-					: replaceEntryByIdentity(slot.entries, entryIdentity, next),
-		}), (current) =>
-			entryIdentity != null &&
-			isEditingWorkspace(current.mode) &&
-			current.mode === workspaceMode &&
-			current.entrySessionId === entrySessionId &&
-			current.slot?.entries.some(
-				(item) => deriveEntryIdentity(item) === entryIdentity,
-			) === true);
+		settleReviewMutation(
+			key,
+			"folderReviews",
+			(slot) => ({
+				...slot,
+				entries:
+					entryIdentity == null
+						? slot.entries
+						: replaceEntryByIdentity(slot.entries, entryIdentity, next),
+			}),
+			(current) =>
+				entryIdentity != null &&
+				isEditingWorkspace(current.mode) &&
+				current.mode === workspaceMode &&
+				current.entrySessionId === entrySessionId &&
+				current.slot?.entries.some(
+					(item) => deriveEntryIdentity(item) === entryIdentity,
+				) === true,
+		);
 	},
 	async updateWeblist(entry: Entry) {
 		const snapshot = getState();
@@ -1455,20 +1460,25 @@ export const action = {
 		}
 
 		const next = result.unwrap();
-		settleReviewMutation(key, "weblistReviews", (slot) => ({
-			...slot,
-			entries:
-				entryIdentity == null
-					? slot.entries
-					: replaceEntryByIdentity(slot.entries, entryIdentity, next),
-		}), (current) =>
-			entryIdentity != null &&
-			isEditingWorkspace(current.mode) &&
-			current.mode === workspaceMode &&
-			current.entrySessionId === snapshot.entrySessionId &&
-			current.slot?.entries.some(
-				(item) => deriveEntryIdentity(item) === entryIdentity,
-			) === true);
+		settleReviewMutation(
+			key,
+			"weblistReviews",
+			(slot) => ({
+				...slot,
+				entries:
+					entryIdentity == null
+						? slot.entries
+						: replaceEntryByIdentity(slot.entries, entryIdentity, next),
+			}),
+			(current) =>
+				entryIdentity != null &&
+				isEditingWorkspace(current.mode) &&
+				current.mode === workspaceMode &&
+				current.entrySessionId === snapshot.entrySessionId &&
+				current.slot?.entries.some(
+					(item) => deriveEntryIdentity(item) === entryIdentity,
+				) === true,
+		);
 	},
 	async up(music: Music) {
 		const result = await crab.boost(music);
