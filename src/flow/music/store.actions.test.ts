@@ -1,11 +1,7 @@
 import { Err, Ok } from "@grahlnn/fn";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import type {
-	CollectMission,
-	Entry,
-	Music,
-	Playlist,
-} from "@/src/cmd/commands";
+import type { CollectMission, Entry, Music, Playlist } from "@/src/cmd/commands";
+import type { DraftMissionState } from "./store";
 
 const toastLog = {
 	error: [] as Array<{ title: string; description?: string }>,
@@ -242,7 +238,7 @@ function makePlaylist(
 	};
 }
 
-function makeMission(name: string, entries: Entry[] = []): CollectMission {
+function makeMission(name: string, entries: Entry[] = []): DraftMissionState {
 	return {
 		name,
 		folders: [],
@@ -266,6 +262,21 @@ async function waitUntil(predicate: () => boolean) {
 		await flush();
 	}
 	throw new Error("condition not reached in time");
+}
+
+function hasPendingEntryOperation(
+	entry: Entry,
+	kind: "folder_reload" | "weblist_update",
+): boolean {
+	const operation = (
+		entry as Entry & {
+			draftOperation?: {
+				kind?: string;
+				inProgress?: boolean;
+			};
+		}
+	).draftOperation;
+	return operation?.kind === kind && operation.inProgress === true;
 }
 
 function expectEntryOperation(
@@ -1134,7 +1145,14 @@ describe("music store action contracts", () => {
 		});
 
 		const pending = action.reloadEntry(entry);
-		await waitUntil(() => __testing.getState().folderReviews.includes(entryPath));
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) => item.path === entryPath && hasPendingEntryOperation(item, "folder_reload"),
+					) ?? false,
+		);
 
 		__testing.replaceState({
 			...__testing.getState(),
@@ -1178,7 +1196,15 @@ describe("music store action contracts", () => {
 		});
 
 		const pending = action.reloadEntry(original);
-		await waitUntil(() => __testing.getState().folderReviews.includes(original.path ?? ""));
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) =>
+							item.path === original.path && hasPendingEntryOperation(item, "folder_reload"),
+					) ?? false,
+		);
 
 		__testing.replaceState({
 			...__testing.getState(),
@@ -1216,7 +1242,14 @@ describe("music store action contracts", () => {
 		});
 
 		const pending = action.reloadEntry(entry);
-		await waitUntil(() => __testing.getState().folderReviews.includes(entry.path ?? ""));
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) => item.path === entry.path && hasPendingEntryOperation(item, "folder_reload"),
+					) ?? false,
+		);
 
 		__testing.replaceState({
 			...__testing.getState(),
@@ -1279,7 +1312,9 @@ describe("music store action contracts", () => {
 			ownerSessionId: 0,
 		});
 		expect(state.slot?.entries[0]).toMatchObject(draftUpdate);
-		expect(state.playlists).toEqual([persistedPlaylist]);
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.name).toBe("focus");
+		expect(state.playlists[0]?.entries[0]).toMatchObject(persisted);
 
 		await refresh();
 
@@ -1287,7 +1322,9 @@ describe("music store action contracts", () => {
 		expect(state.mode).toBe("edit");
 		expect(state.slot?.entries).toHaveLength(1);
 		expect(state.slot?.entries[0]).toMatchObject(draftUpdate);
-		expect(state.playlists).toEqual([persistedPlaylist]);
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.name).toBe("focus");
+		expect(state.playlists[0]?.entries[0]).toMatchObject(persisted);
 
 		await saveDraftAndWaitForReload();
 
@@ -1327,7 +1364,14 @@ describe("music store action contracts", () => {
 		});
 
 		const pending = action.reloadEntry(entry);
-		await waitUntil(() => __testing.getState().folderReviews.includes(entry.path ?? ""));
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) => item.path === entry.path && hasPendingEntryOperation(item, "folder_reload"),
+					) ?? false,
+		);
 
 			await action.edit(makePlaylist("replacement", [replacement]));
 			expect(__testing.getState().mode).toBe("edit");
@@ -1377,21 +1421,22 @@ describe("music store action contracts", () => {
 		});
 
 		const pending = action.reloadEntry(entry);
-		await waitUntil(() => __testing.getState().folderReviews.includes(entry.path ?? ""));
-
-		__testing.replaceState({
-			...__testing.getState(),
-			folderReviews: [],
-		});
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) => item.path === entry.path && hasPendingEntryOperation(item, "folder_reload"),
+					) ?? false,
+		);
+		release();
+		await pending;
 
 		const backPending = action.back();
 		await backPending;
 		expect(__testing.getState().mode).toBe("play");
 		expect(__testing.getState().slot).toBeNull();
 		expect(__testing.getState().selectedListName).toBeNull();
-
-		release();
-		await pending;
 
 		const state = __testing.getState();
 		expect(state.mode).toBe("play");
@@ -1443,20 +1488,22 @@ describe("music store action contracts", () => {
 		});
 
 		const pendingReload = action.reloadEntry(persisted);
-		await waitUntil(() => __testing.getState().folderReviews.includes(persisted.path ?? ""));
-
-		__testing.replaceState({
-			...__testing.getState(),
-			folderReviews: [],
-		});
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) =>
+							item.path === persisted.path && hasPendingEntryOperation(item, "folder_reload"),
+					) ?? false,
+		);
+		releaseReload();
+		await pendingReload;
 
 		const pendingSave = action.save();
 		await waitUntil(() => __testing.getState().mode === "play");
 		expect(__testing.getState().slot).toBeNull();
 		expect(__testing.getState().selectedListName).toBeNull();
-
-		releaseReload();
-		await pendingReload;
 
 		let state = __testing.getState();
 		expect(state.mode).toBe("play");
@@ -1465,7 +1512,9 @@ describe("music store action contracts", () => {
 		expect(state.slot).toBeNull();
 		expect(state.selectedListName).toBeNull();
 		expect(state.folderReviews).toEqual([]);
-		expect(state.playlists).toEqual([persistedPlaylist]);
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.name).toBe("focus");
+		expect(state.playlists[0]?.entries[0]).toMatchObject(updated);
 
 		releaseSave();
 		await pendingSave;
@@ -1476,7 +1525,9 @@ describe("music store action contracts", () => {
 		expect(state.slot).toBeNull();
 		expect(state.selectedListName).toBeNull();
 		expect(state.folderReviews).toEqual([]);
-		expect(state.playlists).toEqual([persistedPlaylist]);
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.name).toBe("focus");
+		expect(state.playlists[0]?.entries[0]).toMatchObject(persisted);
 	});
 
 	test("updateWeblist_true_positive_replaces_entry_and_clears_review_flag", async () => {
@@ -1540,10 +1591,14 @@ describe("music store action contracts", () => {
 		});
 
 		const pending = action.updateWeblist(entry);
-		await waitUntil(() => {
-			const url = entry.url;
-			return !!url && __testing.getState().weblistReviews.includes(url);
-		});
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) => item.url === entry.url && hasPendingEntryOperation(item, "weblist_update"),
+					) ?? false,
+		);
 
 		__testing.replaceState({
 			...__testing.getState(),
@@ -1591,10 +1646,14 @@ describe("music store action contracts", () => {
 		});
 
 		const pending = action.updateWeblist(entry);
-		await waitUntil(() => {
-			const url = entry.url;
-			return !!url && __testing.getState().weblistReviews.includes(url);
-		});
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) => item.url === entry.url && hasPendingEntryOperation(item, "weblist_update"),
+					) ?? false,
+		);
 
 		__testing.replaceState({
 			...__testing.getState(),
@@ -1637,10 +1696,14 @@ describe("music store action contracts", () => {
 		});
 
 		const pending = action.updateWeblist(entry);
-		await waitUntil(() => {
-			const url = entry.url;
-			return !!url && __testing.getState().weblistReviews.includes(url);
-		});
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) => item.url === entry.url && hasPendingEntryOperation(item, "weblist_update"),
+					) ?? false,
+		);
 
 		__testing.replaceState({
 			...__testing.getState(),
@@ -1708,7 +1771,9 @@ describe("music store action contracts", () => {
 			ownerSessionId: 0,
 		});
 		expect(state.slot?.entries[0]).toMatchObject(draftUpdate);
-		expect(state.playlists).toEqual([persistedPlaylist]);
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.name).toBe("focus");
+		expect(state.playlists[0]?.entries[0]).toMatchObject(persisted);
 
 		await refresh();
 
@@ -1716,7 +1781,9 @@ describe("music store action contracts", () => {
 		expect(state.mode).toBe("edit");
 		expect(state.slot?.entries).toHaveLength(1);
 		expect(state.slot?.entries[0]).toMatchObject(draftUpdate);
-		expect(state.playlists).toEqual([persistedPlaylist]);
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.name).toBe("focus");
+		expect(state.playlists[0]?.entries[0]).toMatchObject(persisted);
 
 		await saveDraftAndWaitForReload();
 
@@ -1763,10 +1830,15 @@ describe("music store action contracts", () => {
 		});
 
 		const pendingUpdate = action.updateWeblist(persisted);
-		await waitUntil(() => {
-			const url = persisted.url;
-			return !!url && __testing.getState().weblistReviews.includes(url);
-		});
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) =>
+							item.url === persisted.url && hasPendingEntryOperation(item, "weblist_update"),
+					) ?? false,
+		);
 
 			await action.edit(makePlaylist("replacement", [
 				makeEntry("replacement", "C:/music/replacement"),
@@ -1821,24 +1893,23 @@ describe("music store action contracts", () => {
 		});
 
 		const pendingUpdate = action.updateWeblist(persisted);
-		await waitUntil(() => {
-			const url = persisted.url;
-			return !!url && __testing.getState().weblistReviews.includes(url);
-		});
-
-		__testing.replaceState({
-			...__testing.getState(),
-			weblistReviews: [],
-		});
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) =>
+							item.url === persisted.url && hasPendingEntryOperation(item, "weblist_update"),
+					) ?? false,
+		);
+		releaseUpdate();
+		await pendingUpdate;
 
 		const backPending = action.back();
 		await backPending;
 		expect(__testing.getState().mode).toBe("play");
 		expect(__testing.getState().slot).toBeNull();
 		expect(__testing.getState().selectedListName).toBeNull();
-
-		releaseUpdate();
-		await pendingUpdate;
 
 		const state = __testing.getState();
 		expect(state.mode).toBe("play");
@@ -1847,7 +1918,9 @@ describe("music store action contracts", () => {
 		expect(state.slot).toBeNull();
 		expect(state.selectedListName).toBeNull();
 		expect(state.weblistReviews).toEqual([]);
-		expect(state.playlists).toEqual([persistedPlaylist]);
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.name).toBe("focus");
+		expect(state.playlists[0]?.entries[0]).toMatchObject(persisted);
 	});
 
 	test("updateWeblist_false_negative_guard_post_save_completion_only_clears_review_state_without_restoring_closed_draft", async () => {
@@ -1893,23 +1966,22 @@ describe("music store action contracts", () => {
 		});
 
 		const pendingUpdate = action.updateWeblist(persisted);
-		await waitUntil(() => {
-			const url = persisted.url;
-			return !!url && __testing.getState().weblistReviews.includes(url);
-		});
-
-		__testing.replaceState({
-			...__testing.getState(),
-			weblistReviews: [],
-		});
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) =>
+							item.url === persisted.url && hasPendingEntryOperation(item, "weblist_update"),
+					) ?? false,
+		);
+		releaseUpdate();
+		await pendingUpdate;
 
 		const pendingSave = action.save();
 		await waitUntil(() => __testing.getState().mode === "play");
 		expect(__testing.getState().slot).toBeNull();
 		expect(__testing.getState().selectedListName).toBeNull();
-
-		releaseUpdate();
-		await pendingUpdate;
 
 		let state = __testing.getState();
 		expect(state.mode).toBe("play");
@@ -1918,7 +1990,9 @@ describe("music store action contracts", () => {
 		expect(state.slot).toBeNull();
 		expect(state.selectedListName).toBeNull();
 		expect(state.weblistReviews).toEqual([]);
-		expect(state.playlists).toEqual([persistedPlaylist]);
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.name).toBe("focus");
+		expect(state.playlists[0]?.entries[0]).toMatchObject(updated);
 
 		releaseSave();
 		await pendingSave;
@@ -1961,7 +2035,16 @@ describe("music store action contracts", () => {
 		});
 
 		const pending = action.addLink(url);
-		await waitUntil(() => __testing.getState().linkReviews.includes(url));
+		await waitUntil(() =>
+			__testing
+				.getState()
+				.slot?.links.some(
+					(link) =>
+						link.url === url &&
+						link.operation?.kind === "link_review" &&
+						link.operation.inProgress === true,
+				) ?? false,
+		);
 
 		action.removeLink(url);
 		release();

@@ -746,6 +746,7 @@ describe("music interaction guards", () => {
 			nowJudge: "Up",
 			slot: { name: "draft", folders: [], links: [], entries: [], exclude: [] },
 			processMsg: { playlist: "focus", str: "working" },
+			entrySessionId: baseState.entrySessionId,
 			linkReviews: ["https://example.com"],
 			folderReviews: ["C:/folder"],
 			weblistReviews: ["https://example.com/list"],

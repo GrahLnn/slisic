@@ -707,6 +707,9 @@ export function deriveWorkspaceEntryPatch(
 	| "nowJudge"
 	| "processMsg"
 	| "entrySessionId"
+	| "linkReviews"
+	| "folderReviews"
+	| "weblistReviews"
 > {
 	const editPlaylist = playlist as Playlist;
 
@@ -741,6 +744,9 @@ export function deriveBackTransition(
 		| "slot"
 		| "processMsg"
 		| "entrySessionId"
+		| "linkReviews"
+		| "folderReviews"
+		| "weblistReviews"
 	>,
 ): Pick<
 	MusicState,
@@ -753,6 +759,9 @@ export function deriveBackTransition(
 	| "slot"
 	| "processMsg"
 	| "entrySessionId"
+	| "linkReviews"
+	| "folderReviews"
+	| "weblistReviews"
 > {
 	return {
 		mode: snapshot.playlists.length > 0 ? "play" : "new_guide",
@@ -895,10 +904,6 @@ function isPlaybackContextActive(epoch: number, expectedListName?: string) {
 	return playback.isActive(epoch, getState(), expectedListName);
 }
 
-function addUnique(items: string[], value: string): string[] {
-	return items.includes(value) ? items : [...items, value];
-}
-
 export function mapImportFolderEntryToEntry(item: ImportFolderEntry): Entry {
 	const name = item.path.split(/[\\/]/).filter(Boolean).pop() ?? item.path;
 
@@ -930,10 +935,6 @@ export function mapImportFolderEntryToEntry(item: ImportFolderEntry): Entry {
 		tracking: false,
 		entry_type: item.entry_type as EntryType,
 	};
-}
-
-function removeValue(items: string[], value: string): string[] {
-	return items.filter((item) => item !== value);
 }
 
 function createDraftOperation(
@@ -1617,7 +1618,12 @@ export const action = {
 		patchState(deriveBackTransition(snapshot));
 	},
 	setSlot(slot: CollectMission) {
-		patchState({ slot });
+		patchState({
+			slot: {
+				...slot,
+				links: slot.links.map((link) => ({ ...link, operation: null })),
+			},
+		});
 	},
 	async save() {
 		await persistSlot();
