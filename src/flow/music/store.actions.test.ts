@@ -268,6 +268,22 @@ async function waitUntil(predicate: () => boolean) {
 	throw new Error("condition not reached in time");
 }
 
+function expectEntryOperation(
+	entry: Entry,
+	operation: {
+		kind: "folder_reload" | "weblist_update";
+		key: string;
+		inProgress: boolean;
+		settled: "idle" | "succeeded" | "failed";
+		ownerSessionId: number;
+	},
+) {
+	expect(entry).toMatchObject({
+		...entry,
+		draftOperation: operation,
+	});
+}
+
 async function refresh() {
 	await action.run();
 }
@@ -1079,7 +1095,15 @@ describe("music store action contracts", () => {
 
 		const state = __testing.getState();
 		expect(state.folderReviews).toEqual([]);
-		expect(state.slot).toEqual(mission);
+		expect(state.slot?.name).toBe(mission.name);
+		expect(state.slot?.entries).toHaveLength(1);
+		expectEntryOperation(state.slot!.entries[0]!, {
+			kind: "folder_reload",
+			key: entry.path ?? "",
+			inProgress: false,
+			settled: "failed",
+			ownerSessionId: 0,
+		});
 		expect(toastLog.error).toContainEqual({
 			title: "Reload failed",
 			description: "scan failed",
@@ -1246,21 +1270,31 @@ describe("music store action contracts", () => {
 		await action.reloadEntry(persisted);
 
 		let state = __testing.getState();
-		expect(state.slot?.entries).toEqual([draftUpdate]);
+		expect(state.slot?.entries).toHaveLength(1);
+		expectEntryOperation(state.slot!.entries[0]!, {
+			kind: "folder_reload",
+			key: persisted.path ?? "",
+			inProgress: false,
+			settled: "succeeded",
+			ownerSessionId: 0,
+		});
+		expect(state.slot?.entries[0]).toMatchObject(draftUpdate);
 		expect(state.playlists).toEqual([persistedPlaylist]);
 
 		await refresh();
 
 		state = __testing.getState();
 		expect(state.mode).toBe("edit");
-		expect(state.slot?.entries).toEqual([draftUpdate]);
+		expect(state.slot?.entries).toHaveLength(1);
+		expect(state.slot?.entries[0]).toMatchObject(draftUpdate);
 		expect(state.playlists).toEqual([persistedPlaylist]);
 
 		await saveDraftAndWaitForReload();
 
 		state = __testing.getState();
 		expect(updateCalls).toHaveLength(1);
-		expect(updateCalls[0]?.mission.entries).toEqual([draftUpdate]);
+		expect(updateCalls[0]?.mission.entries).toHaveLength(1);
+		expect(updateCalls[0]?.mission.entries[0]).toMatchObject(draftUpdate);
 		expect(updateCalls[0]?.anchor).toEqual(persistedPlaylist);
 		expect(state.mode).toBe("play");
 		expect(state.playlists).toEqual([refreshedPlaylist]);
@@ -1468,7 +1502,15 @@ describe("music store action contracts", () => {
 
 		const state = __testing.getState();
 		expect(state.weblistReviews).toEqual([]);
-		expect(state.slot?.entries).toEqual([updated]);
+		expect(state.slot?.entries).toHaveLength(1);
+		expectEntryOperation(state.slot!.entries[0]!, {
+			kind: "weblist_update",
+			key: entry.url ?? "",
+			inProgress: false,
+			settled: "succeeded",
+			ownerSessionId: 0,
+		});
+		expect(state.slot?.entries[0]).toMatchObject(updated);
 	});
 
 	test("updateWeblist_true_negative_guard_clears_review_flag_and_preserves_replaced_slot", async () => {
@@ -1657,21 +1699,31 @@ describe("music store action contracts", () => {
 		await action.updateWeblist(persisted);
 
 		let state = __testing.getState();
-		expect(state.slot?.entries).toEqual([draftUpdate]);
+		expect(state.slot?.entries).toHaveLength(1);
+		expectEntryOperation(state.slot!.entries[0]!, {
+			kind: "weblist_update",
+			key: persisted.url ?? "",
+			inProgress: false,
+			settled: "succeeded",
+			ownerSessionId: 0,
+		});
+		expect(state.slot?.entries[0]).toMatchObject(draftUpdate);
 		expect(state.playlists).toEqual([persistedPlaylist]);
 
 		await refresh();
 
 		state = __testing.getState();
 		expect(state.mode).toBe("edit");
-		expect(state.slot?.entries).toEqual([draftUpdate]);
+		expect(state.slot?.entries).toHaveLength(1);
+		expect(state.slot?.entries[0]).toMatchObject(draftUpdate);
 		expect(state.playlists).toEqual([persistedPlaylist]);
 
 		await saveDraftAndWaitForReload();
 
 		state = __testing.getState();
 		expect(updateCalls).toHaveLength(1);
-		expect(updateCalls[0]?.mission.entries).toEqual([draftUpdate]);
+		expect(updateCalls[0]?.mission.entries).toHaveLength(1);
+		expect(updateCalls[0]?.mission.entries[0]).toMatchObject(draftUpdate);
 		expect(updateCalls[0]?.anchor).toEqual(persistedPlaylist);
 		expect(state.mode).toBe("play");
 		expect(state.playlists).toEqual([refreshedPlaylist]);

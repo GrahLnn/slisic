@@ -50,6 +50,43 @@ export interface StartupRouteSnapshot {
 	kind: StartupRouteKind;
 }
 
+export type DraftEntryOperationKind =
+	| "link_review"
+	| "folder_reload"
+	| "weblist_update";
+
+export interface DraftEntryOperationState {
+	kind: DraftEntryOperationKind;
+	key: string;
+	inProgress: boolean;
+	settled: "idle" | "succeeded" | "failed";
+	ownerSessionId: number;
+}
+
+export interface DraftLinkState {
+	url: string;
+	title_or_msg: string;
+	entry_type: EntryType | "Unknown";
+	count: number | null;
+	status: "Ok" | "Err" | null;
+	tracking: boolean;
+	operation: DraftEntryOperationState | null;
+}
+
+export interface DraftMissionState extends Omit<CollectMission, "links"> {
+	links: DraftLinkState[];
+}
+
+type DraftOperationEntry = Entry & {
+	draftOperation?: DraftEntryOperationState | null;
+};
+
+type MusicStateLike = MusicState & {
+	linkReviews?: string[];
+	folderReviews?: string[];
+	weblistReviews?: string[];
+};
+
 export interface MusicState {
 	mode: UiMode;
 	routeResolved: boolean;
@@ -61,14 +98,14 @@ export interface MusicState {
 	confirmedPlaying: Music | null;
 	nowPlaying: Music | null;
 	nowJudge: Judge;
-	slot: CollectMission | null;
+	slot: DraftMissionState | null;
 	processMsg: ProcessMsg | null;
 	ytdlp: InstallResult | null;
 	ffmpeg: InstallResult | null;
 	savePath: string | null;
-	linkReviews: string[];
-	folderReviews: string[];
-	weblistReviews: string[];
+	linkReviews?: string[];
+	folderReviews?: string[];
+	weblistReviews?: string[];
 	entrySessionId: number;
 	playbackEpoch: number;
 	playbackSessionId: number | null;
@@ -255,16 +292,126 @@ export function hasPlaybackContext(
 }
 
 export function canExitWorkspace(
-	snapshot: Pick<
-		MusicState,
-		"linkReviews" | "folderReviews" | "weblistReviews"
-	>,
+	snapshot: Pick<MusicStateLike, "slot"> & {
+		linkReviews?: string[];
+		folderReviews?: string[];
+		weblistReviews?: string[];
+	},
 ): boolean {
-	return (
-		snapshot.linkReviews.length === 0 &&
-		snapshot.folderReviews.length === 0 &&
-		snapshot.weblistReviews.length === 0
-	);
+	return deriveDraftReviewState(snapshot).active.length === 0;
+}
+
+export function deriveDraftReviewState(
+	snapshot: Pick<MusicStateLike, "slot"> & {
+		linkReviews?: string[];
+		folderReviews?: string[];
+		weblistReviews?: string[];
+	},
+): {
+	active: DraftEntryOperationState[];
+	linkReviews: string[];
+	folderReviews: string[];
+	weblistReviews: string[];
+} {
+	const legacyLinkReviews = snapshot.linkReviews ?? [];
+	const legacyFolderReviews = snapshot.folderReviews ?? [];
+	const legacyWeblistReviews = snapshot.weblistReviews ?? [];
+
+	if (!snapshot.slot) {
+		const active = [
+			...legacyLinkReviews.map((key) => ({
+				kind: "link_review" as const,
+				key,
+				inProgress: true,
+				settled: "idle" as const,
+				ownerSessionId: -1,
+			})),
+			...legacyFolderReviews.map((key) => ({
+				kind: "folder_reload" as const,
+				key,
+				inProgress: true,
+				settled: "idle" as const,
+				ownerSessionId: -1,
+			})),
+			...legacyWeblistReviews.map((key) => ({
+				kind: "weblist_update" as const,
+				key,
+				inProgress: true,
+				settled: "idle" as const,
+				ownerSessionId: -1,
+			})),
+		];
+		return {
+			active,
+			linkReviews: legacyLinkReviews,
+			folderReviews: legacyFolderReviews,
+			weblistReviews: legacyWeblistReviews,
+		};
+	}
+
+	const active: DraftEntryOperationState[] = [];
+	const linkReviews: string[] = [];
+	const folderReviews: string[] = [];
+	const weblistReviews: string[] = [];
+
+	for (const link of snapshot.slot.links) {
+		if (link.operation?.inProgress) {
+			active.push(link.operation);
+			linkReviews.push(link.url);
+		}
+	}
+
+	for (const entry of snapshot.slot.entries) {
+		const operation = getDraftEntryOperation(entry);
+		if (!operation?.inProgress) continue;
+		active.push(operation);
+		if (operation.kind === "folder_reload") {
+			folderReviews.push(operation.key);
+		} else if (operation.kind === "weblist_update") {
+			weblistReviews.push(operation.key);
+		}
+	}
+
+	for (const key of legacyLinkReviews) {
+		if (!linkReviews.includes(key)) {
+			linkReviews.push(key);
+			active.push({
+				kind: "link_review",
+				key,
+				inProgress: true,
+				settled: "idle",
+				ownerSessionId: -1,
+			});
+		}
+	}
+
+	for (const key of legacyFolderReviews) {
+		if (!folderReviews.includes(key)) {
+			folderReviews.push(key);
+			active.push({
+				kind: "folder_reload",
+				key,
+				inProgress: true,
+				settled: "idle",
+				ownerSessionId: -1,
+			});
+		}
+	}
+
+	for (const key of legacyWeblistReviews) {
+		if (!weblistReviews.includes(key)) {
+			weblistReviews.push(key);
+			active.push({
+				kind: "weblist_update",
+				key,
+				inProgress: true,
+				settled: "idle",
+				ownerSessionId: -1,
+			});
+		}
+	}
+
+	return { active, linkReviews, folderReviews, weblistReviews };
 }
 
 export function deriveSaveAffordance(
@@ -529,9 +676,6 @@ export function deriveWorkspaceEntryPatch(
 	| "nowPlaying"
 	| "nowJudge"
 	| "processMsg"
-	| "linkReviews"
-	| "folderReviews"
-	| "weblistReviews"
 	| "entrySessionId"
 >;
 export function deriveWorkspaceEntryPatch(
@@ -547,9 +691,6 @@ export function deriveWorkspaceEntryPatch(
 	| "nowPlaying"
 	| "nowJudge"
 	| "processMsg"
-	| "linkReviews"
-	| "folderReviews"
-	| "weblistReviews"
 	| "entrySessionId"
 >;
 export function deriveWorkspaceEntryPatch(
@@ -565,9 +706,6 @@ export function deriveWorkspaceEntryPatch(
 	| "nowPlaying"
 	| "nowJudge"
 	| "processMsg"
-	| "linkReviews"
-	| "folderReviews"
-	| "weblistReviews"
 	| "entrySessionId"
 > {
 	const editPlaylist = playlist as Playlist;
@@ -577,7 +715,9 @@ export function deriveWorkspaceEntryPatch(
 		routeResolved: true,
 		startupRoute: "hydrated_editing",
 		slot:
-			kind === "create" ? defaultMission() : missionFromPlaylist(editPlaylist),
+			kind === "create"
+				? defaultMission()
+				: cloneMissionWithoutDraftOperations(missionFromPlaylist(editPlaylist)),
 		selectedListName: kind === "edit" ? editPlaylist.name : null,
 		nowPlaying: null,
 		nowJudge: null,
@@ -600,9 +740,6 @@ export function deriveBackTransition(
 		| "nowJudge"
 		| "slot"
 		| "processMsg"
-		| "linkReviews"
-		| "folderReviews"
-		| "weblistReviews"
 		| "entrySessionId"
 	>,
 ): Pick<
@@ -615,9 +752,6 @@ export function deriveBackTransition(
 	| "nowJudge"
 	| "slot"
 	| "processMsg"
-	| "linkReviews"
-	| "folderReviews"
-	| "weblistReviews"
 	| "entrySessionId"
 > {
 	return {
@@ -802,6 +936,72 @@ function removeValue(items: string[], value: string): string[] {
 	return items.filter((item) => item !== value);
 }
 
+function createDraftOperation(
+	kind: DraftEntryOperationKind,
+	key: string,
+	ownerSessionId: number,
+): DraftEntryOperationState {
+	return { kind, key, ownerSessionId, inProgress: true, settled: "idle" };
+}
+
+function settleDraftOperation(
+	operation: DraftEntryOperationState,
+	settled: "succeeded" | "failed",
+): DraftEntryOperationState {
+	return { ...operation, inProgress: false, settled };
+}
+
+function getDraftEntryOperation(entry: Entry): DraftEntryOperationState | null {
+	return (
+		(entry as DraftOperationEntry).draftOperation ?? null
+	);
+}
+
+function setDraftEntryOperation(
+	entry: Entry,
+	operation: DraftEntryOperationState | null,
+): Entry {
+	const next: DraftOperationEntry = {
+		...(entry as DraftOperationEntry),
+	};
+
+	if (operation) {
+		next.draftOperation = operation;
+	} else {
+		delete next.draftOperation;
+	}
+
+	return next;
+}
+
+function cloneEntryWithoutDraftOperation(entry: Entry): Entry {
+	return setDraftEntryOperation(entry, null);
+}
+
+function cloneLinkWithoutDraftOperation(link: DraftLinkState): DraftLinkState {
+	return setDraftLinkOperation(link, null);
+}
+
+function cloneMissionWithoutDraftOperations(
+	mission: DraftMissionState,
+): DraftMissionState {
+	return {
+		...mission,
+		entries: mission.entries.map(cloneEntryWithoutDraftOperation),
+		links: mission.links.map(cloneLinkWithoutDraftOperation),
+	};
+}
+
+function setDraftLinkOperation(
+	link: DraftLinkState,
+	operation: DraftEntryOperationState | null,
+): DraftLinkState {
+	return {
+		...link,
+		operation,
+	};
+}
+
 function deriveEntryIdentity(entry: Entry): string | null {
 	return entry.url ?? entry.path ?? null;
 }
@@ -829,29 +1029,22 @@ function replaceEntryByIdentity(
 }
 
 function settleReviewMutation(
-	key: string,
-	reviewKey: "linkReviews" | "folderReviews" | "weblistReviews",
-	mutateSlot: (slot: CollectMission) => CollectMission,
+	mutateSlot: (slot: DraftMissionState) => DraftMissionState,
 	shouldMutate?: (prev: MusicState) => boolean,
 ) {
 	setState((prev) => {
-		const reviews = removeValue(prev[reviewKey], key);
 		if (!prev.slot || (shouldMutate && !shouldMutate(prev))) {
-			return {
-				...prev,
-				[reviewKey]: reviews,
-			};
+			return prev;
 		}
 
 		return {
 			...prev,
 			slot: mutateSlot(prev.slot),
-			[reviewKey]: reviews,
 		};
 	});
 }
 
-function patchSlot(mutator: (slot: CollectMission) => CollectMission) {
+function patchSlot(mutator: (slot: DraftMissionState) => DraftMissionState) {
 	setState((prev) => {
 		if (!prev.slot) return prev;
 		return {
@@ -861,7 +1054,7 @@ function patchSlot(mutator: (slot: CollectMission) => CollectMission) {
 	});
 }
 
-function defaultMission(): CollectMission {
+function defaultMission(): DraftMissionState {
 	return {
 		name: "",
 		folders: [],
@@ -871,12 +1064,12 @@ function defaultMission(): CollectMission {
 	};
 }
 
-function missionFromPlaylist(playlist: Playlist): CollectMission {
+function missionFromPlaylist(playlist: Playlist): DraftMissionState {
 	return {
 		name: playlist.name,
 		folders: [],
 		links: [],
-		entries: playlist.entries,
+		entries: playlist.entries.map(cloneEntryWithoutDraftOperation),
 		exclude: playlist.exclude,
 	};
 }
@@ -1507,23 +1700,33 @@ export const action = {
 
 		setState((prev) => {
 			if (!prev.slot) return prev;
+			const operation = createDraftOperation(
+				"link_review",
+				value,
+				prev.entrySessionId,
+			);
 			return {
 				...prev,
 				slot: {
 					...prev.slot,
-					links: [...prev.slot.links, pendingLink],
+					links: [
+						...prev.slot.links,
+						{ ...pendingLink, operation },
+					],
 				},
-				linkReviews: addUnique(prev.linkReviews, value),
 			};
 		});
 
 		const media = await crab.lookMedia(value);
-		settleReviewMutation(value, "linkReviews", (slot) => {
+		settleReviewMutation((slot) => {
 			const links = slot.links.map((link) => {
 				if (link.url !== value) return link;
+				const operation = link.operation
+					? settleDraftOperation(link.operation, media.isErr() ? "failed" : "succeeded")
+					: null;
 				if (media.isErr()) {
 					return {
-						...link,
+						...setDraftLinkOperation(link, operation),
 						title_or_msg: media.unwrap_err(),
 						status: "Err" as const,
 					};
@@ -1531,7 +1734,7 @@ export const action = {
 
 				const info = media.unwrap();
 				return {
-					...link,
+					...setDraftLinkOperation(link, operation),
 					title_or_msg: info.title,
 					entry_type: inferEntryType(info.item_type),
 					count: info.entries_count,
@@ -1552,9 +1755,8 @@ export const action = {
 				...prev,
 				slot: {
 					...prev.slot,
-					links: prev.slot.links.filter((link) => link.url !== url),
+				links: prev.slot.links.filter((link) => link.url !== url),
 				},
-				linkReviews: removeValue(prev.linkReviews, url),
 			};
 		});
 	},
@@ -1597,14 +1799,31 @@ export const action = {
 		const { entrySessionId } = getState();
 		const entryIdentity = deriveEntryIdentity(entry);
 		const workspaceMode = getState().mode;
-		setState((prev) => ({
-			...prev,
-			folderReviews: addUnique(prev.folderReviews, key),
+		patchSlot((slot) => ({
+			...slot,
+			entries: slot.entries.map((item) =>
+				deriveEntryIdentity(item) === entryIdentity
+					? setDraftEntryOperation(
+							item,
+							createDraftOperation("folder_reload", key, entrySessionId),
+						)
+					: item,
+			),
 		}));
 
 		const result = await crab.recheckFolder(entry);
 		if (result.isErr()) {
-			settleReviewMutation(key, "folderReviews", (slot) => slot);
+			settleReviewMutation((slot) => ({
+				...slot,
+				entries: slot.entries.map((item) =>
+					deriveEntryIdentity(item) === entryIdentity && getDraftEntryOperation(item)
+						? setDraftEntryOperation(
+								item,
+								settleDraftOperation(getDraftEntryOperation(item)!, "failed"),
+							)
+						: item,
+				),
+			}));
 			sileo.error({
 				title: "Reload failed",
 				description: result.unwrap_err(),
@@ -1614,14 +1833,22 @@ export const action = {
 
 		const next = result.unwrap();
 		settleReviewMutation(
-			key,
-			"folderReviews",
 			(slot) => ({
 				...slot,
 				entries:
 					entryIdentity == null
 						? slot.entries
-						: replaceEntryByIdentity(slot.entries, entryIdentity, next),
+						: replaceEntryByIdentity(
+								slot.entries,
+								entryIdentity,
+								setDraftEntryOperation(
+									next,
+									settleDraftOperation(
+										createDraftOperation("folder_reload", key, entrySessionId),
+										"succeeded",
+									),
+								),
+							),
 			}),
 			(current) =>
 				canMutateSettledEntry(
@@ -1640,14 +1867,31 @@ export const action = {
 		const key = entry.url;
 		const entryIdentity = deriveEntryIdentity(entry);
 		const workspaceMode = snapshot.mode;
-		setState((prev) => ({
-			...prev,
-			weblistReviews: addUnique(prev.weblistReviews, key),
+		patchSlot((slot) => ({
+			...slot,
+			entries: slot.entries.map((item) =>
+				deriveEntryIdentity(item) === entryIdentity
+					? setDraftEntryOperation(
+							item,
+							createDraftOperation("weblist_update", key, snapshot.entrySessionId),
+						)
+					: item,
+			),
 		}));
 
 		const result = await crab.updateWeblist(entry, playlist);
 		if (result.isErr()) {
-			settleReviewMutation(key, "weblistReviews", (slot) => slot);
+			settleReviewMutation((slot) => ({
+				...slot,
+				entries: slot.entries.map((item) =>
+					deriveEntryIdentity(item) === entryIdentity && getDraftEntryOperation(item)
+						? setDraftEntryOperation(
+								item,
+								settleDraftOperation(getDraftEntryOperation(item)!, "failed"),
+							)
+						: item,
+				),
+			}));
 			sileo.error({
 				title: "Update failed",
 				description: result.unwrap_err(),
@@ -1657,14 +1901,26 @@ export const action = {
 
 		const next = result.unwrap();
 		settleReviewMutation(
-			key,
-			"weblistReviews",
 			(slot) => ({
 				...slot,
 				entries:
 					entryIdentity == null
 						? slot.entries
-						: replaceEntryByIdentity(slot.entries, entryIdentity, next),
+						: replaceEntryByIdentity(
+								slot.entries,
+								entryIdentity,
+								setDraftEntryOperation(
+									next,
+									settleDraftOperation(
+										createDraftOperation(
+											"weblist_update",
+											key,
+											snapshot.entrySessionId,
+										),
+										"succeeded",
+									),
+								),
+							),
 			}),
 			(current) =>
 				canMutateSettledEntry(
@@ -1892,14 +2148,12 @@ export const hook = {
 		),
 	useIsReview: () =>
 		useMusicSelector(
-			(snapshot) =>
-				snapshot.linkReviews.length > 0 ||
-				snapshot.folderReviews.length > 0 ||
-				snapshot.weblistReviews.length > 0,
+			(snapshot) => deriveDraftReviewState(snapshot).active.length > 0,
 		),
-	useAllReview: () => useMusicSelector((snapshot) => snapshot.linkReviews),
+	useAllReview: () =>
+		useMusicSelector((snapshot) => deriveDraftReviewState(snapshot).linkReviews),
 	useAllFolderReview: () =>
-		useMusicSelector((snapshot) => snapshot.folderReviews),
+		useMusicSelector((snapshot) => deriveDraftReviewState(snapshot).folderReviews),
 	useAllWeblistReview: () =>
-		useMusicSelector((snapshot) => snapshot.weblistReviews),
+		useMusicSelector((snapshot) => deriveDraftReviewState(snapshot).weblistReviews),
 };
