@@ -63,10 +63,6 @@ export function resolveMainRouteWindow(meta: AppWindowMeta): WindowName | null {
 }
 
 export function getHomepagePrewarmTarget(meta: AppWindowMeta): WindowName | null {
-  if (!meta.isPrimaryMain) {
-    return null;
-  }
-
   return resolveMainRouteWindow(meta);
 }
 
@@ -92,6 +88,6 @@ export function shouldRunUpdater(meta: AppWindowMeta): boolean {
   return meta.status === "ready" && meta.isUserWindow && meta.window === "Main" && meta.isPrimaryMain;
 }
 
-export function shouldRequestWindowPrewarm(meta: AppWindowMeta): boolean {
-  return getHomepagePrewarmTarget(meta) !== null;
+export function shouldRequestWindowPrewarm(_meta: AppWindowMeta): boolean {
+  return false;
 }

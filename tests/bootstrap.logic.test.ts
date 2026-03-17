@@ -4,6 +4,7 @@ import {
   getHomepagePrewarmTarget,
   getInteractiveShellState,
   initialAppWindowMeta,
+  resolveMainRouteWindow,
   shouldRequestWindowPrewarm,
   shouldRenderMainWindow,
   shouldRunUpdater,
@@ -224,6 +225,25 @@ describe("shouldRunUpdater", () => {
 });
 
 describe("shouldRequestWindowPrewarm", () => {
+  test("shares the App.tsx route resolver instead of a separate homepage inference path", () => {
+    const primaryMain = createMeta({
+      status: "ready",
+      window: "Main",
+      isPrimaryMain: true,
+      isUserWindow: true,
+    });
+
+    const secondaryMain = createMeta({
+      status: "ready",
+      window: "Main",
+      isPrimaryMain: false,
+      isUserWindow: true,
+    });
+
+    expect(getHomepagePrewarmTarget(primaryMain)).toBe(resolveMainRouteWindow(primaryMain));
+    expect(getHomepagePrewarmTarget(secondaryMain)).toBe(resolveMainRouteWindow(secondaryMain));
+  });
+
   test("homepage prewarm target follows the authoritative resolved window identity", () => {
     expect(
       getHomepagePrewarmTarget(
@@ -245,7 +265,7 @@ describe("shouldRequestWindowPrewarm", () => {
           isUserWindow: true,
         }),
       ),
-    ).toBeNull();
+    ).toBe("Main");
 
     expect(
       getHomepagePrewarmTarget(
@@ -280,7 +300,18 @@ describe("shouldRequestWindowPrewarm", () => {
           isUserWindow: true,
         }),
       ),
-    ).toBeNull();
+    ).toBe("Main");
+
+    expect(
+      shouldRequestWindowPrewarm(
+        createMeta({
+          status: "ready",
+          window: "Main",
+          isPrimaryMain: true,
+          isUserWindow: true,
+        }),
+      ),
+    ).toBe(false);
   });
 
   test("never requests additional hidden-window preparation", () => {
@@ -289,6 +320,7 @@ describe("shouldRequestWindowPrewarm", () => {
         createMeta({
           status: "ready",
           window: "Main",
+          isPrimaryMain: true,
         }),
       ),
     ).toBe(false);

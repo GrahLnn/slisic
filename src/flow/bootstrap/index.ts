@@ -9,6 +9,7 @@ import {
   getHomepagePrewarmTarget,
   initialAppWindowMeta,
   shouldRunUpdater,
+  shouldRequestWindowPrewarm,
   type AppWindowMeta,
 } from "./logic";
 
@@ -38,7 +39,7 @@ export function useAppBootstrap(): AppWindowMeta {
         setAppWindow(nextWindow);
 
         const homepagePrewarmTarget = getHomepagePrewarmTarget(nextWindow);
-        if (homepagePrewarmTarget) {
+        if (shouldRequestWindowPrewarm(nextWindow) && homepagePrewarmTarget) {
           void crab.prewarmWindow(homepagePrewarmTarget);
         }
 
