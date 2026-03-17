@@ -953,9 +953,7 @@ function settleDraftOperation(
 }
 
 function getDraftEntryOperation(entry: Entry): DraftEntryOperationState | null {
-	return (
-		(entry as DraftOperationEntry).draftOperation ?? null
-	);
+	return (entry as DraftOperationEntry).draftOperation ?? null;
 }
 
 function setDraftEntryOperation(
@@ -1258,10 +1256,7 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 		if (playResult.isErr()) {
 			yield* Effect.sync(() => {
 				if (!isPlaybackContextActive(epoch, list.name)) return;
-				const clearPatch = clearPlaybackSession(
-					getState(),
-					requestedSessionId,
-				);
+				const clearPatch = clearPlaybackSession(getState(), requestedSessionId);
 				patchState({
 					...(clearPatch ?? {
 						selectedListName: null,
@@ -1715,10 +1710,7 @@ export const action = {
 				...prev,
 				slot: {
 					...prev.slot,
-					links: [
-						...prev.slot.links,
-						{ ...pendingLink, operation },
-					],
+					links: [...prev.slot.links, { ...pendingLink, operation }],
 				},
 			};
 		});
@@ -1728,7 +1720,10 @@ export const action = {
 			const links = slot.links.map((link) => {
 				if (link.url !== value) return link;
 				const operation = link.operation
-					? settleDraftOperation(link.operation, media.isErr() ? "failed" : "succeeded")
+					? settleDraftOperation(
+							link.operation,
+							media.isErr() ? "failed" : "succeeded",
+						)
 					: null;
 				if (media.isErr()) {
 					return {
@@ -1761,7 +1756,7 @@ export const action = {
 				...prev,
 				slot: {
 					...prev.slot,
-				links: prev.slot.links.filter((link) => link.url !== url),
+					links: prev.slot.links.filter((link) => link.url !== url),
 				},
 			};
 		});
@@ -1822,10 +1817,14 @@ export const action = {
 			settleReviewMutation((slot) => ({
 				...slot,
 				entries: slot.entries.map((item) =>
-					deriveEntryIdentity(item) === entryIdentity && getDraftEntryOperation(item)
+					deriveEntryIdentity(item) === entryIdentity &&
+					getDraftEntryOperation(item)
 						? setDraftEntryOperation(
 								item,
-								settleDraftOperation(getDraftEntryOperation(item)!, "failed"),
+								settleDraftOperation(
+									getDraftEntryOperation(item) as DraftEntryOperationState,
+									"failed",
+								),
 							)
 						: item,
 				),
@@ -1879,7 +1878,11 @@ export const action = {
 				deriveEntryIdentity(item) === entryIdentity
 					? setDraftEntryOperation(
 							item,
-							createDraftOperation("weblist_update", key, snapshot.entrySessionId),
+							createDraftOperation(
+								"weblist_update",
+								key,
+								snapshot.entrySessionId,
+							),
 						)
 					: item,
 			),
@@ -1890,10 +1893,14 @@ export const action = {
 			settleReviewMutation((slot) => ({
 				...slot,
 				entries: slot.entries.map((item) =>
-					deriveEntryIdentity(item) === entryIdentity && getDraftEntryOperation(item)
+					deriveEntryIdentity(item) === entryIdentity &&
+					getDraftEntryOperation(item)
 						? setDraftEntryOperation(
 								item,
-								settleDraftOperation(getDraftEntryOperation(item)!, "failed"),
+								settleDraftOperation(
+									getDraftEntryOperation(item) as DraftEntryOperationState,
+									"failed",
+								),
 							)
 						: item,
 				),
@@ -2157,9 +2164,15 @@ export const hook = {
 			(snapshot) => deriveDraftReviewState(snapshot).active.length > 0,
 		),
 	useAllReview: () =>
-		useMusicSelector((snapshot) => deriveDraftReviewState(snapshot).linkReviews),
+		useMusicSelector(
+			(snapshot) => deriveDraftReviewState(snapshot).linkReviews,
+		),
 	useAllFolderReview: () =>
-		useMusicSelector((snapshot) => deriveDraftReviewState(snapshot).folderReviews),
+		useMusicSelector(
+			(snapshot) => deriveDraftReviewState(snapshot).folderReviews,
+		),
 	useAllWeblistReview: () =>
-		useMusicSelector((snapshot) => deriveDraftReviewState(snapshot).weblistReviews),
+		useMusicSelector(
+			(snapshot) => deriveDraftReviewState(snapshot).weblistReviews,
+		),
 };
