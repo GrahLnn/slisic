@@ -69,6 +69,16 @@ export function getWindowFocusActor(windowLabel = getCurrentWindowLabel()) {
   return actor;
 }
 
+export function releaseWindowFocusActor(windowLabel = getCurrentWindowLabel()) {
+  const actor = windowActors.get(windowLabel);
+  if (!actor) {
+    return;
+  }
+
+  windowActors.delete(windowLabel);
+  actor.stop();
+}
+
 export function useIsWindowFocus(): boolean {
   return useSelector(getWindowFocusActor(), (shot) => shot.matches(state.x.focused));
 }

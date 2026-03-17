@@ -76,6 +76,16 @@ export function getWindowMaximizedActor(windowLabel = getCurrentWindowLabel()) {
   return actor;
 }
 
+export function releaseWindowMaximizedActor(windowLabel = getCurrentWindowLabel()) {
+  const actor = windowActors.get(windowLabel);
+  if (!actor) {
+    return;
+  }
+
+  windowActors.delete(windowLabel);
+  actor.stop();
+}
+
 export function useIsWindowMaximized(): boolean {
   return useSelector(getWindowMaximizedActor(), (shot) => shot.matches(state.x.maximized));
 }
