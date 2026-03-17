@@ -141,10 +141,15 @@ export function derivePlaybackOwnedList(
 		if (playbackOwnedList) return playbackOwnedList;
 	}
 
-	const activeTrack = snapshot.confirmedPlaying ?? snapshot.nowPlaying ?? snapshot.requestedPlaying;
+	const activeTrack =
+		snapshot.confirmedPlaying ??
+		snapshot.nowPlaying ??
+		snapshot.requestedPlaying;
 	if (!activeTrack) {
 		return snapshot.selectedListName
-			? snapshot.playlists.find((playlist) => playlist.name === snapshot.selectedListName) ?? null
+			? (snapshot.playlists.find(
+					(playlist) => playlist.name === snapshot.selectedListName,
+				) ?? null)
 			: null;
 	}
 
@@ -159,7 +164,9 @@ export function derivePlaybackOwnedList(
 	}
 
 	return snapshot.selectedListName
-		? snapshot.playlists.find((playlist) => playlist.name === snapshot.selectedListName) ?? null
+		? (snapshot.playlists.find(
+				(playlist) => playlist.name === snapshot.selectedListName,
+			) ?? null)
 		: null;
 }
 

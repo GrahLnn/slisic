@@ -12,8 +12,8 @@ import {
 	buildPostSavePatch,
 	canExitWorkspace,
 	clearPlaybackSession,
-	derivePlaybackOwnedList,
 	deriveBackTransition,
+	derivePlaybackOwnedList,
 	deriveProbePatch,
 	deriveRefreshPatch,
 	deriveRouteResolution,
@@ -583,14 +583,14 @@ describe("music interaction guards", () => {
 	});
 
 	test("derivePlaybackOwnedList keeps playback-owned context separate from browsed UI focus", () => {
+		const contemporaryPlaylist = baseState.playlists.at(0);
+		if (!contemporaryPlaylist) throw new Error("expected base playlist");
+
 		const playbackOwned = derivePlaybackOwnedList({
 			...baseState,
 			selectedListName: "browsed",
 			playbackListName: "contemporary",
-			playlists: [
-				baseState.playlists[0]!,
-				makePlaylist("browsed"),
-			],
+			playlists: [contemporaryPlaylist, makePlaylist("browsed")],
 			confirmedPlaying: baseState.confirmedPlaying,
 			nowPlaying: baseState.nowPlaying,
 		});
@@ -599,6 +599,9 @@ describe("music interaction guards", () => {
 	});
 
 	test("deriveRefreshPatch preserves playback-owned now-playing context when UI focus browses elsewhere", () => {
+		const contemporaryPlaylist = baseState.playlists.at(0);
+		if (!contemporaryPlaylist) throw new Error("expected base playlist");
+
 		const refreshed = deriveRefreshPatch(
 			{
 				...baseState,
@@ -608,7 +611,7 @@ describe("music interaction guards", () => {
 			},
 			[
 				{
-					...baseState.playlists[0]!,
+					...contemporaryPlaylist,
 				},
 				makePlaylist("browsed"),
 			],
