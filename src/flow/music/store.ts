@@ -1050,9 +1050,11 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 			});
 		});
 
+		const requestedSessionId = nextPlaybackSessionId();
+
 		const playResult = yield* Effect.promise(() =>
 			crab.audioPlay({
-				session_id: toPlaybackContractSessionId(nextPlaybackSessionId()),
+				session_id: toPlaybackContractSessionId(requestedSessionId),
 				path: chosen.path,
 			}),
 		);
@@ -1064,7 +1066,7 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 				if (!isPlaybackContextActive(epoch, list.name)) return;
 				const clearPatch = clearPlaybackSession(
 					getState(),
-					nextPlaybackSessionId(),
+					requestedSessionId,
 				);
 				patchState({
 					...(clearPatch ?? {

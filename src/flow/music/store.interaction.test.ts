@@ -400,6 +400,13 @@ describe("music interaction guards", () => {
 		expect(clearPlaybackSession(baseState, 2)).toBeNull();
 	});
 
+	test("clearPlaybackSession rejects recomputed session ids and only clears the exact live contract id", () => {
+		const liveSessionId = 3;
+
+		expect(clearPlaybackSession(baseState, liveSessionId)).not.toBeNull();
+		expect(clearPlaybackSession(baseState, liveSessionId + 1)).toBeNull();
+	});
+
 	test("settlePlaybackAck keeps replacement session requested track while stale ack is suppressed", () => {
 		const requestedReplacement = {
 			path: "C:/audio/b.flac",
