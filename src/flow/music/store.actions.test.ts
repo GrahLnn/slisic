@@ -23,7 +23,11 @@ const impl = {
 	evt: async (_event: string, _handler: (payload: unknown) => void) => () => {},
 	appReady: async () => undefined,
 	checkExists: async () => Ok<null, string>(null),
-	ffmpegCheckExists: async () => Ok<null, string>(null),
+	ffmpegCheckExists: async () =>
+		Ok<{ installed_path: string; installed_version: string }, string>({
+			installed_path: "ffmpeg",
+			installed_version: "7.0.0",
+		}),
 	resolveSavePath: async () => Ok<string, string>("C:/music"),
 	playlistNames: async () => Ok<string[], string>([]),
 	readAll: async () => Ok<Playlist[], string>([]),
@@ -252,6 +256,10 @@ async function waitUntil(predicate: () => boolean) {
 	throw new Error("condition not reached in time");
 }
 
+async function refresh() {
+	await action.run();
+}
+
 beforeEach(() => {
 	toastLog.error.length = 0;
 	toastLog.success.length = 0;
@@ -265,7 +273,6 @@ beforeEach(() => {
 	impl.evt =
 		async (_event: string, _handler: (payload: unknown) => void) => () => {};
 	impl.checkExists = async () => Ok<null, string>(null);
-	impl.ffmpegCheckExists = async () => Ok<null, string>(null);
 	impl.resolveSavePath = async () => Ok<string, string>("C:/music");
 	impl.playlistNames = async () => Ok<string[], string>([]);
 	impl.readAll = async () => Ok<Playlist[], string>([]);
@@ -764,6 +771,9 @@ describe("music store action contracts", () => {
 			...__testing.getState(),
 			mode: "create",
 			slot: mission,
+			routeResolved: true,
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
 		});
 		impl.create = async (data: CollectMission) => {
 			calls.push(data);
@@ -794,6 +804,9 @@ describe("music store action contracts", () => {
 			...__testing.getState(),
 			mode: "create",
 			slot: mission,
+			routeResolved: true,
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
 		});
 		impl.create = async () => {
 			createStarted = true;
@@ -834,6 +847,9 @@ describe("music store action contracts", () => {
 			...__testing.getState(),
 			mode: "create",
 			slot: mission,
+			routeResolved: true,
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
 		});
 		impl.create = async () => Err<string, null>("write failed");
 		impl.readAll = async () => Ok<Playlist[], string>([]);
@@ -850,6 +866,128 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("save_true_negative_guard_rejects_duplicate_name_without_exiting_editor", async () => {
+		const entry = makeEntry("alpha", "C:/music/alpha");
+		const mission = makeMission("  focus  ", [entry]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			playlists: [makePlaylist("Focus", [entry])],
+			slot: mission,
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+		});
+
+		await action.save();
+		await flush();
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("create");
+		expect(state.slot).toEqual(mission);
+		expect(state.playlists).toEqual([makePlaylist("Focus", [entry])]);
+		expect(toastLog.error).toContainEqual({
+			title: "Cannot save",
+			description: "This list already exists.",
+		});
+	});
+
+	test("save_true_negative_guard_rejects_missing_ffmpeg_without_exiting_editor", async () => {
+		const entry = makeEntry("alpha", "C:/music/alpha");
+		const mission = makeMission("fresh", [entry]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			slot: mission,
+			ffmpeg: null,
+		});
+
+		await action.save();
+		await flush();
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("create");
+		expect(state.slot).toEqual(mission);
+		expect(state.playlists).toEqual([]);
+		expect(toastLog.error).toContainEqual({
+			title: "Cannot save",
+			description: "ffmpeg is required to support audio analysis.",
+		});
+	});
+
+	test("save_true_negative_guard_blocks_reviewed_draft_without_optimistic_exit_or_persist", async () => {
+		const entry = makeEntry("alpha", "C:/music/alpha");
+		const mission = makeMission("fresh", [entry]);
+		const createCalls: CollectMission[] = [];
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			playlists: [makePlaylist("focus", [entry])],
+			slot: mission,
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+			linkReviews: ["https://example.com"],
+		});
+		impl.create = async (data: CollectMission) => {
+			createCalls.push(data);
+			return Ok<null, string>(null);
+		};
+
+		await action.save();
+		await flush();
+
+		const state = __testing.getState();
+		expect(createCalls).toEqual([]);
+		expect(state.mode).toBe("edit");
+		expect(state.slot).toEqual(mission);
+		expect(state.selectedListName).toBe("focus");
+		expect(state.linkReviews).toEqual(["https://example.com"]);
+		expect(toastLog.error).toContainEqual({
+			title: "Please wait",
+			description: "Background checks are still running.",
+		});
+	});
+
+	test("save_false_negative_guard_late_refresh_after_failed_create_reconciles_without_editor_or_playback_resurrection", async () => {
+		const entry = makeEntry("alpha", "C:/music/alpha");
+		const mission = makeMission("fresh", [entry]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			routeResolved: true,
+			slot: mission,
+			selectedListName: "stale",
+			nowPlaying: makeMusic("C:/music/stale/a.flac"),
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+		});
+
+		impl.create = async () => Err<string, null>("write failed");
+		let readAllCalls = 0;
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			return Ok<Playlist[], string>(
+				readAllCalls === 1 ? [] : [makePlaylist("server", [entry])],
+			);
+		};
+
+		await action.save();
+		await flush();
+		await refresh();
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("play");
+		expect(state.routeResolved).toBe(true);
+		expect(state.slot).toBeNull();
+		expect(state.selectedListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.playlists).toEqual([makePlaylist("server", [entry])]);
+	});
+
 	test("save_false_positive_guard_update_error_rolls_back_optimistic_edit_after_refresh", async () => {
 		const original = makePlaylist("focus", [
 			makeEntry("alpha", "C:/music/alpha"),
@@ -861,9 +999,12 @@ describe("music store action contracts", () => {
 		__testing.replaceState({
 			...__testing.getState(),
 			mode: "edit",
+			routeResolved: true,
 			playlists: [original],
 			selectedListName: "focus",
 			slot: mission,
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
 		});
 		impl.update = async () => Err<string, null>("write failed");
 		impl.readAll = async () => Ok<Playlist[], string>([original]);

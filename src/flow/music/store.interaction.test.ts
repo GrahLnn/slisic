@@ -11,6 +11,7 @@ import {
 	buildOptimisticPlaylistFromSlot,
 	buildPostSavePatch,
 	canExitWorkspace,
+	deriveSaveAffordance,
 	deriveBackTransition,
 	deriveRouteResolution,
 	deriveProbePatch,
@@ -58,6 +59,11 @@ const baseState: MusicState = {
 	folderReviews: [],
 	weblistReviews: [],
 	playbackEpoch: 3,
+};
+
+const installedFfmpeg = {
+	installed_path: "ffmpeg",
+	installed_version: "7.0.0",
 };
 
 function makePlaylist(name: string): Playlist {
@@ -245,6 +251,110 @@ describe("music interaction guards", () => {
 			false,
 		);
 		expect(canExitWorkspace(baseState)).toBe(true);
+	});
+
+	test("deriveSaveAffordance only allows persistable non-duplicate drafts with ffmpeg and no active review", () => {
+		expect(
+			deriveSaveAffordance({
+				...baseState,
+				slot: null,
+				ffmpeg: installedFfmpeg,
+			}),
+		).toEqual({ allowed: false, reason: "missing_slot" });
+
+		expect(
+			deriveSaveAffordance({
+				...baseState,
+				slot: {
+					name: "Fresh",
+					folders: [],
+					links: [],
+					entries: [makeEntry("a", "C:/a")],
+					exclude: [],
+				},
+				ffmpeg: null,
+			}),
+		).toEqual({ allowed: false, reason: "missing_ffmpeg" });
+
+		expect(
+			deriveSaveAffordance({
+				...baseState,
+				slot: {
+					name: "Fresh",
+					folders: [],
+					links: [],
+					entries: [makeEntry("a", "C:/a")],
+					exclude: [],
+				},
+				ffmpeg: installedFfmpeg,
+				savePath: null,
+			}),
+		).toEqual({ allowed: false, reason: "missing_save_path" });
+
+		expect(
+			deriveSaveAffordance({
+				...baseState,
+				playlists: [makePlaylist("Focus")],
+				selectedListName: null,
+				slot: {
+					name: "  focus  ",
+					folders: [],
+					links: [],
+					entries: [makeEntry("a", "C:/a")],
+					exclude: [],
+				},
+				ffmpeg: installedFfmpeg,
+				savePath: "C:/music",
+			}),
+		).toEqual({ allowed: false, reason: "duplicate_name" });
+
+		expect(
+			deriveSaveAffordance({
+				...baseState,
+				slot: {
+					name: "Fresh",
+					folders: [],
+					links: [],
+					entries: [],
+					exclude: [],
+				},
+				ffmpeg: installedFfmpeg,
+				savePath: "C:/music",
+			}),
+		).toEqual({ allowed: false, reason: "invalid_mission" });
+
+		expect(
+			deriveSaveAffordance({
+				...baseState,
+				slot: {
+					name: "Fresh",
+					folders: [],
+					links: [],
+					entries: [makeEntry("a", "C:/a")],
+					exclude: [],
+				},
+				ffmpeg: installedFfmpeg,
+				savePath: "C:/music",
+				linkReviews: ["https://example.com"],
+			}),
+		).toEqual({ allowed: false, reason: "review_in_progress" });
+
+		expect(
+			deriveSaveAffordance({
+				...baseState,
+				playlists: [makePlaylist("Focus")],
+				selectedListName: "Focus",
+				slot: {
+					name: "  focus  ",
+					folders: [],
+					links: [],
+					entries: [makeEntry("a", "C:/a")],
+					exclude: [],
+				},
+				ffmpeg: installedFfmpeg,
+				savePath: "C:/music",
+			}),
+		).toEqual({ allowed: true, reason: "review_in_progress" });
 	});
 
 	test("deriveBackTransition clears transient editor and playback state toward play or guide", () => {

@@ -63,6 +63,17 @@ export interface MusicState {
 	playbackEpoch: number;
 }
 
+export interface SaveAffordance {
+	allowed: boolean;
+	reason:
+		| "missing_slot"
+		| "missing_ffmpeg"
+		| "missing_save_path"
+		| "duplicate_name"
+		| "invalid_mission"
+		| "review_in_progress";
+}
+
 export type WorkspaceScreen =
 	| "unresolved"
 	| "guide"
@@ -201,6 +212,51 @@ export function canExitWorkspace(
 		snapshot.folderReviews.length === 0 &&
 		snapshot.weblistReviews.length === 0
 	);
+}
+
+export function deriveSaveAffordance(
+	snapshot: Pick<
+		MusicState,
+		| "slot"
+		| "ffmpeg"
+		| "savePath"
+		| "playlists"
+		| "selectedListName"
+		| "linkReviews"
+		| "folderReviews"
+		| "weblistReviews"
+	>,
+): SaveAffordance {
+	if (!snapshot.slot) {
+		return { allowed: false, reason: "missing_slot" };
+	}
+
+	if (!snapshot.ffmpeg) {
+		return { allowed: false, reason: "missing_ffmpeg" };
+	}
+
+	if (!snapshot.savePath) {
+		return { allowed: false, reason: "missing_save_path" };
+	}
+
+	const normalizedName = snapshot.slot.name.trim().toLowerCase();
+	const duplicate = snapshot.playlists
+		.filter((playlist) => playlist.name !== snapshot.selectedListName)
+		.some((playlist) => playlist.name.trim().toLowerCase() === normalizedName);
+	if (duplicate) {
+		return { allowed: false, reason: "duplicate_name" };
+	}
+
+	const persistCheck = canPersistMission(snapshot.slot);
+	if (!persistCheck.ok) {
+		return { allowed: false, reason: "invalid_mission" };
+	}
+
+	if (!canExitWorkspace(snapshot)) {
+		return { allowed: false, reason: "review_in_progress" };
+	}
+
+	return { allowed: true, reason: "review_in_progress" };
 }
 
 export function shouldHandleAudioEnded(
@@ -526,10 +582,6 @@ function removeValue(items: string[], value: string): string[] {
 	return items.filter((item) => item !== value);
 }
 
-function hasReviewInProgress(snapshot: MusicState): boolean {
-	return !canExitWorkspace(snapshot);
-}
-
 function patchSlot(mutator: (slot: CollectMission) => CollectMission) {
 	setState((prev) => {
 		if (!prev.slot) return prev;
@@ -824,12 +876,39 @@ async function startPlayByList(name: string) {
 
 async function persistSlot() {
 	const snapshot = getState();
-	if (hasReviewInProgress(snapshot)) {
+	const affordance = deriveSaveAffordance(snapshot);
+	if (!affordance.allowed && affordance.reason === "review_in_progress") {
 		sileo.error({
 			title: "Please wait",
 			description: "Background checks are still running.",
 		});
 		return;
+	}
+
+	if (!affordance.allowed) {
+		if (affordance.reason === "missing_ffmpeg") {
+			sileo.error({
+				title: "Cannot save",
+				description: "ffmpeg is required to support audio analysis.",
+			});
+			return;
+		}
+
+		if (affordance.reason === "duplicate_name") {
+			sileo.error({
+				title: "Cannot save",
+				description: "This list already exists.",
+			});
+			return;
+		}
+
+		if (affordance.reason === "missing_save_path") {
+			sileo.error({
+				title: "Cannot save",
+				description: "Choose where downloaded web music should be saved before saving.",
+			});
+			return;
+		}
 	}
 
 	const check = canPersistMission(snapshot.slot);
