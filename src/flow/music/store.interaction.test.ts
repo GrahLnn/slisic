@@ -27,6 +27,7 @@ import {
 const baseState: MusicState = {
 	mode: "play",
 	routeResolved: true,
+	startupRoute: "hydrated_playlists",
 	loading: false,
 	playlists: [],
 	selectedListName: "contemporary",
@@ -431,7 +432,10 @@ describe("music interaction guards", () => {
 		});
 
 		expect(
-			deriveRouteResolution({ routeResolved: true, mode: "new_guide" }),
+			deriveRouteResolution(
+				{ routeResolved: true, mode: "new_guide" },
+				{ kind: "hydrated_empty" },
+			),
 		).toEqual({
 			kind: "hydrated_empty",
 			routeResolved: true,
@@ -440,7 +444,10 @@ describe("music interaction guards", () => {
 		});
 
 		expect(
-			deriveRouteResolution({ routeResolved: true, mode: "play" }),
+			deriveRouteResolution(
+				{ routeResolved: true, mode: "play" },
+				{ kind: "hydrated_playlists" },
+			),
 		).toEqual({
 			kind: "hydrated_playlists",
 			routeResolved: true,
@@ -449,7 +456,10 @@ describe("music interaction guards", () => {
 		});
 
 		expect(
-			deriveRouteResolution({ routeResolved: true, mode: "edit" }),
+			deriveRouteResolution(
+				{ routeResolved: true, mode: "edit" },
+				{ kind: "hydrated_editing" },
+			),
 		).toEqual({
 			kind: "hydrated_editing",
 			routeResolved: true,
@@ -465,32 +475,34 @@ describe("music interaction guards", () => {
 		);
 		expect(nonEmpty.mode).toBe("play");
 		expect(nonEmpty.routeResolved).toBe(true);
+		expect(nonEmpty.startupRoute).toBe("startup_probed_nonempty");
 		expect(
 			deriveRouteResolution({
 				mode: nonEmpty.mode,
 				routeResolved: nonEmpty.routeResolved,
-			}),
+			}, { kind: nonEmpty.startupRoute }),
 		).toEqual({
-			kind: "hydrated_playlists",
+			kind: "startup_probed_nonempty",
 			routeResolved: true,
 			mode: "play",
-			phase: "hydrated",
+			phase: "probed",
 		});
 		expect(nonEmpty.playlists).toEqual(buildPlaylistPlaceholders(["focus"]));
 
 		const empty = deriveProbePatch({ mode: "play", routeResolved: false }, []);
 		expect(empty.mode).toBe("new_guide");
 		expect(empty.routeResolved).toBe(true);
+		expect(empty.startupRoute).toBe("startup_probed_empty");
 		expect(
 			deriveRouteResolution({
 				mode: empty.mode,
 				routeResolved: empty.routeResolved,
-			}),
+			}, { kind: empty.startupRoute }),
 		).toEqual({
-			kind: "hydrated_empty",
+			kind: "startup_probed_empty",
 			routeResolved: true,
 			mode: "new_guide",
-			phase: "hydrated",
+			phase: "probed",
 		});
 		expect(empty.playlists).toEqual([]);
 	});

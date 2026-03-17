@@ -45,9 +45,14 @@ export interface StartupRouteResolution {
 	phase: "unresolved" | "probed" | "hydrated";
 }
 
+export interface StartupRouteSnapshot {
+	kind: StartupRouteKind;
+}
+
 export interface MusicState {
 	mode: UiMode;
 	routeResolved: boolean;
+	startupRoute: StartupRouteKind;
 	loading: boolean;
 	playlists: Playlist[];
 	selectedListName: string | null;
@@ -84,7 +89,23 @@ export type WorkspaceScreen =
 
 export function deriveRouteResolution(
 	snapshot: Pick<MusicState, "mode" | "routeResolved">,
+	routeSnapshot?: StartupRouteSnapshot | null,
 ): StartupRouteResolution {
+	if (routeSnapshot) {
+		return {
+			kind: routeSnapshot.kind,
+			routeResolved: routeSnapshot.kind !== "startup_unresolved",
+			mode: snapshot.mode,
+			phase:
+				routeSnapshot.kind === "startup_unresolved"
+					? "unresolved"
+					: routeSnapshot.kind === "startup_probed_empty" ||
+						  routeSnapshot.kind === "startup_probed_nonempty"
+						? "probed"
+						: "hydrated",
+		};
+	}
+
 	if (!snapshot.routeResolved) {
 		return {
 			kind: "startup_unresolved",
@@ -292,7 +313,12 @@ export function deriveRefreshPatch(
 	playlists: Playlist[],
 ): Pick<
 	MusicState,
-	"playlists" | "selectedListName" | "nowPlaying" | "mode" | "routeResolved"
+	| "playlists"
+	| "selectedListName"
+	| "nowPlaying"
+	| "mode"
+	| "routeResolved"
+	| "startupRoute"
 > {
 	const route = resolveHydratedRoute(prev, playlists.length > 0);
 
@@ -310,6 +336,7 @@ export function deriveRefreshPatch(
 			nowPlaying: null,
 			mode: route.mode,
 			routeResolved: route.routeResolved,
+			startupRoute: route.kind,
 		};
 	}
 
@@ -337,6 +364,7 @@ export function deriveRefreshPatch(
 		nowPlaying: refreshedNowPlaying,
 		mode: route.mode,
 		routeResolved: route.routeResolved,
+		startupRoute: route.kind,
 	};
 }
 
@@ -352,13 +380,14 @@ export function buildPlaylistPlaceholders(names: string[]): Playlist[] {
 export function deriveProbePatch(
 	prev: Pick<MusicState, "mode" | "routeResolved">,
 	playlistNames: string[],
-): Pick<MusicState, "playlists" | "mode" | "routeResolved"> {
+): Pick<MusicState, "playlists" | "mode" | "routeResolved" | "startupRoute"> {
 	const route = resolveProbeRoute(prev, playlistNames.length > 0);
 
 	return {
 		playlists: buildPlaylistPlaceholders(playlistNames),
 		mode: route.mode,
 		routeResolved: route.routeResolved,
+		startupRoute: route.kind,
 	};
 }
 
@@ -369,6 +398,7 @@ export function buildPostSavePatch(
 	MusicState,
 	| "mode"
 	| "routeResolved"
+	| "startupRoute"
 	| "selectedListName"
 	| "nowPlaying"
 	| "nowJudge"
@@ -379,6 +409,7 @@ export function buildPostSavePatch(
 	return {
 		mode: hasData ? "play" : "new_guide",
 		routeResolved: true,
+		startupRoute: hasData ? "hydrated_playlists" : "hydrated_empty",
 		selectedListName: null,
 		nowPlaying: null,
 		nowJudge: null,
@@ -394,6 +425,7 @@ export function deriveWorkspaceEntryPatch(
 	MusicState,
 	| "mode"
 	| "routeResolved"
+	| "startupRoute"
 	| "slot"
 	| "selectedListName"
 	| "nowPlaying"
@@ -410,6 +442,7 @@ export function deriveWorkspaceEntryPatch(
 	MusicState,
 	| "mode"
 	| "routeResolved"
+	| "startupRoute"
 	| "slot"
 	| "selectedListName"
 	| "nowPlaying"
@@ -426,6 +459,7 @@ export function deriveWorkspaceEntryPatch(
 	MusicState,
 	| "mode"
 	| "routeResolved"
+	| "startupRoute"
 	| "slot"
 	| "selectedListName"
 	| "nowPlaying"
@@ -440,6 +474,7 @@ export function deriveWorkspaceEntryPatch(
 	return {
 		mode: kind,
 		routeResolved: true,
+		startupRoute: "hydrated_editing",
 		slot:
 			kind === "create" ? defaultMission() : missionFromPlaylist(editPlaylist),
 		selectedListName: kind === "edit" ? editPlaylist.name : null,
@@ -471,6 +506,7 @@ export function deriveBackTransition(
 	MusicState,
 	| "mode"
 	| "routeResolved"
+	| "startupRoute"
 	| "selectedListName"
 	| "nowPlaying"
 	| "nowJudge"
@@ -483,6 +519,7 @@ export function deriveBackTransition(
 	return {
 		mode: snapshot.playlists.length > 0 ? "play" : "new_guide",
 		routeResolved: snapshot.routeResolved,
+		startupRoute: snapshot.playlists.length > 0 ? "hydrated_playlists" : "hydrated_empty",
 		selectedListName: null,
 		nowPlaying: null,
 		nowJudge: null,
@@ -525,6 +562,7 @@ export function applyOptimisticEditSave(
 const initialState: MusicState = {
 	mode: "new_guide",
 	routeResolved: false,
+	startupRoute: "startup_unresolved",
 	loading: false,
 	playlists: [],
 	selectedListName: null,
@@ -1093,7 +1131,7 @@ export const action = {
 				title: "Initialization failed",
 				description: error instanceof Error ? error.message : String(error),
 			});
-			patchState({ routeResolved: true });
+			patchState({ routeResolved: true, startupRoute: "startup_failed" });
 		} finally {
 			if (isCurrentRun(version)) {
 				patchState({ loading: false });

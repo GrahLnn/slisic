@@ -350,6 +350,7 @@ describe("music store action contracts", () => {
 		expect(state.mode).toBe("play");
 		expect(state.routeResolved).toBe(true);
 		expect(state.playlists).toEqual([makePlaylist("focus")]);
+		expect(state.startupRoute).toBe("hydrated_playlists");
 		expect(state.loading).toBe(false);
 		expect(toastLog.error).toEqual([]);
 	});
@@ -426,7 +427,7 @@ describe("music store action contracts", () => {
 			deriveRouteResolution({
 				mode: state.mode,
 				routeResolved: state.routeResolved,
-			}),
+			}, { kind: state.startupRoute }),
 		).toEqual({
 			kind: "hydrated_playlists",
 			routeResolved: true,
@@ -469,6 +470,7 @@ describe("music store action contracts", () => {
 		expect(state.routeResolved).toBe(false);
 		expect(state.mode).toBe("edit");
 		expect(state.playlists).toEqual([hydrated]);
+		expect(state.startupRoute).toBe("startup_unresolved");
 	});
 
 	test("run_true_negative_probes_empty_names_and_stays_in_new_guide_until_empty_snapshot_confirms_it", async () => {
@@ -503,12 +505,13 @@ describe("music store action contracts", () => {
 		expect(state.mode).toBe("new_guide");
 		expect(state.routeResolved).toBe(true);
 		expect(state.playlists).toEqual([]);
+		expect(state.startupRoute).toBe("hydrated_empty");
 		expect(state.loading).toBe(false);
 		expect(
 			deriveRouteResolution({
 				mode: state.mode,
 				routeResolved: state.routeResolved,
-			}),
+			}, { kind: state.startupRoute }),
 		).toEqual({
 			kind: "hydrated_empty",
 			routeResolved: true,
