@@ -63,6 +63,13 @@ export interface MusicState {
 	playbackEpoch: number;
 }
 
+export type WorkspaceScreen =
+	| "unresolved"
+	| "guide"
+	| "play"
+	| "create"
+	| "edit";
+
 export function deriveRouteResolution(
 	snapshot: Pick<MusicState, "mode" | "routeResolved">,
 ): StartupRouteResolution {
@@ -95,6 +102,24 @@ export function deriveRouteResolution(
 		routeResolved: true,
 		mode: snapshot.mode,
 	};
+}
+
+export function projectWorkspaceScreen(
+	snapshot: Pick<MusicState, "mode" | "routeResolved">,
+): WorkspaceScreen {
+	if (!snapshot.routeResolved) {
+		return "unresolved";
+	}
+
+	if (snapshot.mode === "create") {
+		return "create";
+	}
+
+	if (snapshot.mode === "edit") {
+		return "edit";
+	}
+
+	return snapshot.mode === "new_guide" ? "guide" : "play";
 }
 
 function resolveHydratedRoute(
@@ -168,6 +193,16 @@ export function hasPlaybackContext(
 	);
 }
 
+export function canExitWorkspace(
+	snapshot: Pick<MusicState, "linkReviews" | "folderReviews" | "weblistReviews">,
+): boolean {
+	return (
+		snapshot.linkReviews.length === 0 &&
+		snapshot.folderReviews.length === 0 &&
+		snapshot.weblistReviews.length === 0
+	);
+}
+
 export function shouldHandleAudioEnded(
 	snapshot: Pick<MusicState, "mode" | "selectedListName" | "nowPlaying">,
 	endedPath: string,
@@ -186,13 +221,30 @@ export function deriveRefreshPatch(
 	MusicState,
 	"playlists" | "selectedListName" | "nowPlaying" | "mode" | "routeResolved"
 > {
+	const route = resolveHydratedRoute(prev, playlists.length > 0);
+
+	if (route.mode === "create" || route.mode === "edit") {
+		const selectedListName =
+			route.mode === "edit" &&
+			prev.selectedListName &&
+			playlists.some((playlist) => playlist.name === prev.selectedListName)
+				? prev.selectedListName
+				: null;
+
+		return {
+			playlists,
+			selectedListName,
+			nowPlaying: null,
+			mode: route.mode,
+			routeResolved: route.routeResolved,
+		};
+	}
+
 	const selectedListName =
 		prev.selectedListName &&
 		playlists.some((playlist) => playlist.name === prev.selectedListName)
 			? prev.selectedListName
 			: null;
-
-	const route = resolveHydratedRoute(prev, playlists.length > 0);
 
 	const refreshedNowPlaying =
 		selectedListName && prev.nowPlaying
@@ -260,6 +312,78 @@ export function buildPostSavePatch(
 		slot: null,
 		processMsg: null,
 		playbackEpoch: idleEpoch,
+	};
+}
+
+export function deriveWorkspaceEntryPatch(
+	kind: "create" | "edit",
+	playlist?: Playlist,
+): Pick<
+	MusicState,
+	| "mode"
+	| "routeResolved"
+	| "slot"
+	| "selectedListName"
+	| "nowPlaying"
+	| "nowJudge"
+	| "processMsg"
+	| "linkReviews"
+	| "folderReviews"
+	| "weblistReviews"
+> {
+	return {
+		mode: kind,
+		routeResolved: true,
+		slot: kind === "create" ? defaultMission() : missionFromPlaylist(playlist!),
+		selectedListName: kind === "edit" ? playlist!.name : null,
+		nowPlaying: null,
+		nowJudge: null,
+		processMsg: null,
+		linkReviews: [],
+		folderReviews: [],
+		weblistReviews: [],
+	};
+}
+
+export function deriveBackTransition(
+	snapshot: Pick<
+		MusicState,
+		| "mode"
+		| "playlists"
+		| "routeResolved"
+		| "selectedListName"
+		| "nowPlaying"
+		| "nowJudge"
+		| "slot"
+		| "processMsg"
+		| "linkReviews"
+		| "folderReviews"
+		| "weblistReviews"
+	>,
+): Pick<
+	MusicState,
+	| "mode"
+	| "routeResolved"
+	| "selectedListName"
+	| "nowPlaying"
+	| "nowJudge"
+	| "slot"
+	| "processMsg"
+	| "linkReviews"
+	| "folderReviews"
+	| "weblistReviews"
+> {
+	return {
+		mode: snapshot.playlists.length > 0 ? "play" : "new_guide",
+		routeResolved: snapshot.routeResolved,
+		selectedListName: null,
+		nowPlaying: null,
+		nowJudge: null,
+		slot: null,
+		processMsg: null,
+		linkReviews: [],
+		folderReviews: [],
+		weblistReviews: [],
 	};
 }
 
@@ -403,11 +527,7 @@ function removeValue(items: string[], value: string): string[] {
 }
 
 function hasReviewInProgress(snapshot: MusicState): boolean {
-	return (
-		snapshot.linkReviews.length > 0 ||
-		snapshot.folderReviews.length > 0 ||
-		snapshot.weblistReviews.length > 0
-	);
+	return !canExitWorkspace(snapshot);
 }
 
 function patchSlot(mutator: (slot: CollectMission) => CollectMission) {
@@ -860,47 +980,20 @@ export const action = {
 	},
 	async addNew() {
 		await safeStop();
-		patchState({
-			mode: "create",
-			slot: defaultMission(),
-			selectedListName: null,
-			nowJudge: null,
-			processMsg: null,
-			linkReviews: [],
-			folderReviews: [],
-			weblistReviews: [],
-		});
+		patchState(deriveWorkspaceEntryPatch("create"));
 	},
 	async edit(playlist: Playlist) {
 		await safeStop();
-		patchState({
-			mode: "edit",
-			slot: missionFromPlaylist(playlist),
-			selectedListName: playlist.name,
-			nowJudge: null,
-			processMsg: null,
-			linkReviews: [],
-			folderReviews: [],
-			weblistReviews: [],
-		});
+		patchState(deriveWorkspaceEntryPatch("edit", playlist));
 	},
 	async back() {
 		const snapshot = getState();
-		if (hasReviewInProgress(snapshot)) {
+		if (!canExitWorkspace(snapshot)) {
 			return;
 		}
 
 		await safeStop();
-
-		const hasData = snapshot.playlists.length > 0;
-		patchState({
-			mode: hasData ? "play" : "new_guide",
-			slot: null,
-			processMsg: null,
-			linkReviews: [],
-			folderReviews: [],
-			weblistReviews: [],
-		});
+		patchState(deriveBackTransition(snapshot));
 	},
 	setSlot(slot: CollectMission) {
 		patchState({ slot });

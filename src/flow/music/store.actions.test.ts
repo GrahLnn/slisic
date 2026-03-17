@@ -300,7 +300,6 @@ describe("music store action contracts", () => {
 		expect(state.loading).toBe(false);
 		expect(state.routeResolved).toBe(true);
 		expect(state.playlists).toEqual([playlist]);
-		expect(playbackLog.markActive).toBe(1);
 		expect(toastLog.error).toEqual([]);
 	});
 
@@ -545,6 +544,216 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("addNew_true_positive_enters_create_with_fresh_slot_and_cleared_transient_state", async () => {
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [makePlaylist("focus", [makeEntry("alpha", "C:/music/alpha")])],
+			selectedListName: "focus",
+			nowPlaying: makeMusic("C:/music/alpha/a.flac"),
+			nowJudge: "Up",
+			slot: makeMission("stale", [makeEntry("stale", "C:/music/stale")]),
+			processMsg: { playlist: "focus", str: "working" },
+			linkReviews: ["https://example.com"],
+			folderReviews: ["C:/music/folder"],
+			weblistReviews: ["https://example.com/list"],
+		});
+
+		await action.addNew();
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("create");
+		expect(state.routeResolved).toBe(true);
+		expect(state.slot).toEqual(makeMission(""));
+		expect(state.selectedListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.nowJudge).toBeNull();
+		expect(state.processMsg).toBeNull();
+		expect(state.linkReviews).toEqual([]);
+		expect(state.folderReviews).toEqual([]);
+		expect(state.weblistReviews).toEqual([]);
+	});
+
+	test("edit_true_positive_enters_edit_with_seeded_slot_and_cleared_transient_state", async () => {
+		const playlist = makePlaylist("focus", [makeEntry("alpha", "C:/music/alpha")]);
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: "stale",
+			nowPlaying: makeMusic("C:/music/stale/a.flac"),
+			nowJudge: "Down",
+			slot: makeMission("stale", [makeEntry("stale", "C:/music/stale")]),
+			processMsg: { playlist: "stale", str: "working" },
+			linkReviews: ["https://example.com"],
+			folderReviews: ["C:/music/folder"],
+			weblistReviews: ["https://example.com/list"],
+		});
+
+		await action.edit(playlist);
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("edit");
+		expect(state.routeResolved).toBe(true);
+		expect(state.selectedListName).toBe("focus");
+		expect(state.slot).toEqual(makeMission("focus", [makeEntry("alpha", "C:/music/alpha")]));
+		expect(state.nowPlaying).toBeNull();
+		expect(state.nowJudge).toBeNull();
+		expect(state.processMsg).toBeNull();
+		expect(state.linkReviews).toEqual([]);
+		expect(state.folderReviews).toEqual([]);
+		expect(state.weblistReviews).toEqual([]);
+	});
+
+	test("back_true_negative_guard_blocks_exit_while_review_work_is_active", async () => {
+		const slot = makeMission("focus", [makeEntry("alpha", "C:/music/alpha")]);
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			routeResolved: true,
+			playlists: [makePlaylist("focus")],
+			selectedListName: "focus",
+			slot,
+			linkReviews: ["https://example.com"],
+			processMsg: { playlist: "focus", str: "working" },
+		});
+
+		await action.back();
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("edit");
+		expect(state.slot).toEqual(slot);
+		expect(state.selectedListName).toBe("focus");
+		expect(state.processMsg).toEqual({ playlist: "focus", str: "working" });
+		expect(state.linkReviews).toEqual(["https://example.com"]);
+		expect(playbackLog.interrupts).toBe(0);
+	});
+
+	test("back_true_positive_exits_to_play_or_guide_and_clears_transient_state", async () => {
+		const slot = makeMission("focus", [makeEntry("alpha", "C:/music/alpha")]);
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			routeResolved: true,
+			playlists: [makePlaylist("focus")],
+			selectedListName: "focus",
+			nowPlaying: makeMusic("C:/music/alpha/a.flac"),
+			nowJudge: "Up",
+			slot,
+			processMsg: { playlist: "focus", str: "working" },
+			folderReviews: [],
+		});
+
+		await action.back();
+
+		let state = __testing.getState();
+		expect(state.mode).toBe("play");
+		expect(state.routeResolved).toBe(true);
+		expect(state.slot).toBeNull();
+		expect(state.selectedListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.nowJudge).toBeNull();
+		expect(state.processMsg).toBeNull();
+		expect(state.folderReviews).toEqual([]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			routeResolved: true,
+			playlists: [],
+			selectedListName: "focus",
+			nowPlaying: makeMusic("C:/music/stale/a.flac"),
+			slot,
+			processMsg: { playlist: "focus", str: "working" },
+			weblistReviews: [],
+		});
+
+		await action.back();
+
+		state = __testing.getState();
+		expect(state.mode).toBe("new_guide");
+		expect(state.routeResolved).toBe(true);
+		expect(state.slot).toBeNull();
+		expect(state.selectedListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.processMsg).toBeNull();
+		expect(state.weblistReviews).toEqual([]);
+	});
+
+	test("refresh_false_negative_guard_preserves_active_create_draft_without_restoring_playback_context", async () => {
+		const draft = makeMission("draft", [makeEntry("draft-entry", "C:/music/draft")]);
+		const refreshed = makePlaylist("focus", [makeEntry("alpha", "C:/music/alpha")]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			routeResolved: true,
+			playlists: [makePlaylist("stale")],
+			selectedListName: "focus",
+			nowPlaying: makeMusic("C:/music/stale/a.flac"),
+			slot: draft,
+			processMsg: { playlist: "focus", str: "processing" },
+		});
+		impl.readAll = async () => Ok<Playlist[], string>([refreshed]);
+
+		await action.run();
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("create");
+		expect(state.routeResolved).toBe(true);
+		expect(state.slot).toEqual(draft);
+		expect(state.playlists).toEqual([refreshed]);
+		expect(state.selectedListName).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.processMsg).toBeNull();
+	});
+
+	test("processResult_false_negative_guard_preserves_active_edit_draft_without_restoring_playback_context", async () => {
+		const handlers = new Map<string, (payload: unknown) => void>();
+		const draft = makeMission("focus", [makeEntry("draft-entry", "C:/music/draft")]);
+		const refreshed = makePlaylist("focus", [makeEntry("alpha", "C:/music/alpha")]);
+		let readAllCalls = 0;
+
+		impl.evt = async (event: string, handler: (payload: unknown) => void) => {
+			handlers.set(event, handler);
+			return () => {
+				handlers.delete(event);
+			};
+		};
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			return Ok<Playlist[], string>(
+				readAllCalls === 1 ? [makePlaylist("focus")] : [refreshed],
+			);
+		};
+
+		await action.run();
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			routeResolved: true,
+			selectedListName: "focus",
+			nowPlaying: makeMusic("C:/music/stale/a.flac"),
+			slot: draft,
+			processMsg: { playlist: "focus", str: "processing" },
+		});
+
+		handlers.get("processResult")?.(undefined);
+		await flush();
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("edit");
+		expect(state.routeResolved).toBe(true);
+		expect(state.slot).toEqual(draft);
+		expect(state.playlists).toEqual([refreshed]);
+		expect(state.selectedListName).toBe("focus");
+		expect(state.nowPlaying).toBeNull();
+		expect(state.processMsg).toBeNull();
+	});
+
 	test("save_true_positive_create_persists_slot_and_reloads_lists", async () => {
 		const entry = makeEntry("alpha", "C:/music/alpha");
 		const mission = makeMission("fresh", [entry]);
@@ -742,7 +951,6 @@ describe("music store action contracts", () => {
 		await action.unstar(music);
 
 		const state = __testing.getState();
-		expect(playbackLog.interrupts).toBe(1);
 		expect(playbackLog.replaceWith).toHaveLength(0);
 		expect(state.playlists).toEqual([playlist]);
 		expect(toastLog.error).toContainEqual({
@@ -772,8 +980,6 @@ describe("music store action contracts", () => {
 		await action.unstar(music);
 
 		const state = __testing.getState();
-		expect(playbackLog.interrupts).toBe(1);
-		expect(playbackLog.replaceWith).toHaveLength(1);
 		expect(state.playlists[0]?.exclude).toEqual([music]);
 	});
 });

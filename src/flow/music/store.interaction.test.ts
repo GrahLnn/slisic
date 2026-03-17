@@ -10,11 +10,14 @@ import {
 	buildPlaylistPlaceholders,
 	buildOptimisticPlaylistFromSlot,
 	buildPostSavePatch,
+	canExitWorkspace,
+	deriveBackTransition,
 	deriveRouteResolution,
 	deriveProbePatch,
 	deriveRefreshPatch,
 	hasPlaybackContext,
 	type MusicState,
+	projectWorkspaceScreen,
 	mapImportFolderEntryToEntry,
 	shouldAdvanceOnUnstar,
 	shouldHandleAudioEnded,
@@ -211,6 +214,80 @@ describe("music interaction guards", () => {
 			[],
 		);
 		expect(emptyPlay.mode).toBe("new_guide");
+	});
+
+	test("projectWorkspaceScreen exposes canonical guide play create and edit projections", () => {
+		expect(
+			projectWorkspaceScreen({ ...baseState, routeResolved: false, mode: "edit" }),
+		).toBe("unresolved");
+		expect(
+			projectWorkspaceScreen({ ...baseState, routeResolved: true, mode: "new_guide" }),
+		).toBe("guide");
+		expect(
+			projectWorkspaceScreen({ ...baseState, routeResolved: true, mode: "play" }),
+		).toBe("play");
+		expect(
+			projectWorkspaceScreen({ ...baseState, routeResolved: true, mode: "create" }),
+		).toBe("create");
+		expect(
+			projectWorkspaceScreen({ ...baseState, routeResolved: true, mode: "edit" }),
+		).toBe("edit");
+	});
+
+	test("canExitWorkspace blocks back whenever review work is active", () => {
+		expect(canExitWorkspace({ ...baseState, linkReviews: ["https://a"] })).toBe(
+			false,
+		);
+		expect(canExitWorkspace({ ...baseState, folderReviews: ["C:/folder"] })).toBe(
+			false,
+		);
+		expect(canExitWorkspace({ ...baseState, weblistReviews: ["https://b"] })).toBe(
+			false,
+		);
+		expect(canExitWorkspace(baseState)).toBe(true);
+	});
+
+	test("deriveBackTransition clears transient editor and playback state toward play or guide", () => {
+		const toPlay = deriveBackTransition({
+			...baseState,
+			mode: "edit",
+			playlists: [makePlaylist("focus")],
+			selectedListName: "focus",
+			nowJudge: "Up",
+			slot: { name: "draft", folders: [], links: [], entries: [], exclude: [] },
+			processMsg: { playlist: "focus", str: "working" },
+			linkReviews: ["https://example.com"],
+			folderReviews: ["C:/folder"],
+			weblistReviews: ["https://example.com/list"],
+		});
+
+		expect(toPlay.mode).toBe("play");
+		expect(toPlay.routeResolved).toBe(true);
+		expect(toPlay.selectedListName).toBeNull();
+		expect(toPlay.nowPlaying).toBeNull();
+		expect(toPlay.nowJudge).toBeNull();
+		expect(toPlay.slot).toBeNull();
+		expect(toPlay.processMsg).toBeNull();
+		expect(toPlay.linkReviews).toEqual([]);
+		expect(toPlay.folderReviews).toEqual([]);
+		expect(toPlay.weblistReviews).toEqual([]);
+
+		const toGuide = deriveBackTransition({
+			...baseState,
+			mode: "create",
+			playlists: [],
+			selectedListName: "focus",
+			nowPlaying: makeMusic("C:/audio/stale.flac"),
+			slot: { name: "draft", folders: [], links: [], entries: [], exclude: [] },
+			processMsg: { playlist: "focus", str: "working" },
+		});
+
+		expect(toGuide.mode).toBe("new_guide");
+		expect(toGuide.routeResolved).toBe(true);
+		expect(toGuide.selectedListName).toBeNull();
+		expect(toGuide.nowPlaying).toBeNull();
+		expect(toGuide.slot).toBeNull();
+		expect(toGuide.processMsg).toBeNull();
 	});
 
 	test("deriveRouteResolution projects unresolved, guide, and play states coherently", () => {
