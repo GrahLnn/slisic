@@ -7,6 +7,7 @@ use anyhow::Result;
 use appdb::prelude::{init_db_with_options, Crud, InitDbOptions};
 use domain::models::user::User;
 use domain::template;
+use tauri::Emitter;
 use tauri::async_runtime::block_on;
 use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events, Builder};
@@ -14,6 +15,7 @@ use tokio::task::block_in_place;
 use utils::event;
 
 const DB_PATH: &str = "surreal.db";
+const STARTUP_READY_EVENT: &str = "factory://startup-ready";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -114,6 +116,11 @@ export function makeLiveEvent<T extends Record<string, any>>(ev: EventsShape<T>)
                     Ok(())
                 })
             })
+        })
+        .on_page_load(|window, _payload| {
+            let label = window.label().to_string();
+            eprintln!("startup: page load finished for {label}");
+            let _ = window.emit(STARTUP_READY_EVENT, ());
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

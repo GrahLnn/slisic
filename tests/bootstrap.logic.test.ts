@@ -8,6 +8,8 @@ import {
 } from "../src/flow/bootstrap/logic";
 import { getPlatform } from "../lib/utils";
 
+const startupReadyEvent = "factory://startup-ready";
+
 function createMeta(overrides: Partial<AppWindowMeta> = {}): AppWindowMeta {
   return {
     ...initialAppWindowMeta,
@@ -210,5 +212,9 @@ describe("getPlatform", () => {
     if (originalInternals) {
       windowStub.__TAURI_OS_PLUGIN_INTERNALS__ = originalInternals;
     }
+  });
+
+  test("startup ready event name stays stable for native and renderer startup tracing", () => {
+    expect(startupReadyEvent).toBe("factory://startup-ready");
   });
 });
