@@ -9,11 +9,12 @@ export type OsName = "windows" | "macos" | "linux" | "android" | "ios" | "unknow
 
 export function getPlatform(): OsName {
   if (typeof window !== "undefined") {
-    const tauriOs = (window as typeof window & {
+    const tauriWindow = window as typeof window & {
       __TAURI_OS_PLUGIN_INTERNALS__?: {
         platform?: string;
       };
-    }).__TAURI_OS_PLUGIN_INTERNALS__;
+    };
+    const tauriOs = tauriWindow.__TAURI_OS_PLUGIN_INTERNALS__;
 
     if (typeof tauriOs?.platform === "string") {
       return tauriOs.platform as OsName;
@@ -43,10 +44,18 @@ export function getPlatform(): OsName {
   }
 
   try {
-    return platform() as OsName;
+    if (
+      typeof window !== "undefined" &&
+      typeof (window as typeof window & { __TAURI_OS_PLUGIN_INTERNALS__?: { platform?: string } })
+        .__TAURI_OS_PLUGIN_INTERNALS__?.platform === "string"
+    ) {
+      return platform() as OsName;
+    }
   } catch {
     return "unknown";
   }
+
+  return "unknown";
 }
 
 export const os = me(getPlatform());

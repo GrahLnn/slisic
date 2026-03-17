@@ -29,7 +29,7 @@ export function shouldRenderMainWindow(meta: AppWindowMeta): boolean {
 }
 
 export function shouldRunUpdater(meta: AppWindowMeta): boolean {
-  return meta.window === "Main" && meta.isPrimaryMain;
+  return meta.status === "ready" && meta.isUserWindow && meta.window === "Main" && meta.isPrimaryMain;
 }
 
 export function shouldRequestWindowPrewarm(meta: AppWindowMeta): boolean {

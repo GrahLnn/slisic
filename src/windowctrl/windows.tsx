@@ -2,12 +2,10 @@ import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
 import { Window } from "@tauri-apps/api/window";
 import type React from "react";
-import { type KeyboardEvent, type PropsWithChildren, memo } from "react";
+import { type KeyboardEvent, type PropsWithChildren, memo, useMemo } from "react";
 import ReactDOM from "react-dom";
 import { useIsWindowFocus } from "../flow/windowFocus";
 import { useIsWindowMaximized } from "../flow/windowMaximized";
-
-const appWindow = Window.getCurrent();
 
 const windowsControlsPortal = document.createElement("div");
 windowsControlsPortal.id = "windows-controls-portal";
@@ -77,6 +75,7 @@ const WindowsButton = memo(function WindowsButton({
 });
 
 const WindowsControlsCore = memo(function WindowsControlsCore() {
+  const appWindow = useMemo(() => Window.getCurrent(), []);
   const maximized = useIsWindowMaximized();
   const windowFocused = useIsWindowFocus();
 

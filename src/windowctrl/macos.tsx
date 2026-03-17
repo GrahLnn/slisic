@@ -2,12 +2,10 @@ import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
 import { Window } from "@tauri-apps/api/window";
 import type React from "react";
-import { type PropsWithChildren, useEffect, useState } from "react";
+import { type PropsWithChildren, useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom";
 import { useIsWindowFocus } from "../flow/windowFocus";
 import { events } from "../cmd/commands";
-
-const appWindow = Window.getCurrent();
 
 const windowsControlsPortal = document.createElement("div");
 windowsControlsPortal.id = "windows-controls-portal";
@@ -38,18 +36,19 @@ function WindowButton({ className, onClick, icon }: WindowButtonProps) {
 }
 
 function Core() {
+  const appWindow = useMemo(() => Window.getCurrent(), []);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const windowFocused = useIsWindowFocus();
 
   useEffect(() => {
-    const unlisten = events.fullScreenEvent.listen((event) => {
+    const unlisten = events.fullScreenEvent(appWindow).listen((event) => {
       setIsFullscreen(event.payload.is_fullscreen);
     });
 
     return () => {
       unlisten.then((f) => f());
     };
-  }, []);
+  }, [appWindow]);
 
   const iconcn = "opacity-0 group-hover:opacity-60 transition-opacity duration-300 mx-auto my-auto";
   const iconsize = 8;

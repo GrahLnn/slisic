@@ -87,6 +87,27 @@ describe("shouldRunUpdater", () => {
         }),
       ),
     ).toBe(false);
+
+    expect(
+      shouldRunUpdater(
+        createMeta({
+          status: "pending",
+          window: "Main",
+          isPrimaryMain: true,
+        }),
+      ),
+    ).toBe(false);
+
+    expect(
+      shouldRunUpdater(
+        createMeta({
+          status: "ready",
+          window: "Main",
+          isPrimaryMain: true,
+          isUserWindow: false,
+        }),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -136,6 +157,45 @@ describe("getPlatform", () => {
     delete windowStub.__TAURI_OS_PLUGIN_INTERNALS__;
 
     expect(getPlatform()).toBe("windows");
+
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: originalNavigator,
+    });
+
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: originalWindow,
+    });
+
+    if (originalInternals) {
+      windowStub.__TAURI_OS_PLUGIN_INTERNALS__ = originalInternals;
+    }
+  });
+
+  test("returns unknown when neither Tauri internals nor navigator hints are available", () => {
+    const originalNavigator = globalThis.navigator;
+    const originalWindow = globalThis.window;
+    const windowStub = (originalWindow ?? {}) as typeof window & {
+      __TAURI_OS_PLUGIN_INTERNALS__?: { platform?: string };
+    };
+    const originalInternals = windowStub.__TAURI_OS_PLUGIN_INTERNALS__;
+
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: windowStub,
+    });
+
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: {
+        userAgent: "",
+      },
+    });
+
+    delete windowStub.__TAURI_OS_PLUGIN_INTERNALS__;
+
+    expect(getPlatform()).toBe("unknown");
 
     Object.defineProperty(globalThis, "navigator", {
       configurable: true,

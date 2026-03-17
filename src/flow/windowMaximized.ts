@@ -8,8 +8,6 @@ export const state = allState(ss);
 export const sig = allSignal(ss);
 export const transfer = allTransfer(ss);
 
-const appWindow = Window.getCurrent();
-
 export const mac = createMachine({
   initial: state.x.normal,
   states: {
@@ -22,6 +20,7 @@ export const mac = createMachine({
   },
   invoke: {
     src: fromCallback(({ sendBack }) => {
+      const appWindow = Window.getCurrent();
       let disposed = false;
       const sync = async () => {
         try {
