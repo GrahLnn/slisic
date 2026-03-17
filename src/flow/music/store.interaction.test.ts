@@ -420,30 +420,79 @@ describe("music interaction guards", () => {
 		expect(toGuide.processMsg).toBeNull();
 	});
 
-	test("deriveRouteResolution projects unresolved, guide, and play states coherently", () => {
+	test("deriveRouteResolution projects unresolved, probed, hydrated, and editing states coherently", () => {
 		expect(
 			deriveRouteResolution({ routeResolved: false, mode: "play" }),
 		).toEqual({
 			kind: "startup_unresolved",
 			routeResolved: false,
 			mode: "play",
+			phase: "unresolved",
 		});
 
 		expect(
 			deriveRouteResolution({ routeResolved: true, mode: "new_guide" }),
 		).toEqual({
-			kind: "startup_probed_empty",
+			kind: "hydrated_empty",
 			routeResolved: true,
 			mode: "new_guide",
+			phase: "hydrated",
 		});
 
 		expect(
 			deriveRouteResolution({ routeResolved: true, mode: "play" }),
 		).toEqual({
-			kind: "startup_probed_nonempty",
+			kind: "hydrated_playlists",
 			routeResolved: true,
 			mode: "play",
+			phase: "hydrated",
 		});
+
+		expect(
+			deriveRouteResolution({ routeResolved: true, mode: "edit" }),
+		).toEqual({
+			kind: "hydrated_editing",
+			routeResolved: true,
+			mode: "edit",
+			phase: "hydrated",
+		});
+	});
+
+	test("deriveProbePatch keeps legacy play and guide projection while canonical route remains probed", () => {
+		const nonEmpty = deriveProbePatch(
+			{ mode: "new_guide", routeResolved: false },
+			["focus"],
+		);
+		expect(nonEmpty.mode).toBe("play");
+		expect(nonEmpty.routeResolved).toBe(true);
+		expect(
+			deriveRouteResolution({
+				mode: nonEmpty.mode,
+				routeResolved: nonEmpty.routeResolved,
+			}),
+		).toEqual({
+			kind: "hydrated_playlists",
+			routeResolved: true,
+			mode: "play",
+			phase: "hydrated",
+		});
+		expect(nonEmpty.playlists).toEqual(buildPlaylistPlaceholders(["focus"]));
+
+		const empty = deriveProbePatch({ mode: "play", routeResolved: false }, []);
+		expect(empty.mode).toBe("new_guide");
+		expect(empty.routeResolved).toBe(true);
+		expect(
+			deriveRouteResolution({
+				mode: empty.mode,
+				routeResolved: empty.routeResolved,
+			}),
+		).toEqual({
+			kind: "hydrated_empty",
+			routeResolved: true,
+			mode: "new_guide",
+			phase: "hydrated",
+		});
+		expect(empty.playlists).toEqual([]);
 	});
 
 	test("deriveProbePatch true_positive_promotes_non_empty_names_to_play_with_placeholders", () => {

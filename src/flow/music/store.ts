@@ -42,6 +42,7 @@ export interface StartupRouteResolution {
 	kind: StartupRouteKind;
 	routeResolved: boolean;
 	mode: UiMode;
+	phase: "unresolved" | "probed" | "hydrated";
 }
 
 export interface MusicState {
@@ -89,6 +90,7 @@ export function deriveRouteResolution(
 			kind: "startup_unresolved",
 			routeResolved: false,
 			mode: snapshot.mode,
+			phase: "unresolved",
 		};
 	}
 
@@ -97,21 +99,24 @@ export function deriveRouteResolution(
 			kind: "hydrated_editing",
 			routeResolved: true,
 			mode: snapshot.mode,
+			phase: "hydrated",
 		};
 	}
 
 	if (snapshot.mode === "new_guide") {
 		return {
-			kind: "startup_probed_empty",
+			kind: "hydrated_empty",
 			routeResolved: true,
 			mode: snapshot.mode,
+			phase: "hydrated",
 		};
 	}
 
 	return {
-		kind: "startup_probed_nonempty",
+		kind: "hydrated_playlists",
 		routeResolved: true,
 		mode: snapshot.mode,
+		phase: "hydrated",
 	};
 }
 
@@ -142,6 +147,7 @@ function resolveHydratedRoute(
 			kind: prev.routeResolved ? "hydrated_editing" : "startup_unresolved",
 			routeResolved: prev.routeResolved,
 			mode: prev.mode,
+			phase: prev.routeResolved ? "hydrated" : "unresolved",
 		};
 	}
 
@@ -150,11 +156,13 @@ function resolveHydratedRoute(
 				kind: "hydrated_playlists",
 				routeResolved: true,
 				mode: "play",
+				phase: "hydrated",
 			}
 		: {
 				kind: "hydrated_empty",
 				routeResolved: true,
 				mode: "new_guide",
+				phase: "hydrated",
 			};
 }
 
@@ -167,6 +175,7 @@ function resolveProbeRoute(
 			kind: prev.routeResolved ? "hydrated_editing" : "startup_unresolved",
 			routeResolved: prev.routeResolved,
 			mode: prev.mode,
+			phase: prev.routeResolved ? "hydrated" : "unresolved",
 		};
 	}
 
@@ -175,11 +184,13 @@ function resolveProbeRoute(
 				kind: "startup_probed_nonempty",
 				routeResolved: true,
 				mode: "play",
+				phase: "probed",
 			}
 		: {
 				kind: "startup_probed_empty",
 				routeResolved: true,
 				mode: "new_guide",
+				phase: "probed",
 			};
 }
 

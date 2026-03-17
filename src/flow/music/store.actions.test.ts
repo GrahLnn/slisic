@@ -175,7 +175,7 @@ mock.module("./playbackCoordinator", () => ({
 	PlaybackCoordinator: MockPlaybackCoordinator,
 }));
 
-const { __testing, action } = await import("./store");
+const { __testing, action, deriveRouteResolution } = await import("./store");
 
 function makeMusic(path: string): Music {
 	return {
@@ -422,6 +422,17 @@ describe("music store action contracts", () => {
 		const state = __testing.getState();
 		expect(state.playlists).toEqual([playlist]);
 		expect(state.loading).toBe(false);
+		expect(
+			deriveRouteResolution({
+				mode: state.mode,
+				routeResolved: state.routeResolved,
+			}),
+		).toEqual({
+			kind: "hydrated_playlists",
+			routeResolved: true,
+			mode: "play",
+			phase: "hydrated",
+		});
 	});
 
 	test("run_true_positive_preserves_unresolved_edit_route_until_hydration_reconciles_placeholder_lists", async () => {
@@ -493,6 +504,17 @@ describe("music store action contracts", () => {
 		expect(state.routeResolved).toBe(true);
 		expect(state.playlists).toEqual([]);
 		expect(state.loading).toBe(false);
+		expect(
+			deriveRouteResolution({
+				mode: state.mode,
+				routeResolved: state.routeResolved,
+			}),
+		).toEqual({
+			kind: "hydrated_empty",
+			routeResolved: true,
+			mode: "new_guide",
+			phase: "hydrated",
+		});
 	});
 
 	test("processResult_false_negative_guard_refreshes_downloaded_playlist_before_loudness_analysis_finishes", async () => {
