@@ -136,20 +136,6 @@ impl LibraryRepo {
         .await
     }
 
-    pub async fn update_entry_everywhere(&self, entry: Entry) -> Result<(), String> {
-        self.mutate(|data| {
-            for playlist in &mut data.playlists {
-                replace_if_exists(&mut playlist.entries, &entry);
-                for entry in &mut playlist.entries {
-                    recompute_entry_avg(entry);
-                }
-                recompute_playlist_avg(playlist);
-            }
-            Ok(())
-        })
-        .await
-    }
-
     pub async fn update_music_by_path<F>(&self, path: &str, mut updater: F) -> Result<(), String>
     where
         F: FnMut(&mut Music),
