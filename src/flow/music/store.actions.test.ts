@@ -1754,6 +1754,8 @@ describe("music store action contracts", () => {
 		expect(state.playbackListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
 		expect(state.processMsg).toBeNull();
+		expect(state.startupRoute).toBe("hydrated_playlists");
+		expect(state.loading).toBe(false);
 		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
 
@@ -1815,6 +1817,7 @@ describe("music store action contracts", () => {
 		expect(state.playbackListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
 		expect(state.processMsg).toBeNull();
+		expect(state.startupRoute).toBe("hydrated_empty");
 
 		releaseCreate();
 		await saving;
@@ -1822,6 +1825,8 @@ describe("music store action contracts", () => {
 
 		state = __testing.getState();
 		expect(state.playlists).toEqual([makePlaylist("server", [entry])]);
+		expect(state.mode).toBe("play");
+		expect(state.startupRoute).toBe("hydrated_playlists");
 		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
 
@@ -1886,6 +1891,7 @@ describe("music store action contracts", () => {
 		expect(state.playbackListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
 		expect(state.processMsg).toBeNull();
+		expect(state.loading).toBe(false);
 
 		releaseCreate();
 		await saving;
@@ -1900,8 +1906,10 @@ describe("music store action contracts", () => {
 		expect(state.playbackListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
 		expect(state.processMsg).toBeNull();
+		expect(state.loading).toBe(false);
 		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
+
 
 	test("save_false_positive_guard_update_error_rolls_back_optimistic_edit_after_refresh", async () => {
 		const original = makePlaylist("focus", [
