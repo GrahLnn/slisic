@@ -1044,6 +1044,48 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("reloadEntry_true_positive_only_updates_matching_active_slot_and_clears_review_flag", async () => {
+		const entry = makeEntry("folder", "C:/music/folder");
+		const entryPath = entry.path ?? "";
+		const updated = {
+			...entry,
+			musics: [makeMusic("C:/music/folder/new.flac")],
+		};
+		const mission = makeMission("focus", [entry]);
+
+		let release!: () => void;
+		impl.recheckFolder =
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve(Ok<Entry, string>(updated));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			slot: mission,
+			folderReviews: [],
+		});
+
+		const pending = action.reloadEntry(entry);
+		await waitUntil(() => __testing.getState().folderReviews.includes(entryPath));
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			slot: makeMission("fresh", [makeEntry("other", "C:/music/other")]),
+		});
+
+		release();
+		await pending;
+
+		const state = __testing.getState();
+		expect(state.folderReviews).toEqual([]);
+		expect(state.slot).toEqual(
+			makeMission("fresh", [makeEntry("other", "C:/music/other")]),
+		);
+	});
+
 	test("updateWeblist_true_positive_replaces_entry_and_clears_review_flag", async () => {
 		const entry = makeEntry("remote", "C:/music/remote", {
 			url: "https://example.com/list",
@@ -1068,6 +1110,95 @@ describe("music store action contracts", () => {
 		const state = __testing.getState();
 		expect(state.weblistReviews).toEqual([]);
 		expect(state.slot?.entries).toEqual([updated]);
+	});
+
+	test("updateWeblist_true_negative_guard_clears_review_flag_and_preserves_replaced_slot", async () => {
+		const entry = makeEntry("remote", "C:/music/remote", {
+			url: "https://example.com/list",
+			entry_type: "WebList",
+		});
+		const updated = {
+			...entry,
+			musics: [makeMusic("C:/music/remote/new.flac")],
+		};
+		const mission = makeMission("focus", [entry]);
+
+		let release!: () => void;
+		impl.updateWeblist =
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve(Ok<Entry, string>(updated));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			slot: mission,
+			weblistReviews: [],
+		});
+
+		const pending = action.updateWeblist(entry);
+		await waitUntil(() => {
+			const url = entry.url;
+			return !!url && __testing.getState().weblistReviews.includes(url);
+		});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			selectedListName: "other",
+			slot: makeMission("fresh", [makeEntry("other", "C:/music/other")]),
+		});
+
+		release();
+		await pending;
+
+		const state = __testing.getState();
+		expect(state.weblistReviews).toEqual([]);
+		expect(state.slot).toEqual(
+			makeMission("fresh", [makeEntry("other", "C:/music/other")]),
+		);
+	});
+
+	test("addLink_false_positive_guard_clears_review_flag_without_reintroducing_removed_link", async () => {
+		const mission = makeMission("focus");
+		const url = "https://example.com/playlist";
+
+		let release!: () => void;
+		impl.lookMedia =
+			() =>
+				new Promise((resolve) => {
+					release = () =>
+						resolve(
+							Ok<
+								{ title: string; item_type: string; entries_count: number | null },
+								string
+							>({
+								title: "remote list",
+								item_type: "playlist",
+								entries_count: 12,
+							}),
+						);
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			slot: mission,
+			linkReviews: [],
+		});
+
+		const pending = action.addLink(url);
+		await waitUntil(() => __testing.getState().linkReviews.includes(url));
+
+		action.removeLink(url);
+		release();
+		await pending;
+
+		const state = __testing.getState();
+		expect(state.linkReviews).toEqual([]);
+		expect(state.slot).toEqual(mission);
+		expect(state.slot?.links).toEqual([]);
 	});
 
 	test("unstar_false_positive_guard_does_not_schedule_next_track_when_backend_rejects_exclusion", async () => {

@@ -582,6 +582,35 @@ function removeValue(items: string[], value: string): string[] {
 	return items.filter((item) => item !== value);
 }
 
+function replaceEntryByKey(entries: Entry[], next: Entry): Entry[] {
+	const nextKey = entryKey(next);
+	return entries.map((item) =>
+		entryKey(item) === nextKey || item.path === next.path ? next : item,
+	);
+}
+
+function settleReviewMutation(
+	key: string,
+	reviewKey: "linkReviews" | "folderReviews" | "weblistReviews",
+	mutateSlot: (slot: CollectMission) => CollectMission,
+) {
+	setState((prev) => {
+		const reviews = removeValue(prev[reviewKey], key);
+		if (!prev.slot) {
+			return {
+				...prev,
+				[reviewKey]: reviews,
+			};
+		}
+
+		return {
+			...prev,
+			slot: mutateSlot(prev.slot),
+			[reviewKey]: reviews,
+		};
+	});
+}
+
 function patchSlot(mutator: (slot: CollectMission) => CollectMission) {
 	setState((prev) => {
 		if (!prev.slot) return prev;
@@ -1169,15 +1198,8 @@ export const action = {
 		});
 
 		const media = await crab.lookMedia(value);
-		setState((prev) => {
-			if (!prev.slot) {
-				return {
-					...prev,
-					linkReviews: removeValue(prev.linkReviews, value),
-				};
-			}
-
-			const links = prev.slot.links.map((link) => {
+		settleReviewMutation(value, "linkReviews", (slot) => {
+			const links = slot.links.map((link) => {
 				if (link.url !== value) return link;
 				if (media.isErr()) {
 					return {
@@ -1198,12 +1220,8 @@ export const action = {
 			});
 
 			return {
-				...prev,
-				slot: {
-					...prev.slot,
-					links,
-				},
-				linkReviews: removeValue(prev.linkReviews, value),
+				...slot,
+				links,
 			};
 		});
 	},
@@ -1263,10 +1281,7 @@ export const action = {
 
 		const result = await crab.recheckFolder(entry);
 		if (result.isErr()) {
-			setState((prev) => ({
-				...prev,
-				folderReviews: removeValue(prev.folderReviews, key),
-			}));
+			settleReviewMutation(key, "folderReviews", (slot) => slot);
 			sileo.error({
 				title: "Reload failed",
 				description: result.unwrap_err(),
@@ -1275,25 +1290,10 @@ export const action = {
 		}
 
 		const next = result.unwrap();
-		setState((prev) => {
-			if (!prev.slot) {
-				return {
-					...prev,
-					folderReviews: removeValue(prev.folderReviews, key),
-				};
-			}
-
-			return {
-				...prev,
-				slot: {
-					...prev.slot,
-					entries: prev.slot.entries.map((item) =>
-						item.path === next.path ? next : item,
-					),
-				},
-				folderReviews: removeValue(prev.folderReviews, key),
-			};
-		});
+		settleReviewMutation(key, "folderReviews", (slot) => ({
+			...slot,
+			entries: replaceEntryByKey(slot.entries, next),
+		}));
 	},
 	async updateWeblist(entry: Entry) {
 		const snapshot = getState();
@@ -1308,10 +1308,7 @@ export const action = {
 
 		const result = await crab.updateWeblist(entry, playlist);
 		if (result.isErr()) {
-			setState((prev) => ({
-				...prev,
-				weblistReviews: removeValue(prev.weblistReviews, key),
-			}));
+			settleReviewMutation(key, "weblistReviews", (slot) => slot);
 			sileo.error({
 				title: "Update failed",
 				description: result.unwrap_err(),
@@ -1320,25 +1317,10 @@ export const action = {
 		}
 
 		const next = result.unwrap();
-		setState((prev) => {
-			if (!prev.slot) {
-				return {
-					...prev,
-					weblistReviews: removeValue(prev.weblistReviews, key),
-				};
-			}
-
-			return {
-				...prev,
-				slot: {
-					...prev.slot,
-					entries: prev.slot.entries.map((item) =>
-						item.path === next.path ? next : item,
-					),
-				},
-				weblistReviews: removeValue(prev.weblistReviews, key),
-			};
-		});
+		settleReviewMutation(key, "weblistReviews", (slot) => ({
+			...slot,
+			entries: replaceEntryByKey(slot.entries, next),
+		}));
 	},
 	async up(music: Music) {
 		const result = await crab.boost(music);
