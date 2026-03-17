@@ -31,6 +31,7 @@ type Judge = "Up" | "Down" | null;
 
 export interface MusicState {
 	mode: UiMode;
+	routeResolved: boolean;
 	loading: boolean;
 	playlists: Playlist[];
 	selectedListName: string | null;
@@ -82,7 +83,10 @@ export function shouldHandleAudioEnded(
 export function deriveRefreshPatch(
 	prev: Pick<MusicState, "mode" | "selectedListName" | "nowPlaying">,
 	playlists: Playlist[],
-): Pick<MusicState, "playlists" | "selectedListName" | "nowPlaying" | "mode"> {
+): Pick<
+	MusicState,
+	"playlists" | "selectedListName" | "nowPlaying" | "mode" | "routeResolved"
+> {
 	const selectedListName =
 		prev.selectedListName &&
 		playlists.some((playlist) => playlist.name === prev.selectedListName)
@@ -113,6 +117,7 @@ export function deriveRefreshPatch(
 		selectedListName,
 		nowPlaying: refreshedNowPlaying,
 		mode,
+		routeResolved: true,
 	};
 }
 
@@ -128,7 +133,7 @@ export function buildPlaylistPlaceholders(names: string[]): Playlist[] {
 export function deriveProbePatch(
 	prev: Pick<MusicState, "mode">,
 	playlistNames: string[],
-): Pick<MusicState, "playlists" | "mode"> {
+): Pick<MusicState, "playlists" | "mode" | "routeResolved"> {
 	return {
 		playlists: buildPlaylistPlaceholders(playlistNames),
 		mode:
@@ -137,6 +142,7 @@ export function deriveProbePatch(
 				: playlistNames.length === 0
 					? "new_guide"
 					: "play",
+		routeResolved: true,
 	};
 }
 
@@ -146,6 +152,7 @@ export function buildPostSavePatch(
 ): Pick<
 	MusicState,
 	| "mode"
+	| "routeResolved"
 	| "selectedListName"
 	| "nowPlaying"
 	| "nowJudge"
@@ -155,6 +162,7 @@ export function buildPostSavePatch(
 > {
 	return {
 		mode: hasData ? "play" : "new_guide",
+		routeResolved: true,
 		selectedListName: null,
 		nowPlaying: null,
 		nowJudge: null,
@@ -194,6 +202,7 @@ export function applyOptimisticEditSave(
 
 const initialState: MusicState = {
 	mode: "new_guide",
+	routeResolved: false,
 	loading: false,
 	playlists: [],
 	selectedListName: null,
@@ -713,6 +722,7 @@ export const action = {
 				title: "Initialization failed",
 				description: error instanceof Error ? error.message : String(error),
 			});
+			patchState({ routeResolved: true });
 		} finally {
 			if (isCurrentRun(version)) {
 				patchState({ loading: false });

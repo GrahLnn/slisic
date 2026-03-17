@@ -21,6 +21,7 @@ import {
 
 const baseState: MusicState = {
 	mode: "play",
+	routeResolved: true,
 	loading: false,
 	playlists: [],
 	selectedListName: "contemporary",
@@ -126,12 +127,14 @@ describe("music interaction guards", () => {
 	test("buildPostSavePatch should clear playback context and keep mode by data presence", () => {
 		const withData = buildPostSavePatch(true, 9);
 		expect(withData.mode).toBe("play");
+		expect(withData.routeResolved).toBe(true);
 		expect(withData.selectedListName).toBeNull();
 		expect(withData.nowPlaying).toBeNull();
 		expect(withData.playbackEpoch).toBe(9);
 
 		const empty = buildPostSavePatch(false, 12);
 		expect(empty.mode).toBe("new_guide");
+		expect(empty.routeResolved).toBe(true);
 		expect(empty.selectedListName).toBeNull();
 		expect(empty.nowPlaying).toBeNull();
 		expect(empty.playbackEpoch).toBe(12);
@@ -213,6 +216,7 @@ describe("music interaction guards", () => {
 		const patch = deriveProbePatch({ mode: "new_guide" }, ["focus", "ambient"]);
 
 		expect(patch.mode).toBe("play");
+		expect(patch.routeResolved).toBe(true);
 		expect(patch.playlists).toEqual(buildPlaylistPlaceholders(["focus", "ambient"]));
 	});
 
@@ -220,6 +224,7 @@ describe("music interaction guards", () => {
 		const patch = deriveProbePatch({ mode: "play" }, []);
 
 		expect(patch.mode).toBe("new_guide");
+		expect(patch.routeResolved).toBe(true);
 		expect(patch.playlists).toEqual([]);
 	});
 

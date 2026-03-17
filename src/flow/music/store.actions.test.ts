@@ -281,10 +281,11 @@ beforeEach(() => {
 });
 
 describe("music store action contracts", () => {
-	test("initial_true_negative_empty_state_starts_in_new_guide_without_waiting_for_refresh", () => {
+	test("initial_true_negative_empty_state_keeps_route_unresolved_before_first_probe", () => {
 		const state = __testing.getState();
 
 		expect(state.mode).toBe("new_guide");
+		expect(state.routeResolved).toBe(false);
 		expect(state.playlists).toEqual([]);
 	});
 
@@ -297,6 +298,7 @@ describe("music store action contracts", () => {
 
 		const state = __testing.getState();
 		expect(state.loading).toBe(false);
+		expect(state.routeResolved).toBe(true);
 		expect(state.playlists).toEqual([playlist]);
 		expect(playbackLog.markActive).toBe(1);
 		expect(toastLog.error).toEqual([]);
@@ -340,6 +342,7 @@ describe("music store action contracts", () => {
 
 		const state = __testing.getState();
 		expect(state.mode).toBe("play");
+		expect(state.routeResolved).toBe(true);
 		expect(state.playlists).toEqual([makePlaylist("focus")]);
 		expect(state.loading).toBe(false);
 		expect(toastLog.error).toEqual([]);
@@ -375,6 +378,7 @@ describe("music store action contracts", () => {
 
 		const state = __testing.getState();
 		expect(evtCalls).toBeGreaterThanOrEqual(6);
+		expect(state.routeResolved).toBe(true);
 		expect(state.playlists).toEqual([makePlaylist("retry-ok")]);
 		expect(toastLog.error).toEqual([]);
 	});
@@ -399,6 +403,7 @@ describe("music store action contracts", () => {
 			const state = __testing.getState();
 			return (
 				readAllStarted &&
+				state.routeResolved &&
 				state.mode === "play" &&
 				state.playlists.map((item) => item.name).join(",") === "focus" &&
 				state.playlists[0]?.entries.length === 0
@@ -430,7 +435,12 @@ describe("music store action contracts", () => {
 
 		await waitUntil(() => {
 			const state = __testing.getState();
-			return readAllStarted && state.mode === "new_guide" && state.playlists.length === 0;
+			return (
+				readAllStarted &&
+				state.routeResolved &&
+				state.mode === "new_guide" &&
+				state.playlists.length === 0
+			);
 		});
 
 		releaseReadAll();
@@ -438,6 +448,7 @@ describe("music store action contracts", () => {
 
 		const state = __testing.getState();
 		expect(state.mode).toBe("new_guide");
+		expect(state.routeResolved).toBe(true);
 		expect(state.playlists).toEqual([]);
 		expect(state.loading).toBe(false);
 	});
