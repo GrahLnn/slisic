@@ -1,7 +1,11 @@
 import { Err, Ok } from "@grahlnn/fn";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type { CollectMission, Entry, Music, Playlist } from "@/src/cmd/commands";
-import type { DraftMissionState } from "./store";
+import type {
+	DraftEntryOperationState,
+	DraftLinkState,
+	DraftMissionState,
+} from "./store";
 
 const toastLog = {
 	error: [] as Array<{ title: string; description?: string }>,
@@ -183,7 +187,8 @@ mock.module("./playbackCoordinator", () => ({
 	PlaybackCoordinator: MockPlaybackCoordinator,
 }));
 
-const { __testing, action, deriveRouteResolution } = await import("./store");
+const { __testing, action, deriveDraftReviewState, deriveRouteResolution } =
+	await import("./store");
 
 function makeMusic(path: string): Music {
 	return {
@@ -293,6 +298,46 @@ function expectEntryOperation(
 		...entry,
 		draftOperation: operation,
 	});
+}
+
+function expectLinkOperation(
+	link: DraftMissionState["links"][number],
+	operation: {
+		kind: "link_review";
+		key: string;
+		inProgress: boolean;
+		settled: "idle" | "succeeded" | "failed";
+		ownerSessionId: number;
+	},
+) {
+	expect(link).toMatchObject({
+		...link,
+		operation,
+	});
+}
+
+function withEntryOperation(
+	entry: Entry,
+	operation: DraftEntryOperationState,
+): Entry & { draftOperation: DraftEntryOperationState } {
+	return {
+		...entry,
+		draftOperation: operation,
+	};
+}
+
+function makeDraftLink(
+	patch: Partial<DraftLinkState> & Pick<DraftLinkState, "url">,
+): DraftLinkState {
+	return {
+		url: patch.url,
+		title_or_msg: patch.title_or_msg ?? "Detecting...",
+		entry_type: patch.entry_type ?? "Unknown",
+		count: patch.count ?? null,
+		status: patch.status ?? null,
+		tracking: patch.tracking ?? false,
+		operation: patch.operation ?? null,
+	};
 }
 
 async function refresh() {
@@ -2054,6 +2099,488 @@ describe("music store action contracts", () => {
 		expect(state.linkReviews).toEqual([]);
 		expect(state.slot).toEqual(mission);
 		expect(state.slot?.links).toEqual([]);
+	});
+
+	test("draftEntryOperation_false_negative_guard_keeps_folder_reload_isolated_from_other_entries_and_operations", async () => {
+		const reloadingEntry = makeEntry("folder", "C:/music/folder-a");
+		const unaffectedFolderEntry = makeEntry("folder", "C:/music/folder-b", {
+			musics: [makeMusic("C:/music/folder-b/original.flac")],
+		});
+		const unaffectedWeblistEntry = makeEntry("remote", "C:/music/remote", {
+			url: "https://example.com/list",
+			entry_type: "WebList",
+			musics: [makeMusic("C:/music/remote/original.flac")],
+		});
+		const linkUrl = "https://example.com/link-review";
+		const updated = {
+			...reloadingEntry,
+			musics: [makeMusic("C:/music/folder-a/reloaded.flac")],
+		};
+		let releaseReload!: () => void;
+
+		impl.recheckFolder =
+			() =>
+				new Promise((resolve) => {
+					releaseReload = () => resolve(Ok<Entry, string>(updated));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			slot: {
+				...makeMission("focus", [
+					reloadingEntry,
+					withEntryOperation(unaffectedFolderEntry, {
+						kind: "folder_reload",
+						key: unaffectedFolderEntry.path ?? "",
+						inProgress: false,
+						settled: "succeeded",
+						ownerSessionId: 77,
+					}),
+					withEntryOperation(unaffectedWeblistEntry, {
+						kind: "weblist_update",
+						key: unaffectedWeblistEntry.url ?? "",
+						inProgress: true,
+						settled: "idle",
+						ownerSessionId: 88,
+					}),
+				]),
+				links: [
+					makeDraftLink({
+						url: linkUrl,
+						operation: {
+							kind: "link_review",
+							key: linkUrl,
+							inProgress: true,
+							settled: "idle",
+							ownerSessionId: 99,
+						},
+					}),
+				],
+			},
+			folderReviews: [],
+			weblistReviews: [],
+			linkReviews: [],
+		});
+
+		const pendingReload = action.reloadEntry(reloadingEntry);
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) =>
+							item.path === reloadingEntry.path &&
+							hasPendingEntryOperation(item, "folder_reload"),
+					) ?? false,
+		);
+
+		let state = __testing.getState();
+		expect(deriveDraftReviewState(state).folderReviews).toEqual([
+			reloadingEntry.path ?? "",
+		]);
+		expect(deriveDraftReviewState(state).weblistReviews).toEqual([
+			unaffectedWeblistEntry.url ?? "",
+		]);
+		expect(deriveDraftReviewState(state).linkReviews).toEqual([linkUrl]);
+		expectEntryOperation(state.slot!.entries[0]!, {
+			kind: "folder_reload",
+			key: reloadingEntry.path ?? "",
+			inProgress: true,
+			settled: "idle",
+			ownerSessionId: 0,
+		});
+		expectEntryOperation(state.slot!.entries[1]!, {
+			kind: "folder_reload",
+			key: unaffectedFolderEntry.path ?? "",
+			inProgress: false,
+			settled: "succeeded",
+			ownerSessionId: 77,
+		});
+		expectEntryOperation(state.slot!.entries[2]!, {
+			kind: "weblist_update",
+			key: unaffectedWeblistEntry.url ?? "",
+			inProgress: true,
+			settled: "idle",
+			ownerSessionId: 88,
+		});
+		expectLinkOperation(state.slot!.links[0]!, {
+			kind: "link_review",
+			key: linkUrl,
+			inProgress: true,
+			settled: "idle",
+			ownerSessionId: 99,
+		});
+
+		releaseReload();
+		await pendingReload;
+
+		state = __testing.getState();
+		expect(deriveDraftReviewState(state).folderReviews).toEqual([]);
+		expect(deriveDraftReviewState(state).weblistReviews).toEqual([
+			unaffectedWeblistEntry.url ?? "",
+		]);
+		expect(deriveDraftReviewState(state).linkReviews).toEqual([linkUrl]);
+		expect(state.slot?.entries[0]).toMatchObject(updated);
+		expectEntryOperation(state.slot!.entries[0]!, {
+			kind: "folder_reload",
+			key: reloadingEntry.path ?? "",
+			inProgress: false,
+			settled: "succeeded",
+			ownerSessionId: 0,
+		});
+		expectEntryOperation(state.slot!.entries[1]!, {
+			kind: "folder_reload",
+			key: unaffectedFolderEntry.path ?? "",
+			inProgress: false,
+			settled: "succeeded",
+			ownerSessionId: 77,
+		});
+		expectEntryOperation(state.slot!.entries[2]!, {
+			kind: "weblist_update",
+			key: unaffectedWeblistEntry.url ?? "",
+			inProgress: true,
+			settled: "idle",
+			ownerSessionId: 88,
+		});
+		expectLinkOperation(state.slot!.links[0]!, {
+			kind: "link_review",
+			key: linkUrl,
+			inProgress: true,
+			settled: "idle",
+			ownerSessionId: 99,
+		});
+	});
+
+	test("draftEntryOperation_false_negative_guard_keeps_weblist_update_isolated_from_other_entries_and_operations", async () => {
+		const folderEntry = makeEntry("folder", "C:/music/folder", {
+			musics: [makeMusic("C:/music/folder/original.flac")],
+		});
+		const targetWeblistEntry = makeEntry("remote", "C:/music/remote-a", {
+			url: "https://example.com/list-a",
+			entry_type: "WebList",
+			musics: [makeMusic("C:/music/remote-a/original.flac")],
+		});
+		const otherWeblistEntry = makeEntry("remote", "C:/music/remote-b", {
+			url: "https://example.com/list-b",
+			entry_type: "WebList",
+			musics: [makeMusic("C:/music/remote-b/original.flac")],
+		});
+		const linkUrl = "https://example.com/link-review";
+		const updated = {
+			...targetWeblistEntry,
+			musics: [makeMusic("C:/music/remote-a/updated.flac")],
+			downloaded_ok: true,
+		};
+		let releaseUpdate!: () => void;
+
+		impl.updateWeblist =
+			() =>
+				new Promise((resolve) => {
+					releaseUpdate = () => resolve(Ok<Entry, string>(updated));
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			slot: {
+				...makeMission("focus", [
+					withEntryOperation(folderEntry, {
+						kind: "folder_reload",
+						key: folderEntry.path ?? "",
+						inProgress: true,
+						settled: "idle",
+						ownerSessionId: 11,
+					}),
+					targetWeblistEntry,
+					withEntryOperation(otherWeblistEntry, {
+						kind: "weblist_update",
+						key: otherWeblistEntry.url ?? "",
+						inProgress: false,
+						settled: "failed",
+						ownerSessionId: 12,
+					}),
+				]),
+				links: [
+					makeDraftLink({
+						url: linkUrl,
+						title_or_msg: "Ready",
+						entry_type: "Unknown",
+						count: 4,
+						status: "Ok",
+						operation: {
+							kind: "link_review",
+							key: linkUrl,
+							inProgress: false,
+							settled: "succeeded",
+							ownerSessionId: 13,
+						},
+					}),
+				],
+			},
+			folderReviews: [],
+			weblistReviews: [],
+			linkReviews: [],
+		});
+
+		const pendingUpdate = action.updateWeblist(targetWeblistEntry);
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.entries.some(
+						(item) =>
+							item.url === targetWeblistEntry.url &&
+							hasPendingEntryOperation(item, "weblist_update"),
+					) ?? false,
+		);
+
+		let state = __testing.getState();
+		expect(deriveDraftReviewState(state).folderReviews).toEqual([
+			folderEntry.path ?? "",
+		]);
+		expect(deriveDraftReviewState(state).weblistReviews).toEqual([
+			targetWeblistEntry.url ?? "",
+		]);
+		expect(deriveDraftReviewState(state).linkReviews).toEqual([]);
+		expectEntryOperation(state.slot!.entries[0]!, {
+			kind: "folder_reload",
+			key: folderEntry.path ?? "",
+			inProgress: true,
+			settled: "idle",
+			ownerSessionId: 11,
+		});
+		expectEntryOperation(state.slot!.entries[1]!, {
+			kind: "weblist_update",
+			key: targetWeblistEntry.url ?? "",
+			inProgress: true,
+			settled: "idle",
+			ownerSessionId: 0,
+		});
+		expectEntryOperation(state.slot!.entries[2]!, {
+			kind: "weblist_update",
+			key: otherWeblistEntry.url ?? "",
+			inProgress: false,
+			settled: "failed",
+			ownerSessionId: 12,
+		});
+		expectLinkOperation(state.slot!.links[0]!, {
+			kind: "link_review",
+			key: linkUrl,
+			inProgress: false,
+			settled: "succeeded",
+			ownerSessionId: 13,
+		});
+
+		releaseUpdate();
+		await pendingUpdate;
+
+		state = __testing.getState();
+		expect(deriveDraftReviewState(state).folderReviews).toEqual([
+			folderEntry.path ?? "",
+		]);
+		expect(deriveDraftReviewState(state).weblistReviews).toEqual([]);
+		expect(deriveDraftReviewState(state).linkReviews).toEqual([]);
+		expect(state.slot?.entries[1]).toMatchObject(updated);
+		expectEntryOperation(state.slot!.entries[0]!, {
+			kind: "folder_reload",
+			key: folderEntry.path ?? "",
+			inProgress: true,
+			settled: "idle",
+			ownerSessionId: 11,
+		});
+		expectEntryOperation(state.slot!.entries[1]!, {
+			kind: "weblist_update",
+			key: targetWeblistEntry.url ?? "",
+			inProgress: false,
+			settled: "succeeded",
+			ownerSessionId: 0,
+		});
+		expectEntryOperation(state.slot!.entries[2]!, {
+			kind: "weblist_update",
+			key: otherWeblistEntry.url ?? "",
+			inProgress: false,
+			settled: "failed",
+			ownerSessionId: 12,
+		});
+		expectLinkOperation(state.slot!.links[0]!, {
+			kind: "link_review",
+			key: linkUrl,
+			inProgress: false,
+			settled: "succeeded",
+			ownerSessionId: 13,
+		});
+	});
+
+	test("draftEntryOperation_false_negative_guard_keeps_link_review_isolated_from_entry_operations", async () => {
+		const folderEntry = makeEntry("folder", "C:/music/folder", {
+			musics: [makeMusic("C:/music/folder/original.flac")],
+		});
+		const weblistEntry = makeEntry("remote", "C:/music/remote", {
+			url: "https://example.com/list",
+			entry_type: "WebList",
+			musics: [makeMusic("C:/music/remote/original.flac")],
+		});
+		const targetUrl = "https://example.com/review-target";
+		const otherUrl = "https://example.com/review-other";
+		let releaseReview!: () => void;
+
+		impl.lookMedia =
+			() =>
+				new Promise((resolve) => {
+					releaseReview = () =>
+						resolve(
+							Ok<
+								{ title: string; item_type: string; entries_count: number | null },
+								string
+							>({
+								title: "reviewed link",
+								item_type: "playlist",
+								entries_count: 23,
+							}),
+						);
+				});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			slot: {
+				...makeMission("focus", [
+					withEntryOperation(folderEntry, {
+						kind: "folder_reload",
+						key: folderEntry.path ?? "",
+						inProgress: true,
+						settled: "idle",
+						ownerSessionId: 21,
+					}),
+					withEntryOperation(weblistEntry, {
+						kind: "weblist_update",
+						key: weblistEntry.url ?? "",
+						inProgress: true,
+						settled: "idle",
+						ownerSessionId: 22,
+					}),
+				]),
+				links: [
+					makeDraftLink({
+						url: otherUrl,
+						title_or_msg: "Other",
+						entry_type: "Unknown",
+						count: 7,
+						status: "Ok",
+						operation: {
+							kind: "link_review",
+							key: otherUrl,
+							inProgress: false,
+							settled: "succeeded",
+							ownerSessionId: 23,
+						},
+					}),
+				],
+			},
+			folderReviews: [],
+			weblistReviews: [],
+			linkReviews: [],
+		});
+
+		const pendingReview = action.addLink(targetUrl);
+		await waitUntil(
+			() =>
+				__testing
+					.getState()
+					.slot?.links.some(
+						(link) =>
+							link.url === targetUrl &&
+							link.operation?.kind === "link_review" &&
+							link.operation.inProgress === true,
+					) ?? false,
+		);
+
+		let state = __testing.getState();
+		expect(deriveDraftReviewState(state).folderReviews).toEqual([
+			folderEntry.path ?? "",
+		]);
+		expect(deriveDraftReviewState(state).weblistReviews).toEqual([
+			weblistEntry.url ?? "",
+		]);
+		expect(deriveDraftReviewState(state).linkReviews).toEqual([targetUrl]);
+		expectEntryOperation(state.slot!.entries[0]!, {
+			kind: "folder_reload",
+			key: folderEntry.path ?? "",
+			inProgress: true,
+			settled: "idle",
+			ownerSessionId: 21,
+		});
+		expectEntryOperation(state.slot!.entries[1]!, {
+			kind: "weblist_update",
+			key: weblistEntry.url ?? "",
+			inProgress: true,
+			settled: "idle",
+			ownerSessionId: 22,
+		});
+		expectLinkOperation(state.slot!.links[0]!, {
+			kind: "link_review",
+			key: otherUrl,
+			inProgress: false,
+			settled: "succeeded",
+			ownerSessionId: 23,
+		});
+		expectLinkOperation(state.slot!.links[1]!, {
+			kind: "link_review",
+			key: targetUrl,
+			inProgress: true,
+			settled: "idle",
+			ownerSessionId: 0,
+		});
+
+		releaseReview();
+		await pendingReview;
+
+		state = __testing.getState();
+		expect(deriveDraftReviewState(state).folderReviews).toEqual([
+			folderEntry.path ?? "",
+		]);
+		expect(deriveDraftReviewState(state).weblistReviews).toEqual([
+			weblistEntry.url ?? "",
+		]);
+		expect(deriveDraftReviewState(state).linkReviews).toEqual([]);
+		expectEntryOperation(state.slot!.entries[0]!, {
+			kind: "folder_reload",
+			key: folderEntry.path ?? "",
+			inProgress: true,
+			settled: "idle",
+			ownerSessionId: 21,
+		});
+		expectEntryOperation(state.slot!.entries[1]!, {
+			kind: "weblist_update",
+			key: weblistEntry.url ?? "",
+			inProgress: true,
+			settled: "idle",
+			ownerSessionId: 22,
+		});
+		expectLinkOperation(state.slot!.links[0]!, {
+			kind: "link_review",
+			key: otherUrl,
+			inProgress: false,
+			settled: "succeeded",
+			ownerSessionId: 23,
+		});
+		expectLinkOperation(state.slot!.links[1]!, {
+			kind: "link_review",
+			key: targetUrl,
+			inProgress: false,
+			settled: "succeeded",
+			ownerSessionId: 0,
+		});
+		expect(state.slot?.links[1]).toMatchObject({
+			url: targetUrl,
+			title_or_msg: "reviewed link",
+			entry_type: "WebList",
+			count: 23,
+			status: "Ok",
+		});
 	});
 
 	test("unstar_false_positive_guard_does_not_schedule_next_track_when_backend_rejects_exclusion", async () => {
