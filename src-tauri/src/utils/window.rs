@@ -22,6 +22,15 @@ static PREWARM_MAIN_PENDING: LazyLock<Mutex<Vec<String>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 static PREWARM_MAIN_READY: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WindowLifecycleState {
+    descriptor: WindowIdentityDescriptor,
+    destroyed: bool,
+}
+
+static WINDOW_LIFECYCLE: LazyLock<Mutex<Vec<WindowLifecycleState>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Type, PartialEq, Eq)]
 pub enum WindowVisibilityKind {
     UserVisible,
@@ -131,15 +140,14 @@ pub fn get_window_kind(window: WebviewWindow) -> WindowKindInfo {
 }
 
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
+    register_live_window(closing_label);
     let closing_descriptor = WindowIdentityDescriptor::from_label(closing_label);
     if !closing_descriptor.is_user_visible() {
         return false;
     }
 
-    let visible_window_count = app
-        .webview_windows()
-        .keys()
-        .map(|label| WindowIdentityDescriptor::from_label(label))
+    let visible_window_count = snapshot_live_descriptors(app)
+        .into_iter()
         .filter(WindowIdentityDescriptor::is_user_visible)
         .count();
 
@@ -168,6 +176,82 @@ pub fn close_all_prewarm_windows(app: &AppHandle) {
         .lock()
         .expect("prewarm ready list should be lockable")
         .clear();
+}
+
+fn register_live_window(label: &str) -> WindowIdentityDescriptor {
+    let descriptor = WindowIdentityDescriptor::from_label(label);
+    let mut lifecycle = WINDOW_LIFECYCLE
+        .lock()
+        .expect("window lifecycle should be lockable");
+
+    if let Some(state) = lifecycle.iter_mut().find(|state| state.descriptor.label == label) {
+        state.descriptor = descriptor.clone();
+        state.destroyed = false;
+        return descriptor;
+    }
+
+    lifecycle.push(WindowLifecycleState {
+        descriptor: descriptor.clone(),
+        destroyed: false,
+    });
+    descriptor
+}
+
+fn destroy_window_lifecycle(label: &str) -> Option<WindowIdentityDescriptor> {
+    let mut lifecycle = WINDOW_LIFECYCLE
+        .lock()
+        .expect("window lifecycle should be lockable");
+    lifecycle
+        .iter()
+        .position(|state| state.descriptor.label == label)
+        .map(|index| lifecycle.swap_remove(index).descriptor)
+}
+
+fn snapshot_live_descriptors(app: &AppHandle) -> Vec<WindowIdentityDescriptor> {
+    let live_labels = app
+        .webview_windows()
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+
+    let mut lifecycle = WINDOW_LIFECYCLE
+        .lock()
+        .expect("window lifecycle should be lockable");
+    lifecycle.retain(|state| !state.destroyed && live_labels.contains(&state.descriptor.label));
+
+    for label in &live_labels {
+        if let Some(state) = lifecycle.iter_mut().find(|state| state.descriptor.label == *label) {
+            state.descriptor = WindowIdentityDescriptor::from_label(label);
+            state.destroyed = false;
+        } else {
+            lifecycle.push(WindowLifecycleState {
+                descriptor: WindowIdentityDescriptor::from_label(label),
+                destroyed: false,
+            });
+        }
+    }
+
+    lifecycle
+        .iter()
+        .map(|state| state.descriptor.clone())
+        .collect()
+}
+
+pub fn handle_window_destroyed(label: &str) -> bool {
+    let removed = destroy_window_lifecycle(label).is_some();
+
+    if matches!(window_kind_from_label(label), (Some(_), true)) {
+        PREWARM_MAIN_PENDING
+            .lock()
+            .expect("prewarm pending list should be lockable")
+            .retain(|value| value != label);
+        PREWARM_MAIN_READY
+            .lock()
+            .expect("prewarm ready list should be lockable")
+            .retain(|value| value != label);
+    }
+
+    removed
 }
 
 #[derive(Serialize, Type)]
@@ -436,11 +520,11 @@ pub fn ensure_window_prewarm(app: &tauri::AppHandle, name: WindowName) {
 }
 
 pub fn ensure_prewarm_for_existing_windows(app: &tauri::AppHandle) {
-    let windows = app.webview_windows();
-    let existing_names = windows
-        .keys()
+    let existing_names = snapshot_live_descriptors(app)
+        .into_iter()
         .filter_map(|label| {
-            let (name, is_prewarm) = window_kind_from_label(label);
+            let name = label.window;
+            let is_prewarm = label.is_prepared();
             if is_prewarm {
                 None
             } else {
@@ -485,8 +569,25 @@ pub async fn create_window(
 #[cfg(test)]
 mod tests {
     use super::{
-        window_kind_from_label, WindowIdentityDescriptor, WindowName, WindowVisibilityKind,
+        destroy_window_lifecycle, handle_window_destroyed, register_live_window,
+        window_kind_from_label, WindowIdentityDescriptor, WindowLifecycleState, WindowName,
+        WindowVisibilityKind, WINDOW_LIFECYCLE, PREWARM_MAIN_PENDING, PREWARM_MAIN_READY,
     };
+
+    fn reset_window_lifecycle_for_test() {
+        WINDOW_LIFECYCLE
+            .lock()
+            .expect("window lifecycle should be lockable")
+            .clear();
+        PREWARM_MAIN_PENDING
+            .lock()
+            .expect("prewarm pending list should be lockable")
+            .clear();
+        PREWARM_MAIN_READY
+            .lock()
+            .expect("prewarm ready list should be lockable")
+            .clear();
+    }
 
     #[test]
     fn descriptor_true_positive_classifies_user_visible_and_prepared_windows_explicitly() {
@@ -571,5 +672,110 @@ mod tests {
                 <= 1;
 
         assert!(!should_exit);
+    }
+
+    #[test]
+    fn destroyed_window_true_positive_removes_only_matching_stale_lifecycle_ownership() {
+        reset_window_lifecycle_for_test();
+        register_live_window("main");
+        register_live_window("main-2");
+        register_live_window("main-prewarm-1");
+
+        let removed = handle_window_destroyed("main-2");
+        let lifecycle = WINDOW_LIFECYCLE
+            .lock()
+            .expect("window lifecycle should be lockable")
+            .clone();
+
+        assert!(removed);
+        assert_eq!(
+            lifecycle,
+            vec![
+                WindowLifecycleState {
+                    descriptor: WindowIdentityDescriptor::from_label("main"),
+                    destroyed: false,
+                },
+                WindowLifecycleState {
+                    descriptor: WindowIdentityDescriptor::from_label("main-prewarm-1"),
+                    destroyed: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn destroyed_window_true_positive_clears_matching_prewarm_bookkeeping() {
+        reset_window_lifecycle_for_test();
+        register_live_window("main-prewarm-1");
+        PREWARM_MAIN_PENDING
+            .lock()
+            .expect("prewarm pending list should be lockable")
+            .extend(["main-prewarm-1".to_string(), "main-prewarm-2".to_string()]);
+        PREWARM_MAIN_READY
+            .lock()
+            .expect("prewarm ready list should be lockable")
+            .extend(["main-prewarm-1".to_string(), "main-prewarm-3".to_string()]);
+
+        let removed = handle_window_destroyed("main-prewarm-1");
+
+        assert!(removed);
+        assert_eq!(
+            PREWARM_MAIN_PENDING
+                .lock()
+                .expect("prewarm pending list should be lockable")
+                .clone(),
+            vec!["main-prewarm-2".to_string()]
+        );
+        assert_eq!(
+            PREWARM_MAIN_READY
+                .lock()
+                .expect("prewarm ready list should be lockable")
+                .clone(),
+            vec!["main-prewarm-3".to_string()]
+        );
+    }
+
+    #[test]
+    fn destroyed_window_false_negative_guard_late_destroy_for_unknown_label_cannot_clear_other_window_ownership(
+    ) {
+        reset_window_lifecycle_for_test();
+        register_live_window("main");
+        register_live_window("main-2");
+
+        let removed = handle_window_destroyed("main-99");
+        let lifecycle = WINDOW_LIFECYCLE
+            .lock()
+            .expect("window lifecycle should be lockable")
+            .clone();
+
+        assert!(!removed);
+        assert_eq!(
+            lifecycle,
+            vec![
+                WindowLifecycleState {
+                    descriptor: WindowIdentityDescriptor::from_label("main"),
+                    destroyed: false,
+                },
+                WindowLifecycleState {
+                    descriptor: WindowIdentityDescriptor::from_label("main-2"),
+                    destroyed: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn destroyed_window_false_positive_guard_destroyed_identity_is_removed_instead_of_marked_live() {
+        reset_window_lifecycle_for_test();
+        register_live_window("main");
+
+        let removed_descriptor = destroy_window_lifecycle("main");
+        let lifecycle = WINDOW_LIFECYCLE
+            .lock()
+            .expect("window lifecycle should be lockable")
+            .clone();
+
+        assert_eq!(removed_descriptor, Some(WindowIdentityDescriptor::from_label("main")));
+        assert!(lifecycle.is_empty());
     }
 }
