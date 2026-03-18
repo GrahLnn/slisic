@@ -14,6 +14,7 @@ import {
 	buildPostSavePatch,
 	canExitWorkspace,
 	clearEndedPlaybackForFallback,
+	clearPlaybackTransportFact,
 	clearPlaybackSession,
 	deriveBackTransition,
 	derivePlaybackOwnedList,
@@ -689,6 +690,68 @@ describe("music interaction guards", () => {
 			playbackListName: null,
 			requestedPlaying: null,
 			confirmedPlaying: null,
+			nowPlaying: null,
+			nowJudge: null,
+			playbackSessionId: null,
+		});
+	});
+
+	test("clearPlaybackTransportFact suppresses stale displaced stop ended pause resume and failure facts", () => {
+		const requestedReplacement = {
+			path: "C:/audio/b.flac",
+			title: "B",
+			avg_db: null,
+			integrated_lufs: null,
+			true_peak_dbtp: null,
+			loudness_range_lu: null,
+			loudness_threshold_lufs: null,
+			analyzed_at_ms: null,
+			analysis_version: null,
+			source_mtime_ms: null,
+			source_size_bytes: null,
+			normalization_status: null,
+			normalization_error: null,
+			base_bias: 0,
+			user_boost: 0,
+			fatigue: 0,
+			diversity: 0,
+		};
+
+		const replacementState = {
+			...baseState,
+			playbackSessionId: 4,
+			playbackEpoch: 4,
+			selectedListName: "browsed",
+			playbackListName: "contemporary",
+			requestedPlaying: requestedReplacement,
+			confirmedPlaying: requestedReplacement,
+			nowPlaying: requestedReplacement,
+		};
+
+		for (const fact of [
+			"stopped",
+			"ended",
+			"failed",
+			"paused",
+			"resumed",
+		] as const) {
+			expect(clearPlaybackTransportFact(replacementState, 3, fact)).toBeNull();
+		}
+
+		expect(clearPlaybackTransportFact(replacementState, 4, "paused")).toEqual({
+			selectedListName: "browsed",
+			playbackListName: "contemporary",
+			requestedPlaying: requestedReplacement,
+			confirmedPlaying: requestedReplacement,
+			nowPlaying: requestedReplacement,
+			nowJudge: null,
+			playbackSessionId: 4,
+		});
+		expect(clearPlaybackTransportFact(replacementState, 4, "ended")).toEqual({
+			selectedListName: "browsed",
+			playbackListName: "contemporary",
+			requestedPlaying: null,
+			confirmedPlaying: requestedReplacement,
 			nowPlaying: null,
 			nowJudge: null,
 			playbackSessionId: null,

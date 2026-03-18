@@ -135,6 +135,7 @@ interface PlaybackSessionSnapshot {
 	requestedPlaying: Music | null;
 	confirmedPlaying: Music | null;
 	nowPlaying: Music | null;
+	nowJudge: Judge;
 	playlists: Playlist[];
 }
 
@@ -617,6 +618,43 @@ export function clearPlaybackSession(
 		nowJudge: null,
 		playbackSessionId: null,
 	};
+}
+
+export function clearPlaybackTransportFact(
+	snapshot: PlaybackSessionSnapshot,
+	sessionId: number | null,
+	fact: "stopped" | "ended" | "failed" | "paused" | "resumed",
+): Pick<
+	MusicState,
+	| "selectedListName"
+	| "playbackListName"
+	| "requestedPlaying"
+	| "confirmedPlaying"
+	| "nowPlaying"
+	| "nowJudge"
+	| "playbackSessionId"
+> | null {
+	if (snapshot.playbackSessionId == null) return null;
+	if (snapshot.playbackSessionId !== sessionId) return null;
+
+	if (fact === "paused" || fact === "resumed") {
+		if (!snapshot.confirmedPlaying) return null;
+		return {
+			selectedListName: snapshot.selectedListName,
+			playbackListName: snapshot.playbackListName,
+			requestedPlaying: snapshot.requestedPlaying,
+			confirmedPlaying: snapshot.confirmedPlaying,
+			nowPlaying: snapshot.nowPlaying,
+			nowJudge: null,
+			playbackSessionId: snapshot.playbackSessionId,
+		};
+	}
+
+	if (fact === "ended") {
+		return clearEndedPlaybackForFallback(snapshot);
+	}
+
+	return clearPlaybackSession(snapshot, sessionId);
 }
 
 export function clearEndedPlaybackForFallback(
@@ -1724,6 +1762,45 @@ async function ensureEvents() {
 			scheduleNextPlayback(epoch);
 		});
 		unsubs.push(audioEnded);
+
+		const handleTransportFact = (
+			payload: unknown,
+			fact: "paused" | "resumed" | "failed",
+		) => {
+			const path =
+				payload &&
+				typeof payload === "object" &&
+				"path" in payload &&
+				typeof (payload as { path?: unknown }).path === "string"
+					? (payload as { path: string }).path
+					: null;
+			const sessionId =
+				payload &&
+				typeof payload === "object" &&
+				"session_id" in payload &&
+				typeof (payload as { session_id?: unknown }).session_id === "number"
+					? (payload as { session_id: number }).session_id
+					: null;
+			if (!path) return;
+			const patch = clearPlaybackTransportFact(getState(), sessionId, fact);
+			if (!patch) return;
+			patchState(patch);
+		};
+
+		const audioPaused = await crab.evt("audioPaused")((payload) => {
+			handleTransportFact(payload, "paused");
+		});
+		unsubs.push(audioPaused);
+
+		const audioResumed = await crab.evt("audioResumed")((payload) => {
+			handleTransportFact(payload, "resumed");
+		});
+		unsubs.push(audioResumed);
+
+		const audioFailed = await crab.evt("audioFailed")((payload) => {
+			handleTransportFact(payload, "failed");
+		});
+		unsubs.push(audioFailed);
 
 		const processMsg = await crab.evt("processMsg")((payload) => {
 			patchState({ processMsg: payload as ProcessMsg });

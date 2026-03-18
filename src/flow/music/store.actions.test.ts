@@ -4877,6 +4877,51 @@ describe("music store action contracts", () => {
 		expect(state.playbackSessionId).toBe(13);
 	});
 
+	test("transportLifecycle_false_negative_guard_displaced_pause_resume_failure_facts_cannot_affect_replacement_session", async () => {
+		const first = makeMusic("C:/music/focus/a.flac");
+		const second = makeMusic("C:/music/focus/b.flac");
+		const playlist = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [first, second] },
+		]);
+		const eventHandlers = new Map<string, (payload: unknown) => void>();
+
+		impl.evt = async (event, handler) => {
+			eventHandlers.set(event, handler);
+			return () => {
+				eventHandlers.delete(event);
+			};
+		};
+
+		await action.run();
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: "browsed",
+			playbackListName: "focus",
+			requestedPlaying: second,
+			confirmedPlaying: second,
+			nowPlaying: second,
+			playbackSessionId: 13,
+			playbackEpoch: 13,
+		});
+
+		for (const eventName of ["audioPaused", "audioResumed", "audioFailed"] as const) {
+			eventHandlers.get(eventName)?.({ path: first.path, session_id: 12 });
+			await flush();
+		}
+
+		const state = __testing.getState();
+		expect(playbackLog.replaceWith).toHaveLength(0);
+		expect(state.selectedListName).toBe("browsed");
+		expect(state.playbackListName).toBe("focus");
+		expect(state.requestedPlaying).toMatchObject({ path: second.path });
+		expect(state.confirmedPlaying).toMatchObject({ path: second.path });
+		expect(state.nowPlaying).toMatchObject({ path: second.path });
+		expect(state.playbackSessionId).toBe(13);
+	});
+
 	test("transportLifecycle_true_positive_backend_pause_resume_failure_surface_exposes_live_session_identity", async () => {
 		expect(typeof commandContract.events.audioPaused.emit).toBe("function");
 		expect(typeof commandContract.events.audioResumed.emit).toBe("function");
