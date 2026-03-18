@@ -4922,6 +4922,56 @@ describe("music store action contracts", () => {
 		expect(state.playbackSessionId).toBe(13);
 	});
 
+	test("transportLifecycle_false_negative_guard_displaced_stop_pause_resume_and_failure_facts_stay_suppressed_after_canonical_clear", async () => {
+		const first = makeMusic("C:/music/focus/a.flac");
+		const second = makeMusic("C:/music/focus/b.flac");
+		const playlist = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [first, second] },
+		]);
+		const eventHandlers = new Map<string, (payload: unknown) => void>();
+
+		impl.evt = async (event, handler) => {
+			eventHandlers.set(event, handler);
+			return () => {
+				eventHandlers.delete(event);
+			};
+		};
+
+		await action.run();
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: null,
+			playbackListName: null,
+			requestedPlaying: null,
+			confirmedPlaying: null,
+			nowPlaying: null,
+			playbackSessionId: null,
+			playbackEpoch: 14,
+		});
+
+		for (const [eventName, payload] of [
+			["audioPaused", { path: first.path, session_id: 12 }],
+			["audioResumed", { path: first.path, session_id: 12 }],
+			["audioFailed", { path: first.path, session_id: 12 }],
+			["audioEnded", { path: first.path, session_id: 12 }],
+		] as const) {
+			eventHandlers.get(eventName)?.(payload);
+			await flush();
+		}
+
+		const state = __testing.getState();
+		expect(playbackLog.replaceWith).toHaveLength(0);
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.requestedPlaying).toBeNull();
+		expect(state.confirmedPlaying).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.playbackSessionId).toBeNull();
+	});
+
 	test("transportLifecycle_true_positive_backend_pause_resume_failure_surface_exposes_live_session_identity", async () => {
 		expect(typeof commandContract.events.audioPaused.emit).toBe("function");
 		expect(typeof commandContract.events.audioResumed.emit).toBe("function");
