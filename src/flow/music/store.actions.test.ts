@@ -4876,6 +4876,61 @@ describe("music store action contracts", () => {
 		expect(state.playbackSessionId).toBeNull();
 	});
 
+	test("stop_true_positive_matching_audioStopped_clears_stop_projection_exactly_once", async () => {
+		const music = makeMusic("C:/music/focus/a.flac");
+		const playlist = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [music] },
+		]);
+		const eventHandlers = new Map<string, (payload: unknown) => void>();
+
+		impl.evt = async (event, handler) => {
+			eventHandlers.set(event, handler);
+			return () => {
+				eventHandlers.delete(event);
+			};
+		};
+
+		await action.run();
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: "focus",
+			playbackListName: "focus",
+			requestedPlaying: music,
+			confirmedPlaying: music,
+			nowPlaying: music,
+			playbackSessionId: 14,
+			playbackEpoch: 14,
+		});
+
+		await action.play(playlist);
+
+		eventHandlers.get("audioStopped")?.({ session_id: 14 });
+		await flush();
+
+		let state = __testing.getState();
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.requestedPlaying).toBeNull();
+		expect(state.confirmedPlaying).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.playbackSessionId).toBeNull();
+
+		eventHandlers.get("audioStopped")?.({ session_id: 14 });
+		await flush();
+
+		state = __testing.getState();
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.requestedPlaying).toBeNull();
+		expect(state.confirmedPlaying).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.playbackSessionId).toBeNull();
+	});
+
 	test("audioEnded_false_negative_guard_frontend_end_path_keeps_acknowledged_session_live_until_backend_fact_arrives", async () => {
 		const first = makeMusic("C:/music/first.mp3");
 		const second = makeMusic("C:/music/second.mp3");
