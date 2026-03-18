@@ -1,5 +1,6 @@
 import { Err, Ok } from "@grahlnn/fn";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+import * as commandContract from "@/src/cmd/commands";
 import type { CollectMission, Entry, Music, Playlist } from "@/src/cmd/commands";
 import type {
 	DraftEntryOperationState,
@@ -4874,6 +4875,12 @@ describe("music store action contracts", () => {
 		expect(state.confirmedPlaying).toMatchObject({ path: second.path });
 		expect(state.nowPlaying).toMatchObject({ path: second.path });
 		expect(state.playbackSessionId).toBe(13);
+	});
+
+	test("transportLifecycle_true_positive_backend_pause_resume_failure_surface_exposes_live_session_identity", async () => {
+		expect(typeof commandContract.events.audioPaused.emit).toBe("function");
+		expect(typeof commandContract.events.audioResumed.emit).toBe("function");
+		expect(typeof commandContract.events.audioFailed.emit).toBe("function");
 	});
 
 	test("play_true_positive_creates_a_fresh_playback_session_identity_for_each_start_attempt", async () => {

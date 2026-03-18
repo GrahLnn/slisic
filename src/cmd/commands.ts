@@ -90,6 +90,12 @@ export const commands = {
 export const events = {
 	//@type {ReturnType<typeof makeEvent<AudioEnded>>}
 	audioEnded: makeEvent<AudioEnded>("audio-ended"),
+	//@type {ReturnType<typeof makeEvent<AudioFailed>>}
+	audioFailed: makeEvent<AudioFailed>("audio-failed"),
+	//@type {ReturnType<typeof makeEvent<AudioPaused>>}
+	audioPaused: makeEvent<AudioPaused>("audio-paused"),
+	//@type {ReturnType<typeof makeEvent<AudioResumed>>}
+	audioResumed: makeEvent<AudioResumed>("audio-resumed"),
 	//@type {ReturnType<typeof makeEvent<AudioState>>}
 	audioState: makeEvent<AudioState>("audio-state"),
 	//@type {ReturnType<typeof makeEvent<FullScreenEvent>>}
@@ -165,6 +171,18 @@ export type AudioEnded = {
 	path: string,
 };
 
+export type AudioFailed = {
+	session_id: number,
+	path: string,
+	action: string,
+	error: string,
+};
+
+export type AudioPaused = {
+	session_id: number,
+	path: string,
+};
+
 export type AudioPlayAck = {
 	session_id: number,
 	path: string,
@@ -177,6 +195,11 @@ export type AudioPlayAck = {
 };
 
 export type AudioPlayRequest = {
+	session_id: number,
+	path: string,
+};
+
+export type AudioResumed = {
 	session_id: number,
 	path: string,
 };

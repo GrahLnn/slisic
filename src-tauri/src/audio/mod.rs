@@ -42,6 +42,26 @@ pub struct AudioEnded {
     pub path: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq, Event)]
+pub struct AudioPaused {
+    pub session_id: u64,
+    pub path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq, Event)]
+pub struct AudioResumed {
+    pub session_id: u64,
+    pub path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq, Event)]
+pub struct AudioFailed {
+    pub session_id: u64,
+    pub path: String,
+    pub action: String,
+    pub error: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct AudioPlayRequest {
     pub session_id: u64,
@@ -1155,16 +1175,27 @@ fn handle_cmd(
     match cmd {
         EngineCmd::Play { req, respond } => {
             let result = catch_engine("play", || handle_play(app, backend, state, req));
+            if let Err(error) = &result {
+                emit_transport_failure(app, state, "play", error.clone());
+            }
             let _ = respond.send(result);
             emit_state_and_maybe_end(app, state);
         }
         EngineCmd::Pause { respond } => {
             let result = catch_engine("pause", || handle_pause(state));
+            match &result {
+                Ok(()) => emit_transport_paused(app, state),
+                Err(error) => emit_transport_failure(app, state, "pause", error.clone()),
+            }
             let _ = respond.send(result);
             emit_state_and_maybe_end(app, state);
         }
         EngineCmd::Resume { respond } => {
             let result = catch_engine("resume", || handle_resume(state));
+            match &result {
+                Ok(()) => emit_transport_resumed(app, state),
+                Err(error) => emit_transport_failure(app, state, "resume", error.clone()),
+            }
             let _ = respond.send(result);
             emit_state_and_maybe_end(app, state);
         }
@@ -1179,6 +1210,39 @@ fn handle_cmd(
             let result = catch_engine("status", || Ok(state.to_status()));
             let _ = respond.send(result);
         }
+    }
+}
+
+fn emit_transport_paused(app: &AppHandle, state: &PlayerState) {
+    if !state.paused {
+        return;
+    }
+
+    if let (Some(session_id), Some(path)) = (state.session_id, state.path.clone()) {
+        AudioPaused { session_id, path }.emit(app).ok();
+    }
+}
+
+fn emit_transport_resumed(app: &AppHandle, state: &PlayerState) {
+    if state.paused {
+        return;
+    }
+
+    if let (Some(session_id), Some(path)) = (state.session_id, state.path.clone()) {
+        AudioResumed { session_id, path }.emit(app).ok();
+    }
+}
+
+fn emit_transport_failure(app: &AppHandle, state: &PlayerState, action: &str, error: String) {
+    if let (Some(session_id), Some(path)) = (state.session_id, state.path.clone()) {
+        AudioFailed {
+            session_id,
+            path,
+            action: action.to_string(),
+            error,
+        }
+        .emit(app)
+        .ok();
     }
 }
 

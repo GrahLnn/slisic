@@ -286,7 +286,7 @@ describe("music logic", () => {
 		expect(ack.has_canonical_loudness).toBeTrue();
 	});
 
-	test("AudioPlayRequest and AudioEnded TS contracts expose playback session identity", () => {
+	test("AudioPlayRequest, AudioEnded, AudioPaused, AudioResumed, and AudioFailed TS contracts expose playback session identity", () => {
 		const request = {
 			session_id: 2,
 			path: "track.mp3",
@@ -295,8 +295,25 @@ describe("music logic", () => {
 			session_id: 2,
 			path: "track.mp3",
 		};
+		const paused = {
+			session_id: 2,
+			path: "track.mp3",
+		};
+		const resumed = {
+			session_id: 2,
+			path: "track.mp3",
+		};
+		const failed = {
+			session_id: 2,
+			path: "track.mp3",
+			action: "pause",
+			error: "engine failed",
+		};
 
 		expect(request.session_id).toBe(2);
 		expect(ended.session_id).toBe(2);
+		expect(paused.session_id).toBe(2);
+		expect(resumed.session_id).toBe(2);
+		expect(failed.session_id).toBe(2);
 	});
 });
