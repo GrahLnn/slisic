@@ -4822,6 +4822,67 @@ describe("music store action contracts", () => {
 		expect(state.playbackSessionId).toBeNull();
 	});
 
+	test("stop_false_negative_guard_explicit_stop_keeps_audio_title_and_list_projection_until_matching_audioStopped", async () => {
+		const music = makeMusic("C:/music/focus/a.flac");
+		const playlist = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [music] },
+		]);
+		const eventHandlers = new Map<string, (payload: unknown) => void>();
+
+		impl.evt = async (event, handler) => {
+			eventHandlers.set(event, handler);
+			return () => {
+				eventHandlers.delete(event);
+			};
+		};
+
+		await action.run();
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: "focus",
+			playbackListName: "focus",
+			requestedPlaying: music,
+			confirmedPlaying: music,
+			nowPlaying: music,
+			playbackSessionId: 15,
+			playbackEpoch: 15,
+		});
+
+		await action.play(playlist);
+
+		let state = __testing.getState();
+		expect(playbackLog.interrupts).toBe(1);
+		expect(state.selectedListName).toBe("focus");
+		expect(state.playbackListName).toBe("focus");
+		expect(state.confirmedPlaying).toMatchObject({ title: music.title });
+		expect(state.nowPlaying).toMatchObject({ title: music.title });
+		expect(state.playbackSessionId).toBe(15);
+
+		eventHandlers.get("audioStopped")?.({ session_id: 999 });
+		await flush();
+
+		state = __testing.getState();
+		expect(state.selectedListName).toBe("focus");
+		expect(state.playbackListName).toBe("focus");
+		expect(state.confirmedPlaying).toMatchObject({ title: music.title });
+		expect(state.nowPlaying).toMatchObject({ title: music.title });
+		expect(state.playbackSessionId).toBe(15);
+
+		eventHandlers.get("audioStopped")?.({ session_id: 15 });
+		await flush();
+
+		state = __testing.getState();
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.confirmedPlaying).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.playbackSessionId).toBeNull();
+	});
+
 	test("stop_false_negative_guard_replacement_session_rejects_displaced_audioStopped_settlement", async () => {
 		const first = makeMusic("C:/music/focus/a.flac");
 		const second = makeMusic("C:/music/focus/b.flac");
