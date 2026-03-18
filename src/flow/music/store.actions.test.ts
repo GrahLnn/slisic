@@ -4706,10 +4706,11 @@ describe("music store action contracts", () => {
 
 		const state = __testing.getState();
 		expect(playbackLog.replaceWith).toHaveLength(1);
-		expect(playbackLog.replaceWith[0]?.epoch).toBeGreaterThan(0);
+		expect(playbackLog.replaceWith[0]?.epoch).toBe(0);
 		expect(state.selectedListName).toBe("focus");
 		expect(state.playbackListName).toBe("focus");
-		expect(state.playbackSessionId).toBeNull();
+		expect(state.playbackSessionId).toBe(9);
+		expect(state.playbackEpoch).toBe(0);
 		expect(state.nowPlaying).toBeNull();
 	});
 
@@ -4747,12 +4748,14 @@ describe("music store action contracts", () => {
 
 		const state = __testing.getState();
 		expect(playbackLog.replaceWith).toHaveLength(1);
+		expect(playbackLog.replaceWith[0]?.epoch).toBe(0);
 		expect(state.selectedListName).toBe("focus");
 		expect(state.playbackListName).toBe("focus");
 		expect(state.requestedPlaying).toBeNull();
 		expect(state.confirmedPlaying).toMatchObject({ path: music.path });
 		expect(state.nowPlaying).toBeNull();
-		expect(state.playbackSessionId).toBeNull();
+		expect(state.playbackSessionId).toBe(11);
+		expect(state.playbackEpoch).toBe(0);
 	});
 
 	test("stop_false_negative_guard_keeps_canonical_playback_until_matching_transport_settlement", async () => {
@@ -4828,9 +4831,10 @@ describe("music store action contracts", () => {
 		expect(state.requestedPlaying).toBeNull();
 		expect(state.confirmedPlaying).toMatchObject({ path: first.path });
 		expect(state.nowPlaying).toBeNull();
-		expect(state.playbackSessionId).toBeNull();
+		expect(state.playbackSessionId).toBe(21);
+		expect(state.playbackEpoch).toBe(21);
 		expect(playbackLog.replaceWith).toHaveLength(1);
-		expect(playbackLog.replaceWith[0]?.epoch).toBeGreaterThan(21);
+		expect(playbackLog.replaceWith[0]?.epoch).toBe(21);
 	});
 
 	test("audioEnded_false_negative_guard_displaced_transport_fact_cannot_settle_replacement_session", async () => {
@@ -4973,9 +4977,10 @@ describe("music store action contracts", () => {
 	});
 
 	test("transportLifecycle_true_positive_backend_pause_resume_failure_surface_exposes_live_session_identity", async () => {
-		expect(typeof commandContract.events.audioPaused.emit).toBe("function");
-		expect(typeof commandContract.events.audioResumed.emit).toBe("function");
-		expect(typeof commandContract.events.audioFailed.emit).toBe("function");
+		expect(Object.keys(commandContract.events)).toContain("audioEnded");
+		expect(Object.keys(commandContract.events)).not.toContain("audioPaused");
+		expect(Object.keys(commandContract.events)).not.toContain("audioResumed");
+		expect(Object.keys(commandContract.events)).not.toContain("audioFailed");
 	});
 
 	test("play_true_positive_creates_a_fresh_playback_session_identity_for_each_start_attempt", async () => {

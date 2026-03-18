@@ -516,6 +516,7 @@ describe("music interaction guards", () => {
 			confirmedPlaying: null,
 			nowPlaying: null,
 			nowJudge: null,
+			playbackEpoch: 3,
 			playbackSessionId: null,
 		});
 		expect(clearPlaybackSession(baseState, 2)).toBeNull();
@@ -543,6 +544,7 @@ describe("music interaction guards", () => {
 			confirmedPlaying: null,
 			nowPlaying: null,
 			nowJudge: null,
+			playbackEpoch: 3,
 			playbackSessionId: null,
 		});
 	});
@@ -555,7 +557,8 @@ describe("music interaction guards", () => {
 			confirmedPlaying: baseState.confirmedPlaying,
 			nowPlaying: null,
 			nowJudge: null,
-			playbackSessionId: null,
+			playbackEpoch: 3,
+			playbackSessionId: 3,
 		});
 	});
 
@@ -692,6 +695,7 @@ describe("music interaction guards", () => {
 			confirmedPlaying: null,
 			nowPlaying: null,
 			nowJudge: null,
+			playbackEpoch: 4,
 			playbackSessionId: null,
 		});
 	});
@@ -745,6 +749,7 @@ describe("music interaction guards", () => {
 			confirmedPlaying: requestedReplacement,
 			nowPlaying: requestedReplacement,
 			nowJudge: null,
+			playbackEpoch: 4,
 			playbackSessionId: 4,
 		});
 		expect(clearPlaybackTransportFact(replacementState, 4, "ended")).toEqual({
@@ -754,7 +759,8 @@ describe("music interaction guards", () => {
 			confirmedPlaying: requestedReplacement,
 			nowPlaying: null,
 			nowJudge: null,
-			playbackSessionId: null,
+			playbackEpoch: 4,
+			playbackSessionId: 4,
 		});
 	});
 
@@ -858,25 +864,27 @@ describe("music interaction guards", () => {
 			confirmedPlaying: baseState.confirmedPlaying,
 			nowPlaying: null,
 			nowJudge: null,
-			playbackSessionId: null,
+			playbackEpoch: 3,
+			playbackSessionId: 3,
 		});
 
 		expect(
 			clearEndedPlaybackForFallback({
 				...baseState,
-				playbackListName: null,
 				selectedListName: "browsed",
 			}),
 		).toEqual({
 			selectedListName: "browsed",
-			playbackListName: null,
+			playbackListName: "contemporary",
 			requestedPlaying: null,
 			confirmedPlaying: baseState.confirmedPlaying,
 			nowPlaying: null,
 			nowJudge: null,
-			playbackSessionId: null,
+			playbackEpoch: 3,
+			playbackSessionId: 3,
 		});
 	});
+
 
 	test("deriveRefreshPatch should preserve edit/create mode and clear impossible playback context", () => {
 		const playlists = [makePlaylist("contemporary"), makePlaylist("ambient")];

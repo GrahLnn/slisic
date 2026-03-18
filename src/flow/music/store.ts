@@ -129,6 +129,7 @@ export interface MusicState {
 }
 
 interface PlaybackSessionSnapshot {
+	playbackEpoch: number;
 	playbackSessionId: number | null;
 	selectedListName: string | null;
 	playbackListName: string | null;
@@ -603,6 +604,7 @@ export function clearPlaybackSession(
 	| "confirmedPlaying"
 	| "nowPlaying"
 	| "nowJudge"
+	| "playbackEpoch"
 	| "playbackSessionId"
 > | null {
 	if (snapshot.playbackSessionId == null) return null;
@@ -616,6 +618,7 @@ export function clearPlaybackSession(
 		confirmedPlaying: null,
 		nowPlaying: null,
 		nowJudge: null,
+		playbackEpoch: snapshot.playbackEpoch,
 		playbackSessionId: null,
 	};
 }
@@ -632,6 +635,7 @@ export function clearPlaybackTransportFact(
 	| "confirmedPlaying"
 	| "nowPlaying"
 	| "nowJudge"
+	| "playbackEpoch"
 	| "playbackSessionId"
 > | null {
 	if (snapshot.playbackSessionId == null) return null;
@@ -646,6 +650,7 @@ export function clearPlaybackTransportFact(
 			confirmedPlaying: snapshot.confirmedPlaying,
 			nowPlaying: snapshot.nowPlaying,
 			nowJudge: null,
+			playbackEpoch: snapshot.playbackEpoch,
 			playbackSessionId: snapshot.playbackSessionId,
 		};
 	}
@@ -666,6 +671,7 @@ export function clearEndedPlaybackForFallback(
 		| "confirmedPlaying"
 		| "nowPlaying"
 		| "nowJudge"
+		| "playbackEpoch"
 		| "playbackSessionId"
 	>,
 ): Pick<
@@ -676,6 +682,7 @@ export function clearEndedPlaybackForFallback(
 	| "confirmedPlaying"
 	| "nowPlaying"
 	| "nowJudge"
+	| "playbackEpoch"
 	| "playbackSessionId"
 > {
 	return {
@@ -685,7 +692,8 @@ export function clearEndedPlaybackForFallback(
 		confirmedPlaying: snapshot.confirmedPlaying,
 		nowPlaying: null,
 		nowJudge: null,
-		playbackSessionId: null,
+		playbackEpoch: snapshot.playbackEpoch,
+		playbackSessionId: snapshot.playbackSessionId,
 	};
 }
 
@@ -1757,8 +1765,8 @@ async function ensureEvents() {
 			const snapshot = getState();
 			if (!shouldHandleAudioEnded(snapshot, { path, sessionId })) return;
 			void applyNextFatigue(snapshot.nowPlaying);
-			const epoch = bumpPlaybackEpoch();
 			patchState(clearEndedPlaybackForFallback(snapshot));
+			const epoch = snapshot.playbackEpoch;
 			scheduleNextPlayback(epoch);
 		});
 		unsubs.push(audioEnded);
