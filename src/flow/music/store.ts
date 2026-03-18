@@ -1771,6 +1771,20 @@ async function ensureEvents() {
 		});
 		unsubs.push(audioEnded);
 
+		const audioStopped = await crab.evt("audioStopped")((payload) => {
+			const sessionId =
+				payload &&
+				typeof payload === "object" &&
+				"session_id" in payload &&
+				typeof (payload as { session_id?: unknown }).session_id === "number"
+					? (payload as { session_id: number }).session_id
+					: null;
+			const patch = clearPlaybackTransportFact(getState(), sessionId, "stopped");
+			if (!patch) return;
+			patchState(patch);
+		});
+		unsubs.push(audioStopped);
+
 		const handleTransportFact = (
 			payload: unknown,
 			fact: "paused" | "resumed" | "failed",

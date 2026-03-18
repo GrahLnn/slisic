@@ -4763,6 +4763,16 @@ describe("music store action contracts", () => {
 		const playlist = makePlaylist("focus", [
 			{ ...makeEntry("alpha", "C:/music/focus"), musics: [music] },
 		]);
+		const eventHandlers = new Map<string, (payload: unknown) => void>();
+
+		impl.evt = async (event, handler) => {
+			eventHandlers.set(event, handler);
+			return () => {
+				eventHandlers.delete(event);
+			};
+		};
+
+		await action.run();
 
 		__testing.replaceState({
 			...__testing.getState(),
@@ -4780,7 +4790,7 @@ describe("music store action contracts", () => {
 
 		await action.play(playlist);
 
-		const state = __testing.getState();
+		let state = __testing.getState();
 		expect(playbackLog.interrupts).toBe(1);
 		expect(state.selectedListName).toBe("focus");
 		expect(state.playbackListName).toBe("focus");
@@ -4788,6 +4798,28 @@ describe("music store action contracts", () => {
 		expect(state.confirmedPlaying).toMatchObject({ path: music.path });
 		expect(state.nowPlaying).toMatchObject({ path: music.path });
 		expect(state.playbackSessionId).toBe(12);
+
+		eventHandlers.get("audioStopped")?.({ session_id: 999 });
+		await flush();
+
+		state = __testing.getState();
+		expect(state.selectedListName).toBe("focus");
+		expect(state.playbackListName).toBe("focus");
+		expect(state.requestedPlaying).toMatchObject({ path: music.path });
+		expect(state.confirmedPlaying).toMatchObject({ path: music.path });
+		expect(state.nowPlaying).toMatchObject({ path: music.path });
+		expect(state.playbackSessionId).toBe(12);
+
+		eventHandlers.get("audioStopped")?.({ session_id: 12 });
+		await flush();
+
+		state = __testing.getState();
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.requestedPlaying).toBeNull();
+		expect(state.confirmedPlaying).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.playbackSessionId).toBeNull();
 	});
 
 	test("audioEnded_false_negative_guard_frontend_end_path_keeps_acknowledged_session_live_until_backend_fact_arrives", async () => {
