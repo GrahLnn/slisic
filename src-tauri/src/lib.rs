@@ -90,13 +90,19 @@ export function makeLiveEvent<T extends Record<string, any>>(ev: EventsShape<T>)
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_shell::init())
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let label = window.label().to_string();
-                let app = window.app_handle();
-                if utils::window::should_exit_on_window_close(&app, &label) {
-                    api.prevent_close();
-                    utils::window::begin_graceful_shutdown(&app, &label);
+            let label = window.label().to_string();
+            let app = window.app_handle();
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    if utils::window::should_exit_on_window_close(&app, &label) {
+                        api.prevent_close();
+                        utils::window::begin_graceful_shutdown(&app, &label);
+                    }
                 }
+                tauri::WindowEvent::Destroyed => {
+                    utils::window::handle_window_destroyed(&app, &label);
+                }
+                _ => {}
             }
         })
         .invoke_handler(builder.invoke_handler())
