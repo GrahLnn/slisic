@@ -4880,6 +4880,9 @@ describe("music store action contracts", () => {
 			routeResolved: true,
 			playlists: [playlist],
 			selectedListName: "focus",
+			playbackListName: "focus",
+			requestedPlaying: music,
+			confirmedPlaying: music,
 			nowPlaying: music,
 			playbackSessionId: 7,
 			playbackEpoch: 7,
@@ -4890,9 +4893,79 @@ describe("music store action contracts", () => {
 		const state = __testing.getState();
 		expect(playbackLog.interrupts).toBe(1);
 		expect(state.playbackSessionId).toBe(7);
-		expect(state.confirmedPlaying).toBeNull();
+		expect(state.confirmedPlaying).toMatchObject({ path: music.path });
 		expect(state.nowPlaying).toMatchObject({ path: music.path });
 		expect(state.selectedListName).toBe("focus");
+	});
+
+	test("transportContext_false_negative_guard_restart_while_browsing_keeps_playback_owned_list_context_until_matching_handoff", async () => {
+		const focusTrack = makeMusic("C:/music/focus/a.flac");
+		const browsedTrack = makeMusic("C:/music/browsed/a.flac");
+		const focus = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [focusTrack] },
+		]);
+		const browsed = makePlaylist("browsed", [
+			{ ...makeEntry("beta", "C:/music/browsed"), musics: [browsedTrack] },
+		]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [focus, browsed],
+			selectedListName: "browsed",
+			playbackListName: "focus",
+			requestedPlaying: focusTrack,
+			confirmedPlaying: focusTrack,
+			nowPlaying: focusTrack,
+			playbackSessionId: 21,
+			playbackEpoch: 21,
+		});
+
+		await action.play(focus);
+
+		const state = __testing.getState();
+		expect(playbackLog.interrupts).toBe(1);
+		expect(state.selectedListName).toBe("browsed");
+		expect(state.playbackListName).toBe("focus");
+		expect(state.requestedPlaying).toMatchObject({ path: focusTrack.path });
+		expect(state.confirmedPlaying).toMatchObject({ path: focusTrack.path });
+		expect(state.nowPlaying).toMatchObject({ path: focusTrack.path });
+		expect(state.playbackSessionId).toBe(21);
+	});
+
+	test("transportContext_false_negative_guard_same_list_restart_does_not_rebind_to_browsed_focus_before_matching_handoff", async () => {
+		const focusTrack = makeMusic("C:/music/focus/a.flac");
+		const otherTrack = makeMusic("C:/music/other/a.flac");
+		const focus = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [focusTrack] },
+		]);
+		const other = makePlaylist("other", [
+			{ ...makeEntry("beta", "C:/music/other"), musics: [otherTrack] },
+		]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [focus, other],
+			selectedListName: "other",
+			playbackListName: "focus",
+			requestedPlaying: focusTrack,
+			confirmedPlaying: focusTrack,
+			nowPlaying: focusTrack,
+			playbackSessionId: 34,
+			playbackEpoch: 34,
+		});
+
+		await action.play(focus);
+
+		const state = __testing.getState();
+		expect(state.selectedListName).toBe("other");
+		expect(state.playbackListName).toBe("focus");
+		expect(state.confirmedPlaying).toMatchObject({ path: focusTrack.path });
+		expect(state.nowPlaying).toMatchObject({ path: focusTrack.path });
+		expect(state.requestedPlaying).not.toMatchObject({ path: otherTrack.path });
 	});
 
 	test("play_false_positive_guard_requested_intent_does_not_become_canonical_active_playback_without_backend_ack_fact", async () => {

@@ -1765,7 +1765,10 @@ async function safeStop() {
 
 async function startPlayByList(name: string) {
 	const snapshot = getState();
-	if (snapshot.selectedListName === name && snapshot.nowPlaying) {
+	if (
+		snapshot.playbackListName === name &&
+		(snapshot.confirmedPlaying ?? snapshot.nowPlaying)
+	) {
 		await safeStop();
 		return;
 	}
