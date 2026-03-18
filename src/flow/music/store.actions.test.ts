@@ -4822,6 +4822,60 @@ describe("music store action contracts", () => {
 		expect(state.playbackSessionId).toBeNull();
 	});
 
+	test("stop_false_negative_guard_replacement_session_rejects_displaced_audioStopped_settlement", async () => {
+		const first = makeMusic("C:/music/focus/a.flac");
+		const second = makeMusic("C:/music/focus/b.flac");
+		const playlist = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [first, second] },
+		]);
+		const eventHandlers = new Map<string, (payload: unknown) => void>();
+
+		impl.evt = async (event, handler) => {
+			eventHandlers.set(event, handler);
+			return () => {
+				eventHandlers.delete(event);
+			};
+		};
+
+		await action.run();
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: "focus",
+			playbackListName: "focus",
+			requestedPlaying: second,
+			confirmedPlaying: second,
+			nowPlaying: second,
+			playbackSessionId: 13,
+			playbackEpoch: 13,
+		});
+
+		eventHandlers.get("audioStopped")?.({ session_id: 12 });
+		await flush();
+
+		let state = __testing.getState();
+		expect(state.selectedListName).toBe("focus");
+		expect(state.playbackListName).toBe("focus");
+		expect(state.requestedPlaying).toMatchObject({ path: second.path });
+		expect(state.confirmedPlaying).toMatchObject({ path: second.path });
+		expect(state.nowPlaying).toMatchObject({ path: second.path });
+		expect(state.playbackSessionId).toBe(13);
+
+		eventHandlers.get("audioStopped")?.({ session_id: 13 });
+		await flush();
+
+		state = __testing.getState();
+		expect(state.selectedListName).toBeNull();
+		expect(state.playbackListName).toBeNull();
+		expect(state.requestedPlaying).toBeNull();
+		expect(state.confirmedPlaying).toBeNull();
+		expect(state.nowPlaying).toBeNull();
+		expect(state.playbackSessionId).toBeNull();
+	});
+
 	test("audioEnded_false_negative_guard_frontend_end_path_keeps_acknowledged_session_live_until_backend_fact_arrives", async () => {
 		const first = makeMusic("C:/music/first.mp3");
 		const second = makeMusic("C:/music/second.mp3");
