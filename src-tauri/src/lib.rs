@@ -7,8 +7,8 @@ use anyhow::Result;
 use appdb::prelude::{init_db_with_options, Crud, InitDbOptions};
 use domain::models::user::User;
 use domain::template;
-use tauri::Emitter;
 use tauri::async_runtime::block_on;
+use tauri::Emitter;
 use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events, Builder};
 use tokio::task::block_in_place;
@@ -121,9 +121,6 @@ export function makeLiveEvent<T extends Record<string, any>>(ev: EventsShape<T>)
             })
         })
         .on_page_load(|window, _payload| {
-            let label = window.label().to_string();
-            eprintln!("startup: page load finished for {label}");
-            utils::window::record_prewarm_window_page_load(&window.app_handle(), &label);
             let _ = window.emit(STARTUP_READY_EVENT, ());
         })
         .run(tauri::generate_context!())
@@ -136,9 +133,7 @@ async fn greet(name: &str) -> Result<String, String> {
     let _ = User::save_many(vec![User::from_id(name)])
         .await
         .map_err(|e| e.to_string())?;
-    let users = User::list()
-        .await
-        .map_err(|e| e.to_string())?;
+    let users = User::list().await.map_err(|e| e.to_string())?;
 
     let ids = users
         .iter()

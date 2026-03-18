@@ -97,15 +97,26 @@ function StatsPanel({ stats }: { stats: DemoStats }) {
 }
 
 export function useTemplateBoardPrewarm(appWindow: AppWindowMeta) {
-  const hasPrewarmedRef = useRef(false);
+  const lastRequestedOwnerLabelRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (hasPrewarmedRef.current || !shouldRequestWindowPrewarm(appWindow)) {
+    if (!shouldRequestWindowPrewarm(appWindow)) {
       return;
     }
 
-    hasPrewarmedRef.current = true;
-    void crab.prewarmWindow("Main");
+    const ownerLabel = appWindow.label;
+    if (lastRequestedOwnerLabelRef.current === ownerLabel) {
+      return;
+    }
+
+    lastRequestedOwnerLabelRef.current = ownerLabel;
+    void crab.prewarmWindow("Main").then(
+      () => {},
+      (error) => {
+        lastRequestedOwnerLabelRef.current = null;
+        console.error("Failed to request prewarm window", error);
+      },
+    );
   }, [appWindow]);
 }
 
@@ -132,7 +143,6 @@ function TemplateBoard({ appWindow }: { appWindow: AppWindowMeta }) {
     }
     return map;
   }, [dashboard?.assignments]);
-
   function setStatus(taskIds: string[], status: TaskStatus) {
     if (taskIds.length === 0) {
       return;

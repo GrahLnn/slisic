@@ -90,7 +90,11 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock before epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("template_command_test_{}_{}", std::process::id(), nanos))
+        std::env::temp_dir().join(format!(
+            "template_command_test_{}_{}",
+            std::process::id(),
+            nanos
+        ))
     }
 
     fn with_db(test: impl FnOnce()) {

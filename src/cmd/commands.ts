@@ -160,6 +160,7 @@ export type WindowKindInfo = {
 	label: string,
 	is_primary_main: boolean,
 	is_user_window: boolean,
+	is_prepared_window: boolean,
 };
 
 export type WindowName = "Main";
@@ -189,4 +190,3 @@ function makeEvent<T>(name: string) {
 
     return Object.assign(fn, base);
 }
-

@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri::{LogicalSize, Size};
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
@@ -17,12 +16,15 @@ thread_local! {
     static MAIN_WINDOW_OBSERVER: RefCell<Option<FullscreenStateManager>> = RefCell::new(None);
 }
 
+pub const WINDOW_KIND_CHANGED_EVENT: &str = "factory://window-kind-changed";
+
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct WindowKindInfo {
     pub window: Option<WindowName>,
     pub label: String,
     pub is_primary_main: bool,
     pub is_user_window: bool,
+    pub is_prepared_window: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,18 +32,34 @@ struct WindowIdentity {
     window: Option<WindowName>,
     is_primary_main: bool,
     is_user_window: bool,
+    is_prepared_window: bool,
+}
+
+fn is_label_reserved_for_prepared_window(label: &str) -> bool {
+    let inventory = prepared_window_inventory()
+        .lock()
+        .expect("prepared window inventory poisoned");
+    inventory.values().any(|state| state.label == label)
 }
 
 fn classify_window_identity(label: &str) -> WindowIdentity {
     let window = window_kind_from_label(label);
     let is_primary_main = label == WindowName::Main.as_str();
+    let is_promoted_user_window = promoted_user_window_labels()
+        .lock()
+        .expect("promoted user window labels poisoned")
+        .contains(label);
+    let is_prepared_window = is_label_reserved_for_prepared_window(label);
     let is_user_window = matches!(window, Some(WindowName::Main))
-        && (is_primary_main || is_main_user_window_instance_label(label));
+        && (is_primary_main
+            || is_main_user_window_instance_label(label)
+            || is_promoted_user_window);
 
     WindowIdentity {
         window,
         is_primary_main,
         is_user_window,
+        is_prepared_window,
     }
 }
 
@@ -53,6 +71,7 @@ fn window_kind_info_for_label(label: &str) -> WindowKindInfo {
         label: label.to_string(),
         is_primary_main: identity.is_primary_main,
         is_user_window: identity.is_user_window,
+        is_prepared_window: identity.is_prepared_window,
     }
 }
 
@@ -92,10 +111,7 @@ pub fn should_label_resolve_as_user_window(label: &str) -> bool {
 
 #[cfg(test)]
 fn classify_window_labels<'a>(labels: impl IntoIterator<Item = &'a str>) -> Vec<WindowKindInfo> {
-    labels
-        .into_iter()
-        .map(window_kind_info_for_label)
-        .collect()
+    labels.into_iter().map(window_kind_info_for_label).collect()
 }
 
 fn is_main_user_window_instance_label(label: &str) -> bool {
@@ -123,34 +139,6 @@ enum PreparedWindowReadiness {
     Ready,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
-#[serde(rename_all = "snake_case")]
-pub enum PrewarmPhase {
-    Triggered,
-    HiddenWindowCreated,
-    HiddenPageLoadReady,
-    ConsumedForVisibleWindow,
-    VisibleShowRequested,
-    VisibleFocusRequested,
-    RendererBootstrapResolved,
-}
-
-#[derive(Debug, Clone, Serialize, Type)]
-pub struct PrewarmTimingEvent {
-    pub name: WindowName,
-    pub phase: PrewarmPhase,
-    pub label: String,
-    pub elapsed_ms: u128,
-    pub is_user_window: bool,
-    pub details: String,
-}
-
-#[derive(Debug, Clone)]
-struct PrewarmTimingSession {
-    started_at: Instant,
-    events: Vec<PrewarmTimingEvent>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PreparedWindowState {
     label: String,
@@ -164,93 +152,14 @@ struct PreparedWindowDisposition {
 }
 
 fn prepared_window_inventory() -> &'static Mutex<HashMap<WindowName, PreparedWindowState>> {
-    static PREPARED_WINDOWS: OnceLock<Mutex<HashMap<WindowName, PreparedWindowState>>> = OnceLock::new();
+    static PREPARED_WINDOWS: OnceLock<Mutex<HashMap<WindowName, PreparedWindowState>>> =
+        OnceLock::new();
     PREPARED_WINDOWS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn prewarm_timing_sessions() -> &'static Mutex<HashMap<WindowName, PrewarmTimingSession>> {
-    static PREWARM_TIMING_SESSIONS: OnceLock<Mutex<HashMap<WindowName, PrewarmTimingSession>>> = OnceLock::new();
-    PREWARM_TIMING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn start_prewarm_timing_session(name: WindowName, label: &str, details: impl Into<String>) {
-    let mut sessions = prewarm_timing_sessions()
-        .lock()
-        .expect("prewarm timing sessions poisoned");
-
-    let mut session = PrewarmTimingSession {
-        started_at: Instant::now(),
-        events: Vec::new(),
-    };
-    session.events.push(PrewarmTimingEvent {
-        name,
-        phase: PrewarmPhase::Triggered,
-        label: label.to_string(),
-        elapsed_ms: 0,
-        is_user_window: should_label_resolve_as_user_window(label),
-        details: details.into(),
-    });
-    sessions.insert(name, session);
-}
-
-fn record_prewarm_timing_event(name: WindowName, phase: PrewarmPhase, label: &str, details: impl Into<String>) {
-    let mut sessions = prewarm_timing_sessions()
-        .lock()
-        .expect("prewarm timing sessions poisoned");
-
-    let Some(session) = sessions.get_mut(&name) else {
-        return;
-    };
-
-    let event = PrewarmTimingEvent {
-        name,
-        phase,
-        label: label.to_string(),
-        elapsed_ms: session.started_at.elapsed().as_millis(),
-        is_user_window: should_label_resolve_as_user_window(label),
-        details: details.into(),
-    };
-    eprintln!(
-        "prewarm-timing name={name} phase={phase:?} label={} elapsed_ms={} is_user_window={} details={}",
-        event.label, event.elapsed_ms, event.is_user_window, event.details
-    );
-    session.events.push(event);
-}
-
-fn maybe_record_hidden_page_load_timing(label: &str) {
-    let Some(name) = window_kind_from_label(label) else {
-        return;
-    };
-
-    if should_label_resolve_as_user_window(label) {
-        return;
-    }
-
-    record_prewarm_timing_event(
-        name,
-        PrewarmPhase::HiddenPageLoadReady,
-        label,
-        "hidden prewarm window reported page-load readiness",
-    );
-}
-
-#[cfg(test)]
-fn reset_prewarm_timing_sessions() {
-    let mut sessions = prewarm_timing_sessions()
-        .lock()
-        .expect("prewarm timing sessions poisoned");
-    sessions.clear();
-}
-
-#[cfg(test)]
-fn prewarm_timing_events(name: WindowName) -> Vec<PrewarmTimingEvent> {
-    let sessions = prewarm_timing_sessions()
-        .lock()
-        .expect("prewarm timing sessions poisoned");
-    sessions
-        .get(&name)
-        .map(|session| session.events.clone())
-        .unwrap_or_default()
+fn promoted_user_window_labels() -> &'static Mutex<HashSet<String>> {
+    static PROMOTED_USER_WINDOW_LABELS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    PROMOTED_USER_WINDOW_LABELS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 #[tauri::command]
@@ -264,13 +173,6 @@ pub fn record_renderer_bootstrap_ready(window: WebviewWindow) {
     if !should_label_resolve_as_user_window(&label) {
         let _ = mark_prepared_window_ready(name, &label);
     }
-
-    record_prewarm_timing_event(
-        name,
-        PrewarmPhase::RendererBootstrapResolved,
-        &label,
-        "renderer reported bootstrap-ready",
-    );
 }
 
 fn reserve_prepared_window(name: WindowName, label: String) {
@@ -284,6 +186,20 @@ fn reserve_prepared_window(name: WindowName, label: String) {
             readiness: PreparedWindowReadiness::Created,
         },
     );
+}
+
+fn promote_window_label_to_user_window(label: &str) {
+    let mut promoted_labels = promoted_user_window_labels()
+        .lock()
+        .expect("promoted user window labels poisoned");
+    promoted_labels.insert(label.to_string());
+}
+
+fn demote_window_label_from_user_window(label: &str) {
+    let mut promoted_labels = promoted_user_window_labels()
+        .lock()
+        .expect("promoted user window labels poisoned");
+    promoted_labels.remove(label);
 }
 
 fn mark_prepared_window_ready(name: WindowName, label: &str) -> bool {
@@ -338,7 +254,8 @@ fn take_prepared_window(name: WindowName) -> Option<PreparedWindowState> {
         .is_some_and(|state| state.readiness == PreparedWindowReadiness::Ready);
 
     if should_take {
-        return inventory.remove(&name);
+        let removed = inventory.remove(&name);
+        return removed;
     }
 
     None
@@ -350,6 +267,11 @@ fn reset_prepared_window_inventory() {
         .lock()
         .expect("prepared window inventory poisoned");
     inventory.clear();
+
+    let mut promoted_labels = promoted_user_window_labels()
+        .lock()
+        .expect("promoted user window labels poisoned");
+    promoted_labels.clear();
 }
 
 #[cfg(test)]
@@ -379,11 +301,17 @@ fn prepared_window_readiness(name: WindowName) -> Option<PreparedWindowReadiness
 }
 
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
-    should_exit_on_window_close_after_visible_user_count(closing_label, visible_user_window_count(app))
+    should_exit_on_window_close_after_visible_user_count(
+        closing_label,
+        visible_user_window_count(app),
+    )
 }
 
 #[cfg(test)]
-fn should_exit_on_window_close_with_count(closing_label: &str, visible_user_window_count: usize) -> bool {
+fn should_exit_on_window_close_with_count(
+    closing_label: &str,
+    visible_user_window_count: usize,
+) -> bool {
     should_exit_on_window_close_after_visible_user_count(closing_label, visible_user_window_count)
 }
 
@@ -392,8 +320,7 @@ pub fn visible_user_window_count(app: &AppHandle) -> usize {
         .values()
         .filter(|window| {
             let label = window.label();
-            should_label_resolve_as_user_window(label)
-                && window.is_visible().unwrap_or(false)
+            should_label_resolve_as_user_window(label) && window.is_visible().unwrap_or(false)
         })
         .count()
 }
@@ -414,7 +341,6 @@ pub struct MouseWindowInfo {
 #[tauri::command]
 #[specta::specta]
 pub fn get_mouse_and_window_position(window: WebviewWindow) -> Result<MouseWindowInfo, String> {
-
     // ① 鼠标位置
     let cursor = window
         .cursor_position()
@@ -525,6 +451,22 @@ fn next_label(name: WindowName, app: &tauri::AppHandle) -> String {
     unreachable!("graph window label overflow")
 }
 
+fn next_prewarm_label(name: WindowName, app: &tauri::AppHandle) -> String {
+    let base_label = format!("{name}-prewarm");
+    if app.get_webview_window(&base_label).is_none() {
+        return base_label;
+    }
+
+    for index in 1.. {
+        let label = format!("{name}-prewarm-{index}");
+        if app.get_webview_window(&label).is_none() {
+            return label;
+        }
+    }
+
+    unreachable!("prewarm window label overflow")
+}
+
 fn build_window(
     app: &tauri::AppHandle,
     label: String,
@@ -563,6 +505,10 @@ pub fn activate_window(window: &WebviewWindow) {
     }
 }
 
+pub fn should_activate_window_on_app_ready(label: &str) -> bool {
+    should_label_resolve_as_user_window(label)
+}
+
 fn apply_window_options(window: &WebviewWindow, options: Option<&CreateWindowOptions>) {
     if let Some(options) = options {
         if let (Some(width), Some(height)) = (options.width, options.height) {
@@ -580,26 +526,11 @@ pub async fn create_window(
 ) {
     if let Some(prepared_window) = take_prepared_window(name) {
         if let Some(window) = app.get_webview_window(&prepared_window.label) {
-            record_prewarm_timing_event(
-                name,
-                PrewarmPhase::ConsumedForVisibleWindow,
-                &prepared_window.label,
-                "consuming prepared hidden window for visible open",
-            );
+            promote_window_label_to_user_window(&prepared_window.label);
             apply_window_options(&window, options.as_ref());
-            record_prewarm_timing_event(
-                name,
-                PrewarmPhase::VisibleShowRequested,
-                &prepared_window.label,
-                "requesting show for consumed prepared window",
-            );
             activate_window(&window);
-            record_prewarm_timing_event(
-                name,
-                PrewarmPhase::VisibleFocusRequested,
-                &prepared_window.label,
-                "activation calls finished for consumed prepared window",
-            );
+            let next_window_kind = window_kind_info_for_label(&prepared_window.label);
+            let _ = window.emit(WINDOW_KIND_CHANGED_EVENT, next_window_kind);
             return;
         }
     }
@@ -620,10 +551,6 @@ pub async fn create_window(
 #[specta::specta]
 #[tauri::command]
 pub fn prewarm_window(app: tauri::AppHandle, name: WindowName) {
-    if app.get_webview_window(name.as_str()).is_some() {
-        return;
-    }
-
     let already_prepared_label = {
         let inventory = prepared_window_inventory()
             .lock()
@@ -639,31 +566,30 @@ pub fn prewarm_window(app: tauri::AppHandle, name: WindowName) {
         let _ = discard_prepared_window_state(name);
     }
 
-    let label = format!("{}-prewarm", name.as_str());
-    start_prewarm_timing_session(name, &label, "prewarm command triggered");
-    match build_window(&app, label.clone(), name.as_str(), false) {
-        Ok(window) => {
-            apply_window_setup(&window, false);
-            reserve_prepared_window(name, label);
-            record_prewarm_timing_event(
-                name,
-                PrewarmPhase::HiddenWindowCreated,
-                window.label(),
-                "hidden prewarm window created",
+    let label = next_prewarm_label(name, &app);
+    demote_window_label_from_user_window(&label);
+    let scheduled_label = label.clone();
+    let scheduled_label_for_task = scheduled_label.clone();
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let run_result = app_handle.run_on_main_thread(move || {
+            match build_window(&app, label.clone(), name.as_str(), false) {
+                Ok(window) => {
+                    apply_window_setup(&window, false);
+                    reserve_prepared_window(name, label);
+                }
+                Err(error) => {
+                    eprintln!("Failed to prewarm window: {error}");
+                }
+            }
+        });
+
+        if let Err(error) = run_result {
+            eprintln!(
+                "Failed to schedule prewarm window {scheduled_label_for_task} for {name}: {error}"
             );
         }
-        Err(error) => {
-            eprintln!("Failed to prewarm window: {error}");
-        }
-    }
-}
-
-pub fn record_prewarm_window_page_load(app: &AppHandle, label: &str) {
-    if app.get_webview_window(label).is_none() {
-        return;
-    }
-
-    maybe_record_hidden_page_load_timing(label);
+    });
 }
 
 #[specta::specta]
@@ -672,6 +598,7 @@ pub fn discard_prewarm_window(app: tauri::AppHandle, name: WindowName) -> bool {
     let Some(disposition) = discard_prepared_window_state(name) else {
         return false;
     };
+    demote_window_label_from_user_window(&disposition.label);
 
     if let Some(window) = app.get_webview_window(&disposition.label) {
         let _ = window.close();
@@ -684,18 +611,25 @@ pub fn discard_prewarm_window(app: tauri::AppHandle, name: WindowName) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_window_identity, classify_window_labels, discard_prepared_window,
-        discard_prepared_window_state, maybe_record_hidden_page_load_timing,
-        is_main_user_window_instance_label,
-        is_user_window_label, mark_prepared_window_ready, prewarm_timing_events,
-        prepared_window_label, prepared_window_readiness, prepared_window_targets,
-        record_prewarm_timing_event, reset_prewarm_timing_sessions, reserve_prepared_window,
-        reset_prepared_window_inventory, should_exit_on_window_close_with_count,
+        classify_window_identity, classify_window_labels, demote_window_label_from_user_window,
+        discard_prepared_window, discard_prepared_window_state, is_main_user_window_instance_label,
+        is_user_window_label, mark_prepared_window_ready, prepared_window_label,
+        prepared_window_readiness, prepared_window_targets, promote_window_label_to_user_window,
+        reserve_prepared_window, reset_prepared_window_inventory,
+        should_activate_window_on_app_ready, should_exit_on_window_close_with_count,
         should_label_resolve_as_user_window, take_prepared_window, window_kind_from_label,
         window_kind_info_for_label, PreparedWindowDisposition, PreparedWindowReadiness,
-        PreparedWindowState, PrewarmPhase, WindowName, start_prewarm_timing_session,
-        WindowName,
+        PreparedWindowState, WindowName,
     };
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    fn test_state_guard() -> MutexGuard<'static, ()> {
+        static TEST_STATE_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        TEST_STATE_GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("test state guard poisoned")
+    }
 
     #[test]
     fn visible_main_labels_resolve_as_user_windows() {
@@ -739,7 +673,10 @@ mod tests {
         for label in ["main-prewarm-1", "support-main", "prewarm-main"] {
             let info = window_kind_info_for_label(label);
 
-            assert_eq!(window_kind_from_label(label), Some(WindowName::Main).filter(|_| label.starts_with("main-")));
+            assert_eq!(
+                window_kind_from_label(label),
+                Some(WindowName::Main).filter(|_| label.starts_with("main-"))
+            );
             assert!(!info.is_primary_main);
             assert!(!info.is_user_window);
         }
@@ -789,9 +726,18 @@ mod tests {
         for (label, expected_window, expected_primary, expected_user) in cases {
             let identity = classify_window_identity(label);
 
-            assert_eq!(identity.window, expected_window, "wrong window kind for {label}");
-            assert_eq!(identity.is_primary_main, expected_primary, "wrong primary classification for {label}");
-            assert_eq!(identity.is_user_window, expected_user, "wrong user-window classification for {label}");
+            assert_eq!(
+                identity.window, expected_window,
+                "wrong window kind for {label}"
+            );
+            assert_eq!(
+                identity.is_primary_main, expected_primary,
+                "wrong primary classification for {label}"
+            );
+            assert_eq!(
+                identity.is_user_window, expected_user,
+                "wrong user-window classification for {label}"
+            );
         }
     }
 
@@ -850,6 +796,7 @@ mod tests {
 
     #[test]
     fn typed_prewarm_targets_are_keyed_by_window_enum() {
+        let _guard = test_state_guard();
         reset_prepared_window_inventory();
 
         reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
@@ -863,6 +810,7 @@ mod tests {
 
     #[test]
     fn discarded_prepared_targets_are_removed_from_inventory() {
+        let _guard = test_state_guard();
         reset_prepared_window_inventory();
         reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
@@ -872,6 +820,7 @@ mod tests {
 
     #[test]
     fn authoritative_discard_returns_existing_inventory_label() {
+        let _guard = test_state_guard();
         reset_prepared_window_inventory();
         reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
@@ -887,6 +836,7 @@ mod tests {
 
     #[test]
     fn authoritative_discard_targets_canonical_label_even_without_inventory_entry() {
+        let _guard = test_state_guard();
         reset_prepared_window_inventory();
 
         assert_eq!(
@@ -900,6 +850,7 @@ mod tests {
 
     #[test]
     fn discarded_prepared_targets_stay_absent_during_future_open_flow() {
+        let _guard = test_state_guard();
         reset_prepared_window_inventory();
         reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
@@ -913,20 +864,28 @@ mod tests {
 
     #[test]
     fn prewarm_creates_real_hidden_backend_window_state() {
+        let _guard = test_state_guard();
         reset_prepared_window_inventory();
 
         reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
         let prepared = prepared_window_targets();
         assert_eq!(prepared, vec![WindowName::Main]);
-        assert_eq!(prepared_window_label(WindowName::Main).as_deref(), Some("main-prewarm"));
-        assert_eq!(prepared_window_readiness(WindowName::Main), Some(PreparedWindowReadiness::Created));
+        assert_eq!(
+            prepared_window_label(WindowName::Main).as_deref(),
+            Some("main-prewarm")
+        );
+        assert_eq!(
+            prepared_window_readiness(WindowName::Main),
+            Some(PreparedWindowReadiness::Created)
+        );
         assert!(take_prepared_window(WindowName::Main).is_none());
         assert_eq!(prepared_window_targets(), vec![WindowName::Main]);
     }
 
     #[test]
     fn taking_prepared_window_consumes_authoritative_backend_state_once() {
+        let _guard = test_state_guard();
         reset_prepared_window_inventory();
         reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
@@ -938,21 +897,29 @@ mod tests {
 
     #[test]
     fn merely_created_hidden_window_does_not_count_as_consumable_prewarm_inventory() {
+        let _guard = test_state_guard();
         reset_prepared_window_inventory();
         reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
-        assert_eq!(prepared_window_readiness(WindowName::Main), Some(PreparedWindowReadiness::Created));
+        assert_eq!(
+            prepared_window_readiness(WindowName::Main),
+            Some(PreparedWindowReadiness::Created)
+        );
         assert!(take_prepared_window(WindowName::Main).is_none());
         assert_eq!(prepared_window_targets(), vec![WindowName::Main]);
     }
 
     #[test]
     fn ready_hidden_window_becomes_consumable_for_next_visible_open_flow() {
+        let _guard = test_state_guard();
         reset_prepared_window_inventory();
         reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
         assert!(mark_prepared_window_ready(WindowName::Main, "main-prewarm"));
-        assert_eq!(prepared_window_readiness(WindowName::Main), Some(PreparedWindowReadiness::Ready));
+        assert_eq!(
+            prepared_window_readiness(WindowName::Main),
+            Some(PreparedWindowReadiness::Ready)
+        );
 
         let consumed = take_prepared_window(WindowName::Main);
         assert_eq!(
@@ -967,116 +934,79 @@ mod tests {
 
     #[test]
     fn readiness_updates_only_for_matching_hidden_inventory_label() {
+        let _guard = test_state_guard();
         reset_prepared_window_inventory();
         reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
         assert!(!mark_prepared_window_ready(WindowName::Main, "main-1"));
-        assert_eq!(prepared_window_readiness(WindowName::Main), Some(PreparedWindowReadiness::Created));
-    }
-
-    #[test]
-    fn timing_diagnostics_record_end_to_end_prewarm_progression() {
-        reset_prewarm_timing_sessions();
-
-        start_prewarm_timing_session(WindowName::Main, "main-prewarm", "prewarm command triggered");
-        record_prewarm_timing_event(
-            WindowName::Main,
-            PrewarmPhase::HiddenWindowCreated,
-            "main-prewarm",
-            "hidden prewarm window created",
-        );
-        record_prewarm_timing_event(
-            WindowName::Main,
-            PrewarmPhase::HiddenPageLoadReady,
-            "main-prewarm",
-            "hidden prewarm window reported page-load readiness",
-        );
-        record_prewarm_timing_event(
-            WindowName::Main,
-            PrewarmPhase::ConsumedForVisibleWindow,
-            "main-prewarm",
-            "consuming prepared hidden window for visible open",
-        );
-        record_prewarm_timing_event(
-            WindowName::Main,
-            PrewarmPhase::VisibleShowRequested,
-            "main-prewarm",
-            "requesting show for consumed prepared window",
-        );
-        record_prewarm_timing_event(
-            WindowName::Main,
-            PrewarmPhase::RendererBootstrapResolved,
-            "main-prewarm",
-            "renderer reported bootstrap-ready",
-        );
-
-        let events = prewarm_timing_events(WindowName::Main);
-        let phases = events.into_iter().map(|event| event.phase).collect::<Vec<_>>();
-
         assert_eq!(
-            phases,
-            vec![
-                PrewarmPhase::Triggered,
-                PrewarmPhase::HiddenWindowCreated,
-                PrewarmPhase::HiddenPageLoadReady,
-                PrewarmPhase::ConsumedForVisibleWindow,
-                PrewarmPhase::VisibleShowRequested,
-                PrewarmPhase::RendererBootstrapResolved,
-            ]
-        );
-    }
-
-    #[test]
-    fn page_load_timing_does_not_make_hidden_window_consumable() {
-        reset_prepared_window_inventory();
-        reset_prewarm_timing_sessions();
-        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
-        start_prewarm_timing_session(WindowName::Main, "main-prewarm", "prewarm command triggered");
-
-        maybe_record_hidden_page_load_timing("main-prewarm");
-
-        assert_eq!(prepared_window_readiness(WindowName::Main), Some(PreparedWindowReadiness::Created));
-        assert!(take_prepared_window(WindowName::Main).is_none());
-        let phases = prewarm_timing_events(WindowName::Main)
-            .into_iter()
-            .map(|event| event.phase)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            phases,
-            vec![PrewarmPhase::Triggered, PrewarmPhase::HiddenPageLoadReady]
+            prepared_window_readiness(WindowName::Main),
+            Some(PreparedWindowReadiness::Created)
         );
     }
 
     #[test]
     fn renderer_bootstrap_ready_makes_matching_hidden_window_consumable() {
+        let _guard = test_state_guard();
         reset_prepared_window_inventory();
         reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
         assert!(mark_prepared_window_ready(WindowName::Main, "main-prewarm"));
-        assert_eq!(prepared_window_readiness(WindowName::Main), Some(PreparedWindowReadiness::Ready));
+        assert_eq!(
+            prepared_window_readiness(WindowName::Main),
+            Some(PreparedWindowReadiness::Ready)
+        );
     }
 
     #[test]
-    fn timing_diagnostics_mark_visible_user_phases_after_consumption() {
-        reset_prewarm_timing_sessions();
+    fn consumed_prewarm_label_can_be_promoted_to_user_window() {
+        let _guard = test_state_guard();
+        reset_prepared_window_inventory();
 
-        start_prewarm_timing_session(WindowName::Main, "main-prewarm", "prewarm command triggered");
-        record_prewarm_timing_event(
-            WindowName::Main,
-            PrewarmPhase::ConsumedForVisibleWindow,
-            "main-prewarm",
-            "consuming prepared hidden window for visible open",
-        );
-        record_prewarm_timing_event(
-            WindowName::Main,
-            PrewarmPhase::RendererBootstrapResolved,
-            "main-1",
-            "renderer reported bootstrap-ready",
-        );
+        assert!(!should_label_resolve_as_user_window("main-prewarm"));
+        promote_window_label_to_user_window("main-prewarm");
+        assert!(should_label_resolve_as_user_window("main-prewarm"));
 
-        let events = prewarm_timing_events(WindowName::Main);
-        assert_eq!(events[1].is_user_window, false);
-        assert_eq!(events[2].is_user_window, true);
-        assert_eq!(events[2].label, "main-1");
+        demote_window_label_from_user_window("main-prewarm");
+        assert!(!should_label_resolve_as_user_window("main-prewarm"));
+    }
+
+    #[test]
+    fn app_ready_activation_skips_hidden_prewarm_labels() {
+        assert!(should_activate_window_on_app_ready("main"));
+        assert!(should_activate_window_on_app_ready("main-1"));
+        assert!(!should_activate_window_on_app_ready("main-prewarm"));
+    }
+
+    #[test]
+    fn inventory_backed_hidden_window_classifies_as_prepared_without_user_ownership() {
+        let _guard = test_state_guard();
+        reset_prepared_window_inventory();
+        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
+
+        let info = window_kind_info_for_label("main-prewarm");
+        assert_eq!(info.window, Some(WindowName::Main));
+        assert!(!info.is_user_window);
+        assert!(info.is_prepared_window);
+    }
+
+    #[test]
+    fn consuming_hidden_window_removes_prepared_state_before_user_promotion() {
+        let _guard = test_state_guard();
+        reset_prepared_window_inventory();
+        reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
+        assert!(mark_prepared_window_ready(WindowName::Main, "main-prewarm"));
+
+        let consumed = take_prepared_window(WindowName::Main);
+        assert!(consumed.is_some());
+
+        let before_promotion = window_kind_info_for_label("main-prewarm");
+        assert!(!before_promotion.is_user_window);
+        assert!(!before_promotion.is_prepared_window);
+
+        promote_window_label_to_user_window("main-prewarm");
+        let after_promotion = window_kind_info_for_label("main-prewarm");
+        assert!(after_promotion.is_user_window);
+        assert!(!after_promotion.is_prepared_window);
     }
 }

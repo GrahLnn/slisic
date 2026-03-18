@@ -7,11 +7,12 @@ export interface AppWindowMeta {
   label: string;
   isPrimaryMain: boolean;
   isUserWindow: boolean;
+  isPreparedWindow: boolean;
   status: AppBootstrapStatus;
 }
 
 export interface InteractiveShellState {
-  kind: "fallback" | "resolved" | "blocked";
+  kind: "fallback" | "resolved" | "prepared" | "blocked";
   showShell: boolean;
   showWindowControls: boolean;
   ownershipResolved: boolean;
@@ -27,6 +28,7 @@ export const initialAppWindowMeta: AppWindowMeta = {
   label: "",
   isPrimaryMain: false,
   isUserWindow: true,
+  isPreparedWindow: false,
   status: "pending",
 };
 
@@ -41,6 +43,15 @@ export function getInteractiveShellState(meta: AppWindowMeta): InteractiveShellS
         ownershipResolved: false,
       };
     case "ready":
+      if (meta.isPreparedWindow) {
+        return {
+          kind: "prepared",
+          showShell: true,
+          showWindowControls: false,
+          ownershipResolved: true,
+        };
+      }
+
       if (!meta.isUserWindow) {
         return {
           kind: "blocked",
@@ -60,7 +71,7 @@ export function getInteractiveShellState(meta: AppWindowMeta): InteractiveShellS
 }
 
 export function resolveMainRouteWindow(meta: AppWindowMeta): WindowName | null {
-  if (meta.status !== "ready" || !meta.isUserWindow) {
+  if (meta.status !== "ready" || (!meta.isUserWindow && !meta.isPreparedWindow)) {
     return null;
   }
 
@@ -98,15 +109,24 @@ export function shouldRunUpdater(meta: AppWindowMeta): boolean {
     return false;
   }
 
-  return meta.status === "ready" && meta.isUserWindow && meta.window === "Main" && meta.isPrimaryMain;
+  return (
+    meta.status === "ready" && meta.isUserWindow && meta.window === "Main" && meta.isPrimaryMain
+  );
 }
 
 export function shouldRequestWindowPrewarm(_meta: AppWindowMeta): boolean {
-  return resolveHomepageEffectWindow(_meta) === "Main";
+  return (
+    _meta.status === "ready" &&
+    _meta.window === "Main" &&
+    _meta.isUserWindow &&
+    !_meta.isPreparedWindow
+  );
 }
 
-export function shouldSubscribeToStartupReady(
-  state: StartupReadySubscriptionState,
-): boolean {
-  return state.tauriInternalsReady && typeof state.currentWindowLabel === "string" && state.currentWindowLabel.length > 0;
+export function shouldSubscribeToStartupReady(state: StartupReadySubscriptionState): boolean {
+  return (
+    state.tauriInternalsReady &&
+    typeof state.currentWindowLabel === "string" &&
+    state.currentWindowLabel.length > 0
+  );
 }
