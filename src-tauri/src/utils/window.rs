@@ -60,6 +60,10 @@ impl WindowIdentityDescriptor {
     pub const fn is_prepared(&self) -> bool {
         self.visibility.is_prepared()
     }
+
+    pub const fn is_user_visible(&self) -> bool {
+        self.visibility.is_user_visible()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -126,24 +130,20 @@ pub fn get_window_kind(window: WebviewWindow) -> WindowKindInfo {
     WindowIdentityDescriptor::from_label(window.label()).into()
 }
 
-pub fn is_non_prewarm_window_label(label: &str) -> bool {
-    WindowIdentityDescriptor::from_label(label)
-        .visibility
-        .is_user_visible()
-}
-
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
-    if !is_non_prewarm_window_label(closing_label) {
+    let closing_descriptor = WindowIdentityDescriptor::from_label(closing_label);
+    if !closing_descriptor.is_user_visible() {
         return false;
     }
 
-    let main_window_count = app
+    let visible_window_count = app
         .webview_windows()
         .keys()
-        .filter(|label| is_non_prewarm_window_label(label))
+        .map(|label| WindowIdentityDescriptor::from_label(label))
+        .filter(WindowIdentityDescriptor::is_user_visible)
         .count();
 
-    main_window_count <= 1
+    visible_window_count <= 1
 }
 
 pub fn close_all_prewarm_windows(app: &AppHandle) {
@@ -521,5 +521,55 @@ mod tests {
             assert_eq!(window, descriptor.window);
             assert_eq!(is_prewarm, descriptor.is_prepared());
         }
+    }
+
+    #[test]
+    fn graceful_shutdown_true_positive_closing_final_user_visible_window_exits_even_with_prepared_windows_remaining(
+    ) {
+        let open_labels = ["main", "main-prewarm-1", "main-prewarm-2"];
+        let closing_label = "main";
+
+        let should_exit = WindowIdentityDescriptor::from_label(closing_label).is_user_visible()
+            && open_labels
+                .iter()
+                .map(|label| WindowIdentityDescriptor::from_label(label))
+                .filter(WindowIdentityDescriptor::is_user_visible)
+                .count()
+                <= 1;
+
+        assert!(should_exit);
+    }
+
+    #[test]
+    fn graceful_shutdown_true_negative_prepared_window_close_does_not_count_as_last_user_window() {
+        let open_labels = ["main", "main-prewarm-1"];
+        let closing_label = "main-prewarm-1";
+
+        let should_exit = WindowIdentityDescriptor::from_label(closing_label).is_user_visible()
+            && open_labels
+                .iter()
+                .map(|label| WindowIdentityDescriptor::from_label(label))
+                .filter(WindowIdentityDescriptor::is_user_visible)
+                .count()
+                <= 1;
+
+        assert!(!should_exit);
+    }
+
+    #[test]
+    fn graceful_shutdown_false_negative_guard_keeps_app_alive_while_another_user_visible_window_exists(
+    ) {
+        let open_labels = ["main", "main-2", "main-prewarm-1"];
+        let closing_label = "main-2";
+
+        let should_exit = WindowIdentityDescriptor::from_label(closing_label).is_user_visible()
+            && open_labels
+                .iter()
+                .map(|label| WindowIdentityDescriptor::from_label(label))
+                .filter(WindowIdentityDescriptor::is_user_visible)
+                .count()
+                <= 1;
+
+        assert!(!should_exit);
     }
 }
