@@ -1,0 +1,8 @@
+{
+  "name": "bun-hello-sidecar",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run hello.ts hello"
+  }
+}

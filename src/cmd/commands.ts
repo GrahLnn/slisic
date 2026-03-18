@@ -43,6 +43,7 @@ export const commands = {
 	width: number | null,
 	height: number | null,
 } | null) => __TAURI_INVOKE<void>("create_window", { name, options }),
+	runBunHelloSidecar: (input: string | null) => typedError<BunSidecarOutput, string>(__TAURI_INVOKE("run_bun_hello_sidecar", { input })),
 	greet: (name: string) => typedError<string, string>(__TAURI_INVOKE("greet", { name })),
 	clean: () => typedError<string, string>(__TAURI_INVOKE("clean")),
 	templateBootstrap: () => typedError<TemplateDashboard, string>(__TAURI_INVOKE("template_bootstrap")),
@@ -69,6 +70,13 @@ export const events = {
 export type BulkStatusInput = {
 	task_ids: string[],
 	status: string,
+};
+
+export type BunSidecarOutput = {
+	ok: boolean,
+	status: number | null,
+	stdout: string,
+	stderr: string,
 };
 
 export type CreateWindowOptions = {

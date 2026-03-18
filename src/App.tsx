@@ -2,8 +2,9 @@ import { cn } from "@/lib/utils";
 import "./App.css";
 import "sileo/styles.css";
 import "@fontsource/maple-mono";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "next-themes";
+import { invoke } from "@tauri-apps/api/core";
 import Input from "./components/Input";
 import TopBar from "./topbar";
 import type { DemoStats, Id } from "./cmd/commands";
@@ -35,6 +36,13 @@ const statusLabels: Record<TaskStatus, string> = {
   done: "Done",
 };
 
+type BunHelloResult = {
+  ok: boolean;
+  status: number | null;
+  stdout: string;
+  stderr: string;
+};
+
 const statColors = [
   "from-cyan-500/20 via-cyan-500/5 to-transparent",
   "from-fuchsia-500/20 via-fuchsia-500/5 to-transparent",
@@ -61,6 +69,87 @@ function idToString(id: Id | string | number): string {
 
 function toTaskStatus(value: string): TaskStatus {
   return statusOptions.includes(value as TaskStatus) ? (value as TaskStatus) : "todo";
+}
+
+function formatSidecarStatus(status: number | null): string {
+  if (status == null) {
+    return "pending";
+  }
+
+  return new Intl.NumberFormat("zh-CN").format(status);
+}
+
+function SidecarHelloCard() {
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<BunHelloResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function runHello() {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const output = await invoke<BunHelloResult>("run_bun_hello_sidecar", { input: "hello" });
+      setResult(output);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      setResult(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section className="mt-4 rounded-xl border border-white/20 dark:border-white/10 bg-[var(--card-bg)] p-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 className="text-sm uppercase tracking-[0.14em] opacity-70">Bun Sidecar</h2>
+          <p className="mt-1 text-sm opacity-75">
+            直接从 Rust 调起 Bun runtime sidecar，并把 hello 的结果返回到前端。
+          </p>
+        </div>
+        <button
+          type="button"
+          className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-sm transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          onClick={runHello}
+          disabled={loading}
+        >
+          {loading ? "Running..." : "Run hello"}
+        </button>
+      </div>
+
+      <div className="mt-3 grid gap-3 md:grid-cols-3">
+        <div className="rounded-lg border border-white/15 bg-black/10 px-3 py-2">
+          <p className="text-xs uppercase tracking-[0.12em] opacity-60">OK</p>
+          <p className="mt-1 font-mono text-sm">{result ? String(result.ok) : "-"}</p>
+        </div>
+        <div className="rounded-lg border border-white/15 bg-black/10 px-3 py-2">
+          <p className="text-xs uppercase tracking-[0.12em] opacity-60">Exit Code</p>
+          <p className="mt-1 font-mono text-sm">{result ? formatSidecarStatus(result.status) : "-"}</p>
+        </div>
+        <div className="rounded-lg border border-white/15 bg-black/10 px-3 py-2">
+          <p className="text-xs uppercase tracking-[0.12em] opacity-60">Error</p>
+          <p className="mt-1 break-all font-mono text-sm">{error ?? "-"}</p>
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <div className="rounded-lg border border-white/15 bg-black/10 p-3">
+          <p className="text-xs uppercase tracking-[0.12em] opacity-60">stdout</p>
+          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-sm">
+            {result?.stdout || "-"}
+          </pre>
+        </div>
+        <div className="rounded-lg border border-white/15 bg-black/10 p-3">
+          <p className="text-xs uppercase tracking-[0.12em] opacity-60">stderr</p>
+          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-sm">
+            {result?.stderr || "-"}
+          </pre>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function StatsPanel({ stats }: { stats: DemoStats }) {
@@ -216,6 +305,8 @@ function TemplateBoard({ appWindow }: { appWindow: AppWindowMeta }) {
           </div>
         </div>
       </div>
+
+      <SidecarHelloCard />
 
       {dashboard ? <StatsPanel stats={dashboard.stats} /> : null}
 

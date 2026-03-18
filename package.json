@@ -7,6 +7,8 @@
     "dev": "rsbuild dev",
     "build": "rsbuild build",
     "preview": "rsbuild preview",
+    "sidecar:build:bun-runtime": "node scripts/build-bun-runtime.mjs",
+    "sidecar:build": "bun run sidecar:build:bun-runtime",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "lint": "oxlint .",

@@ -28,6 +28,7 @@ pub fn run() {
         utils::window::discard_prewarm_window,
         utils::window::record_renderer_bootstrap_ready,
         utils::window::create_window,
+        utils::sidecar::run_bun_hello_sidecar,
         greet,
         clean,
         template::template_bootstrap,

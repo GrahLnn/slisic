@@ -17,3 +17,7 @@ target/
 src/cmd/commands.ts
 ~/*
 .tauri/
+
+src-tauri/binaries/bun-runtime-*
+.tmp/bun-runtime/
+
