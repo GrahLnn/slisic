@@ -1,13 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { shouldRequestWindowPrewarm, type AppWindowMeta } from "../src/flow/bootstrap/logic";
+import {
+  getWindowPrewarmTarget,
+  shouldRequestWindowPrewarm,
+  type AppWindowMeta,
+} from "../src/flow/bootstrap/logic";
 import { commands } from "../src/cmd/commands";
 
 function createMeta(overrides: Partial<AppWindowMeta> = {}): AppWindowMeta {
   return {
     window: null,
     label: "",
-    isPrimaryMain: false,
+    isPrimaryWindow: false,
     isUserWindow: true,
+    isPreparedWindow: false,
     status: "pending",
     ...overrides,
   };
@@ -18,13 +23,13 @@ describe("TemplateBoard prewarm effect", () => {
     expect(typeof commands.recordRendererBootstrapReady).toBe("function");
   });
 
-  test("gates prewarm eligibility to the true primary visible main window", () => {
+  test("uses descriptor prewarm targets for any resolved eligible user window", () => {
     expect(
       shouldRequestWindowPrewarm(
         createMeta({
           status: "ready",
           window: "Main",
-          isPrimaryMain: true,
+          isPrimaryWindow: true,
           isUserWindow: true,
         }),
       ),
@@ -35,36 +40,36 @@ describe("TemplateBoard prewarm effect", () => {
         createMeta({
           status: "ready",
           window: "Main",
-          isPrimaryMain: false,
+          isPrimaryWindow: false,
           isUserWindow: true,
         }),
       ),
-    ).toBe(false);
+    ).toBe(true);
 
     expect(
-      shouldRequestWindowPrewarm(
+      getWindowPrewarmTarget(
         createMeta({
           status: "ready",
-          window: null,
-          isPrimaryMain: true,
+          window: "Support",
+          isPrimaryWindow: true,
           isUserWindow: false,
         }),
       ),
-    ).toBe(false);
+    ).toBeNull();
   });
 
   test("rerender-equivalent metadata stays eligible only once per mount through caller-side effect guards", () => {
     const firstRender = createMeta({
       status: "ready",
       window: "Main",
-      isPrimaryMain: true,
+      isPrimaryWindow: true,
       isUserWindow: true,
     });
 
     const rerender = createMeta({
       status: "ready",
       window: "Main",
-      isPrimaryMain: true,
+      isPrimaryWindow: true,
       isUserWindow: true,
       label: "main",
     });
@@ -80,7 +85,7 @@ describe("TemplateBoard prewarm effect", () => {
         createMeta({
           status: "error",
           window: "Main",
-          isPrimaryMain: true,
+          isPrimaryWindow: true,
           isUserWindow: true,
         }),
       ),
@@ -89,8 +94,19 @@ describe("TemplateBoard prewarm effect", () => {
       shouldRequestWindowPrewarm(
         createMeta({
           status: "ready",
-          window: null,
-          isPrimaryMain: true,
+          window: "Main",
+          isPrimaryWindow: true,
+          isUserWindow: true,
+          isPreparedWindow: true,
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldRequestWindowPrewarm(
+        createMeta({
+          status: "ready",
+          window: "Support",
+          isPrimaryWindow: true,
           isUserWindow: false,
         }),
       ),

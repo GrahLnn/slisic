@@ -655,8 +655,17 @@ mod tests {
         let info = window_kind_info_for_label("main");
 
         assert_eq!(info.window, Some(WindowName::Main));
-        assert!(info.is_primary_main);
+        assert!(info.is_primary_window);
         assert!(info.is_user_window);
+    }
+
+    #[test]
+    fn support_window_kind_marks_primary_support_without_user_ownership() {
+        let info = window_kind_info_for_label("support");
+
+        assert_eq!(info.window, Some(WindowName::Support));
+        assert!(info.is_primary_window);
+        assert!(!info.is_user_window);
     }
 
     #[test]
@@ -664,7 +673,7 @@ mod tests {
         let info = window_kind_info_for_label("main-3");
 
         assert_eq!(info.window, Some(WindowName::Main));
-        assert!(!info.is_primary_main);
+        assert!(!info.is_primary_window);
         assert!(info.is_user_window);
     }
 
@@ -677,9 +686,18 @@ mod tests {
                 window_kind_from_label(label),
                 Some(WindowName::Main).filter(|_| label.starts_with("main-"))
             );
-            assert!(!info.is_primary_main);
+            assert!(!info.is_primary_window);
             assert!(!info.is_user_window);
         }
+    }
+
+    #[test]
+    fn support_prewarm_labels_resolve_to_support_without_main_specific_rules() {
+        let info = window_kind_info_for_label("support-prewarm-1");
+
+        assert_eq!(info.window, Some(WindowName::Support));
+        assert!(!info.is_primary_window);
+        assert!(!info.is_user_window);
     }
 
     #[test]
@@ -696,7 +714,7 @@ mod tests {
         let infos = classify_window_labels(["main", "main-1", "main-2"]);
 
         assert_eq!(infos.len(), 3);
-        assert_eq!(infos.iter().filter(|info| info.is_primary_main).count(), 1);
+        assert_eq!(infos.iter().filter(|info| info.is_primary_window).count(), 1);
         assert!(infos.iter().all(|info| info.is_user_window));
     }
 
@@ -704,11 +722,11 @@ mod tests {
     fn reopen_sequences_never_promote_secondary_labels_to_primary_main() {
         let infos = classify_window_labels(["main", "main-1", "main-2", "main-1", "main-3"]);
 
-        assert_eq!(infos.iter().filter(|info| info.is_primary_main).count(), 1);
+        assert_eq!(infos.iter().filter(|info| info.is_primary_window).count(), 1);
         assert!(infos
             .iter()
             .filter(|info| info.label != "main")
-            .all(|info| !info.is_primary_main && info.is_user_window));
+            .all(|info| !info.is_primary_window && info.is_user_window));
     }
 
     #[test]
@@ -731,7 +749,7 @@ mod tests {
                 "wrong window kind for {label}"
             );
             assert_eq!(
-                identity.is_primary_main, expected_primary,
+                identity.is_primary_window, expected_primary,
                 "wrong primary classification for {label}"
             );
             assert_eq!(
@@ -806,6 +824,20 @@ mod tests {
         reserve_prepared_window(WindowName::Main, "main-prewarm".to_string());
 
         assert_eq!(prepared_window_targets(), vec![WindowName::Main]);
+    }
+
+    #[test]
+    fn authoritative_discard_uses_descriptor_prewarm_label_for_support_windows() {
+        let _guard = test_state_guard();
+        reset_prepared_window_inventory();
+
+        assert_eq!(
+            discard_prepared_window_state(WindowName::Support),
+            Some(PreparedWindowDisposition {
+                label: "support-prewarm".to_string(),
+                removed_from_inventory: false,
+            })
+        );
     }
 
     #[test]

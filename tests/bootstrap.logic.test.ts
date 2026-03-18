@@ -1,14 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import rsbuildConfig from "../rsbuild.config";
 import {
-  getHomepagePrewarmTarget,
   getInteractiveShellState,
+  getWindowPrewarmTarget,
   initialAppWindowMeta,
+  resolveWindowRenderTarget,
   shouldSubscribeToStartupReady,
-  resolveHomepageEffectWindow,
-  resolveMainRouteWindow,
   shouldRequestWindowPrewarm,
-  shouldRenderMainWindow,
+  shouldRenderWindowContent,
   shouldRunUpdater,
   type AppWindowMeta,
 } from "../src/flow/bootstrap/logic";
@@ -25,12 +24,12 @@ function createMeta(overrides: Partial<AppWindowMeta> = {}): AppWindowMeta {
 
 describe("shouldRenderMainWindow", () => {
   test("renders main content while bootstrap is still pending", () => {
-    expect(shouldRenderMainWindow(createMeta())).toBe(true);
+    expect(shouldRenderWindowContent(createMeta())).toBe(true);
   });
 
   test("renders main content when window kind lookup fails", () => {
     expect(
-      shouldRenderMainWindow(
+      shouldRenderWindowContent(
         createMeta({
           status: "error",
         }),
@@ -40,10 +39,11 @@ describe("shouldRenderMainWindow", () => {
 
   test("does not treat support windows as user-facing main windows", () => {
     expect(
-      shouldRenderMainWindow(
+      shouldRenderWindowContent(
         createMeta({
           status: "ready",
-          window: null,
+          window: "Support",
+          isPrimaryWindow: true,
           isUserWindow: false,
         }),
       ),
@@ -52,11 +52,11 @@ describe("shouldRenderMainWindow", () => {
 
   test("renders repeated visible main windows because they remain user windows", () => {
     expect(
-      shouldRenderMainWindow(
+      shouldRenderWindowContent(
         createMeta({
           status: "ready",
           window: "Main",
-          isPrimaryMain: false,
+          isPrimaryWindow: false,
           isUserWindow: true,
         }),
       ),
@@ -65,7 +65,7 @@ describe("shouldRenderMainWindow", () => {
 
   test("does not render the main content for ready non-user windows", () => {
     expect(
-      shouldRenderMainWindow(
+      shouldRenderWindowContent(
         createMeta({
           status: "ready",
           window: "Main",
@@ -73,6 +73,30 @@ describe("shouldRenderMainWindow", () => {
         }),
       ),
     ).toBe(false);
+  });
+
+  test("resolves render targets through the window descriptor catalog", () => {
+    expect(
+      resolveWindowRenderTarget(
+        createMeta({
+          status: "ready",
+          window: "Main",
+          isPrimaryWindow: true,
+          isUserWindow: true,
+        }),
+      ),
+    ).toBe("template_board");
+
+    expect(
+      resolveWindowRenderTarget(
+        createMeta({
+          status: "ready",
+          window: "Support",
+          isPrimaryWindow: true,
+          isUserWindow: false,
+        }),
+      ),
+    ).toBeNull();
   });
 });
 
@@ -107,7 +131,7 @@ describe("getInteractiveShellState", () => {
         createMeta({
           status: "ready",
           window: "Main",
-          isPrimaryMain: true,
+          isPrimaryWindow: true,
           isUserWindow: true,
         }),
       ),
@@ -124,7 +148,8 @@ describe("getInteractiveShellState", () => {
       getInteractiveShellState(
         createMeta({
           status: "ready",
-          window: null,
+          window: "Support",
+          isPrimaryWindow: true,
           isUserWindow: false,
         }),
       ),
@@ -150,7 +175,7 @@ describe("shouldRunUpdater", () => {
         createMeta({
           status: "ready",
           window: "Main",
-          isPrimaryMain: true,
+          isPrimaryWindow: true,
         }),
       ),
     ).toBe(true);
@@ -160,7 +185,7 @@ describe("shouldRunUpdater", () => {
         createMeta({
           status: "ready",
           window: "Main",
-          isPrimaryMain: false,
+          isPrimaryWindow: false,
         }),
       ),
     ).toBe(false);
@@ -169,8 +194,8 @@ describe("shouldRunUpdater", () => {
       shouldRunUpdater(
         createMeta({
           status: "ready",
-          window: null,
-          isPrimaryMain: true,
+          window: "Support",
+          isPrimaryWindow: true,
         }),
       ),
     ).toBe(false);
@@ -180,7 +205,7 @@ describe("shouldRunUpdater", () => {
         createMeta({
           status: "pending",
           window: "Main",
-          isPrimaryMain: true,
+          isPrimaryWindow: true,
         }),
       ),
     ).toBe(false);
@@ -190,7 +215,7 @@ describe("shouldRunUpdater", () => {
         createMeta({
           status: "ready",
           window: "Main",
-          isPrimaryMain: true,
+          isPrimaryWindow: true,
           isUserWindow: false,
         }),
       ),
@@ -214,7 +239,7 @@ describe("shouldRunUpdater", () => {
         createMeta({
           status: "ready",
           window: "Main",
-          isPrimaryMain: true,
+          isPrimaryWindow: true,
         }),
       ),
     ).toBe(false);
@@ -227,81 +252,60 @@ describe("shouldRunUpdater", () => {
 });
 
 describe("shouldRequestWindowPrewarm", () => {
-  test("shares the App.tsx route resolver instead of a separate homepage inference path", () => {
-    const primaryMain = createMeta({
-      status: "ready",
-      window: "Main",
-      isPrimaryMain: true,
-      isUserWindow: true,
-    });
-
-    const secondaryMain = createMeta({
-      status: "ready",
-      window: "Main",
-      isPrimaryMain: false,
-      isUserWindow: true,
-    });
-
-    expect(getHomepagePrewarmTarget(primaryMain)).toBe(resolveMainRouteWindow(primaryMain));
-    expect(resolveMainRouteWindow(secondaryMain)).toBe("Main");
-    expect(resolveHomepageEffectWindow(secondaryMain)).toBeNull();
-    expect(getHomepagePrewarmTarget(secondaryMain)).toBe(resolveHomepageEffectWindow(secondaryMain));
-  });
-
-  test("homepage prewarm target follows the authoritative resolved window identity", () => {
+  test("window descriptors control prewarm targets instead of homepage-only heuristics", () => {
     expect(
-      getHomepagePrewarmTarget(
+      getWindowPrewarmTarget(
         createMeta({
           status: "ready",
           window: "Main",
-          isPrimaryMain: true,
+          isPrimaryWindow: true,
           isUserWindow: true,
         }),
       ),
     ).toBe("Main");
 
     expect(
-      getHomepagePrewarmTarget(
+      getWindowPrewarmTarget(
         createMeta({
           status: "ready",
           window: "Main",
-          isPrimaryMain: false,
+          isPrimaryWindow: false,
           isUserWindow: true,
         }),
       ),
-    ).toBeNull();
+    ).toBe("Main");
 
     expect(
-      getHomepagePrewarmTarget(
+      getWindowPrewarmTarget(
         createMeta({
           status: "ready",
-          window: null,
-          isPrimaryMain: true,
+          window: "Support",
+          isPrimaryWindow: true,
           isUserWindow: false,
         }),
       ),
     ).toBeNull();
   });
 
-  test("homepage prewarm stays disabled until a true primary main window resolves", () => {
-    expect(getHomepagePrewarmTarget(createMeta())).toBeNull();
+  test("prewarm stays disabled until a descriptor-backed user window resolves", () => {
+    expect(getWindowPrewarmTarget(createMeta())).toBeNull();
     expect(
-      getHomepagePrewarmTarget(
+      getWindowPrewarmTarget(
         createMeta({
           status: "error",
           window: "Main",
-          isPrimaryMain: true,
+          isPrimaryWindow: true,
           isUserWindow: true,
         }),
       ),
     ).toBeNull();
     expect(
-      getHomepagePrewarmTarget(
+      getWindowPrewarmTarget(
         createMeta({
           status: "ready",
-          window: "Main",
-          isPrimaryMain: false,
-          isUserWindow: true,
+          window: "Support",
+          isPrimaryWindow: true,
+          isUserWindow: false,
         }),
       ),
     ).toBeNull();
@@ -311,7 +315,7 @@ describe("shouldRequestWindowPrewarm", () => {
         createMeta({
           status: "ready",
           window: "Main",
-          isPrimaryMain: true,
+          isPrimaryWindow: true,
           isUserWindow: true,
         }),
       ),
@@ -324,29 +328,35 @@ describe("shouldRequestWindowPrewarm", () => {
         createMeta({
           status: "ready",
           window: "Main",
-          isPrimaryMain: true,
-        }),
-      ),
-    ).toBe(true);
-
-    expect(
-      shouldRequestWindowPrewarm(
-        createMeta({
-          status: "ready",
-          window: null,
+          isPrimaryWindow: true,
+          isUserWindow: true,
+          isPreparedWindow: true,
         }),
       ),
     ).toBe(false);
   });
 
-  test("does not depend on automatic timing heuristics for any bootstrap state", () => {
+  test("never requests preparation for descriptors that opt out", () => {
+    expect(
+      shouldRequestWindowPrewarm(
+        createMeta({
+          status: "ready",
+          window: "Support",
+          isPrimaryWindow: true,
+          isUserWindow: false,
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  test("does not depend on bootstrap timing heuristics for any state", () => {
     expect(shouldRequestWindowPrewarm(createMeta())).toBe(false);
     expect(
       shouldRequestWindowPrewarm(
         createMeta({
           status: "error",
           window: "Main",
-          isPrimaryMain: true,
+          isPrimaryWindow: true,
           isUserWindow: true,
         }),
       ),
@@ -357,23 +367,23 @@ describe("shouldRequestWindowPrewarm", () => {
     const secondaryMain = createMeta({
       status: "ready",
       window: "Main",
-      isPrimaryMain: false,
+      isPrimaryWindow: false,
       isUserWindow: true,
     });
 
-    expect(resolveMainRouteWindow(secondaryMain)).toBe("Main");
-    expect(getHomepagePrewarmTarget(secondaryMain)).toBeNull();
-    expect(shouldRenderMainWindow(secondaryMain)).toBe(true);
-    expect(shouldRequestWindowPrewarm(secondaryMain)).toBe(false);
+    expect(resolveWindowRenderTarget(secondaryMain)).toBe("template_board");
+    expect(getWindowPrewarmTarget(secondaryMain)).toBe("Main");
+    expect(shouldRenderWindowContent(secondaryMain)).toBe(true);
+    expect(shouldRequestWindowPrewarm(secondaryMain)).toBe(true);
   });
 
-  test("requests prewarm only for the resolved true primary visible main window", () => {
+  test("requests prewarm for any resolved user window whose descriptor enables it", () => {
     expect(
       shouldRequestWindowPrewarm(
         createMeta({
           status: "ready",
           window: "Main",
-          isPrimaryMain: true,
+          isPrimaryWindow: true,
           isUserWindow: true,
         }),
       ),
@@ -384,18 +394,18 @@ describe("shouldRequestWindowPrewarm", () => {
         createMeta({
           status: "ready",
           window: "Main",
-          isPrimaryMain: false,
+          isPrimaryWindow: false,
           isUserWindow: true,
         }),
       ),
-    ).toBe(false);
+    ).toBe(true);
 
     expect(
       shouldRequestWindowPrewarm(
         createMeta({
           status: "ready",
-          window: null,
-          isPrimaryMain: true,
+          window: "Support",
+          isPrimaryWindow: true,
           isUserWindow: false,
         }),
       ),
