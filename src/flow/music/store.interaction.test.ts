@@ -546,6 +546,18 @@ describe("music interaction guards", () => {
 		});
 	});
 
+	test("clearEndedPlaybackForFallback preserves canonical confirmed playback while dropping the live session", () => {
+		expect(clearEndedPlaybackForFallback(baseState)).toEqual({
+			selectedListName: "contemporary",
+			playbackListName: "contemporary",
+			requestedPlaying: null,
+			confirmedPlaying: baseState.confirmedPlaying,
+			nowPlaying: null,
+			nowJudge: null,
+			playbackSessionId: null,
+		});
+	});
+
 	test("shouldHandleAudioEnded still accepts matching backend ended facts while ack-confirmed playback is live", () => {
 		const endedReadyState = {
 			...baseState,
@@ -780,7 +792,7 @@ describe("music interaction guards", () => {
 			selectedListName: "contemporary",
 			playbackListName: "contemporary",
 			requestedPlaying: null,
-			confirmedPlaying: null,
+			confirmedPlaying: baseState.confirmedPlaying,
 			nowPlaying: null,
 			nowJudge: null,
 			playbackSessionId: null,
@@ -796,7 +808,7 @@ describe("music interaction guards", () => {
 			selectedListName: "browsed",
 			playbackListName: null,
 			requestedPlaying: null,
-			confirmedPlaying: null,
+			confirmedPlaying: baseState.confirmedPlaying,
 			nowPlaying: null,
 			nowJudge: null,
 			playbackSessionId: null,

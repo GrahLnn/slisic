@@ -4701,6 +4701,7 @@ describe("music store action contracts", () => {
 
 		eventHandlers.get("audioEnded")?.({ path: first.path, session_id: 9 });
 		await flush();
+		await flush();
 
 		const state = __testing.getState();
 		expect(playbackLog.replaceWith).toHaveLength(1);
@@ -4741,13 +4742,14 @@ describe("music store action contracts", () => {
 
 		eventHandlers.get("audioEnded")?.({ path: music.path, session_id: 11 });
 		await flush();
+		await flush();
 
 		const state = __testing.getState();
 		expect(playbackLog.replaceWith).toHaveLength(1);
 		expect(state.selectedListName).toBe("focus");
 		expect(state.playbackListName).toBe("focus");
 		expect(state.requestedPlaying).toBeNull();
-		expect(state.confirmedPlaying).toBeNull();
+		expect(state.confirmedPlaying).toMatchObject({ path: music.path });
 		expect(state.nowPlaying).toBeNull();
 		expect(state.playbackSessionId).toBeNull();
 	});

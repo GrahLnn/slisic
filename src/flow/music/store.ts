@@ -644,7 +644,7 @@ export function clearEndedPlaybackForFallback(
 		selectedListName: snapshot.selectedListName,
 		playbackListName: snapshot.playbackListName,
 		requestedPlaying: null,
-		confirmedPlaying: null,
+		confirmedPlaying: snapshot.confirmedPlaying,
 		nowPlaying: null,
 		nowJudge: null,
 		playbackSessionId: null,
