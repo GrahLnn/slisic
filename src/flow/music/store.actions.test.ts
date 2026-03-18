@@ -4978,9 +4978,9 @@ describe("music store action contracts", () => {
 
 	test("transportLifecycle_true_positive_backend_pause_resume_failure_surface_exposes_live_session_identity", async () => {
 		expect(Object.keys(commandContract.events)).toContain("audioEnded");
-		expect(Object.keys(commandContract.events)).not.toContain("audioPaused");
-		expect(Object.keys(commandContract.events)).not.toContain("audioResumed");
-		expect(Object.keys(commandContract.events)).not.toContain("audioFailed");
+		expect(Object.keys(commandContract.events)).toContain("audioPaused");
+		expect(Object.keys(commandContract.events)).toContain("audioResumed");
+		expect(Object.keys(commandContract.events)).toContain("audioFailed");
 	});
 
 	test("play_true_positive_creates_a_fresh_playback_session_identity_for_each_start_attempt", async () => {

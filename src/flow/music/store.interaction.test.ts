@@ -884,8 +884,6 @@ describe("music interaction guards", () => {
 			playbackSessionId: 3,
 		});
 	});
-
-
 	test("deriveRefreshPatch should preserve edit/create mode and clear impossible playback context", () => {
 		const playlists = [makePlaylist("contemporary"), makePlaylist("ambient")];
 
