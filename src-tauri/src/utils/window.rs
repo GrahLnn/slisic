@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri::{LogicalSize, Size};
@@ -189,6 +190,10 @@ fn should_exit_on_window_close_after_visible_user_count(
     closing_label: &str,
     visible_user_window_count_before_close: usize,
 ) -> bool {
+    if is_graceful_shutdown_in_progress() {
+        return false;
+    }
+
     if !should_label_resolve_as_user_window(closing_label) {
         return false;
     }
@@ -223,6 +228,34 @@ fn prepared_window_inventory() -> &'static Mutex<HashMap<WindowName, PreparedWin
 fn promoted_user_window_labels() -> &'static Mutex<HashSet<String>> {
     static PROMOTED_USER_WINDOW_LABELS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     PROMOTED_USER_WINDOW_LABELS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn graceful_shutdown_state() -> &'static AtomicBool {
+    static GRACEFUL_SHUTDOWN_IN_PROGRESS: OnceLock<AtomicBool> = OnceLock::new();
+    GRACEFUL_SHUTDOWN_IN_PROGRESS.get_or_init(|| AtomicBool::new(false))
+}
+
+fn is_graceful_shutdown_in_progress() -> bool {
+    graceful_shutdown_state().load(Ordering::SeqCst)
+}
+
+fn try_begin_graceful_shutdown() -> bool {
+    !graceful_shutdown_state().swap(true, Ordering::SeqCst)
+}
+
+#[cfg(test)]
+fn reset_graceful_shutdown_state() {
+    graceful_shutdown_state().store(false, Ordering::SeqCst);
+}
+
+fn graceful_shutdown_target_labels(
+    labels: impl IntoIterator<Item = String>,
+    closing_label: &str,
+) -> Vec<String> {
+    labels
+        .into_iter()
+        .filter(|label| label != closing_label)
+        .collect()
 }
 
 #[tauri::command]
@@ -368,6 +401,39 @@ pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool
         closing_label,
         visible_user_window_count(app),
     )
+}
+
+pub fn begin_graceful_shutdown(app: &AppHandle, closing_label: &str) {
+    if !try_begin_graceful_shutdown() {
+        return;
+    }
+
+    let labels_to_close = graceful_shutdown_target_labels(
+        app.webview_windows().keys().cloned().collect::<Vec<_>>(),
+        closing_label,
+    );
+
+    if let Some(window) = app.get_webview_window(closing_label) {
+        let _ = window.close();
+    }
+
+    for label in labels_to_close {
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.close();
+        }
+    }
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..25 {
+            if app_handle.webview_windows().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        app_handle.exit(0);
+    });
 }
 
 #[cfg(test)]
@@ -702,14 +768,15 @@ pub fn discard_prewarm_window(app: tauri::AppHandle, name: WindowName) -> bool {
 mod tests {
     use super::{
         classify_window_identity, classify_window_labels, demote_window_label_from_user_window,
-        discard_prepared_window, discard_prepared_window_state, is_numeric_indexed_label,
-        is_user_window_label, mark_prepared_window_ready, prepared_window_label,
-        prepared_window_readiness, prepared_window_targets, promote_window_label_to_user_window,
-        reserve_prepared_window, reset_prepared_window_inventory,
+        discard_prepared_window, discard_prepared_window_state, graceful_shutdown_target_labels,
+        is_numeric_indexed_label, is_user_window_label, mark_prepared_window_ready,
+        prepared_window_label, prepared_window_readiness, prepared_window_targets,
+        promote_window_label_to_user_window, reserve_prepared_window,
+        reset_graceful_shutdown_state, reset_prepared_window_inventory,
         should_activate_window_on_app_ready, should_exit_on_window_close_with_count,
-        should_label_resolve_as_user_window, take_prepared_window, window_kind_from_label,
-        window_kind_info_for_label, PreparedWindowDisposition, PreparedWindowReadiness,
-        PreparedWindowState, WindowName,
+        should_label_resolve_as_user_window, take_prepared_window, try_begin_graceful_shutdown,
+        window_kind_from_label, window_kind_info_for_label, PreparedWindowDisposition,
+        PreparedWindowReadiness, PreparedWindowState, WindowName,
     };
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -876,6 +943,7 @@ mod tests {
 
     #[test]
     fn closing_last_user_window_exits() {
+        reset_graceful_shutdown_state();
         assert!(should_exit_on_window_close_with_count("main", 1));
         assert!(should_exit_on_window_close_with_count("main-1", 1));
     }
@@ -890,6 +958,7 @@ mod tests {
 
     #[test]
     fn closing_support_or_prewarm_window_never_exits() {
+        reset_graceful_shutdown_state();
         for label in ["main-prewarm-1", "support-main", "prewarm-main", "unknown"] {
             assert!(
                 !should_exit_on_window_close_with_count(label, 1),
@@ -900,6 +969,42 @@ mod tests {
                 "label {label} should not participate in exit accounting"
             );
         }
+    }
+
+    #[test]
+    fn graceful_shutdown_targets_every_other_window_before_exit() {
+        let labels = graceful_shutdown_target_labels(
+            vec![
+                "main".to_string(),
+                "main-prewarm-1".to_string(),
+                "support".to_string(),
+            ],
+            "main",
+        );
+
+        assert_eq!(labels, vec!["main-prewarm-1".to_string(), "support".to_string()]);
+    }
+
+    #[test]
+    fn graceful_shutdown_state_allows_only_one_initiator() {
+        reset_graceful_shutdown_state();
+
+        assert!(try_begin_graceful_shutdown());
+        assert!(!try_begin_graceful_shutdown());
+
+        reset_graceful_shutdown_state();
+        assert!(try_begin_graceful_shutdown());
+    }
+
+    #[test]
+    fn close_requests_stop_triggering_exit_once_graceful_shutdown_has_started() {
+        reset_graceful_shutdown_state();
+        assert!(try_begin_graceful_shutdown());
+
+        assert!(!should_exit_on_window_close_with_count("main", 1));
+        assert!(!should_exit_on_window_close_with_count("main-1", 1));
+
+        reset_graceful_shutdown_state();
     }
 
     #[test]
