@@ -1174,9 +1174,16 @@ fn handle_cmd(
 ) {
     match cmd {
         EngineCmd::Play { req, respond } => {
+            let failure_context = (req.session_id, req.path.clone());
             let result = catch_engine("play", || handle_play(app, backend, state, req));
             if let Err(error) = &result {
-                emit_transport_failure(app, state, "play", error.clone());
+                emit_transport_failure(
+                    app,
+                    Some((failure_context.0, failure_context.1.as_str())),
+                    state,
+                    "play",
+                    error.clone(),
+                );
             }
             let _ = respond.send(result);
             emit_state_and_maybe_end(app, state);
@@ -1185,7 +1192,7 @@ fn handle_cmd(
             let result = catch_engine("pause", || handle_pause(state));
             match &result {
                 Ok(()) => emit_transport_paused(app, state),
-                Err(error) => emit_transport_failure(app, state, "pause", error.clone()),
+                Err(error) => emit_transport_failure(app, None, state, "pause", error.clone()),
             }
             let _ = respond.send(result);
             emit_state_and_maybe_end(app, state);
@@ -1194,7 +1201,7 @@ fn handle_cmd(
             let result = catch_engine("resume", || handle_resume(state));
             match &result {
                 Ok(()) => emit_transport_resumed(app, state),
-                Err(error) => emit_transport_failure(app, state, "resume", error.clone()),
+                Err(error) => emit_transport_failure(app, None, state, "resume", error.clone()),
             }
             let _ = respond.send(result);
             emit_state_and_maybe_end(app, state);
@@ -1233,8 +1240,21 @@ fn emit_transport_resumed(app: &AppHandle, state: &PlayerState) {
     }
 }
 
-fn emit_transport_failure(app: &AppHandle, state: &PlayerState, action: &str, error: String) {
-    if let (Some(session_id), Some(path)) = (state.session_id, state.path.clone()) {
+fn emit_transport_failure(
+    app: &AppHandle,
+    explicit: Option<(u64, &str)>,
+    state: &PlayerState,
+    action: &str,
+    error: String,
+) {
+    let explicit = explicit.map(|(session_id, path)| (session_id, path.to_string()));
+    let identity = explicit.or_else(|| {
+        state
+            .session_id
+            .zip(state.path.clone())
+    });
+
+    if let Some((session_id, path)) = identity {
         AudioFailed {
             session_id,
             path,
@@ -1565,6 +1585,20 @@ mod tests {
         let err = ensure_audio_file_exists(missing.to_string_lossy().as_ref()).unwrap_err();
         assert!(err.starts_with("audio file not found: "));
         assert!(err.contains(missing.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn play_failure_prefers_explicit_request_identity_over_unset_player_state() {
+        let state = PlayerState::new();
+        let explicit = Some((41, "C:/music/missing.flac"));
+        let identity = explicit
+            .map(|(session_id, path)| (session_id, path.to_string()))
+            .or_else(|| state.session_id.zip(state.path.clone()));
+
+        assert_eq!(
+            identity,
+            Some((41, "C:/music/missing.flac".to_string()))
+        );
     }
 
     #[test]
