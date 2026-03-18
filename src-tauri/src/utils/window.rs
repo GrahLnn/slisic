@@ -73,6 +73,15 @@ impl WindowIdentityDescriptor {
     pub const fn is_user_visible(&self) -> bool {
         self.visibility.is_user_visible()
     }
+
+    pub fn promoted_to_user_visible(&self) -> Self {
+        let mut descriptor = self.clone();
+        descriptor.visibility = WindowVisibilityKind::UserVisible;
+        if let Some(window) = descriptor.window {
+            descriptor.is_primary_main = descriptor.label == window.as_str();
+        }
+        descriptor
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -136,7 +145,7 @@ pub fn window_kind_from_label(label: &str) -> (Option<WindowName>, bool) {
 #[tauri::command]
 #[specta::specta]
 pub fn get_window_kind(window: WebviewWindow) -> WindowKindInfo {
-    WindowIdentityDescriptor::from_label(window.label()).into()
+    current_window_descriptor(window.label()).into()
 }
 
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
@@ -180,11 +189,18 @@ pub fn close_all_prewarm_windows(app: &AppHandle) {
 
 fn register_live_window(label: &str) -> WindowIdentityDescriptor {
     let descriptor = WindowIdentityDescriptor::from_label(label);
+    upsert_live_window_descriptor(descriptor)
+}
+
+fn upsert_live_window_descriptor(descriptor: WindowIdentityDescriptor) -> WindowIdentityDescriptor {
     let mut lifecycle = WINDOW_LIFECYCLE
         .lock()
         .expect("window lifecycle should be lockable");
 
-    if let Some(state) = lifecycle.iter_mut().find(|state| state.descriptor.label == label) {
+    if let Some(state) = lifecycle
+        .iter_mut()
+        .find(|state| state.descriptor.label == descriptor.label)
+    {
         state.descriptor = descriptor.clone();
         state.destroyed = false;
         return descriptor;
@@ -195,6 +211,23 @@ fn register_live_window(label: &str) -> WindowIdentityDescriptor {
         destroyed: false,
     });
     descriptor
+}
+
+fn current_window_descriptor(label: &str) -> WindowIdentityDescriptor {
+    let lifecycle = WINDOW_LIFECYCLE
+        .lock()
+        .expect("window lifecycle should be lockable");
+
+    lifecycle
+        .iter()
+        .find(|state| !state.destroyed && state.descriptor.label == label)
+        .map(|state| state.descriptor.clone())
+        .unwrap_or_else(|| WindowIdentityDescriptor::from_label(label))
+}
+
+fn promote_live_window_descriptor(label: &str) -> WindowIdentityDescriptor {
+    let descriptor = current_window_descriptor(label).promoted_to_user_visible();
+    upsert_live_window_descriptor(descriptor)
 }
 
 fn destroy_window_lifecycle(label: &str) -> Option<WindowIdentityDescriptor> {
@@ -221,7 +254,9 @@ fn snapshot_live_descriptors(app: &AppHandle) -> Vec<WindowIdentityDescriptor> {
 
     for label in &live_labels {
         if let Some(state) = lifecycle.iter_mut().find(|state| state.descriptor.label == *label) {
-            state.descriptor = WindowIdentityDescriptor::from_label(label);
+            let fallback_descriptor = WindowIdentityDescriptor::from_label(label);
+            state.descriptor.window = fallback_descriptor.window;
+            state.descriptor.is_primary_main = fallback_descriptor.is_primary_main;
             state.destroyed = false;
         } else {
             lifecycle.push(WindowLifecycleState {
@@ -546,6 +581,7 @@ pub async fn create_window(
     options: Option<CreateWindowOptions>,
 ) {
     if let Some(window) = take_ready_window(&app, name) {
+        promote_live_window_descriptor(window.label());
         apply_window_options(&window, options.as_ref());
         let _ = window.show();
         let _ = window.set_focus();
@@ -569,9 +605,10 @@ pub async fn create_window(
 #[cfg(test)]
 mod tests {
     use super::{
-        destroy_window_lifecycle, handle_window_destroyed, register_live_window,
-        window_kind_from_label, WindowIdentityDescriptor, WindowLifecycleState, WindowName,
-        WindowVisibilityKind, WINDOW_LIFECYCLE, PREWARM_MAIN_PENDING, PREWARM_MAIN_READY,
+        current_window_descriptor, destroy_window_lifecycle, handle_window_destroyed,
+        promote_live_window_descriptor, register_live_window, window_kind_from_label,
+        WindowIdentityDescriptor, WindowLifecycleState, WindowName, WindowVisibilityKind,
+        WINDOW_LIFECYCLE, PREWARM_MAIN_PENDING, PREWARM_MAIN_READY,
     };
 
     fn reset_window_lifecycle_for_test() {
@@ -622,6 +659,20 @@ mod tests {
             assert_eq!(window, descriptor.window);
             assert_eq!(is_prewarm, descriptor.is_prepared());
         }
+    }
+
+    #[test]
+    fn descriptor_true_positive_promoted_prewarm_window_rewrites_canonical_lookup_truth() {
+        reset_window_lifecycle_for_test();
+        register_live_window("main-prewarm-1");
+
+        let promoted = promote_live_window_descriptor("main-prewarm-1");
+        let looked_up = current_window_descriptor("main-prewarm-1");
+
+        assert_eq!(promoted.visibility, WindowVisibilityKind::UserVisible);
+        assert_eq!(looked_up, promoted);
+        assert!(looked_up.is_user_visible());
+        assert!(!looked_up.is_prepared());
     }
 
     #[test]
