@@ -113,9 +113,7 @@ export function makeLiveEvent<T extends Record<string, any>>(ev: EventsShape<T>)
                         .changefeed_gc_interval(None);
                     init_db_with_options(db_path, db_options).await?;
 
-                    if let Some(window) = handle.get_webview_window("main") {
-                        utils::window::apply_window_setup(&window, true);
-                    }
+                    utils::window::configure_existing_primary_windows(&handle);
                     Ok(())
                 })
             })

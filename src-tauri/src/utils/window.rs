@@ -22,7 +22,7 @@ pub const WINDOW_KIND_CHANGED_EVENT: &str = "factory://window-kind-changed";
 pub struct WindowKindInfo {
     pub window: Option<WindowName>,
     pub label: String,
-    pub is_primary_main: bool,
+    pub is_primary_window: bool,
     pub is_user_window: bool,
     pub is_prepared_window: bool,
 }
@@ -30,9 +30,86 @@ pub struct WindowKindInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WindowIdentity {
     window: Option<WindowName>,
-    is_primary_main: bool,
+    is_primary_window: bool,
     is_user_window: bool,
     is_prepared_window: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UserWindowPolicy {
+    PrimaryAndIndexed,
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowDescriptor {
+    name: WindowName,
+    base_label: &'static str,
+    title: &'static str,
+    user_window_policy: UserWindowPolicy,
+    prewarm_enabled: bool,
+    uses_primary_window_setup: bool,
+}
+
+impl WindowDescriptor {
+    fn is_primary_label(self, label: &str) -> bool {
+        label == self.base_label
+    }
+
+    fn matches_label(self, label: &str) -> bool {
+        if self.is_primary_label(label) {
+            return true;
+        }
+
+        is_numeric_indexed_label(self.base_label, label)
+            || label == self.canonical_prewarm_label()
+            || label.starts_with(&format!("{}-", self.canonical_prewarm_label()))
+    }
+
+    fn canonical_prewarm_label(self) -> String {
+        format!("{}-prewarm", self.base_label)
+    }
+
+    fn is_user_window_label(self, label: &str) -> bool {
+        match self.user_window_policy {
+            UserWindowPolicy::PrimaryAndIndexed => {
+                self.is_primary_label(label) || is_numeric_indexed_label(self.base_label, label)
+            }
+            UserWindowPolicy::Never => false,
+        }
+    }
+}
+
+const WINDOW_DESCRIPTORS: [WindowDescriptor; 2] = [
+    WindowDescriptor {
+        name: WindowName::Main,
+        base_label: "main",
+        title: "main",
+        user_window_policy: UserWindowPolicy::PrimaryAndIndexed,
+        prewarm_enabled: true,
+        uses_primary_window_setup: true,
+    },
+    WindowDescriptor {
+        name: WindowName::Support,
+        base_label: "support",
+        title: "support",
+        user_window_policy: UserWindowPolicy::Never,
+        prewarm_enabled: false,
+        uses_primary_window_setup: false,
+    },
+];
+
+fn window_descriptor(name: WindowName) -> &'static WindowDescriptor {
+    WINDOW_DESCRIPTORS
+        .iter()
+        .find(|descriptor| descriptor.name == name)
+        .expect("window descriptor missing")
+}
+
+fn window_descriptor_for_label(label: &str) -> Option<&'static WindowDescriptor> {
+    WINDOW_DESCRIPTORS
+        .iter()
+        .find(|descriptor| descriptor.matches_label(label))
 }
 
 fn is_label_reserved_for_prepared_window(label: &str) -> bool {
@@ -43,21 +120,21 @@ fn is_label_reserved_for_prepared_window(label: &str) -> bool {
 }
 
 fn classify_window_identity(label: &str) -> WindowIdentity {
-    let window = window_kind_from_label(label);
-    let is_primary_main = label == WindowName::Main.as_str();
+    let descriptor = window_descriptor_for_label(label).copied();
+    let window = descriptor.map(|descriptor| descriptor.name);
+    let is_primary_window = descriptor.is_some_and(|descriptor| descriptor.is_primary_label(label));
     let is_promoted_user_window = promoted_user_window_labels()
         .lock()
         .expect("promoted user window labels poisoned")
         .contains(label);
     let is_prepared_window = is_label_reserved_for_prepared_window(label);
-    let is_user_window = matches!(window, Some(WindowName::Main))
-        && (is_primary_main
-            || is_main_user_window_instance_label(label)
-            || is_promoted_user_window);
+    let is_user_window = descriptor
+        .is_some_and(|descriptor| descriptor.is_user_window_label(label))
+        || is_promoted_user_window;
 
     WindowIdentity {
         window,
-        is_primary_main,
+        is_primary_window,
         is_user_window,
         is_prepared_window,
     }
@@ -69,29 +146,14 @@ fn window_kind_info_for_label(label: &str) -> WindowKindInfo {
     WindowKindInfo {
         window: identity.window,
         label: label.to_string(),
-        is_primary_main: identity.is_primary_main,
+        is_primary_window: identity.is_primary_window,
         is_user_window: identity.is_user_window,
         is_prepared_window: identity.is_prepared_window,
     }
 }
 
-fn is_window_label_for(name: WindowName, label: &str) -> bool {
-    if label == name.as_str() {
-        return true;
-    }
-
-    let window_prefix = format!("{}-", name.as_str());
-    label.starts_with(&window_prefix)
-}
-
 pub fn window_kind_from_label(label: &str) -> Option<WindowName> {
-    for name in WindowName::ALL {
-        if is_window_label_for(name, label) {
-            return Some(name);
-        }
-    }
-
-    None
+    window_descriptor_for_label(label).map(|descriptor| descriptor.name)
 }
 
 #[tauri::command]
@@ -114,8 +176,9 @@ fn classify_window_labels<'a>(labels: impl IntoIterator<Item = &'a str>) -> Vec<
     labels.into_iter().map(window_kind_info_for_label).collect()
 }
 
-fn is_main_user_window_instance_label(label: &str) -> bool {
-    let Some(suffix) = label.strip_prefix("main-") else {
+fn is_numeric_indexed_label(base_label: &str, label: &str) -> bool {
+    let prefix = format!("{base_label}-");
+    let Some(suffix) = label.strip_prefix(&prefix) else {
         return false;
     };
 
@@ -240,7 +303,7 @@ fn discard_prepared_window_state(name: WindowName) -> Option<PreparedWindowDispo
     }
 
     Some(PreparedWindowDisposition {
-        label: format!("{}-prewarm", name.as_str()),
+        label: window_descriptor(name).canonical_prewarm_label(),
         removed_from_inventory: false,
     })
 }
@@ -420,17 +483,29 @@ pub fn apply_window_setup(window: &WebviewWindow, is_main: bool) {
     }
 }
 
+pub fn configure_existing_primary_windows(app: &tauri::AppHandle) {
+    for descriptor in WINDOW_DESCRIPTORS {
+        if !descriptor.uses_primary_window_setup {
+            continue;
+        }
+
+        if let Some(window) = app.get_webview_window(descriptor.base_label) {
+            apply_window_setup(&window, true);
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Type, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WindowName {
     Main,
+    Support,
 }
 
 impl WindowName {
-    pub const ALL: [WindowName; 1] = [WindowName::Main];
-
     pub const fn as_str(&self) -> &'static str {
         match self {
             WindowName::Main => "main",
+            WindowName::Support => "support",
         }
     }
 }
@@ -441,9 +516,14 @@ impl fmt::Display for WindowName {
     }
 }
 
-fn next_label(name: WindowName, app: &tauri::AppHandle) -> String {
+fn next_visible_label(name: WindowName, app: &tauri::AppHandle) -> String {
+    let descriptor = window_descriptor(name);
+    if app.get_webview_window(descriptor.base_label).is_none() {
+        return descriptor.base_label.to_string();
+    }
+
     for index in 1.. {
-        let label = format!("{name}-{index}");
+        let label = format!("{}-{index}", descriptor.base_label);
         if app.get_webview_window(&label).is_none() {
             return label;
         }
@@ -452,13 +532,14 @@ fn next_label(name: WindowName, app: &tauri::AppHandle) -> String {
 }
 
 fn next_prewarm_label(name: WindowName, app: &tauri::AppHandle) -> String {
-    let base_label = format!("{name}-prewarm");
+    let descriptor = window_descriptor(name);
+    let base_label = descriptor.canonical_prewarm_label();
     if app.get_webview_window(&base_label).is_none() {
         return base_label;
     }
 
     for index in 1.. {
-        let label = format!("{name}-prewarm-{index}");
+        let label = format!("{}-{index}", descriptor.canonical_prewarm_label());
         if app.get_webview_window(&label).is_none() {
             return label;
         }
@@ -524,6 +605,7 @@ pub async fn create_window(
     name: WindowName,
     options: Option<CreateWindowOptions>,
 ) {
+    let descriptor = window_descriptor(name);
     if let Some(prepared_window) = take_prepared_window(name) {
         if let Some(window) = app.get_webview_window(&prepared_window.label) {
             promote_window_label_to_user_window(&prepared_window.label);
@@ -535,11 +617,14 @@ pub async fn create_window(
         }
     }
 
-    let label = next_label(name, &app);
-    match build_window(&app, label, name.as_str(), true) {
+    let label = next_visible_label(name, &app);
+    match build_window(&app, label, descriptor.title, true) {
         Ok(window) => {
             apply_window_options(&window, options.as_ref());
-            apply_window_setup(&window, false);
+            apply_window_setup(
+                &window,
+                descriptor.uses_primary_window_setup && descriptor.is_primary_label(window.label()),
+            );
             activate_window(&window);
         }
         Err(error) => {
@@ -551,6 +636,11 @@ pub async fn create_window(
 #[specta::specta]
 #[tauri::command]
 pub fn prewarm_window(app: tauri::AppHandle, name: WindowName) {
+    let descriptor = window_descriptor(name);
+    if !descriptor.prewarm_enabled {
+        return;
+    }
+
     let already_prepared_label = {
         let inventory = prepared_window_inventory()
             .lock()
@@ -573,7 +663,7 @@ pub fn prewarm_window(app: tauri::AppHandle, name: WindowName) {
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let run_result = app_handle.run_on_main_thread(move || {
-            match build_window(&app, label.clone(), name.as_str(), false) {
+            match build_window(&app, label.clone(), descriptor.title, false) {
                 Ok(window) => {
                     apply_window_setup(&window, false);
                     reserve_prepared_window(name, label);
@@ -612,7 +702,7 @@ pub fn discard_prewarm_window(app: tauri::AppHandle, name: WindowName) -> bool {
 mod tests {
     use super::{
         classify_window_identity, classify_window_labels, demote_window_label_from_user_window,
-        discard_prepared_window, discard_prepared_window_state, is_main_user_window_instance_label,
+        discard_prepared_window, discard_prepared_window_state, is_numeric_indexed_label,
         is_user_window_label, mark_prepared_window_ready, prepared_window_label,
         prepared_window_readiness, prepared_window_targets, promote_window_label_to_user_window,
         reserve_prepared_window, reset_prepared_window_inventory,
@@ -702,11 +792,11 @@ mod tests {
 
     #[test]
     fn only_numeric_main_suffixes_count_as_user_window_instances() {
-        assert!(is_main_user_window_instance_label("main-1"));
-        assert!(is_main_user_window_instance_label("main-42"));
-        assert!(!is_main_user_window_instance_label("main-prewarm-1"));
-        assert!(!is_main_user_window_instance_label("main-secondary"));
-        assert!(!is_main_user_window_instance_label("support-main-1"));
+        assert!(is_numeric_indexed_label("main", "main-1"));
+        assert!(is_numeric_indexed_label("main", "main-42"));
+        assert!(!is_numeric_indexed_label("main", "main-prewarm-1"));
+        assert!(!is_numeric_indexed_label("main", "main-secondary"));
+        assert!(!is_numeric_indexed_label("main", "support-main-1"));
     }
 
     #[test]
