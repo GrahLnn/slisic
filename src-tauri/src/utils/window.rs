@@ -151,7 +151,7 @@ pub fn get_window_kind(window: WebviewWindow) -> WindowKindInfo {
 
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
     register_live_window(closing_label);
-    let closing_descriptor = WindowIdentityDescriptor::from_label(closing_label);
+    let closing_descriptor = current_window_descriptor(closing_label);
     if !closing_descriptor.is_user_visible() {
         return false;
     }
@@ -751,6 +751,41 @@ mod tests {
             && open_labels
                 .iter()
                 .map(|label| WindowIdentityDescriptor::from_label(label))
+                .filter(WindowIdentityDescriptor::is_user_visible)
+                .count()
+                <= 1;
+
+        assert!(!should_exit);
+    }
+
+    #[test]
+    fn graceful_shutdown_false_negative_guard_promoted_descriptor_truth_counts_reused_prewarm_window_as_user_visible(
+    ) {
+        reset_window_lifecycle_for_test();
+        register_live_window("main-prewarm-1");
+        let promoted = promote_live_window_descriptor("main-prewarm-1");
+
+        let should_exit = promoted.is_user_visible()
+            && [promoted.clone()]
+                .into_iter()
+                .filter(WindowIdentityDescriptor::is_user_visible)
+                .count()
+                <= 1;
+
+        assert_eq!(promoted.label, "main");
+        assert!(should_exit);
+    }
+
+    #[test]
+    fn graceful_shutdown_false_positive_guard_promoted_descriptor_truth_does_not_treat_reused_prewarm_window_as_prepared_only(
+    ) {
+        reset_window_lifecycle_for_test();
+        register_live_window("main-prewarm-1");
+        let promoted = promote_live_window_descriptor("main-prewarm-1");
+
+        let should_exit = promoted.is_user_visible()
+            && [WindowIdentityDescriptor::from_label("main-2"), promoted]
+                .into_iter()
                 .filter(WindowIdentityDescriptor::is_user_visible)
                 .count()
                 <= 1;
