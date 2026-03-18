@@ -7,6 +7,7 @@ use anyhow::Result;
 use audio::{
     audio_debug_pipeline_probe, audio_debug_spectrogram, audio_pause, audio_play, audio_resume,
     audio_status, audio_stop, AudioEnded, AudioFailed, AudioPaused, AudioResumed, AudioState,
+    AudioStopped,
 };
 use domain::music;
 use music::{
@@ -88,6 +89,7 @@ fn run_app() -> Result<()> {
     let events = collect_events![
         AudioState,
         AudioEnded,
+        AudioStopped,
         AudioPaused,
         AudioResumed,
         AudioFailed,

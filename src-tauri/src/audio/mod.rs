@@ -43,6 +43,12 @@ pub struct AudioEnded {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq, Event)]
+pub struct AudioStopped {
+    pub session_id: u64,
+    pub path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq, Event)]
 pub struct AudioPaused {
     pub session_id: u64,
     pub path: String,
@@ -1207,10 +1213,20 @@ fn handle_cmd(
             emit_state_and_maybe_end(app, state);
         }
         EngineCmd::Stop { respond } => {
+            let stopped_identity = state.session_id.zip(state.path.clone());
             let result = catch_engine("stop", || {
                 state.clear();
                 Ok(())
             });
+            if result.is_ok() {
+                emit_transport_stopped(
+                    app,
+                    stopped_identity
+                        .as_ref()
+                        .map(|(session_id, path)| (*session_id, path.as_str())),
+                    state,
+                );
+            }
             let _ = respond.send(result);
         }
         EngineCmd::Status { respond } => {
@@ -1237,6 +1253,15 @@ fn emit_transport_resumed(app: &AppHandle, state: &PlayerState) {
 
     if let (Some(session_id), Some(path)) = (state.session_id, state.path.clone()) {
         AudioResumed { session_id, path }.emit(app).ok();
+    }
+}
+
+fn emit_transport_stopped(app: &AppHandle, explicit: Option<(u64, &str)>, state: &PlayerState) {
+    let explicit = explicit.map(|(session_id, path)| (session_id, path.to_string()));
+    let identity = explicit.or_else(|| state.session_id.zip(state.path.clone()));
+
+    if let Some((session_id, path)) = identity {
+        AudioStopped { session_id, path }.emit(app).ok();
     }
 }
 
