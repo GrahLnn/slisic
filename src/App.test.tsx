@@ -13,6 +13,18 @@ const updaterRun = mock(() => undefined);
 const musicRun = mock(async () => undefined);
 const musicDispose = mock(async () => undefined);
 
+const StubToaster: React.ComponentType<{
+	position?:
+		| "top-left"
+		| "top-center"
+		| "top-right"
+		| "bottom-left"
+		| "bottom-center"
+		| "bottom-right";
+}> = () => {
+	return <div data-testid="toaster" />;
+};
+
 mock.module("./topbar", () => ({
 	default: () => <div data-testid="topbar">topbar</div>,
 }));
@@ -69,18 +81,6 @@ const StubPages: React.ComponentType = () => {
 	return <div data-testid="pages">pages</div>;
 };
 
-const StubToaster: React.ComponentType<{
-	position?:
-		| "top-left"
-		| "top-center"
-		| "top-right"
-		| "bottom-left"
-		| "bottom-center"
-		| "bottom-right";
-}> = () => {
-	return <div data-testid="toaster" />;
-};
-
 const { AppShell, default: App } = await import("./App");
 let useEffectSpy: ReturnType<typeof spyOn>;
 
@@ -121,6 +121,12 @@ describe("App bootstrap boundary", () => {
 		bootstrapState = {
 			status: "prewarm_blocked",
 			info: {
+				descriptor: {
+					window: "Main",
+					visibility: "Prepared",
+					label: "main-prewarm-1",
+					is_primary_main: false,
+				},
 				window: "Main",
 				label: "main-prewarm-1",
 				is_prewarm: true,

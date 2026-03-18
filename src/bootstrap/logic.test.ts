@@ -26,6 +26,12 @@ describe("bootstrap logic", () => {
     const state: BootstrapWindowState = {
       status: "resolved",
       info: {
+        descriptor: {
+          window: null,
+          visibility: "UserVisible",
+          label: "unknown-window",
+          is_primary_main: false,
+        },
         window: null,
         is_prewarm: false,
         label: "unknown-window",
@@ -42,6 +48,12 @@ describe("bootstrap logic", () => {
     const state: BootstrapWindowState = {
       status: "resolved",
       info: {
+        descriptor: {
+          window: "Main",
+          visibility: "Prepared",
+          label: "main-prewarm-1",
+          is_primary_main: false,
+        },
         window: "Main",
         is_prewarm: true,
         label: "main-prewarm-1",

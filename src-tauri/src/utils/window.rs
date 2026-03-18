@@ -22,12 +22,65 @@ static PREWARM_MAIN_PENDING: LazyLock<Mutex<Vec<String>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 static PREWARM_MAIN_READY: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type, PartialEq, Eq)]
+pub enum WindowVisibilityKind {
+    UserVisible,
+    Prepared,
+}
+
+impl WindowVisibilityKind {
+    pub const fn is_user_visible(self) -> bool {
+        matches!(self, Self::UserVisible)
+    }
+
+    pub const fn is_prepared(self) -> bool {
+        matches!(self, Self::Prepared)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
+pub struct WindowIdentityDescriptor {
+    pub window: Option<WindowName>,
+    pub visibility: WindowVisibilityKind,
+    pub label: String,
+    pub is_primary_main: bool,
+}
+
+impl WindowIdentityDescriptor {
+    pub fn from_label(label: &str) -> Self {
+        let (window, visibility) = descriptor_parts_from_label(label);
+        Self {
+            window,
+            visibility,
+            label: label.to_string(),
+            is_primary_main: label == WindowName::Main.as_str(),
+        }
+    }
+
+    pub const fn is_prepared(&self) -> bool {
+        self.visibility.is_prepared()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct WindowKindInfo {
+    pub descriptor: WindowIdentityDescriptor,
     pub window: Option<WindowName>,
     pub is_prewarm: bool,
     pub label: String,
     pub is_primary_main: bool,
+}
+
+impl From<WindowIdentityDescriptor> for WindowKindInfo {
+    fn from(descriptor: WindowIdentityDescriptor) -> Self {
+        Self {
+            window: descriptor.window,
+            is_prewarm: descriptor.is_prepared(),
+            label: descriptor.label.clone(),
+            is_primary_main: descriptor.is_primary_main,
+            descriptor,
+        }
+    }
 }
 
 fn prewarm_prefix(name: WindowName) -> String {
@@ -48,35 +101,35 @@ fn is_window_label_for(name: WindowName, label: &str) -> bool {
     label.starts_with(&window_prefix) && !is_prewarm_label_for(name, label)
 }
 
-pub fn window_kind_from_label(label: &str) -> (Option<WindowName>, bool) {
+fn descriptor_parts_from_label(label: &str) -> (Option<WindowName>, WindowVisibilityKind) {
     for name in WindowName::ALL {
         if is_window_label_for(name, label) {
-            return (Some(name), false);
+            return (Some(name), WindowVisibilityKind::UserVisible);
         }
 
         if is_prewarm_label_for(name, label) {
-            return (Some(name), true);
+            return (Some(name), WindowVisibilityKind::Prepared);
         }
     }
 
-    (None, false)
+    (None, WindowVisibilityKind::UserVisible)
+}
+
+pub fn window_kind_from_label(label: &str) -> (Option<WindowName>, bool) {
+    let descriptor = WindowIdentityDescriptor::from_label(label);
+    (descriptor.window, descriptor.is_prepared())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn get_window_kind(window: WebviewWindow) -> WindowKindInfo {
-    let label = window.label().to_string();
-    let (window, is_prewarm) = window_kind_from_label(&label);
-    WindowKindInfo {
-        window,
-        is_prewarm,
-        is_primary_main: label == "main",
-        label,
-    }
+    WindowIdentityDescriptor::from_label(window.label()).into()
 }
 
 pub fn is_non_prewarm_window_label(label: &str) -> bool {
-    matches!(window_kind_from_label(label), (Some(_), false))
+    WindowIdentityDescriptor::from_label(label)
+        .visibility
+        .is_user_visible()
 }
 
 pub fn should_exit_on_window_close(app: &AppHandle, closing_label: &str) -> bool {
@@ -425,6 +478,48 @@ pub async fn create_window(
         }
         Err(error) => {
             eprintln!("Failed to create window: {error}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        window_kind_from_label, WindowIdentityDescriptor, WindowName, WindowVisibilityKind,
+    };
+
+    #[test]
+    fn descriptor_true_positive_classifies_user_visible_and_prepared_windows_explicitly() {
+        let visible = WindowIdentityDescriptor::from_label("main-2");
+        assert_eq!(visible.window, Some(WindowName::Main));
+        assert_eq!(visible.visibility, WindowVisibilityKind::UserVisible);
+        assert!(visible.is_user_visible());
+        assert!(!visible.is_prepared());
+
+        let prepared = WindowIdentityDescriptor::from_label("main-prewarm-1");
+        assert_eq!(prepared.window, Some(WindowName::Main));
+        assert_eq!(prepared.visibility, WindowVisibilityKind::Prepared);
+        assert!(prepared.is_prepared());
+        assert!(!prepared.is_user_visible());
+    }
+
+    #[test]
+    fn descriptor_false_negative_guard_unknown_labels_default_to_user_visible_without_prewarm_heuristic(
+    ) {
+        let descriptor = WindowIdentityDescriptor::from_label("unknown-window");
+        assert_eq!(descriptor.window, None);
+        assert_eq!(descriptor.visibility, WindowVisibilityKind::UserVisible);
+        assert!(descriptor.is_user_visible());
+    }
+
+    #[test]
+    fn descriptor_false_positive_guard_compatibility_lookup_matches_descriptor_truth() {
+        for label in ["main", "main-3", "main-prewarm-4", "unknown-window"] {
+            let descriptor = WindowIdentityDescriptor::from_label(label);
+            let (window, is_prewarm) = window_kind_from_label(label);
+
+            assert_eq!(window, descriptor.window);
+            assert_eq!(is_prewarm, descriptor.is_prepared());
         }
     }
 }
