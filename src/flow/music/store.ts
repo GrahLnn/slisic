@@ -1779,7 +1779,11 @@ async function ensureEvents() {
 				typeof (payload as { session_id?: unknown }).session_id === "number"
 					? (payload as { session_id: number }).session_id
 					: null;
-			const patch = clearPlaybackTransportFact(getState(), sessionId, "stopped");
+			const patch = clearPlaybackTransportFact(
+				getState(),
+				sessionId,
+				"stopped",
+			);
 			if (!patch) return;
 			patchState(patch);
 		});
