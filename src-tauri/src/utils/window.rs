@@ -78,7 +78,8 @@ impl WindowIdentityDescriptor {
         let mut descriptor = self.clone();
         descriptor.visibility = WindowVisibilityKind::UserVisible;
         if let Some(window) = descriptor.window {
-            descriptor.is_primary_main = descriptor.label == window.as_str();
+            descriptor.label = window.as_str().to_string();
+            descriptor.is_primary_main = true;
         }
         descriptor
     }
@@ -230,6 +231,17 @@ fn promote_live_window_descriptor(label: &str) -> WindowIdentityDescriptor {
     upsert_live_window_descriptor(descriptor)
 }
 
+fn live_window_descriptor_for_label(label: &str) -> Option<WindowIdentityDescriptor> {
+    let lifecycle = WINDOW_LIFECYCLE
+        .lock()
+        .expect("window lifecycle should be lockable");
+
+    lifecycle
+        .iter()
+        .find(|state| !state.destroyed && state.descriptor.label == label)
+        .map(|state| state.descriptor.clone())
+}
+
 fn destroy_window_lifecycle(label: &str) -> Option<WindowIdentityDescriptor> {
     let mut lifecycle = WINDOW_LIFECYCLE
         .lock()
@@ -273,7 +285,10 @@ fn snapshot_live_descriptors(app: &AppHandle) -> Vec<WindowIdentityDescriptor> {
 }
 
 pub fn handle_window_destroyed(label: &str) -> bool {
-    let removed = destroy_window_lifecycle(label).is_some();
+    let canonical_label = live_window_descriptor_for_label(label)
+        .map(|descriptor| descriptor.label)
+        .unwrap_or_else(|| label.to_string());
+    let removed = destroy_window_lifecycle(&canonical_label).is_some();
 
     if matches!(window_kind_from_label(label), (Some(_), true)) {
         PREWARM_MAIN_PENDING
@@ -667,12 +682,30 @@ mod tests {
         register_live_window("main-prewarm-1");
 
         let promoted = promote_live_window_descriptor("main-prewarm-1");
-        let looked_up = current_window_descriptor("main-prewarm-1");
+        let looked_up = current_window_descriptor("main");
 
+        assert_eq!(promoted.label, "main");
         assert_eq!(promoted.visibility, WindowVisibilityKind::UserVisible);
         assert_eq!(looked_up, promoted);
         assert!(looked_up.is_user_visible());
         assert!(!looked_up.is_prepared());
+    }
+
+    #[test]
+    fn descriptor_false_negative_guard_promoted_window_destroyed_cleanup_uses_promoted_canonical_label(
+    ) {
+        reset_window_lifecycle_for_test();
+        register_live_window("main-prewarm-1");
+        promote_live_window_descriptor("main-prewarm-1");
+
+        let removed = handle_window_destroyed("main");
+        let lifecycle = WINDOW_LIFECYCLE
+            .lock()
+            .expect("window lifecycle should be lockable")
+            .clone();
+
+        assert!(removed);
+        assert!(lifecycle.is_empty());
     }
 
     #[test]
