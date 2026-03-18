@@ -31,7 +31,7 @@ export function useAppBootstrap(): AppWindowMeta {
         const nextWindow: AppWindowMeta = {
           window: windowKind.window,
           label: windowKind.label,
-          isPrimaryMain: windowKind.is_primary_main,
+          isPrimaryWindow: windowKind.is_primary_window,
           isUserWindow: windowKind.is_user_window,
           isPreparedWindow: windowKind.is_prepared_window,
           status: "ready",

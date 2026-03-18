@@ -158,12 +158,12 @@ export type UnassignTaskInput = {
 export type WindowKindInfo = {
 	window: WindowName | null,
 	label: string,
-	is_primary_main: boolean,
+	is_primary_window: boolean,
 	is_user_window: boolean,
 	is_prepared_window: boolean,
 };
 
-export type WindowName = "Main";
+export type WindowName = "Main" | "Support";
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {
@@ -190,3 +190,4 @@ function makeEvent<T>(name: string) {
 
     return Object.assign(fn, base);
 }
+

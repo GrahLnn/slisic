@@ -11,12 +11,13 @@ import { crab } from "./cmd";
 import { Toaster } from "sileo";
 import { action, hook } from "./flow/template_board";
 import type { TaskStatus } from "./flow/template_board/core";
-import { me } from "@grahlnn/fn";
 import { useAppBootstrap } from "./flow/bootstrap";
 import {
+  getWindowPrewarmTarget,
   getInteractiveShellState,
-  shouldRenderMainWindow,
+  resolveWindowRenderTarget,
   shouldRequestWindowPrewarm,
+  shouldRenderWindowContent,
   type AppWindowMeta,
 } from "./flow/bootstrap/logic";
 
@@ -100,7 +101,8 @@ export function useTemplateBoardPrewarm(appWindow: AppWindowMeta) {
   const lastRequestedOwnerLabelRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!shouldRequestWindowPrewarm(appWindow)) {
+    const prewarmTarget = getWindowPrewarmTarget(appWindow);
+    if (!shouldRequestWindowPrewarm(appWindow) || !prewarmTarget) {
       return;
     }
 
@@ -110,7 +112,7 @@ export function useTemplateBoardPrewarm(appWindow: AppWindowMeta) {
     }
 
     lastRequestedOwnerLabelRef.current = ownerLabel;
-    void crab.prewarmWindow("Main").then(
+    void crab.prewarmWindow(prewarmTarget).then(
       () => {},
       (error) => {
         lastRequestedOwnerLabelRef.current = null;
@@ -504,8 +506,9 @@ function Base({ children, showTopBar }: { children: React.ReactNode; showTopBar:
 function App() {
   const appWindow = useAppBootstrap();
   const shellState = getInteractiveShellState(appWindow);
+  const renderTarget = resolveWindowRenderTarget(appWindow);
 
-  if (shouldRenderMainWindow(appWindow)) {
+  if (shouldRenderWindowContent(appWindow) && renderTarget === "template_board") {
     return (
       <Base showTopBar={shellState.showWindowControls}>
         <TemplateBoard appWindow={appWindow} />
@@ -513,9 +516,7 @@ function App() {
     );
   }
 
-  return me(appWindow.window).match({
-    Main: () => null,
-  });
+  return null;
 }
 
 export default App;

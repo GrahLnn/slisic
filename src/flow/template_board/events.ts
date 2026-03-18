@@ -1,6 +1,11 @@
 import { me, type Result } from "@grahlnn/fn";
 import { crab } from "../../cmd";
-import type { MouseWindowInfo, NewMemberInput, TemplateDashboard } from "../../cmd/commands";
+import type {
+  MouseWindowInfo,
+  NewMemberInput,
+  TemplateDashboard,
+  WindowName,
+} from "../../cmd/commands";
 import {
   collect,
   createActors,
@@ -42,7 +47,7 @@ export interface TemplateBoardGateway {
   templateUnassignTask(input: UnassignTaskInput): Promise<Result<TemplateDashboard, string>>;
   templateBulkSetStatus(input: BulkStatusInput): Promise<Result<TemplateDashboard, string>>;
   createWindow(
-    name: "Main",
+    name: WindowName,
     options: {
       width: number;
       height: number;
