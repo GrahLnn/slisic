@@ -4754,6 +4754,82 @@ describe("music store action contracts", () => {
 		expect(state.playbackSessionId).toBeNull();
 	});
 
+	test("stop_false_negative_guard_keeps_canonical_playback_until_matching_transport_settlement", async () => {
+		const music = makeMusic("C:/music/focus/a.flac");
+		const playlist = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [music] },
+		]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: "focus",
+			playbackListName: "focus",
+			requestedPlaying: music,
+			confirmedPlaying: music,
+			nowPlaying: music,
+			playbackSessionId: 12,
+			playbackEpoch: 12,
+		});
+
+		await action.play(playlist);
+
+		const state = __testing.getState();
+		expect(playbackLog.interrupts).toBe(1);
+		expect(state.selectedListName).toBe("focus");
+		expect(state.playbackListName).toBe("focus");
+		expect(state.requestedPlaying).toMatchObject({ path: music.path });
+		expect(state.confirmedPlaying).toMatchObject({ path: music.path });
+		expect(state.nowPlaying).toMatchObject({ path: music.path });
+		expect(state.playbackSessionId).toBe(12);
+	});
+
+	test("audioEnded_false_negative_guard_displaced_transport_fact_cannot_settle_replacement_session", async () => {
+		const first = makeMusic("C:/music/focus/a.flac");
+		const second = makeMusic("C:/music/focus/b.flac");
+		const playlist = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [first, second] },
+		]);
+		const eventHandlers = new Map<string, (payload: unknown) => void>();
+
+		impl.evt = async (event, handler) => {
+			eventHandlers.set(event, handler);
+			return () => {
+				eventHandlers.delete(event);
+			};
+		};
+
+		await action.run();
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: "focus",
+			playbackListName: "focus",
+			requestedPlaying: second,
+			confirmedPlaying: second,
+			nowPlaying: second,
+			playbackSessionId: 13,
+			playbackEpoch: 13,
+		});
+
+		eventHandlers.get("audioEnded")?.({ path: first.path, session_id: 12 });
+		await flush();
+		await flush();
+
+		const state = __testing.getState();
+		expect(playbackLog.replaceWith).toHaveLength(0);
+		expect(state.selectedListName).toBe("focus");
+		expect(state.playbackListName).toBe("focus");
+		expect(state.requestedPlaying).toMatchObject({ path: second.path });
+		expect(state.confirmedPlaying).toMatchObject({ path: second.path });
+		expect(state.nowPlaying).toMatchObject({ path: second.path });
+		expect(state.playbackSessionId).toBe(13);
+	});
+
 	test("play_true_positive_creates_a_fresh_playback_session_identity_for_each_start_attempt", async () => {
 		const first = makeMusic("C:/music/focus/a.flac");
 		const second = makeMusic("C:/music/focus/b.flac");
@@ -4792,7 +4868,7 @@ describe("music store action contracts", () => {
 		expect(typeof result.unwrap().session_id).toBe("number");
 	});
 
-	test("play_false_positive_guard_stale_ack_like_restart_does_not_preserve_replaced_session_identity", async () => {
+	test("play_false_positive_guard_same_list_restart_does_not_frontend_clear_before_transport_handoff", async () => {
 		const music = makeMusic("C:/music/focus/a.flac");
 		const playlist = makePlaylist("focus", [
 			{ ...makeEntry("alpha", "C:/music/focus"), musics: [music] },
@@ -4812,10 +4888,11 @@ describe("music store action contracts", () => {
 		await action.play(playlist);
 
 		const state = __testing.getState();
-		expect(state.playbackSessionId).toBeNull();
+		expect(playbackLog.interrupts).toBe(1);
+		expect(state.playbackSessionId).toBe(7);
 		expect(state.confirmedPlaying).toBeNull();
-		expect(state.nowPlaying).toBeNull();
-		expect(state.selectedListName).toBeNull();
+		expect(state.nowPlaying).toMatchObject({ path: music.path });
+		expect(state.selectedListName).toBe("focus");
 	});
 
 	test("play_false_positive_guard_requested_intent_does_not_become_canonical_active_playback_without_backend_ack_fact", async () => {

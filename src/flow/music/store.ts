@@ -1753,15 +1753,6 @@ async function safeStop() {
 	const snapshot = getState();
 	const hadPlayback = hasPlaybackContext(snapshot);
 	bumpPlaybackEpoch();
-	patchState({
-		selectedListName: null,
-		playbackListName: null,
-		requestedPlaying: null,
-		confirmedPlaying: null,
-		nowPlaying: null,
-		nowJudge: null,
-		playbackSessionId: null,
-	});
 	await playback.interruptCurrent();
 	const stopped = await crab.audioStop();
 	if (hadPlayback && stopped.isErr()) {
