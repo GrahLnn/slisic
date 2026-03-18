@@ -4786,6 +4786,52 @@ describe("music store action contracts", () => {
 		expect(state.playbackSessionId).toBe(12);
 	});
 
+	test("audioEnded_false_negative_guard_frontend_end_path_keeps_acknowledged_session_live_until_backend_fact_arrives", async () => {
+		const first = makeMusic("C:/music/first.mp3");
+		const second = makeMusic("C:/music/second.mp3");
+		const playlist = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [first, second] },
+		]);
+		const eventHandlers = new Map<string, (payload: unknown) => void>();
+
+		impl.evt = async (event, handler) => {
+			eventHandlers.set(event, handler);
+			return () => {
+				eventHandlers.delete(event);
+			};
+		};
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => Ok<Playlist[], string>([playlist]);
+
+		await action.run();
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: "focus",
+			playbackListName: "focus",
+			requestedPlaying: first,
+			confirmedPlaying: first,
+			nowPlaying: first,
+			playbackSessionId: 21,
+			playbackEpoch: 21,
+		});
+
+		eventHandlers.get("audioEnded")?.({ path: first.path, session_id: 21 });
+		await flush();
+
+		const state = __testing.getState();
+		expect(state.selectedListName).toBe("focus");
+		expect(state.playbackListName).toBe("focus");
+		expect(state.requestedPlaying).toBeNull();
+		expect(state.confirmedPlaying).toMatchObject({ path: first.path });
+		expect(state.nowPlaying).toBeNull();
+		expect(state.playbackSessionId).toBeNull();
+		expect(playbackLog.replaceWith).toHaveLength(1);
+		expect(playbackLog.replaceWith[0]?.epoch).toBeGreaterThan(21);
+	});
+
 	test("audioEnded_false_negative_guard_displaced_transport_fact_cannot_settle_replacement_session", async () => {
 		const first = makeMusic("C:/music/focus/a.flac");
 		const second = makeMusic("C:/music/focus/b.flac");
