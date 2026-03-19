@@ -1032,7 +1032,9 @@ export function canSettleClosureEvent(
 	event: ClosureEventContract,
 	options: ClosureSettleOptions,
 ): boolean {
-	const liveEntryIdentity = options.entry ? derivePersistedOwnerIdentity(options.entry) : null;
+	const liveEntryIdentity = options.entry
+		? derivePersistedOwnerIdentity(options.entry)
+		: null;
 	if (!liveEntryIdentity) return false;
 	if (snapshot.entrySessionId !== snapshot.closureOwnerSessionId) return false;
 	if (snapshot.closureOwnerSessionId !== event.ownerSessionId) return false;
@@ -1179,7 +1181,11 @@ export function deriveClosureProjection(
 	}
 
 	const materialization = getEntryMaterialization(entry);
-	if (!materialization || materialization.phase === "pending" || materialization.phase === "downloading") {
+	if (
+		!materialization ||
+		materialization.phase === "pending" ||
+		materialization.phase === "downloading"
+	) {
 		return {
 			state: "pending_download",
 			playable: false,
@@ -1190,7 +1196,10 @@ export function deriveClosureProjection(
 		};
 	}
 
-	if (materialization.phase === "persisted" || materialization.phase === "analyzing") {
+	if (
+		materialization.phase === "persisted" ||
+		materialization.phase === "analyzing"
+	) {
 		return {
 			state: "pending_analysis",
 			playable: false,
@@ -1199,7 +1208,7 @@ export function deriveClosureProjection(
 			notificationText,
 			reason: "awaiting_analysis",
 		};
-		}
+	}
 
 	if (materialization.phase === "failed") {
 		return {
@@ -1232,7 +1241,7 @@ export function deriveClosureProjection(
 			notificationText,
 			reason: "ready_without_playback",
 		};
-		}
+	}
 
 	return {
 		state: "playable",
@@ -2171,8 +2180,11 @@ async function startPlayByList(name: string) {
 		return;
 	}
 
-	const list = snapshot.playlists.find((playlist) => playlist.name === name) ?? null;
-	const liveEntry = list?.entries.find((entry) => !!derivePersistedOwnerIdentity(entry)) ?? null;
+	const list =
+		snapshot.playlists.find((playlist) => playlist.name === name) ?? null;
+	const liveEntry =
+		list?.entries.find((entry) => !!derivePersistedOwnerIdentity(entry)) ??
+		null;
 	const nextSessionId = nextPlaybackSessionId();
 	if (
 		liveEntry &&

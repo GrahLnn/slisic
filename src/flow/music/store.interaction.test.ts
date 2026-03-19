@@ -17,8 +17,8 @@ import {
 	clearEndedPlaybackForFallback,
 	clearPlaybackSession,
 	clearPlaybackTransportFact,
-	deriveClosureProjection,
 	deriveBackTransition,
+	deriveClosureProjection,
 	deriveDraftReviewState,
 	derivePlaybackOwnedList,
 	deriveProbePatch,
@@ -271,6 +271,14 @@ function makeWeblistEntry(name: string, path: string, url: string): Entry {
 	};
 }
 
+function requireFirstPlaylist(state: MusicState): Playlist {
+	const [playlist] = state.playlists;
+	if (!playlist) {
+		throw new Error("expected base test state to include a playlist");
+	}
+	return playlist;
+}
+
 describe("music interaction guards", () => {
 	test("shouldAdvanceOnUnstar only true for current playing item in current play list", () => {
 		expect(
@@ -320,7 +328,9 @@ describe("music interaction guards", () => {
 
 		const projection = deriveClosureProjection({
 			...baseState,
-			playlists: [{ ...baseState.playlists[0]!, entries: [remoteEntry] }],
+			playlists: [
+				{ ...requireFirstPlaylist(baseState), entries: [remoteEntry] },
+			],
 			confirmedPlaying: null,
 			nowPlaying: null,
 			processMsg: null,
@@ -358,7 +368,9 @@ describe("music interaction guards", () => {
 
 		const projection = deriveClosureProjection({
 			...baseState,
-			playlists: [{ ...baseState.playlists[0]!, entries: [remoteEntry] }],
+			playlists: [
+				{ ...requireFirstPlaylist(baseState), entries: [remoteEntry] },
+			],
 			entrySessionId: 4,
 			closureOwnerSessionId: 3,
 			confirmedPlaying: null,
