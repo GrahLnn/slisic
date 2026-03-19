@@ -5158,6 +5158,131 @@ describe("music store action contracts", () => {
 		expect(state.playlists[0]?.exclude).toEqual([music]);
 	});
 
+	test("loudnessOwnership_false_negative_guard_unstar_preserves_sibling_canonical_loudness_truth", async () => {
+		const canonical = {
+			...makeMusic("C:/music/focus/shared.flac"),
+			normalization_status: "Ready" as const,
+			integrated_lufs: -18,
+			true_peak_dbtp: -1.2,
+			loudness_range_lu: 5.1,
+			analysis_version: 7,
+			analyzed_at_ms: 456,
+		};
+		const sibling = {
+			...canonical,
+			integrated_lufs: -14.6,
+			true_peak_dbtp: -0.4,
+			loudness_range_lu: 3.4,
+			analysis_version: 11,
+			analyzed_at_ms: 789,
+		};
+		const playlist = makePlaylist(
+			"focus",
+			[
+				{
+					...makeEntry("alpha", "C:/music/focus/alpha", {
+						musics: [canonical],
+					}),
+				},
+				{
+					...makeEntry("beta", "C:/music/focus/beta", {
+						musics: [sibling],
+					}),
+				},
+			],
+		);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			playlists: [playlist],
+			selectedListName: "focus",
+			nowPlaying: canonical,
+			confirmedPlaying: canonical,
+			requestedPlaying: canonical,
+			playbackSessionId: 3,
+		});
+		impl.unstar = async () => Ok<null, string>(null);
+
+		await action.unstar(canonical);
+
+		const state = __testing.getState();
+		expect(state.playlists[0]?.exclude).toEqual([canonical]);
+		expect(state.playlists[0]?.entries[0]?.musics[0]).toMatchObject({
+			path: canonical.path,
+			normalization_status: "Ready",
+			integrated_lufs: -18,
+			true_peak_dbtp: -1.2,
+			loudness_range_lu: 5.1,
+			analysis_version: 7,
+			analyzed_at_ms: 456,
+		});
+		expect(state.playlists[0]?.entries[1]?.musics[0]).toMatchObject({
+			path: sibling.path,
+			normalization_status: "Ready",
+			integrated_lufs: -14.6,
+			true_peak_dbtp: -0.4,
+			loudness_range_lu: 3.4,
+			analysis_version: 11,
+			analyzed_at_ms: 789,
+		});
+		expect(state.nowPlaying).toBeNull();
+		expect(state.confirmedPlaying).toBeNull();
+		expect(state.requestedPlaying).toBeNull();
+	});
+
+	test("loudnessOwnership_false_negative_guard_removeExclude_preserves_owner_bound_canonical_loudness_truth", () => {
+		const canonical = {
+			...makeMusic("C:/music/focus/shared.flac"),
+			normalization_status: "Ready" as const,
+			integrated_lufs: -18.7,
+			true_peak_dbtp: -1.5,
+			loudness_range_lu: 4.8,
+			analysis_version: 5,
+			analyzed_at_ms: 654,
+		};
+		const replacement = {
+			...canonical,
+			integrated_lufs: null,
+			true_peak_dbtp: null,
+			loudness_range_lu: null,
+			analysis_version: null,
+			analyzed_at_ms: null,
+			normalization_status: null,
+		};
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			slot: {
+				name: "focus",
+				folders: [],
+				links: [],
+				entries: [
+					makeEntry("alpha", "C:/music/focus/alpha", {
+						musics: [replacement],
+					}),
+				],
+				exclude: [canonical],
+			},
+		});
+
+		action.removeExclude(canonical.path);
+
+		const state = __testing.getState();
+		expect(state.slot?.exclude).toEqual([]);
+		expect(state.slot?.entries[0]?.musics[0]).toMatchObject({
+			path: replacement.path,
+			normalization_status: null,
+			integrated_lufs: null,
+			true_peak_dbtp: null,
+			loudness_range_lu: null,
+			analysis_version: null,
+			analyzed_at_ms: null,
+		});
+	});
+
 	test("audioEnded_true_positive_preserves_playback_context_long_enough_to_schedule_auto_next", async () => {
 		const first = makeMusic("C:/music/focus/a.flac");
 		const second = makeMusic("C:/music/focus/b.flac");
