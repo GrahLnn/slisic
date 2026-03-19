@@ -432,8 +432,16 @@ describe("music interaction guards", () => {
 		const projection = deriveClosureProjection({
 			...baseState,
 			playlists: [
-				{ ...requireFirstPlaylist(baseState), name: "live", entries: [liveEntry] },
-				{ ...requireFirstPlaylist(baseState), name: "stale", entries: [staleEntry] },
+				{
+					...requireFirstPlaylist(baseState),
+					name: "live",
+					entries: [liveEntry],
+				},
+				{
+					...requireFirstPlaylist(baseState),
+					name: "stale",
+					entries: [staleEntry],
+				},
 			],
 			selectedListName: "live",
 			playbackListName: "live",

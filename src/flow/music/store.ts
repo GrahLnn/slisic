@@ -1138,7 +1138,8 @@ function deriveLiveClosureNotificationHint(
 	}
 
 	const hintedEntry = hintedPlaylist.entries.find(
-		(candidate) => derivePersistedOwnerIdentity(candidate) === liveEntryIdentity,
+		(candidate) =>
+			derivePersistedOwnerIdentity(candidate) === liveEntryIdentity,
 	);
 	if (!hintedEntry) {
 		return { visible: false, text: null };
