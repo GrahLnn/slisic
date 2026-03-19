@@ -712,6 +712,124 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("remoteTaskTruth_false_negative_guard_process_events_do_not_create_or_rebind_materialization_without_matching_refresh_facts", async () => {
+		const handlers = new Map<string, (payload: unknown) => void>();
+		const pending = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus"),
+				url: "https://example.com/list",
+				entry_type: "WebList",
+				downloaded_ok: false,
+				musics: [],
+			},
+		]);
+		const unrelatedReady = makePlaylist("other", [
+			{
+				...makeEntry("other remote", "C:/music/other"),
+				url: "https://example.com/other",
+				entry_type: "WebList",
+				downloaded_ok: true,
+				musics: [
+					{
+						...makeMusic("C:/music/other/a.mp3"),
+						normalization_status: "Ready",
+						integrated_lufs: -18,
+						analysis_version: 1,
+						analyzed_at_ms: 123,
+					},
+				],
+			},
+		]);
+		let readAllCalls = 0;
+
+		impl.evt = async (event: string, handler: (payload: unknown) => void) => {
+			handlers.set(event, handler);
+			return () => {
+				handlers.delete(event);
+			};
+		};
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			return Ok<Playlist[], string>(readAllCalls === 1 ? [pending] : [unrelatedReady]);
+		};
+
+		await action.run();
+		const before = __testing.getState().playlists[0]?.entries[0] as Entry & {
+			materialization?: {
+				phase: string;
+				settled: string;
+				ownerSessionId: number;
+				lastError: string | null;
+			};
+		};
+		expect(before.materialization).toEqual({
+			phase: "pending",
+			settled: "idle",
+			ownerSessionId: 0,
+			lastError: null,
+		});
+
+		handlers.get("processMsg")?.({
+			playlist: "other",
+			str: "Analyzing loudness 1/1: other.mp3",
+		});
+		await flush();
+
+		let state = __testing.getState();
+		expect(state.processMsg).toEqual({
+			playlist: "other",
+			str: "Analyzing loudness 1/1: other.mp3",
+		});
+		expect(
+			(
+				state.playlists[0]?.entries[0] as Entry & {
+					materialization?: {
+						phase: string;
+						settled: string;
+						ownerSessionId: number;
+						lastError: string | null;
+					};
+				}
+			).materialization,
+		).toEqual({
+			phase: "pending",
+			settled: "idle",
+			ownerSessionId: 0,
+			lastError: null,
+		});
+
+		handlers.get("processResult")?.({
+			working_path: "C:/music/other",
+			saved_path: "C:/music/other",
+			name: "other",
+			playlist: "other",
+		});
+		await flush();
+
+		state = __testing.getState();
+		expect(state.processMsg).toBeNull();
+		expect(state.playlists).toHaveLength(1);
+		expect(state.playlists[0]?.name).toBe("other");
+		expect(
+			(
+				state.playlists[0]?.entries[0] as Entry & {
+					materialization?: {
+						phase: string;
+						settled: string;
+						ownerSessionId: number;
+						lastError: string | null;
+					};
+				}
+			).materialization,
+		).toEqual({
+			phase: "ready",
+			settled: "succeeded",
+			ownerSessionId: 0,
+			lastError: null,
+		});
+	});
+
 	test("webMaterialization_true_positive_projects_entry_owned_pending_downloading_persisted_analyzing_ready_and_failed_phases", async () => {
 		const handlers = new Map<string, (payload: unknown) => void>();
 		const pending = makePlaylist("focus", [
