@@ -194,6 +194,7 @@ const {
 	deriveDraftReviewState,
 	deriveRouteResolution,
 	canSettleClosureEvent,
+	canSettleClosureEvents,
 	createClosureEventContract,
 } = await import("./store");
 
@@ -2594,6 +2595,7 @@ describe("music store action contracts", () => {
 			selectedListName: "focus",
 			playbackListName: null,
 			playlists: [makePlaylist("focus", [replacementEntry])],
+			entrySessionId: 22,
 			closureOwnerSessionId: 22,
 			playbackSessionId: 71,
 		});
@@ -2639,6 +2641,96 @@ describe("music store action contracts", () => {
 				allowedPlaybackSessionId: 71,
 			}),
 		).toBe(true);
+	});
+
+	test("closure_true_positive_live_owner_chain_requires_exact_saved_downloaded_analyzed_notified_playback_contract", () => {
+		const liveEntry = withEntryMaterialization(
+			makeEntry("replacement remote", "C:/music/replacement", {
+				url: "https://example.com/remote-replacement",
+				entry_type: "WebList",
+				downloaded_ok: true,
+				musics: [makeMusic("C:/music/replacement/a.mp3")],
+			}),
+			{
+				phase: "ready",
+				settled: "succeeded",
+				ownerSessionId: 22,
+				lastError: null,
+			},
+		);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			selectedListName: "focus",
+			playlists: [makePlaylist("focus", [liveEntry])],
+			entrySessionId: 22,
+			closureOwnerSessionId: 22,
+			playbackSessionId: 71,
+		});
+
+		const phases = ["saved", "downloaded", "analyzed", "notified", "playback"] as const;
+		const liveEvents = phases.map((phase) =>
+			createClosureEventContract(
+				22,
+				"url-path:https://example.com/remote-replacement::C:/music/replacement",
+				phase,
+			),
+		);
+
+		expect(
+			canSettleClosureEvents(__testing.getState(), liveEvents, {
+				entry: __testing.getState().playlists[0]?.entries[0],
+				allowedPlaybackSessionId: 71,
+			}),
+		).toBe(true);
+	});
+
+	test("closure_false_negative_guard_displaced_entry_session_cannot_reuse_live_owner_chain_event_contract", () => {
+		const liveEntry = withEntryMaterialization(
+			makeEntry("replacement remote", "C:/music/replacement", {
+				url: "https://example.com/remote-replacement",
+				entry_type: "WebList",
+				downloaded_ok: true,
+				musics: [makeMusic("C:/music/replacement/a.mp3")],
+			}),
+			{
+				phase: "ready",
+				settled: "succeeded",
+				ownerSessionId: 22,
+				lastError: null,
+			},
+		);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			selectedListName: "focus",
+			playlists: [makePlaylist("focus", [liveEntry])],
+			entrySessionId: 23,
+			closureOwnerSessionId: 22,
+			playbackSessionId: 71,
+		});
+
+		const displacedChainEvents = ["saved", "downloaded", "analyzed", "notified", "playback"] as const;
+		expect(
+			canSettleClosureEvents(
+				__testing.getState(),
+				displacedChainEvents.map((phase) =>
+					createClosureEventContract(
+						22,
+						"url-path:https://example.com/remote-replacement::C:/music/replacement",
+						phase,
+					),
+				),
+				{
+					entry: __testing.getState().playlists[0]?.entries[0],
+					allowedPlaybackSessionId: 71,
+				},
+			),
+		).toBe(false);
 	});
 
 	test("ownerIdentity_false_negative_guard_refresh_carry_forward_keeps_same_path_siblings_owner_scoped", async () => {

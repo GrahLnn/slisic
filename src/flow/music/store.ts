@@ -137,6 +137,16 @@ export interface ClosureEventContract {
 	eventId: string;
 }
 
+type ClosureSnapshot = Pick<
+	MusicState,
+	"closureOwnerSessionId" | "entrySessionId" | "playbackSessionId"
+>;
+
+type ClosureSettleOptions = {
+	entry: Entry | null | undefined;
+	allowedPlaybackSessionId?: number | null;
+};
+
 interface PlaybackSessionSnapshot {
 	playbackEpoch: number;
 	playbackSessionId: number | null;
@@ -993,15 +1003,13 @@ export function createClosureEventContract(
 }
 
 export function canSettleClosureEvent(
-	snapshot: Pick<MusicState, "closureOwnerSessionId" | "playbackSessionId">,
+	snapshot: ClosureSnapshot,
 	event: ClosureEventContract,
-	options: {
-		entry: Entry | null | undefined;
-		allowedPlaybackSessionId?: number | null;
-	},
+	options: ClosureSettleOptions,
 ): boolean {
 	const liveEntryIdentity = options.entry ? derivePersistedOwnerIdentity(options.entry) : null;
 	if (!liveEntryIdentity) return false;
+	if (snapshot.entrySessionId !== snapshot.closureOwnerSessionId) return false;
 	if (snapshot.closureOwnerSessionId !== event.ownerSessionId) return false;
 	if (liveEntryIdentity !== event.entryIdentity) return false;
 	if (
@@ -1012,6 +1020,29 @@ export function canSettleClosureEvent(
 		return false;
 	}
 	return true;
+}
+
+export function canSettleClosureEvents(
+	snapshot: ClosureSnapshot,
+	events: ClosureEventContract[],
+	options: ClosureSettleOptions,
+): boolean {
+	if (events.length === 0) return false;
+	const expectedPhases: ClosureEventPhase[] = [
+		"saved",
+		"downloaded",
+		"analyzed",
+		"notified",
+		"playback",
+	];
+	const seenPhases = new Set<ClosureEventPhase>();
+	for (const event of events) {
+		if (!canSettleClosureEvent(snapshot, event, options)) {
+			return false;
+		}
+		seenPhases.add(event.phase);
+	}
+	return expectedPhases.every((phase) => seenPhases.has(phase));
 }
 
 function sanitizeProcessMsgHint(
