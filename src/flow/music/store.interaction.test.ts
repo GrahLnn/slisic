@@ -17,6 +17,7 @@ import {
 	clearEndedPlaybackForFallback,
 	clearPlaybackSession,
 	clearPlaybackTransportFact,
+	deriveClosureProjection,
 	deriveBackTransition,
 	deriveDraftReviewState,
 	derivePlaybackOwnedList,
@@ -292,6 +293,84 @@ describe("music interaction guards", () => {
 				"C:/audio/a.flac",
 			),
 		).toBe(false);
+	});
+
+	test("deriveClosureProjection keeps missed notifications machine-visible while playback stays blocked", () => {
+		const remoteEntry: Entry = {
+			...makeEntry("remote", "C:/remote"),
+			url: "https://example.com/remote",
+			entry_type: "WebList",
+			downloaded_ok: true,
+			musics: [
+				{
+					...makeMusic("C:/remote/a.mp3"),
+					integrated_lufs: -18,
+					analysis_version: 7,
+					normalization_status: "Ready",
+					analyzed_at_ms: 123,
+				},
+			],
+			materialization: {
+				phase: "ready",
+				ownerSessionId: 3,
+				settled: "succeeded",
+				lastError: null,
+			},
+		} as Entry;
+
+		const projection = deriveClosureProjection({
+			...baseState,
+			playlists: [{ ...baseState.playlists[0]!, entries: [remoteEntry] }],
+			confirmedPlaying: null,
+			nowPlaying: null,
+			processMsg: null,
+			playbackSessionId: null,
+		});
+
+		expect(projection.state).toBe("notification_missing");
+		expect(projection.interactive).toBe(true);
+		expect(projection.playable).toBe(false);
+		expect(projection.reason).toBe("awaiting_notification_projection");
+	});
+
+	test("deriveClosureProjection rejects notification-only revival when the owner chain is stale", () => {
+		const remoteEntry: Entry = {
+			...makeEntry("remote", "C:/remote"),
+			url: "https://example.com/remote",
+			entry_type: "WebList",
+			downloaded_ok: true,
+			musics: [
+				{
+					...makeMusic("C:/remote/a.mp3"),
+					integrated_lufs: -18,
+					analysis_version: 7,
+					normalization_status: "Ready",
+					analyzed_at_ms: 123,
+				},
+			],
+			materialization: {
+				phase: "ready",
+				ownerSessionId: 3,
+				settled: "succeeded",
+				lastError: null,
+			},
+		} as Entry;
+
+		const projection = deriveClosureProjection({
+			...baseState,
+			playlists: [{ ...baseState.playlists[0]!, entries: [remoteEntry] }],
+			entrySessionId: 4,
+			closureOwnerSessionId: 3,
+			confirmedPlaying: null,
+			nowPlaying: null,
+			processMsg: { playlist: "contemporary", str: "Ready" },
+			playbackSessionId: 3,
+		});
+
+		expect(projection.state).toBe("blocked");
+		expect(projection.interactive).toBe(false);
+		expect(projection.playable).toBe(false);
+		expect(projection.reason).toBe("notification_only_hint");
 	});
 
 	test("buildPostSavePatch should clear playback context and keep mode by data presence", () => {

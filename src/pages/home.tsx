@@ -24,6 +24,30 @@ export function projectPlaylistHint(
 	return processMsg?.playlist === playlistName ? processMsg.str : null;
 }
 
+export function closureProjectionLabel(
+	closure: ReturnType<typeof hook.useClosureProjection>,
+): string | null {
+	if (closure.state === "blocked") {
+		return closure.notificationText;
+	}
+	if (closure.state === "pending_download") {
+		return "Waiting for download";
+	}
+	if (closure.state === "pending_analysis") {
+		return "Waiting for analysis";
+	}
+	if (closure.state === "notification_missing") {
+		return "Ready in machine state; notification missing";
+	}
+	if (closure.state === "ready") {
+		return "Ready for playback";
+	}
+	if (closure.state === "playable") {
+		return closure.notificationText ?? "Playable";
+	}
+	return null;
+}
+
 export function shouldRenderHomeRoute(
 	ctx: Pick<ReturnType<typeof hook.useContext>, "routeResolved">,
 ): boolean {
@@ -52,9 +76,11 @@ function Play() {
 	const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
 	const didInitCenterRef = useRef(false);
 	const processMsg = hook.useMsg();
+	const closure = hook.useClosureProjection();
 	const hintForPlaylist = (playlistName: string) =>
 		projectPlaylistHint(processMsg, playlistName);
-	const hasPlaybackSurface = ctx.mode === "play" && !!curList;
+	const closureLabel = closureProjectionLabel(closure);
+	const hasPlaybackSurface = ctx.mode === "play" && closure.interactive && !!curList;
 	const displayLists =
 		lists.length > 0
 			? lists.map((playlist) => ({
@@ -127,7 +153,9 @@ function Play() {
 						({ name, playlist, isHydrated, historicalTitle, activeTitle }) => {
 						const isCurrent = name === curList?.name;
 						const disabled =
-							(hasPlaybackSurface && !isCurrent) || (!isHydrated && ctx.loading);
+							(!closure.interactive && isCurrent) ||
+							(hasPlaybackSurface && !isCurrent) ||
+							(!isHydrated && ctx.loading);
 						const shouldSwap = hasPlaybackSurface && isCurrent;
 						const showName = shouldSwap ? hoveredKey === name : true;
 						const isOk = playlist
@@ -225,6 +253,10 @@ function Play() {
 													<span className="absolute ml-1 max-w-2xs truncate whitespace-nowrap text-xs text-[#262626] dark:text-[#d4d4d4]">
 												- {hintForPlaylist(name)}
 													</span>
+										) : isCurrent && closureLabel ? (
+											<span className="absolute ml-1 max-w-2xs truncate whitespace-nowrap text-xs text-[#262626] dark:text-[#d4d4d4]">
+												- {closureLabel}
+											</span>
 												) : null}
 												{isCurrent && activeTitle ? (
 													<span className="absolute ml-1 max-w-2xs truncate whitespace-nowrap text-xs text-[#262626] dark:text-[#d4d4d4]">

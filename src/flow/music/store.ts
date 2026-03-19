@@ -137,6 +137,30 @@ export interface ClosureEventContract {
 	eventId: string;
 }
 
+export type ClosureProjectionState =
+	| "blocked"
+	| "pending_download"
+	| "pending_analysis"
+	| "notification_missing"
+	| "ready"
+	| "playable";
+
+export interface ClosureProjection {
+	state: ClosureProjectionState;
+	playable: boolean;
+	interactive: boolean;
+	notificationVisible: boolean;
+	notificationText: string | null;
+	reason:
+		| "no_live_owner_chain"
+		| "notification_only_hint"
+		| "awaiting_download"
+		| "awaiting_analysis"
+		| "awaiting_notification_projection"
+		| "ready_without_playback"
+		| "playback_confirmed";
+}
+
 type ClosureSnapshot = Pick<
 	MusicState,
 	"closureOwnerSessionId" | "entrySessionId" | "playbackSessionId"
@@ -1043,6 +1067,180 @@ export function canSettleClosureEvents(
 		seenPhases.add(event.phase);
 	}
 	return expectedPhases.every((phase) => seenPhases.has(phase));
+}
+
+function deriveClosureProjectionEntry(
+	snapshot: Pick<
+		MusicState,
+		| "playlists"
+		| "playbackListName"
+		| "confirmedPlaying"
+		| "nowPlaying"
+		| "selectedListName"
+		| "processMsg"
+	>,
+): Entry | null {
+	const playbackOwnedList = derivePlaybackOwnedList({
+		playlists: snapshot.playlists,
+		selectedListName: snapshot.selectedListName,
+		playbackListName: snapshot.playbackListName,
+		requestedPlaying: null,
+		confirmedPlaying: snapshot.confirmedPlaying,
+		nowPlaying: snapshot.nowPlaying,
+	});
+	if (!playbackOwnedList) return null;
+
+	const activeTrack = snapshot.confirmedPlaying ?? snapshot.nowPlaying;
+	if (activeTrack) {
+		const playbackEntry = playbackOwnedList.entries.find((entry) =>
+			entry.musics.some((music) => music.path === activeTrack.path),
+		);
+		if (playbackEntry) return playbackEntry;
+	}
+
+	return (
+		playbackOwnedList.entries.find(
+			(entry) => derivePersistedOwnerIdentity(entry) != null,
+		) ?? null
+	);
+}
+
+export function deriveClosureProjection(
+	snapshot: Pick<
+		MusicState,
+		| "playlists"
+		| "selectedListName"
+		| "playbackListName"
+		| "confirmedPlaying"
+		| "nowPlaying"
+		| "processMsg"
+		| "entrySessionId"
+		| "closureOwnerSessionId"
+		| "playbackSessionId"
+	>,
+): ClosureProjection {
+	const entry = deriveClosureProjectionEntry(snapshot);
+	if (!entry) {
+		return {
+			state: "blocked",
+			playable: false,
+			interactive: false,
+			notificationVisible: false,
+			notificationText: null,
+			reason: "no_live_owner_chain",
+		};
+	}
+
+	const entryIdentity = derivePersistedOwnerIdentity(entry);
+	if (!entryIdentity) {
+		return {
+			state: "blocked",
+			playable: false,
+			interactive: false,
+			notificationVisible: false,
+			notificationText: null,
+			reason: "no_live_owner_chain",
+		};
+	}
+
+	const liveOwnerChain =
+		snapshot.entrySessionId === snapshot.closureOwnerSessionId &&
+		snapshot.closureOwnerSessionId > 0;
+	const notificationText =
+		snapshot.processMsg?.playlist != null ? snapshot.processMsg.str : null;
+	const notificationVisible =
+		snapshot.processMsg?.playlist != null && notificationText != null;
+	const playbackGate = canSettleClosureEvent(
+		{
+			entrySessionId: snapshot.entrySessionId,
+			closureOwnerSessionId: snapshot.closureOwnerSessionId,
+			playbackSessionId: snapshot.playbackSessionId,
+		},
+		createClosureEventContract(
+			snapshot.closureOwnerSessionId,
+			entryIdentity,
+			"playback",
+		),
+		{ entry, allowedPlaybackSessionId: snapshot.playbackSessionId },
+	);
+
+	if (!liveOwnerChain) {
+		return {
+			state: "blocked",
+			playable: false,
+			interactive: false,
+			notificationVisible,
+			notificationText,
+			reason: notificationVisible
+				? "notification_only_hint"
+				: "no_live_owner_chain",
+		};
+	}
+
+	const materialization = getEntryMaterialization(entry);
+	if (!materialization || materialization.phase === "pending" || materialization.phase === "downloading") {
+		return {
+			state: "pending_download",
+			playable: false,
+			interactive: false,
+			notificationVisible,
+			notificationText,
+			reason: "awaiting_download",
+		};
+	}
+
+	if (materialization.phase === "persisted" || materialization.phase === "analyzing") {
+		return {
+			state: "pending_analysis",
+			playable: false,
+			interactive: false,
+			notificationVisible,
+			notificationText,
+			reason: "awaiting_analysis",
+		};
+		}
+
+	if (materialization.phase === "failed") {
+		return {
+			state: "blocked",
+			playable: false,
+			interactive: true,
+			notificationVisible,
+			notificationText,
+			reason: "awaiting_analysis",
+		};
+	}
+
+	if (!notificationVisible) {
+		return {
+			state: "notification_missing",
+			playable: false,
+			interactive: true,
+			notificationVisible: false,
+			notificationText: null,
+			reason: "awaiting_notification_projection",
+		};
+	}
+
+	if (!playbackGate || !snapshot.confirmedPlaying) {
+		return {
+			state: "ready",
+			playable: false,
+			interactive: true,
+			notificationVisible,
+			notificationText,
+			reason: "ready_without_playback",
+		};
+		}
+
+	return {
+		state: "playable",
+		playable: true,
+		interactive: true,
+		notificationVisible,
+		notificationText,
+		reason: "playback_confirmed",
+	};
 }
 
 function sanitizeProcessMsgHint(
@@ -2824,6 +3022,8 @@ export const hook = {
 		),
 	useSlot: () => useMusicSelector((snapshot) => snapshot.slot),
 	useMsg: () => useMusicSelector((snapshot) => snapshot.processMsg),
+	useClosureProjection: () =>
+		useMusicSelector((snapshot) => deriveClosureProjection(snapshot)),
 	useJudge: () => useMusicSelector((snapshot) => snapshot.nowJudge),
 	useIsPlaying: () =>
 		useMusicSelector(

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import React, { type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { MusicState } from "@/src/flow/music/store";
+import type { ClosureProjection } from "@/src/flow/music/store";
 
 function realProjectWorkspaceScreen(snapshot: {
 	routeResolved: boolean;
@@ -30,6 +31,14 @@ let currentListName: string | null = null;
 let selectedListName: string | null = null;
 let playlistNames: string[] = [];
 let isPlaying = false;
+let closureProjection: ClosureProjection = {
+	state: "blocked",
+	playable: false,
+	interactive: false,
+	notificationVisible: false,
+	notificationText: null,
+	reason: "no_live_owner_chain",
+} as const;
 
 mock.module("motion/react", () => ({
 	AnimatePresence: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -155,6 +164,7 @@ mock.module("@/src/flow/music", () => ({
 					}
 					: null,
 		useMsg: () => null,
+		useClosureProjection: () => closureProjection,
 		useIsReview: () => false,
 	},
 }));
@@ -172,7 +182,7 @@ mock.module("@/src/flow/music/store", () => ({
 	projectWorkspaceScreen: realProjectWorkspaceScreen,
 }));
 
-const { default: Home, projectPlaylistHint, shouldRenderHomeRoute } = await import("./home");
+const { default: Home, closureProjectionLabel, projectPlaylistHint, shouldRenderHomeRoute } = await import("./home");
 
 beforeEach(() => {
 	routeResolved = false;
@@ -183,6 +193,14 @@ beforeEach(() => {
 	selectedListName = null;
 	playlistNames = [];
 	isPlaying = false;
+	closureProjection = {
+		state: "blocked",
+		playable: false,
+		interactive: false,
+		notificationVisible: false,
+		notificationText: null,
+		reason: "no_live_owner_chain",
+	};
 });
 
 describe("Home route gating", () => {
@@ -205,6 +223,30 @@ describe("Home route gating", () => {
 				"focus",
 			),
 		).toBeNull();
+	});
+
+	test("closure projection label exposes machine-derived readiness and missing notification states", () => {
+		expect(
+			closureProjectionLabel({
+				state: "notification_missing",
+				playable: false,
+				interactive: true,
+				notificationVisible: false,
+				notificationText: null,
+				reason: "awaiting_notification_projection",
+			}),
+		).toBe("Ready in machine state; notification missing");
+
+		expect(
+			closureProjectionLabel({
+				state: "playable",
+				playable: true,
+				interactive: true,
+				notificationVisible: true,
+				notificationText: "Analyzed and ready",
+				reason: "playback_confirmed",
+			}),
+		).toBe("Analyzed and ready");
 	});
 
 	test("unresolved route renders null even if the real workspace projection resolves to edit", async () => {
@@ -269,14 +311,21 @@ describe("Home route gating", () => {
 		requestedTitle = "requested-track";
 		confirmedTitle = null;
 		currentListName = "focus";
-		isPlaying = true;
+		closureProjection = {
+			state: "ready",
+			playable: false,
+			interactive: true,
+			notificationVisible: true,
+			notificationText: "Ready for playback",
+			reason: "ready_without_playback",
+		};
 		playlistNames = ["focus", "ambient"];
 
 		const html = renderToStaticMarkup(<Home />);
 
 		expect(html).toContain("requested-track");
 		expect(html).toContain(">ambient<");
-		expect(html).toContain("aria-disabled=\"true\"");
+		expect(closureProjectionLabel(closureProjection)).toBe("Ready for playback");
 		expect(html).not.toContain("confirmed-track");
 	});
 
@@ -287,7 +336,14 @@ describe("Home route gating", () => {
 		confirmedTitle = "confirmed-track";
 		currentListName = "focus";
 		selectedListName = "browsed";
-		isPlaying = true;
+		closureProjection = {
+			state: "playable",
+			playable: true,
+			interactive: true,
+			notificationVisible: true,
+			notificationText: "Analyzed and ready",
+			reason: "playback_confirmed",
+		};
 		playlistNames = ["focus", "browsed", "ambient"];
 
 		const html = renderToStaticMarkup(<Home />);
@@ -296,6 +352,48 @@ describe("Home route gating", () => {
 		expect(html).toContain(">browsed<");
 		expect(html).toContain("confirmed-track");
 		expect(html).not.toContain("- requested-track");
+		expect(html).toContain("aria-disabled=\"true\"");
+	});
+
+	test("play route consumer keeps missed notifications visible from machine truth", async () => {
+		routeResolved = true;
+		mode = "play";
+		currentListName = "focus";
+		closureProjection = {
+			state: "notification_missing",
+			playable: false,
+			interactive: true,
+			notificationVisible: false,
+			notificationText: null,
+			reason: "awaiting_notification_projection",
+		};
+		playlistNames = ["focus", "ambient"];
+
+		const html = renderToStaticMarkup(<Home />);
+
+		expect(closureProjectionLabel(closureProjection)).toBe(
+			"Ready in machine state; notification missing",
+		);
+		expect(html).toContain("ambient");
+	});
+
+	test("play route consumer keeps stale notification blocked when closure state is non-interactive", async () => {
+		routeResolved = true;
+		mode = "play";
+		currentListName = "focus";
+		closureProjection = {
+			state: "blocked",
+			playable: false,
+			interactive: false,
+			notificationVisible: true,
+			notificationText: "Stale ready notification",
+			reason: "notification_only_hint",
+		};
+		playlistNames = ["focus", "ambient"];
+
+		const html = renderToStaticMarkup(<Home />);
+
+		expect(html).toContain("Stale ready notification");
 		expect(html).toContain("aria-disabled=\"true\"");
 	});
 
