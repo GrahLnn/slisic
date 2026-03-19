@@ -117,8 +117,24 @@ export interface MusicState {
 	ffmpeg: InstallResult | null;
 	savePath: string | null;
 	entrySessionId: number;
+	closureOwnerSessionId: number;
 	playbackEpoch: number;
 	playbackSessionId: number | null;
+}
+
+export type ClosureEventPhase =
+	| "deleted"
+	| "saved"
+	| "downloaded"
+	| "analyzed"
+	| "notified"
+	| "playback";
+
+export interface ClosureEventContract {
+	ownerSessionId: number;
+	entryIdentity: string;
+	phase: ClosureEventPhase;
+	eventId: string;
 }
 
 interface PlaybackSessionSnapshot {
@@ -725,6 +741,7 @@ export function buildPostSavePatch(
 	| "slot"
 	| "processMsg"
 	| "entrySessionId"
+	| "closureOwnerSessionId"
 	| "playbackEpoch"
 > {
 	return {
@@ -738,6 +755,7 @@ export function buildPostSavePatch(
 		slot: null,
 		processMsg: null,
 		entrySessionId: idleEpoch,
+		closureOwnerSessionId: idleEpoch,
 		playbackEpoch: idleEpoch,
 	};
 }
@@ -756,6 +774,7 @@ export function deriveWorkspaceEntryPatch(
 	| "nowJudge"
 	| "processMsg"
 	| "entrySessionId"
+	| "closureOwnerSessionId"
 >;
 export function deriveWorkspaceEntryPatch(
 	kind: "edit",
@@ -772,6 +791,7 @@ export function deriveWorkspaceEntryPatch(
 	| "nowJudge"
 	| "processMsg"
 	| "entrySessionId"
+	| "closureOwnerSessionId"
 >;
 export function deriveWorkspaceEntryPatch(
 	kind: "create" | "edit",
@@ -788,6 +808,7 @@ export function deriveWorkspaceEntryPatch(
 	| "nowJudge"
 	| "processMsg"
 	| "entrySessionId"
+	| "closureOwnerSessionId"
 > {
 	const editPlaylist = playlist as Playlist;
 
@@ -805,6 +826,7 @@ export function deriveWorkspaceEntryPatch(
 		nowJudge: null,
 		processMsg: null,
 		entrySessionId: state.entrySessionId + 1,
+		closureOwnerSessionId: state.closureOwnerSessionId,
 	};
 }
 
@@ -821,6 +843,7 @@ export function deriveBackTransition(
 		| "slot"
 		| "processMsg"
 		| "entrySessionId"
+		| "closureOwnerSessionId"
 	>,
 ): Pick<
 	MusicState,
@@ -834,6 +857,7 @@ export function deriveBackTransition(
 	| "slot"
 	| "processMsg"
 	| "entrySessionId"
+	| "closureOwnerSessionId"
 > {
 	return {
 		mode: snapshot.playlists.length > 0 ? "play" : "new_guide",
@@ -847,6 +871,7 @@ export function deriveBackTransition(
 		slot: null,
 		processMsg: null,
 		entrySessionId: snapshot.entrySessionId + 1,
+		closureOwnerSessionId: snapshot.closureOwnerSessionId,
 	};
 }
 
@@ -913,6 +938,7 @@ const initialState: MusicState = {
 	ffmpeg: null,
 	savePath: null,
 	entrySessionId: 0,
+	closureOwnerSessionId: 0,
 	playbackEpoch: 0,
 	playbackSessionId: null,
 };
@@ -943,6 +969,49 @@ function setState(next: MusicState | ((prev: MusicState) => MusicState)) {
 
 function patchState(patch: Partial<MusicState>) {
 	setState((prev) => ({ ...prev, ...patch }));
+}
+
+function buildClosureEventId(
+	ownerSessionId: number,
+	entryIdentity: string,
+	phase: ClosureEventPhase,
+): string {
+	return `${ownerSessionId}:${entryIdentity}:${phase}`;
+}
+
+export function createClosureEventContract(
+	ownerSessionId: number,
+	entryIdentity: string,
+	phase: ClosureEventPhase,
+): ClosureEventContract {
+	return {
+		ownerSessionId,
+		entryIdentity,
+		phase,
+		eventId: buildClosureEventId(ownerSessionId, entryIdentity, phase),
+	};
+}
+
+export function canSettleClosureEvent(
+	snapshot: Pick<MusicState, "closureOwnerSessionId" | "playbackSessionId">,
+	event: ClosureEventContract,
+	options: {
+		entry: Entry | null | undefined;
+		allowedPlaybackSessionId?: number | null;
+	},
+): boolean {
+	const liveEntryIdentity = options.entry ? derivePersistedOwnerIdentity(options.entry) : null;
+	if (!liveEntryIdentity) return false;
+	if (snapshot.closureOwnerSessionId !== event.ownerSessionId) return false;
+	if (liveEntryIdentity !== event.entryIdentity) return false;
+	if (
+		event.phase === "playback" &&
+		options.allowedPlaybackSessionId != null &&
+		snapshot.playbackSessionId !== options.allowedPlaybackSessionId
+	) {
+		return false;
+	}
+	return true;
 }
 
 function sanitizeProcessMsgHint(
@@ -1272,6 +1341,17 @@ function derivePersistedOwnerMaterializationKey(entry: Entry): string | null {
 
 function derivePersistedOwnerIdentity(entry: Entry): string | null {
 	return derivePersistedOwnerMaterializationKey(entry);
+}
+
+function deriveClosureOwnerIdentityFromMission(
+	slot: CollectMission | null | undefined,
+): string | null {
+	if (!slot) return null;
+	for (const entry of slot.entries) {
+		const identity = derivePersistedOwnerIdentity(entry);
+		if (identity) return identity;
+	}
+	return null;
 }
 
 function deriveWebMaterializationPhase(
@@ -1861,6 +1941,25 @@ async function startPlayByList(name: string) {
 		return;
 	}
 
+	const list = snapshot.playlists.find((playlist) => playlist.name === name) ?? null;
+	const liveEntry = list?.entries.find((entry) => !!derivePersistedOwnerIdentity(entry)) ?? null;
+	const nextSessionId = nextPlaybackSessionId();
+	if (
+		liveEntry &&
+		snapshot.playbackSessionId != null &&
+		!canSettleClosureEvent(
+			snapshot,
+			createClosureEventContract(
+				snapshot.closureOwnerSessionId,
+				derivePersistedOwnerIdentity(liveEntry) as string,
+				"playback",
+			),
+			{ entry: liveEntry, allowedPlaybackSessionId: nextSessionId },
+		)
+	) {
+		return;
+	}
+
 	patchState({
 		selectedListName: name,
 		playbackListName: name,
@@ -1869,7 +1968,7 @@ async function startPlayByList(name: string) {
 		confirmedPlaying: null,
 		nowPlaying: null,
 		nowJudge: null,
-		playbackSessionId: nextPlaybackSessionId(),
+		playbackSessionId: nextSessionId,
 	});
 	const epoch = bumpPlaybackEpoch();
 	scheduleNextPlayback(epoch);
@@ -1945,6 +2044,10 @@ async function persistSlot() {
 			playlists: optimisticPlaylists,
 			loading: false,
 			requestedPlaying: null,
+			closureOwnerSessionId:
+				deriveClosureOwnerIdentityFromMission(slot) == null
+					? snapshot.closureOwnerSessionId
+					: idleEpoch,
 			playbackSessionId: null,
 			confirmedPlaying: null,
 		});
@@ -1970,11 +2073,14 @@ async function persistSlot() {
 	const optimisticPlaylists = [...snapshot.playlists, optimisticPlaylist];
 	const idleEpoch = bumpPlaybackEpoch();
 	void playback.interruptCurrent();
+	const closureEntryIdentity = deriveClosureOwnerIdentityFromMission(slot);
 	patchState({
 		...buildPostSavePatch(optimisticPlaylists.length > 0, idleEpoch),
 		playlists: optimisticPlaylists,
 		loading: false,
 		requestedPlaying: null,
+		closureOwnerSessionId:
+			closureEntryIdentity != null ? idleEpoch : snapshot.closureOwnerSessionId,
 		playbackSessionId: null,
 		confirmedPlaying: null,
 	});

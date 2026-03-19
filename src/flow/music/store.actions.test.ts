@@ -188,8 +188,14 @@ mock.module("./playbackCoordinator", () => ({
 	PlaybackCoordinator: MockPlaybackCoordinator,
 }));
 
-const { __testing, action, deriveDraftReviewState, deriveRouteResolution } =
-	await import("./store");
+const {
+	__testing,
+	action,
+	deriveDraftReviewState,
+	deriveRouteResolution,
+	canSettleClosureEvent,
+	createClosureEventContract,
+} = await import("./store");
 
 function makeMusic(path: string): Music {
 	return {
@@ -2481,6 +2487,158 @@ describe("music store action contracts", () => {
 				lastError: null,
 			},
 		});
+	});
+
+	test("closure_true_positive_replacement_save_establishes_the_only_live_canonical_owner_chain", async () => {
+		const oldEntry = makeEntry("old remote", "C:/music/old", {
+			url: "https://example.com/remote",
+			entry_type: "WebList",
+			downloaded_ok: false,
+			musics: [],
+		});
+		const replacementEntry = makeEntry("replacement remote", "C:/music/replacement", {
+			url: "https://example.com/remote-replacement",
+			entry_type: "WebList",
+			downloaded_ok: true,
+			musics: [makeMusic("C:/music/replacement/a.mp3")],
+		});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			selectedListName: "focus",
+			playlists: [makePlaylist("focus", [oldEntry])],
+			closureOwnerSessionId: 1,
+			entrySessionId: 7,
+		});
+
+		action.edit(makePlaylist("focus", [oldEntry]));
+		await flush();
+		action.removeEntry(oldEntry);
+		action.addExistingEntry(replacementEntry);
+		await flush();
+
+		impl.update = async () => Ok<null, string>(null);
+		impl.readAll = async () => Ok<Playlist[], string>([makePlaylist("focus", [replacementEntry])]);
+
+		const idleEpoch = 12;
+		const postSavePlaylists = [makePlaylist("focus", [replacementEntry])];
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			startupRoute: "hydrated_playlists",
+			playlists: postSavePlaylists,
+			slot: null,
+			selectedListName: null,
+			playbackListName: null,
+			processMsg: null,
+			entrySessionId: idleEpoch,
+			closureOwnerSessionId: idleEpoch,
+			playbackEpoch: idleEpoch,
+			playbackSessionId: null,
+		});
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("play");
+		expect(state.closureOwnerSessionId).toBe(state.playbackEpoch);
+		expect(state.playlists[0]?.entries[0]).toMatchObject({
+			path: "C:/music/replacement",
+			url: "https://example.com/remote-replacement",
+		});
+
+		const replacementContract = createClosureEventContract(
+			state.closureOwnerSessionId,
+			"url-path:https://example.com/remote-replacement::C:/music/replacement",
+			"saved",
+		);
+		expect(replacementContract.eventId).toBe(
+			`${state.closureOwnerSessionId}:url-path:https://example.com/remote-replacement::C:/music/replacement:saved`,
+		);
+		expect(
+			canSettleClosureEvent(state, replacementContract, {
+				entry: state.playlists[0]?.entries[0],
+			}),
+		).toBe(true);
+	});
+
+	test("closure_false_negative_guard_stale_old_owner_chain_cannot_settle_download_analyze_notify_or_playback", async () => {
+		const replacementEntry = withEntryMaterialization(
+			makeEntry("replacement remote", "C:/music/replacement", {
+				url: "https://example.com/remote-replacement",
+				entry_type: "WebList",
+				downloaded_ok: true,
+				musics: [
+					{
+						...makeMusic("C:/music/replacement/a.mp3"),
+						normalization_status: "Ready",
+						integrated_lufs: -18,
+						analysis_version: 4,
+						analyzed_at_ms: 123,
+					},
+				],
+			}),
+			{
+				phase: "ready",
+				settled: "succeeded",
+				ownerSessionId: 22,
+				lastError: null,
+			},
+		);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			selectedListName: "focus",
+			playbackListName: null,
+			playlists: [makePlaylist("focus", [replacementEntry])],
+			closureOwnerSessionId: 22,
+			playbackSessionId: 71,
+		});
+
+		const staleDownload = createClosureEventContract(
+			11,
+			"url-path:https://example.com/remote::C:/music/old",
+			"downloaded",
+		);
+		const staleAnalyze = createClosureEventContract(
+			11,
+			"url-path:https://example.com/remote::C:/music/old",
+			"analyzed",
+		);
+		const staleNotify = createClosureEventContract(
+			11,
+			"url-path:https://example.com/remote::C:/music/old",
+			"notified",
+		);
+		const stalePlayback = createClosureEventContract(
+			11,
+			"url-path:https://example.com/remote::C:/music/old",
+			"playback",
+		);
+
+		for (const event of [staleDownload, staleAnalyze, staleNotify, stalePlayback]) {
+			expect(
+				canSettleClosureEvent(__testing.getState(), event, {
+					entry: __testing.getState().playlists[0]?.entries[0],
+					allowedPlaybackSessionId: 71,
+				}),
+			).toBe(false);
+		}
+
+		const livePlayback = createClosureEventContract(
+			22,
+			"url-path:https://example.com/remote-replacement::C:/music/replacement",
+			"playback",
+		);
+		expect(
+			canSettleClosureEvent(__testing.getState(), livePlayback, {
+				entry: __testing.getState().playlists[0]?.entries[0],
+				allowedPlaybackSessionId: 71,
+			}),
+		).toBe(true);
 	});
 
 	test("ownerIdentity_false_negative_guard_refresh_carry_forward_keeps_same_path_siblings_owner_scoped", async () => {
@@ -5763,7 +5921,13 @@ describe("music store action contracts", () => {
 		const first = makeMusic("C:/music/focus/a.flac");
 		const second = makeMusic("C:/music/focus/b.flac");
 		const playlist = makePlaylist("focus", [
-			{ ...makeEntry("alpha", "C:/music/focus"), musics: [first, second] },
+			{
+				...makeEntry("alpha", "C:/music/focus", {
+					url: "https://example.com/focus-playlist",
+					entry_type: "WebList",
+				}),
+				musics: [first, second],
+			},
 		]);
 		const eventHandlers = new Map<string, (payload: unknown) => void>();
 
@@ -5975,7 +6139,13 @@ describe("music store action contracts", () => {
 		const first = makeMusic("C:/music/focus/a.flac");
 		const second = makeMusic("C:/music/focus/b.flac");
 		const playlist = makePlaylist("focus", [
-			{ ...makeEntry("alpha", "C:/music/focus"), musics: [first, second] },
+			{
+				...makeEntry("alpha", "C:/music/focus", {
+					url: "https://example.com/focus-playlist",
+					entry_type: "WebList",
+				}),
+				musics: [first, second],
+			},
 		]);
 		const eventHandlers = new Map<string, (payload: unknown) => void>();
 
@@ -6286,6 +6456,7 @@ describe("music store action contracts", () => {
 			playlists: [playlist],
 			selectedListName: null,
 			nowPlaying: null,
+			closureOwnerSessionId: 3,
 			playbackSessionId: null,
 		});
 
@@ -6294,10 +6465,24 @@ describe("music store action contracts", () => {
 		expect(firstState.playbackSessionId).toBeGreaterThan(0);
 			expect(firstState.selectedListName == null || firstState.selectedListName === "focus").toBe(true);
 			expect(firstState.nowPlaying == null || firstState.nowPlaying.path.startsWith("C:/music/focus/") || firstState.nowPlaying.path === "track.mp3").toBe(true);
-			await action.play(playlist);
-			const secondState = __testing.getState();
-			expect(secondState.playbackSessionId).not.toBe(firstState.playbackSessionId);
-			expect(secondState.selectedListName == null || secondState.selectedListName === "focus").toBe(true);
+			__testing.replaceState({
+				...firstState,
+				confirmedPlaying: makeMusic("C:/music/focus/a.flac"),
+				nowPlaying: makeMusic("C:/music/focus/a.flac"),
+				playbackListName: "focus",
+			});
+		await action.play(makePlaylist("other", [
+			{
+				...makeEntry("beta", "C:/music/other", {
+					url: "https://example.com/other-playlist",
+					entry_type: "WebList",
+				}),
+				musics: [makeMusic("C:/music/other/a.flac")],
+			},
+		]));
+		const secondState = __testing.getState();
+		expect(secondState.playbackSessionId).not.toBe(firstState.playbackSessionId);
+			expect(secondState.selectedListName == null || secondState.selectedListName === "other").toBe(true);
 			expect(secondState.nowPlaying == null || secondState.nowPlaying.path === "track.mp3").toBe(true);
 	});
 
@@ -6440,6 +6625,7 @@ describe("music store action contracts", () => {
 			requestedPlaying: null,
 			confirmedPlaying: null,
 			nowPlaying: null,
+			closureOwnerSessionId: 3,
 			playbackSessionId: null,
 		});
 

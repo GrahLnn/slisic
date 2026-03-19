@@ -204,6 +204,7 @@ const baseState: MusicState = {
 	ffmpeg: null,
 	savePath: null,
 	entrySessionId: 3,
+	closureOwnerSessionId: 3,
 	playbackEpoch: 3,
 	playbackSessionId: 3,
 };
