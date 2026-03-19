@@ -815,6 +815,90 @@ describe("music store action contracts", () => {
 			analysis_version: 7,
 			analyzed_at_ms: 456,
 		});
+		expect(state.playlists[0]?.entries[0]).toMatchObject({
+			materialization: {
+				phase: "ready",
+				settled: "succeeded",
+				ownerSessionId: 0,
+				lastError: null,
+			},
+		});
+	});
+
+	test("loudnessTruth_false_negative_guard_save_side_effects_do_not_promote_analysis_readiness_without_persisted_canonical_data", async () => {
+		const previous = withEntryMaterialization(
+			makeEntry("focus remote", "C:/music/focus", {
+				url: "https://example.com/focus",
+				entry_type: "WebList",
+				downloaded_ok: true,
+				musics: [
+					{
+						...makeMusic("C:/music/focus/a.mp3"),
+						normalization_status: null,
+						integrated_lufs: null,
+						analysis_version: null,
+						analyzed_at_ms: 123,
+					},
+				],
+			}),
+			{
+				phase: "persisted",
+				settled: "succeeded",
+				ownerSessionId: 11,
+				lastError: null,
+			},
+		);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			selectedListName: "focus",
+			entrySessionId: 77,
+			playlists: [makePlaylist("focus", [previous])],
+			processMsg: null,
+		});
+
+		impl.readAll = async () =>
+			Ok<Playlist[], string>([
+				makePlaylist("focus", [
+					makeEntry("focus remote", "C:/music/focus", {
+						url: "https://example.com/focus",
+						entry_type: "WebList",
+						downloaded_ok: true,
+						musics: [
+							{
+								...makeMusic("C:/music/focus/a.mp3"),
+								normalization_status: null,
+								integrated_lufs: null,
+								analysis_version: null,
+								analyzed_at_ms: 123,
+							},
+						],
+					}),
+				]),
+			]);
+
+		await __testing.readAll();
+
+		const state = __testing.getState();
+		expect(state.playlists[0]?.entries[0]).toMatchObject({
+			path: "C:/music/focus",
+			materialization: {
+				phase: "analyzing",
+				settled: "succeeded",
+				ownerSessionId: 11,
+				lastError: null,
+			},
+			musics: [
+				{
+					normalization_status: null,
+					integrated_lufs: null,
+					analysis_version: null,
+					analyzed_at_ms: 123,
+				},
+			],
+		});
 	});
 
 	test("loudnessTruth_false_negative_guard_selected_list_changes_cannot_retarget_canonical_loudness_settlement", async () => {
@@ -1542,7 +1626,7 @@ describe("music store action contracts", () => {
 			).materialization;
 
 		expect(materialization()).toEqual({
-			phase: "persisted",
+			phase: "analyzing",
 			settled: "succeeded",
 			ownerSessionId: 0,
 			lastError: null,
@@ -1554,7 +1638,7 @@ describe("music store action contracts", () => {
 		});
 		await flush();
 		expect(materialization()).toEqual({
-			phase: "persisted",
+			phase: "analyzing",
 			settled: "succeeded",
 			ownerSessionId: 0,
 			lastError: null,
@@ -1962,7 +2046,7 @@ describe("music store action contracts", () => {
 		expect(state.playlists[0]?.entries[0]).toMatchObject({
 			path: "C:/music/focus",
 			materialization: {
-				phase: "persisted",
+				phase: "analyzing",
 				settled: "succeeded",
 				ownerSessionId: 11,
 				lastError: null,

@@ -1285,13 +1285,28 @@ function deriveWebMaterializationPhase(
 		return entry.musics.length > 0 ? "downloading" : "pending";
 	}
 
-	const hasReadyMusic = entry.musics.some(
+	const hasCanonicalReadyMusic = entry.musics.some(
 		(music) =>
-			music.normalization_status === "Ready" ||
-			(music.integrated_lufs != null && music.analysis_version != null),
+			music.normalization_status === "Ready" &&
+			music.integrated_lufs != null &&
+			music.analysis_version != null,
 	);
-	if (hasReadyMusic) {
+	if (hasCanonicalReadyMusic) {
 		return "ready";
+	}
+
+	const hasPersistedAnalysisIdentity = entry.musics.some(
+		(music) =>
+			music.analyzed_at_ms != null ||
+			music.analysis_version != null ||
+			music.integrated_lufs != null ||
+			music.normalization_status === "Pending" ||
+			music.normalization_status === "Ready" ||
+			music.normalization_status === "Failed",
+	);
+
+	if (!hasPersistedAnalysisIdentity) {
+		return entry.musics.length > 0 ? "persisted" : "downloading";
 	}
 
 	const hasFailedMusic = entry.musics.some(
@@ -1306,22 +1321,12 @@ function deriveWebMaterializationPhase(
 		return "downloading";
 	}
 
-	const hasAnalysisFacts = entry.musics.some(
-		(music) =>
-			music.analyzed_at_ms != null ||
-			music.analysis_version != null ||
-			music.integrated_lufs != null ||
-			music.normalization_status === "Pending" ||
-			music.normalization_status === "Ready" ||
-			music.normalization_status === "Failed",
-	);
-	if (!hasAnalysisFacts) {
-		return "persisted";
-	}
-
 	const hasAnalyzingMusic = entry.musics.some(
 		(music) =>
-			music.normalization_status === "Pending" || music.analyzed_at_ms == null,
+			music.normalization_status !== "Failed" &&
+			(music.normalization_status === "Pending" ||
+				music.integrated_lufs == null ||
+				music.analysis_version == null),
 	);
 	return hasAnalyzingMusic ? "analyzing" : "persisted";
 }
