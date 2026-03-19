@@ -712,6 +712,111 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("loudnessTruth_true_positive_process_msg_stays_hint_only_while_refresh_owns_canonical_loudness_truth", async () => {
+		const handlers = new Map<string, (payload: unknown) => void>();
+		const pending = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus", {
+					url: "https://example.com/list",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic("C:/music/focus/a.mp3"),
+							normalization_status: null,
+							integrated_lufs: null,
+							analysis_version: null,
+							analyzed_at_ms: null,
+						},
+					],
+				}),
+			},
+		]);
+		const ready = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus", {
+					url: "https://example.com/list",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic("C:/music/focus/a.mp3"),
+							normalization_status: "Ready",
+							integrated_lufs: -18,
+							analysis_version: 7,
+							analyzed_at_ms: 456,
+						},
+					],
+				}),
+			},
+		]);
+		let readAllCalls = 0;
+
+		impl.evt = async (event: string, handler: (payload: unknown) => void) => {
+			handlers.set(event, handler);
+			return () => {
+				handlers.delete(event);
+			};
+		};
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			return Ok<Playlist[], string>([readAllCalls === 1 ? pending : ready]);
+		};
+
+		await action.run();
+		handlers.get("processMsg")?.({
+			playlist: "focus",
+			str: "Analyzing loudness 1/1: a.mp3",
+		});
+		await flush();
+
+		let state = __testing.getState();
+		expect(state.processMsg).toEqual({
+			playlist: "focus",
+			str: "Analyzing loudness 1/1: a.mp3",
+		});
+		expect(state.playlists[0]?.entries[0]?.musics[0]).toMatchObject({
+			normalization_status: null,
+			integrated_lufs: null,
+			analysis_version: null,
+			analyzed_at_ms: null,
+		});
+
+		handlers.get("processMsg")?.({
+			playlist: "focus",
+			str: "Done analyzing loudness 1/1: a.mp3",
+		});
+		await flush();
+
+		state = __testing.getState();
+		expect(state.processMsg).toEqual({
+			playlist: "focus",
+			str: "Done analyzing loudness 1/1: a.mp3",
+		});
+		expect(state.playlists[0]?.entries[0]?.musics[0]).toMatchObject({
+			normalization_status: null,
+			integrated_lufs: null,
+			analysis_version: null,
+			analyzed_at_ms: null,
+		});
+
+		await __testing.readAll();
+		await flush();
+
+		state = __testing.getState();
+		expect(state.processMsg).toEqual({
+			playlist: "focus",
+			str: "Done analyzing loudness 1/1: a.mp3",
+		});
+		expect(state.playlists[0]?.entries[0]?.musics[0]).toMatchObject({
+			normalization_status: "Ready",
+			integrated_lufs: -18,
+			analysis_version: 7,
+			analyzed_at_ms: 456,
+		});
+	});
+
 	test("remoteTaskTruth_false_negative_guard_process_events_do_not_create_or_rebind_materialization_without_matching_refresh_facts", async () => {
 		const handlers = new Map<string, (payload: unknown) => void>();
 		const pending = makePlaylist("focus", [
