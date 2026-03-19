@@ -1764,6 +1764,151 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("loudnessTruth_false_negative_guard_refresh_keeps_persisted_not_ready_phase_explicit_through_edit_reconciliation", async () => {
+		const sharedUrl = "https://example.com/loudness-refresh-boundary";
+		const pendingAnalysisEntry = withEntryMaterialization(
+			makeEntry("focus remote", "C:/music/focus", {
+				url: sharedUrl,
+				entry_type: "WebList",
+				downloaded_ok: true,
+				musics: [
+					{
+						...makeMusic("C:/music/focus/a.mp3"),
+						normalization_status: null,
+						integrated_lufs: null,
+						analysis_version: null,
+						analyzed_at_ms: 123,
+					},
+				],
+			}),
+			{
+				phase: "persisted",
+				settled: "succeeded",
+				ownerSessionId: 11,
+				lastError: null,
+			},
+		);
+		const readySibling = withEntryMaterialization(
+			makeEntry("other remote", "C:/music/other", {
+				url: "https://example.com/loudness-ready-sibling",
+				entry_type: "WebList",
+				downloaded_ok: true,
+				musics: [
+					{
+						...makeMusic("C:/music/other/a.mp3"),
+						normalization_status: "Ready",
+						integrated_lufs: -17.8,
+						analysis_version: 5,
+						analyzed_at_ms: 444,
+					},
+				],
+			}),
+			{
+				phase: "ready",
+				settled: "succeeded",
+				ownerSessionId: 19,
+				lastError: null,
+			},
+		);
+
+		impl.readAll = async () =>
+			Ok<Playlist[], string>([
+				makePlaylist("focus", [
+					makeEntry("focus remote", "C:/music/focus", {
+						url: sharedUrl,
+						entry_type: "WebList",
+						downloaded_ok: true,
+						musics: [
+							{
+								...makeMusic("C:/music/focus/a.mp3"),
+								normalization_status: null,
+								integrated_lufs: null,
+								analysis_version: null,
+								analyzed_at_ms: 123,
+							},
+						],
+					}),
+					makeEntry("other remote", "C:/music/other", {
+						url: "https://example.com/loudness-ready-sibling",
+						entry_type: "WebList",
+						downloaded_ok: true,
+						musics: [
+							{
+								...makeMusic("C:/music/other/a.mp3"),
+								normalization_status: "Ready",
+								integrated_lufs: -17.8,
+								analysis_version: 5,
+								analyzed_at_ms: 444,
+							},
+						],
+					}),
+				]),
+			]);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			slot: makeMission("focus", [pendingAnalysisEntry]),
+			entrySessionId: 42,
+			playlists: [makePlaylist("focus", [pendingAnalysisEntry, readySibling])],
+			processMsg: { playlist: "focus", str: "Analyzing loudness 1/1: a.mp3" },
+		});
+
+		await __testing.readAll();
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("edit");
+		expect(state.selectedListName).toBe("focus");
+		expect(state.slot?.entries[0]).toMatchObject({
+			path: "C:/music/focus",
+			materialization: {
+				phase: "persisted",
+				settled: "succeeded",
+				ownerSessionId: 11,
+				lastError: null,
+			},
+			musics: [
+				{
+					normalization_status: null,
+					integrated_lufs: null,
+					analysis_version: null,
+					analyzed_at_ms: 123,
+				},
+			],
+		});
+		expect(state.playlists[0]?.entries[0]).toMatchObject({
+			path: "C:/music/focus",
+			materialization: {
+				phase: "persisted",
+				settled: "succeeded",
+				ownerSessionId: 11,
+				lastError: null,
+			},
+			musics: [
+				{
+					normalization_status: null,
+					integrated_lufs: null,
+					analysis_version: null,
+					analyzed_at_ms: 123,
+				},
+			],
+		});
+		expect(state.playlists[0]?.entries[1]).toMatchObject({
+			path: "C:/music/other",
+			materialization: {
+				phase: "ready",
+				settled: "succeeded",
+				ownerSessionId: 19,
+				lastError: null,
+			},
+		});
+		expect(state.processMsg).toEqual({
+			playlist: "focus",
+			str: "Analyzing loudness 1/1: a.mp3",
+		});
+	});
+
 	test("ownerIdentity_false_negative_guard_same_url_same_name_sibling_refresh_keeps_original_owner_layer", async () => {
 		const sharedUrl = "https://example.com/shared-shape";
 		const sharedName = "shared-shape";
