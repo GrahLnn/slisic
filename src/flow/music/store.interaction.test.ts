@@ -3,6 +3,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type {
 	Entry,
+	EntryType,
 	ImportFolderEntry,
 	Music,
 	Playlist,
@@ -16,6 +17,7 @@ import {
 	clearEndedPlaybackForFallback,
 	clearPlaybackSession,
 	clearPlaybackTransportFact,
+	deriveDraftReviewState,
 	deriveBackTransition,
 	derivePlaybackOwnedList,
 	deriveProbePatch,
@@ -32,6 +34,67 @@ import {
 } from "./store";
 
 const { __testing, hook } = await import("./store");
+
+function withEntryOperation(
+	entry: Entry,
+	operation: {
+		kind: "folder_reload" | "weblist_update";
+		key: string;
+		inProgress: boolean;
+		settled: "idle" | "succeeded" | "failed";
+		ownerSessionId: number;
+	},
+): Entry {
+	return {
+		...entry,
+		draftOperation: operation,
+	} as Entry;
+}
+
+function makeDraftLink(
+	overrides: Partial<{
+		url: string;
+		title_or_msg: string;
+		entry_type: EntryType | "Unknown";
+		count: number | null;
+		status: "Ok" | "Err" | null;
+		tracking: boolean;
+		operation: {
+			kind: "link_review";
+			key: string;
+			inProgress: boolean;
+			settled: "idle" | "succeeded" | "failed";
+			ownerSessionId: number;
+		} | null;
+	}> = {},
+): {
+	url: string;
+	title_or_msg: string;
+	entry_type: EntryType | "Unknown";
+	count: number | null;
+	status: "Ok" | "Err" | null;
+	tracking: boolean;
+	operation:
+		| {
+				kind: "link_review";
+				key: string;
+				inProgress: boolean;
+				settled: "idle" | "succeeded" | "failed";
+				ownerSessionId: number;
+			  }
+		| null;
+} {
+	return {
+		url: "https://example.com/link",
+		title_or_msg: "Sample",
+		entry_type: "Unknown",
+		count: null,
+		status: null,
+		tracking: false,
+		operation: null,
+		...overrides,
+	};
+}
 
 const baseState: MusicState = {
 	mode: "play",
@@ -200,6 +263,14 @@ function makeEntry(name: string, path: string): Entry {
 		downloaded_ok: true,
 		tracking: false,
 		entry_type: "Local",
+	};
+}
+
+function makeWeblistEntry(name: string, path: string, url: string): Entry {
+	return {
+		...makeEntry(name, path),
+		url,
+		entry_type: "WebList",
 	};
 }
 
@@ -962,14 +1033,71 @@ describe("music interaction guards", () => {
 	});
 
 	test("canExitWorkspace blocks back whenever review work is active", () => {
-		expect(canExitWorkspace({ ...baseState, linkReviews: ["https://a"] })).toBe(
-			false,
-		);
 		expect(
-			canExitWorkspace({ ...baseState, folderReviews: ["C:/folder"] }),
+			canExitWorkspace({
+				...baseState,
+				slot: {
+					name: "draft",
+					folders: [],
+					links: [
+						makeDraftLink({
+							url: "https://a",
+							operation: {
+								kind: "link_review",
+								key: "https://a",
+								inProgress: true,
+								settled: "idle",
+								ownerSessionId: baseState.entrySessionId,
+							},
+						}),
+					],
+					entries: [],
+					exclude: [],
+				},
+			}),
 		).toBe(false);
 		expect(
-			canExitWorkspace({ ...baseState, weblistReviews: ["https://b"] }),
+			canExitWorkspace({
+				...baseState,
+				slot: {
+					name: "draft",
+					folders: [],
+					links: [],
+					entries: [
+						withEntryOperation(makeEntry("folder", "C:/folder"), {
+							kind: "folder_reload",
+							key: "C:/folder",
+							inProgress: true,
+							settled: "idle",
+							ownerSessionId: baseState.entrySessionId,
+						}),
+					],
+					exclude: [],
+				},
+			}),
+		).toBe(false);
+		expect(
+			canExitWorkspace({
+				...baseState,
+				slot: {
+					name: "draft",
+					folders: [],
+					links: [],
+					entries: [
+						withEntryOperation(
+							makeWeblistEntry("remote", "C:/remote", "https://b"),
+							{
+								kind: "weblist_update",
+								key: "https://b",
+								inProgress: true,
+								settled: "idle",
+								ownerSessionId: baseState.entrySessionId,
+							},
+						),
+					],
+					exclude: [],
+				},
+			}),
 		).toBe(false);
 		expect(canExitWorkspace(baseState)).toBe(true);
 	});
@@ -1050,13 +1178,23 @@ describe("music interaction guards", () => {
 				slot: {
 					name: "Fresh",
 					folders: [],
-					links: [],
+					links: [
+						makeDraftLink({
+							url: "https://example.com",
+							operation: {
+								kind: "link_review",
+								key: "https://example.com",
+								inProgress: true,
+								settled: "idle",
+								ownerSessionId: baseState.entrySessionId,
+							},
+						}),
+					],
 					entries: [makeEntry("a", "C:/a")],
 					exclude: [],
 				},
 				ffmpeg: installedFfmpeg,
 				savePath: "C:/music",
-				linkReviews: ["https://example.com"],
 			}),
 		).toEqual({ allowed: false, visible: true, reason: "review_in_progress" });
 
@@ -1490,8 +1628,8 @@ describe("music interaction guards", () => {
 
 		expect(firstContext).toBe(initialState);
 		expect(secondContext).toBe(firstContext);
-		expect(firstReviews).toBe(initialState.linkReviews);
-		expect(secondReviews).toBe(firstReviews);
+		expect(firstReviews).toEqual(initialState.linkReviews);
+		expect(secondReviews).toEqual(firstReviews);
 
 		__testing.replaceState({
 			...initialState,
@@ -1537,5 +1675,15 @@ describe("music interaction guards", () => {
 		expect(nextContext?.mode).toBe("edit");
 		expect(nextReviews).not.toBe(firstReviews);
 		expect(nextReviews).toEqual(["https://example.com/list"]);
+	});
+
+	test("deriveDraftReviewState_false_negative_guard_ignores_shadow_review_arrays_without_owned_operations", () => {
+		const projection = deriveDraftReviewState(baseState);
+
+		expect(projection.active).toEqual([]);
+		expect(projection.linkReviews).toEqual([]);
+		expect(projection.folderReviews).toEqual([]);
+		expect(projection.weblistReviews).toEqual([]);
+		expect(canExitWorkspace(baseState)).toBe(true);
 	});
 });

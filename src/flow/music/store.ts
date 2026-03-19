@@ -103,6 +103,8 @@ type MusicStateLike = MusicState & {
 	weblistReviews?: string[];
 };
 
+type DraftReviewProjectionSnapshot = Pick<MusicStateLike, "slot">;
+
 export interface MusicState {
 	mode: UiMode;
 	routeResolved: boolean;
@@ -361,60 +363,25 @@ export function hasPlaybackContext(
 }
 
 export function canExitWorkspace(
-	snapshot: Pick<MusicStateLike, "slot"> & {
-		linkReviews?: string[];
-		folderReviews?: string[];
-		weblistReviews?: string[];
-	},
+	snapshot: DraftReviewProjectionSnapshot,
 ): boolean {
 	return deriveDraftReviewState(snapshot).active.length === 0;
 }
 
 export function deriveDraftReviewState(
-	snapshot: Pick<MusicStateLike, "slot"> & {
-		linkReviews?: string[];
-		folderReviews?: string[];
-		weblistReviews?: string[];
-	},
+	snapshot: DraftReviewProjectionSnapshot,
 ): {
 	active: DraftEntryOperationState[];
 	linkReviews: string[];
 	folderReviews: string[];
 	weblistReviews: string[];
 } {
-	const legacyLinkReviews = snapshot.linkReviews ?? [];
-	const legacyFolderReviews = snapshot.folderReviews ?? [];
-	const legacyWeblistReviews = snapshot.weblistReviews ?? [];
-
 	if (!snapshot.slot) {
-		const active = [
-			...legacyLinkReviews.map((key) => ({
-				kind: "link_review" as const,
-				key,
-				inProgress: true,
-				settled: "idle" as const,
-				ownerSessionId: -1,
-			})),
-			...legacyFolderReviews.map((key) => ({
-				kind: "folder_reload" as const,
-				key,
-				inProgress: true,
-				settled: "idle" as const,
-				ownerSessionId: -1,
-			})),
-			...legacyWeblistReviews.map((key) => ({
-				kind: "weblist_update" as const,
-				key,
-				inProgress: true,
-				settled: "idle" as const,
-				ownerSessionId: -1,
-			})),
-		];
 		return {
-			active,
-			linkReviews: legacyLinkReviews,
-			folderReviews: legacyFolderReviews,
-			weblistReviews: legacyWeblistReviews,
+			active: [],
+			linkReviews: [],
+			folderReviews: [],
+			weblistReviews: [],
 		};
 	}
 
@@ -438,45 +405,6 @@ export function deriveDraftReviewState(
 			folderReviews.push(operation.key);
 		} else if (operation.kind === "weblist_update") {
 			weblistReviews.push(operation.key);
-		}
-	}
-
-	for (const key of legacyLinkReviews) {
-		if (!linkReviews.includes(key)) {
-			linkReviews.push(key);
-			active.push({
-				kind: "link_review",
-				key,
-				inProgress: true,
-				settled: "idle",
-				ownerSessionId: -1,
-			});
-		}
-	}
-
-	for (const key of legacyFolderReviews) {
-		if (!folderReviews.includes(key)) {
-			folderReviews.push(key);
-			active.push({
-				kind: "folder_reload",
-				key,
-				inProgress: true,
-				settled: "idle",
-				ownerSessionId: -1,
-			});
-		}
-	}
-
-	for (const key of legacyWeblistReviews) {
-		if (!weblistReviews.includes(key)) {
-			weblistReviews.push(key);
-			active.push({
-				kind: "weblist_update",
-				key,
-				inProgress: true,
-				settled: "idle",
-				ownerSessionId: -1,
-			});
 		}
 	}
 

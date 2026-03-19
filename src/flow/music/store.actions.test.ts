@@ -830,6 +830,120 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("remoteTaskTruth_false_negative_guard_shadow_review_arrays_cannot_override_canonical_materialization_projection", async () => {
+		const handlers = new Map<string, (payload: unknown) => void>();
+		const pending = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus", {
+					url: "https://example.com/list",
+					entry_type: "WebList",
+					downloaded_ok: false,
+					musics: [],
+				}),
+			},
+		]);
+		const ready = makePlaylist("focus", [
+			{
+				...makeEntry("remote", "C:/music/focus", {
+					url: "https://example.com/list",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic("C:/music/focus/a.mp3"),
+							normalization_status: "Ready",
+							integrated_lufs: -18,
+							analysis_version: 1,
+							analyzed_at_ms: 123,
+						},
+					],
+				}),
+			},
+		]);
+		let readAllCalls = 0;
+
+		impl.evt = async (event: string, handler: (payload: unknown) => void) => {
+			handlers.set(event, handler);
+			return () => {
+				handlers.delete(event);
+			};
+		};
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			return Ok<Playlist[], string>([readAllCalls === 1 ? pending : ready]);
+		};
+
+		await action.run();
+		__testing.replaceState({
+			...__testing.getState(),
+			processMsg: { playlist: "focus", str: "shadow processing" },
+			linkReviews: ["https://shadow.example/link"],
+			folderReviews: ["C:/shadow/folder"],
+			weblistReviews: ["https://shadow.example/list"],
+		});
+
+		let state = __testing.getState();
+		expect(state.linkReviews).toEqual(["https://shadow.example/link"]);
+		expect(state.folderReviews).toEqual(["C:/shadow/folder"]);
+		expect(state.weblistReviews).toEqual(["https://shadow.example/list"]);
+		expect(deriveDraftReviewState(state)).toEqual({
+			active: [],
+			linkReviews: [],
+			folderReviews: [],
+			weblistReviews: [],
+		});
+		expect(
+			(
+				state.playlists[0]?.entries[0] as Entry & {
+					materialization?: {
+						phase: string;
+						settled: string;
+						ownerSessionId: number;
+						lastError: string | null;
+					};
+				}
+			).materialization,
+		).toEqual({
+			phase: "pending",
+			settled: "idle",
+			ownerSessionId: 0,
+			lastError: null,
+		});
+
+		handlers.get("processResult")?.(undefined);
+		await flush();
+
+		state = __testing.getState();
+		expect(state.processMsg).toBeNull();
+		expect(state.linkReviews).toEqual(["https://shadow.example/link"]);
+		expect(state.folderReviews).toEqual(["C:/shadow/folder"]);
+		expect(state.weblistReviews).toEqual(["https://shadow.example/list"]);
+		expect(deriveDraftReviewState(state)).toEqual({
+			active: [],
+			linkReviews: [],
+			folderReviews: [],
+			weblistReviews: [],
+		});
+		expect(
+			(
+				state.playlists[0]?.entries[0] as Entry & {
+					materialization?: {
+						phase: string;
+						settled: string;
+						ownerSessionId: number;
+						lastError: string | null;
+					};
+				}
+			).materialization,
+		).toEqual({
+			phase: "ready",
+			settled: "succeeded",
+			ownerSessionId: 0,
+			lastError: null,
+		});
+	});
+
 	test("webMaterialization_true_positive_projects_entry_owned_pending_downloading_persisted_analyzing_ready_and_failed_phases", async () => {
 		const handlers = new Map<string, (payload: unknown) => void>();
 		const pending = makePlaylist("focus", [
@@ -2116,8 +2230,21 @@ describe("music store action contracts", () => {
 			routeResolved: true,
 			playlists: [makePlaylist("focus")],
 			selectedListName: "focus",
-			slot,
-			linkReviews: ["https://example.com"],
+			slot: {
+				...slot,
+				links: [
+					makeDraftLink({
+						url: "https://example.com",
+						operation: {
+							kind: "link_review",
+							key: "https://example.com",
+							inProgress: true,
+							settled: "idle",
+							ownerSessionId: __testing.getState().entrySessionId,
+						},
+					}),
+				],
+			},
 			processMsg: { playlist: "focus", str: "working" },
 		});
 
@@ -2125,10 +2252,26 @@ describe("music store action contracts", () => {
 
 		const state = __testing.getState();
 		expect(state.mode).toBe("edit");
-		expect(state.slot).toEqual(slot);
+		expect(state.slot).toEqual({
+			...slot,
+			links: [
+				makeDraftLink({
+					url: "https://example.com",
+					operation: {
+						kind: "link_review",
+						key: "https://example.com",
+						inProgress: true,
+						settled: "idle",
+						ownerSessionId: __testing.getState().entrySessionId,
+					},
+				}),
+			],
+		});
 		expect(state.selectedListName).toBe("focus");
 		expect(state.processMsg).toEqual({ playlist: "focus", str: "working" });
-		expect(state.linkReviews).toEqual(["https://example.com"]);
+		expect(deriveDraftReviewState(state).linkReviews).toEqual([
+			"https://example.com",
+		]);
 		expect(playbackLog.interrupts).toBe(0);
 	});
 
@@ -2420,10 +2563,23 @@ describe("music store action contracts", () => {
 			mode: "edit",
 			selectedListName: "focus",
 			playlists: [makePlaylist("focus", [entry])],
-			slot: mission,
+			slot: {
+				...mission,
+				links: [
+					makeDraftLink({
+						url: "https://example.com",
+						operation: {
+							kind: "link_review",
+							key: "https://example.com",
+							inProgress: true,
+							settled: "idle",
+							ownerSessionId: __testing.getState().entrySessionId,
+						},
+					}),
+				],
+			},
 			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
 			savePath: "C:/music",
-			linkReviews: ["https://example.com"],
 		});
 		impl.create = async (data: CollectMission) => {
 			createCalls.push(data);
@@ -2436,9 +2592,25 @@ describe("music store action contracts", () => {
 		const state = __testing.getState();
 		expect(createCalls).toEqual([]);
 		expect(state.mode).toBe("edit");
-		expect(state.slot).toEqual(mission);
+		expect(state.slot).toEqual({
+			...mission,
+			links: [
+				makeDraftLink({
+					url: "https://example.com",
+					operation: {
+						kind: "link_review",
+						key: "https://example.com",
+						inProgress: true,
+						settled: "idle",
+						ownerSessionId: __testing.getState().entrySessionId,
+					},
+				}),
+			],
+		});
 		expect(state.selectedListName).toBe("focus");
-		expect(state.linkReviews).toEqual(["https://example.com"]);
+		expect(deriveDraftReviewState(state).linkReviews).toEqual([
+			"https://example.com",
+		]);
 		expect(toastLog.error).toContainEqual({
 			title: "Please wait",
 			description: "Background checks are still running.",
