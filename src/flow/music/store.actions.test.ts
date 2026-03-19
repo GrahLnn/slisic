@@ -878,15 +878,12 @@ describe("music store action contracts", () => {
 		__testing.replaceState({
 			...__testing.getState(),
 			processMsg: { playlist: "focus", str: "shadow processing" },
-			linkReviews: ["https://shadow.example/link"],
-			folderReviews: ["C:/shadow/folder"],
-			weblistReviews: ["https://shadow.example/list"],
 		});
 
 		let state = __testing.getState();
-		expect(state.linkReviews).toEqual(["https://shadow.example/link"]);
-		expect(state.folderReviews).toEqual(["C:/shadow/folder"]);
-		expect(state.weblistReviews).toEqual(["https://shadow.example/list"]);
+		expect("linkReviews" in state).toBe(false);
+		expect("folderReviews" in state).toBe(false);
+		expect("weblistReviews" in state).toBe(false);
 		expect(deriveDraftReviewState(state)).toEqual({
 			active: [],
 			linkReviews: [],
@@ -916,9 +913,9 @@ describe("music store action contracts", () => {
 
 		state = __testing.getState();
 		expect(state.processMsg).toBeNull();
-		expect(state.linkReviews).toEqual(["https://shadow.example/link"]);
-		expect(state.folderReviews).toEqual(["C:/shadow/folder"]);
-		expect(state.weblistReviews).toEqual(["https://shadow.example/list"]);
+		expect("linkReviews" in state).toBe(false);
+		expect("folderReviews" in state).toBe(false);
+		expect("weblistReviews" in state).toBe(false);
 		expect(deriveDraftReviewState(state)).toEqual({
 			active: [],
 			linkReviews: [],
@@ -1313,7 +1310,6 @@ describe("music store action contracts", () => {
 			selectedListName: "focus",
 			slot: makeMission("focus", [original]),
 			playlists: [makePlaylist("focus", [original])],
-			weblistReviews: [],
 			entrySessionId: 2,
 		});
 
@@ -1349,7 +1345,7 @@ describe("music store action contracts", () => {
 
 		const state = __testing.getState();
 		expect(state.slot).toBeNull();
-		expect(state.weblistReviews).toEqual([]);
+		expect(deriveDraftReviewState(state).weblistReviews).toEqual([]);
 		expect(state.playlists).toHaveLength(1);
 		expect(state.playlists[0]?.entries).toHaveLength(1);
 		expect(state.playlists[0]?.entries[0]).toMatchObject({
@@ -1412,7 +1408,6 @@ describe("music store action contracts", () => {
 			selectedListName: "focus",
 			slot: makeMission("focus", [original]),
 			playlists: [makePlaylist("focus", [original, sibling])],
-			weblistReviews: [],
 			entrySessionId: 2,
 		});
 
@@ -2170,9 +2165,6 @@ describe("music store action contracts", () => {
 			nowJudge: "Up",
 			slot: makeMission("stale", [makeEntry("stale", "C:/music/stale")]),
 			processMsg: { playlist: "focus", str: "working" },
-			linkReviews: ["https://example.com"],
-			folderReviews: ["C:/music/folder"],
-			weblistReviews: ["https://example.com/list"],
 		});
 
 		await action.addNew();
@@ -2185,9 +2177,12 @@ describe("music store action contracts", () => {
 		expect(state.nowPlaying).toBeNull();
 		expect(state.nowJudge).toBeNull();
 		expect(state.processMsg).toBeNull();
-		expect(state.linkReviews).toEqual([]);
-		expect(state.folderReviews).toEqual([]);
-		expect(state.weblistReviews).toEqual([]);
+		expect(deriveDraftReviewState(state)).toEqual({
+			active: [],
+			linkReviews: [],
+			folderReviews: [],
+			weblistReviews: [],
+		});
 	});
 
 	test("edit_true_positive_enters_edit_with_seeded_slot_and_cleared_transient_state", async () => {
@@ -2202,9 +2197,6 @@ describe("music store action contracts", () => {
 			nowJudge: "Down",
 			slot: makeMission("stale", [makeEntry("stale", "C:/music/stale")]),
 			processMsg: { playlist: "stale", str: "working" },
-			linkReviews: ["https://example.com"],
-			folderReviews: ["C:/music/folder"],
-			weblistReviews: ["https://example.com/list"],
 		});
 
 		await action.edit(playlist);
@@ -2217,9 +2209,12 @@ describe("music store action contracts", () => {
 		expect(state.nowPlaying).toBeNull();
 		expect(state.nowJudge).toBeNull();
 		expect(state.processMsg).toBeNull();
-		expect(state.linkReviews).toEqual([]);
-		expect(state.folderReviews).toEqual([]);
-		expect(state.weblistReviews).toEqual([]);
+		expect(deriveDraftReviewState(state)).toEqual({
+			active: [],
+			linkReviews: [],
+			folderReviews: [],
+			weblistReviews: [],
+		});
 	});
 
 	test("back_true_negative_guard_blocks_exit_while_review_work_is_active", async () => {
@@ -2287,7 +2282,6 @@ describe("music store action contracts", () => {
 			nowJudge: "Up",
 			slot,
 			processMsg: { playlist: "focus", str: "working" },
-			folderReviews: [],
 		});
 
 		await action.back();
@@ -2300,7 +2294,7 @@ describe("music store action contracts", () => {
 		expect(state.nowPlaying).toBeNull();
 		expect(state.nowJudge).toBeNull();
 		expect(state.processMsg).toBeNull();
-		expect(state.folderReviews).toEqual([]);
+		expect(deriveDraftReviewState(state).folderReviews).toEqual([]);
 
 		__testing.replaceState({
 			...__testing.getState(),
@@ -2311,7 +2305,6 @@ describe("music store action contracts", () => {
 			nowPlaying: makeMusic("C:/music/stale/a.flac"),
 			slot,
 			processMsg: { playlist: "focus", str: "working" },
-			weblistReviews: [],
 		});
 
 		await action.back();
@@ -2323,7 +2316,7 @@ describe("music store action contracts", () => {
 		expect(state.selectedListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
 		expect(state.processMsg).toBeNull();
-		expect(state.weblistReviews).toEqual([]);
+		expect(deriveDraftReviewState(state).weblistReviews).toEqual([]);
 	});
 
 	test("refresh_false_negative_guard_preserves_active_create_draft_without_restoring_playback_context", async () => {

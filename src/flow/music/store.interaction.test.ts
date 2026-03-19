@@ -17,8 +17,8 @@ import {
 	clearEndedPlaybackForFallback,
 	clearPlaybackSession,
 	clearPlaybackTransportFact,
-	deriveDraftReviewState,
 	deriveBackTransition,
+	deriveDraftReviewState,
 	derivePlaybackOwnedList,
 	deriveProbePatch,
 	deriveRefreshPatch,
@@ -74,15 +74,13 @@ function makeDraftLink(
 	count: number | null;
 	status: "Ok" | "Err" | null;
 	tracking: boolean;
-	operation:
-		| {
-				kind: "link_review";
-				key: string;
-				inProgress: boolean;
-				settled: "idle" | "succeeded" | "failed";
-				ownerSessionId: number;
-			  }
-		| null;
+	operation: {
+		kind: "link_review";
+		key: string;
+		inProgress: boolean;
+		settled: "idle" | "succeeded" | "failed";
+		ownerSessionId: number;
+	} | null;
 } {
 	return {
 		url: "https://example.com/link",
@@ -1226,9 +1224,6 @@ describe("music interaction guards", () => {
 			slot: { name: "draft", folders: [], links: [], entries: [], exclude: [] },
 			processMsg: { playlist: "focus", str: "working" },
 			entrySessionId: baseState.entrySessionId,
-			linkReviews: ["https://example.com"],
-			folderReviews: ["C:/folder"],
-			weblistReviews: ["https://example.com/list"],
 		});
 
 		expect(toPlay.mode).toBe("play");
@@ -1238,9 +1233,9 @@ describe("music interaction guards", () => {
 		expect(toPlay.nowJudge).toBeNull();
 		expect(toPlay.slot).toBeNull();
 		expect(toPlay.processMsg).toBeNull();
-		expect(toPlay.linkReviews).toEqual([]);
-		expect(toPlay.folderReviews).toEqual([]);
-		expect(toPlay.weblistReviews).toEqual([]);
+		expect(deriveDraftReviewState(toPlay).linkReviews).toEqual([]);
+		expect(deriveDraftReviewState(toPlay).folderReviews).toEqual([]);
+		expect(deriveDraftReviewState(toPlay).weblistReviews).toEqual([]);
 
 		const toGuide = deriveBackTransition({
 			...baseState,
@@ -1628,13 +1623,12 @@ describe("music interaction guards", () => {
 
 		expect(firstContext).toBe(initialState);
 		expect(secondContext).toBe(firstContext);
-		expect(firstReviews).toEqual(initialState.linkReviews);
+		expect(firstReviews).toEqual([]);
 		expect(secondReviews).toEqual(firstReviews);
 
 		__testing.replaceState({
 			...initialState,
 			mode: "edit",
-			linkReviews: ["https://example.com/list"],
 			slot: {
 				name: "focus",
 				folders: [],

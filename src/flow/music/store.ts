@@ -97,13 +97,7 @@ type DraftOperationEntry = Entry & {
 	materialization?: WebMaterializationState | null;
 };
 
-type MusicStateLike = MusicState & {
-	linkReviews?: string[];
-	folderReviews?: string[];
-	weblistReviews?: string[];
-};
-
-type DraftReviewProjectionSnapshot = Pick<MusicStateLike, "slot">;
+type DraftReviewProjectionSnapshot = Pick<MusicState, "slot">;
 
 export interface MusicState {
 	mode: UiMode;
@@ -1761,8 +1755,7 @@ async function ensureEvents() {
 		});
 		unsubs.push(processMsg);
 
-		const processResult = await crab.evt("processResult")(async () => {
-			await refreshLists();
+		const processResult = await crab.evt("processResult")(() => {
 			patchState({ processMsg: null });
 		});
 		unsubs.push(processResult);
