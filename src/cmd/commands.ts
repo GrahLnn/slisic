@@ -100,6 +100,8 @@ export const events = {
 	audioState: makeEvent<AudioState>("audio-state"),
 	//@type {ReturnType<typeof makeEvent<AudioStopped>>}
 	audioStopped: makeEvent<AudioStopped>("audio-stopped"),
+	//@type {ReturnType<typeof makeEvent<ClosureLifecycleFact>>}
+	closureLifecycleFact: makeEvent<ClosureLifecycleFact>("closure-lifecycle-fact"),
 	//@type {ReturnType<typeof makeEvent<FullScreenEvent>>}
 	fullScreenEvent: makeEvent<FullScreenEvent>("full-screen-event"),
 	//@type {ReturnType<typeof makeEvent<ProcessMsg>>}
@@ -221,6 +223,24 @@ export type AudioStatus = {
 	position_ms: number,
 	duration_ms: number | null,
 };
+
+export type ClosureLifecycleFact = {
+	owner_session_id: number,
+	entry_identity: string,
+	phase: ClosureLifecyclePhase,
+	event_id: string,
+	playlist: string,
+	path: string | null,
+	url: string | null,
+	notification_text: string | null,
+};
+
+export type ClosureLifecyclePhase =
+	| "saved"
+	| "downloaded"
+	| "analyzed"
+	| "failed"
+	| "notified";
 
 export type AudioStopped = {
 	session_id: number,

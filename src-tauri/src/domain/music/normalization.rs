@@ -1,6 +1,7 @@
 use super::repo::repository;
 use super::types::{
-    default_music, sync_legacy_loudness_fields, Music, NormalizationStatus, Playlist, ProcessMsg,
+    build_closure_lifecycle_fact, default_music, sync_legacy_loudness_fields, Music,
+    NormalizationStatus, Playlist, ProcessMsg, ClosureLifecyclePhase, Entry,
     MUSIC_ANALYSIS_VERSION,
 };
 use crate::utils::ffmpeg;
@@ -13,6 +14,37 @@ use tauri::AppHandle;
 use tauri_specta::Event;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
+
+fn emit_analysis_closure_fact(
+    app: &AppHandle,
+    playlist: &str,
+    music_path: &str,
+    phase: ClosureLifecyclePhase,
+    notification_text: Option<String>,
+) {
+    let entry = Entry {
+        path: Some(music_path.to_string()),
+        name: path_display_name(music_path),
+        musics: Vec::new(),
+        avg_db: None,
+        url: None,
+        downloaded_ok: Some(true),
+        tracking: Some(false),
+        entry_type: super::types::EntryType::Local,
+    };
+    let owner_session_id = music_path
+        .bytes()
+        .fold(0u64, |acc, byte| acc.wrapping_mul(16777619).wrapping_add(byte as u64));
+    if let Some(fact) = build_closure_lifecycle_fact(
+        owner_session_id,
+        playlist,
+        &entry,
+        phase,
+        notification_text,
+    ) {
+        fact.emit(app).ok();
+    }
+}
 
 pub const PLAYBACK_TARGET_LUFS: f32 = -18.0;
 const NORMALIZATION_BOOTSTRAP_PLAYLIST: &str = "__library__";
@@ -83,9 +115,28 @@ pub async fn analyze_paths_blocking(
                 }
                 .emit(app)
                 .ok();
+                emit_analysis_closure_fact(
+                    app,
+                    playlist,
+                    &music_path,
+                    ClosureLifecyclePhase::Notified,
+                    Some(format!(
+                        "{label} {}/{}: {}",
+                        completed,
+                        total,
+                        path_display_name(&music_path)
+                    )),
+                );
 
                 match result {
                     Ok(music) => {
+                        emit_analysis_closure_fact(
+                            app,
+                            playlist,
+                            &music.path,
+                            ClosureLifecyclePhase::Analyzed,
+                            Some(format!("Analyzed {}", path_display_name(&music.path))),
+                        );
                         persist_batch.push(music);
                         if persist_batch.len() >= ANALYSIS_PERSIST_BATCH {
                             if let Err(error) = flush_analysis_batch(&mut persist_batch).await {
@@ -96,6 +147,13 @@ pub async fn analyze_paths_blocking(
                         }
                     }
                     Err(error) => {
+                        emit_analysis_closure_fact(
+                            app,
+                            playlist,
+                            &music_path,
+                            ClosureLifecyclePhase::Failed,
+                            Some(format!("Analysis failed: {error}")),
+                        );
                         let _ = persist_analysis_failure(&music_path, error.clone()).await;
                         if first_error.is_none() {
                             first_error = Some(error);

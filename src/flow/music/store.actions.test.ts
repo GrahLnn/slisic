@@ -2,6 +2,7 @@ import { Err, Ok } from "@grahlnn/fn";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import * as commandContract from "@/src/cmd/commands";
 import type { CollectMission, Entry, Music, Playlist } from "@/src/cmd/commands";
+import type { ClosureLifecycleFact } from "@/src/cmd/commands";
 import type {
 	DraftEntryOperationState,
 	DraftLinkState,
@@ -197,6 +198,23 @@ const {
 	canSettleClosureEvents,
 	createClosureEventContract,
 } = await import("./store");
+
+function makeClosureLifecycleFact(
+	patch: Partial<ClosureLifecycleFact> = {},
+): ClosureLifecycleFact {
+	return {
+		owner_session_id: 22,
+		entry_identity: "url-path:https://example.com/remote-replacement::C:/music/replacement",
+		phase: "downloaded",
+		event_id:
+			"22:url-path:https://example.com/remote-replacement::C:/music/replacement:downloaded",
+		playlist: "focus",
+		path: "C:/music/replacement",
+		url: "https://example.com/remote-replacement",
+		notification_text: "Downloaded replacement remote",
+		...patch,
+	};
+}
 
 function makeMusic(path: string): Music {
 	return {
@@ -2685,6 +2703,82 @@ describe("music store action contracts", () => {
 				allowedPlaybackSessionId: 71,
 			}),
 		).toBe(true);
+	});
+
+	test("closure_true_positive_backend_typed_lifecycle_fact_carries_exact_owner_identity_for_notification_projection", () => {
+		const entry = withEntryMaterialization(
+			makeEntry("replacement remote", "C:/music/replacement", {
+				url: "https://example.com/remote-replacement",
+				entry_type: "WebList",
+				downloaded_ok: true,
+			}),
+			{
+				phase: "ready",
+				settled: "succeeded",
+				ownerSessionId: 22,
+				lastError: null,
+			},
+		);
+
+		const fact = makeClosureLifecycleFact();
+		const contract = createClosureEventContract(
+			fact.owner_session_id,
+			fact.entry_identity,
+			fact.phase,
+		);
+
+		expect(contract.eventId).toBe(fact.event_id);
+		expect(
+			canSettleClosureEvent(
+				{
+					entrySessionId: 22,
+					closureOwnerSessionId: 22,
+					playbackSessionId: 71,
+				},
+				contract,
+				{ entry },
+			),
+		).toBe(true);
+	});
+
+	test("closure_false_negative_guard_backend_typed_lifecycle_fact_for_stale_owner_chain_stays_rejectable_without_notification_strings", () => {
+		const entry = withEntryMaterialization(
+			makeEntry("replacement remote", "C:/music/replacement", {
+				url: "https://example.com/remote-replacement",
+				entry_type: "WebList",
+				downloaded_ok: true,
+			}),
+			{
+				phase: "ready",
+				settled: "succeeded",
+				ownerSessionId: 22,
+				lastError: null,
+			},
+		);
+
+		const staleFact = makeClosureLifecycleFact({
+			owner_session_id: 11,
+			entry_identity: "url-path:https://example.com/remote::C:/music/old",
+			phase: "notified",
+			event_id: "11:url-path:https://example.com/remote::C:/music/old:notified",
+			notification_text: "Downloaded old remote",
+		});
+
+		expect(
+			canSettleClosureEvent(
+				{
+					entrySessionId: 22,
+					closureOwnerSessionId: 22,
+					playbackSessionId: 71,
+				},
+				createClosureEventContract(
+					staleFact.owner_session_id,
+					staleFact.entry_identity,
+					staleFact.phase,
+				),
+				{ entry },
+			),
+		).toBe(false);
 	});
 
 	test("closure_false_negative_guard_displaced_entry_session_cannot_reuse_live_owner_chain_event_contract", () => {

@@ -101,6 +101,81 @@ pub struct ProcessMsg {
     pub str: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq)]
+pub enum ClosureLifecyclePhase {
+    Saved,
+    Downloaded,
+    Analyzed,
+    Failed,
+    Notified,
+}
+
+impl ClosureLifecyclePhase {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Saved => "saved",
+            Self::Downloaded => "downloaded",
+            Self::Analyzed => "analyzed",
+            Self::Failed => "failed",
+            Self::Notified => "notified",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq, Event)]
+pub struct ClosureLifecycleFact {
+    pub owner_session_id: u64,
+    pub entry_identity: String,
+    pub phase: ClosureLifecyclePhase,
+    pub event_id: String,
+    pub playlist: String,
+    pub path: Option<String>,
+    pub url: Option<String>,
+    pub notification_text: Option<String>,
+}
+
+pub fn closure_entry_identity(entry: &Entry) -> Option<String> {
+    match (entry.url.as_deref(), entry.path.as_deref()) {
+        (Some(url), Some(path)) if !url.is_empty() && !path.is_empty() => {
+            Some(format!("url-path:{url}::{path}"))
+        }
+        (Some(url), _) if !url.is_empty() => Some(format!("url:{url}")),
+        (_, Some(path)) if !path.is_empty() => Some(format!("path:{path}")),
+        _ => None,
+    }
+}
+
+pub fn closure_event_id(
+    owner_session_id: u64,
+    entry_identity: &str,
+    phase: &ClosureLifecyclePhase,
+) -> String {
+    format!(
+        "{owner_session_id}:{entry_identity}:{}",
+        phase.as_str()
+    )
+}
+
+pub fn build_closure_lifecycle_fact(
+    owner_session_id: u64,
+    playlist: &str,
+    entry: &Entry,
+    phase: ClosureLifecyclePhase,
+    notification_text: Option<String>,
+) -> Option<ClosureLifecycleFact> {
+    let entry_identity = closure_entry_identity(entry)?;
+    Some(ClosureLifecycleFact {
+        owner_session_id,
+        event_id: closure_event_id(owner_session_id, &entry_identity, &phase),
+        entry_identity,
+        phase,
+        playlist: playlist.to_string(),
+        path: entry.path.clone(),
+        url: entry.url.clone(),
+        notification_text,
+    })
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct LibraryData {
     pub schema_version: u32,

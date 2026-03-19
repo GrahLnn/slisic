@@ -127,6 +127,7 @@ export type ClosureEventPhase =
 	| "saved"
 	| "downloaded"
 	| "analyzed"
+	| "failed"
 	| "notified"
 	| "playback";
 

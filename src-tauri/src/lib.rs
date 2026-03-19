@@ -13,7 +13,7 @@ use domain::music;
 use music::{
     boost, bootstrap_normalization, cancle_boost, cancle_fatigue, create, delete, delete_music,
     fatigue, playlist_names, read, read_all, recheck_folder, reset_logits, rmexclude, unstar,
-    update_weblist, ProcessMsg,
+    update_weblist, ClosureLifecycleFact, ProcessMsg,
 };
 use specta_typescript::BigIntExportBehavior;
 use tauri::Manager;
@@ -93,6 +93,7 @@ fn run_app() -> Result<()> {
         AudioPaused,
         AudioResumed,
         AudioFailed,
+        ClosureLifecycleFact,
         FullScreenEvent,
         ProcessResult,
         YtdlpVersionChanged,

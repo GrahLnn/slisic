@@ -7,4 +7,4 @@ mod store_surreal;
 pub mod types;
 
 pub use api::*;
-pub use types::ProcessMsg;
+pub use types::{ClosureLifecycleFact, ProcessMsg};

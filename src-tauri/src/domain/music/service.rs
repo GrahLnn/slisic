@@ -1,9 +1,10 @@
 use super::normalization;
 use super::repo::repository;
 use super::types::{
-    dedup_entries, default_music, entry_key, merge_music_with_template, path_to_title,
-    recompute_entry_avg, recompute_playlist_avg, sanitize_name, CollectMission, Entry, EntryType,
-    FolderSample, LinkSample, Music, Playlist, ProcessMsg,
+    build_closure_lifecycle_fact, closure_entry_identity, dedup_entries, default_music,
+    entry_key, merge_music_with_template, path_to_title, recompute_entry_avg,
+    recompute_playlist_avg, sanitize_name, ClosureLifecyclePhase, CollectMission, Entry,
+    EntryType, FolderSample, LinkSample, Music, Playlist, ProcessMsg,
 };
 use crate::utils::file::{all_audio_recursive_inner, is_audio_path};
 use crate::utils::ytdlp::{self, DownloadOutcome, ProcessResult};
@@ -11,6 +12,35 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tauri::AppHandle;
 use tauri_specta::Event;
+
+fn emit_closure_lifecycle_fact(
+    app: &AppHandle,
+    owner_session_id: u64,
+    playlist: &str,
+    entry: &Entry,
+    phase: ClosureLifecyclePhase,
+    notification_text: Option<String>,
+) {
+    if let Some(fact) = build_closure_lifecycle_fact(
+        owner_session_id,
+        playlist,
+        entry,
+        phase,
+        notification_text,
+    ) {
+        fact.emit(app).ok();
+    }
+}
+
+fn closure_owner_session_id(entry: &Entry) -> u64 {
+    closure_entry_identity(entry)
+        .map(|identity| {
+            identity
+                .bytes()
+                .fold(0u64, |acc, byte| acc.wrapping_mul(16777619).wrapping_add(byte as u64))
+        })
+        .unwrap_or(0)
+}
 
 fn can_refresh_file_loudness(entry: &Entry) -> bool {
     matches!(entry.entry_type, EntryType::Local) && entry.url.is_none()
@@ -170,7 +200,16 @@ pub async fn update_weblist(
     entry: Entry,
     playlist: String,
 ) -> Result<Entry, String> {
+    let owner_session_id = closure_owner_session_id(&entry);
     let outcome = ytdlp::download_entry_for_library(app.clone(), &playlist, &entry).await?;
+    emit_closure_lifecycle_fact(
+        &app,
+        owner_session_id,
+        &playlist,
+        &outcome.entry,
+        ClosureLifecyclePhase::Downloaded,
+        Some(format!("Downloaded {}", outcome.name)),
+    );
     normalization::analyze_paths_blocking(
         &app,
         entry_music_paths(&outcome.entry),
@@ -213,6 +252,7 @@ fn spawn_downloads(app: AppHandle, playlist_name: String, pending: Vec<Entry>) {
 
     tauri::async_runtime::spawn(async move {
         for entry in pending {
+            let owner_session_id = closure_owner_session_id(&entry);
             ProcessMsg {
                 playlist: playlist_name.clone(),
                 str: format!("Downloading {}", entry.name),
@@ -241,6 +281,14 @@ fn spawn_downloads(app: AppHandle, playlist_name: String, pending: Vec<Entry>) {
                         &saved_path,
                         &name,
                     );
+                    emit_closure_lifecycle_fact(
+                        &app,
+                        owner_session_id,
+                        &playlist_name,
+                        &entry,
+                        ClosureLifecyclePhase::Downloaded,
+                        Some(format!("Downloaded {name}")),
+                    );
                     let _ = normalization::analyze_paths_blocking(
                         &app,
                         entry_music_paths(&entry),
@@ -259,6 +307,14 @@ fn spawn_downloads(app: AppHandle, playlist_name: String, pending: Vec<Entry>) {
                 Err(error) => {
                     let mut failed = entry.clone();
                     failed.downloaded_ok = Some(false);
+                    emit_closure_lifecycle_fact(
+                        &app,
+                        owner_session_id,
+                        &playlist_name,
+                        &failed,
+                        ClosureLifecyclePhase::Failed,
+                        Some(format!("Download failed: {error}")),
+                    );
                     if let Ok(repo) = repository().await {
                         let _ = repo.upsert_entry_in_playlist(&playlist_name, failed).await;
                     }
