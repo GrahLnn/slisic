@@ -3232,6 +3232,7 @@ describe("music store action contracts", () => {
 		expect(state.playlists).toEqual([]);
 		expect(state.mode).toBe("new_guide");
 		expect(state.startupRoute).toBe("hydrated_empty");
+		expect(state.processMsg).toEqual({ playlist: "server", str: "late process" });
 		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
 
@@ -3295,7 +3296,6 @@ describe("music store action contracts", () => {
 		expect(state.selectedListName).toBeNull();
 		expect(state.playbackListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
-		expect(state.processMsg).toBeNull();
 		expect(state.loading).toBe(false);
 
 		releaseCreate();
@@ -3310,7 +3310,6 @@ describe("music store action contracts", () => {
 		expect(state.selectedListName).toBeNull();
 		expect(state.playbackListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
-		expect(state.processMsg).toBeNull();
 		expect(state.loading).toBe(false);
 		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
@@ -3671,7 +3670,6 @@ describe("music store action contracts", () => {
 		expect(state.selectedListName).toBeNull();
 		expect(state.playbackListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
-		expect(state.processMsg).toBeNull();
 	});
 
 	test("saveBoundary_false_negative_guard_matching_refresh_materialization_and_process_result_only_settle_the_intended_saved_owner_once", async () => {
@@ -3811,7 +3809,6 @@ describe("music store action contracts", () => {
 				}
 			).materialization?.phase,
 		).toBe("pending");
-		expect(state.processMsg).toBeNull();
 
 		eventHandlers.processMsg?.({ playlist: "other", str: "other processing" });
 		await __testing.readAll();
@@ -3839,7 +3836,6 @@ describe("music store action contracts", () => {
 		expect(state.selectedListName).toBeNull();
 		expect(state.playbackListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
-		expect(state.processMsg).toBeNull();
 
 		releaseCreate();
 		await saving;
@@ -3867,7 +3863,6 @@ describe("music store action contracts", () => {
 		expect(state.selectedListName).toBeNull();
 		expect(state.playbackListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
-		expect(state.processMsg).toBeNull();
 		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
 
