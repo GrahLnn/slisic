@@ -192,6 +192,7 @@ mock.module("./playbackCoordinator", () => ({
 const {
 	__testing,
 	action,
+	deriveClosureProjection,
 	deriveDraftReviewState,
 	deriveRouteResolution,
 	canSettleClosureEvent,
@@ -2879,6 +2880,144 @@ describe("music store action contracts", () => {
 				},
 			),
 		).toBe(false);
+	});
+
+	test("closure_true_positive_action_driven_delete_readd_save_download_analyze_notify_playback_keeps_one_live_automaton_identity_at_the_user_boundary", async () => {
+		const deletedEntry = makeEntry("deleted remote", "C:/music/deleted", {
+			url: "https://example.com/remote-deleted",
+			entry_type: "WebList",
+			downloaded_ok: false,
+			musics: [],
+		});
+		const liveReplacement = withEntryMaterialization(
+			makeEntry("replacement remote", "C:/music/replacement", {
+				url: "https://example.com/remote-replacement",
+				entry_type: "WebList",
+				downloaded_ok: true,
+				musics: [
+					{
+						...makeMusic("C:/music/replacement/a.mp3"),
+						normalization_status: "Ready",
+						integrated_lufs: -18,
+						analysis_version: 4,
+						analyzed_at_ms: 321,
+					},
+				],
+			}),
+			{
+				phase: "ready",
+				settled: "succeeded",
+				ownerSessionId: 22,
+				lastError: null,
+			},
+		);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			startupRoute: "hydrated_playlists",
+			selectedListName: "focus",
+			playbackListName: null,
+			playlists: [makePlaylist("focus", [deletedEntry])],
+			entrySessionId: 5,
+			closureOwnerSessionId: 5,
+			playbackSessionId: null,
+			confirmedPlaying: null,
+			nowPlaying: null,
+			processMsg: null,
+		});
+
+		action.edit(makePlaylist("focus", [deletedEntry]));
+		await flush();
+		action.removeEntry(deletedEntry);
+		action.addExistingEntry(liveReplacement);
+		await flush();
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			startupRoute: "hydrated_playlists",
+			selectedListName: "focus",
+			playbackListName: "focus",
+			playlists: [makePlaylist("focus", [liveReplacement])],
+			slot: null,
+			entrySessionId: 22,
+			closureOwnerSessionId: 22,
+			playbackEpoch: 22,
+			playbackSessionId: 71,
+			requestedPlaying: liveReplacement.musics[0] ?? null,
+			confirmedPlaying: liveReplacement.musics[0] ?? null,
+			nowPlaying: liveReplacement.musics[0] ?? null,
+			processMsg: {
+				playlist: "focus",
+				str: "Replacement remote ready for playback",
+			},
+		});
+
+		const state = __testing.getState();
+		const liveEntry = state.playlists[0]?.entries[0];
+		const liveIdentity =
+			"url-path:https://example.com/remote-replacement::C:/music/replacement";
+		const staleIdentity =
+			"url-path:https://example.com/remote-deleted::C:/music/deleted";
+
+		const phaseSequence = [
+			"saved",
+			"downloaded",
+			"analyzed",
+			"notified",
+			"playback",
+		] as const;
+		const liveContracts = phaseSequence.map((phase) =>
+			createClosureEventContract(22, liveIdentity, phase),
+		);
+		const staleContracts = phaseSequence.map((phase) =>
+			createClosureEventContract(11, staleIdentity, phase),
+		);
+
+		expect(
+			canSettleClosureEvents(state, liveContracts, {
+				entry: liveEntry,
+				allowedPlaybackSessionId: 71,
+			}),
+		).toBe(true);
+
+		for (const contract of staleContracts) {
+			expect(
+				canSettleClosureEvent(state, contract, {
+					entry: liveEntry,
+					allowedPlaybackSessionId: 71,
+				}),
+			).toBe(false);
+		}
+
+		expect(deriveClosureProjection(__testing.getState())).toEqual({
+			state: "playable",
+			playable: true,
+			interactive: true,
+			notificationVisible: true,
+			notificationText: "Replacement remote ready for playback",
+			reason: "playback_confirmed",
+		});
+
+		__testing.replaceState({
+			...state,
+			processMsg: {
+				playlist: "stale",
+				str: "Deleted remote finished",
+			},
+		});
+
+		expect(deriveClosureProjection(__testing.getState())).toEqual({
+			state: "notification_missing",
+			playable: false,
+			interactive: true,
+			notificationVisible: false,
+			notificationText: null,
+			reason: "awaiting_notification_projection",
+		});
 	});
 
 	test("ownerIdentity_false_negative_guard_refresh_carry_forward_keeps_same_path_siblings_owner_scoped", async () => {
