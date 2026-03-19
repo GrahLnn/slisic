@@ -2781,6 +2781,60 @@ describe("music store action contracts", () => {
 		).toBe(false);
 	});
 
+	test("closure_false_negative_guard_backend_failed_fact_keeps_replacement_chain_identity_after_save_download_analyze_notify_slice", () => {
+		const replacementIdentity =
+			"url-path:https://example.com/remote-replacement::C:/music/replacement";
+		const liveEntry = withEntryMaterialization(
+			makeEntry("replacement remote", "C:/music/replacement", {
+				url: "https://example.com/remote-replacement",
+				entry_type: "WebList",
+				downloaded_ok: true,
+				musics: [
+					{
+						...makeMusic("C:/music/replacement/a.mp3"),
+						normalization_status: "Failed",
+						normalization_error: "Analysis failed",
+					},
+				],
+			}),
+			{
+				phase: "failed",
+				settled: "failed",
+				ownerSessionId: 22,
+				lastError: "Analysis failed",
+			},
+		);
+
+		const phases = ["saved", "downloaded", "analyzed", "notified", "failed"] as const;
+		const liveEvents = phases.map((phase) =>
+			createClosureEventContract(22, replacementIdentity, phase),
+		);
+
+		expect(
+			liveEvents.map((event) => event.eventId),
+		).toEqual([
+			"22:url-path:https://example.com/remote-replacement::C:/music/replacement:saved",
+			"22:url-path:https://example.com/remote-replacement::C:/music/replacement:downloaded",
+			"22:url-path:https://example.com/remote-replacement::C:/music/replacement:analyzed",
+			"22:url-path:https://example.com/remote-replacement::C:/music/replacement:notified",
+			"22:url-path:https://example.com/remote-replacement::C:/music/replacement:failed",
+		]);
+
+		expect(
+			liveEvents.every((event) =>
+				canSettleClosureEvent(
+					{
+						entrySessionId: 22,
+						closureOwnerSessionId: 22,
+						playbackSessionId: 71,
+					},
+					event,
+					{ entry: liveEntry },
+				),
+			),
+		).toBe(true);
+	});
+
 	test("closure_false_negative_guard_displaced_entry_session_cannot_reuse_live_owner_chain_event_contract", () => {
 		const liveEntry = withEntryMaterialization(
 			makeEntry("replacement remote", "C:/music/replacement", {
