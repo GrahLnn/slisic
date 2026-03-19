@@ -817,6 +817,122 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("loudnessTruth_false_negative_guard_selected_list_changes_cannot_retarget_canonical_loudness_settlement", async () => {
+		const focusPending = makePlaylist("focus", [
+			{
+				...makeEntry("focus remote", "C:/music/focus", {
+					url: "https://example.com/list-focus",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic("C:/music/focus/a.mp3"),
+							normalization_status: null,
+							integrated_lufs: null,
+							analysis_version: null,
+							analyzed_at_ms: null,
+						},
+					],
+				}),
+			},
+		]);
+		const otherPending = makePlaylist("other", [
+			{
+				...makeEntry("other remote", "C:/music/other", {
+					url: "https://example.com/list-other",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic("C:/music/other/a.mp3"),
+							normalization_status: null,
+							integrated_lufs: null,
+							analysis_version: null,
+							analyzed_at_ms: null,
+						},
+					],
+				}),
+			},
+		]);
+		const focusReady = makePlaylist("focus", [
+			{
+				...makeEntry("focus remote", "C:/music/focus", {
+					url: "https://example.com/list-focus",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic("C:/music/focus/a.mp3"),
+							normalization_status: "Ready",
+							integrated_lufs: -18.2,
+							analysis_version: 3,
+							analyzed_at_ms: 456,
+						},
+					],
+				}),
+			},
+		]);
+		const otherStillPending = makePlaylist("other", [
+			{
+				...makeEntry("other remote", "C:/music/other", {
+					url: "https://example.com/list-other",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic("C:/music/other/a.mp3"),
+							normalization_status: null,
+							integrated_lufs: null,
+							analysis_version: null,
+							analyzed_at_ms: null,
+						},
+					],
+				}),
+			},
+		]);
+		let readAllCalls = 0;
+
+		impl.playlistNames = async () => Ok<string[], string>(["focus", "other"]);
+		impl.readAll = async () => {
+			readAllCalls += 1;
+			if (readAllCalls === 1) {
+				return Ok<Playlist[], string>([focusPending, otherPending]);
+			}
+
+			return Ok<Playlist[], string>([focusReady, otherStillPending]);
+		};
+
+		await action.run();
+		await flush();
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "other",
+			slot: makeMission("other", otherStillPending.entries),
+		});
+
+		await __testing.readAll();
+		await flush();
+
+		const state = __testing.getState();
+		expect(state.mode).toBe("edit");
+		expect(state.selectedListName).toBe("other");
+		expect(state.slot?.name).toBe("other");
+		expect(state.playlists.find((playlist) => playlist.name === "focus")?.entries[0]?.musics[0]).toMatchObject({
+			normalization_status: "Ready",
+			integrated_lufs: -18.2,
+			analysis_version: 3,
+			analyzed_at_ms: 456,
+		});
+		expect(state.playlists.find((playlist) => playlist.name === "other")?.entries[0]?.musics[0]).toMatchObject({
+			normalization_status: null,
+			integrated_lufs: null,
+			analysis_version: null,
+			analyzed_at_ms: null,
+		});
+	});
+
 	test("remoteTaskTruth_false_negative_guard_process_events_do_not_create_or_rebind_materialization_without_matching_refresh_facts", async () => {
 		const handlers = new Map<string, (payload: unknown) => void>();
 		const pending = makePlaylist("focus", [
