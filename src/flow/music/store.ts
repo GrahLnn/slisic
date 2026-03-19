@@ -1488,6 +1488,18 @@ function updateMusicEverywhere(path: string, updater: (music: Music) => Music) {
 	});
 }
 
+function patchCurrentPlaylistByName(
+	playlistName: string,
+	mutator: (playlist: Playlist) => Playlist,
+) {
+	setState((prev) => ({
+		...prev,
+		playlists: prev.playlists.map((playlist) =>
+			playlist.name === playlistName ? mutator(playlist) : playlist,
+		),
+	}));
+}
+
 async function applyNextFatigue(music: Music | null | undefined) {
 	if (!music) return;
 	const result = await crab.fatigue(music);
@@ -2466,6 +2478,8 @@ export const action = {
 		const snapshot = getState();
 		const shouldSwitch = shouldAdvanceOnUnstar(snapshot, list.name, music.path);
 		const epoch = bumpPlaybackEpoch();
+		const canonicalExcludedMusic =
+			list.exclude.find((item) => item.path === music.path) ?? music;
 
 		setState((prev) => ({
 			...prev,
@@ -2475,7 +2489,7 @@ export const action = {
 							...playlist,
 							exclude: playlist.exclude.some((item) => item.path === music.path)
 								? playlist.exclude
-								: [...playlist.exclude, music],
+								: [...playlist.exclude, canonicalExcludedMusic],
 						}
 					: playlist,
 			),
@@ -2514,6 +2528,13 @@ export const action = {
 			await refreshLists();
 			return;
 		}
+
+		patchCurrentPlaylistByName(list.name, (playlist) => ({
+			...playlist,
+			exclude: playlist.exclude.map((item) =>
+				item.path === music.path ? canonicalExcludedMusic : item,
+			),
+		}));
 
 		if (shouldSwitch && isPlaybackContextActive(epoch, list.name)) {
 			scheduleNextPlayback(epoch);

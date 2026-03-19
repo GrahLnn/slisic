@@ -5589,6 +5589,90 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("loudnessOwnership_false_negative_guard_unstar_reuses_persisted_canonical_exclude_for_matching_owner", async () => {
+		const staleSelection = {
+			...makeMusic("C:/music/focus/shared.flac"),
+			normalization_status: null,
+			integrated_lufs: null,
+			true_peak_dbtp: null,
+			loudness_range_lu: null,
+			analysis_version: null,
+			analyzed_at_ms: null,
+		};
+		const persistedCanonical = {
+			...staleSelection,
+			normalization_status: "Ready" as const,
+			integrated_lufs: -17.2,
+			true_peak_dbtp: -1.1,
+			loudness_range_lu: 4.2,
+			analysis_version: 9,
+			analyzed_at_ms: 999,
+		};
+		const sibling = {
+			...makeMusic("C:/music/other/shared.flac"),
+			normalization_status: "Ready" as const,
+			integrated_lufs: -13.8,
+			true_peak_dbtp: -0.3,
+			loudness_range_lu: 2.7,
+			analysis_version: 3,
+			analyzed_at_ms: 444,
+		};
+		const focus = makePlaylist(
+			"focus",
+			[
+				makeEntry("alpha", "C:/music/focus/alpha", {
+					musics: [persistedCanonical],
+				}),
+			],
+			[persistedCanonical],
+		);
+		const other = makePlaylist(
+			"other",
+			[
+				makeEntry("beta", "C:/music/other/beta", {
+					musics: [sibling],
+				}),
+			],
+			[sibling],
+		);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			playlists: [focus, other],
+			selectedListName: "focus",
+			nowPlaying: staleSelection,
+			confirmedPlaying: staleSelection,
+			requestedPlaying: staleSelection,
+			playbackSessionId: 21,
+		});
+		impl.unstar = async () => Ok<null, string>(null);
+
+		await action.unstar(staleSelection);
+
+		const state = __testing.getState();
+		expect(state.playlists[0]?.exclude).toEqual([persistedCanonical]);
+		expect(state.playlists[0]?.exclude[0]).toMatchObject({
+			path: persistedCanonical.path,
+			normalization_status: "Ready",
+			integrated_lufs: -17.2,
+			true_peak_dbtp: -1.1,
+			loudness_range_lu: 4.2,
+			analysis_version: 9,
+			analyzed_at_ms: 999,
+		});
+		expect(state.playlists[1]?.exclude).toEqual([sibling]);
+		expect(state.playlists[1]?.exclude[0]).toMatchObject({
+			path: sibling.path,
+			normalization_status: "Ready",
+			integrated_lufs: -13.8,
+			true_peak_dbtp: -0.3,
+			loudness_range_lu: 2.7,
+			analysis_version: 3,
+			analyzed_at_ms: 444,
+		});
+	});
+
 	test("audioEnded_true_positive_preserves_playback_context_long_enough_to_schedule_auto_next", async () => {
 		const first = makeMusic("C:/music/focus/a.flac");
 		const second = makeMusic("C:/music/focus/b.flac");
