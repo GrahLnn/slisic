@@ -1108,6 +1108,45 @@ function deriveClosureProjectionEntry(
 	);
 }
 
+function deriveLiveClosureNotificationHint(
+	snapshot: Pick<
+		MusicState,
+		| "playlists"
+		| "selectedListName"
+		| "playbackListName"
+		| "confirmedPlaying"
+		| "nowPlaying"
+		| "processMsg"
+	>,
+	entry: Entry,
+): { visible: boolean; text: string | null } {
+	const hint = snapshot.processMsg;
+	if (!hint || hint.playlist == null) {
+		return { visible: false, text: null };
+	}
+
+	const liveEntryIdentity = derivePersistedOwnerIdentity(entry);
+	if (!liveEntryIdentity) {
+		return { visible: false, text: null };
+	}
+
+	const hintedPlaylist = snapshot.playlists.find(
+		(playlist) => playlist.name === hint.playlist,
+	);
+	if (!hintedPlaylist) {
+		return { visible: false, text: null };
+	}
+
+	const hintedEntry = hintedPlaylist.entries.find(
+		(candidate) => derivePersistedOwnerIdentity(candidate) === liveEntryIdentity,
+	);
+	if (!hintedEntry) {
+		return { visible: false, text: null };
+	}
+
+	return { visible: true, text: hint.str };
+}
+
 export function deriveClosureProjection(
 	snapshot: Pick<
 		MusicState,
@@ -1149,10 +1188,9 @@ export function deriveClosureProjection(
 	const liveOwnerChain =
 		snapshot.entrySessionId === snapshot.closureOwnerSessionId &&
 		snapshot.closureOwnerSessionId > 0;
-	const notificationText =
-		snapshot.processMsg?.playlist != null ? snapshot.processMsg.str : null;
-	const notificationVisible =
-		snapshot.processMsg?.playlist != null && notificationText != null;
+	const notificationHint = deriveLiveClosureNotificationHint(snapshot, entry);
+	const notificationText = notificationHint.text;
+	const notificationVisible = notificationHint.visible;
 	const playbackGate = canSettleClosureEvent(
 		{
 			entrySessionId: snapshot.entrySessionId,

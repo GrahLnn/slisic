@@ -385,6 +385,72 @@ describe("music interaction guards", () => {
 		expect(projection.reason).toBe("notification_only_hint");
 	});
 
+	test("deriveClosureProjection scopes notification binding to the matching live owner chain playlist", () => {
+		const liveEntry: Entry = {
+			...makeEntry("live remote", "C:/live"),
+			url: "https://example.com/live",
+			entry_type: "WebList",
+			downloaded_ok: true,
+			musics: [
+				{
+					...makeMusic("C:/live/a.mp3"),
+					integrated_lufs: -18,
+					analysis_version: 7,
+					normalization_status: "Ready",
+					analyzed_at_ms: 123,
+				},
+			],
+			materialization: {
+				phase: "ready",
+				ownerSessionId: 3,
+				settled: "succeeded",
+				lastError: null,
+			},
+		} as Entry;
+		const staleEntry: Entry = {
+			...makeEntry("stale remote", "C:/stale"),
+			url: "https://example.com/stale",
+			entry_type: "WebList",
+			downloaded_ok: true,
+			musics: [
+				{
+					...makeMusic("C:/stale/a.mp3"),
+					integrated_lufs: -17,
+					analysis_version: 7,
+					normalization_status: "Ready",
+					analyzed_at_ms: 456,
+				},
+			],
+			materialization: {
+				phase: "ready",
+				ownerSessionId: 2,
+				settled: "succeeded",
+				lastError: null,
+			},
+		} as Entry;
+
+		const projection = deriveClosureProjection({
+			...baseState,
+			playlists: [
+				{ ...requireFirstPlaylist(baseState), name: "live", entries: [liveEntry] },
+				{ ...requireFirstPlaylist(baseState), name: "stale", entries: [staleEntry] },
+			],
+			selectedListName: "live",
+			playbackListName: "live",
+			confirmedPlaying: null,
+			nowPlaying: null,
+			processMsg: { playlist: "stale", str: "Ready from stale chain" },
+			playbackSessionId: null,
+		});
+
+		expect(projection.state).toBe("notification_missing");
+		expect(projection.notificationVisible).toBe(false);
+		expect(projection.notificationText).toBeNull();
+		expect(projection.interactive).toBe(true);
+		expect(projection.playable).toBe(false);
+		expect(projection.reason).toBe("awaiting_notification_projection");
+	});
+
 	test("buildPostSavePatch should clear playback context and keep mode by data presence", () => {
 		const withData = buildPostSavePatch(true, 9);
 		expect(withData.mode).toBe("play");
