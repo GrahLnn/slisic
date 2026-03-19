@@ -17,6 +17,13 @@ import {
 } from "@/components/ui/context-menu";
 import { projectWorkspaceScreen } from "@/src/flow/music/store";
 
+export function projectPlaylistHint(
+	processMsg: ReturnType<typeof hook.useMsg>,
+	playlistName: string,
+): string | null {
+	return processMsg?.playlist === playlistName ? processMsg.str : null;
+}
+
 export function shouldRenderHomeRoute(
 	ctx: Pick<ReturnType<typeof hook.useContext>, "routeResolved">,
 ): boolean {
@@ -45,6 +52,8 @@ function Play() {
 	const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
 	const didInitCenterRef = useRef(false);
 	const processMsg = hook.useMsg();
+	const hintForPlaylist = (playlistName: string) =>
+		projectPlaylistHint(processMsg, playlistName);
 	const hasPlaybackSurface = ctx.mode === "play" && !!curList;
 	const displayLists =
 		lists.length > 0
@@ -212,9 +221,9 @@ function Play() {
 										) : (
 											<span className="relative inline-block">
 												<span>{name}</span>
-												{processMsg?.playlist === name ? (
+										{hintForPlaylist(name) ? (
 													<span className="absolute ml-1 max-w-2xs truncate whitespace-nowrap text-xs text-[#262626] dark:text-[#d4d4d4]">
-														- {processMsg.str}
+												- {hintForPlaylist(name)}
 													</span>
 												) : null}
 												{isCurrent && activeTitle ? (

@@ -172,7 +172,7 @@ mock.module("@/src/flow/music/store", () => ({
 	projectWorkspaceScreen: realProjectWorkspaceScreen,
 }));
 
-const { default: Home, shouldRenderHomeRoute } = await import("./home");
+const { default: Home, projectPlaylistHint, shouldRenderHomeRoute } = await import("./home");
 
 beforeEach(() => {
 	routeResolved = false;
@@ -189,6 +189,22 @@ describe("Home route gating", () => {
 	test("selector rejects unresolved route projection", () => {
 		expect(shouldRenderHomeRoute({ routeResolved: false })).toBe(false);
 		expect(shouldRenderHomeRoute({ routeResolved: true })).toBe(true);
+	});
+
+	test("playlist hint projection only returns transient text for the matching playlist", () => {
+		expect(projectPlaylistHint(null, "focus")).toBeNull();
+		expect(
+			projectPlaylistHint(
+				{ playlist: "focus", str: "Analyzing loudness 1/1: a.mp3" },
+				"focus",
+			),
+		).toBe("Analyzing loudness 1/1: a.mp3");
+		expect(
+			projectPlaylistHint(
+				{ playlist: "other", str: "Analyzing loudness 1/1: a.mp3" },
+				"focus",
+			),
+		).toBeNull();
 	});
 
 	test("unresolved route renders null even if the real workspace projection resolves to edit", async () => {
