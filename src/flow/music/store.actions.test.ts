@@ -933,6 +933,88 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("loudnessTruth_false_negative_guard_process_msg_hint_ignores_non_play_or_missing_playlist_surfaces", async () => {
+		const handlers = new Map<string, (payload: unknown) => void>();
+		const focusPending = makePlaylist("focus", [
+			{
+				...makeEntry("focus remote", "C:/music/focus", {
+					url: "https://example.com/list-focus",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic("C:/music/focus/a.mp3"),
+							normalization_status: null,
+							integrated_lufs: null,
+							analysis_version: null,
+							analyzed_at_ms: null,
+						},
+					],
+				}),
+			},
+		]);
+
+		impl.evt = async (event: string, handler: (payload: unknown) => void) => {
+			handlers.set(event, handler);
+			return () => {
+				handlers.delete(event);
+			};
+		};
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => Ok<Playlist[], string>([focusPending]);
+
+		await action.run();
+
+		handlers.get("processMsg")?.({
+			playlist: "focus",
+			str: "Analyzing loudness 1/1: a.mp3",
+		});
+		await flush();
+		expect(__testing.getState().processMsg).toEqual({
+			playlist: "focus",
+			str: "Analyzing loudness 1/1: a.mp3",
+		});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			selectedListName: "focus",
+			slot: makeMission("focus", focusPending.entries),
+		});
+		handlers.get("processMsg")?.({
+			playlist: "focus",
+			str: "still a non-canonical edit hint",
+		});
+		await flush();
+		expect(__testing.getState().processMsg).toEqual({
+			playlist: "focus",
+			str: "still a non-canonical edit hint",
+		});
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			selectedListName: null,
+			slot: null,
+			processMsg: { playlist: "focus", str: "working" },
+		});
+		impl.readAll = async () => Ok<Playlist[], string>([]);
+		await __testing.readAll();
+		await flush();
+		expect(__testing.getState().playlists).toEqual([]);
+		expect(__testing.getState().processMsg).toBeNull();
+
+		handlers.get("processMsg")?.({
+			playlist: "missing",
+			str: "orphan hint",
+		});
+		await flush();
+		expect(__testing.getState().processMsg).toEqual({
+			playlist: "missing",
+			str: "orphan hint",
+		});
+	});
+
 	test("remoteTaskTruth_false_negative_guard_process_events_do_not_create_or_rebind_materialization_without_matching_refresh_facts", async () => {
 		const handlers = new Map<string, (payload: unknown) => void>();
 		const pending = makePlaylist("focus", [

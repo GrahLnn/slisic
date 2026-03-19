@@ -945,6 +945,37 @@ function patchState(patch: Partial<MusicState>) {
 	setState((prev) => ({ ...prev, ...patch }));
 }
 
+function sanitizeProcessMsgHint(
+	previousPlaylists: Playlist[],
+	snapshot: Pick<MusicState, "playlists" | "processMsg">,
+): ProcessMsg | null {
+	const hint = snapshot.processMsg;
+	if (!hint) return null;
+	const previouslyKnown = previousPlaylists.some(
+		(playlist) => playlist.name === hint.playlist,
+	);
+	if (!previouslyKnown) return hint;
+	return snapshot.playlists.some((playlist) => playlist.name === hint.playlist)
+		? hint
+		: null;
+}
+
+function patchHintOnlyProcessMsg(payload: unknown) {
+	if (
+		!payload ||
+		typeof payload !== "object" ||
+		!("playlist" in payload) ||
+		typeof (payload as { playlist?: unknown }).playlist !== "string" ||
+		!("str" in payload) ||
+		typeof (payload as { str?: unknown }).str !== "string"
+	) {
+		return;
+	}
+
+	const processMsg = payload as ProcessMsg;
+	patchState({ processMsg: processMsg });
+}
+
 function subscribe(listener: () => void) {
 	listeners.add(listener);
 	return () => listeners.delete(listener);
@@ -1486,8 +1517,19 @@ async function refreshLists(version?: number) {
 	}
 
 	setState((prev) => ({
-		...prev,
-		...deriveRefreshPatch(prev, playlists),
+		...(() => {
+			const next = {
+				...prev,
+				...deriveRefreshPatch(prev, playlists),
+			};
+			return {
+				...next,
+				processMsg: sanitizeProcessMsgHint(previousPlaylists, {
+					playlists: next.playlists,
+					processMsg: next.processMsg,
+				}),
+			};
+		})(),
 	}));
 }
 
@@ -1723,7 +1765,7 @@ async function ensureEvents() {
 		unsubs.push(audioFailed);
 
 		const processMsg = await crab.evt("processMsg")((payload) => {
-			patchState({ processMsg: payload as ProcessMsg });
+			patchHintOnlyProcessMsg(payload);
 		});
 		unsubs.push(processMsg);
 
