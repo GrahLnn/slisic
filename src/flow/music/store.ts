@@ -405,11 +405,7 @@ export function deriveDraftReviewState(
 export function deriveSaveAffordance(
 	snapshot: Pick<
 		MusicState,
-		| "slot"
-		| "ffmpeg"
-		| "savePath"
-		| "playlists"
-		| "selectedListName"
+		"slot" | "ffmpeg" | "savePath" | "playlists" | "selectedListName"
 	>,
 ): SaveAffordance {
 	if (!snapshot.slot) {
