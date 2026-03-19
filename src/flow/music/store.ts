@@ -116,9 +116,6 @@ export interface MusicState {
 	ytdlp: InstallResult | null;
 	ffmpeg: InstallResult | null;
 	savePath: string | null;
-	linkReviews?: string[];
-	folderReviews?: string[];
-	weblistReviews?: string[];
 	entrySessionId: number;
 	playbackEpoch: number;
 	playbackSessionId: number | null;
@@ -413,9 +410,6 @@ export function deriveSaveAffordance(
 		| "savePath"
 		| "playlists"
 		| "selectedListName"
-		| "linkReviews"
-		| "folderReviews"
-		| "weblistReviews"
 	>,
 ): SaveAffordance {
 	if (!snapshot.slot) {
@@ -798,9 +792,6 @@ export function deriveWorkspaceEntryPatch(
 	| "nowJudge"
 	| "processMsg"
 	| "entrySessionId"
-	| "linkReviews"
-	| "folderReviews"
-	| "weblistReviews"
 > {
 	const editPlaylist = playlist as Playlist;
 
@@ -817,9 +808,6 @@ export function deriveWorkspaceEntryPatch(
 		nowPlaying: null,
 		nowJudge: null,
 		processMsg: null,
-		linkReviews: [],
-		folderReviews: [],
-		weblistReviews: [],
 		entrySessionId: state.entrySessionId + 1,
 	};
 }
@@ -837,9 +825,6 @@ export function deriveBackTransition(
 		| "slot"
 		| "processMsg"
 		| "entrySessionId"
-		| "linkReviews"
-		| "folderReviews"
-		| "weblistReviews"
 	>,
 ): Pick<
 	MusicState,
@@ -853,9 +838,6 @@ export function deriveBackTransition(
 	| "slot"
 	| "processMsg"
 	| "entrySessionId"
-	| "linkReviews"
-	| "folderReviews"
-	| "weblistReviews"
 > {
 	return {
 		mode: snapshot.playlists.length > 0 ? "play" : "new_guide",
@@ -868,9 +850,6 @@ export function deriveBackTransition(
 		nowJudge: null,
 		slot: null,
 		processMsg: null,
-		linkReviews: [],
-		folderReviews: [],
-		weblistReviews: [],
 		entrySessionId: snapshot.entrySessionId + 1,
 	};
 }
@@ -937,9 +916,6 @@ const initialState: MusicState = {
 	ytdlp: null,
 	ffmpeg: null,
 	savePath: null,
-	linkReviews: [],
-	folderReviews: [],
-	weblistReviews: [],
 	entrySessionId: 0,
 	playbackEpoch: 0,
 	playbackSessionId: null,
