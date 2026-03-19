@@ -1443,6 +1443,39 @@ function playbackOwnedCurrentList(input = state): Playlist | null {
 	return derivePlaybackOwnedList(input);
 }
 
+function resolvePersistedPlaylistForMusic(
+	input: Pick<
+		MusicState,
+		| "playlists"
+		| "selectedListName"
+		| "playbackListName"
+		| "confirmedPlaying"
+		| "nowPlaying"
+	>,
+	music: Music,
+): Playlist | null {
+	const matchesMusic = (playlist: Playlist) =>
+		playlist.exclude.some((item) => item.path === music.path) ||
+		playlist.entries.some((entry) =>
+			entry.musics.some((item) => item.path === music.path),
+		);
+
+	const candidateNames = [
+		input.playbackListName,
+		input.confirmedPlaying?.path === music.path ? input.playbackListName : null,
+		input.nowPlaying?.path === music.path ? input.playbackListName : null,
+	]
+		.filter((name): name is string => !!name)
+		.filter((name, index, all) => all.indexOf(name) === index);
+
+	for (const name of candidateNames) {
+		const playlist = input.playlists.find((item) => item.name === name);
+		if (playlist && matchesMusic(playlist)) return playlist;
+	}
+
+	return input.playlists.find(matchesMusic) ?? null;
+}
+
 function playableTracks(list: Playlist): Music[] {
 	const excluded = new Set(list.exclude.map((item) => item.path));
 	return list.entries
@@ -2472,10 +2505,10 @@ export const action = {
 		patchState({ nowJudge: null });
 	},
 	async unstar(music: Music) {
-		const list = currentList();
+		const snapshot = getState();
+		const list = resolvePersistedPlaylistForMusic(snapshot, music);
 		if (!list) return;
 
-		const snapshot = getState();
 		const shouldSwitch = shouldAdvanceOnUnstar(snapshot, list.name, music.path);
 		const epoch = bumpPlaybackEpoch();
 		const canonicalExcludedMusic =

@@ -5673,6 +5673,92 @@ describe("music store action contracts", () => {
 		});
 	});
 
+	test("loudnessOwnership_false_negative_guard_unstar_ignores_focus_shift_and_mutates_only_matching_persisted_owner", async () => {
+		const sharedPath = "C:/music/shared/track.flac";
+		const focusSelection = {
+			...makeMusic(sharedPath),
+			normalization_status: null,
+			integrated_lufs: null,
+			true_peak_dbtp: null,
+			loudness_range_lu: null,
+			analysis_version: null,
+			analyzed_at_ms: null,
+		};
+		const ownerCanonical = {
+			...focusSelection,
+			normalization_status: "Ready" as const,
+			integrated_lufs: -16.4,
+			true_peak_dbtp: -1.4,
+			loudness_range_lu: 4.9,
+			analysis_version: 12,
+			analyzed_at_ms: 1234,
+		};
+		const otherOwnerCanonical = {
+			...focusSelection,
+			normalization_status: "Ready" as const,
+			integrated_lufs: -12.1,
+			true_peak_dbtp: -0.2,
+			loudness_range_lu: 2.1,
+			analysis_version: 4,
+			analyzed_at_ms: 4321,
+		};
+		const owner = makePlaylist(
+			"owner",
+			[
+				makeEntry("alpha", "C:/music/owner/alpha", {
+					musics: [ownerCanonical],
+				}),
+			],
+			[ownerCanonical],
+		);
+		const browsed = makePlaylist(
+			"browsed",
+			[
+				makeEntry("beta", "C:/music/browsed/beta", {
+					musics: [otherOwnerCanonical],
+				}),
+			],
+			[],
+		);
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			playlists: [owner, browsed],
+			selectedListName: "browsed",
+			playbackListName: "owner",
+			nowPlaying: focusSelection,
+			confirmedPlaying: focusSelection,
+			requestedPlaying: focusSelection,
+			playbackSessionId: 34,
+		});
+		impl.unstar = async () => Ok<null, string>(null);
+
+		await action.unstar(focusSelection);
+
+		const state = __testing.getState();
+		expect(state.playlists[0]?.exclude).toEqual([ownerCanonical]);
+		expect(state.playlists[0]?.exclude[0]).toMatchObject({
+			path: ownerCanonical.path,
+			normalization_status: "Ready",
+			integrated_lufs: -16.4,
+			true_peak_dbtp: -1.4,
+			loudness_range_lu: 4.9,
+			analysis_version: 12,
+			analyzed_at_ms: 1234,
+		});
+		expect(state.playlists[1]?.exclude).toEqual([]);
+		expect(state.playlists[1]?.entries[0]?.musics[0]).toMatchObject({
+			path: otherOwnerCanonical.path,
+			normalization_status: "Ready",
+			integrated_lufs: -12.1,
+			true_peak_dbtp: -0.2,
+			loudness_range_lu: 2.1,
+			analysis_version: 4,
+			analyzed_at_ms: 4321,
+		});
+	});
+
 	test("audioEnded_true_positive_preserves_playback_context_long_enough_to_schedule_auto_next", async () => {
 		const first = makeMusic("C:/music/focus/a.flac");
 		const second = makeMusic("C:/music/focus/b.flac");
