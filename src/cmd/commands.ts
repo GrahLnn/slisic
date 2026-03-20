@@ -224,24 +224,6 @@ export type AudioStatus = {
 	duration_ms: number | null,
 };
 
-export type ClosureLifecycleFact = {
-	owner_session_id: number,
-	entry_identity: string,
-	phase: ClosureLifecyclePhase,
-	event_id: string,
-	playlist: string,
-	path: string | null,
-	url: string | null,
-	notification_text: string | null,
-};
-
-export type ClosureLifecyclePhase =
-	| "saved"
-	| "downloaded"
-	| "analyzed"
-	| "failed"
-	| "notified";
-
 export type AudioStopped = {
 	session_id: number,
 	path: string,
@@ -255,6 +237,19 @@ export type CheckResult = {
 	asset_name: string,
 	download_url: string,
 };
+
+export type ClosureLifecycleFact = {
+	owner_session_id: number,
+	entry_identity: string,
+	phase: ClosureLifecyclePhase,
+	event_id: string,
+	playlist: string,
+	path: string | null,
+	url: string | null,
+	notification_text: string | null,
+};
+
+export type ClosureLifecyclePhase = "Saved" | "Downloaded" | "Analyzed" | "Failed" | "Notified";
 
 export type CollectMission = {
 	name: string,

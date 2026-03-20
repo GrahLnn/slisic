@@ -206,7 +206,7 @@ function makeClosureLifecycleFact(
 	return {
 		owner_session_id: 22,
 		entry_identity: "url-path:https://example.com/remote-replacement::C:/music/replacement",
-		phase: "downloaded",
+		phase: "Downloaded",
 		event_id:
 			"22:url-path:https://example.com/remote-replacement::C:/music/replacement:downloaded",
 		playlist: "focus",
@@ -215,6 +215,21 @@ function makeClosureLifecycleFact(
 		notification_text: "Downloaded replacement remote",
 		...patch,
 	};
+}
+
+function toClosureEventPhase(phase: ClosureLifecycleFact["phase"]) {
+	switch (phase) {
+		case "Saved":
+			return "saved" as const;
+		case "Downloaded":
+			return "downloaded" as const;
+		case "Analyzed":
+			return "analyzed" as const;
+		case "Failed":
+			return "failed" as const;
+		case "Notified":
+			return "notified" as const;
+	}
 }
 
 function makeMusic(path: string): Music {
@@ -2761,7 +2776,7 @@ describe("music store action contracts", () => {
 		const contract = createClosureEventContract(
 			fact.owner_session_id,
 			fact.entry_identity,
-			fact.phase,
+			toClosureEventPhase(fact.phase),
 		);
 
 		expect(contract.eventId).toBe(fact.event_id);
@@ -2796,7 +2811,7 @@ describe("music store action contracts", () => {
 		const staleFact = makeClosureLifecycleFact({
 			owner_session_id: 11,
 			entry_identity: "url-path:https://example.com/remote::C:/music/old",
-			phase: "notified",
+			phase: "Notified",
 			event_id: "11:url-path:https://example.com/remote::C:/music/old:notified",
 			notification_text: "Downloaded old remote",
 		});
@@ -2811,7 +2826,7 @@ describe("music store action contracts", () => {
 				createClosureEventContract(
 					staleFact.owner_session_id,
 					staleFact.entry_identity,
-					staleFact.phase,
+					toClosureEventPhase(staleFact.phase),
 				),
 				{ entry },
 			),
@@ -2900,25 +2915,25 @@ describe("music store action contracts", () => {
 			makeClosureLifecycleFact({
 				owner_session_id: 22,
 				entry_identity: replacementIdentity,
-				phase: "downloaded",
+				phase: "Downloaded",
 				event_id: `22:${replacementIdentity}:downloaded`,
 			}),
 			makeClosureLifecycleFact({
 				owner_session_id: 22,
 				entry_identity: replacementIdentity,
-				phase: "analyzed",
+				phase: "Analyzed",
 				event_id: `22:${replacementIdentity}:analyzed`,
 			}),
 			makeClosureLifecycleFact({
 				owner_session_id: 22,
 				entry_identity: replacementIdentity,
-				phase: "notified",
+				phase: "Notified",
 				event_id: `22:${replacementIdentity}:notified`,
 			}),
 			makeClosureLifecycleFact({
 				owner_session_id: 22,
 				entry_identity: replacementIdentity,
-				phase: "failed",
+				phase: "Failed",
 				event_id: `22:${replacementIdentity}:failed`,
 			}),
 		];
@@ -2928,7 +2943,7 @@ describe("music store action contracts", () => {
 				createClosureEventContract(
 					fact.owner_session_id,
 					fact.entry_identity,
-					fact.phase,
+					toClosureEventPhase(fact.phase),
 				),
 			),
 		).toEqual([
@@ -2949,7 +2964,7 @@ describe("music store action contracts", () => {
 					createClosureEventContract(
 						fact.owner_session_id,
 						fact.entry_identity,
-						fact.phase,
+						toClosureEventPhase(fact.phase),
 					),
 					{ entry: liveEntry },
 				),
@@ -4720,6 +4735,147 @@ describe("music store action contracts", () => {
 		expect(state.playbackListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
 		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
+	});
+
+	test("closure_false_negative_guard_save_play_back_repro_keeps_stale_top_right_process_msg_on_live_persisted_asset_path", async () => {
+		const handlers = new Map<string, (payload: unknown) => void>();
+		const replacementPath = "C:/music/repro/replacement";
+		const replacementUrl = "https://example.com/repro/replacement";
+		const replacementMusic = {
+			...makeMusic(`${replacementPath}/ready.flac`),
+			normalization_status: "Ready" as const,
+			integrated_lufs: -18,
+			analysis_version: 1,
+			analyzed_at_ms: 321,
+		};
+		const persistedReadyEntry = withEntryMaterialization(
+			makeEntry("replacement remote", replacementPath, {
+				url: replacementUrl,
+				entry_type: "WebList",
+				downloaded_ok: true,
+				musics: [replacementMusic],
+			}),
+			{
+				phase: "ready",
+				ownerSessionId: 0,
+				settled: "succeeded",
+				lastError: null,
+			},
+		);
+
+		impl.evt = async (event: string, handler: (payload: unknown) => void) => {
+			handlers.set(event, handler);
+			return () => {
+				handlers.delete(event);
+			};
+		};
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () =>
+			Ok<Playlist[], string>([
+				makePlaylist("focus", [persistedReadyEntry]),
+			]);
+		impl.audioPlay = async () =>
+			Ok({
+				session_id: 1,
+				path: "track.mp3",
+				duration_ms: 1000,
+				gain: 1,
+				gain_db: 0,
+				target_lufs: -18,
+				integrated_lufs: -18,
+				has_canonical_loudness: true,
+			});
+
+		await action.run();
+		await flush();
+
+		const hydrated = __testing.getState();
+		const hydratedPlaylist = hydrated.playlists[0];
+		expect(hydratedPlaylist?.name).toBe("focus");
+		const hydratedEntry = hydratedPlaylist?.entries[0];
+		expect(hydratedEntry).toMatchObject({
+			path: replacementPath,
+			url: replacementUrl,
+			downloaded_ok: true,
+			materialization: {
+				phase: "ready",
+				settled: "succeeded",
+			},
+		});
+
+		const savedOwnerSessionId = hydrated.closureOwnerSessionId;
+		expect(savedOwnerSessionId).toBe(0);
+		expect(hydrated.entrySessionId).toBe(0);
+
+		handlers.get("processMsg")?.({
+			playlist: "focus",
+			str: `Analyzing loudness 1/1: ${replacementMusic.path}`,
+		});
+		await flush();
+
+		const hinted = __testing.getState();
+		expect(hinted.processMsg).toEqual({
+			playlist: "focus",
+			str: `Analyzing loudness 1/1: ${replacementMusic.path}`,
+		});
+		expect(hinted.playlists[0]?.entries[0]).toMatchObject({
+			path: replacementPath,
+			url: replacementUrl,
+			materialization: {
+				ownerSessionId: 0,
+				phase: "ready",
+			},
+		});
+		expect(deriveClosureProjection(hinted)).toEqual({
+			state: "blocked",
+			playable: false,
+			interactive: false,
+			notificationVisible: false,
+			notificationText: null,
+			reason: "no_live_owner_chain",
+		});
+
+		await action.play(hinted.playlists[0]!);
+		await flush();
+
+		const afterPlay = __testing.getState();
+		expect(afterPlay.playbackListName).toBe("focus");
+		expect(afterPlay.playbackSessionId).toBeGreaterThan(0);
+		expect(afterPlay.confirmedPlaying).toBeNull();
+		expect(afterPlay.nowPlaying).toBeNull();
+		expect(afterPlay.playlists[0]?.entries[0]).toMatchObject({
+			path: replacementPath,
+			url: replacementUrl,
+			materialization: {
+				ownerSessionId: 0,
+				phase: "ready",
+			},
+		});
+		expect(afterPlay.processMsg).toEqual({
+			playlist: "focus",
+			str: `Analyzing loudness 1/1: ${replacementMusic.path}`,
+		});
+
+		await action.back();
+		await flush();
+
+		const afterBack = __testing.getState();
+		expect(afterBack.mode).toBe("play");
+		expect(afterBack.slot).toBeNull();
+		expect(afterBack.selectedListName).toBeNull();
+		expect(afterBack.playbackListName).toBeNull();
+		expect(afterBack.confirmedPlaying).toBeNull();
+		expect(afterBack.nowPlaying).toBeNull();
+		expect(afterBack.playlists[0]?.entries[0]).toMatchObject({
+			path: replacementPath,
+			url: replacementUrl,
+			materialization: {
+				ownerSessionId: 0,
+				phase: "ready",
+				settled: "succeeded",
+			},
+		});
+		expect(afterBack.processMsg).toBeNull();
 	});
 
 
