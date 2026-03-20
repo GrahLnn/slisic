@@ -3090,6 +3090,46 @@ describe("music store action contracts", () => {
 				ownerSessionId: 2,
 			},
 		});
+		expect(deriveClosureProjection(afterSave)).toEqual({
+			state: "blocked",
+			playable: false,
+			interactive: false,
+			notificationVisible: false,
+			notificationText: null,
+			reason: "no_live_owner_chain",
+		});
+
+		await __testing.readAll();
+		await flush();
+
+		const afterDownloadAnalyze = __testing.getState();
+		expect(afterDownloadAnalyze.playlists[0]?.entries[0]).toMatchObject({
+			path: replacementPath,
+			url: replacementUrl,
+			downloaded_ok: true,
+			materialization: {
+				phase: "ready",
+				ownerSessionId: 2,
+				settled: "succeeded",
+			},
+		});
+		expect(deriveClosureProjection(afterDownloadAnalyze)).toEqual({
+			state: "blocked",
+			playable: false,
+			interactive: false,
+			notificationVisible: false,
+			notificationText: null,
+			reason: "no_live_owner_chain",
+		});
+
+		__testing.replaceState({
+			...afterDownloadAnalyze,
+			processMsg: {
+				playlist: "focus",
+				str: "Replacement remote ready for playback",
+			},
+		});
+		await flush();
 
 		impl.audioPlay = async () =>
 			Ok({
@@ -3103,7 +3143,7 @@ describe("music store action contracts", () => {
 				has_canonical_loudness: true,
 			});
 
-		await action.play(afterSave.playlists[0]!);
+		await action.play(__testing.getState().playlists[0]!);
 		await flush();
 		const livePlaybackSessionId = __testing.getState().playbackSessionId;
 		expect(livePlaybackSessionId).toBe(3);
@@ -3123,16 +3163,12 @@ describe("music store action contracts", () => {
 		expect(postPlaybackState.requestedPlaying).toBeNull();
 		expect(postPlaybackState.confirmedPlaying).toBeNull();
 		expect(postPlaybackState.nowPlaying).toBeNull();
-		expect(postPlaybackState.processMsg).toBeNull();
+		expect(postPlaybackState.processMsg).toEqual({
+			playlist: "focus",
+			str: "Replacement remote ready for playback",
+		});
 
-		const state = {
-			...postPlaybackState,
-			processMsg: {
-				playlist: "focus",
-				str: "Replacement remote ready for playback",
-			},
-		};
-		__testing.replaceState(state);
+		const state = postPlaybackState;
 
 		const phaseSequence = [
 			"saved",
