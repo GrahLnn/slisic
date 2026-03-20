@@ -2,6 +2,7 @@ use super::normalization;
 use super::repo::repository;
 use super::types::{
     build_closure_lifecycle_fact, closure_owner_session_id_from_entry,
+    closure_owner_session_id_or_entry_identity,
     dedup_entries, default_music, entry_key, merge_music_with_template, path_to_title,
     recompute_entry_avg, recompute_playlist_avg, sanitize_name, ClosureLifecyclePhase,
     CollectMission, Entry, EntryType, FolderSample, LinkSample, Music, Playlist, ProcessMsg,
@@ -42,15 +43,19 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
     let (playlist, pending) = build_playlist_from_mission(data, &music_index)?;
     let playlist_name = playlist.name.clone();
     let analysis_paths = playlist_music_paths(&playlist);
+    let canonical_owner_session_id = pending
+        .first()
+        .and_then(closure_owner_session_id_from_entry);
     repo.create_playlist(playlist).await?;
     normalization::analyze_paths_blocking(
         &app,
         analysis_paths,
         &playlist_name,
         "Analyzing loudness",
+        canonical_owner_session_id,
     )
     .await?;
-    spawn_downloads(app, playlist_name, pending);
+    spawn_downloads(app, playlist_name, pending, canonical_owner_session_id);
     Ok(())
 }
 
@@ -72,15 +77,19 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
     let (playlist, pending) = build_playlist_from_mission(data, &music_index)?;
     let playlist_name = playlist.name.clone();
     let analysis_paths = playlist_music_paths(&playlist);
+    let canonical_owner_session_id = pending
+        .first()
+        .and_then(closure_owner_session_id_from_entry);
     repo.replace_playlist(&anchor.name, playlist).await?;
     normalization::analyze_paths_blocking(
         &app,
         analysis_paths,
         &playlist_name,
         "Analyzing loudness",
+        canonical_owner_session_id,
     )
     .await?;
-    spawn_downloads(app, playlist_name, pending);
+    spawn_downloads(app, playlist_name, pending, canonical_owner_session_id);
     Ok(())
 }
 
@@ -180,6 +189,7 @@ pub async fn recheck_folder(app: AppHandle, entry: Entry) -> Result<Entry, Strin
         normalization::stale_music_paths(&updated.musics),
         &updated.name,
         "Analyzing loudness",
+        None,
     )
     .await?;
     Ok(updated)
@@ -205,6 +215,7 @@ pub async fn update_weblist(
         entry_music_paths(&outcome.entry),
         &playlist,
         "Analyzing loudness",
+        Some(owner_session_id),
     )
     .await?;
     emit_download_persisted(
@@ -235,14 +246,21 @@ fn emit_download_persisted(
     .ok();
 }
 
-fn spawn_downloads(app: AppHandle, playlist_name: String, pending: Vec<Entry>) {
+fn spawn_downloads(
+    app: AppHandle,
+    playlist_name: String,
+    pending: Vec<Entry>,
+    canonical_owner_session_id: Option<u64>,
+) {
     if pending.is_empty() {
         return;
     }
 
     tauri::async_runtime::spawn(async move {
         for entry in pending {
-            let owner_session_id = closure_owner_session_id_from_entry(&entry).unwrap_or(0);
+            let owner_session_id =
+                closure_owner_session_id_or_entry_identity(canonical_owner_session_id, &entry)
+                    .unwrap_or(0);
             ProcessMsg {
                 playlist: playlist_name.clone(),
                 str: format!("Downloading {}", entry.name),
@@ -284,6 +302,7 @@ fn spawn_downloads(app: AppHandle, playlist_name: String, pending: Vec<Entry>) {
                         entry_music_paths(&entry),
                         &playlist_name,
                         "Analyzing loudness",
+                        Some(owner_session_id),
                     )
                     .await;
                     emit_download_persisted(

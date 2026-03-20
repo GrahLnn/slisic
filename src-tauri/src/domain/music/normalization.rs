@@ -1,6 +1,6 @@
 use super::repo::repository;
 use super::types::{
-    build_closure_lifecycle_fact, closure_owner_session_id_from_entry, default_music,
+    build_closure_lifecycle_fact, closure_owner_session_id_or_entry_identity, default_music,
     sync_legacy_loudness_fields, Music, NormalizationStatus, Playlist, ProcessMsg,
     ClosureLifecyclePhase, Entry,
     MUSIC_ANALYSIS_VERSION,
@@ -22,8 +22,10 @@ fn emit_analysis_closure_fact(
     entry: &Entry,
     phase: ClosureLifecyclePhase,
     notification_text: Option<String>,
+    owner_session_id: Option<u64>,
 ) {
-    let owner_session_id = closure_owner_session_id_from_entry(entry).unwrap_or(0);
+    let owner_session_id = closure_owner_session_id_or_entry_identity(owner_session_id, entry)
+        .unwrap_or(0);
     if let Some(fact) = build_closure_lifecycle_fact(
         owner_session_id,
         playlist,
@@ -72,6 +74,7 @@ pub async fn bootstrap_library_normalization(app: &AppHandle) -> Result<usize, S
         stale,
         NORMALIZATION_BOOTSTRAP_PLAYLIST,
         "Updating loudness library",
+        None,
     )
     .await
 }
@@ -81,6 +84,7 @@ pub async fn analyze_paths_blocking(
     paths: Vec<String>,
     playlist: &str,
     label: &str,
+    owner_session_id: Option<u64>,
 ) -> Result<usize, String> {
     let index = repository().await?.music_index().await?;
     let mut queue = paths_to_music_queue(paths, &index);
@@ -128,6 +132,7 @@ pub async fn analyze_paths_blocking(
                         total,
                         path_display_name(&music_path)
                     )),
+                    owner_session_id,
                 );
 
                 match result {
@@ -139,6 +144,7 @@ pub async fn analyze_paths_blocking(
                             &closure_entry,
                             ClosureLifecyclePhase::Analyzed,
                             Some(format!("Analyzed {}", path_display_name(&music.path))),
+                            owner_session_id,
                         );
                         persist_batch.push(music);
                         if persist_batch.len() >= ANALYSIS_PERSIST_BATCH {
@@ -157,6 +163,7 @@ pub async fn analyze_paths_blocking(
                             &closure_entry,
                             ClosureLifecyclePhase::Failed,
                             Some(format!("Analysis failed: {error}")),
+                            owner_session_id,
                         );
                         let _ = persist_analysis_failure(&music_path, error.clone()).await;
                         if first_error.is_none() {

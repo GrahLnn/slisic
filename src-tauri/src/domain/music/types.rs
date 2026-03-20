@@ -176,6 +176,13 @@ pub fn build_closure_lifecycle_fact(
     })
 }
 
+pub fn closure_owner_session_id_or_entry_identity(
+    owner_session_id: Option<u64>,
+    entry: &Entry,
+) -> Option<u64> {
+    owner_session_id.or_else(|| closure_owner_session_id_from_entry(entry))
+}
+
 pub fn closure_owner_session_id_from_entry(entry: &Entry) -> Option<u64> {
     let entry_identity = closure_entry_identity(entry)?;
     Some(closure_owner_session_id_from_identity(&entry_identity))
@@ -325,6 +332,7 @@ pub fn recompute_playlist_avg(playlist: &mut Playlist) {
 mod tests {
     use super::{
         canonical_mean_lufs, closure_owner_session_id_from_entry,
+        closure_owner_session_id_or_entry_identity,
         closure_owner_session_id_from_identity, dedup_entries, merge_music_with_template,
         music_loudness_lufs, recompute_entry_avg, recompute_playlist_avg, sanitize_name, Entry,
         EntryType, Music, NormalizationStatus, Playlist,
@@ -598,5 +606,25 @@ mod tests {
         let identity = "url-path:https://example.com/remote-replacement::C:/music/replacement";
 
         assert_eq!(closure_owner_session_id_from_entry(&entry), Some(closure_owner_session_id_from_identity(identity)));
+    }
+
+    #[test]
+    fn closure_owner_session_id_or_entry_identity_prefers_live_replacement_save_token() {
+        let entry = Entry {
+            path: Some("C:/music/replacement".to_string()),
+            name: "replacement".to_string(),
+            musics: vec![],
+            avg_db: None,
+            url: Some("https://example.com/remote-replacement".to_string()),
+            downloaded_ok: Some(true),
+            tracking: Some(false),
+            entry_type: EntryType::WebList,
+        };
+
+        assert_eq!(closure_owner_session_id_or_entry_identity(Some(22), &entry), Some(22));
+        assert_eq!(
+            closure_owner_session_id_or_entry_identity(None, &entry),
+            closure_owner_session_id_from_entry(&entry)
+        );
     }
 }

@@ -2836,6 +2836,91 @@ describe("music store action contracts", () => {
 		).toBe(true);
 	});
 
+	test("closure_false_negative_guard_backend_emitters_preserve_replacement_save_owner_token_instead_of_recomputing_path_identity", () => {
+		const replacementIdentity =
+			"url-path:https://example.com/remote-replacement::C:/music/replacement";
+		const liveEntry = withEntryMaterialization(
+			makeEntry("replacement remote", "C:/music/replacement", {
+				url: "https://example.com/remote-replacement",
+				entry_type: "WebList",
+				downloaded_ok: true,
+				musics: [
+					{
+						...makeMusic("C:/music/replacement/a.mp3"),
+						normalization_status: "Failed",
+						normalization_error: "Analysis failed",
+					},
+				],
+			}),
+			{
+				phase: "failed",
+				settled: "failed",
+				ownerSessionId: 22,
+				lastError: "Analysis failed",
+			},
+		);
+
+		const backendFacts = [
+			makeClosureLifecycleFact({
+				owner_session_id: 22,
+				entry_identity: replacementIdentity,
+				phase: "downloaded",
+				event_id: `22:${replacementIdentity}:downloaded`,
+			}),
+			makeClosureLifecycleFact({
+				owner_session_id: 22,
+				entry_identity: replacementIdentity,
+				phase: "analyzed",
+				event_id: `22:${replacementIdentity}:analyzed`,
+			}),
+			makeClosureLifecycleFact({
+				owner_session_id: 22,
+				entry_identity: replacementIdentity,
+				phase: "notified",
+				event_id: `22:${replacementIdentity}:notified`,
+			}),
+			makeClosureLifecycleFact({
+				owner_session_id: 22,
+				entry_identity: replacementIdentity,
+				phase: "failed",
+				event_id: `22:${replacementIdentity}:failed`,
+			}),
+		];
+
+		expect(
+			backendFacts.map((fact) =>
+				createClosureEventContract(
+					fact.owner_session_id,
+					fact.entry_identity,
+					fact.phase,
+				),
+			),
+		).toEqual([
+			{ ownerSessionId: 22, entryIdentity: replacementIdentity, phase: "downloaded", eventId: `22:${replacementIdentity}:downloaded` },
+			{ ownerSessionId: 22, entryIdentity: replacementIdentity, phase: "analyzed", eventId: `22:${replacementIdentity}:analyzed` },
+			{ ownerSessionId: 22, entryIdentity: replacementIdentity, phase: "notified", eventId: `22:${replacementIdentity}:notified` },
+			{ ownerSessionId: 22, entryIdentity: replacementIdentity, phase: "failed", eventId: `22:${replacementIdentity}:failed` },
+		]);
+
+		expect(
+			backendFacts.every((fact) =>
+				canSettleClosureEvent(
+					{
+						entrySessionId: 22,
+						closureOwnerSessionId: 22,
+						playbackSessionId: 71,
+					},
+					createClosureEventContract(
+						fact.owner_session_id,
+						fact.entry_identity,
+						fact.phase,
+					),
+					{ entry: liveEntry },
+				),
+			),
+		).toBe(true);
+	});
+
 	test("closure_false_negative_guard_displaced_entry_session_cannot_reuse_live_owner_chain_event_contract", () => {
 		const liveEntry = withEntryMaterialization(
 			makeEntry("replacement remote", "C:/music/replacement", {
