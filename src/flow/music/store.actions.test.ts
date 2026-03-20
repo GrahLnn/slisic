@@ -3134,6 +3134,20 @@ describe("music store action contracts", () => {
 		const staleContracts = phaseSequence.map((phase) =>
 			createClosureEventContract(11, deletedIdentity, phase),
 		);
+		const duplicateLiveContracts = [
+			liveContracts[0]!,
+			liveContracts[1]!,
+			liveContracts[2]!,
+			liveContracts[3]!,
+			liveContracts[3]!,
+		];
+		const reorderedLiveContracts = [
+			liveContracts[0]!,
+			liveContracts[1]!,
+			liveContracts[3]!,
+			liveContracts[2]!,
+			liveContracts[4]!,
+		];
 
 		expect(
 			canSettleClosureEvents(state, liveContracts, {
@@ -3141,6 +3155,18 @@ describe("music store action contracts", () => {
 				allowedPlaybackSessionId: livePlaybackSessionId,
 			}),
 		).toBe(true);
+		expect(
+			canSettleClosureEvents(state, duplicateLiveContracts, {
+				entry: liveEntry,
+				allowedPlaybackSessionId: livePlaybackSessionId,
+			}),
+		).toBe(false);
+		expect(
+			canSettleClosureEvents(state, reorderedLiveContracts, {
+				entry: liveEntry,
+				allowedPlaybackSessionId: livePlaybackSessionId,
+			}),
+		).toBe(false);
 
 		for (const contract of staleContracts) {
 			expect(
