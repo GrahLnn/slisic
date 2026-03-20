@@ -1062,14 +1062,18 @@ export function canSettleClosureEvents(
 		"notified",
 		"playback",
 	];
-	const seenPhases = new Set<ClosureEventPhase>();
-	for (const event of events) {
+	if (events.length !== expectedPhases.length) {
+		return false;
+	}
+	for (const [index, event] of events.entries()) {
 		if (!canSettleClosureEvent(snapshot, event, options)) {
 			return false;
 		}
-		seenPhases.add(event.phase);
+		if (event.phase !== expectedPhases[index]) {
+			return false;
+		}
 	}
-	return expectedPhases.every((phase) => seenPhases.has(phase));
+	return true;
 }
 
 function deriveClosureProjectionEntry(

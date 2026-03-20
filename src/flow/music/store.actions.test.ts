@@ -2704,6 +2704,42 @@ describe("music store action contracts", () => {
 				allowedPlaybackSessionId: 71,
 			}),
 		).toBe(true);
+
+		const reorderedEvents = [
+			liveEvents[0]!,
+			liveEvents[2]!,
+			liveEvents[1]!,
+			liveEvents[3]!,
+			liveEvents[4]!,
+		];
+		expect(
+			canSettleClosureEvents(__testing.getState(), reorderedEvents, {
+				entry: __testing.getState().playlists[0]?.entries[0],
+				allowedPlaybackSessionId: 71,
+			}),
+		).toBe(false);
+
+		const duplicateEvents = [
+			liveEvents[0]!,
+			liveEvents[1]!,
+			liveEvents[1]!,
+			liveEvents[3]!,
+			liveEvents[4]!,
+		];
+		expect(
+			canSettleClosureEvents(__testing.getState(), duplicateEvents, {
+				entry: __testing.getState().playlists[0]?.entries[0],
+				allowedPlaybackSessionId: 71,
+			}),
+		).toBe(false);
+
+		const omittedEvents = liveEvents.slice(0, 4);
+		expect(
+			canSettleClosureEvents(__testing.getState(), omittedEvents, {
+				entry: __testing.getState().playlists[0]?.entries[0],
+				allowedPlaybackSessionId: 71,
+			}),
+		).toBe(false);
 	});
 
 	test("closure_true_positive_backend_typed_lifecycle_fact_carries_exact_owner_identity_for_notification_projection", () => {
@@ -2974,21 +3010,27 @@ describe("music store action contracts", () => {
 			downloaded_ok: false,
 			musics: [],
 		});
-		const liveReplacement = withEntryMaterialization(
-			makeEntry("replacement remote", "C:/music/replacement", {
-				url: "https://example.com/remote-replacement",
-				entry_type: "WebList",
+		const replacementUrl = "https://example.com/remote-replacement";
+		const replacementPath = "C:/music/replacement";
+		const replacementMusic = {
+			...makeMusic("C:/music/replacement/a.mp3"),
+			normalization_status: "Ready" as const,
+			integrated_lufs: -18,
+			analysis_version: 4,
+			analyzed_at_ms: 321,
+		};
+		const replacementDraft = makeEntry("replacement remote", replacementPath, {
+			url: replacementUrl,
+			entry_type: "WebList",
+			downloaded_ok: false,
+			musics: [],
+		});
+		const persistedReplacement = withEntryMaterialization(
+			{
+				...replacementDraft,
 				downloaded_ok: true,
-				musics: [
-					{
-						...makeMusic("C:/music/replacement/a.mp3"),
-						normalization_status: "Ready",
-						integrated_lufs: -18,
-						analysis_version: 4,
-						analyzed_at_ms: 321,
-					},
-				],
-			}),
+				musics: [replacementMusic],
+			},
 			{
 				phase: "ready",
 				settled: "succeeded",
@@ -2996,57 +3038,86 @@ describe("music store action contracts", () => {
 				lastError: null,
 			},
 		);
+		const replacementIdentity =
+			"url-path:https://example.com/remote-replacement::C:/music/replacement";
+		const deletedIdentity =
+			"url-path:https://example.com/remote-deleted::C:/music/deleted";
+
+		impl.readAll = async () => Ok<Playlist[], string>([makePlaylist("focus", [persistedReplacement])]);
+		impl.create = async () => Ok<null, string>(null);
 
 		__testing.replaceState({
 			...__testing.getState(),
-			mode: "play",
+			mode: "edit",
 			routeResolved: true,
-			startupRoute: "hydrated_playlists",
+			startupRoute: "hydrated_editing",
 			selectedListName: "focus",
 			playbackListName: null,
 			playlists: [makePlaylist("focus", [deletedEntry])],
+			slot: makeMission("focus", [deletedEntry]),
 			entrySessionId: 5,
 			closureOwnerSessionId: 5,
 			playbackSessionId: null,
+			playbackEpoch: 21,
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
 			confirmedPlaying: null,
 			nowPlaying: null,
 			processMsg: null,
 		});
 
-		action.edit(makePlaylist("focus", [deletedEntry]));
-		await flush();
 		action.removeEntry(deletedEntry);
-		action.addExistingEntry(liveReplacement);
+		action.addExistingEntry(replacementDraft);
 		await flush();
 
-		__testing.replaceState({
+		const pendingSave = action.save();
+		await waitUntil(() => __testing.getState().mode === "play");
+		await pendingSave;
+		await flush();
+
+		const afterSave = __testing.getState();
+		expect(afterSave.slot).toBeNull();
+		expect(afterSave.entrySessionId).toBe(2);
+		expect(afterSave.closureOwnerSessionId).toBe(2);
+		expect(afterSave.playlists[0]?.entries[0]).toMatchObject({
+			path: replacementPath,
+			url: replacementUrl,
+			downloaded_ok: true,
+		});
+		expect(afterSave.playlists[0]?.entries[0]).toMatchObject({
+			materialization: {
+				phase: "ready",
+				ownerSessionId: 2,
+			},
+		});
+
+		impl.audioPlay = async () =>
+			Ok({
+				session_id: 71,
+				path: replacementMusic.path,
+				duration_ms: 1000,
+				gain: 1,
+				gain_db: 0,
+				target_lufs: -18,
+				integrated_lufs: -18,
+				has_canonical_loudness: true,
+			});
+
+		await action.play(afterSave.playlists[0]!);
+		await flush();
+		const livePlaybackSessionId = __testing.getState().playbackSessionId;
+		expect(livePlaybackSessionId).toBe(3);
+
+		const state = {
 			...__testing.getState(),
-			mode: "play",
-			routeResolved: true,
-			startupRoute: "hydrated_playlists",
-			selectedListName: "focus",
-			playbackListName: "focus",
-			playlists: [makePlaylist("focus", [liveReplacement])],
-			slot: null,
-			entrySessionId: 22,
-			closureOwnerSessionId: 22,
-			playbackEpoch: 22,
-			playbackSessionId: 71,
-			requestedPlaying: liveReplacement.musics[0] ?? null,
-			confirmedPlaying: liveReplacement.musics[0] ?? null,
-			nowPlaying: liveReplacement.musics[0] ?? null,
 			processMsg: {
 				playlist: "focus",
 				str: "Replacement remote ready for playback",
 			},
-		});
+		};
+		__testing.replaceState(state);
 
-		const state = __testing.getState();
 		const liveEntry = state.playlists[0]?.entries[0];
-		const liveIdentity =
-			"url-path:https://example.com/remote-replacement::C:/music/replacement";
-		const staleIdentity =
-			"url-path:https://example.com/remote-deleted::C:/music/deleted";
 
 		const phaseSequence = [
 			"saved",
@@ -3055,17 +3126,19 @@ describe("music store action contracts", () => {
 			"notified",
 			"playback",
 		] as const;
+		const liveOwnerSessionId = state.closureOwnerSessionId;
+		expect(liveOwnerSessionId).toBe(2);
 		const liveContracts = phaseSequence.map((phase) =>
-			createClosureEventContract(22, liveIdentity, phase),
+			createClosureEventContract(liveOwnerSessionId, replacementIdentity, phase),
 		);
 		const staleContracts = phaseSequence.map((phase) =>
-			createClosureEventContract(11, staleIdentity, phase),
+			createClosureEventContract(11, deletedIdentity, phase),
 		);
 
 		expect(
 			canSettleClosureEvents(state, liveContracts, {
 				entry: liveEntry,
-				allowedPlaybackSessionId: 71,
+				allowedPlaybackSessionId: livePlaybackSessionId,
 			}),
 		).toBe(true);
 
@@ -3073,18 +3146,18 @@ describe("music store action contracts", () => {
 			expect(
 				canSettleClosureEvent(state, contract, {
 					entry: liveEntry,
-					allowedPlaybackSessionId: 71,
+					allowedPlaybackSessionId: livePlaybackSessionId,
 				}),
 			).toBe(false);
 		}
 
 		expect(deriveClosureProjection(__testing.getState())).toEqual({
-			state: "playable",
-			playable: true,
+			state: "ready",
+			playable: false,
 			interactive: true,
 			notificationVisible: true,
 			notificationText: "Replacement remote ready for playback",
-			reason: "playback_confirmed",
+			reason: "ready_without_playback",
 		});
 
 		__testing.replaceState({
