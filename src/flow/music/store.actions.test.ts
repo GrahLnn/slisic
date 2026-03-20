@@ -3107,17 +3107,32 @@ describe("music store action contracts", () => {
 		await flush();
 		const livePlaybackSessionId = __testing.getState().playbackSessionId;
 		expect(livePlaybackSessionId).toBe(3);
+		const postPlaybackState = __testing.getState();
+		const liveEntry = postPlaybackState.playlists[0]?.entries[0];
+		expect(liveEntry).toMatchObject({
+			path: replacementPath,
+			url: replacementUrl,
+			downloaded_ok: true,
+			materialization: {
+				phase: "ready",
+				ownerSessionId: 2,
+				settled: "succeeded",
+			},
+		});
+		expect(postPlaybackState.playbackSessionId).toBe(livePlaybackSessionId);
+		expect(postPlaybackState.requestedPlaying).toBeNull();
+		expect(postPlaybackState.confirmedPlaying).toBeNull();
+		expect(postPlaybackState.nowPlaying).toBeNull();
+		expect(postPlaybackState.processMsg).toBeNull();
 
 		const state = {
-			...__testing.getState(),
+			...postPlaybackState,
 			processMsg: {
 				playlist: "focus",
 				str: "Replacement remote ready for playback",
 			},
 		};
 		__testing.replaceState(state);
-
-		const liveEntry = state.playlists[0]?.entries[0];
 
 		const phaseSequence = [
 			"saved",
