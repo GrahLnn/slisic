@@ -4878,6 +4878,64 @@ describe("music store action contracts", () => {
 		expect(afterBack.processMsg).toBeNull();
 	});
 
+	test("closure_false_negative_guard_process_msg_event_from_replaced_owner_path_is_suppressed_before_projection", async () => {
+		const handlers = new Map<string, (payload: unknown) => void>();
+		const livePath = "C:/music/live/new-track.mp3";
+		const stalePath = "C:/music/stale/old-track.mp3";
+		const livePlaylist = makePlaylist("focus", [
+			withEntryMaterialization(
+				makeEntry("live remote", livePath, {
+					url: "https://example.com/live",
+					entry_type: "WebList",
+					downloaded_ok: true,
+					musics: [
+						{
+							...makeMusic(livePath),
+							integrated_lufs: -18,
+							analysis_version: 7,
+							normalization_status: "Ready",
+							analyzed_at_ms: 123,
+						},
+					],
+				}),
+				{
+					phase: "ready",
+					ownerSessionId: 4,
+					settled: "succeeded",
+					lastError: null,
+				},
+			),
+		]);
+
+		impl.evt = async (event: string, handler: (payload: unknown) => void) => {
+			handlers.set(event, handler);
+			return () => {
+				handlers.delete(event);
+			};
+		};
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => Ok<Playlist[], string>([livePlaylist]);
+
+		await action.run();
+		await flush();
+		await action.play(__testing.getState().playlists[0]!);
+		await flush();
+
+		handlers.get("processMsg")?.({
+			playlist: "focus",
+			str: `Analyzing loudness 1/1: ${stalePath}`,
+		});
+		await flush();
+
+		const state = __testing.getState();
+		expect(state.processMsg).toEqual({
+			playlist: "focus",
+			str: `Analyzing loudness 1/1: ${stalePath}`,
+		});
+		expect(deriveClosureProjection(state).notificationVisible).toBe(false);
+		expect(deriveClosureProjection(state).notificationText).toBeNull();
+	});
+
 
 	test("save_false_positive_guard_update_error_rolls_back_optimistic_edit_after_refresh", async () => {
 		const original = makePlaylist("focus", [

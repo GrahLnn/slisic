@@ -1149,6 +1149,14 @@ function deriveLiveClosureNotificationHint(
 		return { visible: false, text: null };
 	}
 
+	const hintedPathIdentity = deriveProcessMsgIdentityHint(hint);
+	if (
+		hintedPathIdentity &&
+		hintedPathIdentity !== liveEntryIdentity
+	) {
+		return { visible: false, text: null };
+	}
+
 	return { visible: true, text: hint.str };
 }
 
@@ -1311,6 +1319,79 @@ function sanitizeProcessMsgHint(
 		: null;
 }
 
+function deriveProcessMsgIdentityHint(hint: ProcessMsg): string | null {
+	const prefix = "Analyzing loudness 1/1: ";
+	if (!hint.str.startsWith(prefix)) return null;
+	const assetPath = hint.str.slice(prefix.length).trim();
+	if (assetPath.length === 0) return null;
+	return `path:${assetPath}`;
+}
+
+function sanitizeLiveProcessMsgHint(
+	snapshot: Pick<
+		MusicState,
+		| "playlists"
+		| "selectedListName"
+		| "playbackListName"
+		| "confirmedPlaying"
+		| "nowPlaying"
+		| "processMsg"
+		| "entrySessionId"
+		| "closureOwnerSessionId"
+	>,
+): ProcessMsg | null {
+	const hint = snapshot.processMsg;
+	if (!hint) return null;
+
+	const hintedPlaylist = snapshot.playlists.find(
+		(playlist) => playlist.name === hint.playlist,
+	);
+	if (!hintedPlaylist) return hint;
+
+	const hintedEntry =
+		hintedPlaylist.entries.find(
+			(entry) => derivePersistedOwnerIdentity(entry) != null,
+		) ?? null;
+	if (!hintedEntry) return hint;
+
+	const hintedIdentity = derivePersistedOwnerIdentity(hintedEntry);
+	if (!hintedIdentity) return hint;
+
+	if (snapshot.entrySessionId !== snapshot.closureOwnerSessionId) {
+		return hint;
+	}
+
+	if (snapshot.closureOwnerSessionId <= 0) {
+		return hint;
+	}
+
+	const closureEntry = deriveClosureProjectionEntry(snapshot);
+	if (!closureEntry) {
+		const hintedPathIdentity = deriveProcessMsgIdentityHint(hint);
+		if (hintedPathIdentity && hintedPathIdentity !== hintedIdentity) {
+			return null;
+		}
+		return hint;
+	}
+
+	const liveEntryIdentity = derivePersistedOwnerIdentity(closureEntry);
+	if (!liveEntryIdentity) return hint;
+	if (hintedIdentity !== liveEntryIdentity) {
+		return null;
+	}
+
+	const hintedPathIdentity = deriveProcessMsgIdentityHint(hint);
+	if (!hintedPathIdentity) {
+		return hint;
+	}
+
+	if (hintedPathIdentity !== liveEntryIdentity) {
+		return null;
+	}
+
+	return hint;
+}
+
 function patchHintOnlyProcessMsg(payload: unknown) {
 	if (
 		!payload ||
@@ -1324,7 +1405,19 @@ function patchHintOnlyProcessMsg(payload: unknown) {
 	}
 
 	const processMsg = payload as ProcessMsg;
-	patchState({ processMsg: processMsg });
+	setState((prev) => ({
+		...prev,
+		processMsg: sanitizeLiveProcessMsgHint({
+			playlists: prev.playlists,
+			selectedListName: prev.selectedListName,
+			playbackListName: prev.playbackListName,
+			confirmedPlaying: prev.confirmedPlaying,
+			nowPlaying: prev.nowPlaying,
+			processMsg,
+			entrySessionId: prev.entrySessionId,
+			closureOwnerSessionId: prev.closureOwnerSessionId,
+		}),
+	}));
 }
 
 function subscribe(listener: () => void) {
