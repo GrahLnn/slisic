@@ -36,6 +36,14 @@ export interface DraftEntryOperationState {
   ownerSessionId: number;
 }
 
+export interface DraftOperationTargetSnapshot {
+  key: string;
+  kind: DraftEntryOperationKind;
+  ownerSessionId: number;
+  inProgress: boolean;
+  settled: "idle" | "succeeded" | "failed";
+}
+
 export type WebMaterializationPhase =
   | "pending"
   | "downloading"

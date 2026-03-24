@@ -229,6 +229,35 @@ export function deriveDraftReviewState(snapshot: DraftReviewProjectionSnapshot):
   return { active, linkReviews, folderReviews, weblistReviews };
 }
 
+export function deriveDraftOperationTargetSnapshots(
+  snapshot: DraftReviewProjectionSnapshot,
+): import("./store.types").DraftOperationTargetSnapshot[] {
+  if (!snapshot.slot) return [];
+  const targets: import("./store.types").DraftOperationTargetSnapshot[] = [];
+  for (const link of snapshot.slot.links) {
+    if (!link.operation) continue;
+    targets.push({
+      key: link.url,
+      kind: link.operation.kind,
+      ownerSessionId: link.operation.ownerSessionId,
+      inProgress: link.operation.inProgress,
+      settled: link.operation.settled,
+    });
+  }
+  for (const entry of snapshot.slot.entries) {
+    const operation = getDraftEntryOperation(entry);
+    if (!operation) continue;
+    targets.push({
+      key: operation.key,
+      kind: operation.kind,
+      ownerSessionId: operation.ownerSessionId,
+      inProgress: operation.inProgress,
+      settled: operation.settled,
+    });
+  }
+  return targets;
+}
+
 export function canExitWorkspace(snapshot: DraftReviewProjectionSnapshot): boolean {
   return deriveDraftReviewState(snapshot).active.length === 0;
 }

@@ -6,6 +6,7 @@ import {
 	type SnapshotFrom,
 } from "xstate";
 import type {
+	DraftOperationTargetSnapshot,
 	MusicState,
 	ProcessHintProjection,
 	StartupRouteResolution,
@@ -14,6 +15,7 @@ import type {
 import {
 	deriveClosureProjection,
 	deriveProbePatch,
+	deriveDraftOperationTargetSnapshots,
 	deriveDraftReviewState,
 	derivePlaybackOwnedList,
 	deriveProcessHintProjection,
@@ -66,11 +68,11 @@ export interface PlaybackTransportHandoffActorState {
 }
 
 export interface DraftOperationsActorState {
-	snapshot: MusicState;
-	activeReviewKeys: string[];
-	linkReviewKeys: string[];
-	folderReviewKeys: string[];
-	weblistReviewKeys: string[];
+	targets: DraftOperationTargetSnapshot[];
+	activeTargetKeys: string[];
+	linkTargetKeys: string[];
+	folderTargetKeys: string[];
+	weblistTargetKeys: string[];
 }
 
 export interface EntryMaterializationActorState {
@@ -256,12 +258,13 @@ function createDraftOperationsState(
 	snapshot: MusicState,
 ): DraftOperationsActorState {
 	const reviews = deriveDraftReviewState(snapshot);
+	const targets = deriveDraftOperationTargetSnapshots(snapshot);
 	return {
-		snapshot,
-		activeReviewKeys: reviews.active.map((review) => `${review.kind}:${review.key}`),
-		linkReviewKeys: reviews.linkReviews,
-		folderReviewKeys: reviews.folderReviews,
-		weblistReviewKeys: reviews.weblistReviews,
+		targets,
+		activeTargetKeys: reviews.active.map((review) => `${review.kind}:${review.key}`),
+		linkTargetKeys: reviews.linkReviews,
+		folderTargetKeys: reviews.folderReviews,
+		weblistTargetKeys: reviews.weblistReviews,
 	};
 }
 

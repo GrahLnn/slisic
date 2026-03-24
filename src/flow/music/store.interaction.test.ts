@@ -1121,11 +1121,11 @@ describe("music interaction guards", () => {
 			nowPlayingPath: null,
 		});
 		expect(snapshot.draft_operations.context).toEqual({
-			snapshot: __testing.getState(),
-			activeReviewKeys: [],
-			linkReviewKeys: [],
-			folderReviewKeys: [],
-			weblistReviewKeys: [],
+			targets: [],
+			activeTargetKeys: [],
+			linkTargetKeys: [],
+			folderTargetKeys: [],
+			weblistTargetKeys: [],
 		});
 		expect(snapshot.entry_materialization.context.processHint).toEqual({
 			playlistName: "focus",
@@ -1144,6 +1144,98 @@ describe("music interaction guards", () => {
 		);
 		expect("route" in snapshot.playback_session.context).toBe(false);
 		expect("processHint" in snapshot.save_boundary.context).toBe(false);
+	});
+
+	test("draft operations actor keeps explicit target-owned operation truth instead of mirroring the full music snapshot", () => {
+		__testing.reset();
+		const folderEntry = withEntryOperation(
+			{
+				...makeEntry("folder", "C:/music/folder"),
+				musics: [makeMusic("C:/music/folder/original.flac")],
+			},
+			{
+				kind: "folder_reload",
+				key: "C:/music/folder",
+				inProgress: true,
+				settled: "idle",
+				ownerSessionId: 21,
+			},
+		);
+		const webEntry = withEntryOperation(
+			{
+				...makeEntry("remote", "C:/music/remote"),
+				url: "https://example.com/list",
+				entry_type: "WebList",
+				musics: [makeMusic("C:/music/remote/original.flac")],
+			},
+			{
+				kind: "weblist_update",
+				key: "https://example.com/list",
+				inProgress: false,
+				settled: "succeeded",
+				ownerSessionId: 22,
+			},
+		);
+		const linkUrl = "https://example.com/review";
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			slot: {
+				name: "focus",
+				folders: [],
+				entries: [folderEntry, webEntry],
+				exclude: [],
+				links: [
+					makeDraftLink({
+						url: linkUrl,
+						operation: {
+							kind: "link_review",
+							key: linkUrl,
+							inProgress: true,
+							settled: "idle",
+							ownerSessionId: 23,
+						},
+					}),
+				],
+			},
+		});
+
+		const draftSnapshot = __testing.getMachineActors().draft_operations.context;
+
+		expect(draftSnapshot).toEqual({
+			targets: [
+				{
+					key: linkUrl,
+					kind: "link_review",
+					ownerSessionId: 23,
+					inProgress: true,
+					settled: "idle",
+				},
+				{
+					key: "C:/music/folder",
+					kind: "folder_reload",
+					ownerSessionId: 21,
+					inProgress: true,
+					settled: "idle",
+				},
+				{
+					key: "https://example.com/list",
+					kind: "weblist_update",
+					ownerSessionId: 22,
+					inProgress: false,
+					settled: "succeeded",
+				},
+			],
+			activeTargetKeys: [
+				"link_review:https://example.com/review",
+				"folder_reload:C:/music/folder",
+			],
+			linkTargetKeys: [linkUrl],
+			folderTargetKeys: ["C:/music/folder"],
+			weblistTargetKeys: [],
+		});
+		expect("snapshot" in draftSnapshot).toBe(false);
 	});
 
 	test("deriveRefreshPatch preserves playback-owned now-playing context when UI focus browses elsewhere", () => {
@@ -1905,6 +1997,7 @@ describe("music interaction guards", () => {
 	});
 
 	test("store testing boundary exposes stable selector snapshots until canonical state changes", () => {
+		__testing.reset();
 		const initialState = __testing.getState();
 		let firstContext: MusicState | undefined;
 		let secondContext: MusicState | undefined;
