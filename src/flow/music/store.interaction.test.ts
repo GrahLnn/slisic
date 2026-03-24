@@ -9,6 +9,7 @@ import type {
 	Playlist,
 } from "@/src/cmd/commands";
 import {
+	MUSIC_MACHINE_BOUNDARIES,
 	applyOptimisticEditSave,
 	buildOptimisticPlaylistFromSlot,
 	buildPlaylistPlaceholders,
@@ -21,11 +22,11 @@ import {
 	deriveClosureProjection,
 	deriveDraftReviewState,
 	derivePlaybackOwnedList,
+	deriveProcessHintProjection,
 	deriveProbePatch,
 	deriveRefreshPatch,
 	deriveRouteResolution,
 	deriveSaveAffordance,
-	hasPlaybackContext,
 	type MusicState,
 	mapImportFolderEntryToEntry,
 	projectWorkspaceScreen,
@@ -475,17 +476,29 @@ describe("music interaction guards", () => {
 		expect(empty.playbackEpoch).toBe(12);
 	});
 
-	test("hasPlaybackContext should reject stale playback fields outside play mode", () => {
-		expect(hasPlaybackContext(baseState)).toBe(true);
-		expect(hasPlaybackContext({ ...baseState, mode: "edit" })).toBe(false);
-		expect(hasPlaybackContext({ ...baseState, mode: "create" })).toBe(false);
+	test("deriveProcessHintProjection keeps process text as a typed hint instead of state truth", () => {
+		expect(deriveProcessHintProjection(null)).toBeNull();
 		expect(
-			hasPlaybackContext({
-				...baseState,
-				selectedListName: null,
-				nowPlaying: null,
+			deriveProcessHintProjection({
+				playlist: "contemporary",
+				str: "Analyzing loudness 1/1: C:/audio/a.flac",
 			}),
-		).toBe(false);
+		).toEqual({
+			playlistName: "contemporary",
+			text: "Analyzing loudness 1/1: C:/audio/a.flac",
+			kind: "analysis",
+			assetPath: "C:/audio/a.flac",
+			raw: {
+				playlist: "contemporary",
+				str: "Analyzing loudness 1/1: C:/audio/a.flac",
+			},
+		});
+		expect(
+			deriveProcessHintProjection({
+				playlist: "contemporary",
+				str: "Download failed for remote: timeout",
+			})?.kind,
+		).toBe("failure");
 	});
 
 	test("shouldHandleAudioEnded should reject cross-mode or cross-track event bridging", () => {
@@ -1010,6 +1023,43 @@ describe("music interaction guards", () => {
 		});
 
 		expect(playbackOwned?.name).toBe("contemporary");
+	});
+
+	test("music compatibility shell exposes one explicit fn/flow boundary vocabulary over the shared music state", () => {
+		expect(MUSIC_MACHINE_BOUNDARIES).toEqual([
+			"bootstrap_workspace",
+			"playback_session",
+			"draft_operations",
+			"entry_materialization",
+			"save_boundary",
+			"closure_owner_chain",
+		]);
+	});
+
+	test("music compatibility shell projects canonical store state through the machine snapshot", () => {
+		__testing.reset();
+		const replacement = {
+			...__testing.getState(),
+			mode: "play" as const,
+			routeResolved: true,
+			startupRoute: "hydrated_playlists" as const,
+			selectedListName: "A",
+			focusedListName: "A",
+			playbackListName: "A",
+		};
+
+		__testing.replaceState(replacement);
+
+		expect(__testing.getCompatibilityShellState()).toMatchObject({
+			mode: "play",
+			routeResolved: true,
+			startupRoute: "hydrated_playlists",
+			selectedListName: "A",
+			playbackListName: "A",
+		});
+		expect(__testing.getMachineSnapshot().context.state).toEqual(
+			__testing.getState(),
+		);
 	});
 
 	test("deriveRefreshPatch preserves playback-owned now-playing context when UI focus browses elsewhere", () => {
