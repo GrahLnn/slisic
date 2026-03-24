@@ -1387,6 +1387,107 @@ describe("music store action contracts", () => {
 			ownerSessionId: 0,
 			lastError: null,
 		});
+		expect(__testing.getMachineActors().entry_materialization.context.targets).toEqual([
+			{
+				playlistName: "other",
+				entryIdentity: "url-path:https://example.com/other::C:/music/other",
+				ownerSessionId: 0,
+				phase: "ready",
+				settled: "succeeded",
+				lastError: null,
+			},
+		]);
+	});
+
+	test("materializationMachine_false_negative_guard_snapshot_replay_cannot_advance_canonical_phase_without_machine_sync_event", async () => {
+		const persistedState = {
+			...__testing.getState(),
+			playlists: [
+				makePlaylist("focus", [
+					withEntryMaterialization(
+						makeEntry("remote", "C:/music/focus", {
+							url: "https://example.com/focus",
+							entry_type: "WebList",
+							downloaded_ok: true,
+							musics: [makeMusic("C:/music/focus/a.mp3")],
+						}),
+						{
+							phase: "persisted",
+							settled: "succeeded",
+							ownerSessionId: 7,
+							lastError: null,
+						},
+					),
+				]),
+			],
+			processMsg: {
+				playlist: "focus",
+				str: "Analyzing loudness 1/1: C:/music/focus/a.mp3",
+			},
+		};
+
+		__testing.replaceState(persistedState);
+
+		expect(__testing.getMachineActors().entry_materialization.context.targets).toEqual([
+			{
+				playlistName: "focus",
+				entryIdentity: "url-path:https://example.com/focus::C:/music/focus",
+				ownerSessionId: 7,
+				phase: "persisted",
+				settled: "succeeded",
+				lastError: null,
+			},
+		]);
+
+		__testing.replaceCompatibilityBoundary("save_boundary", {
+			...persistedState,
+			playlists: [
+				makePlaylist("focus", [
+					withEntryMaterialization(
+						makeEntry("remote", "C:/music/focus", {
+							url: "https://example.com/focus",
+							entry_type: "WebList",
+							downloaded_ok: true,
+							musics: [
+								{
+									...makeMusic("C:/music/focus/a.mp3"),
+									normalization_status: "Ready",
+									integrated_lufs: -18,
+									analysis_version: 1,
+								},
+							],
+						}),
+						{
+							phase: "ready",
+							settled: "succeeded",
+							ownerSessionId: 7,
+							lastError: null,
+						},
+					),
+				]),
+			],
+		});
+
+		expect(__testing.getMachineActors().entry_materialization.context.targets).toEqual([
+			{
+				playlistName: "focus",
+				entryIdentity: "url-path:https://example.com/focus::C:/music/focus",
+				ownerSessionId: 7,
+				phase: "persisted",
+				settled: "succeeded",
+				lastError: null,
+			},
+		]);
+		expect(__testing.getMachineActors().entry_materialization.context.processHint).toEqual({
+			playlistName: "focus",
+			text: "Analyzing loudness 1/1: C:/music/focus/a.mp3",
+			kind: "analysis",
+			assetPath: "C:/music/focus/a.mp3",
+			raw: {
+				playlist: "focus",
+				str: "Analyzing loudness 1/1: C:/music/focus/a.mp3",
+			},
+		});
 	});
 
 	test("remoteTaskTruth_false_negative_guard_shadow_review_arrays_cannot_override_canonical_materialization_projection", async () => {

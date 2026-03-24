@@ -59,6 +59,15 @@ export interface WebMaterializationState {
   lastError: string | null;
 }
 
+export interface MaterializationTargetSnapshot {
+  playlistName: string;
+  entryIdentity: string;
+  ownerSessionId: number;
+  phase: WebMaterializationPhase;
+  settled: "idle" | "succeeded" | "failed";
+  lastError: string | null;
+}
+
 export interface DraftLinkState {
   url: string;
   title_or_msg: string;

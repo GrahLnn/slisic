@@ -7,6 +7,7 @@ import {
 } from "xstate";
 import type {
 	DraftOperationTargetSnapshot,
+	MaterializationTargetSnapshot,
 	MusicState,
 	ProcessHintProjection,
 	SaveBoundaryState,
@@ -82,14 +83,7 @@ export interface DraftOperationsActorState {
 
 export interface EntryMaterializationActorState {
 	processHint: ProcessHintProjection | null;
-	targets: Array<{
-		playlistName: string;
-		entryIdentity: string;
-		ownerSessionId: number;
-		phase: string;
-		settled: "idle" | "succeeded" | "failed";
-		lastError: string | null;
-	}>;
+	targets: MaterializationTargetSnapshot[];
 }
 
 export interface SaveBoundaryActorState {
@@ -155,7 +149,10 @@ export const musicBoundaryEventDefs = collect(
 		fact: "stopped" | "ended" | "failed" | "paused" | "resumed";
 	}>()("boundary.playback_transport_handoff.transport_fact_received"),
 	...event<MusicState>()("boundary.draft_operations.replace"),
-	...event<MusicState>()("boundary.entry_materialization.replace"),
+	...event<{
+		processHint: ProcessHintProjection | null;
+		targets: MaterializationTargetSnapshot[];
+	}>()("boundary.entry_materialization.sync"),
 	...event<MusicState>()("boundary.save_boundary.replace"),
 	...event<MusicState>()("boundary.closure_owner_chain.replace"),
 );
@@ -281,6 +278,15 @@ function createDraftOperationsState(
 function createEntryMaterializationState(
 	snapshot: MusicState,
 ): EntryMaterializationActorState {
+	return {
+		processHint: deriveProcessHintProjection(snapshot.processMsg),
+		targets: [],
+	};
+}
+
+function createEntryMaterializationTargets(
+	snapshot: MusicState,
+): MaterializationTargetSnapshot[] {
 	const targets = snapshot.playlists.flatMap((playlist) =>
 		playlist.entries.flatMap((entry) => {
 			const entryIdentity = derivePersistedOwnerIdentity(entry);
@@ -298,10 +304,7 @@ function createEntryMaterializationState(
 			];
 		}),
 	);
-	return {
-		processHint: deriveProcessHintProjection(snapshot.processMsg),
-		targets,
-	};
+	return targets;
 }
 
 function createSaveBoundaryState(snapshot: MusicState): SaveBoundaryActorState {
@@ -638,9 +641,12 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 					return boundary === "draft_operations"
 						? createBoundaryState(boundary, event.output)
 						: context;
-				case "boundary.entry_materialization.replace":
+				case "boundary.entry_materialization.sync":
 					return boundary === "entry_materialization"
-						? createBoundaryState(boundary, event.output)
+						? ({
+								processHint: event.output.processHint,
+								targets: event.output.targets,
+							} as MusicMachineContextMap[K])
 						: context;
 				case "boundary.save_boundary.replace":
 					return boundary === "save_boundary"
@@ -672,6 +678,7 @@ export const musicMachine = machines;
 export type MusicBoundaryLogic = ReturnType<typeof createBoundaryLogic>;
 export type MusicMachineSnapshot = SnapshotFrom<MusicBoundaryLogic>;
 export type MusicMachineActor = ReturnType<typeof createActor<MusicBoundaryLogic>>;
+export { createEntryMaterializationTargets };
 
 export const MUSIC_MACHINE_BOUNDARIES: MusicActorBoundary[] = [
 	"bootstrap_workspace",

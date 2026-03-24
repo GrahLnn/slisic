@@ -23,6 +23,7 @@ import {
 	sampleSoftMin,
 } from "./logic";
 import {
+	createEntryMaterializationTargets,
 	MUSIC_MACHINE_BOUNDARIES,
 	type MusicActorBoundary,
 	type MusicMachineActor,
@@ -224,9 +225,22 @@ function getMachineSnapshot(): MusicMachineSnapshot {
 }
 
 function replaceBoundaryState(boundary: MusicActorBoundary, next: MusicState) {
+	if (boundary === "entry_materialization") {
+		syncEntryMaterializationBoundary(next);
+		return;
+	}
 	const event =
 		musicBoundaryEventDefs[`boundary.${boundary}.replace`].load(next);
 	machineActors[boundary].send(event);
+}
+
+function syncEntryMaterializationBoundary(snapshot: MusicState) {
+	machineActors.entry_materialization.send(
+		musicBoundaryEventDefs["boundary.entry_materialization.sync"].load({
+			processHint: deriveProcessHintProjection(snapshot.processMsg),
+			targets: createEntryMaterializationTargets(snapshot),
+		}),
+	);
 }
 
 function sendBootstrapRunStarted(runId: number) {
@@ -335,12 +349,14 @@ function syncCompatibilityShell(nextState: MusicState) {
 	for (const boundary of MUSIC_MACHINE_BOUNDARIES) {
 		if (
 			boundary === "bootstrap_workspace" ||
-			boundary === "playback_transport_handoff"
+			boundary === "playback_transport_handoff" ||
+			boundary === "entry_materialization"
 		) {
 			continue;
 		}
 		replaceBoundaryState(boundary, nextState);
 	}
+	syncEntryMaterializationBoundary(nextState);
 	syncPlaybackTransportHandoff(nextState);
 }
 
