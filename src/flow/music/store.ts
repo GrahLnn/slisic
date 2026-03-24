@@ -23,6 +23,7 @@ import {
 	sampleSoftMin,
 } from "./logic";
 import {
+	type ClosureOwnerChainFact,
 	createEntryMaterializationTargets,
 	MUSIC_MACHINE_BOUNDARIES,
 	type MusicActorBoundary,
@@ -233,6 +234,10 @@ function replaceBoundaryState(boundary: MusicActorBoundary, next: MusicState) {
 	if (boundary === "save_boundary") {
 		return;
 	}
+	if (boundary === "closure_owner_chain") {
+		syncClosureOwnerChain(next);
+		return;
+	}
 	const event =
 		musicBoundaryEventDefs[`boundary.${boundary}.replace`].load(next);
 	machineActors[boundary].send(event);
@@ -355,6 +360,106 @@ function syncSaveBoundary(boundary: SaveBoundaryState) {
 	);
 }
 
+function closureSnapshotOf(
+	snapshot: MusicState,
+): Pick<
+	MusicState,
+	| "playlists"
+	| "selectedListName"
+	| "playbackListName"
+	| "confirmedPlaying"
+	| "nowPlaying"
+	| "processMsg"
+	| "entrySessionId"
+	| "closureOwnerSessionId"
+	| "playbackSessionId"
+> {
+	return {
+		playlists: snapshot.playlists,
+		selectedListName: snapshot.selectedListName,
+		playbackListName: snapshot.playbackListName,
+		confirmedPlaying: snapshot.confirmedPlaying,
+		nowPlaying: snapshot.nowPlaying,
+		processMsg: snapshot.processMsg,
+		entrySessionId: snapshot.entrySessionId,
+		closureOwnerSessionId: snapshot.closureOwnerSessionId,
+		playbackSessionId: snapshot.playbackSessionId,
+	};
+}
+
+function deriveClosureTypedFacts(
+	snapshot: MusicState,
+): ClosureOwnerChainFact[] {
+	const entry = deriveClosureProjectionEntry(snapshot);
+	const entryIdentity = entry ? derivePersistedOwnerIdentity(entry) : null;
+	if (!entryIdentity) return [];
+
+	const ownerSessionId = snapshot.closureOwnerSessionId;
+	if (snapshot.entrySessionId !== ownerSessionId || ownerSessionId <= 0) {
+		return [];
+	}
+
+	const createClosureFact = (
+		phase: ClosureOwnerChainFact["phase"],
+	): ClosureOwnerChainFact => ({
+		ownerSessionId,
+		entryIdentity,
+		phase,
+		eventId: `${ownerSessionId}:${entryIdentity}:${phase}`,
+	});
+	const facts: ClosureOwnerChainFact[] = [createClosureFact("saved")];
+	if (!entry) return facts;
+	const materialization = getEntryMaterialization(entry);
+
+	if (
+		materialization &&
+		materialization.ownerSessionId === ownerSessionId &&
+		(materialization.phase === "persisted" ||
+			materialization.phase === "analyzing" ||
+			materialization.phase === "ready" ||
+			materialization.phase === "failed")
+	) {
+		facts.push(createClosureFact("downloaded"));
+	}
+
+	if (
+		materialization &&
+		materialization.ownerSessionId === ownerSessionId &&
+		(materialization.phase === "ready" || materialization.phase === "failed")
+	) {
+		facts.push(createClosureFact("analyzed"));
+	}
+
+	if (materialization?.phase === "failed") {
+		facts.push(createClosureFact("failed"));
+	}
+
+	const liveHint = sanitizeLiveProcessMsgHint({
+		playlists: snapshot.playlists,
+		selectedListName: snapshot.selectedListName,
+		playbackListName: snapshot.playbackListName,
+		confirmedPlaying: snapshot.confirmedPlaying,
+		nowPlaying: snapshot.nowPlaying,
+		processMsg: snapshot.processMsg,
+		entrySessionId: snapshot.entrySessionId,
+		closureOwnerSessionId: snapshot.closureOwnerSessionId,
+	});
+	if (liveHint) {
+		facts.push(createClosureFact("notified"));
+	}
+
+	return facts;
+}
+
+function syncClosureOwnerChain(snapshot: MusicState) {
+	machineActors.closure_owner_chain.send(
+		musicBoundaryEventDefs["boundary.closure_owner_chain.sync"].load({
+			snapshot: closureSnapshotOf(snapshot),
+			facts: deriveClosureTypedFacts(snapshot),
+		}),
+	);
+}
+
 function syncCompatibilityShell(nextState: MusicState) {
 	for (const boundary of MUSIC_MACHINE_BOUNDARIES) {
 		if (
@@ -369,6 +474,7 @@ function syncCompatibilityShell(nextState: MusicState) {
 	}
 	syncEntryMaterializationBoundary(nextState);
 	syncPlaybackTransportHandoff(nextState);
+	syncClosureOwnerChain(nextState);
 }
 
 function setState(next: MusicState | ((prev: MusicState) => MusicState)) {
@@ -1923,6 +2029,9 @@ export const __testing = {
 				actor.getSnapshot(),
 			]),
 		) as Record<MusicActorBoundary, MusicMachineSnapshot>;
+	},
+	syncClosureOwnerChain() {
+		syncClosureOwnerChain(getState());
 	},
 	readAll() {
 		return refreshLists();

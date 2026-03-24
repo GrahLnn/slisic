@@ -383,7 +383,7 @@ describe("music interaction guards", () => {
 		expect(projection.state).toBe("blocked");
 		expect(projection.interactive).toBe(false);
 		expect(projection.playable).toBe(false);
-		expect(projection.reason).toBe("notification_only_hint");
+		expect(projection.reason).toBe("no_live_owner_chain");
 	});
 
 	test("deriveClosureProjection scopes notification binding to the matching live owner chain playlist", () => {
@@ -1097,6 +1097,7 @@ describe("music interaction guards", () => {
 			entrySessionId: 12,
 			closureOwnerSessionId: 9,
 		});
+		__testing.syncClosureOwnerChain();
 		const snapshot = __testing.getMachineActors();
 
 		expect(snapshot.bootstrap_workspace.context).toEqual({

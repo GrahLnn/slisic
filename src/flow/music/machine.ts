@@ -1,10 +1,27 @@
-import { createMachines, event, collect } from "@grahlnn/fn/flow";
+import { collect, createMachines, event } from "@grahlnn/fn/flow";
 import {
-	createActor,
-	fromTransition,
 	type AnyActorLogic,
+	type createActor,
+	fromTransition,
 	type SnapshotFrom,
 } from "xstate";
+import type { Playlist } from "@/src/cmd/commands";
+import {
+	derivePersistedOwnerIdentity,
+	getEntryMaterialization,
+} from "./store.identity";
+import {
+	deriveBackTransition,
+	deriveClosureProjection,
+	deriveDraftOperationTargetSnapshots,
+	deriveDraftReviewState,
+	derivePlaybackOwnedList,
+	deriveProbePatch,
+	deriveProcessHintProjection,
+	deriveRouteResolution,
+	deriveWorkspaceEntryPatch,
+	projectWorkspaceScreen,
+} from "./store.projections";
 import type {
 	DraftOperationTargetSnapshot,
 	MaterializationTargetSnapshot,
@@ -14,23 +31,6 @@ import type {
 	StartupRouteResolution,
 	WorkspaceScreen,
 } from "./store.types";
-import {
-	deriveClosureProjection,
-	deriveProbePatch,
-	deriveDraftOperationTargetSnapshots,
-	deriveDraftReviewState,
-	derivePlaybackOwnedList,
-	deriveProcessHintProjection,
-	deriveRouteResolution,
-	deriveBackTransition,
-	deriveWorkspaceEntryPatch,
-	projectWorkspaceScreen,
-} from "./store.projections";
-import {
-	derivePersistedOwnerIdentity,
-	getEntryMaterialization,
-} from "./store.identity";
-import type { Playlist } from "@/src/cmd/commands";
 
 export type MusicActorBoundary =
 	| "bootstrap_workspace"
@@ -91,8 +91,29 @@ export interface SaveBoundaryActorState {
 }
 
 export interface ClosureOwnerChainActorState {
-	snapshot: MusicState;
+	liveSnapshot: Pick<
+		MusicState,
+		| "playlists"
+		| "selectedListName"
+		| "playbackListName"
+		| "confirmedPlaying"
+		| "nowPlaying"
+		| "processMsg"
+		| "entrySessionId"
+		| "closureOwnerSessionId"
+		| "playbackSessionId"
+	>;
+	typedFacts: ClosureOwnerChainFact[];
 	projection: ReturnType<typeof deriveClosureProjection>;
+}
+
+type ClosureOwnerChainSnapshot = ClosureOwnerChainActorState["liveSnapshot"];
+
+export interface ClosureOwnerChainFact {
+	ownerSessionId: number;
+	entryIdentity: string;
+	phase: "saved" | "downloaded" | "analyzed" | "failed" | "notified";
+	eventId: string;
 }
 
 export interface MusicMachineInput {
@@ -154,7 +175,11 @@ export const musicBoundaryEventDefs = collect(
 		targets: MaterializationTargetSnapshot[];
 	}>()("boundary.entry_materialization.sync"),
 	...event<SaveBoundaryState>()("boundary.save_boundary.sync"),
-	...event<MusicState>()("boundary.closure_owner_chain.replace"),
+	...event<ClosureOwnerChainSnapshot>()("boundary.closure_owner_chain.replace"),
+	...event<{
+		snapshot: ClosureOwnerChainSnapshot;
+		facts: ClosureOwnerChainFact[];
+	}>()("boundary.closure_owner_chain.sync"),
 );
 
 export type MusicMachineEvent =
@@ -235,7 +260,13 @@ function createPlaybackSessionState(
 
 function createPlaybackTransportHandoffState(
 	snapshot: MusicState,
-	settlementFact: "stopped" | "ended" | "failed" | "paused" | "resumed" | null = null,
+	settlementFact:
+		| "stopped"
+		| "ended"
+		| "failed"
+		| "paused"
+		| "resumed"
+		| null = null,
 	settlementSessionId: number | null = null,
 	lastTransportFactSessionId: number | null = null,
 ): PlaybackTransportHandoffActorState {
@@ -268,7 +299,9 @@ function createDraftOperationsState(
 	const targets = deriveDraftOperationTargetSnapshots(snapshot);
 	return {
 		targets,
-		activeTargetKeys: reviews.active.map((review) => `${review.kind}:${review.key}`),
+		activeTargetKeys: reviews.active.map(
+			(review) => `${review.kind}:${review.key}`,
+		),
 		linkTargetKeys: reviews.linkReviews,
 		folderTargetKeys: reviews.folderReviews,
 		weblistTargetKeys: reviews.weblistReviews,
@@ -307,18 +340,22 @@ function createEntryMaterializationTargets(
 	return targets;
 }
 
-function createSaveBoundaryState(boundary: SaveBoundaryState): SaveBoundaryActorState {
+function createSaveBoundaryState(
+	boundary: SaveBoundaryState,
+): SaveBoundaryActorState {
 	return {
 		boundary,
 	};
 }
 
 function createClosureOwnerChainState(
-	snapshot: MusicState,
+	snapshot: ClosureOwnerChainActorState["liveSnapshot"],
+	typedFacts: ClosureOwnerChainFact[] = [],
 ): ClosureOwnerChainActorState {
 	return {
-		snapshot,
-		projection: deriveClosureProjection(snapshot),
+		liveSnapshot: snapshot,
+		typedFacts,
+		projection: deriveClosureProjection(snapshot, typedFacts),
 	};
 }
 
@@ -343,7 +380,9 @@ function createBoundaryState<K extends MusicActorBoundary>(
 		case "draft_operations":
 			return createDraftOperationsState(snapshot) as MusicMachineContextMap[K];
 		case "entry_materialization":
-			return createEntryMaterializationState(snapshot) as MusicMachineContextMap[K];
+			return createEntryMaterializationState(
+				snapshot,
+			) as MusicMachineContextMap[K];
 		case "save_boundary":
 			return createSaveBoundaryState({
 				active: false,
@@ -353,7 +392,17 @@ function createBoundaryState<K extends MusicActorBoundary>(
 				ownerContext: null,
 			}) as MusicMachineContextMap[K];
 		case "closure_owner_chain":
-			return createClosureOwnerChainState(snapshot) as MusicMachineContextMap[K];
+			return createClosureOwnerChainState({
+				playlists: snapshot.playlists,
+				selectedListName: snapshot.selectedListName,
+				playbackListName: snapshot.playbackListName,
+				confirmedPlaying: snapshot.confirmedPlaying,
+				nowPlaying: snapshot.nowPlaying,
+				processMsg: snapshot.processMsg,
+				entrySessionId: snapshot.entrySessionId,
+				closureOwnerSessionId: snapshot.closureOwnerSessionId,
+				playbackSessionId: snapshot.playbackSessionId,
+			}) as MusicMachineContextMap[K];
 	}
 }
 
@@ -370,7 +419,7 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 					startupFailure: null,
 					isLoading: true,
 				};
-			case "boundary.bootstrap_workspace.probe_completed":
+			case "boundary.bootstrap_workspace.probe_completed": {
 				const probePatch = deriveProbePatch(
 					{
 						mode: context.route.mode,
@@ -396,6 +445,7 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 					isLoading: true,
 					playlistNames: event.output.playlistNames,
 				};
+			}
 			case "boundary.bootstrap_workspace.run_failed":
 				return {
 					...context,
@@ -439,7 +489,7 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 										: context.screen,
 							isLoading: false,
 						};
-			case "boundary.bootstrap_workspace.workspace_entered":
+			case "boundary.bootstrap_workspace.workspace_entered": {
 				const enteredPatch = deriveWorkspaceEntryPatch(
 					event.output.kind,
 					event.output.entrySessionId,
@@ -462,7 +512,8 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 					startupFailure: null,
 					isLoading: false,
 				};
-			case "boundary.bootstrap_workspace.workspace_exited":
+			}
+			case "boundary.bootstrap_workspace.workspace_exited": {
 				const exitedPatch = deriveBackTransition({
 					mode: context.screen === "edit" ? "edit" : "create",
 					playlists: new Array(event.output.playlistsLength).fill(null),
@@ -492,6 +543,7 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 					}),
 					isLoading: false,
 				};
+			}
 			case "boundary.bootstrap_workspace.save_settled":
 				return {
 					...context,
@@ -518,7 +570,7 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 		event: PlaybackTransportHandoffMachineEvent,
 	): PlaybackTransportHandoffActorState => {
 		switch (event.type) {
-			case "boundary.playback_transport_handoff.sync":
+			case "boundary.playback_transport_handoff.sync": {
 				const shouldRetainSettlement =
 					context.settlementFact != null &&
 					context.settlementSessionId != null &&
@@ -529,6 +581,7 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 					shouldRetainSettlement ? context.settlementSessionId : null,
 					context.lastTransportFactSessionId,
 				);
+			}
 			case "boundary.playback_transport_handoff.transport_fact_received":
 				return createPlaybackTransportHandoffState(
 					event.output.snapshot,
@@ -552,12 +605,9 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 					return boundary === "bootstrap_workspace"
 						? createBoundaryState(boundary, event.output, {
 								snapshot: event.output,
-								bootstrapRunId: (
-									context as BootstrapWorkspaceActorState
-								).runId,
-								bootstrapFailure: (
-									context as BootstrapWorkspaceActorState
-								).startupFailure,
+								bootstrapRunId: (context as BootstrapWorkspaceActorState).runId,
+								bootstrapFailure: (context as BootstrapWorkspaceActorState)
+									.startupFailure,
 							})
 						: context;
 				case "boundary.bootstrap_workspace.run_started":
@@ -632,7 +682,16 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 						: context;
 				case "boundary.closure_owner_chain.replace":
 					return boundary === "closure_owner_chain"
-						? createBoundaryState(boundary, event.output)
+						? (createClosureOwnerChainState(
+								event.output,
+							) as MusicMachineContextMap[K])
+						: context;
+				case "boundary.closure_owner_chain.sync":
+					return boundary === "closure_owner_chain"
+						? (createClosureOwnerChainState(
+								event.output.snapshot,
+								event.output.facts,
+							) as MusicMachineContextMap[K])
 						: context;
 				default:
 					return context;
@@ -655,7 +714,9 @@ const machines = createMachines({
 export const musicMachine = machines;
 export type MusicBoundaryLogic = ReturnType<typeof createBoundaryLogic>;
 export type MusicMachineSnapshot = SnapshotFrom<MusicBoundaryLogic>;
-export type MusicMachineActor = ReturnType<typeof createActor<MusicBoundaryLogic>>;
+export type MusicMachineActor = ReturnType<
+	typeof createActor<MusicBoundaryLogic>
+>;
 export { createEntryMaterializationTargets };
 
 export const MUSIC_MACHINE_BOUNDARIES: MusicActorBoundary[] = [
