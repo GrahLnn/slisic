@@ -1036,7 +1036,7 @@ describe("music interaction guards", () => {
 		]);
 	});
 
-	test("music compatibility shell projects canonical store state through the machine snapshot", () => {
+	test("music compatibility shell mirrors explicit bootstrap replacement only in testing bootstrap setup", () => {
 		__testing.reset();
 		const replacement = {
 			...__testing.getState(),
@@ -1050,6 +1050,11 @@ describe("music interaction guards", () => {
 
 		__testing.replaceState(replacement);
 
+		expect(__testing.getState()).toMatchObject({
+			mode: "play",
+			routeResolved: true,
+			startupRoute: "hydrated_playlists",
+		});
 		expect(__testing.getCompatibilityShellState()).toEqual({
 			route: {
 				kind: "hydrated_playlists",
@@ -1060,6 +1065,7 @@ describe("music interaction guards", () => {
 			screen: "play",
 			runId: 0,
 			startupFailure: null,
+			isLoading: false,
 		});
 		expect(__testing.getMachineSnapshot().context).toEqual(
 			__testing.getCompatibilityShellState(),
@@ -1093,6 +1099,7 @@ describe("music interaction guards", () => {
 			screen: "edit",
 			runId: 0,
 			startupFailure: null,
+			isLoading: false,
 		});
 		expect(snapshot.playback_session.context).toEqual({
 			snapshot: __testing.getState(),

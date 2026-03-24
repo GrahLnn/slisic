@@ -33,6 +33,7 @@ export interface BootstrapWorkspaceActorState {
 	screen: WorkspaceScreen;
 	runId: number;
 	startupFailure: string | null;
+	isLoading: boolean;
 }
 
 export interface PlaybackSessionActorState {
@@ -84,9 +85,17 @@ export interface MusicMachineContextMap {
 
 export const musicBoundaryEventDefs = collect(
 	...event<MusicState>()("boundary.bootstrap_workspace.replace"),
-	...event<{ snapshot: MusicState; runId: number; startupFailure: string | null }>()(
-		"boundary.bootstrap_workspace.transition",
+	...event<{ runId: number }>()("boundary.bootstrap_workspace.run_started"),
+	...event<{ runId: number; playlistNames: string[] }>()(
+		"boundary.bootstrap_workspace.probe_completed",
 	),
+	...event<{ runId: number; startupFailure: string }>()(
+		"boundary.bootstrap_workspace.run_failed",
+	),
+	...event<{ runId: number }>()("boundary.bootstrap_workspace.run_finished"),
+	...event<{ snapshot: MusicState }>()("boundary.bootstrap_workspace.workspace_entered"),
+	...event<{ snapshot: MusicState }>()("boundary.bootstrap_workspace.workspace_exited"),
+	...event<{ snapshot: MusicState }>()("boundary.bootstrap_workspace.save_settled"),
 	...event<MusicState>()("boundary.playback_session.replace"),
 	...event<MusicState>()("boundary.draft_operations.replace"),
 	...event<MusicState>()("boundary.entry_materialization.replace"),
@@ -96,6 +105,36 @@ export const musicBoundaryEventDefs = collect(
 
 export type MusicMachineEvent =
 	(typeof musicBoundaryEventDefs)["infer"][number];
+
+type BootstrapWorkspaceMachineEvent =
+	| Extract<
+			MusicMachineEvent,
+			{ type: "boundary.bootstrap_workspace.run_started" }
+	  >
+	| Extract<
+			MusicMachineEvent,
+			{ type: "boundary.bootstrap_workspace.probe_completed" }
+	  >
+	| Extract<
+			MusicMachineEvent,
+			{ type: "boundary.bootstrap_workspace.run_failed" }
+	  >
+	| Extract<
+			MusicMachineEvent,
+			{ type: "boundary.bootstrap_workspace.run_finished" }
+	  >
+	| Extract<
+			MusicMachineEvent,
+			{ type: "boundary.bootstrap_workspace.workspace_entered" }
+	  >
+	| Extract<
+			MusicMachineEvent,
+			{ type: "boundary.bootstrap_workspace.workspace_exited" }
+	  >
+	| Extract<
+			MusicMachineEvent,
+			{ type: "boundary.bootstrap_workspace.save_settled" }
+	  >;
 
 function createBootstrapWorkspaceState({
 	snapshot,
@@ -111,6 +150,7 @@ function createBootstrapWorkspaceState({
 		screen: projectWorkspaceScreen(snapshot),
 		runId,
 		startupFailure,
+		isLoading: !snapshot.routeResolved && startupFailure == null,
 	};
 }
 
@@ -192,6 +232,57 @@ function createBoundaryState<K extends MusicActorBoundary>(
 }
 
 function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
+	const applyBootstrapWorkspaceEvent = (
+		context: BootstrapWorkspaceActorState,
+		event: BootstrapWorkspaceMachineEvent,
+	): BootstrapWorkspaceActorState => {
+		switch (event.type) {
+			case "boundary.bootstrap_workspace.run_started":
+				return {
+					...context,
+					runId: event.output.runId,
+					startupFailure: null,
+					isLoading: true,
+				};
+			case "boundary.bootstrap_workspace.probe_completed":
+				return {
+					...context,
+					runId: event.output.runId,
+					startupFailure: null,
+					isLoading: true,
+				};
+			case "boundary.bootstrap_workspace.run_failed":
+				return {
+					...context,
+					runId: event.output.runId,
+					route: {
+						kind: "startup_failed",
+						routeResolved: true,
+						mode: "new_guide",
+						phase: "hydrated",
+					},
+					screen: "guide",
+					startupFailure: event.output.startupFailure,
+					isLoading: false,
+				};
+			case "boundary.bootstrap_workspace.run_finished":
+				return context.runId !== event.output.runId
+					? context
+					: {
+							...context,
+							isLoading: false,
+						};
+			case "boundary.bootstrap_workspace.workspace_entered":
+			case "boundary.bootstrap_workspace.workspace_exited":
+			case "boundary.bootstrap_workspace.save_settled":
+				return createBoundaryState("bootstrap_workspace", event.output.snapshot, {
+					snapshot: event.output.snapshot,
+					bootstrapRunId: context.runId,
+					bootstrapFailure: context.startupFailure,
+				});
+		}
+	};
+
 	return fromTransition<
 		MusicMachineContextMap[K],
 		MusicMachineEvent,
@@ -213,13 +304,42 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 								).startupFailure,
 							})
 						: context;
-				case "boundary.bootstrap_workspace.transition":
+				case "boundary.bootstrap_workspace.run_started":
 					return boundary === "bootstrap_workspace"
-						? createBoundaryState(boundary, event.output.snapshot, {
-								snapshot: event.output.snapshot,
-								bootstrapRunId: event.output.runId,
-								bootstrapFailure: event.output.startupFailure,
-							})
+						? (applyBootstrapWorkspaceEvent(
+								context as BootstrapWorkspaceActorState,
+								event,
+							) as MusicMachineContextMap[K])
+						: context;
+				case "boundary.bootstrap_workspace.probe_completed":
+					return boundary === "bootstrap_workspace"
+						? (applyBootstrapWorkspaceEvent(
+								context as BootstrapWorkspaceActorState,
+								event,
+							) as MusicMachineContextMap[K])
+						: context;
+				case "boundary.bootstrap_workspace.run_failed":
+					return boundary === "bootstrap_workspace"
+						? (applyBootstrapWorkspaceEvent(
+								context as BootstrapWorkspaceActorState,
+								event,
+							) as MusicMachineContextMap[K])
+						: context;
+				case "boundary.bootstrap_workspace.run_finished":
+					return boundary === "bootstrap_workspace"
+						? (applyBootstrapWorkspaceEvent(
+								context as BootstrapWorkspaceActorState,
+								event,
+							) as MusicMachineContextMap[K])
+						: context;
+				case "boundary.bootstrap_workspace.workspace_entered":
+				case "boundary.bootstrap_workspace.workspace_exited":
+				case "boundary.bootstrap_workspace.save_settled":
+					return boundary === "bootstrap_workspace"
+						? (applyBootstrapWorkspaceEvent(
+								context as BootstrapWorkspaceActorState,
+								event,
+							) as MusicMachineContextMap[K])
 						: context;
 				case "boundary.playback_session.replace":
 					return boundary === "playback_session"

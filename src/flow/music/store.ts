@@ -228,22 +228,75 @@ function replaceBoundaryState(boundary: MusicActorBoundary, next: MusicState) {
 	machineActors[boundary].send(event);
 }
 
-function transitionBootstrapWorkspaceMachine(
-	next: MusicState,
-	runId: number = bootstrapRunId,
-	startupFailure: string | null = bootstrapStartupFailure,
-) {
+function sendBootstrapRunStarted(runId: number) {
 	machineActors.bootstrap_workspace.send(
-		musicBoundaryEventDefs["boundary.bootstrap_workspace.transition"].load({
-			snapshot: next,
+		musicBoundaryEventDefs["boundary.bootstrap_workspace.run_started"].load({
+			runId,
+		}),
+	);
+}
+
+function sendBootstrapProbeCompleted(runId: number, playlistNames: string[]) {
+	machineActors.bootstrap_workspace.send(
+		musicBoundaryEventDefs["boundary.bootstrap_workspace.probe_completed"].load(
+			{
+				runId,
+				playlistNames,
+			},
+		),
+	);
+}
+
+function sendBootstrapStateReplaced(snapshot: MusicState) {
+	replaceBoundaryState("bootstrap_workspace", snapshot);
+}
+
+function sendBootstrapRunFailed(runId: number, startupFailure: string) {
+	machineActors.bootstrap_workspace.send(
+		musicBoundaryEventDefs["boundary.bootstrap_workspace.run_failed"].load({
 			runId,
 			startupFailure,
 		}),
 	);
 }
 
+function sendBootstrapRunFinished(runId: number) {
+	machineActors.bootstrap_workspace.send(
+		musicBoundaryEventDefs["boundary.bootstrap_workspace.run_finished"].load({
+			runId,
+		}),
+	);
+}
+
+function sendBootstrapWorkspaceEntered(snapshot: MusicState) {
+	machineActors.bootstrap_workspace.send(
+		musicBoundaryEventDefs[
+			"boundary.bootstrap_workspace.workspace_entered"
+		].load({
+			snapshot,
+		}),
+	);
+}
+
+function sendBootstrapWorkspaceExited(snapshot: MusicState) {
+	machineActors.bootstrap_workspace.send(
+		musicBoundaryEventDefs[
+			"boundary.bootstrap_workspace.workspace_exited"
+		].load({
+			snapshot,
+		}),
+	);
+}
+
+function sendBootstrapSaveSettled(snapshot: MusicState) {
+	machineActors.bootstrap_workspace.send(
+		musicBoundaryEventDefs["boundary.bootstrap_workspace.save_settled"].load({
+			snapshot,
+		}),
+	);
+}
+
 function syncCompatibilityShell(nextState: MusicState) {
-	transitionBootstrapWorkspaceMachine(nextState);
 	for (const boundary of MUSIC_MACHINE_BOUNDARIES) {
 		if (boundary === "bootstrap_workspace") continue;
 		replaceBoundaryState(boundary, nextState);
@@ -586,13 +639,17 @@ async function refreshLists(version?: number) {
 				...prev,
 				...deriveRefreshPatch(prev, playlists),
 			};
-			return {
+			const sanitized = {
 				...next,
 				processMsg: sanitizeProcessMsgHint(previousPlaylists, {
 					playlists: next.playlists,
 					processMsg: next.processMsg,
 				}),
 			};
+			if (version != null) {
+				sendBootstrapStateReplaced(sanitized);
+			}
+			return sanitized;
 		})(),
 	}));
 }
@@ -607,9 +664,17 @@ async function probePlaylistNames(version?: number) {
 		return;
 	}
 
+	sendBootstrapProbeCompleted(version ?? bootstrapRunId, result.unwrap());
+
 	setState((prev) => ({
-		...prev,
-		...deriveProbePatch(prev, result.unwrap()),
+		...(() => {
+			const next = {
+				...prev,
+				...deriveProbePatch(prev, result.unwrap()),
+			};
+			sendBootstrapStateReplaced(next);
+			return next;
+		})(),
 	}));
 }
 
@@ -1043,6 +1108,7 @@ export const action = {
 		const version = ++bootstrapRunId;
 		bootstrapStartupFailure = null;
 		playback.markActive();
+		sendBootstrapRunStarted(version);
 		patchState({ loading: true });
 		try {
 			await ensureEvents();
@@ -1066,9 +1132,11 @@ export const action = {
 			});
 			bootstrapStartupFailure =
 				error instanceof Error ? error.message : String(error);
+			sendBootstrapRunFailed(version, bootstrapStartupFailure);
 			patchState({ routeResolved: true, startupRoute: "startup_failed" });
 		} finally {
 			if (isCurrentRun(version)) {
+				sendBootstrapRunFinished(version);
 				patchState({ loading: false });
 			}
 		}
@@ -1112,6 +1180,16 @@ export const action = {
 	},
 	async addNew() {
 		await safeStop();
+		const next = {
+			...getState(),
+			...deriveWorkspaceEntryPatch(
+				"create",
+				getState().entrySessionId,
+				getState().closureOwnerSessionId,
+			),
+		};
+		sendBootstrapWorkspaceEntered(next);
+		sendBootstrapStateReplaced(next);
 		patchState(
 			deriveWorkspaceEntryPatch(
 				"create",
@@ -1122,6 +1200,17 @@ export const action = {
 	},
 	async edit(playlist: Playlist) {
 		await safeStop();
+		const next = {
+			...getState(),
+			...deriveWorkspaceEntryPatch(
+				"edit",
+				getState().entrySessionId,
+				getState().closureOwnerSessionId,
+				playlist,
+			),
+		};
+		sendBootstrapWorkspaceEntered(next);
+		sendBootstrapStateReplaced(next);
 		patchState(
 			deriveWorkspaceEntryPatch(
 				"edit",
@@ -1138,6 +1227,12 @@ export const action = {
 		}
 
 		await safeStop();
+		const next = {
+			...snapshot,
+			...deriveBackTransition(snapshot),
+		};
+		sendBootstrapWorkspaceExited(next);
+		sendBootstrapStateReplaced(next);
 		patchState(deriveBackTransition(snapshot));
 	},
 	setSlot(slot: CollectMission) {
@@ -1149,7 +1244,16 @@ export const action = {
 		});
 	},
 	async save() {
+		const before = getState();
 		await persistSlot();
+		const after = getState();
+		if (
+			before.mode !== after.mode ||
+			before.routeResolved !== after.routeResolved
+		) {
+			sendBootstrapSaveSettled(after);
+			sendBootstrapStateReplaced(after);
+		}
 	},
 	async addFolder(path: string) {
 		const snapshot = getState();
@@ -1712,6 +1816,12 @@ export const __testing = {
 	},
 	replaceState(next: MusicState) {
 		state = normalizeMusicState(next);
+		machineActors.bootstrap_workspace.send(
+			musicBoundaryEventDefs["boundary.bootstrap_workspace.run_started"].load({
+				runId: bootstrapRunId,
+			}),
+		);
+		replaceBoundaryState("bootstrap_workspace", state);
 		syncCompatibilityShell(state);
 	},
 	reset() {
@@ -1723,6 +1833,7 @@ export const __testing = {
 		state = normalizeMusicState({ ...initialState });
 		bootstrapRunId = 0;
 		bootstrapStartupFailure = null;
+		replaceBoundaryState("bootstrap_workspace", state);
 		syncCompatibilityShell(state);
 		started = false;
 	},

@@ -594,6 +594,60 @@ describe("music store action contracts", () => {
 			screen: "play",
 			runId: 1,
 			startupFailure: null,
+			isLoading: false,
+		});
+	});
+
+	test("run_true_positive_bootstrap_machine_emits_machine_owned_probe_and_loading_events_before_store_snapshot_settles", async () => {
+		let releaseReadAll!: () => void;
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => {
+			await new Promise<void>((resolve) => {
+				releaseReadAll = resolve;
+			});
+			return Ok<Playlist[], string>([makePlaylist("focus")]);
+		};
+
+		const run = action.run();
+
+		await waitUntil(() => __testing.getMachineActors().bootstrap_workspace.context.runId === 1);
+		expect(__testing.getMachineActors().bootstrap_workspace.context).toMatchObject({
+			runId: 1,
+			startupFailure: null,
+			isLoading: true,
+		});
+
+		await waitUntil(() => __testing.getState().playlists.map((item) => item.name).join(",") === "focus");
+		expect(__testing.getMachineActors().bootstrap_workspace.context).toMatchObject({
+			runId: 1,
+			isLoading: false,
+			screen: "play",
+			route: {
+				kind: "startup_probed_nonempty",
+				routeResolved: true,
+				mode: "play",
+				phase: "probed",
+			},
+		});
+
+		releaseReadAll();
+		await run;
+
+		await waitUntil(
+			() =>
+				__testing.getMachineActors().bootstrap_workspace.context.route.kind ===
+				"hydrated_playlists",
+		);
+		expect(__testing.getMachineActors().bootstrap_workspace.context).toMatchObject({
+			runId: 1,
+			isLoading: false,
+			screen: "play",
+			route: {
+				kind: "hydrated_playlists",
+				routeResolved: true,
+				mode: "play",
+				phase: "hydrated",
+			},
 		});
 	});
 
@@ -3539,6 +3593,15 @@ describe("music store action contracts", () => {
 			folderReviews: [],
 			weblistReviews: [],
 		});
+		expect(__testing.getMachineActors().bootstrap_workspace.context).toMatchObject({
+			screen: "create",
+			route: {
+				kind: "hydrated_editing",
+				routeResolved: true,
+				mode: "create",
+				phase: "hydrated",
+			},
+		});
 	});
 
 	test("edit_true_positive_enters_edit_with_seeded_slot_and_cleared_transient_state", async () => {
@@ -3570,6 +3633,15 @@ describe("music store action contracts", () => {
 			linkReviews: [],
 			folderReviews: [],
 			weblistReviews: [],
+		});
+		expect(__testing.getMachineActors().bootstrap_workspace.context).toMatchObject({
+			screen: "edit",
+			route: {
+				kind: "hydrated_editing",
+				routeResolved: true,
+				mode: "edit",
+				phase: "hydrated",
+			},
 		});
 	});
 
@@ -3651,6 +3723,15 @@ describe("music store action contracts", () => {
 		expect(state.nowJudge).toBeNull();
 		expect(state.processMsg).toBeNull();
 		expect(deriveDraftReviewState(state).folderReviews).toEqual([]);
+		expect(__testing.getMachineActors().bootstrap_workspace.context).toMatchObject({
+			screen: "play",
+			route: {
+				kind: "hydrated_playlists",
+				routeResolved: true,
+				mode: "play",
+				phase: "hydrated",
+			},
+		});
 
 		__testing.replaceState({
 			...__testing.getState(),
@@ -3673,6 +3754,15 @@ describe("music store action contracts", () => {
 		expect(state.nowPlaying).toBeNull();
 		expect(state.processMsg).toBeNull();
 		expect(deriveDraftReviewState(state).weblistReviews).toEqual([]);
+		expect(__testing.getMachineActors().bootstrap_workspace.context).toMatchObject({
+			screen: "guide",
+			route: {
+				kind: "hydrated_empty",
+				routeResolved: true,
+				mode: "new_guide",
+				phase: "hydrated",
+			},
+		});
 	});
 
 	test("refresh_false_negative_guard_preserves_active_create_draft_without_restoring_playback_context", async () => {
