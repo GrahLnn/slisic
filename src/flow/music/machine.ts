@@ -29,7 +29,6 @@ export type MusicActorBoundary =
 	| "closure_owner_chain";
 
 export interface BootstrapWorkspaceActorState {
-	snapshot: MusicState;
 	route: StartupRouteResolution;
 	screen: WorkspaceScreen;
 	runId: number;
@@ -98,16 +97,20 @@ export const musicBoundaryEventDefs = collect(
 export type MusicMachineEvent =
 	(typeof musicBoundaryEventDefs)["infer"][number];
 
-function createBootstrapWorkspaceState(
-	snapshot: MusicState,
-	input?: MusicMachineInput,
-): BootstrapWorkspaceActorState {
+function createBootstrapWorkspaceState({
+	snapshot,
+	runId,
+	startupFailure,
+}: {
+	snapshot: Pick<MusicState, "mode" | "routeResolved" | "startupRoute">;
+	runId: number;
+	startupFailure: string | null;
+}): BootstrapWorkspaceActorState {
 	return {
-		snapshot,
 		route: deriveRouteResolution(snapshot, { kind: snapshot.startupRoute }),
 		screen: projectWorkspaceScreen(snapshot),
-		runId: input?.bootstrapRunId ?? 0,
-		startupFailure: input?.bootstrapFailure ?? null,
+		runId,
+		startupFailure,
 	};
 }
 
@@ -170,10 +173,11 @@ function createBoundaryState<K extends MusicActorBoundary>(
 ): MusicMachineContextMap[K] {
 	switch (boundary) {
 		case "bootstrap_workspace":
-			return createBootstrapWorkspaceState(
+			return createBootstrapWorkspaceState({
 				snapshot,
-				input,
-			) as MusicMachineContextMap[K];
+				runId: input?.bootstrapRunId ?? 0,
+				startupFailure: input?.bootstrapFailure ?? null,
+			}) as MusicMachineContextMap[K];
 		case "playback_session":
 			return createPlaybackSessionState(snapshot) as MusicMachineContextMap[K];
 		case "draft_operations":

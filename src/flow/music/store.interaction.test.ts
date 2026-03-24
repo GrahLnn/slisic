@@ -1050,15 +1050,19 @@ describe("music interaction guards", () => {
 
 		__testing.replaceState(replacement);
 
-		expect(__testing.getCompatibilityShellState()).toMatchObject({
-			mode: "play",
-			routeResolved: true,
-			startupRoute: "hydrated_playlists",
-			selectedListName: "A",
-			playbackListName: "A",
+		expect(__testing.getCompatibilityShellState()).toEqual({
+			route: {
+				kind: "hydrated_playlists",
+				routeResolved: true,
+				mode: "play",
+				phase: "hydrated",
+			},
+			screen: "play",
+			runId: 0,
+			startupFailure: null,
 		});
-		expect(__testing.getMachineSnapshot().context.snapshot).toEqual(
-			__testing.getState(),
+		expect(__testing.getMachineSnapshot().context).toEqual(
+			__testing.getCompatibilityShellState(),
 		);
 	});
 
@@ -1080,7 +1084,6 @@ describe("music interaction guards", () => {
 		const snapshot = __testing.getMachineActors();
 
 		expect(snapshot.bootstrap_workspace.context).toEqual({
-			snapshot: __testing.getState(),
 			route: {
 				kind: "hydrated_editing",
 				routeResolved: true,

@@ -378,7 +378,7 @@ function getState() {
 }
 
 function getCompatibilityShellState() {
-	return getMachineSnapshot().context.snapshot;
+	return getMachineSnapshot().context;
 }
 
 type SelectorCache<T> = {

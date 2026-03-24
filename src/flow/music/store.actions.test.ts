@@ -576,6 +576,27 @@ describe("music store action contracts", () => {
 		expect(toastLog.error).toEqual([]);
 	});
 
+	test("run_true_positive_bootstrap_machine_context_does_not_mirror_full_music_snapshot", async () => {
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => Ok<Playlist[], string>([makePlaylist("focus")]);
+
+		await action.run();
+
+		const bootstrapContext = __testing.getMachineActors().bootstrap_workspace.context;
+		expect("snapshot" in bootstrapContext).toBe(false);
+		expect(bootstrapContext).toEqual({
+			route: {
+				kind: "hydrated_playlists",
+				routeResolved: true,
+				mode: "play",
+				phase: "hydrated",
+			},
+			screen: "play",
+			runId: 1,
+			startupFailure: null,
+		});
+	});
+
 	test("run_true_positive_probes_names_first_and_switches_to_play_before_full_snapshot_hydrates", async () => {
 		const playlist = makePlaylist("focus");
 		let releaseReadAll!: () => void;
