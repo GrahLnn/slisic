@@ -7401,6 +7401,19 @@ describe("music store action contracts", () => {
 		expect(state.confirmedPlaying).toMatchObject({ path: second.path });
 		expect(state.nowPlaying).toMatchObject({ path: second.path });
 		expect(state.playbackSessionId).toBe(13);
+		expect(
+			__testing.getMachineActors().playback_transport_handoff.context,
+		).toMatchObject({
+			liveSessionId: 13,
+			playbackOwnedListName: "focus",
+			requestedListName: null,
+			requestedPath: second.path,
+			confirmedPath: second.path,
+			nowPlayingPath: second.path,
+			settlementFact: null,
+			awaitingTransportHandoff: false,
+			awaitingReplacementHandoff: true,
+		});
 	});
 
 	test("transportLifecycle_false_negative_guard_displaced_stop_pause_resume_and_failure_facts_stay_suppressed_after_canonical_clear", async () => {
@@ -7451,6 +7464,19 @@ describe("music store action contracts", () => {
 		expect(state.confirmedPlaying).toBeNull();
 		expect(state.nowPlaying).toBeNull();
 		expect(state.playbackSessionId).toBeNull();
+		expect(
+			__testing.getMachineActors().playback_transport_handoff.context,
+		).toMatchObject({
+			liveSessionId: null,
+			playbackOwnedListName: null,
+			requestedListName: null,
+			requestedPath: null,
+			confirmedPath: null,
+			nowPlayingPath: null,
+			settlementFact: null,
+			awaitingTransportHandoff: false,
+			awaitingReplacementHandoff: false,
+		});
 	});
 
 	test("transportLifecycle_true_positive_backend_pause_resume_failure_surface_exposes_live_session_identity", async () => {
@@ -7458,6 +7484,83 @@ describe("music store action contracts", () => {
 		expect(Object.keys(commandContract.events)).toContain("audioPaused");
 		expect(Object.keys(commandContract.events)).toContain("audioResumed");
 		expect(Object.keys(commandContract.events)).toContain("audioFailed");
+	});
+
+	test("transportLifecycle_true_positive_machine_actor_tracks_machine_owned_ended_fallback_state", async () => {
+		const first = makeMusic("C:/music/focus/a.flac");
+		const second = makeMusic("C:/music/focus/b.flac");
+		const playlist = makePlaylist("focus", [
+			{ ...makeEntry("alpha", "C:/music/focus"), musics: [first, second] },
+		]);
+		const eventHandlers = new Map<string, (payload: unknown) => void>();
+
+		impl.evt = async (event, handler) => {
+			eventHandlers.set(event, handler);
+			return () => {
+				eventHandlers.delete(event);
+			};
+		};
+
+		await action.run();
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "play",
+			routeResolved: true,
+			playlists: [playlist],
+			selectedListName: "focus",
+			playbackListName: "focus",
+			playbackRequestedListName: "focus",
+			requestedPlaying: first,
+			confirmedPlaying: first,
+			nowPlaying: first,
+			playbackSessionId: 31,
+			playbackEpoch: 31,
+		});
+
+		__testing.replaceCompatibilityBoundary("playback_transport_handoff", {
+			...__testing.getState(),
+			mode: "new_guide",
+			routeResolved: false,
+			selectedListName: null,
+			playbackListName: null,
+			playbackRequestedListName: null,
+			requestedPlaying: null,
+			confirmedPlaying: null,
+			nowPlaying: null,
+			playbackSessionId: null,
+		});
+
+		expect(
+			__testing.getMachineActors().playback_transport_handoff.context,
+		).toMatchObject({
+			liveSessionId: null,
+			playbackOwnedListName: "focus",
+			requestedListName: null,
+			requestedPath: null,
+			confirmedPath: null,
+			nowPlayingPath: null,
+			settlementFact: null,
+			awaitingTransportHandoff: false,
+			awaitingReplacementHandoff: false,
+		});
+
+		eventHandlers.get("audioEnded")?.({ path: first.path, session_id: 31 });
+		await flush();
+		await flush();
+		expect(
+			__testing.getMachineActors().playback_transport_handoff.context,
+		).toMatchObject({
+			liveSessionId: 31,
+			playbackOwnedListName: "focus",
+			requestedListName: null,
+			requestedPath: null,
+			confirmedPath: first.path,
+			nowPlayingPath: null,
+			settlementFact: null,
+			awaitingTransportHandoff: true,
+			awaitingReplacementHandoff: false,
+		});
+
 	});
 
 

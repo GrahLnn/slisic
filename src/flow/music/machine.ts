@@ -52,13 +52,13 @@ export interface PlaybackSessionActorState {
 }
 
 export interface PlaybackTransportHandoffActorState {
-	snapshot: MusicState;
 	liveSessionId: number | null;
 	playbackOwnedListName: string | null;
 	requestedListName: string | null;
 	requestedPath: string | null;
 	confirmedPath: string | null;
 	nowPlayingPath: string | null;
+	settlementFact: "stopped" | "ended" | "failed" | "paused" | "resumed" | null;
 	awaitingTransportHandoff: boolean;
 	awaitingReplacementHandoff: boolean;
 }
@@ -132,6 +132,14 @@ export const musicBoundaryEventDefs = collect(
 	}>()("boundary.bootstrap_workspace.save_settled"),
 	...event<MusicState>()("boundary.playback_session.replace"),
 	...event<MusicState>()("boundary.playback_transport_handoff.replace"),
+	...event<{ snapshot: MusicState; fact: null }>()(
+		"boundary.playback_transport_handoff.sync",
+	),
+	...event<{
+		snapshot: MusicState;
+		sessionId: number | null;
+		fact: "stopped" | "ended" | "failed" | "paused" | "resumed";
+	}>()("boundary.playback_transport_handoff.transport_fact_received"),
 	...event<MusicState>()("boundary.draft_operations.replace"),
 	...event<MusicState>()("boundary.entry_materialization.replace"),
 	...event<MusicState>()("boundary.save_boundary.replace"),
@@ -171,6 +179,16 @@ type BootstrapWorkspaceMachineEvent =
 			{ type: "boundary.bootstrap_workspace.save_settled" }
 	  >;
 
+type PlaybackTransportHandoffMachineEvent =
+	| Extract<
+			MusicMachineEvent,
+			{ type: "boundary.playback_transport_handoff.sync" }
+	  >
+	| Extract<
+			MusicMachineEvent,
+			{ type: "boundary.playback_transport_handoff.transport_fact_received" }
+	  >;
+
 function createBootstrapWorkspaceState({
 	snapshot,
 	runId,
@@ -206,6 +224,7 @@ function createPlaybackSessionState(
 
 function createPlaybackTransportHandoffState(
 	snapshot: MusicState,
+	settlementFact: "stopped" | "ended" | "failed" | "paused" | "resumed" | null = null,
 ): PlaybackTransportHandoffActorState {
 	const playbackOwnedList = derivePlaybackOwnedList(snapshot);
 	const liveSessionId = snapshot.playbackSessionId;
@@ -213,13 +232,13 @@ function createPlaybackTransportHandoffState(
 	const hasRequestedIntent = snapshot.requestedPlaying != null;
 	const hasLiveTrack = snapshot.nowPlaying != null;
 	return {
-		snapshot,
 		liveSessionId,
 		playbackOwnedListName: playbackOwnedList?.name ?? null,
 		requestedListName: snapshot.playbackRequestedListName ?? null,
 		requestedPath: snapshot.requestedPlaying?.path ?? null,
 		confirmedPath: snapshot.confirmedPlaying?.path ?? null,
 		nowPlayingPath: snapshot.nowPlaying?.path ?? null,
+		settlementFact,
 		awaitingTransportHandoff:
 			liveSessionId != null && hasConfirmedPlayback && !hasLiveTrack,
 		awaitingReplacementHandoff:
@@ -451,6 +470,20 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 		}
 	};
 
+	const applyPlaybackTransportHandoffEvent = (
+		event: PlaybackTransportHandoffMachineEvent,
+	): PlaybackTransportHandoffActorState => {
+		switch (event.type) {
+			case "boundary.playback_transport_handoff.sync":
+				return createPlaybackTransportHandoffState(event.output.snapshot, null);
+			case "boundary.playback_transport_handoff.transport_fact_received":
+				return createPlaybackTransportHandoffState(
+					event.output.snapshot,
+					event.output.fact,
+				);
+		}
+	};
+
 	return fromTransition<
 		MusicMachineContextMap[K],
 		MusicMachineEvent,
@@ -512,6 +545,17 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 				case "boundary.playback_session.replace":
 					return boundary === "playback_session"
 						? createBoundaryState(boundary, event.output)
+						: context;
+				case "boundary.playback_transport_handoff.replace":
+					return boundary === "playback_transport_handoff"
+						? createBoundaryState(boundary, event.output)
+						: context;
+				case "boundary.playback_transport_handoff.sync":
+				case "boundary.playback_transport_handoff.transport_fact_received":
+					return boundary === "playback_transport_handoff"
+						? (applyPlaybackTransportHandoffEvent(
+								event,
+							) as MusicMachineContextMap[K])
 						: context;
 				case "boundary.draft_operations.replace":
 					return boundary === "draft_operations"

@@ -306,11 +306,42 @@ function sendBootstrapSaveSettled(snapshot: MusicState) {
 	);
 }
 
+function syncPlaybackTransportHandoff(snapshot: MusicState) {
+	machineActors.playback_transport_handoff.send(
+		musicBoundaryEventDefs["boundary.playback_transport_handoff.sync"].load({
+			snapshot,
+			fact: null,
+		}),
+	);
+}
+
+function sendPlaybackTransportFact(
+	snapshot: MusicState,
+	sessionId: number | null,
+	fact: "stopped" | "ended" | "failed" | "paused" | "resumed",
+) {
+	machineActors.playback_transport_handoff.send(
+		musicBoundaryEventDefs[
+			"boundary.playback_transport_handoff.transport_fact_received"
+		].load({
+			snapshot,
+			sessionId,
+			fact,
+		}),
+	);
+}
+
 function syncCompatibilityShell(nextState: MusicState) {
 	for (const boundary of MUSIC_MACHINE_BOUNDARIES) {
-		if (boundary === "bootstrap_workspace") continue;
+		if (
+			boundary === "bootstrap_workspace" ||
+			boundary === "playback_transport_handoff"
+		) {
+			continue;
+		}
 		replaceBoundaryState(boundary, nextState);
 	}
+	syncPlaybackTransportHandoff(nextState);
 }
 
 function setState(next: MusicState | ((prev: MusicState) => MusicState)) {
@@ -838,7 +869,10 @@ async function ensureEvents() {
 			const snapshot = getState();
 			if (!shouldHandleAudioEnded(snapshot, { path, sessionId })) return;
 			void applyNextFatigue(snapshot.nowPlaying);
-			patchState(clearEndedPlaybackForFallback(snapshot));
+			const patch = clearEndedPlaybackForFallback(snapshot);
+			const nextSnapshot = normalizeMusicState({ ...snapshot, ...patch });
+			sendPlaybackTransportFact(nextSnapshot, sessionId, "ended");
+			setState(nextSnapshot);
 			const epoch = snapshot.playbackEpoch;
 			scheduleNextPlayback(epoch);
 		});
@@ -858,7 +892,10 @@ async function ensureEvents() {
 				"stopped",
 			);
 			if (!patch) return;
-			patchState(patch);
+			const snapshot = getState();
+			const nextSnapshot = normalizeMusicState({ ...snapshot, ...patch });
+			sendPlaybackTransportFact(nextSnapshot, sessionId, "stopped");
+			setState(nextSnapshot);
 		});
 		unsubs.push(audioStopped);
 
@@ -881,9 +918,12 @@ async function ensureEvents() {
 					? (payload as { session_id: number }).session_id
 					: null;
 			if (!path) return;
-			const patch = clearPlaybackTransportFact(getState(), sessionId, fact);
+			const snapshot = getState();
+			const patch = clearPlaybackTransportFact(snapshot, sessionId, fact);
 			if (!patch) return;
-			patchState(patch);
+			const nextSnapshot = normalizeMusicState({ ...snapshot, ...patch });
+			sendPlaybackTransportFact(nextSnapshot, sessionId, fact);
+			setState(nextSnapshot);
 		};
 
 		const audioPaused = await crab.evt("audioPaused")((payload) => {
