@@ -1137,11 +1137,15 @@ describe("music interaction guards", () => {
 		expect(snapshot.entry_materialization.context.targets).toEqual([]);
 		expect(snapshot.save_boundary.context).toEqual({
 			boundary: {
-				active: false,
-				routeMode: "edit",
+				active: true,
+				routeMode: "play",
 				reconciled: false,
-				source: "create",
-				ownerContext: null,
+				source: "edit",
+				ownerContext: {
+					playlistName: "focus",
+					entryIdentity: "url-path:https://example.com/list::C:/music/remote",
+					ownerSessionId: 34,
+				},
 			},
 		});
 		expect(snapshot.closure_owner_chain.context.projection.reason).toBe(

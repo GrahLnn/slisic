@@ -4711,8 +4711,8 @@ describe("music store action contracts", () => {
 		expect(boundary).toEqual({
 			active: true,
 			routeMode: "play",
-			reconciled: true,
-			source: null,
+			reconciled: false,
+			source: "create",
 			ownerContext: {
 				playlistName: "fresh",
 				entryIdentity: "path:C:/music/alpha",
@@ -4727,6 +4727,77 @@ describe("music store action contracts", () => {
 		boundary = __testing.getMachineActors().save_boundary.context.boundary;
 		expect(boundary.ownerContext?.playlistName).toBe("fresh");
 		expect(boundary.ownerContext?.entryIdentity).toBe("path:C:/music/alpha");
+	});
+
+	test("saveBoundary_false_negative_guard_snapshot_replay_is_inert_for_canonical_save_boundary_advancement", async () => {
+		const savedEntry = makeEntry("alpha", "C:/music/alpha");
+		const mission = makeMission("fresh", [savedEntry]);
+		let releaseCreate!: () => void;
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			routeResolved: true,
+			startupRoute: "hydrated_editing",
+			slot: mission,
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+		});
+
+		impl.create = async () => {
+			await new Promise<void>((resolve) => {
+				releaseCreate = resolve;
+			});
+			return Ok<null, string>(null);
+		};
+		impl.readAll = async () =>
+			Ok<Playlist[], string>([makePlaylist("fresh", [savedEntry])]);
+
+		const saving = action.save();
+		await waitUntil(() => __testing.getState().slot === null);
+
+		const machineBeforeReplay =
+			__testing.getMachineActors().save_boundary.context.boundary;
+		expect(machineBeforeReplay).toEqual({
+			active: true,
+			routeMode: "play",
+			reconciled: false,
+			source: "create",
+			ownerContext: {
+				playlistName: "fresh",
+				entryIdentity: "path:C:/music/alpha",
+				ownerSessionId: __testing.getState().closureOwnerSessionId,
+			},
+		});
+
+		__testing.replaceCompatibilityBoundary("save_boundary", {
+			...__testing.getState(),
+			mode: "new_guide",
+			startupRoute: "hydrated_empty",
+			playlists: [makePlaylist("other", [makeEntry("other", "C:/music/other")])],
+			selectedListName: "other",
+			processMsg: { playlist: "other", str: "stale replay" },
+		});
+
+		expect(__testing.getMachineActors().save_boundary.context.boundary).toEqual(
+			machineBeforeReplay,
+		);
+
+		releaseCreate();
+		await saving;
+		await flush();
+
+		expect(__testing.getMachineActors().save_boundary.context.boundary).toEqual({
+			active: true,
+			routeMode: "play",
+			reconciled: false,
+			source: "create",
+			ownerContext: {
+				playlistName: "fresh",
+				entryIdentity: "path:C:/music/alpha",
+				ownerSessionId: machineBeforeReplay.ownerContext?.ownerSessionId ?? 0,
+			},
+		});
 	});
 
 	test("saveBoundary_true_negative_guard_non_matching_refresh_after_edit_save_does_not_rebind_to_another_playlist", async () => {

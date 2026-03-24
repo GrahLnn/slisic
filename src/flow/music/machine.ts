@@ -153,7 +153,7 @@ export const musicBoundaryEventDefs = collect(
 		processHint: ProcessHintProjection | null;
 		targets: MaterializationTargetSnapshot[];
 	}>()("boundary.entry_materialization.sync"),
-	...event<MusicState>()("boundary.save_boundary.replace"),
+	...event<SaveBoundaryState>()("boundary.save_boundary.sync"),
 	...event<MusicState>()("boundary.closure_owner_chain.replace"),
 );
 
@@ -307,39 +307,9 @@ function createEntryMaterializationTargets(
 	return targets;
 }
 
-function createSaveBoundaryState(snapshot: MusicState): SaveBoundaryActorState {
+function createSaveBoundaryState(boundary: SaveBoundaryState): SaveBoundaryActorState {
 	return {
-		boundary: {
-			active:
-				snapshot.slot == null &&
-				snapshot.entrySessionId === snapshot.closureOwnerSessionId &&
-				snapshot.entrySessionId > 0,
-			routeMode: snapshot.mode,
-			reconciled: snapshot.mode === "play" || snapshot.mode === "new_guide",
-			source: snapshot.startupRoute === "hydrated_editing"
-				? snapshot.playlists.some(
-						(playlist) => playlist.name === (snapshot.editingListName ?? ""),
-					)
-					? "edit"
-					: "create"
-				: null,
-			ownerContext: (() => {
-				const playlist =
-					snapshot.playlists.find(
-						(item) => item.name === (snapshot.selectedListName ?? ""),
-					) ?? snapshot.playlists.at(0);
-				const entry = playlist?.entries.find(
-					(item) => derivePersistedOwnerIdentity(item) != null,
-				);
-				return playlist
-					? {
-							playlistName: playlist.name,
-							entryIdentity: entry ? derivePersistedOwnerIdentity(entry) : null,
-							ownerSessionId: snapshot.closureOwnerSessionId,
-						}
-					: null;
-			})(),
-		},
+		boundary,
 	};
 }
 
@@ -375,7 +345,13 @@ function createBoundaryState<K extends MusicActorBoundary>(
 		case "entry_materialization":
 			return createEntryMaterializationState(snapshot) as MusicMachineContextMap[K];
 		case "save_boundary":
-			return createSaveBoundaryState(snapshot) as MusicMachineContextMap[K];
+			return createSaveBoundaryState({
+				active: false,
+				routeMode: snapshot.mode,
+				reconciled: snapshot.mode === "play" || snapshot.mode === "new_guide",
+				source: snapshot.startupRoute === "hydrated_editing" ? "create" : null,
+				ownerContext: null,
+			}) as MusicMachineContextMap[K];
 		case "closure_owner_chain":
 			return createClosureOwnerChainState(snapshot) as MusicMachineContextMap[K];
 	}
@@ -648,9 +624,11 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 								targets: event.output.targets,
 							} as MusicMachineContextMap[K])
 						: context;
-				case "boundary.save_boundary.replace":
+				case "boundary.save_boundary.sync":
 					return boundary === "save_boundary"
-						? createBoundaryState(boundary, event.output)
+						? (createSaveBoundaryState(
+								event.output,
+							) as MusicMachineContextMap[K])
 						: context;
 				case "boundary.closure_owner_chain.replace":
 					return boundary === "closure_owner_chain"

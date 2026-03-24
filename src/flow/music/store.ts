@@ -83,6 +83,7 @@ import type {
 	DraftMissionState,
 	MusicState,
 	ProcessHintProjection,
+	SaveBoundaryState,
 	UiMode,
 } from "./store.types";
 
@@ -229,6 +230,9 @@ function replaceBoundaryState(boundary: MusicActorBoundary, next: MusicState) {
 		syncEntryMaterializationBoundary(next);
 		return;
 	}
+	if (boundary === "save_boundary") {
+		return;
+	}
 	const event =
 		musicBoundaryEventDefs[`boundary.${boundary}.replace`].load(next);
 	machineActors[boundary].send(event);
@@ -345,12 +349,19 @@ function sendPlaybackTransportFact(
 	);
 }
 
+function syncSaveBoundary(boundary: SaveBoundaryState) {
+	machineActors.save_boundary.send(
+		musicBoundaryEventDefs["boundary.save_boundary.sync"].load(boundary),
+	);
+}
+
 function syncCompatibilityShell(nextState: MusicState) {
 	for (const boundary of MUSIC_MACHINE_BOUNDARIES) {
 		if (
 			boundary === "bootstrap_workspace" ||
 			boundary === "playback_transport_handoff" ||
-			boundary === "entry_materialization"
+			boundary === "entry_materialization" ||
+			boundary === "save_boundary"
 		) {
 			continue;
 		}
@@ -1083,6 +1094,8 @@ async function persistSlot() {
 
 	const slot = snapshot.slot;
 	if (!slot) return;
+	const boundaryOwnerIdentity = deriveClosureOwnerIdentityFromMission(slot);
+	const saveSource = snapshot.mode === "edit" ? "edit" : "create";
 
 	if (snapshot.mode === "edit") {
 		const anchorListName =
@@ -1101,23 +1114,47 @@ async function persistSlot() {
 		);
 		const idleEpoch = bumpPlaybackEpoch();
 		void playback.interruptCurrent();
-		patchState({
+		const optimisticState = normalizeMusicState({
+			...snapshot,
 			...buildPostSavePatch(optimisticPlaylists.length > 0, idleEpoch),
 			playlists: optimisticPlaylists,
 			loading: false,
 			requestedPlaying: null,
 			closureOwnerSessionId:
-				deriveClosureOwnerIdentityFromMission(slot) == null
+				boundaryOwnerIdentity == null
 					? snapshot.closureOwnerSessionId
 					: idleEpoch,
 			playbackSessionId: null,
 			playbackRequestedListName: null,
 			confirmedPlaying: null,
 		});
+		syncSaveBoundary({
+			active: true,
+			routeMode: optimisticState.mode,
+			reconciled: false,
+			source: saveSource,
+			ownerContext: {
+				playlistName: slot.name,
+				entryIdentity: boundaryOwnerIdentity,
+				ownerSessionId: optimisticState.closureOwnerSessionId,
+			},
+		});
+		setState(optimisticState);
 
 		void (async () => {
 			const result = await crab.update(slot, anchor);
 			if (result.isErr()) {
+				syncSaveBoundary({
+					active: false,
+					routeMode: getState().mode,
+					reconciled: false,
+					source: saveSource,
+					ownerContext: {
+						playlistName: slot.name,
+						entryIdentity: boundaryOwnerIdentity,
+						ownerSessionId: optimisticState.closureOwnerSessionId,
+					},
+				});
 				sileo.error({
 					title: "Save failed",
 					description: result.unwrap_err(),
@@ -1135,8 +1172,9 @@ async function persistSlot() {
 	const optimisticPlaylists = [...snapshot.playlists, optimisticPlaylist];
 	const idleEpoch = bumpPlaybackEpoch();
 	void playback.interruptCurrent();
-	const closureEntryIdentity = deriveClosureOwnerIdentityFromMission(slot);
-	patchState({
+	const closureEntryIdentity = boundaryOwnerIdentity;
+	const optimisticState = normalizeMusicState({
+		...snapshot,
 		...buildPostSavePatch(optimisticPlaylists.length > 0, idleEpoch),
 		playlists: optimisticPlaylists,
 		loading: false,
@@ -1147,10 +1185,33 @@ async function persistSlot() {
 		playbackRequestedListName: null,
 		confirmedPlaying: null,
 	});
+	syncSaveBoundary({
+		active: true,
+		routeMode: optimisticState.mode,
+		reconciled: false,
+		source: saveSource,
+		ownerContext: {
+			playlistName: slot.name,
+			entryIdentity: boundaryOwnerIdentity,
+			ownerSessionId: optimisticState.closureOwnerSessionId,
+		},
+	});
+	setState(optimisticState);
 
 	void (async () => {
 		const result = await crab.create(slot);
 		if (result.isErr()) {
+			syncSaveBoundary({
+				active: false,
+				routeMode: getState().mode,
+				reconciled: false,
+				source: saveSource,
+				ownerContext: {
+					playlistName: slot.name,
+					entryIdentity: boundaryOwnerIdentity,
+					ownerSessionId: optimisticState.closureOwnerSessionId,
+				},
+			});
 			sileo.error({
 				title: "Save failed",
 				description: result.unwrap_err(),
