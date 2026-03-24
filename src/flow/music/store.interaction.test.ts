@@ -1136,7 +1136,19 @@ describe("music interaction guards", () => {
 			raw: { playlist: "focus", str: "Analyzing C:/focus.flac" },
 		});
 		expect(snapshot.entry_materialization.context.targets).toEqual([]);
-		expect(snapshot.save_boundary.context).toEqual({
+		__testing.syncSaveBoundary({
+			active: true,
+			routeMode: "play",
+			reconciled: false,
+			source: "edit",
+			ownerContext: {
+				playlistName: "focus",
+				entryIdentity: "url-path:https://example.com/list::C:/music/remote",
+				ownerSessionId: 34,
+			},
+		});
+		const saveBoundarySnapshot = __testing.getMachineActors();
+		expect(saveBoundarySnapshot.save_boundary.context).toEqual({
 			boundary: {
 				active: true,
 				routeMode: "play",

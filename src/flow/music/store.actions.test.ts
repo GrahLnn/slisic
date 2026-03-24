@@ -161,41 +161,56 @@ mock.module("sileo", () => ({
 	},
 }));
 
-class MockPlaybackCoordinator {
-	private epoch = 0;
-
-	markActive() {
-		playbackLog.markActive += 1;
-	}
-
-	markDisposed() {
-		playbackLog.markDisposed += 1;
-	}
-
-	bumpEpoch() {
-		this.epoch += 1;
-		return this.epoch;
-	}
-
-	getEpoch() {
-		return this.epoch;
-	}
-
-	isActive(epoch: number) {
-		return epoch === this.epoch;
-	}
-
-	replaceWith(_task: unknown, epoch: number) {
-		playbackLog.replaceWith.push({ epoch });
-	}
-
-	async interruptCurrent() {
-		playbackLog.interrupts += 1;
-	}
-}
-
 mock.module("./playbackCoordinator", () => ({
-	PlaybackCoordinator: MockPlaybackCoordinator,
+	PlaybackCoordinator: class PlaybackCoordinator {
+		private epoch = 0;
+
+		bumpEpoch() {
+			this.epoch += 1;
+			return this.epoch;
+		}
+
+		getEpoch() {
+			return this.epoch;
+		}
+
+		markDisposed() {
+			playbackLog.markDisposed += 1;
+			this.bumpEpoch();
+		}
+
+		markActive() {
+			playbackLog.markActive += 1;
+		}
+
+		isActive(
+			epoch: number,
+			snapshot: {
+				mode: string;
+				selectedListName?: string | null;
+				playbackListName?: string | null;
+			},
+			expectedListName?: string,
+		) {
+			if (epoch !== this.epoch) return false;
+			if (snapshot.mode !== "play") return false;
+			const activeListName =
+				snapshot.playbackListName ?? snapshot.selectedListName ?? null;
+			if (!activeListName) return false;
+			if (expectedListName && activeListName !== expectedListName) {
+				return false;
+			}
+			return true;
+		}
+
+		async interruptCurrent() {
+			playbackLog.interrupts += 1;
+		}
+
+		replaceWith(_task: unknown, epoch: number) {
+			playbackLog.replaceWith.push({ epoch });
+		}
+	},
 }));
 
 const {
@@ -322,7 +337,7 @@ function hasPendingEntryOperation(
 }
 
 function expectEntryOperation(
-	entry: Entry,
+	entry: Entry | null,
 	operation: {
 		kind: "folder_reload" | "weblist_update";
 		key: string;
@@ -331,6 +346,7 @@ function expectEntryOperation(
 		ownerSessionId: number;
 	},
 ) {
+	expect(entry).toBeTruthy();
 	expect(entry).toMatchObject({
 		...entry,
 		draftOperation: operation,
@@ -338,7 +354,7 @@ function expectEntryOperation(
 }
 
 function expectLinkOperation(
-	link: DraftMissionState["links"][number],
+	link: DraftMissionState["links"][number] | null,
 	operation: {
 		kind: "link_review";
 		key: string;
@@ -347,6 +363,7 @@ function expectLinkOperation(
 		ownerSessionId: number;
 	},
 ) {
+	expect(link).toBeTruthy();
 	expect(link).toMatchObject({
 		...link,
 		operation,
@@ -391,7 +408,7 @@ function expectPlaylistLike(
 ) {
 	expect(actual).toHaveLength(expected.length);
 	actual?.forEach((playlist, index) => {
-		expect(playlist).toMatchObject(expected[index]!);
+		expect(playlist).toMatchObject(expected[index] ?? null);
 	});
 }
 
@@ -1753,9 +1770,9 @@ describe("music store action contracts", () => {
 		impl.readAll = async () => {
 			readAllCalls += 1;
 			const snapshots = [pending, downloading, persisted, ready, failed];
-			return Ok<Playlist[], string>([
-				snapshots[Math.min(readAllCalls - 1, snapshots.length - 1)]!,
-			]);
+			const snapshot =
+				snapshots[Math.min(readAllCalls - 1, snapshots.length - 1)];
+			return Ok<Playlist[], string>(snapshot ? [snapshot] : []);
 		};
 
 		await action.run();
@@ -1952,9 +1969,9 @@ describe("music store action contracts", () => {
 		impl.readAll = async () => {
 			readAllCalls += 1;
 			const snapshots = [persisted, analyzing, ready, failedAfterPersisted];
-			return Ok<Playlist[], string>([
-				snapshots[Math.min(readAllCalls - 1, snapshots.length - 1)]!,
-			]);
+			const snapshot =
+				snapshots[Math.min(readAllCalls - 1, snapshots.length - 1)];
+			return Ok<Playlist[], string>(snapshot ? [snapshot] : []);
 		};
 
 		await action.run();
@@ -3048,12 +3065,12 @@ describe("music store action contracts", () => {
 		).toBe(true);
 
 		const reorderedEvents = [
-			liveEvents[0]!,
-			liveEvents[2]!,
-			liveEvents[1]!,
-			liveEvents[3]!,
-			liveEvents[4]!,
-		];
+			liveEvents[0],
+			liveEvents[2],
+			liveEvents[1],
+			liveEvents[3],
+			liveEvents[4],
+		].filter((event) => event != null);
 		expect(
 			canSettleClosureEvents(__testing.getState(), reorderedEvents, {
 				entry: __testing.getState().playlists[0]?.entries[0],
@@ -3062,12 +3079,12 @@ describe("music store action contracts", () => {
 		).toBe(false);
 
 		const duplicateEvents = [
-			liveEvents[0]!,
-			liveEvents[1]!,
-			liveEvents[1]!,
-			liveEvents[3]!,
-			liveEvents[4]!,
-		];
+			liveEvents[0],
+			liveEvents[1],
+			liveEvents[1],
+			liveEvents[3],
+			liveEvents[4],
+		].filter((event) => event != null);
 		expect(
 			canSettleClosureEvents(__testing.getState(), duplicateEvents, {
 				entry: __testing.getState().playlists[0]?.entries[0],
@@ -3625,7 +3642,12 @@ describe("music store action contracts", () => {
 				has_canonical_loudness: true,
 			});
 
-		await action.play(__testing.getState().playlists[0]!);
+		const livePlaylist = __testing.getState().playlists[0];
+		expect(livePlaylist).toBeDefined();
+		if (!livePlaylist) {
+			throw new Error("expected live playlist for playback handoff test");
+		}
+		await action.play(livePlaylist);
 		await flush();
 		const livePlaybackSessionId = __testing.getState().playbackSessionId;
 		expect(livePlaybackSessionId).toBe(3);
@@ -3672,19 +3694,19 @@ describe("music store action contracts", () => {
 			createClosureEventContract(11, deletedIdentity, phase),
 		);
 		const duplicateLiveContracts = [
-			liveContracts[0]!,
-			liveContracts[1]!,
-			liveContracts[2]!,
-			liveContracts[3]!,
-			liveContracts[3]!,
-		];
+			liveContracts[0],
+			liveContracts[1],
+			liveContracts[2],
+			liveContracts[3],
+			liveContracts[3],
+		].filter((contract) => contract != null);
 		const reorderedLiveContracts = [
-			liveContracts[0]!,
-			liveContracts[1]!,
-			liveContracts[3]!,
-			liveContracts[2]!,
-			liveContracts[4]!,
-		];
+			liveContracts[0],
+			liveContracts[1],
+			liveContracts[3],
+			liveContracts[2],
+			liveContracts[4],
+		].filter((contract) => contract != null);
 
 		expect(
 			canSettleClosureEvents(state, liveContracts, {
@@ -5493,7 +5515,12 @@ describe("music store action contracts", () => {
 			reason: "no_live_owner_chain",
 		});
 
-		await action.play(hinted.playlists[0]!);
+		const hintedPlaylist = hinted.playlists[0];
+		expect(hintedPlaylist).toBeDefined();
+		if (!hintedPlaylist) {
+			throw new Error("expected hinted playlist");
+		}
+		await action.play(hintedPlaylist);
 		await flush();
 
 		const afterPlay = __testing.getState();
@@ -5576,7 +5603,12 @@ describe("music store action contracts", () => {
 
 		await action.run();
 		await flush();
-		await action.play(__testing.getState().playlists[0]!);
+		const hydratedPlaylist = __testing.getState().playlists[0];
+		expect(hydratedPlaylist).toBeDefined();
+		if (!hydratedPlaylist) {
+			throw new Error("expected live playlist");
+		}
+		await action.play(hydratedPlaylist);
 		await flush();
 
 		handlers.get("processMsg")?.({
@@ -5645,7 +5677,7 @@ describe("music store action contracts", () => {
 		expect(deriveDraftReviewState(state).folderReviews).toEqual([]);
 		expect(state.slot?.name).toBe(mission.name);
 		expect(state.slot?.entries).toHaveLength(1);
-		expectEntryOperation(state.slot!.entries[0]!, {
+		expectEntryOperation(state.slot?.entries[0] ?? null, {
 			kind: "folder_reload",
 			key: entry.path ?? "",
 			inProgress: false,
@@ -5841,7 +5873,7 @@ describe("music store action contracts", () => {
 
 		let state = __testing.getState();
 		expect(state.slot?.entries).toHaveLength(1);
-		expectEntryOperation(state.slot!.entries[0]!, {
+		expectEntryOperation(state.slot?.entries[0] ?? null, {
 			kind: "folder_reload",
 			key: persisted.path ?? "",
 			inProgress: false,
@@ -6095,7 +6127,7 @@ describe("music store action contracts", () => {
 		const state = __testing.getState();
 		expect(deriveDraftReviewState(state).weblistReviews).toEqual([]);
 		expect(state.slot?.entries).toHaveLength(1);
-		expectEntryOperation(state.slot!.entries[0]!, {
+		expectEntryOperation(state.slot?.entries[0] ?? null, {
 			kind: "weblist_update",
 			key: entry.url ?? "",
 			inProgress: false,
@@ -6305,7 +6337,7 @@ describe("music store action contracts", () => {
 
 		let state = __testing.getState();
 		expect(state.slot?.entries).toHaveLength(1);
-		expectEntryOperation(state.slot!.entries[0]!, {
+		expectEntryOperation(state.slot?.entries[0] ?? null, {
 			kind: "weblist_update",
 			key: persisted.url ?? "",
 			inProgress: false,
@@ -6681,28 +6713,28 @@ describe("music store action contracts", () => {
 			unaffectedWeblistEntry.url ?? "",
 		]);
 		expect(deriveDraftReviewState(state).linkReviews).toEqual([linkUrl]);
-		expectEntryOperation(state.slot!.entries[0]!, {
+		expectEntryOperation(state.slot?.entries[0] ?? null, {
 			kind: "folder_reload",
 			key: reloadingEntry.path ?? "",
 			inProgress: true,
 			settled: "idle",
 			ownerSessionId: 0,
 		});
-		expectEntryOperation(state.slot!.entries[1]!, {
+		expectEntryOperation(state.slot?.entries[1] ?? null, {
 			kind: "folder_reload",
 			key: unaffectedFolderEntry.path ?? "",
 			inProgress: false,
 			settled: "succeeded",
 			ownerSessionId: 77,
 		});
-		expectEntryOperation(state.slot!.entries[2]!, {
+		expectEntryOperation(state.slot?.entries[2] ?? null, {
 			kind: "weblist_update",
 			key: unaffectedWeblistEntry.url ?? "",
 			inProgress: true,
 			settled: "idle",
 			ownerSessionId: 88,
 		});
-		expectLinkOperation(state.slot!.links[0]!, {
+		expectLinkOperation(state.slot?.links[0] ?? null, {
 			kind: "link_review",
 			key: linkUrl,
 			inProgress: true,
@@ -6720,28 +6752,28 @@ describe("music store action contracts", () => {
 		]);
 		expect(deriveDraftReviewState(state).linkReviews).toEqual([linkUrl]);
 		expect(state.slot?.entries[0]).toMatchObject(updated);
-		expectEntryOperation(state.slot!.entries[0]!, {
+		expectEntryOperation(state.slot?.entries[0] ?? null, {
 			kind: "folder_reload",
 			key: reloadingEntry.path ?? "",
 			inProgress: false,
 			settled: "succeeded",
 			ownerSessionId: 0,
 		});
-		expectEntryOperation(state.slot!.entries[1]!, {
+		expectEntryOperation(state.slot?.entries[1] ?? null, {
 			kind: "folder_reload",
 			key: unaffectedFolderEntry.path ?? "",
 			inProgress: false,
 			settled: "succeeded",
 			ownerSessionId: 77,
 		});
-		expectEntryOperation(state.slot!.entries[2]!, {
+		expectEntryOperation(state.slot?.entries[2] ?? null, {
 			kind: "weblist_update",
 			key: unaffectedWeblistEntry.url ?? "",
 			inProgress: true,
 			settled: "idle",
 			ownerSessionId: 88,
 		});
-		expectLinkOperation(state.slot!.links[0]!, {
+		expectLinkOperation(state.slot?.links[0] ?? null, {
 			kind: "link_review",
 			key: linkUrl,
 			inProgress: true,
@@ -6838,28 +6870,28 @@ describe("music store action contracts", () => {
 			targetWeblistEntry.url ?? "",
 		]);
 		expect(deriveDraftReviewState(state).linkReviews).toEqual([]);
-		expectEntryOperation(state.slot!.entries[0]!, {
+		expectEntryOperation(state.slot?.entries[0] ?? null, {
 			kind: "folder_reload",
 			key: folderEntry.path ?? "",
 			inProgress: true,
 			settled: "idle",
 			ownerSessionId: 11,
 		});
-		expectEntryOperation(state.slot!.entries[1]!, {
+		expectEntryOperation(state.slot?.entries[1] ?? null, {
 			kind: "weblist_update",
 			key: targetWeblistEntry.url ?? "",
 			inProgress: true,
 			settled: "idle",
 			ownerSessionId: 0,
 		});
-		expectEntryOperation(state.slot!.entries[2]!, {
+		expectEntryOperation(state.slot?.entries[2] ?? null, {
 			kind: "weblist_update",
 			key: otherWeblistEntry.url ?? "",
 			inProgress: false,
 			settled: "failed",
 			ownerSessionId: 12,
 		});
-		expectLinkOperation(state.slot!.links[0]!, {
+		expectLinkOperation(state.slot?.links[0] ?? null, {
 			kind: "link_review",
 			key: linkUrl,
 			inProgress: false,
@@ -6877,28 +6909,28 @@ describe("music store action contracts", () => {
 		expect(deriveDraftReviewState(state).weblistReviews).toEqual([]);
 		expect(deriveDraftReviewState(state).linkReviews).toEqual([]);
 		expect(state.slot?.entries[1]).toMatchObject(updated);
-		expectEntryOperation(state.slot!.entries[0]!, {
+		expectEntryOperation(state.slot?.entries[0] ?? null, {
 			kind: "folder_reload",
 			key: folderEntry.path ?? "",
 			inProgress: true,
 			settled: "idle",
 			ownerSessionId: 11,
 		});
-		expectEntryOperation(state.slot!.entries[1]!, {
+		expectEntryOperation(state.slot?.entries[1] ?? null, {
 			kind: "weblist_update",
 			key: targetWeblistEntry.url ?? "",
 			inProgress: false,
 			settled: "succeeded",
 			ownerSessionId: 0,
 		});
-		expectEntryOperation(state.slot!.entries[2]!, {
+		expectEntryOperation(state.slot?.entries[2] ?? null, {
 			kind: "weblist_update",
 			key: otherWeblistEntry.url ?? "",
 			inProgress: false,
 			settled: "failed",
 			ownerSessionId: 12,
 		});
-		expectLinkOperation(state.slot!.links[0]!, {
+		expectLinkOperation(state.slot?.links[0] ?? null, {
 			kind: "link_review",
 			key: linkUrl,
 			inProgress: false,
@@ -6999,28 +7031,28 @@ describe("music store action contracts", () => {
 			weblistEntry.url ?? "",
 		]);
 		expect(deriveDraftReviewState(state).linkReviews).toEqual([targetUrl]);
-		expectEntryOperation(state.slot!.entries[0]!, {
+		expectEntryOperation(state.slot?.entries[0] ?? null, {
 			kind: "folder_reload",
 			key: folderEntry.path ?? "",
 			inProgress: true,
 			settled: "idle",
 			ownerSessionId: 21,
 		});
-		expectEntryOperation(state.slot!.entries[1]!, {
+		expectEntryOperation(state.slot?.entries[1] ?? null, {
 			kind: "weblist_update",
 			key: weblistEntry.url ?? "",
 			inProgress: true,
 			settled: "idle",
 			ownerSessionId: 22,
 		});
-		expectLinkOperation(state.slot!.links[0]!, {
+		expectLinkOperation(state.slot?.links[0] ?? null, {
 			kind: "link_review",
 			key: otherUrl,
 			inProgress: false,
 			settled: "succeeded",
 			ownerSessionId: 23,
 		});
-		expectLinkOperation(state.slot!.links[1]!, {
+		expectLinkOperation(state.slot?.links[1] ?? null, {
 			kind: "link_review",
 			key: targetUrl,
 			inProgress: true,
@@ -7039,28 +7071,28 @@ describe("music store action contracts", () => {
 			weblistEntry.url ?? "",
 		]);
 		expect(deriveDraftReviewState(state).linkReviews).toEqual([]);
-		expectEntryOperation(state.slot!.entries[0]!, {
+		expectEntryOperation(state.slot?.entries[0] ?? null, {
 			kind: "folder_reload",
 			key: folderEntry.path ?? "",
 			inProgress: true,
 			settled: "idle",
 			ownerSessionId: 21,
 		});
-		expectEntryOperation(state.slot!.entries[1]!, {
+		expectEntryOperation(state.slot?.entries[1] ?? null, {
 			kind: "weblist_update",
 			key: weblistEntry.url ?? "",
 			inProgress: true,
 			settled: "idle",
 			ownerSessionId: 22,
 		});
-		expectLinkOperation(state.slot!.links[0]!, {
+		expectLinkOperation(state.slot?.links[0] ?? null, {
 			kind: "link_review",
 			key: otherUrl,
 			inProgress: false,
 			settled: "succeeded",
 			ownerSessionId: 23,
 		});
-		expectLinkOperation(state.slot!.links[1]!, {
+		expectLinkOperation(state.slot?.links[1] ?? null, {
 			kind: "link_review",
 			key: targetUrl,
 			inProgress: false,

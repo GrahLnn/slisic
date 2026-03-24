@@ -638,7 +638,9 @@ function bumpPlaybackEpoch(): number {
 }
 
 function nextPlaybackSessionId(): number {
-	return playback.getEpoch() + 1;
+	const liveSessionId = getState().playbackSessionId;
+	const baseline = liveSessionId ?? playback.getEpoch();
+	return baseline + 1;
 }
 
 function isPlaybackContextActive(epoch: number, expectedListName?: string) {
@@ -977,6 +979,7 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 
 function scheduleNextPlayback(epoch: number) {
 	playback.replaceWith(chooseAndPlayNextTask(epoch), epoch);
+	patchState({ playbackEpoch: epoch });
 }
 
 async function ensureEvents() {
@@ -2029,6 +2032,9 @@ export const __testing = {
 				actor.getSnapshot(),
 			]),
 		) as Record<MusicActorBoundary, MusicMachineSnapshot>;
+	},
+	syncSaveBoundary(boundary: SaveBoundaryState) {
+		syncSaveBoundary(boundary);
 	},
 	syncClosureOwnerChain() {
 		syncClosureOwnerChain(getState());
