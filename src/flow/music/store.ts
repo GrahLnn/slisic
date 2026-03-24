@@ -173,7 +173,7 @@ let runVersion = 0;
 const machineActors = Object.fromEntries(
 	MUSIC_MACHINE_BOUNDARIES.map((boundary) => [
 		boundary,
-		createActor(musicMachine[boundary].logic, { input: { state } }),
+		createActor(musicMachine[boundary].logic, { input: { snapshot: state } }),
 	]),
 ) as Record<MusicActorBoundary, MusicMachineActor>;
 
@@ -211,24 +211,8 @@ function normalizeMusicState(snapshot: MusicState): MusicState {
 	};
 }
 
-function syncMachineState(nextState: MusicState) {
-	const event = musicBoundaryEventDefs["state.replace"].load(nextState);
-	for (const actor of Object.values(machineActors)) {
-		actor.send(event);
-	}
-}
-
 function getMachineSnapshot(): MusicMachineSnapshot {
 	return machineActors.bootstrap_workspace.getSnapshot();
-}
-
-function patchBoundaryState(
-	boundary: MusicActorBoundary,
-	patch: Partial<MusicState>,
-) {
-	const event =
-		musicBoundaryEventDefs[`boundary.${boundary}.patch`].load(patch);
-	machineActors[boundary].send(event);
 }
 
 function replaceBoundaryState(boundary: MusicActorBoundary, next: MusicState) {
@@ -238,7 +222,6 @@ function replaceBoundaryState(boundary: MusicActorBoundary, next: MusicState) {
 }
 
 function syncCompatibilityShell(nextState: MusicState) {
-	syncMachineState(nextState);
 	for (const boundary of MUSIC_MACHINE_BOUNDARIES) {
 		replaceBoundaryState(boundary, nextState);
 	}
@@ -251,9 +234,6 @@ function setState(next: MusicState | ((prev: MusicState) => MusicState)) {
 }
 
 function patchState(patch: Partial<MusicState>) {
-	for (const boundary of MUSIC_MACHINE_BOUNDARIES) {
-		patchBoundaryState(boundary, patch);
-	}
 	setState((prev) => ({ ...prev, ...patch }));
 }
 
@@ -375,7 +355,7 @@ function getState() {
 }
 
 function getCompatibilityShellState() {
-	return getMachineSnapshot().context.state;
+	return getMachineSnapshot().context.snapshot;
 }
 
 type SelectorCache<T> = {
@@ -1692,6 +1672,14 @@ export const __testing = {
 	getState,
 	getCompatibilityShellState,
 	getMachineSnapshot,
+	getMachineActors() {
+		return Object.fromEntries(
+			Object.entries(machineActors).map(([boundary, actor]) => [
+				boundary,
+				actor.getSnapshot(),
+			]),
+		) as Record<MusicActorBoundary, MusicMachineSnapshot>;
+	},
 	readAll() {
 		return refreshLists();
 	},

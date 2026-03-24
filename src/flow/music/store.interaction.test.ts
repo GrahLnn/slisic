@@ -1057,9 +1057,69 @@ describe("music interaction guards", () => {
 			selectedListName: "A",
 			playbackListName: "A",
 		});
-		expect(__testing.getMachineSnapshot().context.state).toEqual(
+		expect(__testing.getMachineSnapshot().context.snapshot).toEqual(
 			__testing.getState(),
 		);
+	});
+
+	test("boundary actors keep boundary-specific machine-owned context instead of mirroring full MusicState", () => {
+		__testing.reset();
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "edit",
+			routeResolved: true,
+			startupRoute: "hydrated_editing",
+			selectedListName: "focus",
+			editingListName: "focus",
+			playbackListName: "playback",
+			processMsg: { playlist: "focus", str: "Analyzing C:/focus.flac" },
+			entrySessionId: 12,
+			closureOwnerSessionId: 9,
+		});
+
+		const snapshot = __testing.getMachineActors();
+
+		expect(snapshot.bootstrap_workspace.context).toEqual({
+			snapshot: __testing.getState(),
+			route: {
+				kind: "hydrated_editing",
+				routeResolved: true,
+				mode: "edit",
+				phase: "hydrated",
+			},
+			screen: "edit",
+		});
+		expect(snapshot.playback_session.context).toEqual({
+			snapshot: __testing.getState(),
+			playbackOwnedListName: null,
+			requestedPath: null,
+			confirmedPath: null,
+			nowPlayingPath: null,
+		});
+		expect(snapshot.draft_operations.context).toEqual({
+			snapshot: __testing.getState(),
+			activeReviewKeys: [],
+			linkReviewKeys: [],
+			folderReviewKeys: [],
+			weblistReviewKeys: [],
+		});
+		expect(snapshot.entry_materialization.context.processHint).toEqual({
+			playlistName: "focus",
+			text: "Analyzing C:/focus.flac",
+			kind: "analysis",
+			assetPath: null,
+			raw: { playlist: "focus", str: "Analyzing C:/focus.flac" },
+		});
+		expect(snapshot.save_boundary.context).toEqual({
+			snapshot: __testing.getState(),
+			entrySessionId: 12,
+			closureOwnerSessionId: 9,
+		});
+		expect(snapshot.closure_owner_chain.context.projection.reason).toBe(
+			"no_live_owner_chain",
+		);
+		expect("route" in snapshot.playback_session.context).toBe(false);
+		expect("processHint" in snapshot.save_boundary.context).toBe(false);
 	});
 
 	test("deriveRefreshPatch preserves playback-owned now-playing context when UI focus browses elsewhere", () => {
