@@ -177,3 +177,17 @@ export type WorkspaceScreen =
   | "play"
   | "create"
   | "edit";
+
+export interface SaveBoundaryOwnerContext {
+  playlistName: string;
+  entryIdentity: string | null;
+  ownerSessionId: number;
+}
+
+export interface SaveBoundaryState {
+  active: boolean;
+  routeMode: UiMode;
+  reconciled: boolean;
+  source: "create" | "edit" | null;
+  ownerContext: SaveBoundaryOwnerContext | null;
+}

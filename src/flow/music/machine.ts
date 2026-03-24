@@ -9,6 +9,7 @@ import type {
 	DraftOperationTargetSnapshot,
 	MusicState,
 	ProcessHintProjection,
+	SaveBoundaryState,
 	StartupRouteResolution,
 	WorkspaceScreen,
 } from "./store.types";
@@ -92,9 +93,7 @@ export interface EntryMaterializationActorState {
 }
 
 export interface SaveBoundaryActorState {
-	snapshot: MusicState;
-	entrySessionId: number;
-	closureOwnerSessionId: number;
+	boundary: SaveBoundaryState;
 }
 
 export interface ClosureOwnerChainActorState {
@@ -307,9 +306,37 @@ function createEntryMaterializationState(
 
 function createSaveBoundaryState(snapshot: MusicState): SaveBoundaryActorState {
 	return {
-		snapshot,
-		entrySessionId: snapshot.entrySessionId,
-		closureOwnerSessionId: snapshot.closureOwnerSessionId,
+		boundary: {
+			active:
+				snapshot.slot == null &&
+				snapshot.entrySessionId === snapshot.closureOwnerSessionId &&
+				snapshot.entrySessionId > 0,
+			routeMode: snapshot.mode,
+			reconciled: snapshot.mode === "play" || snapshot.mode === "new_guide",
+			source: snapshot.startupRoute === "hydrated_editing"
+				? snapshot.playlists.some(
+						(playlist) => playlist.name === (snapshot.editingListName ?? ""),
+					)
+					? "edit"
+					: "create"
+				: null,
+			ownerContext: (() => {
+				const playlist =
+					snapshot.playlists.find(
+						(item) => item.name === (snapshot.selectedListName ?? ""),
+					) ?? snapshot.playlists.at(0);
+				const entry = playlist?.entries.find(
+					(item) => derivePersistedOwnerIdentity(item) != null,
+				);
+				return playlist
+					? {
+							playlistName: playlist.name,
+							entryIdentity: entry ? derivePersistedOwnerIdentity(entry) : null,
+							ownerSessionId: snapshot.closureOwnerSessionId,
+						}
+					: null;
+			})(),
+		},
 	};
 }
 

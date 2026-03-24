@@ -1136,15 +1136,20 @@ describe("music interaction guards", () => {
 		});
 		expect(snapshot.entry_materialization.context.targets).toEqual([]);
 		expect(snapshot.save_boundary.context).toEqual({
-			snapshot: __testing.getState(),
-			entrySessionId: 12,
-			closureOwnerSessionId: 9,
+			boundary: {
+				active: false,
+				routeMode: "edit",
+				reconciled: false,
+				source: "create",
+				ownerContext: null,
+			},
 		});
 		expect(snapshot.closure_owner_chain.context.projection.reason).toBe(
 			"no_live_owner_chain",
 		);
 		expect("route" in snapshot.playback_session.context).toBe(false);
 		expect("processHint" in snapshot.save_boundary.context).toBe(false);
+		expect("snapshot" in snapshot.save_boundary.context).toBe(false);
 	});
 
 	test("draft operations actor keeps explicit target-owned operation truth instead of mirroring the full music snapshot", () => {

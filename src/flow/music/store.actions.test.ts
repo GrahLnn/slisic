@@ -4526,6 +4526,55 @@ describe("music store action contracts", () => {
 		expect(state.processMsg).toBeNull();
 	});
 
+	test("saveBoundary_machine_true_positive_tracks_explicit_owned_reconcile_boundary_instead_of_snapshot_mirror", async () => {
+		const savedEntry = makeEntry("alpha", "C:/music/alpha");
+		const mission = makeMission("fresh", [savedEntry]);
+		let releaseCreate!: () => void;
+
+		__testing.replaceState({
+			...__testing.getState(),
+			mode: "create",
+			routeResolved: true,
+			startupRoute: "hydrated_editing",
+			slot: mission,
+			ffmpeg: { installed_path: "ffmpeg", installed_version: "7.0.0" },
+			savePath: "C:/music",
+		});
+
+		impl.create = async () => {
+			await new Promise<void>((resolve) => {
+				releaseCreate = resolve;
+			});
+			return Ok<null, string>(null);
+		};
+		impl.readAll = async () =>
+			Ok<Playlist[], string>([makePlaylist("fresh", [savedEntry])]);
+
+		const saving = action.save();
+		await waitUntil(() => __testing.getState().slot === null);
+
+		let boundary = __testing.getMachineActors().save_boundary.context.boundary;
+		expect(boundary).toEqual({
+			active: true,
+			routeMode: "play",
+			reconciled: true,
+			source: null,
+			ownerContext: {
+				playlistName: "fresh",
+				entryIdentity: "path:C:/music/alpha",
+				ownerSessionId: __testing.getState().closureOwnerSessionId,
+			},
+		});
+
+		releaseCreate();
+		await saving;
+		await flush();
+
+		boundary = __testing.getMachineActors().save_boundary.context.boundary;
+		expect(boundary.ownerContext?.playlistName).toBe("fresh");
+		expect(boundary.ownerContext?.entryIdentity).toBe("path:C:/music/alpha");
+	});
+
 	test("saveBoundary_true_negative_guard_non_matching_refresh_after_edit_save_does_not_rebind_to_another_playlist", async () => {
 		const anchorEntry = makeEntry("alpha", "C:/music/alpha");
 		const savedEntry = makeEntry("alpha saved", "C:/music/alpha-saved");
