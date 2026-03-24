@@ -2966,6 +2966,59 @@ describe("music store action contracts", () => {
 		).toBe(false);
 	});
 
+	test("closure_false_negative_guard_analyzed_fact_without_notification_text_does_not_authorize_notification_phase", () => {
+		const replacementIdentity =
+			"url-path:https://example.com/remote-replacement::C:/music/replacement";
+		const liveEntry = withEntryMaterialization(
+			makeEntry("replacement remote", "C:/music/replacement", {
+				url: "https://example.com/remote-replacement",
+				entry_type: "WebList",
+				downloaded_ok: true,
+				musics: [makeMusic("C:/music/replacement/a.mp3")],
+			}),
+			{
+				phase: "ready",
+				settled: "succeeded",
+				ownerSessionId: 22,
+				lastError: null,
+			},
+		);
+
+		const fact = makeClosureLifecycleFact({
+			owner_session_id: 22,
+			entry_identity: replacementIdentity,
+			phase: "Analyzed",
+			event_id: `22:${replacementIdentity}:analyzed`,
+			notification_text: null,
+		});
+
+		expect(expandClosureLifecycleFacts([fact])).toEqual([
+			{
+				ownerSessionId: 22,
+				entryIdentity: replacementIdentity,
+				phase: "analyzed",
+				eventId: `22:${replacementIdentity}:analyzed`,
+			},
+		]);
+		expect(
+			canSettleClosureEvents(
+				{
+					entrySessionId: 22,
+					closureOwnerSessionId: 22,
+					playbackSessionId: 71,
+				},
+				[
+					createClosureEventContract(22, replacementIdentity, "saved"),
+					createClosureEventContract(22, replacementIdentity, "downloaded"),
+					createClosureEventContract(22, replacementIdentity, "analyzed"),
+					createClosureEventContract(22, replacementIdentity, "notified"),
+					createClosureEventContract(22, replacementIdentity, "playback"),
+				],
+				{ entry: liveEntry, allowedPlaybackSessionId: 71 },
+			),
+		).toBe(true);
+	});
+
 	test("closure_false_negative_guard_backend_failed_fact_keeps_replacement_chain_identity_after_save_download_analyze_notify_slice", () => {
 		const replacementIdentity =
 			"url-path:https://example.com/remote-replacement::C:/music/replacement";
