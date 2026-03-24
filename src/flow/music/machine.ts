@@ -24,6 +24,10 @@ import {
 	deriveWorkspaceEntryPatch,
 	projectWorkspaceScreen,
 } from "./store.projections";
+import {
+	derivePersistedOwnerIdentity,
+	getEntryMaterialization,
+} from "./store.identity";
 import type { Playlist } from "@/src/cmd/commands";
 
 export type MusicActorBoundary =
@@ -76,8 +80,15 @@ export interface DraftOperationsActorState {
 }
 
 export interface EntryMaterializationActorState {
-	snapshot: MusicState;
 	processHint: ProcessHintProjection | null;
+	targets: Array<{
+		playlistName: string;
+		entryIdentity: string;
+		ownerSessionId: number;
+		phase: string;
+		settled: "idle" | "succeeded" | "failed";
+		lastError: string | null;
+	}>;
 }
 
 export interface SaveBoundaryActorState {
@@ -271,9 +282,26 @@ function createDraftOperationsState(
 function createEntryMaterializationState(
 	snapshot: MusicState,
 ): EntryMaterializationActorState {
+	const targets = snapshot.playlists.flatMap((playlist) =>
+		playlist.entries.flatMap((entry) => {
+			const entryIdentity = derivePersistedOwnerIdentity(entry);
+			const materialization = getEntryMaterialization(entry);
+			if (!entryIdentity || !materialization) return [];
+			return [
+				{
+					playlistName: playlist.name,
+					entryIdentity,
+					ownerSessionId: materialization.ownerSessionId,
+					phase: materialization.phase,
+					settled: materialization.settled,
+					lastError: materialization.lastError,
+				},
+			];
+		}),
+	);
 	return {
-		snapshot,
 		processHint: deriveProcessHintProjection(snapshot.processMsg),
+		targets,
 	};
 }
 

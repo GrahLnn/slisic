@@ -1134,6 +1134,7 @@ describe("music interaction guards", () => {
 			assetPath: null,
 			raw: { playlist: "focus", str: "Analyzing C:/focus.flac" },
 		});
+		expect(snapshot.entry_materialization.context.targets).toEqual([]);
 		expect(snapshot.save_boundary.context).toEqual({
 			snapshot: __testing.getState(),
 			entrySessionId: 12,
@@ -1236,6 +1237,78 @@ describe("music interaction guards", () => {
 			weblistTargetKeys: [],
 		});
 		expect("snapshot" in draftSnapshot).toBe(false);
+	});
+
+	test("entry materialization actor keeps explicit owner-scoped materialization targets instead of mirroring the full music snapshot", () => {
+		__testing.reset();
+		const focusEntry = {
+			...makeWeblistEntry(
+				"remote",
+				"C:/music/focus",
+				"https://example.com/focus",
+			),
+			materialization: {
+				phase: "persisted" as const,
+				settled: "succeeded" as const,
+				ownerSessionId: 21,
+				lastError: null,
+			},
+		};
+		const siblingEntry = {
+			...{
+				...makeWeblistEntry(
+					"sibling",
+					"C:/music/sibling",
+					"https://example.com/sibling",
+				),
+				entry_type: "WebVideo" as const,
+			},
+			materialization: {
+				phase: "failed" as const,
+				settled: "failed" as const,
+				ownerSessionId: 22,
+				lastError: "network",
+			},
+		};
+		__testing.replaceState({
+			...__testing.getState(),
+			playlists: [
+				{ ...makePlaylist("focus"), entries: [focusEntry] },
+				{ ...makePlaylist("other"), entries: [siblingEntry] },
+			],
+			processMsg: { playlist: "focus", str: "Analyzing loudness 1/1: C:/music/focus" },
+		});
+
+		const snapshot = __testing.getMachineActors().entry_materialization.context;
+		expect(snapshot.processHint).toEqual({
+			playlistName: "focus",
+			text: "Analyzing loudness 1/1: C:/music/focus",
+			kind: "analysis",
+			assetPath: "C:/music/focus",
+			raw: {
+				playlist: "focus",
+				str: "Analyzing loudness 1/1: C:/music/focus",
+			},
+		});
+		expect(snapshot.targets).toEqual([
+			{
+				playlistName: "focus",
+				entryIdentity: "url-path:https://example.com/focus::C:/music/focus",
+				ownerSessionId: 21,
+				phase: "persisted",
+				settled: "succeeded",
+				lastError: null,
+			},
+			{
+				playlistName: "other",
+				entryIdentity: "url-path:https://example.com/sibling::C:/music/sibling",
+				ownerSessionId: 22,
+				phase: "failed",
+				settled: "failed",
+				lastError: "network",
+			},
+		]);
+		expect("snapshot" in snapshot).toBe(false);
 	});
 
 	test("deriveRefreshPatch preserves playback-owned now-playing context when UI focus browses elsewhere", () => {
