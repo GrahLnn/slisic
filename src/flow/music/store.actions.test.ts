@@ -7410,7 +7410,9 @@ describe("music store action contracts", () => {
 			requestedPath: second.path,
 			confirmedPath: second.path,
 			nowPlayingPath: second.path,
-			settlementFact: null,
+			settlementFact: "ended",
+			settlementSessionId: 21,
+			lastTransportFactSessionId: 21,
 			awaitingTransportHandoff: false,
 			awaitingReplacementHandoff: true,
 		});
@@ -7473,7 +7475,9 @@ describe("music store action contracts", () => {
 			requestedPath: null,
 			confirmedPath: null,
 			nowPlayingPath: null,
-			settlementFact: null,
+			settlementFact: "ended",
+			settlementSessionId: 21,
+			lastTransportFactSessionId: 21,
 			awaitingTransportHandoff: false,
 			awaitingReplacementHandoff: false,
 		});
@@ -7540,6 +7544,8 @@ describe("music store action contracts", () => {
 			confirmedPath: null,
 			nowPlayingPath: null,
 			settlementFact: null,
+			settlementSessionId: null,
+			lastTransportFactSessionId: null,
 			awaitingTransportHandoff: false,
 			awaitingReplacementHandoff: false,
 		});
@@ -7556,7 +7562,9 @@ describe("music store action contracts", () => {
 			requestedPath: null,
 			confirmedPath: first.path,
 			nowPlayingPath: null,
-			settlementFact: null,
+			settlementFact: "ended",
+			settlementSessionId: 31,
+			lastTransportFactSessionId: 31,
 			awaitingTransportHandoff: true,
 			awaitingReplacementHandoff: false,
 		});

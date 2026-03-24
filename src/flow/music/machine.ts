@@ -59,6 +59,8 @@ export interface PlaybackTransportHandoffActorState {
 	confirmedPath: string | null;
 	nowPlayingPath: string | null;
 	settlementFact: "stopped" | "ended" | "failed" | "paused" | "resumed" | null;
+	settlementSessionId: number | null;
+	lastTransportFactSessionId: number | null;
 	awaitingTransportHandoff: boolean;
 	awaitingReplacementHandoff: boolean;
 }
@@ -225,6 +227,8 @@ function createPlaybackSessionState(
 function createPlaybackTransportHandoffState(
 	snapshot: MusicState,
 	settlementFact: "stopped" | "ended" | "failed" | "paused" | "resumed" | null = null,
+	settlementSessionId: number | null = null,
+	lastTransportFactSessionId: number | null = null,
 ): PlaybackTransportHandoffActorState {
 	const playbackOwnedList = derivePlaybackOwnedList(snapshot);
 	const liveSessionId = snapshot.playbackSessionId;
@@ -239,6 +243,8 @@ function createPlaybackTransportHandoffState(
 		confirmedPath: snapshot.confirmedPlaying?.path ?? null,
 		nowPlayingPath: snapshot.nowPlaying?.path ?? null,
 		settlementFact,
+		settlementSessionId,
+		lastTransportFactSessionId,
 		awaitingTransportHandoff:
 			liveSessionId != null && hasConfirmedPlayback && !hasLiveTrack,
 		awaitingReplacementHandoff:
@@ -471,15 +477,27 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 	};
 
 	const applyPlaybackTransportHandoffEvent = (
+		context: PlaybackTransportHandoffActorState,
 		event: PlaybackTransportHandoffMachineEvent,
 	): PlaybackTransportHandoffActorState => {
 		switch (event.type) {
 			case "boundary.playback_transport_handoff.sync":
-				return createPlaybackTransportHandoffState(event.output.snapshot, null);
+				const shouldRetainSettlement =
+					context.settlementFact != null &&
+					context.settlementSessionId != null &&
+					context.lastTransportFactSessionId === context.settlementSessionId;
+				return createPlaybackTransportHandoffState(
+					event.output.snapshot,
+					shouldRetainSettlement ? context.settlementFact : null,
+					shouldRetainSettlement ? context.settlementSessionId : null,
+					context.lastTransportFactSessionId,
+				);
 			case "boundary.playback_transport_handoff.transport_fact_received":
 				return createPlaybackTransportHandoffState(
 					event.output.snapshot,
 					event.output.fact,
+					event.output.sessionId,
+					event.output.sessionId,
 				);
 		}
 	};
@@ -554,6 +572,7 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 				case "boundary.playback_transport_handoff.transport_fact_received":
 					return boundary === "playback_transport_handoff"
 						? (applyPlaybackTransportHandoffEvent(
+								context as PlaybackTransportHandoffActorState,
 								event,
 							) as MusicMachineContextMap[K])
 						: context;
