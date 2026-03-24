@@ -561,6 +561,7 @@ describe("music interaction guards", () => {
 		).toEqual({
 			selectedListName: "contemporary",
 			playbackListName: "contemporary",
+			playbackRequestedListName: "contemporary",
 			confirmedPlaying: baseState.confirmedPlaying,
 			nowPlaying: baseState.nowPlaying,
 		});
@@ -638,6 +639,7 @@ describe("music interaction guards", () => {
 		expect(patch).toEqual({
 			selectedListName: "contemporary",
 			playbackListName: "contemporary",
+			playbackRequestedListName: "contemporary",
 			confirmedPlaying: baseState.confirmedPlaying,
 			nowPlaying: baseState.confirmedPlaying,
 		});
@@ -701,6 +703,7 @@ describe("music interaction guards", () => {
 		expect(patch).toEqual({
 			selectedListName: "contemporary",
 			playbackListName: "contemporary",
+			playbackRequestedListName: "contemporary",
 			confirmedPlaying: requested,
 			nowPlaying: requested,
 		});
@@ -757,6 +760,7 @@ describe("music interaction guards", () => {
 		expect(clearPlaybackSession(baseState, 3)).toEqual({
 			selectedListName: null,
 			playbackListName: null,
+			playbackRequestedListName: null,
 			requestedPlaying: null,
 			confirmedPlaying: null,
 			nowPlaying: null,
@@ -785,6 +789,7 @@ describe("music interaction guards", () => {
 		expect(clearPlaybackSession(baseState, 3)).toEqual({
 			selectedListName: null,
 			playbackListName: null,
+			playbackRequestedListName: null,
 			requestedPlaying: null,
 			confirmedPlaying: null,
 			nowPlaying: null,
@@ -798,6 +803,7 @@ describe("music interaction guards", () => {
 		expect(clearEndedPlaybackForFallback(baseState)).toEqual({
 			selectedListName: "contemporary",
 			playbackListName: "contemporary",
+			playbackRequestedListName: null,
 			requestedPlaying: null,
 			confirmedPlaying: baseState.confirmedPlaying,
 			nowPlaying: null,
@@ -897,6 +903,7 @@ describe("music interaction guards", () => {
 		).toEqual({
 			selectedListName: "contemporary",
 			playbackListName: "contemporary",
+			playbackRequestedListName: "contemporary",
 			confirmedPlaying: requestedReplacement,
 			nowPlaying: requestedReplacement,
 		});
@@ -936,6 +943,7 @@ describe("music interaction guards", () => {
 		expect(clearPlaybackSession(acknowledgedReplacement, 4)).toEqual({
 			selectedListName: null,
 			playbackListName: null,
+			playbackRequestedListName: null,
 			requestedPlaying: null,
 			confirmedPlaying: null,
 			nowPlaying: null,
@@ -1000,6 +1008,7 @@ describe("music interaction guards", () => {
 		expect(clearPlaybackTransportFact(replacementState, 4, "ended")).toEqual({
 			selectedListName: "browsed",
 			playbackListName: "contemporary",
+			playbackRequestedListName: null,
 			requestedPlaying: null,
 			confirmedPlaying: requestedReplacement,
 			nowPlaying: null,
@@ -1106,6 +1115,7 @@ describe("music interaction guards", () => {
 		expect(snapshot.playback_session.context).toEqual({
 			snapshot: __testing.getState(),
 			playbackOwnedListName: null,
+			requestedListName: null,
 			requestedPath: null,
 			confirmedPath: null,
 			nowPlayingPath: null,
@@ -1192,6 +1202,7 @@ describe("music interaction guards", () => {
 		expect(settled).toEqual({
 			selectedListName: "browsed",
 			playbackListName: "contemporary",
+			playbackRequestedListName: "contemporary",
 			confirmedPlaying: baseState.confirmedPlaying,
 			nowPlaying: baseState.requestedPlaying,
 		});
@@ -1216,6 +1227,7 @@ describe("music interaction guards", () => {
 		expect(clearEndedPlaybackForFallback(baseState)).toEqual({
 			selectedListName: "contemporary",
 			playbackListName: "contemporary",
+			playbackRequestedListName: null,
 			requestedPlaying: null,
 			confirmedPlaying: baseState.confirmedPlaying,
 			nowPlaying: null,
@@ -1232,6 +1244,7 @@ describe("music interaction guards", () => {
 		).toEqual({
 			selectedListName: "browsed",
 			playbackListName: "contemporary",
+			playbackRequestedListName: null,
 			requestedPlaying: null,
 			confirmedPlaying: baseState.confirmedPlaying,
 			nowPlaying: null,

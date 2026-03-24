@@ -94,6 +94,7 @@ export interface MusicState {
   closureOwnerSessionId: number;
   playbackEpoch: number;
   playbackSessionId: number | null;
+  playbackRequestedListName?: string | null;
 }
 
 export type ClosureEventPhase =

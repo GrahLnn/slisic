@@ -161,6 +161,7 @@ const initialState: MusicState = {
 	closureOwnerSessionId: 0,
 	playbackEpoch: 0,
 	playbackSessionId: null,
+	playbackRequestedListName: null,
 };
 
 const listeners = new Set<() => void>();
@@ -742,6 +743,7 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 			patchState({
 				selectedListName: list.name,
 				playbackListName: list.name,
+				playbackRequestedListName: list.name,
 				requestedPlaying: chosen,
 				confirmedPlaying: null,
 				nowPlaying: snapshot.confirmedPlaying,
@@ -769,6 +771,7 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 					...(clearPatch ?? {
 						selectedListName: null,
 						playbackListName: null,
+						playbackRequestedListName: null,
 						requestedPlaying: null,
 						confirmedPlaying: null,
 						nowPlaying: null,
@@ -937,13 +940,6 @@ async function safeStop() {
 
 async function startPlayByList(name: string) {
 	const snapshot = getState();
-	if (
-		snapshot.playbackListName === name &&
-		(snapshot.confirmedPlaying ?? snapshot.nowPlaying)
-	) {
-		await safeStop();
-		return;
-	}
 
 	const list =
 		snapshot.playlists.find((playlist) => playlist.name === name) ?? null;
@@ -976,6 +972,7 @@ async function startPlayByList(name: string) {
 		nowPlaying: null,
 		nowJudge: null,
 		playbackSessionId: nextSessionId,
+		playbackRequestedListName: name,
 	});
 	const epoch = bumpPlaybackEpoch();
 	scheduleNextPlayback(epoch);
@@ -1058,6 +1055,7 @@ async function persistSlot() {
 					? snapshot.closureOwnerSessionId
 					: idleEpoch,
 			playbackSessionId: null,
+			playbackRequestedListName: null,
 			confirmedPlaying: null,
 		});
 
@@ -1090,6 +1088,7 @@ async function persistSlot() {
 		closureOwnerSessionId:
 			closureEntryIdentity != null ? idleEpoch : snapshot.closureOwnerSessionId,
 		playbackSessionId: null,
+		playbackRequestedListName: null,
 		confirmedPlaying: null,
 	});
 
@@ -1696,6 +1695,7 @@ export const action = {
 			nowJudge: null,
 			playbackEpoch: epoch,
 			playbackSessionId: null,
+			playbackRequestedListName: null,
 		}));
 
 		await playback.interruptCurrent();

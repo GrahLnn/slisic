@@ -41,6 +41,7 @@ type PlaybackSessionSnapshot = Pick<
   | "selectedListName"
   | "focusedListName"
   | "playbackListName"
+  | "playbackRequestedListName"
   | "requestedPlaying"
   | "confirmedPlaying"
   | "nowPlaying"
@@ -270,13 +271,21 @@ export function settlePlaybackAck(
     | "playbackSessionId"
     | "selectedListName"
     | "playbackListName"
+    | "playbackRequestedListName"
     | "requestedPlaying"
     | "confirmedPlaying"
     | "nowPlaying"
     | "playlists"
   >,
   payload: { sessionId: number | null; listName: string | null; ack: AudioPlayAck },
-): Pick<MusicState, "selectedListName" | "playbackListName" | "confirmedPlaying" | "nowPlaying"> | null {
+): Pick<
+  MusicState,
+  | "selectedListName"
+  | "playbackListName"
+  | "playbackRequestedListName"
+  | "confirmedPlaying"
+  | "nowPlaying"
+> | null {
   if (snapshot.mode !== "play") return null;
   if (snapshot.playbackSessionId == null) return null;
   if (snapshot.playbackSessionId !== payload.sessionId) return null;
@@ -291,6 +300,7 @@ export function settlePlaybackAck(
   return {
     selectedListName: snapshot.selectedListName,
     playbackListName: payload.listName,
+    playbackRequestedListName: payload.listName,
     confirmedPlaying: confirmedTrack,
     nowPlaying: confirmedTrack,
   };
@@ -303,6 +313,7 @@ export function clearPlaybackSession(
   MusicState,
   | "selectedListName"
   | "playbackListName"
+  | "playbackRequestedListName"
   | "requestedPlaying"
   | "confirmedPlaying"
   | "nowPlaying"
@@ -316,6 +327,7 @@ export function clearPlaybackSession(
   return {
     selectedListName: null,
     playbackListName: null,
+    playbackRequestedListName: null,
     requestedPlaying: null,
     confirmedPlaying: null,
     nowPlaying: null,
@@ -330,6 +342,7 @@ export function clearEndedPlaybackForFallback(
     MusicState,
     | "selectedListName"
     | "playbackListName"
+    | "playbackRequestedListName"
     | "requestedPlaying"
     | "confirmedPlaying"
     | "nowPlaying"
@@ -341,6 +354,7 @@ export function clearEndedPlaybackForFallback(
   MusicState,
   | "selectedListName"
   | "playbackListName"
+  | "playbackRequestedListName"
   | "requestedPlaying"
   | "confirmedPlaying"
   | "nowPlaying"
@@ -351,6 +365,7 @@ export function clearEndedPlaybackForFallback(
   return {
     selectedListName: snapshot.selectedListName,
     playbackListName: snapshot.playbackListName,
+    playbackRequestedListName: null,
     requestedPlaying: null,
     confirmedPlaying: snapshot.confirmedPlaying,
     nowPlaying: null,

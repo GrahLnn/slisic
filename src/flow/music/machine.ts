@@ -44,6 +44,7 @@ export interface BootstrapWorkspaceActorState {
 export interface PlaybackSessionActorState {
 	snapshot: MusicState;
 	playbackOwnedListName: string | null;
+	requestedListName: string | null;
 	requestedPath: string | null;
 	confirmedPath: string | null;
 	nowPlayingPath: string | null;
@@ -181,6 +182,7 @@ function createPlaybackSessionState(
 	return {
 		snapshot,
 		playbackOwnedListName: playbackOwnedList?.name ?? null,
+		requestedListName: snapshot.playbackRequestedListName ?? null,
 		requestedPath: snapshot.requestedPlaying?.path ?? null,
 		confirmedPath: snapshot.confirmedPlaying?.path ?? null,
 		nowPlayingPath: snapshot.nowPlaying?.path ?? null,

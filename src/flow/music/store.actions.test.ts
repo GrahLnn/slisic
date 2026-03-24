@@ -421,6 +421,7 @@ beforeEach(() => {
 	impl.update = async (_data: CollectMission, _anchor: Playlist) =>
 		Ok<null, string>(null);
 	impl.audioStop = async () => Ok<null, string>(null);
+	impl.audioStop = async () => Ok<null, string>(null);
 	impl.unstar = async (_list: Playlist, _music: Music) =>
 		Ok<null, string>(null);
 	impl.recheckFolder = async (entry: Entry) => Ok<Entry, string>(entry);
@@ -7015,7 +7016,7 @@ describe("music store action contracts", () => {
 		await action.play(playlist);
 
 		let state = __testing.getState();
-		expect(playbackLog.interrupts).toBe(1);
+		expect(playbackLog.interrupts).toBe(0);
 		expect(state.selectedListName).toBe("focus");
 		expect(state.playbackListName).toBe("focus");
 		expect(state.requestedPlaying).toMatchObject({ path: music.path });
@@ -7079,7 +7080,7 @@ describe("music store action contracts", () => {
 		await action.play(playlist);
 
 		let state = __testing.getState();
-		expect(playbackLog.interrupts).toBe(1);
+		expect(playbackLog.interrupts).toBe(0);
 		expect(state.selectedListName).toBe("focus");
 		expect(state.playbackListName).toBe("focus");
 		expect(state.confirmedPlaying).toMatchObject({ title: music.title });
@@ -7491,7 +7492,7 @@ describe("music store action contracts", () => {
 		await action.play(playlist);
 
 		const state = __testing.getState();
-		expect(playbackLog.interrupts).toBe(1);
+		expect(playbackLog.interrupts).toBe(0);
 		expect(state.playbackSessionId).toBe(7);
 		expect(state.confirmedPlaying).toMatchObject({ path: music.path });
 		expect(state.nowPlaying).toMatchObject({ path: music.path });
@@ -7525,7 +7526,7 @@ describe("music store action contracts", () => {
 		await action.play(focus);
 
 		const state = __testing.getState();
-		expect(playbackLog.interrupts).toBe(1);
+		expect(playbackLog.interrupts).toBe(0);
 		expect(state.selectedListName).toBe("browsed");
 		expect(state.playbackListName).toBe("focus");
 		expect(state.requestedPlaying).toMatchObject({ path: focusTrack.path });
@@ -7606,6 +7607,7 @@ describe("music store action contracts", () => {
 		const state = __testing.getState();
 		expect(state.selectedListName).toBe("focus");
 		expect(state.playbackListName).toBe("focus");
+		expect(state.playbackRequestedListName).toBe("focus");
 		expect(state.requestedPlaying == null || state.requestedPlaying.path.startsWith("C:/music/focus/")).toBe(true);
 		expect(state.confirmedPlaying).toBeNull();
 		expect(state.nowPlaying).toBeNull();
