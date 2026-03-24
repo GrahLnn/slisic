@@ -28,6 +28,7 @@ const playbackLog = {
 	replaceWith: [] as Array<{ epoch: number }>,
 	markActive: 0,
 	markDisposed: 0,
+	audioPlayRequests: [] as Array<{ session_id: number; path: string }>,
 };
 
 const impl = {
@@ -134,6 +135,7 @@ const crab = {
 	ffmpegDownloadAndInstall: () => impl.ffmpegDownloadAndInstall(),
 	updateSavePath: (path: string) => impl.updateSavePath(path),
 	audioPlay: (req: { session_id: number; path: string }) => {
+		playbackLog.audioPlayRequests.push(req);
 		impl.audioPlay = async () =>
 			Ok({
 				session_id: req.session_id,
@@ -437,6 +439,7 @@ beforeEach(() => {
 	playbackLog.replaceWith.length = 0;
 	playbackLog.markActive = 0;
 	playbackLog.markDisposed = 0;
+	playbackLog.audioPlayRequests.length = 0;
 	__testing.reset();
 
 	impl.appReady = async () => undefined;
@@ -7643,6 +7646,7 @@ describe("music store action contracts", () => {
 		});
 
 		await action.play(playlist);
+		await flush();
 
 		let state = __testing.getState();
 		expect(playbackLog.interrupts).toBe(0);

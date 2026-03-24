@@ -868,103 +868,101 @@ async function refreshTools(version?: number) {
 
 async function chooseAndPlayNextTask(epoch: number, signal: AbortSignal) {
 	if (signal.aborted) return;
-		const snapshot = getState();
-		const list = currentList(snapshot);
-		if (!list) return;
-		if (!isPlaybackContextActive(epoch, list.name)) return;
+	const snapshot = getState();
+	const list = currentList(snapshot);
+	if (!list) return;
+	if (!isPlaybackContextActive(epoch, list.name)) return;
 
-		const all = playableTracks(list);
-		if (all.length === 0) {
-			patchState({
+	const all = playableTracks(list);
+	if (all.length === 0) {
+		patchState({
+			requestedPlaying: null,
+			confirmedPlaying: null,
+			nowPlaying: null,
+			nowJudge: null,
+		});
+		return;
+	}
+
+	const pool = snapshot.nowPlaying
+		? all.filter((music) => !sameTrack(music, snapshot.nowPlaying))
+		: all;
+	const base = pool.length > 0 ? pool : all;
+	const recent = recentByList.get(list.name) ?? [];
+	const filtered = avoidRecentlyPlayed(
+		base,
+		recent,
+		recentWindowSize(all.length),
+	);
+	const candidates = filtered.length > 0 ? filtered : base;
+	const chosen = sampleSoftMin(candidates, 0.8);
+	if (!chosen) return;
+	if (!isPlaybackContextActive(epoch, list.name)) return;
+	if (signal.aborted) return;
+	const previousNowPlaying = snapshot.nowPlaying;
+
+	if (!isPlaybackContextActive(epoch, list.name)) return;
+	const sessionId = nextPlaybackSessionId();
+	patchState({
+		selectedListName: list.name,
+		playbackListName: list.name,
+		playbackRequestedListName: list.name,
+		requestedPlaying: chosen,
+		confirmedPlaying: null,
+		nowPlaying: snapshot.confirmedPlaying,
+		nowJudge: null,
+		playbackSessionId: sessionId,
+	});
+
+	const playResult = await crab.audioPlay({
+		session_id: toPlaybackContractSessionId(sessionId),
+		path: chosen.path,
+	});
+
+	if (!isPlaybackContextActive(epoch, list.name)) return;
+	if (signal.aborted) return;
+
+	if (playResult.isErr()) {
+		if (!isPlaybackContextActive(epoch, list.name)) return;
+		const clearPatch = clearPlaybackSession(getState(), sessionId);
+		patchState({
+			...(clearPatch ?? {
+				selectedListName: null,
+				playbackListName: null,
+				playbackRequestedListName: null,
 				requestedPlaying: null,
 				confirmedPlaying: null,
 				nowPlaying: null,
 				nowJudge: null,
-			});
-			return;
-		}
-
-		const pool = snapshot.nowPlaying
-			? all.filter((music) => !sameTrack(music, snapshot.nowPlaying))
-			: all;
-		const base = pool.length > 0 ? pool : all;
-		const recent = recentByList.get(list.name) ?? [];
-		const filtered = avoidRecentlyPlayed(
-			base,
-			recent,
-			recentWindowSize(all.length),
-		);
-		const candidates = filtered.length > 0 ? filtered : base;
-		const chosen = sampleSoftMin(candidates, 0.8);
-		if (!chosen) return;
-		if (!isPlaybackContextActive(epoch, list.name)) return;
-		if (signal.aborted) return;
-		const previousNowPlaying = snapshot.nowPlaying;
-
-		if (!isPlaybackContextActive(epoch, list.name)) return;
-		const sessionId = nextPlaybackSessionId();
-		patchState({
-			selectedListName: list.name,
-			playbackListName: list.name,
-			playbackRequestedListName: list.name,
-			requestedPlaying: chosen,
-			confirmedPlaying: null,
-			nowPlaying: snapshot.confirmedPlaying,
-			nowJudge: null,
-			playbackSessionId: sessionId,
+				playbackSessionId: null,
+			}),
+			requestedPlaying: previousNowPlaying,
+			confirmedPlaying: previousNowPlaying,
+			nowPlaying: previousNowPlaying,
 		});
-
-		const requestedSessionId = nextPlaybackSessionId();
-
-		const playResult = await crab.audioPlay({
-			session_id: toPlaybackContractSessionId(requestedSessionId),
-			path: chosen.path,
+		sileo.error({
+			title: "Play failed",
+			description: playResult.unwrap_err(),
 		});
+		return;
+	}
 
-		if (!isPlaybackContextActive(epoch, list.name)) return;
-		if (signal.aborted) return;
-
-		if (playResult.isErr()) {
-			if (!isPlaybackContextActive(epoch, list.name)) return;
-			const clearPatch = clearPlaybackSession(getState(), requestedSessionId);
-			patchState({
-				...(clearPatch ?? {
-					selectedListName: null,
-					playbackListName: null,
-					playbackRequestedListName: null,
-					requestedPlaying: null,
-					confirmedPlaying: null,
-					nowPlaying: null,
-					nowJudge: null,
-					playbackSessionId: null,
-				}),
-				requestedPlaying: previousNowPlaying,
-				confirmedPlaying: previousNowPlaying,
-				nowPlaying: previousNowPlaying,
-			});
-			sileo.error({
-				title: "Play failed",
-				description: playResult.unwrap_err(),
-			});
-			return;
-		}
-
-		if (!isPlaybackContextActive(epoch, list.name)) return;
-		const acknowledgedSessionId = playResult.unwrap().session_id;
-		const ackPatch = settlePlaybackAck(getState(), {
-			sessionId: acknowledgedSessionId,
-			listName: list.name,
-			ack: playResult.unwrap(),
-		});
-		if (!ackPatch) return;
-		patchState({
-			...ackPatch,
-			nowJudge: null,
-		});
-		recentByList.set(
-			list.name,
-			pushRecentPath(recent, chosen.path, recentWindowSize(all.length)),
-		);
+	if (!isPlaybackContextActive(epoch, list.name)) return;
+	const acknowledgedSessionId = playResult.unwrap().session_id;
+	const ackPatch = settlePlaybackAck(getState(), {
+		sessionId: acknowledgedSessionId,
+		listName: list.name,
+		ack: playResult.unwrap(),
+	});
+	if (!ackPatch) return;
+	patchState({
+		...ackPatch,
+		nowJudge: null,
+	});
+	recentByList.set(
+		list.name,
+		pushRecentPath(recent, chosen.path, recentWindowSize(all.length)),
+	);
 }
 
 function scheduleNextPlayback(epoch: number) {
