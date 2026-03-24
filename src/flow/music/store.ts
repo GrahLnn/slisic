@@ -1,5 +1,4 @@
 import { me } from "@grahlnn/fn";
-import { Effect } from "effect";
 import { useMemo, useSyncExternalStore } from "react";
 import { sileo } from "sileo";
 import { createActor } from "xstate";
@@ -32,7 +31,7 @@ import {
 	musicBoundaryEventDefs,
 	musicMachine,
 } from "./machine";
-import { PlaybackCoordinator } from "./playbackCoordinator";
+import { PlaybackScheduler } from "./playbackScheduler";
 import {
 	carryForwardPersistedMaterializationOwnership,
 	createClosureEventContract,
@@ -172,7 +171,7 @@ let state: MusicState = normalizeMusicState({ ...initialState });
 let started = false;
 const unsubs: Array<() => void> = [];
 const recentByList = new Map<string, string[]>();
-const playback = new PlaybackCoordinator();
+const playback = new PlaybackScheduler();
 let bootstrapRunId = 0;
 let bootstrapStartupFailure: string | null = null;
 const machineActors = Object.fromEntries(
@@ -867,8 +866,8 @@ async function refreshTools(version?: number) {
 	});
 }
 
-function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
-	return Effect.gen(function* () {
+async function chooseAndPlayNextTask(epoch: number, signal: AbortSignal) {
+	if (signal.aborted) return;
 		const snapshot = getState();
 		const list = currentList(snapshot);
 		if (!list) return;
@@ -876,14 +875,12 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 
 		const all = playableTracks(list);
 		if (all.length === 0) {
-			yield* Effect.sync(() =>
-				patchState({
-					requestedPlaying: null,
-					confirmedPlaying: null,
-					nowPlaying: null,
-					nowJudge: null,
-				}),
-			);
+			patchState({
+				requestedPlaying: null,
+				confirmedPlaying: null,
+				nowPlaying: null,
+				nowJudge: null,
+			});
 			return;
 		}
 
@@ -901,84 +898,77 @@ function chooseAndPlayNextTask(epoch: number): Effect.Effect<void> {
 		const chosen = sampleSoftMin(candidates, 0.8);
 		if (!chosen) return;
 		if (!isPlaybackContextActive(epoch, list.name)) return;
+		if (signal.aborted) return;
 		const previousNowPlaying = snapshot.nowPlaying;
 
-		yield* Effect.sync(() => {
-			if (!isPlaybackContextActive(epoch, list.name)) return;
-			const sessionId = nextPlaybackSessionId();
-			patchState({
-				selectedListName: list.name,
-				playbackListName: list.name,
-				playbackRequestedListName: list.name,
-				requestedPlaying: chosen,
-				confirmedPlaying: null,
-				nowPlaying: snapshot.confirmedPlaying,
-				nowJudge: null,
-				playbackSessionId: sessionId,
-			});
+		if (!isPlaybackContextActive(epoch, list.name)) return;
+		const sessionId = nextPlaybackSessionId();
+		patchState({
+			selectedListName: list.name,
+			playbackListName: list.name,
+			playbackRequestedListName: list.name,
+			requestedPlaying: chosen,
+			confirmedPlaying: null,
+			nowPlaying: snapshot.confirmedPlaying,
+			nowJudge: null,
+			playbackSessionId: sessionId,
 		});
 
 		const requestedSessionId = nextPlaybackSessionId();
 
-		const playResult = yield* Effect.promise(() =>
-			crab.audioPlay({
-				session_id: toPlaybackContractSessionId(requestedSessionId),
-				path: chosen.path,
-			}),
-		);
+		const playResult = await crab.audioPlay({
+			session_id: toPlaybackContractSessionId(requestedSessionId),
+			path: chosen.path,
+		});
 
 		if (!isPlaybackContextActive(epoch, list.name)) return;
+		if (signal.aborted) return;
 
 		if (playResult.isErr()) {
-			yield* Effect.sync(() => {
-				if (!isPlaybackContextActive(epoch, list.name)) return;
-				const clearPatch = clearPlaybackSession(getState(), requestedSessionId);
-				patchState({
-					...(clearPatch ?? {
-						selectedListName: null,
-						playbackListName: null,
-						playbackRequestedListName: null,
-						requestedPlaying: null,
-						confirmedPlaying: null,
-						nowPlaying: null,
-						nowJudge: null,
-						playbackSessionId: null,
-					}),
-					requestedPlaying: previousNowPlaying,
-					confirmedPlaying: previousNowPlaying,
-					nowPlaying: previousNowPlaying,
-				});
-				sileo.error({
-					title: "Play failed",
-					description: playResult.unwrap_err(),
-				});
+			if (!isPlaybackContextActive(epoch, list.name)) return;
+			const clearPatch = clearPlaybackSession(getState(), requestedSessionId);
+			patchState({
+				...(clearPatch ?? {
+					selectedListName: null,
+					playbackListName: null,
+					playbackRequestedListName: null,
+					requestedPlaying: null,
+					confirmedPlaying: null,
+					nowPlaying: null,
+					nowJudge: null,
+					playbackSessionId: null,
+				}),
+				requestedPlaying: previousNowPlaying,
+				confirmedPlaying: previousNowPlaying,
+				nowPlaying: previousNowPlaying,
+			});
+			sileo.error({
+				title: "Play failed",
+				description: playResult.unwrap_err(),
 			});
 			return;
 		}
 
-		yield* Effect.sync(() => {
-			if (!isPlaybackContextActive(epoch, list.name)) return;
-			const sessionId = playResult.unwrap().session_id;
-			const ackPatch = settlePlaybackAck(getState(), {
-				sessionId,
-				listName: list.name,
-				ack: playResult.unwrap(),
-			});
-			if (!ackPatch) return;
-			patchState({
-				...ackPatch,
-				nowJudge: null,
-			});
-			recentByList.set(
-				list.name,
-				pushRecentPath(recent, chosen.path, recentWindowSize(all.length)),
-			);
+		if (!isPlaybackContextActive(epoch, list.name)) return;
+		const acknowledgedSessionId = playResult.unwrap().session_id;
+		const ackPatch = settlePlaybackAck(getState(), {
+			sessionId: acknowledgedSessionId,
+			listName: list.name,
+			ack: playResult.unwrap(),
 		});
-	});
+		if (!ackPatch) return;
+		patchState({
+			...ackPatch,
+			nowJudge: null,
+		});
+		recentByList.set(
+			list.name,
+			pushRecentPath(recent, chosen.path, recentWindowSize(all.length)),
+		);
 }
 
 function scheduleNextPlayback(epoch: number) {
-	playback.replaceWith(chooseAndPlayNextTask(epoch), epoch);
+	playback.replaceWith((signal) => chooseAndPlayNextTask(epoch, signal), epoch);
 	patchState({ playbackEpoch: epoch });
 }
 
@@ -1104,7 +1094,7 @@ async function safeStop() {
 	const snapshot = getState();
 	const hadPlayback = hasPlaybackContext(snapshot);
 	bumpPlaybackEpoch();
-	await playback.interruptCurrent();
+	playback.cancelCurrent();
 	const stopped = await crab.audioStop();
 	if (hadPlayback && stopped.isErr()) {
 		sileo.error({
@@ -1222,7 +1212,7 @@ async function persistSlot() {
 			slot,
 		);
 		const idleEpoch = bumpPlaybackEpoch();
-		void playback.interruptCurrent();
+		playback.cancelCurrent();
 		const optimisticState = normalizeMusicState({
 			...snapshot,
 			...buildPostSavePatch(optimisticPlaylists.length > 0, idleEpoch),
@@ -1280,7 +1270,7 @@ async function persistSlot() {
 	const optimisticPlaylist = buildOptimisticPlaylistFromSlot(slot);
 	const optimisticPlaylists = [...snapshot.playlists, optimisticPlaylist];
 	const idleEpoch = bumpPlaybackEpoch();
-	void playback.interruptCurrent();
+	playback.cancelCurrent();
 	const closureEntryIdentity = boundaryOwnerIdentity;
 	const optimisticState = normalizeMusicState({
 		...snapshot,
@@ -1924,7 +1914,7 @@ export const action = {
 			playbackRequestedListName: null,
 		}));
 
-		await playback.interruptCurrent();
+		playback.cancelCurrent();
 		const stopped = await crab.audioStop();
 		if (stopped.isErr()) {
 			sileo.error({
@@ -1995,7 +1985,7 @@ export const action = {
 		bootstrapStartupFailure = null;
 		playback.markDisposed();
 		patchState({ playbackEpoch: playback.getEpoch() });
-		await playback.interruptCurrent();
+		playback.cancelCurrent();
 		for (const unsub of unsubs.splice(0)) {
 			unsub();
 		}

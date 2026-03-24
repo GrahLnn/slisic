@@ -161,8 +161,8 @@ mock.module("sileo", () => ({
 	},
 }));
 
-mock.module("./playbackCoordinator", () => ({
-	PlaybackCoordinator: class PlaybackCoordinator {
+mock.module("./playbackScheduler", () => ({
+	PlaybackScheduler: class PlaybackScheduler {
 		private epoch = 0;
 
 		bumpEpoch() {
@@ -203,11 +203,11 @@ mock.module("./playbackCoordinator", () => ({
 			return true;
 		}
 
-		async interruptCurrent() {
+		cancelCurrent() {
 			playbackLog.interrupts += 1;
 		}
 
-		replaceWith(_task: unknown, epoch: number) {
+		replaceWith(_task: (signal: AbortSignal) => Promise<void>, epoch: number) {
 			playbackLog.replaceWith.push({ epoch });
 		}
 	},
