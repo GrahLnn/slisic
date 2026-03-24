@@ -27,6 +27,7 @@ import type { Playlist } from "@/src/cmd/commands";
 export type MusicActorBoundary =
 	| "bootstrap_workspace"
 	| "playback_session"
+	| "playback_transport_handoff"
 	| "draft_operations"
 	| "entry_materialization"
 	| "save_boundary"
@@ -48,6 +49,18 @@ export interface PlaybackSessionActorState {
 	requestedPath: string | null;
 	confirmedPath: string | null;
 	nowPlayingPath: string | null;
+}
+
+export interface PlaybackTransportHandoffActorState {
+	snapshot: MusicState;
+	liveSessionId: number | null;
+	playbackOwnedListName: string | null;
+	requestedListName: string | null;
+	requestedPath: string | null;
+	confirmedPath: string | null;
+	nowPlayingPath: string | null;
+	awaitingTransportHandoff: boolean;
+	awaitingReplacementHandoff: boolean;
 }
 
 export interface DraftOperationsActorState {
@@ -83,6 +96,7 @@ export interface MusicMachineInput {
 export interface MusicMachineContextMap {
 	bootstrap_workspace: BootstrapWorkspaceActorState;
 	playback_session: PlaybackSessionActorState;
+	playback_transport_handoff: PlaybackTransportHandoffActorState;
 	draft_operations: DraftOperationsActorState;
 	entry_materialization: EntryMaterializationActorState;
 	save_boundary: SaveBoundaryActorState;
@@ -117,6 +131,7 @@ export const musicBoundaryEventDefs = collect(
 		closureOwnerSessionId: number;
 	}>()("boundary.bootstrap_workspace.save_settled"),
 	...event<MusicState>()("boundary.playback_session.replace"),
+	...event<MusicState>()("boundary.playback_transport_handoff.replace"),
 	...event<MusicState>()("boundary.draft_operations.replace"),
 	...event<MusicState>()("boundary.entry_materialization.replace"),
 	...event<MusicState>()("boundary.save_boundary.replace"),
@@ -189,6 +204,29 @@ function createPlaybackSessionState(
 	};
 }
 
+function createPlaybackTransportHandoffState(
+	snapshot: MusicState,
+): PlaybackTransportHandoffActorState {
+	const playbackOwnedList = derivePlaybackOwnedList(snapshot);
+	const liveSessionId = snapshot.playbackSessionId;
+	const hasConfirmedPlayback = snapshot.confirmedPlaying != null;
+	const hasRequestedIntent = snapshot.requestedPlaying != null;
+	const hasLiveTrack = snapshot.nowPlaying != null;
+	return {
+		snapshot,
+		liveSessionId,
+		playbackOwnedListName: playbackOwnedList?.name ?? null,
+		requestedListName: snapshot.playbackRequestedListName ?? null,
+		requestedPath: snapshot.requestedPlaying?.path ?? null,
+		confirmedPath: snapshot.confirmedPlaying?.path ?? null,
+		nowPlayingPath: snapshot.nowPlaying?.path ?? null,
+		awaitingTransportHandoff:
+			liveSessionId != null && hasConfirmedPlayback && !hasLiveTrack,
+		awaitingReplacementHandoff:
+			liveSessionId != null && hasConfirmedPlayback && hasRequestedIntent,
+	};
+}
+
 function createDraftOperationsState(
 	snapshot: MusicState,
 ): DraftOperationsActorState {
@@ -242,6 +280,10 @@ function createBoundaryState<K extends MusicActorBoundary>(
 			}) as MusicMachineContextMap[K];
 		case "playback_session":
 			return createPlaybackSessionState(snapshot) as MusicMachineContextMap[K];
+		case "playback_transport_handoff":
+			return createPlaybackTransportHandoffState(
+				snapshot,
+			) as MusicMachineContextMap[K];
 		case "draft_operations":
 			return createDraftOperationsState(snapshot) as MusicMachineContextMap[K];
 		case "entry_materialization":
@@ -498,6 +540,7 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 const machines = createMachines({
 	bootstrap_workspace: createBoundaryLogic("bootstrap_workspace"),
 	playback_session: createBoundaryLogic("playback_session"),
+	playback_transport_handoff: createBoundaryLogic("playback_transport_handoff"),
 	draft_operations: createBoundaryLogic("draft_operations"),
 	entry_materialization: createBoundaryLogic("entry_materialization"),
 	save_boundary: createBoundaryLogic("save_boundary"),
@@ -512,6 +555,7 @@ export type MusicMachineActor = ReturnType<typeof createActor<MusicBoundaryLogic
 export const MUSIC_MACHINE_BOUNDARIES: MusicActorBoundary[] = [
 	"bootstrap_workspace",
 	"playback_session",
+	"playback_transport_handoff",
 	"draft_operations",
 	"entry_materialization",
 	"save_boundary",

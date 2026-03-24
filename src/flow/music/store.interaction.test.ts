@@ -1038,6 +1038,7 @@ describe("music interaction guards", () => {
 		expect(MUSIC_MACHINE_BOUNDARIES).toEqual([
 			"bootstrap_workspace",
 			"playback_session",
+			"playback_transport_handoff",
 			"draft_operations",
 			"entry_materialization",
 			"save_boundary",
@@ -1096,7 +1097,6 @@ describe("music interaction guards", () => {
 			entrySessionId: 12,
 			closureOwnerSessionId: 9,
 		});
-
 		const snapshot = __testing.getMachineActors();
 
 		expect(snapshot.bootstrap_workspace.context).toEqual({

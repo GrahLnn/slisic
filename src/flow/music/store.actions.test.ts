@@ -7416,6 +7416,7 @@ describe("music store action contracts", () => {
 		expect(Object.keys(commandContract.events)).toContain("audioFailed");
 	});
 
+
 	test("play_true_positive_creates_a_fresh_playback_session_identity_for_each_start_attempt", async () => {
 		const first = makeMusic("C:/music/focus/a.flac");
 		const second = makeMusic("C:/music/focus/b.flac");
