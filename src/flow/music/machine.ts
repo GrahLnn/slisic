@@ -32,6 +32,8 @@ export interface BootstrapWorkspaceActorState {
 	snapshot: MusicState;
 	route: StartupRouteResolution;
 	screen: WorkspaceScreen;
+	runId: number;
+	startupFailure: string | null;
 }
 
 export interface PlaybackSessionActorState {
@@ -68,6 +70,8 @@ export interface ClosureOwnerChainActorState {
 
 export interface MusicMachineInput {
 	snapshot: MusicState;
+	bootstrapRunId?: number;
+	bootstrapFailure?: string | null;
 }
 
 export interface MusicMachineContextMap {
@@ -81,6 +85,9 @@ export interface MusicMachineContextMap {
 
 export const musicBoundaryEventDefs = collect(
 	...event<MusicState>()("boundary.bootstrap_workspace.replace"),
+	...event<{ snapshot: MusicState; runId: number; startupFailure: string | null }>()(
+		"boundary.bootstrap_workspace.transition",
+	),
 	...event<MusicState>()("boundary.playback_session.replace"),
 	...event<MusicState>()("boundary.draft_operations.replace"),
 	...event<MusicState>()("boundary.entry_materialization.replace"),
@@ -93,11 +100,14 @@ export type MusicMachineEvent =
 
 function createBootstrapWorkspaceState(
 	snapshot: MusicState,
+	input?: MusicMachineInput,
 ): BootstrapWorkspaceActorState {
 	return {
 		snapshot,
 		route: deriveRouteResolution(snapshot, { kind: snapshot.startupRoute }),
 		screen: projectWorkspaceScreen(snapshot),
+		runId: input?.bootstrapRunId ?? 0,
+		startupFailure: input?.bootstrapFailure ?? null,
 	};
 }
 
@@ -156,10 +166,14 @@ function createClosureOwnerChainState(
 function createBoundaryState<K extends MusicActorBoundary>(
 	boundary: K,
 	snapshot: MusicState,
+	input?: MusicMachineInput,
 ): MusicMachineContextMap[K] {
 	switch (boundary) {
 		case "bootstrap_workspace":
-			return createBootstrapWorkspaceState(snapshot) as MusicMachineContextMap[K];
+			return createBootstrapWorkspaceState(
+				snapshot,
+				input,
+			) as MusicMachineContextMap[K];
 		case "playback_session":
 			return createPlaybackSessionState(snapshot) as MusicMachineContextMap[K];
 		case "draft_operations":
@@ -185,7 +199,23 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 			switch (event.type) {
 				case "boundary.bootstrap_workspace.replace":
 					return boundary === "bootstrap_workspace"
-						? createBoundaryState(boundary, event.output)
+						? createBoundaryState(boundary, event.output, {
+								snapshot: event.output,
+								bootstrapRunId: (
+									context as BootstrapWorkspaceActorState
+								).runId,
+								bootstrapFailure: (
+									context as BootstrapWorkspaceActorState
+								).startupFailure,
+							})
+						: context;
+				case "boundary.bootstrap_workspace.transition":
+					return boundary === "bootstrap_workspace"
+						? createBoundaryState(boundary, event.output.snapshot, {
+								snapshot: event.output.snapshot,
+								bootstrapRunId: event.output.runId,
+								bootstrapFailure: event.output.startupFailure,
+							})
 						: context;
 				case "boundary.playback_session.replace":
 					return boundary === "playback_session"

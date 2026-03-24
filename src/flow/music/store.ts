@@ -169,11 +169,18 @@ let started = false;
 const unsubs: Array<() => void> = [];
 const recentByList = new Map<string, string[]>();
 const playback = new PlaybackCoordinator();
-let runVersion = 0;
+let bootstrapRunId = 0;
+let bootstrapStartupFailure: string | null = null;
 const machineActors = Object.fromEntries(
 	MUSIC_MACHINE_BOUNDARIES.map((boundary) => [
 		boundary,
-		createActor(musicMachine[boundary].logic, { input: { snapshot: state } }),
+		createActor(musicMachine[boundary].logic, {
+			input: {
+				snapshot: state,
+				bootstrapRunId,
+				bootstrapFailure: bootstrapStartupFailure,
+			},
+		}),
 	]),
 ) as Record<MusicActorBoundary, MusicMachineActor>;
 
@@ -221,8 +228,24 @@ function replaceBoundaryState(boundary: MusicActorBoundary, next: MusicState) {
 	machineActors[boundary].send(event);
 }
 
+function transitionBootstrapWorkspaceMachine(
+	next: MusicState,
+	runId: number = bootstrapRunId,
+	startupFailure: string | null = bootstrapStartupFailure,
+) {
+	machineActors.bootstrap_workspace.send(
+		musicBoundaryEventDefs["boundary.bootstrap_workspace.transition"].load({
+			snapshot: next,
+			runId,
+			startupFailure,
+		}),
+	);
+}
+
 function syncCompatibilityShell(nextState: MusicState) {
+	transitionBootstrapWorkspaceMachine(nextState);
 	for (const boundary of MUSIC_MACHINE_BOUNDARIES) {
+		if (boundary === "bootstrap_workspace") continue;
 		replaceBoundaryState(boundary, nextState);
 	}
 }
@@ -378,7 +401,7 @@ function createStableSnapshotSelector<T>(selector: (state: MusicState) => T) {
 }
 
 function isCurrentRun(version: number) {
-	return version === runVersion;
+	return version === bootstrapRunId;
 }
 
 function bumpPlaybackEpoch(): number {
@@ -1017,7 +1040,8 @@ async function persistSlot() {
 
 export const action = {
 	async run() {
-		const version = ++runVersion;
+		const version = ++bootstrapRunId;
+		bootstrapStartupFailure = null;
 		playback.markActive();
 		patchState({ loading: true });
 		try {
@@ -1040,6 +1064,8 @@ export const action = {
 				title: "Initialization failed",
 				description: error instanceof Error ? error.message : String(error),
 			});
+			bootstrapStartupFailure =
+				error instanceof Error ? error.message : String(error);
 			patchState({ routeResolved: true, startupRoute: "startup_failed" });
 		} finally {
 			if (isCurrentRun(version)) {
@@ -1642,7 +1668,8 @@ export const action = {
 		patchState({ savePath: path });
 	},
 	async dispose() {
-		runVersion += 1;
+		bootstrapRunId += 1;
+		bootstrapStartupFailure = null;
 		playback.markDisposed();
 		patchState({ playbackEpoch: playback.getEpoch() });
 		await playback.interruptCurrent();
@@ -1694,6 +1721,8 @@ export const __testing = {
 			unsub();
 		}
 		state = normalizeMusicState({ ...initialState });
+		bootstrapRunId = 0;
+		bootstrapStartupFailure = null;
 		syncCompatibilityShell(state);
 		started = false;
 	},

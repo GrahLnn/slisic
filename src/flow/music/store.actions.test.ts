@@ -536,6 +536,46 @@ describe("music store action contracts", () => {
 		expect(toastLog.error).toEqual([]);
 	});
 
+	test("run_true_positive_bootstrap_machine_owns_current_run_and_recoverable_startup_failure_truth", async () => {
+		impl.evt = async (_event: string, _handler: (payload: unknown) => void) => {
+			throw new Error("listen failed");
+		};
+
+		await action.run();
+
+		expect(__testing.getMachineActors().bootstrap_workspace.context).toMatchObject({
+			runId: 1,
+			startupFailure: "listen failed",
+			screen: "guide",
+			route: {
+				kind: "startup_failed",
+				routeResolved: true,
+			},
+		});
+
+		toastLog.error.length = 0;
+		impl.evt =
+			async (_event: string, _handler: (payload: unknown) => void) => () => {};
+		impl.playlistNames = async () => Ok<string[], string>(["recovered"]);
+		impl.readAll = async () =>
+			Ok<Playlist[], string>([makePlaylist("recovered")]);
+
+		await action.run();
+
+		expect(__testing.getMachineActors().bootstrap_workspace.context).toMatchObject({
+			runId: 2,
+			startupFailure: null,
+			screen: "play",
+			route: {
+				kind: "hydrated_playlists",
+				routeResolved: true,
+				mode: "play",
+				phase: "hydrated",
+			},
+		});
+		expect(toastLog.error).toEqual([]);
+	});
+
 	test("run_true_positive_probes_names_first_and_switches_to_play_before_full_snapshot_hydrates", async () => {
 		const playlist = makePlaylist("focus");
 		let releaseReadAll!: () => void;

@@ -1088,6 +1088,8 @@ describe("music interaction guards", () => {
 				phase: "hydrated",
 			},
 			screen: "edit",
+			runId: 0,
+			startupFailure: null,
 		});
 		expect(snapshot.playback_session.context).toEqual({
 			snapshot: __testing.getState(),
