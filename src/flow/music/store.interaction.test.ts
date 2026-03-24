@@ -1281,7 +1281,10 @@ describe("music interaction guards", () => {
 				{ ...makePlaylist("focus"), entries: [focusEntry] },
 				{ ...makePlaylist("other"), entries: [siblingEntry] },
 			],
-			processMsg: { playlist: "focus", str: "Analyzing loudness 1/1: C:/music/focus" },
+			processMsg: {
+				playlist: "focus",
+				str: "Analyzing loudness 1/1: C:/music/focus",
+			},
 		});
 
 		const snapshot = __testing.getMachineActors().entry_materialization.context;
