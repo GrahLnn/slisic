@@ -1,7 +1,7 @@
 use super::store::SnapshotStore;
 use super::types::{
-    entry_key, recompute_entry_avg, recompute_playlist_avg, Entry, EntryType, LibraryData, Music,
-    NormalizationStatus, Playlist, MUSIC_LIBRARY_SCHEMA_VERSION,
+    entry_key, recompute_entry_avg, recompute_playlist_avg, ClosureSubject, Entry, EntryType,
+    LibraryData, Music, NormalizationStatus, Playlist, MUSIC_LIBRARY_SCHEMA_VERSION,
 };
 use appdb::model::meta::ModelMeta;
 use appdb::model::relation::relation_name;
@@ -42,6 +42,11 @@ struct MusicEntry {
     downloaded_ok: Option<bool>,
     tracking: Option<bool>,
     entry_type: String,
+    lifecycle_owner_session_id: Option<i64>,
+    lifecycle_entry_identity: Option<String>,
+    lifecycle_playlist: Option<String>,
+    lifecycle_path: Option<String>,
+    lifecycle_url: Option<String>,
     updated_at: i64,
 }
 
@@ -242,6 +247,26 @@ impl SurrealStore {
             downloaded_ok: entry.downloaded_ok,
             tracking: entry.tracking,
             entry_type: Self::encode_entry_type(&entry.entry_type).to_string(),
+            lifecycle_owner_session_id: entry
+                .lifecycle_subject
+                .as_ref()
+                .and_then(|subject| i64::try_from(subject.owner_session_id).ok()),
+            lifecycle_entry_identity: entry
+                .lifecycle_subject
+                .as_ref()
+                .map(|subject| subject.entry_identity.clone()),
+            lifecycle_playlist: entry
+                .lifecycle_subject
+                .as_ref()
+                .map(|subject| subject.playlist.clone()),
+            lifecycle_path: entry
+                .lifecycle_subject
+                .as_ref()
+                .and_then(|subject| subject.path.clone()),
+            lifecycle_url: entry
+                .lifecycle_subject
+                .as_ref()
+                .and_then(|subject| subject.url.clone()),
             updated_at,
         }
     }
@@ -501,6 +526,11 @@ impl SnapshotStore for SurrealStore {
                         downloaded_ok: $downloaded_ok,\
                         tracking: $tracking,\
                         entry_type: $entry_type,\
+                        lifecycle_owner_session_id: $lifecycle_owner_session_id,\
+                        lifecycle_entry_identity: $lifecycle_entry_identity,\
+                        lifecycle_playlist: $lifecycle_playlist,\
+                        lifecycle_path: $lifecycle_path,\
+                        lifecycle_url: $lifecycle_url,\
                         updated_at: $updated_at\
                     } RETURN NONE;",
                 )
@@ -514,6 +544,17 @@ impl SnapshotStore for SurrealStore {
                 .bind("downloaded_ok", entry_row.downloaded_ok)
                 .bind("tracking", entry_row.tracking)
                 .bind("entry_type", entry_row.entry_type.clone())
+                .bind(
+                    "lifecycle_owner_session_id",
+                    entry_row.lifecycle_owner_session_id,
+                )
+                .bind(
+                    "lifecycle_entry_identity",
+                    entry_row.lifecycle_entry_identity.clone(),
+                )
+                .bind("lifecycle_playlist", entry_row.lifecycle_playlist.clone())
+                .bind("lifecycle_path", entry_row.lifecycle_path.clone())
+                .bind("lifecycle_url", entry_row.lifecycle_url.clone())
                 .bind("updated_at", entry_row.updated_at),
             );
         }
@@ -745,6 +786,22 @@ impl SnapshotStore for SurrealStore {
                     downloaded_ok: entry_row.downloaded_ok,
                     tracking: entry_row.tracking,
                     entry_type: Self::decode_entry_type(&entry_row.entry_type),
+                    lifecycle_subject: match (
+                        entry_row.lifecycle_owner_session_id,
+                        entry_row.lifecycle_entry_identity.clone(),
+                        entry_row.lifecycle_playlist.clone(),
+                    ) {
+                        (Some(owner_session_id), Some(entry_identity), Some(playlist)) => {
+                            Some(ClosureSubject {
+                                owner_session_id: owner_session_id as u64,
+                                entry_identity,
+                                playlist,
+                                path: entry_row.lifecycle_path.clone(),
+                                url: entry_row.lifecycle_url.clone(),
+                            })
+                        }
+                        _ => None,
+                    },
                 };
                 recompute_entry_avg(&mut entry);
                 entries.push(entry);
@@ -864,6 +921,11 @@ impl SnapshotStore for SurrealStore {
                         downloaded_ok: $downloaded_ok,\
                         tracking: $tracking,\
                         entry_type: $entry_type,\
+                        lifecycle_owner_session_id: $lifecycle_owner_session_id,\
+                        lifecycle_entry_identity: $lifecycle_entry_identity,\
+                        lifecycle_playlist: $lifecycle_playlist,\
+                        lifecycle_path: $lifecycle_path,\
+                        lifecycle_url: $lifecycle_url,\
                         updated_at: $updated_at\
                     } RETURN NONE;",
                 )
@@ -877,6 +939,17 @@ impl SnapshotStore for SurrealStore {
                 .bind("downloaded_ok", entry_row.downloaded_ok)
                 .bind("tracking", entry_row.tracking)
                 .bind("entry_type", entry_row.entry_type.clone())
+                .bind(
+                    "lifecycle_owner_session_id",
+                    entry_row.lifecycle_owner_session_id,
+                )
+                .bind(
+                    "lifecycle_entry_identity",
+                    entry_row.lifecycle_entry_identity.clone(),
+                )
+                .bind("lifecycle_playlist", entry_row.lifecycle_playlist.clone())
+                .bind("lifecycle_path", entry_row.lifecycle_path.clone())
+                .bind("lifecycle_url", entry_row.lifecycle_url.clone())
                 .bind("updated_at", entry_row.updated_at),
             );
         }

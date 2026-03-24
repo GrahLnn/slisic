@@ -4,7 +4,8 @@ export type PlaybackMode = "play" | "create" | "edit" | "new_guide";
 
 export interface PlaybackContextSnapshot {
 	mode: PlaybackMode;
-	selectedListName: string | null;
+	selectedListName?: string | null;
+	playbackListName?: string | null;
 }
 
 export class PlaybackCoordinator {
@@ -38,8 +39,9 @@ export class PlaybackCoordinator {
 		if (this.disposed) return false;
 		if (epoch !== this.epoch) return false;
 		if (snapshot.mode !== "play") return false;
-		if (!snapshot.selectedListName) return false;
-		if (expectedListName && snapshot.selectedListName !== expectedListName) {
+		const activeListName = snapshot.playbackListName ?? snapshot.selectedListName ?? null;
+		if (!activeListName) return false;
+		if (expectedListName && activeListName !== expectedListName) {
 			return false;
 		}
 		return true;

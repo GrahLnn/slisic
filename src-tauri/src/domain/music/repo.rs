@@ -104,6 +104,42 @@ impl LibraryRepo {
         self.store.replace_playlist(anchor, playlist).await
     }
 
+    pub async fn find_entry_by_music_path(
+        &self,
+        path: &str,
+    ) -> Result<Option<(String, Entry)>, String> {
+        let data = self.store.load_data().await?;
+        for playlist in data.playlists {
+            for entry in playlist.entries {
+                if entry.musics.iter().any(|music| music.path == path) {
+                    return Ok(Some((playlist.name, entry)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    #[allow(dead_code)]
+    pub async fn find_entry_by_identity(
+        &self,
+        entry_identity: &str,
+    ) -> Result<Option<(String, Entry)>, String> {
+        let data = self.store.load_data().await?;
+        for playlist in data.playlists {
+            for entry in playlist.entries {
+                if entry
+                    .lifecycle_subject
+                    .as_ref()
+                    .map(|subject| subject.entry_identity.as_str())
+                    == Some(entry_identity)
+                {
+                    return Ok(Some((playlist.name, entry)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn delete_playlist(&self, name: &str) -> Result<(), String> {
         self.mutate(|data| {
             let before = data.playlists.len();

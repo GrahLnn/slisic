@@ -562,6 +562,7 @@ pub async fn download_entry_for_library(
         downloaded_ok: Some(false),
         tracking: entry.tracking.or(Some(false)),
         entry_type: resolved_entry_type.clone(),
+        lifecycle_subject: entry.lifecycle_subject.clone(),
     };
     recompute_entry_avg(&mut updated_entry);
     updated_entry.downloaded_ok = Some(!updated_entry.musics.is_empty());
@@ -601,6 +602,7 @@ pub async fn test_download_audio(app: tauri::AppHandle) -> Result<Vec<String>, S
         downloaded_ok: Some(false),
         tracking: Some(false),
         entry_type: EntryType::WebVideo,
+        lifecycle_subject: None,
     };
 
     let outcome = download_entry_for_library(app, "test", &entry).await?;

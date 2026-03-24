@@ -17,6 +17,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "block2",
+ "ffplayr",
  "hex",
  "inventory",
  "log",
@@ -1776,6 +1777,18 @@ checksum = "c0b50bfb653653f9ca9095b427bed08ab8d75a137839d9ad64eb11810d5b6393"
 dependencies = [
  "rand_core 0.6.4",
  "subtle",
+]
+
+[[package]]
+name = "ffplayr"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "rodio",
+ "serde",
+ "serde_json",
+ "specta",
+ "tokio",
 ]
 
 [[package]]

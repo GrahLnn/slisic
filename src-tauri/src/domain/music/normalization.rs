@@ -1,9 +1,8 @@
 use super::repo::repository;
 use super::types::{
-    build_closure_lifecycle_fact, closure_owner_session_id_or_entry_identity, default_music,
-    sync_legacy_loudness_fields, Music, NormalizationStatus, Playlist, ProcessMsg,
-    ClosureLifecyclePhase, Entry,
-    MUSIC_ANALYSIS_VERSION,
+    build_closure_lifecycle_fact_from_subject, closure_owner_session_id_or_entry_identity,
+    closure_subject_from_entry, default_music, sync_legacy_loudness_fields, ClosureLifecyclePhase,
+    Entry, Music, NormalizationStatus, Playlist, ProcessMsg, MUSIC_ANALYSIS_VERSION,
 };
 use crate::utils::ffmpeg;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -24,16 +23,12 @@ fn emit_analysis_closure_fact(
     notification_text: Option<String>,
     owner_session_id: Option<u64>,
 ) {
-    let owner_session_id = closure_owner_session_id_or_entry_identity(owner_session_id, entry)
-        .unwrap_or(0);
-    if let Some(fact) = build_closure_lifecycle_fact(
-        owner_session_id,
-        playlist,
-        entry,
-        phase,
-        notification_text,
-    ) {
-        fact.emit(app).ok();
+    let owner_session_id =
+        closure_owner_session_id_or_entry_identity(owner_session_id, entry).unwrap_or(0);
+    if let Some(subject) = closure_subject_from_entry(owner_session_id, playlist, entry) {
+        build_closure_lifecycle_fact_from_subject(&subject, phase, notification_text)
+            .emit(app)
+            .ok();
     }
 }
 
@@ -47,7 +42,18 @@ fn closure_entry_from_music(music: &Music) -> Entry {
         downloaded_ok: Some(true),
         tracking: Some(false),
         entry_type: super::types::EntryType::Local,
+        lifecycle_subject: None,
     }
+}
+
+async fn canonical_subject_for_music_path(
+    path: &str,
+    owner_session_id: Option<u64>,
+) -> Option<(String, Entry, u64)> {
+    let repo = repository().await.ok()?;
+    let (playlist, entry) = repo.find_entry_by_music_path(path).await.ok()??;
+    let resolved_owner = closure_owner_session_id_or_entry_identity(owner_session_id, &entry)?;
+    Some((playlist, entry, resolved_owner))
 }
 
 pub const PLAYBACK_TARGET_LUFS: f32 = -18.0;
@@ -121,30 +127,29 @@ pub async fn analyze_paths_blocking(
                 }
                 .emit(app)
                 .ok();
-                emit_analysis_closure_fact(
-                    app,
-                    playlist,
-                    &closure_entry_from_music(&default_music(music_path.clone())),
-                    ClosureLifecyclePhase::Notified,
-                    Some(format!(
-                        "{label} {}/{}: {}",
-                        completed,
-                        total,
-                        path_display_name(&music_path)
-                    )),
-                    owner_session_id,
-                );
-
                 match result {
                     Ok(music) => {
-                        let closure_entry = closure_entry_from_music(&music);
+                        let (fact_playlist, closure_entry, fact_owner_session_id) =
+                            canonical_subject_for_music_path(&music.path, owner_session_id)
+                                .await
+                                .unwrap_or_else(|| {
+                                    (
+                                        playlist.to_string(),
+                                        closure_entry_from_music(&music),
+                                        closure_owner_session_id_or_entry_identity(
+                                            owner_session_id,
+                                            &closure_entry_from_music(&music),
+                                        )
+                                        .unwrap_or(0),
+                                    )
+                                });
                         emit_analysis_closure_fact(
                             app,
-                            playlist,
+                            &fact_playlist,
                             &closure_entry,
                             ClosureLifecyclePhase::Analyzed,
                             Some(format!("Analyzed {}", path_display_name(&music.path))),
-                            owner_session_id,
+                            Some(fact_owner_session_id),
                         );
                         persist_batch.push(music);
                         if persist_batch.len() >= ANALYSIS_PERSIST_BATCH {
@@ -156,14 +161,28 @@ pub async fn analyze_paths_blocking(
                         }
                     }
                     Err(error) => {
-                        let closure_entry = closure_entry_from_music(&default_music(music_path.clone()));
+                        let fallback_music = default_music(music_path.clone());
+                        let (fact_playlist, closure_entry, fact_owner_session_id) =
+                            canonical_subject_for_music_path(&music_path, owner_session_id)
+                                .await
+                                .unwrap_or_else(|| {
+                                    (
+                                        playlist.to_string(),
+                                        closure_entry_from_music(&fallback_music),
+                                        closure_owner_session_id_or_entry_identity(
+                                            owner_session_id,
+                                            &closure_entry_from_music(&fallback_music),
+                                        )
+                                        .unwrap_or(0),
+                                    )
+                                });
                         emit_analysis_closure_fact(
                             app,
-                            playlist,
+                            &fact_playlist,
                             &closure_entry,
                             ClosureLifecyclePhase::Failed,
                             Some(format!("Analysis failed: {error}")),
-                            owner_session_id,
+                            Some(fact_owner_session_id),
                         );
                         let _ = persist_analysis_failure(&music_path, error.clone()).await;
                         if first_error.is_none() {

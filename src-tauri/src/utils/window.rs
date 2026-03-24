@@ -265,7 +265,10 @@ fn snapshot_live_descriptors(app: &AppHandle) -> Vec<WindowIdentityDescriptor> {
     lifecycle.retain(|state| !state.destroyed && live_labels.contains(&state.descriptor.label));
 
     for label in &live_labels {
-        if let Some(state) = lifecycle.iter_mut().find(|state| state.descriptor.label == *label) {
+        if let Some(state) = lifecycle
+            .iter_mut()
+            .find(|state| state.descriptor.label == *label)
+        {
             let fallback_descriptor = WindowIdentityDescriptor::from_label(label);
             state.descriptor.window = fallback_descriptor.window;
             state.descriptor.is_primary_main = fallback_descriptor.is_primary_main;
@@ -623,7 +626,7 @@ mod tests {
         current_window_descriptor, destroy_window_lifecycle, handle_window_destroyed,
         promote_live_window_descriptor, register_live_window, window_kind_from_label,
         WindowIdentityDescriptor, WindowLifecycleState, WindowName, WindowVisibilityKind,
-        WINDOW_LIFECYCLE, PREWARM_MAIN_PENDING, PREWARM_MAIN_READY,
+        PREWARM_MAIN_PENDING, PREWARM_MAIN_READY, WINDOW_LIFECYCLE,
     };
 
     fn reset_window_lifecycle_for_test() {
@@ -884,7 +887,8 @@ mod tests {
     }
 
     #[test]
-    fn destroyed_window_false_positive_guard_destroyed_identity_is_removed_instead_of_marked_live() {
+    fn destroyed_window_false_positive_guard_destroyed_identity_is_removed_instead_of_marked_live()
+    {
         reset_window_lifecycle_for_test();
         register_live_window("main");
 
@@ -894,7 +898,10 @@ mod tests {
             .expect("window lifecycle should be lockable")
             .clone();
 
-        assert_eq!(removed_descriptor, Some(WindowIdentityDescriptor::from_label("main")));
+        assert_eq!(
+            removed_descriptor,
+            Some(WindowIdentityDescriptor::from_label("main"))
+        );
         assert!(lifecycle.is_empty());
     }
 }

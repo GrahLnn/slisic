@@ -18,10 +18,10 @@ import {
 import { projectWorkspaceScreen } from "@/src/flow/music/store";
 
 export function projectPlaylistHint(
-	processMsg: ReturnType<typeof hook.useMsg>,
+	processHint: ReturnType<typeof hook.useProcessHint>,
 	playlistName: string,
 ): string | null {
-	return processMsg?.playlist === playlistName ? processMsg.str : null;
+	return processHint?.playlistName === playlistName ? processHint.text : null;
 }
 
 export function closureProjectionLabel(
@@ -75,10 +75,10 @@ function Play() {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
 	const didInitCenterRef = useRef(false);
-	const processMsg = hook.useMsg();
+	const processHint = hook.useProcessHint();
 	const closure = hook.useClosureProjection();
 	const hintForPlaylist = (playlistName: string) =>
-		projectPlaylistHint(processMsg, playlistName);
+		projectPlaylistHint(processHint, playlistName);
 	const closureLabel = closureProjectionLabel(closure);
 	const hasPlaybackSurface = ctx.mode === "play" && closure.interactive && !!curList;
 	const displayLists =
@@ -450,41 +450,7 @@ function Play() {
 	);
 }
 
-function Create() {
-	const isReview = hook.useIsReview();
-	return (
-		<Face>
-			<div className="relative flex h-full w-full overflow-hidden">
-				<div
-					className={cn([
-						"absolute left-6 top-0 flex items-center gap-2 transition",
-						isReview && "pointer-events-none opacity-0",
-					])}
-				>
-					<BackButton onClick={action.back} />
-				</div>
-
-				<div className="flex w-1/2 flex-col items-center justify-center">
-					<motion.div layoutId="musicPlus">
-						<labels.musicPlus />
-					</motion.div>
-				</div>
-
-				<div className="w-1/2 overflow-y-auto px-6 py-4">
-					<motion.div
-						initial={{ opacity: 0, y: 20 }}
-						animate={{ opacity: 1, y: 0 }}
-						transition={{ duration: 0.5 }}
-					>
-						<New />
-					</motion.div>
-				</div>
-			</div>
-		</Face>
-	);
-}
-
-function Edit() {
+function WorkspaceEditor() {
 	const isReview = hook.useIsReview();
 	return (
 		<Face>
@@ -542,8 +508,8 @@ export default function Home() {
 	return {
 		play: <Play />,
 		guide: <Guide />,
-		create: <Create />,
-		edit: <Edit />,
+		create: <WorkspaceEditor />,
+		edit: <WorkspaceEditor />,
 		unresolved: null,
 	}[projectWorkspaceScreen(ctx)] ?? null;
 }

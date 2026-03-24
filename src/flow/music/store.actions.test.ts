@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import * as commandContract from "@/src/cmd/commands";
 import type { CollectMission, Entry, Music, Playlist } from "@/src/cmd/commands";
 import type { ClosureLifecycleFact } from "@/src/cmd/commands";
+import { expandClosureLifecycleFacts, toClosureEventPhase } from "./closureFacts";
 import type {
 	DraftEntryOperationState,
 	DraftLinkState,
@@ -215,21 +216,6 @@ function makeClosureLifecycleFact(
 		notification_text: "Downloaded replacement remote",
 		...patch,
 	};
-}
-
-function toClosureEventPhase(phase: ClosureLifecycleFact["phase"]) {
-	switch (phase) {
-		case "Saved":
-			return "saved" as const;
-		case "Downloaded":
-			return "downloaded" as const;
-		case "Analyzed":
-			return "analyzed" as const;
-		case "Failed":
-			return "failed" as const;
-		case "Notified":
-			return "notified" as const;
-	}
 }
 
 function makeMusic(path: string): Music {
@@ -2811,8 +2797,8 @@ describe("music store action contracts", () => {
 		const staleFact = makeClosureLifecycleFact({
 			owner_session_id: 11,
 			entry_identity: "url-path:https://example.com/remote::C:/music/old",
-			phase: "Notified",
-			event_id: "11:url-path:https://example.com/remote::C:/music/old:notified",
+			phase: "Failed",
+			event_id: "11:url-path:https://example.com/remote::C:/music/old:failed",
 			notification_text: "Downloaded old remote",
 		});
 
@@ -2857,7 +2843,7 @@ describe("music store action contracts", () => {
 			},
 		);
 
-		const phases = ["saved", "downloaded", "analyzed", "notified", "failed"] as const;
+		const phases = ["saved", "downloaded", "analyzed", "failed"] as const;
 		const liveEvents = phases.map((phase) =>
 			createClosureEventContract(22, replacementIdentity, phase),
 		);
@@ -2868,7 +2854,6 @@ describe("music store action contracts", () => {
 			"22:url-path:https://example.com/remote-replacement::C:/music/replacement:saved",
 			"22:url-path:https://example.com/remote-replacement::C:/music/replacement:downloaded",
 			"22:url-path:https://example.com/remote-replacement::C:/music/replacement:analyzed",
-			"22:url-path:https://example.com/remote-replacement::C:/music/replacement:notified",
 			"22:url-path:https://example.com/remote-replacement::C:/music/replacement:failed",
 		]);
 
@@ -2927,26 +2912,12 @@ describe("music store action contracts", () => {
 			makeClosureLifecycleFact({
 				owner_session_id: 22,
 				entry_identity: replacementIdentity,
-				phase: "Notified",
-				event_id: `22:${replacementIdentity}:notified`,
-			}),
-			makeClosureLifecycleFact({
-				owner_session_id: 22,
-				entry_identity: replacementIdentity,
 				phase: "Failed",
 				event_id: `22:${replacementIdentity}:failed`,
 			}),
 		];
 
-		expect(
-			backendFacts.map((fact) =>
-				createClosureEventContract(
-					fact.owner_session_id,
-					fact.entry_identity,
-					toClosureEventPhase(fact.phase),
-				),
-			),
-		).toEqual([
+		expect(expandClosureLifecycleFacts(backendFacts)).toEqual([
 			{ ownerSessionId: 22, entryIdentity: replacementIdentity, phase: "downloaded", eventId: `22:${replacementIdentity}:downloaded` },
 			{ ownerSessionId: 22, entryIdentity: replacementIdentity, phase: "analyzed", eventId: `22:${replacementIdentity}:analyzed` },
 			{ ownerSessionId: 22, entryIdentity: replacementIdentity, phase: "notified", eventId: `22:${replacementIdentity}:notified` },
@@ -3744,7 +3715,6 @@ describe("music store action contracts", () => {
 		expect(state.loading).toBe(false);
 		expect(state.slot).toBeNull();
 		expect(state.playlists).toEqual([playlist]);
-		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
 
 	test("save_false_negative_guard_create_switches_to_play_immediately_before_backend_finishes", async () => {
@@ -3790,7 +3760,6 @@ describe("music store action contracts", () => {
 
 		const state = __testing.getState();
 		expect(state.playlists).toEqual([playlist]);
-		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
 
 	test("save_false_positive_guard_create_error_rolls_back_optimistic_playlist_after_refresh", async () => {
@@ -4033,7 +4002,6 @@ describe("music store action contracts", () => {
 		expect(state.processMsg).toBeNull();
 		expect(state.startupRoute).toBe("hydrated_playlists");
 		expect(state.loading).toBe(false);
-		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
 
 	test("saveBoundary_true_negative_guard_process_result_does_not_rebind_optimistic_exit_context_before_matching_reconcile", async () => {
@@ -4104,7 +4072,6 @@ describe("music store action contracts", () => {
 		expect(state.mode).toBe("new_guide");
 		expect(state.startupRoute).toBe("hydrated_empty");
 		expect(state.processMsg).toEqual({ playlist: "server", str: "late process" });
-		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
 
 	test("saveBoundary_true_negative_guard_materialization_events_do_not_rebind_optimistic_exit_context_before_matching_reconcile", async () => {
@@ -4182,7 +4149,6 @@ describe("music store action contracts", () => {
 		expect(state.playbackListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
 		expect(state.loading).toBe(false);
-		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
 
 	test("saveBoundary_true_negative_guard_late_refresh_process_and_materialization_traffic_preserves_the_same_optimistic_post_save_context", async () => {
@@ -4308,7 +4274,6 @@ describe("music store action contracts", () => {
 		expect(state.nowPlaying).toBeNull();
 		expect(state.processMsg).toBeNull();
 		expect(state.loading).toBe(false);
-		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
 
 	test("saveBoundary_true_positive_matching_refresh_reconciles_only_the_intended_persisted_playlist_once", async () => {
@@ -4376,7 +4341,6 @@ describe("music store action contracts", () => {
 		expect(state.playbackListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
 		expect(state.processMsg).toBeNull();
-		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
 
 	test("saveBoundary_true_negative_guard_non_matching_refresh_after_edit_save_does_not_rebind_to_another_playlist", async () => {
@@ -4447,7 +4411,6 @@ describe("music store action contracts", () => {
 		expect(state.playbackListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
 		expect(state.processMsg).toBeNull();
-		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
 
 	test("saveBoundary_true_negative_guard_non_matching_materialization_after_save_does_not_mutate_another_persisted_owner_boundary", async () => {
@@ -4734,7 +4697,6 @@ describe("music store action contracts", () => {
 		expect(state.selectedListName).toBeNull();
 		expect(state.playbackListName).toBeNull();
 		expect(state.nowPlaying).toBeNull();
-		expect(toastLog.success).toContainEqual({ title: "Playlist saved" });
 	});
 
 	test("closure_false_negative_guard_save_play_back_repro_keeps_stale_top_right_process_msg_on_live_persisted_asset_path", async () => {

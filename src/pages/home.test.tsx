@@ -164,6 +164,7 @@ mock.module("@/src/flow/music", () => ({
 					}
 					: null,
 		useMsg: () => null,
+		useProcessHint: () => null,
 		useClosureProjection: () => closureProjection,
 		useIsReview: () => false,
 	},
@@ -213,13 +214,25 @@ describe("Home route gating", () => {
 		expect(projectPlaylistHint(null, "focus")).toBeNull();
 		expect(
 			projectPlaylistHint(
-				{ playlist: "focus", str: "Analyzing loudness 1/1: a.mp3" },
+				{
+					playlistName: "focus",
+					text: "Analyzing loudness 1/1: a.mp3",
+					kind: "analysis",
+					assetPath: "a.mp3",
+					raw: { playlist: "focus", str: "Analyzing loudness 1/1: a.mp3" },
+				},
 				"focus",
 			),
 		).toBe("Analyzing loudness 1/1: a.mp3");
 		expect(
 			projectPlaylistHint(
-				{ playlist: "other", str: "Analyzing loudness 1/1: a.mp3" },
+				{
+					playlistName: "other",
+					text: "Analyzing loudness 1/1: a.mp3",
+					kind: "analysis",
+					assetPath: "a.mp3",
+					raw: { playlist: "other", str: "Analyzing loudness 1/1: a.mp3" },
+				},
 				"focus",
 			),
 		).toBeNull();

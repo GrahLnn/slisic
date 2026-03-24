@@ -1,13 +1,13 @@
 use super::normalization;
 use super::repo::repository;
 use super::types::{
-    build_closure_lifecycle_fact, closure_owner_session_id_from_entry,
-    closure_owner_session_id_or_entry_identity,
-    dedup_entries, default_music, entry_key, merge_music_with_template, path_to_title,
-    recompute_entry_avg, recompute_playlist_avg, sanitize_name, ClosureLifecyclePhase,
-    CollectMission, Entry, EntryType, FolderSample, LinkSample, Music, Playlist, ProcessMsg,
+    build_closure_lifecycle_fact_from_subject, closure_owner_session_id_from_entry,
+    closure_owner_session_id_or_entry_identity, closure_subject_from_entry, dedup_entries,
+    default_music, entry_key, merge_music_with_template, path_to_title, recompute_entry_avg,
+    recompute_playlist_avg, sanitize_name, ClosureLifecyclePhase, ClosureSubject, CollectMission,
+    Entry, EntryType, FolderSample, LinkSample, Music, Playlist, ProcessMsg,
 };
-use crate::utils::file::{all_audio_recursive_inner, is_audio_path};
+use crate::utils::file::{all_audio_recursive_inner, is_audio_path, read_entry_metadata};
 use crate::utils::ytdlp::{self, DownloadOutcome, ProcessResult};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -16,21 +16,28 @@ use tauri_specta::Event;
 
 fn emit_closure_lifecycle_fact(
     app: &AppHandle,
-    owner_session_id: u64,
-    playlist: &str,
-    entry: &Entry,
+    subject: &ClosureSubject,
     phase: ClosureLifecyclePhase,
     notification_text: Option<String>,
 ) {
-    if let Some(fact) = build_closure_lifecycle_fact(
-        owner_session_id,
-        playlist,
-        entry,
-        phase,
-        notification_text,
-    ) {
-        fact.emit(app).ok();
+    build_closure_lifecycle_fact_from_subject(subject, phase, notification_text)
+        .emit(app)
+        .ok();
+}
+
+fn canonical_subject_for_playlist(playlist_name: &str, entry: &Entry) -> Option<ClosureSubject> {
+    if let Some(subject) = &entry.lifecycle_subject {
+        return Some(subject.clone());
     }
+    let owner_session_id = closure_owner_session_id_from_entry(entry)?;
+    closure_subject_from_entry(owner_session_id, playlist_name, entry)
+}
+
+fn attach_canonical_subject(playlist_name: &str, mut entry: Entry) -> Entry {
+    if entry.lifecycle_subject.is_none() {
+        entry.lifecycle_subject = canonical_subject_for_playlist(playlist_name, &entry);
+    }
+    entry
 }
 
 fn can_refresh_file_loudness(entry: &Entry) -> bool {
@@ -41,12 +48,35 @@ pub async fn create(app: AppHandle, data: CollectMission) -> Result<(), String> 
     let repo = repository().await?;
     let music_index = load_music_index_if_needed(&repo, &data).await?;
     let (playlist, pending) = build_playlist_from_mission(data, &music_index)?;
+    let playlist = Playlist {
+        entries: playlist
+            .entries
+            .into_iter()
+            .map(|entry| attach_canonical_subject(&playlist.name, entry))
+            .collect(),
+        ..playlist
+    };
+    let pending = pending
+        .into_iter()
+        .map(|entry| attach_canonical_subject(&playlist.name, entry))
+        .collect::<Vec<_>>();
     let playlist_name = playlist.name.clone();
     let analysis_paths = playlist_music_paths(&playlist);
     let canonical_owner_session_id = pending
         .first()
         .and_then(closure_owner_session_id_from_entry);
     repo.create_playlist(playlist).await?;
+    if let Some(subject) = pending
+        .first()
+        .and_then(|entry| canonical_subject_for_playlist(&playlist_name, entry))
+    {
+        emit_closure_lifecycle_fact(
+            &app,
+            &subject,
+            ClosureLifecyclePhase::Saved,
+            Some(format!("Saved {}", playlist_name)),
+        );
+    }
     normalization::analyze_paths_blocking(
         &app,
         analysis_paths,
@@ -75,12 +105,35 @@ pub async fn update(app: AppHandle, data: CollectMission, anchor: Playlist) -> R
     let repo = repository().await?;
     let music_index = load_music_index_if_needed(&repo, &data).await?;
     let (playlist, pending) = build_playlist_from_mission(data, &music_index)?;
+    let playlist = Playlist {
+        entries: playlist
+            .entries
+            .into_iter()
+            .map(|entry| attach_canonical_subject(&playlist.name, entry))
+            .collect(),
+        ..playlist
+    };
+    let pending = pending
+        .into_iter()
+        .map(|entry| attach_canonical_subject(&playlist.name, entry))
+        .collect::<Vec<_>>();
     let playlist_name = playlist.name.clone();
     let analysis_paths = playlist_music_paths(&playlist);
     let canonical_owner_session_id = pending
         .first()
         .and_then(closure_owner_session_id_from_entry);
     repo.replace_playlist(&anchor.name, playlist).await?;
+    if let Some(subject) = pending
+        .first()
+        .and_then(|entry| canonical_subject_for_playlist(&playlist_name, entry))
+    {
+        emit_closure_lifecycle_fact(
+            &app,
+            &subject,
+            ClosureLifecyclePhase::Saved,
+            Some(format!("Saved {}", playlist_name)),
+        );
+    }
     normalization::analyze_paths_blocking(
         &app,
         analysis_paths,
@@ -173,23 +226,31 @@ pub async fn recheck_folder(app: AppHandle, entry: Entry) -> Result<Entry, Strin
         musics.push(music);
     }
 
+    let metadata = read_entry_metadata(Path::new(&folder))?;
+    let (entry_url, entry_type) = match metadata {
+        Some(metadata) => (Some(metadata.url), metadata.entry_type),
+        None => (entry.url.clone(), entry.entry_type.clone()),
+    };
+
     let mut updated = Entry {
         path: Some(folder.clone()),
         name: entry.name,
         musics,
         avg_db: None,
-        url: entry.url,
+        url: entry_url,
         downloaded_ok: Some(true),
         tracking: entry.tracking.or(Some(false)),
-        entry_type: EntryType::Local,
+        entry_type,
+        lifecycle_subject: entry.lifecycle_subject,
     };
     recompute_entry_avg(&mut updated);
+    let owner_session_id = closure_owner_session_id_from_entry(&updated);
     normalization::analyze_paths_blocking(
         &app,
         normalization::stale_music_paths(&updated.musics),
         &updated.name,
         "Analyzing loudness",
-        None,
+        owner_session_id,
     )
     .await?;
     Ok(updated)
@@ -200,13 +261,14 @@ pub async fn update_weblist(
     entry: Entry,
     playlist: String,
 ) -> Result<Entry, String> {
-    let owner_session_id = closure_owner_session_id_from_entry(&entry).unwrap_or(0);
+    let owner_session_id = closure_owner_session_id_from_entry(&entry)
+        .ok_or_else(|| "missing canonical owner identity for web entry".to_string())?;
+    let subject = closure_subject_from_entry(owner_session_id, &playlist, &entry)
+        .ok_or_else(|| "missing canonical closure subject for web entry".to_string())?;
     let outcome = ytdlp::download_entry_for_library(app.clone(), &playlist, &entry).await?;
     emit_closure_lifecycle_fact(
         &app,
-        owner_session_id,
-        &playlist,
-        &outcome.entry,
+        &subject,
         ClosureLifecyclePhase::Downloaded,
         Some(format!("Downloaded {}", outcome.name)),
     );
@@ -258,9 +320,16 @@ fn spawn_downloads(
 
     tauri::async_runtime::spawn(async move {
         for entry in pending {
-            let owner_session_id =
+            let Some(owner_session_id) =
                 closure_owner_session_id_or_entry_identity(canonical_owner_session_id, &entry)
-                    .unwrap_or(0);
+            else {
+                continue;
+            };
+            let Some(subject) =
+                closure_subject_from_entry(owner_session_id, &playlist_name, &entry)
+            else {
+                continue;
+            };
             ProcessMsg {
                 playlist: playlist_name.clone(),
                 str: format!("Downloading {}", entry.name),
@@ -291,9 +360,7 @@ fn spawn_downloads(
                     );
                     emit_closure_lifecycle_fact(
                         &app,
-                        owner_session_id,
-                        &playlist_name,
-                        &entry,
+                        &subject,
                         ClosureLifecyclePhase::Downloaded,
                         Some(format!("Downloaded {name}")),
                     );
@@ -318,9 +385,7 @@ fn spawn_downloads(
                     failed.downloaded_ok = Some(false);
                     emit_closure_lifecycle_fact(
                         &app,
-                        owner_session_id,
-                        &playlist_name,
-                        &failed,
+                        &subject,
                         ClosureLifecyclePhase::Failed,
                         Some(format!("Download failed: {error}")),
                     );
@@ -456,6 +521,7 @@ fn normalize_existing_entry(entry: Entry, music_index: &HashMap<String, Music>) 
         downloaded_ok: entry.downloaded_ok,
         tracking: entry.tracking.or(Some(false)),
         entry_type: entry.entry_type,
+        lifecycle_subject: entry.lifecycle_subject,
     };
 
     recompute_entry_avg(&mut normalized);
@@ -510,6 +576,7 @@ fn normalize_folder_entry(
         downloaded_ok: Some(true),
         tracking: Some(false),
         entry_type: EntryType::Local,
+        lifecycle_subject: None,
     };
     recompute_entry_avg(&mut entry);
     Ok(entry)
@@ -534,6 +601,7 @@ fn normalize_link_entry(link: LinkSample) -> Entry {
             EntryType::Unknown => EntryType::WebVideo,
             other => other,
         },
+        lifecycle_subject: None,
     }
 }
 
@@ -557,15 +625,13 @@ async fn load_music_index_if_needed(
 #[cfg(test)]
 mod tests {
     use super::build_playlist_from_mission;
-    use crate::domain::music::repo::{set_repository_for_tests, LibraryRepo};
     use crate::domain::music::store::SnapshotStore;
     use crate::domain::music::types::{
-        CollectMission, Entry, EntryType, FolderSample, LinkSample, LinkStatus, Music,
-        LibraryData, NormalizationStatus, Playlist, MUSIC_LIBRARY_SCHEMA_VERSION,
+        closure_entry_identity, CollectMission, Entry, EntryType, FolderSample, LibraryData,
+        LinkSample, LinkStatus, Music, NormalizationStatus, Playlist,
     };
     use async_trait::async_trait;
     use std::collections::HashMap;
-    use std::sync::Arc;
     use tokio::sync::Mutex;
 
     fn music(path: &str) -> Music {
@@ -602,6 +668,25 @@ mod tests {
             normalization_status: Some(NormalizationStatus::Ready),
             ..music(path)
         }
+    }
+
+    #[test]
+    fn closure_identity_for_web_entry_stays_url_path_canonical() {
+        let entry = Entry {
+            path: Some("C:/music/remote".to_string()),
+            name: "remote".to_string(),
+            musics: vec![],
+            avg_db: None,
+            url: Some("https://example.com/remote".to_string()),
+            downloaded_ok: Some(true),
+            tracking: Some(false),
+            entry_type: EntryType::WebList,
+        };
+
+        assert_eq!(
+            closure_entry_identity(&entry).as_deref(),
+            Some("url-path:https://example.com/remote::C:/music/remote")
+        );
     }
 
     fn entry(path: Option<&str>, name: &str, url: Option<&str>, musics: Vec<Music>) -> Entry {
@@ -810,5 +895,4 @@ mod tests {
         assert_eq!(playlist.0.entries.len(), 1);
         assert_eq!(playlist.0.entries[0].avg_db, Some(-16.0));
     }
-
 }

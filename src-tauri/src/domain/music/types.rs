@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use tauri_specta::Event;
 
-pub const MUSIC_LIBRARY_SCHEMA_VERSION: u32 = 2;
+pub const MUSIC_LIBRARY_SCHEMA_VERSION: u32 = 3;
 pub const MUSIC_ANALYSIS_VERSION: u32 = 1;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
@@ -93,6 +93,8 @@ pub struct Entry {
     pub downloaded_ok: Option<bool>,
     pub tracking: Option<bool>,
     pub entry_type: EntryType,
+    #[serde(default)]
+    pub lifecycle_subject: Option<ClosureSubject>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq, Event)]
@@ -107,7 +109,6 @@ pub enum ClosureLifecyclePhase {
     Downloaded,
     Analyzed,
     Failed,
-    Notified,
 }
 
 impl ClosureLifecyclePhase {
@@ -117,9 +118,17 @@ impl ClosureLifecyclePhase {
             Self::Downloaded => "downloaded",
             Self::Analyzed => "analyzed",
             Self::Failed => "failed",
-            Self::Notified => "notified",
         }
     }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq)]
+pub struct ClosureSubject {
+    pub owner_session_id: u64,
+    pub entry_identity: String,
+    pub playlist: String,
+    pub path: Option<String>,
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq, Event)]
@@ -135,6 +144,11 @@ pub struct ClosureLifecycleFact {
 }
 
 pub fn closure_entry_identity(entry: &Entry) -> Option<String> {
+    if let Some(subject) = &entry.lifecycle_subject {
+        if !subject.entry_identity.is_empty() {
+            return Some(subject.entry_identity.clone());
+        }
+    }
     match (entry.url.as_deref(), entry.path.as_deref()) {
         (Some(url), Some(path)) if !url.is_empty() && !path.is_empty() => {
             Some(format!("url-path:{url}::{path}"))
@@ -150,12 +164,10 @@ pub fn closure_event_id(
     entry_identity: &str,
     phase: &ClosureLifecyclePhase,
 ) -> String {
-    format!(
-        "{owner_session_id}:{entry_identity}:{}",
-        phase.as_str()
-    )
+    format!("{owner_session_id}:{entry_identity}:{}", phase.as_str())
 }
 
+#[allow(dead_code)]
 pub fn build_closure_lifecycle_fact(
     owner_session_id: u64,
     playlist: &str,
@@ -176,6 +188,37 @@ pub fn build_closure_lifecycle_fact(
     })
 }
 
+pub fn closure_subject_from_entry(
+    owner_session_id: u64,
+    playlist: &str,
+    entry: &Entry,
+) -> Option<ClosureSubject> {
+    Some(ClosureSubject {
+        owner_session_id,
+        entry_identity: closure_entry_identity(entry)?,
+        playlist: playlist.to_string(),
+        path: entry.path.clone(),
+        url: entry.url.clone(),
+    })
+}
+
+pub fn build_closure_lifecycle_fact_from_subject(
+    subject: &ClosureSubject,
+    phase: ClosureLifecyclePhase,
+    notification_text: Option<String>,
+) -> ClosureLifecycleFact {
+    ClosureLifecycleFact {
+        owner_session_id: subject.owner_session_id,
+        entry_identity: subject.entry_identity.clone(),
+        event_id: closure_event_id(subject.owner_session_id, &subject.entry_identity, &phase),
+        phase,
+        playlist: subject.playlist.clone(),
+        path: subject.path.clone(),
+        url: subject.url.clone(),
+        notification_text,
+    }
+}
+
 pub fn closure_owner_session_id_or_entry_identity(
     owner_session_id: Option<u64>,
     entry: &Entry,
@@ -184,14 +227,17 @@ pub fn closure_owner_session_id_or_entry_identity(
 }
 
 pub fn closure_owner_session_id_from_entry(entry: &Entry) -> Option<u64> {
+    if let Some(subject) = &entry.lifecycle_subject {
+        return Some(subject.owner_session_id);
+    }
     let entry_identity = closure_entry_identity(entry)?;
     Some(closure_owner_session_id_from_identity(&entry_identity))
 }
 
 pub fn closure_owner_session_id_from_identity(entry_identity: &str) -> u64 {
-    entry_identity
-        .bytes()
-        .fold(0u64, |acc, byte| acc.wrapping_mul(16777619).wrapping_add(byte as u64))
+    entry_identity.bytes().fold(0u64, |acc, byte| {
+        acc.wrapping_mul(16777619).wrapping_add(byte as u64)
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -332,10 +378,10 @@ pub fn recompute_playlist_avg(playlist: &mut Playlist) {
 mod tests {
     use super::{
         canonical_mean_lufs, closure_owner_session_id_from_entry,
-        closure_owner_session_id_or_entry_identity,
-        closure_owner_session_id_from_identity, dedup_entries, merge_music_with_template,
-        music_loudness_lufs, recompute_entry_avg, recompute_playlist_avg, sanitize_name, Entry,
-        EntryType, Music, NormalizationStatus, Playlist,
+        closure_owner_session_id_from_identity, closure_owner_session_id_or_entry_identity,
+        dedup_entries, merge_music_with_template, music_loudness_lufs, recompute_entry_avg,
+        recompute_playlist_avg, sanitize_name, Entry, EntryType, Music, NormalizationStatus,
+        Playlist,
     };
 
     #[test]
@@ -605,7 +651,10 @@ mod tests {
 
         let identity = "url-path:https://example.com/remote-replacement::C:/music/replacement";
 
-        assert_eq!(closure_owner_session_id_from_entry(&entry), Some(closure_owner_session_id_from_identity(identity)));
+        assert_eq!(
+            closure_owner_session_id_from_entry(&entry),
+            Some(closure_owner_session_id_from_identity(identity))
+        );
     }
 
     #[test]
@@ -621,7 +670,10 @@ mod tests {
             entry_type: EntryType::WebList,
         };
 
-        assert_eq!(closure_owner_session_id_or_entry_identity(Some(22), &entry), Some(22));
+        assert_eq!(
+            closure_owner_session_id_or_entry_identity(Some(22), &entry),
+            Some(22)
+        );
         assert_eq!(
             closure_owner_session_id_or_entry_identity(None, &entry),
             closure_owner_session_id_from_entry(&entry)

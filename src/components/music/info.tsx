@@ -20,11 +20,12 @@ import { sileo } from "sileo";
 export function Edit({ title, explain }: { title: string; explain: string }) {
   const slot = hook.useSlot();
   const ctx = hook.useContext();
+  const editingList = hook.useEditingList();
   if (!slot) return null;
 
   const check = ctx.playlists
     .map((item) => item.name)
-    .filter((name) => name !== ctx.selectedListName);
+    .filter((name) => name !== editingList?.name);
 
   return (
     <DataList className="group rounded-lg border">

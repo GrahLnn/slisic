@@ -45,6 +45,7 @@ regex = "1.12.3"
 base64 = "0.22.1"
 walkdir = "2.5.0"
 rodio = { version = "0.22.1", features = ["symphonia-all"] }
+audio-playback = { package = "ffplayr", path = "crates/audio-playback" }
 
 # Tauri plugins
 # Keep plugin set aligned with frontend API usage.
