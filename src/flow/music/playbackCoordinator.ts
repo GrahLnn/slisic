@@ -39,7 +39,8 @@ export class PlaybackCoordinator {
 		if (this.disposed) return false;
 		if (epoch !== this.epoch) return false;
 		if (snapshot.mode !== "play") return false;
-		const activeListName = snapshot.playbackListName ?? snapshot.selectedListName ?? null;
+		const activeListName =
+			snapshot.playbackListName ?? snapshot.selectedListName ?? null;
 		if (!activeListName) return false;
 		if (expectedListName && activeListName !== expectedListName) {
 			return false;

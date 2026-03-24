@@ -1,8 +1,8 @@
 import { me } from "@grahlnn/fn";
 import { Effect } from "effect";
-import { createActor } from "xstate";
 import { useMemo, useSyncExternalStore } from "react";
 import { sileo } from "sileo";
+import { createActor } from "xstate";
 import { crab } from "@/src/cmd";
 import type {
 	CollectMission,
@@ -22,6 +22,14 @@ import {
 	sameTrack,
 	sampleSoftMin,
 } from "./logic";
+import {
+	MUSIC_MACHINE_BOUNDARIES,
+	type MusicActorBoundary,
+	type MusicMachineActor,
+	type MusicMachineSnapshot,
+	musicBoundaryEventDefs,
+	musicMachine,
+} from "./machine";
 import { PlaybackCoordinator } from "./playbackCoordinator";
 import {
 	carryForwardPersistedMaterializationOwnership,
@@ -41,14 +49,6 @@ import {
 	syncEntryOwnedMaterialization,
 } from "./store.identity";
 import {
-	MUSIC_MACHINE_BOUNDARIES,
-	musicBoundaryEventDefs,
-	musicMachine,
-	type MusicActorBoundary,
-	type MusicMachineActor,
-	type MusicMachineSnapshot,
-} from "./machine";
-import {
 	applyOptimisticEditSave,
 	buildOptimisticPlaylistFromSlot,
 	buildPostSavePatch,
@@ -64,8 +64,8 @@ import {
 	deriveClosureProjectionEntry,
 	deriveDraftReviewState,
 	derivePlaybackOwnedList,
-	deriveProcessHintProjection,
 	deriveProbePatch,
+	deriveProcessHintProjection,
 	deriveRefreshPatch,
 	deriveSaveAffordance,
 	deriveWorkspaceEntryPatch,
@@ -85,16 +85,16 @@ import type {
 	UiMode,
 } from "./store.types";
 
-export { createClosureEventContract } from "./store.identity";
-export {
-	MUSIC_MACHINE_BOUNDARIES,
-	musicMachine,
-} from "./machine";
 export type {
 	MusicActorBoundary,
 	MusicMachineActor,
 	MusicMachineSnapshot,
 } from "./machine";
+export {
+	MUSIC_MACHINE_BOUNDARIES,
+	musicMachine,
+} from "./machine";
+export { createClosureEventContract } from "./store.identity";
 export {
 	applyOptimisticEditSave,
 	buildOptimisticPlaylistFromSlot,
@@ -110,8 +110,8 @@ export {
 	deriveClosureProjection,
 	deriveDraftReviewState,
 	derivePlaybackOwnedList,
-	deriveProcessHintProjection,
 	deriveProbePatch,
+	deriveProcessHintProjection,
 	deriveRefreshPatch,
 	deriveRouteResolution,
 	deriveSaveAffordance,
@@ -194,12 +194,14 @@ function emit() {
 
 function normalizeMusicState(snapshot: MusicState): MusicState {
 	const editingListName =
-		snapshot.editingListName ?? (snapshot.mode === "edit" ? snapshot.selectedListName : null);
+		snapshot.editingListName ??
+		(snapshot.mode === "edit" ? snapshot.selectedListName : null);
 	const focusedListName =
-		snapshot.focusedListName ?? (snapshot.mode === "play" ? snapshot.selectedListName : null);
+		snapshot.focusedListName ??
+		(snapshot.mode === "play" ? snapshot.selectedListName : null);
 	const selectedListName =
 		snapshot.mode === "edit"
-			? snapshot.selectedListName ?? editingListName ?? null
+			? (snapshot.selectedListName ?? editingListName ?? null)
 			: snapshot.selectedListName;
 	return {
 		...snapshot,
@@ -220,8 +222,12 @@ function getMachineSnapshot(): MusicMachineSnapshot {
 	return machineActors.bootstrap_workspace.getSnapshot();
 }
 
-function patchBoundaryState(boundary: MusicActorBoundary, patch: Partial<MusicState>) {
-	const event = musicBoundaryEventDefs[`boundary.${boundary}.patch`].load(patch);
+function patchBoundaryState(
+	boundary: MusicActorBoundary,
+	patch: Partial<MusicState>,
+) {
+	const event =
+		musicBoundaryEventDefs[`boundary.${boundary}.patch`].load(patch);
 	machineActors[boundary].send(event);
 }
 
@@ -953,7 +959,8 @@ async function persistSlot() {
 	if (!slot) return;
 
 	if (snapshot.mode === "edit") {
-		const anchorListName = snapshot.editingListName ?? snapshot.selectedListName;
+		const anchorListName =
+			snapshot.editingListName ?? snapshot.selectedListName;
 		const anchor = snapshot.playlists.find(
 			(playlist) => playlist.name === anchorListName,
 		);
@@ -1728,24 +1735,27 @@ export const hook = {
 		useMusicSelector((snapshot) => {
 			const listName = projectFocusedListName(snapshot);
 			return listName
-				? (snapshot.playlists.find((playlist) => playlist.name === listName) ?? null)
+				? (snapshot.playlists.find((playlist) => playlist.name === listName) ??
+						null)
 				: null;
 		}),
 	useEditingList: () =>
 		useMusicSelector((snapshot) => {
 			const listName = projectEditingListName(snapshot);
 			return listName
-				? (snapshot.playlists.find((playlist) => playlist.name === listName) ?? null)
+				? (snapshot.playlists.find((playlist) => playlist.name === listName) ??
+						null)
 				: null;
 		}),
 	useSelectedList: () =>
 		useMusicSelector((snapshot) => {
 			const listName =
 				snapshot.mode === "edit"
-					? snapshot.editingListName ?? snapshot.selectedListName
+					? (snapshot.editingListName ?? snapshot.selectedListName)
 					: snapshot.selectedListName;
 			return listName
-				? (snapshot.playlists.find((playlist) => playlist.name === listName) ?? null)
+				? (snapshot.playlists.find((playlist) => playlist.name === listName) ??
+						null)
 				: null;
 		}),
 	useSlot: () => useMusicSelector((snapshot) => snapshot.slot),
