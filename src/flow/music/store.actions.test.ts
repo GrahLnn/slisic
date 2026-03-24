@@ -595,6 +595,7 @@ describe("music store action contracts", () => {
 			runId: 1,
 			startupFailure: null,
 			isLoading: false,
+			playlistNames: ["focus"],
 		});
 	});
 
@@ -617,10 +618,12 @@ describe("music store action contracts", () => {
 			isLoading: true,
 		});
 
-		await waitUntil(() => __testing.getState().playlists.map((item) => item.name).join(",") === "focus");
+		await waitUntil(
+			() => __testing.getState().playlists.map((item) => item.name).join(",") === "focus",
+		);
 		expect(__testing.getMachineActors().bootstrap_workspace.context).toMatchObject({
 			runId: 1,
-			isLoading: false,
+			isLoading: true,
 			screen: "play",
 			route: {
 				kind: "startup_probed_nonempty",
@@ -628,6 +631,7 @@ describe("music store action contracts", () => {
 				mode: "play",
 				phase: "probed",
 			},
+			playlistNames: ["focus"],
 		});
 
 		releaseReadAll();
@@ -649,6 +653,33 @@ describe("music store action contracts", () => {
 				phase: "hydrated",
 			},
 		});
+	});
+
+	test("run_true_positive_snapshot_replay_is_inert_for_bootstrap_route_advancement", async () => {
+		impl.playlistNames = async () => Ok<string[], string>(["focus"]);
+		impl.readAll = async () => Ok<Playlist[], string>([]);
+
+		await action.run();
+
+		expect(__testing.getMachineActors().bootstrap_workspace.context.route).toMatchObject({
+			kind: "hydrated_playlists",
+			mode: "play",
+			phase: "hydrated",
+		});
+
+		const shellBefore = __testing.getCompatibilityShellState();
+		const machineBefore = __testing.getMachineActors().bootstrap_workspace.context;
+		__testing.replaceCompatibilityBoundary("playback_session", {
+			...__testing.getState(),
+			mode: "edit",
+			routeResolved: true,
+			startupRoute: "hydrated_editing",
+			selectedListName: "focus",
+			slot: makeMission("focus"),
+		});
+
+		expect(__testing.getCompatibilityShellState()).toEqual(shellBefore);
+		expect(__testing.getMachineActors().bootstrap_workspace.context).toEqual(machineBefore);
 	});
 
 	test("run_true_positive_probes_names_first_and_switches_to_play_before_full_snapshot_hydrates", async () => {

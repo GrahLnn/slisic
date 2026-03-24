@@ -247,10 +247,6 @@ function sendBootstrapProbeCompleted(runId: number, playlistNames: string[]) {
 	);
 }
 
-function sendBootstrapStateReplaced(snapshot: MusicState) {
-	replaceBoundaryState("bootstrap_workspace", snapshot);
-}
-
 function sendBootstrapRunFailed(runId: number, startupFailure: string) {
 	machineActors.bootstrap_workspace.send(
 		musicBoundaryEventDefs["boundary.bootstrap_workspace.run_failed"].load({
@@ -268,12 +264,20 @@ function sendBootstrapRunFinished(runId: number) {
 	);
 }
 
-function sendBootstrapWorkspaceEntered(snapshot: MusicState) {
+function sendBootstrapWorkspaceEntered(
+	kind: "create" | "edit",
+	entrySessionId: number,
+	closureOwnerSessionId: number,
+	playlist?: Playlist,
+) {
 	machineActors.bootstrap_workspace.send(
 		musicBoundaryEventDefs[
 			"boundary.bootstrap_workspace.workspace_entered"
 		].load({
-			snapshot,
+			kind,
+			entrySessionId,
+			closureOwnerSessionId,
+			playlist,
 		}),
 	);
 }
@@ -283,7 +287,10 @@ function sendBootstrapWorkspaceExited(snapshot: MusicState) {
 		musicBoundaryEventDefs[
 			"boundary.bootstrap_workspace.workspace_exited"
 		].load({
-			snapshot,
+			playlistsLength: snapshot.playlists.length,
+			routeResolved: snapshot.routeResolved,
+			entrySessionId: snapshot.entrySessionId,
+			closureOwnerSessionId: snapshot.closureOwnerSessionId,
 		}),
 	);
 }
@@ -291,7 +298,9 @@ function sendBootstrapWorkspaceExited(snapshot: MusicState) {
 function sendBootstrapSaveSettled(snapshot: MusicState) {
 	machineActors.bootstrap_workspace.send(
 		musicBoundaryEventDefs["boundary.bootstrap_workspace.save_settled"].load({
-			snapshot,
+			playlistsLength: snapshot.playlists.length,
+			entrySessionId: snapshot.entrySessionId,
+			closureOwnerSessionId: snapshot.closureOwnerSessionId,
 		}),
 	);
 }
@@ -646,9 +655,6 @@ async function refreshLists(version?: number) {
 					processMsg: next.processMsg,
 				}),
 			};
-			if (version != null) {
-				sendBootstrapStateReplaced(sanitized);
-			}
 			return sanitized;
 		})(),
 	}));
@@ -672,7 +678,6 @@ async function probePlaylistNames(version?: number) {
 				...prev,
 				...deriveProbePatch(prev, result.unwrap()),
 			};
-			sendBootstrapStateReplaced(next);
 			return next;
 		})(),
 	}));
@@ -1180,16 +1185,11 @@ export const action = {
 	},
 	async addNew() {
 		await safeStop();
-		const next = {
-			...getState(),
-			...deriveWorkspaceEntryPatch(
-				"create",
-				getState().entrySessionId,
-				getState().closureOwnerSessionId,
-			),
-		};
-		sendBootstrapWorkspaceEntered(next);
-		sendBootstrapStateReplaced(next);
+		sendBootstrapWorkspaceEntered(
+			"create",
+			getState().entrySessionId,
+			getState().closureOwnerSessionId,
+		);
 		patchState(
 			deriveWorkspaceEntryPatch(
 				"create",
@@ -1200,17 +1200,12 @@ export const action = {
 	},
 	async edit(playlist: Playlist) {
 		await safeStop();
-		const next = {
-			...getState(),
-			...deriveWorkspaceEntryPatch(
-				"edit",
-				getState().entrySessionId,
-				getState().closureOwnerSessionId,
-				playlist,
-			),
-		};
-		sendBootstrapWorkspaceEntered(next);
-		sendBootstrapStateReplaced(next);
+		sendBootstrapWorkspaceEntered(
+			"edit",
+			getState().entrySessionId,
+			getState().closureOwnerSessionId,
+			playlist,
+		);
 		patchState(
 			deriveWorkspaceEntryPatch(
 				"edit",
@@ -1232,7 +1227,6 @@ export const action = {
 			...deriveBackTransition(snapshot),
 		};
 		sendBootstrapWorkspaceExited(next);
-		sendBootstrapStateReplaced(next);
 		patchState(deriveBackTransition(snapshot));
 	},
 	setSlot(slot: CollectMission) {
@@ -1252,7 +1246,6 @@ export const action = {
 			before.routeResolved !== after.routeResolved
 		) {
 			sendBootstrapSaveSettled(after);
-			sendBootstrapStateReplaced(after);
 		}
 	},
 	async addFolder(path: string) {
@@ -1803,6 +1796,9 @@ export const __testing = {
 	getState,
 	getCompatibilityShellState,
 	getMachineSnapshot,
+	replaceCompatibilityBoundary(boundary: MusicActorBoundary, next: MusicState) {
+		replaceBoundaryState(boundary, next);
+	},
 	getMachineActors() {
 		return Object.fromEntries(
 			Object.entries(machineActors).map(([boundary, actor]) => [

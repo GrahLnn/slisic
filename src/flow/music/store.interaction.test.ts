@@ -1066,6 +1066,7 @@ describe("music interaction guards", () => {
 			runId: 0,
 			startupFailure: null,
 			isLoading: false,
+			playlistNames: [],
 		});
 		expect(__testing.getMachineSnapshot().context).toEqual(
 			__testing.getCompatibilityShellState(),
@@ -1100,6 +1101,7 @@ describe("music interaction guards", () => {
 			runId: 0,
 			startupFailure: null,
 			isLoading: false,
+			playlistNames: [],
 		});
 		expect(snapshot.playback_session.context).toEqual({
 			snapshot: __testing.getState(),

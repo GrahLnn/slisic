@@ -13,12 +13,16 @@ import type {
 } from "./store.types";
 import {
 	deriveClosureProjection,
+	deriveProbePatch,
 	deriveDraftReviewState,
 	derivePlaybackOwnedList,
 	deriveProcessHintProjection,
 	deriveRouteResolution,
+	deriveBackTransition,
+	deriveWorkspaceEntryPatch,
 	projectWorkspaceScreen,
 } from "./store.projections";
+import type { Playlist } from "@/src/cmd/commands";
 
 export type MusicActorBoundary =
 	| "bootstrap_workspace"
@@ -34,6 +38,7 @@ export interface BootstrapWorkspaceActorState {
 	runId: number;
 	startupFailure: string | null;
 	isLoading: boolean;
+	playlistNames: string[];
 }
 
 export interface PlaybackSessionActorState {
@@ -93,9 +98,23 @@ export const musicBoundaryEventDefs = collect(
 		"boundary.bootstrap_workspace.run_failed",
 	),
 	...event<{ runId: number }>()("boundary.bootstrap_workspace.run_finished"),
-	...event<{ snapshot: MusicState }>()("boundary.bootstrap_workspace.workspace_entered"),
-	...event<{ snapshot: MusicState }>()("boundary.bootstrap_workspace.workspace_exited"),
-	...event<{ snapshot: MusicState }>()("boundary.bootstrap_workspace.save_settled"),
+	...event<{
+		kind: "create" | "edit";
+		entrySessionId: number;
+		closureOwnerSessionId: number;
+		playlist?: Playlist;
+	}>()("boundary.bootstrap_workspace.workspace_entered"),
+	...event<{
+		playlistsLength: number;
+		routeResolved: boolean;
+		entrySessionId: number;
+		closureOwnerSessionId: number;
+	}>()("boundary.bootstrap_workspace.workspace_exited"),
+	...event<{
+		playlistsLength: number;
+		entrySessionId: number;
+		closureOwnerSessionId: number;
+	}>()("boundary.bootstrap_workspace.save_settled"),
 	...event<MusicState>()("boundary.playback_session.replace"),
 	...event<MusicState>()("boundary.draft_operations.replace"),
 	...event<MusicState>()("boundary.entry_materialization.replace"),
@@ -151,6 +170,7 @@ function createBootstrapWorkspaceState({
 		runId,
 		startupFailure,
 		isLoading: !snapshot.routeResolved && startupFailure == null,
+		playlistNames: [],
 	};
 }
 
@@ -245,11 +265,30 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 					isLoading: true,
 				};
 			case "boundary.bootstrap_workspace.probe_completed":
+				const probePatch = deriveProbePatch(
+					{
+						mode: context.route.mode,
+						routeResolved: context.route.routeResolved,
+					},
+					event.output.playlistNames,
+				);
 				return {
 					...context,
 					runId: event.output.runId,
+					route: deriveRouteResolution(
+						{
+							mode: probePatch.mode,
+							routeResolved: probePatch.routeResolved,
+						},
+						{ kind: probePatch.startupRoute },
+					),
+					screen: projectWorkspaceScreen({
+						mode: probePatch.mode,
+						routeResolved: probePatch.routeResolved,
+					}),
 					startupFailure: null,
 					isLoading: true,
+					playlistNames: event.output.playlistNames,
 				};
 			case "boundary.bootstrap_workspace.run_failed":
 				return {
@@ -270,16 +309,101 @@ function createBoundaryLogic<K extends MusicActorBoundary>(boundary: K) {
 					? context
 					: {
 							...context,
+							route:
+								context.playlistNames.length > 0
+									? {
+											kind: "hydrated_playlists",
+											routeResolved: true,
+											mode: "play",
+											phase: "hydrated",
+										}
+									: context.route.kind === "startup_probed_nonempty"
+										? {
+												kind: "hydrated_empty",
+												routeResolved: true,
+												mode: "new_guide",
+												phase: "hydrated",
+											}
+										: context.route,
+							screen:
+								context.playlistNames.length > 0
+									? "play"
+									: context.route.kind === "startup_probed_nonempty"
+										? "guide"
+										: context.screen,
 							isLoading: false,
 						};
 			case "boundary.bootstrap_workspace.workspace_entered":
+				const enteredPatch = deriveWorkspaceEntryPatch(
+					event.output.kind,
+					event.output.entrySessionId,
+					event.output.closureOwnerSessionId,
+					event.output.playlist,
+				);
+				return {
+					...context,
+					route: deriveRouteResolution(
+						{
+							mode: enteredPatch.mode,
+							routeResolved: enteredPatch.routeResolved,
+						},
+						{ kind: enteredPatch.startupRoute },
+					),
+					screen: projectWorkspaceScreen({
+						mode: enteredPatch.mode,
+						routeResolved: enteredPatch.routeResolved,
+					}),
+					startupFailure: null,
+					isLoading: false,
+				};
 			case "boundary.bootstrap_workspace.workspace_exited":
-			case "boundary.bootstrap_workspace.save_settled":
-				return createBoundaryState("bootstrap_workspace", event.output.snapshot, {
-					snapshot: event.output.snapshot,
-					bootstrapRunId: context.runId,
-					bootstrapFailure: context.startupFailure,
+				const exitedPatch = deriveBackTransition({
+					mode: context.screen === "edit" ? "edit" : "create",
+					playlists: new Array(event.output.playlistsLength).fill(null),
+					routeResolved: event.output.routeResolved,
+					selectedListName: null,
+					editingListName: null,
+					playbackListName: null,
+					nowPlaying: null,
+					nowJudge: null,
+					slot: null,
+					processMsg: null,
+					entrySessionId: event.output.entrySessionId,
+					closureOwnerSessionId: event.output.closureOwnerSessionId,
 				});
+				return {
+					...context,
+					route: deriveRouteResolution(
+						{
+							mode: exitedPatch.mode,
+							routeResolved: exitedPatch.routeResolved,
+						},
+						{ kind: exitedPatch.startupRoute },
+					),
+					screen: projectWorkspaceScreen({
+						mode: exitedPatch.mode,
+						routeResolved: exitedPatch.routeResolved,
+					}),
+					isLoading: false,
+				};
+			case "boundary.bootstrap_workspace.save_settled":
+				return {
+					...context,
+					route: deriveRouteResolution(
+						{
+							mode: event.output.playlistsLength > 0 ? "play" : "new_guide",
+							routeResolved: true,
+						},
+						{
+							kind:
+								event.output.playlistsLength > 0
+									? "hydrated_playlists"
+									: "hydrated_empty",
+						},
+					),
+					screen: event.output.playlistsLength > 0 ? "play" : "guide",
+					isLoading: false,
+				};
 		}
 	};
 
