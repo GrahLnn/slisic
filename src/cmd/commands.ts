@@ -36,6 +36,8 @@ export const commands = {
 	appReady: () => __TAURI_INVOKE<void>("app_ready"),
 	getMouseAndWindowPosition: () => typedError<MouseWindowInfo, string>(__TAURI_INVOKE("get_mouse_and_window_position")),
 	getWindowKind: () => __TAURI_INVOKE<WindowKindInfo>("get_window_kind"),
+	warmWindow: (name: WindowName) => __TAURI_INVOKE<void>("warm_window", { name }),
+	coldWindow: (name: WindowName) => __TAURI_INVOKE<boolean>("cold_window", { name }),
 	prewarmWindow: (name: WindowName) => __TAURI_INVOKE<void>("prewarm_window", { name }),
 	discardPrewarmWindow: (name: WindowName) => __TAURI_INVOKE<boolean>("discard_prewarm_window", { name }),
 	recordRendererBootstrapReady: () => __TAURI_INVOKE<void>("record_renderer_bootstrap_ready"),
@@ -46,14 +48,6 @@ export const commands = {
 	runBunHelloSidecar: (input: string | null) => typedError<BunSidecarOutput, string>(__TAURI_INVOKE("run_bun_hello_sidecar", { input })),
 	greet: (name: string) => typedError<string, string>(__TAURI_INVOKE("greet", { name })),
 	clean: () => typedError<string, string>(__TAURI_INVOKE("clean")),
-	templateBootstrap: () => typedError<TemplateDashboard, string>(__TAURI_INVOKE("template_bootstrap")),
-	templateSnapshot: () => typedError<TemplateDashboard, string>(__TAURI_INVOKE("template_snapshot")),
-	templateCreateMember: (input: NewMemberInput) => typedError<TemplateDashboard, string>(__TAURI_INVOKE("template_create_member", { input })),
-	templateCreateTask: (input: NewTaskInput) => typedError<TemplateDashboard, string>(__TAURI_INVOKE("template_create_task", { input })),
-	templateAssignTask: (input: AssignTaskInput) => typedError<TemplateDashboard, string>(__TAURI_INVOKE("template_assign_task", { input })),
-	templateUnassignTask: (input: UnassignTaskInput) => typedError<TemplateDashboard, string>(__TAURI_INVOKE("template_unassign_task", { input })),
-	templateBulkSetStatus: (input: BulkStatusInput) => typedError<TemplateDashboard, string>(__TAURI_INVOKE("template_bulk_set_status", { input })),
-	templateReset: () => typedError<TemplateDashboard, string>(__TAURI_INVOKE("template_reset")),
 };
 
 /** Events */
@@ -62,17 +56,7 @@ export const events = {
 	fullScreenEvent: makeEvent<FullScreenEvent>("full-screen-event"),
 };
 
-/* Types */export type AssignTaskInput = {
-	task_id: string,
-	member_id: string,
-};
-
-export type BulkStatusInput = {
-	task_ids: string[],
-	status: string,
-};
-
-export type BunSidecarOutput = {
+/* Types */export type BunSidecarOutput = {
 	ok: boolean,
 	status: number | null,
 	stdout: string,
@@ -84,30 +68,8 @@ export type CreateWindowOptions = {
 	height: number | null,
 };
 
-export type DemoStats = {
-	total_members: number,
-	total_tasks: number,
-	todo_tasks: number,
-	doing_tasks: number,
-	done_tasks: number,
-};
-
 export type FullScreenEvent = {
 	is_fullscreen: boolean,
-};
-
-// Application-facing id type that accepts either string or integer ids.
-export type Id = 
-// String record key.
-{ String: string } | 
-// Integer record key.
-{ Number: number };
-
-export type Member = {
-	id: Id,
-	name: string,
-	role: string,
-	created_at: number,
 };
 
 export type MouseWindowInfo = {
@@ -120,47 +82,6 @@ export type MouseWindowInfo = {
 	rel_x: number,
 	rel_y: number,
 	pixel_ratio: number,
-};
-
-export type NewMemberInput = {
-	id: string,
-	name: string,
-	role: string,
-};
-
-export type NewTaskInput = {
-	id: string,
-	title: string,
-	notes: string,
-	status: string,
-	priority: number,
-};
-
-export type Task = {
-	id: Id,
-	title: string,
-	notes: string,
-	status: string,
-	priority: number,
-	owner_id: string | null,
-	created_at: number,
-	updated_at: number,
-};
-
-export type TaskAssignmentView = {
-	task_id: string,
-	member_id: string,
-};
-
-export type TemplateDashboard = {
-	members: Member[],
-	tasks: Task[],
-	assignments: TaskAssignmentView[],
-	stats: DemoStats,
-};
-
-export type UnassignTaskInput = {
-	task_id: string,
 };
 
 export type WindowKindInfo = {

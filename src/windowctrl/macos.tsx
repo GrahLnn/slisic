@@ -6,11 +6,9 @@ import { type PropsWithChildren, useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom";
 import { useIsWindowFocus } from "../flow/windowFocus";
 import { events } from "../cmd/commands";
+import { getWindowControlsPortal } from "./portal";
 
-const windowsControlsPortal = document.createElement("div");
-windowsControlsPortal.id = "windows-controls-portal";
-
-document.documentElement.appendChild(windowsControlsPortal);
+const windowsControlsPortal = getWindowControlsPortal();
 
 interface WindowButtonProps extends PropsWithChildren {
   className?: string;
@@ -50,7 +48,8 @@ function Core() {
     };
   }, [appWindow]);
 
-  const iconcn = "opacity-0 group-hover:opacity-60 transition-opacity duration-300 mx-auto my-auto";
+  const iconcn =
+    "opacity-0 group-hover:opacity-60 transition-opacity duration-300 mx-auto my-auto";
   const iconsize = 8;
 
   return (
@@ -74,7 +73,9 @@ function Core() {
       />
       <WindowButton
         className="group-hover:bg-[#27c63f]"
-        icon={<icons.caretMaximizeDiagonal2 size={iconsize} className={iconcn} />}
+        icon={
+          <icons.caretMaximizeDiagonal2 size={iconsize} className={iconcn} />
+        }
         onClick={() => {
           appWindow.setFullscreen(true);
           setIsFullscreen(true);

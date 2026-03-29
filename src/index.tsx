@@ -1,71 +1,19 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App";
-import WindowsControlsPortal from "./windowctrl/windows";
-import MacOSControlsPortal from "./windowctrl/macos";
 import { me } from "@grahlnn/fn";
 import { getPlatform } from "@/lib/utils";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useAppBootstrap } from "./flow/bootstrap";
-import { getInteractiveShellState, shouldSubscribeToStartupReady } from "./flow/bootstrap/logic";
+import App from "./App";
+import { ensureAppLogicStarted } from "./flow/appLogic";
+import { AppBootstrapProvider, useAppBootstrap } from "./flow/bootstrap";
+import MacOSControlsPortal from "./windowctrl/macos";
+import WindowsControlsPortal from "./windowctrl/windows";
 
 const os = me(getPlatform());
-const startupReadyEvent = "factory://startup-ready";
-
-function signalStartupReady() {
-  if (typeof window === "undefined" || typeof document === "undefined") {
-    return;
-  }
-
-  const tauriWindow = window as typeof window & {
-    __TAURI_INTERNALS__?: {
-      metadata?: {
-        currentWindow?: {
-          label?: string;
-        };
-      };
-    };
-  };
-
-  const currentWindowLabel = tauriWindow.__TAURI_INTERNALS__?.metadata?.currentWindow?.label;
-  if (
-    !shouldSubscribeToStartupReady({
-      tauriInternalsReady: Boolean(tauriWindow.__TAURI_INTERNALS__),
-      currentWindowLabel,
-    })
-  ) {
-    return;
-  }
-
-  const notifyReady = async () => {
-    try {
-      await getCurrentWindow().once(startupReadyEvent, () => {
-        console.info("startup: received native ready event");
-      });
-      console.info("startup: renderer awaiting native ready event");
-    } catch (error) {
-      console.error("startup: failed to subscribe to native ready event", error);
-      throw error;
-    }
-  };
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => {
-      void notifyReady();
-    }, { once: true });
-    return;
-  }
-
-  void notifyReady();
-}
-
-signalStartupReady();
 
 function WindowControlsRoot() {
-  const appWindow = useAppBootstrap();
-  const shellState = getInteractiveShellState(appWindow);
+  const app = useAppBootstrap();
 
-  if (!shellState.showWindowControls) {
+  if (!app.showWindowControls) {
     return null;
   }
 
@@ -78,11 +26,14 @@ function WindowControlsRoot() {
 
 const rootEl = document.getElementById("root");
 if (rootEl) {
+  ensureAppLogicStarted();
   const root = ReactDOM.createRoot(rootEl);
   root.render(
     <React.StrictMode>
-      <WindowControlsRoot />
-      <App />
+      <AppBootstrapProvider>
+        <WindowControlsRoot />
+        <App />
+      </AppBootstrapProvider>
     </React.StrictMode>,
   );
 }

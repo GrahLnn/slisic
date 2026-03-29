@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use serde::Serialize;
-use tauri::path::BaseDirectory;
 use tauri::AppHandle;
 use tauri::Manager;
+use tauri::path::BaseDirectory;
 use tauri_plugin_shell::ShellExt;
 
 #[derive(Debug, Serialize, specta::Type)]

@@ -1,7 +1,8 @@
-import type { WindowName } from "../../cmd";
+import { me, type ME } from "@grahlnn/fn";
+import type { WindowName as CmdWindowName } from "../../cmd";
 
 export type AppBootstrapStatus = "pending" | "ready" | "error";
-export type WindowRenderTarget = "template_board";
+export type WindowName = Lowercase<CmdWindowName>;
 
 export interface AppWindowMeta {
   window: WindowName | null;
@@ -12,118 +13,104 @@ export interface AppWindowMeta {
   status: AppBootstrapStatus;
 }
 
-export interface InteractiveShellState {
-  kind: "fallback" | "resolved" | "prepared" | "blocked";
-  showShell: boolean;
+export interface AppBootstrap {
+  window: ME<WindowName>;
+  label: string;
+  status: AppBootstrapStatus;
   showWindowControls: boolean;
-  ownershipResolved: boolean;
 }
 
-export interface StartupReadySubscriptionState {
-  tauriInternalsReady: boolean;
-  currentWindowLabel: string | null | undefined;
+const fallbackWindowName: WindowName = "main";
+
+function readCurrentRendererWindowLabel(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const tauriWindow = window as typeof window & {
+    __TAURI_INTERNALS__?: {
+      metadata?: {
+        currentWindow?: {
+          label?: string;
+        };
+      };
+    };
+  };
+
+  return (
+    tauriWindow.__TAURI_INTERNALS__?.metadata?.currentWindow?.label ?? null
+  );
 }
 
-interface WindowUiDescriptor {
-  renderTarget: WindowRenderTarget | null;
-  prewarmTarget: WindowName | null;
-  runUpdaterOnPrimaryUserWindow: boolean;
+export function inferWindowNameFromLabel(
+  label: string | null | undefined,
+): WindowName | null {
+  if (!label) {
+    return null;
+  }
+
+  if (
+    label === "main" ||
+    /^main-\d+$/.test(label) ||
+    label === "main-prewarm" ||
+    /^main-prewarm-\d+$/.test(label)
+  ) {
+    return "main";
+  }
+
+  if (
+    label === "support" ||
+    /^support-\d+$/.test(label) ||
+    label === "support-prewarm" ||
+    /^support-prewarm-\d+$/.test(label)
+  ) {
+    return "support";
+  }
+
+  return null;
 }
 
-const windowUiDescriptors: Record<WindowName, WindowUiDescriptor> = {
-  Main: {
-    renderTarget: "template_board",
-    prewarmTarget: "Main",
-    runUpdaterOnPrimaryUserWindow: true,
-  },
-  Support: {
-    renderTarget: null,
-    prewarmTarget: null,
-    runUpdaterOnPrimaryUserWindow: false,
-  },
-};
+export function createInitialAppWindowMeta(): AppWindowMeta {
+  const label = readCurrentRendererWindowLabel();
 
-const fallbackRenderTarget: WindowRenderTarget = "template_board";
+  return {
+    window: inferWindowNameFromLabel(label),
+    label: label ?? "",
+    isPrimaryWindow: false,
+    isUserWindow: false,
+    isPreparedWindow: false,
+    status: "pending",
+  };
+}
 
-export const initialAppWindowMeta: AppWindowMeta = {
-  window: null,
-  label: "",
-  isPrimaryWindow: false,
-  isUserWindow: true,
-  isPreparedWindow: false,
-  status: "pending",
-};
-
-function getWindowUiDescriptor(window: WindowName | null): WindowUiDescriptor | null {
+export function normalizeWindowName(
+  window: CmdWindowName | null | undefined,
+): WindowName | null {
   if (!window) {
     return null;
   }
 
-  return windowUiDescriptors[window] ?? null;
+  return me(window).match({
+    Main: () => "main",
+    Support: () => "support",
+  });
 }
 
-export function getInteractiveShellState(meta: AppWindowMeta): InteractiveShellState {
-  switch (meta.status) {
-    case "pending":
-    case "error":
-      return {
-        kind: "fallback",
-        showShell: true,
-        showWindowControls: false,
-        ownershipResolved: false,
-      };
-    case "ready":
-      if (meta.isPreparedWindow) {
-        return {
-          kind: "prepared",
-          showShell: true,
-          showWindowControls: false,
-          ownershipResolved: true,
-        };
-      }
-
-      if (!meta.isUserWindow) {
-        return {
-          kind: "blocked",
-          showShell: false,
-          showWindowControls: false,
-          ownershipResolved: true,
-        };
-      }
-
-      return {
-        kind: "resolved",
-        showShell: true,
-        showWindowControls: true,
-        ownershipResolved: true,
-      };
-  }
+export function toCommandWindowName(window: WindowName): CmdWindowName {
+  return me(window).match({
+    main: () => "Main",
+    support: () => "Support",
+  });
 }
 
-export function resolveWindowRenderTarget(meta: AppWindowMeta): WindowRenderTarget | null {
-  if (meta.status !== "ready") {
-    return fallbackRenderTarget;
-  }
-
-  if (!meta.isUserWindow && !meta.isPreparedWindow) {
-    return null;
-  }
-
-  return getWindowUiDescriptor(meta.window)?.renderTarget ?? null;
+function resolveWindowForMatch(meta: AppWindowMeta): WindowName {
+  return (
+    meta.window ?? inferWindowNameFromLabel(meta.label) ?? fallbackWindowName
+  );
 }
 
-export function shouldRenderWindowContent(meta: AppWindowMeta): boolean {
-  const shellState = getInteractiveShellState(meta);
-
-  if (!shellState.showShell) {
-    return false;
-  }
-
-  if (!shellState.ownershipResolved) {
-    return fallbackRenderTarget !== null;
-  }
-
-  return resolveWindowRenderTarget(meta) !== null;
+export function shouldShowWindowControls(meta: AppWindowMeta): boolean {
+  return meta.status === "ready" && meta.isUserWindow && !meta.isPreparedWindow;
 }
 
 export function shouldRunUpdater(meta: AppWindowMeta): boolean {
@@ -131,31 +118,19 @@ export function shouldRunUpdater(meta: AppWindowMeta): boolean {
     return false;
   }
 
-  const descriptor = getWindowUiDescriptor(meta.window);
-  return Boolean(
-    descriptor?.runUpdaterOnPrimaryUserWindow &&
-      meta.status === "ready" &&
-      meta.isUserWindow &&
-      meta.isPrimaryWindow,
-  );
-}
-
-export function getWindowPrewarmTarget(meta: AppWindowMeta): WindowName | null {
-  if (meta.status !== "ready" || !meta.isUserWindow || meta.isPreparedWindow) {
-    return null;
-  }
-
-  return getWindowUiDescriptor(meta.window)?.prewarmTarget ?? null;
-}
-
-export function shouldRequestWindowPrewarm(meta: AppWindowMeta): boolean {
-  return getWindowPrewarmTarget(meta) !== null;
-}
-
-export function shouldSubscribeToStartupReady(state: StartupReadySubscriptionState): boolean {
   return (
-    state.tauriInternalsReady &&
-    typeof state.currentWindowLabel === "string" &&
-    state.currentWindowLabel.length > 0
+    meta.status === "ready" &&
+    meta.window === "main" &&
+    meta.isUserWindow &&
+    meta.isPrimaryWindow
   );
+}
+
+export function toAppBootstrap(meta: AppWindowMeta): AppBootstrap {
+  return {
+    window: me(resolveWindowForMatch(meta)),
+    label: meta.label,
+    status: meta.status,
+    showWindowControls: shouldShowWindowControls(meta),
+  };
 }

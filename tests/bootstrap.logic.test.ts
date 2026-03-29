@@ -1,415 +1,204 @@
 import { describe, expect, test } from "bun:test";
 import rsbuildConfig from "../rsbuild.config";
+import { commands } from "../src/cmd/commands";
 import {
-  getInteractiveShellState,
-  getWindowPrewarmTarget,
-  initialAppWindowMeta,
-  resolveWindowRenderTarget,
-  shouldSubscribeToStartupReady,
-  shouldRequestWindowPrewarm,
-  shouldRenderWindowContent,
+  inferWindowNameFromLabel,
+  normalizeWindowName,
   shouldRunUpdater,
+  shouldShowWindowControls,
+  toAppBootstrap,
+  toCommandWindowName,
   type AppWindowMeta,
 } from "../src/flow/bootstrap/logic";
 import { getPlatform } from "../lib/utils";
 
-const startupReadyEvent = "factory://startup-ready";
-
 function createMeta(overrides: Partial<AppWindowMeta> = {}): AppWindowMeta {
   return {
-    ...initialAppWindowMeta,
+    window: null,
+    label: "",
+    isPrimaryWindow: false,
+    isUserWindow: false,
+    isPreparedWindow: false,
+    status: "pending",
     ...overrides,
   };
 }
 
-describe("shouldRenderMainWindow", () => {
-  test("renders main content while bootstrap is still pending", () => {
-    expect(shouldRenderWindowContent(createMeta())).toBe(true);
+function withDevValue<T>(value: boolean, run: () => T): T {
+  const originalDev = import.meta.env.DEV;
+  Object.defineProperty(import.meta.env, "DEV", {
+    configurable: true,
+    value,
   });
 
-  test("renders main content when window kind lookup fails", () => {
-    expect(
-      shouldRenderWindowContent(
-        createMeta({
-          status: "error",
-        }),
-      ),
-    ).toBe(true);
-  });
-
-  test("does not treat support windows as user-facing main windows", () => {
-    expect(
-      shouldRenderWindowContent(
-        createMeta({
-          status: "ready",
-          window: "Support",
-          isPrimaryWindow: true,
-          isUserWindow: false,
-        }),
-      ),
-    ).toBe(false);
-  });
-
-  test("renders repeated visible main windows because they remain user windows", () => {
-    expect(
-      shouldRenderWindowContent(
-        createMeta({
-          status: "ready",
-          window: "Main",
-          isPrimaryWindow: false,
-          isUserWindow: true,
-        }),
-      ),
-    ).toBe(true);
-  });
-
-  test("does not render the main content for ready non-user windows", () => {
-    expect(
-      shouldRenderWindowContent(
-        createMeta({
-          status: "ready",
-          window: "Main",
-          isUserWindow: false,
-        }),
-      ),
-    ).toBe(false);
-  });
-
-  test("resolves render targets through the window descriptor catalog", () => {
-    expect(
-      resolveWindowRenderTarget(
-        createMeta({
-          status: "ready",
-          window: "Main",
-          isPrimaryWindow: true,
-          isUserWindow: true,
-        }),
-      ),
-    ).toBe("template_board");
-
-    expect(
-      resolveWindowRenderTarget(
-        createMeta({
-          status: "ready",
-          window: "Support",
-          isPrimaryWindow: true,
-          isUserWindow: false,
-        }),
-      ),
-    ).toBeNull();
-  });
-});
-
-describe("getInteractiveShellState", () => {
-  test("keeps bootstrap pending usable without assigning window ownership", () => {
-    expect(getInteractiveShellState(createMeta())).toEqual({
-      kind: "fallback",
-      showShell: true,
-      showWindowControls: false,
-      ownershipResolved: false,
-    });
-  });
-
-  test("keeps bootstrap errors usable without leaking wrong-window ownership", () => {
-    expect(
-      getInteractiveShellState(
-        createMeta({
-          status: "error",
-        }),
-      ),
-    ).toEqual({
-      kind: "fallback",
-      showShell: true,
-      showWindowControls: false,
-      ownershipResolved: false,
-    });
-  });
-
-  test("mounts the interactive shell and controls only for ready user windows", () => {
-    expect(
-      getInteractiveShellState(
-        createMeta({
-          status: "ready",
-          window: "Main",
-          isPrimaryWindow: true,
-          isUserWindow: true,
-        }),
-      ),
-    ).toEqual({
-      kind: "resolved",
-      showShell: true,
-      showWindowControls: true,
-      ownershipResolved: true,
-    });
-  });
-
-  test("blocks shell and controls for ready non-user windows", () => {
-    expect(
-      getInteractiveShellState(
-        createMeta({
-          status: "ready",
-          window: "Support",
-          isPrimaryWindow: true,
-          isUserWindow: false,
-        }),
-      ),
-    ).toEqual({
-      kind: "blocked",
-      showShell: false,
-      showWindowControls: false,
-      ownershipResolved: true,
-    });
-  });
-});
-
-describe("shouldRunUpdater", () => {
-  test("runs only for the primary visible main window", () => {
-    const originalDev = import.meta.env.DEV;
-    Object.defineProperty(import.meta.env, "DEV", {
-      configurable: true,
-      value: false,
-    });
-
-    expect(
-      shouldRunUpdater(
-        createMeta({
-          status: "ready",
-          window: "Main",
-          isPrimaryWindow: true,
-        }),
-      ),
-    ).toBe(true);
-
-    expect(
-      shouldRunUpdater(
-        createMeta({
-          status: "ready",
-          window: "Main",
-          isPrimaryWindow: false,
-        }),
-      ),
-    ).toBe(false);
-
-    expect(
-      shouldRunUpdater(
-        createMeta({
-          status: "ready",
-          window: "Support",
-          isPrimaryWindow: true,
-        }),
-      ),
-    ).toBe(false);
-
-    expect(
-      shouldRunUpdater(
-        createMeta({
-          status: "pending",
-          window: "Main",
-          isPrimaryWindow: true,
-        }),
-      ),
-    ).toBe(false);
-
-    expect(
-      shouldRunUpdater(
-        createMeta({
-          status: "ready",
-          window: "Main",
-          isPrimaryWindow: true,
-          isUserWindow: false,
-        }),
-      ),
-    ).toBe(false);
-
+  try {
+    return run();
+  } finally {
     Object.defineProperty(import.meta.env, "DEV", {
       configurable: true,
       value: originalDev,
     });
+  }
+}
+
+describe("inferWindowNameFromLabel", () => {
+  test("recognizes visible and prepared main labels", () => {
+    expect(inferWindowNameFromLabel("main")).toBe("main");
+    expect(inferWindowNameFromLabel("main-2")).toBe("main");
+    expect(inferWindowNameFromLabel("main-prewarm")).toBe("main");
+    expect(inferWindowNameFromLabel("main-prewarm-2")).toBe("main");
   });
 
-  test("does not run updater during dev validation startup", () => {
-    const originalDev = import.meta.env.DEV;
-    Object.defineProperty(import.meta.env, "DEV", {
-      configurable: true,
-      value: true,
-    });
+  test("recognizes visible and prepared support labels", () => {
+    expect(inferWindowNameFromLabel("support")).toBe("support");
+    expect(inferWindowNameFromLabel("support-2")).toBe("support");
+    expect(inferWindowNameFromLabel("support-prewarm")).toBe("support");
+    expect(inferWindowNameFromLabel("support-prewarm-2")).toBe("support");
+  });
 
-    expect(
-      shouldRunUpdater(
-        createMeta({
-          status: "ready",
-          window: "Main",
-          isPrimaryWindow: true,
-        }),
-      ),
-    ).toBe(false);
-
-    Object.defineProperty(import.meta.env, "DEV", {
-      configurable: true,
-      value: originalDev,
-    });
+  test("rejects unknown labels", () => {
+    expect(inferWindowNameFromLabel("unknown")).toBeNull();
+    expect(inferWindowNameFromLabel("main-support")).toBeNull();
+    expect(inferWindowNameFromLabel(null)).toBeNull();
   });
 });
 
-describe("shouldRequestWindowPrewarm", () => {
-  test("window descriptors control prewarm targets instead of homepage-only heuristics", () => {
-    expect(
-      getWindowPrewarmTarget(
-        createMeta({
-          status: "ready",
-          window: "Main",
-          isPrimaryWindow: true,
-          isUserWindow: true,
-        }),
-      ),
-    ).toBe("Main");
-
-    expect(
-      getWindowPrewarmTarget(
-        createMeta({
-          status: "ready",
-          window: "Main",
-          isPrimaryWindow: false,
-          isUserWindow: true,
-        }),
-      ),
-    ).toBe("Main");
-
-    expect(
-      getWindowPrewarmTarget(
-        createMeta({
-          status: "ready",
-          window: "Support",
-          isPrimaryWindow: true,
-          isUserWindow: false,
-        }),
-      ),
-    ).toBeNull();
+describe("window name adapters", () => {
+  test("normalizes command window names for frontend matching", () => {
+    expect(normalizeWindowName("Main")).toBe("main");
+    expect(normalizeWindowName("Support")).toBe("support");
+    expect(normalizeWindowName(null)).toBeNull();
   });
 
-  test("prewarm stays disabled until a descriptor-backed user window resolves", () => {
-    expect(getWindowPrewarmTarget(createMeta())).toBeNull();
-    expect(
-      getWindowPrewarmTarget(
-        createMeta({
-          status: "error",
-          window: "Main",
-          isPrimaryWindow: true,
-          isUserWindow: true,
-        }),
-      ),
-    ).toBeNull();
-    expect(
-      getWindowPrewarmTarget(
-        createMeta({
-          status: "ready",
-          window: "Support",
-          isPrimaryWindow: true,
-          isUserWindow: false,
-        }),
-      ),
-    ).toBeNull();
+  test("converts frontend window names back to command names", () => {
+    expect(toCommandWindowName("main")).toBe("Main");
+    expect(toCommandWindowName("support")).toBe("Support");
+  });
+});
 
+describe("shouldShowWindowControls", () => {
+  test("shows controls only for ready visible user windows", () => {
     expect(
-      shouldRequestWindowPrewarm(
+      shouldShowWindowControls(
         createMeta({
           status: "ready",
-          window: "Main",
-          isPrimaryWindow: true,
+          window: "main",
           isUserWindow: true,
         }),
       ),
     ).toBe(true);
-  });
 
-  test("never requests additional hidden-window preparation", () => {
     expect(
-      shouldRequestWindowPrewarm(
+      shouldShowWindowControls(
         createMeta({
           status: "ready",
-          window: "Main",
-          isPrimaryWindow: true,
+          window: "main",
+          isUserWindow: false,
+        }),
+      ),
+    ).toBe(false);
+
+    expect(
+      shouldShowWindowControls(
+        createMeta({
+          status: "ready",
+          window: "main",
           isUserWindow: true,
           isPreparedWindow: true,
         }),
       ),
     ).toBe(false);
   });
+});
 
-  test("never requests preparation for descriptors that opt out", () => {
-    expect(
-      shouldRequestWindowPrewarm(
-        createMeta({
-          status: "ready",
-          window: "Support",
-          isPrimaryWindow: true,
-          isUserWindow: false,
-        }),
-      ),
-    ).toBe(false);
-  });
+describe("shouldRunUpdater", () => {
+  test("runs only for the primary visible main window in production", () => {
+    withDevValue(false, () => {
+      expect(
+        shouldRunUpdater(
+          createMeta({
+            status: "ready",
+            window: "main",
+            isPrimaryWindow: true,
+            isUserWindow: true,
+          }),
+        ),
+      ).toBe(true);
 
-  test("does not depend on bootstrap timing heuristics for any state", () => {
-    expect(shouldRequestWindowPrewarm(createMeta())).toBe(false);
-    expect(
-      shouldRequestWindowPrewarm(
-        createMeta({
-          status: "error",
-          window: "Main",
-          isPrimaryWindow: true,
-          isUserWindow: true,
-        }),
-      ),
-    ).toBe(false);
-  });
+      expect(
+        shouldRunUpdater(
+          createMeta({
+            status: "ready",
+            window: "main",
+            isPrimaryWindow: false,
+            isUserWindow: true,
+          }),
+        ),
+      ).toBe(false);
 
-  test("secondary visible main windows still render the app shell without gaining homepage target eligibility", () => {
-    const secondaryMain = createMeta({
-      status: "ready",
-      window: "Main",
-      isPrimaryWindow: false,
-      isUserWindow: true,
+      expect(
+        shouldRunUpdater(
+          createMeta({
+            status: "ready",
+            window: "support",
+            isPrimaryWindow: true,
+            isUserWindow: true,
+          }),
+        ),
+      ).toBe(false);
+
+      expect(
+        shouldRunUpdater(
+          createMeta({
+            status: "ready",
+            window: "main",
+            isPrimaryWindow: true,
+            isUserWindow: false,
+          }),
+        ),
+      ).toBe(false);
     });
-
-    expect(resolveWindowRenderTarget(secondaryMain)).toBe("template_board");
-    expect(getWindowPrewarmTarget(secondaryMain)).toBe("Main");
-    expect(shouldRenderWindowContent(secondaryMain)).toBe(true);
-    expect(shouldRequestWindowPrewarm(secondaryMain)).toBe(true);
   });
 
-  test("requests prewarm for any resolved user window whose descriptor enables it", () => {
-    expect(
-      shouldRequestWindowPrewarm(
-        createMeta({
-          status: "ready",
-          window: "Main",
-          isPrimaryWindow: true,
-          isUserWindow: true,
-        }),
-      ),
-    ).toBe(true);
+  test("never runs updater during development", () => {
+    withDevValue(true, () => {
+      expect(
+        shouldRunUpdater(
+          createMeta({
+            status: "ready",
+            window: "main",
+            isPrimaryWindow: true,
+            isUserWindow: true,
+          }),
+        ),
+      ).toBe(false);
+    });
+  });
+});
 
-    expect(
-      shouldRequestWindowPrewarm(
-        createMeta({
-          status: "ready",
-          window: "Main",
-          isPrimaryWindow: false,
-          isUserWindow: true,
-        }),
-      ),
-    ).toBe(true);
+describe("toAppBootstrap", () => {
+  test("exposes a matchable window with label-based fallback", () => {
+    const app = toAppBootstrap(
+      createMeta({
+        label: "main-prewarm",
+      }),
+    );
 
+    expect(app.label).toBe("main-prewarm");
+    expect(app.status).toBe("pending");
     expect(
-      shouldRequestWindowPrewarm(
-        createMeta({
-          status: "ready",
-          window: "Support",
-          isPrimaryWindow: true,
-          isUserWindow: false,
-        }),
-      ),
-    ).toBe(false);
+      app.window.match({
+        main: () => "main",
+        support: () => "support",
+      }),
+    ).toBe("main");
+    expect(app.showWindowControls).toBe(false);
+  });
+});
+
+describe("bootstrap commands", () => {
+  test("renderer bootstrap ready command stays available for prepared-window handoff", () => {
+    expect(typeof commands.recordRendererBootstrapReady).toBe("function");
   });
 });
 
@@ -491,38 +280,12 @@ describe("getPlatform", () => {
       windowStub.__TAURI_OS_PLUGIN_INTERNALS__ = originalInternals;
     }
   });
-
-  test("startup ready event name stays stable for native and renderer startup tracing", () => {
-    expect(startupReadyEvent).toBe("factory://startup-ready");
-  });
-
-  test("startup ready subscription waits for current window metadata", () => {
-    expect(
-      shouldSubscribeToStartupReady({
-        tauriInternalsReady: true,
-        currentWindowLabel: "main",
-      }),
-    ).toBe(true);
-
-    expect(
-      shouldSubscribeToStartupReady({
-        tauriInternalsReady: true,
-        currentWindowLabel: "",
-      }),
-    ).toBe(false);
-
-    expect(
-      shouldSubscribeToStartupReady({
-        tauriInternalsReady: false,
-        currentWindowLabel: "main",
-      }),
-    ).toBe(false);
-  });
 });
 
 describe("rsbuild react runtime defines", () => {
   test("defines process.env.NODE_ENV so browser React runtime does not read an undefined process global", () => {
-    const definedNodeEnv = rsbuildConfig.source?.define?.["process.env.NODE_ENV"];
+    const definedNodeEnv =
+      rsbuildConfig.source?.define?.["process.env.NODE_ENV"];
 
     expect(typeof definedNodeEnv).toBe("string");
     expect(JSON.parse(definedNodeEnv as string)).toBeString();

@@ -1,21 +1,16 @@
 mod domain;
 mod utils;
 
-pub use appdb::{impl_schema, Relation};
-
 use anyhow::Result;
-use appdb::prelude::{init_db_with_options, Crud, InitDbOptions};
+use appdb::prelude::{InitDbOptions, init_db_with_options};
 use domain::models::user::User;
-use domain::template;
-use tauri::async_runtime::block_on;
-use tauri::Emitter;
 use tauri::Manager;
-use tauri_specta::{collect_commands, collect_events, Builder};
+use tauri::async_runtime::block_on;
+use tauri_specta::{Builder, collect_commands, collect_events};
 use tokio::task::block_in_place;
 use utils::event;
 
 const DB_PATH: &str = "surreal.db";
-const STARTUP_READY_EVENT: &str = "factory://startup-ready";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -24,6 +19,8 @@ pub fn run() {
         utils::core::app_ready,
         utils::window::get_mouse_and_window_position,
         utils::window::get_window_kind,
+        utils::window::warm_window,
+        utils::window::cold_window,
         utils::window::prewarm_window,
         utils::window::discard_prewarm_window,
         utils::window::record_renderer_bootstrap_ready,
@@ -31,14 +28,6 @@ pub fn run() {
         utils::sidecar::run_bun_hello_sidecar,
         greet,
         clean,
-        template::template_bootstrap,
-        template::template_snapshot,
-        template::template_create_member,
-        template::template_create_task,
-        template::template_assign_task,
-        template::template_unassign_task,
-        template::template_bulk_set_status,
-        template::template_reset,
     ];
     let events = collect_events![event::FullScreenEvent];
 
@@ -125,9 +114,6 @@ export function makeLiveEvent<T extends Record<string, any>>(ev: EventsShape<T>)
                     Ok(())
                 })
             })
-        })
-        .on_page_load(|window, _payload| {
-            let _ = window.emit(STARTUP_READY_EVENT, ());
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

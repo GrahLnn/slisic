@@ -3,7 +3,7 @@ use specta::Type;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
-use tauri::{LogicalSize, Size};
+use tauri::{LogicalSize, PhysicalPosition, PhysicalSize, Position, Size};
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(target_os = "macos")]
@@ -41,7 +41,7 @@ enum UserWindowPolicy {
     Never,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct WindowDescriptor {
     name: WindowName,
     base_label: &'static str,
@@ -49,6 +49,10 @@ struct WindowDescriptor {
     user_window_policy: UserWindowPolicy,
     prewarm_enabled: bool,
     uses_primary_window_setup: bool,
+    default_width: f64,
+    default_height: f64,
+    min_width: f64,
+    min_height: f64,
 }
 
 impl WindowDescriptor {
@@ -88,6 +92,10 @@ const WINDOW_DESCRIPTORS: [WindowDescriptor; 2] = [
         user_window_policy: UserWindowPolicy::PrimaryAndIndexed,
         prewarm_enabled: true,
         uses_primary_window_setup: true,
+        default_width: 1400.0,
+        default_height: 750.0,
+        min_width: 768.0,
+        min_height: 500.0,
     },
     WindowDescriptor {
         name: WindowName::Support,
@@ -96,6 +104,10 @@ const WINDOW_DESCRIPTORS: [WindowDescriptor; 2] = [
         user_window_policy: UserWindowPolicy::Never,
         prewarm_enabled: false,
         uses_primary_window_setup: false,
+        default_width: 1400.0,
+        default_height: 750.0,
+        min_width: 768.0,
+        min_height: 500.0,
     },
 ];
 
@@ -229,6 +241,12 @@ fn prepared_window_inventory() -> &'static Mutex<HashMap<WindowName, PreparedWin
     PREPARED_WINDOWS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn warm_window_owners() -> &'static Mutex<HashMap<WindowName, HashSet<String>>> {
+    static WARM_WINDOW_OWNERS: OnceLock<Mutex<HashMap<WindowName, HashSet<String>>>> =
+        OnceLock::new();
+    WARM_WINDOW_OWNERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn promoted_user_window_labels() -> &'static Mutex<HashSet<String>> {
     static PROMOTED_USER_WINDOW_LABELS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     PROMOTED_USER_WINDOW_LABELS.get_or_init(|| Mutex::new(HashSet::new()))
@@ -296,6 +314,69 @@ fn graceful_shutdown_target_labels(
         .into_iter()
         .filter(|label| label != closing_label)
         .collect()
+}
+
+fn add_warm_window_owner(name: WindowName, label: &str) -> bool {
+    let mut owners = warm_window_owners()
+        .lock()
+        .expect("warm window owners poisoned");
+    owners.entry(name).or_default().insert(label.to_string())
+}
+
+fn remove_warm_window_owner(name: WindowName, label: &str) -> bool {
+    let mut owners = warm_window_owners()
+        .lock()
+        .expect("warm window owners poisoned");
+    let Some(labels) = owners.get_mut(&name) else {
+        return false;
+    };
+
+    labels.remove(label);
+    if labels.is_empty() {
+        owners.remove(&name);
+        return false;
+    }
+
+    true
+}
+
+fn remove_warm_window_owner_label(label: &str) -> Vec<WindowName> {
+    let mut owners = warm_window_owners()
+        .lock()
+        .expect("warm window owners poisoned");
+    let mut emptied_targets = Vec::new();
+
+    owners.retain(|name, labels| {
+        labels.remove(label);
+        let keep = !labels.is_empty();
+        if !keep {
+            emptied_targets.push(*name);
+        }
+        keep
+    });
+
+    emptied_targets.sort_by_key(WindowName::as_str);
+    emptied_targets
+}
+
+fn has_warm_window_owner(name: WindowName) -> bool {
+    warm_window_owners()
+        .lock()
+        .expect("warm window owners poisoned")
+        .get(&name)
+        .is_some_and(|labels| !labels.is_empty())
+}
+
+fn active_warm_window_targets() -> Vec<WindowName> {
+    let owners = warm_window_owners()
+        .lock()
+        .expect("warm window owners poisoned");
+    let mut targets = owners
+        .iter()
+        .filter_map(|(name, labels)| (!labels.is_empty()).then_some(*name))
+        .collect::<Vec<_>>();
+    targets.sort_by_key(WindowName::as_str);
+    targets
 }
 
 #[tauri::command]
@@ -404,6 +485,11 @@ fn reset_prepared_window_inventory() {
         .expect("prepared window inventory poisoned");
     inventory.clear();
 
+    let mut warm_owners = warm_window_owners()
+        .lock()
+        .expect("warm window owners poisoned");
+    warm_owners.clear();
+
     let mut promoted_labels = promoted_user_window_labels()
         .lock()
         .expect("promoted user window labels poisoned");
@@ -475,6 +561,12 @@ fn mark_graceful_shutdown_window_destroyed(label: &str) -> bool {
     true
 }
 
+fn ensure_active_warm_window_targets_prepared(app: &AppHandle) {
+    for name in active_warm_window_targets() {
+        prewarm_window(app.clone(), name);
+    }
+}
+
 fn handle_destroyed_window_state(label: &str) -> bool {
     demote_window_label_from_user_window(label);
     let _ = release_prepared_window_for_label(label);
@@ -482,8 +574,18 @@ fn handle_destroyed_window_state(label: &str) -> bool {
 }
 
 pub fn handle_window_destroyed(app: &AppHandle, label: &str) {
+    let emptied_targets = remove_warm_window_owner_label(label);
     if handle_destroyed_window_state(label) {
         app.exit(0);
+        return;
+    }
+
+    if !is_graceful_shutdown_in_progress() {
+        for name in emptied_targets {
+            let _ = discard_prewarm_window(app.clone(), name);
+        }
+
+        ensure_active_warm_window_targets_prepared(app);
     }
 }
 
@@ -691,14 +793,16 @@ fn next_prewarm_label(name: WindowName, app: &tauri::AppHandle) -> String {
 fn build_window(
     app: &tauri::AppHandle,
     label: String,
-    title: &str,
+    descriptor: &WindowDescriptor,
     visible: bool,
 ) -> Result<WebviewWindow, String> {
     let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
-        .title(title)
+        .title(descriptor.title)
         .visible(visible)
         .focused(visible)
-        .accept_first_mouse(true);
+        .accept_first_mouse(true)
+        .inner_size(descriptor.default_width, descriptor.default_height)
+        .min_inner_size(descriptor.min_width, descriptor.min_height);
 
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     {
@@ -710,6 +814,74 @@ fn build_window(
     }
 
     builder.build().map_err(|error| error.to_string())
+}
+
+fn clamp_i64_to_i32(value: i64) -> i32 {
+    value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+fn centered_axis_position(area_start: i32, area_size: u32, window_size: u32) -> i32 {
+    if window_size >= area_size {
+        return area_start;
+    }
+
+    let centered = i64::from(area_start) + i64::from((area_size - window_size) / 2);
+    clamp_i64_to_i32(centered)
+}
+
+fn centered_position_in_area(
+    area_position: PhysicalPosition<i32>,
+    area_size: PhysicalSize<u32>,
+    window_size: PhysicalSize<u32>,
+) -> PhysicalPosition<i32> {
+    PhysicalPosition::new(
+        centered_axis_position(area_position.x, area_size.width, window_size.width),
+        centered_axis_position(area_position.y, area_size.height, window_size.height),
+    )
+}
+
+fn is_window_fully_within_area(
+    window_position: PhysicalPosition<i32>,
+    window_size: PhysicalSize<u32>,
+    area_position: PhysicalPosition<i32>,
+    area_size: PhysicalSize<u32>,
+) -> bool {
+    let window_left = i64::from(window_position.x);
+    let window_top = i64::from(window_position.y);
+    let window_right = window_left + i64::from(window_size.width);
+    let window_bottom = window_top + i64::from(window_size.height);
+
+    let area_left = i64::from(area_position.x);
+    let area_top = i64::from(area_position.y);
+    let area_right = area_left + i64::from(area_size.width);
+    let area_bottom = area_top + i64::from(area_size.height);
+
+    window_left >= area_left
+        && window_top >= area_top
+        && window_right <= area_right
+        && window_bottom <= area_bottom
+}
+
+fn ensure_window_visible_on_opener_monitor(window: &WebviewWindow, opener: &WebviewWindow) {
+    let Ok(Some(monitor)) = opener.current_monitor() else {
+        return;
+    };
+
+    let work_area = monitor.work_area();
+    let area_position = work_area.position;
+    let area_size = work_area.size;
+    let Ok(window_size) = window.outer_size() else {
+        return;
+    };
+
+    if let Ok(window_position) = window.outer_position()
+        && is_window_fully_within_area(window_position, window_size, area_position, area_size)
+    {
+        return;
+    }
+
+    let target_position = centered_position_in_area(area_position, area_size, window_size);
+    let _ = window.set_position(Position::Physical(target_position));
 }
 
 pub fn activate_window(window: &WebviewWindow) {
@@ -730,42 +902,55 @@ pub fn should_activate_window_on_app_ready(label: &str) -> bool {
     should_label_resolve_as_user_window(label)
 }
 
-fn apply_window_options(window: &WebviewWindow, options: Option<&CreateWindowOptions>) {
-    if let Some(options) = options {
-        if let (Some(width), Some(height)) = (options.width, options.height) {
-            let _ = window.set_size(Size::Logical(LogicalSize::new(width, height)));
-        }
+fn apply_window_options(window: &WebviewWindow, options: Option<&CreateWindowOptions>) -> bool {
+    if let Some(options) = options
+        && let (Some(width), Some(height)) = (options.width, options.height)
+    {
+        let _ = window.set_size(Size::Logical(LogicalSize::new(width, height)));
+        return true;
     }
+
+    false
 }
 
 #[specta::specta]
 #[tauri::command]
 pub async fn create_window(
     app: tauri::AppHandle,
+    window: WebviewWindow,
     name: WindowName,
     options: Option<CreateWindowOptions>,
 ) {
     let descriptor = window_descriptor(name);
+
     if let Some(prepared_window) = take_prepared_window(name) {
-        if let Some(window) = app.get_webview_window(&prepared_window.label) {
+        if let Some(window_to_show) = app.get_webview_window(&prepared_window.label) {
             promote_window_label_to_user_window(&prepared_window.label);
-            apply_window_options(&window, options.as_ref());
-            activate_window(&window);
+            let _ = apply_window_options(&window_to_show, options.as_ref());
+            ensure_window_visible_on_opener_monitor(&window_to_show, &window);
+            activate_window(&window_to_show);
+            if has_warm_window_owner(name) {
+                prewarm_window(app.clone(), name);
+            }
             let next_window_kind = window_kind_info_for_label(&prepared_window.label);
-            let _ = window.emit(WINDOW_KIND_CHANGED_EVENT, next_window_kind);
+            let _ = window_to_show.emit(WINDOW_KIND_CHANGED_EVENT, next_window_kind);
             return;
         }
     }
 
     let label = next_visible_label(name, &app);
-    match build_window(&app, label, descriptor.title, true) {
-        Ok(window) => {
-            apply_window_options(&window, options.as_ref());
+    match build_window(&app, label, descriptor, true) {
+        Ok(window_to_show) => {
+            let did_resize = apply_window_options(&window_to_show, options.as_ref());
+            if did_resize {
+                ensure_window_visible_on_opener_monitor(&window_to_show, &window);
+            }
             apply_window_setup(
-                &window,
-                descriptor.uses_primary_window_setup && descriptor.is_primary_label(window.label()),
+                &window_to_show,
+                descriptor.uses_primary_window_setup
+                    && descriptor.is_primary_label(window_to_show.label()),
             );
-            activate_window(&window);
+            activate_window(&window_to_show);
         }
         Err(error) => {
             eprintln!("Failed to create window: {error}");
@@ -775,9 +960,32 @@ pub async fn create_window(
 
 #[specta::specta]
 #[tauri::command]
+pub fn warm_window(app: tauri::AppHandle, window: WebviewWindow, name: WindowName) {
+    let label = window.label().to_string();
+    if !should_label_resolve_as_user_window(&label) {
+        return;
+    }
+
+    let _ = add_warm_window_owner(name, &label);
+    prewarm_window(app, name);
+}
+
+#[specta::specta]
+#[tauri::command]
+pub fn cold_window(app: tauri::AppHandle, window: WebviewWindow, name: WindowName) -> bool {
+    let label = window.label().to_string();
+    if remove_warm_window_owner(name, &label) {
+        return false;
+    }
+
+    discard_prewarm_window(app, name)
+}
+
+#[specta::specta]
+#[tauri::command]
 pub fn prewarm_window(app: tauri::AppHandle, name: WindowName) {
     let descriptor = window_descriptor(name);
-    if !descriptor.prewarm_enabled {
+    if !descriptor.prewarm_enabled || !has_warm_window_owner(name) {
         return;
     }
 
@@ -803,8 +1011,17 @@ pub fn prewarm_window(app: tauri::AppHandle, name: WindowName) {
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let run_result = app_handle.run_on_main_thread(move || {
-            match build_window(&app, label.clone(), descriptor.title, false) {
+            if !has_warm_window_owner(name) {
+                return;
+            }
+
+            match build_window(&app, label.clone(), descriptor, false) {
                 Ok(window) => {
+                    if !has_warm_window_owner(name) {
+                        let _ = window.close();
+                        return;
+                    }
+
                     apply_window_setup(&window, false);
                     reserve_prepared_window(name, label);
                 }
@@ -841,20 +1058,23 @@ pub fn discard_prewarm_window(app: tauri::AppHandle, name: WindowName) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
+        PreparedWindowDisposition, PreparedWindowReadiness, PreparedWindowState, WindowName,
+        active_warm_window_targets, add_warm_window_owner, centered_position_in_area,
         classify_window_identity, classify_window_labels, demote_window_label_from_user_window,
-        discard_prepared_window, discard_prepared_window_state, graceful_shutdown_target_labels,
-        handle_destroyed_window_state, is_graceful_shutdown_in_progress,
-        is_numeric_indexed_label, is_user_window_label, mark_prepared_window_ready,
-        prepared_window_label, prepared_window_readiness, prepared_window_targets,
-        promote_window_label_to_user_window, reserve_prepared_window,
+        discard_prepared_window, discard_prepared_window_state, graceful_shutdown_pending_labels,
+        graceful_shutdown_target_labels, handle_destroyed_window_state, has_warm_window_owner,
+        is_graceful_shutdown_in_progress, is_numeric_indexed_label, is_user_window_label,
+        is_window_fully_within_area, mark_prepared_window_ready, prepared_window_label,
+        prepared_window_readiness, prepared_window_targets, promote_window_label_to_user_window,
+        remove_warm_window_owner, remove_warm_window_owner_label, reserve_prepared_window,
         reset_graceful_shutdown_state, reset_prepared_window_inventory,
-        start_graceful_shutdown_tracking, graceful_shutdown_pending_labels,
         should_activate_window_on_app_ready, should_exit_on_window_close_with_count,
-        should_label_resolve_as_user_window, take_prepared_window, try_begin_graceful_shutdown,
-        window_kind_from_label, window_kind_info_for_label, PreparedWindowDisposition,
-        PreparedWindowReadiness, PreparedWindowState, WindowName,
+        should_label_resolve_as_user_window, start_graceful_shutdown_tracking,
+        take_prepared_window, try_begin_graceful_shutdown, window_kind_from_label,
+        window_kind_info_for_label,
     };
     use std::sync::{Mutex, MutexGuard, OnceLock};
+    use tauri::{PhysicalPosition, PhysicalSize};
 
     fn test_state_guard() -> MutexGuard<'static, ()> {
         static TEST_STATE_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
@@ -868,6 +1088,75 @@ mod tests {
     fn visible_main_labels_resolve_as_user_windows() {
         assert_eq!(window_kind_from_label("main"), Some(WindowName::Main));
         assert_eq!(window_kind_from_label("main-1"), Some(WindowName::Main));
+    }
+
+    #[test]
+    fn warm_window_owners_are_deduped_per_target_and_label() {
+        let _guard = test_state_guard();
+        reset_prepared_window_inventory();
+
+        assert!(add_warm_window_owner(WindowName::Main, "main"));
+        assert!(!add_warm_window_owner(WindowName::Main, "main"));
+        assert_eq!(active_warm_window_targets(), vec![WindowName::Main]);
+        assert!(has_warm_window_owner(WindowName::Main));
+    }
+
+    #[test]
+    fn warm_window_target_stays_active_until_last_owner_leaves() {
+        let _guard = test_state_guard();
+        reset_prepared_window_inventory();
+
+        assert!(add_warm_window_owner(WindowName::Main, "main"));
+        assert!(add_warm_window_owner(WindowName::Main, "main-1"));
+        assert!(remove_warm_window_owner(WindowName::Main, "main"));
+        assert!(has_warm_window_owner(WindowName::Main));
+
+        assert!(!remove_warm_window_owner(WindowName::Main, "main-1"));
+        assert!(!has_warm_window_owner(WindowName::Main));
+        assert!(active_warm_window_targets().is_empty());
+    }
+
+    #[test]
+    fn removing_owner_label_cleans_up_all_matching_warm_targets() {
+        let _guard = test_state_guard();
+        reset_prepared_window_inventory();
+
+        assert!(add_warm_window_owner(WindowName::Main, "main"));
+        assert!(add_warm_window_owner(WindowName::Support, "main"));
+
+        assert_eq!(
+            remove_warm_window_owner_label("main"),
+            vec![WindowName::Main, WindowName::Support]
+        );
+        assert!(active_warm_window_targets().is_empty());
+    }
+
+    #[test]
+    fn centered_position_clamps_to_area_origin_when_window_is_oversized() {
+        let position = centered_position_in_area(
+            PhysicalPosition::new(100, 120),
+            PhysicalSize::new(800, 600),
+            PhysicalSize::new(1200, 900),
+        );
+
+        assert_eq!(position, PhysicalPosition::new(100, 120));
+    }
+
+    #[test]
+    fn window_visibility_check_uses_full_window_bounds_against_work_area() {
+        assert!(is_window_fully_within_area(
+            PhysicalPosition::new(120, 150),
+            PhysicalSize::new(400, 300),
+            PhysicalPosition::new(100, 120),
+            PhysicalSize::new(800, 600),
+        ));
+
+        assert!(!is_window_fully_within_area(
+            PhysicalPosition::new(700, 500),
+            PhysicalSize::new(400, 300),
+            PhysicalPosition::new(100, 120),
+            PhysicalSize::new(800, 600),
+        ));
     }
 
     #[test]
@@ -947,7 +1236,10 @@ mod tests {
         let infos = classify_window_labels(["main", "main-1", "main-2"]);
 
         assert_eq!(infos.len(), 3);
-        assert_eq!(infos.iter().filter(|info| info.is_primary_window).count(), 1);
+        assert_eq!(
+            infos.iter().filter(|info| info.is_primary_window).count(),
+            1
+        );
         assert!(infos.iter().all(|info| info.is_user_window));
     }
 
@@ -955,11 +1247,16 @@ mod tests {
     fn reopen_sequences_never_promote_secondary_labels_to_primary_main() {
         let infos = classify_window_labels(["main", "main-1", "main-2", "main-1", "main-3"]);
 
-        assert_eq!(infos.iter().filter(|info| info.is_primary_window).count(), 1);
-        assert!(infos
-            .iter()
-            .filter(|info| info.label != "main")
-            .all(|info| !info.is_primary_window && info.is_user_window));
+        assert_eq!(
+            infos.iter().filter(|info| info.is_primary_window).count(),
+            1
+        );
+        assert!(
+            infos
+                .iter()
+                .filter(|info| info.label != "main")
+                .all(|info| !info.is_primary_window && info.is_user_window)
+        );
     }
 
     #[test]
@@ -1060,7 +1357,10 @@ mod tests {
             "main",
         );
 
-        assert_eq!(labels, vec!["main-prewarm-1".to_string(), "support".to_string()]);
+        assert_eq!(
+            labels,
+            vec!["main-prewarm-1".to_string(), "support".to_string()]
+        );
     }
 
     #[test]
@@ -1107,7 +1407,10 @@ mod tests {
         );
 
         assert!(!handle_destroyed_window_state("main"));
-        assert_eq!(graceful_shutdown_pending_labels(), vec!["main-1".to_string()]);
+        assert_eq!(
+            graceful_shutdown_pending_labels(),
+            vec!["main-1".to_string()]
+        );
         assert!(is_graceful_shutdown_in_progress());
 
         assert!(handle_destroyed_window_state("main-1"));
