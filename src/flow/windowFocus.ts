@@ -1,6 +1,6 @@
 import { useSelector } from "@xstate/react";
 import { createActor, createMachine, fromCallback } from "xstate";
-import { defineSS, ns, sst, allState, allSignal, allTransfer } from "./kit";
+import { defineSS, ns, sst, allState, allSignal, allTransfer } from "@grahlnn/fn/flow";
 
 const ss = defineSS(ns("x", sst(["focused", "blurred"])));
 export const state = allState(ss);

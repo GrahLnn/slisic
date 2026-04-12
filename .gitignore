@@ -21,3 +21,4 @@ src/cmd/commands.ts
 src-tauri/binaries/bun-runtime-*
 .tmp/bun-runtime/
 
+.gitnexus

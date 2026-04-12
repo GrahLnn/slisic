@@ -1,6 +1,6 @@
 import { useSelector } from "@xstate/react";
 import { createActor, createMachine, fromCallback } from "xstate";
-import { defineSS, ns, sst, allState, allSignal, allTransfer } from "./kit";
+import { defineSS, ns, sst, allState, allSignal, allTransfer } from "@grahlnn/fn/flow";
 import { Window } from "@tauri-apps/api/window";
 
 const ss = defineSS(ns("x", sst(["normal", "maximized"])));

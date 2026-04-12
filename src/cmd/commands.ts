@@ -46,8 +46,7 @@ export const commands = {
 	height: number | null,
 } | null) => __TAURI_INVOKE<void>("create_window", { name, options }),
 	runBunHelloSidecar: (input: string | null) => typedError<BunSidecarOutput, string>(__TAURI_INVOKE("run_bun_hello_sidecar", { input })),
-	greet: (name: string) => typedError<string, string>(__TAURI_INVOKE("greet", { name })),
-	clean: () => typedError<string, string>(__TAURI_INVOKE("clean")),
+	checkList: () => typedError<boolean, string>(__TAURI_INVOKE("check_list")),
 };
 
 /** Events */

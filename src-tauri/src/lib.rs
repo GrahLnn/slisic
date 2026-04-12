@@ -1,9 +1,7 @@
 mod domain;
 mod utils;
 
-use anyhow::Result;
 use appdb::prelude::{InitDbOptions, init_db_with_options};
-use domain::models::user::User;
 use tauri::Manager;
 use tauri::async_runtime::block_on;
 use tauri_specta::{Builder, collect_commands, collect_events};
@@ -11,62 +9,33 @@ use tokio::task::block_in_place;
 use utils::event;
 
 const DB_PATH: &str = "surreal.db";
+const COMMANDS_TYPESCRIPT_HEADER: &str = include_str!("commands.header.ts");
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let commands = collect_commands![
-        utils::file::exists,
-        utils::core::app_ready,
-        utils::window::get_mouse_and_window_position,
-        utils::window::get_window_kind,
-        utils::window::warm_window,
-        utils::window::cold_window,
-        utils::window::prewarm_window,
-        utils::window::discard_prewarm_window,
-        utils::window::record_renderer_bootstrap_ready,
-        utils::window::create_window,
-        utils::sidecar::run_bun_hello_sidecar,
-        greet,
-        clean,
-    ];
-    let events = collect_events![event::FullScreenEvent];
-
-    let builder: Builder = Builder::new().commands(commands).events(events);
+    let builder = Builder::new()
+        .commands(collect_commands![
+            utils::file::exists,
+            utils::core::app_ready,
+            utils::window::get_mouse_and_window_position,
+            utils::window::get_window_kind,
+            utils::window::warm_window,
+            utils::window::cold_window,
+            utils::window::prewarm_window,
+            utils::window::discard_prewarm_window,
+            utils::window::record_renderer_bootstrap_ready,
+            utils::window::create_window,
+            utils::sidecar::run_bun_hello_sidecar,
+            domain::playlists::check_list,
+        ])
+        .events(collect_events![event::FullScreenEvent]);
 
     #[cfg(debug_assertions)]
     builder
         .export(
             specta_typescript::Typescript::default()
                 .bigint(specta_typescript::BigIntExportBehavior::Number)
-                .header(
-                    r#"/* eslint-disable */
-
-type __WebviewWindow__ =
-  | import("@tauri-apps/api/webview").Webview
-  | import("@tauri-apps/api/window").Window;
-
-type __EventObj__<T> = {
-  listen: (cb: (event: { payload: T }) => void) => Promise<() => void>;
-  once: (cb: (event: { payload: T }) => void) => Promise<() => void>;
-  emit: T extends null ? () => Promise<void> : (payload: T) => Promise<void>;
-};
-
-export type EventsShape<T extends Record<string, any>> = {
-  [K in keyof T]: __EventObj__<T[K]> & {
-    (handle: __WebviewWindow__): __EventObj__<T[K]>;
-  };
-};
-
-export function makeLiveEvent<T extends Record<string, any>>(ev: EventsShape<T>) {
-  return function liveEvent<K extends keyof T>(key: K) {
-    return (handler: (payload: T[K]) => void) => {
-      const obj = ev[key] as __EventObj__<T[K]>;
-      return obj.listen((e) => handler(e.payload));
-    };
-  };
-}
-"#,
-                ),
+                .header(COMMANDS_TYPESCRIPT_HEADER),
             "../src/cmd/commands.ts",
         )
         .expect("Failed to export typescript bindings");
@@ -111,34 +80,11 @@ export function makeLiveEvent<T extends Record<string, any>>(ev: EventsShape<T>)
                     init_db_with_options(db_path, db_options).await?;
 
                     utils::window::configure_existing_primary_windows(&handle);
+                    utils::binaries::spawn_binary_maintenance(handle.clone());
                     Ok(())
                 })
             })
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn greet(name: &str) -> Result<String, String> {
-    let _ = User::save_many(vec![User::from_id(name)])
-        .await
-        .map_err(|e| e.to_string())?;
-    let users = User::list().await.map_err(|e| e.to_string())?;
-
-    let ids = users
-        .iter()
-        .map(|u| u.id.to_string())
-        .collect::<Vec<String>>()
-        .join(", ");
-
-    Ok(format!("Hello, {}! You've been greeted from Rust!", ids))
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn clean() -> Result<String, String> {
-    User::delete_all().await.map_err(|e| e.to_string())?;
-    Ok("message cleaned".to_string())
 }

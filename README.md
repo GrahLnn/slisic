@@ -1,6 +1,6 @@
-# Tauri + React Modern Template
+# ransic
 
-A feature-rich Tauri + React development template, integrated with the latest development tools and frameworks.
+A feature-rich Tauri + React starter based on `GrahLnn/tauri-react`, prepared for the `ransic` project.
 
 ## Features
 

@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "template",
+  "productName": "ransic",
   "version": "0.0.1",
-  "identifier": "template",
+  "identifier": "com.ransic.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:3000",

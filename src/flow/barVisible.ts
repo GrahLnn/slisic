@@ -1,6 +1,6 @@
 import { useSelector } from "@xstate/react";
 import { createActor, createMachine } from "xstate";
-import { defineSS, ns, sst, allState, allSignal, allTransfer } from "./kit";
+import { defineSS, ns, sst, allState, allSignal, allTransfer } from "@grahlnn/fn/flow";
 
 const ss = defineSS(ns("main", sst(["visible", "hidden"])));
 export const state = allState(ss);

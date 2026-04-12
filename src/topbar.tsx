@@ -56,9 +56,9 @@ const CtrlButton = memo(function CtrlButtonComp({
 
 export const LeftControls = memo(function LeftControlsComponent() {
   return (
-    <div className="flex items-center px-2 text-[var(--content)]">
+    <div className="flex items-center px-2 text-(--content)">
       {os.match({
-        macos: () => <div className="w-[84px]" />,
+        macos: () => <div className="w-21" />,
         _: () => null,
       })}
     </div>
@@ -68,13 +68,13 @@ export const LeftControls = memo(function LeftControlsComponent() {
 const RightControls = memo(function RightControlsComponent() {
   return (
     <div className={cn(["flex items-center"])}>
-      <CtrlButton label="Search" icon={<icons.magnifier3 size={14} />} />
+      {/*<CtrlButton label="Search" icon={<icons.magnifier3 size={14} />} />
       <CtrlButton label="Language" icon={<icons.globe3 size={14} />} />
-      <CtrlButton label="Update" icon={<icons.arrowDown size={14} />} />
+      <CtrlButton label="Update" icon={<icons.arrowDown size={14} />} />*/}
 
       {os.match({
-        windows: () => <div className="w-[138px]" />,
-        macos: () => <div className="w-[8px]" />,
+        windows: () => <div className="w-34.5" />,
+        macos: () => <div className="w-2" />,
         _: () => null,
       })}
     </div>
@@ -158,13 +158,13 @@ const TopBar = memo(function TopBarComponent() {
         <div
           className={cn([
             "flex flex-none relative",
-            "w-full h-8 z-[100] select-none",
+            "w-full h-8 z-100 select-none",
             "before:content-[''] before:absolute before:inset-0 before:-z-10",
-            "before:bg-gradient-to-b before:from-[var(--app-bg)] before:to-[var(--app-bg)]/60",
+            "before:bg-linear-to-b before:from-(--app-bg) before:to-(--app-bg)/60",
             "before:transition-colors before:duration-500 before:ease-in-out",
             "after:content-[''] after:absolute after:inset-0 after:-z-10",
-            "after:backdrop-blur-[16px] after:opacity-100 after:origin-top",
-            "after:bg-gradient-to-b after:from-transparent after:via-transparent after:to-white/0",
+            "after:backdrop-blur-lg after:opacity-100 after:origin-top",
+            "after:bg-linear-to-b after:from-transparent after:via-transparent after:to-white/0",
             "after:mask-image-[linear-gradient(to_bottom,rgba(0,0,0,1)_0%,rgba(0,0,0,0)_100%)]",
             "after:transition-colors after:duration-500 after:ease-in-out",
           ])}
@@ -179,13 +179,22 @@ const TopBar = memo(function TopBarComponent() {
           >
             {allowBarInteraction && (
               <>
-                <div data-tauri-drag-region className={cn(["flex justify-start pl-1"])}>
+                <div
+                  data-tauri-drag-region
+                  className={cn(["flex justify-start pl-1"])}
+                >
                   <LeftControls />
                 </div>
-                <div data-tauri-drag-region className={cn(["flex justify-center"])}>
+                <div
+                  data-tauri-drag-region
+                  className={cn(["flex justify-center"])}
+                >
                   <MiddleControls />
                 </div>
-                <div data-tauri-drag-region className={cn(["flex justify-end"])}>
+                <div
+                  data-tauri-drag-region
+                  className={cn(["flex justify-end"])}
+                >
                   <RightControls />
                 </div>
               </>

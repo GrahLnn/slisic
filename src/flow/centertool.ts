@@ -1,10 +1,10 @@
 import { createMachine, createActor } from "xstate";
-import { sst } from "./kit";
+import { sst } from "@grahlnn/fn/flow";
 import { ME, me } from "@grahlnn/fn";
 import { useSelector } from "@xstate/react";
 
-const { State, Signal, transfer } = sst(["view", "hide"]);
-type StateType = keyof typeof State;
+const { State } = sst(["view", "hide"]);
+type StateType = Extract<keyof typeof State, string>;
 
 export const machine = createMachine({
   id: "centertool",

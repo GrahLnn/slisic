@@ -13,5 +13,5 @@ export const ss = defineSS(ns("mainx", sst(["running"])));
 export const state = allState(ss);
 export const payloads = collect(...event<AppBootstrap>()("bootstrap.changed"));
 
-export type MainStateT = keyof typeof ss.mainx.State;
+export type MainStateT = Extract<keyof typeof ss.mainx.State, string>;
 export type Events = PayloadEvt<typeof payloads.infer>;

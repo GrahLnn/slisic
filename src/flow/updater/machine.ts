@@ -14,8 +14,8 @@ export const machine = src.createMachine({
     },
     [ss.mainx.State.check]: {
       invoke: {
-        id: invoker.checkUpdate.name,
-        src: invoker.checkUpdate.name,
+        id: invoker.checkUpdate.id,
+        src: invoker.checkUpdate.src,
         onDone: ss.resultx.State.ok,
         onError: ss.resultx.State.err,
       },

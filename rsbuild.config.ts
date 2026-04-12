@@ -8,6 +8,7 @@ const disableReactScan = process.env.PUBLIC_DISABLE_REACT_SCAN === "1";
 const reactProcessEnvNodeEnv = JSON.stringify(
   process.env.NODE_ENV ?? (isDev ? "development" : "production"),
 );
+
 export default defineConfig({
   source: {
     define: {
@@ -26,6 +27,14 @@ export default defineConfig({
   ],
   tools: {
     rspack: {
+      module: {
+        rules: [
+          {
+            test: /\.glsl$/,
+            type: "asset/source",
+          },
+        ],
+      },
       watchOptions: {
         ignored: ["**/src-tauri/**", "**/.bg-shell/**", "**/.tauri/**"],
       },

@@ -10,7 +10,7 @@ import {
   allSignal,
   allState,
   allTransfer,
-} from "../kit";
+} from "@grahlnn/fn/flow";
 import { resultx } from "../state";
 import { check } from "@tauri-apps/plugin-updater";
 import { sileo } from "sileo";
@@ -67,6 +67,6 @@ export const invoker = createActors({
 export const payloads = collect();
 export const machines = collect();
 
-export type MainStateT = keyof typeof ss.mainx.State;
-export type ResultStateT = keyof typeof resultx.State;
+export type MainStateT = Extract<keyof typeof ss.mainx.State, string>;
+export type ResultStateT = Extract<keyof typeof resultx.State, string>;
 export type Events = UniqueEvts<SignalEvt<typeof ss> | InvokeEvt<typeof invoker>>;

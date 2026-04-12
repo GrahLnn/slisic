@@ -1,19 +1,24 @@
 import { cn } from "@/lib/utils";
+import "./fonts.css";
+import "@fontsource-variable/noto-sans";
+import "@fontsource-variable/noto-serif";
 import "./App.css";
 import "sileo/styles.css";
-import "@fontsource/maple-mono";
-import type { PropsWithChildren } from "react";
+import { useState, type PropsWithChildren } from "react";
 import { useTheme } from "next-themes";
 import { Toaster } from "sileo";
+import { PlayListPage } from "./components/PlayListPage";
+import { ListConfig } from "./components/ListConfig";
+
 import { useAppBootstrap } from "./flow/bootstrap";
-import { crab } from "./cmd";
+import { useInteractionBootstrap } from "./flow/interaction";
 import TopBar from "./topbar";
 
 function WindowMainArea({ children }: PropsWithChildren) {
   return (
     <main
       className={cn(
-        "fixed top-0 left-0 h-screen w-full overflow-y-auto",
+        "fixed top-0 left-0 h-screen w-full overflow-y-auto overscroll-y-contain",
         "flex-1 flex flex-col hide-scrollbar",
       )}
     >
@@ -44,38 +49,16 @@ function Base({ children }: PropsWithChildren) {
   );
 }
 
-function MainWindowContent() {
-  return (
-    <div className="flex min-h-[calc(100vh-2rem)] items-center justify-center">
-      <button
-        className={cn(
-          "rounded-full border border-black/10 bg-black px-6 py-3 text-sm font-medium text-white",
-          "shadow-[0_14px_30px_rgba(15,23,42,0.16)] transition duration-200 ease-out",
-          "hover:-translate-y-0.5 hover:bg-black/92",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/20",
-          "dark:border-white/10 dark:bg-white dark:text-black dark:hover:bg-white/92 dark:focus-visible:ring-white/20",
-        )}
-        type="button"
-        onClick={() => {
-          void crab.createWindow("Main", null).catch((error) => {
-            console.error("Failed to create main window", error);
-          });
-        }}
-      >
-        Open Main Window
-      </button>
-    </div>
-  );
-}
-
 function SupportWindowContent() {
   return null;
 }
 
 function MainWindowApp() {
+  const [idx, setIdx] = useState(0);
   return (
     <Base>
-      <MainWindowContent />
+      <PlayListPage />
+      {/*<ListConfig />*/}
     </Base>
   );
 }
@@ -90,6 +73,7 @@ function SupportWindowApp() {
 
 function App() {
   const app = useAppBootstrap();
+  useInteractionBootstrap(app);
 
   return app.window.match({
     main: () => <MainWindowApp />,
