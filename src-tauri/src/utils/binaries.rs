@@ -113,6 +113,23 @@ pub fn spawn_binary_maintenance(app: AppHandle) {
     }
 }
 
+pub(crate) fn managed_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app_bin_dir(app)
+}
+
+pub(crate) fn ensure_managed_binary(app: &AppHandle, kind: ManagedBinary) -> Result<PathBuf, String> {
+    let plan = plan_for_current_platform(kind)?;
+    let install_path = installed_bin_path(app, &plan)?;
+    if install_path.exists() {
+        return Ok(install_path);
+    }
+
+    let state_path = install_state_path(app, kind)?;
+    let client = http_client()?;
+    install_binary(app, kind, &plan, &install_path, &state_path, &client)?;
+    Ok(install_path)
+}
+
 fn run_maintenance_cycle(app: &AppHandle) {
     for kind in ManagedBinary::all() {
         if let Err(error) = maintain_binary(app, kind) {

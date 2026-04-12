@@ -26,7 +26,16 @@ pub fn run() {
             utils::window::record_renderer_bootstrap_ready,
             utils::window::create_window,
             utils::sidecar::run_bun_hello_sidecar,
+            domain::meta::get_meta_info,
+            domain::meta::save_meta_info,
             domain::playlists::check_list,
+            domain::playlists::list_collections,
+            domain::playlists::get_collection,
+            domain::playlists::set_collection_updates,
+            domain::downloads::enqueue_collection_download,
+            domain::downloads::resume_download_task,
+            domain::downloads::get_download_task,
+            domain::downloads::list_download_tasks,
         ])
         .events(collect_events![event::FullScreenEvent]);
 
@@ -81,6 +90,7 @@ pub fn run() {
 
                     utils::window::configure_existing_primary_windows(&handle);
                     utils::binaries::spawn_binary_maintenance(handle.clone());
+                    domain::downloads::service::initialize_runtime(handle.clone());
                     Ok(())
                 })
             })

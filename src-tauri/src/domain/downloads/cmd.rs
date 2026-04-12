@@ -1,0 +1,33 @@
+use super::model::DownloadTask;
+
+#[tauri::command]
+#[specta::specta]
+pub async fn enqueue_collection_download(url: String) -> Result<DownloadTask, String> {
+    super::service::enqueue_collection_download(url)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn resume_download_task(task_id: String) -> Result<DownloadTask, String> {
+    super::service::resume_download_task(task_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_download_task(task_id: String) -> Result<DownloadTask, String> {
+    super::service::get_download_task(task_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn list_download_tasks() -> Result<Vec<DownloadTask>, String> {
+    super::service::list_download_tasks()
+        .await
+        .map_err(|error| error.to_string())
+}

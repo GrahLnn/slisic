@@ -1,4 +1,4 @@
-use appdb::{Id, Store};
+use appdb::Store;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use surrealdb_types::SurrealValue;
