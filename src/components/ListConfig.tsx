@@ -223,8 +223,12 @@ function FnButton({ text }: { text: string }) {
 }
 
 export function ListConfig() {
-  const { activeLayoutId, draft } = appLogicHook.useContext();
+  const { activeLayoutId, draft, titleToneHandoff } = appLogicHook.useContext();
   const [displayHash] = useState(() => createDisplayHash());
+  const handoffTone =
+    activeLayoutId && titleToneHandoff?.layoutId === activeLayoutId
+      ? titleToneHandoff.tone
+      : null;
 
   return (
     <div className={cn("relative flex flex-col w-160 mx-auto mt-24")}>
@@ -245,6 +249,7 @@ export function ListConfig() {
         <EditableTitle
           autoFocus={draft?.mode === "create"}
           className={cn("text-4xl font-bold", "w-fit")}
+          handoffTone={handoffTone}
           layoutId={activeLayoutId ?? undefined}
           placeholder={
             draft?.mode === "create" ? CREATE_COLLECTION_TITLE : undefined

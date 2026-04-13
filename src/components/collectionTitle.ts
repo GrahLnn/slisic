@@ -1,10 +1,8 @@
 import { cn } from "@/lib/utils";
-import type { Transition } from "motion/react";
 import { useSyncExternalStore } from "react";
+import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 
 export const CREATE_COLLECTION_TITLE = "Create a List";
-
-type CollectionTitleTone = "solid" | "muted";
 
 const collectionTitlePalette = {
   light: {
@@ -17,16 +15,15 @@ const collectionTitlePalette = {
   },
 } as const;
 
-export const collectionTitleTransition = {
-  layout: {
-    duration: 0.36,
-    ease: [0.22, 1, 0.36, 1],
-  },
-  color: {
-    duration: 0.28,
-    ease: "linear",
-  },
-} satisfies Transition;
+export const collectionTitleLayoutTransition = {
+  duration: 0.36,
+  ease: [0.22, 1, 0.36, 1],
+} as const;
+
+export const collectionTitleColorTransition = {
+  duration: 0.28,
+  ease: "linear",
+} as const;
 
 export const collectionTitleClassName = cn(
   "w-fit select-none",

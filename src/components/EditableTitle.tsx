@@ -1,6 +1,11 @@
 import { cn } from "@/lib/utils";
-import { useRef, type ComponentProps } from "react";
-import { motion } from "motion/react";
+import { useLayoutEffect, useRef, type ComponentProps } from "react";
+import { motion, useAnimate } from "motion/react";
+import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
+import {
+  collectionTitleColorTransition,
+  useCollectionTitleColor,
+} from "./collectionTitle";
 
 type EditableTitleProps = {
   value: string;
@@ -8,6 +13,7 @@ type EditableTitleProps = {
   placeholder?: string;
   autoFocus?: boolean;
   layoutId?: string;
+  handoffTone?: CollectionTitleTone | null;
 } & Omit<ComponentProps<"div">, "onChange">;
 
 /**
@@ -22,12 +28,49 @@ export function EditableTitle({
   placeholder = "Untitled List",
   autoFocus = false,
   layoutId,
+  handoffTone = null,
   className,
   style,
   ...props
 }: EditableTitleProps) {
   const displayValue = value.length > 0 ? value : placeholder;
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const targetTone: CollectionTitleTone =
+    value.length === 0 ? "muted" : "solid";
+  const targetColor = useCollectionTitleColor(targetTone);
+  const handoffColor = useCollectionTitleColor(handoffTone ?? targetTone);
+  const [scope, animate] = useAnimate<HTMLDivElement>();
+
+  useLayoutEffect(() => {
+    const node = scope.current;
+    if (!node) {
+      return;
+    }
+
+    if (!handoffTone || handoffColor === targetColor) {
+      node.style.color = targetColor;
+      return;
+    }
+
+    node.style.color = handoffColor;
+
+    let stopAnimation: (() => void) | undefined;
+    const frame = requestAnimationFrame(() => {
+      const controls = animate(
+        node,
+        { color: targetColor },
+        collectionTitleColorTransition,
+      );
+      stopAnimation = () => {
+        controls.stop();
+      };
+    });
+
+    return () => {
+      cancelAnimationFrame(frame);
+      stopAnimation?.();
+    };
+  }, [animate, handoffColor, handoffTone, scope, targetColor]);
 
   return (
     <div {...props}>
@@ -38,10 +81,8 @@ export function EditableTitle({
       >
         <div
           aria-hidden="true"
-          className={cn(
-            "pointer-events-none whitespace-pre-wrap break-words",
-            value.length === 0 && "opacity-40",
-          )}
+          ref={scope}
+          className="pointer-events-none whitespace-pre-wrap break-words"
         >
           {displayValue}
         </div>

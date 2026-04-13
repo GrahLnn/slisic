@@ -71,6 +71,7 @@ describe("appLogic machine", () => {
       hasPlayList: null,
       collections: [],
       activeLayoutId: null,
+      titleToneHandoff: null,
       draft: null,
       error: null,
     });
@@ -82,6 +83,7 @@ describe("appLogic machine", () => {
       hasPlayList: true,
       collections: [sampleCollection],
       activeLayoutId: null,
+      titleToneHandoff: null,
       draft: null,
       error: null,
     });
@@ -101,6 +103,7 @@ describe("appLogic machine", () => {
       hasPlayList: false,
       collections: [],
       activeLayoutId: null,
+      titleToneHandoff: null,
       draft: null,
       error: null,
     });
@@ -120,6 +123,7 @@ describe("appLogic machine", () => {
       hasPlayList: null,
       collections: [],
       activeLayoutId: null,
+      titleToneHandoff: null,
       draft: null,
       error: "db unavailable",
     });
@@ -138,6 +142,10 @@ describe("appLogic machine", () => {
 
     expect(actor.getSnapshot().value).toBe(ss.mainx.State.config);
     expect(actor.getSnapshot().context.activeLayoutId).toBe(CREATE_COLLECTION_LAYOUT_ID);
+    expect(actor.getSnapshot().context.titleToneHandoff).toEqual({
+      layoutId: CREATE_COLLECTION_LAYOUT_ID,
+      tone: "solid",
+    });
     expect(actor.getSnapshot().context.draft).toEqual({
       mode: "create",
       sourceUrl: null,
@@ -152,7 +160,30 @@ describe("appLogic machine", () => {
     actor.send(sig.mainx.back);
     expect(actor.getSnapshot().value).toBe(ss.mainx.State.ready);
     expect(actor.getSnapshot().context.activeLayoutId).toBeNull();
+    expect(actor.getSnapshot().context.titleToneHandoff).toEqual({
+      layoutId: CREATE_COLLECTION_LAYOUT_ID,
+      tone: "solid",
+    });
     expect(actor.getSnapshot().context.draft).toBeNull();
+  });
+
+  test("returns placeholder handoff tone when backing out of an empty create draft", async () => {
+    setCheckListMock(async () => Ok(true));
+    setListCollectionsMock(async () => Ok([sampleCollection]));
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(sig.mainx.run);
+
+    await waitForState(actor, ss.mainx.State.ready);
+    actor.send(sig.mainx.opencreate);
+    actor.send(sig.mainx.back);
+
+    expect(actor.getSnapshot().value).toBe(ss.mainx.State.ready);
+    expect(actor.getSnapshot().context.titleToneHandoff).toEqual({
+      layoutId: CREATE_COLLECTION_LAYOUT_ID,
+      tone: "muted",
+    });
   });
 
   test("opens an existing collection in config draft state", async () => {
@@ -170,6 +201,10 @@ describe("appLogic machine", () => {
     expect(actor.getSnapshot().context.activeLayoutId).toBe(
       collectionTitleLayoutId(sampleCollection.url),
     );
+    expect(actor.getSnapshot().context.titleToneHandoff).toEqual({
+      layoutId: collectionTitleLayoutId(sampleCollection.url),
+      tone: "solid",
+    });
     expect(actor.getSnapshot().context.draft).toEqual({
       mode: "edit",
       sourceUrl: sampleCollection.url,
@@ -207,6 +242,7 @@ describe("ensureAppLogicStarted", () => {
         hasPlayList: true,
         collections: [sampleCollection],
         activeLayoutId: null,
+        titleToneHandoff: null,
         draft: null,
         error: null,
       });

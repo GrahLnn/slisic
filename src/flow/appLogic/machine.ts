@@ -2,6 +2,8 @@ import { assign } from "xstate";
 import {
   CREATE_COLLECTION_LAYOUT_ID,
   collectionTitleLayoutId,
+  collectionTitleToneFromDraft,
+  createCollectionTitleHandoff,
   createDraft,
   createDraftFromCollection,
   initialContext,
@@ -35,6 +37,7 @@ export const machine = src.createMachine({
             hasPlayList: ({ event }) => event.output.hasPlayList,
             collections: ({ event }) => event.output.collections,
             activeLayoutId: () => null,
+            titleToneHandoff: () => null,
             draft: () => null,
             error: () => null,
           }),
@@ -45,6 +48,7 @@ export const machine = src.createMachine({
             hasPlayList: () => null,
             collections: () => [],
             activeLayoutId: () => null,
+            titleToneHandoff: () => null,
             draft: () => null,
             error: ({ event }) => toErrorMessage(event.error),
           }),
@@ -58,13 +62,21 @@ export const machine = src.createMachine({
           target: ss.mainx.State.config,
           actions: assign({
             activeLayoutId: () => CREATE_COLLECTION_LAYOUT_ID,
+            titleToneHandoff: () =>
+              createCollectionTitleHandoff(CREATE_COLLECTION_LAYOUT_ID, "solid"),
             draft: () => createDraft(),
           }),
         },
         [openCollection.evt]: {
           target: ss.mainx.State.config,
           actions: assign({
-            activeLayoutId: ({ event }) => collectionTitleLayoutId(event.output.url),
+            activeLayoutId: ({ event }) =>
+              collectionTitleLayoutId(event.output.url),
+            titleToneHandoff: ({ event }) =>
+              createCollectionTitleHandoff(
+                collectionTitleLayoutId(event.output.url),
+                "solid",
+              ),
             draft: ({ event }) => createDraftFromCollection(event.output),
           }),
         },
@@ -77,18 +89,36 @@ export const machine = src.createMachine({
           target: ss.mainx.State.ready,
           actions: assign({
             activeLayoutId: () => null,
+            titleToneHandoff: ({ context }) =>
+              context.activeLayoutId
+                ? createCollectionTitleHandoff(
+                    context.activeLayoutId,
+                    collectionTitleToneFromDraft(context.draft),
+                  )
+                : null,
             draft: () => null,
           }),
         },
         opencreate: {
           actions: assign({
             activeLayoutId: () => CREATE_COLLECTION_LAYOUT_ID,
+            titleToneHandoff: ({ context }) =>
+              createCollectionTitleHandoff(
+                CREATE_COLLECTION_LAYOUT_ID,
+                collectionTitleToneFromDraft(context.draft),
+              ),
             draft: () => createDraft(),
           }),
         },
         [openCollection.evt]: {
           actions: assign({
-            activeLayoutId: ({ event }) => collectionTitleLayoutId(event.output.url),
+            activeLayoutId: ({ event }) =>
+              collectionTitleLayoutId(event.output.url),
+            titleToneHandoff: ({ context, event }) =>
+              createCollectionTitleHandoff(
+                collectionTitleLayoutId(event.output.url),
+                collectionTitleToneFromDraft(context.draft),
+              ),
             draft: ({ event }) => createDraftFromCollection(event.output),
           }),
         },

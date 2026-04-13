@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import {
   CREATE_COLLECTION_LAYOUT_ID,
   collectionTitleLayoutId,
@@ -14,12 +15,17 @@ import {
 } from "./collectionTitle";
 import { PlayItem } from "./playItem";
 
-function CreateNewItem() {
+function CreateNewItem({
+  handoffTone,
+}: {
+  handoffTone?: CollectionTitleTone | null;
+}) {
   const [isCommitted, setIsCommitted] = useState(false);
 
   return (
     <PlayItem
       className={collectionTitleClassName}
+      handoffTone={handoffTone}
       layoutId={CREATE_COLLECTION_LAYOUT_ID}
       text={CREATE_COLLECTION_TITLE}
       textClassName={isCommitted ? collectionTitleTextHoverClassName : undefined}
@@ -36,7 +42,7 @@ function CreateNewItem() {
 
 export function PlayListPage() {
   const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
-  const { collections } = appLogicHook.useContext();
+  const { collections, titleToneHandoff } = appLogicHook.useContext();
   const [texts, setTexts] = useState<string[]>([]);
 
   useEffect(() => {
@@ -69,6 +75,9 @@ export function PlayListPage() {
 
   const itemComponents = collections.map((collection, index) => {
     const text = texts[index] ?? collection.name;
+    const layoutId = collectionTitleLayoutId(collection.url);
+    const handoffTone =
+      titleToneHandoff?.layoutId === layoutId ? titleToneHandoff.tone : null;
 
     return (
       <div
@@ -79,7 +88,8 @@ export function PlayListPage() {
       >
         <PlayItem
           className={collectionTitleClassName}
-          layoutId={collectionTitleLayoutId(collection.url)}
+          handoffTone={handoffTone}
+          layoutId={layoutId}
           text={text}
           onClick={() => {
             setTexts((current) => {
@@ -106,7 +116,17 @@ export function PlayListPage() {
       className="flex min-h-[calc(100vh-2rem)] flex-col items-center gap-8 px-6 pt-[40vh]"
       style={{ fontFamily: "var(--font-noto-sans)" }}
     >
-      {[...itemComponents, <CreateNewItem key="create" />]}
+      {[
+        ...itemComponents,
+        <CreateNewItem
+          key="create"
+          handoffTone={
+            titleToneHandoff?.layoutId === CREATE_COLLECTION_LAYOUT_ID
+              ? titleToneHandoff.tone
+              : null
+          }
+        />,
+      ]}
       <div aria-hidden className="mt-[50vh] h-px w-full shrink-0" />
     </div>
   );
