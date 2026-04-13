@@ -1,10 +1,11 @@
-use super::model::{Collection, PlayList};
-use appdb::Crud;
+use super::model::{Collection, Exclude, Music};
 
 #[tauri::command]
 #[specta::specta]
 pub async fn check_list() -> Result<bool, String> {
-    PlayList::exists().await.map_err(|err| err.to_string())
+    super::repo::has_collections()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -30,6 +31,22 @@ pub async fn set_collection_updates(
     enabled: bool,
 ) -> Result<Option<Collection>, String> {
     super::repo::set_collection_updates(&url, enabled)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn add_exclude(music: Music) -> Result<Exclude, String> {
+    super::repo::add_exclude(music)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn remove_exclude(music: Music) -> Result<bool, String> {
+    super::repo::remove_exclude(&music)
         .await
         .map_err(|error| error.to_string())
 }

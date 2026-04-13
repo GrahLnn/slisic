@@ -1,23 +1,36 @@
 import type { ComponentProps } from "react";
 import { cn } from "@/lib/utils";
-import { Torph } from "@grahlnn/comps";
+import { motion } from "motion/react";
+import { collectionTitleTextClassName } from "./collectionTitle";
 
 export function PlayItem({
   className,
   onClick,
   onContextMenu,
+  onPointerDown,
+  layoutId,
   text,
-}: ComponentProps<"div"> & { text: string }) {
+  textClassName,
+}: ComponentProps<"div"> & {
+  text: string;
+  layoutId?: string;
+  textClassName?: string;
+}) {
   return (
-    <div
+    <motion.div
       className={cn(className)}
+      layoutId={layoutId}
       onClick={onClick}
       onContextMenu={(e) => {
         e.preventDefault();
         onContextMenu?.(e);
       }}
+      onPointerDown={onPointerDown}
     >
-      <Torph text={text} />
-    </div>
+      <div className={cn(collectionTitleTextClassName, textClassName)}>
+        {/*<Torph text={text} />*/}
+        {text}
+      </div>
+    </motion.div>
   );
 }

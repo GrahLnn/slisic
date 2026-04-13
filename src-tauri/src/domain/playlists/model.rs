@@ -13,11 +13,9 @@ pub struct PlayList {
 
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, Store, Type)]
 pub struct Collection {
-    #[unique]
     pub name: String,
     #[unique]
     pub url: String,
-    #[unique]
     pub folder: String,
     #[relate("includes")]
     pub musics: Vec<Music>,
@@ -26,8 +24,18 @@ pub struct Collection {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, Store, Type)]
+pub struct Group {
+    pub name: String,
+    #[unique]
+    pub url: String,
+    pub folder: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, Store, Type)]
 pub struct Music {
     pub name: String,
+    #[foreign]
+    pub group: Option<Group>,
     pub url: String,
     pub path: Option<String>,
     pub start: u32,

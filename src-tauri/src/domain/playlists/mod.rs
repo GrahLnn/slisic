@@ -14,3 +14,7 @@ mod cmd_test;
 #[cfg(test)]
 #[path = "model.test.rs"]
 mod model_test;
+
+#[cfg(test)]
+#[path = "repo.test.rs"]
+mod repo_test;

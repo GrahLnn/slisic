@@ -51,10 +51,12 @@ fn saves_and_loads_singleton_meta_info() {
     run_async(async {
         ensure_db().await;
 
-        assert!(get_meta_info()
-            .await
-            .expect("meta info lookup should succeed")
-            .is_none());
+        assert!(
+            get_meta_info()
+                .await
+                .expect("meta info lookup should succeed")
+                .is_none()
+        );
 
         save_meta_info(MetaInfo {
             save_path: Some("D:\\MediaLibrary".to_string()),

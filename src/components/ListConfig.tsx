@@ -1,13 +1,25 @@
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
+import {
+  action as appLogicAction,
+  hook as appLogicHook,
+} from "@/src/flow/appLogic";
 import { ArcTrackList } from "./ArcTrackList";
 import { HoloButton } from "./HoloButton";
 import { ToolLabel, MaskL, MaskMiddle, MaskR } from "./toollabel";
 import { AnimatePresence, motion } from "motion/react";
 import { Torph } from "@grahlnn/comps";
 import { CoverTool } from "./coverTool";
+import {
+  collectionTitleClassName,
+  CREATE_COLLECTION_TITLE,
+} from "./collectionTitle";
 import { EditableTitle } from "./EditableTitle";
+import {
+  CREATE_COLLECTION_LAYOUT_ID,
+  collectionTitleLayoutId,
+} from "@/src/flow/appLogic/core";
 
 const HASH_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const HASH_FONT_FAMILIES = [
@@ -211,20 +223,38 @@ function FnButton({ text }: { text: string }) {
 }
 
 export function ListConfig() {
+  const { activeLayoutId, draft } = appLogicHook.useContext();
   const [displayHash] = useState(() => createDisplayHash());
-  const [title, setTitle] = useState("LIST NAME");
 
   return (
     <div className={cn("relative flex flex-col w-160 mx-auto mt-24")}>
-      <div className={cn("relative z-10 flex flex-col")}>
+      <div className={cn("relative z-20 flex flex-col")}>
+        <button
+          type="button"
+          onClick={appLogicAction.back}
+          className={cn(
+            "group relative isolate inline-flex w-fit cursor-pointer select-none py-2 pr-2",
+            "before:absolute before:inset-y-0 before:-left-2 before:right-0 before:-z-10",
+            "before:rounded-[25px] before:bg-transparent before:transition before:duration-300",
+            "before:[corner-shape:squircle_squircle_squircle_squircle]",
+            "hover:before:bg-[#e5e5e5] dark:hover:before:bg-[#262626]",
+          )}
+        >
+          <icons.arrowDown className="rotate-90 text-[#737373] dark:text-[#8a8a8a] group-hover:text-[#262626] dark:group-hover:text-[#d4d4d4] transition duration-300" />
+        </button>
         <EditableTitle
-          className={cn("text-4xl font-bold", "trim-cap")}
+          autoFocus={draft?.mode === "create"}
+          className={cn("text-4xl font-bold", "w-fit")}
+          layoutId={activeLayoutId ?? undefined}
+          placeholder={
+            draft?.mode === "create" ? CREATE_COLLECTION_TITLE : undefined
+          }
           style={{ fontFamily: "var(--font-noto-sans)" }}
-          value={title}
-          onChange={setTitle}
+          value={draft?.name ?? ""}
+          onChange={appLogicAction.changeDraftName}
         />
         <ToolLabel
-          className="mt-4"
+          className="mt-2"
           textClassName="text-sm trim-cap text-[#404040] dark:text-[#a3a3a3]"
           text="C:\\download"
           tool={
@@ -241,16 +271,14 @@ export function ListConfig() {
             <FnButton text="Imoprt" />
           </div>
 
-          <div>
-            <FnButton text="Save" />
-          </div>
+          <div>{/*<FnButton text="Save" />*/}</div>
         </div>
         <div className="h-2" />
       </div>
 
       <div className="relative z-10 flex flex-col">
         {TOOL_LABEL_ITEMS.map((item) => (
-          <div className="py-2 z-50 group">
+          <div className="py-2 group">
             <div
               className={cn(
                 "flex items-center backdrop-blur-md w-fit gap-2 pr-1",
@@ -282,6 +310,7 @@ export function ListConfig() {
           </div>
         ))}
       </div>
+
       <ArcTrackList items={ARC_LIST_ITEMS} />
     </div>
   );

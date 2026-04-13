@@ -1,43 +1,75 @@
 import { createSender } from "@grahlnn/fn/flow";
+import { useSelector } from "@xstate/react";
+import { me } from "@grahlnn/fn";
+import type { Collection } from "@/src/cmd";
 import { createActor } from "xstate";
-import { app } from "../bootstrap";
-import { payloads } from "./events";
+import { MainStateT, payloads, sig } from "./events";
 import { machine } from "./machine";
 
-const actor = createActor(machine);
+export const actor = createActor(machine);
 const send = createSender(actor);
-const bootstrapChanged = payloads["bootstrap.changed"];
+const openCollection = payloads["collection.open"];
+const draftNameChanged = payloads["draft.name.changed"];
+type ActorSnapshot = ReturnType<(typeof actor)["getSnapshot"]>;
+const selectMainState = me.select(
+  (shot: { value: unknown }) => shot.value as MainStateT,
+  me.eq.strict<MainStateT>(),
+);
+const selectContext = me.select((shot: { context: ActorSnapshot["context"] }) => shot.context);
 
 let started = false;
-let unsubscribeBootstrap: (() => void) | null = null;
-
-function syncBootstrapSnapshot() {
-  send(bootstrapChanged.load(app.getSnapshot()));
-}
 
 export const action = {
-  ensureStarted() {
-    if (started) {
-      return;
-    }
-
-    started = true;
-    actor.start();
-    unsubscribeBootstrap = app.subscribe(syncBootstrapSnapshot);
-    syncBootstrapSnapshot();
+  run: () => {
+    ensureStarted();
+    actor.send(sig.mainx.run);
   },
-  stop() {
-    if (!started) {
-      return;
-    }
-
-    started = false;
-    unsubscribeBootstrap?.();
-    unsubscribeBootstrap = null;
-    actor.stop();
+  openCreate: () => {
+    ensureStarted();
+    actor.send(sig.mainx.opencreate);
+  },
+  openCollection: (collection: Collection) => {
+    ensureStarted();
+    send(openCollection.load(collection));
+  },
+  back: () => {
+    ensureStarted();
+    actor.send(sig.mainx.back);
+  },
+  changeDraftName: (name: string) => {
+    ensureStarted();
+    send(draftNameChanged.load(name));
   },
 };
 
+export const hook = {
+  useState: () => me(useSelector(actor, selectMainState.project, selectMainState.compare)),
+  useContext: () => useSelector(actor, selectContext.project, selectContext.compare),
+};
+
+export function ensureStarted() {
+  if (started) {
+    return;
+  }
+
+  actor.start();
+  started = true;
+}
+
+export function stop() {
+  if (!started) {
+    return;
+  }
+
+  actor.stop();
+  started = false;
+}
+
 export function ensureAppLogicStarted() {
-  action.ensureStarted();
+  if (started) {
+    return;
+  }
+
+  ensureStarted();
+  actor.send(sig.mainx.run);
 }

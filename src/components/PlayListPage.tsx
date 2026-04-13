@@ -1,42 +1,47 @@
-import { useRef, useState } from "react";
-import { cn } from "@/lib/utils";
+import { useEffect, useRef, useState } from "react";
+import {
+  CREATE_COLLECTION_LAYOUT_ID,
+  collectionTitleLayoutId,
+} from "@/src/flow/appLogic/core";
+import {
+  action as appLogicAction,
+  hook as appLogicHook,
+} from "@/src/flow/appLogic";
+import {
+  collectionTitleClassName,
+  CREATE_COLLECTION_TITLE,
+  collectionTitleTextHoverClassName,
+} from "./collectionTitle";
 import { PlayItem } from "./playItem";
 
-const PLAY_ITEM_TEXTS = [
-  "Quiet Morning",
-  "Open Window",
-  "Small Talk",
-  "Golden Hour",
-  "Field Notes",
-  "Slow Bloom",
-  "Night Drive",
-  "Silver Thread",
-  "Clear Signal",
-  "Afterglow",
-  "Soft Echo",
-  "Second Nature",
-  "Paper Lantern",
-  "Blue Horizon",
-  "Hidden Path",
-  "Daily Motion",
-  "Northern Light",
-  "Open Secret",
-] as const;
+function CreateNewItem() {
+  const [isCommitted, setIsCommitted] = useState(false);
+
+  return (
+    <PlayItem
+      className={collectionTitleClassName}
+      layoutId={CREATE_COLLECTION_LAYOUT_ID}
+      text={CREATE_COLLECTION_TITLE}
+      textClassName={isCommitted ? collectionTitleTextHoverClassName : undefined}
+      onPointerDown={() => {
+        setIsCommitted(true);
+      }}
+      onClick={() => {
+        setIsCommitted(true);
+        appLogicAction.openCreate();
+      }}
+    />
+  );
+}
 
 export function PlayListPage() {
   const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
-  const [texts, setTexts] = useState<Array<(typeof PLAY_ITEM_TEXTS)[number]>>([
-    ...PLAY_ITEM_TEXTS,
-  ]);
+  const { collections } = appLogicHook.useContext();
+  const [texts, setTexts] = useState<string[]>([]);
 
-  function nextText(
-    current: (typeof PLAY_ITEM_TEXTS)[number],
-  ): (typeof PLAY_ITEM_TEXTS)[number] {
-    const nextIndex =
-      (PLAY_ITEM_TEXTS.indexOf(current) + 1) % PLAY_ITEM_TEXTS.length;
-
-    return PLAY_ITEM_TEXTS[nextIndex];
-  }
+  useEffect(() => {
+    setTexts(collections.map((collection) => collection.name));
+  }, [collections]);
 
   function scrollItemToCenter(index: number) {
     const item = itemRefs.current[index];
@@ -62,40 +67,46 @@ export function PlayListPage() {
     });
   }
 
+  const itemComponents = collections.map((collection, index) => {
+    const text = texts[index] ?? collection.name;
+
+    return (
+      <div
+        key={collection.url}
+        ref={(node) => {
+          itemRefs.current[index] = node;
+        }}
+      >
+        <PlayItem
+          className={collectionTitleClassName}
+          layoutId={collectionTitleLayoutId(collection.url)}
+          text={text}
+          onClick={() => {
+            setTexts((current) => {
+              if (current.length <= 1) {
+                return current;
+              }
+
+              const nextIndex = (index + 1) % current.length;
+              const nextText = current[nextIndex];
+              return current.map((itemText, itemIndex) =>
+                itemIndex === index ? nextText : itemText,
+              );
+            });
+
+            scrollItemToCenter(index);
+          }}
+        />
+      </div>
+    );
+  });
+
   return (
     <div
       className="flex min-h-[calc(100vh-2rem)] flex-col items-center gap-8 px-6 pt-[40vh]"
       style={{ fontFamily: "var(--font-noto-sans)" }}
     >
-      {texts.map((text, index) => (
-        <div
-          key={index}
-          ref={(node) => {
-            itemRefs.current[index] = node;
-          }}
-        >
-          <PlayItem
-            className={cn(
-              "text-4xl select-none",
-              "font-[520] [font-synthesis-weight:none]",
-              "[font-variation-settings:'wght'_520] tracking-[-0.02em]",
-              "transition-[font-variation-settings,font-weight,letter-spacing,transform,opacity] duration-300 ease-in-out",
-              "will-change-[font-variation-settings]",
-              "hover:font-[680] hover:[font-variation-settings:'wght'_680] hover:tracking-[-0.03em]",
-            )}
-            text={text}
-            onClick={() => {
-              setTexts((current) =>
-                current.map((itemText, itemIndex) =>
-                  itemIndex === index ? nextText(itemText) : itemText,
-                ),
-              );
-
-              scrollItemToCenter(index);
-            }}
-          />
-        </div>
-      ))}
+      {[...itemComponents, <CreateNewItem key="create" />]}
       <div aria-hidden className="mt-[50vh] h-px w-full shrink-0" />
     </div>
   );

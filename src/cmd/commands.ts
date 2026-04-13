@@ -46,7 +46,34 @@ export const commands = {
 	height: number | null,
 } | null) => __TAURI_INVOKE<void>("create_window", { name, options }),
 	runBunHelloSidecar: (input: string | null) => typedError<BunSidecarOutput, string>(__TAURI_INVOKE("run_bun_hello_sidecar", { input })),
+	getMetaInfo: () => typedError<{
+	save_path: string | null,
+} | null, string>(__TAURI_INVOKE("get_meta_info")),
+	saveMetaInfo: (meta: MetaInfo) => typedError<MetaInfo, string>(__TAURI_INVOKE("save_meta_info", { meta })),
 	checkList: () => typedError<boolean, string>(__TAURI_INVOKE("check_list")),
+	listCollections: () => typedError<Collection[], string>(__TAURI_INVOKE("list_collections")),
+	getCollection: (url: string) => typedError<{
+	name: string,
+	url: string,
+	folder: string,
+	musics: Music[],
+	last_updated: string,
+	enable_updates: boolean | null,
+} | null, string>(__TAURI_INVOKE("get_collection", { url })),
+	setCollectionUpdates: (url: string, enabled: boolean) => typedError<{
+	name: string,
+	url: string,
+	folder: string,
+	musics: Music[],
+	last_updated: string,
+	enable_updates: boolean | null,
+} | null, string>(__TAURI_INVOKE("set_collection_updates", { url, enabled })),
+	addExclude: (music: Music) => typedError<Exclude, string>(__TAURI_INVOKE("add_exclude", { music })),
+	removeExclude: (music: Music) => typedError<boolean, string>(__TAURI_INVOKE("remove_exclude", { music })),
+	enqueueCollectionDownload: (url: string) => typedError<DownloadTask, string>(__TAURI_INVOKE("enqueue_collection_download", { url })),
+	resumeDownloadTask: (taskId: string) => typedError<DownloadTask, string>(__TAURI_INVOKE("resume_download_task", { taskId })),
+	getDownloadTask: (taskId: string) => typedError<DownloadTask, string>(__TAURI_INVOKE("get_download_task", { taskId })),
+	listDownloadTasks: () => typedError<DownloadTask[], string>(__TAURI_INVOKE("list_download_tasks")),
 };
 
 /** Events */
@@ -62,13 +89,88 @@ export const events = {
 	stderr: string,
 };
 
+export type Collection = {
+	name: string,
+	url: string,
+	folder: string,
+	musics: Music[],
+	last_updated: string,
+	enable_updates: boolean | null,
+};
+
+export type CollectionSourceKind = "single" | "list";
+
 export type CreateWindowOptions = {
 	width: number | null,
 	height: number | null,
 };
 
+export type DownloadLeaf = {
+	id: Id,
+	url: string,
+	title: string | null,
+	file_name: string | null,
+	relative_path: string | null,
+	duration_seconds: number | null,
+	chapter_count: number | null,
+	downloaded_bytes: number | null,
+	total_bytes: number | null,
+	speed_bytes_per_second: number | null,
+	eta_seconds: number | null,
+	status: DownloadLeafStatus,
+	last_error: string | null,
+	sequence: number,
+	created_at: string,
+	updated_at: string,
+};
+
+export type DownloadLeafStatus = "queued" | "probing" | "downloading" | "persisting" | "completed" | "failed" | "cancelled" | "interrupted";
+
+export type DownloadTask = {
+	id: Id,
+	url: string,
+	collection_url: string | null,
+	collection_name: string | null,
+	collection_folder: string | null,
+	source_kind: CollectionSourceKind | null,
+	trigger: DownloadTrigger,
+	status: DownloadTaskStatus,
+	leafs: DownloadLeaf[],
+	total_leaves: number,
+	completed_leaves: number,
+	failed_leaves: number,
+	last_error: string | null,
+	created_at: string,
+	updated_at: string,
+};
+
+export type DownloadTaskStatus = "queued" | "resolving" | "downloading" | "persisting" | "completed" | "completed_with_errors" | "failed" | "cancelled" | "interrupted";
+
+export type DownloadTrigger = "manual" | "auto_update";
+
+export type Exclude = {
+	music: Music,
+};
+
 export type FullScreenEvent = {
 	is_fullscreen: boolean,
+};
+
+export type Group = {
+	name: string,
+	url: string,
+	folder: string,
+};
+
+// Application-facing id type that accepts either string or integer ids.
+export type Id = 
+// String record key.
+{ String: string } | 
+// Integer record key.
+{ Number: number };
+
+export type MetaInfo = {
+	save_path: string | null,
 };
 
 export type MouseWindowInfo = {
@@ -81,6 +183,15 @@ export type MouseWindowInfo = {
 	rel_x: number,
 	rel_y: number,
 	pixel_ratio: number,
+};
+
+export type Music = {
+	name: string,
+	group: Group | null,
+	url: string,
+	path: string | null,
+	start: number,
+	end: number,
 };
 
 export type WindowKindInfo = {

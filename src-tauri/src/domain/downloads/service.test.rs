@@ -1,5 +1,27 @@
-use super::service::{materialize_music_entries, provider_segment, sanitize_path_component};
-use super::yt_dlp::{LeafChapter, LeafProbe};
+use super::model::CollectionSourceKind;
+use super::repo::{list_tasks, save_task};
+use super::service::{
+    derive_youtube_channel_url_from_uploads_playlist, existing_leaf_urls,
+    expand_root_entries_to_planned_leafs, extract_olak_playlist_ids, materialize_music_entries,
+    prepare_task_enqueue, provider_segment, resume_download_task, sanitize_path_component,
+    should_reprobe_single_leaf, try_claim_enqueue_url,
+};
+use super::yt_dlp::{
+    DownloadProgress, DownloadedLeaf, LeafChapter, LeafProbe, LeafReference, PlaylistRoot,
+    RootProbe, YtDlpClient,
+};
+use crate::domain::downloads::model::{DownloadTask, DownloadTaskStatus, DownloadTrigger};
+use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
+use crate::domain::playlists::model::{Collection, Group, Music};
+use anyhow::{Result, anyhow};
+use appdb::Id;
+use appdb::connection::{InitDbOptions, reinit_db_with_options, reset_db};
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier, LazyLock};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::runtime::Runtime;
 
 #[test]
 fn sanitize_path_component_replaces_windows_invalid_characters() {
@@ -18,11 +40,18 @@ fn provider_segment_normalizes_youtube_hosts() {
 }
 
 #[test]
+fn only_direct_leaf_roots_can_reuse_initial_leaf_probe() {
+    assert!(!should_reprobe_single_leaf(CollectionSourceKind::Single));
+    assert!(should_reprobe_single_leaf(CollectionSourceKind::List));
+}
+
+#[test]
 fn materialize_music_entries_expands_chapters_without_splitting_files() {
     let probe = LeafProbe {
         title: "Album".to_string(),
         webpage_url: "https://example.com/video".to_string(),
         extractor_key: Some("Youtube".to_string()),
+        album: None,
         duration_seconds: Some(180),
         chapters: vec![
             LeafChapter {
@@ -38,11 +67,13 @@ fn materialize_music_entries_expands_chapters_without_splitting_files() {
         ],
     };
 
-    let musics = materialize_music_entries(&probe, "album.m4a");
+    let musics = materialize_music_entries(&probe, "album.m4a", None);
 
     assert_eq!(musics.len(), 2);
     assert_eq!(musics[0].name, "Intro");
     assert_eq!(musics[1].name, "Main");
+    assert!(musics[0].group.is_none());
+    assert!(musics[1].group.is_none());
     assert_eq!(musics[0].path.as_deref(), Some("album.m4a"));
     assert_eq!(musics[1].path.as_deref(), Some("album.m4a"));
     assert_eq!(musics[0].start, 0);
@@ -55,16 +86,405 @@ fn materialize_music_entries_falls_back_to_single_full_track_when_no_chapters_ex
         title: "Single Track".to_string(),
         webpage_url: "https://example.com/video".to_string(),
         extractor_key: Some("Youtube".to_string()),
+        album: None,
         duration_seconds: Some(245),
         chapters: vec![],
     };
 
-    let musics = materialize_music_entries(&probe, "single-track.m4a");
+    let musics = materialize_music_entries(&probe, "single-track.m4a", None);
 
     assert_eq!(musics.len(), 1);
     assert_eq!(musics[0].name, "Single Track");
+    assert!(musics[0].group.is_none());
     assert_eq!(musics[0].url, "https://example.com/video");
     assert_eq!(musics[0].path.as_deref(), Some("single-track.m4a"));
     assert_eq!(musics[0].start, 0);
     assert_eq!(musics[0].end, 245);
+}
+
+fn temp_test_dir() -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock before epoch")
+        .as_nanos();
+
+    std::env::temp_dir().join(format!(
+        "ransic_service_test_{}_{}",
+        std::process::id(),
+        nanos
+    ))
+}
+
+static SERVICE_TEST_RT: LazyLock<Runtime> =
+    LazyLock::new(|| Runtime::new().expect("download service test runtime should be created"));
+
+#[derive(Debug, Default)]
+struct FakeYtDlpClient {
+    roots: HashMap<String, RootProbe>,
+}
+
+impl YtDlpClient for FakeYtDlpClient {
+    fn probe_root(&self, url: &str) -> Result<RootProbe> {
+        self.roots
+            .get(url)
+            .cloned()
+            .ok_or_else(|| anyhow!("missing fake root probe for {url}"))
+    }
+
+    fn probe_leaf(&self, url: &str) -> Result<LeafProbe> {
+        Err(anyhow!("unexpected fake probe_leaf call for {url}"))
+    }
+
+    fn download_leaf_audio(
+        &self,
+        url: &str,
+        _target_dir: &Path,
+        _file_stem: &str,
+        _on_progress: &mut dyn FnMut(DownloadProgress),
+    ) -> Result<DownloadedLeaf> {
+        Err(anyhow!("unexpected fake download call for {url}"))
+    }
+}
+
+fn run_async<T>(fut: impl std::future::Future<Output = T>) -> T {
+    SERVICE_TEST_RT.block_on(fut)
+}
+
+fn acquire_db_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    PLAYLIST_DB_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+async fn ensure_db() {
+    reinit_db_with_options(
+        temp_test_dir(),
+        InitDbOptions::default()
+            .versioned(false)
+            .changefeed_gc_interval(None),
+    )
+    .await
+    .expect("download service database should initialize");
+}
+
+#[test]
+fn existing_leaf_urls_only_counts_entries_with_present_files() {
+    let root = temp_test_dir();
+    let folder = "youtube/demo";
+    let collection_dir = root.join(folder);
+    std::fs::create_dir_all(&collection_dir).expect("test collection dir should be created");
+    std::fs::write(collection_dir.join("present.m4a"), b"ok")
+        .expect("present audio file should be created");
+
+    let collection = Collection {
+        name: "Demo".to_string(),
+        url: "https://example.com/playlist".to_string(),
+        folder: folder.to_string(),
+        musics: vec![
+            Music {
+                name: "Present".to_string(),
+                group: None,
+                url: "https://example.com/watch?v=present".to_string(),
+                path: Some("present.m4a".to_string()),
+                start: 0,
+                end: 60,
+            },
+            Music {
+                name: "Missing".to_string(),
+                group: None,
+                url: "https://example.com/watch?v=missing".to_string(),
+                path: Some("missing.m4a".to_string()),
+                start: 0,
+                end: 60,
+            },
+        ],
+        last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    let urls = existing_leaf_urls(Some(&collection), &root);
+
+    assert!(urls.contains("https://example.com/watch?v=present"));
+    assert!(!urls.contains("https://example.com/watch?v=missing"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+#[test]
+fn materialize_music_entries_preserves_group_and_nested_relative_path() {
+    let probe = LeafProbe {
+        title: "Album".to_string(),
+        webpage_url: "https://example.com/video".to_string(),
+        extractor_key: Some("Youtube".to_string()),
+        album: None,
+        duration_seconds: Some(180),
+        chapters: vec![LeafChapter {
+            title: "Intro".to_string(),
+            start_seconds: 0,
+            end_seconds: 180,
+        }],
+    };
+    let group = Group {
+        name: "Compilation".to_string(),
+        url: "https://example.com/group".to_string(),
+        folder: "Compilation".to_string(),
+    };
+    let relative_path = Path::new(&group.folder)
+        .join("album.m4a")
+        .to_string_lossy()
+        .to_string();
+
+    let musics = materialize_music_entries(&probe, &relative_path, Some(group.clone()));
+
+    assert_eq!(musics.len(), 1);
+    let music_group = musics[0].group.as_ref().expect("group should be preserved");
+    assert_eq!(music_group.name, group.name);
+    assert_eq!(music_group.url, group.url);
+    assert_eq!(music_group.folder, group.folder);
+    assert_eq!(musics[0].path.as_deref(), Some(relative_path.as_str()));
+}
+
+#[test]
+fn derives_channel_url_from_uploads_playlist_id() {
+    let derived = derive_youtube_channel_url_from_uploads_playlist(
+        "https://www.youtube.com/playlist?list=UUyp_JApwUNqb9v595vPRvhg",
+    );
+
+    assert_eq!(
+        derived.as_deref(),
+        Some("https://www.youtube.com/channel/UCyp_JApwUNqb9v595vPRvhg")
+    );
+}
+
+#[test]
+fn extracts_unique_olak_playlist_ids_from_html() {
+    let html = r#"
+        <script>
+            var a = "OLAK5uy_testAlpha-123";
+            var b = "OLAK5uy_testBeta_456";
+            var c = "OLAK5uy_testAlpha-123";
+        </script>
+    "#;
+
+    let ids = extract_olak_playlist_ids(html);
+
+    assert_eq!(
+        ids,
+        BTreeSet::from([
+            "OLAK5uy_testAlpha-123".to_string(),
+            "OLAK5uy_testBeta_456".to_string(),
+        ])
+    );
+}
+
+#[test]
+fn try_claim_enqueue_url_allows_only_one_parallel_claim_for_same_url() {
+    let barrier = Arc::new(Barrier::new(8));
+    let winners = Arc::new(AtomicUsize::new(0));
+
+    let handles = (0..8)
+        .map(|_| {
+            let barrier = Arc::clone(&barrier);
+            let winners = Arc::clone(&winners);
+            std::thread::spawn(move || {
+                barrier.wait();
+                let claim = try_claim_enqueue_url("https://example.com/list")
+                    .expect("enqueue url claim should not poison");
+                if claim.is_some() {
+                    winners.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for handle in handles {
+        handle.join().expect("parallel claim thread should finish");
+    }
+
+    assert_eq!(winners.load(Ordering::SeqCst), 1);
+    assert!(
+        try_claim_enqueue_url("https://example.com/list")
+            .expect("claim should succeed after previous guard dropped")
+            .is_some()
+    );
+}
+
+#[test]
+fn prepare_task_enqueue_deduplicates_same_url_under_concurrency() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let handles = (0..12)
+            .map(|_| {
+                tokio::spawn(prepare_task_enqueue(
+                    "https://example.com/list".to_string(),
+                    DownloadTrigger::Manual,
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        let mut ids = BTreeSet::new();
+        for handle in handles {
+            let task = handle
+                .await
+                .expect("task join should succeed")
+                .expect("enqueue should succeed");
+            ids.insert(task.id.to_string());
+        }
+
+        let tasks = list_tasks().await.expect("task listing should succeed");
+        assert_eq!(ids.len(), 1);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].url, "https://example.com/list");
+
+        reset_db();
+    });
+}
+
+#[test]
+fn prepare_task_enqueue_deduplicates_equivalent_single_video_aliases() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let alias = "https://www.youtube.com/watch?v=ZE5zXLOyEOQ&list=RDMMIHIRrASFLcg&index=3";
+        let canonical = "https://www.youtube.com/watch?v=ZE5zXLOyEOQ";
+
+        let first = prepare_task_enqueue(alias.to_string(), DownloadTrigger::Manual)
+            .await
+            .expect("aliased single video enqueue should succeed");
+        let second = prepare_task_enqueue(canonical.to_string(), DownloadTrigger::Manual)
+            .await
+            .expect("canonical single video enqueue should succeed");
+        let tasks = list_tasks().await.expect("task listing should succeed");
+
+        assert_eq!(
+            first.id, second.id,
+            "equivalent single-video urls should resolve to one active task"
+        );
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].url, canonical);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn prepare_task_enqueue_accepts_many_distinct_urls_concurrently() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let urls = (0..24)
+            .map(|index| format!("https://example.com/list/{index}"))
+            .collect::<Vec<_>>();
+        let handles = urls
+            .iter()
+            .cloned()
+            .map(|url| tokio::spawn(prepare_task_enqueue(url, DownloadTrigger::Manual)))
+            .collect::<Vec<_>>();
+
+        let mut ids = BTreeSet::new();
+        for handle in handles {
+            let task = handle
+                .await
+                .expect("task join should succeed")
+                .expect("enqueue should succeed");
+            ids.insert(task.id.to_string());
+        }
+
+        let tasks = list_tasks().await.expect("task listing should succeed");
+        assert_eq!(ids.len(), urls.len());
+        assert_eq!(tasks.len(), urls.len());
+
+        reset_db();
+    });
+}
+
+#[test]
+fn resume_download_task_rejects_completed_tasks() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let mut task = DownloadTask::new(
+            "completed-task".to_string(),
+            "https://example.com/video".to_string(),
+            DownloadTrigger::Manual,
+        );
+        task.status = DownloadTaskStatus::Completed;
+        save_task(task).await.expect("completed task should save");
+
+        let error = resume_download_task("completed-task".to_string())
+            .await
+            .expect_err("completed tasks should not resume");
+
+        assert!(
+            error
+                .to_string()
+                .contains("completed download tasks cannot be resumed")
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_flattens_nested_playlists_into_grouped_leaves() {
+    run_async(async {
+        let nested_url = "https://www.youtube.com/playlist?list=PLnested";
+        let client = Arc::new(FakeYtDlpClient {
+            roots: HashMap::from([(
+                nested_url.to_string(),
+                RootProbe::List(PlaylistRoot {
+                    title: "Album One".to_string(),
+                    webpage_url: nested_url.to_string(),
+                    extractor_key: Some("YoutubeTab".to_string()),
+                    entries: vec![
+                        LeafReference {
+                            url: "https://www.youtube.com/watch?v=track1".to_string(),
+                            title: Some("Track 1".to_string()),
+                            sequence: 0,
+                        },
+                        LeafReference {
+                            url: "https://www.youtube.com/watch?v=track2".to_string(),
+                            title: Some("Track 2".to_string()),
+                            sequence: 1,
+                        },
+                    ],
+                }),
+            )]),
+        });
+
+        let leaves = expand_root_entries_to_planned_leafs(
+            &Id::from("task-expand"),
+            client,
+            vec![LeafReference {
+                url: nested_url.to_string(),
+                title: Some("Album One".to_string()),
+                sequence: 0,
+            }],
+            None,
+        )
+        .await
+        .expect("nested playlist should expand into leaf downloads");
+
+        assert_eq!(leaves.len(), 2);
+        assert_eq!(leaves[0].url, "https://www.youtube.com/watch?v=track1");
+        assert_eq!(leaves[1].url, "https://www.youtube.com/watch?v=track2");
+        assert_eq!(leaves[0].sequence, 0);
+        assert_eq!(leaves[1].sequence, 1);
+        let group = leaves[0]
+            .group_hint
+            .as_ref()
+            .expect("nested playlist leaves should inherit group hint");
+        assert_eq!(group.name, "Album One");
+        assert_eq!(group.url, nested_url);
+        assert_eq!(group.folder, "Album One");
+    });
 }

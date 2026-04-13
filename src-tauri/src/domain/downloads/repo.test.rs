@@ -1,4 +1,6 @@
-use super::repo::{find_latest_active_task_for_url, get_task, list_tasks, mark_interrupted_tasks, save_task};
+use super::repo::{
+    find_latest_active_task_for_url, get_task, list_tasks, mark_interrupted_tasks, save_task,
+};
 use crate::domain::downloads::model::{
     DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
 };
@@ -87,6 +89,23 @@ fn save_and_load_task_round_trips_relation_backed_leafs() {
 }
 
 #[test]
+fn list_tasks_treats_missing_table_as_empty() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let tasks = list_tasks()
+            .await
+            .expect("missing download task table should behave as empty");
+
+        assert!(tasks.is_empty());
+
+        reset_db();
+    });
+}
+
+#[test]
 fn find_latest_active_task_for_url_ignores_terminal_tasks() {
     let _guard = acquire_db_test_lock();
 
@@ -115,6 +134,23 @@ fn find_latest_active_task_for_url_ignores_terminal_tasks() {
             .expect("active task should be found");
 
         assert_eq!(found.id, active.id);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn mark_interrupted_tasks_is_noop_when_task_table_is_missing() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let updated = mark_interrupted_tasks()
+            .await
+            .expect("missing download task table should behave as no interrupted tasks");
+
+        assert!(updated.is_empty());
 
         reset_db();
     });
@@ -150,8 +186,16 @@ fn mark_interrupted_tasks_moves_active_rows_into_interrupted_state() {
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].status, DownloadTaskStatus::Interrupted);
         assert_eq!(tasks.len(), 2);
-        assert!(tasks.iter().any(|task| task.id.to_string() == "task-interrupt"));
-        assert!(tasks.iter().any(|task| task.id.to_string() == "task-complete"));
+        assert!(
+            tasks
+                .iter()
+                .any(|task| task.id.to_string() == "task-interrupt")
+        );
+        assert!(
+            tasks
+                .iter()
+                .any(|task| task.id.to_string() == "task-complete")
+        );
 
         reset_db();
     });

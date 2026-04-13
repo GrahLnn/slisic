@@ -33,6 +33,7 @@ pub struct LeafProbe {
     pub title: String,
     pub webpage_url: String,
     pub extractor_key: Option<String>,
+    pub album: Option<String>,
     pub duration_seconds: Option<u32>,
     pub chapters: Vec<LeafChapter>,
 }
@@ -91,11 +92,10 @@ impl CliYtDlpClient {
     }
 
     fn run_json_command(&self, args: &[String]) -> Result<Value> {
-        let output = self
-            .base_command()
-            .args(args)
-            .output()
-            .with_context(|| format!("failed to run yt-dlp at {}", self.ytdlp_path.display()))?;
+        let output =
+            self.base_command().args(args).output().with_context(|| {
+                format!("failed to run yt-dlp at {}", self.ytdlp_path.display())
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -256,12 +256,18 @@ pub fn looks_like_direct_leaf_url(url: &str) -> bool {
 
     if host.ends_with("youtube.com") {
         let query = parsed.query_pairs().collect::<Vec<_>>();
-        let has_video = query.iter().any(|(key, value)| key == "v" && !value.is_empty());
+        let has_video = query
+            .iter()
+            .any(|(key, value)| key == "v" && !value.is_empty());
         let playlist_id = query
             .iter()
             .find(|(key, value)| key == "list" && !value.is_empty())
             .map(|(_, value)| value.to_string());
-        if has_video && playlist_id.as_deref().is_some_and(is_youtube_mix_playlist_id) {
+        if has_video
+            && playlist_id
+                .as_deref()
+                .is_some_and(is_youtube_mix_playlist_id)
+        {
             return true;
         }
 
@@ -282,15 +288,20 @@ pub fn parse_root_probe(value: Value, input_url: &str) -> Result<RootProbe> {
         .get("_type")
         .and_then(Value::as_str)
         .map(|kind| matches!(kind, "playlist" | "multi_video"))
-        .unwrap_or_else(|| value.get("entries").map(|entries| entries.is_array()).unwrap_or(false));
+        .unwrap_or_else(|| {
+            value
+                .get("entries")
+                .map(|entries| entries.is_array())
+                .unwrap_or(false)
+        });
 
     if !is_playlist {
         return Ok(RootProbe::Single(parse_leaf_probe(value)?));
     }
 
     let title = read_required_string(&value, "title")?;
-    let webpage_url = read_optional_string(&value, "webpage_url")
-        .unwrap_or_else(|| input_url.to_string());
+    let webpage_url =
+        read_optional_string(&value, "webpage_url").unwrap_or_else(|| input_url.to_string());
     let extractor_key = read_optional_string(&value, "extractor_key");
     let entries = value
         .get("entries")
@@ -308,11 +319,8 @@ pub fn parse_root_probe(value: Value, input_url: &str) -> Result<RootProbe> {
             .get("_type")
             .and_then(Value::as_str)
             .unwrap_or("video");
-        if matches!(entry_type, "playlist" | "multi_video") {
-            bail!("nested playlists are not supported yet");
-        }
 
-        let Some(url) = resolve_leaf_reference_url(&entry, input_url) else {
+        let Some(url) = resolve_leaf_reference_url(&entry, input_url, entry_type) else {
             continue;
         };
         let title = read_optional_string(&entry, "title");
@@ -337,6 +345,7 @@ pub fn parse_leaf_probe(value: Value) -> Result<LeafProbe> {
         .or_else(|| read_optional_string(&value, "original_url"))
         .context("yt-dlp metadata is missing webpage_url")?;
     let extractor_key = read_optional_string(&value, "extractor_key");
+    let album = read_optional_string(&value, "album");
     let duration_seconds = value
         .get("duration")
         .and_then(parse_number_like)
@@ -351,11 +360,13 @@ pub fn parse_leaf_probe(value: Value) -> Result<LeafProbe> {
                 .collect::<Vec<LeafChapter>>()
         })
         .unwrap_or_default();
+    let chapters = normalize_chapters(&title, duration_seconds, chapters);
 
     Ok(LeafProbe {
         title,
         webpage_url,
         extractor_key,
+        album,
         duration_seconds,
         chapters,
     })
@@ -381,6 +392,9 @@ fn parse_chapter(value: &Value) -> Option<LeafChapter> {
     let title = read_optional_string(value, "title")?;
     let start_seconds = value.get("start_time").and_then(parse_number_like)?.floor() as u32;
     let end_seconds = value.get("end_time").and_then(parse_number_like)?.ceil() as u32;
+    if end_seconds <= start_seconds {
+        return None;
+    }
 
     Some(LeafChapter {
         title,
@@ -389,7 +403,34 @@ fn parse_chapter(value: &Value) -> Option<LeafChapter> {
     })
 }
 
-fn resolve_leaf_reference_url(entry: &Value, input_url: &str) -> Option<String> {
+fn normalize_chapters(
+    video_title: &str,
+    duration_seconds: Option<u32>,
+    mut chapters: Vec<LeafChapter>,
+) -> Vec<LeafChapter> {
+    if chapters.len() != 1 {
+        return chapters;
+    }
+
+    let chapter = chapters.pop().expect("single chapter should exist");
+    let covers_full_duration = duration_seconds.is_some_and(|duration| {
+        chapter.start_seconds == 0 && chapter.end_seconds >= duration.saturating_sub(1)
+    });
+    let repeats_video_title = chapter
+        .title
+        .trim()
+        .eq_ignore_ascii_case(video_title.trim());
+
+    if covers_full_duration
+        || duration_seconds.is_none() && repeats_video_title && chapter.start_seconds == 0
+    {
+        return vec![];
+    }
+
+    vec![chapter]
+}
+
+fn resolve_leaf_reference_url(entry: &Value, input_url: &str, entry_type: &str) -> Option<String> {
     if let Some(url) = read_optional_string(entry, "webpage_url") {
         return Some(url);
     }
@@ -401,6 +442,10 @@ fn resolve_leaf_reference_url(entry: &Value, input_url: &str) -> Option<String> 
     let raw_url = read_optional_string(entry, "url")?;
     if raw_url.starts_with("http://") || raw_url.starts_with("https://") {
         return Some(raw_url);
+    }
+
+    if matches!(entry_type, "playlist" | "multi_video") && looks_like_youtube_root(input_url) {
+        return Some(format!("https://www.youtube.com/playlist?list={raw_url}"));
     }
 
     if looks_like_youtube_root(input_url) {
@@ -427,7 +472,10 @@ fn read_required_string(value: &Value, key: &str) -> Result<String> {
 }
 
 fn read_optional_string(value: &Value, key: &str) -> Option<String> {
-    value.get(key).and_then(Value::as_str).map(ToOwned::to_owned)
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
 }
 
 fn parse_number_like(value: &Value) -> Option<f64> {
@@ -444,7 +492,10 @@ fn parse_optional_u64(value: &str) -> Option<u64> {
         return None;
     }
 
-    trimmed.parse::<f64>().ok().map(|value| value.round() as u64)
+    trimmed
+        .parse::<f64>()
+        .ok()
+        .map(|value| value.round() as u64)
 }
 
 fn parse_optional_string(value: &str) -> Option<String> {

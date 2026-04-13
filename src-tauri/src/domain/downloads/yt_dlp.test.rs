@@ -22,6 +22,14 @@ fn classifies_explicit_youtube_playlist_watch_url_as_list() {
 }
 
 #[test]
+fn classifies_plain_youtube_watch_url_as_single() {
+    let url = "https://www.youtube.com/watch?v=ZE5zXLOyEOQ";
+
+    assert!(looks_like_direct_leaf_url(url));
+    assert_eq!(classify_root_preference(url), CollectionSourceKind::Single);
+}
+
+#[test]
 fn parses_playlist_root_and_expands_youtube_video_ids_into_watch_urls() {
     let value = json!({
         "_type": "playlist",
@@ -62,11 +70,42 @@ fn parses_playlist_root_and_expands_youtube_video_ids_into_watch_urls() {
 }
 
 #[test]
+fn parses_nested_playlist_entries_as_playlist_urls_instead_of_failing() {
+    let value = json!({
+        "_type": "playlist",
+        "title": "Channel Releases",
+        "webpage_url": "https://www.youtube.com/channel/UCdemo",
+        "entries": [
+            {
+                "_type": "playlist",
+                "url": "OLAK5uy_nested_demo",
+                "title": "Album One"
+            }
+        ]
+    });
+
+    let parsed = parse_root_probe(value, "https://www.youtube.com/channel/UCdemo")
+        .expect("nested playlist entries should stay parseable");
+
+    let RootProbe::List(playlist) = parsed else {
+        panic!("expected playlist root probe");
+    };
+
+    assert_eq!(playlist.entries.len(), 1);
+    assert_eq!(
+        playlist.entries[0].url,
+        "https://www.youtube.com/playlist?list=OLAK5uy_nested_demo"
+    );
+    assert_eq!(playlist.entries[0].title.as_deref(), Some("Album One"));
+}
+
+#[test]
 fn parses_leaf_probe_with_chapters() {
     let value = json!({
         "title": "Leaf Title",
         "webpage_url": "https://www.youtube.com/watch?v=leaf1",
         "extractor_key": "Youtube",
+        "album": "Album Title",
         "duration": 301.2,
         "chapters": [
             {
@@ -85,10 +124,36 @@ fn parses_leaf_probe_with_chapters() {
     let parsed = parse_leaf_probe(value).expect("leaf probe should parse");
 
     assert_eq!(parsed.title, "Leaf Title");
+    assert_eq!(parsed.album.as_deref(), Some("Album Title"));
     assert_eq!(parsed.duration_seconds, Some(302));
     assert_eq!(parsed.chapters.len(), 2);
     assert_eq!(parsed.chapters[0].title, "Intro");
     assert_eq!(parsed.chapters[0].end_seconds, 13);
+}
+
+#[test]
+fn collapses_single_full_duration_chapter_into_plain_leaf() {
+    let value = json!({
+        "title": "Leaf Title",
+        "webpage_url": "https://www.youtube.com/watch?v=leaf1",
+        "extractor_key": "Youtube",
+        "duration": 245.0,
+        "chapters": [
+            {
+                "title": "Leaf Title",
+                "start_time": 0.0,
+                "end_time": 245.0
+            }
+        ]
+    });
+
+    let parsed = parse_leaf_probe(value).expect("leaf probe should parse");
+
+    assert_eq!(parsed.duration_seconds, Some(245));
+    assert!(
+        parsed.chapters.is_empty(),
+        "single full-span pseudo chapter should collapse into plain leaf metadata"
+    );
 }
 
 #[test]

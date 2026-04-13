@@ -4,12 +4,14 @@ import "@fontsource-variable/noto-sans";
 import "@fontsource-variable/noto-serif";
 import "./App.css";
 import "sileo/styles.css";
-import { useState, type PropsWithChildren } from "react";
+import { type PropsWithChildren } from "react";
+import { AnimatePresence, LayoutGroup } from "motion/react";
 import { useTheme } from "next-themes";
 import { Toaster } from "sileo";
 import { PlayListPage } from "./components/PlayListPage";
 import { ListConfig } from "./components/ListConfig";
 
+import { hook as appLogicHook } from "./flow/appLogic";
 import { useAppBootstrap } from "./flow/bootstrap";
 import { useInteractionBootstrap } from "./flow/interaction";
 import TopBar from "./topbar";
@@ -54,11 +56,17 @@ function SupportWindowContent() {
 }
 
 function MainWindowApp() {
-  const [idx, setIdx] = useState(0);
+  const appLogicState = appLogicHook.useState();
+
   return (
     <Base>
-      <PlayListPage />
-      {/*<ListConfig />*/}
+      {appLogicState.match({
+        config: () => <ListConfig key="config" />,
+        idle: () => <PlayListPage key="list" />,
+        loading: () => <PlayListPage key="list" />,
+        ready: () => <PlayListPage key="list" />,
+        error: () => <PlayListPage key="list" />,
+      })}
     </Base>
   );
 }

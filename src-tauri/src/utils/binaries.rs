@@ -9,6 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{LazyLock, Mutex};
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
@@ -19,6 +20,8 @@ const BIN_DIR_NAME: &str = "bin";
 const GITHUB_RELAY_BASE: &str = "https://xget.r2g2.org/gh";
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60 * 5);
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+static BINARY_OPERATION_LOCKS: LazyLock<[Mutex<()>; 2]> =
+    LazyLock::new(|| [Mutex::new(()), Mutex::new(())]);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManagedBinary {
@@ -117,17 +120,22 @@ pub(crate) fn managed_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app_bin_dir(app)
 }
 
-pub(crate) fn ensure_managed_binary(app: &AppHandle, kind: ManagedBinary) -> Result<PathBuf, String> {
-    let plan = plan_for_current_platform(kind)?;
-    let install_path = installed_bin_path(app, &plan)?;
-    if install_path.exists() {
-        return Ok(install_path);
-    }
+pub(crate) fn ensure_managed_binary(
+    app: &AppHandle,
+    kind: ManagedBinary,
+) -> Result<PathBuf, String> {
+    with_binary_kind_lock(kind, || {
+        let plan = plan_for_current_platform(kind)?;
+        let install_path = installed_bin_path(app, &plan)?;
+        if install_path.exists() {
+            return Ok(install_path);
+        }
 
-    let state_path = install_state_path(app, kind)?;
-    let client = http_client()?;
-    install_binary(app, kind, &plan, &install_path, &state_path, &client)?;
-    Ok(install_path)
+        let state_path = install_state_path(app, kind)?;
+        let client = http_client()?;
+        install_binary(app, kind, &plan, &install_path, &state_path, &client)?;
+        Ok(install_path)
+    })
 }
 
 fn run_maintenance_cycle(app: &AppHandle) {
@@ -143,43 +151,64 @@ fn run_maintenance_cycle(app: &AppHandle) {
 }
 
 fn maintain_binary(app: &AppHandle, kind: ManagedBinary) -> Result<(), String> {
-    let plan = plan_for_current_platform(kind)?;
-    let install_path = installed_bin_path(app, &plan)?;
-    let state_path = install_state_path(app, kind)?;
-    let client = http_client()?;
+    with_binary_kind_lock(kind, || {
+        let plan = plan_for_current_platform(kind)?;
+        let install_path = installed_bin_path(app, &plan)?;
+        let state_path = install_state_path(app, kind)?;
+        let client = http_client()?;
 
-    if !install_path.exists() {
-        println!(
-            "[binary-maintenance] {} missing, downloading latest managed copy",
-            kind.key()
-        );
-        install_binary(app, kind, &plan, &install_path, &state_path, &client)?;
-        return Ok(());
-    }
-
-    let remote = match head_remote_identity(&client, &plan.download_url) {
-        Ok(remote) => remote,
-        Err(error) => {
-            eprintln!(
-                "[binary-maintenance] failed to inspect remote {} asset {}: {}",
-                kind.key(),
-                plan.download_url,
-                error
+        if !install_path.exists() {
+            println!(
+                "[binary-maintenance] {} missing, downloading latest managed copy",
+                kind.key()
             );
+            install_binary(app, kind, &plan, &install_path, &state_path, &client)?;
             return Ok(());
         }
-    };
 
-    let state = read_install_state(&state_path);
-    if !needs_install_or_update(true, state.as_ref(), &remote) {
-        return Ok(());
+        let remote = match head_remote_identity(&client, &plan.download_url) {
+            Ok(remote) => remote,
+            Err(error) => {
+                eprintln!(
+                    "[binary-maintenance] failed to inspect remote {} asset {}: {}",
+                    kind.key(),
+                    plan.download_url,
+                    error
+                );
+                return Ok(());
+            }
+        };
+
+        let state = read_install_state(&state_path);
+        if !needs_install_or_update(true, state.as_ref(), &remote) {
+            return Ok(());
+        }
+
+        println!(
+            "[binary-maintenance] {} remote asset changed, updating managed copy",
+            kind.key()
+        );
+        install_binary(app, kind, &plan, &install_path, &state_path, &client)
+    })
+}
+
+pub(crate) fn with_binary_kind_lock<T>(
+    kind: ManagedBinary,
+    work: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    // Startup maintenance and on-demand ensure run on different call paths; the
+    // lock must therefore be per binary kind, not one coarse global mutex.
+    let _guard = binary_operation_lock(kind)
+        .lock()
+        .map_err(|_| format!("{} operation lock is poisoned", kind.key()))?;
+    work()
+}
+
+fn binary_operation_lock(kind: ManagedBinary) -> &'static Mutex<()> {
+    match kind {
+        ManagedBinary::Ffmpeg => &BINARY_OPERATION_LOCKS[0],
+        ManagedBinary::YtDlp => &BINARY_OPERATION_LOCKS[1],
     }
-
-    println!(
-        "[binary-maintenance] {} remote asset changed, updating managed copy",
-        kind.key()
-    );
-    install_binary(app, kind, &plan, &install_path, &state_path, &client)
 }
 
 /// Persist the last remote identity so periodic update checks can stay on the

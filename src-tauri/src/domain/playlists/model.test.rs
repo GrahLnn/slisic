@@ -123,9 +123,7 @@ async fn insert_collection_row(id: &str, collection: &Collection) -> RecordId {
         .check()
         .expect("collection insert response should succeed");
 
-    let record: Option<RecordId> = result
-        .take(0)
-        .expect("collection insert id should decode");
+    let record: Option<RecordId> = result.take(0).expect("collection insert id should decode");
     record.expect("collection insert should return one record id")
 }
 
@@ -238,6 +236,7 @@ fn sample_collection(
         musics: vec![
             Music {
                 name: format!("{name} intro"),
+                group: None,
                 url: format!("{url}#intro"),
                 path: Some(format!("{name}.m4a")),
                 start: 0,
@@ -245,6 +244,7 @@ fn sample_collection(
             },
             Music {
                 name: format!("{name} outro"),
+                group: None,
                 url: format!("{url}#outro"),
                 path: Some(format!("{name}.m4a")),
                 start: 42,
@@ -278,6 +278,15 @@ fn sample_playlist() -> PlayList {
 
 fn assert_music_eq(actual: &Music, expected: &Music) {
     assert_eq!(actual.name, expected.name);
+    match (&actual.group, &expected.group) {
+        (Some(actual_group), Some(expected_group)) => {
+            assert_eq!(actual_group.name, expected_group.name);
+            assert_eq!(actual_group.url, expected_group.url);
+            assert_eq!(actual_group.folder, expected_group.folder);
+        }
+        (None, None) => {}
+        _ => panic!("music group presence should match"),
+    }
     assert_eq!(actual.url, expected.url);
     assert_eq!(actual.path, expected.path);
     assert_eq!(actual.start, expected.start);
@@ -316,8 +325,14 @@ fn serializes_playlist_with_nested_collections_and_musics() {
 
     assert_eq!(value["name"], "favorites");
     assert_eq!(value["collections"][0]["folder"], "youtube/playlist-alpha");
-    assert_eq!(value["collections"][0]["musics"][0]["name"], "playlist-alpha intro");
-    assert_eq!(value["collections"][1]["enable_updates"], serde_json::Value::Null);
+    assert_eq!(
+        value["collections"][0]["musics"][0]["name"],
+        "playlist-alpha intro"
+    );
+    assert_eq!(
+        value["collections"][1]["enable_updates"],
+        serde_json::Value::Null
+    );
 }
 
 #[test]
@@ -381,7 +396,10 @@ fn clone_keeps_nested_collection_data_independent() {
 
     assert_eq!(playlist.name, "favorites");
     assert_eq!(playlist.collections[0].name, "playlist-alpha");
-    assert_eq!(playlist.collections[0].musics[0].name, "playlist-alpha intro");
+    assert_eq!(
+        playlist.collections[0].musics[0].name,
+        "playlist-alpha intro"
+    );
 
     assert_eq!(cloned.name, "favorites-copy");
     assert_eq!(cloned.collections[0].name, "playlist-alpha-copy");
@@ -483,14 +501,19 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
             assert_eq!(stored_collection.name, expected_collection.name);
             assert_eq!(stored_collection.url, expected_collection.url);
             assert_eq!(stored_collection.folder, expected_collection.folder);
-            assert_eq!(stored_collection.last_updated, expected_collection.last_updated);
+            assert_eq!(
+                stored_collection.last_updated,
+                expected_collection.last_updated
+            );
             assert_eq!(
                 stored_collection.enable_updates,
                 expected_collection.enable_updates
             );
             assert_eq!(collection_edges.len(), expected_collection.musics.len());
 
-            for (edge, expected_music) in collection_edges.iter().zip(expected_collection.musics.iter())
+            for (edge, expected_music) in collection_edges
+                .iter()
+                .zip(expected_collection.musics.iter())
             {
                 let stored_music = load_music_record(&edge.out).await;
                 assert_music_eq(&stored_music, expected_music);

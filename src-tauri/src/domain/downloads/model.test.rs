@@ -4,7 +4,11 @@ use super::model::{
 
 #[test]
 fn refresh_counts_tracks_leaf_progress() {
-    let mut task = DownloadTask::new("task-1", "https://example.com/list", DownloadTrigger::Manual);
+    let mut task = DownloadTask::new(
+        "task-1",
+        "https://example.com/list",
+        DownloadTrigger::Manual,
+    );
     let mut first = DownloadLeaf::new("leaf-1", "https://example.com/a", 0);
     let mut second = DownloadLeaf::new("leaf-2", "https://example.com/b", 1);
 
@@ -21,7 +25,11 @@ fn refresh_counts_tracks_leaf_progress() {
 
 #[test]
 fn mark_interrupted_only_changes_active_states() {
-    let mut task = DownloadTask::new("task-2", "https://example.com/list", DownloadTrigger::Manual);
+    let mut task = DownloadTask::new(
+        "task-2",
+        "https://example.com/list",
+        DownloadTrigger::Manual,
+    );
     let mut queued = DownloadLeaf::new("leaf-queued", "https://example.com/a", 0);
     let mut completed = DownloadLeaf::new("leaf-completed", "https://example.com/b", 1);
 
