@@ -1,17 +1,23 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
 import {
   action as appLogicAction,
   hook as appLogicHook,
 } from "@/src/flow/appLogic";
+import type {
+  CollectionTitleHandoff,
+  CollectionTitleTone,
+  ConfigDraft,
+} from "@/src/flow/appLogic/core";
 import { ArcTrackList } from "./ArcTrackList";
 import { HoloButton } from "./HoloButton";
 import { ToolLabel, MaskL, MaskMiddle, MaskR } from "./toollabel";
-import { AnimatePresence, motion } from "motion/react";
+import { motion } from "motion/react";
 import { Torph } from "@grahlnn/comps";
 import { CoverTool } from "./coverTool";
 import {
+  collectionTitleLayoutTransition,
   collectionTitleClassName,
   CREATE_COLLECTION_TITLE,
 } from "./collectionTitle";
@@ -183,6 +189,58 @@ const ARC_LIST_ITEMS = [
   "キラキラDaydream ♡ Maria Marionette 【OFFICIAL MV】 原创歌曲",
 ] as const;
 
+export interface ListConfigTitleSnapshot {
+  layoutId: string;
+  value: string;
+  placeholder?: string;
+}
+
+export function createListConfigTitleSnapshot(
+  activeLayoutId: string | null,
+  draft: ConfigDraft | null,
+): ListConfigTitleSnapshot | null {
+  if (!activeLayoutId || !draft) {
+    return null;
+  }
+
+  return {
+    layoutId: activeLayoutId,
+    value: draft.name,
+    placeholder: draft.mode === "create" ? CREATE_COLLECTION_TITLE : undefined,
+  };
+}
+
+export function resolveListConfigTitleViewModel(args: {
+  activeLayoutId: string | null;
+  draft: ConfigDraft | null;
+  titleToneHandoff: CollectionTitleHandoff | null;
+  previousSnapshot: ListConfigTitleSnapshot | null;
+}) {
+  const snapshot =
+    createListConfigTitleSnapshot(args.activeLayoutId, args.draft) ??
+    args.previousSnapshot;
+  const layoutId = snapshot?.layoutId;
+
+  return {
+    snapshot,
+    autoFocus: Boolean(args.activeLayoutId && args.draft?.mode === "create"),
+    handoffTone:
+      layoutId && args.titleToneHandoff?.layoutId === layoutId
+        ? args.titleToneHandoff.tone
+        : null,
+    layoutId,
+    placeholder: snapshot?.placeholder,
+    value: snapshot?.value ?? "",
+  } as {
+    snapshot: ListConfigTitleSnapshot | null;
+    autoFocus: boolean;
+    handoffTone: CollectionTitleTone | null;
+    layoutId: string | undefined;
+    placeholder?: string;
+    value: string;
+  };
+}
+
 function createDisplayHash(length = 5) {
   const values = new Uint32Array(length);
 
@@ -224,64 +282,80 @@ function FnButton({ text }: { text: string }) {
 
 export function ListConfig() {
   const { activeLayoutId, draft, titleToneHandoff } = appLogicHook.useContext();
+  const titleSnapshotRef = useRef<ListConfigTitleSnapshot | null>(null);
   const [displayHash] = useState(() => createDisplayHash());
-  const handoffTone =
-    activeLayoutId && titleToneHandoff?.layoutId === activeLayoutId
-      ? titleToneHandoff.tone
-      : null;
+  const titleViewModel = resolveListConfigTitleViewModel({
+    activeLayoutId,
+    draft,
+    titleToneHandoff,
+    previousSnapshot: titleSnapshotRef.current,
+  });
+
+  if (titleViewModel.snapshot) {
+    titleSnapshotRef.current = titleViewModel.snapshot;
+  }
+
+  const contentFadeProps = {
+    initial: { opacity: 0 },
+    animate: { opacity: 1 },
+    exit: { opacity: 0 },
+    transition: collectionTitleLayoutTransition,
+  } as const;
 
   return (
     <div className={cn("relative flex flex-col w-160 mx-auto mt-24")}>
       <div className={cn("relative z-20 flex flex-col")}>
-        <button
-          type="button"
-          onClick={appLogicAction.back}
-          className={cn(
-            "group relative isolate inline-flex w-fit cursor-pointer select-none py-2 pr-2",
-            "before:absolute before:inset-y-0 before:-left-2 before:right-0 before:-z-10",
-            "before:rounded-[25px] before:bg-transparent before:transition before:duration-300",
-            "before:[corner-shape:squircle_squircle_squircle_squircle]",
-            "hover:before:bg-[#e5e5e5] dark:hover:before:bg-[#262626]",
-          )}
-        >
-          <icons.arrowDown className="rotate-90 text-[#737373] dark:text-[#8a8a8a] group-hover:text-[#262626] dark:group-hover:text-[#d4d4d4] transition duration-300" />
-        </button>
+        <motion.div {...contentFadeProps}>
+          <button
+            type="button"
+            onClick={appLogicAction.back}
+            className={cn(
+              "group relative isolate inline-flex w-fit cursor-pointer select-none py-2 pr-2",
+              "before:absolute before:inset-y-0 before:-left-2 before:right-0 before:-z-10",
+              "before:rounded-[25px] before:bg-transparent before:transition before:duration-300",
+              "before:[corner-shape:squircle_squircle_squircle_squircle]",
+              "hover:before:bg-[#e5e5e5] dark:hover:before:bg-[#262626]",
+            )}
+          >
+            <icons.arrowDown className="rotate-90 text-[#737373] dark:text-[#8a8a8a] group-hover:text-[#262626] dark:group-hover:text-[#d4d4d4] transition duration-300" />
+          </button>
+        </motion.div>
         <EditableTitle
-          autoFocus={draft?.mode === "create"}
+          autoFocus={titleViewModel.autoFocus}
           className={cn("text-4xl font-bold", "w-fit")}
-          handoffTone={handoffTone}
-          layoutId={activeLayoutId ?? undefined}
-          placeholder={
-            draft?.mode === "create" ? CREATE_COLLECTION_TITLE : undefined
-          }
+          handoffTone={titleViewModel.handoffTone}
+          layoutId={titleViewModel.layoutId}
+          placeholder={titleViewModel.placeholder}
           style={{ fontFamily: "var(--font-noto-sans)" }}
-          value={draft?.name ?? ""}
+          value={titleViewModel.value}
           onChange={appLogicAction.changeDraftName}
         />
-        <ToolLabel
-          className="mt-2"
-          textClassName="text-sm trim-cap text-[#404040] dark:text-[#a3a3a3]"
-          text="C:\\download"
-          tool={
-            <>
-              <CoverTool text="Change" />
-              <MaskR />
-            </>
-          }
-        />
-        <div className="h-24" />
-        <div className="flex justify-between">
-          <div className="flex gap-2">
-            <FnButton text="Paste" />
-            <FnButton text="Imoprt" />
-          </div>
+        <motion.div {...contentFadeProps}>
+          <ToolLabel
+            className="mt-2"
+            textClassName="text-sm trim-cap text-[#404040] dark:text-[#a3a3a3]"
+            text="C:\\download"
+            tool={
+              <>
+                <CoverTool text="Change" />
+                <MaskR />
+              </>
+            }
+          />
+          <div className="h-24" />
+          <div className="flex justify-between">
+            <div className="flex gap-2">
+              <FnButton text="Paste" />
+              <FnButton text="Imoprt" />
+            </div>
 
-          <div>{/*<FnButton text="Save" />*/}</div>
-        </div>
-        <div className="h-2" />
+            <div>{/*<FnButton text="Save" />*/}</div>
+          </div>
+          <div className="h-2" />
+        </motion.div>
       </div>
 
-      <div className="relative z-10 flex flex-col">
+      <motion.div {...contentFadeProps} className="relative z-10 flex flex-col">
         {TOOL_LABEL_ITEMS.map((item) => (
           <div className="py-2 group">
             <div
@@ -314,9 +388,11 @@ export function ListConfig() {
             </div>
           </div>
         ))}
-      </div>
+      </motion.div>
 
-      <ArcTrackList items={ARC_LIST_ITEMS} />
+      <motion.div {...contentFadeProps}>
+        <ArcTrackList items={ARC_LIST_ITEMS} />
+      </motion.div>
     </div>
   );
 }

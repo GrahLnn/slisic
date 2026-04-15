@@ -16,6 +16,17 @@ type EditableTitleProps = {
   handoffTone?: CollectionTitleTone | null;
 } & Omit<ComponentProps<"div">, "onChange">;
 
+export function resolveEditableTitleDisplayValue(
+  value: string,
+  placeholder?: string,
+) {
+  if (value.length > 0) {
+    return value;
+  }
+
+  return placeholder ?? "";
+}
+
 /**
  * The visible title layer keeps the exact display typography, while the
  * overlaid textarea preserves native text editing semantics. Keeping both
@@ -25,7 +36,7 @@ type EditableTitleProps = {
 export function EditableTitle({
   value,
   onChange,
-  placeholder = "Untitled List",
+  placeholder,
   autoFocus = false,
   layoutId,
   handoffTone = null,
@@ -33,7 +44,7 @@ export function EditableTitle({
   style,
   ...props
 }: EditableTitleProps) {
-  const displayValue = value.length > 0 ? value : placeholder;
+  const displayValue = resolveEditableTitleDisplayValue(value, placeholder);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const targetTone: CollectionTitleTone =
     value.length === 0 ? "muted" : "solid";
@@ -82,7 +93,7 @@ export function EditableTitle({
         <div
           aria-hidden="true"
           ref={scope}
-          className="pointer-events-none whitespace-pre-wrap break-words"
+          className="pointer-events-none whitespace-pre-wrap wrap-break-word"
         >
           {displayValue}
         </div>
@@ -109,7 +120,7 @@ export function EditableTitle({
           onBlur={(event) => onChange(event.target.value.trim())}
           className={cn(
             "pointer-events-auto absolute inset-0 block h-full w-full resize-none overflow-hidden bg-transparent",
-            "whitespace-pre-wrap break-words text-transparent outline-none",
+            "whitespace-pre-wrap wrap-break-word text-transparent outline-none",
             "caret-[#090909] dark:caret-[#f6f6f6]",
           )}
           style={{

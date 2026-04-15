@@ -5,7 +5,7 @@ import "@fontsource-variable/noto-serif";
 import "./App.css";
 import "sileo/styles.css";
 import { type PropsWithChildren } from "react";
-import { AnimatePresence, LayoutGroup } from "motion/react";
+import { AnimatePresence, LayoutGroup, motion } from "motion/react";
 import { useTheme } from "next-themes";
 import { Toaster } from "sileo";
 import { PlayListPage } from "./components/PlayListPage";
@@ -60,13 +60,39 @@ function MainWindowApp() {
 
   return (
     <Base>
-      {appLogicState.match({
-        config: () => <ListConfig key="config" />,
-        idle: () => <PlayListPage key="list" />,
-        loading: () => <PlayListPage key="list" />,
-        ready: () => <PlayListPage key="list" />,
-        error: () => <PlayListPage key="list" />,
-      })}
+      <LayoutGroup id="main-window">
+        {/* Shared titles need the entering page to measure in its real slot. */}
+        <AnimatePresence initial={false} mode="popLayout">
+          {appLogicState.match({
+            config: () => (
+              // popLayout only works on direct DOM-backed motion children.
+              <motion.div key="config" className="relative w-full">
+                <ListConfig />
+              </motion.div>
+            ),
+            idle: () => (
+              <motion.div key="list" className="relative w-full">
+                <PlayListPage />
+              </motion.div>
+            ),
+            loading: () => (
+              <motion.div key="list" className="relative w-full">
+                <PlayListPage />
+              </motion.div>
+            ),
+            ready: () => (
+              <motion.div key="list" className="relative w-full">
+                <PlayListPage />
+              </motion.div>
+            ),
+            error: () => (
+              <motion.div key="list" className="relative w-full">
+                <PlayListPage />
+              </motion.div>
+            ),
+          })}
+        </AnimatePresence>
+      </LayoutGroup>
     </Base>
   );
 }
