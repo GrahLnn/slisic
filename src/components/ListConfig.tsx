@@ -13,7 +13,7 @@ import type {
 import { ArcTrackList } from "./ArcTrackList";
 import { HoloButton } from "./HoloButton";
 import { ToolLabel, MaskL, MaskMiddle, MaskR } from "./toollabel";
-import { motion } from "motion/react";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { Torph } from "@grahlnn/comps";
 import { CoverTool } from "./coverTool";
 import {
@@ -42,7 +42,6 @@ const TOOL_LABEL_ITEMS = [
   "【青春猪头少年不会梦到兔女郎学姐】ED六人合唱.樱岛麻衣&梓川枫&古贺朋绘&双叶理央&丰浜和花&牧之原翔子",
 ] as const;
 const ARC_LIST_ITEMS = [
-  "[Official] TUNIC (Original Soundtrack) - Full Album _ Lifeformed × Janice Kwan",
   "【原神】「白露澄明の泉」Disc 1 - 律令の頌歌",
   "【原神】「白露澄明の泉」Disc 2 - 栄光のアリオーソ",
   "【原神】「白露澄明の泉」Disc 3 - 幽泉淙々の歌",
@@ -96,8 +95,6 @@ const ARC_LIST_ITEMS = [
   "【原神】「真珠の歌4」Disc 3 - 集う光彩",
   "【原神】「ジュニャーナとヴィディヤーの森」Disc 1 - 緑に囲まれた住処",
   "【原神】「ジュニャーナとヴィディヤーの森」Disc 2 - 深林、せせらぎと秘めごと",
-  "【原神】「ジュニャーナとヴィディヤーの森」Disc 3 - 死生流転真如",
-  "【原神】「ジュニャーナとヴィディヤーの森」Disc 4 - スメール戦闘編",
   "【原神】風と異邦人 Le Vent et les Enfants des étoiles",
   "【原神】流星の軌跡Vol.3",
   "【ユメの喫茶店】 - ミツキヨ (Mitsukiyo) 【FULL ALBUM】",
@@ -155,7 +152,6 @@ const ARC_LIST_ITEMS = [
   "【翻唱】Let's Get It Started【Maria Marionette Ver.】",
   "【钢琴】拉威尔 镜子组曲 丑角的晨歌",
   "【拉威尔⧸卡萨多】丑角的晨歌｜法国广播爱乐乐团",
-  "【青春猪头少年不会梦到兔女郎学姐】ED六人合唱.樱岛麻衣&梓川枫&古贺朋绘&双叶理央&丰浜和花&牧之原翔子",
   "【世界顶尖的暗杀者转生为异世界贵族】ED完整版",
   "【杨·霍班】Yann Robin -  Quatuor à Cordes n°2, Crescent scratches（新月刮痕）",
   "【原创音乐】「Escape」Feat.LinLin【bassy官方】",
@@ -241,6 +237,13 @@ export function resolveListConfigTitleViewModel(args: {
   };
 }
 
+export function resolveListConfigToolListInteractionDisabled(args: {
+  isAnimating: boolean;
+  isPresent: boolean;
+}) {
+  return args.isAnimating || !args.isPresent;
+}
+
 function createDisplayHash(length = 5) {
   const values = new Uint32Array(length);
 
@@ -281,9 +284,17 @@ function FnButton({ text }: { text: string }) {
 }
 
 export function ListConfig() {
+  const isPresent = useIsPresent();
   const { activeLayoutId, draft, titleToneHandoff } = appLogicHook.useContext();
   const titleSnapshotRef = useRef<ListConfigTitleSnapshot | null>(null);
   const [displayHash] = useState(() => createDisplayHash());
+  const [isToolListAnimating, setIsToolListAnimating] = useState(true);
+  const [toolLabelItems, setToolLabelItems] = useState(() =>
+    TOOL_LABEL_ITEMS.map((text, index) => ({
+      id: `tool-label-${index}`,
+      text,
+    })),
+  );
   const titleViewModel = resolveListConfigTitleViewModel({
     activeLayoutId,
     draft,
@@ -294,6 +305,14 @@ export function ListConfig() {
   if (titleViewModel.snapshot) {
     titleSnapshotRef.current = titleViewModel.snapshot;
   }
+
+  // Portal overlays render under document.body, so exit transitions need an
+  // explicit interactivity gate instead of relying on ancestor pointer-events.
+  const isToolListInteractionDisabled =
+    resolveListConfigToolListInteractionDisabled({
+      isAnimating: isToolListAnimating,
+      isPresent,
+    });
 
   const contentFadeProps = {
     initial: { opacity: 0 },
@@ -355,38 +374,70 @@ export function ListConfig() {
         </motion.div>
       </div>
 
-      <motion.div {...contentFadeProps} className="relative z-10 flex flex-col">
-        {TOOL_LABEL_ITEMS.map((item, index) => (
-          <div key={`${item}-${index}`} className="py-2 group">
-            <div
-              className={cn(
-                "flex items-center backdrop-blur-md w-fit gap-2 pr-1",
-                "rounded-full",
-              )}
+      <motion.div
+        {...contentFadeProps}
+        className={cn(
+          "relative z-10 flex flex-col",
+          isToolListInteractionDisabled && "pointer-events-none",
+        )}
+        onAnimationStart={() => {
+          setIsToolListAnimating(true);
+        }}
+        onAnimationComplete={() => {
+          setIsToolListAnimating(false);
+        }}
+      >
+        <AnimatePresence initial={false}>
+          {toolLabelItems.map((item) => (
+            <motion.div
+              key={item.id}
+              className="group"
+              initial={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
+              animate={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
+              exit={{ height: 0, paddingTop: 0, paddingBottom: 0 }}
             >
-              <ToolLabel
-                className={cn("")}
-                hoverMode="group"
-                toolLayer="portal"
-                text={item}
-                textClassName="text-[12px] text-[#404040] dark:text-[#a3a3a3]"
-                tool={
-                  <div className="flex justify-between w-full items-center">
-                    <div className="flex h-fit">
-                      <CoverTool text="Enable Update" />
-                      <MaskR />
-                    </div>
-                    <div className="flex h-fit">
-                      <MaskL />
-                      <CoverTool text="Pop" />
-                    </div>
-                  </div>
-                }
-              />
-              <icons.autoDownload size={12} />
-            </div>
-          </div>
-        ))}
+              <div
+                className={cn(
+                  "flex items-center backdrop-blur-md w-fit gap-2 pr-1.5",
+                  "rounded-full",
+                )}
+              >
+                <motion.div layoutId={item.text}>
+                  <ToolLabel
+                    className={cn("")}
+                    hoverMode="group"
+                    interactionDisabled={isToolListInteractionDisabled}
+                    toolLayer="portal"
+                    text={item.text}
+                    textClassName="text-[12px] text-[#404040] dark:text-[#a3a3a3]"
+                    tool={
+                      <div className="flex justify-between w-full items-center">
+                        <div className="flex h-fit">
+                          <CoverTool text="Enable Update" />
+                          <MaskR />
+                        </div>
+                        <div className="flex h-fit">
+                          <MaskL />
+                          <CoverTool
+                            text="Pop"
+                            onClick={() => {
+                              setToolLabelItems((current) =>
+                                current.filter(
+                                  (candidate) => candidate.id !== item.id,
+                                ),
+                              );
+                            }}
+                          />
+                        </div>
+                      </div>
+                    }
+                  />
+                </motion.div>
+                <icons.autoDownload size={12} />
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </motion.div>
 
       <motion.div {...contentFadeProps}>

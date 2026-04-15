@@ -1,10 +1,4 @@
-import {
-  useLayoutEffect,
-  useRef,
-  useState,
-  type ComponentProps,
-  type CSSProperties,
-} from "react";
+import { useLayoutEffect, useRef, useState, type ComponentProps, type CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import { AnimatePresence, motion } from "motion/react";
 import { createPortal } from "react-dom";
@@ -63,16 +57,19 @@ export function MaskMiddle() {
   );
 }
 
-const TOOL_LABEL_OVERLAY_CLASS_NAME =
-  "z-200 inline-flex items-center overflow-visible";
+const TOOL_LABEL_OVERLAY_CLASS_NAME = "z-200 inline-flex items-center overflow-visible";
 type ToolLabelAnchor = "left" | "right";
 
+export function resolveToolLabelOverlayVisibility(args: {
+  isHovered: boolean;
+  hasTool: boolean;
+  interactionDisabled: boolean;
+}) {
+  return args.isHovered && args.hasTool && !args.interactionDisabled;
+}
+
 function ToolLabelOverlayBody({ tool }: { tool: React.ReactNode }) {
-  return (
-    <div className="inline-flex h-full min-w-full items-center overflow-visible">
-      {tool}
-    </div>
-  );
+  return <div className="inline-flex h-full min-w-full items-center overflow-visible">{tool}</div>;
 }
 
 function isScrollableContainer(element: HTMLElement) {
@@ -98,26 +95,17 @@ function collectScrollContainers(anchor: HTMLElement | null) {
 }
 
 function canScrollContainer(container: HTMLElement, deltaX: number, deltaY: number) {
-  const canScrollVertically =
-    deltaY !== 0 && container.scrollHeight > container.clientHeight;
-  const canScrollHorizontally =
-    deltaX !== 0 && container.scrollWidth > container.clientWidth;
+  const canScrollVertically = deltaY !== 0 && container.scrollHeight > container.clientHeight;
+  const canScrollHorizontally = deltaX !== 0 && container.scrollWidth > container.clientWidth;
 
   return canScrollVertically || canScrollHorizontally;
 }
 
-function findScrollableAncestor(
-  element: HTMLElement | null,
-  deltaX: number,
-  deltaY: number,
-) {
+function findScrollableAncestor(element: HTMLElement | null, deltaX: number, deltaY: number) {
   let current = element;
 
   while (current) {
-    if (
-      isScrollableContainer(current) &&
-      canScrollContainer(current, deltaX, deltaY)
-    ) {
+    if (isScrollableContainer(current) && canScrollContainer(current, deltaX, deltaY)) {
       return current;
     }
 
@@ -145,9 +133,7 @@ function findUnderlyingScrollContainer(
     .elementsFromPoint(clientX, clientY)
     .filter(
       (element): element is HTMLElement =>
-        element instanceof HTMLElement &&
-        !anchor?.contains(element) &&
-        !overlay?.contains(element),
+        element instanceof HTMLElement && !anchor?.contains(element) && !overlay?.contains(element),
     )
     .map((element) => findScrollableAncestor(element, deltaX, deltaY))
     .find((container): container is HTMLElement => !!container);
@@ -166,14 +152,7 @@ function forwardWheelToScrollContainer(
   }
 
   const scrollContainer =
-    findUnderlyingScrollContainer(
-      anchor,
-      overlay,
-      clientX,
-      clientY,
-      deltaX,
-      deltaY,
-    ) ??
+    findUnderlyingScrollContainer(anchor, overlay, clientX, clientY, deltaX, deltaY) ??
     collectScrollContainers(anchor).find((container) =>
       canScrollContainer(container, deltaX, deltaY),
     );
@@ -214,11 +193,7 @@ function toOverlayStyle(
 
 function sameRect(a: DOMRectReadOnly | null, b: DOMRectReadOnly) {
   return (
-    !!a &&
-    a.top === b.top &&
-    a.left === b.left &&
-    a.width === b.width &&
-    a.height === b.height
+    !!a && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height
   );
 }
 
@@ -268,9 +243,7 @@ function ToolLabelPortalOverlay({
     const syncRect = () => {
       const nextRect = anchor.getBoundingClientRect();
 
-      setAnchorRect((currentRect) =>
-        sameRect(currentRect, nextRect) ? currentRect : nextRect,
-      );
+      setAnchorRect((currentRect) => (sameRect(currentRect, nextRect) ? currentRect : nextRect));
     };
 
     syncRect();
@@ -295,8 +268,7 @@ function ToolLabelPortalOverlay({
   }, [anchorRef]);
 
   const portalTarget = anchorRef.current?.ownerDocument.body;
-  const viewportWidth =
-    anchorRef.current?.ownerDocument.defaultView?.innerWidth ?? 0;
+  const viewportWidth = anchorRef.current?.ownerDocument.defaultView?.innerWidth ?? 0;
 
   if (!portalTarget || !anchorRect || viewportWidth <= 0) {
     return null;
@@ -323,6 +295,7 @@ export function ToolLabel({
   textClassName,
   className,
   hoverMode = "self",
+  interactionDisabled = false,
   toolLayer = "inline",
   toolAnchor = "left",
 }: {
@@ -330,6 +303,7 @@ export function ToolLabel({
   textClassName?: string;
   tool?: React.ReactNode;
   hoverMode?: "self" | "group";
+  interactionDisabled?: boolean;
   toolLayer?: "inline" | "portal";
   toolAnchor?: ToolLabelAnchor;
 } & ComponentProps<"div">) {
@@ -337,15 +311,21 @@ export function ToolLabel({
   const resolvedTextClassName = textClassName ?? "";
   const rootRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const isOverlayVisible = resolveToolLabelOverlayVisibility({
+    isHovered,
+    hasTool: Boolean(tool),
+    interactionDisabled,
+  });
 
-  function containsTarget(
-    container: HTMLElement | null,
-    target: EventTarget | null,
-  ) {
+  function containsTarget(container: HTMLElement | null, target: EventTarget | null) {
     return target instanceof Node && !!container?.contains(target);
   }
 
   function openOverlay() {
+    if (interactionDisabled || !tool) {
+      return;
+    }
+
     setIsHovered(true);
   }
 
@@ -361,6 +341,10 @@ export function ToolLabel({
   }
 
   function handlePortalOverlayWheel(event: React.WheelEvent<HTMLDivElement>) {
+    if (interactionDisabled) {
+      return;
+    }
+
     event.preventDefault();
     forwardWheelToScrollContainer(
       rootRef.current,
@@ -379,6 +363,14 @@ export function ToolLabel({
   }, [isHovered, tool, text]);
 
   useLayoutEffect(() => {
+    if (!interactionDisabled) {
+      return;
+    }
+
+    setIsHovered(false);
+  }, [interactionDisabled]);
+
+  useLayoutEffect(() => {
     if (hoverMode !== "group") {
       return;
     }
@@ -391,11 +383,24 @@ export function ToolLabel({
     }
 
     const handleEnter = () => {
-      openOverlay();
+      if (interactionDisabled || !tool) {
+        return;
+      }
+
+      setIsHovered(true);
     };
 
     const handleLeave = (event: MouseEvent) => {
-      closeOverlay(event.relatedTarget);
+      const nextTarget = event.relatedTarget;
+
+      if (
+        (nextTarget instanceof Node && !!rootRef.current?.contains(nextTarget)) ||
+        (nextTarget instanceof Node && !!overlayRef.current?.contains(nextTarget))
+      ) {
+        return;
+      }
+
+      setIsHovered(false);
     };
 
     group.addEventListener("mouseenter", handleEnter);
@@ -405,7 +410,7 @@ export function ToolLabel({
       group.removeEventListener("mouseenter", handleEnter);
       group.removeEventListener("mouseleave", handleLeave);
     };
-  }, [hoverMode]);
+  }, [hoverMode, interactionDisabled, tool]);
 
   return (
     <>
@@ -413,20 +418,13 @@ export function ToolLabel({
         ref={rootRef}
         onMouseEnter={hoverMode === "self" ? openOverlay : undefined}
         onMouseLeave={
-          hoverMode === "self"
-            ? (event) => closeOverlay(event.relatedTarget)
-            : undefined
+          hoverMode === "self" ? (event) => closeOverlay(event.relatedTarget) : undefined
         }
-        className={cn(
-          "relative inline-flex w-fit select-none items-center",
-          className,
-        )}
+        className={cn("relative inline-flex w-fit select-none items-center", className)}
       >
-        <div className={cn("inline-flex w-fit", resolvedTextClassName)}>
-          {text}
-        </div>
+        <div className={cn("inline-flex w-fit", resolvedTextClassName)}>{text}</div>
         <AnimatePresence initial={false}>
-          {isHovered &&
+          {isOverlayVisible &&
             tool &&
             (toolLayer === "portal" ? (
               <ToolLabelPortalOverlay

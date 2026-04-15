@@ -1,4 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type RefObject,
+  type SetStateAction,
+} from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { ToolLabel, MaskL } from "./toollabel";
 import { CoverTool } from "./coverTool";
 
@@ -8,18 +20,76 @@ const ARC_TRAILING_PADDING = 112;
 const ARC_ITEM_GAP = 78;
 const ARC_VIEWPORT_FALLBACK_HEIGHT = 640;
 const ARC_LOOKUP_STEPS = 240;
-const ARC_VISIBLE_MARGIN = 72;
 const ARC_PATH_STEPS = 96;
+const arcPathCache = new Map<number, string>();
+const arcLookupCache = new Map<number, ArcSample[]>();
 
 type ArcTrackListProps = {
   items: readonly string[];
 };
 
 type ArcSample = {
-  distance: number;
   x: number;
   y: number;
 };
+
+type ArcProjection = ArcSample & {
+  angle: number;
+};
+
+type ArcTrackItemRegistryKey = string | number | bigint;
+
+type ArcTrackItemNodeState = {
+  node: HTMLLIElement;
+  start: number;
+};
+
+type ArcTrackItemNodeRegistry = Map<
+  ArcTrackItemRegistryKey,
+  ArcTrackItemNodeState
+>;
+
+type ArcTrackPositionController = {
+  itemRegistryRef: RefObject<ArcTrackItemNodeRegistry>;
+  positionFrameRef: RefObject<number | null>;
+  scrollElementRef: RefObject<HTMLDivElement | null>;
+  scrollOffsetRef: RefObject<number>;
+};
+
+type ArcTrackItemProps = {
+  index: number;
+  item: string;
+  itemKey: ArcTrackItemRegistryKey;
+  itemRegistryRef: RefObject<ArcTrackItemNodeRegistry>;
+  scrollElementRef: RefObject<HTMLDivElement | null>;
+  scrollOffsetRef: RefObject<number>;
+  setVisibleItems: Dispatch<SetStateAction<string[]>>;
+  start: number;
+};
+
+export function resolveArcTrackViewportScrollTop(args: {
+  currentScrollTop: number;
+  trackHeight: number;
+  viewportHeight: number;
+}) {
+  const maxScrollTop = Math.max(args.trackHeight - args.viewportHeight, 0);
+
+  return Math.min(Math.max(args.currentScrollTop, 0), maxScrollTop);
+}
+
+export function createArcTrackListIdentity(items: readonly string[]) {
+  return JSON.stringify(items);
+}
+
+export function resolveArcTrackVirtualPaddingEnd(itemCount: number) {
+  return itemCount > 0
+    ? Math.max(ARC_TRAILING_PADDING - ARC_ITEM_GAP, 0)
+    : ARC_TRAILING_PADDING;
+}
+
+function resolveArcTrackViewportHeight(scrollElement: HTMLDivElement | null) {
+  return scrollElement?.clientHeight ?? ARC_VIEWPORT_FALLBACK_HEIGHT;
+}
 
 function getArcGeometry(viewportHeight: number) {
   const topInset = 0;
@@ -36,7 +106,7 @@ function getArcGeometry(viewportHeight: number) {
   };
 }
 
-function getArcPath(viewportHeight: number) {
+function createArcCurveSamples(viewportHeight: number, steps: number) {
   const { topInset, drawableHeight, topX, bottomX, circleRadius } =
     getArcGeometry(viewportHeight);
   const start = { x: topX, y: topInset };
@@ -61,32 +131,50 @@ function getArcPath(viewportHeight: number) {
     Math.cos(endAngle - startAngle),
   );
 
-  return Array.from({ length: ARC_PATH_STEPS + 1 }, (_, index) => {
-    const progress = index / ARC_PATH_STEPS;
+  return Array.from({ length: steps + 1 }, (_, index) => {
+    const progress = index / steps;
     const angle = startAngle + deltaAngle * progress;
     const x = centerX + safeRadius * Math.cos(angle);
     const y = centerY + safeRadius * Math.sin(angle);
 
-    return `${index === 0 ? "M" : "L"}${x} ${y}`;
-  }).join("");
-}
-
-function buildArcLookup(path: SVGPathElement) {
-  const totalLength = path.getTotalLength();
-
-  return Array.from({ length: ARC_LOOKUP_STEPS + 1 }, (_, index) => {
-    const distance = (totalLength * index) / ARC_LOOKUP_STEPS;
-    const point = path.getPointAtLength(distance);
-
-    return {
-      distance,
-      x: point.x,
-      y: point.y,
-    };
+    return { x, y };
   });
 }
 
-function getArcSampleAtY(targetY: number, samples: ArcSample[]) {
+function getArcPath(viewportHeight: number) {
+  const cachedPath = arcPathCache.get(viewportHeight);
+
+  if (cachedPath) {
+    return cachedPath;
+  }
+
+  const path = createArcCurveSamples(viewportHeight, ARC_PATH_STEPS)
+    .map((point, index) => `${index === 0 ? "M" : "L"}${point.x} ${point.y}`)
+    .join("");
+
+  arcPathCache.set(viewportHeight, path);
+
+  return path;
+}
+
+function buildArcLookup(viewportHeight: number) {
+  const cachedLookup = arcLookupCache.get(viewportHeight);
+
+  if (cachedLookup) {
+    return cachedLookup;
+  }
+
+  const lookup = createArcCurveSamples(viewportHeight, ARC_LOOKUP_STEPS);
+
+  arcLookupCache.set(viewportHeight, lookup);
+
+  return lookup;
+}
+
+function getArcSampleAtY(
+  targetY: number,
+  samples: ArcSample[],
+): ArcProjection | null {
   if (samples.length < 2) {
     return null;
   }
@@ -147,134 +235,274 @@ function getArcSampleAtY(targetY: number, samples: ArcSample[]) {
   return { x, y, angle };
 }
 
-export function ArcTrackList({ items }: ArcTrackListProps) {
-  const arcViewportRef = useRef<HTMLDivElement>(null);
-  const arcPathRef = useRef<SVGPathElement>(null);
-  const itemRefs = useRef<Array<HTMLLIElement | null>>([]);
-  const frameRef = useRef<number | null>(null);
-  const arcLookupRef = useRef<ArcSample[]>([]);
-  const [arcViewportHeight, setArcViewportHeight] = useState(
-    ARC_VIEWPORT_FALLBACK_HEIGHT,
+function createArcTrackItemTransform(sample: ArcProjection) {
+  return (
+    `translate3d(${sample.x}px, ${sample.y}px, 0) ` +
+    `translate3d(calc(-100% + 2px), -50%, 0) rotate(${sample.angle}deg)`
   );
-  const arcTrackHeight =
-    ARC_LEADING_PADDING +
-    ARC_TRAILING_PADDING +
-    ARC_ITEM_GAP * Math.max(items.length - 1, 0);
-  const arcPath = getArcPath(arcViewportHeight);
+}
 
-  function updateArcItems() {
-    const viewport = arcViewportRef.current;
-    const samples = arcLookupRef.current;
+function applyArcTrackItemPosition(args: {
+  node: HTMLLIElement;
+  samples: ArcSample[];
+  scrollOffset: number;
+  start: number;
+}) {
+  const sample = getArcSampleAtY(args.start - args.scrollOffset, args.samples);
 
-    if (!viewport || samples.length < 2) {
-      return;
+  if (!sample) {
+    if (args.node.style.opacity !== "0") {
+      args.node.style.opacity = "0";
     }
-
-    const { topInset, bottomInset } = getArcGeometry(arcViewportHeight);
-    const minVisibleY = topInset - ARC_VISIBLE_MARGIN;
-    const maxVisibleY = arcViewportHeight - bottomInset + ARC_VISIBLE_MARGIN;
-
-    items.forEach((_, index) => {
-      const item = itemRefs.current[index];
-
-      if (!item) {
-        return;
-      }
-
-      const itemTop = ARC_LEADING_PADDING + ARC_ITEM_GAP * index;
-      const viewportY = itemTop - viewport.scrollTop;
-
-      if (viewportY < minVisibleY || viewportY > maxVisibleY) {
-        item.style.opacity = "0";
-        return;
-      }
-
-      const sample = getArcSampleAtY(viewportY, samples);
-
-      if (!sample) {
-        item.style.opacity = "0";
-        return;
-      }
-
-      item.style.opacity = "1";
-      item.style.transform =
-        `translate3d(${sample.x}px, ${sample.y}px, 0) ` +
-        `translate3d(calc(-100% + 2px), -50%, 0) rotate(${sample.angle}deg)`;
-    });
+    return;
   }
 
-  function scheduleArcUpdate() {
-    if (frameRef.current !== null) {
-      return;
-    }
+  const transform = createArcTrackItemTransform(sample);
 
-    frameRef.current = window.requestAnimationFrame(() => {
-      frameRef.current = null;
-      updateArcItems();
-    });
+  if (args.node.style.transform !== transform) {
+    args.node.style.transform = transform;
   }
 
-  useEffect(() => {
-    const viewport = arcViewportRef.current;
+  if (args.node.style.opacity !== "1") {
+    args.node.style.opacity = "1";
+  }
+}
 
-    if (!viewport) {
-      return;
-    }
+function updateArcTrackItemPositions(controller: ArcTrackPositionController) {
+  const viewportHeight = resolveArcTrackViewportHeight(
+    controller.scrollElementRef.current,
+  );
+  const samples = buildArcLookup(viewportHeight);
 
-    const syncViewportMetrics = () => {
-      setArcViewportHeight(
-        viewport.clientHeight || ARC_VIEWPORT_FALLBACK_HEIGHT,
-      );
+  for (const { node, start } of controller.itemRegistryRef.current.values()) {
+    applyArcTrackItemPosition({
+      node,
+      samples,
+      scrollOffset: controller.scrollOffsetRef.current,
+      start,
+    });
+  }
+}
+
+function scheduleArcTrackItemPositionUpdate(
+  controller: ArcTrackPositionController,
+) {
+  const scrollElement = controller.scrollElementRef.current;
+  const targetWindow = scrollElement?.ownerDocument.defaultView;
+
+  if (!targetWindow) {
+    updateArcTrackItemPositions(controller);
+    return;
+  }
+
+  if (controller.positionFrameRef.current !== null) {
+    return;
+  }
+
+  controller.positionFrameRef.current = targetWindow.requestAnimationFrame(
+    () => {
+      controller.positionFrameRef.current = null;
+      updateArcTrackItemPositions(controller);
+    },
+  );
+}
+
+function registerArcTrackItemNode(args: {
+  itemKey: ArcTrackItemRegistryKey;
+  node: HTMLLIElement | null;
+  registryRef: RefObject<ArcTrackItemNodeRegistry>;
+  scrollElementRef: RefObject<HTMLDivElement | null>;
+  scrollOffsetRef: RefObject<number>;
+  start: number;
+}) {
+  const registry = args.registryRef.current;
+
+  if (!args.node) {
+    registry.delete(args.itemKey);
+    return;
+  }
+
+  registry.set(args.itemKey, { node: args.node, start: args.start });
+  applyArcTrackItemPosition({
+    node: args.node,
+    samples: buildArcLookup(
+      resolveArcTrackViewportHeight(args.scrollElementRef.current),
+    ),
+    scrollOffset: args.scrollOffsetRef.current,
+    start: args.start,
+  });
+}
+
+function syncArcTrackScrollElement(args: {
+  controller: ArcTrackPositionController;
+  node: HTMLDivElement | null;
+  setScrollElement: Dispatch<SetStateAction<HTMLDivElement | null>>;
+}) {
+  const previousElement = args.controller.scrollElementRef.current;
+  const pendingFrame = args.controller.positionFrameRef.current;
+
+  if (previousElement && pendingFrame !== null) {
+    previousElement.ownerDocument.defaultView?.cancelAnimationFrame(
+      pendingFrame,
+    );
+    args.controller.positionFrameRef.current = null;
+  }
+
+  args.controller.scrollElementRef.current = args.node;
+  args.controller.scrollOffsetRef.current = args.node?.scrollTop ?? 0;
+  args.setScrollElement(args.node);
+
+  if (!args.node) {
+    args.controller.itemRegistryRef.current.clear();
+    return;
+  }
+
+  scheduleArcTrackItemPositionUpdate(args.controller);
+}
+
+const ArcTrackItem = memo(function ArcTrackItem({
+  index,
+  item,
+  itemKey,
+  itemRegistryRef,
+  scrollElementRef,
+  scrollOffsetRef,
+  setVisibleItems,
+  start,
+}: ArcTrackItemProps) {
+  return (
+    <li
+      ref={(node) => {
+        registerArcTrackItemNode({
+          itemKey,
+          node,
+          registryRef: itemRegistryRef,
+          scrollElementRef,
+          scrollOffsetRef,
+          start,
+        });
+      }}
+      className="pointer-events-auto absolute top-0 left-0 origin-right whitespace-nowrap opacity-0 will-change-transform"
+    >
+      <div className="flex items-center justify-end gap-3">
+        <ToolLabel
+          textClassName="text-[12px] text-[#404040] dark:text-[#a3a3a3]"
+          toolAnchor="right"
+          text={item}
+          tool={
+            <div className="flex w-full items-center justify-between">
+              <div />
+              <div className="flex h-fit">
+                <MaskL />
+                <CoverTool
+                  text="Push"
+                  onClick={() => {
+                    startTransition(() => {
+                      setVisibleItems((current) =>
+                        current.filter(
+                          (_, currentIndex) => currentIndex !== index,
+                        ),
+                      );
+                    });
+                  }}
+                />
+              </div>
+            </div>
+          }
+        />
+        <span className="size-1 rounded-full bg-[#4f4f4f]/70 dark:bg-[#bdbdbd]/70" />
+      </div>
+    </li>
+  );
+});
+
+function ArcTrackListBody({ items }: ArcTrackListProps) {
+  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const [visibleItems, setVisibleItems] = useState(() => [...items]);
+  const itemRegistryRef = useRef<ArcTrackItemNodeRegistry>(new Map());
+  const positionFrameRef = useRef<number | null>(null);
+  const scrollElementRef = useRef<HTMLDivElement | null>(null);
+  const scrollOffsetRef = useRef(0);
+  const positionControllerRef = useRef<ArcTrackPositionController>({
+    itemRegistryRef,
+    positionFrameRef,
+    scrollElementRef,
+    scrollOffsetRef,
+  });
+  const scrollElementCallbackRef = useRef<
+    ((node: HTMLDivElement | null) => void) | null
+  >(null);
+
+  if (scrollElementCallbackRef.current === null) {
+    scrollElementCallbackRef.current = (node) => {
+      syncArcTrackScrollElement({
+        controller: positionControllerRef.current,
+        node,
+        setScrollElement,
+      });
     };
+  }
 
-    syncViewportMetrics();
+  const virtualPaddingEnd = resolveArcTrackVirtualPaddingEnd(
+    visibleItems.length,
+  );
+  const estimateSize = useCallback(() => ARC_ITEM_GAP, []);
+  const getItemKey = useCallback(
+    (index: number) => visibleItems[index] ?? index,
+    [visibleItems],
+  );
 
-    const observer = new ResizeObserver(() => {
-      syncViewportMetrics();
-    });
+  // Virtualization only controls which nodes are mounted.
+  // Per-frame arc projection is driven by the native scroll event instead of
+  // virtualizer state so the curve layer stays in lockstep with scrollTop.
+  const rowVirtualizer = useVirtualizer({
+    count: visibleItems.length,
+    estimateSize,
+    getItemKey,
+    getScrollElement: () => scrollElement,
+    overscan: 12,
+    paddingStart: ARC_LEADING_PADDING,
+    paddingEnd: virtualPaddingEnd,
+    useAnimationFrameWithResizeObserver: false,
+  });
 
-    observer.observe(viewport);
-
-    return () => observer.disconnect();
-  }, []);
+  const arcViewportHeight =
+    rowVirtualizer.scrollRect?.height ??
+    resolveArcTrackViewportHeight(scrollElement);
+  const arcPath = getArcPath(arcViewportHeight);
+  const arcTrackHeight = rowVirtualizer.getTotalSize();
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  const firstVirtualIndex = virtualItems[0]?.index ?? -1;
+  const lastVirtualIndex = virtualItems[virtualItems.length - 1]?.index ?? -1;
 
   useEffect(() => {
-    const viewport = arcViewportRef.current;
-
-    if (!viewport) {
+    if (!scrollElement) {
       return;
     }
-
-    viewport.scrollTop = 0;
-    scheduleArcUpdate();
-  }, [arcTrackHeight]);
-
-  useEffect(() => {
-    const viewport = arcViewportRef.current;
-    const path = arcPathRef.current;
-
-    if (!viewport || !path) {
-      return;
-    }
-
-    arcLookupRef.current = buildArcLookup(path);
-    updateArcItems();
 
     const handleScroll = () => {
-      scheduleArcUpdate();
+      scrollOffsetRef.current = scrollElement.scrollTop;
+      scheduleArcTrackItemPositionUpdate(positionControllerRef.current);
     };
 
-    viewport.addEventListener("scroll", handleScroll, { passive: true });
+    handleScroll();
+    scrollElement.addEventListener("scroll", handleScroll, { passive: true });
 
     return () => {
-      viewport.removeEventListener("scroll", handleScroll);
-
-      if (frameRef.current !== null) {
-        window.cancelAnimationFrame(frameRef.current);
-        frameRef.current = null;
-      }
+      scrollElement.removeEventListener("scroll", handleScroll);
     };
-  }, [arcViewportHeight, arcPath]);
+  }, [scrollElement]);
+
+  useLayoutEffect(() => {
+    scheduleArcTrackItemPositionUpdate(positionControllerRef.current);
+  }, [
+    arcViewportHeight,
+    firstVirtualIndex,
+    lastVirtualIndex,
+    visibleItems.length,
+  ]);
 
   return (
     <div className="fixed inset-y-0 right-0 z-0 hidden min-[1180px]:block">
@@ -286,7 +514,6 @@ export function ArcTrackList({ items }: ArcTrackListProps) {
           aria-hidden="true"
         >
           <path
-            ref={arcPathRef}
             d={arcPath}
             className="stroke-[#b7b7b7]/32 dark:stroke-[#676767]/38"
             strokeWidth="1.25"
@@ -295,8 +522,8 @@ export function ArcTrackList({ items }: ArcTrackListProps) {
           />
         </svg>
         <div
-          ref={arcViewportRef}
-          className="pointer-events-auto absolute inset-y-0 right-0 z-0 w-screen overflow-y-auto overscroll-y-contain hide-scrollbar"
+          ref={scrollElementCallbackRef.current}
+          className="pointer-events-auto absolute inset-y-0 right-0 z-0 w-screen overflow-y-auto overscroll-y-contain hide-scrollbar [overflow-anchor:none]"
         >
           <div className="relative" style={{ height: `${arcTrackHeight}px` }}>
             <div
@@ -304,38 +531,38 @@ export function ArcTrackList({ items }: ArcTrackListProps) {
               style={{ width: `${ARC_VIEWBOX_WIDTH}px` }}
             >
               <ul className="absolute inset-0 z-10 m-0 list-none p-0">
-                {items.map((item, index) => (
-                  <li
-                    key={`${item}-${index}`}
-                    ref={(node) => {
-                      itemRefs.current[index] = node;
-                    }}
-                    className="pointer-events-auto absolute top-0 left-0 origin-right whitespace-nowrap opacity-0 will-change-transform"
-                  >
-                    <div className="flex items-center justify-end gap-3">
-                      <ToolLabel
-                        textClassName="text-[12px] text-[#404040] dark:text-[#a3a3a3]"
-                        toolAnchor="right"
-                        text={item}
-                        tool={
-                          <div className="flex justify-between w-full items-center">
-                            <div />
-                            <div className="flex h-fit">
-                              <MaskL />
-                              <CoverTool text="Push" />
-                            </div>
-                          </div>
-                        }
-                      />
-                      <span className="size-1 rounded-full bg-[#4f4f4f]/70 dark:bg-[#bdbdbd]/70" />
-                    </div>
-                  </li>
-                ))}
+                {virtualItems.map((virtualItem) => {
+                  const item = visibleItems[virtualItem.index];
+
+                  if (!item) {
+                    return null;
+                  }
+
+                  return (
+                    <ArcTrackItem
+                      key={virtualItem.key}
+                      index={virtualItem.index}
+                      item={item}
+                      itemKey={virtualItem.key}
+                      itemRegistryRef={itemRegistryRef}
+                      scrollElementRef={scrollElementRef}
+                      scrollOffsetRef={scrollOffsetRef}
+                      setVisibleItems={setVisibleItems}
+                      start={virtualItem.start}
+                    />
+                  );
+                })}
               </ul>
             </div>
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+export function ArcTrackList({ items }: ArcTrackListProps) {
+  return (
+    <ArcTrackListBody key={createArcTrackListIdentity(items)} items={items} />
   );
 }

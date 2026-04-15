@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import type { ConfigDraft } from "@/src/flow/appLogic/core";
 import {
   createListConfigTitleSnapshot,
+  resolveListConfigToolListInteractionDisabled,
   resolveListConfigTitleViewModel,
 } from "./ListConfig";
 
@@ -24,14 +25,11 @@ const editDraft: ConfigDraft = {
 
 describe("ListConfig title view model", () => {
   test("captures the live create draft title snapshot", () => {
-    assert.deepEqual(
-      createListConfigTitleSnapshot("collection-title:create", createDraft),
-      {
-        layoutId: "collection-title:create",
-        value: "",
-        placeholder: "Create a List",
-      },
-    );
+    assert.deepEqual(createListConfigTitleSnapshot("collection-title:create", createDraft), {
+      layoutId: "collection-title:create",
+      value: "",
+      placeholder: "Create a List",
+    });
   });
 
   test("keeps the previous snapshot while the exit animation is running", () => {
@@ -82,6 +80,26 @@ describe("ListConfig title view model", () => {
         placeholder: undefined,
         value: "Quiet Morning",
       },
+    );
+  });
+
+  test("disables the tool list while the config page is exiting", () => {
+    assert.equal(
+      resolveListConfigToolListInteractionDisabled({
+        isAnimating: false,
+        isPresent: false,
+      }),
+      true,
+    );
+  });
+
+  test("keeps the tool list interactive only after entry settles", () => {
+    assert.equal(
+      resolveListConfigToolListInteractionDisabled({
+        isAnimating: false,
+        isPresent: true,
+      }),
+      false,
     );
   });
 });

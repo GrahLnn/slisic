@@ -60,39 +60,37 @@ function MainWindowApp() {
 
   return (
     <Base>
-      <LayoutGroup id="main-window">
-        {/* Shared titles need the entering page to measure in its real slot. */}
-        <AnimatePresence initial={false} mode="popLayout">
-          {appLogicState.match({
-            config: () => (
-              // popLayout only works on direct DOM-backed motion children.
-              <motion.div key="config" className="relative w-full">
-                <ListConfig />
-              </motion.div>
-            ),
-            idle: () => (
-              <motion.div key="list" className="relative w-full">
-                <PlayListPage />
-              </motion.div>
-            ),
-            loading: () => (
-              <motion.div key="list" className="relative w-full">
-                <PlayListPage />
-              </motion.div>
-            ),
-            ready: () => (
-              <motion.div key="list" className="relative w-full">
-                <PlayListPage />
-              </motion.div>
-            ),
-            error: () => (
-              <motion.div key="list" className="relative w-full">
-                <PlayListPage />
-              </motion.div>
-            ),
-          })}
-        </AnimatePresence>
-      </LayoutGroup>
+      {/* Shared titles need the entering page to measure in its real slot. */}
+      <AnimatePresence initial={false} mode="popLayout">
+        {appLogicState.match({
+          config: () => (
+            // popLayout only works on direct DOM-backed motion children.
+            <motion.div key="config" className="relative w-full">
+              <ListConfig />
+            </motion.div>
+          ),
+          idle: () => (
+            <motion.div key="list" className="relative w-full">
+              <PlayListPage />
+            </motion.div>
+          ),
+          loading: () => (
+            <motion.div key="list" className="relative w-full">
+              <PlayListPage />
+            </motion.div>
+          ),
+          ready: () => (
+            <motion.div key="list" className="relative w-full">
+              <PlayListPage />
+            </motion.div>
+          ),
+          error: () => (
+            <motion.div key="list" className="relative w-full">
+              <PlayListPage />
+            </motion.div>
+          ),
+        })}
+      </AnimatePresence>
     </Base>
   );
 }
