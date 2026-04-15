@@ -356,8 +356,8 @@ export function ListConfig() {
       </div>
 
       <motion.div {...contentFadeProps} className="relative z-10 flex flex-col">
-        {TOOL_LABEL_ITEMS.map((item) => (
-          <div className="py-2 group">
+        {TOOL_LABEL_ITEMS.map((item, index) => (
+          <div key={`${item}-${index}`} className="py-2 group">
             <div
               className={cn(
                 "flex items-center backdrop-blur-md w-fit gap-2 pr-1",
@@ -366,7 +366,6 @@ export function ListConfig() {
             >
               <ToolLabel
                 className={cn("")}
-                key={item}
                 hoverMode="group"
                 toolLayer="portal"
                 text={item}
