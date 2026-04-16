@@ -305,15 +305,16 @@ async fn run_task(task_id: String, app: AppHandle) -> Result<()> {
             }
         };
 
+        let music_group = resolve_music_group(group, &collection);
         let file_name = finalize_downloaded_leaf(
             &collection,
             &probe.webpage_url,
-            group.as_ref(),
+            &music_group,
             &save_root,
             &file_stem,
             downloaded.absolute_path,
         )?;
-        let mut materialized = materialize_music_entries(&probe, &file_name, group.clone());
+        let mut materialized = materialize_music_entries(&probe, &file_name, music_group);
         if plan.source_kind == CollectionSourceKind::Single {
             collection.musics = materialized.clone();
         } else {
@@ -521,7 +522,7 @@ fn temporary_download_stem(file_stem: &str, task_id: &Id, leaf_id: &Id) -> Strin
 fn finalize_downloaded_leaf(
     collection: &Collection,
     leaf_url: &str,
-    group: Option<&Group>,
+    group: &Group,
     save_root: &Path,
     file_stem: &str,
     downloaded_path: PathBuf,
@@ -534,7 +535,7 @@ fn finalize_downloaded_leaf(
     let final_file_name = extension
         .map(|extension| format!("{file_stem}.{extension}"))
         .unwrap_or_else(|| file_stem.to_string());
-    let relative_path = relative_music_path(&final_file_name, group);
+    let relative_path = relative_music_path(collection, &final_file_name, group);
     let final_path = save_root.join(&collection.folder).join(&relative_path);
 
     remove_existing_leaf_files(collection, leaf_url, save_root)?;
@@ -983,7 +984,7 @@ pub(crate) fn provider_segment(url: &str) -> String {
 pub(crate) fn materialize_music_entries(
     probe: &LeafProbe,
     relative_path: &str,
-    group: Option<Group>,
+    group: Group,
 ) -> Vec<Music> {
     if probe.chapters.is_empty() {
         return vec![Music {
@@ -1037,15 +1038,15 @@ pub(crate) fn existing_leaf_urls(
         .unwrap_or_default()
 }
 
-fn relative_music_path(file_name: &str, group: Option<&Group>) -> String {
-    group
-        .map(|group| {
-            PathBuf::from(&group.folder)
-                .join(file_name)
-                .to_string_lossy()
-                .to_string()
-        })
-        .unwrap_or_else(|| file_name.to_string())
+fn relative_music_path(collection: &Collection, file_name: &str, group: &Group) -> String {
+    if group.url == collection.url || group.folder == collection.folder {
+        return file_name.to_string();
+    }
+
+    PathBuf::from(&group.folder)
+        .join(file_name)
+        .to_string_lossy()
+        .to_string()
 }
 
 fn remove_existing_leaf_files(
@@ -1080,12 +1081,7 @@ fn remove_existing_leaf_files(
 impl GroupCatalog {
     fn seed(collection: &Collection) -> Self {
         let mut catalog = Self::default();
-        catalog.extend(
-            collection
-                .musics
-                .iter()
-                .filter_map(|music| music.group.clone()),
-        );
+        catalog.extend(collection.musics.iter().map(|music| music.group.clone()));
         catalog
     }
 
@@ -1116,6 +1112,14 @@ impl GroupCatalog {
         let key = normalize_group_key(probe.album.as_deref()?)?;
         self.groups.get(&key).cloned()
     }
+}
+
+fn resolve_music_group(group: Option<Group>, collection: &Collection) -> Group {
+    group.unwrap_or_else(|| Group {
+        name: collection.name.clone(),
+        url: collection.url.clone(),
+        folder: collection.folder.clone(),
+    })
 }
 
 fn normalize_group_key(value: &str) -> Option<String> {

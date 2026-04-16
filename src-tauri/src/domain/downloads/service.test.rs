@@ -67,13 +67,22 @@ fn materialize_music_entries_expands_chapters_without_splitting_files() {
         ],
     };
 
-    let musics = materialize_music_entries(&probe, "album.m4a", None);
+    let group = collection_group(
+        "Album Collection",
+        "https://example.com/playlist",
+        "youtube/album-collection",
+    );
+    let musics = materialize_music_entries(&probe, "album.m4a", group.clone());
 
     assert_eq!(musics.len(), 2);
     assert_eq!(musics[0].name, "Intro");
     assert_eq!(musics[1].name, "Main");
-    assert!(musics[0].group.is_none());
-    assert!(musics[1].group.is_none());
+    assert_eq!(musics[0].group.name, group.name);
+    assert_eq!(musics[0].group.url, group.url);
+    assert_eq!(musics[0].group.folder, group.folder);
+    assert_eq!(musics[1].group.name, group.name);
+    assert_eq!(musics[1].group.url, group.url);
+    assert_eq!(musics[1].group.folder, group.folder);
     assert_eq!(musics[0].path.as_deref(), Some("album.m4a"));
     assert_eq!(musics[1].path.as_deref(), Some("album.m4a"));
     assert_eq!(musics[0].start, 0);
@@ -91,11 +100,14 @@ fn materialize_music_entries_falls_back_to_single_full_track_when_no_chapters_ex
         chapters: vec![],
     };
 
-    let musics = materialize_music_entries(&probe, "single-track.m4a", None);
+    let group = collection_group("Singles", "https://example.com/singles", "youtube/singles");
+    let musics = materialize_music_entries(&probe, "single-track.m4a", group.clone());
 
     assert_eq!(musics.len(), 1);
     assert_eq!(musics[0].name, "Single Track");
-    assert!(musics[0].group.is_none());
+    assert_eq!(musics[0].group.name, group.name);
+    assert_eq!(musics[0].group.url, group.url);
+    assert_eq!(musics[0].group.folder, group.folder);
     assert_eq!(musics[0].url, "https://example.com/video");
     assert_eq!(musics[0].path.as_deref(), Some("single-track.m4a"));
     assert_eq!(musics[0].start, 0);
@@ -117,6 +129,14 @@ fn temp_test_dir() -> PathBuf {
 
 static SERVICE_TEST_RT: LazyLock<Runtime> =
     LazyLock::new(|| Runtime::new().expect("download service test runtime should be created"));
+
+fn collection_group(name: &str, url: &str, folder: &str) -> Group {
+    Group {
+        name: name.to_string(),
+        url: url.to_string(),
+        folder: folder.to_string(),
+    }
+}
 
 #[derive(Debug, Default)]
 struct FakeYtDlpClient {
@@ -183,7 +203,7 @@ fn existing_leaf_urls_only_counts_entries_with_present_files() {
         musics: vec![
             Music {
                 name: "Present".to_string(),
-                group: None,
+                group: collection_group("Demo", "https://example.com/playlist", folder),
                 url: "https://example.com/watch?v=present".to_string(),
                 path: Some("present.m4a".to_string()),
                 start: 0,
@@ -191,7 +211,7 @@ fn existing_leaf_urls_only_counts_entries_with_present_files() {
             },
             Music {
                 name: "Missing".to_string(),
-                group: None,
+                group: collection_group("Demo", "https://example.com/playlist", folder),
                 url: "https://example.com/watch?v=missing".to_string(),
                 path: Some("missing.m4a".to_string()),
                 start: 0,
@@ -233,10 +253,10 @@ fn materialize_music_entries_preserves_group_and_nested_relative_path() {
         .to_string_lossy()
         .to_string();
 
-    let musics = materialize_music_entries(&probe, &relative_path, Some(group.clone()));
+    let musics = materialize_music_entries(&probe, &relative_path, group.clone());
 
     assert_eq!(musics.len(), 1);
-    let music_group = musics[0].group.as_ref().expect("group should be preserved");
+    let music_group = &musics[0].group;
     assert_eq!(music_group.name, group.name);
     assert_eq!(music_group.url, group.url);
     assert_eq!(music_group.folder, group.folder);

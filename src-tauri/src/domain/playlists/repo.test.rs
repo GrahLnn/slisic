@@ -60,6 +60,14 @@ fn sample_collection(url: &str, enable_updates: Option<bool>) -> Collection {
     }
 }
 
+fn collection_group(name: &str, url: &str, folder: &str) -> Group {
+    Group {
+        name: name.to_string(),
+        url: url.to_string(),
+        folder: folder.to_string(),
+    }
+}
+
 fn grouped_collection(url: &str) -> Collection {
     Collection {
         name: "Grouped Demo".to_string(),
@@ -67,11 +75,11 @@ fn grouped_collection(url: &str) -> Collection {
         folder: "youtube/grouped-demo".to_string(),
         musics: vec![Music {
             name: "Track".to_string(),
-            group: Some(Group {
+            group: Group {
                 name: "Disc 1".to_string(),
                 url: format!("{url}#disc-1"),
                 folder: "Disc 1".to_string(),
-            }),
+            },
             url: format!("{url}#track"),
             path: Some(
                 PathBuf::from("Disc 1")
@@ -103,10 +111,10 @@ fn collection_with_musics(
     }
 }
 
-fn shared_music() -> Music {
+fn shared_music(collection_url: &str, collection_folder: &str) -> Music {
     Music {
         name: "Shared Track".to_string(),
-        group: None,
+        group: collection_group("Demo", collection_url, collection_folder),
         url: "https://example.com/watch/shared".to_string(),
         path: Some("Shared Track.m4a".to_string()),
         start: 0,
@@ -302,7 +310,7 @@ fn upsert_collection_round_trips_grouped_music() {
         assert_eq!(reloaded.musics.len(), 1);
         let music = &reloaded.musics[0];
         assert_eq!(music.name, "Track");
-        let group = music.group.as_ref().expect("group should hydrate");
+        let group = &music.group;
         assert_eq!(group.name, "Disc 1");
         assert_eq!(group.url, "https://example.com/grouped#disc-1");
         assert_eq!(group.folder, "Disc 1");
@@ -367,7 +375,7 @@ fn upsert_collection_reuses_existing_legacy_record_id_and_removes_old_music() {
         let legacy_record = insert_collection_row("legacy-grouped", &legacy_collection).await;
         let stale_music = Music {
             name: "Stale Track".to_string(),
-            group: None,
+            group: collection_group("Demo", url, "youtube/demo"),
             url: format!("{url}#stale"),
             path: Some("Stale Track.m4a".to_string()),
             start: 0,
@@ -435,18 +443,23 @@ fn upsert_collection_deletes_music_only_after_all_collection_edges_are_gone() {
     run_async(async {
         ensure_db().await;
 
-        let shared = shared_music();
         let first = collection_with_musics(
             "https://example.com/collection-a",
             "youtube/a",
             Some(false),
-            vec![shared.clone()],
+            vec![shared_music(
+                "https://example.com/collection-a",
+                "youtube/a",
+            )],
         );
         let second = collection_with_musics(
             "https://example.com/collection-b",
             "youtube/b",
             Some(false),
-            vec![shared.clone()],
+            vec![shared_music(
+                "https://example.com/collection-b",
+                "youtube/b",
+            )],
         );
 
         let _ = upsert_collection(&first)
@@ -462,11 +475,12 @@ fn upsert_collection_deletes_music_only_after_all_collection_edges_are_gone() {
         let second_record = second_records.remove(0);
         let first_music_ids = load_collection_music_ids(&first_record).await;
         let second_music_ids = load_collection_music_ids(&second_record).await;
-        assert_eq!(
+        assert_ne!(
             first_music_ids, second_music_ids,
-            "shared music fields should resolve to one shared record"
+            "collection-backed root groups should keep music records collection-scoped"
         );
-        let shared_music_record = first_music_ids[0].clone();
+        let first_music_record = first_music_ids[0].clone();
+        let second_music_record = second_music_ids[0].clone();
 
         let _ = upsert_collection(&collection_with_musics(
             &first.url,
@@ -478,12 +492,16 @@ fn upsert_collection_deletes_music_only_after_all_collection_edges_are_gone() {
         .expect("removing one collection edge should succeed");
 
         assert!(
-            Music::get_record(shared_music_record.clone()).await.is_ok(),
-            "music should stay alive while another collection still references it"
+            Music::get_record(first_music_record.clone()).await.is_err(),
+            "collection-scoped music should be deleted after its collection edge is removed"
         );
         assert_eq!(
             load_collection_music_ids(&second_record).await,
-            vec![shared_music_record.clone()]
+            vec![second_music_record.clone()]
+        );
+        assert!(
+            Music::get_record(second_music_record.clone()).await.is_ok(),
+            "other collection music should stay alive"
         );
 
         let _ = upsert_collection(&collection_with_musics(
@@ -496,8 +514,8 @@ fn upsert_collection_deletes_music_only_after_all_collection_edges_are_gone() {
         .expect("removing the last collection edge should succeed");
 
         assert!(
-            Music::get_record(shared_music_record).await.is_err(),
-            "music should be deleted after its final collection edge is removed"
+            Music::get_record(second_music_record).await.is_err(),
+            "music should be deleted after its collection loses the final edge"
         );
 
         reset_db();

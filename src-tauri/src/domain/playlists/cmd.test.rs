@@ -1,7 +1,7 @@
 use super::PLAYLIST_DB_TEST_LOCK;
 use super::add_exclude;
 use super::check_list;
-use super::model::{Collection, Exclude, Music, PlayList};
+use super::model::{Collection, Exclude, Group, Music, PlayList};
 use super::remove_exclude;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
 use appdb::model::meta::ModelMeta;
@@ -101,7 +101,11 @@ async fn insert_collection_row(id: &str) {
 fn sample_music() -> Music {
     Music {
         name: "Blocked Track".to_string(),
-        group: None,
+        group: Group {
+            name: "Blocked Collection".to_string(),
+            url: "https://example.com/blocked-collection".to_string(),
+            folder: "youtube/blocked-collection".to_string(),
+        },
         url: "https://example.com/watch?v=blocked".to_string(),
         path: Some("Blocked Track.m4a".to_string()),
         start: 0,

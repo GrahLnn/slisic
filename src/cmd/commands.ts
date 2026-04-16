@@ -187,7 +187,7 @@ export type MouseWindowInfo = {
 
 export type Music = {
 	name: string,
-	group: Group | null,
+	group: Group,
 	url: string,
 	path: string | null,
 	start: number,

@@ -1,4 +1,4 @@
-use super::model::{Collection, Music, PlayList};
+use super::model::{Collection, Group, Music, PlayList};
 use appdb::Crud;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
 use appdb::model::meta::ModelMeta;
@@ -229,6 +229,12 @@ fn sample_collection(
     folder: &str,
     enable_updates: Option<bool>,
 ) -> Collection {
+    let group = Group {
+        name: name.to_string(),
+        url: url.to_string(),
+        folder: folder.to_string(),
+    };
+
     Collection {
         name: name.to_string(),
         url: url.to_string(),
@@ -236,7 +242,7 @@ fn sample_collection(
         musics: vec![
             Music {
                 name: format!("{name} intro"),
-                group: None,
+                group: group.clone(),
                 url: format!("{url}#intro"),
                 path: Some(format!("{name}.m4a")),
                 start: 0,
@@ -244,7 +250,7 @@ fn sample_collection(
             },
             Music {
                 name: format!("{name} outro"),
-                group: None,
+                group,
                 url: format!("{url}#outro"),
                 path: Some(format!("{name}.m4a")),
                 start: 42,
@@ -278,15 +284,9 @@ fn sample_playlist() -> PlayList {
 
 fn assert_music_eq(actual: &Music, expected: &Music) {
     assert_eq!(actual.name, expected.name);
-    match (&actual.group, &expected.group) {
-        (Some(actual_group), Some(expected_group)) => {
-            assert_eq!(actual_group.name, expected_group.name);
-            assert_eq!(actual_group.url, expected_group.url);
-            assert_eq!(actual_group.folder, expected_group.folder);
-        }
-        (None, None) => {}
-        _ => panic!("music group presence should match"),
-    }
+    assert_eq!(actual.group.name, expected.group.name);
+    assert_eq!(actual.group.url, expected.group.url);
+    assert_eq!(actual.group.folder, expected.group.folder);
     assert_eq!(actual.url, expected.url);
     assert_eq!(actual.path, expected.path);
     assert_eq!(actual.start, expected.start);
@@ -330,6 +330,10 @@ fn serializes_playlist_with_nested_collections_and_musics() {
         "playlist-alpha intro"
     );
     assert_eq!(
+        value["collections"][0]["musics"][0]["group"]["url"],
+        "https://example.com/playlist-alpha"
+    );
+    assert_eq!(
         value["collections"][1]["enable_updates"],
         serde_json::Value::Null
     );
@@ -349,6 +353,11 @@ fn deserializes_playlist_with_collection_update_flags() {
                 "musics": [
                     {
                         "name": "track-a",
+                        "group": {
+                            "name": "playlist-a",
+                            "url": "https://example.com/playlist-a",
+                            "folder": "youtube/playlist-a"
+                        },
                         "url": "https://example.com/track-a",
                         "path": "track-a.m4a",
                         "start": 0,
@@ -365,6 +374,11 @@ fn deserializes_playlist_with_collection_update_flags() {
                 "musics": [
                     {
                         "name": "track-b",
+                        "group": {
+                            "name": "single-b",
+                            "url": "https://example.com/single-b",
+                            "folder": "youtube/single-b"
+                        },
                         "url": "https://example.com/track-b",
                         "path": null,
                         "start": 0,
@@ -436,6 +450,7 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
 
     run_async(async {
         ensure_db().await;
+        bootstrap_table(Group::table_name()).await;
         bootstrap_table(Music::table_name()).await;
         bootstrap_table(Collection::table_name()).await;
         bootstrap_table(PlayList::table_name()).await;
@@ -530,6 +545,7 @@ fn save_fails_for_playlist_without_id_field() {
 
     run_async(async {
         ensure_db().await;
+        bootstrap_table(Group::table_name()).await;
         bootstrap_table(Music::table_name()).await;
         bootstrap_table(Collection::table_name()).await;
 

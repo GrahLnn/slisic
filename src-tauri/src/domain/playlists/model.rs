@@ -34,8 +34,8 @@ pub struct Group {
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, Store, Type)]
 pub struct Music {
     pub name: String,
-    #[foreign]
-    pub group: Option<Group>,
+    #[back_relate("includes")]
+    pub group: Group,
     pub url: String,
     pub path: Option<String>,
     pub start: u32,

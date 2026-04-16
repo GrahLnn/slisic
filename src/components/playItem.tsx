@@ -7,6 +7,7 @@ import {
   collectionTitleTextClassName,
   useCollectionTitleColor,
 } from "./collectionTitle";
+import { Torph } from "@grahlnn/comps";
 
 export function PlayItem({
   className,
