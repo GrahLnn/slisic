@@ -117,11 +117,17 @@ const candidateItems: ConfigCandidateItem[] = [
 
 describe("ListConfig title view model", () => {
   test("captures the live create draft title snapshot", () => {
-    assert.deepEqual(createListConfigTitleSnapshot("collection-title:create", createDraft), {
-      layoutId: "collection-title:create",
-      value: "",
-      placeholder: "Create a List",
-    });
+    assert.deepEqual(
+      createListConfigTitleSnapshot({
+        activeLayoutId: "collection-title:create",
+        draft: createDraft,
+      }),
+      {
+        layoutId: "collection-title:create",
+        value: "",
+        placeholder: "Create a List",
+      },
+    );
   });
 
   test("keeps the previous snapshot while the exit animation is running", () => {
@@ -157,6 +163,7 @@ describe("ListConfig title view model", () => {
       resolveListConfigTitleViewModel({
         activeLayoutId: "playlist-title:Quiet Morning",
         draft: editDraft,
+        pendingPlaylistName: null,
         titleToneHandoff: null,
         previousSnapshot: null,
       }),
@@ -171,6 +178,21 @@ describe("ListConfig title view model", () => {
         layoutId: "playlist-title:Quiet Morning",
         placeholder: undefined,
         value: "Quiet Morning",
+      },
+    );
+  });
+
+  test("creates a loading snapshot from the pending playlist name before the draft arrives", () => {
+    assert.deepEqual(
+      createListConfigTitleSnapshot({
+        activeLayoutId: "playlist-title:Quiet Morning",
+        draft: null,
+        pendingPlaylistName: "Quiet Morning",
+      }),
+      {
+        layoutId: "playlist-title:Quiet Morning",
+        value: "Quiet Morning",
+        placeholder: undefined,
       },
     );
   });
@@ -708,6 +730,7 @@ describe("ListConfig title view model", () => {
         ...draftWithGroup,
         name: "Original Name",
       },
+      pendingPlaylistName: null,
       titleToneHandoff: null,
       isPresent: true,
       libraryItems: [

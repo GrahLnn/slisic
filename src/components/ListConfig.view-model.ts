@@ -62,28 +62,48 @@ export type ListConfigToolLabelItem =
   | ListConfigCandidateToolLabelItem;
 
 export function createListConfigTitleSnapshot(
-  activeLayoutId: string | null,
-  draft: ConfigDraft | null,
+  args: {
+    activeLayoutId: string | null;
+    draft: ConfigDraft | null;
+    pendingPlaylistName?: string | null;
+  },
 ): ListConfigTitleSnapshot | null {
-  if (!activeLayoutId || !draft) {
+  if (!args.activeLayoutId) {
     return null;
   }
 
+  if (!args.draft) {
+    if (!args.pendingPlaylistName) {
+      return null;
+    }
+
+    return {
+      layoutId: args.activeLayoutId,
+      value: args.pendingPlaylistName,
+      placeholder: undefined,
+    };
+  }
+
   return {
-    layoutId: activeLayoutId,
-    value: draft.name,
-    placeholder: draft.mode === "create" ? CREATE_COLLECTION_TITLE : undefined,
+    layoutId: args.activeLayoutId,
+    value: args.draft.name,
+    placeholder: args.draft.mode === "create" ? CREATE_COLLECTION_TITLE : undefined,
   };
 }
 
 export function resolveListConfigTitleViewModel(args: {
   activeLayoutId: string | null;
   draft: ConfigDraft | null;
+  pendingPlaylistName?: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   previousSnapshot: ListConfigTitleSnapshot | null;
 }): ListConfigTitleViewModel {
   const snapshot =
-    createListConfigTitleSnapshot(args.activeLayoutId, args.draft) ?? args.previousSnapshot;
+    createListConfigTitleSnapshot({
+      activeLayoutId: args.activeLayoutId,
+      draft: args.draft,
+      pendingPlaylistName: args.pendingPlaylistName,
+    }) ?? args.previousSnapshot;
   const layoutId = snapshot?.layoutId;
 
   return {
@@ -335,6 +355,7 @@ export function resolveListConfigViewModel(args: {
   activeLayoutId: string | null;
   draft: ConfigDraft | null;
   draftBaseline: ConfigDraft | null;
+  pendingPlaylistName?: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   isPresent: boolean;
   libraryItems: readonly ConfigSidebarItem[];
@@ -353,6 +374,7 @@ export function resolveListConfigViewModel(args: {
   const title = resolveListConfigTitleViewModel({
     activeLayoutId: args.activeLayoutId,
     draft: args.draft,
+    pendingPlaylistName: args.pendingPlaylistName,
     titleToneHandoff: args.titleToneHandoff,
     previousSnapshot: args.previousTitleSnapshot,
   });

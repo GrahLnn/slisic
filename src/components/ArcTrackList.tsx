@@ -8,6 +8,7 @@ import {
   type RefObject,
   type SetStateAction,
 } from "react";
+import { cn } from "@/lib/utils";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { motion, type MotionProps } from "motion/react";
 import type { ConfigSidebarItem } from "@/src/flow/appLogic/core";
@@ -29,15 +30,12 @@ type ArcTrackListProps = {
   items: readonly ConfigSidebarItem[];
   onPushItem?: (item: ConfigSidebarItem) => void;
   motionProps?: MotionProps;
+  interactionDisabled?: boolean;
 };
 
 type ArcSample = {
   x: number;
   y: number;
-};
-
-type ArcProjection = ArcSample & {
-  angle: number;
 };
 
 type ArcTrackItemRegistryKey = string | number | bigint;
@@ -101,6 +99,21 @@ export function resolveArcTrackPathClassName(itemCount: number) {
 
 export function resolveArcTrackPathStrokeWidth(itemCount: number) {
   return itemCount === 0 ? 1.7 : 1.25;
+}
+
+export function resolveArcTrackItemFrame(args: {
+  sample: ArcSample | null;
+  itemWidth: number;
+  itemHeight: number;
+}) {
+  if (!args.sample) {
+    return null;
+  }
+
+  return {
+    left: args.sample.x - args.itemWidth + 2,
+    top: args.sample.y - args.itemHeight / 2,
+  };
 }
 
 function resolveArcTrackViewportHeight(scrollElement: HTMLDivElement | null) {
@@ -181,7 +194,7 @@ function buildArcLookup(viewportHeight: number) {
   return lookup;
 }
 
-function getArcSampleAtY(targetY: number, samples: ArcSample[]): ArcProjection | null {
+function getArcSampleAtY(targetY: number, samples: ArcSample[]): ArcSample | null {
   if (samples.length < 2) {
     return null;
   }
@@ -196,7 +209,6 @@ function getArcSampleAtY(targetY: number, samples: ArcSample[]): ArcProjection |
     return {
       x: current.x + slope * (targetY - current.y),
       y: targetY,
-      angle: (Math.atan2(next.x - current.x, next.y - current.y) * 180) / Math.PI,
     };
   }
 
@@ -212,7 +224,6 @@ function getArcSampleAtY(targetY: number, samples: ArcSample[]): ArcProjection |
     return {
       x: current.x + slope * (targetY - current.y),
       y: targetY,
-      angle: (Math.atan2(current.x - previous.x, current.y - previous.y) * 180) / Math.PI,
     };
   }
 
@@ -234,16 +245,8 @@ function getArcSampleAtY(targetY: number, samples: ArcSample[]): ArcProjection |
   const ratio = (targetY - start.y) / Math.max(1e-6, end.y - start.y);
   const x = start.x + (end.x - start.x) * ratio;
   const y = start.y + (end.y - start.y) * ratio;
-  const angle = (Math.atan2(end.x - start.x, end.y - start.y) * 180) / Math.PI;
 
-  return { x, y, angle };
-}
-
-function createArcTrackItemTransform(sample: ArcProjection) {
-  return (
-    `translate3d(${sample.x}px, ${sample.y}px, 0) ` +
-    `translate3d(calc(-100% + 2px), -50%, 0) rotate(${sample.angle}deg)`
-  );
+  return { x, y };
 }
 
 function applyArcTrackItemPosition(args: {
@@ -254,17 +257,41 @@ function applyArcTrackItemPosition(args: {
 }) {
   const sample = getArcSampleAtY(args.start - args.scrollOffset, args.samples);
 
-  if (!sample) {
+  const frame = resolveArcTrackItemFrame({
+    sample,
+    itemWidth: args.node.offsetWidth,
+    itemHeight: args.node.offsetHeight,
+  });
+
+  if (!frame) {
     if (args.node.style.opacity !== "0") {
       args.node.style.opacity = "0";
     }
+
+    if (args.node.style.left !== "") {
+      args.node.style.left = "";
+    }
+
+    if (args.node.style.top !== "") {
+      args.node.style.top = "";
+    }
+
     return;
   }
 
-  const transform = createArcTrackItemTransform(sample);
+  const nextLeft = `${frame.left}px`;
+  const nextTop = `${frame.top}px`;
 
-  if (args.node.style.transform !== transform) {
-    args.node.style.transform = transform;
+  if (args.node.style.left !== nextLeft) {
+    args.node.style.left = nextLeft;
+  }
+
+  if (args.node.style.top !== nextTop) {
+    args.node.style.top = nextTop;
+  }
+
+  if (args.node.style.transform !== "") {
+    args.node.style.transform = "";
   }
 
   if (args.node.style.opacity !== "1") {
@@ -404,7 +431,7 @@ const ArcTrackItem = memo(function ArcTrackItem({
           start,
         });
       }}
-      className="pointer-events-auto absolute top-0 left-0 origin-right whitespace-nowrap opacity-0 will-change-transform"
+      className="pointer-events-auto absolute whitespace-nowrap opacity-0"
     >
       <div className="flex items-center justify-end gap-3">
         <ToolLabel
@@ -438,7 +465,11 @@ const ArcTrackItem = memo(function ArcTrackItem({
   );
 });
 
-function ArcTrackListBody({ items, onPushItem }: Pick<ArcTrackListProps, "items" | "onPushItem">) {
+function ArcTrackListBody({
+  items,
+  onPushItem,
+  interactionDisabled = false,
+}: Pick<ArcTrackListProps, "items" | "onPushItem" | "interactionDisabled">) {
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
   const itemRegistryRef = useRef<ArcTrackItemNodeRegistry>(new Map());
   const positionFrameRef = useRef<number | null>(null);
@@ -509,7 +540,10 @@ function ArcTrackListBody({ items, onPushItem }: Pick<ArcTrackListProps, "items"
       <motion.div
         layoutScroll
         ref={scrollElementCallbackRef.current}
-        className="pointer-events-auto absolute inset-y-0 right-0 z-0 w-screen overflow-y-auto overscroll-y-contain hide-scrollbar [overflow-anchor:none]"
+        className={cn(
+          "absolute inset-y-0 right-0 z-0 w-screen overflow-y-auto overscroll-y-contain hide-scrollbar [overflow-anchor:none]",
+          interactionDisabled ? "pointer-events-none" : "pointer-events-auto",
+        )}
       >
         <div className="relative" style={{ height: `${arcTrackHeight}px` }}>
           <div
@@ -545,14 +579,23 @@ function ArcTrackListBody({ items, onPushItem }: Pick<ArcTrackListProps, "items"
   );
 }
 
-export function ArcTrackList({ items, motionProps, onPushItem }: ArcTrackListProps) {
+export function ArcTrackList({
+  items,
+  motionProps,
+  onPushItem,
+  interactionDisabled = false,
+}: ArcTrackListProps) {
   return (
     <motion.div
       layoutRoot
       {...motionProps}
       className="fixed inset-y-0 right-0 z-0 hidden min-[1180px]:block"
     >
-      <ArcTrackListBody items={items} onPushItem={onPushItem} />
+      <ArcTrackListBody
+        items={items}
+        onPushItem={onPushItem}
+        interactionDisabled={interactionDisabled}
+      />
     </motion.div>
   );
 }

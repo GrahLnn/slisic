@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   createArcTrackListIdentity,
+  resolveArcTrackItemFrame,
   resolveArcTrackPathClassName,
   resolveArcTrackPathStrokeWidth,
   resolveArcTrackViewportScrollTop,
@@ -143,6 +144,36 @@ describe("resolveArcTrackViewportScrollTop", () => {
         viewportHeight: 640,
       }),
       0,
+    );
+  });
+});
+
+describe("resolveArcTrackItemFrame", () => {
+  test("projects the item into a stable top/left frame", () => {
+    assert.deepEqual(
+      resolveArcTrackItemFrame({
+        sample: {
+          x: 244,
+          y: 220,
+        },
+        itemWidth: 120,
+        itemHeight: 28,
+      }),
+      {
+        left: 126,
+        top: 206,
+      },
+    );
+  });
+
+  test("returns null when the arc sample is outside the visible lookup", () => {
+    assert.equal(
+      resolveArcTrackItemFrame({
+        sample: null,
+        itemWidth: 120,
+        itemHeight: 28,
+      }),
+      null,
     );
   });
 });

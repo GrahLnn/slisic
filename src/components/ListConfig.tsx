@@ -6,9 +6,15 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
 import { crab } from "@/src/cmd";
-import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
-import { action as pasteDownloadAction, hook as pasteDownloadHook } from "@/src/flow/pasteDownload";
-import { AnimatePresence, LayoutGroup, motion, useIsPresent } from "motion/react";
+import {
+  action as appLogicAction,
+  hook as appLogicHook,
+} from "@/src/flow/appLogic";
+import {
+  action as pasteDownloadAction,
+  hook as pasteDownloadHook,
+} from "@/src/flow/pasteDownload";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import {
   createConfigSidebarItemRef,
   createConfigSidebarItems,
@@ -128,7 +134,8 @@ function resolveListConfigToolLabelTool(args: {
 }): ReactNode {
   if (args.item.kind === "playlist") {
     const playlistItem = args.item;
-    const collectionUpdatesToolText = resolveListConfigCollectionUpdatesToolText(playlistItem);
+    const collectionUpdatesToolText =
+      resolveListConfigCollectionUpdatesToolText(playlistItem);
 
     return (
       <div
@@ -214,8 +221,14 @@ function FnButton({ text, onClick }: { text: string; onClick?: () => void }) {
 
 export function ListConfig() {
   const isPresent = useIsPresent();
-  const { activeLayoutId, collections, draft, draftBaseline, savePath, titleToneHandoff } =
-    appLogicHook.useContext();
+  const {
+    activeLayoutId,
+    collections,
+    draft,
+    draftBaseline,
+    savePath,
+    titleToneHandoff,
+  } = appLogicHook.useContext();
   const { items: candidateItems } = pasteDownloadHook.useContext();
   const titleSnapshotRef = useRef<ListConfigTitleSnapshot | null>(null);
   const emptyStateRef = useRef<ListConfigEmptyState | null>(null);
@@ -238,7 +251,8 @@ export function ListConfig() {
 
   async function handleChangeSavePath() {
     try {
-      const defaultSavePath = savePath || (await getDefaultListConfigSavePath());
+      const defaultSavePath =
+        savePath || (await getDefaultListConfigSavePath());
       const selectedPath = await open({
         directory: true,
         multiple: false,
@@ -255,7 +269,9 @@ export function ListConfig() {
 
       result.match({
         Ok: (meta) => {
-          appLogicAction.changeSavePath(resolveListConfigSavePath(meta.save_path, selectedPath));
+          appLogicAction.changeSavePath(
+            resolveListConfigSavePath(meta.save_path, selectedPath),
+          );
         },
         Err: (error) => {
           console.error("Failed to persist the selected save path", error);
@@ -267,147 +283,155 @@ export function ListConfig() {
   }
 
   return (
-    <LayoutGroup id="list-config-shared-layout">
-      <div
-        className={cn(
-          "relative flex flex-col w-160 mx-auto mt-24",
-          !isPresent && "pointer-events-none",
-        )}
-      >
-        <div className={cn("relative z-20 flex flex-col")}>
-          <motion.div {...contentFadeProps}>
-            <button
-              type="button"
-              onClick={() => {
-                pasteDownloadAction.reset();
-                appLogicAction.back();
-              }}
-              className={cn(
-                "group relative isolate inline-flex w-fit cursor-pointer select-none py-2 pr-2",
-                "before:absolute before:inset-y-0 before:-left-2 before:right-0 before:-z-10",
-                "before:rounded-[25px] before:bg-transparent before:transition before:duration-300",
-                "before:[corner-shape:squircle_squircle_squircle_squircle]",
-                "hover:before:bg-[#e5e5e5] dark:hover:before:bg-[#262626]",
-              )}
-            >
-              <BackActionIcon hasDraftChanges={viewModel.hasDraftChanges} />
-            </button>
-          </motion.div>
-          <EditableTitle
-            autoFocus={viewModel.title.autoFocus}
-            className={cn("text-4xl font-bold", "w-fit")}
-            handoffTone={viewModel.title.handoffTone}
-            interactionDisabled={viewModel.interactionFlags.isTitleInteractionDisabled}
-            layoutId={viewModel.title.layoutId}
-            placeholder={viewModel.title.placeholder}
-            style={{ fontFamily: "var(--font-noto-sans)" }}
-            value={viewModel.title.value}
-            onChange={appLogicAction.changeDraftName}
-          />
-          <motion.div {...contentFadeProps}>
-            <ToolLabel
-              className="mt-2"
-              textClassName="text-sm trim-cap text-[#404040] dark:text-[#a3a3a3]"
-              text={savePath}
-              tool={
-                <>
-                  <CoverTool text="Change" onClick={handleChangeSavePath} />
-                  <MaskR />
-                </>
-              }
-            />
-            <div className="h-24" />
-            <div className="flex justify-between">
-              <div className="flex gap-5">
-                <FnButton text="Paste" onClick={pasteDownloadAction.paste} />
-                <FnButton text="Import" />
-              </div>
-
-              <div>{/*<FnButton text="Save" />*/}</div>
-            </div>
-            <div className="h-2" />
-          </motion.div>
-        </div>
-
-        <div className="relative z-10 overflow-visible">
-          <motion.div
-            {...contentFadeProps}
+    <div
+      className={cn(
+        "relative flex flex-col w-160 mx-auto mt-24",
+        !isPresent && "pointer-events-none",
+      )}
+    >
+      <div className={cn("relative z-20 flex flex-col")}>
+        <motion.div {...contentFadeProps}>
+          <button
+            type="button"
+            onClick={() => {
+              pasteDownloadAction.reset();
+              appLogicAction.back();
+            }}
             className={cn(
-              "flex flex-col",
-              viewModel.interactionFlags.isToolListInteractionDisabled && "pointer-events-none",
+              "group relative isolate inline-flex w-fit cursor-pointer select-none py-2 pr-2",
+              "before:absolute before:inset-y-0 before:-left-2 before:right-0 before:-z-10",
+              "before:rounded-[25px] before:bg-transparent before:transition before:duration-300",
+              "before:[corner-shape:squircle_squircle_squircle_squircle]",
+              "hover:before:bg-[#e5e5e5] dark:hover:before:bg-[#262626]",
             )}
           >
-            <AnimatePresence initial={false} mode="popLayout">
-              {viewModel.toolLabelItems.map((item) => (
-                <motion.div
-                  key={item.id}
-                  layout
-                  className="group"
-                  initial={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
-                  animate={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
-                  exit={{ height: 0, paddingTop: 0, paddingBottom: 0 }}
-                >
-                  <div
-                    className={cn(
-                      "flex items-center backdrop-blur-md w-fit gap-2 pr-1.5",
-                      "rounded-full",
-                    )}
-                  >
-                    <ToolLabel
-                      className={cn("")}
-                      hoverMode="group"
-                      interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
-                      layoutId={item.kind === "playlist" ? item.id : undefined}
-                      toolLayer="portal"
-                      text={item.text}
-                      textClassName={resolveListConfigToolLabelTextClassName(item)}
-                      tool={resolveListConfigToolLabelTool({
-                        item,
-                        onRemoveDraftItem: (ref) => {
-                          appLogicAction.removeDraftItem(ref);
-                        },
-                        onDeleteCandidateItem: (id) => {
-                          pasteDownloadAction.delete(id);
-                        },
-                      })}
-                    />
-                    {shouldShowListConfigAutoDownloadIcon(item) && <icons.autoDownload size={12} />}
-                  </div>
-                </motion.div>
-              ))}
-            </AnimatePresence>
-          </motion.div>
-
-          <AnimatePresence initial={false}>
-            {viewModel.emptyState.match({
-              true: () => (
-                <motion.div
-                  key="empty-state"
-                  {...contentFadeProps}
-                  className="pointer-events-none absolute inset-x-0 top-0"
-                >
-                  <p
-                    className={cn(
-                      "max-w-xl cursor-default select-none whitespace-pre-line text-pretty text-sm leading-6",
-                      "text-[#525252] dark:text-[#a3a3a3]",
-                    )}
-                  >
-                    {LIST_CONFIG_EMPTY_STATE_TEXT}
-                  </p>
-                </motion.div>
-              ),
-              false: () => null,
-            })}
-          </AnimatePresence>
-        </div>
-        {viewModel.interactionFlags.shouldRenderArcTrack && (
-          <ArcTrackList
-            items={viewModel.arcTrackItems}
-            onPushItem={(item) => appLogicAction.includeDraftItem(createConfigSidebarItemRef(item))}
-            motionProps={contentFadeProps}
+            <BackActionIcon hasDraftChanges={viewModel.hasDraftChanges} />
+          </button>
+        </motion.div>
+        <EditableTitle
+          autoFocus={viewModel.title.autoFocus}
+          className={cn("text-4xl font-bold", "w-fit")}
+          handoffTone={viewModel.title.handoffTone}
+          interactionDisabled={
+            viewModel.interactionFlags.isTitleInteractionDisabled
+          }
+          layoutId={viewModel.title.layoutId}
+          placeholder={viewModel.title.placeholder}
+          style={{ fontFamily: "var(--font-noto-sans)" }}
+          value={viewModel.title.value}
+          onChange={appLogicAction.changeDraftName}
+        />
+        <motion.div {...contentFadeProps}>
+          <ToolLabel
+            className="mt-2"
+            textClassName="text-sm trim-cap text-[#404040] dark:text-[#a3a3a3]"
+            text={savePath}
+            tool={
+              <>
+                <CoverTool text="Change" onClick={handleChangeSavePath} />
+                <MaskR />
+              </>
+            }
           />
-        )}
+          <div className="h-24" />
+          <div className="flex justify-between">
+            <div className="flex gap-5">
+              <FnButton text="Paste" onClick={pasteDownloadAction.paste} />
+              <FnButton text="Import" />
+            </div>
+
+            <div>{/*<FnButton text="Save" />*/}</div>
+          </div>
+          <div className="h-2" />
+        </motion.div>
       </div>
-    </LayoutGroup>
+
+      <div className="relative z-10 overflow-visible">
+        {viewModel.emptyState.match({
+          true: () => (
+            <motion.div
+              {...contentFadeProps}
+              className="pointer-events-none absolute inset-x-0 top-0"
+            >
+              <p
+                className={cn(
+                  "max-w-xl cursor-default select-none whitespace-pre-line text-pretty text-sm leading-6",
+                  "text-[#525252] dark:text-[#a3a3a3]",
+                )}
+              >
+                {LIST_CONFIG_EMPTY_STATE_TEXT}
+              </p>
+            </motion.div>
+          ),
+          false: () => (
+            <motion.div
+              {...contentFadeProps}
+              className={cn(
+                "flex flex-col",
+                viewModel.interactionFlags.isToolListInteractionDisabled &&
+                  "pointer-events-none",
+              )}
+            >
+              <AnimatePresence initial={false}>
+                {viewModel.toolLabelItems.map((item) => (
+                  <motion.div
+                    key={item.id}
+                    className="group"
+                    initial={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
+                    animate={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
+                    exit={{ height: 0, paddingTop: 0, paddingBottom: 0 }}
+                  >
+                    <div
+                      className={cn(
+                        "flex items-center backdrop-blur-md w-fit gap-2 pr-1.5",
+                        "rounded-full",
+                      )}
+                    >
+                      <ToolLabel
+                        className={cn("")}
+                        hoverMode="group"
+                        interactionDisabled={
+                          viewModel.interactionFlags
+                            .isToolListInteractionDisabled
+                        }
+                        layoutId={
+                          item.kind === "playlist" ? item.id : undefined
+                        }
+                        toolLayer="portal"
+                        text={item.text}
+                        textClassName={resolveListConfigToolLabelTextClassName(
+                          item,
+                        )}
+                        tool={resolveListConfigToolLabelTool({
+                          item,
+                          onRemoveDraftItem: (ref) => {
+                            appLogicAction.removeDraftItem(ref);
+                          },
+                          onDeleteCandidateItem: (id) => {
+                            pasteDownloadAction.delete(id);
+                          },
+                        })}
+                      />
+                      {shouldShowListConfigAutoDownloadIcon(item) && (
+                        <icons.autoDownload size={12} />
+                      )}
+                    </div>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </motion.div>
+          ),
+        })}
+      </div>
+      {viewModel.interactionFlags.shouldRenderArcTrack && (
+        <ArcTrackList
+          items={viewModel.arcTrackItems}
+          onPushItem={(item) =>
+            appLogicAction.includeDraftItem(createConfigSidebarItemRef(item))
+          }
+          motionProps={contentFadeProps}
+        />
+      )}
+    </div>
   );
 }

@@ -314,6 +314,7 @@ export function ToolLabel({
   const [isLayoutAnimating, setIsLayoutAnimating] = useState(false);
   const resolvedTextClassName = textClassName ?? "";
   const rootRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const hoverSyncFrameRef = useRef<number | null>(null);
   const effectiveInteractionDisabled = interactionDisabled || isLayoutAnimating;
@@ -467,25 +468,30 @@ export function ToolLabel({
 
   return (
     <>
-      <motion.div
+      <div
         ref={rootRef}
-        layoutId={layoutId}
-        onLayoutAnimationStart={() => {
-          clearPendingHoverSync();
-          setIsLayoutAnimating(true);
-          setIsHovered(false);
-        }}
-        onLayoutAnimationComplete={() => {
-          setIsLayoutAnimating(false);
-          scheduleHoverSync();
-        }}
         onMouseEnter={hoverMode === "self" ? openOverlay : undefined}
         onMouseLeave={
           hoverMode === "self" ? (event) => closeOverlay(event.relatedTarget) : undefined
         }
         className={cn("relative inline-flex w-fit select-none items-center", className)}
       >
-        <div className={cn("inline-flex w-fit", resolvedTextClassName)}>{text}</div>
+        <motion.div
+          ref={textRef}
+          layoutId={layoutId}
+          onLayoutAnimationStart={() => {
+            clearPendingHoverSync();
+            setIsLayoutAnimating(true);
+            setIsHovered(false);
+          }}
+          onLayoutAnimationComplete={() => {
+            setIsLayoutAnimating(false);
+            scheduleHoverSync();
+          }}
+          className={cn("inline-flex w-fit", resolvedTextClassName)}
+        >
+          {text}
+        </motion.div>
         <AnimatePresence initial={false}>
           {isOverlayVisible &&
             tool &&
@@ -514,7 +520,7 @@ export function ToolLabel({
               </div>
             ))}
         </AnimatePresence>
-      </motion.div>
+      </div>
     </>
   );
 }
