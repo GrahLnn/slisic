@@ -1,19 +1,34 @@
 import { assign } from "xstate";
-import { createInitialContext, parseClipboardDownloadUrl, toErrorMessage } from "./core";
-import { invoker, ss } from "./events";
+import { draftCollectionUpserted, send as sendAppLogic } from "../appLogic/runtime";
+import {
+  activateNextCandidate,
+  appendCandidateItem,
+  clearActiveCandidate,
+  completeActiveCandidateProbe,
+  createInitialContext,
+  deleteCandidateItem,
+  failActiveCandidateEnqueue,
+  failActiveCandidateProbe,
+  findActiveCandidateItem,
+  hasPendingCandidateToProbe,
+  removeActiveCandidate,
+  toErrorMessage,
+} from "./core";
+import { invoker, payloads, ss } from "./events";
 import { src } from "./src";
 
-function resolveClipboardUrl(text: string | null) {
-  return parseClipboardDownloadUrl(text ?? "");
-}
+const pasteRequested = payloads["paste.requested"];
+const candidateDelete = payloads["candidate.delete"];
 
 export const machine = src.createMachine({
   initial: ss.mainx.State.idle,
   context: createInitialContext(),
   on: {
-    paste: {
-      target: `.${ss.mainx.State.readingClipboard}`,
-      actions: assign(() => createInitialContext()),
+    [pasteRequested.evt]: {
+      actions: assign(({ context, event }) => appendCandidateItem(context, event.output)),
+    },
+    [candidateDelete.evt]: {
+      actions: assign(({ context, event }) => deleteCandidateItem(context, event.output)),
     },
     reset: {
       target: `.${ss.mainx.State.idle}`,
@@ -21,55 +36,12 @@ export const machine = src.createMachine({
     },
   },
   states: {
-    [ss.mainx.State.idle]: {},
-    [ss.mainx.State.readingClipboard]: {
-      invoke: {
-        id: invoker.readClipboardText.id,
-        src: invoker.readClipboardText.src,
-        onDone: {
-          target: ss.mainx.State.validating,
-          actions: assign(({ event }) => ({
-            ...createInitialContext(),
-            clipboardText: event.output,
-          })),
-        },
-        onError: {
-          target: ss.mainx.State.error,
-          actions: assign(({ event }) => ({
-            ...createInitialContext(),
-            error: toErrorMessage(event.error),
-          })),
-        },
-      },
-    },
-    [ss.mainx.State.validating]: {
+    [ss.mainx.State.idle]: {
       always: [
         {
-          guard: ({ context }) => resolveClipboardUrl(context.clipboardText).ok,
+          guard: ({ context }) => hasPendingCandidateToProbe(context),
           target: ss.mainx.State.probing,
-          actions: assign(({ context }) => {
-            const parsed = resolveClipboardUrl(context.clipboardText);
-            if (!parsed.ok) {
-              return {};
-            }
-
-            return {
-              url: parsed.url,
-            };
-          }),
-        },
-        {
-          target: ss.mainx.State.error,
-          actions: assign(({ context }) => {
-            const parsed = resolveClipboardUrl(context.clipboardText);
-            if (parsed.ok) {
-              return {};
-            }
-
-            return {
-              error: parsed.error,
-            };
-          }),
+          actions: assign(({ context }) => activateNextCandidate(context)),
         },
       ],
     },
@@ -78,25 +50,27 @@ export const machine = src.createMachine({
         id: invoker.probeDownloadResource.id,
         src: invoker.probeDownloadResource.src,
         input: ({ context }) => {
-          if (!context.url) {
-            throw new Error("missing validated URL for probe");
+          const item = findActiveCandidateItem(context);
+
+          if (!item?.sourceUrl) {
+            throw new Error("missing candidate URL for probe");
           }
 
-          return context.url;
+          return item.sourceUrl;
         },
         onDone: {
           target: ss.mainx.State.enqueueing,
-          actions: assign({
-            probe: ({ event }) => event.output,
-            url: ({ event }) => event.output.url,
-            error: () => null,
-          }),
+          actions: assign(({ context, event }) =>
+            completeActiveCandidateProbe(context, event.output),
+          ),
         },
         onError: {
-          target: ss.mainx.State.error,
-          actions: assign({
-            error: ({ event }) => toErrorMessage(event.error),
-          }),
+          target: ss.mainx.State.idle,
+          actions: assign(({ context, event }) =>
+            clearActiveCandidate(
+              failActiveCandidateProbe(context, toErrorMessage(event.error)),
+            ),
+          ),
         },
       },
     },
@@ -105,29 +79,32 @@ export const machine = src.createMachine({
         id: invoker.enqueueCollectionDownload.id,
         src: invoker.enqueueCollectionDownload.src,
         input: ({ context }) => {
-          if (!context.url) {
-            throw new Error("missing download URL for enqueue");
+          const item = findActiveCandidateItem(context);
+
+          if (!item?.sourceUrl) {
+            throw new Error("missing candidate URL for enqueue");
           }
 
-          return context.url;
+          return item.sourceUrl;
         },
         onDone: {
-          target: ss.mainx.State.done,
-          actions: assign({
-            task: ({ event }) => event.output,
-            url: ({ event }) => event.output.url,
-            error: () => null,
-          }),
+          target: ss.mainx.State.idle,
+          actions: [
+            assign(({ context }) => removeActiveCandidate(context)),
+            ({ event }) => {
+              sendAppLogic(draftCollectionUpserted.load(event.output.collection));
+            },
+          ],
         },
         onError: {
-          target: ss.mainx.State.error,
-          actions: assign({
-            error: ({ event }) => toErrorMessage(event.error),
-          }),
+          target: ss.mainx.State.idle,
+          actions: assign(({ context, event }) =>
+            clearActiveCandidate(
+              failActiveCandidateEnqueue(context, toErrorMessage(event.error)),
+            ),
+          ),
         },
       },
     },
-    [ss.mainx.State.done]: {},
-    [ss.mainx.State.error]: {},
   },
 });

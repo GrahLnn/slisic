@@ -1,30 +1,30 @@
 import {
+  collect,
   createActors,
   defineSS,
+  event,
   ns,
   sst,
   allSignal,
   allState,
   type InvokeEvt,
+  type PayloadEvt,
   type SignalEvt,
 } from "@grahlnn/fn/flow";
-import { readText } from "@tauri-apps/plugin-clipboard-manager";
-import { crab, type DownloadResourceProbe, type DownloadTask } from "@/src/cmd";
+import {
+  crab,
+  type DownloadResourceProbe,
+  type DownloadTask,
+  type EnqueuedCollectionDownload,
+} from "@/src/cmd";
 
 export const ss = defineSS(
-  ns(
-    "mainx",
-    sst(
-      ["idle", "readingClipboard", "validating", "probing", "enqueueing", "done", "error"],
-      ["paste", "reset"],
-    ),
-  ),
+  ns("mainx", sst(["idle", "probing", "enqueueing"], ["reset"])),
 );
 export const state = allState(ss);
 export const sig = allSignal(ss);
 
 export const deps = {
-  readClipboardText: () => readText(),
   probeDownloadResource: async (url: string): Promise<DownloadResourceProbe> => {
     const result = await crab.probeDownloadResource(url);
 
@@ -35,7 +35,7 @@ export const deps = {
       },
     });
   },
-  enqueueCollectionDownload: async (url: string): Promise<DownloadTask> => {
+  enqueueCollectionDownload: async (url: string): Promise<EnqueuedCollectionDownload> => {
     const result = await crab.enqueueCollectionDownload(url);
 
     return result.match({
@@ -48,12 +48,19 @@ export const deps = {
 };
 
 export const invoker = createActors({
-  readClipboardText: async (): Promise<string> => deps.readClipboardText(),
   probeDownloadResource: async (url: string): Promise<DownloadResourceProbe> =>
     deps.probeDownloadResource(url),
-  enqueueCollectionDownload: async (url: string): Promise<DownloadTask> =>
+  enqueueCollectionDownload: async (url: string): Promise<EnqueuedCollectionDownload> =>
     deps.enqueueCollectionDownload(url),
 });
 
+export const payloads = collect(
+  ...event<string>()("paste.requested"),
+  ...event<string>()("candidate.delete"),
+);
+
 export type MainStateT = Extract<keyof typeof ss.mainx.State, string>;
-export type Events = SignalEvt<typeof ss> | InvokeEvt<typeof invoker>;
+export type Events =
+  | SignalEvt<typeof ss>
+  | InvokeEvt<typeof invoker>
+  | PayloadEvt<typeof payloads.infer>;

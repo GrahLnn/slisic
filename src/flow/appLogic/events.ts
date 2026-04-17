@@ -11,11 +11,16 @@ import {
   type PayloadEvt,
   type SignalEvt,
 } from "@grahlnn/fn/flow";
-import { crab, type Collection } from "@/src/cmd";
-import { createDraftFromPlayList, type ConfigDraft } from "./core";
+import { crab, type Collection, type PlayList } from "@/src/cmd";
+import {
+  createDraftFromPlayList,
+  type ConfigDraft,
+  type ConfigSidebarItem,
+} from "./core";
 
 export interface BootstrapResult {
   hasPlayList: boolean;
+  playlists: PlayList[];
   collections: Collection[];
   savePath: string;
 }
@@ -64,19 +69,30 @@ export const invoker = createActors({
     if (!hasPlayList) {
       return {
         hasPlayList: false,
+        playlists: [],
         collections: [],
         savePath,
       };
     }
 
-    const collections = await crab.listCollections();
+    const [playlists, collections] = await Promise.all([
+      crab.listPlaylists(),
+      crab.listCollections(),
+    ]);
 
-    return collections.match({
-      Ok: (value) => ({
-        hasPlayList: true,
-        collections: value,
-        savePath,
-      }),
+    return playlists.match({
+      Ok: (playlistValues) =>
+        collections.match({
+          Ok: (collectionValues) => ({
+            hasPlayList: true,
+            playlists: playlistValues,
+            collections: collectionValues,
+            savePath,
+          }),
+          Err: (error) => {
+            throw new BootstrapLoadError(error, savePath);
+          },
+        }),
       Err: (error) => {
         throw new BootstrapLoadError(error, savePath);
       },
@@ -103,6 +119,9 @@ export const payloads = collect(
   ...event<string>()("playlist.open"),
   ...event<string>()("draft.name.changed"),
   ...event<string>()("save_path.changed"),
+  ...event<Collection>()("collection.upserted"),
+  ...event<Collection>()("draft.collection.upserted"),
+  ...event<ConfigSidebarItem>()("draft.sidebar-item.pushed"),
 );
 
 export type MainStateT = Extract<keyof typeof ss.mainx.State, string>;

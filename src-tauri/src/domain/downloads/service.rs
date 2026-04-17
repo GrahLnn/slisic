@@ -1,6 +1,6 @@
 use super::model::{
     CollectionSourceKind, DownloadLeaf, DownloadLeafStatus, DownloadResourceProbe, DownloadTask,
-    DownloadTaskStatus, DownloadTrigger, now_timestamp,
+    DownloadTaskStatus, DownloadTrigger, EnqueuedCollectionDownload, now_timestamp,
 };
 use super::repo;
 use super::yt_dlp::{
@@ -36,13 +36,19 @@ pub struct DownloadRuntime {
 }
 
 #[derive(Debug, Clone)]
-struct CollectionSyncPlan {
-    source_kind: CollectionSourceKind,
-    collection_name: String,
-    collection_url: String,
-    collection_folder: String,
-    enable_updates: Option<bool>,
-    leaves: Vec<PlannedLeaf>,
+pub(crate) struct CollectionSyncPlan {
+    pub(crate) source_kind: CollectionSourceKind,
+    pub(crate) collection_name: String,
+    pub(crate) collection_url: String,
+    pub(crate) collection_folder: String,
+    pub(crate) enable_updates: Option<bool>,
+    pub(crate) leaves: Vec<PlannedLeaf>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum PreparedTaskEnqueue {
+    Existing(DownloadTask),
+    New(DownloadTask),
 }
 
 #[derive(Debug, Clone)]
@@ -78,7 +84,7 @@ pub fn initialize_runtime(app: AppHandle) {
     spawn_auto_update_loop(runtime.app.clone());
 }
 
-pub async fn enqueue_collection_download(url: String) -> Result<DownloadTask> {
+pub async fn enqueue_collection_download(url: String) -> Result<EnqueuedCollectionDownload> {
     enqueue_collection_download_with_trigger(url, DownloadTrigger::Manual).await
 }
 
@@ -138,10 +144,28 @@ pub(crate) fn describe_download_resource(root_probe: RootProbe) -> Result<Downlo
 async fn enqueue_collection_download_with_trigger(
     url: String,
     trigger: DownloadTrigger,
-) -> Result<DownloadTask> {
-    let task = prepare_task_enqueue(url, trigger).await?;
-    spawn_task(task.id.to_string())?;
-    Ok(task)
+) -> Result<EnqueuedCollectionDownload> {
+    let prepared = prepare_task_enqueue_outcome(url, trigger).await?;
+
+    let (task, collection) = match prepared {
+        PreparedTaskEnqueue::Existing(task) => {
+            let app = runtime()?.app.clone();
+            match resolve_existing_enqueued_collection(&task).await {
+                Ok(collection) => (task, collection),
+                Err(_) => bootstrap_enqueued_collection(task, app).await?,
+            }
+        }
+        PreparedTaskEnqueue::New(task) => {
+            let app = runtime()?.app.clone();
+            bootstrap_enqueued_collection(task, app).await?
+        }
+    };
+
+    if !task.status.is_terminal() {
+        spawn_task(task.id.to_string())?;
+    }
+
+    Ok(EnqueuedCollectionDownload { task, collection })
 }
 
 /// Batch imports can enqueue many URLs in parallel, so duplicate suppression
@@ -151,11 +175,20 @@ pub(crate) async fn prepare_task_enqueue(
     url: String,
     trigger: DownloadTrigger,
 ) -> Result<DownloadTask> {
+    Ok(match prepare_task_enqueue_outcome(url, trigger).await? {
+        PreparedTaskEnqueue::Existing(task) | PreparedTaskEnqueue::New(task) => task,
+    })
+}
+
+async fn prepare_task_enqueue_outcome(
+    url: String,
+    trigger: DownloadTrigger,
+) -> Result<PreparedTaskEnqueue> {
     let normalized_url = normalize_url(&url)?;
 
     loop {
         if let Some(existing) = repo::find_latest_active_task_for_url(&normalized_url).await? {
-            return Ok(existing);
+            return Ok(PreparedTaskEnqueue::Existing(existing));
         }
 
         let Some(_claim) = try_claim_enqueue_url(&normalized_url)? else {
@@ -164,7 +197,7 @@ pub(crate) async fn prepare_task_enqueue(
         };
 
         if let Some(existing) = repo::find_latest_active_task_for_url(&normalized_url).await? {
-            return Ok(existing);
+            return Ok(PreparedTaskEnqueue::Existing(existing));
         }
 
         return repo::save_task(DownloadTask::new(
@@ -172,7 +205,8 @@ pub(crate) async fn prepare_task_enqueue(
             normalized_url,
             trigger,
         ))
-        .await;
+        .await
+        .map(PreparedTaskEnqueue::New);
     }
 }
 
@@ -194,6 +228,80 @@ fn spawn_task(task_id: String) -> Result<()> {
     Ok(())
 }
 
+async fn resolve_existing_enqueued_collection(task: &DownloadTask) -> Result<Collection> {
+    if let Some(collection_url) = &task.collection_url
+        && let Some(collection) = collection_repo::get_collection_by_url(collection_url).await?
+    {
+        return Ok(collection);
+    }
+
+    bail!(
+        "active download task `{}` does not have a persisted collection yet",
+        task.id
+    );
+}
+
+pub(crate) fn create_collection_shell(
+    plan: &CollectionSyncPlan,
+    existing: Option<Collection>,
+) -> Collection {
+    let mut collection = existing.unwrap_or_else(|| Collection {
+        name: plan.collection_name.clone(),
+        url: plan.collection_url.clone(),
+        folder: plan.collection_folder.clone(),
+        musics: vec![],
+        last_updated: now_timestamp(),
+        enable_updates: plan.enable_updates,
+    });
+
+    collection.name = plan.collection_name.clone();
+    collection.url = plan.collection_url.clone();
+    collection.folder = plan.collection_folder.clone();
+    collection.enable_updates = plan.enable_updates;
+    collection
+}
+
+pub(crate) fn apply_collection_plan_to_task(task: &mut DownloadTask, plan: &CollectionSyncPlan) {
+    task.collection_url = Some(plan.collection_url.clone());
+    task.collection_name = Some(plan.collection_name.clone());
+    task.collection_folder = Some(plan.collection_folder.clone());
+    task.source_kind = Some(plan.source_kind);
+    task.leafs = plan
+        .leaves
+        .iter()
+        .map(|leaf| DownloadLeaf::new(leaf.id.clone(), leaf.url.clone(), leaf.sequence))
+        .collect();
+    task.refresh_counts();
+}
+
+pub(crate) async fn persist_enqueued_collection_state(
+    mut task: DownloadTask,
+    plan: &CollectionSyncPlan,
+) -> Result<(DownloadTask, Collection)> {
+    let existing = collection_repo::get_collection_by_url(&plan.collection_url).await?;
+    let collection = collection_repo::upsert_collection(&create_collection_shell(plan, existing)).await?;
+    apply_collection_plan_to_task(&mut task, plan);
+
+    if plan.leaves.is_empty() {
+        task.status = DownloadTaskStatus::Completed;
+        task.last_error = None;
+        task.refresh_counts();
+    }
+
+    let task = repo::save_task(task).await?;
+    Ok((task, collection))
+}
+
+async fn bootstrap_enqueued_collection(
+    task: DownloadTask,
+    app: AppHandle,
+) -> Result<(DownloadTask, Collection)> {
+    let client = build_client(&app)?;
+    let save_root = resolve_save_root(&app).await?;
+    let plan = resolve_collection_plan(&task, client, &save_root).await?;
+    persist_enqueued_collection_state(task, &plan).await
+}
+
 async fn run_task(task_id: String, app: AppHandle) -> Result<()> {
     let mut task_snapshot = repo::get_task(&task_id).await?;
     update_task_status(&mut task_snapshot, DownloadTaskStatus::Resolving, None).await?;
@@ -201,32 +309,12 @@ async fn run_task(task_id: String, app: AppHandle) -> Result<()> {
     let client = build_client(&app)?;
     let save_root = resolve_save_root(&app).await?;
     let plan = resolve_collection_plan(&task_snapshot, client.clone(), &save_root).await?;
-    let mut collection = collection_repo::get_collection_by_url(&plan.collection_url)
-        .await?
-        .unwrap_or_else(|| Collection {
-            name: plan.collection_name.clone(),
-            url: plan.collection_url.clone(),
-            folder: plan.collection_folder.clone(),
-            musics: vec![],
-            last_updated: now_timestamp(),
-            enable_updates: plan.enable_updates,
-        });
-
-    collection.name = plan.collection_name.clone();
-    collection.url = plan.collection_url.clone();
-    collection.folder = plan.collection_folder.clone();
-    collection.enable_updates = plan.enable_updates;
+    let mut collection = create_collection_shell(
+        &plan,
+        collection_repo::get_collection_by_url(&plan.collection_url).await?,
+    );
     let mut group_catalog = GroupCatalog::seed(&collection);
-    task_snapshot.collection_url = Some(plan.collection_url.clone());
-    task_snapshot.collection_name = Some(plan.collection_name.clone());
-    task_snapshot.collection_folder = Some(plan.collection_folder.clone());
-    task_snapshot.source_kind = Some(plan.source_kind);
-    task_snapshot.leafs = plan
-        .leaves
-        .iter()
-        .map(|leaf| DownloadLeaf::new(leaf.id.clone(), leaf.url.clone(), leaf.sequence))
-        .collect();
-    task_snapshot.refresh_counts();
+    apply_collection_plan_to_task(&mut task_snapshot, &plan);
     repo::save_task(task_snapshot.clone()).await?;
 
     if plan.leaves.is_empty() {

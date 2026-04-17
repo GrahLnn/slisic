@@ -29,6 +29,7 @@ export interface ConfigSidebarItem {
 
 export interface Context {
   hasPlayList: boolean | null;
+  playlists: PlayList[];
   collections: Collection[];
   savePath: string;
   configSidebarItems: ConfigSidebarItem[];
@@ -142,9 +143,78 @@ export function createConfigSidebarItems(collections: readonly Collection[]): Co
   return items;
 }
 
+export function upsertCollectionIntoCollections(
+  collections: readonly Collection[],
+  nextCollection: Collection,
+): Collection[] {
+  const currentIndex = collections.findIndex((collection) => collection.url === nextCollection.url);
+
+  if (currentIndex < 0) {
+    return [nextCollection, ...collections];
+  }
+
+  return collections.map((collection, index) =>
+    index === currentIndex ? nextCollection : collection,
+  );
+}
+
+export function upsertCollectionIntoDraft(
+  draft: ConfigDraft | null,
+  nextCollection: Collection,
+): ConfigDraft | null {
+  if (!draft) {
+    return null;
+  }
+
+  return {
+    ...draft,
+    collections: upsertCollectionIntoCollections(draft.collections, nextCollection),
+  };
+}
+
+export function insertConfigSidebarItemIntoDraft(
+  draft: ConfigDraft | null,
+  collections: readonly Collection[],
+  item: ConfigSidebarItem,
+): ConfigDraft | null {
+  if (!draft) {
+    return null;
+  }
+
+  if (item.kind === "collection") {
+    const collection = collections.find((candidate) => candidate.url === item.url);
+
+    if (!collection) {
+      return draft;
+    }
+
+    return {
+      ...draft,
+      collections: upsertCollectionIntoCollections(draft.collections, collection),
+    };
+  }
+
+  if (draft.groups.some((group) => group.url === item.url)) {
+    return draft;
+  }
+
+  return {
+    ...draft,
+    groups: [
+      ...draft.groups,
+      {
+        name: item.name,
+        url: item.url,
+        folder: item.folder,
+      },
+    ],
+  };
+}
+
 export function createInitialContext(): Context {
   return {
     hasPlayList: null,
+    playlists: [],
     collections: [],
     savePath: "",
     configSidebarItems: [],

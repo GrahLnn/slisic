@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { AnyActorRef } from "xstate";
 import { createActor } from "xstate";
-import type { DownloadResourceProbe, DownloadTask } from "../src/cmd";
-import { deps, sig, ss } from "../src/flow/pasteDownload/events";
+import type { Collection, DownloadResourceProbe, DownloadTask } from "../src/cmd";
+import { deps, payloads, sig, ss } from "../src/flow/pasteDownload/events";
 import { machine } from "../src/flow/pasteDownload/machine";
 
-const originalReadClipboardText = deps.readClipboardText;
 const originalProbeDownloadResource = deps.probeDownloadResource;
 const originalEnqueueCollectionDownload = deps.enqueueCollectionDownload;
 
@@ -13,6 +12,13 @@ const sampleProbe: DownloadResourceProbe = {
   url: "https://www.youtube.com/watch?v=abc123",
   source_kind: "single",
   title: "Quiet Morning",
+  item_count: 1,
+};
+
+const secondProbe: DownloadResourceProbe = {
+  url: "https://www.youtube.com/watch?v=def456",
+  source_kind: "single",
+  title: "Night Walk",
   item_count: 1,
 };
 
@@ -34,9 +40,34 @@ const sampleTask: DownloadTask = {
   updated_at: "2026-04-17T00:00:00Z",
 };
 
-function setReadClipboardTextMock(mock: typeof deps.readClipboardText) {
-  deps.readClipboardText = mock;
-}
+const sampleCollection: Collection = {
+  name: sampleProbe.title,
+  url: sampleProbe.url,
+  folder: "youtube/quiet-morning",
+  musics: [],
+  last_updated: "2026-04-17T00:00:00Z",
+  enable_updates: null,
+};
+
+const secondCollection: Collection = {
+  name: secondProbe.title,
+  url: secondProbe.url,
+  folder: "youtube/night-walk",
+  musics: [],
+  last_updated: "2026-04-17T00:00:00Z",
+  enable_updates: null,
+};
+
+const secondTask: DownloadTask = {
+  ...sampleTask,
+  id: { String: "task-2" },
+  url: secondProbe.url,
+  collection_url: secondProbe.url,
+  collection_name: secondProbe.title,
+};
+
+const pasteRequested = payloads["paste.requested"];
+const candidateDelete = payloads["candidate.delete"];
 
 function setProbeDownloadResourceMock(mock: typeof deps.probeDownloadResource) {
   deps.probeDownloadResource = mock;
@@ -70,14 +101,43 @@ function waitForState(actor: AnyActorRef, expected: string, timeoutMs = 1000) {
   });
 }
 
+function waitForContext<T>(
+  actor: AnyActorRef,
+  predicate: (context: T) => boolean,
+  timeoutMs = 1000,
+) {
+  return new Promise<void>((resolve, reject) => {
+    if (predicate(actor.getSnapshot().context as T)) {
+      resolve();
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      subscription.unsubscribe();
+      reject(new Error("Timed out waiting for context update"));
+    }, timeoutMs);
+
+    const subscription = actor.subscribe((snapshot) => {
+      if (!predicate(snapshot.context as T)) {
+        return;
+      }
+
+      clearTimeout(timer);
+      subscription.unsubscribe();
+      resolve();
+    });
+  });
+}
+
 beforeEach(() => {
-  setReadClipboardTextMock(async () => "");
   setProbeDownloadResourceMock(async () => sampleProbe);
-  setEnqueueCollectionDownloadMock(async () => sampleTask);
+  setEnqueueCollectionDownloadMock(async () => ({
+    task: sampleTask,
+    collection: sampleCollection,
+  }));
 });
 
 afterEach(() => {
-  setReadClipboardTextMock(originalReadClipboardText);
   setProbeDownloadResourceMock(originalProbeDownloadResource);
   setEnqueueCollectionDownloadMock(originalEnqueueCollectionDownload);
 });
@@ -89,103 +149,189 @@ describe("pasteDownload machine", () => {
 
     expect(actor.getSnapshot().value).toBe(ss.mainx.State.idle);
     expect(actor.getSnapshot().context).toEqual({
-      clipboardText: null,
-      url: null,
-      probe: null,
-      task: null,
-      error: null,
+      items: [],
+      pendingProbeItemIds: [],
+      activeItemId: null,
+      nextItemSequence: 0,
     });
   });
 
-  test("reads the clipboard, probes the resource, and enqueues the download", async () => {
-    let probeCalls = 0;
-    let enqueueCalls = 0;
-
-    setReadClipboardTextMock(async () => " https://www.youtube.com/watch?v=abc123 ");
-    setProbeDownloadResourceMock(async (url) => {
-      probeCalls += 1;
-      expect(url).toBe("https://www.youtube.com/watch?v=abc123");
-      return sampleProbe;
-    });
-    setEnqueueCollectionDownloadMock(async (url) => {
-      enqueueCalls += 1;
-      expect(url).toBe(sampleProbe.url);
-      return sampleTask;
-    });
-
+  test("adds a valid pasted url, resolves it, and stores the created task", async () => {
     const actor = createActor(machine);
     actor.start();
-    actor.send(sig.mainx.paste);
+    actor.send(pasteRequested.load(" https://www.youtube.com/watch?v=abc123 "));
 
-    await waitForState(actor, ss.mainx.State.done);
+    await waitForContext(actor, (context: { items: Array<unknown> }) => {
+      return context.items.length === 0;
+    });
 
-    expect(probeCalls).toBe(1);
-    expect(enqueueCalls).toBe(1);
     expect(actor.getSnapshot().context).toEqual({
-      clipboardText: " https://www.youtube.com/watch?v=abc123 ",
-      url: sampleProbe.url,
-      probe: sampleProbe,
-      task: sampleTask,
-      error: null,
+      items: [],
+      pendingProbeItemIds: [],
+      activeItemId: null,
+      nextItemSequence: 1,
     });
   });
 
-  test("rejects invalid clipboard text before probing", async () => {
+  test("keeps invalid pasted text as a delete-only candidate without probing", async () => {
     let probeCalls = 0;
-    let enqueueCalls = 0;
-
-    setReadClipboardTextMock(async () => "not a url");
     setProbeDownloadResourceMock(async () => {
       probeCalls += 1;
       return sampleProbe;
     });
-    setEnqueueCollectionDownloadMock(async () => {
-      enqueueCalls += 1;
-      return sampleTask;
-    });
 
     const actor = createActor(machine);
     actor.start();
-    actor.send(sig.mainx.paste);
+    actor.send(pasteRequested.load("not a url"));
 
-    await waitForState(actor, ss.mainx.State.error);
+    await waitForState(actor, ss.mainx.State.idle);
 
     expect(probeCalls).toBe(0);
-    expect(enqueueCalls).toBe(0);
     expect(actor.getSnapshot().context).toEqual({
-      clipboardText: "not a url",
-      url: null,
-      probe: null,
-      task: null,
-      error: "Clipboard does not contain a valid URL.",
+      items: [
+        {
+          id: "candidate:0",
+          rawText: "not a url",
+          sourceUrl: null,
+          displayText: "not a url",
+          status: "invalid_url",
+          error: "Clipboard does not contain a valid URL.",
+          probe: null,
+          task: null,
+        },
+      ],
+      pendingProbeItemIds: [],
+      activeItemId: null,
+      nextItemSequence: 1,
     });
   });
 
-  test("surfaces probe failures without enqueueing", async () => {
-    let enqueueCalls = 0;
-
-    setReadClipboardTextMock(async () => "https://www.youtube.com/watch?v=abc123");
+  test("keeps probe failures as delete-only candidates", async () => {
     setProbeDownloadResourceMock(async () => {
       throw new Error("resource is not downloadable");
     });
-    setEnqueueCollectionDownloadMock(async () => {
-      enqueueCalls += 1;
-      return sampleTask;
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(pasteRequested.load("https://www.youtube.com/watch?v=abc123"));
+
+    await waitForContext(actor, (context: { items: Array<{ status: string }> }) => {
+      return context.items[0]?.status === "probe_failed";
+    });
+
+    expect(actor.getSnapshot().context).toEqual({
+      items: [
+        {
+          id: "candidate:0",
+          rawText: "https://www.youtube.com/watch?v=abc123",
+          sourceUrl: "https://www.youtube.com/watch?v=abc123",
+          displayText: "https://www.youtube.com/watch?v=abc123",
+          status: "probe_failed",
+          error: "resource is not downloadable",
+          probe: null,
+          task: null,
+        },
+      ],
+      pendingProbeItemIds: [],
+      activeItemId: null,
+      nextItemSequence: 1,
+    });
+  });
+
+  test("prepends later pasted candidates while earlier ones are still processing", async () => {
+    let releaseFirstProbe: (() => void) | null = null;
+    const firstProbe = new Promise<DownloadResourceProbe>((resolve) => {
+      releaseFirstProbe = () => resolve(sampleProbe);
+    });
+    let probeCalls = 0;
+
+    setProbeDownloadResourceMock(async (url: string) => {
+      probeCalls += 1;
+      if (url === sampleProbe.url) {
+        return firstProbe;
+      }
+
+      return secondProbe;
+    });
+    setEnqueueCollectionDownloadMock(async (url: string) => {
+      return url === sampleProbe.url
+        ? {
+            task: sampleTask,
+            collection: sampleCollection,
+          }
+        : {
+            task: secondTask,
+            collection: secondCollection,
+          };
     });
 
     const actor = createActor(machine);
     actor.start();
-    actor.send(sig.mainx.paste);
+    actor.send(pasteRequested.load(sampleProbe.url));
+    await waitForState(actor, ss.mainx.State.probing);
+    actor.send(pasteRequested.load(secondProbe.url));
 
-    await waitForState(actor, ss.mainx.State.error);
+    expect(probeCalls).toBe(1);
+    expect(actor.getSnapshot().context.items).toEqual([
+      {
+        id: "candidate:1",
+        rawText: secondProbe.url,
+        sourceUrl: secondProbe.url,
+        displayText: secondProbe.url,
+        status: "probing",
+        error: null,
+        probe: null,
+        task: null,
+      },
+      {
+        id: "candidate:0",
+        rawText: sampleProbe.url,
+        sourceUrl: sampleProbe.url,
+        displayText: sampleProbe.url,
+        status: "probing",
+        error: null,
+        probe: null,
+        task: null,
+      },
+    ]);
 
-    expect(enqueueCalls).toBe(0);
+    releaseFirstProbe?.();
+    await waitForContext(actor, (context: { items: Array<{ id: string }> }) => {
+      return context.items.length === 0;
+    });
+
+    expect(actor.getSnapshot().context.items).toEqual([]);
+  });
+
+  test("deletes failed candidates by id", async () => {
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(pasteRequested.load("not a url"));
+    await waitForState(actor, ss.mainx.State.idle);
+
+    actor.send(candidateDelete.load("candidate:0"));
+
     expect(actor.getSnapshot().context).toEqual({
-      clipboardText: "https://www.youtube.com/watch?v=abc123",
-      url: "https://www.youtube.com/watch?v=abc123",
-      probe: null,
-      task: null,
-      error: "resource is not downloadable",
+      items: [],
+      pendingProbeItemIds: [],
+      activeItemId: null,
+      nextItemSequence: 1,
+    });
+  });
+
+  test("resets the entire candidate list", async () => {
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(pasteRequested.load("not a url"));
+    await waitForState(actor, ss.mainx.State.idle);
+
+    actor.send(sig.mainx.reset);
+
+    expect(actor.getSnapshot().context).toEqual({
+      items: [],
+      pendingProbeItemIds: [],
+      activeItemId: null,
+      nextItemSequence: 0,
     });
   });
 });

@@ -6,8 +6,11 @@ import {
   createConfigSidebarItems,
   createDraft,
   initialContext,
+  insertConfigSidebarItemIntoDraft,
   playlistTitleLayoutId,
   resetContextWith,
+  upsertCollectionIntoDraft,
+  upsertCollectionIntoCollections,
 } from "./core";
 import { BootstrapLoadError, invoker, payloads, ss } from "./events";
 import { src } from "./src";
@@ -23,6 +26,9 @@ function resolveSavePathFromLoadingError(error: unknown, fallback: string) {
 const openPlaylist = payloads["playlist.open"];
 const draftNameChanged = payloads["draft.name.changed"];
 const savePathChanged = payloads["save_path.changed"];
+const collectionUpserted = payloads["collection.upserted"];
+const draftCollectionUpserted = payloads["draft.collection.upserted"];
+const draftSidebarItemPushed = payloads["draft.sidebar-item.pushed"];
 
 export const machine = src.createMachine({
   initial: ss.mainx.State.idle,
@@ -32,6 +38,46 @@ export const machine = src.createMachine({
       actions: assign({
         savePath: ({ event }) => event.output,
       }),
+    },
+    [collectionUpserted.evt]: {
+      actions: assign(({ context, event }) => {
+        const collections = upsertCollectionIntoCollections(
+          context.collections,
+          event.output,
+        );
+
+        return {
+          collections,
+          configSidebarItems: context.activeLayoutId
+            ? createConfigSidebarItems(collections)
+            : context.configSidebarItems,
+        };
+      }),
+    },
+    [draftCollectionUpserted.evt]: {
+      actions: assign(({ context, event }) => {
+        const collections = upsertCollectionIntoCollections(
+          context.collections,
+          event.output,
+        );
+
+        return {
+          collections,
+          configSidebarItems: context.activeLayoutId
+            ? createConfigSidebarItems(collections)
+            : context.configSidebarItems,
+          draft: upsertCollectionIntoDraft(context.draft, event.output),
+        };
+      }),
+    },
+    [draftSidebarItemPushed.evt]: {
+      actions: assign(({ context, event }) => ({
+        draft: insertConfigSidebarItemIntoDraft(
+          context.draft,
+          context.collections,
+          event.output,
+        ),
+      })),
     },
   },
   states: {
@@ -49,6 +95,7 @@ export const machine = src.createMachine({
           actions: assign(({ event }) =>
             resetContextWith({
               hasPlayList: event.output.hasPlayList,
+              playlists: event.output.playlists,
               collections: event.output.collections,
               savePath: event.output.savePath,
             }),
@@ -73,6 +120,7 @@ export const machine = src.createMachine({
           actions: assign(({ context }) =>
             resetContextWith({
               hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
               configSidebarItems: createConfigSidebarItems(context.collections),
@@ -90,6 +138,7 @@ export const machine = src.createMachine({
           actions: assign(({ context, event }) =>
             resetContextWith({
               hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
               configSidebarItems: createConfigSidebarItems(context.collections),
@@ -116,6 +165,7 @@ export const machine = src.createMachine({
           actions: assign(({ context, event }) =>
             resetContextWith({
               hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
               configSidebarItems: context.configSidebarItems,
@@ -129,6 +179,7 @@ export const machine = src.createMachine({
           actions: assign(({ context, event }) =>
             resetContextWith({
               hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
               configSidebarItems: context.configSidebarItems,
@@ -145,6 +196,7 @@ export const machine = src.createMachine({
           actions: assign(({ context }) =>
             resetContextWith({
               hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
             }),
@@ -160,6 +212,7 @@ export const machine = src.createMachine({
           actions: assign(({ context }) =>
             resetContextWith({
               hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
               titleToneHandoff: context.activeLayoutId
@@ -175,6 +228,7 @@ export const machine = src.createMachine({
           actions: assign(({ context }) =>
             resetContextWith({
               hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
               configSidebarItems: createConfigSidebarItems(context.collections),
@@ -192,6 +246,7 @@ export const machine = src.createMachine({
           actions: assign(({ context, event }) =>
             resetContextWith({
               hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
               configSidebarItems: createConfigSidebarItems(context.collections),

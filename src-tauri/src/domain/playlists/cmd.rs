@@ -18,6 +18,14 @@ pub async fn list_collections() -> Result<Vec<Collection>, String> {
 
 #[tauri::command]
 #[specta::specta]
+pub async fn list_playlists() -> Result<Vec<PlayList>, String> {
+    super::repo::list_playlists()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn get_collection(url: String) -> Result<Option<Collection>, String> {
     super::repo::get_collection_by_url(&url)
         .await

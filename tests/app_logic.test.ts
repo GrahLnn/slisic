@@ -13,11 +13,15 @@ import { machine } from "../src/flow/appLogic/machine";
 
 const originalCheckList = crab.checkList;
 const originalListCollections = crab.listCollections;
+const originalListPlaylists = crab.listPlaylists;
 const originalGetPlaylist = crab.getPlaylist;
 const originalGetMetaInfo = crab.getMetaInfo;
 const openPlaylist = payloads["playlist.open"];
 const draftNameChanged = payloads["draft.name.changed"];
 const savePathChanged = payloads["save_path.changed"];
+const collectionUpserted = payloads["collection.upserted"];
+const draftCollectionUpserted = payloads["draft.collection.upserted"];
+const draftSidebarItemPushed = payloads["draft.sidebar-item.pushed"];
 const sampleSavePath = "C:\\Users\\admin\\Documents\\ransic";
 
 const sampleCollection: Collection = {
@@ -93,12 +97,32 @@ const samplePlaylist: PlayList = {
   ],
 };
 
+const syncedCollection: Collection = {
+  name: "Fresh Import",
+  url: "https://example.com/fresh-import",
+  folder: "youtube/fresh-import",
+  musics: [],
+  last_updated: "2026-04-17T00:00:00Z",
+  enable_updates: null,
+};
+
+const sampleGroupSidebarItem = {
+  kind: "group" as const,
+  name: "Disc 2",
+  url: "https://example.com/quiet-morning#disc-2",
+  folder: "Disc 2",
+};
+
 function setCheckListMock(mock: typeof crab.checkList) {
   (crab as { checkList: typeof crab.checkList }).checkList = mock;
 }
 
 function setListCollectionsMock(mock: typeof crab.listCollections) {
   (crab as { listCollections: typeof crab.listCollections }).listCollections = mock;
+}
+
+function setListPlaylistsMock(mock: typeof crab.listPlaylists) {
+  (crab as { listPlaylists: typeof crab.listPlaylists }).listPlaylists = mock;
 }
 
 function setGetPlaylistMock(mock: typeof crab.getPlaylist) {
@@ -163,11 +187,13 @@ function waitForContext<T>(
 
 beforeEach(() => {
   setGetMetaInfoMock(async () => Ok({ save_path: sampleSavePath }));
+  setListPlaylistsMock(async () => Ok([]));
 });
 
 afterEach(() => {
   setCheckListMock(originalCheckList);
   setListCollectionsMock(originalListCollections);
+  setListPlaylistsMock(originalListPlaylists);
   setGetPlaylistMock(originalGetPlaylist);
   setGetMetaInfoMock(originalGetMetaInfo);
 });
@@ -181,6 +207,7 @@ describe("createConfigSidebarItems", () => {
 describe("appLogic machine", () => {
   test("starts idle and resolves to ready with playlist presence", async () => {
     setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
     setListCollectionsMock(async () => Ok([sampleCollection]));
 
     const actor = createActor(machine);
@@ -189,6 +216,7 @@ describe("appLogic machine", () => {
     expect(actor.getSnapshot().value).toBe(ss.mainx.State.idle);
     expect(actor.getSnapshot().context).toEqual({
       hasPlayList: null,
+      playlists: [],
       collections: [],
       savePath: "",
       configSidebarItems: [],
@@ -204,6 +232,7 @@ describe("appLogic machine", () => {
 
     expect(actor.getSnapshot().context).toEqual({
       hasPlayList: true,
+      playlists: [samplePlaylist],
       collections: [sampleCollection],
       savePath: sampleSavePath,
       configSidebarItems: [],
@@ -227,6 +256,7 @@ describe("appLogic machine", () => {
 
     expect(actor.getSnapshot().context).toEqual({
       hasPlayList: false,
+      playlists: [],
       collections: [],
       savePath: sampleSavePath,
       configSidebarItems: [],
@@ -250,6 +280,7 @@ describe("appLogic machine", () => {
 
     expect(actor.getSnapshot().context).toEqual({
       hasPlayList: null,
+      playlists: [],
       collections: [],
       savePath: sampleSavePath,
       configSidebarItems: [],
@@ -263,6 +294,7 @@ describe("appLogic machine", () => {
 
   test("moves into config with a create draft and back to ready", async () => {
     setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
     setListCollectionsMock(async () => Ok([sampleCollection]));
 
     const actor = createActor(machine);
@@ -292,6 +324,7 @@ describe("appLogic machine", () => {
 
     actor.send(sig.mainx.back);
     expect(actor.getSnapshot().value).toBe(ss.mainx.State.ready);
+    expect(actor.getSnapshot().context.playlists).toEqual([samplePlaylist]);
     expect(actor.getSnapshot().context.savePath).toBe(sampleSavePath);
     expect(actor.getSnapshot().context.configSidebarItems).toEqual([]);
     expect(actor.getSnapshot().context.activeLayoutId).toBeNull();
@@ -305,6 +338,7 @@ describe("appLogic machine", () => {
 
   test("returns placeholder handoff tone when backing out of an empty create draft", async () => {
     setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
     setListCollectionsMock(async () => Ok([sampleCollection]));
 
     const actor = createActor(machine);
@@ -324,6 +358,7 @@ describe("appLogic machine", () => {
 
   test("keeps savePath in context across config transitions and updates", async () => {
     setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
     setListCollectionsMock(async () => Ok([sampleCollection]));
 
     const actor = createActor(machine);
@@ -340,11 +375,13 @@ describe("appLogic machine", () => {
 
     actor.send(sig.mainx.back);
     expect(actor.getSnapshot().value).toBe(ss.mainx.State.ready);
+    expect(actor.getSnapshot().context.playlists).toEqual([samplePlaylist]);
     expect(actor.getSnapshot().context.savePath).toBe("D:\\MediaLibrary");
   });
 
   test("loads an existing playlist into config state by name", async () => {
     setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
     setListCollectionsMock(async () => Ok([sampleCollection]));
     setGetPlaylistMock(async (name) => {
       expect(name).toBe(samplePlaylist.name);
@@ -375,8 +412,117 @@ describe("appLogic machine", () => {
     });
   });
 
+  test("upserts synced collections into config context and refreshes sidebar items", async () => {
+    setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
+    setListCollectionsMock(async () => Ok([sampleCollection]));
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(sig.mainx.run);
+
+    await waitForState(actor, ss.mainx.State.ready);
+    actor.send(sig.mainx.opencreate);
+    actor.send(collectionUpserted.load(syncedCollection));
+
+    expect(actor.getSnapshot().context.collections).toEqual([
+      syncedCollection,
+      sampleCollection,
+    ]);
+    expect(actor.getSnapshot().context.playlists).toEqual([samplePlaylist]);
+    expect(actor.getSnapshot().context.configSidebarItems).toEqual([
+      {
+        kind: "collection",
+        name: syncedCollection.name,
+        url: syncedCollection.url,
+        folder: syncedCollection.folder,
+      },
+      ...expectedConfigSidebarItems,
+    ]);
+  });
+
+  test("upserts synced collections into the active draft so saving uses canonical data", async () => {
+    setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
+    setListCollectionsMock(async () => Ok([sampleCollection]));
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(sig.mainx.run);
+
+    await waitForState(actor, ss.mainx.State.ready);
+    actor.send(sig.mainx.opencreate);
+    actor.send(draftCollectionUpserted.load(syncedCollection));
+
+    expect(actor.getSnapshot().context.collections).toEqual([
+      syncedCollection,
+      sampleCollection,
+    ]);
+    expect(actor.getSnapshot().context.playlists).toEqual([samplePlaylist]);
+    expect(actor.getSnapshot().context.draft).toEqual({
+      mode: "create",
+      name: "",
+      collections: [syncedCollection],
+      groups: [],
+    });
+    expect(actor.getSnapshot().context.configSidebarItems).toEqual([
+      {
+        kind: "collection",
+        name: syncedCollection.name,
+        url: syncedCollection.url,
+        folder: syncedCollection.folder,
+      },
+      ...expectedConfigSidebarItems,
+    ]);
+  });
+
+  test("pushes a sidebar item into the draft through appLogic instead of local ui state", async () => {
+    setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
+    setListCollectionsMock(async () => Ok([sampleCollection, syncedCollection]));
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(sig.mainx.run);
+
+    await waitForState(actor, ss.mainx.State.ready);
+    actor.send(sig.mainx.opencreate);
+
+    actor.send(
+      draftSidebarItemPushed.load({
+        kind: "collection",
+        name: syncedCollection.name,
+        url: syncedCollection.url,
+        folder: syncedCollection.folder,
+      }),
+    );
+
+    expect(actor.getSnapshot().context.draft).toEqual({
+      mode: "create",
+      name: "",
+      collections: [syncedCollection],
+      groups: [],
+    });
+
+    actor.send(draftSidebarItemPushed.load(sampleGroupSidebarItem));
+
+    expect(actor.getSnapshot().context.draft).toEqual({
+      mode: "create",
+      name: "",
+      collections: [syncedCollection],
+      groups: [
+        {
+          name: sampleGroupSidebarItem.name,
+          url: sampleGroupSidebarItem.url,
+          folder: sampleGroupSidebarItem.folder,
+        },
+      ],
+    });
+  });
+
   test("moves to error when the requested playlist does not exist", async () => {
     setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
     setListCollectionsMock(async () => Ok([sampleCollection]));
     setGetPlaylistMock(async () => Ok(null));
 
@@ -390,6 +536,7 @@ describe("appLogic machine", () => {
 
     expect(actor.getSnapshot().context).toEqual({
       hasPlayList: true,
+      playlists: [samplePlaylist],
       collections: [sampleCollection],
       savePath: sampleSavePath,
       configSidebarItems: expectedConfigSidebarItems,
@@ -406,9 +553,14 @@ describe("ensureAppLogicStarted", () => {
   test("runs the startup check only once for the same module instance", async () => {
     let checkCalls = 0;
     let listCalls = 0;
+    let listPlaylistCalls = 0;
     setCheckListMock(async () => {
       checkCalls += 1;
       return Ok(true);
+    });
+    setListPlaylistsMock(async () => {
+      listPlaylistCalls += 1;
+      return Ok([samplePlaylist]);
     });
     setListCollectionsMock(async () => {
       listCalls += 1;
@@ -424,9 +576,11 @@ describe("ensureAppLogicStarted", () => {
       await waitForState(mod.actor, ss.mainx.State.ready);
 
       expect(checkCalls).toBe(1);
+      expect(listPlaylistCalls).toBe(1);
       expect(listCalls).toBe(1);
       expect(mod.actor.getSnapshot().context).toEqual({
         hasPlayList: true,
+        playlists: [samplePlaylist],
         collections: [sampleCollection],
         savePath: sampleSavePath,
         configSidebarItems: [],
@@ -446,6 +600,7 @@ describe("ensureAppLogicStarted", () => {
     const originalLog = console.log;
     let checkCalls = 0;
     let listCalls = 0;
+    let listPlaylistCalls = 0;
 
     console.log = (...args: unknown[]) => {
       logs.push(args.map(String).join(" "));
@@ -454,6 +609,10 @@ describe("ensureAppLogicStarted", () => {
     setCheckListMock(async () => {
       checkCalls += 1;
       return Ok(true);
+    });
+    setListPlaylistsMock(async () => {
+      listPlaylistCalls += 1;
+      return Ok([samplePlaylist]);
     });
     setListCollectionsMock(async () => {
       listCalls += 1;
@@ -470,6 +629,7 @@ describe("ensureAppLogicStarted", () => {
       await waitForState(mod.actor, ss.mainx.State.config);
 
       expect(checkCalls).toBe(1);
+      expect(listPlaylistCalls).toBe(1);
       expect(listCalls).toBe(1);
       expect(logs).toEqual(
         expect.arrayContaining([

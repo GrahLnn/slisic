@@ -11,15 +11,67 @@ import {
 describe("createArcTrackListIdentity", () => {
   test("stays stable for the same item sequence", () => {
     assert.equal(
-      createArcTrackListIdentity(["alpha", "beta"]),
-      createArcTrackListIdentity(["alpha", "beta"]),
+      createArcTrackListIdentity([
+        {
+          kind: "collection",
+          name: "alpha",
+          url: "https://example.com/alpha",
+          folder: "alpha",
+        },
+        {
+          kind: "group",
+          name: "beta",
+          url: "https://example.com/beta",
+          folder: "beta",
+        },
+      ]),
+      createArcTrackListIdentity([
+        {
+          kind: "collection",
+          name: "alpha",
+          url: "https://example.com/alpha",
+          folder: "alpha",
+        },
+        {
+          kind: "group",
+          name: "beta",
+          url: "https://example.com/beta",
+          folder: "beta",
+        },
+      ]),
     );
   });
 
   test("changes when the item sequence changes", () => {
     assert.notEqual(
-      createArcTrackListIdentity(["alpha", "beta"]),
-      createArcTrackListIdentity(["beta", "alpha"]),
+      createArcTrackListIdentity([
+        {
+          kind: "collection",
+          name: "alpha",
+          url: "https://example.com/alpha",
+          folder: "alpha",
+        },
+        {
+          kind: "group",
+          name: "beta",
+          url: "https://example.com/beta",
+          folder: "beta",
+        },
+      ]),
+      createArcTrackListIdentity([
+        {
+          kind: "group",
+          name: "beta",
+          url: "https://example.com/beta",
+          folder: "beta",
+        },
+        {
+          kind: "collection",
+          name: "alpha",
+          url: "https://example.com/alpha",
+          folder: "alpha",
+        },
+      ]),
     );
   });
 });

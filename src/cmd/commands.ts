@@ -52,6 +52,7 @@ export const commands = {
 	saveMetaInfo: (meta: MetaInfo) => typedError<MetaInfo, string>(__TAURI_INVOKE("save_meta_info", { meta })),
 	checkList: () => typedError<boolean, string>(__TAURI_INVOKE("check_list")),
 	listCollections: () => typedError<Collection[], string>(__TAURI_INVOKE("list_collections")),
+	listPlaylists: () => typedError<PlayList[], string>(__TAURI_INVOKE("list_playlists")),
 	getCollection: (url: string) => typedError<{
 	name: string,
 	url: string,
@@ -75,7 +76,7 @@ export const commands = {
 } | null, string>(__TAURI_INVOKE("set_collection_updates", { url, enabled })),
 	addExclude: (music: Music) => typedError<Exclude, string>(__TAURI_INVOKE("add_exclude", { music })),
 	removeExclude: (music: Music) => typedError<boolean, string>(__TAURI_INVOKE("remove_exclude", { music })),
-	enqueueCollectionDownload: (url: string) => typedError<DownloadTask, string>(__TAURI_INVOKE("enqueue_collection_download", { url })),
+	enqueueCollectionDownload: (url: string) => typedError<EnqueuedCollectionDownload, string>(__TAURI_INVOKE("enqueue_collection_download", { url })),
 	probeDownloadResource: (url: string) => typedError<DownloadResourceProbe, string>(__TAURI_INVOKE("probe_download_resource", { url })),
 	resumeDownloadTask: (taskId: string) => typedError<DownloadTask, string>(__TAURI_INVOKE("resume_download_task", { taskId })),
 	getDownloadTask: (taskId: string) => typedError<DownloadTask, string>(__TAURI_INVOKE("get_download_task", { taskId })),
@@ -160,6 +161,11 @@ export type DownloadTask = {
 export type DownloadTaskStatus = "queued" | "resolving" | "downloading" | "persisting" | "completed" | "completed_with_errors" | "failed" | "cancelled" | "interrupted";
 
 export type DownloadTrigger = "manual" | "auto_update";
+
+export type EnqueuedCollectionDownload = {
+	task: DownloadTask,
+	collection: Collection,
+};
 
 export type Exclude = {
 	music: Music,

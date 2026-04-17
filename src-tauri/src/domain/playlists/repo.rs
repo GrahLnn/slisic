@@ -20,6 +20,16 @@ pub async fn list_collections() -> Result<Vec<Collection>> {
     }
 }
 
+pub async fn list_playlists() -> Result<Vec<PlayList>> {
+    match PlayList::list().await {
+        Ok(playlists) => Ok(playlists),
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) => Ok(vec![]),
+            other => Err(other.into()),
+        },
+    }
+}
+
 pub async fn add_exclude(music: Music) -> Result<Exclude> {
     Exclude::save(Exclude { music }).await
 }

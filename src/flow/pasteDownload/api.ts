@@ -1,10 +1,15 @@
 import { createActor } from "xstate";
 import { useSelector } from "@xstate/react";
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
+import { createSender } from "@grahlnn/fn/flow";
 import { me } from "@grahlnn/fn";
 import { machine } from "./machine";
-import { sig, type MainStateT } from "./events";
+import { payloads, sig, type MainStateT } from "./events";
 
 export const actor = createActor(machine);
+const send = createSender(actor);
+const pasteRequested = payloads["paste.requested"];
+const candidateDelete = payloads["candidate.delete"];
 
 type ActorSnapshot = ReturnType<(typeof actor)["getSnapshot"]>;
 
@@ -40,9 +45,18 @@ export const hook = {
 };
 
 export const action = {
-  paste: () => {
+  paste: async () => {
     ensureStarted();
-    actor.send(sig.mainx.paste);
+
+    try {
+      send(pasteRequested.load(await readText()));
+    } catch (error) {
+      console.error("Failed to read clipboard for paste download", error);
+    }
+  },
+  delete: (id: string) => {
+    ensureStarted();
+    send(candidateDelete.load(id));
   },
   reset: () => {
     ensureStarted();

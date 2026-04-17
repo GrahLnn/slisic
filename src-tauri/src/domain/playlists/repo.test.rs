@@ -1,6 +1,7 @@
 use super::model::{Collection, Group, Music, PlayList};
 use super::repo::{
-    get_collection_by_url, get_playlist_by_name, set_collection_updates, upsert_collection,
+    get_collection_by_url, get_playlist_by_name, list_playlists, set_collection_updates,
+    upsert_collection,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::Crud;
@@ -685,6 +686,58 @@ fn get_playlist_by_name_reads_related_collections_and_groups() {
             .expect("playlist should exist");
 
         assert_playlist_matches(&loaded, &playlist);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn list_playlists_reads_hydrated_rows() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let first = sample_playlist("repo-playlist-a");
+        let first_collection =
+            insert_collection_row("repo-playlist-a-collection", &first.collections[0]).await;
+        let first_group = insert_group_row("repo-playlist-a-group", &first.groups[0]).await;
+        insert_playlist_row(
+            "repo-playlist-a",
+            &first,
+            std::slice::from_ref(&first_collection),
+            std::slice::from_ref(&first_group),
+        )
+        .await;
+
+        let second = sample_playlist("repo-playlist-b");
+        let second_collection =
+            insert_collection_row("repo-playlist-b-collection", &second.collections[0]).await;
+        let second_group = insert_group_row("repo-playlist-b-group", &second.groups[0]).await;
+        insert_playlist_row(
+            "repo-playlist-b",
+            &second,
+            std::slice::from_ref(&second_collection),
+            std::slice::from_ref(&second_group),
+        )
+        .await;
+
+        let loaded = list_playlists()
+            .await
+            .expect("playlist listing should succeed");
+
+        assert_eq!(loaded.len(), 2);
+        let first_loaded = loaded
+            .iter()
+            .find(|playlist| playlist.name == first.name)
+            .expect("first playlist should be listed");
+        let second_loaded = loaded
+            .iter()
+            .find(|playlist| playlist.name == second.name)
+            .expect("second playlist should be listed");
+
+        assert_playlist_matches(first_loaded, &first);
+        assert_playlist_matches(second_loaded, &second);
 
         reset_db();
     });

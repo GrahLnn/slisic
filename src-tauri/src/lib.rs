@@ -30,6 +30,7 @@ pub fn run() {
             domain::meta::save_meta_info,
             domain::playlists::check_list,
             domain::playlists::list_collections,
+            domain::playlists::list_playlists,
             domain::playlists::get_collection,
             domain::playlists::get_playlist,
             domain::playlists::set_collection_updates,

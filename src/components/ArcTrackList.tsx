@@ -15,6 +15,7 @@ import {
   sampleUiTraceFrames,
   snapshotUiTraceElement,
 } from "@/src/debug/uiTrace";
+import type { ConfigSidebarItem } from "@/src/flow/appLogic/core";
 import { ToolLabel, MaskL } from "./toollabel";
 import { CoverTool } from "./coverTool";
 
@@ -29,7 +30,8 @@ const arcPathCache = new Map<number, string>();
 const arcLookupCache = new Map<number, ArcSample[]>();
 
 type ArcTrackListProps = {
-  items: readonly string[];
+  items: readonly ConfigSidebarItem[];
+  onPushItem?: (item: ConfigSidebarItem) => void;
   motionProps?: MotionProps;
 };
 
@@ -64,13 +66,12 @@ type ArcTrackPositionController = {
 type ArcTrackScrollOwnerCleanupRef = RefObject<(() => void) | null>;
 
 type ArcTrackItemProps = {
-  index: number;
-  item: string;
+  item: ConfigSidebarItem;
   itemKey: ArcTrackItemRegistryKey;
   itemRegistryRef: RefObject<ArcTrackItemNodeRegistry>;
   scrollElementRef: RefObject<HTMLDivElement | null>;
   scrollOffsetRef: RefObject<number>;
-  setVisibleItems: Dispatch<SetStateAction<string[]>>;
+  onPushItem?: (item: ConfigSidebarItem) => void;
   start: number;
 };
 
@@ -84,8 +85,15 @@ export function resolveArcTrackViewportScrollTop(args: {
   return Math.min(Math.max(args.currentScrollTop, 0), maxScrollTop);
 }
 
-export function createArcTrackListIdentity(items: readonly string[]) {
-  return JSON.stringify(items);
+export function createArcTrackListIdentity(items: readonly ConfigSidebarItem[]) {
+  return JSON.stringify(
+    items.map((item) => ({
+      kind: item.kind,
+      url: item.url,
+      name: item.name,
+      folder: item.folder,
+    })),
+  );
 }
 
 export function resolveArcTrackVirtualPaddingEnd(itemCount: number) {
@@ -458,13 +466,12 @@ function syncArcTrackScrollElement(args: {
 }
 
 const ArcTrackItem = memo(function ArcTrackItem({
-  index,
   item,
   itemKey,
   itemRegistryRef,
   scrollElementRef,
   scrollOffsetRef,
-  setVisibleItems,
+  onPushItem,
   start,
 }: ArcTrackItemProps) {
   return (
@@ -485,7 +492,7 @@ const ArcTrackItem = memo(function ArcTrackItem({
         <ToolLabel
           textClassName="text-[12px] text-[#404040] dark:text-[#a3a3a3]"
           toolAnchor="right"
-          text={item}
+          text={item.name}
           tool={
             <div className="flex w-full items-center justify-between">
               <div />
@@ -495,11 +502,7 @@ const ArcTrackItem = memo(function ArcTrackItem({
                   text="Push"
                   onClick={() => {
                     startTransition(() => {
-                      setVisibleItems((current) =>
-                        current.filter(
-                          (_, currentIndex) => currentIndex !== index,
-                        ),
-                      );
+                      onPushItem?.(item);
                     });
                   }}
                 />
@@ -513,11 +516,13 @@ const ArcTrackItem = memo(function ArcTrackItem({
   );
 });
 
-function ArcTrackListBody({ items }: Pick<ArcTrackListProps, "items">) {
+function ArcTrackListBody({
+  items,
+  onPushItem,
+}: Pick<ArcTrackListProps, "items" | "onPushItem">) {
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(
     null,
   );
-  const [visibleItems, setVisibleItems] = useState(() => [...items]);
   const itemRegistryRef = useRef<ArcTrackItemNodeRegistry>(new Map());
   const positionFrameRef = useRef<number | null>(null);
   const scrollElementRef = useRef<HTMLDivElement | null>(null);
@@ -546,21 +551,21 @@ function ArcTrackListBody({ items }: Pick<ArcTrackListProps, "items">) {
   }
 
   const virtualPaddingEnd = resolveArcTrackVirtualPaddingEnd(
-    visibleItems.length,
+    items.length,
   );
-  const arcPathClassName = resolveArcTrackPathClassName(visibleItems.length);
-  const arcPathStrokeWidth = resolveArcTrackPathStrokeWidth(visibleItems.length);
+  const arcPathClassName = resolveArcTrackPathClassName(items.length);
+  const arcPathStrokeWidth = resolveArcTrackPathStrokeWidth(items.length);
   const estimateSize = useCallback(() => ARC_ITEM_GAP, []);
   const getItemKey = useCallback(
-    (index: number) => visibleItems[index] ?? index,
-    [visibleItems],
+    (index: number) => items[index]?.url ?? index,
+    [items],
   );
 
   // Virtualization only controls which nodes are mounted.
   // Per-frame arc projection is driven by the native scroll event instead of
   // virtualizer state so the curve layer stays in lockstep with scrollTop.
   const rowVirtualizer = useVirtualizer({
-    count: visibleItems.length,
+    count: items.length,
     estimateSize,
     getItemKey,
     getScrollElement: () => scrollElement,
@@ -585,7 +590,7 @@ function ArcTrackListBody({ items }: Pick<ArcTrackListProps, "items">) {
     renderSequence,
     scrollElementPresent: Boolean(scrollElement),
     virtualItemCount: virtualItems.length,
-    visibleItemsLength: visibleItems.length,
+    visibleItemsLength: items.length,
   });
 
   return (
@@ -615,7 +620,7 @@ function ArcTrackListBody({ items }: Pick<ArcTrackListProps, "items">) {
           >
             <ul className="absolute inset-0 z-10 m-0 list-none p-0">
               {virtualItems.map((virtualItem) => {
-                const item = visibleItems[virtualItem.index];
+                const item = items[virtualItem.index];
 
                 if (!item) {
                   return null;
@@ -624,13 +629,12 @@ function ArcTrackListBody({ items }: Pick<ArcTrackListProps, "items">) {
                 return (
                   <ArcTrackItem
                     key={virtualItem.key}
-                    index={virtualItem.index}
                     item={item}
                     itemKey={virtualItem.key}
                     itemRegistryRef={itemRegistryRef}
                     scrollElementRef={scrollElementRef}
                     scrollOffsetRef={scrollOffsetRef}
-                    setVisibleItems={setVisibleItems}
+                    onPushItem={onPushItem}
                     start={virtualItem.start}
                   />
                 );
@@ -643,7 +647,7 @@ function ArcTrackListBody({ items }: Pick<ArcTrackListProps, "items">) {
   );
 }
 
-export function ArcTrackList({ items, motionProps }: ArcTrackListProps) {
+export function ArcTrackList({ items, motionProps, onPushItem }: ArcTrackListProps) {
   const itemsRef = useRef(items);
   itemsRef.current = items;
   const renderSequenceRef = useRef(0);
@@ -713,7 +717,11 @@ export function ArcTrackList({ items, motionProps }: ArcTrackListProps) {
         });
       }}
     >
-      <ArcTrackListBody key={createArcTrackListIdentity(items)} items={items} />
+      <ArcTrackListBody
+        key={createArcTrackListIdentity(items)}
+        items={items}
+        onPushItem={onPushItem}
+      />
     </motion.div>
   );
 }

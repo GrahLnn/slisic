@@ -1,3 +1,4 @@
+use crate::domain::playlists::model::Collection;
 use appdb::{Id, Store};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -155,6 +156,12 @@ pub struct DownloadResourceProbe {
     pub source_kind: CollectionSourceKind,
     pub title: String,
     pub item_count: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct EnqueuedCollectionDownload {
+    pub task: DownloadTask,
+    pub collection: Collection,
 }
 
 impl DownloadTask {

@@ -10,13 +10,20 @@ import {
   action as appLogicAction,
   hook as appLogicHook,
 } from "@/src/flow/appLogic";
-import { action as pasteDownloadAction } from "@/src/flow/pasteDownload";
+import {
+  action as pasteDownloadAction,
+  hook as pasteDownloadHook,
+} from "@/src/flow/pasteDownload";
 import type {
   ConfigSidebarItem,
   CollectionTitleHandoff,
   CollectionTitleTone,
   ConfigDraft,
 } from "@/src/flow/appLogic/core";
+import type {
+  ConfigCandidateItem,
+  ConfigCandidateItemStatus,
+} from "@/src/flow/pasteDownload/core";
 import { ArcTrackList } from "./ArcTrackList";
 import { ToolLabel, MaskL, MaskR } from "./toollabel";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
@@ -84,7 +91,7 @@ export function resolveListConfigToolListInteractionDisabled(args: {
   isAnimating: boolean;
   isPresent: boolean;
 }) {
-  return args.isAnimating || !args.isPresent;
+  return !args.isPresent;
 }
 
 export const LIST_CONFIG_EMPTY_STATE_TEXT =
@@ -94,15 +101,280 @@ export type ListConfigEmptyStateKind = "keep" | "show" | "hide";
 export type ListConfigEmptyStateSignal = ME<ListConfigEmptyStateKind>;
 export type ListConfigEmptyState = ME<boolean>;
 
-export function shouldShowListConfigEmptyState(draft: ConfigDraft | null) {
-  if (!draft) {
+export function shouldShowListConfigEmptyState(args: {
+  draft: ConfigDraft | null;
+  candidateItemCount: number;
+}): ListConfigEmptyStateSignal {
+  if (!args.draft) {
     return me<ListConfigEmptyStateKind>("keep");
   }
 
+  if (args.candidateItemCount > 0) {
+    return me<ListConfigEmptyStateKind>("hide");
+  }
+
   return me<ListConfigEmptyStateKind>(
-    draft.collections.length === 0 && draft.groups.length === 0
+    args.draft.collections.length === 0 && args.draft.groups.length === 0
       ? "show"
       : "hide",
+  );
+}
+
+export interface ListConfigPlaylistToolLabelItem {
+  kind: "playlist";
+  id: string;
+  text: string;
+  sourceKind: ConfigSidebarItem["kind"];
+  enableUpdates: boolean | null;
+}
+
+export interface ListConfigCandidateToolLabelItem {
+  kind: "candidate";
+  id: string;
+  text: string;
+  status: ConfigCandidateItemStatus;
+}
+
+export type ListConfigToolLabelItem =
+  | ListConfigPlaylistToolLabelItem
+  | ListConfigCandidateToolLabelItem;
+
+export interface ListConfigPlaylistSidebarItem extends ConfigSidebarItem {
+  enableUpdates: boolean | null;
+}
+
+function normalizeListConfigSidebarName(name: string) {
+  return name.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+function createListConfigSidebarItemId(
+  item: Pick<ConfigSidebarItem, "kind" | "url">,
+) {
+  return `playlist:${item.kind}:${item.url}`;
+}
+
+export function createListConfigPlaylistSidebarItems(
+  draft: ConfigDraft | null,
+): ListConfigPlaylistSidebarItem[] {
+  if (!draft) {
+    return [];
+  }
+
+  const items: ListConfigPlaylistSidebarItem[] = [];
+  const seenUrls = new Set<string>();
+  const collectionNames = new Set(
+    draft.collections.map((collection) =>
+      normalizeListConfigSidebarName(collection.name),
+    ),
+  );
+
+  for (const collection of draft.collections) {
+    if (seenUrls.has(collection.url)) {
+      continue;
+    }
+
+    seenUrls.add(collection.url);
+    items.push({
+      kind: "collection",
+      name: collection.name,
+      url: collection.url,
+      folder: collection.folder,
+      enableUpdates: collection.enable_updates,
+    });
+  }
+
+  for (const group of draft.groups) {
+    if (collectionNames.has(normalizeListConfigSidebarName(group.name))) {
+      continue;
+    }
+
+    if (seenUrls.has(group.url)) {
+      continue;
+    }
+
+    seenUrls.add(group.url);
+    items.push({
+      kind: "group",
+      name: group.name,
+      url: group.url,
+      folder: group.folder,
+      enableUpdates: null,
+    });
+  }
+
+  return items;
+}
+
+export function createListConfigPlaylistToolLabelItems(
+  items: readonly ListConfigPlaylistSidebarItem[],
+): ListConfigPlaylistToolLabelItem[] {
+  return items.map((item) => ({
+    kind: "playlist",
+    id: createListConfigSidebarItemId(item),
+    text: item.name,
+    sourceKind: item.kind,
+    enableUpdates: item.enableUpdates,
+  }));
+}
+
+export function createListConfigCandidateToolLabelItems(
+  items: readonly ConfigCandidateItem[],
+): ListConfigCandidateToolLabelItem[] {
+  return items.map((item) => ({
+    kind: "candidate",
+    id: item.id,
+    text: item.displayText,
+    status: item.status,
+  }));
+}
+
+export function resolveListConfigToolLabelItems(
+  args: {
+    playlistItems: readonly ListConfigPlaylistSidebarItem[];
+    candidateItems: readonly ConfigCandidateItem[];
+  },
+  removedItemIds: ReadonlySet<string>,
+): ListConfigToolLabelItem[] {
+  return [
+    ...createListConfigCandidateToolLabelItems(args.candidateItems),
+    ...createListConfigPlaylistToolLabelItems(args.playlistItems).filter(
+      (item) => !removedItemIds.has(item.id),
+    ),
+  ];
+}
+
+export function createListConfigArcTrackItems(args: {
+  libraryItems: readonly ConfigSidebarItem[];
+  playlistItems: readonly ConfigSidebarItem[];
+  candidateItems: readonly ConfigCandidateItem[];
+}) {
+  const foregroundUrls = new Set(args.playlistItems.map((item) => item.url));
+
+  for (const item of args.candidateItems) {
+    if (!item.sourceUrl) {
+      continue;
+    }
+
+    if (
+      item.status === "invalid_url" ||
+      item.status === "probe_failed" ||
+      item.status === "enqueue_failed"
+    ) {
+      continue;
+    }
+
+    foregroundUrls.add(item.sourceUrl);
+  }
+
+  return args.libraryItems
+    .filter((item) => !foregroundUrls.has(item.url));
+}
+
+export function resolveListConfigToolLabelTextClassName(
+  item: ListConfigToolLabelItem,
+): string {
+  return me(item).match("kind", {
+    playlist: (): string => "text-[12px] text-[#404040] dark:text-[#a3a3a3]",
+    candidate: ({ status }): string =>
+      cn(
+        "text-[12px] text-[#404040] dark:text-[#a3a3a3]",
+        (status === "invalid_url" ||
+          status === "probe_failed" ||
+          status === "enqueue_failed") &&
+          "line-through opacity-70",
+      ),
+  });
+}
+
+export function resolveListConfigShouldShowDeleteOnlyTool(
+  status: ConfigCandidateItemStatus,
+): boolean {
+  return (
+    status === "invalid_url" ||
+    status === "probe_failed" ||
+    status === "enqueue_failed"
+  );
+}
+
+export function shouldShowListConfigCandidateDeleteTool(
+  item: ListConfigToolLabelItem,
+): boolean {
+  return me(item).match("kind", {
+    playlist: (): boolean => false,
+    candidate: ({ status }): boolean =>
+      resolveListConfigShouldShowDeleteOnlyTool(status),
+  });
+}
+
+export function shouldShowListConfigPlaylistHoverTool(
+  item: ListConfigToolLabelItem,
+): boolean {
+  return me(item).match("kind", {
+    playlist: (): boolean => true,
+    candidate: ({ status }): boolean => status === "resolved",
+  });
+}
+
+export function shouldShowListConfigEnableUpdateTool(
+  item: ListConfigToolLabelItem,
+): boolean {
+  return me(item).match("kind", {
+    candidate: (): boolean => false,
+    playlist: ({ sourceKind, enableUpdates }): boolean =>
+      sourceKind === "collection" && enableUpdates !== null,
+  });
+}
+
+export function shouldShowListConfigAutoDownloadIcon(
+  item: ListConfigToolLabelItem,
+): boolean {
+  return me(item).match("kind", {
+    candidate: (): boolean => false,
+    playlist: ({ sourceKind, enableUpdates }): boolean =>
+      sourceKind === "collection" && enableUpdates === true,
+  });
+}
+
+function resolveListConfigToolLabelTool(args: {
+  item: ListConfigToolLabelItem;
+  onPopPlaylistItem: () => void;
+  onDeleteCandidateItem: () => void;
+}) {
+  if (shouldShowListConfigPlaylistHoverTool(args.item)) {
+    const shouldShowEnableUpdateTool = shouldShowListConfigEnableUpdateTool(
+      args.item,
+    );
+
+    return (
+      <div
+        className={cn(
+          "flex w-full items-center",
+          shouldShowEnableUpdateTool ? "justify-between" : "justify-end",
+        )}
+      >
+        {shouldShowEnableUpdateTool && (
+          <div className="flex h-fit">
+            <CoverTool text="Enable Update" />
+            <MaskR />
+          </div>
+        )}
+        <div className="flex h-fit">
+          <MaskL />
+          <CoverTool text="Pop" onClick={args.onPopPlaylistItem} />
+        </div>
+      </div>
+    );
+  }
+
+  if (!shouldShowListConfigCandidateDeleteTool(args.item)) {
+    return undefined;
+  }
+
+  return (
+    <div className="flex h-fit">
+      <CoverTool text="Delete" onClick={args.onDeleteCandidateItem} />
+      <MaskR />
+    </div>
   );
 }
 
@@ -128,47 +400,23 @@ export async function getDefaultListConfigSavePath() {
   return join(await documentDir(), await getName());
 }
 
-function createListConfigToolLabelItems(items: readonly ConfigSidebarItem[]) {
-  return items.map((item) => ({
-    id: `${item.kind}:${item.url}`,
-    text: item.name,
-  }));
-}
-
-export function resolveListConfigToolLabelItems(
-  items: readonly ConfigSidebarItem[],
-  removedItemIds: ReadonlySet<string>,
-) {
-  return createListConfigToolLabelItems(items).filter(
-    (item) => !removedItemIds.has(item.id),
-  );
-}
-
-function FnButton({
-  text,
-  onClick,
-}: {
-  text: string;
-  onClick?: () => void;
-}) {
+function FnButton({ text, onClick }: { text: string; onClick?: () => void }) {
   return (
-    <div
+    <button
+      type="button"
       className={cn(
-        "w-fit h-fit",
-        // "flex items-center justify-between",
-        // "flex items-center justify-between w-fit gap-2 whitespace-nowrap",
-        "[corner-shape:squircle_squircle_squircle_squircle] rounded-[25px] outline-none",
-        "cursor-pointer transition duration-300 ease-in-out",
-        // "data-[size=default]:h-9 data-[size=sm]:h-8",
-        "px-2 py-1 text-sm",
-        "text-xs text-[#525252] dark:text-[#e5e5e5] hover:text-[#262626] hover:dark:text-[#d4d4d4]",
-        "hover:bg-[#e7eced] dark:hover:bg-[#383838]",
-        // open && "bg-[#f1f5f9] dark:bg-[#1a1a1b]",
+        "group relative isolate inline-flex h-7 w-fit items-center justify-center",
+        "cursor-pointer select-none text-xs leading-none outline-none transition duration-300 ease-in-out",
+        "text-[#525252] dark:text-[#e5e5e5] hover:text-[#262626] hover:dark:text-[#d4d4d4]",
+        "before:absolute before:inset-y-0 before:-left-2.5 before:-right-2.5 before:-z-10",
+        "before:rounded-[25px] before:bg-transparent before:transition before:duration-300",
+        "before:[corner-shape:squircle_squircle_squircle_squircle]",
+        "hover:before:bg-[#e7eced] dark:hover:before:bg-[#383838]",
       )}
       onClick={onClick}
     >
       {text}
-    </div>
+    </button>
   );
 }
 
@@ -181,6 +429,7 @@ export function ListConfig() {
     savePath,
     titleToneHandoff,
   } = appLogicHook.useContext();
+  const { items: candidateItems } = pasteDownloadHook.useContext();
   const titleSnapshotRef = useRef<ListConfigTitleSnapshot | null>(null);
   const emptyStateRef = useRef<ListConfigEmptyState | null>(null);
   const renderSequenceRef = useRef(0);
@@ -199,22 +448,35 @@ export function ListConfig() {
     titleSnapshotRef.current = titleViewModel.snapshot;
   }
 
-  // Portal overlays render under document.body, so exit transitions need an
-  // explicit interactivity gate instead of relying on ancestor pointer-events.
+  // Portal overlays render under document.body, so exit transitions still need
+  // an explicit interactivity gate instead of relying on ancestor
+  // pointer-events. Entry animations should stay interactive.
   const isToolListInteractionDisabled =
     resolveListConfigToolListInteractionDisabled({
       isAnimating: isToolListAnimating,
       isPresent,
     });
   const emptyState = resolveListConfigEmptyState(
-    shouldShowListConfigEmptyState(draft),
+    shouldShowListConfigEmptyState({
+      draft,
+      candidateItemCount: candidateItems.length,
+    }),
     emptyStateRef.current,
   );
   emptyStateRef.current = emptyState;
+  const playlistSidebarItems = createListConfigPlaylistSidebarItems(draft);
   const toolLabelItems = resolveListConfigToolLabelItems(
-    configSidebarItems,
+    {
+      playlistItems: playlistSidebarItems,
+      candidateItems,
+    },
     removedToolLabelItemIds,
   );
+  const arcTrackItems = createListConfigArcTrackItems({
+    libraryItems: configSidebarItems,
+    playlistItems: playlistSidebarItems,
+    candidateItems,
+  });
   const shouldShowEmptyState = emptyState.match({
     true: () => true,
     false: () => false,
@@ -224,14 +486,17 @@ export function ListConfig() {
   recordUiTrace("list-config", "render", {
     activeLayoutId,
     configSidebarItemCount: configSidebarItems.length,
+    candidateItemCount: candidateItems.length,
     draftCollectionCount: draft?.collections.length ?? null,
     draftGroupCount: draft?.groups.length ?? null,
     draftMode: draft?.mode ?? null,
     draftName: draft?.name ?? null,
     isPresent,
     isToolListAnimating,
+    playlistSidebarItemCount: playlistSidebarItems.length,
     removedToolLabelItemCount: removedToolLabelItemIds.size,
     renderSequence,
+    arcTrackItemCount: arcTrackItems.length,
     shouldShowEmptyState,
     toolLabelItemCount: toolLabelItems.length,
   });
@@ -287,7 +552,10 @@ export function ListConfig() {
         <motion.div {...contentFadeProps}>
           <button
             type="button"
-            onClick={appLogicAction.back}
+            onClick={() => {
+              pasteDownloadAction.reset();
+              appLogicAction.back();
+            }}
             className={cn(
               "group relative isolate inline-flex w-fit cursor-pointer select-none py-2 pr-2",
               "before:absolute before:inset-y-0 before:-left-2 before:right-0 before:-z-10",
@@ -324,7 +592,7 @@ export function ListConfig() {
           />
           <div className="h-24" />
           <div className="flex justify-between">
-            <div className="flex gap-2">
+            <div className="flex gap-5">
               <FnButton text="Paste" onClick={pasteDownloadAction.paste} />
               <FnButton text="Import" />
             </div>
@@ -352,7 +620,7 @@ export function ListConfig() {
           >
             <p
               className={cn(
-                "relative z-10 mt-14 max-w-xl cursor-default select-none whitespace-pre-line text-pretty text-sm leading-6",
+                "relative z-10 mt-4 max-w-xl cursor-default select-none whitespace-pre-line text-pretty text-sm leading-6",
                 "text-[#525252] dark:text-[#a3a3a3]",
               )}
             >
@@ -361,87 +629,90 @@ export function ListConfig() {
           </motion.div>
         ),
         false: () => (
-          <>
-            <motion.div
-              {...contentFadeProps}
-              className={cn(
-                "relative z-10 flex flex-col",
-                isToolListInteractionDisabled && "pointer-events-none",
-              )}
-              onAnimationStart={() => {
-                recordUiTrace("list-config/tool-list", "animation-start", {
-                  renderSequence,
-                  toolLabelItemCount: toolLabelItems.length,
-                });
-                setIsToolListAnimating(true);
-              }}
-              onAnimationComplete={() => {
-                recordUiTrace("list-config/tool-list", "animation-complete", {
-                  renderSequence,
-                  toolLabelItemCount: toolLabelItems.length,
-                });
-                setIsToolListAnimating(false);
-              }}
-            >
-              <AnimatePresence initial={false}>
-                {toolLabelItems.map((item) => (
-                  <motion.div
-                    key={item.id}
-                    className="group"
-                    initial={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
-                    animate={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
-                    exit={{ height: 0, paddingTop: 0, paddingBottom: 0 }}
+          <motion.div
+            {...contentFadeProps}
+            className={cn(
+              "relative z-10 flex flex-col",
+              isToolListInteractionDisabled && "pointer-events-none",
+            )}
+            onAnimationStart={() => {
+              recordUiTrace("list-config/tool-list", "animation-start", {
+                renderSequence,
+                toolLabelItemCount: toolLabelItems.length,
+              });
+              setIsToolListAnimating(true);
+            }}
+            onAnimationComplete={() => {
+              recordUiTrace("list-config/tool-list", "animation-complete", {
+                renderSequence,
+                toolLabelItemCount: toolLabelItems.length,
+              });
+              setIsToolListAnimating(false);
+            }}
+          >
+            <AnimatePresence initial={false}>
+              {toolLabelItems.map((item) => (
+                <motion.div
+                  key={item.id}
+                  className="group"
+                  initial={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
+                  animate={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
+                  exit={{ height: 0, paddingTop: 0, paddingBottom: 0 }}
+                >
+                  <div
+                    className={cn(
+                      "flex items-center backdrop-blur-md w-fit gap-2 pr-1.5",
+                      "rounded-full",
+                    )}
                   >
-                    <div
-                      className={cn(
-                        "flex items-center backdrop-blur-md w-fit gap-2 pr-1.5",
-                        "rounded-full",
-                      )}
-                    >
-                      <motion.div layoutId={item.text}>
-                        <ToolLabel
-                          className={cn("")}
-                          hoverMode="group"
-                          interactionDisabled={isToolListInteractionDisabled}
-                          toolLayer="portal"
-                          text={item.text}
-                          textClassName="text-[12px] text-[#404040] dark:text-[#a3a3a3]"
-                          tool={
-                            <div className="flex justify-between w-full items-center">
-                              <div className="flex h-fit">
-                                <CoverTool text="Enable Update" />
-                                <MaskR />
-                              </div>
-                              <div className="flex h-fit">
-                                <MaskL />
-                                <CoverTool
-                                  text="Pop"
-                                  onClick={() => {
-                                    setRemovedToolLabelItemIds((current) => {
-                                      const next = new Set(current);
-                                      next.add(item.id);
-                                      return next;
-                                    });
-                                  }}
-                                />
-                              </div>
-                            </div>
-                          }
-                        />
-                      </motion.div>
+                    <motion.div layoutId={item.id}>
+                      <ToolLabel
+                        className={cn("")}
+                        hoverMode="group"
+                        interactionDisabled={isToolListInteractionDisabled}
+                        toolLayer="portal"
+                        text={item.text}
+                        textClassName={resolveListConfigToolLabelTextClassName(
+                          item,
+                        )}
+                        tool={resolveListConfigToolLabelTool({
+                          item,
+                          onPopPlaylistItem: () =>
+                            me(item).match("kind", {
+                              playlist: () => {
+                                setRemovedToolLabelItemIds((current) => {
+                                  const next = new Set(current);
+                                  next.add(item.id);
+                                  return next;
+                                });
+                              },
+                              candidate: () => {
+                                pasteDownloadAction.delete(item.id);
+                              },
+                            }),
+                          onDeleteCandidateItem: () => {
+                            pasteDownloadAction.delete(item.id);
+                          },
+                        })}
+                      />
+                    </motion.div>
+                    {shouldShowListConfigAutoDownloadIcon(item) && (
                       <icons.autoDownload size={12} />
-                    </div>
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-            </motion.div>
-            <ArcTrackList
-              items={toolLabelItems.map((item) => item.text)}
-              motionProps={contentFadeProps}
-            />
-          </>
+                    )}
+                  </div>
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          </motion.div>
         ),
       })}
+      {arcTrackItems.length > 0 && (
+        <ArcTrackList
+          items={arcTrackItems}
+          onPushItem={appLogicAction.pushDraftSidebarItem}
+          motionProps={contentFadeProps}
+        />
+      )}
     </div>
   );
 }

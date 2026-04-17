@@ -2,6 +2,7 @@ use super::PLAYLIST_DB_TEST_LOCK;
 use super::add_exclude;
 use super::check_list;
 use super::get_playlist;
+use super::list_playlists;
 use super::model::{Collection, Exclude, Group, Music, PlayList};
 use super::remove_exclude;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -339,6 +340,39 @@ fn get_playlist_hydrates_related_collections_and_groups() {
             .expect("seeded playlist should exist");
 
         assert_playlist_matches(&loaded, &playlist);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn list_playlists_returns_hydrated_rows() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_table(PlayList::table_name()).await;
+        bootstrap_table(Collection::table_name()).await;
+        bootstrap_table(Group::table_name()).await;
+
+        let playlist = sample_playlist();
+        let collection_record =
+            insert_collection_row_with_data("favorites-collection", &playlist.collections[0]).await;
+        let group_record = insert_group_row("favorites-group", &playlist.groups[0]).await;
+        insert_playlist_with_relations(
+            "favorites-playlist",
+            &playlist,
+            std::slice::from_ref(&collection_record),
+            std::slice::from_ref(&group_record),
+        )
+        .await;
+
+        let loaded = list_playlists()
+            .await
+            .expect("playlist listing should succeed");
+
+        assert_eq!(loaded.len(), 1);
+        assert_playlist_matches(&loaded[0], &playlist);
 
         reset_db();
     });

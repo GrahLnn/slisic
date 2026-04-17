@@ -1,11 +1,12 @@
 use super::model::CollectionSourceKind;
 use super::repo::{list_tasks, save_task};
 use super::service::{
+    CollectionSyncPlan, PlannedLeaf, apply_collection_plan_to_task, create_collection_shell,
     derive_youtube_channel_url_from_uploads_playlist, describe_download_resource,
     existing_leaf_urls,
     expand_root_entries_to_planned_leafs, extract_olak_playlist_ids, materialize_music_entries,
-    prepare_task_enqueue, provider_segment, resume_download_task, sanitize_path_component,
-    should_reprobe_single_leaf, try_claim_enqueue_url,
+    persist_enqueued_collection_state, prepare_task_enqueue, provider_segment, resume_download_task,
+    sanitize_path_component, should_reprobe_single_leaf, try_claim_enqueue_url,
 };
 use super::yt_dlp::{
     DownloadProgress, DownloadedLeaf, LeafChapter, LeafProbe, LeafReference, PlaylistRoot,
@@ -542,5 +543,129 @@ fn expand_root_entries_to_planned_leafs_flattens_nested_playlists_into_grouped_l
         assert_eq!(group.name, "Album One");
         assert_eq!(group.url, nested_url);
         assert_eq!(group.folder, "Album One");
+    });
+}
+
+#[test]
+fn create_collection_shell_reuses_existing_music_and_updates_collection_metadata() {
+    let existing = Collection {
+        name: "Original List".to_string(),
+        url: "https://example.com/list".to_string(),
+        folder: "youtube/original-list".to_string(),
+        musics: vec![Music {
+            name: "Track 1".to_string(),
+            group: collection_group(
+                "Disc 1",
+                "https://example.com/list#disc-1",
+                "Disc 1",
+            ),
+            url: "https://example.com/watch?v=track-1".to_string(),
+            path: Some("Disc 1/track-1.m4a".to_string()),
+            start: 0,
+            end: 120,
+        }],
+        last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+    let plan = CollectionSyncPlan {
+        source_kind: CollectionSourceKind::List,
+        collection_name: "Renamed List".to_string(),
+        collection_url: existing.url.clone(),
+        collection_folder: "youtube/renamed-list".to_string(),
+        enable_updates: Some(true),
+        leaves: vec![],
+    };
+
+    let collection = create_collection_shell(&plan, Some(existing.clone()));
+
+    assert_eq!(collection.name, "Renamed List");
+    assert_eq!(collection.folder, "youtube/renamed-list");
+    assert_eq!(collection.enable_updates, Some(true));
+    assert_eq!(collection.musics.len(), existing.musics.len());
+    assert_eq!(collection.musics[0].url, existing.musics[0].url);
+    assert_eq!(collection.musics[0].group.url, existing.musics[0].group.url);
+}
+
+#[test]
+fn apply_collection_plan_to_task_populates_collection_metadata_and_leaf_queue() {
+    let mut task = DownloadTask::new(
+        "task-bootstrap",
+        "https://example.com/list",
+        DownloadTrigger::Manual,
+    );
+    let plan = CollectionSyncPlan {
+        source_kind: CollectionSourceKind::List,
+        collection_name: "Bootstrapped List".to_string(),
+        collection_url: "https://example.com/list".to_string(),
+        collection_folder: "youtube/bootstrapped-list".to_string(),
+        enable_updates: Some(false),
+        leaves: vec![PlannedLeaf {
+            id: Id::from("leaf-bootstrap"),
+            url: "https://example.com/watch?v=leaf".to_string(),
+            sequence: 0,
+            initial_probe: None,
+            group_hint: None,
+        }],
+    };
+
+    apply_collection_plan_to_task(&mut task, &plan);
+
+    assert_eq!(task.collection_url.as_deref(), Some("https://example.com/list"));
+    assert_eq!(task.collection_name.as_deref(), Some("Bootstrapped List"));
+    assert_eq!(
+        task.collection_folder.as_deref(),
+        Some("youtube/bootstrapped-list")
+    );
+    assert_eq!(task.source_kind, Some(CollectionSourceKind::List));
+    assert_eq!(task.leafs.len(), 1);
+    assert_eq!(task.leafs[0].url, "https://example.com/watch?v=leaf");
+}
+
+#[test]
+fn persist_enqueued_collection_state_saves_collection_before_leaf_downloads_start() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let task = save_task(DownloadTask::new(
+            "task-persist",
+            "https://example.com/list",
+            DownloadTrigger::Manual,
+        ))
+        .await
+        .expect("task should save before bootstrap persistence");
+        let plan = CollectionSyncPlan {
+            source_kind: CollectionSourceKind::List,
+            collection_name: "Bootstrap Persist".to_string(),
+            collection_url: "https://example.com/list".to_string(),
+            collection_folder: "youtube/bootstrap-persist".to_string(),
+            enable_updates: Some(false),
+            leaves: vec![PlannedLeaf {
+                id: Id::from("leaf-persist"),
+                url: "https://example.com/watch?v=persist".to_string(),
+                sequence: 0,
+                initial_probe: None,
+                group_hint: None,
+            }],
+        };
+
+        let (saved_task, saved_collection) = persist_enqueued_collection_state(task, &plan)
+            .await
+            .expect("enqueue bootstrap should persist collection and task metadata");
+        let reloaded_collection = crate::domain::playlists::repo::get_collection_by_url(
+            &plan.collection_url,
+        )
+        .await
+        .expect("collection lookup should succeed")
+        .expect("collection should exist immediately after bootstrap");
+
+        assert_eq!(saved_task.collection_url.as_deref(), Some(plan.collection_url.as_str()));
+        assert_eq!(saved_task.leafs.len(), 1);
+        assert_eq!(saved_collection.url, plan.collection_url);
+        assert_eq!(reloaded_collection.name, plan.collection_name);
+        assert!(reloaded_collection.musics.is_empty());
+
+        reset_db();
     });
 }

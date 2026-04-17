@@ -1,8 +1,8 @@
-use super::model::{DownloadResourceProbe, DownloadTask};
+use super::model::{DownloadResourceProbe, DownloadTask, EnqueuedCollectionDownload};
 
 #[tauri::command]
 #[specta::specta]
-pub async fn enqueue_collection_download(url: String) -> Result<DownloadTask, String> {
+pub async fn enqueue_collection_download(url: String) -> Result<EnqueuedCollectionDownload, String> {
     super::service::enqueue_collection_download(url)
         .await
         .map_err(|error| error.to_string())
