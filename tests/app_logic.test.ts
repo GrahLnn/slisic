@@ -16,12 +16,15 @@ const originalListCollections = crab.listCollections;
 const originalListPlaylists = crab.listPlaylists;
 const originalGetPlaylist = crab.getPlaylist;
 const originalGetMetaInfo = crab.getMetaInfo;
+const originalSetCollectionUpdates = crab.setCollectionUpdates;
 const openPlaylist = payloads["playlist.open"];
 const draftNameChanged = payloads["draft.name.changed"];
 const savePathChanged = payloads["save_path.changed"];
 const collectionUpserted = payloads["collection.upserted"];
 const draftCollectionUpserted = payloads["draft.collection.upserted"];
-const draftSidebarItemPushed = payloads["draft.sidebar-item.pushed"];
+const draftItemIncluded = payloads["draft.item.included"];
+const draftItemRemoved = payloads["draft.item.removed"];
+const collectionUpdatesRequested = payloads["collection.updates.requested"];
 const sampleSavePath = "C:\\Users\\admin\\Documents\\ransic";
 
 const sampleCollection: Collection = {
@@ -106,12 +109,14 @@ const syncedCollection: Collection = {
   enable_updates: null,
 };
 
-const sampleGroupSidebarItem = {
+const sampleGroupSidebarItemRef = {
   kind: "group" as const,
-  name: "Disc 2",
-  url: "https://example.com/quiet-morning#disc-2",
-  folder: "Disc 2",
+  url: "https://example.com/quiet-morning#disc-1",
 };
+
+function currentConfigSidebarItems(actor: AnyActorRef) {
+  return createConfigSidebarItems(actor.getSnapshot().context.collections);
+}
 
 function setCheckListMock(mock: typeof crab.checkList) {
   (crab as { checkList: typeof crab.checkList }).checkList = mock;
@@ -131,6 +136,10 @@ function setGetPlaylistMock(mock: typeof crab.getPlaylist) {
 
 function setGetMetaInfoMock(mock: typeof crab.getMetaInfo) {
   (crab as { getMetaInfo: typeof crab.getMetaInfo }).getMetaInfo = mock;
+}
+
+function setSetCollectionUpdatesMock(mock: typeof crab.setCollectionUpdates) {
+  (crab as { setCollectionUpdates: typeof crab.setCollectionUpdates }).setCollectionUpdates = mock;
 }
 
 function waitForState(actor: AnyActorRef, expected: string, timeoutMs = 1000) {
@@ -196,6 +205,7 @@ afterEach(() => {
   setListPlaylistsMock(originalListPlaylists);
   setGetPlaylistMock(originalGetPlaylist);
   setGetMetaInfoMock(originalGetMetaInfo);
+  setSetCollectionUpdatesMock(originalSetCollectionUpdates);
 });
 
 describe("createConfigSidebarItems", () => {
@@ -219,10 +229,11 @@ describe("appLogic machine", () => {
       playlists: [],
       collections: [],
       savePath: "",
-      configSidebarItems: [],
       activeLayoutId: null,
       titleToneHandoff: null,
       pendingPlaylistName: null,
+      pendingCollectionUpdatesChange: null,
+      draftBaseline: null,
       draft: null,
       error: null,
     });
@@ -235,10 +246,11 @@ describe("appLogic machine", () => {
       playlists: [samplePlaylist],
       collections: [sampleCollection],
       savePath: sampleSavePath,
-      configSidebarItems: [],
       activeLayoutId: null,
       titleToneHandoff: null,
       pendingPlaylistName: null,
+      pendingCollectionUpdatesChange: null,
+      draftBaseline: null,
       draft: null,
       error: null,
     });
@@ -259,10 +271,11 @@ describe("appLogic machine", () => {
       playlists: [],
       collections: [],
       savePath: sampleSavePath,
-      configSidebarItems: [],
       activeLayoutId: null,
       titleToneHandoff: null,
       pendingPlaylistName: null,
+      pendingCollectionUpdatesChange: null,
+      draftBaseline: null,
       draft: null,
       error: null,
     });
@@ -283,10 +296,11 @@ describe("appLogic machine", () => {
       playlists: [],
       collections: [],
       savePath: sampleSavePath,
-      configSidebarItems: [],
       activeLayoutId: null,
       titleToneHandoff: null,
       pendingPlaylistName: null,
+      pendingCollectionUpdatesChange: null,
+      draftBaseline: null,
       draft: null,
       error: "db unavailable",
     });
@@ -306,13 +320,19 @@ describe("appLogic machine", () => {
 
     expect(actor.getSnapshot().value).toBe(ss.mainx.State.config);
     expect(actor.getSnapshot().context.activeLayoutId).toBe(CREATE_COLLECTION_LAYOUT_ID);
-    expect(actor.getSnapshot().context.configSidebarItems).toEqual(expectedConfigSidebarItems);
+    expect(currentConfigSidebarItems(actor)).toEqual(expectedConfigSidebarItems);
     expect(actor.getSnapshot().context.titleToneHandoff).toEqual({
       layoutId: CREATE_COLLECTION_LAYOUT_ID,
       tone: "solid",
     });
     expect(actor.getSnapshot().context.savePath).toBe(sampleSavePath);
     expect(actor.getSnapshot().context.draft).toEqual({
+      mode: "create",
+      name: "",
+      collections: [],
+      groups: [],
+    });
+    expect(actor.getSnapshot().context.draftBaseline).toEqual({
       mode: "create",
       name: "",
       collections: [],
@@ -326,13 +346,14 @@ describe("appLogic machine", () => {
     expect(actor.getSnapshot().value).toBe(ss.mainx.State.ready);
     expect(actor.getSnapshot().context.playlists).toEqual([samplePlaylist]);
     expect(actor.getSnapshot().context.savePath).toBe(sampleSavePath);
-    expect(actor.getSnapshot().context.configSidebarItems).toEqual([]);
+    expect(currentConfigSidebarItems(actor)).toEqual(expectedConfigSidebarItems);
     expect(actor.getSnapshot().context.activeLayoutId).toBeNull();
     expect(actor.getSnapshot().context.titleToneHandoff).toEqual({
       layoutId: CREATE_COLLECTION_LAYOUT_ID,
       tone: "solid",
     });
     expect(actor.getSnapshot().context.pendingPlaylistName).toBeNull();
+    expect(actor.getSnapshot().context.draftBaseline).toBeNull();
     expect(actor.getSnapshot().context.draft).toBeNull();
   });
 
@@ -401,10 +422,16 @@ describe("appLogic machine", () => {
     expect(actor.getSnapshot().context.activeLayoutId).toBe(
       playlistTitleLayoutId(samplePlaylist.name),
     );
-    expect(actor.getSnapshot().context.configSidebarItems).toEqual(expectedConfigSidebarItems);
+    expect(currentConfigSidebarItems(actor)).toEqual(expectedConfigSidebarItems);
     expect(actor.getSnapshot().context.titleToneHandoff).toBeNull();
     expect(actor.getSnapshot().context.pendingPlaylistName).toBeNull();
     expect(actor.getSnapshot().context.draft).toEqual({
+      mode: "edit",
+      name: samplePlaylist.name,
+      collections: samplePlaylist.collections,
+      groups: samplePlaylist.groups,
+    });
+    expect(actor.getSnapshot().context.draftBaseline).toEqual({
       mode: "edit",
       name: samplePlaylist.name,
       collections: samplePlaylist.collections,
@@ -425,12 +452,9 @@ describe("appLogic machine", () => {
     actor.send(sig.mainx.opencreate);
     actor.send(collectionUpserted.load(syncedCollection));
 
-    expect(actor.getSnapshot().context.collections).toEqual([
-      syncedCollection,
-      sampleCollection,
-    ]);
+    expect(actor.getSnapshot().context.collections).toEqual([syncedCollection, sampleCollection]);
     expect(actor.getSnapshot().context.playlists).toEqual([samplePlaylist]);
-    expect(actor.getSnapshot().context.configSidebarItems).toEqual([
+    expect(currentConfigSidebarItems(actor)).toEqual([
       {
         kind: "collection",
         name: syncedCollection.name,
@@ -454,10 +478,7 @@ describe("appLogic machine", () => {
     actor.send(sig.mainx.opencreate);
     actor.send(draftCollectionUpserted.load(syncedCollection));
 
-    expect(actor.getSnapshot().context.collections).toEqual([
-      syncedCollection,
-      sampleCollection,
-    ]);
+    expect(actor.getSnapshot().context.collections).toEqual([syncedCollection, sampleCollection]);
     expect(actor.getSnapshot().context.playlists).toEqual([samplePlaylist]);
     expect(actor.getSnapshot().context.draft).toEqual({
       mode: "create",
@@ -465,7 +486,13 @@ describe("appLogic machine", () => {
       collections: [syncedCollection],
       groups: [],
     });
-    expect(actor.getSnapshot().context.configSidebarItems).toEqual([
+    expect(actor.getSnapshot().context.draftBaseline).toEqual({
+      mode: "create",
+      name: "",
+      collections: [],
+      groups: [],
+    });
+    expect(currentConfigSidebarItems(actor)).toEqual([
       {
         kind: "collection",
         name: syncedCollection.name,
@@ -474,6 +501,61 @@ describe("appLogic machine", () => {
       },
       ...expectedConfigSidebarItems,
     ]);
+  });
+
+  test("toggles collection updates through a domain event and keeps draft canonical", async () => {
+    const updateEnabledCollection: Collection = {
+      ...sampleCollection,
+      enable_updates: true,
+    };
+
+    setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
+    setListCollectionsMock(async () => Ok([sampleCollection]));
+    setSetCollectionUpdatesMock(async (url, enabled) => {
+      expect(url).toBe(sampleCollection.url);
+      expect(enabled).toBe(true);
+      return Ok(updateEnabledCollection);
+    });
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(sig.mainx.run);
+
+    await waitForState(actor, ss.mainx.State.ready);
+    setGetPlaylistMock(async () => Ok(samplePlaylist));
+    actor.send(openPlaylist.load(samplePlaylist.name));
+    await waitForState(actor, ss.mainx.State.config);
+    await waitForContext(actor, (context: { draft: unknown }) => context.draft !== null);
+
+    actor.send(
+      collectionUpdatesRequested.load({
+        url: sampleCollection.url,
+        enabled: true,
+      }),
+    );
+
+    await waitForState(actor, ss.mainx.State.configUpdatingCollectionUpdates);
+    await waitForContext(
+      actor,
+      (context: { collections: Collection[] }) => context.collections[0]?.enable_updates === true,
+    );
+    await waitForState(actor, ss.mainx.State.config);
+
+    expect(actor.getSnapshot().context.pendingCollectionUpdatesChange).toBeNull();
+    expect(actor.getSnapshot().context.collections).toEqual([updateEnabledCollection]);
+    expect(actor.getSnapshot().context.draft).toEqual({
+      mode: "edit",
+      name: samplePlaylist.name,
+      collections: [updateEnabledCollection],
+      groups: samplePlaylist.groups,
+    });
+    expect(actor.getSnapshot().context.draftBaseline).toEqual({
+      mode: "edit",
+      name: samplePlaylist.name,
+      collections: samplePlaylist.collections,
+      groups: samplePlaylist.groups,
+    });
   });
 
   test("pushes a sidebar item into the draft through appLogic instead of local ui state", async () => {
@@ -489,11 +571,9 @@ describe("appLogic machine", () => {
     actor.send(sig.mainx.opencreate);
 
     actor.send(
-      draftSidebarItemPushed.load({
+      draftItemIncluded.load({
         kind: "collection",
-        name: syncedCollection.name,
         url: syncedCollection.url,
-        folder: syncedCollection.folder,
       }),
     );
 
@@ -503,8 +583,14 @@ describe("appLogic machine", () => {
       collections: [syncedCollection],
       groups: [],
     });
+    expect(actor.getSnapshot().context.draftBaseline).toEqual({
+      mode: "create",
+      name: "",
+      collections: [],
+      groups: [],
+    });
 
-    actor.send(draftSidebarItemPushed.load(sampleGroupSidebarItem));
+    actor.send(draftItemIncluded.load(sampleGroupSidebarItemRef));
 
     expect(actor.getSnapshot().context.draft).toEqual({
       mode: "create",
@@ -512,11 +598,32 @@ describe("appLogic machine", () => {
       collections: [syncedCollection],
       groups: [
         {
-          name: sampleGroupSidebarItem.name,
-          url: sampleGroupSidebarItem.url,
-          folder: sampleGroupSidebarItem.folder,
+          name: "Disc 1",
+          url: sampleGroupSidebarItemRef.url,
+          folder: "Disc 1",
         },
       ],
+    });
+
+    actor.send(
+      draftItemRemoved.load({
+        kind: "collection",
+        url: syncedCollection.url,
+      }),
+    );
+    actor.send(draftItemRemoved.load(sampleGroupSidebarItemRef));
+
+    expect(actor.getSnapshot().context.draft).toEqual({
+      mode: "create",
+      name: "",
+      collections: [],
+      groups: [],
+    });
+    expect(actor.getSnapshot().context.draftBaseline).toEqual({
+      mode: "create",
+      name: "",
+      collections: [],
+      groups: [],
     });
   });
 
@@ -539,10 +646,11 @@ describe("appLogic machine", () => {
       playlists: [samplePlaylist],
       collections: [sampleCollection],
       savePath: sampleSavePath,
-      configSidebarItems: expectedConfigSidebarItems,
       activeLayoutId: playlistTitleLayoutId("Missing"),
       titleToneHandoff: null,
       pendingPlaylistName: null,
+      pendingCollectionUpdatesChange: null,
+      draftBaseline: null,
       draft: null,
       error: "playlist `Missing` not found",
     });
@@ -583,10 +691,11 @@ describe("ensureAppLogicStarted", () => {
         playlists: [samplePlaylist],
         collections: [sampleCollection],
         savePath: sampleSavePath,
-        configSidebarItems: [],
         activeLayoutId: null,
         titleToneHandoff: null,
         pendingPlaylistName: null,
+        pendingCollectionUpdatesChange: null,
+        draftBaseline: null,
         draft: null,
         error: null,
       });

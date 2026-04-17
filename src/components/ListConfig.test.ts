@@ -1,28 +1,29 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { me } from "@grahlnn/fn";
-import type { ConfigDraft } from "@/src/flow/appLogic/core";
+import { createConfigSidebarItemRef, type ConfigDraft } from "@/src/flow/appLogic/core";
 import type { ConfigCandidateItem } from "@/src/flow/pasteDownload/core";
+import { LIST_CONFIG_EMPTY_STATE_TEXT } from "./ListConfig";
 import {
-  LIST_CONFIG_EMPTY_STATE_TEXT,
   createListConfigArcTrackItems,
   createListConfigCandidateToolLabelItems,
   createListConfigPlaylistSidebarItems,
   createListConfigPlaylistToolLabelItems,
   createListConfigTitleSnapshot,
   resolveListConfigEmptyState,
+  resolveListConfigInteractionFlags,
+  resolveListConfigCollectionUpdatesToolText,
   resolveListConfigSavePath,
-  resolveListConfigShouldShowDeleteOnlyTool,
-  shouldShowListConfigAutoDownloadIcon,
+  resolveListConfigHasDraftChanges,
+  resolveListConfigToolLabelAffordance,
   resolveListConfigToolLabelItems,
   resolveListConfigToolLabelTextClassName,
-  resolveListConfigToolListInteractionDisabled,
   resolveListConfigTitleViewModel,
-  shouldShowListConfigCandidateDeleteTool,
+  resolveListConfigViewModel,
+  shouldShowListConfigAutoDownloadIcon,
   shouldShowListConfigEnableUpdateTool,
   shouldShowListConfigEmptyState,
-  shouldShowListConfigPlaylistHoverTool,
-} from "./ListConfig";
+} from "./ListConfig.view-model";
 
 const createDraft: ConfigDraft = {
   mode: "create",
@@ -174,23 +175,28 @@ describe("ListConfig title view model", () => {
     );
   });
 
-  test("disables the tool list while the config page is exiting", () => {
-    assert.equal(
-      resolveListConfigToolListInteractionDisabled({
-        isAnimating: false,
+  test("derives interaction flags from presence and visible arc-track items", () => {
+    assert.deepEqual(
+      resolveListConfigInteractionFlags({
         isPresent: false,
+        arcTrackItemCount: 0,
       }),
-      true,
+      {
+        isTitleInteractionDisabled: true,
+        isToolListInteractionDisabled: true,
+        shouldRenderArcTrack: false,
+      },
     );
-  });
-
-  test("keeps the tool list interactive only after entry settles", () => {
-    assert.equal(
-      resolveListConfigToolListInteractionDisabled({
-        isAnimating: false,
+    assert.deepEqual(
+      resolveListConfigInteractionFlags({
         isPresent: true,
+        arcTrackItemCount: 2,
       }),
-      false,
+      {
+        isTitleInteractionDisabled: false,
+        isToolListInteractionDisabled: false,
+        shouldRenderArcTrack: true,
+      },
     );
   });
 
@@ -206,6 +212,21 @@ describe("ListConfig title view model", () => {
       resolveListConfigSavePath(null, "C:\\Users\\admin\\Documents\\ransic"),
       "C:\\Users\\admin\\Documents\\ransic",
     );
+  });
+
+  test("marks the draft as changed only when it differs from the session baseline", () => {
+    assert.equal(resolveListConfigHasDraftChanges(createDraft, createDraft), false);
+    assert.equal(
+      resolveListConfigHasDraftChanges(
+        {
+          ...createDraft,
+          name: "Changed",
+        },
+        createDraft,
+      ),
+      true,
+    );
+    assert.equal(resolveListConfigHasDraftChanges(null, createDraft), false);
   });
 
   test("creates playlist and candidate tool items with distinct kinds", () => {
@@ -229,6 +250,10 @@ describe("ListConfig title view model", () => {
       {
         kind: "playlist",
         id: "playlist:collection:https://example.com/quiet-morning",
+        ref: createConfigSidebarItemRef({
+          kind: "collection",
+          url: "https://example.com/quiet-morning",
+        }),
         text: "Quiet Morning",
         sourceKind: "collection",
         enableUpdates: null,
@@ -236,6 +261,10 @@ describe("ListConfig title view model", () => {
       {
         kind: "playlist",
         id: "playlist:group:https://example.com/quiet-morning#disc-1",
+        ref: createConfigSidebarItemRef({
+          kind: "group",
+          url: "https://example.com/quiet-morning#disc-1",
+        }),
         text: "Disc 1",
         sourceKind: "group",
         enableUpdates: null,
@@ -293,13 +322,10 @@ describe("ListConfig title view model", () => {
 
   test("prepends candidate items ahead of persisted playlist items", () => {
     assert.deepEqual(
-      resolveListConfigToolLabelItems(
-        {
-          playlistItems: createListConfigPlaylistSidebarItems(draftWithGroup),
-          candidateItems,
-        },
-        new Set(),
-      ),
+      resolveListConfigToolLabelItems({
+        playlistItems: createListConfigPlaylistSidebarItems(draftWithGroup),
+        candidateItems,
+      }),
       [
         {
           kind: "candidate",
@@ -316,6 +342,10 @@ describe("ListConfig title view model", () => {
         {
           kind: "playlist",
           id: "playlist:collection:https://example.com/quiet-morning",
+          ref: createConfigSidebarItemRef({
+            kind: "collection",
+            url: "https://example.com/quiet-morning",
+          }),
           text: "Quiet Morning",
           sourceKind: "collection",
           enableUpdates: null,
@@ -323,6 +353,10 @@ describe("ListConfig title view model", () => {
         {
           kind: "playlist",
           id: "playlist:group:https://example.com/quiet-morning#disc-1",
+          ref: createConfigSidebarItemRef({
+            kind: "group",
+            url: "https://example.com/quiet-morning#disc-1",
+          }),
           text: "Disc 1",
           sourceKind: "group",
           enableUpdates: null,
@@ -331,36 +365,66 @@ describe("ListConfig title view model", () => {
     );
   });
 
-  test("filters popped persisted items without affecting candidates", () => {
-    assert.deepEqual(
-      resolveListConfigToolLabelItems(
-        {
-          playlistItems: createListConfigPlaylistSidebarItems(draftWithGroup),
-          candidateItems,
-        },
-        new Set(["playlist:group:https://example.com/quiet-morning#disc-1"]),
-      ),
-      [
-        {
-          kind: "candidate",
-          id: "candidate:0",
-          text: "Quiet Morning",
-          status: "resolved",
-        },
-        {
-          kind: "candidate",
-          id: "candidate:1",
-          text: "not a url",
-          status: "invalid_url",
-        },
-        {
-          kind: "playlist",
-          id: "playlist:collection:https://example.com/quiet-morning",
-          text: "Quiet Morning",
-          sourceKind: "collection",
-          enableUpdates: null,
-        },
-      ],
+  test("derives tool affordances from canonical item kind and status", () => {
+    assert.equal(
+      resolveListConfigToolLabelAffordance({
+        kind: "playlist",
+        id: "playlist:collection:https://example.com/quiet-morning",
+        ref: createConfigSidebarItemRef({
+          kind: "collection",
+          url: "https://example.com/quiet-morning",
+        }),
+        text: "Quiet Morning",
+        sourceKind: "collection",
+        enableUpdates: null,
+      }),
+      "playlist",
+    );
+    assert.equal(
+      resolveListConfigToolLabelAffordance({
+        kind: "candidate",
+        id: "candidate:0",
+        text: "Quiet Morning",
+        status: "resolved",
+      }),
+      "passive",
+    );
+    assert.equal(
+      resolveListConfigToolLabelAffordance({
+        kind: "candidate",
+        id: "candidate:1",
+        text: "not a url",
+        status: "invalid_url",
+      }),
+      "candidate-delete",
+    );
+    assert.equal(
+      resolveListConfigCollectionUpdatesToolText({
+        kind: "playlist",
+        id: "playlist:collection:https://example.com/quiet-morning",
+        ref: createConfigSidebarItemRef({
+          kind: "collection",
+          url: "https://example.com/quiet-morning",
+        }),
+        text: "Quiet Morning",
+        sourceKind: "collection",
+        enableUpdates: false,
+      }),
+      "Enable Update",
+    );
+    assert.equal(
+      resolveListConfigCollectionUpdatesToolText({
+        kind: "playlist",
+        id: "playlist:collection:https://example.com/quiet-morning",
+        ref: createConfigSidebarItemRef({
+          kind: "collection",
+          url: "https://example.com/quiet-morning",
+        }),
+        text: "Quiet Morning",
+        sourceKind: "collection",
+        enableUpdates: true,
+      }),
+      "Disable Update",
     );
   });
 
@@ -452,59 +516,46 @@ describe("ListConfig title view model", () => {
       }),
       /line-through/,
     );
-    assert.equal(resolveListConfigShouldShowDeleteOnlyTool("invalid_url"), true);
-    assert.equal(resolveListConfigShouldShowDeleteOnlyTool("resolved"), false);
     assert.equal(
-      shouldShowListConfigPlaylistHoverTool({
+      resolveListConfigToolLabelAffordance({
+        kind: "candidate",
+        id: "candidate:1",
+        text: "not a url",
+        status: "invalid_url",
+      }),
+      "candidate-delete",
+    );
+    assert.equal(
+      resolveListConfigToolLabelAffordance({
         kind: "candidate",
         id: "candidate:0",
         text: "Quiet Morning",
         status: "resolved",
       }),
-      true,
+      "passive",
     );
     assert.equal(
-      shouldShowListConfigPlaylistHoverTool({
-        kind: "candidate",
-        id: "candidate:1",
-        text: "not a url",
-        status: "invalid_url",
-      }),
-      false,
-    );
-    assert.equal(
-      shouldShowListConfigPlaylistHoverTool({
+      resolveListConfigToolLabelAffordance({
         kind: "playlist",
         id: "playlist:collection:https://example.com/quiet-morning",
+        ref: createConfigSidebarItemRef({
+          kind: "collection",
+          url: "https://example.com/quiet-morning",
+        }),
         text: "Quiet Morning",
         sourceKind: "collection",
         enableUpdates: null,
       }),
-      true,
-    );
-    assert.equal(
-      shouldShowListConfigCandidateDeleteTool({
-        kind: "candidate",
-        id: "candidate:1",
-        text: "not a url",
-        status: "invalid_url",
-      }),
-      true,
-    );
-    assert.equal(
-      shouldShowListConfigCandidateDeleteTool({
-        kind: "playlist",
-        id: "playlist:collection:https://example.com/quiet-morning",
-        text: "Quiet Morning",
-        sourceKind: "collection",
-        enableUpdates: null,
-      }),
-      false,
+      "playlist",
     );
     assert.equal(
       shouldShowListConfigEnableUpdateTool({
         kind: "playlist",
         id: "playlist:collection:https://example.com/quiet-morning",
+        ref: createConfigSidebarItemRef({
+          kind: "collection",
+          url: "https://example.com/quiet-morning",
+        }),
         text: "Quiet Morning",
         sourceKind: "collection",
         enableUpdates: false,
@@ -515,6 +566,10 @@ describe("ListConfig title view model", () => {
       shouldShowListConfigEnableUpdateTool({
         kind: "playlist",
         id: "playlist:collection:https://example.com/quiet-morning",
+        ref: createConfigSidebarItemRef({
+          kind: "collection",
+          url: "https://example.com/quiet-morning",
+        }),
         text: "Quiet Morning",
         sourceKind: "collection",
         enableUpdates: null,
@@ -525,6 +580,10 @@ describe("ListConfig title view model", () => {
       shouldShowListConfigEnableUpdateTool({
         kind: "playlist",
         id: "playlist:group:https://example.com/quiet-morning#disc-1",
+        ref: createConfigSidebarItemRef({
+          kind: "group",
+          url: "https://example.com/quiet-morning#disc-1",
+        }),
         text: "Disc 1",
         sourceKind: "group",
         enableUpdates: null,
@@ -535,6 +594,10 @@ describe("ListConfig title view model", () => {
       shouldShowListConfigAutoDownloadIcon({
         kind: "playlist",
         id: "playlist:collection:https://example.com/quiet-morning",
+        ref: createConfigSidebarItemRef({
+          kind: "collection",
+          url: "https://example.com/quiet-morning",
+        }),
         text: "Quiet Morning",
         sourceKind: "collection",
         enableUpdates: true,
@@ -545,6 +608,10 @@ describe("ListConfig title view model", () => {
       shouldShowListConfigAutoDownloadIcon({
         kind: "playlist",
         id: "playlist:collection:https://example.com/quiet-morning",
+        ref: createConfigSidebarItemRef({
+          kind: "collection",
+          url: "https://example.com/quiet-morning",
+        }),
         text: "Quiet Morning",
         sourceKind: "collection",
         enableUpdates: false,
@@ -631,5 +698,50 @@ describe("ListConfig title view model", () => {
       }),
       false,
     );
+  });
+
+  test("resolves the full screen view model from canonical state and animation memory", () => {
+    const viewModel = resolveListConfigViewModel({
+      activeLayoutId: "playlist-title:Focus Session",
+      draft: draftWithGroup,
+      draftBaseline: {
+        ...draftWithGroup,
+        name: "Original Name",
+      },
+      titleToneHandoff: null,
+      isPresent: true,
+      libraryItems: [
+        {
+          kind: "collection",
+          name: "Quiet Morning",
+          url: "https://example.com/quiet-morning",
+          folder: "youtube/quiet-morning",
+        },
+        {
+          kind: "collection",
+          name: "Late Night Tape",
+          url: "https://example.com/late-night-tape",
+          folder: "youtube/late-night-tape",
+        },
+      ],
+      candidateItems: [],
+      previousTitleSnapshot: null,
+      previousEmptyState: null,
+    });
+
+    assert.equal(viewModel.title.value, "Focus Session");
+    assert.equal(viewModel.title.layoutId, "playlist-title:Focus Session");
+    assert.equal(viewModel.hasDraftChanges, true);
+    assert.equal(viewModel.interactionFlags.isToolListInteractionDisabled, false);
+    assert.equal(viewModel.interactionFlags.shouldRenderArcTrack, true);
+    assert.equal(viewModel.shouldShowEmptyState, false);
+    assert.deepEqual(viewModel.arcTrackItems, [
+      {
+        kind: "collection",
+        name: "Late Night Tape",
+        url: "https://example.com/late-night-tape",
+        folder: "youtube/late-night-tape",
+      },
+    ]);
   });
 });

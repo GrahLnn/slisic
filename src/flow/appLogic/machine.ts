@@ -3,11 +3,12 @@ import {
   CREATE_COLLECTION_LAYOUT_ID,
   collectionTitleToneFromDraft,
   createCollectionTitleHandoff,
-  createConfigSidebarItems,
   createDraft,
+  cloneDraft,
+  includeDraftSidebarItem,
   initialContext,
-  insertConfigSidebarItemIntoDraft,
   playlistTitleLayoutId,
+  removeDraftSidebarItem,
   resetContextWith,
   upsertCollectionIntoDraft,
   upsertCollectionIntoCollections,
@@ -28,7 +29,9 @@ const draftNameChanged = payloads["draft.name.changed"];
 const savePathChanged = payloads["save_path.changed"];
 const collectionUpserted = payloads["collection.upserted"];
 const draftCollectionUpserted = payloads["draft.collection.upserted"];
-const draftSidebarItemPushed = payloads["draft.sidebar-item.pushed"];
+const draftItemIncluded = payloads["draft.item.included"];
+const draftItemRemoved = payloads["draft.item.removed"];
+const collectionUpdatesRequested = payloads["collection.updates.requested"];
 
 export const machine = src.createMachine({
   initial: ss.mainx.State.idle,
@@ -41,42 +44,31 @@ export const machine = src.createMachine({
     },
     [collectionUpserted.evt]: {
       actions: assign(({ context, event }) => {
-        const collections = upsertCollectionIntoCollections(
-          context.collections,
-          event.output,
-        );
+        const collections = upsertCollectionIntoCollections(context.collections, event.output);
 
         return {
           collections,
-          configSidebarItems: context.activeLayoutId
-            ? createConfigSidebarItems(collections)
-            : context.configSidebarItems,
         };
       }),
     },
     [draftCollectionUpserted.evt]: {
       actions: assign(({ context, event }) => {
-        const collections = upsertCollectionIntoCollections(
-          context.collections,
-          event.output,
-        );
+        const collections = upsertCollectionIntoCollections(context.collections, event.output);
 
         return {
           collections,
-          configSidebarItems: context.activeLayoutId
-            ? createConfigSidebarItems(collections)
-            : context.configSidebarItems,
           draft: upsertCollectionIntoDraft(context.draft, event.output),
         };
       }),
     },
-    [draftSidebarItemPushed.evt]: {
+    [draftItemIncluded.evt]: {
       actions: assign(({ context, event }) => ({
-        draft: insertConfigSidebarItemIntoDraft(
-          context.draft,
-          context.collections,
-          event.output,
-        ),
+        draft: includeDraftSidebarItem(context.draft, context.collections, event.output),
+      })),
+    },
+    [draftItemRemoved.evt]: {
+      actions: assign(({ context, event }) => ({
+        draft: removeDraftSidebarItem(context.draft, event.output),
       })),
     },
   },
@@ -123,12 +115,9 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
-              configSidebarItems: createConfigSidebarItems(context.collections),
               activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
-              titleToneHandoff: createCollectionTitleHandoff(
-                CREATE_COLLECTION_LAYOUT_ID,
-                "solid",
-              ),
+              titleToneHandoff: createCollectionTitleHandoff(CREATE_COLLECTION_LAYOUT_ID, "solid"),
+              draftBaseline: createDraft(),
               draft: createDraft(),
             }),
           ),
@@ -141,7 +130,6 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
-              configSidebarItems: createConfigSidebarItems(context.collections),
               activeLayoutId: playlistTitleLayoutId(event.output),
               pendingPlaylistName: event.output,
             }),
@@ -168,8 +156,8 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
-              configSidebarItems: context.configSidebarItems,
               activeLayoutId: context.activeLayoutId,
+              draftBaseline: cloneDraft(event.output),
               draft: event.output,
             }),
           ),
@@ -182,7 +170,6 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
-              configSidebarItems: context.configSidebarItems,
               activeLayoutId: context.activeLayoutId,
               error: toErrorMessage(event.error),
             }),
@@ -231,12 +218,12 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
-              configSidebarItems: createConfigSidebarItems(context.collections),
               activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
               titleToneHandoff: createCollectionTitleHandoff(
                 CREATE_COLLECTION_LAYOUT_ID,
                 collectionTitleToneFromDraft(context.draft),
               ),
+              draftBaseline: createDraft(),
               draft: createDraft(),
             }),
           ),
@@ -249,7 +236,6 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
-              configSidebarItems: createConfigSidebarItems(context.collections),
               activeLayoutId: playlistTitleLayoutId(event.output),
               pendingPlaylistName: event.output,
             }),
@@ -264,6 +250,41 @@ export const machine = src.createMachine({
                     name: event.output,
                   }
                 : null,
+          }),
+        },
+        [collectionUpdatesRequested.evt]: {
+          target: ss.mainx.State.configUpdatingCollectionUpdates,
+          actions: assign({
+            pendingCollectionUpdatesChange: ({ event }) => event.output,
+            error: () => null,
+          }),
+        },
+      },
+    },
+    [ss.mainx.State.configUpdatingCollectionUpdates]: {
+      invoke: {
+        id: invoker.setCollectionUpdates.id,
+        src: invoker.setCollectionUpdates.src,
+        input: ({ context }) => {
+          if (!context.pendingCollectionUpdatesChange) {
+            throw new Error("missing collection updates request");
+          }
+
+          return context.pendingCollectionUpdatesChange;
+        },
+        onDone: {
+          target: ss.mainx.State.config,
+          actions: assign(({ context, event }) => ({
+            collections: upsertCollectionIntoCollections(context.collections, event.output),
+            draft: upsertCollectionIntoDraft(context.draft, event.output),
+            pendingCollectionUpdatesChange: null,
+          })),
+        },
+        onError: {
+          target: ss.mainx.State.config,
+          actions: assign({
+            pendingCollectionUpdatesChange: () => null,
+            error: ({ event }) => toErrorMessage(event.error),
           }),
         },
       },

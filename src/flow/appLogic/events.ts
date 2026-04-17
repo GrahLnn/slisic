@@ -14,8 +14,9 @@ import {
 import { crab, type Collection, type PlayList } from "@/src/cmd";
 import {
   createDraftFromPlayList,
+  type CollectionUpdatesChange,
+  type ConfigSidebarItemRef,
   type ConfigDraft,
-  type ConfigSidebarItem,
 } from "./core";
 
 export interface BootstrapResult {
@@ -48,7 +49,15 @@ export const ss = defineSS(
   ns(
     "mainx",
     sst(
-      ["idle", "loading", "ready", "configLoading", "config", "error"],
+      [
+        "idle",
+        "loading",
+        "ready",
+        "configLoading",
+        "config",
+        "configUpdatingCollectionUpdates",
+        "error",
+      ],
       ["run", "opencreate", "back"],
     ),
   ),
@@ -114,6 +123,22 @@ export const invoker = createActors({
       },
     });
   },
+  setCollectionUpdates: async (input: CollectionUpdatesChange): Promise<Collection> => {
+    const result = await crab.setCollectionUpdates(input.url, input.enabled);
+
+    return result.match({
+      Ok: (collection) => {
+        if (!collection) {
+          throw new Error(`collection \`${input.url}\` not found`);
+        }
+
+        return collection;
+      },
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+  },
 });
 export const payloads = collect(
   ...event<string>()("playlist.open"),
@@ -121,7 +146,9 @@ export const payloads = collect(
   ...event<string>()("save_path.changed"),
   ...event<Collection>()("collection.upserted"),
   ...event<Collection>()("draft.collection.upserted"),
-  ...event<ConfigSidebarItem>()("draft.sidebar-item.pushed"),
+  ...event<ConfigSidebarItemRef>()("draft.item.included"),
+  ...event<ConfigSidebarItemRef>()("draft.item.removed"),
+  ...event<CollectionUpdatesChange>()("collection.updates.requested"),
 );
 
 export type MainStateT = Extract<keyof typeof ss.mainx.State, string>;

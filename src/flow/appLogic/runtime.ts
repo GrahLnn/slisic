@@ -11,7 +11,9 @@ export const draftNameChanged = payloads["draft.name.changed"];
 export const savePathChanged = payloads["save_path.changed"];
 export const collectionUpserted = payloads["collection.upserted"];
 export const draftCollectionUpserted = payloads["draft.collection.upserted"];
-export const draftSidebarItemPushed = payloads["draft.sidebar-item.pushed"];
+export const draftItemIncluded = payloads["draft.item.included"];
+export const draftItemRemoved = payloads["draft.item.removed"];
+export const collectionUpdatesRequested = payloads["collection.updates.requested"];
 
 export function resetRuntimeActor() {
   actor = createActor(machine);

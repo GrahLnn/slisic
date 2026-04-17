@@ -27,15 +27,26 @@ export interface ConfigSidebarItem {
   folder: string;
 }
 
+export interface ConfigSidebarItemRef {
+  kind: ConfigSidebarItem["kind"];
+  url: string;
+}
+
+export interface CollectionUpdatesChange {
+  url: string;
+  enabled: boolean;
+}
+
 export interface Context {
   hasPlayList: boolean | null;
   playlists: PlayList[];
   collections: Collection[];
   savePath: string;
-  configSidebarItems: ConfigSidebarItem[];
   activeLayoutId: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   pendingPlaylistName: string | null;
+  pendingCollectionUpdatesChange: CollectionUpdatesChange | null;
+  draftBaseline: ConfigDraft | null;
   draft: ConfigDraft | null;
   error: string | null;
 }
@@ -63,13 +74,22 @@ export function createDraft(): ConfigDraft {
   };
 }
 
-export function createDraftFromPlayList(playlist: PlayList): ConfigDraft {
+export function cloneDraft(draft: ConfigDraft): ConfigDraft {
   return {
+    mode: draft.mode,
+    name: draft.name,
+    collections: [...draft.collections],
+    groups: [...draft.groups],
+  };
+}
+
+export function createDraftFromPlayList(playlist: PlayList): ConfigDraft {
+  return cloneDraft({
     mode: "edit",
     name: playlist.name,
-    collections: [...playlist.collections],
-    groups: [...playlist.groups],
-  };
+    collections: playlist.collections,
+    groups: playlist.groups,
+  });
 }
 
 export function collectionTitleToneFromDraft(draft: ConfigDraft | null): CollectionTitleTone {
@@ -87,6 +107,15 @@ export function createCollectionTitleHandoff(
   return {
     layoutId,
     tone,
+  };
+}
+
+export function createConfigSidebarItemRef(
+  item: Pick<ConfigSidebarItem, "kind" | "url">,
+): ConfigSidebarItemRef {
+  return {
+    kind: item.kind,
+    url: item.url,
   };
 }
 
@@ -143,6 +172,17 @@ export function createConfigSidebarItems(collections: readonly Collection[]): Co
   return items;
 }
 
+export function findConfigSidebarItem(
+  collections: readonly Collection[],
+  ref: ConfigSidebarItemRef,
+): ConfigSidebarItem | null {
+  return (
+    createConfigSidebarItems(collections).find(
+      (item) => item.kind === ref.kind && item.url === ref.url,
+    ) ?? null
+  );
+}
+
 export function upsertCollectionIntoCollections(
   collections: readonly Collection[],
   nextCollection: Collection,
@@ -172,17 +212,22 @@ export function upsertCollectionIntoDraft(
   };
 }
 
-export function insertConfigSidebarItemIntoDraft(
+export function includeDraftSidebarItem(
   draft: ConfigDraft | null,
   collections: readonly Collection[],
-  item: ConfigSidebarItem,
+  ref: ConfigSidebarItemRef,
 ): ConfigDraft | null {
   if (!draft) {
     return null;
   }
 
-  if (item.kind === "collection") {
-    const collection = collections.find((candidate) => candidate.url === item.url);
+  const item = findConfigSidebarItem(collections, ref);
+  if (!item) {
+    return draft;
+  }
+
+  if (ref.kind === "collection") {
+    const collection = collections.find((candidate) => candidate.url === ref.url);
 
     if (!collection) {
       return draft;
@@ -194,7 +239,7 @@ export function insertConfigSidebarItemIntoDraft(
     };
   }
 
-  if (draft.groups.some((group) => group.url === item.url)) {
+  if (draft.groups.some((group) => group.url === ref.url)) {
     return draft;
   }
 
@@ -211,16 +256,38 @@ export function insertConfigSidebarItemIntoDraft(
   };
 }
 
+export function removeDraftSidebarItem(
+  draft: ConfigDraft | null,
+  ref: ConfigSidebarItemRef,
+): ConfigDraft | null {
+  if (!draft) {
+    return null;
+  }
+
+  if (ref.kind === "collection") {
+    return {
+      ...draft,
+      collections: draft.collections.filter((collection) => collection.url !== ref.url),
+    };
+  }
+
+  return {
+    ...draft,
+    groups: draft.groups.filter((group) => group.url !== ref.url),
+  };
+}
+
 export function createInitialContext(): Context {
   return {
     hasPlayList: null,
     playlists: [],
     collections: [],
     savePath: "",
-    configSidebarItems: [],
     activeLayoutId: null,
     titleToneHandoff: null,
     pendingPlaylistName: null,
+    pendingCollectionUpdatesChange: null,
+    draftBaseline: null,
     draft: null,
     error: null,
   };

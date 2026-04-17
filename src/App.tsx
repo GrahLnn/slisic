@@ -68,6 +68,11 @@ function MainWindowApp() {
               <ListConfig />
             </motion.div>
           ),
+          configUpdatingCollectionUpdates: () => (
+            <motion.div key="config" className="relative w-full">
+              <ListConfig />
+            </motion.div>
+          ),
           idle: () => (
             <motion.div key="list" className="relative w-full">
               <PlayListPage />

@@ -1,11 +1,14 @@
 import { useSelector } from "@xstate/react";
 import { me } from "@grahlnn/fn";
+import type { ConfigSidebarItemRef } from "./core";
 import { MainStateT, sig } from "./events";
 import {
   actor,
   collectionUpserted,
+  collectionUpdatesRequested,
   draftNameChanged,
-  draftSidebarItemPushed,
+  draftItemIncluded,
+  draftItemRemoved,
   openPlaylist,
   resetRuntimeActor,
   savePathChanged,
@@ -83,11 +86,22 @@ export const action = {
     ensureStarted();
     send(collectionUpserted.load(collection));
   },
-  pushDraftSidebarItem: (
-    item: ActorSnapshot["context"]["configSidebarItems"][number],
-  ) => {
+  includeDraftItem: (item: ConfigSidebarItemRef) => {
     ensureStarted();
-    send(draftSidebarItemPushed.load(item));
+    send(draftItemIncluded.load(item));
+  },
+  removeDraftItem: (item: ConfigSidebarItemRef) => {
+    ensureStarted();
+    send(draftItemRemoved.load(item));
+  },
+  setCollectionUpdates: (url: string, enabled: boolean) => {
+    ensureStarted();
+    send(
+      collectionUpdatesRequested.load({
+        url,
+        enabled,
+      }),
+    );
   },
 };
 

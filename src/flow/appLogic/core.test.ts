@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
-  createInitialContext,
   createContextResetter,
-  insertConfigSidebarItemIntoDraft,
+  createInitialContext,
+  includeDraftSidebarItem,
+  removeDraftSidebarItem,
   resetContextWith,
   upsertCollectionIntoDraft,
   upsertCollectionIntoCollections,
@@ -17,7 +18,6 @@ describe("createInitialContext", () => {
     assert.deepEqual(first, second);
     assert.notEqual(first.playlists, second.playlists);
     assert.notEqual(first.collections, second.collections);
-    assert.notEqual(first.configSidebarItems, second.configSidebarItems);
   });
 });
 
@@ -62,10 +62,8 @@ describe("createContextResetter", () => {
 
     assert.deepEqual(next.playlists, []);
     assert.deepEqual(next.collections, []);
-    assert.deepEqual(next.configSidebarItems, []);
     assert.notEqual(next.playlists, defaults.playlists);
     assert.notEqual(next.collections, defaults.collections);
-    assert.notEqual(next.configSidebarItems, defaults.configSidebarItems);
   });
 });
 
@@ -183,8 +181,8 @@ describe("upsertCollectionIntoDraft", () => {
   });
 });
 
-describe("insertConfigSidebarItemIntoDraft", () => {
-  test("appends a missing group into the draft", () => {
+describe("includeDraftSidebarItem", () => {
+  test("ignores unknown sidebar refs so draft mutations stay canonical", () => {
     const draft = {
       mode: "create" as const,
       name: "Focus Session",
@@ -193,22 +191,11 @@ describe("insertConfigSidebarItemIntoDraft", () => {
     };
 
     assert.deepEqual(
-      insertConfigSidebarItemIntoDraft(draft, [], {
+      includeDraftSidebarItem(draft, [], {
         kind: "group",
-        name: "Disc 1",
         url: "https://example.com/disc-1",
-        folder: "Disc 1",
       }),
-      {
-        ...draft,
-        groups: [
-          {
-            name: "Disc 1",
-            url: "https://example.com/disc-1",
-            folder: "Disc 1",
-          },
-        ],
-      },
+      draft,
     );
   });
 
@@ -229,15 +216,116 @@ describe("insertConfigSidebarItemIntoDraft", () => {
     };
 
     assert.deepEqual(
-      insertConfigSidebarItemIntoDraft(draft, [collection], {
+      includeDraftSidebarItem(draft, [collection], {
         kind: "collection",
-        name: collection.name,
         url: collection.url,
-        folder: collection.folder,
       }),
       {
         ...draft,
         collections: [collection],
+      },
+    );
+  });
+
+  test("hydrates groups from the canonical collection-derived sidebar", () => {
+    const collection = {
+      name: "Quiet Morning",
+      url: "https://example.com/quiet-morning",
+      folder: "youtube/quiet-morning",
+      musics: [
+        {
+          name: "Disc 1 Opening",
+          group: {
+            name: "Disc 1",
+            url: "https://example.com/disc-1",
+            folder: "Disc 1",
+          },
+          url: "https://example.com/disc-1#opening",
+          path: "Disc 1/opening.m4a",
+          start: 0,
+          end: 120,
+        },
+      ],
+      last_updated: "2026-04-13T00:00:00Z",
+      enable_updates: null,
+    };
+    const draft = {
+      mode: "create" as const,
+      name: "Focus Session",
+      collections: [],
+      groups: [],
+    };
+
+    assert.deepEqual(
+      includeDraftSidebarItem(draft, [collection], {
+        kind: "group",
+        url: "https://example.com/disc-1",
+      }),
+      {
+        ...draft,
+        groups: [
+          {
+            name: "Disc 1",
+            url: "https://example.com/disc-1",
+            folder: "Disc 1",
+          },
+        ],
+      },
+    );
+  });
+});
+
+describe("removeDraftSidebarItem", () => {
+  test("removes collections by canonical ref", () => {
+    const collection = {
+      name: "Quiet Morning",
+      url: "https://example.com/quiet-morning",
+      folder: "youtube/quiet-morning",
+      musics: [],
+      last_updated: "2026-04-13T00:00:00Z",
+      enable_updates: null,
+    };
+    const draft = {
+      mode: "edit" as const,
+      name: "Focus Session",
+      collections: [collection],
+      groups: [],
+    };
+
+    assert.deepEqual(
+      removeDraftSidebarItem(draft, {
+        kind: "collection",
+        url: collection.url,
+      }),
+      {
+        ...draft,
+        collections: [],
+      },
+    );
+  });
+
+  test("removes groups by canonical ref", () => {
+    const draft = {
+      mode: "edit" as const,
+      name: "Focus Session",
+      collections: [],
+      groups: [
+        {
+          name: "Disc 1",
+          url: "https://example.com/disc-1",
+          folder: "Disc 1",
+        },
+      ],
+    };
+
+    assert.deepEqual(
+      removeDraftSidebarItem(draft, {
+        kind: "group",
+        url: "https://example.com/disc-1",
+      }),
+      {
+        ...draft,
+        groups: [],
       },
     );
   });
