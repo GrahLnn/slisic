@@ -7,6 +7,7 @@ import {
   createDraft,
   initialContext,
   playlistTitleLayoutId,
+  resetContextWith,
 } from "./core";
 import { BootstrapLoadError, invoker, payloads, ss } from "./events";
 import { src } from "./src";
@@ -45,32 +46,22 @@ export const machine = src.createMachine({
         src: invoker.loadCollections.src,
         onDone: {
           target: ss.mainx.State.ready,
-          actions: assign({
-            hasPlayList: ({ event }) => event.output.hasPlayList,
-            collections: ({ event }) => event.output.collections,
-            savePath: ({ event }) => event.output.savePath,
-            configSidebarItems: () => [],
-            activeLayoutId: () => null,
-            titleToneHandoff: () => null,
-            pendingPlaylistName: () => null,
-            draft: () => null,
-            error: () => null,
-          }),
+          actions: assign(({ event }) =>
+            resetContextWith({
+              hasPlayList: event.output.hasPlayList,
+              collections: event.output.collections,
+              savePath: event.output.savePath,
+            }),
+          ),
         },
         onError: {
           target: ss.mainx.State.error,
-          actions: assign({
-            hasPlayList: () => null,
-            collections: () => [],
-            savePath: ({ context, event }) =>
-              resolveSavePathFromLoadingError(event.error, context.savePath),
-            configSidebarItems: () => [],
-            activeLayoutId: () => null,
-            titleToneHandoff: () => null,
-            pendingPlaylistName: () => null,
-            draft: () => null,
-            error: ({ event }) => toErrorMessage(event.error),
-          }),
+          actions: assign(({ context, event }) =>
+            resetContextWith({
+              savePath: resolveSavePathFromLoadingError(event.error, context.savePath),
+              error: toErrorMessage(event.error),
+            }),
+          ),
         },
       },
     },
@@ -79,26 +70,33 @@ export const machine = src.createMachine({
         run: ss.mainx.State.loading,
         opencreate: {
           target: ss.mainx.State.config,
-          actions: assign({
-            configSidebarItems: ({ context }) => createConfigSidebarItems(context.collections),
-            activeLayoutId: () => CREATE_COLLECTION_LAYOUT_ID,
-            titleToneHandoff: () =>
-              createCollectionTitleHandoff(CREATE_COLLECTION_LAYOUT_ID, "solid"),
-            pendingPlaylistName: () => null,
-            draft: () => createDraft(),
-            error: () => null,
-          }),
+          actions: assign(({ context }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              collections: context.collections,
+              savePath: context.savePath,
+              configSidebarItems: createConfigSidebarItems(context.collections),
+              activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
+              titleToneHandoff: createCollectionTitleHandoff(
+                CREATE_COLLECTION_LAYOUT_ID,
+                "solid",
+              ),
+              draft: createDraft(),
+            }),
+          ),
         },
         [openPlaylist.evt]: {
           target: ss.mainx.State.configLoading,
-          actions: assign({
-            configSidebarItems: ({ context }) => createConfigSidebarItems(context.collections),
-            activeLayoutId: ({ event }) => playlistTitleLayoutId(event.output),
-            titleToneHandoff: () => null,
-            pendingPlaylistName: ({ event }) => event.output,
-            draft: () => null,
-            error: () => null,
-          }),
+          actions: assign(({ context, event }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              collections: context.collections,
+              savePath: context.savePath,
+              configSidebarItems: createConfigSidebarItems(context.collections),
+              activeLayoutId: playlistTitleLayoutId(event.output),
+              pendingPlaylistName: event.output,
+            }),
+          ),
         },
       },
     },
@@ -115,33 +113,42 @@ export const machine = src.createMachine({
         },
         onDone: {
           target: ss.mainx.State.config,
-          actions: assign({
-            pendingPlaylistName: () => null,
-            draft: ({ event }) => event.output,
-            error: () => null,
-          }),
+          actions: assign(({ context, event }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              collections: context.collections,
+              savePath: context.savePath,
+              configSidebarItems: context.configSidebarItems,
+              activeLayoutId: context.activeLayoutId,
+              draft: event.output,
+            }),
+          ),
         },
         onError: {
           target: ss.mainx.State.error,
-          actions: assign({
-            pendingPlaylistName: () => null,
-            draft: () => null,
-            error: ({ event }) => toErrorMessage(event.error),
-          }),
+          actions: assign(({ context, event }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              collections: context.collections,
+              savePath: context.savePath,
+              configSidebarItems: context.configSidebarItems,
+              activeLayoutId: context.activeLayoutId,
+              error: toErrorMessage(event.error),
+            }),
+          ),
         },
       },
       on: {
         run: ss.mainx.State.loading,
         back: {
           target: ss.mainx.State.ready,
-          actions: assign({
-            configSidebarItems: () => [],
-            activeLayoutId: () => null,
-            titleToneHandoff: () => null,
-            pendingPlaylistName: () => null,
-            draft: () => null,
-            error: () => null,
-          }),
+          actions: assign(({ context }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              collections: context.collections,
+              savePath: context.savePath,
+            }),
+          ),
         },
       },
     },
@@ -150,45 +157,48 @@ export const machine = src.createMachine({
         run: ss.mainx.State.loading,
         back: {
           target: ss.mainx.State.ready,
-          actions: assign({
-            configSidebarItems: () => [],
-            activeLayoutId: () => null,
-            titleToneHandoff: ({ context }) =>
-              context.activeLayoutId
+          actions: assign(({ context }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              collections: context.collections,
+              savePath: context.savePath,
+              titleToneHandoff: context.activeLayoutId
                 ? createCollectionTitleHandoff(
                     context.activeLayoutId,
                     collectionTitleToneFromDraft(context.draft),
                   )
                 : null,
-            pendingPlaylistName: () => null,
-            draft: () => null,
-            error: () => null,
-          }),
+            }),
+          ),
         },
         opencreate: {
-          actions: assign({
-            configSidebarItems: ({ context }) => createConfigSidebarItems(context.collections),
-            activeLayoutId: () => CREATE_COLLECTION_LAYOUT_ID,
-            titleToneHandoff: ({ context }) =>
-              createCollectionTitleHandoff(
+          actions: assign(({ context }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              collections: context.collections,
+              savePath: context.savePath,
+              configSidebarItems: createConfigSidebarItems(context.collections),
+              activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
+              titleToneHandoff: createCollectionTitleHandoff(
                 CREATE_COLLECTION_LAYOUT_ID,
                 collectionTitleToneFromDraft(context.draft),
               ),
-            pendingPlaylistName: () => null,
-            draft: () => createDraft(),
-            error: () => null,
-          }),
+              draft: createDraft(),
+            }),
+          ),
         },
         [openPlaylist.evt]: {
           target: ss.mainx.State.configLoading,
-          actions: assign({
-            configSidebarItems: ({ context }) => createConfigSidebarItems(context.collections),
-            activeLayoutId: ({ event }) => playlistTitleLayoutId(event.output),
-            titleToneHandoff: () => null,
-            pendingPlaylistName: ({ event }) => event.output,
-            draft: () => null,
-            error: () => null,
-          }),
+          actions: assign(({ context, event }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              collections: context.collections,
+              savePath: context.savePath,
+              configSidebarItems: createConfigSidebarItems(context.collections),
+              activeLayoutId: playlistTitleLayoutId(event.output),
+              pendingPlaylistName: event.output,
+            }),
+          ),
         },
         [draftNameChanged.evt]: {
           actions: assign({

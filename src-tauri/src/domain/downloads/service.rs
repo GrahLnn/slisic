@@ -1,6 +1,6 @@
 use super::model::{
-    CollectionSourceKind, DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus,
-    DownloadTrigger, now_timestamp,
+    CollectionSourceKind, DownloadLeaf, DownloadLeafStatus, DownloadResourceProbe, DownloadTask,
+    DownloadTaskStatus, DownloadTrigger, now_timestamp,
 };
 use super::repo;
 use super::yt_dlp::{
@@ -82,6 +82,19 @@ pub async fn enqueue_collection_download(url: String) -> Result<DownloadTask> {
     enqueue_collection_download_with_trigger(url, DownloadTrigger::Manual).await
 }
 
+pub async fn probe_download_resource(url: String) -> Result<DownloadResourceProbe> {
+    let normalized_url = normalize_url(&url)?;
+    let app = runtime()?.app.clone();
+    let client = build_client(&app)?;
+    let root_probe = {
+        let client = client.clone();
+        let probe_url = normalized_url.clone();
+        run_blocking(move || client.probe_root(&probe_url)).await?
+    };
+
+    describe_download_resource(root_probe)
+}
+
 pub async fn resume_download_task(task_id: String) -> Result<DownloadTask> {
     let task = repo::get_task(&task_id).await?;
     if task.status == DownloadTaskStatus::Completed {
@@ -97,6 +110,29 @@ pub async fn get_download_task(task_id: String) -> Result<DownloadTask> {
 
 pub async fn list_download_tasks() -> Result<Vec<DownloadTask>> {
     repo::list_tasks().await
+}
+
+pub(crate) fn describe_download_resource(root_probe: RootProbe) -> Result<DownloadResourceProbe> {
+    match root_probe {
+        RootProbe::Single(leaf) => Ok(DownloadResourceProbe {
+            url: leaf.webpage_url,
+            source_kind: CollectionSourceKind::Single,
+            title: leaf.title,
+            item_count: 1,
+        }),
+        RootProbe::List(list) => {
+            if list.entries.is_empty() {
+                bail!("download resource does not contain any downloadable entries");
+            }
+
+            Ok(DownloadResourceProbe {
+                url: list.webpage_url,
+                source_kind: CollectionSourceKind::List,
+                title: list.title,
+                item_count: list.entries.len() as u32,
+            })
+        }
+    }
 }
 
 async fn enqueue_collection_download_with_trigger(

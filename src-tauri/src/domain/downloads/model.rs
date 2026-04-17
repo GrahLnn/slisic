@@ -149,6 +149,14 @@ pub struct DownloadTask {
     pub updated_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq)]
+pub struct DownloadResourceProbe {
+    pub url: String,
+    pub source_kind: CollectionSourceKind,
+    pub title: String,
+    pub item_count: u32,
+}
+
 impl DownloadTask {
     pub fn new(id: impl Into<Id>, url: impl Into<String>, trigger: DownloadTrigger) -> Self {
         let now = now_timestamp();

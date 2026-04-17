@@ -142,14 +142,31 @@ export function createConfigSidebarItems(collections: readonly Collection[]): Co
   return items;
 }
 
-export const initialContext: Context = {
-  hasPlayList: null,
-  collections: [],
-  savePath: "",
-  configSidebarItems: [],
-  activeLayoutId: null,
-  titleToneHandoff: null,
-  pendingPlaylistName: null,
-  draft: null,
-  error: null,
-};
+export function createInitialContext(): Context {
+  return {
+    hasPlayList: null,
+    collections: [],
+    savePath: "",
+    configSidebarItems: [],
+    activeLayoutId: null,
+    titleToneHandoff: null,
+    pendingPlaylistName: null,
+    draft: null,
+    error: null,
+  };
+}
+
+export function createContextResetter<TContext>(createInitial: () => TContext) {
+  return function resetContextWith<const K extends keyof TContext>(
+    kept: Pick<TContext, K>,
+  ): TContext {
+    return {
+      ...createInitial(),
+      ...kept,
+    };
+  };
+}
+
+export const initialContext = createInitialContext();
+
+export const resetContextWith = createContextResetter(createInitialContext);

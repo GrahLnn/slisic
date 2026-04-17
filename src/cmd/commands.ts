@@ -76,6 +76,7 @@ export const commands = {
 	addExclude: (music: Music) => typedError<Exclude, string>(__TAURI_INVOKE("add_exclude", { music })),
 	removeExclude: (music: Music) => typedError<boolean, string>(__TAURI_INVOKE("remove_exclude", { music })),
 	enqueueCollectionDownload: (url: string) => typedError<DownloadTask, string>(__TAURI_INVOKE("enqueue_collection_download", { url })),
+	probeDownloadResource: (url: string) => typedError<DownloadResourceProbe, string>(__TAURI_INVOKE("probe_download_resource", { url })),
 	resumeDownloadTask: (taskId: string) => typedError<DownloadTask, string>(__TAURI_INVOKE("resume_download_task", { taskId })),
 	getDownloadTask: (taskId: string) => typedError<DownloadTask, string>(__TAURI_INVOKE("get_download_task", { taskId })),
 	listDownloadTasks: () => typedError<DownloadTask[], string>(__TAURI_INVOKE("list_download_tasks")),
@@ -130,6 +131,13 @@ export type DownloadLeaf = {
 };
 
 export type DownloadLeafStatus = "queued" | "probing" | "downloading" | "persisting" | "completed" | "failed" | "cancelled" | "interrupted";
+
+export type DownloadResourceProbe = {
+	url: string,
+	source_kind: CollectionSourceKind,
+	title: string,
+	item_count: number,
+};
 
 export type DownloadTask = {
 	id: Id,

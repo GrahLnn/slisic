@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { me } from "@grahlnn/fn";
+import { me, type ME } from "@grahlnn/fn";
 import { getName } from "@tauri-apps/api/app";
 import { open } from "@tauri-apps/plugin-dialog";
 import { documentDir, join } from "@tauri-apps/api/path";
@@ -10,6 +10,7 @@ import {
   action as appLogicAction,
   hook as appLogicHook,
 } from "@/src/flow/appLogic";
+import { action as pasteDownloadAction } from "@/src/flow/pasteDownload";
 import type {
   ConfigSidebarItem,
   CollectionTitleHandoff,
@@ -89,16 +90,16 @@ export function resolveListConfigToolListInteractionDisabled(args: {
 export const LIST_CONFIG_EMPTY_STATE_TEXT =
   "Nothing here yet.\nPaste a link to download from the web, or import a local music folder to get started.";
 
-export type ListConfigEmptyStateSignal = ReturnType<
-  typeof me<"keep" | "show" | "hide">
->;
+export type ListConfigEmptyStateKind = "keep" | "show" | "hide";
+export type ListConfigEmptyStateSignal = ME<ListConfigEmptyStateKind>;
+export type ListConfigEmptyState = ME<boolean>;
 
 export function shouldShowListConfigEmptyState(draft: ConfigDraft | null) {
   if (!draft) {
-    return me<"keep" | "show" | "hide">("keep");
+    return me<ListConfigEmptyStateKind>("keep");
   }
 
-  return me<"keep" | "show" | "hide">(
+  return me<ListConfigEmptyStateKind>(
     draft.collections.length === 0 && draft.groups.length === 0
       ? "show"
       : "hide",
@@ -107,7 +108,7 @@ export function shouldShowListConfigEmptyState(draft: ConfigDraft | null) {
 
 export function resolveListConfigEmptyState(
   emptyStateSignal: ListConfigEmptyStateSignal,
-  previousEmptyState: ReturnType<typeof me<boolean>> | null,
+  previousEmptyState: ListConfigEmptyState | null,
 ) {
   return emptyStateSignal.match({
     keep: () => previousEmptyState ?? me(false),
@@ -143,7 +144,13 @@ export function resolveListConfigToolLabelItems(
   );
 }
 
-function FnButton({ text }: { text: string }) {
+function FnButton({
+  text,
+  onClick,
+}: {
+  text: string;
+  onClick?: () => void;
+}) {
   return (
     <div
       className={cn(
@@ -158,7 +165,7 @@ function FnButton({ text }: { text: string }) {
         "hover:bg-[#e7eced] dark:hover:bg-[#383838]",
         // open && "bg-[#f1f5f9] dark:bg-[#1a1a1b]",
       )}
-      // onClick={() => setOpen((v) => !v)}
+      onClick={onClick}
     >
       {text}
     </div>
@@ -175,7 +182,7 @@ export function ListConfig() {
     titleToneHandoff,
   } = appLogicHook.useContext();
   const titleSnapshotRef = useRef<ListConfigTitleSnapshot | null>(null);
-  const emptyStateRef = useRef<ReturnType<typeof me<boolean>> | null>(null);
+  const emptyStateRef = useRef<ListConfigEmptyState | null>(null);
   const renderSequenceRef = useRef(0);
   const [isToolListAnimating, setIsToolListAnimating] = useState(true);
   const [removedToolLabelItemIds, setRemovedToolLabelItemIds] = useState<
@@ -318,7 +325,7 @@ export function ListConfig() {
           <div className="h-24" />
           <div className="flex justify-between">
             <div className="flex gap-2">
-              <FnButton text="Paste" />
+              <FnButton text="Paste" onClick={pasteDownloadAction.paste} />
               <FnButton text="Import" />
             </div>
 

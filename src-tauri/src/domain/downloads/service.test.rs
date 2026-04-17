@@ -1,7 +1,8 @@
 use super::model::CollectionSourceKind;
 use super::repo::{list_tasks, save_task};
 use super::service::{
-    derive_youtube_channel_url_from_uploads_playlist, existing_leaf_urls,
+    derive_youtube_channel_url_from_uploads_playlist, describe_download_resource,
+    existing_leaf_urls,
     expand_root_entries_to_planned_leafs, extract_olak_playlist_ids, materialize_music_entries,
     prepare_task_enqueue, provider_segment, resume_download_task, sanitize_path_component,
     should_reprobe_single_leaf, try_claim_enqueue_url,
@@ -112,6 +113,41 @@ fn materialize_music_entries_falls_back_to_single_full_track_when_no_chapters_ex
     assert_eq!(musics[0].path.as_deref(), Some("single-track.m4a"));
     assert_eq!(musics[0].start, 0);
     assert_eq!(musics[0].end, 245);
+}
+
+#[test]
+fn describe_download_resource_maps_single_probe_to_one_item_result() {
+    let probe = describe_download_resource(RootProbe::Single(LeafProbe {
+        title: "Single Track".to_string(),
+        webpage_url: "https://example.com/watch?v=single".to_string(),
+        extractor_key: Some("Youtube".to_string()),
+        album: None,
+        duration_seconds: Some(245),
+        chapters: vec![],
+    }))
+    .expect("single root probe should become a download resource");
+
+    assert_eq!(probe.url, "https://example.com/watch?v=single");
+    assert_eq!(probe.source_kind, CollectionSourceKind::Single);
+    assert_eq!(probe.title, "Single Track");
+    assert_eq!(probe.item_count, 1);
+}
+
+#[test]
+fn describe_download_resource_rejects_empty_lists() {
+    let error = describe_download_resource(RootProbe::List(PlaylistRoot {
+        title: "Empty Playlist".to_string(),
+        webpage_url: "https://example.com/playlist".to_string(),
+        extractor_key: Some("YoutubeTab".to_string()),
+        entries: vec![],
+    }))
+    .expect_err("empty list probes should be rejected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("download resource does not contain any downloadable entries")
+    );
 }
 
 fn temp_test_dir() -> PathBuf {
