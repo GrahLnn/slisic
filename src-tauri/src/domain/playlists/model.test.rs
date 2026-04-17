@@ -20,6 +20,7 @@ struct StoredPlayListRow {
     id: RecordId,
     name: String,
     collections: Vec<RecordId>,
+    groups: Vec<RecordId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, SurrealValue)]
@@ -127,6 +128,28 @@ async fn insert_collection_row(id: &str, collection: &Collection) -> RecordId {
     record.expect("collection insert should return one record id")
 }
 
+async fn insert_group_row(id: &str, group: &Group) -> RecordId {
+    let db = get_db().expect("global playlist database handle should exist");
+    let mut result = db
+        .query("CREATE $record CONTENT $data RETURN VALUE id;")
+        .bind(("record", RecordId::new(Group::table_name(), id)))
+        .bind((
+            "data",
+            json!({
+                "name": group.name,
+                "url": group.url,
+                "folder": group.folder,
+            }),
+        ))
+        .await
+        .expect("group insert query should succeed")
+        .check()
+        .expect("group insert response should succeed");
+
+    let record: Option<RecordId> = result.take(0).expect("group insert id should decode");
+    record.expect("group insert should return one record id")
+}
+
 async fn insert_music_edges(source: &RecordId, targets: &[RecordId]) {
     if targets.is_empty() {
         return;
@@ -159,7 +182,12 @@ async fn insert_music_edges(source: &RecordId, targets: &[RecordId]) {
         .expect("music edge insert response should succeed");
 }
 
-async fn insert_playlist_row(id: &str, playlist: &PlayList, collections: &[RecordId]) -> RecordId {
+async fn insert_playlist_row(
+    id: &str,
+    playlist: &PlayList,
+    collections: &[RecordId],
+    groups: &[RecordId],
+) -> RecordId {
     let db = get_db().expect("global playlist database handle should exist");
     let mut result = db
         .query("CREATE $record CONTENT $data RETURN VALUE id;")
@@ -169,6 +197,7 @@ async fn insert_playlist_row(id: &str, playlist: &PlayList, collections: &[Recor
             json!({
                 "name": playlist.name,
                 "collections": collections,
+                "groups": groups,
             }),
         ))
         .await
@@ -199,6 +228,15 @@ async fn load_collection_row(record: &RecordId) -> StoredCollectionRow {
         .expect("collection row should exist");
 
     serde_json::from_value(value).expect("collection row should decode")
+}
+
+async fn load_group_row(record: &RecordId) -> Group {
+    let stmt = RawSqlStmt::new("SELECT * FROM ONLY $record;").bind("record", record.clone());
+
+    query_bound_return::<Group>(stmt)
+        .await
+        .expect("group raw query should succeed")
+        .expect("group row should exist")
 }
 
 async fn load_music_edges(record: &RecordId) -> Vec<StoredMusicEdgeRow> {
@@ -279,7 +317,25 @@ fn sample_playlist() -> PlayList {
                 None,
             ),
         ],
+        groups: vec![
+            Group {
+                name: "playlist-alpha".to_string(),
+                url: "https://example.com/playlist-alpha".to_string(),
+                folder: "youtube/playlist-alpha".to_string(),
+            },
+            Group {
+                name: "single-beta".to_string(),
+                url: "https://example.com/single-beta".to_string(),
+                folder: "youtube/single-beta".to_string(),
+            },
+        ],
     }
+}
+
+fn assert_group_eq(actual: &Group, expected: &Group) {
+    assert_eq!(actual.name, expected.name);
+    assert_eq!(actual.url, expected.url);
+    assert_eq!(actual.folder, expected.folder);
 }
 
 fn assert_music_eq(actual: &Music, expected: &Music) {
@@ -309,11 +365,16 @@ fn assert_collection_eq(actual: &Collection, expected: &Collection) {
 fn assert_playlist_eq(actual: &PlayList, expected: &PlayList) {
     assert_eq!(actual.name, expected.name);
     assert_eq!(actual.collections.len(), expected.collections.len());
+    assert_eq!(actual.groups.len(), expected.groups.len());
 
     for (actual_collection, expected_collection) in
         actual.collections.iter().zip(expected.collections.iter())
     {
         assert_collection_eq(actual_collection, expected_collection);
+    }
+
+    for (actual_group, expected_group) in actual.groups.iter().zip(expected.groups.iter()) {
+        assert_group_eq(actual_group, expected_group);
     }
 }
 
@@ -325,6 +386,10 @@ fn serializes_playlist_with_nested_collections_and_musics() {
 
     assert_eq!(value["name"], "favorites");
     assert_eq!(value["collections"][0]["folder"], "youtube/playlist-alpha");
+    assert_eq!(
+        value["groups"][0]["url"],
+        "https://example.com/playlist-alpha"
+    );
     assert_eq!(
         value["collections"][0]["musics"][0]["name"],
         "playlist-alpha intro"
@@ -343,6 +408,18 @@ fn serializes_playlist_with_nested_collections_and_musics() {
 fn deserializes_playlist_with_collection_update_flags() {
     let value = json!({
         "name": "study",
+        "groups": [
+            {
+                "name": "playlist-a",
+                "url": "https://example.com/playlist-a",
+                "folder": "youtube/playlist-a"
+            },
+            {
+                "name": "single-b",
+                "url": "https://example.com/single-b",
+                "folder": "youtube/single-b"
+            }
+        ],
         "collections": [
             {
                 "name": "playlist-a",
@@ -394,8 +471,10 @@ fn deserializes_playlist_with_collection_update_flags() {
 
     assert_eq!(playlist.name, "study");
     assert_eq!(playlist.collections.len(), 2);
+    assert_eq!(playlist.groups.len(), 2);
     assert_eq!(playlist.collections[0].enable_updates, Some(true));
     assert_eq!(playlist.collections[1].enable_updates, None);
+    assert_eq!(playlist.groups[0].url, "https://example.com/playlist-a");
     assert_eq!(playlist.collections[1].musics[0].path, None);
 }
 
@@ -405,10 +484,12 @@ fn clone_keeps_nested_collection_data_independent() {
     let mut cloned = playlist.clone();
 
     cloned.name = "favorites-copy".to_string();
+    cloned.groups[0].name = "playlist-alpha-group-copy".to_string();
     cloned.collections[0].name = "playlist-alpha-copy".to_string();
     cloned.collections[0].musics[0].name = "playlist-alpha remix".to_string();
 
     assert_eq!(playlist.name, "favorites");
+    assert_eq!(playlist.groups[0].name, "playlist-alpha");
     assert_eq!(playlist.collections[0].name, "playlist-alpha");
     assert_eq!(
         playlist.collections[0].musics[0].name,
@@ -416,6 +497,7 @@ fn clone_keeps_nested_collection_data_independent() {
     );
 
     assert_eq!(cloned.name, "favorites-copy");
+    assert_eq!(cloned.groups[0].name, "playlist-alpha-group-copy");
     assert_eq!(cloned.collections[0].name, "playlist-alpha-copy");
     assert_eq!(cloned.collections[0].musics[0].name, "playlist-alpha remix");
 }
@@ -457,6 +539,11 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
 
         let playlist = sample_playlist();
         let mut collection_records = Vec::with_capacity(playlist.collections.len());
+        let mut group_records = Vec::with_capacity(playlist.groups.len());
+
+        for (index, group) in playlist.groups.iter().enumerate() {
+            group_records.push(insert_group_row(&format!("seeded-group-{index}"), group).await);
+        }
 
         for (index, collection) in playlist.collections.iter().enumerate() {
             let mut music_records = Vec::with_capacity(collection.musics.len());
@@ -470,8 +557,13 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
             collection_records.push(collection_record);
         }
 
-        let playlist_record =
-            insert_playlist_row("seeded-playlist", &playlist, &collection_records).await;
+        let playlist_record = insert_playlist_row(
+            "seeded-playlist",
+            &playlist,
+            &collection_records,
+            &group_records,
+        )
+        .await;
 
         let saved = PlayList::get_record(playlist_record.clone())
             .await
@@ -502,11 +594,22 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
             raw_root_object.contains_key("collections"),
             "playlist row should store foreign collection links inline"
         );
+        assert!(
+            raw_root_object.contains_key("groups"),
+            "playlist row should store foreign group links inline"
+        );
 
         let stored_root: StoredPlayListRow =
             serde_json::from_value(raw_root).expect("playlist raw row should decode");
         assert_eq!(stored_root.name, playlist.name);
         assert_eq!(stored_root.collections.len(), playlist.collections.len());
+        assert_eq!(stored_root.groups.len(), playlist.groups.len());
+
+        for (group_record, expected_group) in stored_root.groups.iter().zip(playlist.groups.iter())
+        {
+            let stored_group = load_group_row(group_record).await;
+            assert_group_eq(&stored_group, expected_group);
+        }
 
         for (index, collection_record) in stored_root.collections.iter().enumerate() {
             let stored_collection = load_collection_row(collection_record).await;

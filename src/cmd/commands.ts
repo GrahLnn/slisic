@@ -60,6 +60,11 @@ export const commands = {
 	last_updated: string,
 	enable_updates: boolean | null,
 } | null, string>(__TAURI_INVOKE("get_collection", { url })),
+	getPlaylist: (name: string) => typedError<{
+	name: string,
+	collections: Collection[],
+	groups: Group[],
+} | null, string>(__TAURI_INVOKE("get_playlist", { name })),
 	setCollectionUpdates: (url: string, enabled: boolean) => typedError<{
 	name: string,
 	url: string,
@@ -192,6 +197,12 @@ export type Music = {
 	path: string | null,
 	start: number,
 	end: number,
+};
+
+export type PlayList = {
+	name: string,
+	collections: Collection[],
+	groups: Group[],
 };
 
 export type WindowKindInfo = {

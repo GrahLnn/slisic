@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   createArcTrackListIdentity,
+  resolveArcTrackPathClassName,
+  resolveArcTrackPathStrokeWidth,
   resolveArcTrackViewportScrollTop,
   resolveArcTrackVirtualPaddingEnd,
 } from "./ArcTrackList";
@@ -29,6 +31,32 @@ describe("resolveArcTrackVirtualPaddingEnd", () => {
 
   test("subtracts one gap when virtual rows represent point spacing", () => {
     assert.equal(resolveArcTrackVirtualPaddingEnd(3), 34);
+  });
+});
+
+describe("resolveArcTrackPathClassName", () => {
+  test("uses a stronger path style when the track has no items", () => {
+    assert.equal(
+      resolveArcTrackPathClassName(0),
+      "stroke-[#b7b7b7]/52 dark:stroke-[#676767]/58",
+    );
+  });
+
+  test("keeps the lighter path style when the track has items", () => {
+    assert.equal(
+      resolveArcTrackPathClassName(3),
+      "stroke-[#b7b7b7]/32 dark:stroke-[#676767]/38",
+    );
+  });
+});
+
+describe("resolveArcTrackPathStrokeWidth", () => {
+  test("uses a thicker path when the track has no items", () => {
+    assert.equal(resolveArcTrackPathStrokeWidth(0), 1.7);
+  });
+
+  test("keeps the original path width when the track has items", () => {
+    assert.equal(resolveArcTrackPathStrokeWidth(2), 1.25);
   });
 });
 

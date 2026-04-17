@@ -1,4 +1,4 @@
-import type { Collection } from "@/src/cmd";
+import type { Collection, Group, PlayList } from "@/src/cmd";
 
 export const CREATE_COLLECTION_LAYOUT_ID = "collection-title:create";
 
@@ -15,17 +15,26 @@ export interface CollectionTitleHandoff {
 
 export interface ConfigDraft {
   mode: "create" | "edit";
-  sourceUrl: string | null;
   name: string;
+  collections: Collection[];
+  groups: Group[];
+}
+
+export interface ConfigSidebarItem {
+  kind: "collection" | "group";
+  name: string;
+  url: string;
   folder: string;
-  enableUpdates: boolean | null;
 }
 
 export interface Context {
   hasPlayList: boolean | null;
   collections: Collection[];
+  savePath: string;
+  configSidebarItems: ConfigSidebarItem[];
   activeLayoutId: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
+  pendingPlaylistName: string | null;
   draft: ConfigDraft | null;
   error: string | null;
 }
@@ -34,29 +43,35 @@ export function collectionTitleLayoutId(url: string) {
   return `collection-title:${url}`;
 }
 
+export function playlistTitleLayoutId(name: string) {
+  return `playlist-title:${name}`;
+}
+
+export function createEmptyPlayList(): PlayList {
+  return {
+    name: "",
+    collections: [],
+    groups: [],
+  };
+}
+
 export function createDraft(): ConfigDraft {
   return {
     mode: "create",
-    sourceUrl: null,
-    name: "",
-    folder: "",
-    enableUpdates: null,
+    ...createEmptyPlayList(),
   };
 }
 
-export function createDraftFromCollection(collection: Collection): ConfigDraft {
+export function createDraftFromPlayList(playlist: PlayList): ConfigDraft {
   return {
     mode: "edit",
-    sourceUrl: collection.url,
-    name: collection.name,
-    folder: collection.folder,
-    enableUpdates: collection.enable_updates,
+    name: playlist.name,
+    collections: [...playlist.collections],
+    groups: [...playlist.groups],
   };
 }
 
-export function collectionTitleToneFromDraft(
-  draft: ConfigDraft | null,
-): CollectionTitleTone {
+export function collectionTitleToneFromDraft(draft: ConfigDraft | null): CollectionTitleTone {
   if (!draft) {
     return "solid";
   }
@@ -74,11 +89,67 @@ export function createCollectionTitleHandoff(
   };
 }
 
+function appendConfigSidebarItem(
+  items: ConfigSidebarItem[],
+  seenUrls: Set<string>,
+  item: ConfigSidebarItem,
+) {
+  if (seenUrls.has(item.url)) {
+    return;
+  }
+
+  seenUrls.add(item.url);
+  items.push(item);
+}
+
+function normalizeConfigSidebarName(name: string) {
+  return name.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+function createConfigSidebarGroupItem(group: Group): ConfigSidebarItem {
+  return {
+    kind: "group",
+    name: group.name,
+    url: group.url,
+    folder: group.folder,
+  };
+}
+
+export function createConfigSidebarItems(collections: readonly Collection[]): ConfigSidebarItem[] {
+  const items: ConfigSidebarItem[] = [];
+  const seenUrls = new Set<string>();
+  const collectionNames = new Set(
+    collections.map((collection) => normalizeConfigSidebarName(collection.name)),
+  );
+
+  for (const collection of collections) {
+    appendConfigSidebarItem(items, seenUrls, {
+      kind: "collection",
+      name: collection.name,
+      url: collection.url,
+      folder: collection.folder,
+    });
+
+    for (const music of collection.musics) {
+      if (collectionNames.has(normalizeConfigSidebarName(music.group.name))) {
+        continue;
+      }
+
+      appendConfigSidebarItem(items, seenUrls, createConfigSidebarGroupItem(music.group));
+    }
+  }
+
+  return items;
+}
+
 export const initialContext: Context = {
   hasPlayList: null,
   collections: [],
+  savePath: "",
+  configSidebarItems: [],
   activeLayoutId: null,
   titleToneHandoff: null,
+  pendingPlaylistName: null,
   draft: null,
   error: null,
 };

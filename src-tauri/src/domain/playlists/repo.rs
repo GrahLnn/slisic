@@ -1,4 +1,4 @@
-use super::model::{Collection, Exclude, Music};
+use super::model::{Collection, Exclude, Music, PlayList};
 use anyhow::{Result, bail};
 use appdb::Crud;
 use appdb::connection::get_db;
@@ -57,6 +57,15 @@ pub async fn get_collection_by_url(url: &str) -> Result<Option<Collection>> {
     };
 
     Ok(Some(Collection::get_record(record).await?))
+}
+
+pub async fn get_playlist_by_name(name: &str) -> Result<Option<PlayList>> {
+    let Some(record) = find_unique_record_id_by_string_field::<PlayList>("name", name).await?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(PlayList::get_record(record).await?))
 }
 
 pub async fn set_collection_updates(url: &str, enabled: bool) -> Result<Option<Collection>> {

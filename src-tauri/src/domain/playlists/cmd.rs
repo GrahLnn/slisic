@@ -1,4 +1,4 @@
-use super::model::{Collection, Exclude, Music};
+use super::model::{Collection, Exclude, Music, PlayList};
 
 #[tauri::command]
 #[specta::specta]
@@ -20,6 +20,14 @@ pub async fn list_collections() -> Result<Vec<Collection>, String> {
 #[specta::specta]
 pub async fn get_collection(url: String) -> Result<Option<Collection>, String> {
     super::repo::get_collection_by_url(&url)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_playlist(name: String) -> Result<Option<PlayList>, String> {
+    super::repo::get_playlist_by_name(&name)
         .await
         .map_err(|error| error.to_string())
 }

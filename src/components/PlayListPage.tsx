@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
+import type { Collection } from "@/src/cmd";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import {
   CREATE_COLLECTION_LAYOUT_ID,
@@ -14,6 +15,55 @@ import {
   collectionTitleTextHoverClassName,
 } from "./collectionTitle";
 import { PlayItem } from "./playItem";
+
+type PlayListTextOverrides = Record<string, string>;
+
+export function resolvePlayListPageTexts(
+  collections: readonly Collection[],
+  textOverrides: Readonly<PlayListTextOverrides>,
+) {
+  return collections.map((collection) => textOverrides[collection.url] ?? collection.name);
+}
+
+export function resolveNextPlayListTextOverrides(args: {
+  collections: readonly Collection[];
+  textOverrides: Readonly<PlayListTextOverrides>;
+  clickedCollectionUrl: string;
+}) {
+  const nextOverrides = Object.fromEntries(
+    args.collections.flatMap((collection) => {
+      const override = args.textOverrides[collection.url];
+
+      return override && override !== collection.name ? [[collection.url, override]] : [];
+    }),
+  );
+
+  if (args.collections.length <= 1) {
+    return nextOverrides;
+  }
+
+  const currentTexts = resolvePlayListPageTexts(args.collections, nextOverrides);
+  const clickedIndex = args.collections.findIndex(
+    (collection) => collection.url === args.clickedCollectionUrl,
+  );
+  if (clickedIndex < 0) {
+    return nextOverrides;
+  }
+
+  const nextIndex = (clickedIndex + 1) % currentTexts.length;
+  const nextText = currentTexts[nextIndex];
+  const clickedCollection = args.collections[clickedIndex];
+
+  if (nextText === clickedCollection.name) {
+    delete nextOverrides[clickedCollection.url];
+    return nextOverrides;
+  }
+
+  return {
+    ...nextOverrides,
+    [clickedCollection.url]: nextText,
+  };
+}
 
 function CreateNewItem({
   handoffTone,
@@ -43,11 +93,8 @@ function CreateNewItem({
 export function PlayListPage() {
   const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
   const { collections, titleToneHandoff } = appLogicHook.useContext();
-  const [texts, setTexts] = useState<string[]>([]);
-
-  useEffect(() => {
-    setTexts(collections.map((collection) => collection.name));
-  }, [collections]);
+  const [textOverrides, setTextOverrides] = useState<PlayListTextOverrides>({});
+  const texts = resolvePlayListPageTexts(collections, textOverrides);
 
   function scrollItemToCenter(index: number) {
     const item = itemRefs.current[index];
@@ -92,17 +139,13 @@ export function PlayListPage() {
           layoutId={layoutId}
           text={text}
           onClick={() => {
-            setTexts((current) => {
-              if (current.length <= 1) {
-                return current;
-              }
-
-              const nextIndex = (index + 1) % current.length;
-              const nextText = current[nextIndex];
-              return current.map((itemText, itemIndex) =>
-                itemIndex === index ? nextText : itemText,
-              );
-            });
+            setTextOverrides((current) =>
+              resolveNextPlayListTextOverrides({
+                collections,
+                textOverrides: current,
+                clickedCollectionUrl: collection.url,
+              }),
+            );
 
             scrollItemToCenter(index);
           }}

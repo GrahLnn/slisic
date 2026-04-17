@@ -5,7 +5,7 @@ import "@fontsource-variable/noto-serif";
 import "./App.css";
 import "sileo/styles.css";
 import { type PropsWithChildren } from "react";
-import { AnimatePresence, LayoutGroup, motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { useTheme } from "next-themes";
 import { Toaster } from "sileo";
 import { PlayListPage } from "./components/PlayListPage";
@@ -13,7 +13,6 @@ import { ListConfig } from "./components/ListConfig";
 
 import { hook as appLogicHook } from "./flow/appLogic";
 import { useAppBootstrap } from "./flow/bootstrap";
-import { useInteractionBootstrap } from "./flow/interaction";
 import TopBar from "./topbar";
 
 function WindowMainArea({ children }: PropsWithChildren) {
@@ -33,12 +32,7 @@ function WindowMainArea({ children }: PropsWithChildren) {
 function WindowToaster() {
   const { resolvedTheme } = useTheme();
 
-  return (
-    <Toaster
-      position="bottom-right"
-      theme={resolvedTheme === "dark" ? "dark" : "light"}
-    />
-  );
+  return <Toaster position="bottom-right" theme={resolvedTheme === "dark" ? "dark" : "light"} />;
 }
 
 function Base({ children }: PropsWithChildren) {
@@ -65,6 +59,11 @@ function MainWindowApp() {
         {appLogicState.match({
           config: () => (
             // popLayout only works on direct DOM-backed motion children.
+            <motion.div key="config" className="relative w-full">
+              <ListConfig />
+            </motion.div>
+          ),
+          configLoading: () => (
             <motion.div key="config" className="relative w-full">
               <ListConfig />
             </motion.div>
@@ -105,7 +104,6 @@ function SupportWindowApp() {
 
 function App() {
   const app = useAppBootstrap();
-  useInteractionBootstrap(app);
 
   return app.window.match({
     main: () => <MainWindowApp />,

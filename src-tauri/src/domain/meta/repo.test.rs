@@ -1,5 +1,5 @@
 use super::model::MetaInfo;
-use super::repo::{get_meta_info, save_meta_info};
+use super::repo::{ensure_meta_info, get_meta_info, resolve_meta_info, save_meta_info};
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, reinit_db_with_options, reset_db};
 use std::path::PathBuf;
@@ -70,6 +70,57 @@ fn saves_and_loads_singleton_meta_info() {
             .expect("meta info should exist");
 
         assert_eq!(loaded.save_path.as_deref(), Some("D:\\MediaLibrary"));
+
+        reset_db();
+    });
+}
+
+#[test]
+fn resolve_meta_info_backfills_the_default_save_path() {
+    let resolved_missing = resolve_meta_info(None, "C:\\Users\\admin\\Documents\\ransic".to_string());
+    let resolved_null = resolve_meta_info(
+        Some(MetaInfo { save_path: None }),
+        "C:\\Users\\admin\\Documents\\ransic".to_string(),
+    );
+    let resolved_existing = resolve_meta_info(
+        Some(MetaInfo {
+            save_path: Some("D:\\MediaLibrary".to_string()),
+        }),
+        "C:\\Users\\admin\\Documents\\ransic".to_string(),
+    );
+
+    assert_eq!(
+        resolved_missing.save_path.as_deref(),
+        Some("C:\\Users\\admin\\Documents\\ransic")
+    );
+    assert_eq!(
+        resolved_null.save_path.as_deref(),
+        Some("C:\\Users\\admin\\Documents\\ransic")
+    );
+    assert_eq!(
+        resolved_existing.save_path.as_deref(),
+        Some("D:\\MediaLibrary")
+    );
+}
+
+#[test]
+fn ensure_meta_info_persists_the_default_save_path_when_missing() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let default_path = "C:\\Users\\admin\\Documents\\ransic".to_string();
+        let meta = ensure_meta_info(default_path.clone())
+            .await
+            .expect("default meta info should be created");
+        let loaded = get_meta_info()
+            .await
+            .expect("meta info lookup should succeed")
+            .expect("meta info should exist after ensure");
+
+        assert_eq!(meta.save_path.as_deref(), Some(default_path.as_str()));
+        assert_eq!(loaded.save_path.as_deref(), Some(default_path.as_str()));
 
         reset_db();
     });

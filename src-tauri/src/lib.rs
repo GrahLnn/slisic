@@ -31,6 +31,7 @@ pub fn run() {
             domain::playlists::check_list,
             domain::playlists::list_collections,
             domain::playlists::get_collection,
+            domain::playlists::get_playlist,
             domain::playlists::set_collection_updates,
             domain::playlists::add_exclude,
             domain::playlists::remove_exclude,

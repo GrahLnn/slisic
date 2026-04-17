@@ -1,6 +1,7 @@
 use super::PLAYLIST_DB_TEST_LOCK;
 use super::add_exclude;
 use super::check_list;
+use super::get_playlist;
 use super::model::{Collection, Exclude, Group, Music, PlayList};
 use super::remove_exclude;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -77,6 +78,28 @@ async fn insert_playlist_row(id: &str) {
         .expect("playlist row insert response should succeed");
 }
 
+async fn insert_group_row(id: &str, group: &Group) -> RecordId {
+    let db = get_db().expect("global playlist cmd database handle should exist");
+    let mut result = db
+        .query("CREATE $record CONTENT $data RETURN VALUE id;")
+        .bind(("record", RecordId::new(Group::table_name(), id)))
+        .bind((
+            "data",
+            json!({
+                "name": group.name,
+                "url": group.url,
+                "folder": group.folder,
+            }),
+        ))
+        .await
+        .expect("group row insert query should succeed")
+        .check()
+        .expect("group row insert response should succeed");
+
+    let record: Option<RecordId> = result.take(0).expect("group insert id should decode");
+    record.expect("group insert should return one record id")
+}
+
 async fn insert_collection_row(id: &str) {
     let db = get_db().expect("global playlist cmd database handle should exist");
 
@@ -98,6 +121,54 @@ async fn insert_collection_row(id: &str) {
         .expect("collection row insert response should succeed");
 }
 
+async fn insert_collection_row_with_data(id: &str, collection: &Collection) -> RecordId {
+    let db = get_db().expect("global playlist cmd database handle should exist");
+    let mut result = db
+        .query("CREATE $record CONTENT $data RETURN VALUE id;")
+        .bind(("record", RecordId::new(Collection::table_name(), id)))
+        .bind((
+            "data",
+            json!({
+                "name": collection.name,
+                "url": collection.url,
+                "folder": collection.folder,
+                "last_updated": collection.last_updated,
+                "enable_updates": collection.enable_updates,
+            }),
+        ))
+        .await
+        .expect("collection row insert query should succeed")
+        .check()
+        .expect("collection row insert response should succeed");
+
+    let record: Option<RecordId> = result.take(0).expect("collection insert id should decode");
+    record.expect("collection insert should return one record id")
+}
+
+async fn insert_playlist_with_relations(
+    id: &str,
+    playlist: &PlayList,
+    collections: &[RecordId],
+    groups: &[RecordId],
+) {
+    let db = get_db().expect("global playlist cmd database handle should exist");
+
+    db.query("CREATE $record CONTENT $data RETURN NONE;")
+        .bind(("record", RecordId::new(PlayList::table_name(), id)))
+        .bind((
+            "data",
+            json!({
+                "name": playlist.name,
+                "collections": collections,
+                "groups": groups,
+            }),
+        ))
+        .await
+        .expect("playlist row insert query should succeed")
+        .check()
+        .expect("playlist row insert response should succeed");
+}
+
 fn sample_music() -> Music {
     Music {
         name: "Blocked Track".to_string(),
@@ -110,6 +181,53 @@ fn sample_music() -> Music {
         path: Some("Blocked Track.m4a".to_string()),
         start: 0,
         end: 180,
+    }
+}
+
+fn sample_playlist() -> PlayList {
+    PlayList {
+        name: "favorites".to_string(),
+        collections: vec![Collection {
+            name: "Calm Set".to_string(),
+            url: "https://example.com/calm-set".to_string(),
+            folder: "youtube/calm-set".to_string(),
+            musics: vec![],
+            last_updated: "2026-04-13T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        }],
+        groups: vec![Group {
+            name: "Disc 1".to_string(),
+            url: "https://example.com/calm-set#disc-1".to_string(),
+            folder: "Disc 1".to_string(),
+        }],
+    }
+}
+
+fn assert_playlist_matches(actual: &PlayList, expected: &PlayList) {
+    assert_eq!(actual.name, expected.name);
+    assert_eq!(actual.collections.len(), expected.collections.len());
+    assert_eq!(actual.groups.len(), expected.groups.len());
+
+    for (actual_collection, expected_collection) in
+        actual.collections.iter().zip(expected.collections.iter())
+    {
+        assert_eq!(actual_collection.name, expected_collection.name);
+        assert_eq!(actual_collection.url, expected_collection.url);
+        assert_eq!(actual_collection.folder, expected_collection.folder);
+        assert_eq!(
+            actual_collection.last_updated,
+            expected_collection.last_updated
+        );
+        assert_eq!(
+            actual_collection.enable_updates,
+            expected_collection.enable_updates
+        );
+    }
+
+    for (actual_group, expected_group) in actual.groups.iter().zip(expected.groups.iter()) {
+        assert_eq!(actual_group.name, expected_group.name);
+        assert_eq!(actual_group.url, expected_group.url);
+        assert_eq!(actual_group.folder, expected_group.folder);
     }
 }
 
@@ -171,6 +289,56 @@ fn check_list_ignores_legacy_playlist_rows_without_collections() {
                 .await
                 .expect("legacy playlist-only rows should not count as collections")
         );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn get_playlist_returns_none_when_the_name_is_missing() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let playlist = get_playlist("missing".to_string())
+            .await
+            .expect("missing playlist lookup should not error");
+
+        assert!(playlist.is_none());
+
+        reset_db();
+    });
+}
+
+#[test]
+fn get_playlist_hydrates_related_collections_and_groups() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_table(PlayList::table_name()).await;
+        bootstrap_table(Collection::table_name()).await;
+        bootstrap_table(Group::table_name()).await;
+
+        let playlist = sample_playlist();
+        let collection_record =
+            insert_collection_row_with_data("favorites-collection", &playlist.collections[0]).await;
+        let group_record = insert_group_row("favorites-group", &playlist.groups[0]).await;
+        insert_playlist_with_relations(
+            "favorites-playlist",
+            &playlist,
+            std::slice::from_ref(&collection_record),
+            std::slice::from_ref(&group_record),
+        )
+        .await;
+
+        let loaded = get_playlist(playlist.name.clone())
+            .await
+            .expect("seeded playlist lookup should succeed")
+            .expect("seeded playlist should exist");
+
+        assert_playlist_matches(&loaded, &playlist);
 
         reset_db();
     });

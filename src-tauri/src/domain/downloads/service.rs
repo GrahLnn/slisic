@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::task;
 
 const AUTO_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
@@ -163,7 +163,7 @@ async fn run_task(task_id: String, app: AppHandle) -> Result<()> {
     update_task_status(&mut task_snapshot, DownloadTaskStatus::Resolving, None).await?;
 
     let client = build_client(&app)?;
-    let save_root = resolve_save_root().await?;
+    let save_root = resolve_save_root(&app).await?;
     let plan = resolve_collection_plan(&task_snapshot, client.clone(), &save_root).await?;
     let mut collection = collection_repo::get_collection_by_url(&plan.collection_url)
         .await?
@@ -831,13 +831,21 @@ fn build_client(app: &AppHandle) -> Result<Arc<dyn YtDlpClient>> {
     Ok(Arc::new(CliYtDlpClient::new(ytdlp_path, ffmpeg_dir)))
 }
 
-async fn resolve_save_root() -> Result<PathBuf> {
-    let meta = meta_repo::get_meta_info()
-        .await?
-        .ok_or_else(|| anyhow!("save path is not configured"))?;
+fn default_save_root(app: &AppHandle) -> Result<PathBuf> {
+    let document_dir = app
+        .path()
+        .document_dir()
+        .map_err(|error| anyhow!(error))?;
+
+    Ok(document_dir.join(&app.package_info().name))
+}
+
+async fn resolve_save_root(app: &AppHandle) -> Result<PathBuf> {
+    let default_root = default_save_root(app)?;
+    let meta = meta_repo::ensure_meta_info(default_root.to_string_lossy().to_string()).await?;
     let save_path = meta
         .save_path
-        .ok_or_else(|| anyhow!("save path is not configured"))?;
+        .ok_or_else(|| anyhow!("save path should always be configured"))?;
     let root = PathBuf::from(save_path);
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create {}", root.display()))?;

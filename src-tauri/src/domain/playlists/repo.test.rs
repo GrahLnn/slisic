@@ -1,5 +1,7 @@
-use super::model::{Collection, Group, Music};
-use super::repo::{get_collection_by_url, set_collection_updates, upsert_collection};
+use super::model::{Collection, Group, Music, PlayList};
+use super::repo::{
+    get_collection_by_url, get_playlist_by_name, set_collection_updates, upsert_collection,
+};
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::Crud;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -122,6 +124,55 @@ fn shared_music(collection_url: &str, collection_folder: &str) -> Music {
     }
 }
 
+fn sample_playlist(name: &str) -> PlayList {
+    PlayList {
+        name: name.to_string(),
+        collections: vec![Collection {
+            name: "Repo Demo".to_string(),
+            url: format!("https://example.com/{name}"),
+            folder: format!("youtube/{name}"),
+            musics: vec![],
+            last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        }],
+        groups: vec![Group {
+            name: "Disc 1".to_string(),
+            url: format!("https://example.com/{name}#disc-1"),
+            folder: "Disc 1".to_string(),
+        }],
+    }
+}
+
+fn assert_playlist_matches(actual: &PlayList, expected: &PlayList) {
+    assert_eq!(actual.name, expected.name);
+    assert_eq!(actual.collections.len(), expected.collections.len());
+    assert_eq!(actual.groups.len(), expected.groups.len());
+
+    for (actual_collection, expected_collection) in
+        actual.collections.iter().zip(expected.collections.iter())
+    {
+        assert_eq!(actual_collection.name, expected_collection.name);
+        assert_eq!(actual_collection.url, expected_collection.url);
+        assert_eq!(actual_collection.folder, expected_collection.folder);
+        assert_eq!(
+            actual_collection.last_updated,
+            expected_collection.last_updated
+        );
+        assert_eq!(
+            actual_collection.enable_updates,
+            expected_collection.enable_updates
+        );
+        assert!(actual_collection.musics.is_empty());
+        assert!(expected_collection.musics.is_empty());
+    }
+
+    for (actual_group, expected_group) in actual.groups.iter().zip(expected.groups.iter()) {
+        assert_eq!(actual_group.name, expected_group.name);
+        assert_eq!(actual_group.url, expected_group.url);
+        assert_eq!(actual_group.folder, expected_group.folder);
+    }
+}
+
 async fn insert_collection_row(id: &str, collection: &Collection) -> RecordId {
     let db = get_db().expect("global playlist repo database handle should exist");
     let mut result = db
@@ -146,6 +197,28 @@ async fn insert_collection_row(id: &str, collection: &Collection) -> RecordId {
     record.expect("collection insert should return one record id")
 }
 
+async fn insert_group_row(id: &str, group: &Group) -> RecordId {
+    let db = get_db().expect("global playlist repo database handle should exist");
+    let mut result = db
+        .query("CREATE $record CONTENT $data RETURN VALUE id;")
+        .bind(("record", RecordId::new(Group::table_name(), id)))
+        .bind((
+            "data",
+            json!({
+                "name": group.name,
+                "url": group.url,
+                "folder": group.folder,
+            }),
+        ))
+        .await
+        .expect("group insert query should succeed")
+        .check()
+        .expect("group insert response should succeed");
+
+    let record: Option<RecordId> = result.take(0).expect("group insert id should decode");
+    record.expect("group insert should return one record id")
+}
+
 async fn insert_music_row(id: &str, music: &Music) -> RecordId {
     let db = get_db().expect("global playlist repo database handle should exist");
     let mut result = db
@@ -159,6 +232,33 @@ async fn insert_music_row(id: &str, music: &Music) -> RecordId {
 
     let record: Option<RecordId> = result.take(0).expect("music insert id should decode");
     record.expect("music insert should return one record id")
+}
+
+async fn insert_playlist_row(
+    id: &str,
+    playlist: &PlayList,
+    collections: &[RecordId],
+    groups: &[RecordId],
+) -> RecordId {
+    let db = get_db().expect("global playlist repo database handle should exist");
+    let mut result = db
+        .query("CREATE $record CONTENT $data RETURN VALUE id;")
+        .bind(("record", RecordId::new(PlayList::table_name(), id)))
+        .bind((
+            "data",
+            json!({
+                "name": playlist.name,
+                "collections": collections,
+                "groups": groups,
+            }),
+        ))
+        .await
+        .expect("playlist insert query should succeed")
+        .check()
+        .expect("playlist insert response should succeed");
+
+    let record: Option<RecordId> = result.take(0).expect("playlist insert id should decode");
+    record.expect("playlist insert should return one record id")
 }
 
 async fn insert_music_edges(source: &RecordId, targets: &[RecordId]) {
@@ -555,6 +655,36 @@ fn upsert_collection_never_deletes_non_music_records_from_corrupted_include_edge
             load_collection_ids_by_url(foreign_url).await,
             vec![foreign_record]
         );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn get_playlist_by_name_reads_related_collections_and_groups() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let playlist = sample_playlist("repo-playlist");
+        let collection_record =
+            insert_collection_row("repo-playlist-collection", &playlist.collections[0]).await;
+        let group_record = insert_group_row("repo-playlist-group", &playlist.groups[0]).await;
+        insert_playlist_row(
+            "repo-playlist",
+            &playlist,
+            std::slice::from_ref(&collection_record),
+            std::slice::from_ref(&group_record),
+        )
+        .await;
+
+        let loaded = get_playlist_by_name(&playlist.name)
+            .await
+            .expect("playlist lookup should succeed")
+            .expect("playlist should exist");
+
+        assert_playlist_matches(&loaded, &playlist);
 
         reset_db();
     });

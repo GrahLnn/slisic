@@ -9,6 +9,8 @@ pub struct PlayList {
     pub name: String,
     #[foreign]
     pub collections: Vec<Collection>,
+    #[foreign]
+    pub groups: Vec<Group>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, Store, Type)]
