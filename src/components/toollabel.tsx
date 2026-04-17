@@ -57,7 +57,8 @@ export function MaskMiddle() {
   );
 }
 
-const TOOL_LABEL_OVERLAY_CLASS_NAME = "z-200 inline-flex items-center overflow-visible";
+const TOOL_LABEL_OVERLAY_CLASS_NAME =
+  "z-200 inline-flex cursor-default items-center overflow-visible";
 type ToolLabelAnchor = "left" | "right";
 
 export function resolveToolLabelOverlayVisibility(args: {
@@ -294,6 +295,7 @@ export function ToolLabel({
   tool,
   textClassName,
   className,
+  layoutId,
   hoverMode = "self",
   interactionDisabled = false,
   toolLayer = "inline",
@@ -302,27 +304,71 @@ export function ToolLabel({
   text: string;
   textClassName?: string;
   tool?: React.ReactNode;
+  layoutId?: string;
   hoverMode?: "self" | "group";
   interactionDisabled?: boolean;
   toolLayer?: "inline" | "portal";
   toolAnchor?: ToolLabelAnchor;
 } & ComponentProps<"div">) {
   const [isHovered, setIsHovered] = useState(false);
+  const [isLayoutAnimating, setIsLayoutAnimating] = useState(false);
   const resolvedTextClassName = textClassName ?? "";
   const rootRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const hoverSyncFrameRef = useRef<number | null>(null);
+  const effectiveInteractionDisabled = interactionDisabled || isLayoutAnimating;
   const isOverlayVisible = resolveToolLabelOverlayVisibility({
     isHovered,
     hasTool: Boolean(tool),
-    interactionDisabled,
+    interactionDisabled: effectiveInteractionDisabled,
   });
 
   function containsTarget(container: HTMLElement | null, target: EventTarget | null) {
     return target instanceof Node && !!container?.contains(target);
   }
 
+  function clearPendingHoverSync() {
+    const ownerWindow = rootRef.current?.ownerDocument.defaultView;
+
+    if (!ownerWindow || hoverSyncFrameRef.current === null) {
+      hoverSyncFrameRef.current = null;
+      return;
+    }
+
+    ownerWindow.cancelAnimationFrame(hoverSyncFrameRef.current);
+    hoverSyncFrameRef.current = null;
+  }
+
+  function syncHoverStateFromPointer() {
+    const root = rootRef.current;
+    const hoverTarget = hoverMode === "group" ? root?.closest(".group") : root;
+    const shouldShowHover =
+      !interactionDisabled &&
+      !!tool &&
+      hoverTarget instanceof HTMLElement &&
+      hoverTarget.matches(":hover");
+
+    setIsHovered(shouldShowHover);
+  }
+
+  function scheduleHoverSync() {
+    const ownerWindow = rootRef.current?.ownerDocument.defaultView;
+
+    clearPendingHoverSync();
+
+    if (!ownerWindow) {
+      syncHoverStateFromPointer();
+      return;
+    }
+
+    hoverSyncFrameRef.current = ownerWindow.requestAnimationFrame(() => {
+      hoverSyncFrameRef.current = null;
+      syncHoverStateFromPointer();
+    });
+  }
+
   function openOverlay() {
-    if (interactionDisabled || !tool) {
+    if (effectiveInteractionDisabled || !tool) {
       return;
     }
 
@@ -341,7 +387,7 @@ export function ToolLabel({
   }
 
   function handlePortalOverlayWheel(event: React.WheelEvent<HTMLDivElement>) {
-    if (interactionDisabled) {
+    if (effectiveInteractionDisabled) {
       return;
     }
 
@@ -363,12 +409,19 @@ export function ToolLabel({
   }, [isHovered, tool, text]);
 
   useLayoutEffect(() => {
-    if (!interactionDisabled) {
+    if (!effectiveInteractionDisabled) {
       return;
     }
 
+    clearPendingHoverSync();
     setIsHovered(false);
-  }, [interactionDisabled]);
+  }, [effectiveInteractionDisabled]);
+
+  useLayoutEffect(() => {
+    return () => {
+      clearPendingHoverSync();
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (hoverMode !== "group") {
@@ -383,7 +436,7 @@ export function ToolLabel({
     }
 
     const handleEnter = () => {
-      if (interactionDisabled || !tool) {
+      if (effectiveInteractionDisabled || !tool) {
         return;
       }
 
@@ -410,12 +463,22 @@ export function ToolLabel({
       group.removeEventListener("mouseenter", handleEnter);
       group.removeEventListener("mouseleave", handleLeave);
     };
-  }, [hoverMode, interactionDisabled, tool]);
+  }, [hoverMode, effectiveInteractionDisabled, tool]);
 
   return (
     <>
-      <div
+      <motion.div
         ref={rootRef}
+        layoutId={layoutId}
+        onLayoutAnimationStart={() => {
+          clearPendingHoverSync();
+          setIsLayoutAnimating(true);
+          setIsHovered(false);
+        }}
+        onLayoutAnimationComplete={() => {
+          setIsLayoutAnimating(false);
+          scheduleHoverSync();
+        }}
         onMouseEnter={hoverMode === "self" ? openOverlay : undefined}
         onMouseLeave={
           hoverMode === "self" ? (event) => closeOverlay(event.relatedTarget) : undefined
@@ -451,7 +514,7 @@ export function ToolLabel({
               </div>
             ))}
         </AnimatePresence>
-      </div>
+      </motion.div>
     </>
   );
 }

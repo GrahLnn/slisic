@@ -101,7 +101,7 @@ function normalizeListConfigSidebarName(name: string) {
   return name.trim().replace(/\s+/g, " ").toLocaleLowerCase();
 }
 
-function createListConfigToolLabelItemId(ref: ConfigSidebarItemRef) {
+export function createListConfigToolLabelLayoutId(ref: ConfigSidebarItemRef) {
   return `playlist:${ref.kind}:${ref.url}`;
 }
 
@@ -163,7 +163,7 @@ export function createListConfigPlaylistToolLabelItems(
 
     return {
       kind: "playlist",
-      id: createListConfigToolLabelItemId(ref),
+      id: createListConfigToolLabelLayoutId(ref),
       ref,
       text: item.name,
       sourceKind: item.kind,
