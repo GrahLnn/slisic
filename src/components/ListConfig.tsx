@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { me } from "@grahlnn/fn";
 import { getName } from "@tauri-apps/api/app";
 import { documentDir, join } from "@tauri-apps/api/path";
@@ -219,6 +219,11 @@ function FnButton({ text, onClick }: { text: string; onClick?: () => void }) {
   );
 }
 
+type ListConfigRenderSnapshot = {
+  savePath: string;
+  viewModel: ReturnType<typeof resolveListConfigViewModel>;
+};
+
 export function ListConfig() {
   const isPresent = useIsPresent();
   const {
@@ -232,8 +237,10 @@ export function ListConfig() {
   const { items: candidateItems } = pasteDownloadHook.useContext();
   const titleSnapshotRef = useRef<ListConfigTitleSnapshot | null>(null);
   const emptyStateRef = useRef<ListConfigEmptyState | null>(null);
+  const [renderSnapshot, setRenderSnapshot] =
+    useState<ListConfigRenderSnapshot | null>(null);
   const libraryItems = createConfigSidebarItems(collections);
-  const viewModel = resolveListConfigViewModel({
+  const liveViewModel = resolveListConfigViewModel({
     activeLayoutId,
     draft,
     draftBaseline,
@@ -244,6 +251,13 @@ export function ListConfig() {
     previousTitleSnapshot: titleSnapshotRef.current,
     previousEmptyState: emptyStateRef.current,
   });
+  const liveRenderSnapshot = {
+    savePath,
+    viewModel: liveViewModel,
+  } satisfies ListConfigRenderSnapshot;
+  const renderData = renderSnapshot ?? liveRenderSnapshot;
+  const { savePath: renderedSavePath, viewModel } = renderData;
+
   if (viewModel.title.snapshot) {
     titleSnapshotRef.current = viewModel.title.snapshot;
   }
@@ -252,7 +266,7 @@ export function ListConfig() {
   async function handleChangeSavePath() {
     try {
       const defaultSavePath =
-        savePath || (await getDefaultListConfigSavePath());
+        renderedSavePath || (await getDefaultListConfigSavePath());
       const selectedPath = await open({
         directory: true,
         multiple: false,
@@ -294,6 +308,7 @@ export function ListConfig() {
           <button
             type="button"
             onClick={() => {
+              setRenderSnapshot(liveRenderSnapshot);
               pasteDownloadAction.reset();
               appLogicAction.back();
             }}
