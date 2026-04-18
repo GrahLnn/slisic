@@ -38,6 +38,10 @@ type ArcSample = {
   y: number;
 };
 
+type ArcProjection = ArcSample & {
+  angle: number;
+};
+
 type ArcTrackItemRegistryKey = string | number | bigint;
 
 type ArcTrackItemNodeState = {
@@ -194,7 +198,7 @@ function buildArcLookup(viewportHeight: number) {
   return lookup;
 }
 
-function getArcSampleAtY(targetY: number, samples: ArcSample[]): ArcSample | null {
+function getArcSampleAtY(targetY: number, samples: ArcSample[]): ArcProjection | null {
   if (samples.length < 2) {
     return null;
   }
@@ -209,6 +213,7 @@ function getArcSampleAtY(targetY: number, samples: ArcSample[]): ArcSample | nul
     return {
       x: current.x + slope * (targetY - current.y),
       y: targetY,
+      angle: (Math.atan2(next.x - current.x, next.y - current.y) * 180) / Math.PI,
     };
   }
 
@@ -224,6 +229,7 @@ function getArcSampleAtY(targetY: number, samples: ArcSample[]): ArcSample | nul
     return {
       x: current.x + slope * (targetY - current.y),
       y: targetY,
+      angle: (Math.atan2(current.x - previous.x, current.y - previous.y) * 180) / Math.PI,
     };
   }
 
@@ -245,8 +251,9 @@ function getArcSampleAtY(targetY: number, samples: ArcSample[]): ArcSample | nul
   const ratio = (targetY - start.y) / Math.max(1e-6, end.y - start.y);
   const x = start.x + (end.x - start.x) * ratio;
   const y = start.y + (end.y - start.y) * ratio;
+  const angle = (Math.atan2(end.x - start.x, end.y - start.y) * 180) / Math.PI;
 
-  return { x, y };
+  return { x, y, angle };
 }
 
 function applyArcTrackItemPosition(args: {
@@ -263,7 +270,7 @@ function applyArcTrackItemPosition(args: {
     itemHeight: args.node.offsetHeight,
   });
 
-  if (!frame) {
+  if (!sample || !frame) {
     if (args.node.style.opacity !== "0") {
       args.node.style.opacity = "0";
     }
@@ -275,6 +282,8 @@ function applyArcTrackItemPosition(args: {
     if (args.node.style.top !== "") {
       args.node.style.top = "";
     }
+
+    args.node.style.removeProperty("--arc-item-angle");
 
     return;
   }
@@ -293,6 +302,8 @@ function applyArcTrackItemPosition(args: {
   if (args.node.style.transform !== "") {
     args.node.style.transform = "";
   }
+
+  args.node.style.setProperty("--arc-item-angle", `${sample.angle}deg`);
 
   if (args.node.style.opacity !== "1") {
     args.node.style.opacity = "1";
@@ -435,6 +446,8 @@ const ArcTrackItem = memo(function ArcTrackItem({
     >
       <div className="flex items-center justify-end gap-3">
         <ToolLabel
+          restClassName="origin-right will-change-transform"
+          restStyle={{ transform: "rotate(var(--arc-item-angle, 0deg))" }}
           layoutId={createListConfigToolLabelLayoutId({
             kind: item.kind,
             url: item.url,
@@ -459,7 +472,14 @@ const ArcTrackItem = memo(function ArcTrackItem({
             </div>
           }
         />
-        <span className="size-1 rounded-full bg-[#4f4f4f]/70 dark:bg-[#bdbdbd]/70" />
+        <div
+          className={cn(
+            "flex items-center origin-left",
+            item.kind === "collection" ? "rotate-[-6deg]" : "rotate-[6deg]",
+          )}
+        >
+          <span className="size-1 rounded-full bg-[#4f4f4f]/70 dark:bg-[#bdbdbd]/70" />
+        </div>
       </div>
     </li>
   );

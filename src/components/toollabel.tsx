@@ -295,6 +295,8 @@ export function ToolLabel({
   tool,
   textClassName,
   className,
+  restClassName,
+  restStyle,
   layoutId,
   hoverMode = "self",
   interactionDisabled = false,
@@ -305,6 +307,8 @@ export function ToolLabel({
   textClassName?: string;
   tool?: React.ReactNode;
   layoutId?: string;
+  restClassName?: string;
+  restStyle?: CSSProperties;
   hoverMode?: "self" | "group";
   interactionDisabled?: boolean;
   toolLayer?: "inline" | "portal";
@@ -474,7 +478,12 @@ export function ToolLabel({
         onMouseLeave={
           hoverMode === "self" ? (event) => closeOverlay(event.relatedTarget) : undefined
         }
-        className={cn("relative inline-flex w-fit select-none items-center", className)}
+        className={cn(
+          "relative inline-flex w-fit select-none items-center",
+          className,
+          !isLayoutAnimating && restClassName,
+        )}
+        style={!isLayoutAnimating ? restStyle : undefined}
       >
         <motion.div
           ref={textRef}
