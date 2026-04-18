@@ -1,6 +1,6 @@
 import { useSelector } from "@xstate/react";
 import { me } from "@grahlnn/fn";
-import type { ConfigSidebarItemRef } from "./core";
+import type { ConfigSidebarItemRef, PlaylistUpsertResult } from "./core";
 import { MainStateT, sig } from "./events";
 import {
   actor,
@@ -10,6 +10,7 @@ import {
   draftItemIncluded,
   draftItemRemoved,
   openPlaylist,
+  playlistUpserted,
   resetRuntimeActor,
   savePathChanged,
   send,
@@ -85,6 +86,10 @@ export const action = {
   upsertCollection: (collection: ActorSnapshot["context"]["collections"][number]) => {
     ensureStarted();
     send(collectionUpserted.load(collection));
+  },
+  upsertPlaylist: (payload: PlaylistUpsertResult) => {
+    ensureStarted();
+    send(playlistUpserted.load(payload));
   },
   includeDraftItem: (item: ConfigSidebarItemRef) => {
     ensureStarted();

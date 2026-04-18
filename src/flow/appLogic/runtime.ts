@@ -7,6 +7,7 @@ export let actor = createActor(machine);
 export let send = createSender(actor);
 
 export const openPlaylist = payloads["playlist.open"];
+export const playlistUpserted = payloads["playlist.upserted"];
 export const draftNameChanged = payloads["draft.name.changed"];
 export const savePathChanged = payloads["save_path.changed"];
 export const collectionUpserted = payloads["collection.upserted"];

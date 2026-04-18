@@ -89,6 +89,16 @@ async fn bootstrap_table(table: &str) {
         .expect("table bootstrap response should succeed");
 }
 
+async fn bootstrap_relation_table(table: &str) {
+    let db = get_db().expect("global playlist database handle should exist");
+
+    db.query(format!("DEFINE TABLE IF NOT EXISTS {table} TYPE RELATION SCHEMALESS;"))
+        .await
+        .expect("relation table bootstrap query should succeed")
+        .check()
+        .expect("relation table bootstrap response should succeed");
+}
+
 async fn insert_music_row(music: &Music) -> RecordId {
     let db = get_db().expect("global playlist database handle should exist");
     let mut result = db
@@ -180,6 +190,38 @@ async fn insert_music_edges(source: &RecordId, targets: &[RecordId]) {
         .expect("music edge insert query should succeed")
         .check()
         .expect("music edge insert response should succeed");
+}
+
+async fn insert_group_edges(source: &RecordId, targets: &[RecordId]) {
+    if targets.is_empty() {
+        return;
+    }
+
+    let db = get_db().expect("global playlist database handle should exist");
+    let mut sql = String::from("INSERT RELATION INTO $rel [");
+    for idx in 0..targets.len() {
+        if idx > 0 {
+            sql.push_str(", ");
+        }
+        sql.push_str(&format!(
+            "{{ in: $in_{idx}, out: $out_{idx}, position: $position_{idx} }}"
+        ));
+    }
+    sql.push_str("] RETURN NONE;");
+
+    let mut query = db.query(sql).bind(("rel", Table::from("grouped")));
+    for (idx, target) in targets.iter().enumerate() {
+        query = query
+            .bind((format!("in_{idx}"), source.clone()))
+            .bind((format!("out_{idx}"), target.clone()))
+            .bind((format!("position_{idx}"), idx as i64));
+    }
+
+    query
+        .await
+        .expect("group edge insert query should succeed")
+        .check()
+        .expect("group edge insert response should succeed");
 }
 
 async fn insert_playlist_row(
@@ -536,6 +578,8 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
         bootstrap_table(Music::table_name()).await;
         bootstrap_table(Collection::table_name()).await;
         bootstrap_table(PlayList::table_name()).await;
+        bootstrap_relation_table("includes").await;
+        bootstrap_relation_table("grouped").await;
 
         let playlist = sample_playlist();
         let mut collection_records = Vec::with_capacity(playlist.collections.len());
@@ -554,6 +598,7 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
             let collection_record =
                 insert_collection_row(&format!("seeded-collection-{index}"), collection).await;
             insert_music_edges(&collection_record, &music_records).await;
+            insert_group_edges(&group_records[index], &music_records).await;
             collection_records.push(collection_record);
         }
 
@@ -643,7 +688,7 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
 }
 
 #[test]
-fn save_fails_for_playlist_without_id_field() {
+fn playlist_create_and_list_succeed_once_relation_schema_exists() {
     let _guard = acquire_db_test_lock();
 
     run_async(async {
@@ -651,12 +696,23 @@ fn save_fails_for_playlist_without_id_field() {
         bootstrap_table(Group::table_name()).await;
         bootstrap_table(Music::table_name()).await;
         bootstrap_table(Collection::table_name()).await;
+        bootstrap_table(PlayList::table_name()).await;
+        bootstrap_relation_table("includes").await;
 
-        let err = PlayList::save(sample_playlist())
+        let playlist = sample_playlist();
+        let saved = PlayList::create_at(
+            RecordId::new(PlayList::table_name(), "model-check"),
+            playlist.clone(),
+        )
+        .await
+        .expect("playlist create_at should succeed once relation schema exists");
+        let listed = PlayList::list()
             .await
-            .expect_err("playlist save should fail without an id field");
+            .expect("playlist list should succeed once relation schema exists");
 
-        assert!(err.to_string().contains("id"));
+        assert_playlist_eq(&saved, &playlist);
+        assert_eq!(listed.len(), 1);
+        assert_playlist_eq(&listed[0], &playlist);
 
         reset_db();
     });

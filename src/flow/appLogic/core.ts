@@ -37,6 +37,18 @@ export interface CollectionUpdatesChange {
   enabled: boolean;
 }
 
+export type DraftCommitTitleResolutionKind = "keep" | "restore" | "generate";
+
+export interface DraftCommitTitleResolution {
+  kind: DraftCommitTitleResolutionKind;
+  name: string;
+}
+
+export interface PlaylistUpsertResult {
+  playlist: PlayList;
+  previousName: string | null;
+}
+
 export interface Context {
   hasPlayList: boolean | null;
   playlists: PlayList[];
@@ -80,6 +92,58 @@ export function cloneDraft(draft: ConfigDraft): ConfigDraft {
     name: draft.name,
     collections: [...draft.collections],
     groups: [...draft.groups],
+  };
+}
+
+export function normalizeDraftName(name: string) {
+  return name.trim();
+}
+
+export function createPlayListFromDraft(draft: ConfigDraft): PlayList {
+  return {
+    name: draft.name,
+    collections: [...draft.collections],
+    groups: [...draft.groups],
+  };
+}
+
+export function resolveNextGeneratedPlaylistName(playlists: readonly PlayList[]) {
+  const existingNames = new Set(playlists.map((playlist) => normalizeDraftName(playlist.name)));
+  let index = 1;
+
+  while (existingNames.has(`PlayList ${index}`)) {
+    index += 1;
+  }
+
+  return `PlayList ${index}`;
+}
+
+export function resolveDraftCommitTitle(args: {
+  draft: ConfigDraft;
+  draftBaseline: ConfigDraft | null;
+  playlists: readonly PlayList[];
+}): DraftCommitTitleResolution {
+  const currentName = normalizeDraftName(args.draft.name);
+
+  if (currentName.length > 0) {
+    return {
+      kind: "keep",
+      name: currentName,
+    };
+  }
+
+  const baselineName = normalizeDraftName(args.draftBaseline?.name ?? "");
+
+  if (baselineName.length > 0) {
+    return {
+      kind: "restore",
+      name: baselineName,
+    };
+  }
+
+  return {
+    kind: "generate",
+    name: resolveNextGeneratedPlaylistName(args.playlists),
   };
 }
 
@@ -210,6 +274,23 @@ export function upsertCollectionIntoDraft(
     ...draft,
     collections: upsertCollectionIntoCollections(draft.collections, nextCollection),
   };
+}
+
+export function upsertPlaylistIntoPlaylists(
+  playlists: readonly PlayList[],
+  nextPlaylist: PlayList,
+  previousName: string | null = null,
+): PlayList[] {
+  const matchName = previousName ?? nextPlaylist.name;
+  const currentIndex = playlists.findIndex((playlist) => playlist.name === matchName);
+
+  if (currentIndex < 0) {
+    return [nextPlaylist, ...playlists];
+  }
+
+  return playlists.map((playlist, index) =>
+    index === currentIndex ? nextPlaylist : playlist,
+  );
 }
 
 export function includeDraftSidebarItem(

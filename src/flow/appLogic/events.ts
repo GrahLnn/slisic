@@ -17,6 +17,7 @@ import {
   type CollectionUpdatesChange,
   type ConfigSidebarItemRef,
   type ConfigDraft,
+  type PlaylistUpsertResult,
 } from "./core";
 
 export interface BootstrapResult {
@@ -142,6 +143,7 @@ export const invoker = createActors({
 });
 export const payloads = collect(
   ...event<string>()("playlist.open"),
+  ...event<PlaylistUpsertResult>()("playlist.upserted"),
   ...event<string>()("draft.name.changed"),
   ...event<string>()("save_path.changed"),
   ...event<Collection>()("collection.upserted"),

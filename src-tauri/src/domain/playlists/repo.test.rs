@@ -1,7 +1,7 @@
-use super::model::{Collection, Group, Music, PlayList};
+use super::model::{Collection, Exclude, Group, Music, PlayList};
 use super::repo::{
-    get_collection_by_url, get_playlist_by_name, list_playlists, set_collection_updates,
-    upsert_collection,
+    add_exclude, get_collection_by_url, get_playlist_by_name, has_collections, list_playlists,
+    remove_exclude, set_collection_updates, upsert_collection, upsert_playlist,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::Crud;
@@ -50,6 +50,36 @@ async fn ensure_db() {
     )
     .await
     .expect("playlist repo database should initialize");
+}
+
+async fn bootstrap_table(table: &str) {
+    let db = get_db().expect("global playlist repo database handle should exist");
+
+    db.query(format!("DEFINE TABLE IF NOT EXISTS {table} SCHEMALESS;"))
+        .await
+        .expect("table bootstrap query should succeed")
+        .check()
+        .expect("table bootstrap response should succeed");
+}
+
+async fn bootstrap_relation_table(table: &str) {
+    let db = get_db().expect("global playlist repo database handle should exist");
+
+    db.query(format!("DEFINE TABLE IF NOT EXISTS {table} TYPE RELATION SCHEMALESS;"))
+        .await
+        .expect("relation table bootstrap query should succeed")
+        .check()
+        .expect("relation table bootstrap response should succeed");
+}
+
+async fn bootstrap_collection_write_schema() {
+    bootstrap_table(Music::table_name()).await;
+    bootstrap_relation_table("includes").await;
+}
+
+async fn bootstrap_playlist_read_schema() {
+    bootstrap_table(Music::table_name()).await;
+    bootstrap_relation_table("includes").await;
 }
 
 fn sample_collection(url: &str, enable_updates: Option<bool>) -> Collection {
@@ -141,6 +171,21 @@ fn sample_playlist(name: &str) -> PlayList {
             url: format!("https://example.com/{name}#disc-1"),
             folder: "Disc 1".to_string(),
         }],
+    }
+}
+
+fn sample_excluded_music() -> Music {
+    Music {
+        name: "Blocked Track".to_string(),
+        group: Group {
+            name: "Blocked Collection".to_string(),
+            url: "https://example.com/blocked-collection".to_string(),
+            folder: "youtube/blocked-collection".to_string(),
+        },
+        url: "https://example.com/watch?v=blocked".to_string(),
+        path: Some("Blocked Track.m4a".to_string()),
+        start: 0,
+        end: 180,
     }
 }
 
@@ -314,7 +359,7 @@ async fn load_collection_ids_by_url(url: &str) -> Vec<RecordId> {
 async fn load_collection_music_ids(record: &RecordId) -> Vec<RecordId> {
     let db = get_db().expect("global playlist repo database handle should exist");
     let mut result = db
-        .query("SELECT out FROM $rel WHERE in = $record ORDER BY position ASC;")
+        .query("SELECT out, position FROM $rel WHERE in = $record ORDER BY position ASC;")
         .bind(("rel", Table::from("includes")))
         .bind(("record", record.clone()))
         .await
@@ -334,6 +379,128 @@ async fn load_collection_music_ids(record: &RecordId) -> Vec<RecordId> {
         .take(0)
         .expect("collection music edge rows should decode");
     rows.into_iter().map(|row| row.out).collect()
+}
+
+async fn count_excludes() -> usize {
+    let db = get_db().expect("global playlist repo database handle should exist");
+    let mut result = db
+        .query("SELECT VALUE id FROM $table LIMIT 100;")
+        .bind(("table", Table::from(Exclude::table_name())))
+        .await
+        .expect("exclude count query should succeed")
+        .check()
+        .expect("exclude count response should succeed");
+
+    let ids: Vec<RecordId> = result.take(0).expect("exclude ids should decode");
+    ids.len()
+}
+
+#[test]
+fn has_collections_returns_false_when_collection_table_is_missing_or_empty() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        assert!(
+            !has_collections()
+                .await
+                .expect("missing collection table should not error")
+        );
+
+        let db = get_db().expect("global playlist repo database handle should exist");
+        db.query(format!(
+            "DEFINE TABLE IF NOT EXISTS {} SCHEMALESS;",
+            Collection::table_name()
+        ))
+        .await
+        .expect("collection table bootstrap query should succeed")
+        .check()
+        .expect("collection table bootstrap response should succeed");
+
+        assert!(
+            !has_collections()
+                .await
+                .expect("empty collection table should not error")
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn has_collections_returns_true_when_collection_rows_exist() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let _ = upsert_collection(&sample_collection("https://example.com/seeded", Some(false)))
+            .await
+            .expect("seeded collection should save");
+
+        assert!(
+            has_collections()
+                .await
+                .expect("seeded collection table should not error")
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn add_exclude_is_idempotent_and_remove_exclude_deletes_the_row() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_table(Music::table_name()).await;
+
+        let music = sample_excluded_music();
+        let first = add_exclude(music.clone())
+            .await
+            .expect("first exclude add should succeed");
+        let second = add_exclude(music.clone())
+            .await
+            .expect("second exclude add should reuse the same row");
+        let exclude_count = count_excludes().await;
+
+        assert_eq!(first.music.url, music.url);
+        assert_eq!(second.music.url, music.url);
+        assert_eq!(exclude_count, 1);
+
+        let removed = remove_exclude(&music)
+            .await
+            .expect("exclude removal should succeed");
+        let removed_again = remove_exclude(&music)
+            .await
+            .expect("repeated exclude removal should succeed");
+        let exclude_count_after = count_excludes().await;
+
+        assert!(removed);
+        assert!(!removed_again);
+        assert_eq!(exclude_count_after, 0);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn remove_exclude_returns_false_when_table_is_missing() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let removed = remove_exclude(&sample_excluded_music())
+            .await
+            .expect("missing exclude table should not error");
+
+        assert!(!removed);
+
+        reset_db();
+    });
 }
 
 #[test]
@@ -399,6 +566,7 @@ fn upsert_collection_round_trips_grouped_music() {
 
     run_async(async {
         ensure_db().await;
+        bootstrap_collection_write_schema().await;
 
         let collection = upsert_collection(&grouped_collection("https://example.com/grouped"))
             .await
@@ -426,6 +594,7 @@ fn get_collection_by_url_reads_legacy_record_ids_via_url_lookup() {
 
     run_async(async {
         ensure_db().await;
+        bootstrap_playlist_read_schema().await;
 
         let url = "https://example.com/legacy";
         let legacy_record =
@@ -444,21 +613,47 @@ fn get_collection_by_url_reads_legacy_record_ids_via_url_lookup() {
 }
 
 #[test]
-fn get_collection_by_url_errors_when_url_matches_multiple_records() {
+fn collection_unique_index_rejects_duplicate_urls_before_lookup_becomes_ambiguous() {
     let _guard = acquire_db_test_lock();
 
     run_async(async {
         ensure_db().await;
+        bootstrap_playlist_read_schema().await;
 
         let url = "https://example.com/ambiguous";
         let collection = sample_collection(url, Some(false));
         insert_collection_row("ambiguous-a", &collection).await;
-        insert_collection_row("ambiguous-b", &collection).await;
 
-        let error = get_collection_by_url(url)
+        let db = get_db().expect("global playlist repo database handle should exist");
+        let duplicate_error = db
+            .query("CREATE $record CONTENT $data RETURN NONE;")
+            .bind(("record", RecordId::new(Collection::table_name(), "ambiguous-b")))
+            .bind((
+                "data",
+                json!({
+                    "name": collection.name,
+                    "url": collection.url,
+                    "folder": collection.folder,
+                    "last_updated": collection.last_updated,
+                    "enable_updates": collection.enable_updates,
+                }),
+            ))
             .await
-            .expect_err("ambiguous url lookup should fail");
-        assert!(error.to_string().contains("multiple records"), "{error}");
+            .expect("duplicate insert should return a response")
+            .check()
+            .expect_err("duplicate collection insert should fail");
+        let loaded = get_collection_by_url(url)
+            .await
+            .expect("unique lookup should still succeed")
+            .expect("unique collection should still exist");
+
+        assert!(
+            duplicate_error
+                .to_string()
+                .contains("already contains"),
+            "{duplicate_error}"
+        );
+        assert_eq!(loaded.url, url);
 
         reset_db();
     });
@@ -470,6 +665,7 @@ fn upsert_collection_reuses_existing_legacy_record_id_and_removes_old_music() {
 
     run_async(async {
         ensure_db().await;
+        bootstrap_collection_write_schema().await;
 
         let url = "https://example.com/legacy-grouped";
         let legacy_collection = sample_collection(url, Some(false));
@@ -515,6 +711,7 @@ fn upsert_collection_reuses_music_records_via_fallback_lookup_without_explicit_i
 
     run_async(async {
         ensure_db().await;
+        bootstrap_collection_write_schema().await;
 
         let url = "https://example.com/fallback-music";
         let collection = grouped_collection(url);
@@ -538,11 +735,12 @@ fn upsert_collection_reuses_music_records_via_fallback_lookup_without_explicit_i
 }
 
 #[test]
-fn upsert_collection_deletes_music_only_after_all_collection_edges_are_gone() {
+fn upsert_collection_keeps_shared_music_until_all_collection_edges_are_gone() {
     let _guard = acquire_db_test_lock();
 
     run_async(async {
         ensure_db().await;
+        bootstrap_collection_write_schema().await;
 
         let first = collection_with_musics(
             "https://example.com/collection-a",
@@ -576,9 +774,9 @@ fn upsert_collection_deletes_music_only_after_all_collection_edges_are_gone() {
         let second_record = second_records.remove(0);
         let first_music_ids = load_collection_music_ids(&first_record).await;
         let second_music_ids = load_collection_music_ids(&second_record).await;
-        assert_ne!(
+        assert_eq!(
             first_music_ids, second_music_ids,
-            "collection-backed root groups should keep music records collection-scoped"
+            "shared music urls should resolve to the same persisted music record"
         );
         let first_music_record = first_music_ids[0].clone();
         let second_music_record = second_music_ids[0].clone();
@@ -593,8 +791,8 @@ fn upsert_collection_deletes_music_only_after_all_collection_edges_are_gone() {
         .expect("removing one collection edge should succeed");
 
         assert!(
-            Music::get_record(first_music_record.clone()).await.is_err(),
-            "collection-scoped music should be deleted after its collection edge is removed"
+            Music::get_record(first_music_record.clone()).await.is_ok(),
+            "shared music should stay alive while another collection still includes it"
         );
         assert_eq!(
             load_collection_music_ids(&second_record).await,
@@ -629,6 +827,7 @@ fn upsert_collection_never_deletes_non_music_records_from_corrupted_include_edge
 
     run_async(async {
         ensure_db().await;
+        bootstrap_collection_write_schema().await;
 
         let root_url = "https://example.com/root";
         let foreign_url = "https://example.com/foreign";
@@ -667,6 +866,7 @@ fn get_playlist_by_name_reads_related_collections_and_groups() {
 
     run_async(async {
         ensure_db().await;
+        bootstrap_playlist_read_schema().await;
 
         let playlist = sample_playlist("repo-playlist");
         let collection_record =
@@ -697,6 +897,7 @@ fn list_playlists_reads_hydrated_rows() {
 
     run_async(async {
         ensure_db().await;
+        bootstrap_playlist_read_schema().await;
 
         let first = sample_playlist("repo-playlist-a");
         let first_collection =
@@ -738,6 +939,53 @@ fn list_playlists_reads_hydrated_rows() {
 
         assert_playlist_matches(first_loaded, &first);
         assert_playlist_matches(second_loaded, &second);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn upsert_playlist_creates_new_rows_and_updates_existing_renames() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let original = sample_playlist("Original");
+        let created = upsert_playlist(&original, None)
+            .await
+            .expect("playlist create should succeed");
+        let loaded_created = get_playlist_by_name("Original")
+            .await
+            .expect("created playlist should load")
+            .expect("created playlist should exist");
+
+        assert_playlist_matches(&created, &original);
+        assert_playlist_matches(&loaded_created, &original);
+
+        let renamed = PlayList {
+            name: "Renamed".to_string(),
+            ..original.clone()
+        };
+        let updated = upsert_playlist(&renamed, Some("Original"))
+            .await
+            .expect("playlist update should succeed");
+        let loaded_updated = get_playlist_by_name("Renamed")
+            .await
+            .expect("renamed playlist should load")
+            .expect("renamed playlist should exist");
+        let missing_original = get_playlist_by_name("Original")
+            .await
+            .expect("original lookup should succeed");
+        let listed = list_playlists()
+            .await
+            .expect("playlist listing should succeed after rename");
+
+        assert_playlist_matches(&updated, &renamed);
+        assert_playlist_matches(&loaded_updated, &renamed);
+        assert!(missing_original.is_none());
+        assert_eq!(listed.len(), 1);
+        assert_playlist_matches(&listed[0], &renamed);
 
         reset_db();
     });

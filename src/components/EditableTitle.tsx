@@ -1,6 +1,13 @@
 import { cn } from "@/lib/utils";
-import { useLayoutEffect, useRef, type ComponentProps } from "react";
-import { motion, useAnimate } from "motion/react";
+import {
+  forwardRef,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+} from "react";
+import { motion } from "motion/react";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import {
   collectionTitleColorTransition,
@@ -28,13 +35,47 @@ export function resolveEditableTitleDisplayValue(
   return placeholder ?? "";
 }
 
+export function resolveEditableTitleLayoutId(args: {
+  layoutId?: string;
+  interactionDisabled: boolean;
+  isFocused: boolean;
+  isAutoWriting: boolean;
+}) {
+  if (
+    args.isFocused ||
+    args.isAutoWriting ||
+    !args.layoutId
+  ) {
+    return undefined;
+  }
+
+  return args.layoutId;
+}
+
+function wait(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function waitForNextFrame() {
+  return new Promise<void>((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
+export interface EditableTitleHandle {
+  commitResolvedValue(args: { value: string; animateTyping: boolean }): Promise<void>;
+  blur(): Promise<void>;
+}
+
 /**
  * The visible title layer keeps the exact display typography, while the
  * overlaid textarea preserves native text editing semantics. Keeping both
  * layers separate avoids fighting textarea rendering quirks just to reproduce
  * the title's visual treatment.
  */
-export function EditableTitle({
+export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>(function EditableTitle({
   value,
   onChange,
   placeholder,
@@ -45,45 +86,23 @@ export function EditableTitle({
   className,
   style,
   ...props
-}: EditableTitleProps) {
+}: EditableTitleProps, ref) {
   const displayValue = resolveEditableTitleDisplayValue(value, placeholder);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const autoWriteRunRef = useRef(0);
+  const [isFocused, setIsFocused] = useState(false);
+  const [isAutoWriting, setIsAutoWriting] = useState(false);
   const targetTone: CollectionTitleTone =
     value.length === 0 ? "muted" : "solid";
   const targetColor = useCollectionTitleColor(targetTone);
   const handoffColor = useCollectionTitleColor(handoffTone ?? targetTone);
-  const [scope, animate] = useAnimate<HTMLDivElement>();
-
-  useLayoutEffect(() => {
-    const node = scope.current;
-    if (!node) {
-      return;
-    }
-
-    if (!handoffTone || handoffColor === targetColor) {
-      node.style.color = targetColor;
-      return;
-    }
-
-    node.style.color = handoffColor;
-
-    let stopAnimation: (() => void) | undefined;
-    const frame = requestAnimationFrame(() => {
-      const controls = animate(
-        node,
-        { color: targetColor },
-        collectionTitleColorTransition,
-      );
-      stopAnimation = () => {
-        controls.stop();
-      };
-    });
-
-    return () => {
-      cancelAnimationFrame(frame);
-      stopAnimation?.();
-    };
-  }, [animate, handoffColor, handoffTone, scope, targetColor]);
+  const resolvedLayoutId = resolveEditableTitleLayoutId({
+    layoutId,
+    interactionDisabled,
+    isFocused,
+    isAutoWriting,
+  });
+  const hasColorHandoff = Boolean(handoffTone && handoffColor !== targetColor);
 
   useLayoutEffect(() => {
     if (!interactionDisabled) {
@@ -93,20 +112,70 @@ export function EditableTitle({
     inputRef.current?.blur();
   }, [interactionDisabled]);
 
+  useImperativeHandle(ref, () => ({
+    async commitResolvedValue(args) {
+      const node = inputRef.current;
+      const runId = autoWriteRunRef.current + 1;
+      autoWriteRunRef.current = runId;
+
+      if (!node) {
+        onChange(args.value);
+        return;
+      }
+
+      if (!args.animateTyping) {
+        onChange(args.value);
+        node.focus();
+        await waitForNextFrame();
+        node.blur();
+        await waitForNextFrame();
+        return;
+      }
+
+      setIsAutoWriting(true);
+      node.focus();
+      node.setSelectionRange(0, 0);
+      onChange("");
+      await waitForNextFrame();
+
+      for (let index = 0; index < args.value.length; index += 1) {
+        if (autoWriteRunRef.current !== runId) {
+          break;
+        }
+
+        onChange(args.value.slice(0, index + 1));
+        await wait(22);
+      }
+
+      node.blur();
+      await waitForNextFrame();
+      if (autoWriteRunRef.current === runId) {
+        setIsAutoWriting(false);
+      }
+    },
+    async blur() {
+      inputRef.current?.blur();
+      await waitForNextFrame();
+    },
+  }), [onChange]);
+
   return (
     <div {...props}>
       <motion.div
-        layoutId={layoutId}
+        layoutId={resolvedLayoutId}
         className={cn("relative w-fit max-w-full", className)}
         style={style}
       >
-        <div
+        <motion.div
           aria-hidden="true"
-          ref={scope}
           className="pointer-events-none whitespace-pre-wrap wrap-break-word"
+          initial={false}
+          animate={{ color: targetColor }}
+          transition={hasColorHandoff ? collectionTitleColorTransition : { duration: 0 }}
+          style={{ color: hasColorHandoff ? handoffColor : targetColor }}
         >
           {displayValue}
-        </div>
+        </motion.div>
         <textarea
           ref={(node) => {
             inputRef.current = node;
@@ -130,14 +199,18 @@ export function EditableTitle({
           aria-label="List title"
           rows={1}
           spellCheck={false}
-          readOnly={interactionDisabled}
-          tabIndex={interactionDisabled ? -1 : undefined}
+          readOnly={interactionDisabled || isAutoWriting}
+          tabIndex={interactionDisabled || isAutoWriting ? -1 : undefined}
           value={value}
           onChange={(event) => onChange(event.target.value)}
           onBlur={(event) => onChange(event.target.value.trim())}
+          onFocus={() => setIsFocused(true)}
+          onBlurCapture={() => setIsFocused(false)}
           className={cn(
             "absolute inset-0 block h-full w-full resize-none overflow-hidden bg-transparent",
-            interactionDisabled ? "pointer-events-none" : "pointer-events-auto",
+            interactionDisabled || isAutoWriting
+              ? "pointer-events-none"
+              : "pointer-events-auto",
             "whitespace-pre-wrap wrap-break-word text-transparent outline-none",
             "caret-[#090909] dark:caret-[#f6f6f6]",
           )}
@@ -150,4 +223,4 @@ export function EditableTitle({
       </motion.div>
     </div>
   );
-}
+});

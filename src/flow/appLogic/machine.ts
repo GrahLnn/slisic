@@ -10,6 +10,7 @@ import {
   playlistTitleLayoutId,
   removeDraftSidebarItem,
   resetContextWith,
+  upsertPlaylistIntoPlaylists,
   upsertCollectionIntoDraft,
   upsertCollectionIntoCollections,
 } from "./core";
@@ -25,6 +26,7 @@ function resolveSavePathFromLoadingError(error: unknown, fallback: string) {
 }
 
 const openPlaylist = payloads["playlist.open"];
+const playlistUpserted = payloads["playlist.upserted"];
 const draftNameChanged = payloads["draft.name.changed"];
 const savePathChanged = payloads["save_path.changed"];
 const collectionUpserted = payloads["collection.upserted"];
@@ -50,6 +52,16 @@ export const machine = src.createMachine({
           collections,
         };
       }),
+    },
+    [playlistUpserted.evt]: {
+      actions: assign(({ context, event }) => ({
+        hasPlayList: true,
+        playlists: upsertPlaylistIntoPlaylists(
+          context.playlists,
+          event.output.playlist,
+          event.output.previousName,
+        ),
+      })),
     },
     [draftCollectionUpserted.evt]: {
       actions: assign(({ context, event }) => {

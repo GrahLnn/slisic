@@ -11,14 +11,17 @@ import {
   action as appLogicAction,
   hook as appLogicHook,
 } from "@/src/flow/appLogic";
+import { action as playlistCommitAction } from "@/src/flow/playlistCommit";
 import {
   action as pasteDownloadAction,
   hook as pasteDownloadHook,
 } from "@/src/flow/pasteDownload";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import {
+  createPlayListFromDraft,
   createConfigSidebarItemRef,
   createConfigSidebarItems,
+  resolveDraftCommitTitle,
   type ConfigSidebarItemRef,
 } from "@/src/flow/appLogic/core";
 import { collectionTitleLayoutTransition } from "./collectionTitle";
@@ -27,7 +30,7 @@ import {
   type ArcTrackPushTransitionSource,
 } from "./ArcTrackList";
 import { CoverTool } from "./coverTool";
-import { EditableTitle } from "./EditableTitle";
+import { EditableTitle, type EditableTitleHandle } from "./EditableTitle";
 import {
   type ListConfigTitleSnapshot,
   resolveListConfigToolLabelAffordance,
@@ -285,14 +288,42 @@ function createGhostClone(sourceNode: HTMLDivElement) {
   };
 }
 
+function createBackRenderSnapshot(
+  snapshot: ListConfigRenderSnapshot,
+  title: string,
+): ListConfigRenderSnapshot {
+  const currentTitle = snapshot.viewModel.title;
+
+  return {
+    ...snapshot,
+    viewModel: {
+      ...snapshot.viewModel,
+      title: {
+        ...currentTitle,
+        value: title,
+        snapshot: currentTitle.layoutId
+          ? {
+              layoutId: currentTitle.layoutId,
+              value: title,
+              placeholder: currentTitle.placeholder,
+            }
+          : null,
+      },
+    },
+  };
+}
+
 export function ListConfig() {
   const isPresent = useIsPresent();
   const rootRef = useRef<HTMLDivElement>(null);
+  const editableTitleRef = useRef<EditableTitleHandle | null>(null);
   const {
     activeLayoutId,
     collections,
     draft,
     draftBaseline,
+    pendingPlaylistName,
+    playlists,
     savePath,
     titleToneHandoff,
   } = appLogicHook.useContext();
@@ -305,6 +336,7 @@ export function ListConfig() {
     null,
   );
   const [arcTrackHoverDismissSignal, setArcTrackHoverDismissSignal] = useState(0);
+  const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
   const ghostTransitionRef = useRef<ListConfigGhostTransition | null>(null);
   const ghostTargetNodeRegistryRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const libraryItems = createConfigSidebarItems(collections);
@@ -312,6 +344,7 @@ export function ListConfig() {
     activeLayoutId,
     draft,
     draftBaseline,
+    pendingPlaylistName,
     titleToneHandoff,
     isPresent,
     libraryItems,
@@ -477,6 +510,60 @@ export function ListConfig() {
     }
   }
 
+  async function handleBackAction() {
+    if (isBackNavigationPending) {
+      return;
+    }
+
+    setIsBackNavigationPending(true);
+
+    try {
+      if (!viewModel.hasDraftChanges || !draft) {
+        setRenderSnapshot(liveRenderSnapshot);
+        pasteDownloadAction.reset();
+        appLogicAction.back();
+        return;
+      }
+
+      const titleResolution = resolveDraftCommitTitle({
+        draft,
+        draftBaseline,
+        playlists,
+      });
+      const committedDraft = {
+        ...draft,
+        name: titleResolution.name,
+      };
+      const committedPlaylist = createPlayListFromDraft(committedDraft);
+
+      playlistCommitAction.commit({
+        playlist: committedPlaylist,
+        previousName: draft.mode === "edit" ? draftBaseline?.name ?? null : null,
+      });
+
+      await editableTitleRef.current?.commitResolvedValue({
+        value: titleResolution.name,
+        animateTyping: titleResolution.kind !== "keep",
+      });
+
+      appLogicAction.changeDraftName(titleResolution.name);
+      setRenderSnapshot(
+        createBackRenderSnapshot(
+          {
+            savePath: renderedSavePath,
+            viewModel,
+          },
+          committedPlaylist.name,
+        ),
+      );
+      pasteDownloadAction.reset();
+      appLogicAction.back();
+    } catch (error) {
+      console.error("Failed to complete the config back transition", error);
+      setIsBackNavigationPending(false);
+    }
+  }
+
   return (
     <div
       ref={rootRef}
@@ -490,12 +577,11 @@ export function ListConfig() {
           <button
             type="button"
             onClick={() => {
-              setRenderSnapshot(liveRenderSnapshot);
-              pasteDownloadAction.reset();
-              appLogicAction.back();
+              void handleBackAction();
             }}
             className={cn(
               "group relative isolate inline-flex w-fit cursor-pointer select-none py-2 pr-2",
+              isBackNavigationPending && "pointer-events-none",
               "before:absolute before:inset-y-0 before:-left-2 before:right-0 before:-z-10",
               "before:rounded-[25px] before:bg-transparent before:transition before:duration-300",
               "before:[corner-shape:squircle_squircle_squircle_squircle]",
@@ -506,6 +592,7 @@ export function ListConfig() {
           </button>
         </motion.div>
         <EditableTitle
+          ref={editableTitleRef}
           autoFocus={viewModel.title.autoFocus}
           className={cn("text-4xl font-bold", "w-fit")}
           handoffTone={viewModel.title.handoffTone}
@@ -522,7 +609,7 @@ export function ListConfig() {
           <ToolLabel
             className="mt-2"
             textClassName="text-sm trim-cap text-[#404040] dark:text-[#a3a3a3]"
-            text={savePath}
+            text={renderedSavePath}
             tool={
               <>
                 <CoverTool text="Change" onClick={handleChangeSavePath} />

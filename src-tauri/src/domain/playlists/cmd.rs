@@ -42,6 +42,17 @@ pub async fn get_playlist(name: String) -> Result<Option<PlayList>, String> {
 
 #[tauri::command]
 #[specta::specta]
+pub async fn upsert_playlist(
+    previous_name: Option<String>,
+    playlist: PlayList,
+) -> Result<PlayList, String> {
+    super::repo::upsert_playlist(&playlist, previous_name.as_deref())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn set_collection_updates(
     url: String,
     enabled: bool,

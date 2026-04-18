@@ -66,6 +66,7 @@ export const commands = {
 	collections: Collection[],
 	groups: Group[],
 } | null, string>(__TAURI_INVOKE("get_playlist", { name })),
+	upsertPlaylist: (previousName: string | null, playlist: PlayList) => typedError<PlayList, string>(__TAURI_INVOKE("upsert_playlist", { previousName, playlist })),
 	setCollectionUpdates: (url: string, enabled: boolean) => typedError<{
 	name: string,
 	url: string,

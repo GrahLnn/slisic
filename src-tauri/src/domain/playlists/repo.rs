@@ -1,12 +1,13 @@
 use super::model::{Collection, Exclude, Music, PlayList};
 use anyhow::{Result, bail};
-use appdb::Crud;
+use appdb::{Crud, Id, Store};
 use appdb::connection::get_db;
 use appdb::error::{DBError, classify_db_error};
 use appdb::graph;
 use appdb::model::meta::ModelMeta;
 use appdb::repository::Repo;
 use sha2::{Digest, Sha256};
+use serde::{Deserialize, Serialize};
 use surrealdb::types::{RecordId, Table};
 use surrealdb_types::SurrealValue;
 
@@ -31,22 +32,34 @@ pub async fn list_playlists() -> Result<Vec<PlayList>> {
 }
 
 pub async fn add_exclude(music: Music) -> Result<Exclude> {
-    Exclude::save(Exclude { music }).await
+    let record = exclude_record_id(&music);
+    let saved = Repo::<StoredExclude>::upsert_at(
+        RecordId::new(StoredExclude::table_name(), record.to_string()),
+        StoredExclude { id: record, music },
+    )
+    .await?;
+
+    Ok(saved.into_public())
 }
 
 pub async fn remove_exclude(music: &Music) -> Result<bool> {
-    let exclude = Exclude {
-        music: music.clone(),
-    };
-    let record = match Repo::<Exclude>::find_unique_id_for(&exclude).await {
-        Ok(record) => record,
+    let record = RecordId::new(
+        StoredExclude::table_name(),
+        exclude_record_id(music).to_string(),
+    );
+
+    let exists = match Repo::<StoredExclude>::exists_record(record.clone()).await {
+        Ok(exists) => exists,
         Err(error) => match classify_db_error(&error) {
-            DBError::NotFound | DBError::MissingTable(_) => return Ok(false),
+            DBError::MissingTable(_) => return Ok(false),
             other => return Err(other.into()),
         },
     };
+    if !exists {
+        return Ok(false);
+    }
 
-    Repo::<Exclude>::delete_record(record).await?;
+    Repo::<StoredExclude>::delete_record(record).await?;
     Ok(true)
 }
 
@@ -76,6 +89,21 @@ pub async fn get_playlist_by_name(name: &str) -> Result<Option<PlayList>> {
     };
 
     Ok(Some(PlayList::get_record(record).await?))
+}
+
+pub async fn upsert_playlist(playlist: &PlayList, previous_name: Option<&str>) -> Result<PlayList> {
+    let existing_record = match previous_name {
+        Some(name) => find_unique_record_id_by_string_field::<PlayList>("name", name).await?,
+        None => None,
+    };
+    let record = existing_record
+        .clone()
+        .unwrap_or_else(|| playlist_record_id(&playlist.name));
+
+    match existing_record {
+        Some(record) => Ok(Repo::<PlayList>::update_at(record, playlist.clone()).await?),
+        None => Ok(Repo::<PlayList>::create_at(record, playlist.clone()).await?),
+    }
 }
 
 pub async fn set_collection_updates(url: &str, enabled: bool) -> Result<Option<Collection>> {
@@ -222,10 +250,32 @@ fn collection_record_id(url: &str) -> RecordId {
     RecordId::new(Collection::table_name(), stable_record_key(url))
 }
 
+fn playlist_record_id(name: &str) -> RecordId {
+    RecordId::new(PlayList::table_name(), stable_record_key(name))
+}
+
+fn exclude_record_id(music: &Music) -> Id {
+    Id::from(stable_record_key(&music.url))
+}
+
 fn stable_record_key(seed: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(seed.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Store)]
+#[table_as(Exclude)]
+struct StoredExclude {
+    id: Id,
+    #[foreign]
+    music: Music,
+}
+
+impl StoredExclude {
+    fn into_public(self) -> Exclude {
+        Exclude { music: self.music }
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, surrealdb_types::SurrealValue)]
