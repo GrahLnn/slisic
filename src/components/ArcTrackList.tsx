@@ -2,6 +2,7 @@ import {
   memo,
   startTransition,
   useCallback,
+  useLayoutEffect,
   useRef,
   useState,
   type Dispatch,
@@ -9,6 +10,7 @@ import {
   type SetStateAction,
 } from "react";
 import { cn } from "@/lib/utils";
+import { recordUiTrace, registerUiTraceNode, sampleUiTraceFrames } from "@/src/debug/uiTrace";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { motion, type MotionProps } from "motion/react";
 import type { ConfigSidebarItem } from "@/src/flow/appLogic/core";
@@ -26,11 +28,19 @@ const ARC_PATH_STEPS = 96;
 const arcPathCache = new Map<number, string>();
 const arcLookupCache = new Map<number, ArcSample[]>();
 
+export type ArcTrackPushTransitionSource = {
+  item: ConfigSidebarItem;
+  layoutId: string;
+  sourceNode: HTMLDivElement | null;
+};
+
 type ArcTrackListProps = {
   items: readonly ConfigSidebarItem[];
-  onPushItem?: (item: ConfigSidebarItem) => void;
+  onPushItem?: (source: ArcTrackPushTransitionSource) => void;
   motionProps?: MotionProps;
   interactionDisabled?: boolean;
+  dismissHoverSignal?: number;
+  suppressedLayoutIds?: ReadonlySet<string>;
 };
 
 type ArcSample = {
@@ -66,8 +76,11 @@ type ArcTrackItemProps = {
   itemRegistryRef: RefObject<ArcTrackItemNodeRegistry>;
   scrollElementRef: RefObject<HTMLDivElement | null>;
   scrollOffsetRef: RefObject<number>;
-  onPushItem?: (item: ConfigSidebarItem) => void;
+  onPushItem?: (source: ArcTrackPushTransitionSource) => void;
   start: number;
+  interactionDisabled?: boolean;
+  dismissHoverSignal?: number;
+  suppressedLayoutIds?: ReadonlySet<string>;
 };
 
 export function resolveArcTrackViewportScrollTop(args: {
@@ -429,10 +442,22 @@ const ArcTrackItem = memo(function ArcTrackItem({
   scrollOffsetRef,
   onPushItem,
   start,
+  interactionDisabled = false,
+  dismissHoverSignal,
+  suppressedLayoutIds,
 }: ArcTrackItemProps) {
+  const itemNodeRef = useRef<HTMLLIElement | null>(null);
+  const toolLabelRootRef = useRef<HTMLDivElement | null>(null);
+  const layoutId = createListConfigToolLabelLayoutId({
+    kind: item.kind,
+    url: item.url,
+  });
+  const shouldSuppressLayoutId = suppressedLayoutIds?.has(layoutId) ?? false;
+
   return (
     <li
       ref={(node) => {
+        itemNodeRef.current = node;
         registerArcTrackItemNode({
           itemKey,
           node,
@@ -446,12 +471,14 @@ const ArcTrackItem = memo(function ArcTrackItem({
     >
       <div className="flex items-center justify-end gap-3">
         <ToolLabel
+          dismissHoverSignal={dismissHoverSignal}
+          interactionDisabled={interactionDisabled}
+          onRootNodeChange={(node) => {
+            toolLabelRootRef.current = node;
+          }}
           restClassName="origin-right will-change-transform"
           restStyle={{ transform: "rotate(var(--arc-item-angle, 0deg))" }}
-          layoutId={createListConfigToolLabelLayoutId({
-            kind: item.kind,
-            url: item.url,
-          })}
+          layoutId={shouldSuppressLayoutId ? undefined : layoutId}
           textClassName="text-[12px] text-[#404040] dark:text-[#a3a3a3]"
           toolAnchor="right"
           text={item.name}
@@ -463,8 +490,26 @@ const ArcTrackItem = memo(function ArcTrackItem({
                 <CoverTool
                   text="Push"
                   onClick={() => {
+                    recordUiTrace("arc-track/item", "push-click", {
+                      dismissHoverSignal,
+                      interactionDisabled,
+                      item: {
+                        kind: item.kind,
+                        name: item.name,
+                        url: item.url,
+                      },
+                      layoutId,
+                    });
+                    sampleUiTraceFrames({
+                      label: `push:${layoutId}`,
+                      scope: "arc-track/item",
+                    });
                     startTransition(() => {
-                      onPushItem?.(item);
+                      onPushItem?.({
+                        item,
+                        layoutId,
+                        sourceNode: toolLabelRootRef.current,
+                      });
                     });
                   }}
                 />
@@ -489,7 +534,16 @@ function ArcTrackListBody({
   items,
   onPushItem,
   interactionDisabled = false,
-}: Pick<ArcTrackListProps, "items" | "onPushItem" | "interactionDisabled">) {
+  dismissHoverSignal,
+  suppressedLayoutIds,
+}: Pick<
+  ArcTrackListProps,
+  | "items"
+  | "onPushItem"
+  | "interactionDisabled"
+  | "dismissHoverSignal"
+  | "suppressedLayoutIds"
+>) {
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
   const itemRegistryRef = useRef<ArcTrackItemNodeRegistry>(new Map());
   const positionFrameRef = useRef<number | null>(null);
@@ -541,6 +595,27 @@ function ArcTrackListBody({
   const arcTrackHeight = rowVirtualizer.getTotalSize();
   const virtualItems = rowVirtualizer.getVirtualItems();
 
+  useLayoutEffect(() => {
+    registerUiTraceNode({
+      scope: "arc-track/body",
+      key: "body",
+      node: scrollElementRef.current,
+      data: {
+        dismissHoverSignal,
+        interactionDisabled,
+        itemCount: items.length,
+      },
+    });
+
+    return () => {
+      registerUiTraceNode({
+        scope: "arc-track/body",
+        key: "body",
+        node: null,
+      });
+    };
+  }, [dismissHoverSignal, interactionDisabled, items.length]);
+
   return (
     <div className="relative h-screen w-72">
       <svg
@@ -588,6 +663,9 @@ function ArcTrackListBody({
                     scrollOffsetRef={scrollOffsetRef}
                     onPushItem={onPushItem}
                     start={virtualItem.start}
+                    interactionDisabled={interactionDisabled}
+                    dismissHoverSignal={dismissHoverSignal}
+                    suppressedLayoutIds={suppressedLayoutIds}
                   />
                 );
               })}
@@ -604,6 +682,8 @@ export function ArcTrackList({
   motionProps,
   onPushItem,
   interactionDisabled = false,
+  dismissHoverSignal,
+  suppressedLayoutIds,
 }: ArcTrackListProps) {
   return (
     <motion.div
@@ -615,6 +695,8 @@ export function ArcTrackList({
         items={items}
         onPushItem={onPushItem}
         interactionDisabled={interactionDisabled}
+        dismissHoverSignal={dismissHoverSignal}
+        suppressedLayoutIds={suppressedLayoutIds}
       />
     </motion.div>
   );
