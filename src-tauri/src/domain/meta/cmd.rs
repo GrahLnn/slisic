@@ -29,6 +29,6 @@ pub async fn save_meta_info(app: AppHandle, meta: MetaInfo) -> Result<MetaInfo, 
         Some(meta),
         default_save_path(&app)?,
     ))
-        .await
-        .map_err(|error| error.to_string())
+    .await
+    .map_err(|error| error.to_string())
 }

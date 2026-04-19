@@ -2,7 +2,9 @@ use super::model::{DownloadResourceProbe, DownloadTask, EnqueuedCollectionDownlo
 
 #[tauri::command]
 #[specta::specta]
-pub async fn enqueue_collection_download(url: String) -> Result<EnqueuedCollectionDownload, String> {
+pub async fn enqueue_collection_download(
+    url: String,
+) -> Result<EnqueuedCollectionDownload, String> {
     super::service::enqueue_collection_download(url)
         .await
         .map_err(|error| error.to_string())

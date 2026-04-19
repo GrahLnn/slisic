@@ -42,6 +42,14 @@ pub async fn get_playlist(name: String) -> Result<Option<PlayList>, String> {
 
 #[tauri::command]
 #[specta::specta]
+pub async fn delete_playlist(name: String) -> Result<bool, String> {
+    super::repo::delete_playlist_by_name(&name)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn upsert_playlist(
     previous_name: Option<String>,
     playlist: PlayList,

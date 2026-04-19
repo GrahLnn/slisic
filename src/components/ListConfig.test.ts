@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { me } from "@grahlnn/fn";
 import { createConfigSidebarItemRef, type ConfigDraft } from "@/src/flow/appLogic/core";
+import { hasConfigDraftChanges } from "@/src/flow/appLogic/titleShare";
 import type { ConfigCandidateItem } from "@/src/flow/pasteDownload/core";
 import { LIST_CONFIG_EMPTY_STATE_TEXT } from "./ListConfig";
 import {
@@ -15,7 +16,6 @@ import {
   resolveListConfigInteractionFlags,
   resolveListConfigCollectionUpdatesToolText,
   resolveListConfigSavePath,
-  resolveListConfigHasDraftChanges,
   resolveListConfigToolLabelAffordance,
   resolveListConfigToolLabelItems,
   resolveListConfigToolLabelTextClassName,
@@ -244,9 +244,9 @@ describe("ListConfig title view model", () => {
   });
 
   test("marks the draft as changed only when it differs from the session baseline", () => {
-    assert.equal(resolveListConfigHasDraftChanges(createDraft, createDraft), false);
+    assert.equal(hasConfigDraftChanges(createDraft, createDraft), false);
     assert.equal(
-      resolveListConfigHasDraftChanges(
+      hasConfigDraftChanges(
         {
           ...createDraft,
           name: "Changed",
@@ -255,7 +255,7 @@ describe("ListConfig title view model", () => {
       ),
       true,
     );
-    assert.equal(resolveListConfigHasDraftChanges(null, createDraft), false);
+    assert.equal(hasConfigDraftChanges(null, createDraft), false);
   });
 
   test("creates playlist and candidate tool items with distinct kinds", () => {

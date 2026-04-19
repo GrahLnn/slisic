@@ -1,13 +1,13 @@
 use super::model::{Collection, Exclude, Music, PlayList};
 use anyhow::{Result, bail};
-use appdb::{Crud, Id, Store};
 use appdb::connection::get_db;
 use appdb::error::{DBError, classify_db_error};
 use appdb::graph;
 use appdb::model::meta::ModelMeta;
 use appdb::repository::Repo;
-use sha2::{Digest, Sha256};
+use appdb::{Crud, Id, Store};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use surrealdb::types::{RecordId, Table};
 use surrealdb_types::SurrealValue;
 
@@ -89,6 +89,16 @@ pub async fn get_playlist_by_name(name: &str) -> Result<Option<PlayList>> {
     };
 
     Ok(Some(PlayList::get_record(record).await?))
+}
+
+pub async fn delete_playlist_by_name(name: &str) -> Result<bool> {
+    let Some(record) = find_unique_record_id_by_string_field::<PlayList>("name", name).await?
+    else {
+        return Ok(false);
+    };
+
+    Repo::<PlayList>::delete_record(record).await?;
+    Ok(true)
 }
 
 pub async fn upsert_playlist(playlist: &PlayList, previous_name: Option<&str>) -> Result<PlayList> {

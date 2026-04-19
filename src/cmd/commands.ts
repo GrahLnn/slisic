@@ -66,6 +66,7 @@ export const commands = {
 	collections: Collection[],
 	groups: Group[],
 } | null, string>(__TAURI_INVOKE("get_playlist", { name })),
+	deletePlaylist: (name: string) => typedError<boolean, string>(__TAURI_INVOKE("delete_playlist", { name })),
 	upsertPlaylist: (previousName: string | null, playlist: PlayList) => typedError<PlayList, string>(__TAURI_INVOKE("upsert_playlist", { previousName, playlist })),
 	setCollectionUpdates: (url: string, enabled: boolean) => typedError<{
 	name: string,
@@ -77,6 +78,7 @@ export const commands = {
 } | null, string>(__TAURI_INVOKE("set_collection_updates", { url, enabled })),
 	addExclude: (music: Music) => typedError<Exclude, string>(__TAURI_INVOKE("add_exclude", { music })),
 	removeExclude: (music: Music) => typedError<boolean, string>(__TAURI_INVOKE("remove_exclude", { music })),
+	playPlaylist: (name: string) => typedError<PlayPlaylistSession, string>(__TAURI_INVOKE("play_playlist", { name })),
 	enqueueCollectionDownload: (url: string) => typedError<EnqueuedCollectionDownload, string>(__TAURI_INVOKE("enqueue_collection_download", { url })),
 	probeDownloadResource: (url: string) => typedError<DownloadResourceProbe, string>(__TAURI_INVOKE("probe_download_resource", { url })),
 	resumeDownloadTask: (taskId: string) => typedError<DownloadTask, string>(__TAURI_INVOKE("resume_download_task", { taskId })),
@@ -88,6 +90,8 @@ export const commands = {
 export const events = {
 	//@type {ReturnType<typeof makeEvent<FullScreenEvent>>}
 	fullScreenEvent: makeEvent<FullScreenEvent>("full-screen-event"),
+	//@type {ReturnType<typeof makeEvent<NowPlayingTrackChangedEvent>>}
+	nowPlayingTrackChangedEvent: makeEvent<NowPlayingTrackChangedEvent>("now-playing-track-changed-event"),
 };
 
 /* Types */export type BunSidecarOutput = {
@@ -214,10 +218,23 @@ export type Music = {
 	end: number,
 };
 
+export type NowPlayingTrackChangedEvent = {
+	playlist_name: string,
+	music_name: string,
+	music_url: string,
+	start: number,
+	end: number,
+};
+
 export type PlayList = {
 	name: string,
 	collections: Collection[],
 	groups: Group[],
+};
+
+export type PlayPlaylistSession = {
+	playlist_name: string,
+	track_count: number,
 };
 
 export type WindowKindInfo = {

@@ -1,6 +1,11 @@
 import { assign } from "xstate";
 import { sileo } from "sileo";
-import { playlistUpserted, send as sendAppLogic } from "../appLogic/runtime";
+import { recordTitleShareTrace } from "@/src/debug/titleShareTrace";
+import {
+  playlistPreviewChanged,
+  playlistUpserted,
+  send as sendAppLogic,
+} from "../appLogic/runtime";
 import {
   activateNextCommit,
   clearActiveCommit,
@@ -8,22 +13,55 @@ import {
   enqueueCommit,
   hasPendingCommit,
   toErrorMessage,
+  type PlaylistCommitRequest,
 } from "./core";
 import { invoker, payloads, ss } from "./events";
 import { src } from "./src";
 
 const commitRequested = payloads["playlist.commit.requested"];
 
+function resolveQueuedPreview(context: {
+  queue: PlaylistCommitRequest[];
+}) {
+  const nextRequest = context.queue[0];
+
+  return nextRequest
+    ? {
+        playlist: nextRequest.playlist,
+        previousName: nextRequest.previousName,
+      }
+    : null;
+}
+
 export const machine = src.createMachine({
   initial: ss.mainx.State.idle,
   context: createInitialContext(),
   on: {
     [commitRequested.evt]: {
-      actions: assign(({ context, event }) => enqueueCommit(context, event.output)),
+      actions: [
+        ({ context, event }) => {
+          recordTitleShareTrace("playlist-commit:requested", {
+            queuedBefore: context.queue.map((request) => ({
+              name: request.playlist.name,
+              previousName: request.previousName,
+            })),
+            request: {
+              name: event.output.playlist.name,
+              previousName: event.output.previousName,
+            },
+          });
+        },
+        assign(({ context, event }) => enqueueCommit(context, event.output)),
+      ],
     },
     reset: {
       target: `.${ss.mainx.State.idle}`,
-      actions: assign(() => createInitialContext()),
+      actions: [
+        () => {
+          sendAppLogic(playlistPreviewChanged.load(null));
+        },
+        assign(() => createInitialContext()),
+      ],
     },
   },
   states: {
@@ -32,7 +70,21 @@ export const machine = src.createMachine({
         {
           guard: ({ context }) => hasPendingCommit(context),
           target: ss.mainx.State.submitting,
-          actions: assign(({ context }) => activateNextCommit(context)),
+          actions: [
+            ({ context }) => {
+              recordTitleShareTrace("playlist-commit:submitting", {
+                queue: context.queue.map((request) => ({
+                  name: request.playlist.name,
+                  previousName: request.previousName,
+                })),
+                preview: resolveQueuedPreview(context),
+              });
+              sendAppLogic(
+                playlistPreviewChanged.load(resolveQueuedPreview(context)),
+              );
+            },
+            assign(({ context }) => activateNextCommit(context)),
+          ],
         },
       ],
     },
@@ -50,10 +102,29 @@ export const machine = src.createMachine({
         onDone: {
           target: ss.mainx.State.idle,
           actions: [
-            assign(({ context }) => clearActiveCommit(context)),
-            ({ event }) => {
+            ({ context, event }) => {
+              recordTitleShareTrace("playlist-commit:succeeded", {
+                activeRequest: context.activeRequest
+                  ? {
+                      name: context.activeRequest.playlist.name,
+                      previousName: context.activeRequest.previousName,
+                    }
+                  : null,
+                queue: context.queue.map((request) => ({
+                  name: request.playlist.name,
+                  previousName: request.previousName,
+                })),
+                persisted: {
+                  name: event.output.playlist.name,
+                  previousName: event.output.previousName,
+                },
+              });
               sendAppLogic(playlistUpserted.load(event.output));
+              sendAppLogic(
+                playlistPreviewChanged.load(resolveQueuedPreview(context)),
+              );
             },
+            assign(({ context }) => clearActiveCommit(context)),
           ],
         },
         onError: {
@@ -63,6 +134,19 @@ export const machine = src.createMachine({
               const title = context.activeRequest?.playlist.name || "PlayList";
               const description = toErrorMessage(event.error);
 
+              recordTitleShareTrace("playlist-commit:failed", {
+                activeRequest: context.activeRequest
+                  ? {
+                      name: context.activeRequest.playlist.name,
+                      previousName: context.activeRequest.previousName,
+                    }
+                  : null,
+                queue: context.queue.map((request) => ({
+                  name: request.playlist.name,
+                  previousName: request.previousName,
+                })),
+                description,
+              });
               console.error("Failed to commit playlist draft", {
                 title,
                 description,
@@ -71,6 +155,9 @@ export const machine = src.createMachine({
                 title: "Failed to save playlist",
                 description: `${title}: ${description}`,
               });
+              sendAppLogic(
+                playlistPreviewChanged.load(resolveQueuedPreview(context)),
+              );
             },
             assign(({ context, event }) =>
               clearActiveCommit(context, toErrorMessage(event.error)),

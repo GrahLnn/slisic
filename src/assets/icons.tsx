@@ -181,6 +181,40 @@ export const icons = {
       </motion.svg>
     );
   },
+  trashXmark({ size, color, className, ...props }: IconProps) {
+    return (
+      <motion.svg
+        xmlns="http://www.w3.org/2000/svg"
+        width={size || 18}
+        height={size || 18}
+        viewBox="0 0 18 18"
+        className={className}
+        {...props}
+      >
+        <title>trash-xmark</title>
+        <g
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.5"
+          stroke={color || "currentColor"}
+        >
+          <path
+            opacity="0.3"
+            d="M13.605 4.75L13.099 14.35C13.043 15.4201 12.165 16.25 11.102 16.25H6.89704C5.83304 16.25 4.95604 15.42 4.90004 14.35L4.39404 4.75"
+            fill={color || "currentColor"}
+            data-stroke="none"
+            stroke="none"
+          />
+          <path d="M13.8557 4.75L13.35 14.35C13.294 15.4201 12.416 16.25 11.353 16.25H6.64796C5.58396 16.25 4.70696 15.42 4.65096 14.35L4.14526 4.75" />
+          <path d="M7.23206 8.72998L10.7681 12.27" />
+          <path d="M10.7681 8.72998L7.23206 12.27" />
+          <path d="M2.75 4.75H15.25" />
+          <path d="M6.75 4.75V2.75C6.75 2.2 7.198 1.75 7.75 1.75H10.25C10.802 1.75 11.25 2.2 11.25 2.75V4.75" />
+        </g>
+      </motion.svg>
+    );
+  },
   /**
    *
    * @preview ![img](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOCIgaGVpZ2h0PSIxOCIgdmlld0JveD0iMCAwIDE4IDE4Ij48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJ3aGl0ZSIvPjx0aXRsZT5taW51czwvdGl0bGU+PGcgZmlsbD0iIzIxMjEyMSI+PHBhdGggZD0iTTE0Ljc1MDEgOS43NUgzLjI1MDEyQzIuODM2MDIgOS43NSAyLjUwMDEyIDkuNDE0MSAyLjUwMDEyIDlDMi41MDAxMiA4LjU4NTkgMi44MzYwMiA4LjI1IDMuMjUwMTIgOC4yNUgxNC43NTAxQzE1LjE2NDIgOC4yNSAxNS41MDAxIDguNTg1OSAxNS41MDAxIDlDMTUuNTAwMSA5LjQxNDEgMTUuMTY0MiA5Ljc1IDE0Ljc1MDEgOS43NVoiPjwvcGF0aD48L2c+PC9zdmc+)

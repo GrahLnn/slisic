@@ -1,115 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
-  resolvePlayListPageCommittedLayoutId,
-  resolvePlayListPageTransitionViewModel,
-  shouldSuppressPlayListPageItemFade,
-} from "./PlayListPage.view-model";
-import {
   resolvePlayListPageItemFadeProps,
+  shouldEnablePlayListPageTitleShare,
   shouldCommitPlayListPageItem,
+  shouldRenderPlayListPageContent,
 } from "./PlayListPage";
 
-describe("PlayListPage transition view model", () => {
-  test("treats config-entering states as an outgoing source transition only", () => {
-    const transition = resolvePlayListPageTransitionViewModel({
-      activeLayoutId: "playlist-title:PlayList 1",
-      titleToneHandoff: {
-        layoutId: "playlist-title:PlayList 1",
-        tone: "solid",
-      },
-    });
-
-    assert.deepEqual(transition, {
-      outgoingSourceLayoutId: "playlist-title:PlayList 1",
-      returnTargetLayoutId: null,
-    });
-    assert.equal(
-      shouldSuppressPlayListPageItemFade(
-        "playlist-title:PlayList 1",
-        transition,
-      ),
-      true,
-    );
-    assert.equal(
-      shouldSuppressPlayListPageItemFade("collection-title:create", transition),
-      false,
-    );
-  });
-
-  test("treats ready state handoff as a returning target only", () => {
-    const transition = resolvePlayListPageTransitionViewModel({
-      activeLayoutId: null,
-      titleToneHandoff: {
-        layoutId: "playlist-title:PlayList 1",
-        tone: "solid",
-      },
-    });
-
-    assert.deepEqual(transition, {
-      outgoingSourceLayoutId: null,
-      returnTargetLayoutId: "playlist-title:PlayList 1",
-    });
-    assert.equal(
-      shouldSuppressPlayListPageItemFade(
-        "playlist-title:PlayList 1",
-        transition,
-      ),
-      true,
-    );
-    assert.equal(
-      shouldSuppressPlayListPageItemFade("collection-title:create", transition),
-      false,
-    );
-  });
-
-  test("keeps all playlist rows share-ready during config entry", () => {
-    const transition = resolvePlayListPageTransitionViewModel({
-      activeLayoutId: "collection-title:create",
-      titleToneHandoff: null,
-    });
-
-    assert.equal(
-      shouldSuppressPlayListPageItemFade("collection-title:create", transition),
-      true,
-    );
-    assert.equal(
-      shouldSuppressPlayListPageItemFade("playlist-title:PlayList 1", transition),
-      false,
-    );
-  });
-
-  test("keeps every item share-ready when there is no page transition", () => {
-    const transition = resolvePlayListPageTransitionViewModel({
-      activeLayoutId: null,
-      titleToneHandoff: null,
-    });
-
-    assert.equal(
-      shouldSuppressPlayListPageItemFade("playlist-title:PlayList 1", transition),
-      false,
-    );
-    assert.equal(
-      shouldSuppressPlayListPageItemFade("collection-title:create", transition),
-      false,
-    );
-  });
-
-  test("keeps other playlist items share-ready while returning from config", () => {
-    const transition = resolvePlayListPageTransitionViewModel({
-      activeLayoutId: null,
-      titleToneHandoff: {
-        layoutId: "playlist-title:PlayList 1",
-        tone: "solid",
-      },
-    });
-
-    assert.equal(
-      shouldSuppressPlayListPageItemFade("playlist-title:PlayList 2", transition),
-      false,
-    );
-  });
-
+describe("PlayListPage", () => {
   test("keeps a stable fade host while suppressing opacity changes for shared items", () => {
     assert.deepEqual(
       resolvePlayListPageItemFadeProps({
@@ -162,6 +60,53 @@ describe("PlayListPage transition view model", () => {
       shouldCommitPlayListPageItem({
         button: 2,
         gesture: "secondary-only",
+      }),
+      true,
+    );
+  });
+
+  test("enables title share only after the playlist page is ready to hand off titles", () => {
+    assert.equal(shouldEnablePlayListPageTitleShare("idle"), false);
+    assert.equal(shouldEnablePlayListPageTitleShare("loading"), false);
+    assert.equal(shouldEnablePlayListPageTitleShare("ready"), true);
+    assert.equal(shouldEnablePlayListPageTitleShare("play"), true);
+    assert.equal(shouldEnablePlayListPageTitleShare("config"), false);
+    assert.equal(shouldEnablePlayListPageTitleShare("configLoading"), false);
+    assert.equal(
+      shouldEnablePlayListPageTitleShare("configUpdatingCollectionUpdates"),
+      false,
+    );
+    assert.equal(shouldEnablePlayListPageTitleShare("error"), false);
+  });
+
+  test("hides playlist content before bootstrap resolves but keeps real page snapshots renderable", () => {
+    assert.equal(
+      shouldRenderPlayListPageContent({
+        hasPlayList: null,
+        visiblePlaylistCount: 0,
+        hasPendingPreview: false,
+        hasActiveLayoutId: false,
+        hasTitleToneHandoff: false,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldRenderPlayListPageContent({
+        hasPlayList: false,
+        visiblePlaylistCount: 0,
+        hasPendingPreview: false,
+        hasActiveLayoutId: false,
+        hasTitleToneHandoff: false,
+      }),
+      true,
+    );
+    assert.equal(
+      shouldRenderPlayListPageContent({
+        hasPlayList: null,
+        visiblePlaylistCount: 0,
+        hasPendingPreview: false,
+        hasActiveLayoutId: true,
+        hasTitleToneHandoff: false,
       }),
       true,
     );

@@ -14,10 +14,6 @@ import {
   collectionTitleColorTransition,
   useCollectionTitleColor,
 } from "./collectionTitle";
-import {
-  captureTitleShareFrames,
-  recordTitleShareNodeTrace,
-} from "@/src/debug/titleShareTrace";
 
 type EditableTitleProps = {
   value: string;
@@ -122,42 +118,6 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
     inputRef.current?.blur();
   }, [interactionDisabled]);
 
-  useLayoutEffect(() => {
-    const node = titleRootRef.current;
-
-    if (!node || !layoutId) {
-      return;
-    }
-
-    recordTitleShareNodeTrace("config-title:layout", node, {
-      layoutId,
-      resolvedLayoutId: resolvedLayoutId ?? null,
-      displayValue,
-      placeholder: placeholder ?? null,
-      interactionDisabled,
-      isFocused,
-      isAutoWriting,
-      handoffTone: handoffTone ?? null,
-    });
-    captureTitleShareFrames(`config-title:${layoutId}`, {
-      frames: 18,
-      payload: {
-        layoutId,
-        resolvedLayoutId: resolvedLayoutId ?? null,
-        displayValue,
-      },
-    });
-  }, [
-    displayValue,
-    handoffTone,
-    interactionDisabled,
-    isAutoWriting,
-    isFocused,
-    layoutId,
-    placeholder,
-    resolvedLayoutId,
-  ]);
-
   useImperativeHandle(ref, () => ({
     async commitResolvedValue(args) {
       const node = inputRef.current;
@@ -210,9 +170,10 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
       <motion.div
         key={layoutHostKey}
         ref={titleRootRef}
-        data-title-layout-id={resolvedLayoutId ?? layoutId}
-        data-title-role="config-title"
         layoutId={resolvedLayoutId}
+        data-title-layout-id={resolvedLayoutId}
+        data-title-role="config-title"
+        data-title-text={displayValue}
         className={cn("relative w-fit max-w-full", className)}
         style={style}
       >

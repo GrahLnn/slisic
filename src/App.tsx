@@ -38,7 +38,6 @@ function WindowMainArea({ children }: PropsWithChildren) {
   return (
     <motion.main
       layoutRoot
-      data-title-trace-root="window-main-area"
       className={cn(
         "fixed top-0 left-0 h-screen w-full overflow-hidden",
         "flex-1 hide-scrollbar",
@@ -55,13 +54,11 @@ function PageViewport({
   pageState,
   scrollKey,
   scrollPositionsRef,
-  traceRoot,
 }: PropsWithChildren<{
   pageKey: string;
   pageState: string;
   scrollKey: PageScrollKey;
   scrollPositionsRef: { current: Record<PageScrollKey, number> };
-  traceRoot: string;
 }>) {
   const viewportRef = useRef<HTMLElement | null>(null);
 
@@ -84,9 +81,9 @@ function PageViewport({
         });
       }}
       layoutScroll
-      data-title-trace-root={traceRoot}
-      data-title-trace-scroll-root={traceRoot}
       data-page-state={pageState}
+      data-title-trace-root={pageState}
+      data-title-trace-scroll-root={scrollKey}
       className={cn(
         "absolute inset-0 overflow-y-auto overscroll-y-contain pt-8",
         "hide-scrollbar",
@@ -138,7 +135,6 @@ function MainWindowApp() {
               pageState="config"
               scrollKey="config"
               scrollPositionsRef={scrollPositionsRef}
-              traceRoot="app-page-config"
             >
               <ListConfig />
             </PageViewport>
@@ -150,7 +146,6 @@ function MainWindowApp() {
               pageState="config-loading"
               scrollKey="config"
               scrollPositionsRef={scrollPositionsRef}
-              traceRoot="app-page-config-loading"
             >
               <ListConfig />
             </PageViewport>
@@ -162,7 +157,6 @@ function MainWindowApp() {
               pageState="config-updating"
               scrollKey="config"
               scrollPositionsRef={scrollPositionsRef}
-              traceRoot="app-page-config-updating"
             >
               <ListConfig />
             </PageViewport>
@@ -174,7 +168,6 @@ function MainWindowApp() {
               pageState="idle"
               scrollKey="list"
               scrollPositionsRef={scrollPositionsRef}
-              traceRoot="app-page-list-idle"
             >
               <PlayListPage />
             </PageViewport>
@@ -186,7 +179,6 @@ function MainWindowApp() {
               pageState="loading"
               scrollKey="list"
               scrollPositionsRef={scrollPositionsRef}
-              traceRoot="app-page-list-loading"
             >
               <PlayListPage />
             </PageViewport>
@@ -198,7 +190,17 @@ function MainWindowApp() {
               pageState="ready"
               scrollKey="list"
               scrollPositionsRef={scrollPositionsRef}
-              traceRoot="app-page-list-ready"
+            >
+              <PlayListPage />
+            </PageViewport>
+          ),
+          play: () => (
+            <PageViewport
+              key="list"
+              pageKey="list"
+              pageState="play"
+              scrollKey="list"
+              scrollPositionsRef={scrollPositionsRef}
             >
               <PlayListPage />
             </PageViewport>
@@ -210,7 +212,6 @@ function MainWindowApp() {
               pageState="error"
               scrollKey="list"
               scrollPositionsRef={scrollPositionsRef}
-              traceRoot="app-page-list-error"
             >
               <PlayListPage />
             </PageViewport>

@@ -11,7 +11,7 @@ import {
   type PayloadEvt,
   type SignalEvt,
 } from "@grahlnn/fn/flow";
-import { crab, type Collection, type PlayList } from "@/src/cmd";
+import { crab, type Collection, type PlayList, type PlayPlaylistSession } from "@/src/cmd";
 import {
   createDraftFromPlayList,
   type CollectionUpdatesChange,
@@ -54,6 +54,7 @@ export const ss = defineSS(
         "idle",
         "loading",
         "ready",
+        "play",
         "configLoading",
         "config",
         "configUpdatingCollectionUpdates",
@@ -140,10 +141,23 @@ export const invoker = createActors({
       },
     });
   },
+  playPlaylist: async (playlistName: string): Promise<PlayPlaylistSession> => {
+    const result = await crab.playPlaylist(playlistName);
+
+    return result.match({
+      Ok: (session) => session,
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+  },
 });
 export const payloads = collect(
   ...event<string>()("playlist.open"),
+  ...event<string>()("playlist.play"),
   ...event<PlaylistUpsertResult>()("playlist.upserted"),
+  ...event<string>()("playlist.deleted"),
+  ...event<PlaylistUpsertResult | null>()("playlist.preview.changed"),
   ...event<string>()("draft.name.changed"),
   ...event<string>()("save_path.changed"),
   ...event<Collection>()("collection.upserted"),

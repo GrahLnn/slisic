@@ -52,8 +52,10 @@ export interface PlaylistUpsertResult {
 export interface Context {
   hasPlayList: boolean | null;
   playlists: PlayList[];
+  pendingPlaylistPreview: PlaylistUpsertResult | null;
   collections: Collection[];
   savePath: string;
+  playingPlaylistName: string | null;
   activeLayoutId: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   pendingPlaylistName: string | null;
@@ -167,35 +169,6 @@ export function createDraftFromPlaylistName(
   }
 
   return createDraftFromPlayList(playlist);
-}
-
-export function collectionTitleToneFromDraft(draft: ConfigDraft | null): CollectionTitleTone {
-  if (!draft) {
-    return "solid";
-  }
-
-  return draft.name.length === 0 ? "muted" : "solid";
-}
-
-export function resolveConfigBackLayoutId(args: {
-  activeLayoutId: string | null;
-  draft: ConfigDraft | null;
-  draftBaseline: ConfigDraft | null;
-}) {
-  if (!args.activeLayoutId || !args.draft || !args.draftBaseline) {
-    return args.activeLayoutId;
-  }
-
-  if (JSON.stringify(args.draft) === JSON.stringify(args.draftBaseline)) {
-    return args.activeLayoutId;
-  }
-
-  const normalizedName = normalizeDraftName(args.draft.name);
-  if (normalizedName.length === 0) {
-    return args.activeLayoutId;
-  }
-
-  return playlistTitleLayoutId(normalizedName);
 }
 
 export function createCollectionTitleHandoff(
@@ -327,6 +300,28 @@ export function upsertPlaylistIntoPlaylists(
   );
 }
 
+export function removePlaylistFromPlaylists(
+  playlists: readonly PlayList[],
+  name: string,
+) {
+  return playlists.filter((playlist) => playlist.name !== name);
+}
+
+export function resolvePlaylistsWithPreview(
+  playlists: readonly PlayList[],
+  preview: PlaylistUpsertResult | null,
+) {
+  if (!preview) {
+    return [...playlists];
+  }
+
+  return upsertPlaylistIntoPlaylists(
+    playlists,
+    preview.playlist,
+    preview.previousName,
+  );
+}
+
 export function includeDraftSidebarItem(
   draft: ConfigDraft | null,
   collections: readonly Collection[],
@@ -396,8 +391,10 @@ export function createInitialContext(): Context {
   return {
     hasPlayList: null,
     playlists: [],
+    pendingPlaylistPreview: null,
     collections: [],
     savePath: "",
+    playingPlaylistName: null,
     activeLayoutId: null,
     titleToneHandoff: null,
     pendingPlaylistName: null,

@@ -1,7 +1,6 @@
 import { assign } from "xstate";
 import {
   CREATE_COLLECTION_LAYOUT_ID,
-  collectionTitleToneFromDraft,
   createCollectionTitleHandoff,
   createDraft,
   createDraftFromPlaylistName,
@@ -9,13 +8,18 @@ import {
   includeDraftSidebarItem,
   initialContext,
   playlistTitleLayoutId,
+  removePlaylistFromPlaylists,
+  resolvePlaylistsWithPreview,
   removeDraftSidebarItem,
-  resolveConfigBackLayoutId,
   resetContextWith,
   upsertPlaylistIntoPlaylists,
   upsertCollectionIntoDraft,
   upsertCollectionIntoCollections,
 } from "./core";
+import {
+  resolveConfigBackTitleSharePlan,
+  resolveTitleShareToneFromDraft,
+} from "./titleShare";
 import { BootstrapLoadError, invoker, payloads, ss } from "./events";
 import { src } from "./src";
 
@@ -28,7 +32,10 @@ function resolveSavePathFromLoadingError(error: unknown, fallback: string) {
 }
 
 const openPlaylist = payloads["playlist.open"];
+const playPlaylist = payloads["playlist.play"];
 const playlistUpserted = payloads["playlist.upserted"];
+const playlistDeleted = payloads["playlist.deleted"];
+const playlistPreviewChanged = payloads["playlist.preview.changed"];
 const draftNameChanged = payloads["draft.name.changed"];
 const savePathChanged = payloads["save_path.changed"];
 const collectionUpserted = payloads["collection.upserted"];
@@ -64,6 +71,32 @@ export const machine = src.createMachine({
           event.output.previousName,
         ),
       })),
+    },
+    [playlistDeleted.evt]: {
+      actions: assign(({ context, event }) => {
+        const playlists = removePlaylistFromPlaylists(
+          context.playlists,
+          event.output,
+        );
+
+        return {
+          hasPlayList: playlists.length > 0,
+          playlists,
+          pendingPlaylistPreview:
+            context.pendingPlaylistPreview &&
+            (
+              context.pendingPlaylistPreview.playlist.name === event.output ||
+              context.pendingPlaylistPreview.previousName === event.output
+            )
+              ? null
+              : context.pendingPlaylistPreview,
+        };
+      }),
+    },
+    [playlistPreviewChanged.evt]: {
+      actions: assign({
+        pendingPlaylistPreview: ({ event }) => event.output,
+      }),
     },
     [draftCollectionUpserted.evt]: {
       actions: assign(({ context, event }) => {
@@ -102,8 +135,10 @@ export const machine = src.createMachine({
             resetContextWith({
               hasPlayList: event.output.hasPlayList,
               playlists: event.output.playlists,
+              pendingPlaylistPreview: null,
               collections: event.output.collections,
               savePath: event.output.savePath,
+              playingPlaylistName: null,
             }),
           ),
         },
@@ -129,6 +164,7 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
+              playingPlaylistName: null,
               activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
               titleToneHandoff: createCollectionTitleHandoff(CREATE_COLLECTION_LAYOUT_ID, "solid"),
               draftBaseline: createDraft(),
@@ -136,11 +172,121 @@ export const machine = src.createMachine({
             }),
           ),
         },
+        [playPlaylist.evt]: {
+          target: ss.mainx.State.play,
+          actions: assign(({ context, event }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
+              collections: context.collections,
+              savePath: context.savePath,
+              playingPlaylistName: event.output,
+            }),
+          ),
+        },
         [openPlaylist.evt]: {
           target: ss.mainx.State.configLoading,
           actions: assign(({ context, event }) => {
-            const cachedDraft = createDraftFromPlaylistName(
+            const visiblePlaylists = resolvePlaylistsWithPreview(
               context.playlists,
+              context.pendingPlaylistPreview,
+            );
+            const cachedDraft = createDraftFromPlaylistName(
+              visiblePlaylists,
+              event.output,
+            );
+
+            return resetContextWith({
+              hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
+              collections: context.collections,
+              savePath: context.savePath,
+              playingPlaylistName: null,
+              activeLayoutId: playlistTitleLayoutId(event.output),
+              pendingPlaylistName: event.output,
+              draftBaseline: cachedDraft ? cloneDraft(cachedDraft) : null,
+              draft: cachedDraft,
+            });
+          }),
+        },
+      },
+    },
+    [ss.mainx.State.play]: {
+      invoke: {
+        id: invoker.playPlaylist.id,
+        src: invoker.playPlaylist.src,
+        input: ({ context }) => {
+          if (!context.playingPlaylistName) {
+            throw new Error("missing playlist name for playback");
+          }
+
+          return context.playingPlaylistName;
+        },
+        onError: {
+          target: ss.mainx.State.error,
+          actions: assign(({ context, event }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
+              collections: context.collections,
+              savePath: context.savePath,
+              error: toErrorMessage(event.error),
+            }),
+          ),
+        },
+      },
+      on: {
+        run: ss.mainx.State.loading,
+        back: {
+          target: ss.mainx.State.ready,
+          actions: assign(({ context }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
+              collections: context.collections,
+              savePath: context.savePath,
+            }),
+          ),
+        },
+        opencreate: {
+          target: ss.mainx.State.config,
+          actions: assign(({ context }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
+              collections: context.collections,
+              savePath: context.savePath,
+              playingPlaylistName: null,
+              activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
+              titleToneHandoff: createCollectionTitleHandoff(CREATE_COLLECTION_LAYOUT_ID, "solid"),
+              draftBaseline: createDraft(),
+              draft: createDraft(),
+            }),
+          ),
+        },
+        [playPlaylist.evt]: {
+          target: ss.mainx.State.play,
+          reenter: true,
+          actions: assign(({ context, event }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
+              collections: context.collections,
+              savePath: context.savePath,
+              playingPlaylistName: event.output,
+            }),
+          ),
+        },
+        [openPlaylist.evt]: {
+          target: ss.mainx.State.configLoading,
+          actions: assign(({ context, event }) => {
+            const visiblePlaylists = resolvePlaylistsWithPreview(
+              context.playlists,
+              context.pendingPlaylistPreview,
+            );
+            const cachedDraft = createDraftFromPlaylistName(
+              visiblePlaylists,
               event.output,
             );
 
@@ -149,6 +295,7 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
+              playingPlaylistName: null,
               activeLayoutId: playlistTitleLayoutId(event.output),
               pendingPlaylistName: event.output,
               draftBaseline: cachedDraft ? cloneDraft(cachedDraft) : null,
@@ -177,6 +324,7 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
+              playingPlaylistName: null,
               activeLayoutId: context.activeLayoutId,
               draftBaseline: cloneDraft(event.output),
               draft: event.output,
@@ -191,6 +339,7 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
+              playingPlaylistName: null,
               activeLayoutId: context.activeLayoutId,
               error: toErrorMessage(event.error),
             }),
@@ -207,6 +356,7 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
+              playingPlaylistName: null,
             }),
           ),
         },
@@ -218,7 +368,7 @@ export const machine = src.createMachine({
         back: {
           target: ss.mainx.State.ready,
           actions: assign(({ context }) => {
-            const backLayoutId = resolveConfigBackLayoutId({
+            const backPlan = resolveConfigBackTitleSharePlan({
               activeLayoutId: context.activeLayoutId,
               draft: context.draft,
               draftBaseline: context.draftBaseline,
@@ -229,12 +379,8 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
-              titleToneHandoff: backLayoutId
-                ? createCollectionTitleHandoff(
-                    backLayoutId,
-                    collectionTitleToneFromDraft(context.draft),
-                  )
-                : null,
+              playingPlaylistName: null,
+              titleToneHandoff: backPlan.titleToneHandoff,
             });
           }),
         },
@@ -245,10 +391,11 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
+              playingPlaylistName: null,
               activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
               titleToneHandoff: createCollectionTitleHandoff(
                 CREATE_COLLECTION_LAYOUT_ID,
-                collectionTitleToneFromDraft(context.draft),
+                resolveTitleShareToneFromDraft(context.draft),
               ),
               draftBaseline: createDraft(),
               draft: createDraft(),
@@ -258,8 +405,12 @@ export const machine = src.createMachine({
         [openPlaylist.evt]: {
           target: ss.mainx.State.configLoading,
           actions: assign(({ context, event }) => {
-            const cachedDraft = createDraftFromPlaylistName(
+            const visiblePlaylists = resolvePlaylistsWithPreview(
               context.playlists,
+              context.pendingPlaylistPreview,
+            );
+            const cachedDraft = createDraftFromPlaylistName(
+              visiblePlaylists,
               event.output,
             );
 
@@ -268,6 +419,7 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
+              playingPlaylistName: null,
               activeLayoutId: playlistTitleLayoutId(event.output),
               pendingPlaylistName: event.output,
               draftBaseline: cachedDraft ? cloneDraft(cachedDraft) : null,

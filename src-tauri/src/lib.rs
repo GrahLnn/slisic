@@ -33,17 +33,22 @@ pub fn run() {
             domain::playlists::list_playlists,
             domain::playlists::get_collection,
             domain::playlists::get_playlist,
+            domain::playlists::delete_playlist,
             domain::playlists::upsert_playlist,
             domain::playlists::set_collection_updates,
             domain::playlists::add_exclude,
             domain::playlists::remove_exclude,
+            domain::player::play_playlist,
             domain::downloads::enqueue_collection_download,
             domain::downloads::probe_download_resource,
             domain::downloads::resume_download_task,
             domain::downloads::get_download_task,
             domain::downloads::list_download_tasks,
         ])
-        .events(collect_events![event::FullScreenEvent]);
+        .events(collect_events![
+            event::FullScreenEvent,
+            domain::player::event::NowPlayingTrackChangedEvent
+        ]);
 
     #[cfg(debug_assertions)]
     builder
@@ -97,6 +102,7 @@ pub fn run() {
                     utils::window::configure_existing_primary_windows(&handle);
                     utils::binaries::spawn_binary_maintenance(handle.clone());
                     domain::downloads::service::initialize_runtime(handle.clone());
+                    domain::player::service::initialize_runtime(handle.clone());
                     Ok(())
                 })
             })

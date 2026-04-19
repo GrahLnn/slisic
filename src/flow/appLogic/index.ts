@@ -1,5 +1,6 @@
 import { useSelector } from "@xstate/react";
 import { me } from "@grahlnn/fn";
+import { recordTitleShareTrace } from "@/src/debug/titleShareTrace";
 import type { ConfigSidebarItemRef, PlaylistUpsertResult } from "./core";
 import { MainStateT, sig } from "./events";
 import {
@@ -10,6 +11,9 @@ import {
   draftItemIncluded,
   draftItemRemoved,
   openPlaylist,
+  playPlaylist,
+  playlistDeleted,
+  playlistPreviewChanged,
   playlistUpserted,
   resetRuntimeActor,
   savePathChanged,
@@ -33,19 +37,58 @@ function formatStateValue(value: unknown) {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
+function summarizeContext(context: ActorSnapshot["context"]) {
+  return {
+    activeLayoutId: context.activeLayoutId,
+    pendingPlaylistName: context.pendingPlaylistName,
+    playingPlaylistName: context.playingPlaylistName,
+    titleToneHandoffLayoutId: context.titleToneHandoff?.layoutId ?? null,
+    titleToneHandoffTone: context.titleToneHandoff?.tone ?? null,
+    pendingPlaylistPreview: context.pendingPlaylistPreview
+      ? {
+          name: context.pendingPlaylistPreview.playlist.name,
+          previousName: context.pendingPlaylistPreview.previousName,
+        }
+      : null,
+    playlists: context.playlists.map((playlist) => playlist.name),
+    draft: context.draft
+      ? {
+          mode: context.draft.mode,
+          name: context.draft.name,
+          collectionCount: context.draft.collections.length,
+          groupCount: context.draft.groups.length,
+        }
+      : null,
+  };
+}
+
 function attachDebugLogger() {
-  let prevState = formatStateValue(actor.getSnapshot().value);
+  const initialSnapshot = actor.getSnapshot();
+  let prevState = formatStateValue(initialSnapshot.value);
+  let prevContextKey = JSON.stringify(summarizeContext(initialSnapshot.context));
 
   console.log(`[appLogic] enter ${prevState}`);
+  recordTitleShareTrace("app-logic:snapshot", {
+    state: prevState,
+    context: summarizeContext(initialSnapshot.context),
+  });
 
   const subscription = actor.subscribe((snapshot) => {
     const nextState = formatStateValue(snapshot.value);
-    if (nextState === prevState) {
+    const contextSummary = summarizeContext(snapshot.context);
+    const nextContextKey = JSON.stringify(contextSummary);
+    if (nextState === prevState && nextContextKey === prevContextKey) {
       return;
     }
 
     console.log(`[appLogic] ${prevState} -> ${nextState}`);
+    recordTitleShareTrace("app-logic:snapshot", {
+      prevState,
+      state: nextState,
+      context: contextSummary,
+    });
     prevState = nextState;
+    prevContextKey = nextContextKey;
   });
 
   unsubscribeDebug = () => subscription.unsubscribe();
@@ -71,6 +114,11 @@ export const action = {
     pasteDownloadAction.reset();
     send(openPlaylist.load(playlistName));
   },
+  playPlaylist: (playlistName: string) => {
+    ensureStarted();
+    pasteDownloadAction.reset();
+    send(playPlaylist.load(playlistName));
+  },
   back: () => {
     ensureStarted();
     actor.send(sig.mainx.back);
@@ -90,6 +138,14 @@ export const action = {
   upsertPlaylist: (payload: PlaylistUpsertResult) => {
     ensureStarted();
     send(playlistUpserted.load(payload));
+  },
+  deletePlaylist: (playlistName: string) => {
+    ensureStarted();
+    send(playlistDeleted.load(playlistName));
+  },
+  previewPlaylist: (payload: PlaylistUpsertResult | null) => {
+    ensureStarted();
+    send(playlistPreviewChanged.load(payload));
   },
   includeDraftItem: (item: ConfigSidebarItemRef) => {
     ensureStarted();

@@ -7,7 +7,7 @@ use super::yt_dlp::{
     CliYtDlpClient, DownloadProgress, LeafProbe, LeafReference, RootProbe, YtDlpClient,
     classify_root_preference,
 };
-use crate::domain::meta::repo as meta_repo;
+use crate::domain::meta::service as meta_service;
 use crate::domain::playlists::model::{Collection, Group, Music};
 use crate::domain::playlists::repo as collection_repo;
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary, managed_bin_dir};
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tokio::task;
 
 const AUTO_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
@@ -279,7 +279,8 @@ pub(crate) async fn persist_enqueued_collection_state(
     plan: &CollectionSyncPlan,
 ) -> Result<(DownloadTask, Collection)> {
     let existing = collection_repo::get_collection_by_url(&plan.collection_url).await?;
-    let collection = collection_repo::upsert_collection(&create_collection_shell(plan, existing)).await?;
+    let collection =
+        collection_repo::upsert_collection(&create_collection_shell(plan, existing)).await?;
     apply_collection_plan_to_task(&mut task, plan);
 
     if plan.leaves.is_empty() {
@@ -955,25 +956,8 @@ fn build_client(app: &AppHandle) -> Result<Arc<dyn YtDlpClient>> {
     Ok(Arc::new(CliYtDlpClient::new(ytdlp_path, ffmpeg_dir)))
 }
 
-fn default_save_root(app: &AppHandle) -> Result<PathBuf> {
-    let document_dir = app
-        .path()
-        .document_dir()
-        .map_err(|error| anyhow!(error))?;
-
-    Ok(document_dir.join(&app.package_info().name))
-}
-
 async fn resolve_save_root(app: &AppHandle) -> Result<PathBuf> {
-    let default_root = default_save_root(app)?;
-    let meta = meta_repo::ensure_meta_info(default_root.to_string_lossy().to_string()).await?;
-    let save_path = meta
-        .save_path
-        .ok_or_else(|| anyhow!("save path should always be configured"))?;
-    let root = PathBuf::from(save_path);
-    std::fs::create_dir_all(&root)
-        .with_context(|| format!("failed to create {}", root.display()))?;
-    Ok(root)
+    meta_service::resolve_save_root(app).await
 }
 
 async fn run_blocking<T>(work: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T>

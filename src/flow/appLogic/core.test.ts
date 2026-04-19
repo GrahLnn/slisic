@@ -7,10 +7,11 @@ import {
   createInitialContext,
   includeDraftSidebarItem,
   normalizeDraftName,
+  removePlaylistFromPlaylists,
   removeDraftSidebarItem,
-  resolveConfigBackLayoutId,
   resolveDraftCommitTitle,
   resolveNextGeneratedPlaylistName,
+  resolvePlaylistsWithPreview,
   resetContextWith,
   upsertPlaylistIntoPlaylists,
   upsertCollectionIntoDraft,
@@ -374,56 +375,6 @@ describe("draft commit naming", () => {
     });
   });
 
-  test("returns the committed playlist layout id when create draft changes become saveable", () => {
-    assert.equal(
-      resolveConfigBackLayoutId({
-        activeLayoutId: "collection-title:create",
-        draft: {
-          mode: "create",
-          name: "Quiet Morning",
-          collections: [
-            {
-              name: "Quiet Morning",
-              url: "https://example.com/quiet-morning",
-              folder: "youtube/quiet-morning",
-              musics: [],
-              last_updated: "2026-04-13T00:00:00Z",
-              enable_updates: null,
-            },
-          ],
-          groups: [],
-        },
-        draftBaseline: {
-          mode: "create",
-          name: "",
-          collections: [],
-          groups: [],
-        },
-      }),
-      "playlist-title:Quiet Morning",
-    );
-  });
-
-  test("keeps the original layout id when config draft did not change", () => {
-    assert.equal(
-      resolveConfigBackLayoutId({
-        activeLayoutId: "playlist-title:Quiet Morning",
-        draft: {
-          mode: "edit",
-          name: "Quiet Morning",
-          collections: [],
-          groups: [],
-        },
-        draftBaseline: {
-          mode: "edit",
-          name: "Quiet Morning",
-          collections: [],
-          groups: [],
-        },
-      }),
-      "playlist-title:Quiet Morning",
-    );
-  });
 });
 
 describe("upsertPlaylistIntoPlaylists", () => {
@@ -509,6 +460,125 @@ describe("upsertPlaylistIntoPlaylists", () => {
         "Original",
       ),
       [renamed],
+    );
+  });
+});
+
+describe("removePlaylistFromPlaylists", () => {
+  test("removes the matching playlist without disturbing the rest of the order", () => {
+    assert.deepEqual(
+      removePlaylistFromPlaylists(
+        [
+          {
+            name: "First",
+            collections: [],
+            groups: [],
+          },
+          {
+            name: "Second",
+            collections: [],
+            groups: [],
+          },
+          {
+            name: "Third",
+            collections: [],
+            groups: [],
+          },
+        ],
+        "Second",
+      ),
+      [
+        {
+          name: "First",
+          collections: [],
+          groups: [],
+        },
+        {
+          name: "Third",
+          collections: [],
+          groups: [],
+        },
+      ],
+    );
+  });
+});
+
+describe("resolvePlaylistsWithPreview", () => {
+  test("returns a detached copy when there is no pending preview", () => {
+    const playlists = [
+      {
+        name: "Existing",
+        collections: [],
+        groups: [],
+      },
+    ];
+
+    const resolved = resolvePlaylistsWithPreview(playlists, null);
+
+    assert.deepEqual(resolved, playlists);
+    assert.notEqual(resolved, playlists);
+  });
+
+  test("materializes the returning playlist immediately while the commit is still pending", () => {
+    assert.deepEqual(
+      resolvePlaylistsWithPreview(
+        [
+          {
+            name: "Existing",
+            collections: [],
+            groups: [],
+          },
+        ],
+        {
+          playlist: {
+            name: "PlayList 1",
+            collections: [],
+            groups: [],
+          },
+          previousName: null,
+        },
+      ),
+      [
+        {
+          name: "Existing",
+          collections: [],
+          groups: [],
+        },
+        {
+          name: "PlayList 1",
+          collections: [],
+          groups: [],
+        },
+      ],
+    );
+  });
+
+  test("replaces the previous title immediately for rename previews", () => {
+    assert.deepEqual(
+      resolvePlaylistsWithPreview(
+        [
+          {
+            name: "Original",
+            collections: [],
+            groups: [],
+          },
+        ],
+        {
+          playlist: {
+            name: "Renamed",
+            collections: [],
+            groups: [],
+          },
+          previousName: "Original",
+        },
+      ),
+      [
+        {
+          name: "Renamed",
+          collections: [],
+          groups: [],
+        },
+      ],
     );
   });
 });

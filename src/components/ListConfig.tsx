@@ -18,18 +18,18 @@ import {
 } from "@/src/flow/pasteDownload";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import {
+  captureTitleShareFrames,
+  recordTitleShareTrace,
+} from "@/src/debug/titleShareTrace";
+import {
   createPlayListFromDraft,
   createConfigSidebarItemRef,
   createConfigSidebarItems,
   playlistTitleLayoutId,
   resolveDraftCommitTitle,
+  resolvePlaylistsWithPreview,
   type ConfigSidebarItemRef,
 } from "@/src/flow/appLogic/core";
-import {
-  captureTitleShareFrames,
-  recordTitleShareTrace,
-  snapshotTitleShareNodes,
-} from "@/src/debug/titleShareTrace";
 import { collectionTitleLayoutTransition } from "./collectionTitle";
 import {
   ArcTrackList,
@@ -252,14 +252,17 @@ async function waitForTitleShareSourceReady() {
 function createFrozenListConfigRenderData(args: {
   renderData: ListConfigRenderData;
   titleValue?: string;
-  titleLayoutId?: string;
+  titleLayoutId?: string | null;
 }): ListConfigRenderData {
   if (args.titleValue === undefined && args.titleLayoutId === undefined) {
     return args.renderData;
   }
 
   const currentTitle = args.renderData.viewModel.title;
-  const titleLayoutId = args.titleLayoutId ?? currentTitle.layoutId;
+  const titleLayoutId =
+    args.titleLayoutId === undefined
+      ? currentTitle.layoutId
+      : (args.titleLayoutId ?? undefined);
   const titleValue = args.titleValue ?? currentTitle.value;
 
   return {
@@ -290,6 +293,7 @@ export function ListConfig() {
     collections,
     draft,
     draftBaseline,
+    pendingPlaylistPreview,
     pendingPlaylistName,
     playlists,
     savePath,
@@ -298,6 +302,7 @@ export function ListConfig() {
   const { items: candidateItems } = pasteDownloadHook.useContext();
   const emptyStateRef = useRef<ListConfigEmptyState | null>(null);
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
+  const [isDeletePending, setIsDeletePending] = useState(false);
   const libraryItems = createConfigSidebarItems(collections);
   const liveRenderData = {
     savePath,
@@ -361,13 +366,6 @@ export function ListConfig() {
       return;
     }
     setIsBackNavigationPending(true);
-    recordTitleShareTrace("config:back-triggered", {
-      activeLayoutId,
-      draftMode: draft?.mode ?? null,
-      draftName: draft?.name ?? null,
-      hasDraftChanges: viewModel.hasDraftChanges,
-      pendingPlaylistName,
-    });
 
     try {
       if (!viewModel.hasDraftChanges || !draft) {
@@ -380,44 +378,58 @@ export function ListConfig() {
       const titleResolution = resolveDraftCommitTitle({
         draft,
         draftBaseline,
-        playlists,
+        playlists: resolvePlaylistsWithPreview(playlists, pendingPlaylistPreview),
       });
       const committedDraft = {
         ...draft,
         name: titleResolution.name,
       };
       const committedPlaylist = createPlayListFromDraft(committedDraft);
-
-      playlistCommitAction.commit({
+      const commitRequest = {
         playlist: committedPlaylist,
-        previousName: draft.mode === "edit" ? draftBaseline?.name ?? null : null,
+        previousName:
+          draft.mode === "edit" ? (draftBaseline?.name ?? null) : null,
+      };
+
+      recordTitleShareTrace("list-config:back-requested", {
+        activeLayoutId,
+        pendingPlaylistName,
+        playlists: playlists.map((playlist) => playlist.name),
+        pendingPlaylistPreview: pendingPlaylistPreview
+          ? {
+              name: pendingPlaylistPreview.playlist.name,
+              previousName: pendingPlaylistPreview.previousName,
+            }
+          : null,
+        visiblePlaylists: resolvePlaylistsWithPreview(
+          playlists,
+          pendingPlaylistPreview,
+        ).map((playlist) => playlist.name),
+        draft: {
+          mode: draft.mode,
+          name: draft.name,
+          collections: draft.collections.map((collection) => collection.name),
+          groups: draft.groups.map((group) => group.name),
+        },
+        titleResolution,
+        commitRequest: {
+          name: commitRequest.playlist.name,
+          previousName: commitRequest.previousName,
+        },
+        renderedTitleLayoutId: viewModel.title.layoutId ?? null,
+        renderedTitleValue: viewModel.title.value,
       });
+
+      playlistCommitAction.commit(commitRequest);
 
       await editableTitleRef.current?.commitResolvedValue({
         value: titleResolution.name,
         animateTyping: titleResolution.kind !== "keep",
       });
 
-      const committedReturnLayoutId = playlistTitleLayoutId(committedPlaylist.name);
-      recordTitleShareTrace("create-back:commit-ready", {
-        activeLayoutId,
-        draftMode: draft.mode,
-        currentDraftName: draft.name,
-        resolvedTitle: titleResolution.name,
-        committedReturnLayoutId,
-        playlists: playlists.map((playlist) => ({
-          name: playlist.name,
-          layoutId: playlistTitleLayoutId(playlist.name),
-        })),
-        titleNodes: snapshotTitleShareNodes(),
-      });
-      captureTitleShareFrames("create-back:commit-ready", {
-        frames: 24,
-        payload: {
-          activeLayoutId,
-          committedReturnLayoutId,
-        },
-      });
+      const committedReturnLayoutId = playlistTitleLayoutId(
+        committedPlaylist.name,
+      );
       flushSync(() => {
         appLogicAction.changeDraftName(titleResolution.name);
         pageRenderFreeze.freeze(
@@ -428,6 +440,26 @@ export function ListConfig() {
           }),
         );
       });
+      recordTitleShareTrace("list-config:back-dispatch", {
+        activeLayoutId,
+        committedReturnLayoutId,
+        pendingPlaylistPreview: pendingPlaylistPreview
+          ? {
+              name: pendingPlaylistPreview.playlist.name,
+              previousName: pendingPlaylistPreview.previousName,
+            }
+          : null,
+        frozenTitleLayoutId: committedReturnLayoutId,
+        frozenTitleValue: committedPlaylist.name,
+      });
+      captureTitleShareFrames("list-config:back-dispatch", {
+        frames: 30,
+        payload: {
+          activeLayoutId,
+          committedReturnLayoutId,
+          committedPlaylistName: committedPlaylist.name,
+        },
+      });
       await waitForTitleShareSourceReady();
       pasteDownloadAction.reset();
       appLogicAction.back();
@@ -437,15 +469,70 @@ export function ListConfig() {
     }
   }
 
+  async function handleDeletePlaylistAction() {
+    if (isDeletePending || isBackNavigationPending) {
+      return;
+    }
+
+    if (!draft || draft.mode !== "edit") {
+      pageRenderFreeze.freeze();
+      pasteDownloadAction.reset();
+      appLogicAction.back();
+      return;
+    }
+
+    const playlistName = draftBaseline?.name ?? draft.name;
+    if (!playlistName) {
+      pageRenderFreeze.freeze();
+      pasteDownloadAction.reset();
+      appLogicAction.back();
+      return;
+    }
+
+    setIsDeletePending(true);
+
+    try {
+      const result = await crab.deletePlaylist(playlistName);
+
+      result.match({
+        Ok: () => {
+          recordTitleShareTrace("list-config:delete-succeeded", {
+            playlistName,
+            playlists: playlists.map((playlist) => playlist.name),
+          });
+          flushSync(() => {
+            appLogicAction.deletePlaylist(playlistName);
+            pageRenderFreeze.freeze(
+              createFrozenListConfigRenderData({
+                renderData: liveRenderData,
+                titleLayoutId: null,
+              }),
+            );
+          });
+          pasteDownloadAction.reset();
+          appLogicAction.back();
+        },
+        Err: (error) => {
+          console.error("Failed to delete playlist", {
+            playlistName,
+            error,
+          });
+          setIsDeletePending(false);
+        },
+      });
+    } catch (error) {
+      console.error("Failed to delete playlist", {
+        playlistName,
+        error,
+      });
+      setIsDeletePending(false);
+    }
+  }
+
   return (
     <div
       data-title-trace-root="list-config"
       data-page-state="config"
-      data-title-trace-active-layout-id={activeLayoutId ?? undefined}
-      data-title-trace-title-layout-id={viewModel.title.layoutId ?? undefined}
-      data-title-trace-pending-playlist-name={pendingPlaylistName ?? undefined}
-      data-title-trace-has-draft-changes={String(viewModel.hasDraftChanges)}
-      data-title-trace-back-pending={String(isBackNavigationPending)}
       className={cn(
         "relative flex flex-col w-160 mx-auto mt-24",
         !isPresent && "pointer-events-none",
@@ -470,20 +557,44 @@ export function ListConfig() {
             <BackActionIcon hasDraftChanges={viewModel.hasDraftChanges} />
           </button>
         </motion.div>
-        <EditableTitle
-          ref={editableTitleRef}
-          autoFocus={viewModel.title.autoFocus}
-          className={cn("text-4xl font-bold", "w-fit")}
-          handoffTone={viewModel.title.handoffTone}
-          interactionDisabled={
-            viewModel.interactionFlags.isTitleInteractionDisabled
-          }
-          layoutId={viewModel.title.layoutId}
-          placeholder={viewModel.title.placeholder}
-          style={{ fontFamily: "var(--font-noto-sans)" }}
-          value={viewModel.title.value}
-          onChange={appLogicAction.changeDraftName}
-        />
+        <motion.div
+          {...contentFadeProps}
+          className="flex items-center gap-4"
+        >
+          <EditableTitle
+            ref={editableTitleRef}
+            autoFocus={viewModel.title.autoFocus}
+            className={cn("text-4xl font-bold", "w-fit")}
+            handoffTone={viewModel.title.handoffTone}
+            interactionDisabled={
+              viewModel.interactionFlags.isTitleInteractionDisabled
+            }
+            layoutId={isDeletePending ? undefined : viewModel.title.layoutId}
+            placeholder={viewModel.title.placeholder}
+            style={{ fontFamily: "var(--font-noto-sans)" }}
+            value={viewModel.title.value}
+            onChange={appLogicAction.changeDraftName}
+          />
+          <button
+            type="button"
+            disabled={isDeletePending}
+            onClick={() => {
+              void handleDeletePlaylistAction();
+            }}
+            className={cn(
+              "group p-2 [corner-shape:squircle_squircle_squircle_squircle] rounded-[25px] transition",
+              "hover:bg-[#e5e5e5] dark:hover:bg-[#262626]",
+              "disabled:pointer-events-none",
+            )}
+          >
+            <icons.trashXmark
+              className={cn(
+                "opacity-20 transition group-hover:opacity-70 group-hover:text-red-600",
+                isDeletePending && "opacity-70 text-red-600",
+              )}
+            />
+          </button>
+        </motion.div>
         <motion.div {...contentFadeProps}>
           <ToolLabel
             className="mt-2"
@@ -559,7 +670,11 @@ export function ListConfig() {
                         }
                         onRootNodeChange={
                           item.kind === "playlist"
-                            ? (node) => ghostTransition.registerTargetNode(item.id, node)
+                            ? (node) =>
+                                ghostTransition.registerTargetNode(
+                                  item.id,
+                                  node,
+                                )
                             : undefined
                         }
                         layoutId={

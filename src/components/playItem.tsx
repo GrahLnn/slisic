@@ -15,6 +15,7 @@ export function PlayItem({
   onContextMenu,
   onPointerDown,
   layoutId,
+  traceRole,
   tone = "solid",
   handoffTone = null,
   text,
@@ -22,6 +23,7 @@ export function PlayItem({
 }: ComponentProps<"div"> & {
   text: string;
   layoutId?: string;
+  traceRole?: string;
   tone?: CollectionTitleTone;
   handoffTone?: CollectionTitleTone | null;
   textClassName?: string;
@@ -64,9 +66,10 @@ export function PlayItem({
   return (
     <motion.div
       className={cn(className)}
-      data-title-layout-id={layoutId}
-      data-title-role="playlist-page-item"
       layoutId={layoutId}
+      data-title-layout-id={layoutId}
+      data-title-role={traceRole}
+      data-title-text={text}
       onClick={onClick}
       onContextMenu={(e) => {
         e.preventDefault();

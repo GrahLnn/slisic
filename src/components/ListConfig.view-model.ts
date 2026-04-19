@@ -8,6 +8,7 @@ import {
   type ConfigSidebarItem,
   type ConfigSidebarItemRef,
 } from "@/src/flow/appLogic/core";
+import { hasConfigDraftChanges } from "@/src/flow/appLogic/titleShare";
 import type { ConfigCandidateItem, ConfigCandidateItemStatus } from "@/src/flow/pasteDownload/core";
 import { CREATE_COLLECTION_TITLE } from "./collectionTitle";
 
@@ -349,17 +350,6 @@ export function resolveListConfigSavePath(
   return savePath ?? defaultSavePath;
 }
 
-export function resolveListConfigHasDraftChanges(
-  draft: ConfigDraft | null,
-  draftBaseline: ConfigDraft | null,
-): boolean {
-  if (!draft || !draftBaseline) {
-    return false;
-  }
-
-  return JSON.stringify(draft) !== JSON.stringify(draftBaseline);
-}
-
 export function resolveListConfigInteractionFlags(args: {
   isPresent: boolean;
   arcTrackItemCount: number;
@@ -409,7 +399,7 @@ export function resolveListConfigViewModel(args: {
 
   return {
     title,
-    hasDraftChanges: resolveListConfigHasDraftChanges(args.draft, args.draftBaseline),
+    hasDraftChanges: hasConfigDraftChanges(args.draft, args.draftBaseline),
     playlistItems,
     toolLabelItems: resolveListConfigToolLabelItems({
       playlistItems,

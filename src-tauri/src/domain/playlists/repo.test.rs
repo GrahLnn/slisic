@@ -1,7 +1,8 @@
 use super::model::{Collection, Exclude, Group, Music, PlayList};
 use super::repo::{
-    add_exclude, get_collection_by_url, get_playlist_by_name, has_collections, list_playlists,
-    remove_exclude, set_collection_updates, upsert_collection, upsert_playlist,
+    add_exclude, delete_playlist_by_name, get_collection_by_url, get_playlist_by_name,
+    has_collections, list_collections, list_playlists, remove_exclude, set_collection_updates,
+    upsert_collection, upsert_playlist,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::Crud;
@@ -986,6 +987,34 @@ fn upsert_playlist_creates_new_rows_and_updates_existing_renames() {
         assert!(missing_original.is_none());
         assert_eq!(listed.len(), 1);
         assert_playlist_matches(&listed[0], &renamed);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn delete_playlist_by_name_removes_only_the_playlist_row() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let playlist = sample_playlist("Delete Me");
+        let created = upsert_playlist(&playlist, None)
+            .await
+            .expect("playlist create should succeed before deletion");
+        let deleted = delete_playlist_by_name(&created.name)
+            .await
+            .expect("playlist delete should succeed");
+        let missing = get_playlist_by_name(&created.name)
+            .await
+            .expect("deleted playlist lookup should succeed");
+        let collections = list_collections().await.expect("collections should still list");
+
+        assert!(deleted);
+        assert!(missing.is_none());
+        assert_eq!(collections.len(), 1);
+        assert_eq!(collections[0].url, playlist.collections[0].url);
 
         reset_db();
     });
