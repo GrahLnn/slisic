@@ -2,7 +2,6 @@ import {
   memo,
   startTransition,
   useCallback,
-  useLayoutEffect,
   useRef,
   useState,
   type Dispatch,
@@ -10,11 +9,6 @@ import {
   type SetStateAction,
 } from "react";
 import { cn } from "@/lib/utils";
-import {
-  recordUiTrace,
-  registerUiTraceNode,
-  sampleUiTraceFrames,
-} from "@/src/debug/uiTrace";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { motion, type MotionProps } from "motion/react";
 import type { ConfigSidebarItem } from "@/src/flow/appLogic/core";
@@ -98,19 +92,6 @@ export function resolveArcTrackViewportScrollTop(args: {
   const maxScrollTop = Math.max(args.trackHeight - args.viewportHeight, 0);
 
   return Math.min(Math.max(args.currentScrollTop, 0), maxScrollTop);
-}
-
-export function createArcTrackListIdentity(
-  items: readonly ConfigSidebarItem[],
-) {
-  return JSON.stringify(
-    items.map((item) => ({
-      kind: item.kind,
-      url: item.url,
-      name: item.name,
-      folder: item.folder,
-    })),
-  );
 }
 
 export function resolveArcTrackVirtualPaddingEnd(itemCount: number) {
@@ -480,7 +461,6 @@ const ArcTrackItem = memo(function ArcTrackItem({
   dismissHoverSignal,
   suppressedLayoutIds,
 }: ArcTrackItemProps) {
-  const itemNodeRef = useRef<HTMLLIElement | null>(null);
   const toolLabelRootRef = useRef<HTMLDivElement | null>(null);
   const layoutId = createListConfigToolLabelLayoutId({
     kind: item.kind,
@@ -491,7 +471,6 @@ const ArcTrackItem = memo(function ArcTrackItem({
   return (
     <li
       ref={(node) => {
-        itemNodeRef.current = node;
         registerArcTrackItemNode({
           itemKey,
           node,
@@ -524,20 +503,6 @@ const ArcTrackItem = memo(function ArcTrackItem({
                 <CoverTool
                   text="Push"
                   onClick={() => {
-                    recordUiTrace("arc-track/item", "push-click", {
-                      dismissHoverSignal,
-                      interactionDisabled,
-                      item: {
-                        kind: item.kind,
-                        name: item.name,
-                        url: item.url,
-                      },
-                      layoutId,
-                    });
-                    sampleUiTraceFrames({
-                      label: `push:${layoutId}`,
-                      scope: "arc-track/item",
-                    });
                     startTransition(() => {
                       onPushItem?.({
                         item,
@@ -636,27 +601,6 @@ function ArcTrackListBody({
   const arcPath = getArcPath(arcViewportHeight);
   const arcTrackHeight = rowVirtualizer.getTotalSize();
   const virtualItems = rowVirtualizer.getVirtualItems();
-
-  useLayoutEffect(() => {
-    registerUiTraceNode({
-      scope: "arc-track/body",
-      key: "body",
-      node: scrollElementRef.current,
-      data: {
-        dismissHoverSignal,
-        interactionDisabled,
-        itemCount: items.length,
-      },
-    });
-
-    return () => {
-      registerUiTraceNode({
-        scope: "arc-track/body",
-        key: "body",
-        node: null,
-      });
-    };
-  }, [dismissHoverSignal, interactionDisabled, items.length]);
 
   return (
     <div className="relative h-screen w-72">

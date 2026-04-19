@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import { motion, useIsPresent } from "motion/react";
 import type { PlayList } from "@/src/cmd";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
@@ -16,6 +16,16 @@ import {
   CREATE_COLLECTION_TITLE,
   collectionTitleTextHoverClassName,
 } from "./collectionTitle";
+import {
+  resolvePlayListPageCommittedLayoutId,
+  resolvePlayListPageTransitionViewModel,
+  shouldSuppressPlayListPageItemFade,
+} from "./PlayListPage.view-model";
+import {
+  captureTitleShareFrames,
+  recordTitleShareTrace,
+  snapshotTitleShareNodes,
+} from "@/src/debug/titleShareTrace";
 import { PlayItem } from "./playItem";
 
 const contentFadeProps = {
@@ -25,25 +35,49 @@ const contentFadeProps = {
   transition: collectionTitleLayoutTransition,
 } as const;
 
+export function resolvePlayListPageItemFadeProps(args: {
+  isPresent: boolean;
+  suppressFade: boolean;
+}) {
+  if (args.suppressFade) {
+    return {
+      initial: contentFadeProps.animate,
+      animate: contentFadeProps.animate,
+    } as const;
+  }
+
+  return {
+    initial: contentFadeProps.initial,
+    animate: args.isPresent ? contentFadeProps.animate : contentFadeProps.exit,
+  } as const;
+}
+
 export function resolvePlayListPageTexts(playlists: readonly PlayList[]) {
   return playlists.map((playlist) => playlist.name);
 }
 
 function PlayListPageItem({
   handoffTone,
+  isCommitted = false,
   layoutId,
   suppressFade = false,
   text,
+  onPointerDown,
   onCommit,
 }: {
   handoffTone?: CollectionTitleTone | null;
+  isCommitted?: boolean;
   layoutId: string;
   suppressFade?: boolean;
   text: string;
+  onPointerDown?: () => void;
   onCommit: () => void;
 }) {
   const isPresent = useIsPresent();
-  const [isCommitted, setIsCommitted] = useState(false);
+  const fadeProps = resolvePlayListPageItemFadeProps({
+    isPresent,
+    suppressFade,
+  });
 
   const item = (
     <PlayItem
@@ -53,23 +87,18 @@ function PlayListPageItem({
       text={text}
       textClassName={isCommitted ? collectionTitleTextHoverClassName : undefined}
       onPointerDown={() => {
-        setIsCommitted(true);
+        onPointerDown?.();
       }}
       onClick={() => {
-        setIsCommitted(true);
         onCommit();
       }}
     />
   );
 
-  if (suppressFade) {
-    return item;
-  }
-
   return (
     <motion.div
-      initial={contentFadeProps.initial}
-      animate={isPresent ? contentFadeProps.animate : contentFadeProps.exit}
+      initial={fadeProps.initial}
+      animate={fadeProps.animate}
       transition={contentFadeProps.transition}
     >
       {item}
@@ -79,15 +108,21 @@ function PlayListPageItem({
 
 function CreateNewItem({
   handoffTone,
+  isCommitted,
+  onPointerDown,
   suppressFade,
 }: {
   handoffTone?: CollectionTitleTone | null;
+  isCommitted?: boolean;
+  onPointerDown?: () => void;
   suppressFade?: boolean;
 }) {
   return (
     <PlayListPageItem
       handoffTone={handoffTone}
+      isCommitted={isCommitted}
       layoutId={CREATE_COLLECTION_LAYOUT_ID}
+      onPointerDown={onPointerDown}
       suppressFade={suppressFade}
       text={CREATE_COLLECTION_TITLE}
       onCommit={() => {
@@ -99,23 +134,35 @@ function CreateNewItem({
 
 export function PlayListPage() {
   const { activeLayoutId, playlists, titleToneHandoff } = appLogicHook.useContext();
+  const [pressedLayoutId, setPressedLayoutId] = useState<string | null>(null);
   const texts = resolvePlayListPageTexts(playlists);
+  const transition = resolvePlayListPageTransitionViewModel({
+    activeLayoutId,
+    titleToneHandoff,
+  });
+  const committedLayoutId = resolvePlayListPageCommittedLayoutId({
+    pressedLayoutId,
+    transition,
+  });
 
   const itemComponents = playlists.map((playlist, index) => {
     const text = texts[index] ?? playlist.name;
     const layoutId = playlistTitleLayoutId(playlist.name);
     const handoffTone =
-      titleToneHandoff?.layoutId === layoutId ? titleToneHandoff.tone : null;
-    const suppressFade =
-      activeLayoutId === layoutId || titleToneHandoff?.layoutId === layoutId;
+      transition.returnTargetLayoutId === layoutId ? titleToneHandoff?.tone ?? null : null;
+    const suppressFade = shouldSuppressPlayListPageItemFade(layoutId, transition);
 
     return (
       <PlayListPageItem
         key={playlist.name}
         handoffTone={handoffTone}
+        isCommitted={committedLayoutId === layoutId}
         layoutId={layoutId}
         suppressFade={suppressFade}
         text={text}
+        onPointerDown={() => {
+          setPressedLayoutId(layoutId);
+        }}
         onCommit={() => {
           appLogicAction.openPlaylist(playlist.name);
         }}
@@ -123,9 +170,41 @@ export function PlayListPage() {
     );
   });
 
-  const shouldSuppressCreateFade =
-    activeLayoutId === CREATE_COLLECTION_LAYOUT_ID ||
-    titleToneHandoff?.layoutId === CREATE_COLLECTION_LAYOUT_ID;
+  const shouldSuppressCreateFade = shouldSuppressPlayListPageItemFade(
+    CREATE_COLLECTION_LAYOUT_ID,
+    transition,
+  );
+
+  useLayoutEffect(() => {
+    recordTitleShareTrace("playlist-page:layout", {
+      activeLayoutId,
+      pressedLayoutId,
+      committedLayoutId,
+      outgoingSourceLayoutId: transition.outgoingSourceLayoutId,
+      returnTargetLayoutId: transition.returnTargetLayoutId,
+      titleToneHandoffLayoutId: titleToneHandoff?.layoutId ?? null,
+      titleToneHandoffTone: titleToneHandoff?.tone ?? null,
+      playlistNames: playlists.map((playlist) => playlist.name),
+      titleNodes: snapshotTitleShareNodes(),
+    });
+    captureTitleShareFrames("playlist-page:layout", {
+      frames: 12,
+      payload: {
+        activeLayoutId,
+        committedLayoutId,
+        outgoingSourceLayoutId: transition.outgoingSourceLayoutId,
+        returnTargetLayoutId: transition.returnTargetLayoutId,
+      },
+    });
+  }, [
+    activeLayoutId,
+    committedLayoutId,
+    playlists,
+    pressedLayoutId,
+    titleToneHandoff,
+    transition.outgoingSourceLayoutId,
+    transition.returnTargetLayoutId,
+  ]);
 
   return (
     <div
@@ -137,11 +216,15 @@ export function PlayListPage() {
         <CreateNewItem
           key="create"
           handoffTone={
-            titleToneHandoff?.layoutId === CREATE_COLLECTION_LAYOUT_ID
-              ? titleToneHandoff.tone
+            transition.returnTargetLayoutId === CREATE_COLLECTION_LAYOUT_ID
+              ? titleToneHandoff?.tone ?? null
               : null
           }
+          isCommitted={committedLayoutId === CREATE_COLLECTION_LAYOUT_ID}
           suppressFade={shouldSuppressCreateFade}
+          onPointerDown={() => {
+            setPressedLayoutId(CREATE_COLLECTION_LAYOUT_ID);
+          }}
         />,
       ]}
       <div aria-hidden className="mt-[50vh] h-px w-full shrink-0" />

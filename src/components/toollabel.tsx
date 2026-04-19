@@ -1,6 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ComponentProps, type CSSProperties } from "react";
 import { cn } from "@/lib/utils";
-import { recordUiTrace, registerUiTraceNode } from "@/src/debug/uiTrace";
 import { AnimatePresence, motion } from "motion/react";
 import { createPortal } from "react-dom";
 
@@ -326,9 +325,6 @@ export function ToolLabel({
   const rootRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
-  const instanceIdRef = useRef(
-    `${layoutId ?? "tool-label"}:${Math.random().toString(36).slice(2, 8)}`,
-  );
   const hoverSyncFrameRef = useRef<number | null>(null);
   const effectiveInteractionDisabled = interactionDisabled || isLayoutAnimating;
   const isOverlayVisible = resolveToolLabelOverlayVisibility({
@@ -386,14 +382,6 @@ export function ToolLabel({
       return;
     }
 
-    recordUiTrace("tool-label", "open-overlay", {
-      dismissHoverSignal,
-      instanceId: instanceIdRef.current,
-      interactionDisabled,
-      isLayoutAnimating,
-      layoutId: layoutId ?? null,
-      text,
-    });
     setIsHovered(true);
   }
 
@@ -405,14 +393,6 @@ export function ToolLabel({
       return;
     }
 
-    recordUiTrace("tool-label", "close-overlay", {
-      dismissHoverSignal,
-      instanceId: instanceIdRef.current,
-      interactionDisabled,
-      isLayoutAnimating,
-      layoutId: layoutId ?? null,
-      text,
-    });
     setIsHovered(false);
   }
 
@@ -443,14 +423,6 @@ export function ToolLabel({
       return;
     }
 
-    recordUiTrace("tool-label", "interaction-disabled-close", {
-      dismissHoverSignal,
-      instanceId: instanceIdRef.current,
-      interactionDisabled,
-      isHovered,
-      layoutId: layoutId ?? null,
-      text,
-    });
     clearPendingHoverSync();
     setIsHovered(false);
   }, [effectiveInteractionDisabled]);
@@ -460,73 +432,9 @@ export function ToolLabel({
       return;
     }
 
-    recordUiTrace("tool-label", "dismiss-hover-signal", {
-      dismissHoverSignal,
-      instanceId: instanceIdRef.current,
-      interactionDisabled,
-      isHovered,
-      layoutId: layoutId ?? null,
-      text,
-    });
     clearPendingHoverSync();
     setIsHovered(false);
   }, [dismissHoverSignal]);
-
-  useLayoutEffect(() => {
-    registerUiTraceNode({
-      scope: "tool-label/root",
-      key: instanceIdRef.current,
-      node: rootRef.current,
-      data: {
-        dismissHoverSignal,
-        hoverMode,
-        interactionDisabled,
-        isHovered,
-        layoutId: layoutId ?? null,
-        text,
-        toolLayer,
-      },
-    });
-
-    return () => {
-      registerUiTraceNode({
-        scope: "tool-label/root",
-        key: instanceIdRef.current,
-        node: null,
-      });
-    };
-  }, [
-    dismissHoverSignal,
-    hoverMode,
-    interactionDisabled,
-    isHovered,
-    layoutId,
-    text,
-    toolLayer,
-  ]);
-
-  useLayoutEffect(() => {
-    registerUiTraceNode({
-      scope: "tool-label/overlay",
-      key: instanceIdRef.current,
-      node: overlayRef.current,
-      data: {
-        dismissHoverSignal,
-        isOverlayVisible,
-        layoutId: layoutId ?? null,
-        text,
-        toolLayer,
-      },
-    });
-
-    return () => {
-      registerUiTraceNode({
-        scope: "tool-label/overlay",
-        key: instanceIdRef.current,
-        node: null,
-      });
-    };
-  }, [dismissHoverSignal, isOverlayVisible, layoutId, text, toolLayer]);
 
   useLayoutEffect(() => {
     return () => {

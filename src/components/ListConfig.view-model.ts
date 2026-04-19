@@ -61,10 +61,27 @@ export type ListConfigToolLabelItem =
   | ListConfigPlaylistToolLabelItem
   | ListConfigCandidateToolLabelItem;
 
+export function resolveListConfigTitlePlaceholder(args: {
+  draft: ConfigDraft | null;
+  draftBaseline: ConfigDraft | null;
+}) {
+  if (!args.draft) {
+    return undefined;
+  }
+
+  if (args.draft.mode === "create") {
+    return CREATE_COLLECTION_TITLE;
+  }
+
+  const baselineName = args.draftBaseline?.name.trim() ?? "";
+  return baselineName.length > 0 ? baselineName : undefined;
+}
+
 export function createListConfigTitleSnapshot(
   args: {
     activeLayoutId: string | null;
     draft: ConfigDraft | null;
+    draftBaseline: ConfigDraft | null;
     pendingPlaylistName?: string | null;
   },
 ): ListConfigTitleSnapshot | null {
@@ -87,28 +104,31 @@ export function createListConfigTitleSnapshot(
   return {
     layoutId: args.activeLayoutId,
     value: args.draft.name,
-    placeholder: args.draft.mode === "create" ? CREATE_COLLECTION_TITLE : undefined,
+    placeholder: resolveListConfigTitlePlaceholder({
+      draft: args.draft,
+      draftBaseline: args.draftBaseline,
+    }),
   };
 }
 
 export function resolveListConfigTitleViewModel(args: {
   activeLayoutId: string | null;
   draft: ConfigDraft | null;
+  draftBaseline: ConfigDraft | null;
   pendingPlaylistName?: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
-  previousSnapshot: ListConfigTitleSnapshot | null;
 }): ListConfigTitleViewModel {
-  const snapshot =
-    createListConfigTitleSnapshot({
-      activeLayoutId: args.activeLayoutId,
-      draft: args.draft,
-      pendingPlaylistName: args.pendingPlaylistName,
-    }) ?? args.previousSnapshot;
+  const snapshot = createListConfigTitleSnapshot({
+    activeLayoutId: args.activeLayoutId,
+    draft: args.draft,
+    draftBaseline: args.draftBaseline,
+    pendingPlaylistName: args.pendingPlaylistName,
+  });
   const layoutId = snapshot?.layoutId;
 
   return {
     snapshot,
-    autoFocus: Boolean(args.activeLayoutId && args.draft?.mode === "create"),
+    autoFocus: Boolean(snapshot?.layoutId && args.draft?.mode === "create"),
     handoffTone:
       layoutId && args.titleToneHandoff?.layoutId === layoutId ? args.titleToneHandoff.tone : null,
     layoutId,
@@ -360,7 +380,6 @@ export function resolveListConfigViewModel(args: {
   isPresent: boolean;
   libraryItems: readonly ConfigSidebarItem[];
   candidateItems: readonly ConfigCandidateItem[];
-  previousTitleSnapshot: ListConfigTitleSnapshot | null;
   previousEmptyState: ListConfigEmptyState | null;
 }) {
   const playlistItems = createListConfigPlaylistSidebarItems(args.draft);
@@ -374,9 +393,9 @@ export function resolveListConfigViewModel(args: {
   const title = resolveListConfigTitleViewModel({
     activeLayoutId: args.activeLayoutId,
     draft: args.draft,
+    draftBaseline: args.draftBaseline,
     pendingPlaylistName: args.pendingPlaylistName,
     titleToneHandoff: args.titleToneHandoff,
-    previousSnapshot: args.previousTitleSnapshot,
   });
   const arcTrackItems = createListConfigArcTrackItems({
     libraryItems: args.libraryItems,

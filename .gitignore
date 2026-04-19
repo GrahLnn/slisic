@@ -22,3 +22,7 @@ src-tauri/binaries/bun-runtime-*
 .tmp/bun-runtime/
 
 .gitnexus
+
+# FM tooling
+/fm_*/
+/fm-*/

@@ -7,6 +7,10 @@ import {
   collectionTitleTextClassName,
   useCollectionTitleColor,
 } from "./collectionTitle";
+import {
+  captureTitleShareFrames,
+  recordTitleShareNodeTrace,
+} from "@/src/debug/titleShareTrace";
 import { Torph } from "@grahlnn/comps";
 
 export function PlayItem({
@@ -64,13 +68,47 @@ export function PlayItem({
   return (
     <motion.div
       className={cn(className)}
+      data-title-layout-id={layoutId}
+      data-title-role="playlist-page-item"
       layoutId={layoutId}
-      onClick={onClick}
+      onClick={(event) => {
+        if (layoutId) {
+          recordTitleShareNodeTrace("playlist-title:click", event.currentTarget, {
+            layoutId,
+            text,
+          });
+          captureTitleShareFrames(`playlist-title:click:${layoutId}`, {
+            frames: 24,
+            payload: {
+              layoutId,
+              text,
+            },
+          });
+        }
+
+        onClick?.(event);
+      }}
       onContextMenu={(e) => {
         e.preventDefault();
         onContextMenu?.(e);
       }}
-      onPointerDown={onPointerDown}
+      onPointerDown={(event) => {
+        if (layoutId) {
+          recordTitleShareNodeTrace("playlist-title:pointerdown", event.currentTarget, {
+            layoutId,
+            text,
+          });
+          captureTitleShareFrames(`playlist-title:pointerdown:${layoutId}`, {
+            frames: 12,
+            payload: {
+              layoutId,
+              text,
+            },
+          });
+        }
+
+        onPointerDown?.(event);
+      }}
     >
       <div
         ref={scope}

@@ -13,6 +13,10 @@ import {
   collectionTitleColorTransition,
   useCollectionTitleColor,
 } from "./collectionTitle";
+import {
+  captureTitleShareFrames,
+  recordTitleShareNodeTrace,
+} from "@/src/debug/titleShareTrace";
 
 type EditableTitleProps = {
   value: string;
@@ -89,6 +93,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
 }: EditableTitleProps, ref) {
   const displayValue = resolveEditableTitleDisplayValue(value, placeholder);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const titleRootRef = useRef<HTMLDivElement>(null);
   const autoWriteRunRef = useRef(0);
   const [isFocused, setIsFocused] = useState(false);
   const [isAutoWriting, setIsAutoWriting] = useState(false);
@@ -111,6 +116,42 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
 
     inputRef.current?.blur();
   }, [interactionDisabled]);
+
+  useLayoutEffect(() => {
+    const node = titleRootRef.current;
+
+    if (!node || !layoutId) {
+      return;
+    }
+
+    recordTitleShareNodeTrace("config-title:layout", node, {
+      layoutId,
+      resolvedLayoutId: resolvedLayoutId ?? null,
+      displayValue,
+      placeholder: placeholder ?? null,
+      interactionDisabled,
+      isFocused,
+      isAutoWriting,
+      handoffTone: handoffTone ?? null,
+    });
+    captureTitleShareFrames(`config-title:${layoutId}`, {
+      frames: 24,
+      payload: {
+        layoutId,
+        resolvedLayoutId: resolvedLayoutId ?? null,
+        displayValue,
+      },
+    });
+  }, [
+    displayValue,
+    handoffTone,
+    interactionDisabled,
+    isAutoWriting,
+    isFocused,
+    layoutId,
+    placeholder,
+    resolvedLayoutId,
+  ]);
 
   useImperativeHandle(ref, () => ({
     async commitResolvedValue(args) {
@@ -162,6 +203,9 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
   return (
     <div {...props}>
       <motion.div
+        ref={titleRootRef}
+        data-title-layout-id={resolvedLayoutId ?? layoutId}
+        data-title-role="config-title"
         layoutId={resolvedLayoutId}
         className={cn("relative w-fit max-w-full", className)}
         style={style}

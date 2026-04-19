@@ -1,81 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
-  createArcTrackListIdentity,
   resolveArcTrackItemFrame,
   resolveArcTrackPathClassName,
   resolveArcTrackPathStrokeWidth,
   resolveArcTrackViewportScrollTop,
   resolveArcTrackVirtualPaddingEnd,
 } from "./ArcTrackList";
-
-describe("createArcTrackListIdentity", () => {
-  test("stays stable for the same item sequence", () => {
-    assert.equal(
-      createArcTrackListIdentity([
-        {
-          kind: "collection",
-          name: "alpha",
-          url: "https://example.com/alpha",
-          folder: "alpha",
-        },
-        {
-          kind: "group",
-          name: "beta",
-          url: "https://example.com/beta",
-          folder: "beta",
-        },
-      ]),
-      createArcTrackListIdentity([
-        {
-          kind: "collection",
-          name: "alpha",
-          url: "https://example.com/alpha",
-          folder: "alpha",
-        },
-        {
-          kind: "group",
-          name: "beta",
-          url: "https://example.com/beta",
-          folder: "beta",
-        },
-      ]),
-    );
-  });
-
-  test("changes when the item sequence changes", () => {
-    assert.notEqual(
-      createArcTrackListIdentity([
-        {
-          kind: "collection",
-          name: "alpha",
-          url: "https://example.com/alpha",
-          folder: "alpha",
-        },
-        {
-          kind: "group",
-          name: "beta",
-          url: "https://example.com/beta",
-          folder: "beta",
-        },
-      ]),
-      createArcTrackListIdentity([
-        {
-          kind: "group",
-          name: "beta",
-          url: "https://example.com/beta",
-          folder: "beta",
-        },
-        {
-          kind: "collection",
-          name: "alpha",
-          url: "https://example.com/alpha",
-          folder: "alpha",
-        },
-      ]),
-    );
-  });
-});
 
 describe("resolveArcTrackVirtualPaddingEnd", () => {
   test("keeps the trailing padding intact when there are no items", () => {

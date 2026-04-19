@@ -10,6 +10,7 @@ import {
   createListConfigPlaylistSidebarItems,
   createListConfigPlaylistToolLabelItems,
   createListConfigTitleSnapshot,
+  resolveListConfigTitlePlaceholder,
   resolveListConfigEmptyState,
   resolveListConfigInteractionFlags,
   resolveListConfigCollectionUpdatesToolText,
@@ -121,6 +122,7 @@ describe("ListConfig title view model", () => {
       createListConfigTitleSnapshot({
         activeLayoutId: "collection-title:create",
         draft: createDraft,
+        draftBaseline: null,
       }),
       {
         layoutId: "collection-title:create",
@@ -130,55 +132,59 @@ describe("ListConfig title view model", () => {
     );
   });
 
-  test("keeps the previous snapshot while the exit animation is running", () => {
-    const previousSnapshot = {
-      layoutId: "collection-title:create",
-      value: "",
-      placeholder: "Create a List",
-    };
-
+  test("stays empty without an active title layout id", () => {
     assert.deepEqual(
       resolveListConfigTitleViewModel({
         activeLayoutId: null,
         draft: null,
-        titleToneHandoff: {
-          layoutId: "collection-title:create",
-          tone: "muted",
-        },
-        previousSnapshot,
+        draftBaseline: null,
+        titleToneHandoff: null,
       }),
       {
-        snapshot: previousSnapshot,
+        snapshot: null,
         autoFocus: false,
-        handoffTone: "muted",
-        layoutId: "collection-title:create",
-        placeholder: "Create a List",
+        handoffTone: null,
+        layoutId: undefined,
+        placeholder: undefined,
         value: "",
       },
     );
   });
 
-  test("uses the live edit draft without a placeholder", () => {
+  test("uses the baseline edit title as the placeholder", () => {
     assert.deepEqual(
       resolveListConfigTitleViewModel({
         activeLayoutId: "playlist-title:Quiet Morning",
         draft: editDraft,
+        draftBaseline: editDraft,
         pendingPlaylistName: null,
         titleToneHandoff: null,
-        previousSnapshot: null,
       }),
       {
         snapshot: {
           layoutId: "playlist-title:Quiet Morning",
           value: "Quiet Morning",
-          placeholder: undefined,
+          placeholder: "Quiet Morning",
         },
         autoFocus: false,
         handoffTone: null,
         layoutId: "playlist-title:Quiet Morning",
-        placeholder: undefined,
+        placeholder: "Quiet Morning",
         value: "Quiet Morning",
       },
+    );
+  });
+
+  test("falls back to the baseline edit title after the user clears the current title", () => {
+    assert.equal(
+      resolveListConfigTitlePlaceholder({
+        draft: {
+          ...editDraft,
+          name: "",
+        },
+        draftBaseline: editDraft,
+      }),
+      "Quiet Morning",
     );
   });
 
@@ -187,6 +193,7 @@ describe("ListConfig title view model", () => {
       createListConfigTitleSnapshot({
         activeLayoutId: "playlist-title:Quiet Morning",
         draft: null,
+        draftBaseline: null,
         pendingPlaylistName: "Quiet Morning",
       }),
       {
@@ -748,7 +755,6 @@ describe("ListConfig title view model", () => {
         },
       ],
       candidateItems: [],
-      previousTitleSnapshot: null,
       previousEmptyState: null,
     });
 

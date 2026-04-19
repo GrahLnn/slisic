@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { me } from "@grahlnn/fn";
 import { getName } from "@tauri-apps/api/app";
 import { documentDir, join } from "@tauri-apps/api/path";
@@ -6,7 +6,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
 import { crab } from "@/src/cmd";
-import { flushSync } from "react-dom";
 import {
   action as appLogicAction,
   hook as appLogicHook,
@@ -26,13 +25,19 @@ import {
 } from "@/src/flow/appLogic/core";
 import { collectionTitleLayoutTransition } from "./collectionTitle";
 import {
+  captureTitleShareFrames,
+  recordTitleShareTrace,
+  snapshotTitleShareNodes,
+} from "@/src/debug/titleShareTrace";
+import {
   ArcTrackList,
   type ArcTrackPushTransitionSource,
 } from "./ArcTrackList";
 import { CoverTool } from "./coverTool";
 import { EditableTitle, type EditableTitleHandle } from "./EditableTitle";
+import { useListConfigGhostTransition } from "./ListConfig.ghost-transition";
+import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import {
-  type ListConfigTitleSnapshot,
   resolveListConfigToolLabelAffordance,
   resolveListConfigCollectionUpdatesToolText,
   resolveListConfigSavePath,
@@ -42,7 +47,6 @@ import {
   type ListConfigEmptyState,
   type ListConfigToolLabelItem,
 } from "./ListConfig.view-model";
-import { recordUiTrace, registerUiTraceNode, sampleUiTraceFrames } from "@/src/debug/uiTrace";
 import { ToolLabel, MaskL, MaskR } from "./toollabel";
 
 export const LIST_CONFIG_EMPTY_STATE_TEXT =
@@ -227,84 +231,32 @@ function FnButton({ text, onClick }: { text: string; onClick?: () => void }) {
   );
 }
 
-type ListConfigRenderSnapshot = {
+type ListConfigRenderData = {
   savePath: string;
   viewModel: ReturnType<typeof resolveListConfigViewModel>;
 };
 
-type ListConfigGhostTransition = {
-  layoutId: string;
-  cloneNode: HTMLDivElement;
-};
-
-const LIST_CONFIG_GHOST_Z_INDEX = 180;
-
-function hideGhostTarget(node: HTMLDivElement | null) {
-  if (!node) {
-    return;
+function createFrozenListConfigRenderData(args: {
+  renderData: ListConfigRenderData;
+  titleValue?: string;
+}): ListConfigRenderData {
+  if (args.titleValue === undefined) {
+    return args.renderData;
   }
 
-  node.style.opacity = "0";
-}
-
-function showGhostTarget(node: HTMLDivElement | null) {
-  if (!node) {
-    return;
-  }
-
-  node.style.opacity = "";
-}
-
-function createGhostClone(sourceNode: HTMLDivElement) {
-  const sourceRect = sourceNode.getBoundingClientRect();
-  const cloneNode = sourceNode.cloneNode(true) as HTMLDivElement;
-  const sourceStyle = window.getComputedStyle(sourceNode);
-  const overlayNodes = cloneNode.querySelectorAll<HTMLElement>("[data-tool-label-overlay='true']");
-  const removedOverlayCount = overlayNodes.length;
-
-  overlayNodes.forEach((node) => {
-    node.remove();
-  });
-
-  cloneNode.style.position = "fixed";
-  cloneNode.style.left = `${sourceRect.left}px`;
-  cloneNode.style.top = `${sourceRect.top}px`;
-  cloneNode.style.width = `${sourceRect.width}px`;
-  cloneNode.style.height = `${sourceRect.height}px`;
-  cloneNode.style.margin = "0";
-  cloneNode.style.pointerEvents = "none";
-  // Keep the flying ghost above the page content but below ToolLabel overlays
-  // so a pre-hovered target can reveal its tool layer on time.
-  cloneNode.style.zIndex = `${LIST_CONFIG_GHOST_Z_INDEX}`;
-  cloneNode.style.transform = sourceStyle.transform;
-  cloneNode.style.transformOrigin = sourceStyle.transformOrigin;
-  cloneNode.style.opacity = sourceStyle.opacity;
-
-  sourceNode.ownerDocument.body.appendChild(cloneNode);
+  const currentTitle = args.renderData.viewModel.title;
 
   return {
-    cloneNode,
-    removedOverlayCount,
-  };
-}
-
-function createBackRenderSnapshot(
-  snapshot: ListConfigRenderSnapshot,
-  title: string,
-): ListConfigRenderSnapshot {
-  const currentTitle = snapshot.viewModel.title;
-
-  return {
-    ...snapshot,
+    ...args.renderData,
     viewModel: {
-      ...snapshot.viewModel,
+      ...args.renderData.viewModel,
       title: {
         ...currentTitle,
-        value: title,
+        value: args.titleValue,
         snapshot: currentTitle.layoutId
           ? {
               layoutId: currentTitle.layoutId,
-              value: title,
+              value: args.titleValue,
               placeholder: currentTitle.placeholder,
             }
           : null,
@@ -315,7 +267,6 @@ function createBackRenderSnapshot(
 
 export function ListConfig() {
   const isPresent = useIsPresent();
-  const rootRef = useRef<HTMLDivElement>(null);
   const editableTitleRef = useRef<EditableTitleHandle | null>(null);
   const {
     activeLayoutId,
@@ -328,154 +279,32 @@ export function ListConfig() {
     titleToneHandoff,
   } = appLogicHook.useContext();
   const { items: candidateItems } = pasteDownloadHook.useContext();
-  const titleSnapshotRef = useRef<ListConfigTitleSnapshot | null>(null);
   const emptyStateRef = useRef<ListConfigEmptyState | null>(null);
-  const [renderSnapshot, setRenderSnapshot] =
-    useState<ListConfigRenderSnapshot | null>(null);
-  const [activeGhostLayoutId, setActiveGhostLayoutId] = useState<string | null>(
-    null,
-  );
-  const [arcTrackHoverDismissSignal, setArcTrackHoverDismissSignal] = useState(0);
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
-  const ghostTransitionRef = useRef<ListConfigGhostTransition | null>(null);
-  const ghostTargetNodeRegistryRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const libraryItems = createConfigSidebarItems(collections);
-  const liveViewModel = resolveListConfigViewModel({
-    activeLayoutId,
-    draft,
-    draftBaseline,
-    pendingPlaylistName,
-    titleToneHandoff,
-    isPresent,
-    libraryItems,
-    candidateItems,
-    previousTitleSnapshot: titleSnapshotRef.current,
-    previousEmptyState: emptyStateRef.current,
-  });
-  const liveRenderSnapshot = {
+  const liveRenderData = {
     savePath,
-    viewModel: liveViewModel,
-  } satisfies ListConfigRenderSnapshot;
-  const renderData = renderSnapshot ?? liveRenderSnapshot;
+    viewModel: resolveListConfigViewModel({
+      activeLayoutId,
+      draft,
+      draftBaseline,
+      pendingPlaylistName,
+      titleToneHandoff,
+      isPresent,
+      libraryItems,
+      candidateItems,
+      previousEmptyState: emptyStateRef.current,
+    }),
+  } satisfies ListConfigRenderData;
+  const pageRenderFreeze = usePageRenderFreeze(liveRenderData);
+  const renderData = pageRenderFreeze.renderValue;
   const { savePath: renderedSavePath, viewModel } = renderData;
-
-  if (viewModel.title.snapshot) {
-    titleSnapshotRef.current = viewModel.title.snapshot;
-  }
   emptyStateRef.current = viewModel.emptyState;
-
-  useLayoutEffect(() => {
-    registerUiTraceNode({
-      scope: "list-config/root",
-      key: "root",
-      node: rootRef.current,
-      data: {
-        activeGhostLayoutId,
-        arcTrackHoverDismissSignal,
-        toolLabelItemCount: viewModel.toolLabelItems.length,
-      },
-    });
-
-    return () => {
-      registerUiTraceNode({
-        scope: "list-config/root",
-        key: "root",
-        node: null,
-      });
-    };
-  }, [activeGhostLayoutId, arcTrackHoverDismissSignal, viewModel.toolLabelItems.length]);
-
-  useLayoutEffect(() => {
-    const ghostTransition = ghostTransitionRef.current;
-
-    if (!activeGhostLayoutId || !ghostTransition) {
-      return;
-    }
-
-    const targetNode = ghostTargetNodeRegistryRef.current.get(activeGhostLayoutId);
-
-    if (!targetNode) {
-      recordUiTrace("list-config/ghost", "target-missing", {
-        activeGhostLayoutId,
-        registeredTargets: Array.from(ghostTargetNodeRegistryRef.current.keys()),
-      });
-      return;
-    }
-
-    const targetRect = targetNode.getBoundingClientRect();
-    recordUiTrace("list-config/ghost", "animation-start", {
-      activeGhostLayoutId,
-      dismissSignal: arcTrackHoverDismissSignal,
-      targetRect: {
-        height: Number(targetRect.height.toFixed(3)),
-        left: Number(targetRect.left.toFixed(3)),
-        top: Number(targetRect.top.toFixed(3)),
-        width: Number(targetRect.width.toFixed(3)),
-      },
-    });
-    sampleUiTraceFrames({
-      label: `ghost:${activeGhostLayoutId}`,
-      scope: "list-config/ghost",
-    });
-    hideGhostTarget(targetNode);
-
-    const animation = ghostTransition.cloneNode.animate(
-      [
-        {
-          left: ghostTransition.cloneNode.style.left,
-          top: ghostTransition.cloneNode.style.top,
-          width: ghostTransition.cloneNode.style.width,
-          height: ghostTransition.cloneNode.style.height,
-          transform: ghostTransition.cloneNode.style.transform || "none",
-        },
-        {
-          left: `${targetRect.left}px`,
-          top: `${targetRect.top}px`,
-          width: `${targetRect.width}px`,
-          height: `${targetRect.height}px`,
-          transform: "none",
-        },
-      ],
-      {
-        duration: 360,
-        easing: "cubic-bezier(0.22, 1, 0.36, 1)",
-        fill: "forwards",
-      },
-    );
-
-    animation.finished
-      .catch(() => {})
-      .finally(() => {
-        recordUiTrace("list-config/ghost", "animation-finish", {
-          activeGhostLayoutId,
-          dismissSignal: arcTrackHoverDismissSignal,
-        });
-        showGhostTarget(targetNode);
-        registerUiTraceNode({
-          scope: "list-config/ghost",
-          key: ghostTransition.layoutId,
-          node: null,
-        });
-        ghostTransition.cloneNode.remove();
-
-        if (ghostTransitionRef.current?.layoutId === ghostTransition.layoutId) {
-          ghostTransitionRef.current = null;
-        }
-
-        setActiveGhostLayoutId((current) =>
-          current === ghostTransition.layoutId ? null : current,
-        );
-      });
-
-    return () => {
-      recordUiTrace("list-config/ghost", "animation-cleanup", {
-        activeGhostLayoutId,
-        dismissSignal: arcTrackHoverDismissSignal,
-      });
-      animation.cancel();
-      showGhostTarget(targetNode);
-    };
-  }, [activeGhostLayoutId, arcTrackHoverDismissSignal, viewModel.toolLabelItems]);
+  const ghostTargetIdsKey = viewModel.toolLabelItems
+    .filter((item) => item.kind === "playlist")
+    .map((item) => item.id)
+    .join("|");
+  const ghostTransition = useListConfigGhostTransition(ghostTargetIdsKey);
 
   async function handleChangeSavePath() {
     try {
@@ -515,11 +344,29 @@ export function ListConfig() {
       return;
     }
 
+    recordTitleShareTrace("list-config:back", {
+      activeLayoutId,
+      draftName: draft?.name ?? null,
+      draftMode: draft?.mode ?? null,
+      renderedTitleLayoutId: viewModel.title.layoutId ?? null,
+      renderedTitleValue: viewModel.title.value,
+      hasDraftChanges: viewModel.hasDraftChanges,
+      titleToneHandoffLayoutId: titleToneHandoff?.layoutId ?? null,
+      titleToneHandoffTone: titleToneHandoff?.tone ?? null,
+      titleNodes: snapshotTitleShareNodes(),
+    });
+    captureTitleShareFrames("list-config:back", {
+      frames: 18,
+      payload: {
+        activeLayoutId,
+        renderedTitleLayoutId: viewModel.title.layoutId ?? null,
+      },
+    });
     setIsBackNavigationPending(true);
 
     try {
       if (!viewModel.hasDraftChanges || !draft) {
-        setRenderSnapshot(liveRenderSnapshot);
+        pageRenderFreeze.freeze();
         pasteDownloadAction.reset();
         appLogicAction.back();
         return;
@@ -547,14 +394,11 @@ export function ListConfig() {
       });
 
       appLogicAction.changeDraftName(titleResolution.name);
-      setRenderSnapshot(
-        createBackRenderSnapshot(
-          {
-            savePath: renderedSavePath,
-            viewModel,
-          },
-          committedPlaylist.name,
-        ),
+      pageRenderFreeze.freeze(
+        createFrozenListConfigRenderData({
+          renderData: liveRenderData,
+          titleValue: committedPlaylist.name,
+        }),
       );
       pasteDownloadAction.reset();
       appLogicAction.back();
@@ -566,7 +410,6 @@ export function ListConfig() {
 
   return (
     <div
-      ref={rootRef}
       className={cn(
         "relative flex flex-col w-160 mx-auto mt-24",
         !isPresent && "pointer-events-none",
@@ -680,30 +523,12 @@ export function ListConfig() {
                         }
                         onRootNodeChange={
                           item.kind === "playlist"
-                            ? (node) => {
-                                const registry = ghostTargetNodeRegistryRef.current;
-                                registerUiTraceNode({
-                                  scope: "list-config/tool-label",
-                                  key: item.id,
-                                  node,
-                                  data: {
-                                    itemId: item.id,
-                                    text: item.text,
-                                  },
-                                });
-
-                                if (!node) {
-                                  registry.delete(item.id);
-                                  return;
-                                }
-
-                                registry.set(item.id, node);
-                              }
+                            ? (node) => ghostTransition.registerTargetNode(item.id, node)
                             : undefined
                         }
                         layoutId={
                           item.kind === "playlist" &&
-                          activeGhostLayoutId !== item.id
+                          ghostTransition.activeLayoutId !== item.id
                             ? item.id
                             : undefined
                         }
@@ -736,61 +561,24 @@ export function ListConfig() {
       {viewModel.interactionFlags.shouldRenderArcTrack && (
         <ArcTrackList
           items={viewModel.arcTrackItems}
-          dismissHoverSignal={arcTrackHoverDismissSignal}
+          dismissHoverSignal={ghostTransition.dismissHoverSignal}
           interactionDisabled={
             !viewModel.interactionFlags.shouldRenderArcTrack ||
-            activeGhostLayoutId !== null
+            ghostTransition.isAnimating
           }
           suppressedLayoutIds={
-            activeGhostLayoutId ? new Set([activeGhostLayoutId]) : undefined
+            ghostTransition.activeLayoutId
+              ? new Set([ghostTransition.activeLayoutId])
+              : undefined
           }
           onPushItem={(source: ArcTrackPushTransitionSource) => {
             const sourceNode = source.sourceNode;
             const layoutRef = createConfigSidebarItemRef(source.item);
 
-            recordUiTrace("list-config/push", "start", {
-              activeGhostLayoutId,
-              dismissSignal: arcTrackHoverDismissSignal,
-              item: {
-                kind: source.item.kind,
-                name: source.item.name,
-                url: source.item.url,
-              },
+            ghostTransition.startGhostTransition({
               layoutId: source.layoutId,
-              sourceNodePresent: Boolean(sourceNode),
+              sourceNode,
             });
-            ghostTransitionRef.current?.cloneNode.remove();
-            ghostTransitionRef.current = null;
-
-            if (sourceNode) {
-              registerUiTraceNode({
-                scope: "list-config/ghost",
-                key: source.layoutId,
-                node: null,
-              });
-              const ghostClone = createGhostClone(sourceNode);
-              ghostTransitionRef.current = {
-                layoutId: source.layoutId,
-                cloneNode: ghostClone.cloneNode,
-              };
-              registerUiTraceNode({
-                scope: "list-config/ghost",
-                key: source.layoutId,
-                node: ghostTransitionRef.current.cloneNode,
-                data: {
-                  layoutId: source.layoutId,
-                },
-              });
-              recordUiTrace("list-config/ghost", "clone-created", {
-                layoutId: source.layoutId,
-                removedOverlayCount: ghostClone.removedOverlayCount,
-              });
-              flushSync(() => {
-                setArcTrackHoverDismissSignal((current) => current + 1);
-                setActiveGhostLayoutId(source.layoutId);
-              });
-            }
-
             appLogicAction.includeDraftItem(layoutRef);
           }}
           motionProps={contentFadeProps}
