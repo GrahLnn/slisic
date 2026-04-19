@@ -1,4 +1,5 @@
 import { useRef, useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { me } from "@grahlnn/fn";
 import { getName } from "@tauri-apps/api/app";
 import { documentDir, join } from "@tauri-apps/api/path";
@@ -20,9 +21,15 @@ import {
   createPlayListFromDraft,
   createConfigSidebarItemRef,
   createConfigSidebarItems,
+  playlistTitleLayoutId,
   resolveDraftCommitTitle,
   type ConfigSidebarItemRef,
 } from "@/src/flow/appLogic/core";
+import {
+  captureTitleShareFrames,
+  recordTitleShareTrace,
+  snapshotTitleShareNodes,
+} from "@/src/debug/titleShareTrace";
 import { collectionTitleLayoutTransition } from "./collectionTitle";
 import {
   ArcTrackList,
@@ -231,15 +238,29 @@ type ListConfigRenderData = {
   viewModel: ReturnType<typeof resolveListConfigViewModel>;
 };
 
+function waitForNextFrame() {
+  return new Promise<void>((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
+async function waitForTitleShareSourceReady() {
+  await waitForNextFrame();
+  await waitForNextFrame();
+}
+
 function createFrozenListConfigRenderData(args: {
   renderData: ListConfigRenderData;
   titleValue?: string;
+  titleLayoutId?: string;
 }): ListConfigRenderData {
-  if (args.titleValue === undefined) {
+  if (args.titleValue === undefined && args.titleLayoutId === undefined) {
     return args.renderData;
   }
 
   const currentTitle = args.renderData.viewModel.title;
+  const titleLayoutId = args.titleLayoutId ?? currentTitle.layoutId;
+  const titleValue = args.titleValue ?? currentTitle.value;
 
   return {
     ...args.renderData,
@@ -247,11 +268,12 @@ function createFrozenListConfigRenderData(args: {
       ...args.renderData.viewModel,
       title: {
         ...currentTitle,
-        value: args.titleValue,
-        snapshot: currentTitle.layoutId
+        layoutId: titleLayoutId,
+        value: titleValue,
+        snapshot: titleLayoutId
           ? {
-              layoutId: currentTitle.layoutId,
-              value: args.titleValue,
+              layoutId: titleLayoutId,
+              value: titleValue,
               placeholder: currentTitle.placeholder,
             }
           : null,
@@ -339,6 +361,13 @@ export function ListConfig() {
       return;
     }
     setIsBackNavigationPending(true);
+    recordTitleShareTrace("config:back-triggered", {
+      activeLayoutId,
+      draftMode: draft?.mode ?? null,
+      draftName: draft?.name ?? null,
+      hasDraftChanges: viewModel.hasDraftChanges,
+      pendingPlaylistName,
+    });
 
     try {
       if (!viewModel.hasDraftChanges || !draft) {
@@ -369,13 +398,37 @@ export function ListConfig() {
         animateTyping: titleResolution.kind !== "keep",
       });
 
-      appLogicAction.changeDraftName(titleResolution.name);
-      pageRenderFreeze.freeze(
-        createFrozenListConfigRenderData({
-          renderData: liveRenderData,
-          titleValue: committedPlaylist.name,
-        }),
-      );
+      const committedReturnLayoutId = playlistTitleLayoutId(committedPlaylist.name);
+      recordTitleShareTrace("create-back:commit-ready", {
+        activeLayoutId,
+        draftMode: draft.mode,
+        currentDraftName: draft.name,
+        resolvedTitle: titleResolution.name,
+        committedReturnLayoutId,
+        playlists: playlists.map((playlist) => ({
+          name: playlist.name,
+          layoutId: playlistTitleLayoutId(playlist.name),
+        })),
+        titleNodes: snapshotTitleShareNodes(),
+      });
+      captureTitleShareFrames("create-back:commit-ready", {
+        frames: 24,
+        payload: {
+          activeLayoutId,
+          committedReturnLayoutId,
+        },
+      });
+      flushSync(() => {
+        appLogicAction.changeDraftName(titleResolution.name);
+        pageRenderFreeze.freeze(
+          createFrozenListConfigRenderData({
+            renderData: liveRenderData,
+            titleValue: committedPlaylist.name,
+            titleLayoutId: committedReturnLayoutId,
+          }),
+        );
+      });
+      await waitForTitleShareSourceReady();
       pasteDownloadAction.reset();
       appLogicAction.back();
     } catch (error) {
@@ -386,6 +439,13 @@ export function ListConfig() {
 
   return (
     <div
+      data-title-trace-root="list-config"
+      data-page-state="config"
+      data-title-trace-active-layout-id={activeLayoutId ?? undefined}
+      data-title-trace-title-layout-id={viewModel.title.layoutId ?? undefined}
+      data-title-trace-pending-playlist-name={pendingPlaylistName ?? undefined}
+      data-title-trace-has-draft-changes={String(viewModel.hasDraftChanges)}
+      data-title-trace-back-pending={String(isBackNavigationPending)}
       className={cn(
         "relative flex flex-col w-160 mx-auto mt-24",
         !isPresent && "pointer-events-none",

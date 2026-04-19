@@ -4,11 +4,13 @@ import {
   collectionTitleToneFromDraft,
   createCollectionTitleHandoff,
   createDraft,
+  createDraftFromPlaylistName,
   cloneDraft,
   includeDraftSidebarItem,
   initialContext,
   playlistTitleLayoutId,
   removeDraftSidebarItem,
+  resolveConfigBackLayoutId,
   resetContextWith,
   upsertPlaylistIntoPlaylists,
   upsertCollectionIntoDraft,
@@ -136,16 +138,23 @@ export const machine = src.createMachine({
         },
         [openPlaylist.evt]: {
           target: ss.mainx.State.configLoading,
-          actions: assign(({ context, event }) =>
-            resetContextWith({
+          actions: assign(({ context, event }) => {
+            const cachedDraft = createDraftFromPlaylistName(
+              context.playlists,
+              event.output,
+            );
+
+            return resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
               activeLayoutId: playlistTitleLayoutId(event.output),
               pendingPlaylistName: event.output,
-            }),
-          ),
+              draftBaseline: cachedDraft ? cloneDraft(cachedDraft) : null,
+              draft: cachedDraft,
+            });
+          }),
         },
       },
     },
@@ -208,20 +217,26 @@ export const machine = src.createMachine({
         run: ss.mainx.State.loading,
         back: {
           target: ss.mainx.State.ready,
-          actions: assign(({ context }) =>
-            resetContextWith({
+          actions: assign(({ context }) => {
+            const backLayoutId = resolveConfigBackLayoutId({
+              activeLayoutId: context.activeLayoutId,
+              draft: context.draft,
+              draftBaseline: context.draftBaseline,
+            });
+
+            return resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
-              titleToneHandoff: context.activeLayoutId
+              titleToneHandoff: backLayoutId
                 ? createCollectionTitleHandoff(
-                    context.activeLayoutId,
+                    backLayoutId,
                     collectionTitleToneFromDraft(context.draft),
                   )
                 : null,
-            }),
-          ),
+            });
+          }),
         },
         opencreate: {
           actions: assign(({ context }) =>
@@ -242,16 +257,23 @@ export const machine = src.createMachine({
         },
         [openPlaylist.evt]: {
           target: ss.mainx.State.configLoading,
-          actions: assign(({ context, event }) =>
-            resetContextWith({
+          actions: assign(({ context, event }) => {
+            const cachedDraft = createDraftFromPlaylistName(
+              context.playlists,
+              event.output,
+            );
+
+            return resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
               activeLayoutId: playlistTitleLayoutId(event.output),
               pendingPlaylistName: event.output,
-            }),
-          ),
+              draftBaseline: cachedDraft ? cloneDraft(cachedDraft) : null,
+              draft: cachedDraft,
+            });
+          }),
         },
         [draftNameChanged.evt]: {
           actions: assign({

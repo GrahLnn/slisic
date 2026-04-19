@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  createDraftFromPlaylistName,
   createPlayListFromDraft,
   createContextResetter,
   createInitialContext,
   includeDraftSidebarItem,
   normalizeDraftName,
   removeDraftSidebarItem,
+  resolveConfigBackLayoutId,
   resolveDraftCommitTitle,
   resolveNextGeneratedPlaylistName,
   resetContextWith,
@@ -187,6 +189,61 @@ describe("upsertCollectionIntoDraft", () => {
 });
 
 describe("draft commit naming", () => {
+  test("hydrates an edit draft directly from an already loaded playlist snapshot", () => {
+    assert.deepEqual(
+      createDraftFromPlaylistName(
+        [
+          {
+            name: "Quiet Morning",
+            collections: [
+              {
+                name: "Quiet Morning",
+                url: "https://example.com/quiet-morning",
+                folder: "youtube/quiet-morning",
+                musics: [],
+                last_updated: "2026-04-13T00:00:00Z",
+                enable_updates: null,
+              },
+            ],
+            groups: [
+              {
+                name: "Disc 1",
+                url: "https://example.com/disc-1",
+                folder: "Disc 1",
+              },
+            ],
+          },
+        ],
+        "Quiet Morning",
+      ),
+      {
+        mode: "edit",
+        name: "Quiet Morning",
+        collections: [
+          {
+            name: "Quiet Morning",
+            url: "https://example.com/quiet-morning",
+            folder: "youtube/quiet-morning",
+            musics: [],
+            last_updated: "2026-04-13T00:00:00Z",
+            enable_updates: null,
+          },
+        ],
+        groups: [
+          {
+            name: "Disc 1",
+            url: "https://example.com/disc-1",
+            folder: "Disc 1",
+          },
+        ],
+      },
+    );
+  });
+
+  test("returns null when the requested playlist is not in the cached list", () => {
+    assert.equal(createDraftFromPlaylistName([], "Missing"), null);
+  });
+
   test("normalizes draft names before they are committed", () => {
     assert.equal(normalizeDraftName("  Quiet Morning  "), "Quiet Morning");
   });
@@ -316,10 +373,61 @@ describe("draft commit naming", () => {
       groups: draft.groups,
     });
   });
+
+  test("returns the committed playlist layout id when create draft changes become saveable", () => {
+    assert.equal(
+      resolveConfigBackLayoutId({
+        activeLayoutId: "collection-title:create",
+        draft: {
+          mode: "create",
+          name: "Quiet Morning",
+          collections: [
+            {
+              name: "Quiet Morning",
+              url: "https://example.com/quiet-morning",
+              folder: "youtube/quiet-morning",
+              musics: [],
+              last_updated: "2026-04-13T00:00:00Z",
+              enable_updates: null,
+            },
+          ],
+          groups: [],
+        },
+        draftBaseline: {
+          mode: "create",
+          name: "",
+          collections: [],
+          groups: [],
+        },
+      }),
+      "playlist-title:Quiet Morning",
+    );
+  });
+
+  test("keeps the original layout id when config draft did not change", () => {
+    assert.equal(
+      resolveConfigBackLayoutId({
+        activeLayoutId: "playlist-title:Quiet Morning",
+        draft: {
+          mode: "edit",
+          name: "Quiet Morning",
+          collections: [],
+          groups: [],
+        },
+        draftBaseline: {
+          mode: "edit",
+          name: "Quiet Morning",
+          collections: [],
+          groups: [],
+        },
+      }),
+      "playlist-title:Quiet Morning",
+    );
+  });
 });
 
 describe("upsertPlaylistIntoPlaylists", () => {
-  test("prepends a newly committed playlist when it did not exist before", () => {
+  test("appends a newly committed playlist when it did not exist before", () => {
     const next = {
       name: "Quiet Morning",
       collections: [],
@@ -327,6 +435,26 @@ describe("upsertPlaylistIntoPlaylists", () => {
     };
 
     assert.deepEqual(upsertPlaylistIntoPlaylists([], next), [next]);
+    assert.deepEqual(
+      upsertPlaylistIntoPlaylists(
+        [
+          {
+            name: "Existing",
+            collections: [],
+            groups: [],
+          },
+        ],
+        next,
+      ),
+      [
+        {
+          name: "Existing",
+          collections: [],
+          groups: [],
+        },
+        next,
+      ],
+    );
   });
 
   test("replaces an existing playlist in place when the name matches", () => {

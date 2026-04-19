@@ -5,7 +5,10 @@ import {
   resolvePlayListPageTransitionViewModel,
   shouldSuppressPlayListPageItemFade,
 } from "./PlayListPage.view-model";
-import { resolvePlayListPageItemFadeProps } from "./PlayListPage";
+import {
+  resolvePlayListPageItemFadeProps,
+  shouldCommitPlayListPageItem,
+} from "./PlayListPage";
 
 describe("PlayListPage transition view model", () => {
   test("treats config-entering states as an outgoing source transition only", () => {
@@ -60,7 +63,39 @@ describe("PlayListPage transition view model", () => {
     );
   });
 
-  test("lets the fresh click source dominate over any prior return target memory", () => {
+  test("keeps all playlist rows share-ready during config entry", () => {
+    const transition = resolvePlayListPageTransitionViewModel({
+      activeLayoutId: "collection-title:create",
+      titleToneHandoff: null,
+    });
+
+    assert.equal(
+      shouldSuppressPlayListPageItemFade("collection-title:create", transition),
+      true,
+    );
+    assert.equal(
+      shouldSuppressPlayListPageItemFade("playlist-title:PlayList 1", transition),
+      false,
+    );
+  });
+
+  test("keeps every item share-ready when there is no page transition", () => {
+    const transition = resolvePlayListPageTransitionViewModel({
+      activeLayoutId: null,
+      titleToneHandoff: null,
+    });
+
+    assert.equal(
+      shouldSuppressPlayListPageItemFade("playlist-title:PlayList 1", transition),
+      false,
+    );
+    assert.equal(
+      shouldSuppressPlayListPageItemFade("collection-title:create", transition),
+      false,
+    );
+  });
+
+  test("keeps other playlist items share-ready while returning from config", () => {
     const transition = resolvePlayListPageTransitionViewModel({
       activeLayoutId: null,
       titleToneHandoff: {
@@ -70,11 +105,8 @@ describe("PlayListPage transition view model", () => {
     });
 
     assert.equal(
-      resolvePlayListPageCommittedLayoutId({
-        pressedLayoutId: "collection-title:create",
-        transition,
-      }),
-      "collection-title:create",
+      shouldSuppressPlayListPageItemFade("playlist-title:PlayList 2", transition),
+      false,
     );
   });
 
@@ -98,6 +130,40 @@ describe("PlayListPage transition view model", () => {
         initial: { opacity: 0 },
         animate: { opacity: 0 },
       },
+    );
+  });
+
+  test("allows create to open config from both primary and secondary clicks", () => {
+    assert.equal(
+      shouldCommitPlayListPageItem({
+        button: 0,
+        gesture: "primary-and-secondary",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldCommitPlayListPageItem({
+        button: 2,
+        gesture: "primary-and-secondary",
+      }),
+      true,
+    );
+  });
+
+  test("allows existing playlists to open config only from secondary click", () => {
+    assert.equal(
+      shouldCommitPlayListPageItem({
+        button: 0,
+        gesture: "secondary-only",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldCommitPlayListPageItem({
+        button: 2,
+        gesture: "secondary-only",
+      }),
+      true,
     );
   });
 });

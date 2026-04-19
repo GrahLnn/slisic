@@ -156,12 +156,46 @@ export function createDraftFromPlayList(playlist: PlayList): ConfigDraft {
   });
 }
 
+export function createDraftFromPlaylistName(
+  playlists: readonly PlayList[],
+  name: string,
+): ConfigDraft | null {
+  const playlist = playlists.find((candidate) => candidate.name === name);
+
+  if (!playlist) {
+    return null;
+  }
+
+  return createDraftFromPlayList(playlist);
+}
+
 export function collectionTitleToneFromDraft(draft: ConfigDraft | null): CollectionTitleTone {
   if (!draft) {
     return "solid";
   }
 
   return draft.name.length === 0 ? "muted" : "solid";
+}
+
+export function resolveConfigBackLayoutId(args: {
+  activeLayoutId: string | null;
+  draft: ConfigDraft | null;
+  draftBaseline: ConfigDraft | null;
+}) {
+  if (!args.activeLayoutId || !args.draft || !args.draftBaseline) {
+    return args.activeLayoutId;
+  }
+
+  if (JSON.stringify(args.draft) === JSON.stringify(args.draftBaseline)) {
+    return args.activeLayoutId;
+  }
+
+  const normalizedName = normalizeDraftName(args.draft.name);
+  if (normalizedName.length === 0) {
+    return args.activeLayoutId;
+  }
+
+  return playlistTitleLayoutId(normalizedName);
 }
 
 export function createCollectionTitleHandoff(
@@ -285,7 +319,7 @@ export function upsertPlaylistIntoPlaylists(
   const currentIndex = playlists.findIndex((playlist) => playlist.name === matchName);
 
   if (currentIndex < 0) {
-    return [nextPlaylist, ...playlists];
+    return [...playlists, nextPlaylist];
   }
 
   return playlists.map((playlist, index) =>

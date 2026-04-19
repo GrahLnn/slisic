@@ -4,7 +4,7 @@ import "@fontsource-variable/noto-sans";
 import "@fontsource-variable/noto-serif";
 import "./App.css";
 import "sileo/styles.css";
-import { type PropsWithChildren } from "react";
+import { useLayoutEffect, useRef, type PropsWithChildren } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useTheme } from "next-themes";
 import { Toaster } from "sileo";
@@ -15,17 +15,88 @@ import { hook as appLogicHook } from "./flow/appLogic";
 import { useAppBootstrap } from "./flow/bootstrap";
 import TopBar from "./topbar";
 
+type PageScrollKey = "list" | "config";
+
+function restorePageViewportScrollPosition(args: {
+  node: HTMLElement | null;
+  scrollKey: PageScrollKey;
+  scrollPositionsRef: { current: Record<PageScrollKey, number> };
+}) {
+  if (!args.node) {
+    return;
+  }
+
+  const nextScrollTop = args.scrollPositionsRef.current[args.scrollKey];
+  if (Math.abs(args.node.scrollTop - nextScrollTop) < 1) {
+    return;
+  }
+
+  args.node.scrollTop = nextScrollTop;
+}
+
 function WindowMainArea({ children }: PropsWithChildren) {
   return (
-    <main
+    <motion.main
+      layoutRoot
+      data-title-trace-root="window-main-area"
       className={cn(
-        "fixed top-0 left-0 h-screen w-full overflow-y-auto overscroll-y-contain",
-        "flex-1 flex flex-col hide-scrollbar",
+        "fixed top-0 left-0 h-screen w-full overflow-hidden",
+        "flex-1 hide-scrollbar",
       )}
     >
-      <div className="min-h-8" />
       {children}
-    </main>
+    </motion.main>
+  );
+}
+
+function PageViewport({
+  children,
+  pageKey,
+  pageState,
+  scrollKey,
+  scrollPositionsRef,
+  traceRoot,
+}: PropsWithChildren<{
+  pageKey: string;
+  pageState: string;
+  scrollKey: PageScrollKey;
+  scrollPositionsRef: { current: Record<PageScrollKey, number> };
+  traceRoot: string;
+}>) {
+  const viewportRef = useRef<HTMLElement | null>(null);
+
+  useLayoutEffect(() => {
+    restorePageViewportScrollPosition({
+      node: viewportRef.current,
+      scrollKey,
+      scrollPositionsRef,
+    });
+  }, [pageKey, scrollKey, scrollPositionsRef]);
+
+  return (
+    <motion.section
+      ref={(node) => {
+        viewportRef.current = node;
+        restorePageViewportScrollPosition({
+          node,
+          scrollKey,
+          scrollPositionsRef,
+        });
+      }}
+      layoutScroll
+      data-title-trace-root={traceRoot}
+      data-title-trace-scroll-root={traceRoot}
+      data-page-state={pageState}
+      className={cn(
+        "absolute inset-0 overflow-y-auto overscroll-y-contain pt-8",
+        "hide-scrollbar",
+      )}
+      onScrollCapture={(event) => {
+        scrollPositionsRef.current[scrollKey] = event.currentTarget.scrollTop;
+      }}
+    >
+      {children}
+    </motion.section>
   );
 }
 
@@ -51,47 +122,98 @@ function SupportWindowContent() {
 
 function MainWindowApp() {
   const appLogicState = appLogicHook.useState();
+  const scrollPositionsRef = useRef<Record<PageScrollKey, number>>({
+    list: 0,
+    config: 0,
+  });
 
   return (
     <Base>
-      {/* Shared titles need the entering page to measure in its real slot. */}
-      <AnimatePresence initial={false} mode="popLayout">
+      <AnimatePresence initial={false}>
         {appLogicState.match({
           config: () => (
-            // popLayout only works on direct DOM-backed motion children.
-            <motion.div key="config" className="relative w-full">
+            <PageViewport
+              key="config"
+              pageKey="config"
+              pageState="config"
+              scrollKey="config"
+              scrollPositionsRef={scrollPositionsRef}
+              traceRoot="app-page-config"
+            >
               <ListConfig />
-            </motion.div>
+            </PageViewport>
           ),
           configLoading: () => (
-            <motion.div key="config" className="relative w-full">
+            <PageViewport
+              key="config"
+              pageKey="config"
+              pageState="config-loading"
+              scrollKey="config"
+              scrollPositionsRef={scrollPositionsRef}
+              traceRoot="app-page-config-loading"
+            >
               <ListConfig />
-            </motion.div>
+            </PageViewport>
           ),
           configUpdatingCollectionUpdates: () => (
-            <motion.div key="config" className="relative w-full">
+            <PageViewport
+              key="config"
+              pageKey="config"
+              pageState="config-updating"
+              scrollKey="config"
+              scrollPositionsRef={scrollPositionsRef}
+              traceRoot="app-page-config-updating"
+            >
               <ListConfig />
-            </motion.div>
+            </PageViewport>
           ),
           idle: () => (
-            <motion.div key="list" className="relative w-full">
+            <PageViewport
+              key="list"
+              pageKey="list"
+              pageState="idle"
+              scrollKey="list"
+              scrollPositionsRef={scrollPositionsRef}
+              traceRoot="app-page-list-idle"
+            >
               <PlayListPage />
-            </motion.div>
+            </PageViewport>
           ),
           loading: () => (
-            <motion.div key="list" className="relative w-full">
+            <PageViewport
+              key="list"
+              pageKey="list"
+              pageState="loading"
+              scrollKey="list"
+              scrollPositionsRef={scrollPositionsRef}
+              traceRoot="app-page-list-loading"
+            >
               <PlayListPage />
-            </motion.div>
+            </PageViewport>
           ),
           ready: () => (
-            <motion.div key="list" className="relative w-full">
+            <PageViewport
+              key="list"
+              pageKey="list"
+              pageState="ready"
+              scrollKey="list"
+              scrollPositionsRef={scrollPositionsRef}
+              traceRoot="app-page-list-ready"
+            >
               <PlayListPage />
-            </motion.div>
+            </PageViewport>
           ),
           error: () => (
-            <motion.div key="list" className="relative w-full">
+            <PageViewport
+              key="list"
+              pageKey="list"
+              pageState="error"
+              scrollKey="list"
+              scrollPositionsRef={scrollPositionsRef}
+              traceRoot="app-page-list-error"
+            >
               <PlayListPage />
-            </motion.div>
+            </PageViewport>
           ),
         })}
       </AnimatePresence>

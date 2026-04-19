@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import { motion, useIsPresent } from "motion/react";
 import type { PlayList } from "@/src/cmd";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
@@ -21,6 +21,11 @@ import {
   resolvePlayListPageTransitionViewModel,
   shouldSuppressPlayListPageItemFade,
 } from "./PlayListPage.view-model";
+import {
+  captureTitleShareFrames,
+  recordTitleShareTrace,
+  snapshotTitleShareNodes,
+} from "@/src/debug/titleShareTrace";
 import { PlayItem } from "./playItem";
 
 const contentFadeProps = {
@@ -29,6 +34,17 @@ const contentFadeProps = {
   exit: { opacity: 0 },
   transition: collectionTitleLayoutTransition,
 } as const;
+
+export type PlayListPageCommitGesture = "primary-and-secondary" | "secondary-only";
+
+export function shouldCommitPlayListPageItem(args: {
+  button: number;
+  gesture: PlayListPageCommitGesture;
+}) {
+  return args.gesture === "primary-and-secondary"
+    ? args.button === 0 || args.button === 2
+    : args.button === 2;
+}
 
 export function resolvePlayListPageItemFadeProps(args: {
   isPresent: boolean;
@@ -52,6 +68,7 @@ export function resolvePlayListPageTexts(playlists: readonly PlayList[]) {
 }
 
 function PlayListPageItem({
+  commitGesture,
   handoffTone,
   isCommitted = false,
   layoutId,
@@ -60,9 +77,10 @@ function PlayListPageItem({
   onPointerDown,
   onCommit,
 }: {
+  commitGesture: PlayListPageCommitGesture;
   handoffTone?: CollectionTitleTone | null;
   isCommitted?: boolean;
-  layoutId: string;
+  layoutId?: string;
   suppressFade?: boolean;
   text: string;
   onPointerDown?: () => void;
@@ -81,11 +99,53 @@ function PlayListPageItem({
       layoutId={layoutId}
       text={text}
       textClassName={isCommitted ? collectionTitleTextHoverClassName : undefined}
-      onPointerDown={() => {
-        onPointerDown?.();
+      onPointerDown={(event) => {
+        if (
+          shouldCommitPlayListPageItem({
+            button: event.button,
+            gesture: commitGesture,
+          })
+        ) {
+          recordTitleShareTrace("playlist-page:item-pointerdown", {
+            layoutId: layoutId ?? null,
+            text,
+            button: event.button,
+            gesture: commitGesture,
+          });
+          onPointerDown?.();
+        }
       }}
       onClick={() => {
-        onCommit();
+        if (
+          shouldCommitPlayListPageItem({
+            button: 0,
+            gesture: commitGesture,
+          })
+        ) {
+          recordTitleShareTrace("playlist-page:item-commit", {
+            layoutId: layoutId ?? null,
+            text,
+            trigger: "click",
+            gesture: commitGesture,
+          });
+          onCommit();
+        }
+      }}
+      onContextMenu={() => {
+        if (
+          shouldCommitPlayListPageItem({
+            button: 2,
+            gesture: commitGesture,
+          })
+        ) {
+          recordTitleShareTrace("playlist-page:item-commit", {
+            layoutId: layoutId ?? null,
+            text,
+            trigger: "contextmenu",
+            gesture: commitGesture,
+          });
+          onCommit();
+        }
       }}
     />
   );
@@ -104,19 +164,22 @@ function PlayListPageItem({
 function CreateNewItem({
   handoffTone,
   isCommitted,
+  layoutId,
   onPointerDown,
   suppressFade,
 }: {
   handoffTone?: CollectionTitleTone | null;
   isCommitted?: boolean;
+  layoutId?: string;
   onPointerDown?: () => void;
   suppressFade?: boolean;
 }) {
   return (
     <PlayListPageItem
+      commitGesture="primary-and-secondary"
       handoffTone={handoffTone}
       isCommitted={isCommitted}
-      layoutId={CREATE_COLLECTION_LAYOUT_ID}
+      layoutId={layoutId}
       onPointerDown={onPointerDown}
       suppressFade={suppressFade}
       text={CREATE_COLLECTION_TITLE}
@@ -142,21 +205,22 @@ export function PlayListPage() {
 
   const itemComponents = playlists.map((playlist, index) => {
     const text = texts[index] ?? playlist.name;
-    const layoutId = playlistTitleLayoutId(playlist.name);
+    const itemLayoutId = playlistTitleLayoutId(playlist.name);
     const handoffTone =
-      transition.returnTargetLayoutId === layoutId ? titleToneHandoff?.tone ?? null : null;
-    const suppressFade = shouldSuppressPlayListPageItemFade(layoutId, transition);
+      transition.returnTargetLayoutId === itemLayoutId ? titleToneHandoff?.tone ?? null : null;
+    const suppressFade = shouldSuppressPlayListPageItemFade(itemLayoutId, transition);
 
     return (
       <PlayListPageItem
         key={playlist.name}
+        commitGesture="secondary-only"
         handoffTone={handoffTone}
-        isCommitted={committedLayoutId === layoutId}
-        layoutId={layoutId}
+        isCommitted={committedLayoutId === itemLayoutId}
+        layoutId={itemLayoutId}
         suppressFade={suppressFade}
         text={text}
         onPointerDown={() => {
-          setPressedLayoutId(layoutId);
+          setPressedLayoutId(itemLayoutId);
         }}
         onCommit={() => {
           appLogicAction.openPlaylist(playlist.name);
@@ -170,8 +234,56 @@ export function PlayListPage() {
     transition,
   );
 
+  useLayoutEffect(() => {
+    if (
+      !transition.outgoingSourceLayoutId &&
+      !transition.returnTargetLayoutId
+    ) {
+      return;
+    }
+
+    recordTitleShareTrace("playlist-page:return-layout", {
+      activeLayoutId,
+      pressedLayoutId,
+      committedLayoutId,
+      outgoingSourceLayoutId: transition.outgoingSourceLayoutId,
+      returnTargetLayoutId: transition.returnTargetLayoutId,
+      titleToneHandoffLayoutId: titleToneHandoff?.layoutId ?? null,
+      titleToneHandoffTone: titleToneHandoff?.tone ?? null,
+      playlistNames: playlists.map((playlist) => ({
+        name: playlist.name,
+        layoutId: playlistTitleLayoutId(playlist.name),
+      })),
+      titleNodes: snapshotTitleShareNodes(),
+    });
+    captureTitleShareFrames("playlist-page:return-layout", {
+      frames: 24,
+      payload: {
+        activeLayoutId,
+        committedLayoutId,
+        outgoingSourceLayoutId: transition.outgoingSourceLayoutId,
+        returnTargetLayoutId: transition.returnTargetLayoutId,
+      },
+    });
+  }, [
+    activeLayoutId,
+    committedLayoutId,
+    playlists,
+    pressedLayoutId,
+    titleToneHandoff,
+    transition.outgoingSourceLayoutId,
+    transition.returnTargetLayoutId,
+  ]);
+
   return (
     <div
+      data-title-trace-root="playlist-page"
+      data-page-state="playlist"
+      data-title-trace-active-layout-id={activeLayoutId ?? undefined}
+      data-title-trace-pressed-layout-id={pressedLayoutId ?? undefined}
+      data-title-trace-committed-layout-id={committedLayoutId ?? undefined}
+      data-title-trace-outgoing-layout-id={transition.outgoingSourceLayoutId ?? undefined}
+      data-title-trace-return-layout-id={transition.returnTargetLayoutId ?? undefined}
       className="flex min-h-[calc(100vh-2rem)] flex-col items-center gap-8 px-6 pt-[40vh]"
       style={{ fontFamily: "var(--font-noto-sans)" }}
     >
@@ -185,6 +297,7 @@ export function PlayListPage() {
               : null
           }
           isCommitted={committedLayoutId === CREATE_COLLECTION_LAYOUT_ID}
+          layoutId={CREATE_COLLECTION_LAYOUT_ID}
           suppressFade={shouldSuppressCreateFade}
           onPointerDown={() => {
             setPressedLayoutId(CREATE_COLLECTION_LAYOUT_ID);

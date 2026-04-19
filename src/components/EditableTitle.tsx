@@ -10,9 +10,14 @@ import {
 import { motion } from "motion/react";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import {
+  collectionTitleLayoutTransition,
   collectionTitleColorTransition,
   useCollectionTitleColor,
 } from "./collectionTitle";
+import {
+  captureTitleShareFrames,
+  recordTitleShareNodeTrace,
+} from "@/src/debug/titleShareTrace";
 
 type EditableTitleProps = {
   value: string;
@@ -64,6 +69,9 @@ function waitForNextFrame() {
   });
 }
 
+const EDITABLE_TITLE_AUTOFOCUS_DELAY_MS =
+  Math.round(collectionTitleLayoutTransition.duration * 1000) + 16;
+
 export interface EditableTitleHandle {
   commitResolvedValue(args: { value: string; animateTyping: boolean }): Promise<void>;
   blur(): Promise<void>;
@@ -89,6 +97,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
 }: EditableTitleProps, ref) {
   const displayValue = resolveEditableTitleDisplayValue(value, placeholder);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const titleRootRef = useRef<HTMLDivElement>(null);
   const autoWriteRunRef = useRef(0);
   const [isFocused, setIsFocused] = useState(false);
   const [isAutoWriting, setIsAutoWriting] = useState(false);
@@ -103,6 +112,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
     isAutoWriting,
   });
   const hasColorHandoff = Boolean(handoffTone && handoffColor !== targetColor);
+  const layoutHostKey = layoutId ?? "__editable-title";
 
   useLayoutEffect(() => {
     if (!interactionDisabled) {
@@ -111,6 +121,42 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
 
     inputRef.current?.blur();
   }, [interactionDisabled]);
+
+  useLayoutEffect(() => {
+    const node = titleRootRef.current;
+
+    if (!node || !layoutId) {
+      return;
+    }
+
+    recordTitleShareNodeTrace("config-title:layout", node, {
+      layoutId,
+      resolvedLayoutId: resolvedLayoutId ?? null,
+      displayValue,
+      placeholder: placeholder ?? null,
+      interactionDisabled,
+      isFocused,
+      isAutoWriting,
+      handoffTone: handoffTone ?? null,
+    });
+    captureTitleShareFrames(`config-title:${layoutId}`, {
+      frames: 18,
+      payload: {
+        layoutId,
+        resolvedLayoutId: resolvedLayoutId ?? null,
+        displayValue,
+      },
+    });
+  }, [
+    displayValue,
+    handoffTone,
+    interactionDisabled,
+    isAutoWriting,
+    isFocused,
+    layoutId,
+    placeholder,
+    resolvedLayoutId,
+  ]);
 
   useImperativeHandle(ref, () => ({
     async commitResolvedValue(args) {
@@ -162,6 +208,10 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
   return (
     <div {...props}>
       <motion.div
+        key={layoutHostKey}
+        ref={titleRootRef}
+        data-title-layout-id={resolvedLayoutId ?? layoutId}
+        data-title-role="config-title"
         layoutId={resolvedLayoutId}
         className={cn("relative w-fit max-w-full", className)}
         style={style}
@@ -190,11 +240,15 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
             }
 
             node.dataset.autofocusReady = "true";
-            queueMicrotask(() => {
+            window.setTimeout(() => {
+              if (!node.isConnected || interactionDisabled) {
+                return;
+              }
+
               node.focus();
               const cursor = node.value.length;
               node.setSelectionRange(cursor, cursor);
-            });
+            }, EDITABLE_TITLE_AUTOFOCUS_DELAY_MS);
           }}
           aria-label="List title"
           rows={1}

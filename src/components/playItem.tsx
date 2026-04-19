@@ -64,6 +64,8 @@ export function PlayItem({
   return (
     <motion.div
       className={cn(className)}
+      data-title-layout-id={layoutId}
+      data-title-role="playlist-page-item"
       layoutId={layoutId}
       onClick={onClick}
       onContextMenu={(e) => {
