@@ -5,7 +5,6 @@ import { getPlatform } from "@/lib/utils";
 import App from "./App";
 import { ensureAppLogicStarted } from "./flow/appLogic";
 import { AppBootstrapProvider, useAppBootstrap } from "./flow/bootstrap";
-import { installTitleShareTrace } from "./debug/titleShareTrace";
 import MacOSControlsPortal from "./windowctrl/macos";
 import WindowsControlsPortal from "./windowctrl/windows";
 
@@ -28,7 +27,6 @@ function WindowControlsRoot() {
 const rootEl = document.getElementById("root");
 if (rootEl) {
   ensureAppLogicStarted();
-  installTitleShareTrace();
   const root = ReactDOM.createRoot(rootEl);
   root.render(
     <React.StrictMode>

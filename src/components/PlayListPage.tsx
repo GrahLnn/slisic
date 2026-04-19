@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState } from "react";
+import { useState } from "react";
 import { motion, useIsPresent } from "motion/react";
 import type { PlayList } from "@/src/cmd";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
@@ -21,11 +21,6 @@ import {
   resolvePlayListPageTransitionViewModel,
   shouldSuppressPlayListPageItemFade,
 } from "./PlayListPage.view-model";
-import {
-  captureTitleShareFrames,
-  recordTitleShareTrace,
-  snapshotTitleShareNodes,
-} from "@/src/debug/titleShareTrace";
 import { PlayItem } from "./playItem";
 
 const contentFadeProps = {
@@ -174,37 +169,6 @@ export function PlayListPage() {
     CREATE_COLLECTION_LAYOUT_ID,
     transition,
   );
-
-  useLayoutEffect(() => {
-    recordTitleShareTrace("playlist-page:layout", {
-      activeLayoutId,
-      pressedLayoutId,
-      committedLayoutId,
-      outgoingSourceLayoutId: transition.outgoingSourceLayoutId,
-      returnTargetLayoutId: transition.returnTargetLayoutId,
-      titleToneHandoffLayoutId: titleToneHandoff?.layoutId ?? null,
-      titleToneHandoffTone: titleToneHandoff?.tone ?? null,
-      playlistNames: playlists.map((playlist) => playlist.name),
-      titleNodes: snapshotTitleShareNodes(),
-    });
-    captureTitleShareFrames("playlist-page:layout", {
-      frames: 12,
-      payload: {
-        activeLayoutId,
-        committedLayoutId,
-        outgoingSourceLayoutId: transition.outgoingSourceLayoutId,
-        returnTargetLayoutId: transition.returnTargetLayoutId,
-      },
-    });
-  }, [
-    activeLayoutId,
-    committedLayoutId,
-    playlists,
-    pressedLayoutId,
-    titleToneHandoff,
-    transition.outgoingSourceLayoutId,
-    transition.returnTargetLayoutId,
-  ]);
 
   return (
     <div

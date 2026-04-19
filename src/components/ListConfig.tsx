@@ -25,11 +25,6 @@ import {
 } from "@/src/flow/appLogic/core";
 import { collectionTitleLayoutTransition } from "./collectionTitle";
 import {
-  captureTitleShareFrames,
-  recordTitleShareTrace,
-  snapshotTitleShareNodes,
-} from "@/src/debug/titleShareTrace";
-import {
   ArcTrackList,
   type ArcTrackPushTransitionSource,
 } from "./ArcTrackList";
@@ -343,25 +338,6 @@ export function ListConfig() {
     if (isBackNavigationPending) {
       return;
     }
-
-    recordTitleShareTrace("list-config:back", {
-      activeLayoutId,
-      draftName: draft?.name ?? null,
-      draftMode: draft?.mode ?? null,
-      renderedTitleLayoutId: viewModel.title.layoutId ?? null,
-      renderedTitleValue: viewModel.title.value,
-      hasDraftChanges: viewModel.hasDraftChanges,
-      titleToneHandoffLayoutId: titleToneHandoff?.layoutId ?? null,
-      titleToneHandoffTone: titleToneHandoff?.tone ?? null,
-      titleNodes: snapshotTitleShareNodes(),
-    });
-    captureTitleShareFrames("list-config:back", {
-      frames: 18,
-      payload: {
-        activeLayoutId,
-        renderedTitleLayoutId: viewModel.title.layoutId ?? null,
-      },
-    });
     setIsBackNavigationPending(true);
 
     try {
