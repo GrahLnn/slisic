@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { me } from "@grahlnn/fn";
 import { getPlatform } from "@/lib/utils";
 import { installTitleShareTrace } from "@/src/debug/titleShareTrace";
+import { installTorphTrace } from "@/src/debug/torphTrace";
 import App from "./App";
 import { ensureAppLogicStarted } from "./flow/appLogic";
 import { AppBootstrapProvider, useAppBootstrap } from "./flow/bootstrap";
@@ -28,6 +29,7 @@ function WindowControlsRoot() {
 const rootEl = document.getElementById("root");
 if (rootEl) {
   installTitleShareTrace();
+  installTorphTrace();
   ensureAppLogicStarted();
   const root = ReactDOM.createRoot(rootEl);
   root.render(
