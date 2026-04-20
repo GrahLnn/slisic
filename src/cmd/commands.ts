@@ -34,6 +34,7 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	exists: (path: string) => typedError<boolean, string>(__TAURI_INVOKE("exists", { path })),
 	appReady: () => __TAURI_INVOKE<void>("app_ready"),
+	resetDevDatabaseAndRestart: () => typedError<null, string>(__TAURI_INVOKE("reset_dev_database_and_restart")),
 	getMouseAndWindowPosition: () => typedError<MouseWindowInfo, string>(__TAURI_INVOKE("get_mouse_and_window_position")),
 	getWindowKind: () => __TAURI_INVOKE<WindowKindInfo>("get_window_kind"),
 	warmWindow: (name: WindowName) => __TAURI_INVOKE<void>("warm_window", { name }),
@@ -79,6 +80,7 @@ export const commands = {
 	addExclude: (music: Music) => typedError<Exclude, string>(__TAURI_INVOKE("add_exclude", { music })),
 	removeExclude: (music: Music) => typedError<boolean, string>(__TAURI_INVOKE("remove_exclude", { music })),
 	playPlaylist: (name: string) => typedError<PlayPlaylistSession, string>(__TAURI_INVOKE("play_playlist", { name })),
+	stopPlayback: () => typedError<boolean, string>(__TAURI_INVOKE("stop_playback")),
 	enqueueCollectionDownload: (url: string) => typedError<EnqueuedCollectionDownload, string>(__TAURI_INVOKE("enqueue_collection_download", { url })),
 	probeDownloadResource: (url: string) => typedError<DownloadResourceProbe, string>(__TAURI_INVOKE("probe_download_resource", { url })),
 	resumeDownloadTask: (taskId: string) => typedError<DownloadTask, string>(__TAURI_INVOKE("resume_download_task", { taskId })),

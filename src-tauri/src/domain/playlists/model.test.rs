@@ -92,11 +92,13 @@ async fn bootstrap_table(table: &str) {
 async fn bootstrap_relation_table(table: &str) {
     let db = get_db().expect("global playlist database handle should exist");
 
-    db.query(format!("DEFINE TABLE IF NOT EXISTS {table} TYPE RELATION SCHEMALESS;"))
-        .await
-        .expect("relation table bootstrap query should succeed")
-        .check()
-        .expect("relation table bootstrap response should succeed");
+    db.query(format!(
+        "DEFINE TABLE IF NOT EXISTS {table} TYPE RELATION SCHEMALESS;"
+    ))
+    .await
+    .expect("relation table bootstrap query should succeed")
+    .check()
+    .expect("relation table bootstrap response should succeed");
 }
 
 async fn insert_music_row(music: &Music) -> RecordId {

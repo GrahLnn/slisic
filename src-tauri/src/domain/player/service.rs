@@ -62,6 +62,21 @@ pub async fn play_playlist(name: String) -> Result<PlayPlaylistSession> {
     })
 }
 
+pub async fn stop_playback() -> Result<bool> {
+    let runtime = runtime()?;
+    runtime.generation.fetch_add(1, Ordering::SeqCst);
+    let Some(playback) = runtime.current_playback()? else {
+        return Ok(false);
+    };
+
+    playback
+        .stop()
+        .await
+        .map_err(|error| anyhow!("failed to stop playback: {error}"))?;
+
+    Ok(true)
+}
+
 fn runtime() -> Result<&'static Arc<PlayerRuntime>> {
     PLAYER_RUNTIME
         .get()
@@ -85,6 +100,13 @@ impl PlayerRuntime {
         *playback = Some(created.clone());
         Ok(created)
     }
+
+    fn current_playback(&self) -> Result<Option<Playback>> {
+        self.playback
+            .lock()
+            .map(|playback| playback.clone())
+            .map_err(|_| anyhow!("player runtime playback lock is poisoned"))
+    }
 }
 
 struct PlaylistSession {
@@ -97,12 +119,26 @@ async fn build_playlist_session(app: &AppHandle, playlist_name: &str) -> Result<
     let playlist = playlist_repo::get_playlist_by_name(playlist_name)
         .await?
         .ok_or_else(|| anyhow!("playlist `{playlist_name}` not found"))?;
-    let library_collections = playlist_repo::list_collections().await?;
     let save_root = meta_service::resolve_save_root(app).await?;
-    let tracks = collect_playlist_tracks(&playlist, &library_collections, &save_root);
+    let library_collections = playlist_repo::list_collections().await?;
+    let selected_collections = resolve_selected_collections(&playlist, &library_collections);
+    let tracks = collect_playlist_tracks(
+        &playlist,
+        &selected_collections,
+        &library_collections,
+        &save_root,
+    );
 
     if tracks.is_empty() {
-        bail!("playlist `{playlist_name}` does not contain any playable tracks");
+        bail!(
+            "{}",
+            describe_playlist_track_resolution_failure(
+                &playlist,
+                &selected_collections,
+                &library_collections,
+                &save_root,
+            )
+        );
     }
 
     Ok(PlaylistSession {
@@ -110,6 +146,113 @@ async fn build_playlist_session(app: &AppHandle, playlist_name: &str) -> Result<
         tracks,
         strategy: Box::new(RandomPlaybackStrategy::new()),
     })
+}
+
+pub(crate) fn resolve_selected_collections(
+    playlist: &PlayList,
+    library_collections: &[Collection],
+) -> Vec<Collection> {
+    playlist
+        .collections
+        .iter()
+        .filter_map(|selected| {
+            library_collections
+                .iter()
+                .find(|candidate| candidate.url == selected.url)
+                .cloned()
+        })
+        .collect()
+}
+
+fn describe_playlist_track_resolution_failure(
+    playlist: &PlayList,
+    selected_collections: &[Collection],
+    library_collections: &[Collection],
+    save_root: &Path,
+) -> String {
+    let selected_urls = playlist
+        .collections
+        .iter()
+        .map(|collection| collection.url.as_str())
+        .collect::<Vec<_>>();
+    let selected_group_urls = playlist
+        .groups
+        .iter()
+        .map(|group| group.url.as_str())
+        .collect::<HashSet<_>>();
+
+    let mut collection_summaries = Vec::new();
+
+    for selected in &playlist.collections {
+        let Some(collection) = library_collections
+            .iter()
+            .find(|candidate| candidate.url == selected.url)
+        else {
+            collection_summaries.push(format!(
+                "collection(url={}, status=missing-from-library)",
+                selected.url
+            ));
+            continue;
+        };
+
+        let mut playable = 0usize;
+        let mut missing_path = 0usize;
+        let mut missing_file = 0usize;
+
+        for music in &collection.musics {
+            let Some(path) = music.path.as_deref() else {
+                missing_path += 1;
+                continue;
+            };
+
+            let resolved = resolve_music_file_path(save_root, collection, Some(path));
+            if resolved.as_ref().is_some_and(|path| path.is_file()) {
+                playable += 1;
+            } else {
+                missing_file += 1;
+            }
+        }
+
+        collection_summaries.push(format!(
+            "collection(url={}, musics={}, playable={}, missing_path={}, missing_file={})",
+            collection.url,
+            collection.musics.len(),
+            playable,
+            missing_path,
+            missing_file
+        ));
+    }
+
+    let mut group_matches = 0usize;
+    let mut group_playable = 0usize;
+    for collection in library_collections {
+        for music in &collection.musics {
+            if !selected_group_urls.contains(music.group.url.as_str()) {
+                continue;
+            }
+
+            group_matches += 1;
+            if let Some(path) = music.path.as_deref() {
+                let resolved = resolve_music_file_path(save_root, collection, Some(path));
+                if resolved.as_ref().is_some_and(|path| path.is_file()) {
+                    group_playable += 1;
+                }
+            }
+        }
+    }
+
+    format!(
+        "playlist `{}` does not contain any playable tracks [selected_collection_refs={}, matched_collections={}, selected_group_refs={}, group_matches={}, group_playable={}, save_root={}, selected_urls=[{}], details=[{}]]",
+        playlist.name,
+        playlist.collections.len(),
+        selected_collections.len(),
+        playlist.groups.len(),
+        group_matches,
+        group_playable,
+        save_root.display(),
+        selected_urls.join(", "),
+        collection_summaries.join("; ")
+    )
 }
 
 async fn run_playlist_session(
@@ -168,13 +311,14 @@ async fn wait_until_track_finishes(
 
 pub(crate) fn collect_playlist_tracks(
     playlist: &PlayList,
+    selected_collections: &[Collection],
     library_collections: &[Collection],
     save_root: &Path,
 ) -> Vec<PlaybackTrack> {
     let mut seen = HashSet::new();
     let mut tracks = Vec::new();
 
-    for collection in &playlist.collections {
+    for collection in selected_collections {
         append_collection_tracks(
             playlist,
             collection,

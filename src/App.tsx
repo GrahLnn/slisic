@@ -85,7 +85,10 @@ function PageViewport({
       data-title-trace-root={pageState}
       data-title-trace-scroll-root={scrollKey}
       className={cn(
-        "absolute inset-0 overflow-y-auto overscroll-y-contain pt-8",
+        "absolute inset-0 pt-8",
+        pageState === "play"
+          ? "overflow-hidden"
+          : "overflow-y-auto overscroll-y-contain",
         "hide-scrollbar",
       )}
       onScrollCapture={(event) => {

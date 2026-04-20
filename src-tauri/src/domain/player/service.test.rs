@@ -1,4 +1,4 @@
-use super::service::collect_playlist_tracks;
+use super::service::{collect_playlist_tracks, resolve_selected_collections};
 use crate::domain::playlists::model::{Collection, Group, Music, PlayList};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -72,7 +72,7 @@ fn collect_playlist_tracks_includes_group_only_entries_from_library() {
         groups: vec![disc],
     };
 
-    let tracks = collect_playlist_tracks(&playlist, &library, &root);
+    let tracks = collect_playlist_tracks(&playlist, &[], &library, &root);
 
     assert_eq!(tracks.len(), 1);
     assert_eq!(tracks[0].music_name, "Track A");
@@ -112,10 +112,48 @@ fn collect_playlist_tracks_deduplicates_overlap_between_selected_collections_and
         groups: vec![disc],
     };
 
-    let tracks = collect_playlist_tracks(&playlist, &[selected_collection], &root);
+    let tracks = collect_playlist_tracks(
+        &playlist,
+        std::slice::from_ref(&selected_collection),
+        &[selected_collection.clone()],
+        &root,
+    );
 
     assert_eq!(tracks.len(), 1);
     assert_eq!(tracks[0].file_path, audio_path);
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn resolve_selected_collections_uses_current_library_records_for_playlist_refs() {
+    let stale_disc = group("Disc 1", "https://example.com/disc-1", "disc-1");
+    let playlist = PlayList {
+        name: "Focus".to_string(),
+        collections: vec![collection(
+            "Album",
+            "https://example.com/album",
+            "youtube/album",
+            vec![],
+        )],
+        groups: vec![stale_disc],
+    };
+    let library = vec![collection(
+        "Album",
+        "https://example.com/album",
+        "youtube/album",
+        vec![music(
+            "Track A",
+            "https://example.com/watch?v=track-a",
+            "disc-1/track-a.m4a",
+            group("Disc 1", "https://example.com/disc-1", "disc-1"),
+        )],
+    )];
+
+    let selected = resolve_selected_collections(&playlist, &library);
+
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].url, "https://example.com/album");
+    assert_eq!(selected[0].musics.len(), 1);
+    assert_eq!(selected[0].musics[0].name, "Track A");
 }

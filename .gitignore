@@ -19,6 +19,7 @@ src/cmd/commands.ts
 .tauri/
 
 src-tauri/binaries/bun-runtime-*
+src-tauri/dev-reset-trigger.txt
 .tmp/bun-runtime/
 
 .gitnexus

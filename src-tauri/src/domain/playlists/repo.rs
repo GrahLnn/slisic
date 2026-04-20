@@ -1,19 +1,34 @@
-use super::model::{Collection, Exclude, Music, PlayList};
+use super::model::{Collection, Exclude, Group, Music, PlayList};
 use anyhow::{Result, bail};
 use appdb::connection::get_db;
 use appdb::error::{DBError, classify_db_error};
-use appdb::graph;
 use appdb::model::meta::ModelMeta;
+use appdb::graph;
 use appdb::repository::Repo;
 use appdb::{Crud, Id, Store};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use surrealdb::types::{RecordId, Table};
 use surrealdb_types::SurrealValue;
 
 pub async fn list_collections() -> Result<Vec<Collection>> {
+    ensure_collection_graph_schema().await?;
+
     match Collection::list().await {
-        Ok(collections) => Ok(collections),
+        Ok(collections) => {
+            let mut hydrated = Vec::with_capacity(collections.len());
+
+            for collection in collections {
+                let Some(full) = get_collection_by_url(&collection.url).await? else {
+                    continue;
+                };
+
+                hydrated.push(full);
+            }
+
+            Ok(hydrated)
+        }
         Err(error) => match classify_db_error(&error) {
             DBError::MissingTable(_) => Ok(vec![]),
             other => Err(other.into()),
@@ -74,6 +89,8 @@ pub async fn has_collections() -> Result<bool> {
 }
 
 pub async fn get_collection_by_url(url: &str) -> Result<Option<Collection>> {
+    ensure_collection_graph_schema().await?;
+
     let Some(record) = find_unique_record_id_by_string_field::<Collection>("url", url).await?
     else {
         return Ok(None);
@@ -102,6 +119,7 @@ pub async fn delete_playlist_by_name(name: &str) -> Result<bool> {
 }
 
 pub async fn upsert_playlist(playlist: &PlayList, previous_name: Option<&str>) -> Result<PlayList> {
+    let playlist = resolve_playlist_foreign_refs(playlist).await?;
     let existing_record = match previous_name {
         Some(name) => find_unique_record_id_by_string_field::<PlayList>("name", name).await?,
         None => None,
@@ -138,6 +156,8 @@ pub async fn list_auto_update_collections() -> Result<Vec<Collection>> {
 }
 
 pub async fn upsert_collection(collection: &Collection) -> Result<Collection> {
+    ensure_collection_graph_schema().await?;
+
     let existing_record =
         find_unique_record_id_by_string_field::<Collection>("url", &collection.url).await?;
     let record = existing_record
@@ -151,6 +171,25 @@ pub async fn upsert_collection(collection: &Collection) -> Result<Collection> {
     let next_music_ids = load_collection_music_ids(&record).await?;
     delete_orphaned_music_records(previous_music_ids, &next_music_ids).await?;
     Ok(saved)
+}
+
+/// Collection persistence owns its graph schema so callers never need to
+/// remember a separate bootstrap step before writing or hydrating musics.
+async fn ensure_collection_graph_schema() -> Result<()> {
+    let db = get_db()?;
+
+    db.query(format!(
+        "DEFINE TABLE IF NOT EXISTS {} SCHEMALESS;",
+        Music::table_name()
+    ))
+    .await?
+    .check()?;
+
+    db.query("DEFINE TABLE IF NOT EXISTS includes TYPE RELATION SCHEMALESS;")
+        .await?
+        .check()?;
+
+    Ok(())
 }
 
 async fn load_collection_music_ids(record: &RecordId) -> Result<Vec<RecordId>> {
@@ -244,6 +283,52 @@ async fn delete_orphaned_music_records(
     }
 
     Ok(())
+}
+
+/// Playlists reference canonical library entities. Saving a draft playlist must
+/// never overwrite hydrated collection/group records with UI-side shells.
+async fn resolve_playlist_foreign_refs(playlist: &PlayList) -> Result<PlayList> {
+    let library_collections = list_collections().await?;
+    let library_groups = library_group_index(&library_collections);
+
+    Ok(PlayList {
+        name: playlist.name.clone(),
+        collections: playlist
+            .collections
+            .iter()
+            .map(|collection| {
+                library_collections
+                    .iter()
+                    .find(|candidate| candidate.url == collection.url)
+                    .cloned()
+                    .unwrap_or_else(|| collection.clone())
+            })
+            .collect(),
+        groups: playlist
+            .groups
+            .iter()
+            .map(|group| {
+                library_groups
+                    .get(group.url.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| group.clone())
+            })
+            .collect(),
+    })
+}
+
+fn library_group_index(collections: &[Collection]) -> HashMap<String, Group> {
+    let mut groups = HashMap::new();
+
+    for collection in collections {
+        for music in &collection.musics {
+            groups
+                .entry(music.group.url.clone())
+                .or_insert_with(|| music.group.clone());
+        }
+    }
+
+    groups
 }
 
 async fn music_parent_count(record: &RecordId) -> Result<i64> {

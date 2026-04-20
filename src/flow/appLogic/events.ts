@@ -11,7 +11,13 @@ import {
   type PayloadEvt,
   type SignalEvt,
 } from "@grahlnn/fn/flow";
-import { crab, type Collection, type PlayList, type PlayPlaylistSession } from "@/src/cmd";
+import {
+  crab,
+  type Collection,
+  type NowPlayingTrackChangedEvent,
+  type PlayList,
+  type PlayPlaylistSession,
+} from "@/src/cmd";
 import {
   createDraftFromPlayList,
   type CollectionUpdatesChange,
@@ -165,6 +171,7 @@ export const payloads = collect(
   ...event<ConfigSidebarItemRef>()("draft.item.included"),
   ...event<ConfigSidebarItemRef>()("draft.item.removed"),
   ...event<CollectionUpdatesChange>()("collection.updates.requested"),
+  ...event<NowPlayingTrackChangedEvent>()("player.now_playing_track.changed"),
 );
 
 export type MainStateT = Extract<keyof typeof ss.mainx.State, string>;

@@ -3,10 +3,10 @@ use super::repo::{list_tasks, save_task};
 use super::service::{
     CollectionSyncPlan, PlannedLeaf, apply_collection_plan_to_task, create_collection_shell,
     derive_youtube_channel_url_from_uploads_playlist, describe_download_resource,
-    existing_leaf_urls,
-    expand_root_entries_to_planned_leafs, extract_olak_playlist_ids, materialize_music_entries,
-    persist_enqueued_collection_state, prepare_task_enqueue, provider_segment, resume_download_task,
-    sanitize_path_component, should_reprobe_single_leaf, try_claim_enqueue_url,
+    existing_leaf_urls, expand_root_entries_to_planned_leafs, extract_olak_playlist_ids,
+    materialize_music_entries, persist_enqueued_collection_state, prepare_task_enqueue,
+    provider_segment, resume_download_task, sanitize_path_component, should_reprobe_single_leaf,
+    try_claim_enqueue_url,
 };
 use super::yt_dlp::{
     DownloadProgress, DownloadedLeaf, LeafChapter, LeafProbe, LeafReference, PlaylistRoot,
@@ -554,11 +554,7 @@ fn create_collection_shell_reuses_existing_music_and_updates_collection_metadata
         folder: "youtube/original-list".to_string(),
         musics: vec![Music {
             name: "Track 1".to_string(),
-            group: collection_group(
-                "Disc 1",
-                "https://example.com/list#disc-1",
-                "Disc 1",
-            ),
+            group: collection_group("Disc 1", "https://example.com/list#disc-1", "Disc 1"),
             url: "https://example.com/watch?v=track-1".to_string(),
             path: Some("Disc 1/track-1.m4a".to_string()),
             start: 0,
@@ -610,7 +606,10 @@ fn apply_collection_plan_to_task_populates_collection_metadata_and_leaf_queue() 
 
     apply_collection_plan_to_task(&mut task, &plan);
 
-    assert_eq!(task.collection_url.as_deref(), Some("https://example.com/list"));
+    assert_eq!(
+        task.collection_url.as_deref(),
+        Some("https://example.com/list")
+    );
     assert_eq!(task.collection_name.as_deref(), Some("Bootstrapped List"));
     assert_eq!(
         task.collection_folder.as_deref(),
@@ -653,14 +652,16 @@ fn persist_enqueued_collection_state_saves_collection_before_leaf_downloads_star
         let (saved_task, saved_collection) = persist_enqueued_collection_state(task, &plan)
             .await
             .expect("enqueue bootstrap should persist collection and task metadata");
-        let reloaded_collection = crate::domain::playlists::repo::get_collection_by_url(
-            &plan.collection_url,
-        )
-        .await
-        .expect("collection lookup should succeed")
-        .expect("collection should exist immediately after bootstrap");
+        let reloaded_collection =
+            crate::domain::playlists::repo::get_collection_by_url(&plan.collection_url)
+                .await
+                .expect("collection lookup should succeed")
+                .expect("collection should exist immediately after bootstrap");
 
-        assert_eq!(saved_task.collection_url.as_deref(), Some(plan.collection_url.as_str()));
+        assert_eq!(
+            saved_task.collection_url.as_deref(),
+            Some(plan.collection_url.as_str())
+        );
         assert_eq!(saved_task.leafs.len(), 1);
         assert_eq!(saved_collection.url, plan.collection_url);
         assert_eq!(reloaded_collection.name, plan.collection_name);

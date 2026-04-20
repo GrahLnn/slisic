@@ -74,6 +74,12 @@ struct GroupCatalog {
     discovery_attempted: bool,
 }
 
+#[derive(Clone)]
+struct DownloadExecutionDeps {
+    client: Arc<dyn YtDlpClient>,
+    save_root: PathBuf,
+}
+
 pub fn initialize_runtime(app: AppHandle) {
     let runtime = DOWNLOAD_RUNTIME.get_or_init(|| DownloadRuntime {
         app: app.clone(),
@@ -91,9 +97,9 @@ pub async fn enqueue_collection_download(url: String) -> Result<EnqueuedCollecti
 pub async fn probe_download_resource(url: String) -> Result<DownloadResourceProbe> {
     let normalized_url = normalize_url(&url)?;
     let app = runtime()?.app.clone();
-    let client = build_client(&app)?;
+    let deps = resolve_execution_deps(&app).await?;
     let root_probe = {
-        let client = client.clone();
+        let client = deps.client.clone();
         let probe_url = normalized_url.clone();
         run_blocking(move || client.probe_root(&probe_url)).await?
     };
@@ -163,6 +169,35 @@ async fn enqueue_collection_download_with_trigger(
 
     if !task.status.is_terminal() {
         spawn_task(task.id.to_string())?;
+    }
+
+    Ok(EnqueuedCollectionDownload { task, collection })
+}
+
+pub(crate) async fn enqueue_collection_download_for_test(
+    url: String,
+    client: Arc<dyn YtDlpClient>,
+    save_root: PathBuf,
+) -> Result<EnqueuedCollectionDownload> {
+    let deps = DownloadExecutionDeps { client, save_root };
+    let prepared = prepare_task_enqueue_outcome(url, DownloadTrigger::Manual).await?;
+
+    let (mut task, mut collection) = match prepared {
+        PreparedTaskEnqueue::Existing(task) => match resolve_existing_enqueued_collection(&task).await {
+            Ok(collection) => (task, collection),
+            Err(_) => bootstrap_enqueued_collection_with_deps(task, deps.clone()).await?,
+        },
+        PreparedTaskEnqueue::New(task) => bootstrap_enqueued_collection_with_deps(task, deps.clone()).await?,
+    };
+
+    if !task.status.is_terminal() {
+        run_task_with_deps(task.id.to_string(), deps).await?;
+        task = repo::get_task(&task.id.to_string()).await?;
+        if let Some(collection_url) = task.collection_url.as_deref()
+            && let Some(updated) = collection_repo::get_collection_by_url(collection_url).await?
+        {
+            collection = updated;
+        }
     }
 
     Ok(EnqueuedCollectionDownload { task, collection })
@@ -297,18 +332,29 @@ async fn bootstrap_enqueued_collection(
     task: DownloadTask,
     app: AppHandle,
 ) -> Result<(DownloadTask, Collection)> {
-    let client = build_client(&app)?;
-    let save_root = resolve_save_root(&app).await?;
-    let plan = resolve_collection_plan(&task, client, &save_root).await?;
+    let deps = resolve_execution_deps(&app).await?;
+    bootstrap_enqueued_collection_with_deps(task, deps).await
+}
+
+async fn bootstrap_enqueued_collection_with_deps(
+    task: DownloadTask,
+    deps: DownloadExecutionDeps,
+) -> Result<(DownloadTask, Collection)> {
+    let plan = resolve_collection_plan(&task, deps.client, &deps.save_root).await?;
     persist_enqueued_collection_state(task, &plan).await
 }
 
 async fn run_task(task_id: String, app: AppHandle) -> Result<()> {
+    let deps = resolve_execution_deps(&app).await?;
+    run_task_with_deps(task_id, deps).await
+}
+
+async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Result<()> {
     let mut task_snapshot = repo::get_task(&task_id).await?;
     update_task_status(&mut task_snapshot, DownloadTaskStatus::Resolving, None).await?;
 
-    let client = build_client(&app)?;
-    let save_root = resolve_save_root(&app).await?;
+    let client = deps.client;
+    let save_root = deps.save_root;
     let plan = resolve_collection_plan(&task_snapshot, client.clone(), &save_root).await?;
     let mut collection = create_collection_shell(
         &plan,
@@ -899,12 +945,134 @@ fn spawn_recovery(app: AppHandle) {
                     eprintln!("[downloads] failed to mark interrupted tasks: {error}");
                 }
 
+                match resolve_save_root(&app).await {
+                    Ok(save_root) => match repair_stale_single_source_collections(&save_root).await {
+                        Ok(repaired) if repaired > 0 => {
+                            eprintln!(
+                                "[downloads] repaired {repaired} stale single-source collections"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            eprintln!(
+                                "[downloads] failed to repair stale single-source collections: {error}"
+                            );
+                        }
+                    },
+                    Err(error) => {
+                        eprintln!("[downloads] failed to resolve save root during recovery: {error}");
+                    }
+                }
+
                 if let Err(error) = run_auto_update_cycle().await {
                     eprintln!("[downloads] initial auto update failed: {error}");
                 }
             });
-            drop(app);
         });
+}
+
+/// Interrupted single-resource imports can leave behind a collection shell
+/// even though the downloaded leaf file already exists on disk. Recovery
+/// repairs that persisted state so playback stays data-driven.
+pub(crate) async fn repair_stale_single_source_collections(save_root: &Path) -> Result<usize> {
+    let mut repaired = 0;
+    let mut tasks_by_collection = HashMap::<String, Vec<DownloadTask>>::new();
+
+    for task in repo::list_tasks().await? {
+        if task.source_kind != Some(CollectionSourceKind::Single) {
+            continue;
+        }
+
+        let Some(collection_url) = task.collection_url.as_ref() else {
+            continue;
+        };
+
+        tasks_by_collection
+            .entry(collection_url.clone())
+            .or_default()
+            .push(task);
+    }
+
+    for (collection_url, mut tasks) in tasks_by_collection {
+        tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+
+        let Some(mut collection) = collection_repo::get_collection_by_url(&collection_url).await?
+        else {
+            continue;
+        };
+        if !collection.musics.is_empty() {
+            continue;
+        }
+
+        for task in tasks {
+            let restored = restore_single_source_musics_from_task(&collection, &task, save_root);
+            if restored.is_empty() {
+                continue;
+            }
+
+            collection.musics = restored;
+            collection.last_updated = now_timestamp();
+            let _ = collection_repo::upsert_collection(&collection).await?;
+            repaired += 1;
+            break;
+        }
+    }
+
+    Ok(repaired)
+}
+
+pub(crate) fn restore_single_source_musics_from_task(
+    collection: &Collection,
+    task: &DownloadTask,
+    save_root: &Path,
+) -> Vec<Music> {
+    if task.source_kind != Some(CollectionSourceKind::Single) {
+        return vec![];
+    }
+
+    let default_group = Group {
+        name: collection.name.clone(),
+        url: collection.url.clone(),
+        folder: collection.folder.clone(),
+    };
+    let mut restored = Vec::new();
+    let mut seen_urls = HashSet::new();
+
+    for leaf in &task.leafs {
+        let Some(relative_path) = leaf.relative_path.as_ref() else {
+            continue;
+        };
+        let relative_path = relative_path.trim();
+        if relative_path.is_empty() {
+            continue;
+        }
+
+        let absolute_path = save_root.join(&collection.folder).join(relative_path);
+        if !absolute_path.is_file() {
+            continue;
+        }
+
+        if !seen_urls.insert(leaf.url.clone()) {
+            continue;
+        }
+
+        restored.push(Music {
+            name: leaf
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .unwrap_or(&collection.name)
+                .to_string(),
+            group: default_group.clone(),
+            url: leaf.url.clone(),
+            path: Some(relative_path.to_string()),
+            start: 0,
+            end: leaf.duration_seconds.unwrap_or(0),
+        });
+    }
+
+    restored
 }
 
 fn spawn_auto_update_loop(app: AppHandle) {
@@ -958,6 +1126,13 @@ fn build_client(app: &AppHandle) -> Result<Arc<dyn YtDlpClient>> {
 
 async fn resolve_save_root(app: &AppHandle) -> Result<PathBuf> {
     meta_service::resolve_save_root(app).await
+}
+
+async fn resolve_execution_deps(app: &AppHandle) -> Result<DownloadExecutionDeps> {
+    Ok(DownloadExecutionDeps {
+        client: build_client(app)?,
+        save_root: resolve_save_root(app).await?,
+    })
 }
 
 async fn run_blocking<T>(work: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T>

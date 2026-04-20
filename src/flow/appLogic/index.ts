@@ -1,5 +1,6 @@
 import { useSelector } from "@xstate/react";
 import { me } from "@grahlnn/fn";
+import { crab } from "@/src/cmd";
 import type { ConfigSidebarItemRef, PlaylistUpsertResult } from "./core";
 import { MainStateT, sig } from "./events";
 import {
@@ -9,6 +10,7 @@ import {
   draftNameChanged,
   draftItemIncluded,
   draftItemRemoved,
+  nowPlayingTrackChanged,
   openPlaylist,
   playPlaylist,
   playlistDeleted,
@@ -31,6 +33,7 @@ const selectContext = me.select((shot: { context: ActorSnapshot["context"] }) =>
 
 let started = false;
 let unsubscribeDebug: (() => void) | null = null;
+let unsubscribeNowPlayingTrackChanged: (() => void) | null = null;
 
 function formatStateValue(value: unknown) {
   return typeof value === "string" ? value : JSON.stringify(value);
@@ -41,6 +44,8 @@ function summarizeContext(context: ActorSnapshot["context"]) {
     activeLayoutId: context.activeLayoutId,
     pendingPlaylistName: context.pendingPlaylistName,
     playingPlaylistName: context.playingPlaylistName,
+    nowPlayingTrackName: context.nowPlayingTrackName,
+    error: context.error,
     titleToneHandoffLayoutId: context.titleToneHandoff?.layoutId ?? null,
     titleToneHandoffTone: context.titleToneHandoff?.tone ?? null,
     pendingPlaylistPreview: context.pendingPlaylistPreview
@@ -64,9 +69,13 @@ function summarizeContext(context: ActorSnapshot["context"]) {
 function attachDebugLogger() {
   const initialSnapshot = actor.getSnapshot();
   let prevState = formatStateValue(initialSnapshot.value);
-  let prevContextKey = JSON.stringify(summarizeContext(initialSnapshot.context));
+  let prevContextSummary = summarizeContext(initialSnapshot.context);
+  let prevContextKey = JSON.stringify(prevContextSummary);
 
   console.log(`[appLogic] enter ${prevState}`);
+  if (prevContextSummary.error) {
+    console.error(`[appLogic:error] ${prevState}`, prevContextSummary.error);
+  }
 
   const subscription = actor.subscribe((snapshot) => {
     const nextState = formatStateValue(snapshot.value);
@@ -77,21 +86,68 @@ function attachDebugLogger() {
     }
 
     console.log(`[appLogic] ${prevState} -> ${nextState}`);
+    if (
+      contextSummary.error &&
+      (contextSummary.error !== prevContextSummary.error || nextState === "error")
+    ) {
+      console.error(`[appLogic:error] ${nextState}`, contextSummary.error);
+    }
+
     prevState = nextState;
+    prevContextSummary = contextSummary;
     prevContextKey = nextContextKey;
   });
 
   unsubscribeDebug = () => subscription.unsubscribe();
 }
 
+function requestPlaybackStop() {
+  void crab
+    .stopPlayback()
+    .then((result) =>
+      result.match({
+        Ok: () => undefined,
+        Err: (error) => {
+          console.error("Failed to stop playlist playback", error);
+        },
+      }),
+    )
+    .catch((error) => {
+      console.error("Failed to stop playlist playback", error);
+    });
+}
+
+function shouldStopPlaybackForSnapshot(snapshot: ActorSnapshot) {
+  return snapshot.value === "play" && snapshot.context.playingPlaylistName !== null;
+}
+
+function attachNowPlayingTrackListener() {
+  void crab
+    .evt("nowPlayingTrackChangedEvent")((payload) => {
+      send(nowPlayingTrackChanged.load(payload));
+    })
+    .then((unlisten) => {
+      unsubscribeNowPlayingTrackChanged = unlisten;
+    })
+    .catch((error) => {
+      console.error("Failed to subscribe to now playing track changes", error);
+    });
+}
+
 export const action = {
   run: () => {
     ensureStarted();
+    if (shouldStopPlaybackForSnapshot(actor.getSnapshot())) {
+      requestPlaybackStop();
+    }
     actor.send(sig.mainx.run);
   },
   openCreate: (playlistName?: string) => {
     ensureStarted();
     pasteDownloadAction.reset();
+    if (shouldStopPlaybackForSnapshot(actor.getSnapshot())) {
+      requestPlaybackStop();
+    }
     if (playlistName) {
       send(openPlaylist.load(playlistName));
       return;
@@ -102,15 +158,31 @@ export const action = {
   openPlaylist: (playlistName: string) => {
     ensureStarted();
     pasteDownloadAction.reset();
+    if (shouldStopPlaybackForSnapshot(actor.getSnapshot())) {
+      requestPlaybackStop();
+    }
     send(openPlaylist.load(playlistName));
   },
   playPlaylist: (playlistName: string) => {
     ensureStarted();
     pasteDownloadAction.reset();
+    const snapshot = actor.getSnapshot();
+    if (
+      snapshot.value === "play" &&
+      snapshot.context.playingPlaylistName === playlistName
+    ) {
+      requestPlaybackStop();
+      actor.send(sig.mainx.back);
+      return;
+    }
+
     send(playPlaylist.load(playlistName));
   },
   back: () => {
     ensureStarted();
+    if (shouldStopPlaybackForSnapshot(actor.getSnapshot())) {
+      requestPlaybackStop();
+    }
     actor.send(sig.mainx.back);
   },
   changeDraftName: (name: string) => {
@@ -168,6 +240,7 @@ export function ensureStarted() {
 
   actor.start();
   attachDebugLogger();
+  attachNowPlayingTrackListener();
   started = true;
 }
 
@@ -179,6 +252,8 @@ export function stop() {
   actor.stop();
   unsubscribeDebug?.();
   unsubscribeDebug = null;
+  unsubscribeNowPlayingTrackChanged?.();
+  unsubscribeNowPlayingTrackChanged = null;
   started = false;
   resetRuntimeActor();
 }

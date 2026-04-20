@@ -7,8 +7,6 @@ use tauri::async_runtime::block_on;
 use tauri_specta::{Builder, collect_commands, collect_events};
 use tokio::task::block_in_place;
 use utils::event;
-
-const DB_PATH: &str = "surreal.db";
 const COMMANDS_TYPESCRIPT_HEADER: &str = include_str!("commands.header.ts");
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -17,6 +15,7 @@ pub fn run() {
         .commands(collect_commands![
             utils::file::exists,
             utils::core::app_ready,
+            utils::core::reset_dev_database_and_restart,
             utils::window::get_mouse_and_window_position,
             utils::window::get_window_kind,
             utils::window::warm_window,
@@ -39,6 +38,7 @@ pub fn run() {
             domain::playlists::add_exclude,
             domain::playlists::remove_exclude,
             domain::player::play_playlist,
+            domain::player::stop_playback,
             domain::downloads::enqueue_collection_download,
             domain::downloads::probe_download_resource,
             domain::downloads::resume_download_task,
@@ -92,7 +92,7 @@ pub fn run() {
                 block_on(async move {
                     let local_data_dir = handle.path().app_local_data_dir()?;
                     std::fs::create_dir_all(&local_data_dir)?;
-                    let db_path = local_data_dir.join(DB_PATH);
+                    let db_path = local_data_dir.join(utils::core::APP_DB_FILE_NAME);
                     println!("DB initialized on {}", db_path.display());
                     let db_options = InitDbOptions::default()
                         .versioned(false)

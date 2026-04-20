@@ -56,6 +56,7 @@ export interface Context {
   collections: Collection[];
   savePath: string;
   playingPlaylistName: string | null;
+  nowPlayingTrackName: string | null;
   activeLayoutId: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   pendingPlaylistName: string | null;
@@ -395,6 +396,7 @@ export function createInitialContext(): Context {
     collections: [],
     savePath: "",
     playingPlaylistName: null,
+    nowPlayingTrackName: null,
     activeLayoutId: null,
     titleToneHandoff: null,
     pendingPlaylistName: null,

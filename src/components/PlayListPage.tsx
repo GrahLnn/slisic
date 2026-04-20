@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { motion, useIsPresent } from "motion/react";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { CREATE_COLLECTION_LAYOUT_ID } from "@/src/flow/appLogic/core";
 import {
   action as appLogicAction,
@@ -91,6 +91,8 @@ function PlayListPageItem({
 
   return (
     <motion.div
+      layout="position"
+      exit={fadeProps.exit}
       initial={fadeProps.initial}
       animate={fadeProps.animate}
       transition={collectionTitleLayoutTransition}
@@ -125,6 +127,8 @@ export function PlayListPage() {
     hasPlayList,
     playlists,
     pendingPlaylistPreview,
+    playingPlaylistName,
+    nowPlayingTrackName,
     titleToneHandoff,
   } = appLogicHook.useContext();
   const pageState = appLogicHook.useState();
@@ -146,6 +150,8 @@ export function PlayListPage() {
     hasPlayList,
     playlists,
     pendingPlaylistPreview,
+    playingPlaylistName,
+    nowPlayingTrackName,
     titleToneHandoff,
     pressedLayoutId,
   } as const;
@@ -160,12 +166,13 @@ export function PlayListPage() {
     <div
       data-title-trace-root="playlist-page"
       data-page-state="playlist"
-      className="flex min-h-[calc(100vh-2rem)] flex-col items-center gap-8 px-6 pt-[40vh]"
+      className="relative flex min-h-[calc(100vh-2rem)] flex-col items-center gap-8 px-6 pt-[40vh]"
       style={{ fontFamily: "var(--font-noto-sans)" }}
     >
-      {viewModel.shouldRenderContent
-        ? [
-            ...viewModel.itemViewModels.map((itemViewModel) => (
+      {viewModel.shouldRenderContent ? (
+        <>
+          <AnimatePresence initial={false} mode="popLayout">
+            {viewModel.itemViewModels.map((itemViewModel) => (
               <PlayListPageItem
                 key={itemViewModel.key}
                 viewModel={itemViewModel}
@@ -191,16 +198,59 @@ export function PlayListPage() {
                   appLogicAction.openPlaylist(itemViewModel.playlistName);
                 }}
               />
-            )),
-            <CreateNewItem
-              key={viewModel.createItemViewModel.key}
-              viewModel={viewModel.createItemViewModel}
-              onPointerDown={() => {
-                setPressedLayoutId(CREATE_COLLECTION_LAYOUT_ID);
-              }}
-            />,
-          ]
-        : null}
+            ))}
+            {viewModel.shouldShowCreateItem ? (
+              <CreateNewItem
+                key={viewModel.createItemViewModel.key}
+                viewModel={viewModel.createItemViewModel}
+                onPointerDown={() => {
+                  setPressedLayoutId(CREATE_COLLECTION_LAYOUT_ID);
+                }}
+              />
+            ) : null}
+          </AnimatePresence>
+          <AnimatePresence initial={false}>
+            {viewModel.playbackItemViewModel ? (
+              <motion.div
+                key={viewModel.playbackItemViewModel.key}
+                className="pointer-events-none fixed inset-0 z-10 flex items-center justify-center px-6"
+              >
+                <div className="pointer-events-auto">
+                  <PlayListPageItem
+                    viewModel={viewModel.playbackItemViewModel}
+                    onPrimaryCommit={() => {
+                      if (!viewModel.playbackItemViewModel?.playlistName) {
+                        return;
+                      }
+
+                      appLogicAction.playPlaylist(
+                        viewModel.playbackItemViewModel.playlistName,
+                      );
+                    }}
+                    onPointerDown={() => {
+                      const layoutId = viewModel.playbackItemViewModel?.layoutId;
+                      if (!layoutId) {
+                        return;
+                      }
+
+                      setPressedLayoutId(layoutId);
+                    }}
+                    onCommit={() => {
+                      if (!viewModel.playbackItemViewModel?.playlistName) {
+                        return;
+                      }
+
+                      appLogicAction.openPlaylist(
+                        viewModel.playbackItemViewModel.playlistName,
+                      );
+                    }}
+                  />
+                </div>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
+        </>
+      ) : null}
       <div aria-hidden className="mt-[50vh] h-px w-full shrink-0" />
     </div>
   );

@@ -3,6 +3,7 @@ import { icons } from "@/src/assets/icons";
 import { AnimatePresence, motion } from "motion/react";
 import type React from "react";
 import { type PropsWithChildren, type ReactNode, memo } from "react";
+import { crab } from "./cmd";
 import { useIsBarVisible } from "./flow/barVisible";
 import { useIsWindowFocus } from "./flow/windowFocus";
 import { os } from "@/lib/utils";
@@ -55,12 +56,32 @@ const CtrlButton = memo(function CtrlButtonComp({
 });
 
 export const LeftControls = memo(function LeftControlsComponent() {
+  const handleResetDevDatabase = () => {
+    void crab.resetDevDatabaseAndRestart().then((result) => {
+      result.match({
+        Ok: () => {},
+        Err: (error) => {
+          console.error("Failed to reset dev database and restart", error);
+        },
+      });
+    });
+  };
+
   return (
     <div className="flex items-center px-2 text-(--content)">
       {os.match({
         macos: () => <div className="w-21" />,
         _: () => null,
       })}
+      {import.meta.env.DEV && (
+        <CtrlButton
+          label="Reset DB"
+          icon={<icons.trashXmark size={14} />}
+          onClick={handleResetDevDatabase}
+          className="cursor-pointer hover:text-red-600"
+          o="opacity-30"
+        />
+      )}
     </div>
   );
 });

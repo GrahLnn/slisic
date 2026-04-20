@@ -34,6 +34,8 @@ export interface PlayListPageRenderData {
   pendingPlaylistPreview: PlaylistUpsertResult | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   pressedLayoutId: string | null;
+  playingPlaylistName: string | null;
+  nowPlayingTrackName: string | null;
 }
 
 export interface PlayListPageItemViewModel {
@@ -53,7 +55,10 @@ export interface PlayListPageViewModel {
   transition: TitleSharePageTransition;
   committedLayoutId: string | null;
   shouldRenderContent: boolean;
+  shouldLockScroll: boolean;
   itemViewModels: PlayListPageItemViewModel[];
+  playbackItemViewModel: PlayListPageItemViewModel | null;
+  shouldShowCreateItem: boolean;
   createItemViewModel: PlayListPageItemViewModel;
 }
 
@@ -96,17 +101,75 @@ export function resolvePlayListPageItemFadeProps(args: {
     return {
       initial: contentFadeProps.animate,
       animate: contentFadeProps.animate,
+      exit: contentFadeProps.animate,
     } as const;
   }
 
   return {
     initial: contentFadeProps.initial,
     animate: args.isPresent ? contentFadeProps.animate : contentFadeProps.exit,
+    exit: contentFadeProps.exit,
   } as const;
 }
 
 export function resolvePlayListPageTexts(playlists: readonly PlayList[]) {
   return playlists.map((playlist) => playlist.name);
+}
+
+function createPlayListPageItemViewModel(args: {
+  playlist: PlayList;
+  text: string;
+  titleShareEnabled: boolean;
+  transition: TitleSharePageTransition;
+  titleToneHandoff: CollectionTitleHandoff | null;
+}) {
+  const itemLayoutId = playlistTitleLayoutId(args.playlist.name);
+
+  return {
+    key: args.playlist.name,
+    text: args.text,
+    layoutId: args.titleShareEnabled ? itemLayoutId : undefined,
+    handoffTone:
+      args.transition.returnTargetLayoutId === itemLayoutId
+        ? args.titleToneHandoff?.tone ?? null
+        : null,
+    suppressFade: shouldSuppressTitleShareFade(itemLayoutId, args.transition),
+    isCommitted: args.transition.committedLayoutId === itemLayoutId,
+    commitGesture: "secondary-only" as const,
+    playlistName: args.playlist.name,
+  } satisfies PlayListPageItemViewModel;
+}
+
+function resolvePlayListPagePlaybackItem(args: {
+  pageState: MainStateT;
+  visiblePlaylists: readonly PlayList[];
+  playingPlaylistName: string | null;
+  nowPlayingTrackName: string | null;
+  titleShareEnabled: boolean;
+  transition: TitleSharePageTransition;
+  titleToneHandoff: CollectionTitleHandoff | null;
+}) {
+  if (args.pageState !== "play" || !args.playingPlaylistName) {
+    return null;
+  }
+
+  const playlist = args.visiblePlaylists.find(
+    (candidate) => candidate.name === args.playingPlaylistName,
+  );
+  if (!playlist) {
+    return null;
+  }
+
+  return {
+    ...createPlayListPageItemViewModel({
+      playlist,
+      text: args.nowPlayingTrackName ?? playlist.name,
+      titleShareEnabled: args.titleShareEnabled,
+      transition: args.transition,
+      titleToneHandoff: args.titleToneHandoff,
+    }),
+    suppressFade: true,
+  };
 }
 
 export function resolvePlayListPageViewModel(
@@ -133,25 +196,27 @@ export function resolvePlayListPageViewModel(
     hasActiveLayoutId: renderData.activeLayoutId !== null,
     hasTitleToneHandoff: renderData.titleToneHandoff !== null,
   });
-
-  const itemViewModels = visiblePlaylists.map((playlist, index) => {
-    const text = texts[index] ?? playlist.name;
-    const itemLayoutId = playlistTitleLayoutId(playlist.name);
-
-    return {
-      key: playlist.name,
-      text,
-      layoutId: titleShareEnabled ? itemLayoutId : undefined,
-      handoffTone:
-        transition.returnTargetLayoutId === itemLayoutId
-          ? renderData.titleToneHandoff?.tone ?? null
-          : null,
-      suppressFade: shouldSuppressTitleShareFade(itemLayoutId, transition),
-      isCommitted: committedLayoutId === itemLayoutId,
-      commitGesture: "secondary-only" as const,
-      playlistName: playlist.name,
-    } satisfies PlayListPageItemViewModel;
+  const playbackItemViewModel = resolvePlayListPagePlaybackItem({
+    pageState: renderData.pageState,
+    visiblePlaylists,
+    playingPlaylistName: renderData.playingPlaylistName,
+    nowPlayingTrackName: renderData.nowPlayingTrackName,
+    titleShareEnabled,
+    transition,
+    titleToneHandoff: renderData.titleToneHandoff,
   });
+  const shouldLockScroll = playbackItemViewModel !== null;
+  const itemViewModels = shouldLockScroll
+    ? []
+    : visiblePlaylists.map((playlist, index) =>
+        createPlayListPageItemViewModel({
+          playlist,
+          text: texts[index] ?? playlist.name,
+          titleShareEnabled,
+          transition,
+          titleToneHandoff: renderData.titleToneHandoff,
+        }),
+      );
 
   return {
     visiblePlaylists,
@@ -161,7 +226,10 @@ export function resolvePlayListPageViewModel(
     transition,
     committedLayoutId,
     shouldRenderContent,
+    shouldLockScroll,
     itemViewModels,
+    playbackItemViewModel,
+    shouldShowCreateItem: !shouldLockScroll,
     createItemViewModel: {
       key: "create",
       text: "Create a List",

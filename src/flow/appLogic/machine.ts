@@ -43,6 +43,7 @@ const draftCollectionUpserted = payloads["draft.collection.upserted"];
 const draftItemIncluded = payloads["draft.item.included"];
 const draftItemRemoved = payloads["draft.item.removed"];
 const collectionUpdatesRequested = payloads["collection.updates.requested"];
+const nowPlayingTrackChanged = payloads["player.now_playing_track.changed"];
 
 export const machine = src.createMachine({
   initial: ss.mainx.State.idle,
@@ -118,6 +119,20 @@ export const machine = src.createMachine({
         draft: removeDraftSidebarItem(context.draft, event.output),
       })),
     },
+    [nowPlayingTrackChanged.evt]: {
+      actions: assign(({ context, event }) => {
+        if (
+          !context.playingPlaylistName ||
+          context.playingPlaylistName !== event.output.playlist_name
+        ) {
+          return {};
+        }
+
+        return {
+          nowPlayingTrackName: event.output.music_name,
+        };
+      }),
+    },
   },
   states: {
     [ss.mainx.State.idle]: {
@@ -139,6 +154,7 @@ export const machine = src.createMachine({
               collections: event.output.collections,
               savePath: event.output.savePath,
               playingPlaylistName: null,
+              nowPlayingTrackName: null,
             }),
           ),
         },
@@ -165,6 +181,7 @@ export const machine = src.createMachine({
               collections: context.collections,
               savePath: context.savePath,
               playingPlaylistName: null,
+              nowPlayingTrackName: null,
               activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
               titleToneHandoff: createCollectionTitleHandoff(CREATE_COLLECTION_LAYOUT_ID, "solid"),
               draftBaseline: createDraft(),
@@ -181,6 +198,7 @@ export const machine = src.createMachine({
               collections: context.collections,
               savePath: context.savePath,
               playingPlaylistName: event.output,
+              nowPlayingTrackName: null,
             }),
           ),
         },
@@ -203,6 +221,7 @@ export const machine = src.createMachine({
               collections: context.collections,
               savePath: context.savePath,
               playingPlaylistName: null,
+              nowPlayingTrackName: null,
               activeLayoutId: playlistTitleLayoutId(event.output),
               pendingPlaylistName: event.output,
               draftBaseline: cachedDraft ? cloneDraft(cachedDraft) : null,
@@ -231,6 +250,8 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
+              playingPlaylistName: context.playingPlaylistName,
+              nowPlayingTrackName: context.nowPlayingTrackName,
               error: toErrorMessage(event.error),
             }),
           ),
@@ -246,6 +267,8 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               collections: context.collections,
               savePath: context.savePath,
+              playingPlaylistName: null,
+              nowPlayingTrackName: null,
             }),
           ),
         },
@@ -258,6 +281,7 @@ export const machine = src.createMachine({
               collections: context.collections,
               savePath: context.savePath,
               playingPlaylistName: null,
+              nowPlayingTrackName: null,
               activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
               titleToneHandoff: createCollectionTitleHandoff(CREATE_COLLECTION_LAYOUT_ID, "solid"),
               draftBaseline: createDraft(),
@@ -275,6 +299,7 @@ export const machine = src.createMachine({
               collections: context.collections,
               savePath: context.savePath,
               playingPlaylistName: event.output,
+              nowPlayingTrackName: null,
             }),
           ),
         },
@@ -296,6 +321,7 @@ export const machine = src.createMachine({
               collections: context.collections,
               savePath: context.savePath,
               playingPlaylistName: null,
+              nowPlayingTrackName: null,
               activeLayoutId: playlistTitleLayoutId(event.output),
               pendingPlaylistName: event.output,
               draftBaseline: cachedDraft ? cloneDraft(cachedDraft) : null,
@@ -325,6 +351,7 @@ export const machine = src.createMachine({
               collections: context.collections,
               savePath: context.savePath,
               playingPlaylistName: null,
+              nowPlayingTrackName: null,
               activeLayoutId: context.activeLayoutId,
               draftBaseline: cloneDraft(event.output),
               draft: event.output,
@@ -340,6 +367,7 @@ export const machine = src.createMachine({
               collections: context.collections,
               savePath: context.savePath,
               playingPlaylistName: null,
+              nowPlayingTrackName: null,
               activeLayoutId: context.activeLayoutId,
               error: toErrorMessage(event.error),
             }),
@@ -357,6 +385,7 @@ export const machine = src.createMachine({
               collections: context.collections,
               savePath: context.savePath,
               playingPlaylistName: null,
+              nowPlayingTrackName: null,
             }),
           ),
         },
@@ -380,6 +409,7 @@ export const machine = src.createMachine({
               collections: context.collections,
               savePath: context.savePath,
               playingPlaylistName: null,
+              nowPlayingTrackName: null,
               titleToneHandoff: backPlan.titleToneHandoff,
             });
           }),
@@ -392,6 +422,7 @@ export const machine = src.createMachine({
               collections: context.collections,
               savePath: context.savePath,
               playingPlaylistName: null,
+              nowPlayingTrackName: null,
               activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
               titleToneHandoff: createCollectionTitleHandoff(
                 CREATE_COLLECTION_LAYOUT_ID,
@@ -420,6 +451,7 @@ export const machine = src.createMachine({
               collections: context.collections,
               savePath: context.savePath,
               playingPlaylistName: null,
+              nowPlayingTrackName: null,
               activeLayoutId: playlistTitleLayoutId(event.output),
               pendingPlaylistName: event.output,
               draftBaseline: cachedDraft ? cloneDraft(cachedDraft) : null,
@@ -476,9 +508,7 @@ export const machine = src.createMachine({
       },
     },
     [ss.mainx.State.error]: {
-      on: {
-        run: ss.mainx.State.loading,
-      },
+      always: ss.mainx.State.loading,
     },
   },
 });

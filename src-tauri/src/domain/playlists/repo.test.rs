@@ -66,11 +66,13 @@ async fn bootstrap_table(table: &str) {
 async fn bootstrap_relation_table(table: &str) {
     let db = get_db().expect("global playlist repo database handle should exist");
 
-    db.query(format!("DEFINE TABLE IF NOT EXISTS {table} TYPE RELATION SCHEMALESS;"))
-        .await
-        .expect("relation table bootstrap query should succeed")
-        .check()
-        .expect("relation table bootstrap response should succeed");
+    db.query(format!(
+        "DEFINE TABLE IF NOT EXISTS {table} TYPE RELATION SCHEMALESS;"
+    ))
+    .await
+    .expect("relation table bootstrap query should succeed")
+    .check()
+    .expect("relation table bootstrap response should succeed");
 }
 
 async fn bootstrap_collection_write_schema() {
@@ -436,9 +438,12 @@ fn has_collections_returns_true_when_collection_rows_exist() {
     run_async(async {
         ensure_db().await;
 
-        let _ = upsert_collection(&sample_collection("https://example.com/seeded", Some(false)))
-            .await
-            .expect("seeded collection should save");
+        let _ = upsert_collection(&sample_collection(
+            "https://example.com/seeded",
+            Some(false),
+        ))
+        .await
+        .expect("seeded collection should save");
 
         assert!(
             has_collections()
@@ -562,6 +567,81 @@ fn set_collection_updates_toggles_list_collections() {
 }
 
 #[test]
+fn list_collections_returns_hydrated_music_rows() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let saved = upsert_collection(&grouped_collection("https://example.com/listed"))
+            .await
+            .expect("grouped collection should save");
+
+        let listed = list_collections()
+            .await
+            .expect("collection listing should succeed");
+        let loaded = listed
+            .iter()
+            .find(|collection| collection.url == saved.url)
+            .expect("saved collection should appear in listing");
+
+        assert_eq!(loaded.musics.len(), 1);
+        assert_eq!(loaded.musics[0].name, "Track");
+        assert_eq!(loaded.musics[0].path.as_deref(), Some("Disc 1\\Track.m4a"));
+
+        reset_db();
+    });
+}
+
+#[test]
+fn upsert_collection_bootstraps_collection_graph_schema_on_clean_db() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let url = "https://example.com/self-bootstrapped-single";
+        let collection = collection_with_musics(
+            url,
+            "youtube/self-bootstrapped-single",
+            None,
+            vec![Music {
+                name: "Minus Sixty One".to_string(),
+                group: collection_group("Minus Sixty One", url, "youtube/self-bootstrapped-single"),
+                url: url.to_string(),
+                path: Some("Minus Sixty One.m4a".to_string()),
+                start: 0,
+                end: 316,
+            }],
+        );
+
+        let saved = upsert_collection(&collection)
+            .await
+            .expect("collection upsert should bootstrap graph schema on demand");
+        let reloaded = get_collection_by_url(url)
+            .await
+            .expect("self-bootstrapped collection should reload")
+            .expect("self-bootstrapped collection should exist");
+        let listed = list_collections()
+            .await
+            .expect("self-bootstrapped collection listing should succeed");
+
+        assert_eq!(saved.musics.len(), 1);
+        assert_eq!(reloaded.musics.len(), 1);
+        assert_eq!(reloaded.musics[0].name, "Minus Sixty One");
+        assert_eq!(reloaded.musics[0].path.as_deref(), Some("Minus Sixty One.m4a"));
+        assert!(
+            listed
+                .iter()
+                .any(|candidate| candidate.url == url && candidate.musics.len() == 1)
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
 fn upsert_collection_round_trips_grouped_music() {
     let _guard = acquire_db_test_lock();
 
@@ -628,7 +708,10 @@ fn collection_unique_index_rejects_duplicate_urls_before_lookup_becomes_ambiguou
         let db = get_db().expect("global playlist repo database handle should exist");
         let duplicate_error = db
             .query("CREATE $record CONTENT $data RETURN NONE;")
-            .bind(("record", RecordId::new(Collection::table_name(), "ambiguous-b")))
+            .bind((
+                "record",
+                RecordId::new(Collection::table_name(), "ambiguous-b"),
+            ))
             .bind((
                 "data",
                 json!({
@@ -649,9 +732,7 @@ fn collection_unique_index_rejects_duplicate_urls_before_lookup_becomes_ambiguou
             .expect("unique collection should still exist");
 
         assert!(
-            duplicate_error
-                .to_string()
-                .contains("already contains"),
+            duplicate_error.to_string().contains("already contains"),
             "{duplicate_error}"
         );
         assert_eq!(loaded.url, url);
@@ -993,6 +1074,61 @@ fn upsert_playlist_creates_new_rows_and_updates_existing_renames() {
 }
 
 #[test]
+fn upsert_playlist_does_not_clobber_existing_collection_graph_data() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let collection_url = "https://example.com/library-album";
+        let collection_folder = "youtube/library-album";
+        let populated_collection = collection_with_musics(
+            collection_url,
+            collection_folder,
+            Some(false),
+            vec![shared_music(collection_url, collection_folder)],
+        );
+        upsert_collection(&populated_collection)
+            .await
+            .expect("library collection should persist before playlist save");
+
+        let playlist = PlayList {
+            name: "Reference Only".to_string(),
+            collections: vec![Collection {
+                musics: vec![],
+                ..sample_collection(collection_url, Some(false))
+            }],
+            groups: vec![],
+        };
+
+        upsert_playlist(&playlist, None)
+            .await
+            .expect("playlist save should succeed");
+
+        let persisted_collection = get_collection_by_url(collection_url)
+            .await
+            .expect("library collection reload should succeed")
+            .expect("library collection should still exist");
+        let persisted_playlist = get_playlist_by_name(&playlist.name)
+            .await
+            .expect("saved playlist should load")
+            .expect("saved playlist should exist");
+
+        assert_eq!(persisted_collection.url, populated_collection.url);
+        assert_eq!(persisted_collection.musics.len(), 1);
+        assert_eq!(persisted_collection.musics[0].url, populated_collection.musics[0].url);
+        assert_eq!(persisted_playlist.collections[0].url, populated_collection.url);
+        assert_eq!(persisted_playlist.collections[0].musics.len(), 1);
+        assert_eq!(
+            persisted_playlist.collections[0].musics[0].url,
+            populated_collection.musics[0].url
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
 fn delete_playlist_by_name_removes_only_the_playlist_row() {
     let _guard = acquire_db_test_lock();
 
@@ -1009,7 +1145,9 @@ fn delete_playlist_by_name_removes_only_the_playlist_row() {
         let missing = get_playlist_by_name(&created.name)
             .await
             .expect("deleted playlist lookup should succeed");
-        let collections = list_collections().await.expect("collections should still list");
+        let collections = list_collections()
+            .await
+            .expect("collections should still list");
 
         assert!(deleted);
         assert!(missing.is_none());
