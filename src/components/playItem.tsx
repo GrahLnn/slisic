@@ -81,8 +81,8 @@ export function PlayItem({
         ref={scope}
         className={cn(collectionTitleTextClassName, textClassName)}
       >
-        {/*<Torph text={text} />*/}
-        {text}
+        <Torph text={text} />
+        {/*{text}*/}
       </div>
     </motion.div>
   );

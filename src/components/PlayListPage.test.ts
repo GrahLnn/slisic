@@ -5,7 +5,7 @@ import {
   shouldEnablePlayListPageTitleShare,
   shouldCommitPlayListPageItem,
   shouldRenderPlayListPageContent,
-} from "./PlayListPage";
+} from "./PlayListPage.view-model";
 
 describe("PlayListPage", () => {
   test("keeps a stable fade host while suppressing opacity changes for shared items", () => {

@@ -18,10 +18,6 @@ import {
 } from "@/src/flow/pasteDownload";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import {
-  captureTitleShareFrames,
-  recordTitleShareTrace,
-} from "@/src/debug/titleShareTrace";
-import {
   createPlayListFromDraft,
   createConfigSidebarItemRef,
   createConfigSidebarItems,
@@ -391,35 +387,6 @@ export function ListConfig() {
           draft.mode === "edit" ? (draftBaseline?.name ?? null) : null,
       };
 
-      recordTitleShareTrace("list-config:back-requested", {
-        activeLayoutId,
-        pendingPlaylistName,
-        playlists: playlists.map((playlist) => playlist.name),
-        pendingPlaylistPreview: pendingPlaylistPreview
-          ? {
-              name: pendingPlaylistPreview.playlist.name,
-              previousName: pendingPlaylistPreview.previousName,
-            }
-          : null,
-        visiblePlaylists: resolvePlaylistsWithPreview(
-          playlists,
-          pendingPlaylistPreview,
-        ).map((playlist) => playlist.name),
-        draft: {
-          mode: draft.mode,
-          name: draft.name,
-          collections: draft.collections.map((collection) => collection.name),
-          groups: draft.groups.map((group) => group.name),
-        },
-        titleResolution,
-        commitRequest: {
-          name: commitRequest.playlist.name,
-          previousName: commitRequest.previousName,
-        },
-        renderedTitleLayoutId: viewModel.title.layoutId ?? null,
-        renderedTitleValue: viewModel.title.value,
-      });
-
       playlistCommitAction.commit(commitRequest);
 
       await editableTitleRef.current?.commitResolvedValue({
@@ -439,26 +406,6 @@ export function ListConfig() {
             titleLayoutId: committedReturnLayoutId,
           }),
         );
-      });
-      recordTitleShareTrace("list-config:back-dispatch", {
-        activeLayoutId,
-        committedReturnLayoutId,
-        pendingPlaylistPreview: pendingPlaylistPreview
-          ? {
-              name: pendingPlaylistPreview.playlist.name,
-              previousName: pendingPlaylistPreview.previousName,
-            }
-          : null,
-        frozenTitleLayoutId: committedReturnLayoutId,
-        frozenTitleValue: committedPlaylist.name,
-      });
-      captureTitleShareFrames("list-config:back-dispatch", {
-        frames: 30,
-        payload: {
-          activeLayoutId,
-          committedReturnLayoutId,
-          committedPlaylistName: committedPlaylist.name,
-        },
       });
       await waitForTitleShareSourceReady();
       pasteDownloadAction.reset();
@@ -496,10 +443,6 @@ export function ListConfig() {
 
       result.match({
         Ok: () => {
-          recordTitleShareTrace("list-config:delete-succeeded", {
-            playlistName,
-            playlists: playlists.map((playlist) => playlist.name),
-          });
           flushSync(() => {
             appLogicAction.deletePlaylist(playlistName);
             pageRenderFreeze.freeze(
@@ -575,25 +518,27 @@ export function ListConfig() {
             value={viewModel.title.value}
             onChange={appLogicAction.changeDraftName}
           />
-          <button
-            type="button"
-            disabled={isDeletePending}
-            onClick={() => {
-              void handleDeletePlaylistAction();
-            }}
-            className={cn(
-              "group p-2 [corner-shape:squircle_squircle_squircle_squircle] rounded-[25px] transition",
-              "hover:bg-[#e5e5e5] dark:hover:bg-[#262626]",
-              "disabled:pointer-events-none",
-            )}
-          >
-            <icons.trashXmark
+          {draft?.mode === "edit" ? (
+            <button
+              type="button"
+              disabled={isDeletePending}
+              onClick={() => {
+                void handleDeletePlaylistAction();
+              }}
               className={cn(
-                "opacity-20 transition group-hover:opacity-70 group-hover:text-red-600",
-                isDeletePending && "opacity-70 text-red-600",
+                "group p-2 [corner-shape:squircle_squircle_squircle_squircle] rounded-[25px] transition",
+                "hover:bg-[#e5e5e5] dark:hover:bg-[#262626]",
+                "disabled:pointer-events-none",
               )}
-            />
-          </button>
+            >
+              <icons.trashXmark
+                className={cn(
+                  "opacity-20 transition group-hover:opacity-70 group-hover:text-red-600",
+                  isDeletePending && "opacity-70 text-red-600",
+                )}
+              />
+            </button>
+          ) : null}
         </motion.div>
         <motion.div {...contentFadeProps}>
           <ToolLabel

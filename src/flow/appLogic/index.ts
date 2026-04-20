@@ -1,6 +1,5 @@
 import { useSelector } from "@xstate/react";
 import { me } from "@grahlnn/fn";
-import { recordTitleShareTrace } from "@/src/debug/titleShareTrace";
 import type { ConfigSidebarItemRef, PlaylistUpsertResult } from "./core";
 import { MainStateT, sig } from "./events";
 import {
@@ -68,10 +67,6 @@ function attachDebugLogger() {
   let prevContextKey = JSON.stringify(summarizeContext(initialSnapshot.context));
 
   console.log(`[appLogic] enter ${prevState}`);
-  recordTitleShareTrace("app-logic:snapshot", {
-    state: prevState,
-    context: summarizeContext(initialSnapshot.context),
-  });
 
   const subscription = actor.subscribe((snapshot) => {
     const nextState = formatStateValue(snapshot.value);
@@ -82,11 +77,6 @@ function attachDebugLogger() {
     }
 
     console.log(`[appLogic] ${prevState} -> ${nextState}`);
-    recordTitleShareTrace("app-logic:snapshot", {
-      prevState,
-      state: nextState,
-      context: contextSummary,
-    });
     prevState = nextState;
     prevContextKey = nextContextKey;
   });
