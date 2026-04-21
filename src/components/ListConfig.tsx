@@ -376,7 +376,10 @@ export function ListConfig() {
       const titleResolution = resolveDraftCommitTitle({
         draft,
         draftBaseline,
-        playlists: resolvePlaylistsWithPreview(playlists, pendingPlaylistPreview),
+        playlists: resolvePlaylistsWithPreview(
+          playlists,
+          pendingPlaylistPreview,
+        ),
       });
       const committedDraft = {
         ...draft,
@@ -476,7 +479,6 @@ export function ListConfig() {
 
   return (
     <div
-      data-title-trace-root="list-config"
       data-page-state="config"
       className={cn(
         "relative flex flex-col w-160 mx-auto mt-24",
@@ -502,10 +504,7 @@ export function ListConfig() {
             <BackActionIcon hasDraftChanges={viewModel.hasDraftChanges} />
           </button>
         </motion.div>
-        <motion.div
-          {...contentFadeProps}
-          className="flex items-center gap-4"
-        >
+        <motion.div {...contentFadeProps} className="flex items-center gap-4">
           <EditableTitle
             ref={editableTitleRef}
             autoFocus={viewModel.title.autoFocus}

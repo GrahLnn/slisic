@@ -492,6 +492,7 @@ const ArcTrackItem = memo(function ArcTrackItem({
           restClassName="origin-right will-change-transform"
           restStyle={{ transform: "rotate(var(--arc-item-angle, 0deg))" }}
           layoutId={shouldSuppressLayoutId ? undefined : layoutId}
+          textRenderMode="plain"
           textClassName="text-[12px] text-[#404040] dark:text-[#a3a3a3]"
           toolAnchor="right"
           text={item.name}

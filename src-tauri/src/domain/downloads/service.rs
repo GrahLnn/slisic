@@ -124,7 +124,9 @@ pub async fn list_download_tasks() -> Result<Vec<DownloadTask>> {
     repo::list_tasks().await
 }
 
-pub(crate) async fn describe_download_resource(root_probe: RootProbe) -> Result<DownloadResourceProbe> {
+pub(crate) async fn describe_download_resource(
+    root_probe: RootProbe,
+) -> Result<DownloadResourceProbe> {
     match root_probe {
         RootProbe::Single(leaf) => {
             let existing = collection_repo::get_collection_by_url(&leaf.webpage_url).await?;

@@ -82,8 +82,6 @@ function PageViewport({
       }}
       layoutScroll
       data-page-state={pageState}
-      data-title-trace-root={pageState}
-      data-title-trace-scroll-root={scrollKey}
       className={cn(
         "absolute inset-0 pt-8",
         pageState === "play"

@@ -2,7 +2,6 @@ import type { Ref } from "react";
 import { motion, useIsPresent } from "motion/react";
 import type { TorphStage } from "@grahlnn/comps";
 import { cn } from "@/lib/utils";
-import { CREATE_COLLECTION_LAYOUT_ID } from "@/src/flow/appLogic/core";
 import { action as appLogicAction } from "@/src/flow/appLogic";
 import {
   collectionTitleClassName,
@@ -63,14 +62,6 @@ export function PlayListPageItem({
           className={collectionTitleClassName}
           handoffTone={viewModel.handoffTone}
           layoutId={viewModel.layoutId}
-          traceKey={viewModel.key}
-          traceRole={
-            viewModel.layoutId === CREATE_COLLECTION_LAYOUT_ID
-              ? "playlist-create"
-              : "playlist-item"
-          }
-          tracePlaybackTarget={viewModel.isPlaybackTarget}
-          traceHiddenInPlay={viewModel.isHiddenInPlay}
           shouldAnimateLayoutPosition={viewModel.shouldAnimateLayoutPosition}
           text={viewModel.text}
           textClassName={

@@ -197,9 +197,7 @@ function getTraceDataAttributes(node: Element) {
   );
 }
 
-function snapshotTraceElement(
-  node: Element | null,
-): TraceElementSnapshot | null {
+function snapshotTraceElement(node: Element | null): TraceElementSnapshot | null {
   if (!(node instanceof HTMLElement || node instanceof SVGElement)) {
     return null;
   }
@@ -528,7 +526,8 @@ export function captureTorphHostFrames(
       label,
       frameIndex,
       frameTime,
-      frameDelta: previousFrameTime === null ? null : frameTime - previousFrameTime,
+      frameDelta:
+        previousFrameTime === null ? null : frameTime - previousFrameTime,
       ...args?.payload,
     });
 

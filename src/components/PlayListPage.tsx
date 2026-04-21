@@ -10,10 +10,6 @@ import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import { PlayListPageItem, CreateNewPlayListItem } from "./PlayListPageItem";
 import { usePlayListPlaybackSurface } from "./usePlayListPlaybackSurface";
 import { resolvePlayListPageViewModel } from "./PlayListPage.view-model";
-import {
-  createPlayListPageCenteringTraceHandlers,
-  usePlayListPageTrace,
-} from "./usePlayListPageTrace";
 
 export function PlayListPage() {
   const isPresent = useIsPresent();
@@ -39,24 +35,11 @@ export function PlayListPage() {
       "configUpdatingCollectionUpdates" as const,
     error: () => "error" as const,
   });
-  const centeringTrace = createPlayListPageCenteringTraceHandlers({
-    pageState: pageStateValue,
-    nowPlayingTrackName,
-  });
   const playbackSurface = usePlayListPlaybackSurface({
     pageState: pageStateValue,
     playlists,
     playingPlaylistName,
     nowPlayingTrackName,
-    onCenteringSchedule: (payload) => {
-      centeringTrace.onCenteringSchedule(payload);
-    },
-    onCenteringExecute: (payload) => {
-      centeringTrace.onCenteringExecute(payload);
-    },
-    onCentered: (payload) => {
-      centeringTrace.onCentered(payload);
-    },
   });
   const liveRenderData = {
     pageState: pageStateValue,
@@ -74,24 +57,9 @@ export function PlayListPage() {
   });
   const renderData = pageRenderFreeze.renderValue;
   const viewModel = resolvePlayListPageViewModel(renderData);
-  const playListPageTrace = usePlayListPageTrace({
-    pageState: pageStateValue,
-    activeLayoutId,
-    pressedLayoutId,
-    playbackTargetKey: viewModel.playbackTargetKey,
-    playbackSurfacePhase: playbackSurface.playbackSurface.phase,
-    shouldLockScroll: viewModel.shouldLockScroll,
-    shouldShowCreateItem: viewModel.shouldShowCreateItem,
-    nowPlayingTrackName,
-    playingPlaylistName,
-    visibleItemKeys: viewModel.itemViewModels.map((item) => item.key),
-  });
 
   return (
     <div
-      data-title-trace-root="playlist-page"
-      data-torph-trace-root="playlist-page"
-      data-torph-trace-page-state={pageStateValue}
       data-page-state="playlist"
       className="relative h-[calc(100vh-2rem)] w-full overflow-hidden px-6"
       style={{ fontFamily: "var(--font-noto-sans)" }}
@@ -100,7 +68,6 @@ export function PlayListPage() {
         <div className="relative z-0 flex h-full w-full flex-col items-center">
           <div
             ref={playbackSurface.containerRef}
-            data-torph-trace-scroll-root="playlist-scroll"
             className={cn(
               "hide-scrollbar flex h-full w-full flex-col items-center gap-8 snap-y snap-mandatory overscroll-y-contain",
               viewModel.shouldLockScroll ? "overflow-hidden" : "overflow-y-auto",
@@ -123,10 +90,6 @@ export function PlayListPage() {
                     return;
                   }
 
-                  playListPageTrace.recordItemPrimaryCommit({
-                    itemKey: itemViewModel.key,
-                    playlistName: itemViewModel.playlistName,
-                  });
                   appLogicAction.playPlaylist(itemViewModel.playlistName);
                 }}
                 onPointerDown={() => {
@@ -134,10 +97,6 @@ export function PlayListPage() {
                     return;
                   }
 
-                  playListPageTrace.recordItemPress({
-                    itemKey: itemViewModel.key,
-                    layoutId: itemViewModel.layoutId,
-                  });
                   setPressedLayoutId(itemViewModel.layoutId);
                 }}
                 onCommit={() => {
@@ -145,10 +104,6 @@ export function PlayListPage() {
                     return;
                   }
 
-                  playListPageTrace.recordItemConfigCommit({
-                    itemKey: itemViewModel.key,
-                    playlistName: itemViewModel.playlistName,
-                  });
                   appLogicAction.openPlaylist(itemViewModel.playlistName);
                 }}
               />
@@ -158,9 +113,6 @@ export function PlayListPage() {
                 key={viewModel.createItemViewModel.key}
                 viewModel={viewModel.createItemViewModel}
                 onPointerDown={() => {
-                  playListPageTrace.recordCreatePress({
-                    layoutId: CREATE_COLLECTION_LAYOUT_ID,
-                  });
                   setPressedLayoutId(CREATE_COLLECTION_LAYOUT_ID);
                 }}
               />

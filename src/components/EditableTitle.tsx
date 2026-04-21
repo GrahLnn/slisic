@@ -171,9 +171,6 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
         key={layoutHostKey}
         ref={titleRootRef}
         layoutId={resolvedLayoutId}
-        data-title-layout-id={resolvedLayoutId}
-        data-title-role="config-title"
-        data-title-text={displayValue}
         className={cn("relative w-fit max-w-full", className)}
         style={style}
       >

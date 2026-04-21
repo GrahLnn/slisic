@@ -1,5 +1,10 @@
-use super::service::{collect_playlist_tracks, resolve_selected_collections};
+use super::service::{
+    collect_playlist_tracks, playlist_has_relevant_active_downloads,
+    resolve_playlist_playback_inventory, resolve_selected_collections,
+};
+use crate::domain::downloads::model::{DownloadTask, DownloadTaskStatus, DownloadTrigger};
 use crate::domain::playlists::model::{Collection, Group, Music, PlayList};
+use appdb::Id;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -39,6 +44,21 @@ fn collection(name: &str, url: &str, folder: &str, musics: Vec<Music>) -> Collec
         last_updated: "2026-04-19T00:00:00Z".to_string(),
         enable_updates: Some(false),
     }
+}
+
+fn download_task(
+    url: &str,
+    collection_url: Option<&str>,
+    status: DownloadTaskStatus,
+) -> DownloadTask {
+    let mut task = DownloadTask::new(
+        Id::from(format!("task-{}", url.len())),
+        url.to_string(),
+        DownloadTrigger::Manual,
+    );
+    task.collection_url = collection_url.map(str::to_string);
+    task.status = status;
+    task
 }
 
 #[test]
@@ -156,4 +176,82 @@ fn resolve_selected_collections_uses_current_library_records_for_playlist_refs()
     assert_eq!(selected[0].url, "https://example.com/album");
     assert_eq!(selected[0].musics.len(), 1);
     assert_eq!(selected[0].musics[0].name, "Track A");
+}
+
+#[test]
+fn playlist_has_relevant_active_downloads_matches_collection_and_group_domains() {
+    let playlist = PlayList {
+        name: "Focus".to_string(),
+        collections: vec![collection(
+            "Album",
+            "https://example.com/album",
+            "youtube/album",
+            vec![],
+        )],
+        groups: vec![group("Disc 1", "https://example.com/disc-1", "disc-1")],
+    };
+    let tasks = vec![
+        download_task(
+            "https://example.com/album",
+            Some("https://example.com/album"),
+            DownloadTaskStatus::Downloading,
+        ),
+        download_task(
+            "https://example.com/disc-1",
+            None,
+            DownloadTaskStatus::Resolving,
+        ),
+        download_task(
+            "https://example.com/other",
+            Some("https://example.com/other"),
+            DownloadTaskStatus::Downloading,
+        ),
+        download_task(
+            "https://example.com/album",
+            Some("https://example.com/album"),
+            DownloadTaskStatus::Completed,
+        ),
+    ];
+
+    assert!(playlist_has_relevant_active_downloads(&playlist, &tasks));
+}
+
+#[test]
+fn resolve_playlist_playback_inventory_waits_for_matching_downloads_when_tracks_are_not_ready() {
+    let root = temp_root();
+    let playlist = PlayList {
+        name: "Focus".to_string(),
+        collections: vec![collection(
+            "Album",
+            "https://example.com/album",
+            "youtube/album",
+            vec![],
+        )],
+        groups: vec![],
+    };
+    let library = vec![collection(
+        "Album",
+        "https://example.com/album",
+        "youtube/album",
+        vec![],
+    )];
+    let inventory = resolve_playlist_playback_inventory(
+        &playlist,
+        &library,
+        &library,
+        &[download_task(
+            "https://example.com/album",
+            Some("https://example.com/album"),
+            DownloadTaskStatus::Downloading,
+        )],
+        &root,
+    );
+
+    assert!(inventory.tracks.is_empty());
+    assert!(inventory.has_relevant_active_downloads);
+    assert!(
+        inventory
+            .failure_description
+            .contains("does not contain any playable tracks")
+    );
 }

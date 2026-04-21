@@ -137,7 +137,7 @@ fn describe_download_resource_maps_single_probe_to_one_item_result() {
         reset_db();
         result
     })
-        .expect("single root probe should become a download resource");
+    .expect("single root probe should become a download resource");
 
     assert_eq!(probe.url, "https://example.com/watch?v=single");
     assert_eq!(probe.source_kind, CollectionSourceKind::Single);
@@ -153,16 +153,16 @@ fn describe_download_resource_rejects_empty_lists() {
     let error = run_async(async {
         ensure_db().await;
         let result = describe_download_resource(RootProbe::List(PlaylistRoot {
-                title: "Empty Playlist".to_string(),
-                webpage_url: "https://example.com/playlist".to_string(),
-                extractor_key: Some("YoutubeTab".to_string()),
-                entries: vec![],
-            }))
-            .await;
+            title: "Empty Playlist".to_string(),
+            webpage_url: "https://example.com/playlist".to_string(),
+            extractor_key: Some("YoutubeTab".to_string()),
+            entries: vec![],
+        }))
+        .await;
         reset_db();
         result
     })
-        .expect_err("empty list probes should be rejected");
+    .expect_err("empty list probes should be rejected");
 
     assert!(
         error

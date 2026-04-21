@@ -130,16 +130,20 @@ function getElementClassName(node: Element) {
 }
 
 function getTraceDataAttributes(node: Element) {
-  const attributes = Array.from(node.attributes)
-    .filter((attribute) =>
+  const attributes = Array.from(node.attributes).filter(
+    (attribute) =>
       attribute.name.startsWith("data-title-") ||
       attribute.name.startsWith("data-page-"),
-    );
+  );
 
-  return Object.fromEntries(attributes.map((attribute) => [attribute.name, attribute.value]));
+  return Object.fromEntries(
+    attributes.map((attribute) => [attribute.name, attribute.value]),
+  );
 }
 
-function snapshotTraceElement(node: Element | null): TitleShareTraceElementSnapshot | null {
+function snapshotTraceElement(
+  node: Element | null,
+): TitleShareTraceElementSnapshot | null {
   if (!(node instanceof HTMLElement || node instanceof SVGElement)) {
     return null;
   }
@@ -222,9 +226,10 @@ function snapshotNode(node: Element): TitleShareTraceNodeSnapshot | null {
   const style = window.getComputedStyle(node);
   const nearestScrollRoot = node.closest(TRACE_SCROLL_ROOT_SELECTOR);
   const nearestScrollRootSnapshot = snapshotTraceElement(nearestScrollRoot);
-  const nearestScrollRootRect = nearestScrollRoot instanceof HTMLElement
-    ? nearestScrollRoot.getBoundingClientRect()
-    : null;
+  const nearestScrollRootRect =
+    nearestScrollRoot instanceof HTMLElement
+      ? nearestScrollRoot.getBoundingClientRect()
+      : null;
 
   return {
     layoutId: node.getAttribute("data-title-layout-id") ?? "",
@@ -323,7 +328,8 @@ export function captureTitleShareFrames(
       label,
       frameIndex,
       frameTime,
-      frameDelta: previousFrameTime === null ? null : frameTime - previousFrameTime,
+      frameDelta:
+        previousFrameTime === null ? null : frameTime - previousFrameTime,
       ...args?.payload,
     });
 

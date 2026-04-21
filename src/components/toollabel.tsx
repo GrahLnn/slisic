@@ -61,6 +61,7 @@ export function MaskMiddle() {
 const TOOL_LABEL_OVERLAY_CLASS_NAME =
   "z-200 inline-flex cursor-default items-center overflow-visible";
 type ToolLabelAnchor = "left" | "right";
+type ToolLabelTextRenderMode = "torph" | "plain";
 
 export function resolveToolLabelOverlayVisibility(args: {
   isHovered: boolean;
@@ -306,6 +307,7 @@ export function ToolLabel({
   interactionDisabled = false,
   toolLayer = "inline",
   toolAnchor = "left",
+  textRenderMode = "torph",
 }: {
   text: string;
   textClassName?: string;
@@ -319,6 +321,7 @@ export function ToolLabel({
   interactionDisabled?: boolean;
   toolLayer?: "inline" | "portal";
   toolAnchor?: ToolLabelAnchor;
+  textRenderMode?: ToolLabelTextRenderMode;
 } & ComponentProps<"div">) {
   const [isHovered, setIsHovered] = useState(false);
   const [isLayoutAnimating, setIsLayoutAnimating] = useState(false);
@@ -517,7 +520,7 @@ export function ToolLabel({
           }}
           className={cn("inline-flex w-fit", resolvedTextClassName)}
         >
-          <Torph text={text} />
+          {textRenderMode === "plain" ? text : <Torph text={text} />}
         </motion.div>
         <AnimatePresence initial={false}>
           {isOverlayVisible &&

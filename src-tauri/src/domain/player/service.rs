@@ -1,6 +1,8 @@
 use super::event::NowPlayingTrackChangedEvent;
 use super::model::{PlayPlaylistSession, PlaybackTrack};
 use super::strategy::{PlaybackStrategy, RandomPlaybackStrategy};
+use crate::domain::downloads::model::DownloadTask;
+use crate::domain::downloads::repo as download_repo;
 use crate::domain::meta::service as meta_service;
 use crate::domain::playlists::model::{Collection, PlayList};
 use crate::domain::playlists::repo as playlist_repo;
@@ -16,6 +18,8 @@ use tauri::AppHandle;
 use tauri_specta::Event;
 
 static PLAYER_RUNTIME: OnceLock<Arc<PlayerRuntime>> = OnceLock::new();
+const DOWNLOAD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const PLAYLIST_DOWNLOADING_STATUS_TEXT: &str = "Downloading...";
 
 pub struct PlayerRuntime {
     app: AppHandle,
@@ -35,7 +39,7 @@ pub fn initialize_runtime(app: AppHandle) {
 
 pub async fn play_playlist(name: String) -> Result<PlayPlaylistSession> {
     let runtime = runtime()?;
-    let session = build_playlist_session(&runtime.app, &name).await?;
+    let (session, track_count) = build_playlist_session(&runtime.app, &name).await?;
     let playback = runtime.playback()?;
     let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
@@ -47,7 +51,6 @@ pub async fn play_playlist(name: String) -> Result<PlayPlaylistSession> {
     let playback_for_task = playback.clone();
     let playlist_name = session.playlist_name.clone();
     let playlist_name_for_task = playlist_name.clone();
-    let track_count = session.tracks.len() as u32;
     tauri::async_runtime::spawn(async move {
         if let Err(error) =
             run_playlist_session(runtime_for_task, playback_for_task, generation, session).await
@@ -111,41 +114,54 @@ impl PlayerRuntime {
 
 struct PlaylistSession {
     playlist_name: String,
-    tracks: Vec<PlaybackTrack>,
     strategy: Box<dyn PlaybackStrategy>,
 }
 
-async fn build_playlist_session(app: &AppHandle, playlist_name: &str) -> Result<PlaylistSession> {
+pub(crate) struct PlaylistPlaybackInventory {
+    pub(crate) tracks: Vec<PlaybackTrack>,
+    pub(crate) has_relevant_active_downloads: bool,
+    pub(crate) failure_description: String,
+}
+
+async fn build_playlist_session(
+    app: &AppHandle,
+    playlist_name: &str,
+) -> Result<(PlaylistSession, u32)> {
+    let (playlist, inventory) = load_playlist_playback_inventory(app, playlist_name).await?;
+
+    if inventory.tracks.is_empty() && !inventory.has_relevant_active_downloads {
+        bail!("{}", inventory.failure_description);
+    }
+
+    Ok((
+        PlaylistSession {
+            playlist_name: playlist.name.clone(),
+            strategy: Box::new(RandomPlaybackStrategy::new()),
+        },
+        inventory.tracks.len() as u32,
+    ))
+}
+
+async fn load_playlist_playback_inventory(
+    app: &AppHandle,
+    playlist_name: &str,
+) -> Result<(PlayList, PlaylistPlaybackInventory)> {
     let playlist = playlist_repo::get_playlist_by_name(playlist_name)
         .await?
         .ok_or_else(|| anyhow!("playlist `{playlist_name}` not found"))?;
     let save_root = meta_service::resolve_save_root(app).await?;
     let library_collections = playlist_repo::list_collections().await?;
+    let download_tasks = download_repo::list_tasks().await?;
     let selected_collections = resolve_selected_collections(&playlist, &library_collections);
-    let tracks = collect_playlist_tracks(
+    let inventory = resolve_playlist_playback_inventory(
         &playlist,
         &selected_collections,
         &library_collections,
+        &download_tasks,
         &save_root,
     );
 
-    if tracks.is_empty() {
-        bail!(
-            "{}",
-            describe_playlist_track_resolution_failure(
-                &playlist,
-                &selected_collections,
-                &library_collections,
-                &save_root,
-            )
-        );
-    }
-
-    Ok(PlaylistSession {
-        playlist_name: playlist.name.clone(),
-        tracks,
-        strategy: Box::new(RandomPlaybackStrategy::new()),
-    })
+    Ok((playlist, inventory))
 }
 
 pub(crate) fn resolve_selected_collections(
@@ -162,6 +178,64 @@ pub(crate) fn resolve_selected_collections(
                 .cloned()
         })
         .collect()
+}
+
+pub(crate) fn playlist_has_relevant_active_downloads(
+    playlist: &PlayList,
+    download_tasks: &[DownloadTask],
+) -> bool {
+    let selected_urls = playlist
+        .collections
+        .iter()
+        .map(|collection| collection.url.as_str())
+        .chain(playlist.groups.iter().map(|group| group.url.as_str()))
+        .collect::<HashSet<_>>();
+
+    if selected_urls.is_empty() {
+        return false;
+    }
+
+    download_tasks
+        .iter()
+        .filter(|task| task.status.is_active())
+        .any(|task| {
+            task.collection_url
+                .as_deref()
+                .into_iter()
+                .chain(std::iter::once(task.url.as_str()))
+                .any(|url| selected_urls.contains(url))
+        })
+}
+
+pub(crate) fn resolve_playlist_playback_inventory(
+    playlist: &PlayList,
+    selected_collections: &[Collection],
+    library_collections: &[Collection],
+    download_tasks: &[DownloadTask],
+    save_root: &Path,
+) -> PlaylistPlaybackInventory {
+    // Playback stays data-driven: the session re-resolves tracks from the
+    // canonical library and only treats active download tasks as a wait signal.
+    let tracks = collect_playlist_tracks(
+        playlist,
+        selected_collections,
+        library_collections,
+        save_root,
+    );
+
+    PlaylistPlaybackInventory {
+        has_relevant_active_downloads: playlist_has_relevant_active_downloads(
+            playlist,
+            download_tasks,
+        ),
+        failure_description: describe_playlist_track_resolution_failure(
+            playlist,
+            selected_collections,
+            library_collections,
+            save_root,
+        ),
+        tracks,
+    }
 }
 
 fn describe_playlist_track_resolution_failure(
@@ -261,13 +335,38 @@ async fn run_playlist_session(
     generation: u64,
     mut session: PlaylistSession,
 ) -> Result<()> {
+    let mut is_waiting_for_download = false;
+
     loop {
         if runtime.generation.load(Ordering::SeqCst) != generation {
             return Ok(());
         }
 
-        let Some(track) = session.strategy.next_track(&session.tracks).cloned() else {
-            return Ok(());
+        let (_, inventory) =
+            load_playlist_playback_inventory(&runtime.app, &session.playlist_name).await?;
+
+        if inventory.tracks.is_empty() {
+            if inventory.has_relevant_active_downloads {
+                if !is_waiting_for_download {
+                    emit_playlist_status_text(
+                        &runtime.app,
+                        &session.playlist_name,
+                        PLAYLIST_DOWNLOADING_STATUS_TEXT,
+                    )?;
+                    is_waiting_for_download = true;
+                }
+
+                tokio::time::sleep(DOWNLOAD_WAIT_POLL_INTERVAL).await;
+                continue;
+            }
+
+            bail!("{}", inventory.failure_description);
+        }
+
+        is_waiting_for_download = false;
+
+        let Some(track) = session.strategy.next_track(&inventory.tracks).cloned() else {
+            continue;
         };
 
         NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&runtime.app)?;
@@ -277,6 +376,19 @@ async fn run_playlist_session(
             .map_err(|error| anyhow!("failed to play `{}`: {error}", track.music_name))?;
         wait_until_track_finishes(&runtime, &playback, generation, &track.file_path).await?;
     }
+}
+
+fn emit_playlist_status_text(app: &AppHandle, playlist_name: &str, text: &str) -> Result<()> {
+    NowPlayingTrackChangedEvent {
+        playlist_name: playlist_name.to_string(),
+        music_name: text.to_string(),
+        music_url: String::new(),
+        start: 0,
+        end: 0,
+    }
+    .emit(app)?;
+
+    Ok(())
 }
 
 async fn wait_until_track_finishes(
