@@ -10,6 +10,23 @@ export type GhostClone = {
 
 const LIST_CONFIG_GHOST_Z_INDEX = 180;
 
+export function resolveGhostCloneContentDisplay(display: string) {
+  switch (display.trim()) {
+    case "inline":
+      return "block";
+    case "inline-block":
+      return "block";
+    case "inline-flex":
+      return "flex";
+    case "inline-grid":
+      return "grid";
+    case "inline-table":
+      return "table";
+    default:
+      return display;
+  }
+}
+
 export function hideGhostTarget(node: HTMLDivElement | null) {
   if (!node) {
     return;
@@ -70,6 +87,10 @@ export function createGhostClone(sourceNode: HTMLDivElement): GhostClone {
   cloneContentNode.style.height = "100%";
   cloneContentNode.style.margin = "0";
   cloneContentNode.style.boxSizing = sourceStyle.boxSizing;
+  // The ghost clone no longer lives in inline text flow, so keeping an
+  // inline display would reintroduce baseline layout and make the final
+  // handoff jump even when the outer frame is already correct.
+  cloneContentNode.style.display = resolveGhostCloneContentDisplay(sourceStyle.display);
   cloneContentNode.style.whiteSpace = sourceStyle.whiteSpace;
   cloneContentNode.style.overflowWrap = sourceStyle.overflowWrap;
   cloneContentNode.style.wordBreak = sourceStyle.wordBreak;

@@ -183,8 +183,10 @@ function scheduleGhostAnimationPlayback(args: {
   hideGhostTarget(targetNode);
 
   let beforePaintFrame: number | null = null;
+  let cleanupFrame: number | null = null;
   let startAnimationFrame: number | null = null;
   let isCancelled = false;
+  let isCompleted = false;
   const ownerWindow = ghostTransition.cloneNode.ownerDocument.defaultView;
 
   beforePaintFrame =
@@ -213,17 +215,43 @@ function scheduleGhostAnimationPlayback(args: {
             return;
           }
 
-          recordGhostTransitionTrace(
-            "list-config:ghost-animation-finished",
-            {
-              ...traceBase,
-              targetNode,
-            },
-            animation.sample(),
-          );
-          showGhostTarget(targetNode);
-          ghostTransition.cloneNode.remove();
-          args.onFinish();
+          if (!ownerWindow) {
+            isCompleted = true;
+            recordGhostTransitionTrace(
+              "list-config:ghost-animation-finished",
+              {
+                ...traceBase,
+                targetNode,
+              },
+              animation.sample(),
+            );
+            showGhostTarget(targetNode);
+            ghostTransition.cloneNode.remove();
+            args.onFinish();
+            return;
+          }
+
+          // Let the exact terminal pose commit for one paint before
+          // swapping the real target back in, otherwise the user only
+          // sees the penultimate frame and the finish looks like a nudge.
+          cleanupFrame = ownerWindow.requestAnimationFrame(() => {
+            if (isCancelled) {
+              return;
+            }
+
+            isCompleted = true;
+            recordGhostTransitionTrace(
+              "list-config:ghost-animation-finished",
+              {
+                ...traceBase,
+                targetNode,
+              },
+              animation.sample(),
+            );
+            showGhostTarget(targetNode);
+            ghostTransition.cloneNode.remove();
+            args.onFinish();
+          });
         });
 
       startAnimationFrame =
@@ -248,10 +276,17 @@ function scheduleGhostAnimationPlayback(args: {
     }) ?? null;
 
   return () => {
+    if (isCompleted) {
+      return;
+    }
+
     isCancelled = true;
 
     if (beforePaintFrame !== null) {
       ownerWindow?.cancelAnimationFrame(beforePaintFrame);
+    }
+    if (cleanupFrame !== null) {
+      ownerWindow?.cancelAnimationFrame(cleanupFrame);
     }
     if (startAnimationFrame !== null) {
       ownerWindow?.cancelAnimationFrame(startAnimationFrame);

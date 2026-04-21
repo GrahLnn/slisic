@@ -131,6 +131,63 @@ describe("ListConfig ghost motion", () => {
     }
   });
 
+  test("treats the opposite tangent direction as the same rail orientation", () => {
+    const sourceFrame = createSourceFrame();
+    const targetFrame = createTargetFrame();
+    const sourceAngle = -10.6;
+    const path = resolveGhostMotionPath({
+      sourceAngle,
+      sourceFrame,
+      targetFrame,
+    });
+    const initialState = resolveGhostMotionState({
+      path,
+      progress: 0,
+      sourceAngle,
+      sourceFrame,
+      targetFrame,
+    });
+    const earlyFollowState = resolveGhostMotionState({
+      path,
+      progress: 0.26698276343715577,
+      sourceAngle,
+      sourceFrame,
+      targetFrame,
+    });
+
+    assert.ok(Math.abs(earlyFollowState.pathAngle - sourceAngle) < 5);
+    assert.ok(Math.abs(earlyFollowState.rawPathAngle - earlyFollowState.pathAngle) > 150);
+    assert.ok(Math.abs(earlyFollowState.angle - initialState.angle) < 5);
+  });
+
+  test("does not drop sharply when the settle phase begins", () => {
+    const sourceFrame = createSourceFrame();
+    const targetFrame = createTargetFrame();
+    const sourceAngle = -10.6;
+    const path = resolveGhostMotionPath({
+      sourceAngle,
+      sourceFrame,
+      targetFrame,
+    });
+    const preSettleState = resolveGhostMotionState({
+      path,
+      progress: 0.8160851117462358,
+      sourceAngle,
+      sourceFrame,
+      targetFrame,
+    });
+    const settleEntryState = resolveGhostMotionState({
+      path,
+      progress: 0.8394319016413956,
+      sourceAngle,
+      sourceFrame,
+      targetFrame,
+    });
+
+    assert.ok(Math.abs(settleEntryState.angle - preSettleState.angle) < 25);
+    assert.ok(Math.abs(settleEntryState.trackedAngle - settleEntryState.angle) < 5);
+  });
+
   test("lands on the target frame and settles back to the horizontal label pose", () => {
     const sourceFrame = createSourceFrame();
     const targetFrame = createTargetFrame();

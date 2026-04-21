@@ -56,8 +56,28 @@ function easeOutGhostProgress(progress: number) {
   return 1 - Math.pow(1 - clampedProgress, 5);
 }
 
+function easeInGhostProgress(progress: number) {
+  const clampedProgress = clampGhostValue(progress, 0, 1);
+
+  return clampedProgress * clampedProgress;
+}
+
+function smoothstepGhostProgress(progress: number) {
+  const clampedProgress = clampGhostValue(progress, 0, 1);
+
+  return clampedProgress * clampedProgress * (3 - 2 * clampedProgress);
+}
+
 function resolveGhostUnwrappedAngle(angle: number, referenceAngle: number) {
   return referenceAngle + normalizeGhostAngle(angle - referenceAngle);
+}
+
+function normalizeGhostOrientationDelta(angleDelta: number) {
+  return ((((angleDelta + 90) % 180) + 180) % 180) - 90;
+}
+
+function resolveGhostOrientedAngle(angle: number, referenceAngle: number) {
+  return referenceAngle + normalizeGhostOrientationDelta(angle - referenceAngle);
 }
 
 function resolveGhostPointDistance(from: GhostPoint, to: GhostPoint) {
@@ -138,7 +158,7 @@ export function resolveGhostContinuousPathAngle(args: {
       resolveGhostBezierDerivative(args.path, stepProgress),
     );
 
-    continuousAngle = resolveGhostUnwrappedAngle(rawAngle, continuousAngle);
+    continuousAngle = resolveGhostOrientedAngle(rawAngle, continuousAngle);
   }
 
   return continuousAngle;
@@ -207,7 +227,7 @@ export function resolveGhostMotionState(args: {
   const trackedAngle = lerpGhostValue(
     args.sourceAngle,
     pathAngle,
-    easeOutGhostProgress(followProgress),
+    smoothstepGhostProgress(followProgress),
   );
   const settleProgress = clampGhostValue(
     (progress - GHOST_ANGLE_SETTLE_PROGRESS) / (1 - GHOST_ANGLE_SETTLE_PROGRESS),
@@ -218,7 +238,7 @@ export function resolveGhostMotionState(args: {
   const angle = lerpGhostValue(
     trackedAngle,
     settleTargetAngle,
-    easeOutGhostProgress(settleProgress),
+    easeInGhostProgress(settleProgress),
   );
 
   return {
