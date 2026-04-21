@@ -1,28 +1,26 @@
 use super::model::PlaybackTrack;
-use rand::seq::SliceRandom;
+use rand::RngExt;
 
 pub trait PlaybackStrategy: Send {
     fn next_track<'a>(&mut self, tracks: &'a [PlaybackTrack]) -> Option<&'a PlaybackTrack>;
 }
 
 pub struct RandomPlaybackStrategy {
-    order: Vec<usize>,
-    cursor: usize,
+    remaining: Vec<usize>,
+    track_count: usize,
 }
 
 impl RandomPlaybackStrategy {
     pub fn new() -> Self {
         Self {
-            order: vec![],
-            cursor: 0,
+            remaining: vec![],
+            track_count: 0,
         }
     }
 
-    fn refill_order(&mut self, len: usize) {
-        self.order = (0..len).collect();
-        self.cursor = 0;
-        let mut rng = rand::rng();
-        self.order.shuffle(&mut rng);
+    fn refill_remaining(&mut self, len: usize) {
+        self.remaining = (0..len).collect();
+        self.track_count = len;
     }
 }
 
@@ -38,12 +36,13 @@ impl PlaybackStrategy for RandomPlaybackStrategy {
             return None;
         }
 
-        if self.order.len() != tracks.len() || self.cursor >= self.order.len() {
-            self.refill_order(tracks.len());
+        if self.track_count != tracks.len() || self.remaining.is_empty() {
+            self.refill_remaining(tracks.len());
         }
 
-        let index = self.order[self.cursor];
-        self.cursor += 1;
+        let mut rng = rand::rng();
+        let remaining_index = rng.random_range(0..self.remaining.len());
+        let index = self.remaining.swap_remove(remaining_index);
         tracks.get(index)
     }
 }

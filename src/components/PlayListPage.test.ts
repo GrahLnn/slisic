@@ -18,7 +18,6 @@ describe("PlayListPage", () => {
       {
         initial: { opacity: 1 },
         animate: { opacity: 1 },
-        exit: { opacity: 1 },
       },
     );
     assert.deepEqual(
@@ -29,7 +28,6 @@ describe("PlayListPage", () => {
       {
         initial: { opacity: 0 },
         animate: { opacity: 0 },
-        exit: { opacity: 0 },
       },
     );
   });
@@ -65,6 +63,23 @@ describe("PlayListPage", () => {
         gesture: "secondary-only",
       }),
       true,
+    );
+  });
+
+  test("disables config commits when the item gesture is disabled", () => {
+    assert.equal(
+      shouldCommitPlayListPageItem({
+        button: 0,
+        gesture: "disabled",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldCommitPlayListPageItem({
+        button: 2,
+        gesture: "disabled",
+      }),
+      false,
     );
   });
 
@@ -135,10 +150,11 @@ describe("PlayListPage", () => {
       pendingPlaylistPreview: null,
       titleToneHandoff: null,
       pressedLayoutId: null,
-      playingPlaylistName: "Quiet Morning",
-      nowPlayingTrackName: "Track A",
-      playbackSurfaceTargetName: "Quiet Morning",
-      playbackSurfaceTrackName: "Track A",
+      playbackSurface: {
+        phase: "playing",
+        playlistName: "Quiet Morning",
+        displayedTrackName: "Track A",
+      },
     });
 
     assert.equal(viewModel.shouldLockScroll, true);
@@ -154,7 +170,7 @@ describe("PlayListPage", () => {
         isHiddenInPlay: true,
         shouldAnimateLayoutPosition: false,
         isCommitted: false,
-        commitGesture: "secondary-only",
+        commitGesture: "disabled",
         playlistName: "Night Drive",
       },
       {
@@ -167,11 +183,13 @@ describe("PlayListPage", () => {
         isHiddenInPlay: false,
         shouldAnimateLayoutPosition: false,
         isCommitted: false,
-        commitGesture: "secondary-only",
+        commitGesture: "disabled",
         playlistName: "Quiet Morning",
       },
     ]);
+    assert.equal(viewModel.shouldRenderCreateItem, true);
     assert.equal(viewModel.shouldShowCreateItem, false);
+    assert.equal(viewModel.createItemViewModel.isHiddenInPlay, true);
   });
 
   test("falls back to the normal list when the playing playlist snapshot is missing", () => {
@@ -189,16 +207,19 @@ describe("PlayListPage", () => {
       pendingPlaylistPreview: null,
       titleToneHandoff: null,
       pressedLayoutId: null,
-      playingPlaylistName: "Missing",
-      nowPlayingTrackName: "Track A",
-      playbackSurfaceTargetName: "Missing",
-      playbackSurfaceTrackName: "Track A",
+      playbackSurface: {
+        phase: "playing",
+        playlistName: "Missing",
+        displayedTrackName: "Track A",
+      },
     });
 
     assert.equal(viewModel.shouldLockScroll, false);
     assert.equal(viewModel.playbackTargetKey, null);
     assert.equal(viewModel.itemViewModels.length, 1);
+    assert.equal(viewModel.shouldRenderCreateItem, true);
     assert.equal(viewModel.shouldShowCreateItem, true);
+    assert.equal(viewModel.createItemViewModel.isHiddenInPlay, false);
   });
 
   test("keeps the playlist title until the playback surface finishes centering", () => {
@@ -216,17 +237,20 @@ describe("PlayListPage", () => {
       pendingPlaylistPreview: null,
       titleToneHandoff: null,
       pressedLayoutId: null,
-      playingPlaylistName: "Quiet Morning",
-      nowPlayingTrackName: "Track A",
-      playbackSurfaceTargetName: "Quiet Morning",
-      playbackSurfaceTrackName: null,
+      playbackSurface: {
+        phase: "centering",
+        playlistName: "Quiet Morning",
+        displayedTrackName: null,
+      },
     });
 
     assert.equal(viewModel.shouldLockScroll, true);
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.shouldAnimateLayoutPosition, false);
+    assert.equal(viewModel.shouldRenderCreateItem, true);
     assert.equal(viewModel.shouldShowCreateItem, false);
+    assert.equal(viewModel.createItemViewModel.isHiddenInPlay, true);
   });
 
   test("keeps the playback surface locked while restoring the original playlist title", () => {
@@ -244,16 +268,19 @@ describe("PlayListPage", () => {
       pendingPlaylistPreview: null,
       titleToneHandoff: null,
       pressedLayoutId: null,
-      playingPlaylistName: null,
-      nowPlayingTrackName: null,
-      playbackSurfaceTargetName: "Quiet Morning",
-      playbackSurfaceTrackName: null,
+      playbackSurface: {
+        phase: "restoring",
+        playlistName: "Quiet Morning",
+        displayedTrackName: null,
+      },
     });
 
     assert.equal(viewModel.shouldLockScroll, true);
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.shouldAnimateLayoutPosition, false);
+    assert.equal(viewModel.shouldRenderCreateItem, true);
     assert.equal(viewModel.shouldShowCreateItem, false);
+    assert.equal(viewModel.createItemViewModel.isHiddenInPlay, true);
   });
 });

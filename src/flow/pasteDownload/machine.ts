@@ -1,10 +1,15 @@
 import { assign } from "xstate";
-import { draftCollectionUpserted, send as sendAppLogic } from "../appLogic/runtime";
+import {
+  draftCollectionUpserted,
+  draftItemRemoved,
+  send as sendAppLogic,
+} from "../appLogic/runtime";
 import {
   activateNextCandidate,
   appendCandidateItem,
   clearActiveCandidate,
   completeActiveCandidateProbe,
+  createDraftCollectionFromProbe,
   createInitialContext,
   deleteCandidateItem,
   failActiveCandidateEnqueue,
@@ -60,9 +65,18 @@ export const machine = src.createMachine({
         },
         onDone: {
           target: ss.mainx.State.enqueueing,
-          actions: assign(({ context, event }) =>
-            completeActiveCandidateProbe(context, event.output),
-          ),
+          actions: [
+            assign(({ context, event }) =>
+              completeActiveCandidateProbe(context, event.output),
+            ),
+            ({ event }) => {
+              sendAppLogic(
+                draftCollectionUpserted.load(
+                  createDraftCollectionFromProbe(event.output),
+                ),
+              );
+            },
+          ],
         },
         onError: {
           target: ss.mainx.State.idle,
@@ -98,11 +112,26 @@ export const machine = src.createMachine({
         },
         onError: {
           target: ss.mainx.State.idle,
-          actions: assign(({ context, event }) =>
-            clearActiveCandidate(
-              failActiveCandidateEnqueue(context, toErrorMessage(event.error)),
+          actions: [
+            assign(({ context, event }) =>
+              clearActiveCandidate(
+                failActiveCandidateEnqueue(context, toErrorMessage(event.error)),
+              ),
             ),
-          ),
+            ({ context }) => {
+              const item = findActiveCandidateItem(context);
+              if (!item?.sourceUrl) {
+                return;
+              }
+
+              sendAppLogic(
+                draftItemRemoved.load({
+                  kind: "collection",
+                  url: item.sourceUrl,
+                }),
+              );
+            },
+          ],
         },
       },
     },

@@ -156,6 +156,8 @@ pub struct DownloadResourceProbe {
     pub source_kind: CollectionSourceKind,
     pub title: String,
     pub item_count: u32,
+    pub collection_folder: String,
+    pub enable_updates: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]

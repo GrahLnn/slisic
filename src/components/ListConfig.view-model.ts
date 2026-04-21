@@ -54,6 +54,7 @@ export interface ListConfigPlaylistToolLabelItem {
 export interface ListConfigCandidateToolLabelItem {
   kind: "candidate";
   id: string;
+  candidateId: string;
   text: string;
   status: ConfigCandidateItemStatus;
 }
@@ -218,7 +219,13 @@ export function createListConfigCandidateToolLabelItems(
 ): ListConfigCandidateToolLabelItem[] {
   return items.map((item) => ({
     kind: "candidate",
-    id: item.id,
+    id: item.sourceUrl
+      ? createListConfigToolLabelLayoutId({
+          kind: "collection",
+          url: item.sourceUrl,
+        })
+      : item.id,
+    candidateId: item.id,
     text: item.displayText,
     status: item.status,
   }));
@@ -228,9 +235,17 @@ export function resolveListConfigToolLabelItems(args: {
   playlistItems: readonly ListConfigPlaylistSidebarItem[];
   candidateItems: readonly ConfigCandidateItem[];
 }): ListConfigToolLabelItem[] {
+  const playlistToolLabelItems = createListConfigPlaylistToolLabelItems(
+    args.playlistItems,
+  );
+  const playlistIds = new Set(playlistToolLabelItems.map((item) => item.id));
+  const candidateToolLabelItems = createListConfigCandidateToolLabelItems(
+    args.candidateItems,
+  ).filter((item) => !playlistIds.has(item.id));
+
   return [
-    ...createListConfigCandidateToolLabelItems(args.candidateItems),
-    ...createListConfigPlaylistToolLabelItems(args.playlistItems),
+    ...candidateToolLabelItems,
+    ...playlistToolLabelItems,
   ];
 }
 

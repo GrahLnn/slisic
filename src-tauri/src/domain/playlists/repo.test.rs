@@ -630,7 +630,10 @@ fn upsert_collection_bootstraps_collection_graph_schema_on_clean_db() {
         assert_eq!(saved.musics.len(), 1);
         assert_eq!(reloaded.musics.len(), 1);
         assert_eq!(reloaded.musics[0].name, "Minus Sixty One");
-        assert_eq!(reloaded.musics[0].path.as_deref(), Some("Minus Sixty One.m4a"));
+        assert_eq!(
+            reloaded.musics[0].path.as_deref(),
+            Some("Minus Sixty One.m4a")
+        );
         assert!(
             listed
                 .iter()
@@ -1116,8 +1119,14 @@ fn upsert_playlist_does_not_clobber_existing_collection_graph_data() {
 
         assert_eq!(persisted_collection.url, populated_collection.url);
         assert_eq!(persisted_collection.musics.len(), 1);
-        assert_eq!(persisted_collection.musics[0].url, populated_collection.musics[0].url);
-        assert_eq!(persisted_playlist.collections[0].url, populated_collection.url);
+        assert_eq!(
+            persisted_collection.musics[0].url,
+            populated_collection.musics[0].url
+        );
+        assert_eq!(
+            persisted_playlist.collections[0].url,
+            populated_collection.url
+        );
         assert_eq!(persisted_playlist.collections[0].musics.len(), 1);
         assert_eq!(
             persisted_playlist.collections[0].musics[0].url,

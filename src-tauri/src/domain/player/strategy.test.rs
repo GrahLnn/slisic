@@ -44,3 +44,48 @@ fn random_strategy_visits_each_track_once_before_repeating() {
     let visited = std::collections::HashSet::from([first, second, third]);
     assert_eq!(visited.len(), 3);
 }
+
+#[test]
+fn random_strategy_refills_after_consuming_a_full_round() {
+    let mut strategy = RandomPlaybackStrategy::new();
+    let tracks = vec![track("a"), track("b")];
+
+    let _ = strategy
+        .next_track(&tracks)
+        .expect("first track should exist")
+        .music_url
+        .clone();
+    let _ = strategy
+        .next_track(&tracks)
+        .expect("second track should exist")
+        .music_url
+        .clone();
+    let third = strategy
+        .next_track(&tracks)
+        .expect("strategy should refill after one full round")
+        .music_url
+        .clone();
+
+    assert!(tracks.iter().any(|track| track.music_url == third));
+}
+
+#[test]
+fn random_strategy_resets_when_track_count_changes() {
+    let mut strategy = RandomPlaybackStrategy::new();
+    let original_tracks = vec![track("a"), track("b"), track("c")];
+    let resized_tracks = vec![track("x"), track("y")];
+
+    let _ = strategy
+        .next_track(&original_tracks)
+        .expect("first track should exist");
+
+    let next = strategy
+        .next_track(&resized_tracks)
+        .expect("strategy should recover after track count changes");
+
+    assert!(
+        resized_tracks
+            .iter()
+            .any(|track| track.music_url == next.music_url)
+    );
+}

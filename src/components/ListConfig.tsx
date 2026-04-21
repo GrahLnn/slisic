@@ -188,7 +188,9 @@ function resolveListConfigToolLabelTool(args: {
     );
   }
 
-  return me(resolveListConfigToolLabelAffordance(args.item)).match({
+  const candidateItem = args.item;
+
+  return me(resolveListConfigToolLabelAffordance(candidateItem)).match({
     playlist: () => undefined,
     passive: () => undefined,
     "candidate-delete": () => (
@@ -196,7 +198,7 @@ function resolveListConfigToolLabelTool(args: {
         <CoverTool
           text="Delete"
           onClick={() => {
-            args.onDeleteCandidateItem(args.item.id);
+            args.onDeleteCandidateItem(candidateItem.candidateId);
           }}
         />
         <MaskR />

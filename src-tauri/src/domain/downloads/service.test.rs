@@ -1,3 +1,7 @@
+/// Appdb-style domain tests stay inside a local Tokio runtime and a temporary
+/// appdb instance. Keep this file free of Tauri host setup and `AppHandle`
+/// dependencies so `cargo test` only exercises pure download-domain contracts.
+/// Manual end-to-end download checks belong in `examples/manual_download_chain.rs`.
 use super::model::CollectionSourceKind;
 use super::repo::{list_tasks, save_task};
 use super::service::{
@@ -118,31 +122,47 @@ fn materialize_music_entries_falls_back_to_single_full_track_when_no_chapters_ex
 
 #[test]
 fn describe_download_resource_maps_single_probe_to_one_item_result() {
-    let probe = describe_download_resource(RootProbe::Single(LeafProbe {
-        title: "Single Track".to_string(),
-        webpage_url: "https://example.com/watch?v=single".to_string(),
-        extractor_key: Some("Youtube".to_string()),
-        album: None,
-        duration_seconds: Some(245),
-        chapters: vec![],
-    }))
-    .expect("single root probe should become a download resource");
+    let _guard = acquire_db_test_lock();
+    let probe = run_async(async {
+        ensure_db().await;
+        let result = describe_download_resource(RootProbe::Single(LeafProbe {
+            title: "Single Track".to_string(),
+            webpage_url: "https://example.com/watch?v=single".to_string(),
+            extractor_key: Some("Youtube".to_string()),
+            album: None,
+            duration_seconds: Some(245),
+            chapters: vec![],
+        }))
+        .await;
+        reset_db();
+        result
+    })
+        .expect("single root probe should become a download resource");
 
     assert_eq!(probe.url, "https://example.com/watch?v=single");
     assert_eq!(probe.source_kind, CollectionSourceKind::Single);
     assert_eq!(probe.title, "Single Track");
     assert_eq!(probe.item_count, 1);
+    assert_eq!(probe.collection_folder, "example/Single Track");
+    assert_eq!(probe.enable_updates, None);
 }
 
 #[test]
 fn describe_download_resource_rejects_empty_lists() {
-    let error = describe_download_resource(RootProbe::List(PlaylistRoot {
-        title: "Empty Playlist".to_string(),
-        webpage_url: "https://example.com/playlist".to_string(),
-        extractor_key: Some("YoutubeTab".to_string()),
-        entries: vec![],
-    }))
-    .expect_err("empty list probes should be rejected");
+    let _guard = acquire_db_test_lock();
+    let error = run_async(async {
+        ensure_db().await;
+        let result = describe_download_resource(RootProbe::List(PlaylistRoot {
+                title: "Empty Playlist".to_string(),
+                webpage_url: "https://example.com/playlist".to_string(),
+                extractor_key: Some("YoutubeTab".to_string()),
+                entries: vec![],
+            }))
+            .await;
+        reset_db();
+        result
+    })
+        .expect_err("empty list probes should be rejected");
 
     assert!(
         error

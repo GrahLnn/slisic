@@ -17,6 +17,7 @@ use tauri::{AppHandle, Manager};
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const BIN_DIR_NAME: &str = "bin";
+const GITHUB_API_BASE: &str = "https://api.github.com/repos";
 const GITHUB_RELAY_BASE: &str = "https://xget.r2g2.org/gh";
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60 * 5);
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
@@ -36,13 +37,29 @@ enum ArchiveKind {
     TarXz,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GitHubReleaseAssetMatcher {
+    Exact(&'static str),
+    Suffix(&'static str),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DownloadPlan {
     install_name: &'static str,
-    checksum_asset_name: Option<&'static str>,
+    checksum_asset_name: Option<String>,
     download_url: String,
     checksum_url: Option<String>,
     archive_kind: ArchiveKind,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct GitHubLatestRelease {
+    assets: Vec<GitHubLatestReleaseAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct GitHubLatestReleaseAsset {
+    pub(crate) name: String,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,14 +142,14 @@ pub(crate) fn ensure_managed_binary(
     kind: ManagedBinary,
 ) -> Result<PathBuf, String> {
     with_binary_kind_lock(kind, || {
-        let plan = plan_for_current_platform(kind)?;
-        let install_path = installed_bin_path(app, &plan)?;
+        let install_path = installed_bin_path(app, install_name_for_kind(kind))?;
         if install_path.exists() {
             return Ok(install_path);
         }
 
-        let state_path = install_state_path(app, kind)?;
         let client = http_client()?;
+        let plan = plan_for_current_platform(&client, kind)?;
+        let state_path = install_state_path(app, kind)?;
         install_binary(app, kind, &plan, &install_path, &state_path, &client)?;
         Ok(install_path)
     })
@@ -152,10 +169,10 @@ fn run_maintenance_cycle(app: &AppHandle) {
 
 fn maintain_binary(app: &AppHandle, kind: ManagedBinary) -> Result<(), String> {
     with_binary_kind_lock(kind, || {
-        let plan = plan_for_current_platform(kind)?;
-        let install_path = installed_bin_path(app, &plan)?;
-        let state_path = install_state_path(app, kind)?;
+        let install_path = installed_bin_path(app, install_name_for_kind(kind))?;
         let client = http_client()?;
+        let plan = plan_for_current_platform(&client, kind)?;
+        let state_path = install_state_path(app, kind)?;
 
         if !install_path.exists() {
             println!(
@@ -275,7 +292,7 @@ fn checksum_for_plan(client: &Client, plan: &DownloadPlan) -> Result<Option<Stri
     let Some(checksum_url) = &plan.checksum_url else {
         return Ok(None);
     };
-    let Some(asset_name) = plan.checksum_asset_name else {
+    let Some(asset_name) = plan.checksum_asset_name.as_deref() else {
         return Ok(None);
     };
 
@@ -546,29 +563,60 @@ fn app_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-fn installed_bin_path(app: &AppHandle, plan: &DownloadPlan) -> Result<PathBuf, String> {
-    Ok(app_bin_dir(app)?.join(plan.install_name))
+/// The on-disk executable name is local runtime state, not release metadata.
+/// Keep it independent from network resolution so existing installs stay usable
+/// even when the latest release API is temporarily unavailable.
+fn install_name_for_kind(kind: ManagedBinary) -> &'static str {
+    match kind {
+        ManagedBinary::Ffmpeg => {
+            if cfg!(windows) {
+                "ffmpeg.exe"
+            } else {
+                "ffmpeg"
+            }
+        }
+        ManagedBinary::YtDlp => {
+            if cfg!(windows) {
+                "yt-dlp.exe"
+            } else {
+                "yt-dlp"
+            }
+        }
+    }
+}
+
+fn installed_bin_path(app: &AppHandle, install_name: &str) -> Result<PathBuf, String> {
+    Ok(app_bin_dir(app)?.join(install_name))
 }
 
 fn install_state_path(app: &AppHandle, kind: ManagedBinary) -> Result<PathBuf, String> {
     Ok(app_bin_dir(app)?.join(kind.state_file_name()))
 }
 
-fn plan_for_current_platform(kind: ManagedBinary) -> Result<DownloadPlan, String> {
+fn plan_for_current_platform(client: &Client, kind: ManagedBinary) -> Result<DownloadPlan, String> {
     match kind {
-        ManagedBinary::YtDlp => ytdlp_plan(),
-        ManagedBinary::Ffmpeg => ffmpeg_plan(),
+        ManagedBinary::YtDlp => ytdlp_plan(client),
+        ManagedBinary::Ffmpeg => ffmpeg_plan(client),
     }
 }
 
-fn ytdlp_plan() -> Result<DownloadPlan, String> {
-    let (asset_name, install_name) = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("windows", "x86") => ("yt-dlp_x86.exe", "yt-dlp.exe"),
-        ("windows", _) => ("yt-dlp.exe", "yt-dlp.exe"),
-        ("linux", "aarch64") => ("yt-dlp_linux_aarch64", "yt-dlp"),
-        ("linux", "arm") | ("linux", "armv7") => ("yt-dlp_linux_armv7l", "yt-dlp"),
-        ("linux", _) => ("yt-dlp_linux", "yt-dlp"),
-        ("macos", _) => ("yt-dlp_macos", "yt-dlp"),
+fn ytdlp_plan(client: &Client) -> Result<DownloadPlan, String> {
+    let (asset_matcher, install_name) = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86") => (
+            GitHubReleaseAssetMatcher::Exact("yt-dlp_x86.exe"),
+            "yt-dlp.exe",
+        ),
+        ("windows", _) => (GitHubReleaseAssetMatcher::Exact("yt-dlp.exe"), "yt-dlp.exe"),
+        ("linux", "aarch64") => (
+            GitHubReleaseAssetMatcher::Exact("yt-dlp_linux_aarch64"),
+            "yt-dlp",
+        ),
+        ("linux", "arm") | ("linux", "armv7") => (
+            GitHubReleaseAssetMatcher::Exact("yt-dlp_linux_armv7l"),
+            "yt-dlp",
+        ),
+        ("linux", _) => (GitHubReleaseAssetMatcher::Exact("yt-dlp_linux"), "yt-dlp"),
+        ("macos", _) => (GitHubReleaseAssetMatcher::Exact("yt-dlp_macos"), "yt-dlp"),
         _ => {
             return Err(format!(
                 "yt-dlp is not configured for {}-{}",
@@ -577,10 +625,17 @@ fn ytdlp_plan() -> Result<DownloadPlan, String> {
             ));
         }
     };
+    let release = fetch_github_latest_release(client, "yt-dlp", "yt-dlp")?;
+    let asset_name = select_release_asset_name(&release.assets, asset_matcher)?.to_string();
+    let checksum_asset_name = select_release_asset_name(
+        &release.assets,
+        GitHubReleaseAssetMatcher::Exact("SHA2-256SUMS"),
+    )?
+    .to_string();
 
     Ok(DownloadPlan {
         install_name,
-        checksum_asset_name: Some(asset_name),
+        checksum_asset_name: Some(asset_name.clone()),
         download_url: build_github_relay_url(
             "yt-dlp",
             "yt-dlp",
@@ -589,21 +644,22 @@ fn ytdlp_plan() -> Result<DownloadPlan, String> {
         checksum_url: Some(build_github_relay_url(
             "yt-dlp",
             "yt-dlp",
-            "releases/latest/download/SHA2-256SUMS",
+            &format!("releases/latest/download/{checksum_asset_name}"),
         )),
         archive_kind: ArchiveKind::Raw,
     })
 }
 
-fn ffmpeg_plan() -> Result<DownloadPlan, String> {
-    let install_name = if cfg!(windows) {
-        "ffmpeg.exe"
-    } else {
-        "ffmpeg"
-    };
+fn ffmpeg_plan(client: &Client) -> Result<DownloadPlan, String> {
+    let install_name = install_name_for_kind(ManagedBinary::Ffmpeg);
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("windows", "x86") | ("windows", "x86_64") | ("windows", "aarch64") => {
-            let asset_name = "ffmpeg-master-latest-win64-gpl.zip";
+            let release = fetch_github_latest_release(client, "BtbN", "FFmpeg-Builds")?;
+            let asset_name = select_release_asset_name(
+                &release.assets,
+                GitHubReleaseAssetMatcher::Suffix("-win64-gpl.zip"),
+            )?
+            .to_string();
             Ok(DownloadPlan {
                 install_name,
                 checksum_asset_name: None,
@@ -617,7 +673,12 @@ fn ffmpeg_plan() -> Result<DownloadPlan, String> {
             })
         }
         ("linux", "x86_64") => {
-            let asset_name = "ffmpeg-master-latest-linux64-gpl.tar.xz";
+            let release = fetch_github_latest_release(client, "BtbN", "FFmpeg-Builds")?;
+            let asset_name = select_release_asset_name(
+                &release.assets,
+                GitHubReleaseAssetMatcher::Suffix("-linux64-gpl.tar.xz"),
+            )?
+            .to_string();
             Ok(DownloadPlan {
                 install_name,
                 checksum_asset_name: None,
@@ -631,7 +692,12 @@ fn ffmpeg_plan() -> Result<DownloadPlan, String> {
             })
         }
         ("linux", "aarch64") => {
-            let asset_name = "ffmpeg-master-latest-linuxarm64-gpl.tar.xz";
+            let release = fetch_github_latest_release(client, "BtbN", "FFmpeg-Builds")?;
+            let asset_name = select_release_asset_name(
+                &release.assets,
+                GitHubReleaseAssetMatcher::Suffix("-linuxarm64-gpl.tar.xz"),
+            )?
+            .to_string();
             Ok(DownloadPlan {
                 install_name,
                 checksum_asset_name: None,
@@ -668,8 +734,65 @@ fn ffmpeg_plan() -> Result<DownloadPlan, String> {
     }
 }
 
+pub(crate) fn build_github_api_url(owner: &str, repo: &str, suffix: &str) -> String {
+    format!("{GITHUB_API_BASE}/{owner}/{repo}/{suffix}")
+}
+
 pub(crate) fn build_github_relay_url(owner: &str, repo: &str, suffix: &str) -> String {
     format!("{GITHUB_RELAY_BASE}/{owner}/{repo}/{suffix}")
+}
+
+/// Release asset names are upstream-owned and may change shape over time even
+/// when the platform flavor stays the same. Resolve them from the latest
+/// release metadata instead of treating a guessed filename as canonical.
+fn fetch_github_latest_release(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+) -> Result<GitHubLatestRelease, String> {
+    client
+        .get(build_github_api_url(owner, repo, "releases/latest"))
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .send()
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .json::<GitHubLatestRelease>()
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn select_release_asset_name<'a>(
+    assets: &'a [GitHubLatestReleaseAsset],
+    matcher: GitHubReleaseAssetMatcher,
+) -> Result<&'a str, String> {
+    let matched = assets
+        .iter()
+        .map(|asset| asset.name.as_str())
+        .find(|name| release_asset_matcher_matches(matcher, name));
+
+    if let Some(name) = matched {
+        return Ok(name);
+    }
+
+    let available_assets = assets
+        .iter()
+        .map(|asset| asset.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "release asset {:?} not found in latest release assets [{}]",
+        matcher, available_assets
+    ))
+}
+
+pub(crate) fn release_asset_matcher_matches(
+    matcher: GitHubReleaseAssetMatcher,
+    asset_name: &str,
+) -> bool {
+    match matcher {
+        GitHubReleaseAssetMatcher::Exact(expected) => asset_name == expected,
+        GitHubReleaseAssetMatcher::Suffix(expected) => asset_name.ends_with(expected),
+    }
 }
 
 pub(crate) fn parse_sha256(sums: &str, asset_name: &str) -> Option<String> {

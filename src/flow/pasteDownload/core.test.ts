@@ -5,6 +5,7 @@ import {
   appendCandidateItem,
   candidateItemAllowsDelete,
   candidateItemIsErrored,
+  createDraftCollectionFromProbe,
   createInitialContext,
   deleteCandidateItem,
   hasPendingCandidateToProbe,
@@ -47,6 +48,27 @@ describe("parseClipboardDownloadUrl", () => {
 });
 
 describe("candidate item helpers", () => {
+  test("creates a draft-ready collection shell from a resolved probe", () => {
+    assert.deepEqual(
+      createDraftCollectionFromProbe({
+        url: "https://example.com/watch?v=abc",
+        source_kind: "single",
+        title: "Example",
+        item_count: 1,
+        collection_folder: "youtube/Example",
+        enable_updates: null,
+      }),
+      {
+        name: "Example",
+        url: "https://example.com/watch?v=abc",
+        folder: "youtube/Example",
+        musics: [],
+        last_updated: "",
+        enable_updates: null,
+      },
+    );
+  });
+
   test("prepends new pasted items and queues only valid urls for probing", () => {
     const withFirst = appendCandidateItem(
       createInitialContext(),

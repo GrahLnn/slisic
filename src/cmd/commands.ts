@@ -145,6 +145,8 @@ export type DownloadResourceProbe = {
 	source_kind: CollectionSourceKind,
 	title: string,
 	item_count: number,
+	collection_folder: string,
+	enable_updates: boolean | null,
 };
 
 export type DownloadTask = {

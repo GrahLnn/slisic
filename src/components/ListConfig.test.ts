@@ -10,6 +10,7 @@ import {
   createListConfigCandidateToolLabelItems,
   createListConfigPlaylistSidebarItems,
   createListConfigPlaylistToolLabelItems,
+  createListConfigToolLabelLayoutId,
   createListConfigTitleSnapshot,
   resolveListConfigTitlePlaceholder,
   resolveListConfigEmptyState,
@@ -101,6 +102,8 @@ const candidateItems: ConfigCandidateItem[] = [
       source_kind: "single",
       title: "Quiet Morning",
       item_count: 1,
+      collection_folder: "youtube/quiet-morning",
+      enable_updates: null,
     },
     task: null,
   },
@@ -302,13 +305,18 @@ describe("ListConfig title view model", () => {
     assert.deepEqual(createListConfigCandidateToolLabelItems(candidateItems), [
       {
         kind: "candidate",
-        id: "candidate:0",
+        id: createListConfigToolLabelLayoutId({
+          kind: "collection",
+          url: "https://www.youtube.com/watch?v=abc123",
+        }),
+        candidateId: "candidate:0",
         text: "Quiet Morning",
         status: "resolved",
       },
       {
         kind: "candidate",
         id: "candidate:1",
+        candidateId: "candidate:1",
         text: "not a url",
         status: "invalid_url",
       },
@@ -358,13 +366,18 @@ describe("ListConfig title view model", () => {
       [
         {
           kind: "candidate",
-          id: "candidate:0",
+          id: createListConfigToolLabelLayoutId({
+            kind: "collection",
+            url: "https://www.youtube.com/watch?v=abc123",
+          }),
+          candidateId: "candidate:0",
           text: "Quiet Morning",
           status: "resolved",
         },
         {
           kind: "candidate",
           id: "candidate:1",
+          candidateId: "candidate:1",
           text: "not a url",
           status: "invalid_url",
         },
@@ -412,7 +425,11 @@ describe("ListConfig title view model", () => {
     assert.equal(
       resolveListConfigToolLabelAffordance({
         kind: "candidate",
-        id: "candidate:0",
+        id: createListConfigToolLabelLayoutId({
+          kind: "collection",
+          url: "https://www.youtube.com/watch?v=abc123",
+        }),
+        candidateId: "candidate:0",
         text: "Quiet Morning",
         status: "resolved",
       }),
@@ -422,6 +439,7 @@ describe("ListConfig title view model", () => {
       resolveListConfigToolLabelAffordance({
         kind: "candidate",
         id: "candidate:1",
+        candidateId: "candidate:1",
         text: "not a url",
         status: "invalid_url",
       }),
@@ -540,6 +558,7 @@ describe("ListConfig title view model", () => {
       resolveListConfigToolLabelTextClassName({
         kind: "candidate",
         id: "candidate:1",
+        candidateId: "candidate:1",
         text: "not a url",
         status: "invalid_url",
       }),
@@ -549,6 +568,7 @@ describe("ListConfig title view model", () => {
       resolveListConfigToolLabelAffordance({
         kind: "candidate",
         id: "candidate:1",
+        candidateId: "candidate:1",
         text: "not a url",
         status: "invalid_url",
       }),
@@ -557,7 +577,11 @@ describe("ListConfig title view model", () => {
     assert.equal(
       resolveListConfigToolLabelAffordance({
         kind: "candidate",
-        id: "candidate:0",
+        id: createListConfigToolLabelLayoutId({
+          kind: "collection",
+          url: "https://www.youtube.com/watch?v=abc123",
+        }),
+        candidateId: "candidate:0",
         text: "Quiet Morning",
         status: "resolved",
       }),
@@ -681,6 +705,50 @@ describe("ListConfig title view model", () => {
         false: () => false,
       }),
       false,
+    );
+  });
+
+  test("switches to the draft playlist item as soon as a matching collection enters draft", () => {
+    assert.deepEqual(
+      resolveListConfigToolLabelItems({
+        playlistItems: [
+          {
+            kind: "collection",
+            name: "Quiet Morning",
+            url: "https://www.youtube.com/watch?v=abc123",
+            folder: "youtube/quiet-morning",
+            enableUpdates: null,
+          },
+        ],
+        candidateItems: [
+          {
+            id: "candidate:0",
+            rawText: "https://www.youtube.com/watch?v=abc123",
+            sourceUrl: "https://www.youtube.com/watch?v=abc123",
+            displayText: "Quiet Morning",
+            status: "resolved",
+            error: null,
+            probe: null,
+            task: null,
+          },
+        ],
+      }),
+      [
+        {
+          kind: "playlist",
+          id: createListConfigToolLabelLayoutId({
+            kind: "collection",
+            url: "https://www.youtube.com/watch?v=abc123",
+          }),
+          ref: createConfigSidebarItemRef({
+            kind: "collection",
+            url: "https://www.youtube.com/watch?v=abc123",
+          }),
+          text: "Quiet Morning",
+          sourceKind: "collection",
+          enableUpdates: null,
+        },
+      ],
     );
   });
 

@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type ComponentProps, type CSSPropert
 import { cn } from "@/lib/utils";
 import { AnimatePresence, motion } from "motion/react";
 import { createPortal } from "react-dom";
+import { Torph } from "@grahlnn/comps";
 
 export function MaskR() {
   return (
@@ -516,7 +517,7 @@ export function ToolLabel({
           }}
           className={cn("inline-flex w-fit", resolvedTextClassName)}
         >
-          {text}
+          <Torph text={text} />
         </motion.div>
         <AnimatePresence initial={false}>
           {isOverlayVisible &&

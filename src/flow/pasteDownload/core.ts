@@ -1,5 +1,5 @@
 import { type as arkType } from "arktype";
-import type { DownloadResourceProbe, DownloadTask } from "@/src/cmd";
+import type { Collection, DownloadResourceProbe, DownloadTask } from "@/src/cmd";
 
 const downloadUrl = arkType("string.url");
 const EMPTY_CLIPBOARD_TEXT = "Empty clipboard";
@@ -179,6 +179,19 @@ export function completeActiveCandidateProbe(
     error: null,
     probe,
   }));
+}
+
+export function createDraftCollectionFromProbe(
+  probe: DownloadResourceProbe,
+): Collection {
+  return {
+    name: probe.title,
+    url: probe.url,
+    folder: probe.collection_folder,
+    musics: [],
+    last_updated: "",
+    enable_updates: probe.enable_updates,
+  };
 }
 
 export function failActiveCandidateProbe(context: Context, error: string): Context {

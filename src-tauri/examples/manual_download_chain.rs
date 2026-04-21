@@ -117,12 +117,16 @@ use domain::downloads::service::enqueue_collection_download_for_test;
 use domain::downloads::yt_dlp::CliYtDlpClient;
 use domain::meta::model::MetaInfo;
 use domain::meta::repo::save_meta_info;
-use domain::playlists::model::PlayList;
 use domain::player::service::{collect_playlist_tracks, resolve_selected_collections};
+use domain::playlists::model::PlayList;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
+
+/// This is a manual diagnostics entrypoint, not a Rust test. It intentionally
+/// stays out of `tests/` so the default test harness keeps the appdb-style
+/// domain boundary: temporary database + fake deps, with no Tauri host runtime.
 
 fn temp_test_dir(prefix: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -139,8 +143,7 @@ fn installed_bin_dir() -> PathBuf {
         .join("bin")
 }
 
-#[test]
-fn manual_real_single_download_populates_collection_musics() {
+fn main() {
     let _guard = domain::playlists::PLAYLIST_DB_TEST_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

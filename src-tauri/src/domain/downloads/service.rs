@@ -104,7 +104,7 @@ pub async fn probe_download_resource(url: String) -> Result<DownloadResourceProb
         run_blocking(move || client.probe_root(&probe_url)).await?
     };
 
-    describe_download_resource(root_probe)
+    describe_download_resource(root_probe).await
 }
 
 pub async fn resume_download_task(task_id: String) -> Result<DownloadTask> {
@@ -124,24 +124,46 @@ pub async fn list_download_tasks() -> Result<Vec<DownloadTask>> {
     repo::list_tasks().await
 }
 
-pub(crate) fn describe_download_resource(root_probe: RootProbe) -> Result<DownloadResourceProbe> {
+pub(crate) async fn describe_download_resource(root_probe: RootProbe) -> Result<DownloadResourceProbe> {
     match root_probe {
-        RootProbe::Single(leaf) => Ok(DownloadResourceProbe {
-            url: leaf.webpage_url,
-            source_kind: CollectionSourceKind::Single,
-            title: leaf.title,
-            item_count: 1,
-        }),
+        RootProbe::Single(leaf) => {
+            let existing = collection_repo::get_collection_by_url(&leaf.webpage_url).await?;
+            Ok(DownloadResourceProbe {
+                url: leaf.webpage_url.clone(),
+                source_kind: CollectionSourceKind::Single,
+                title: leaf.title.clone(),
+                item_count: 1,
+                collection_folder: resolve_collection_folder(
+                    &leaf.webpage_url,
+                    &leaf.title,
+                    existing.as_ref(),
+                )
+                .await?,
+                enable_updates: None,
+            })
+        }
         RootProbe::List(list) => {
             if list.entries.is_empty() {
                 bail!("download resource does not contain any downloadable entries");
             }
 
+            let existing = collection_repo::get_collection_by_url(&list.webpage_url).await?;
             Ok(DownloadResourceProbe {
-                url: list.webpage_url,
+                url: list.webpage_url.clone(),
                 source_kind: CollectionSourceKind::List,
-                title: list.title,
+                title: list.title.clone(),
                 item_count: list.entries.len() as u32,
+                collection_folder: resolve_collection_folder(
+                    &list.webpage_url,
+                    &list.title,
+                    existing.as_ref(),
+                )
+                .await?,
+                enable_updates: Some(
+                    existing
+                        .and_then(|collection| collection.enable_updates)
+                        .unwrap_or(false),
+                ),
             })
         }
     }
@@ -179,15 +201,23 @@ pub(crate) async fn enqueue_collection_download_for_test(
     client: Arc<dyn YtDlpClient>,
     save_root: PathBuf,
 ) -> Result<EnqueuedCollectionDownload> {
+    // This helper is reserved for manual chain verification outside `cargo test`.
+    // Domain tests should follow the appdb pattern with fake dependencies and
+    // temporary appdb state instead of pulling Tauri-hosted execution paths into
+    // the Rust test harness.
     let deps = DownloadExecutionDeps { client, save_root };
     let prepared = prepare_task_enqueue_outcome(url, DownloadTrigger::Manual).await?;
 
     let (mut task, mut collection) = match prepared {
-        PreparedTaskEnqueue::Existing(task) => match resolve_existing_enqueued_collection(&task).await {
-            Ok(collection) => (task, collection),
-            Err(_) => bootstrap_enqueued_collection_with_deps(task, deps.clone()).await?,
-        },
-        PreparedTaskEnqueue::New(task) => bootstrap_enqueued_collection_with_deps(task, deps.clone()).await?,
+        PreparedTaskEnqueue::Existing(task) => {
+            match resolve_existing_enqueued_collection(&task).await {
+                Ok(collection) => (task, collection),
+                Err(_) => bootstrap_enqueued_collection_with_deps(task, deps.clone()).await?,
+            }
+        }
+        PreparedTaskEnqueue::New(task) => {
+            bootstrap_enqueued_collection_with_deps(task, deps.clone()).await?
+        }
     };
 
     if !task.status.is_terminal() {

@@ -1,6 +1,7 @@
 use super::binaries::{
-    BinaryInstallState, ManagedBinary, RemoteIdentity, build_github_relay_url,
-    needs_install_or_update, parse_sha256, with_binary_kind_lock,
+    BinaryInstallState, GitHubLatestReleaseAsset, GitHubReleaseAssetMatcher, ManagedBinary,
+    RemoteIdentity, build_github_api_url, build_github_relay_url, needs_install_or_update,
+    parse_sha256, release_asset_matcher_matches, select_release_asset_name, with_binary_kind_lock,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
@@ -18,6 +19,16 @@ fn build_github_relay_url_uses_single_canonical_base() {
 }
 
 #[test]
+fn build_github_api_url_uses_the_official_release_metadata_endpoint() {
+    let url = build_github_api_url("BtbN", "FFmpeg-Builds", "releases/latest");
+
+    assert_eq!(
+        url,
+        "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
+    );
+}
+
+#[test]
 fn parse_sha256_extracts_matching_asset_hash() {
     let sums = "\
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  other-file\n\
@@ -29,6 +40,44 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  yt-dlp.exe\n";
         hash.as_deref(),
         Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
     );
+}
+
+#[test]
+fn release_asset_matcher_matches_exact_and_suffix_rules() {
+    assert!(release_asset_matcher_matches(
+        GitHubReleaseAssetMatcher::Exact("yt-dlp.exe"),
+        "yt-dlp.exe"
+    ));
+    assert!(!release_asset_matcher_matches(
+        GitHubReleaseAssetMatcher::Exact("yt-dlp.exe"),
+        "yt-dlp_x86.exe"
+    ));
+    assert!(release_asset_matcher_matches(
+        GitHubReleaseAssetMatcher::Suffix("-win64-gpl.zip"),
+        "ffmpeg-N-124055-gc67a4554d1-win64-gpl.zip"
+    ));
+    assert!(!release_asset_matcher_matches(
+        GitHubReleaseAssetMatcher::Suffix("-win64-gpl.zip"),
+        "ffmpeg-N-124055-gc67a4554d1-win64-gpl-shared.zip"
+    ));
+}
+
+#[test]
+fn select_release_asset_name_picks_the_current_release_asset_without_hardcoding_build_ids() {
+    let assets = vec![
+        GitHubLatestReleaseAsset {
+            name: "ffmpeg-N-124055-gc67a4554d1-win64-gpl-shared.zip".to_string(),
+        },
+        GitHubLatestReleaseAsset {
+            name: "ffmpeg-N-124055-gc67a4554d1-win64-gpl.zip".to_string(),
+        },
+    ];
+
+    let selected =
+        select_release_asset_name(&assets, GitHubReleaseAssetMatcher::Suffix("-win64-gpl.zip"))
+            .expect("suffix matcher should resolve the non-shared win64 gpl asset");
+
+    assert_eq!(selected, "ffmpeg-N-124055-gc67a4554d1-win64-gpl.zip");
 }
 
 #[test]
