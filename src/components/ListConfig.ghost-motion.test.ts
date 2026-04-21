@@ -1,79 +1,34 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  createGhostMotionModel,
   resolveGhostContinuousPathAngle,
-  resolveGhostAngleFromTransform,
-  resolveGhostCloneFrame,
   resolveGhostMotionPath,
   resolveGhostMotionState,
-} from "./ListConfig.ghost-transition";
+} from "./ListConfig.ghost-motion";
 
-describe("ListConfig ghost transition", () => {
-  test("recovers the pre-transform frame from the transformed source rect", () => {
-    const frame = resolveGhostCloneFrame({
-      sourceRect: {
-        left: 1201.7822265625,
-        top: 211.1537322998047,
-        width: 90.88460540771484,
-        height: 34.08927536010742,
-      },
-      width: 89.0938,
-      height: 18,
-      transform: "matrix(0.982919, -0.184039, 0.184039, 0.982919, 0, 0)",
-      transformOrigin: "89.0938px 9px",
-    });
+function createSourceFrame() {
+  return {
+    left: 1201.91677,
+    top: 211.00001,
+    width: 89.0938,
+    height: 18,
+  };
+}
 
-    assert.ok(Math.abs(frame.left - 1201.91677) < 0.01);
-    assert.ok(Math.abs(frame.top - 211.00001) < 0.01);
-    assert.equal(frame.width, 89.0938);
-    assert.equal(frame.height, 18);
-  });
+function createTargetFrame() {
+  return {
+    left: 380,
+    top: 371.3333435058594,
+    width: 71.8125,
+    height: 18,
+  };
+}
 
-  test("keeps the box unchanged when the source has no transform", () => {
-    assert.deepEqual(
-      resolveGhostCloneFrame({
-        sourceRect: {
-          left: 380,
-          top: 371.3333435058594,
-          width: 71.8125,
-          height: 18,
-        },
-        width: 71.8125,
-        height: 18,
-        transform: "none",
-        transformOrigin: "35.9062px 9px",
-      }),
-      {
-        left: 380,
-        top: 371.3333435058594,
-        width: 71.8125,
-        height: 18,
-      },
-    );
-  });
-
-  test("extracts the visual angle from the current transform matrix", () => {
-    assert.ok(
-      Math.abs(
-        resolveGhostAngleFromTransform("matrix(0.982919, -0.184039, 0.184039, 0.982919, 0, 0)") +
-          10.6,
-      ) < 0.2,
-    );
-  });
-
+describe("ListConfig ghost motion", () => {
   test("uses a curved motion path instead of a straight midpoint interpolation", () => {
-    const sourceFrame = {
-      left: 1201.91677,
-      top: 211.00001,
-      width: 89.0938,
-      height: 18,
-    };
-    const targetFrame = {
-      left: 380,
-      top: 371.3333435058594,
-      width: 71.8125,
-      height: 18,
-    };
+    const sourceFrame = createSourceFrame();
+    const targetFrame = createTargetFrame();
     const path = resolveGhostMotionPath({
       sourceAngle: -10.6,
       sourceFrame,
@@ -93,22 +48,10 @@ describe("ListConfig ghost transition", () => {
   });
 
   test("uses the source angle as the exact initial path tangent", () => {
-    const sourceFrame = {
-      left: 1201.91677,
-      top: 211.00001,
-      width: 89.0938,
-      height: 18,
-    };
-    const targetFrame = {
-      left: 380,
-      top: 371.3333435058594,
-      width: 71.8125,
-      height: 18,
-    };
     const path = resolveGhostMotionPath({
       sourceAngle: -10.6,
-      sourceFrame,
-      targetFrame,
+      sourceFrame: createSourceFrame(),
+      targetFrame: createTargetFrame(),
     });
     const initialPathAngle = resolveGhostContinuousPathAngle({
       path,
@@ -120,30 +63,19 @@ describe("ListConfig ghost transition", () => {
   });
 
   test("keeps the early motion aligned with the source forward heading", () => {
-    const sourceFrame = {
-      left: 1201.91677,
-      top: 211.00001,
-      width: 89.0938,
-      height: 18,
-    };
-    const targetFrame = {
-      left: 380,
-      top: 371.3333435058594,
-      width: 71.8125,
-      height: 18,
-    };
+    const sourceFrame = createSourceFrame();
     const sourceAngle = -10.6;
     const path = resolveGhostMotionPath({
       sourceAngle,
       sourceFrame,
-      targetFrame,
+      targetFrame: createTargetFrame(),
     });
     const state = resolveGhostMotionState({
       path,
       progress: 0.08,
       sourceAngle,
       sourceFrame,
-      targetFrame,
+      targetFrame: createTargetFrame(),
     });
     const sourceHeadingInRadians = (sourceAngle * Math.PI) / 180;
     const sourceHeading = {
@@ -162,18 +94,8 @@ describe("ListConfig ghost transition", () => {
   });
 
   test("keeps the initial source angle fixed before the path-follow phase", () => {
-    const sourceFrame = {
-      left: 1201.91677,
-      top: 211.00001,
-      width: 89.0938,
-      height: 18,
-    };
-    const targetFrame = {
-      left: 380,
-      top: 371.3333435058594,
-      width: 71.8125,
-      height: 18,
-    };
+    const sourceFrame = createSourceFrame();
+    const targetFrame = createTargetFrame();
     const path = resolveGhostMotionPath({
       sourceAngle: -10.6,
       sourceFrame,
@@ -191,22 +113,10 @@ describe("ListConfig ghost transition", () => {
   });
 
   test("keeps the path angle continuous when it crosses the wrap boundary", () => {
-    const sourceFrame = {
-      left: 1201.91677,
-      top: 211.00001,
-      width: 89.0938,
-      height: 18,
-    };
-    const targetFrame = {
-      left: 380,
-      top: 371.3333435058594,
-      width: 71.8125,
-      height: 18,
-    };
     const path = resolveGhostMotionPath({
       sourceAngle: -10.6,
-      sourceFrame,
-      targetFrame,
+      sourceFrame: createSourceFrame(),
+      targetFrame: createTargetFrame(),
     });
     const pathAngles = [0.2, 0.4, 0.6, 0.8].map((progress) =>
       resolveGhostContinuousPathAngle({
@@ -222,18 +132,8 @@ describe("ListConfig ghost transition", () => {
   });
 
   test("lands on the target frame and settles back to the horizontal label pose", () => {
-    const sourceFrame = {
-      left: 1201.91677,
-      top: 211.00001,
-      width: 89.0938,
-      height: 18,
-    };
-    const targetFrame = {
-      left: 380,
-      top: 371.3333435058594,
-      width: 71.8125,
-      height: 18,
-    };
+    const sourceFrame = createSourceFrame();
+    const targetFrame = createTargetFrame();
     const path = resolveGhostMotionPath({
       sourceAngle: -10.6,
       sourceFrame,
@@ -252,5 +152,32 @@ describe("ListConfig ghost transition", () => {
     assert.ok(Math.abs(state.width - targetFrame.width) < 0.001);
     assert.ok(Math.abs(state.height - targetFrame.height) < 0.001);
     assert.ok(Math.abs(((state.angle % 360) + 360) % 360) < 0.001);
+  });
+
+  test("composes the planned path and sampled state through a single motion model", () => {
+    const sourceFrame = createSourceFrame();
+    const targetFrame = createTargetFrame();
+    const sourceAngle = -10.6;
+    const model = createGhostMotionModel({
+      sourceAngle,
+      sourceFrame,
+      targetFrame,
+    });
+    const sample = model.sample(0.5);
+    const path = resolveGhostMotionPath({
+      sourceAngle,
+      sourceFrame,
+      targetFrame,
+    });
+    const state = resolveGhostMotionState({
+      path,
+      progress: 0.5,
+      sourceAngle,
+      sourceFrame,
+      targetFrame,
+    });
+
+    assert.deepEqual(sample.path, path);
+    assert.deepEqual(sample.state, state);
   });
 });
