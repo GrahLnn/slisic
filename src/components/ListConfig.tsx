@@ -7,15 +7,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
 import { crab } from "@/src/cmd";
-import {
-  action as appLogicAction,
-  hook as appLogicHook,
-} from "@/src/flow/appLogic";
+import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { action as playlistCommitAction } from "@/src/flow/playlistCommit";
-import {
-  action as pasteDownloadAction,
-  hook as pasteDownloadHook,
-} from "@/src/flow/pasteDownload";
+import { action as pasteDownloadAction, hook as pasteDownloadHook } from "@/src/flow/pasteDownload";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import {
   createPlayListFromDraft,
@@ -27,10 +21,7 @@ import {
   type ConfigSidebarItemRef,
 } from "@/src/flow/appLogic/core";
 import { collectionTitleLayoutTransition } from "./collectionTitle";
-import {
-  ArcTrackList,
-  type ArcTrackPushTransitionSource,
-} from "./ArcTrackList";
+import { ArcTrackList, type ArcTrackPushTransitionSource } from "./ArcTrackList";
 import { CoverTool } from "./coverTool";
 import { EditableTitle, type EditableTitleHandle } from "./EditableTitle";
 import { useListConfigGhostTransition } from "./ListConfig.ghost-transition";
@@ -144,8 +135,7 @@ function resolveListConfigToolLabelTool(args: {
 }): ReactNode {
   if (args.item.kind === "playlist") {
     const playlistItem = args.item;
-    const collectionUpdatesToolText =
-      resolveListConfigCollectionUpdatesToolText(playlistItem);
+    const collectionUpdatesToolText = resolveListConfigCollectionUpdatesToolText(playlistItem);
 
     return (
       <div
@@ -258,9 +248,7 @@ function createFrozenListConfigRenderData(args: {
 
   const currentTitle = args.renderData.viewModel.title;
   const titleLayoutId =
-    args.titleLayoutId === undefined
-      ? currentTitle.layoutId
-      : (args.titleLayoutId ?? undefined);
+    args.titleLayoutId === undefined ? currentTitle.layoutId : (args.titleLayoutId ?? undefined);
   const titleValue = args.titleValue ?? currentTitle.value;
 
   return {
@@ -328,8 +316,7 @@ export function ListConfig() {
 
   async function handleChangeSavePath() {
     try {
-      const defaultSavePath =
-        renderedSavePath || (await getDefaultListConfigSavePath());
+      const defaultSavePath = renderedSavePath || (await getDefaultListConfigSavePath());
       const selectedPath = await open({
         directory: true,
         multiple: false,
@@ -346,9 +333,7 @@ export function ListConfig() {
 
       result.match({
         Ok: (meta) => {
-          appLogicAction.changeSavePath(
-            resolveListConfigSavePath(meta.save_path, selectedPath),
-          );
+          appLogicAction.changeSavePath(resolveListConfigSavePath(meta.save_path, selectedPath));
         },
         Err: (error) => {
           console.error("Failed to persist the selected save path", error);
@@ -376,10 +361,7 @@ export function ListConfig() {
       const titleResolution = resolveDraftCommitTitle({
         draft,
         draftBaseline,
-        playlists: resolvePlaylistsWithPreview(
-          playlists,
-          pendingPlaylistPreview,
-        ),
+        playlists: resolvePlaylistsWithPreview(playlists, pendingPlaylistPreview),
       });
       const committedDraft = {
         ...draft,
@@ -388,8 +370,7 @@ export function ListConfig() {
       const committedPlaylist = createPlayListFromDraft(committedDraft);
       const commitRequest = {
         playlist: committedPlaylist,
-        previousName:
-          draft.mode === "edit" ? (draftBaseline?.name ?? null) : null,
+        previousName: draft.mode === "edit" ? (draftBaseline?.name ?? null) : null,
       };
 
       playlistCommitAction.commit(commitRequest);
@@ -399,9 +380,7 @@ export function ListConfig() {
         animateTyping: titleResolution.kind !== "keep",
       });
 
-      const committedReturnLayoutId = playlistTitleLayoutId(
-        committedPlaylist.name,
-      );
+      const committedReturnLayoutId = playlistTitleLayoutId(committedPlaylist.name);
       flushSync(() => {
         appLogicAction.changeDraftName(titleResolution.name);
         pageRenderFreeze.freeze(
@@ -510,9 +489,7 @@ export function ListConfig() {
             autoFocus={viewModel.title.autoFocus}
             className={cn("text-4xl font-bold", "w-fit")}
             handoffTone={viewModel.title.handoffTone}
-            interactionDisabled={
-              viewModel.interactionFlags.isTitleInteractionDisabled
-            }
+            interactionDisabled={viewModel.interactionFlags.isTitleInteractionDisabled}
             layoutId={isDeletePending ? undefined : viewModel.title.layoutId}
             placeholder={viewModel.title.placeholder}
             style={{ fontFamily: "var(--font-noto-sans)" }}
@@ -588,8 +565,7 @@ export function ListConfig() {
               {...contentFadeProps}
               className={cn(
                 "flex flex-col",
-                viewModel.interactionFlags.isToolListInteractionDisabled &&
-                  "pointer-events-none",
+                viewModel.interactionFlags.isToolListInteractionDisabled && "pointer-events-none",
               )}
             >
               <AnimatePresence initial={false}>
@@ -611,29 +587,21 @@ export function ListConfig() {
                         className={cn("")}
                         hoverMode="group"
                         interactionDisabled={
-                          viewModel.interactionFlags
-                            .isToolListInteractionDisabled
+                          viewModel.interactionFlags.isToolListInteractionDisabled
                         }
                         onRootNodeChange={
                           item.kind === "playlist"
-                            ? (node) =>
-                                ghostTransition.registerTargetNode(
-                                  item.id,
-                                  node,
-                                )
+                            ? (node) => ghostTransition.registerTargetNode(item.id, node)
                             : undefined
                         }
                         layoutId={
-                          item.kind === "playlist" &&
-                          ghostTransition.activeLayoutId !== item.id
+                          item.kind === "playlist" && ghostTransition.activeLayoutId !== item.id
                             ? item.id
                             : undefined
                         }
                         toolLayer="portal"
                         text={item.text}
-                        textClassName={resolveListConfigToolLabelTextClassName(
-                          item,
-                        )}
+                        textClassName={resolveListConfigToolLabelTextClassName(item)}
                         tool={resolveListConfigToolLabelTool({
                           item,
                           onRemoveDraftItem: (ref) => {
@@ -660,13 +628,7 @@ export function ListConfig() {
           items={viewModel.arcTrackItems}
           dismissHoverSignal={ghostTransition.dismissHoverSignal}
           interactionDisabled={
-            !viewModel.interactionFlags.shouldRenderArcTrack ||
-            ghostTransition.isAnimating
-          }
-          suppressedLayoutIds={
-            ghostTransition.activeLayoutId
-              ? new Set([ghostTransition.activeLayoutId])
-              : undefined
+            !viewModel.interactionFlags.shouldRenderArcTrack || ghostTransition.isAnimating
           }
           onPushItem={(source: ArcTrackPushTransitionSource) => {
             const sourceNode = source.sourceNode;

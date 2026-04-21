@@ -20,6 +20,7 @@ const ARC_VIEWBOX_WIDTH = 288;
 const ARC_LEADING_PADDING = 220;
 const ARC_TRAILING_PADDING = 112;
 const ARC_ITEM_GAP = 78;
+const ARC_ITEM_SHIFT_DURATION = 280;
 const ARC_VIEWPORT_FALLBACK_HEIGHT = 640;
 const ARC_LOOKUP_STEPS = 240;
 const ARC_PATH_STEPS = 96;
@@ -38,7 +39,6 @@ type ArcTrackListProps = {
   motionProps?: MotionProps;
   interactionDisabled?: boolean;
   dismissHoverSignal?: number;
-  suppressedLayoutIds?: ReadonlySet<string>;
 };
 
 type ArcSample = {
@@ -55,12 +55,13 @@ type ArcTrackItemRegistryKey = string | number | bigint;
 type ArcTrackItemNodeState = {
   node: HTMLLIElement;
   start: number;
+  renderedStart: number;
+  animationFrame: number | null;
 };
 
-type ArcTrackItemNodeRegistry = Map<
-  ArcTrackItemRegistryKey,
-  ArcTrackItemNodeState
->;
+type ArcTrackItemNodeRegistry = Map<ArcTrackItemRegistryKey, ArcTrackItemNodeState>;
+type ArcTrackDetachedNodeState = Pick<ArcTrackItemNodeState, "start" | "renderedStart">;
+type ArcTrackDetachedNodeRegistry = Map<ArcTrackItemRegistryKey, ArcTrackDetachedNodeState>;
 
 type ArcTrackPositionController = {
   itemRegistryRef: RefObject<ArcTrackItemNodeRegistry>;
@@ -81,7 +82,27 @@ type ArcTrackItemProps = {
   start: number;
   interactionDisabled?: boolean;
   dismissHoverSignal?: number;
-  suppressedLayoutIds?: ReadonlySet<string>;
+  detachedItemRegistryRef: RefObject<ArcTrackDetachedNodeRegistry>;
+};
+
+type ArcTrackPushToolProps = {
+  item: ConfigSidebarItem;
+  layoutId: string;
+  onPushItem?: (source: ArcTrackPushTransitionSource) => void;
+  sourceNodeRef: RefObject<HTMLDivElement | null>;
+};
+
+type ArcTrackLabelHostProps = {
+  item: ConfigSidebarItem;
+  layoutId: string;
+  dismissHoverSignal?: number;
+  interactionDisabled: boolean;
+  onPushItem?: (source: ArcTrackPushTransitionSource) => void;
+  sourceNodeRef: RefObject<HTMLDivElement | null>;
+};
+
+type ArcTrackIndicatorProps = {
+  itemKind: ConfigSidebarItem["kind"];
 };
 
 export function resolveArcTrackViewportScrollTop(args: {
@@ -95,9 +116,7 @@ export function resolveArcTrackViewportScrollTop(args: {
 }
 
 export function resolveArcTrackVirtualPaddingEnd(itemCount: number) {
-  return itemCount > 0
-    ? Math.max(ARC_TRAILING_PADDING - ARC_ITEM_GAP, 0)
-    : ARC_TRAILING_PADDING;
+  return itemCount > 0 ? Math.max(ARC_TRAILING_PADDING - ARC_ITEM_GAP, 0) : ARC_TRAILING_PADDING;
 }
 
 export function resolveArcTrackPathClassName(itemCount: number) {
@@ -125,6 +144,23 @@ export function resolveArcTrackItemFrame(args: {
   };
 }
 
+export function resolveArcTrackAnimatedStart(args: {
+  fromStart: number;
+  targetStart: number;
+  progress: number;
+}) {
+  const clampedProgress = Math.min(Math.max(args.progress, 0), 1);
+  const easedProgress = 1 - Math.pow(1 - clampedProgress, 3);
+
+  return args.fromStart + (args.targetStart - args.fromStart) * easedProgress;
+}
+
+function resolveArcTrackIndicatorTransform(itemKind: ConfigSidebarItem["kind"]) {
+  return itemKind === "collection"
+    ? "rotate(calc(var(--arc-item-angle, 0deg) - 6deg))"
+    : "rotate(calc(var(--arc-item-angle, 0deg) + 6deg))";
+}
+
 function resolveArcTrackViewportHeight(scrollElement: HTMLDivElement | null) {
   return scrollElement?.clientHeight ?? ARC_VIEWPORT_FALLBACK_HEIGHT;
 }
@@ -145,8 +181,7 @@ function getArcGeometry(viewportHeight: number) {
 }
 
 function createArcCurveSamples(viewportHeight: number, steps: number) {
-  const { topInset, drawableHeight, topX, bottomX, circleRadius } =
-    getArcGeometry(viewportHeight);
+  const { topInset, drawableHeight, topX, bottomX, circleRadius } = getArcGeometry(viewportHeight);
   const start = { x: topX, y: topInset };
   const end = { x: bottomX, y: topInset + drawableHeight };
   const dx = end.x - start.x;
@@ -157,17 +192,12 @@ function createArcCurveSamples(viewportHeight: number, steps: number) {
   const midY = (start.y + end.y) / 2;
   const perpX = dy / chord;
   const perpY = -dx / chord;
-  const offset = Math.sqrt(
-    Math.max(0, safeRadius * safeRadius - (chord * chord) / 4),
-  );
+  const offset = Math.sqrt(Math.max(0, safeRadius * safeRadius - (chord * chord) / 4));
   const centerX = midX + perpX * offset;
   const centerY = midY + perpY * offset;
   const startAngle = Math.atan2(start.y - centerY, start.x - centerX);
   const endAngle = Math.atan2(end.y - centerY, end.x - centerX);
-  const deltaAngle = Math.atan2(
-    Math.sin(endAngle - startAngle),
-    Math.cos(endAngle - startAngle),
-  );
+  const deltaAngle = Math.atan2(Math.sin(endAngle - startAngle), Math.cos(endAngle - startAngle));
 
   return Array.from({ length: steps + 1 }, (_, index) => {
     const progress = index / steps;
@@ -209,10 +239,7 @@ function buildArcLookup(viewportHeight: number) {
   return lookup;
 }
 
-function getArcSampleAtY(
-  targetY: number,
-  samples: ArcSample[],
-): ArcProjection | null {
+function getArcSampleAtY(targetY: number, samples: ArcSample[]): ArcProjection | null {
   if (samples.length < 2) {
     return null;
   }
@@ -227,8 +254,7 @@ function getArcSampleAtY(
     return {
       x: current.x + slope * (targetY - current.y),
       y: targetY,
-      angle:
-        (Math.atan2(next.x - current.x, next.y - current.y) * 180) / Math.PI,
+      angle: (Math.atan2(next.x - current.x, next.y - current.y) * 180) / Math.PI,
     };
   }
 
@@ -244,9 +270,7 @@ function getArcSampleAtY(
     return {
       x: current.x + slope * (targetY - current.y),
       y: targetY,
-      angle:
-        (Math.atan2(current.x - previous.x, current.y - previous.y) * 180) /
-        Math.PI,
+      angle: (Math.atan2(current.x - previous.x, current.y - previous.y) * 180) / Math.PI,
     };
   }
 
@@ -327,25 +351,91 @@ function applyArcTrackItemPosition(args: {
   }
 }
 
+function stopArcTrackItemAnimation(state: ArcTrackItemNodeState) {
+  if (state.animationFrame === null) {
+    return;
+  }
+
+  state.node.ownerDocument.defaultView?.cancelAnimationFrame(state.animationFrame);
+  state.animationFrame = null;
+}
+
+function applyArcTrackItemNodeStatePosition(args: {
+  state: ArcTrackItemNodeState;
+  scrollElementRef: RefObject<HTMLDivElement | null>;
+  scrollOffsetRef: RefObject<number>;
+}) {
+  applyArcTrackItemPosition({
+    node: args.state.node,
+    samples: buildArcLookup(resolveArcTrackViewportHeight(args.scrollElementRef.current)),
+    scrollOffset: args.scrollOffsetRef.current,
+    start: args.state.renderedStart,
+  });
+}
+
+function animateArcTrackItemToStart(args: {
+  state: ArcTrackItemNodeState;
+  nextStart: number;
+  scrollElementRef: RefObject<HTMLDivElement | null>;
+  scrollOffsetRef: RefObject<number>;
+}) {
+  const { state } = args;
+  const ownerWindow = state.node.ownerDocument.defaultView;
+
+  stopArcTrackItemAnimation(state);
+  state.start = args.nextStart;
+
+  if (!ownerWindow || state.renderedStart === args.nextStart) {
+    state.renderedStart = args.nextStart;
+    applyArcTrackItemNodeStatePosition(args);
+    return;
+  }
+
+  const fromStart = state.renderedStart;
+  const startTime = ownerWindow.performance.now();
+
+  const animate = (frameTime: number) => {
+    if (!state.node.isConnected) {
+      state.animationFrame = null;
+      return;
+    }
+
+    const progress = Math.min(Math.max((frameTime - startTime) / ARC_ITEM_SHIFT_DURATION, 0), 1);
+    state.renderedStart = resolveArcTrackAnimatedStart({
+      fromStart,
+      targetStart: args.nextStart,
+      progress,
+    });
+    applyArcTrackItemNodeStatePosition(args);
+
+    if (progress < 1) {
+      state.animationFrame = ownerWindow.requestAnimationFrame(animate);
+      return;
+    }
+
+    state.animationFrame = null;
+    state.renderedStart = args.nextStart;
+    applyArcTrackItemNodeStatePosition(args);
+  };
+
+  state.animationFrame = ownerWindow.requestAnimationFrame(animate);
+}
+
 function updateArcTrackItemPositions(controller: ArcTrackPositionController) {
-  const viewportHeight = resolveArcTrackViewportHeight(
-    controller.scrollElementRef.current,
-  );
+  const viewportHeight = resolveArcTrackViewportHeight(controller.scrollElementRef.current);
   const samples = buildArcLookup(viewportHeight);
 
-  for (const { node, start } of controller.itemRegistryRef.current.values()) {
+  for (const { node, renderedStart } of controller.itemRegistryRef.current.values()) {
     applyArcTrackItemPosition({
       node,
       samples,
       scrollOffset: controller.scrollOffsetRef.current,
-      start,
+      start: renderedStart,
     });
   }
 }
 
-function scheduleArcTrackItemPositionUpdate(
-  controller: ArcTrackPositionController,
-) {
+function scheduleArcTrackItemPositionUpdate(controller: ArcTrackPositionController) {
   const scrollElement = controller.scrollElementRef.current;
   const targetWindow = scrollElement?.ownerDocument.defaultView;
 
@@ -358,37 +448,67 @@ function scheduleArcTrackItemPositionUpdate(
     return;
   }
 
-  controller.positionFrameRef.current = targetWindow.requestAnimationFrame(
-    () => {
-      controller.positionFrameRef.current = null;
-      updateArcTrackItemPositions(controller);
-    },
-  );
+  controller.positionFrameRef.current = targetWindow.requestAnimationFrame(() => {
+    controller.positionFrameRef.current = null;
+    updateArcTrackItemPositions(controller);
+  });
 }
 
 function registerArcTrackItemNode(args: {
   itemKey: ArcTrackItemRegistryKey;
   node: HTMLLIElement | null;
   registryRef: RefObject<ArcTrackItemNodeRegistry>;
+  detachedItemRegistryRef: RefObject<ArcTrackDetachedNodeRegistry>;
   scrollElementRef: RefObject<HTMLDivElement | null>;
   scrollOffsetRef: RefObject<number>;
   start: number;
 }) {
   const registry = args.registryRef.current;
+  const detachedRegistry = args.detachedItemRegistryRef.current;
+  const existingState = registry.get(args.itemKey);
 
   if (!args.node) {
-    registry.delete(args.itemKey);
+    if (existingState) {
+      stopArcTrackItemAnimation(existingState);
+      detachedRegistry.set(args.itemKey, {
+        start: existingState.start,
+        renderedStart: existingState.renderedStart,
+      });
+      registry.delete(args.itemKey);
+    }
     return;
   }
 
-  registry.set(args.itemKey, { node: args.node, start: args.start });
-  applyArcTrackItemPosition({
-    node: args.node,
-    samples: buildArcLookup(
-      resolveArcTrackViewportHeight(args.scrollElementRef.current),
-    ),
-    scrollOffset: args.scrollOffsetRef.current,
-    start: args.start,
+  const detachedState = detachedRegistry.get(args.itemKey);
+  const state =
+    existingState ??
+    ({
+      node: args.node,
+      start: detachedState?.start ?? args.start,
+      renderedStart: detachedState?.renderedStart ?? args.start,
+      animationFrame: null,
+    } satisfies ArcTrackItemNodeState);
+
+  state.node = args.node;
+  registry.set(args.itemKey, state);
+  detachedRegistry.delete(args.itemKey);
+
+  if (state.start !== args.start || state.renderedStart !== args.start) {
+    animateArcTrackItemToStart({
+      state,
+      nextStart: args.start,
+      scrollElementRef: args.scrollElementRef,
+      scrollOffsetRef: args.scrollOffsetRef,
+    });
+    return;
+  }
+
+  state.start = args.start;
+  state.renderedStart = args.start;
+  applyArcTrackItemNodeStatePosition({
+    state,
+    scrollElementRef: args.scrollElementRef,
+    scrollOffsetRef: args.scrollOffsetRef,
   });
 }
 
@@ -405,9 +525,7 @@ function syncArcTrackScrollElement(args: {
   const pendingFrame = args.controller.positionFrameRef.current;
 
   if (previousElement && pendingFrame !== null) {
-    previousElement.ownerDocument.defaultView?.cancelAnimationFrame(
-      pendingFrame,
-    );
+    previousElement.ownerDocument.defaultView?.cancelAnimationFrame(pendingFrame);
     args.controller.positionFrameRef.current = null;
   }
 
@@ -416,6 +534,9 @@ function syncArcTrackScrollElement(args: {
   args.setScrollElement(args.node);
 
   if (!args.node) {
+    for (const state of args.controller.itemRegistryRef.current.values()) {
+      stopArcTrackItemAnimation(state);
+    }
     args.controller.itemRegistryRef.current.clear();
     return;
   }
@@ -428,8 +549,7 @@ function syncArcTrackScrollElement(args: {
   const handleScroll = () => {
     syncPositions();
   };
-  const ResizeObserverCtor =
-    scrollElement.ownerDocument.defaultView?.ResizeObserver;
+  const ResizeObserverCtor = scrollElement.ownerDocument.defaultView?.ResizeObserver;
   const resizeObserver = ResizeObserverCtor
     ? new ResizeObserverCtor(() => {
         syncPositions();
@@ -449,6 +569,74 @@ function syncArcTrackScrollElement(args: {
   };
 }
 
+function ArcTrackPushTool({ item, layoutId, onPushItem, sourceNodeRef }: ArcTrackPushToolProps) {
+  return (
+    <div className="flex w-full items-center justify-between">
+      <div />
+      <div className="flex h-fit">
+        <MaskL />
+        <CoverTool
+          text="Push"
+          onClick={() => {
+            startTransition(() => {
+              onPushItem?.({
+                item,
+                layoutId,
+                sourceNode: sourceNodeRef.current,
+              });
+            });
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ArcTrackLabelHost({
+  item,
+  layoutId,
+  dismissHoverSignal,
+  interactionDisabled,
+  onPushItem,
+  sourceNodeRef,
+}: ArcTrackLabelHostProps) {
+  return (
+    <div
+      ref={sourceNodeRef}
+      className="inline-flex w-fit origin-right will-change-transform"
+      style={{ transform: "rotate(var(--arc-item-angle, 0deg))" }}
+    >
+      <ToolLabel
+        dismissHoverSignal={dismissHoverSignal}
+        interactionDisabled={interactionDisabled}
+        textRenderMode="plain"
+        textClassName="text-[12px] text-[#404040] dark:text-[#a3a3a3]"
+        toolAnchor="right"
+        text={item.name}
+        tool={
+          <ArcTrackPushTool
+            item={item}
+            layoutId={layoutId}
+            onPushItem={onPushItem}
+            sourceNodeRef={sourceNodeRef}
+          />
+        }
+      />
+    </div>
+  );
+}
+
+function ArcTrackIndicator({ itemKind }: ArcTrackIndicatorProps) {
+  return (
+    <div
+      className="flex items-center origin-left will-change-transform"
+      style={{ transform: resolveArcTrackIndicatorTransform(itemKind) }}
+    >
+      <span className="size-1 rounded-full bg-[#4f4f4f]/70 dark:bg-[#bdbdbd]/70" />
+    </div>
+  );
+}
+
 const ArcTrackItem = memo(function ArcTrackItem({
   item,
   itemKey,
@@ -459,14 +647,13 @@ const ArcTrackItem = memo(function ArcTrackItem({
   start,
   interactionDisabled = false,
   dismissHoverSignal,
-  suppressedLayoutIds,
+  detachedItemRegistryRef,
 }: ArcTrackItemProps) {
-  const toolLabelRootRef = useRef<HTMLDivElement | null>(null);
+  const sourceNodeRef = useRef<HTMLDivElement | null>(null);
   const layoutId = createListConfigToolLabelLayoutId({
     kind: item.kind,
     url: item.url,
   });
-  const shouldSuppressLayoutId = suppressedLayoutIds?.has(layoutId) ?? false;
 
   return (
     <li
@@ -475,6 +662,7 @@ const ArcTrackItem = memo(function ArcTrackItem({
           itemKey,
           node,
           registryRef: itemRegistryRef,
+          detachedItemRegistryRef,
           scrollElementRef,
           scrollOffsetRef,
           start,
@@ -483,48 +671,15 @@ const ArcTrackItem = memo(function ArcTrackItem({
       className="pointer-events-auto absolute whitespace-nowrap opacity-0"
     >
       <div className="flex items-center justify-end gap-3">
-        <ToolLabel
+        <ArcTrackLabelHost
+          item={item}
+          layoutId={layoutId}
           dismissHoverSignal={dismissHoverSignal}
           interactionDisabled={interactionDisabled}
-          onRootNodeChange={(node) => {
-            toolLabelRootRef.current = node;
-          }}
-          restClassName="origin-right will-change-transform"
-          restStyle={{ transform: "rotate(var(--arc-item-angle, 0deg))" }}
-          layoutId={shouldSuppressLayoutId ? undefined : layoutId}
-          textRenderMode="plain"
-          textClassName="text-[12px] text-[#404040] dark:text-[#a3a3a3]"
-          toolAnchor="right"
-          text={item.name}
-          tool={
-            <div className="flex w-full items-center justify-between">
-              <div />
-              <div className="flex h-fit">
-                <MaskL />
-                <CoverTool
-                  text="Push"
-                  onClick={() => {
-                    startTransition(() => {
-                      onPushItem?.({
-                        item,
-                        layoutId,
-                        sourceNode: toolLabelRootRef.current,
-                      });
-                    });
-                  }}
-                />
-              </div>
-            </div>
-          }
+          onPushItem={onPushItem}
+          sourceNodeRef={sourceNodeRef}
         />
-        <div
-          className={cn(
-            "flex items-center origin-left",
-            item.kind === "collection" ? "-rotate-6" : "rotate-6",
-          )}
-        >
-          <span className="size-1 rounded-full bg-[#4f4f4f]/70 dark:bg-[#bdbdbd]/70" />
-        </div>
+        <ArcTrackIndicator itemKind={item.kind} />
       </div>
     </li>
   );
@@ -535,19 +690,10 @@ function ArcTrackListBody({
   onPushItem,
   interactionDisabled = false,
   dismissHoverSignal,
-  suppressedLayoutIds,
-}: Pick<
-  ArcTrackListProps,
-  | "items"
-  | "onPushItem"
-  | "interactionDisabled"
-  | "dismissHoverSignal"
-  | "suppressedLayoutIds"
->) {
-  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(
-    null,
-  );
+}: Pick<ArcTrackListProps, "items" | "onPushItem" | "interactionDisabled" | "dismissHoverSignal">) {
+  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
   const itemRegistryRef = useRef<ArcTrackItemNodeRegistry>(new Map());
+  const detachedItemRegistryRef = useRef<ArcTrackDetachedNodeRegistry>(new Map());
   const positionFrameRef = useRef<number | null>(null);
   const scrollElementRef = useRef<HTMLDivElement | null>(null);
   const scrollOffsetRef = useRef(0);
@@ -558,9 +704,7 @@ function ArcTrackListBody({
     scrollOffsetRef,
   });
   const scrollOwnerCleanupRef = useRef<(() => void) | null>(null);
-  const scrollElementCallbackRef = useRef<
-    ((node: HTMLDivElement | null) => void) | null
-  >(null);
+  const scrollElementCallbackRef = useRef<((node: HTMLDivElement | null) => void) | null>(null);
 
   if (scrollElementCallbackRef.current === null) {
     scrollElementCallbackRef.current = (node) => {
@@ -577,10 +721,7 @@ function ArcTrackListBody({
   const arcPathClassName = resolveArcTrackPathClassName(items.length);
   const arcPathStrokeWidth = resolveArcTrackPathStrokeWidth(items.length);
   const estimateSize = useCallback(() => ARC_ITEM_GAP, []);
-  const getItemKey = useCallback(
-    (index: number) => items[index]?.url ?? index,
-    [items],
-  );
+  const getItemKey = useCallback((index: number) => items[index]?.url ?? index, [items]);
 
   // Virtualization only controls which nodes are mounted.
   // Per-frame arc projection is driven by the native scroll event instead of
@@ -597,8 +738,7 @@ function ArcTrackListBody({
   });
 
   const arcViewportHeight =
-    rowVirtualizer.scrollRect?.height ??
-    resolveArcTrackViewportHeight(scrollElement);
+    rowVirtualizer.scrollRect?.height ?? resolveArcTrackViewportHeight(scrollElement);
   const arcPath = getArcPath(arcViewportHeight);
   const arcTrackHeight = rowVirtualizer.getTotalSize();
   const virtualItems = rowVirtualizer.getVirtualItems();
@@ -652,7 +792,7 @@ function ArcTrackListBody({
                     start={virtualItem.start}
                     interactionDisabled={interactionDisabled}
                     dismissHoverSignal={dismissHoverSignal}
-                    suppressedLayoutIds={suppressedLayoutIds}
+                    detachedItemRegistryRef={detachedItemRegistryRef}
                   />
                 );
               })}
@@ -670,7 +810,6 @@ export function ArcTrackList({
   onPushItem,
   interactionDisabled = false,
   dismissHoverSignal,
-  suppressedLayoutIds,
 }: ArcTrackListProps) {
   return (
     <motion.div
@@ -683,7 +822,6 @@ export function ArcTrackList({
         onPushItem={onPushItem}
         interactionDisabled={interactionDisabled}
         dismissHoverSignal={dismissHoverSignal}
-        suppressedLayoutIds={suppressedLayoutIds}
       />
     </motion.div>
   );

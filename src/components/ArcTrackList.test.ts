@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  resolveArcTrackAnimatedStart,
   resolveArcTrackItemFrame,
   resolveArcTrackPathClassName,
   resolveArcTrackPathStrokeWidth,
@@ -20,17 +21,11 @@ describe("resolveArcTrackVirtualPaddingEnd", () => {
 
 describe("resolveArcTrackPathClassName", () => {
   test("uses a stronger path style when the track has no items", () => {
-    assert.equal(
-      resolveArcTrackPathClassName(0),
-      "stroke-[#b7b7b7]/52 dark:stroke-[#676767]/58",
-    );
+    assert.equal(resolveArcTrackPathClassName(0), "stroke-[#b7b7b7]/52 dark:stroke-[#676767]/58");
   });
 
   test("keeps the lighter path style when the track has items", () => {
-    assert.equal(
-      resolveArcTrackPathClassName(3),
-      "stroke-[#b7b7b7]/32 dark:stroke-[#676767]/38",
-    );
+    assert.equal(resolveArcTrackPathClassName(3), "stroke-[#b7b7b7]/32 dark:stroke-[#676767]/38");
   });
 });
 
@@ -105,6 +100,41 @@ describe("resolveArcTrackItemFrame", () => {
         itemHeight: 28,
       }),
       null,
+    );
+  });
+});
+
+describe("resolveArcTrackAnimatedStart", () => {
+  test("keeps the original track offset at the beginning of the motion", () => {
+    assert.equal(
+      resolveArcTrackAnimatedStart({
+        fromStart: 480,
+        targetStart: 402,
+        progress: 0,
+      }),
+      480,
+    );
+  });
+
+  test("reaches the target track offset at the end of the motion", () => {
+    assert.equal(
+      resolveArcTrackAnimatedStart({
+        fromStart: 480,
+        targetStart: 402,
+        progress: 1,
+      }),
+      402,
+    );
+  });
+
+  test("interpolates on the track parameter instead of snapping to the final offset", () => {
+    assert.equal(
+      resolveArcTrackAnimatedStart({
+        fromStart: 480,
+        targetStart: 402,
+        progress: 0.5,
+      }),
+      411.75,
     );
   });
 });
