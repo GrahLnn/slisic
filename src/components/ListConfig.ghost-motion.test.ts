@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   createGhostMotionModel,
+  resolveGhostBezierDerivative,
   resolveGhostBezierPoint,
   resolveGhostContinuousPathAngle,
   resolveGhostMotionPath,
@@ -69,6 +70,36 @@ function lerpValue(from: number, to: number, progress: number) {
   return from + (to - from) * progress;
 }
 
+function dotVector(
+  left: {
+    x: number;
+    y: number;
+  },
+  right: {
+    x: number;
+    y: number;
+  },
+) {
+  return left.x * right.x + left.y * right.y;
+}
+
+function normalizeVector(vector: {
+  x: number;
+  y: number;
+}) {
+  const magnitude = Math.hypot(vector.x, vector.y);
+
+  return magnitude <= 1e-6
+    ? {
+        x: 1,
+        y: 0,
+      }
+    : {
+        x: vector.x / magnitude,
+        y: vector.y / magnitude,
+      };
+}
+
 describe("ListConfig ghost motion", () => {
   test("uses a curved motion path instead of a straight midpoint interpolation", () => {
     const sourceFrame = createSourceFrame();
@@ -88,10 +119,24 @@ describe("ListConfig ghost motion", () => {
       targetFrame,
       targetTransformOrigin: createTargetTransformOrigin(),
     });
-    const linearMidpointY =
-      (sourceFrame.top + sourceFrame.height / 2 + targetFrame.top + targetFrame.height / 2) / 2;
+    const linearMidpoint = {
+      x:
+        (sourceFrame.left +
+          sourceFrame.width / 2 +
+          targetFrame.left +
+          targetFrame.width / 2) /
+        2,
+      y:
+        (sourceFrame.top +
+          sourceFrame.height / 2 +
+          targetFrame.top +
+          targetFrame.height / 2) /
+        2,
+    };
 
-    assert.ok(Math.abs(state.center.y - linearMidpointY) > 4);
+    assert.ok(
+      Math.hypot(state.center.x - linearMidpoint.x, state.center.y - linearMidpoint.y) > 10,
+    );
   });
 
   test("uses the source angle as the exact initial path tangent", () => {
@@ -109,7 +154,7 @@ describe("ListConfig ghost motion", () => {
     assert.ok(Math.abs(initialPathAngle + 10.6) < 0.01);
   });
 
-  test("keeps the early motion aligned with the source forward heading", () => {
+  test("keeps the early motion aligned with the source rail axis", () => {
     const sourceFrame = createSourceFrame();
     const sourceAngle = -10.6;
     const path = resolveGhostMotionPath({
@@ -136,11 +181,37 @@ describe("ListConfig ghost motion", () => {
       x: state.center.x - path.start.x,
       y: state.center.y - path.start.y,
     };
-    const forwardDistance = delta.x * sourceHeading.x + delta.y * sourceHeading.y;
-    const lateralDistance = delta.x * -sourceHeading.y + delta.y * sourceHeading.x;
+    const axialDistance = Math.abs(dotVector(delta, sourceHeading));
+    const lateralDistance = Math.abs(
+      delta.x * -sourceHeading.y + delta.y * sourceHeading.x,
+    );
 
-    assert.ok(forwardDistance > 0);
-    assert.ok(Math.abs(lateralDistance) < forwardDistance * 0.01);
+    assert.ok(axialDistance > 0);
+    assert.ok(lateralDistance < axialDistance * 0.01);
+  });
+
+  test("chooses the target-facing branch of the source rail axis for lower pushes", () => {
+    const sourceFrame = createLowerArcPushSourceFrame();
+    const targetFrame = createLowerArcPushTargetFrame();
+    const sourceAngle = -5.397855224449131;
+    const path = resolveGhostMotionPath({
+      sourceAngle,
+      sourceFrame,
+      targetFrame,
+    });
+    const startDerivative = normalizeVector(resolveGhostBezierDerivative(path, 0));
+    const sourceAxis = normalizeVector({
+      x: Math.cos((sourceAngle * Math.PI) / 180),
+      y: Math.sin((sourceAngle * Math.PI) / 180),
+    });
+    const toTargetDirection = normalizeVector({
+      x: targetFrame.left + targetFrame.width / 2 - (sourceFrame.left + sourceFrame.width / 2),
+      y: targetFrame.top + targetFrame.height / 2 - (sourceFrame.top + sourceFrame.height / 2),
+    });
+
+    assert.ok(Math.abs(dotVector(startDerivative, sourceAxis)) > 0.99);
+    assert.ok(dotVector(startDerivative, toTargetDirection) > 0.9);
+    assert.ok(path.launch.control1.x < path.start.x);
   });
 
   test("keeps the initial source angle fixed before the path-follow phase", () => {
@@ -240,8 +311,20 @@ describe("ListConfig ghost motion", () => {
         targetTransformOrigin: createLowerArcPushTransformOrigin(),
       }),
     );
+    const earlyState = resolveGhostMotionState({
+      path,
+      progress: 0.08,
+      sourceAngle,
+      sourceFrame,
+      sourceTransformOrigin: createLowerArcPushTransformOrigin(),
+      targetAngle: 0,
+      targetFrame,
+      targetTransformOrigin: createLowerArcPushTransformOrigin(),
+    });
 
     assert.ok(sampledStates.some((state) => Math.abs(state.rawPathAngle - state.pathAngle) > 120));
+    assert.ok(earlyState.center.x < path.start.x);
+    assert.ok(earlyState.center.y > path.start.y + 4);
 
     for (const state of sampledStates) {
       assert.ok(
