@@ -2,12 +2,24 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   resolveArcTrackAnimatedStart,
+  resolveArcTrackDisplayItems,
   resolveArcTrackItemFrame,
+  resolveArcTrackItemMountState,
   resolveArcTrackPathClassName,
   resolveArcTrackPathStrokeWidth,
+  resolveArcTrackVisibleInsertion,
   resolveArcTrackViewportScrollTop,
   resolveArcTrackVirtualPaddingEnd,
 } from "./ArcTrackList";
+
+function createItem(name: string, url: string) {
+  return {
+    kind: "collection" as const,
+    name,
+    url,
+    folder: `/music/${name}`,
+  };
+}
 
 describe("resolveArcTrackVirtualPaddingEnd", () => {
   test("keeps the trailing padding intact when there are no items", () => {
@@ -135,6 +147,163 @@ describe("resolveArcTrackAnimatedStart", () => {
         progress: 0.5,
       }),
       411.75,
+    );
+  });
+});
+
+describe("resolveArcTrackVisibleInsertion", () => {
+  test("brackets the source y between the nearest visible neighbors", () => {
+    assert.deepEqual(
+      resolveArcTrackVisibleInsertion({
+        itemFrames: [
+          {
+            layoutId: "playlist:collection:above",
+            top: 40,
+            bottom: 70,
+            centerY: 55,
+          },
+          {
+            layoutId: "playlist:collection:upper",
+            top: 140,
+            bottom: 170,
+            centerY: 155,
+          },
+          {
+            layoutId: "playlist:collection:lower",
+            top: 240,
+            bottom: 270,
+            centerY: 255,
+          },
+          {
+            layoutId: "playlist:collection:below",
+            top: 560,
+            bottom: 590,
+            centerY: 575,
+          },
+        ],
+        sourceCenterY: 210,
+        viewportTop: 100,
+        viewportBottom: 500,
+      }),
+      {
+        previousLayoutId: "playlist:collection:upper",
+        nextLayoutId: "playlist:collection:lower",
+      },
+    );
+  });
+
+  test("pins the insertion to the first visible item when the source is above the viewport band", () => {
+    assert.deepEqual(
+      resolveArcTrackVisibleInsertion({
+        itemFrames: [
+          {
+            layoutId: "playlist:collection:upper",
+            top: 140,
+            bottom: 170,
+            centerY: 155,
+          },
+          {
+            layoutId: "playlist:collection:lower",
+            top: 240,
+            bottom: 270,
+            centerY: 255,
+          },
+        ],
+        sourceCenterY: 120,
+        viewportTop: 100,
+        viewportBottom: 500,
+      }),
+      {
+        previousLayoutId: null,
+        nextLayoutId: "playlist:collection:upper",
+      },
+    );
+  });
+});
+
+describe("resolveArcTrackDisplayItems", () => {
+  test("inserts the returning item between the planned visible neighbors", () => {
+    const resolution = resolveArcTrackDisplayItems({
+      items: [
+        createItem("Alpha", "alpha"),
+        createItem("Bravo", "bravo"),
+        createItem("Charlie", "charlie"),
+        createItem("Delta", "delta"),
+      ],
+      previousLayoutOrder: [
+        "playlist:collection:alpha",
+        "playlist:collection:bravo",
+        "playlist:collection:delta",
+      ],
+      pendingInsertion: {
+        targetLayoutId: "playlist:collection:charlie",
+        previousLayoutId: "playlist:collection:alpha",
+        nextLayoutId: "playlist:collection:bravo",
+      },
+    });
+
+    assert.equal(resolution.didApplyPendingInsertion, true);
+    assert.deepEqual(
+      resolution.items.map((item) => item.url),
+      ["alpha", "charlie", "bravo", "delta"],
+    );
+  });
+
+  test("preserves the prior rendered order for existing items before appending new ones", () => {
+    const resolution = resolveArcTrackDisplayItems({
+      items: [
+        createItem("Alpha", "alpha"),
+        createItem("Bravo", "bravo"),
+        createItem("Charlie", "charlie"),
+      ],
+      previousLayoutOrder: [
+        "playlist:collection:bravo",
+        "playlist:collection:alpha",
+      ],
+      pendingInsertion: null,
+    });
+
+    assert.deepEqual(
+      resolution.items.map((item) => item.url),
+      ["bravo", "alpha", "charlie"],
+    );
+  });
+});
+
+describe("resolveArcTrackItemMountState", () => {
+  test("snaps the returning target directly to the planned insertion start", () => {
+    assert.deepEqual(
+      resolveArcTrackItemMountState({
+        detachedState: {
+          start: 468,
+          renderedStart: 468,
+        },
+        nextStart: 312,
+        shouldIgnoreDetachedState: true,
+      }),
+      {
+        start: 312,
+        renderedStart: 312,
+        shouldAnimateToStart: false,
+      },
+    );
+  });
+
+  test("preserves detached placement for regular arc items so they can animate to the new start", () => {
+    assert.deepEqual(
+      resolveArcTrackItemMountState({
+        detachedState: {
+          start: 468,
+          renderedStart: 452,
+        },
+        nextStart: 312,
+        shouldIgnoreDetachedState: false,
+      }),
+      {
+        start: 468,
+        renderedStart: 452,
+        shouldAnimateToStart: true,
+      },
     );
   });
 });

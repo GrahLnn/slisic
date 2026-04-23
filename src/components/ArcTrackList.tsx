@@ -2,6 +2,7 @@ import {
   memo,
   startTransition,
   useCallback,
+  useLayoutEffect,
   useRef,
   useState,
   type Dispatch,
@@ -33,10 +34,18 @@ export type ArcTrackPushTransitionSource = {
   sourceNode: HTMLDivElement | null;
 };
 
+export type ArcTrackPopInsertionRequest = {
+  layoutId: string;
+  sourceNode: HTMLDivElement | null;
+};
+
+export type ArcTrackPopInsertionPlanner = (request: ArcTrackPopInsertionRequest) => void;
+
 type ArcTrackListProps = {
   items: readonly ConfigSidebarItem[];
   onPushItem?: (source: ArcTrackPushTransitionSource) => void;
   onGhostNodeChange?: (layoutId: string, node: HTMLDivElement | null) => void;
+  onPopInsertionPlannerChange?: (planner: ArcTrackPopInsertionPlanner | null) => void;
   motionProps?: MotionProps;
   interactionDisabled?: boolean;
   dismissHoverSignal?: number;
@@ -54,6 +63,7 @@ type ArcProjection = ArcSample & {
 type ArcTrackItemRegistryKey = string | number | bigint;
 
 type ArcTrackItemNodeState = {
+  layoutId: string;
   node: HTMLLIElement;
   start: number;
   renderedStart: number;
@@ -79,6 +89,7 @@ type ArcTrackItemProps = {
   itemRegistryRef: RefObject<ArcTrackItemNodeRegistry>;
   scrollElementRef: RefObject<HTMLDivElement | null>;
   scrollOffsetRef: RefObject<number>;
+  snapMountLayoutIdRef: RefObject<string | null>;
   onPushItem?: (source: ArcTrackPushTransitionSource) => void;
   onGhostNodeChange?: (layoutId: string, node: HTMLDivElement | null) => void;
   start: number;
@@ -106,6 +117,25 @@ type ArcTrackLabelHostProps = {
 
 type ArcTrackIndicatorProps = {
   itemKind: ConfigSidebarItem["kind"];
+};
+
+type ArcTrackVisibleItemFrame = {
+  bottom: number;
+  centerY: number;
+  layoutId: string;
+  top: number;
+};
+
+type ArcTrackPendingInsertion = {
+  nextLayoutId: string | null;
+  previousLayoutId: string | null;
+  targetLayoutId: string;
+};
+
+type ArcTrackItemMountState = {
+  renderedStart: number;
+  shouldAnimateToStart: boolean;
+  start: number;
 };
 
 export function resolveArcTrackViewportScrollTop(args: {
@@ -156,6 +186,134 @@ export function resolveArcTrackAnimatedStart(args: {
   const easedProgress = 1 - Math.pow(1 - clampedProgress, 3);
 
   return args.fromStart + (args.targetStart - args.fromStart) * easedProgress;
+}
+
+export function resolveArcTrackVisibleInsertion(args: {
+  itemFrames: readonly ArcTrackVisibleItemFrame[];
+  sourceCenterY: number;
+  viewportBottom: number;
+  viewportTop: number;
+}) {
+  const visibleFrames = args.itemFrames
+    .filter((frame) => frame.bottom >= args.viewportTop && frame.top <= args.viewportBottom)
+    .sort((left, right) => left.centerY - right.centerY);
+
+  if (visibleFrames.length === 0) {
+    return null;
+  }
+
+  const nextIndex = visibleFrames.findIndex((frame) => frame.centerY >= args.sourceCenterY);
+
+  if (nextIndex === -1) {
+    return {
+      nextLayoutId: null,
+      previousLayoutId: visibleFrames[visibleFrames.length - 1]?.layoutId ?? null,
+    } satisfies Omit<ArcTrackPendingInsertion, "targetLayoutId">;
+  }
+
+  if (nextIndex === 0) {
+    return {
+      nextLayoutId: visibleFrames[0]?.layoutId ?? null,
+      previousLayoutId: null,
+    } satisfies Omit<ArcTrackPendingInsertion, "targetLayoutId">;
+  }
+
+  return {
+    nextLayoutId: visibleFrames[nextIndex]?.layoutId ?? null,
+    previousLayoutId: visibleFrames[nextIndex - 1]?.layoutId ?? null,
+  } satisfies Omit<ArcTrackPendingInsertion, "targetLayoutId">;
+}
+
+export function resolveArcTrackDisplayItems(args: {
+  items: readonly ConfigSidebarItem[];
+  pendingInsertion: ArcTrackPendingInsertion | null;
+  previousLayoutOrder: readonly string[];
+}) {
+  const layoutEntries = args.items.map((item) => {
+    const layoutId = createListConfigToolLabelLayoutId({
+      kind: item.kind,
+      url: item.url,
+    });
+
+    return {
+      item,
+      layoutId,
+    };
+  });
+  const itemByLayoutId = new Map(layoutEntries.map((entry) => [entry.layoutId, entry.item]));
+  const orderedLayoutIds = args.previousLayoutOrder.filter((layoutId) =>
+    itemByLayoutId.has(layoutId),
+  );
+  const knownLayoutIds = new Set(orderedLayoutIds);
+
+  for (const entry of layoutEntries) {
+    if (knownLayoutIds.has(entry.layoutId)) {
+      continue;
+    }
+
+    orderedLayoutIds.push(entry.layoutId);
+    knownLayoutIds.add(entry.layoutId);
+  }
+
+  let didApplyPendingInsertion = false;
+
+  if (args.pendingInsertion && itemByLayoutId.has(args.pendingInsertion.targetLayoutId)) {
+    const layoutIdsWithoutTarget = orderedLayoutIds.filter(
+      (layoutId) => layoutId !== args.pendingInsertion?.targetLayoutId,
+    );
+    const previousIndex =
+      args.pendingInsertion.previousLayoutId === null
+        ? -1
+        : layoutIdsWithoutTarget.indexOf(args.pendingInsertion.previousLayoutId);
+    const nextIndex =
+      args.pendingInsertion.nextLayoutId === null
+        ? -1
+        : layoutIdsWithoutTarget.indexOf(args.pendingInsertion.nextLayoutId);
+    const insertionIndex =
+      previousIndex !== -1 && nextIndex !== -1
+        ? nextIndex > previousIndex
+          ? nextIndex
+          : previousIndex + 1
+        : nextIndex !== -1
+          ? nextIndex
+          : previousIndex !== -1
+            ? previousIndex + 1
+            : layoutIdsWithoutTarget.length;
+
+    layoutIdsWithoutTarget.splice(insertionIndex, 0, args.pendingInsertion.targetLayoutId);
+    orderedLayoutIds.splice(0, orderedLayoutIds.length, ...layoutIdsWithoutTarget);
+    didApplyPendingInsertion = true;
+  }
+
+  return {
+    didApplyPendingInsertion,
+    items: orderedLayoutIds
+      .map((layoutId) => itemByLayoutId.get(layoutId) ?? null)
+      .filter((item): item is ConfigSidebarItem => item !== null),
+    layoutOrder: orderedLayoutIds,
+  };
+}
+
+export function resolveArcTrackItemMountState(args: {
+  detachedState: ArcTrackDetachedNodeState | null | undefined;
+  nextStart: number;
+  shouldIgnoreDetachedState: boolean;
+}): ArcTrackItemMountState {
+  if (!args.detachedState || args.shouldIgnoreDetachedState) {
+    return {
+      start: args.nextStart,
+      renderedStart: args.nextStart,
+      shouldAnimateToStart: false,
+    };
+  }
+
+  return {
+    start: args.detachedState.start,
+    renderedStart: args.detachedState.renderedStart,
+    shouldAnimateToStart:
+      args.detachedState.start !== args.nextStart ||
+      args.detachedState.renderedStart !== args.nextStart,
+  };
 }
 
 function resolveArcTrackIndicatorTransform(itemKind: ConfigSidebarItem["kind"]) {
@@ -459,11 +617,13 @@ function scheduleArcTrackItemPositionUpdate(controller: ArcTrackPositionControll
 
 function registerArcTrackItemNode(args: {
   itemKey: ArcTrackItemRegistryKey;
+  layoutId: string;
   node: HTMLLIElement | null;
   registryRef: RefObject<ArcTrackItemNodeRegistry>;
   detachedItemRegistryRef: RefObject<ArcTrackDetachedNodeRegistry>;
   scrollElementRef: RefObject<HTMLDivElement | null>;
   scrollOffsetRef: RefObject<number>;
+  shouldIgnoreDetachedState: boolean;
   start: number;
 }) {
   const registry = args.registryRef.current;
@@ -483,20 +643,44 @@ function registerArcTrackItemNode(args: {
   }
 
   const detachedState = detachedRegistry.get(args.itemKey);
+  const mountState = resolveArcTrackItemMountState({
+    detachedState,
+    nextStart: args.start,
+    shouldIgnoreDetachedState: args.shouldIgnoreDetachedState,
+  });
   const state =
     existingState ??
     ({
+      layoutId: args.layoutId,
       node: args.node,
-      start: detachedState?.start ?? args.start,
-      renderedStart: detachedState?.renderedStart ?? args.start,
+      start: mountState.start,
+      renderedStart: mountState.renderedStart,
       animationFrame: null,
     } satisfies ArcTrackItemNodeState);
 
+  state.layoutId = args.layoutId;
   state.node = args.node;
   registry.set(args.itemKey, state);
   detachedRegistry.delete(args.itemKey);
 
-  if (state.start !== args.start || state.renderedStart !== args.start) {
+  if (args.shouldIgnoreDetachedState) {
+    stopArcTrackItemAnimation(state);
+    state.start = args.start;
+    state.renderedStart = args.start;
+    applyArcTrackItemNodeStatePosition({
+      state,
+      scrollElementRef: args.scrollElementRef,
+      scrollOffsetRef: args.scrollOffsetRef,
+    });
+    return;
+  }
+
+  const shouldAnimateToStart =
+    existingState !== undefined
+      ? state.start !== args.start || state.renderedStart !== args.start
+      : mountState.shouldAnimateToStart;
+
+  if (shouldAnimateToStart) {
     animateArcTrackItemToStart({
       state,
       nextStart: args.start,
@@ -655,6 +839,7 @@ const ArcTrackItem = memo(function ArcTrackItem({
   itemRegistryRef,
   scrollElementRef,
   scrollOffsetRef,
+  snapMountLayoutIdRef,
   onPushItem,
   onGhostNodeChange,
   start,
@@ -671,15 +856,23 @@ const ArcTrackItem = memo(function ArcTrackItem({
   return (
     <li
       ref={(node) => {
+        const shouldIgnoreDetachedState = snapMountLayoutIdRef.current === layoutId;
+
         registerArcTrackItemNode({
           itemKey,
+          layoutId,
           node,
           registryRef: itemRegistryRef,
           detachedItemRegistryRef,
           scrollElementRef,
           scrollOffsetRef,
+          shouldIgnoreDetachedState,
           start,
         });
+
+        if (node && shouldIgnoreDetachedState) {
+          snapMountLayoutIdRef.current = null;
+        }
       }}
       className="pointer-events-auto absolute whitespace-nowrap opacity-0"
     >
@@ -703,11 +896,17 @@ function ArcTrackListBody({
   items,
   onPushItem,
   onGhostNodeChange,
+  onPopInsertionPlannerChange,
   interactionDisabled = false,
   dismissHoverSignal,
 }: Pick<
   ArcTrackListProps,
-  "items" | "onPushItem" | "onGhostNodeChange" | "interactionDisabled" | "dismissHoverSignal"
+  | "items"
+  | "onPushItem"
+  | "onGhostNodeChange"
+  | "onPopInsertionPlannerChange"
+  | "interactionDisabled"
+  | "dismissHoverSignal"
 >) {
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
   const itemRegistryRef = useRef<ArcTrackItemNodeRegistry>(new Map());
@@ -715,6 +914,9 @@ function ArcTrackListBody({
   const positionFrameRef = useRef<number | null>(null);
   const scrollElementRef = useRef<HTMLDivElement | null>(null);
   const scrollOffsetRef = useRef(0);
+  const pendingInsertionRef = useRef<ArcTrackPendingInsertion | null>(null);
+  const displayOrderRef = useRef<string[]>([]);
+  const snapMountLayoutIdRef = useRef<string | null>(null);
   const positionControllerRef = useRef<ArcTrackPositionController>({
     itemRegistryRef,
     positionFrameRef,
@@ -735,17 +937,77 @@ function ArcTrackListBody({
     };
   }
 
+  const preparePopInsertion = useCallback<ArcTrackPopInsertionPlanner>(
+    ({ layoutId, sourceNode }) => {
+      snapMountLayoutIdRef.current = layoutId;
+      const scrollElement = scrollElementRef.current;
+      const sourceRect = sourceNode?.getBoundingClientRect();
+
+      if (!scrollElement || !sourceRect) {
+        pendingInsertionRef.current = null;
+        return;
+      }
+
+      const viewportRect = scrollElement.getBoundingClientRect();
+      const insertion = resolveArcTrackVisibleInsertion({
+        itemFrames: Array.from(itemRegistryRef.current.values()).map((state) => {
+          const rect = state.node.getBoundingClientRect();
+
+          return {
+            bottom: rect.bottom,
+            centerY: rect.top + rect.height / 2,
+            layoutId: state.layoutId,
+            top: rect.top,
+          } satisfies ArcTrackVisibleItemFrame;
+        }),
+        sourceCenterY: sourceRect.top + sourceRect.height / 2,
+        viewportBottom: viewportRect.bottom,
+        viewportTop: viewportRect.top,
+      });
+
+      pendingInsertionRef.current = insertion
+        ? {
+            ...insertion,
+            targetLayoutId: layoutId,
+          }
+        : null;
+    },
+    [],
+  );
+
+  useLayoutEffect(() => {
+    onPopInsertionPlannerChange?.(preparePopInsertion);
+
+    return () => {
+      onPopInsertionPlannerChange?.(null);
+    };
+  }, [onPopInsertionPlannerChange, preparePopInsertion]);
+
   const virtualPaddingEnd = resolveArcTrackVirtualPaddingEnd(items.length);
   const arcPathClassName = resolveArcTrackPathClassName(items.length);
   const arcPathStrokeWidth = resolveArcTrackPathStrokeWidth(items.length);
+  const displayResolution = resolveArcTrackDisplayItems({
+    items,
+    pendingInsertion: pendingInsertionRef.current,
+    previousLayoutOrder: displayOrderRef.current,
+  });
+  const displayItems = displayResolution.items;
+
+  displayOrderRef.current = displayResolution.layoutOrder;
+  if (displayResolution.didApplyPendingInsertion) {
+    pendingInsertionRef.current = null;
+  }
   const estimateSize = useCallback(() => ARC_ITEM_GAP, []);
-  const getItemKey = useCallback((index: number) => items[index]?.url ?? index, [items]);
+  const getItemKey = useCallback(
+    (index: number) => displayItems[index]?.url ?? index,
+    [displayItems],
+  );
 
   // Virtualization only controls which nodes are mounted.
   // Per-frame arc projection is driven by the native scroll event instead of
   // virtualizer state so the curve layer stays in lockstep with scrollTop.
   const rowVirtualizer = useVirtualizer({
-    count: items.length,
+    count: displayItems.length,
     estimateSize,
     getItemKey,
     getScrollElement: () => scrollElement,
@@ -792,7 +1054,7 @@ function ArcTrackListBody({
           >
             <ul className="absolute inset-0 z-10 m-0 list-none p-0">
               {virtualItems.map((virtualItem) => {
-                const item = items[virtualItem.index];
+                const item = displayItems[virtualItem.index];
 
                 if (!item) {
                   return null;
@@ -806,6 +1068,7 @@ function ArcTrackListBody({
                     itemRegistryRef={itemRegistryRef}
                     scrollElementRef={scrollElementRef}
                     scrollOffsetRef={scrollOffsetRef}
+                    snapMountLayoutIdRef={snapMountLayoutIdRef}
                     onPushItem={onPushItem}
                     onGhostNodeChange={onGhostNodeChange}
                     start={virtualItem.start}
@@ -828,6 +1091,7 @@ export function ArcTrackList({
   motionProps,
   onPushItem,
   onGhostNodeChange,
+  onPopInsertionPlannerChange,
   interactionDisabled = false,
   dismissHoverSignal,
 }: ArcTrackListProps) {
@@ -841,6 +1105,7 @@ export function ArcTrackList({
         items={items}
         onPushItem={onPushItem}
         onGhostNodeChange={onGhostNodeChange}
+        onPopInsertionPlannerChange={onPopInsertionPlannerChange}
         interactionDisabled={interactionDisabled}
         dismissHoverSignal={dismissHoverSignal}
       />

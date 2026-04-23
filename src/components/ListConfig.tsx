@@ -21,7 +21,11 @@ import {
   type ConfigSidebarItemRef,
 } from "@/src/flow/appLogic/core";
 import { collectionTitleLayoutTransition } from "./collectionTitle";
-import { ArcTrackList, type ArcTrackPushTransitionSource } from "./ArcTrackList";
+import {
+  ArcTrackList,
+  type ArcTrackPopInsertionPlanner,
+  type ArcTrackPushTransitionSource,
+} from "./ArcTrackList";
 import { CoverTool } from "./coverTool";
 import { EditableTitle, type EditableTitleHandle } from "./EditableTitle";
 import { useListConfigGhostTransition } from "./ListConfig.ghost-transition";
@@ -394,11 +398,18 @@ export function ListConfig() {
     registerGhostNode,
     startGhostTransition,
   } = useListConfigGhostTransition();
+  const popInsertionPlannerRef = useRef<ArcTrackPopInsertionPlanner | null>(null);
   const handleArcTrackGhostNodeChange = useCallback(
     (layoutId: string, node: HTMLDivElement | null) => {
       registerGhostNode(layoutId, LIST_CONFIG_GHOST_NODE_OWNER.arcTrack, node);
     },
     [registerGhostNode],
+  );
+  const handlePopInsertionPlannerChange = useCallback(
+    (planner: ArcTrackPopInsertionPlanner | null) => {
+      popInsertionPlannerRef.current = planner;
+    },
+    [],
   );
 
   async function handleChangeSavePath() {
@@ -664,6 +675,10 @@ export function ListConfig() {
                     interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
                     registerGhostNode={registerGhostNode}
                     onRemoveDraftItem={({ layoutId, ref, sourceNode }) => {
+                      popInsertionPlannerRef.current?.({
+                        layoutId,
+                        sourceNode,
+                      });
                       startGhostTransition({
                         layoutId,
                         sourceNode,
@@ -689,6 +704,7 @@ export function ListConfig() {
             !viewModel.interactionFlags.shouldRenderArcTrack || isGhostAnimating
           }
           onGhostNodeChange={handleArcTrackGhostNodeChange}
+          onPopInsertionPlannerChange={handlePopInsertionPlannerChange}
           onPushItem={(source: ArcTrackPushTransitionSource) => {
             const sourceNode = source.sourceNode;
             const layoutRef = createConfigSidebarItemRef(source.item);
