@@ -4,7 +4,10 @@ import { me } from "@grahlnn/fn";
 import { createConfigSidebarItemRef, type ConfigDraft } from "@/src/flow/appLogic/core";
 import { hasConfigDraftChanges } from "@/src/flow/appLogic/titleShare";
 import type { ConfigCandidateItem } from "@/src/flow/pasteDownload/core";
-import { LIST_CONFIG_EMPTY_STATE_TEXT } from "./ListConfig";
+import {
+  LIST_CONFIG_EMPTY_STATE_TEXT,
+  shouldHideListConfigToolLabelRowContent,
+} from "./ListConfig";
 import {
   createListConfigArcTrackItems,
   createListConfigCandidateToolLabelItems,
@@ -120,6 +123,48 @@ const candidateItems: ConfigCandidateItem[] = [
 ];
 
 describe("ListConfig title view model", () => {
+  test("hides the left row content only while a playlist item is leaving toward the arc track", () => {
+    assert.equal(
+      shouldHideListConfigToolLabelRowContent({
+        item: {
+          kind: "playlist",
+          id: "playlist:collection:https://example.com/quiet-morning",
+          ref: createConfigSidebarItemRef({
+            kind: "collection",
+            url: "https://example.com/quiet-morning",
+          }),
+          text: "Quiet Morning",
+          sourceKind: "collection",
+          enableUpdates: null,
+        },
+        activeGhostLayoutId: "playlist:collection:https://example.com/quiet-morning",
+        activeGhostTargetOwnerId: "arc-track",
+      }),
+      true,
+    );
+  });
+
+  test("keeps the push target visible while the incoming ghost docks into the left list", () => {
+    assert.equal(
+      shouldHideListConfigToolLabelRowContent({
+        item: {
+          kind: "playlist",
+          id: "playlist:collection:https://example.com/quiet-morning",
+          ref: createConfigSidebarItemRef({
+            kind: "collection",
+            url: "https://example.com/quiet-morning",
+          }),
+          text: "Quiet Morning",
+          sourceKind: "collection",
+          enableUpdates: null,
+        },
+        activeGhostLayoutId: "playlist:collection:https://example.com/quiet-morning",
+        activeGhostTargetOwnerId: "tool-label",
+      }),
+      false,
+    );
+  });
+
   test("captures the live create draft title snapshot", () => {
     assert.deepEqual(
       createListConfigTitleSnapshot({

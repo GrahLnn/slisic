@@ -247,6 +247,8 @@ type ListConfigRenderData = {
 type ListConfigToolLabelRowProps = {
   item: ListConfigToolLabelItem;
   activeGhostLayoutId: string | null;
+  activeGhostTargetOwnerId: string | null;
+  dismissHoverSignal: number;
   interactionDisabled: boolean;
   registerGhostNode: (layoutId: string, ownerId: string, node: HTMLDivElement | null) => void;
   onRemoveDraftItem: (source: {
@@ -263,15 +265,34 @@ function waitForNextFrame() {
   });
 }
 
+export function shouldHideListConfigToolLabelRowContent(args: {
+  activeGhostLayoutId: string | null;
+  activeGhostTargetOwnerId: string | null;
+  item: ListConfigToolLabelItem;
+}) {
+  return (
+    args.item.kind === "playlist" &&
+    args.activeGhostLayoutId === args.item.id &&
+    args.activeGhostTargetOwnerId === LIST_CONFIG_GHOST_NODE_OWNER.arcTrack
+  );
+}
+
 function ListConfigToolLabelRow({
   item,
   activeGhostLayoutId,
+  activeGhostTargetOwnerId,
+  dismissHoverSignal,
   interactionDisabled,
   registerGhostNode,
   onRemoveDraftItem,
   onDeleteCandidateItem,
 }: ListConfigToolLabelRowProps) {
   const sourceNodeRef = useRef<HTMLDivElement | null>(null);
+  const shouldHideRowContent = shouldHideListConfigToolLabelRowContent({
+    item,
+    activeGhostLayoutId,
+    activeGhostTargetOwnerId,
+  });
   const handleRootNodeChange = useCallback(
     (node: HTMLDivElement | null) => {
       sourceNodeRef.current = node;
@@ -282,7 +303,7 @@ function ListConfigToolLabelRow({
 
   return (
     <motion.div
-      className="group"
+      className="group overflow-hidden"
       initial={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
       animate={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
       exit={{ height: 0, paddingTop: 0, paddingBottom: 0 }}
@@ -291,10 +312,12 @@ function ListConfigToolLabelRow({
         className={cn(
           "flex items-center backdrop-blur-md w-fit gap-2 pr-1.5",
           "rounded-full",
+          shouldHideRowContent && "invisible",
         )}
       >
         <ToolLabel
           className={cn("")}
+          dismissHoverSignal={dismissHoverSignal}
           hoverMode="group"
           interactionDisabled={interactionDisabled}
           onRootNodeChange={item.kind === "playlist" ? handleRootNodeChange : undefined}
@@ -393,6 +416,7 @@ export function ListConfig() {
   emptyStateRef.current = viewModel.emptyState;
   const {
     activeLayoutId: activeGhostLayoutId,
+    activeTargetOwnerId: activeGhostTargetOwnerId,
     dismissHoverSignal,
     isAnimating: isGhostAnimating,
     registerGhostNode,
@@ -672,6 +696,8 @@ export function ListConfig() {
                     key={item.id}
                     item={item}
                     activeGhostLayoutId={activeGhostLayoutId}
+                    activeGhostTargetOwnerId={activeGhostTargetOwnerId}
+                    dismissHoverSignal={dismissHoverSignal}
                     interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
                     registerGhostNode={registerGhostNode}
                     onRemoveDraftItem={({ layoutId, ref, sourceNode }) => {

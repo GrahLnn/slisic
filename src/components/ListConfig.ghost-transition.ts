@@ -829,7 +829,10 @@ function scheduleGhostAnimationPlayback(args: {
 }
 
 export function useListConfigGhostTransition() {
-  const [activeLayoutId, setActiveLayoutId] = useState<string | null>(null);
+  const [activeTransition, setActiveTransition] = useState<{
+    layoutId: string;
+    targetOwnerId: string;
+  } | null>(null);
   const [dismissHoverSignal, setDismissHoverSignal] = useState(0);
   const ghostTransitionRef = useRef<ListConfigGhostTransition | null>(null);
   const ghostNodeRegistryRef = useRef<GhostNodeRegistry>(new Map());
@@ -895,7 +898,12 @@ export function useListConfigGhostTransition() {
           ghostTransitionRef.current = null;
         }
 
-        setActiveLayoutId((current) => (current === ghostTransition.layoutId ? null : current));
+        setActiveTransition((current) =>
+          current?.layoutId === ghostTransition.layoutId &&
+          current.targetOwnerId === ghostTransition.targetOwnerId
+            ? null
+            : current,
+        );
       },
     });
     ghostPlaybackCleanupRef.current = playbackCleanup;
@@ -1001,7 +1009,10 @@ export function useListConfigGhostTransition() {
 
       flushSync(() => {
         setDismissHoverSignal((current) => current + 1);
-        setActiveLayoutId(args.layoutId);
+        setActiveTransition({
+          layoutId: args.layoutId,
+          targetOwnerId: args.targetOwnerId,
+        });
       });
       recordGhostTransitionTrace("list-config:ghost-after-flush", {
         ...traceBase,
@@ -1017,9 +1028,10 @@ export function useListConfigGhostTransition() {
   );
 
   return {
-    activeLayoutId,
+    activeLayoutId: activeTransition?.layoutId ?? null,
+    activeTargetOwnerId: activeTransition?.targetOwnerId ?? null,
     dismissHoverSignal,
-    isAnimating: activeLayoutId !== null,
+    isAnimating: activeTransition !== null,
     registerGhostNode,
     startGhostTransition,
   };
