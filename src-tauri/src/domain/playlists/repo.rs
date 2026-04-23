@@ -5,7 +5,7 @@ use appdb::error::{DBError, classify_db_error};
 use appdb::graph;
 use appdb::model::meta::ModelMeta;
 use appdb::repository::Repo;
-use appdb::{Crud, Id, Store};
+use appdb::{Crud, Id, Order, Store};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -37,7 +37,7 @@ pub async fn list_collections() -> Result<Vec<Collection>> {
 }
 
 pub async fn list_playlists() -> Result<Vec<PlayList>> {
-    match PlayList::list().await {
+    match PlayList::list().order_by("created_at", Order::Asc).await {
         Ok(playlists) => Ok(playlists),
         Err(error) => match classify_db_error(&error) {
             DBError::MissingTable(_) => Ok(vec![]),
@@ -314,6 +314,7 @@ async fn resolve_playlist_foreign_refs(playlist: &PlayList) -> Result<PlayList> 
                     .unwrap_or_else(|| group.clone())
             })
             .collect(),
+        created_at: playlist.created_at.clone(),
     })
 }
 

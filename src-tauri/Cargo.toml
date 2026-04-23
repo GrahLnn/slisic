@@ -28,19 +28,15 @@ log = "0.4"
 tauri-plugin-log = "2.8.0"
 tauri-plugin-shell = "2"
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
-specta = "2.0.0-rc.23"
-specta-typescript = "0.0.10"
-tauri-specta = { git = "https://github.com/specta-rs/tauri-specta.git", rev = "b7cd99b786bd437acdbf2c11ae3e2c955b611a51", features = [
-  "derive",
-  "typescript",
-] }
+specta = "2.0.0-rc.24"
+specta-typescript = "0.0.11"
 tauri-plugin-os = "2"
-appdb = "0.2.11"
+appdb = "0.2.17"
 anyhow = "1.0.102"
 async-trait = "0.1.89"
 inventory = "0.3.22"
-surrealdb = { version = "3.0.4", features = ["kv-surrealkv"] }
-surrealdb-types = "3.0.4"
+surrealdb = { version = "3.0.5", features = ["kv-surrealkv"] }
+surrealdb-types = "3.0.5"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
@@ -58,6 +54,7 @@ xz2 = "0.1.7"
 chrono = { version = "0.4.44", features = ["serde", "clock"] }
 rand = "0.10.1"
 tauri = { version = "2.10.3", features = ["macos-private-api", "protocol-asset"] }
+tauri-specta = { version = "2.0.0-rc.24", features = ["derive", "typescript"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"

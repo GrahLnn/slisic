@@ -5,9 +5,9 @@ use super::repo::{
     upsert_collection, upsert_playlist,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
-use appdb::Crud;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
 use appdb::model::meta::ModelMeta;
+use appdb::{AutoFill, Crud};
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -174,6 +174,7 @@ fn sample_playlist(name: &str) -> PlayList {
             url: format!("https://example.com/{name}#disc-1"),
             folder: "Disc 1".to_string(),
         }],
+        created_at: AutoFill::pending(),
     }
 }
 
@@ -299,6 +300,7 @@ async fn insert_playlist_row(
                 "name": playlist.name,
                 "collections": collections,
                 "groups": groups,
+                "created_at": playlist.created_at.clone(),
             }),
         ))
         .await
@@ -1102,6 +1104,7 @@ fn upsert_playlist_does_not_clobber_existing_collection_graph_data() {
                 ..sample_collection(collection_url, Some(false))
             }],
             groups: vec![],
+            created_at: AutoFill::pending(),
         };
 
         upsert_playlist(&playlist, None)

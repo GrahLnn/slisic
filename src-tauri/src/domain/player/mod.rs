@@ -1,9 +1,13 @@
+#[cfg(not(test))]
 pub mod cmd;
+
+#[cfg(not(test))]
 pub mod event;
 pub mod model;
 pub mod service;
 pub mod strategy;
 
+#[cfg(not(test))]
 pub use cmd::*;
 
 #[cfg(test)]

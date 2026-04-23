@@ -9,7 +9,6 @@ import {
   type RefObject,
   type SetStateAction,
 } from "react";
-import { cn } from "@/lib/utils";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { motion, type MotionProps } from "motion/react";
 import type { ConfigSidebarItem } from "@/src/flow/appLogic/core";
@@ -47,7 +46,6 @@ type ArcTrackListProps = {
   onGhostNodeChange?: (layoutId: string, node: HTMLDivElement | null) => void;
   onPopInsertionPlannerChange?: (planner: ArcTrackPopInsertionPlanner | null) => void;
   motionProps?: MotionProps;
-  interactionDisabled?: boolean;
   dismissHoverSignal?: number;
 };
 
@@ -93,7 +91,6 @@ type ArcTrackItemProps = {
   onPushItem?: (source: ArcTrackPushTransitionSource) => void;
   onGhostNodeChange?: (layoutId: string, node: HTMLDivElement | null) => void;
   start: number;
-  interactionDisabled?: boolean;
   dismissHoverSignal?: number;
   detachedItemRegistryRef: RefObject<ArcTrackDetachedNodeRegistry>;
 };
@@ -109,7 +106,6 @@ type ArcTrackLabelHostProps = {
   item: ConfigSidebarItem;
   layoutId: string;
   dismissHoverSignal?: number;
-  interactionDisabled: boolean;
   onPushItem?: (source: ArcTrackPushTransitionSource) => void;
   onGhostNodeChange?: (layoutId: string, node: HTMLDivElement | null) => void;
   labelNodeRef: RefObject<HTMLDivElement | null>;
@@ -783,7 +779,6 @@ function ArcTrackLabelHost({
   item,
   layoutId,
   dismissHoverSignal,
-  interactionDisabled,
   onPushItem,
   onGhostNodeChange,
   labelNodeRef,
@@ -804,7 +799,6 @@ function ArcTrackLabelHost({
     >
       <ToolLabel
         dismissHoverSignal={dismissHoverSignal}
-        interactionDisabled={interactionDisabled}
         textRenderMode="plain"
         textClassName="text-[12px] text-[#404040] dark:text-[#a3a3a3]"
         toolAnchor="right"
@@ -843,7 +837,6 @@ const ArcTrackItem = memo(function ArcTrackItem({
   onPushItem,
   onGhostNodeChange,
   start,
-  interactionDisabled = false,
   dismissHoverSignal,
   detachedItemRegistryRef,
 }: ArcTrackItemProps) {
@@ -881,7 +874,6 @@ const ArcTrackItem = memo(function ArcTrackItem({
           item={item}
           layoutId={layoutId}
           dismissHoverSignal={dismissHoverSignal}
-          interactionDisabled={interactionDisabled}
           onPushItem={onPushItem}
           onGhostNodeChange={onGhostNodeChange}
           labelNodeRef={labelNodeRef}
@@ -897,7 +889,6 @@ function ArcTrackListBody({
   onPushItem,
   onGhostNodeChange,
   onPopInsertionPlannerChange,
-  interactionDisabled = false,
   dismissHoverSignal,
 }: Pick<
   ArcTrackListProps,
@@ -905,7 +896,6 @@ function ArcTrackListBody({
   | "onPushItem"
   | "onGhostNodeChange"
   | "onPopInsertionPlannerChange"
-  | "interactionDisabled"
   | "dismissHoverSignal"
 >) {
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
@@ -1042,10 +1032,7 @@ function ArcTrackListBody({
       <motion.div
         layoutScroll
         ref={scrollElementCallbackRef.current}
-        className={cn(
-          "absolute inset-y-0 right-0 z-0 w-screen overflow-y-auto overscroll-y-contain hide-scrollbar [overflow-anchor:none]",
-          interactionDisabled ? "pointer-events-none" : "pointer-events-auto",
-        )}
+        className="absolute inset-y-0 right-0 z-0 w-screen overflow-y-auto overscroll-y-contain hide-scrollbar [overflow-anchor:none]"
       >
         <div className="relative" style={{ height: `${arcTrackHeight}px` }}>
           <div
@@ -1072,7 +1059,6 @@ function ArcTrackListBody({
                     onPushItem={onPushItem}
                     onGhostNodeChange={onGhostNodeChange}
                     start={virtualItem.start}
-                    interactionDisabled={interactionDisabled}
                     dismissHoverSignal={dismissHoverSignal}
                     detachedItemRegistryRef={detachedItemRegistryRef}
                   />
@@ -1092,7 +1078,6 @@ export function ArcTrackList({
   onPushItem,
   onGhostNodeChange,
   onPopInsertionPlannerChange,
-  interactionDisabled = false,
   dismissHoverSignal,
 }: ArcTrackListProps) {
   return (
@@ -1106,7 +1091,6 @@ export function ArcTrackList({
         onPushItem={onPushItem}
         onGhostNodeChange={onGhostNodeChange}
         onPopInsertionPlannerChange={onPopInsertionPlannerChange}
-        interactionDisabled={interactionDisabled}
         dismissHoverSignal={dismissHoverSignal}
       />
     </motion.div>

@@ -1,8 +1,8 @@
 use super::model::{Collection, Group, Music, PlayList};
-use appdb::Crud;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
 use appdb::model::meta::ModelMeta;
 use appdb::query::{RawSqlStmt, query_bound_checked, query_bound_return};
+use appdb::{AutoFill, Crud};
 use serde::Deserialize;
 use serde_json::json;
 use std::path::PathBuf;
@@ -21,6 +21,7 @@ struct StoredPlayListRow {
     name: String,
     collections: Vec<RecordId>,
     groups: Vec<RecordId>,
+    created_at: AutoFill,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, SurrealValue)]
@@ -242,6 +243,7 @@ async fn insert_playlist_row(
                 "name": playlist.name,
                 "collections": collections,
                 "groups": groups,
+                "created_at": playlist.created_at.clone(),
             }),
         ))
         .await
@@ -373,6 +375,7 @@ fn sample_playlist() -> PlayList {
                 folder: "youtube/single-beta".to_string(),
             },
         ],
+        created_at: AutoFill::pending(),
     }
 }
 
@@ -452,6 +455,7 @@ fn serializes_playlist_with_nested_collections_and_musics() {
 fn deserializes_playlist_with_collection_update_flags() {
     let value = json!({
         "name": "study",
+        "created_at": "2026-04-12T00:00:00.000000000Z",
         "groups": [
             {
                 "name": "playlist-a",
@@ -520,6 +524,10 @@ fn deserializes_playlist_with_collection_update_flags() {
     assert_eq!(playlist.collections[1].enable_updates, None);
     assert_eq!(playlist.groups[0].url, "https://example.com/playlist-a");
     assert_eq!(playlist.collections[1].musics[0].path, None);
+    assert_eq!(
+        playlist.created_at.as_str(),
+        Some("2026-04-12T00:00:00.000000000Z")
+    );
 }
 
 #[test]
@@ -651,6 +659,7 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
         assert_eq!(stored_root.name, playlist.name);
         assert_eq!(stored_root.collections.len(), playlist.collections.len());
         assert_eq!(stored_root.groups.len(), playlist.groups.len());
+        assert_eq!(stored_root.created_at, playlist.created_at);
 
         for (group_record, expected_group) in stored_root.groups.iter().zip(playlist.groups.iter())
         {
@@ -715,6 +724,11 @@ fn playlist_create_and_list_succeed_once_relation_schema_exists() {
         assert_playlist_eq(&saved, &playlist);
         assert_eq!(listed.len(), 1);
         assert_playlist_eq(&listed[0], &playlist);
+        assert!(
+            saved.created_at.as_str().is_some(),
+            "playlist create_at should resolve created_at"
+        );
+        assert_eq!(saved.created_at, listed[0].created_at);
 
         reset_db();
     });

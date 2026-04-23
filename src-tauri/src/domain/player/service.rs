@@ -1,32 +1,48 @@
+#[cfg(not(test))]
 use super::event::NowPlayingTrackChangedEvent;
-use super::model::{PlayPlaylistSession, PlaybackTrack};
+#[cfg(not(test))]
+use super::model::PlayPlaylistSession;
+use super::model::PlaybackTrack;
+#[cfg(not(test))]
 use super::strategy::{PlaybackStrategy, RandomPlaybackStrategy};
 use crate::domain::downloads::model::DownloadTask;
+#[cfg(not(test))]
 use crate::domain::downloads::repo as download_repo;
+#[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
 use crate::domain::playlists::model::{Collection, PlayList};
+#[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
+#[cfg(not(test))]
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 use anyhow::{Context, Result, anyhow, bail};
+#[cfg(not(test))]
 use ffplayr::Playback;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+#[cfg(not(test))]
 use tauri::AppHandle;
+#[cfg(not(test))]
 use tauri_specta::Event;
 
+#[cfg(not(test))]
 static PLAYER_RUNTIME: OnceLock<Arc<PlayerRuntime>> = OnceLock::new();
+#[cfg(not(test))]
 const DOWNLOAD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+#[cfg(not(test))]
 const PLAYLIST_DOWNLOADING_STATUS_TEXT: &str = "Downloading...";
 
+#[cfg(not(test))]
 pub struct PlayerRuntime {
     app: AppHandle,
     playback: Mutex<Option<Playback>>,
     generation: AtomicU64,
 }
 
+#[cfg(not(test))]
 pub fn initialize_runtime(app: AppHandle) {
     let _ = PLAYER_RUNTIME.get_or_init(|| {
         Arc::new(PlayerRuntime {
@@ -37,6 +53,7 @@ pub fn initialize_runtime(app: AppHandle) {
     });
 }
 
+#[cfg(not(test))]
 pub async fn play_playlist(name: String) -> Result<PlayPlaylistSession> {
     let runtime = runtime()?;
     let (session, track_count) = build_playlist_session(&runtime.app, &name).await?;
@@ -65,6 +82,7 @@ pub async fn play_playlist(name: String) -> Result<PlayPlaylistSession> {
     })
 }
 
+#[cfg(not(test))]
 pub async fn stop_playback() -> Result<bool> {
     let runtime = runtime()?;
     runtime.generation.fetch_add(1, Ordering::SeqCst);
@@ -80,12 +98,14 @@ pub async fn stop_playback() -> Result<bool> {
     Ok(true)
 }
 
+#[cfg(not(test))]
 fn runtime() -> Result<&'static Arc<PlayerRuntime>> {
     PLAYER_RUNTIME
         .get()
         .context("player runtime has not been initialized")
 }
 
+#[cfg(not(test))]
 impl PlayerRuntime {
     fn playback(&self) -> Result<Playback> {
         let mut playback = self
@@ -112,6 +132,7 @@ impl PlayerRuntime {
     }
 }
 
+#[cfg(not(test))]
 struct PlaylistSession {
     playlist_name: String,
     strategy: Box<dyn PlaybackStrategy>,
@@ -123,6 +144,7 @@ pub(crate) struct PlaylistPlaybackInventory {
     pub(crate) failure_description: String,
 }
 
+#[cfg(not(test))]
 async fn build_playlist_session(
     app: &AppHandle,
     playlist_name: &str,
@@ -142,6 +164,7 @@ async fn build_playlist_session(
     ))
 }
 
+#[cfg(not(test))]
 async fn load_playlist_playback_inventory(
     app: &AppHandle,
     playlist_name: &str,
@@ -329,6 +352,7 @@ fn describe_playlist_track_resolution_failure(
     )
 }
 
+#[cfg(not(test))]
 async fn run_playlist_session(
     runtime: Arc<PlayerRuntime>,
     playback: Playback,
@@ -378,6 +402,7 @@ async fn run_playlist_session(
     }
 }
 
+#[cfg(not(test))]
 fn emit_playlist_status_text(app: &AppHandle, playlist_name: &str, text: &str) -> Result<()> {
     NowPlayingTrackChangedEvent {
         playlist_name: playlist_name.to_string(),
@@ -391,6 +416,7 @@ fn emit_playlist_status_text(app: &AppHandle, playlist_name: &str, text: &str) -
     Ok(())
 }
 
+#[cfg(not(test))]
 async fn wait_until_track_finishes(
     runtime: &PlayerRuntime,
     playback: &Playback,

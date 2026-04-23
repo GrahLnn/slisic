@@ -1,4 +1,4 @@
-use appdb::Store;
+use appdb::{AutoFill, Store};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use surrealdb_types::SurrealValue;
@@ -11,6 +11,9 @@ pub struct PlayList {
     pub collections: Vec<Collection>,
     #[foreign]
     pub groups: Vec<Group>,
+    #[pagin]
+    #[fill(now)]
+    pub created_at: AutoFill,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, Store, Type)]

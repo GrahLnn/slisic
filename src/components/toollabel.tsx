@@ -1,4 +1,11 @@
-import { useLayoutEffect, useRef, useState, type ComponentProps, type CSSProperties } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type CSSProperties,
+} from "react";
 import { cn } from "@/lib/utils";
 import { AnimatePresence, motion } from "motion/react";
 import { createPortal } from "react-dom";
@@ -259,6 +266,7 @@ function ToolLabelPortalOverlay({
   toolAnchor: ToolLabelAnchor;
 }) {
   const [anchorRect, setAnchorRect] = useState<DOMRectReadOnly | null>(null);
+  const trackingFrameRef = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     const anchor = anchorRef.current;
@@ -287,7 +295,21 @@ function ToolLabelPortalOverlay({
       container.addEventListener("scroll", syncRect, { passive: true });
     });
 
+    const trackAnchorRect = () => {
+      syncRect();
+      trackingFrameRef.current = ownerWindow.requestAnimationFrame(trackAnchorRect);
+    };
+
+    // Portal overlays render outside the anchor tree, so layout-driven motion
+    // does not emit a local resize/scroll signal. Keep a lightweight frame loop
+    // while the overlay is mounted so the portal can stay locked to the moving label.
+    trackingFrameRef.current = ownerWindow.requestAnimationFrame(trackAnchorRect);
+
     return () => {
+      if (trackingFrameRef.current !== null) {
+        ownerWindow.cancelAnimationFrame(trackingFrameRef.current);
+        trackingFrameRef.current = null;
+      }
       resizeObserver.disconnect();
       ownerWindow.removeEventListener("resize", syncRect);
       scrollContainers.forEach((container) => {
@@ -367,7 +389,7 @@ export function ToolLabel({
     return target instanceof Node && !!container?.contains(target);
   }
 
-  function clearPendingHoverSync() {
+  const clearPendingHoverSync = useCallback(() => {
     const ownerWindow = rootRef.current?.ownerDocument.defaultView;
 
     if (!ownerWindow || hoverSyncFrameRef.current === null) {
@@ -377,9 +399,9 @@ export function ToolLabel({
 
     ownerWindow.cancelAnimationFrame(hoverSyncFrameRef.current);
     hoverSyncFrameRef.current = null;
-  }
+  }, []);
 
-  function syncHoverStateFromPointer() {
+  const syncHoverStateFromPointer = useCallback(() => {
     const root = rootRef.current;
     const hoverTarget = hoverMode === "group" ? root?.closest(".group") : root;
     const shouldShowHover =
@@ -389,9 +411,9 @@ export function ToolLabel({
       hoverTarget.matches(":hover");
 
     setIsHovered(shouldShowHover);
-  }
+  }, [hoverMode, interactionDisabled, tool]);
 
-  function scheduleHoverSync() {
+  const scheduleHoverSync = useCallback(() => {
     const ownerWindow = rootRef.current?.ownerDocument.defaultView;
 
     clearPendingHoverSync();
@@ -405,7 +427,7 @@ export function ToolLabel({
       hoverSyncFrameRef.current = null;
       syncHoverStateFromPointer();
     });
-  }
+  }, [clearPendingHoverSync, syncHoverStateFromPointer]);
 
   function openOverlay() {
     if (effectiveInteractionDisabled || !tool) {
@@ -449,13 +471,11 @@ export function ToolLabel({
   }, [isHovered, tool, text]);
 
   useLayoutEffect(() => {
-    if (!effectiveInteractionDisabled) {
-      return;
+    if (effectiveInteractionDisabled) {
+      clearPendingHoverSync();
+      setIsHovered(false);
     }
-
-    clearPendingHoverSync();
-    setIsHovered(false);
-  }, [effectiveInteractionDisabled]);
+  }, [clearPendingHoverSync, effectiveInteractionDisabled]);
 
   useLayoutEffect(() => {
     if (dismissHoverSignal == null) {
@@ -464,13 +484,13 @@ export function ToolLabel({
 
     clearPendingHoverSync();
     setIsHovered(false);
-  }, [dismissHoverSignal]);
+  }, [clearPendingHoverSync, dismissHoverSignal]);
 
   useLayoutEffect(() => {
     return () => {
       clearPendingHoverSync();
     };
-  }, []);
+  }, [clearPendingHoverSync]);
 
   useLayoutEffect(() => {
     if (hoverMode !== "group") {

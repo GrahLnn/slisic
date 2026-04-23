@@ -4,7 +4,7 @@ use super::service::{
 };
 use crate::domain::downloads::model::{DownloadTask, DownloadTaskStatus, DownloadTrigger};
 use crate::domain::playlists::model::{Collection, Group, Music, PlayList};
-use appdb::Id;
+use appdb::{AutoFill, Id};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -90,6 +90,7 @@ fn collect_playlist_tracks_includes_group_only_entries_from_library() {
         name: "Focus".to_string(),
         collections: vec![],
         groups: vec![disc],
+        created_at: AutoFill::pending(),
     };
 
     let tracks = collect_playlist_tracks(&playlist, &[], &library, &root);
@@ -130,6 +131,7 @@ fn collect_playlist_tracks_deduplicates_overlap_between_selected_collections_and
         name: "Focus".to_string(),
         collections: vec![selected_collection.clone()],
         groups: vec![disc],
+        created_at: AutoFill::pending(),
     };
 
     let tracks = collect_playlist_tracks(
@@ -157,6 +159,7 @@ fn resolve_selected_collections_uses_current_library_records_for_playlist_refs()
             vec![],
         )],
         groups: vec![stale_disc],
+        created_at: AutoFill::pending(),
     };
     let library = vec![collection(
         "Album",
@@ -189,6 +192,7 @@ fn playlist_has_relevant_active_downloads_matches_collection_and_group_domains()
             vec![],
         )],
         groups: vec![group("Disc 1", "https://example.com/disc-1", "disc-1")],
+        created_at: AutoFill::pending(),
     };
     let tasks = vec![
         download_task(
@@ -228,6 +232,7 @@ fn resolve_playlist_playback_inventory_waits_for_matching_downloads_when_tracks_
             vec![],
         )],
         groups: vec![],
+        created_at: AutoFill::pending(),
     };
     let library = vec![collection(
         "Album",

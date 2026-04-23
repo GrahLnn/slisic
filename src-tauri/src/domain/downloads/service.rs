@@ -3,13 +3,16 @@ use super::model::{
     DownloadTaskStatus, DownloadTrigger, EnqueuedCollectionDownload, now_timestamp,
 };
 use super::repo;
+#[cfg(not(test))]
+use super::yt_dlp::CliYtDlpClient;
 use super::yt_dlp::{
-    CliYtDlpClient, DownloadProgress, LeafProbe, LeafReference, RootProbe, YtDlpClient,
-    classify_root_preference,
+    DownloadProgress, LeafProbe, LeafReference, RootProbe, YtDlpClient, classify_root_preference,
 };
+#[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
 use crate::domain::playlists::model::{Collection, Group, Music};
 use crate::domain::playlists::repo as collection_repo;
+#[cfg(not(test))]
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary, managed_bin_dir};
 use anyhow::{Context, Result, anyhow, bail};
 use appdb::Id;
@@ -18,18 +21,23 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(not(test))]
 use std::thread;
 use std::time::Duration;
+#[cfg(not(test))]
 use tauri::AppHandle;
 use tokio::task;
 
+#[cfg(not(test))]
 const AUTO_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
 const GROUP_DISCOVERY_USER_AGENT: &str =
     concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
+#[cfg(not(test))]
 static DOWNLOAD_RUNTIME: OnceLock<DownloadRuntime> = OnceLock::new();
 static PENDING_ENQUEUE_URLS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
+#[cfg(not(test))]
 pub struct DownloadRuntime {
     app: AppHandle,
     active_task_ids: Mutex<HashSet<String>>,
@@ -80,6 +88,7 @@ struct DownloadExecutionDeps {
     save_root: PathBuf,
 }
 
+#[cfg(not(test))]
 pub fn initialize_runtime(app: AppHandle) {
     let runtime = DOWNLOAD_RUNTIME.get_or_init(|| DownloadRuntime {
         app: app.clone(),
@@ -90,10 +99,12 @@ pub fn initialize_runtime(app: AppHandle) {
     spawn_auto_update_loop(runtime.app.clone());
 }
 
+#[cfg(not(test))]
 pub async fn enqueue_collection_download(url: String) -> Result<EnqueuedCollectionDownload> {
     enqueue_collection_download_with_trigger(url, DownloadTrigger::Manual).await
 }
 
+#[cfg(not(test))]
 pub async fn probe_download_resource(url: String) -> Result<DownloadResourceProbe> {
     let normalized_url = normalize_url(&url)?;
     let app = runtime()?.app.clone();
@@ -171,6 +182,7 @@ pub(crate) async fn describe_download_resource(
     }
 }
 
+#[cfg(not(test))]
 async fn enqueue_collection_download_with_trigger(
     url: String,
     trigger: DownloadTrigger,
@@ -198,6 +210,7 @@ async fn enqueue_collection_download_with_trigger(
     Ok(EnqueuedCollectionDownload { task, collection })
 }
 
+#[cfg(not(test))]
 pub(crate) async fn enqueue_collection_download_for_test(
     url: String,
     client: Arc<dyn YtDlpClient>,
@@ -277,6 +290,7 @@ async fn prepare_task_enqueue_outcome(
     }
 }
 
+#[cfg(not(test))]
 fn spawn_task(task_id: String) -> Result<()> {
     let runtime = runtime()?;
     if !try_claim_task(&task_id)? {
@@ -295,6 +309,12 @@ fn spawn_task(task_id: String) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+fn spawn_task(_task_id: String) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(test))]
 async fn resolve_existing_enqueued_collection(task: &DownloadTask) -> Result<Collection> {
     if let Some(collection_url) = &task.collection_url
         && let Some(collection) = collection_repo::get_collection_by_url(collection_url).await?
@@ -360,6 +380,7 @@ pub(crate) async fn persist_enqueued_collection_state(
     Ok((task, collection))
 }
 
+#[cfg(not(test))]
 async fn bootstrap_enqueued_collection(
     task: DownloadTask,
     app: AppHandle,
@@ -368,6 +389,7 @@ async fn bootstrap_enqueued_collection(
     bootstrap_enqueued_collection_with_deps(task, deps).await
 }
 
+#[cfg(not(test))]
 async fn bootstrap_enqueued_collection_with_deps(
     task: DownloadTask,
     deps: DownloadExecutionDeps,
@@ -376,11 +398,13 @@ async fn bootstrap_enqueued_collection_with_deps(
     persist_enqueued_collection_state(task, &plan).await
 }
 
+#[cfg(not(test))]
 async fn run_task(task_id: String, app: AppHandle) -> Result<()> {
     let deps = resolve_execution_deps(&app).await?;
     run_task_with_deps(task_id, deps).await
 }
 
+#[cfg(not(test))]
 async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Result<()> {
     let mut task_snapshot = repo::get_task(&task_id).await?;
     update_task_status(&mut task_snapshot, DownloadTaskStatus::Resolving, None).await?;
@@ -569,6 +593,7 @@ async fn mark_leaf_failed(
     Ok(())
 }
 
+#[cfg(not(test))]
 async fn resolve_collection_plan(
     task: &DownloadTask,
     client: Arc<dyn YtDlpClient>,
@@ -715,6 +740,7 @@ pub(crate) async fn expand_root_entries_to_planned_leafs(
     Ok(planned)
 }
 
+#[cfg(not(test))]
 fn temporary_download_stem(file_stem: &str, task_id: &Id, leaf_id: &Id) -> String {
     format!(
         "{file_stem}.__ransic_tmp__{}",
@@ -722,6 +748,7 @@ fn temporary_download_stem(file_stem: &str, task_id: &Id, leaf_id: &Id) -> Strin
     )
 }
 
+#[cfg(not(test))]
 fn finalize_downloaded_leaf(
     collection: &Collection,
     leaf_url: &str,
@@ -765,6 +792,7 @@ fn finalize_downloaded_leaf(
     Ok(relative_path)
 }
 
+#[cfg(not(test))]
 async fn resolve_probe_group(
     source_kind: CollectionSourceKind,
     probe: &LeafProbe,
@@ -797,6 +825,7 @@ async fn resolve_probe_group(
 
 /// Group data is leaf-level enrichment: root collection shape stays flat, and
 /// album metadata only adds a parent folder when a real playlist URL is known.
+#[cfg(not(test))]
 async fn discover_group_catalog(
     source_url: String,
     client: Arc<dyn YtDlpClient>,
@@ -804,6 +833,7 @@ async fn discover_group_catalog(
     run_blocking(move || discover_group_catalog_blocking(&source_url, client)).await
 }
 
+#[cfg(not(test))]
 fn discover_group_catalog_blocking(
     source_url: &str,
     client: Arc<dyn YtDlpClient>,
@@ -827,6 +857,7 @@ fn discover_group_catalog_blocking(
     bail!("{}", errors.join("; "))
 }
 
+#[cfg(not(test))]
 fn discover_groups_from_source(
     http: &BlockingHttpClient,
     source_url: &str,
@@ -928,12 +959,14 @@ async fn mark_task_failed(task_id: &str, error: String) -> Result<()> {
     update_task_status(&mut task, DownloadTaskStatus::Failed, Some(error)).await
 }
 
+#[cfg(not(test))]
 fn runtime() -> Result<&'static DownloadRuntime> {
     DOWNLOAD_RUNTIME
         .get()
         .context("download runtime has not been initialized")
 }
 
+#[cfg(not(test))]
 fn try_claim_task(task_id: &str) -> Result<bool> {
     let runtime = runtime()?;
     let mut active = runtime
@@ -960,6 +993,7 @@ pub(crate) fn try_claim_enqueue_url(url: &str) -> Result<Option<PendingEnqueueUr
     }))
 }
 
+#[cfg(not(test))]
 fn release_task(task_id: &str) {
     if let Some(runtime) = DOWNLOAD_RUNTIME.get()
         && let Ok(mut active) = runtime.active_task_ids.lock()
@@ -968,6 +1002,7 @@ fn release_task(task_id: &str) {
     }
 }
 
+#[cfg(not(test))]
 fn spawn_recovery(app: AppHandle) {
     let _ = thread::Builder::new()
         .name("download-recovery".to_string())
@@ -1107,6 +1142,7 @@ pub(crate) fn restore_single_source_musics_from_task(
     restored
 }
 
+#[cfg(not(test))]
 fn spawn_auto_update_loop(app: AppHandle) {
     let _ = thread::Builder::new()
         .name("download-auto-update".to_string())
@@ -1123,6 +1159,7 @@ fn spawn_auto_update_loop(app: AppHandle) {
         });
 }
 
+#[cfg(not(test))]
 async fn run_auto_update_cycle() -> Result<()> {
     let mut errors = Vec::new();
     for collection in collection_repo::list_auto_update_collections().await? {
@@ -1146,6 +1183,7 @@ async fn run_auto_update_cycle() -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(test))]
 fn build_client(app: &AppHandle) -> Result<Arc<dyn YtDlpClient>> {
     let ytdlp_path =
         ensure_managed_binary(app, ManagedBinary::YtDlp).map_err(|error| anyhow!(error))?;
@@ -1156,10 +1194,12 @@ fn build_client(app: &AppHandle) -> Result<Arc<dyn YtDlpClient>> {
     Ok(Arc::new(CliYtDlpClient::new(ytdlp_path, ffmpeg_dir)))
 }
 
+#[cfg(not(test))]
 async fn resolve_save_root(app: &AppHandle) -> Result<PathBuf> {
     meta_service::resolve_save_root(app).await
 }
 
+#[cfg(not(test))]
 async fn resolve_execution_deps(app: &AppHandle) -> Result<DownloadExecutionDeps> {
     Ok(DownloadExecutionDeps {
         client: build_client(app)?,

@@ -57,6 +57,11 @@ const iconStrokeTransition = {
   ease: [0.22, 1, 0.36, 1],
 } as const;
 
+const toolLabelRowHeightTransition = {
+  duration: 0.24,
+  ease: [0.22, 1, 0.36, 1],
+} as const;
+
 const LIST_CONFIG_GHOST_NODE_OWNER = {
   arcTrack: "arc-track",
   toolLabel: "tool-label",
@@ -304,13 +309,14 @@ function ListConfigToolLabelRow({
   return (
     <motion.div
       className="group overflow-hidden"
-      initial={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
-      animate={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
-      exit={{ height: 0, paddingTop: 0, paddingBottom: 0 }}
+      initial={{ height: 0 }}
+      animate={{ height: "auto" }}
+      exit={{ height: 0 }}
+      transition={toolLabelRowHeightTransition}
     >
       <div
         className={cn(
-          "flex items-center backdrop-blur-md w-fit gap-2 pr-1.5",
+          "flex items-center backdrop-blur-md w-fit gap-2 pr-1.5 py-2",
           "rounded-full",
           shouldHideRowContent && "invisible",
         )}
@@ -418,7 +424,6 @@ export function ListConfig() {
     activeLayoutId: activeGhostLayoutId,
     activeTargetOwnerId: activeGhostTargetOwnerId,
     dismissHoverSignal,
-    isAnimating: isGhostAnimating,
     registerGhostNode,
     startGhostTransition,
   } = useListConfigGhostTransition();
@@ -726,9 +731,6 @@ export function ListConfig() {
         <ArcTrackList
           items={viewModel.arcTrackItems}
           dismissHoverSignal={dismissHoverSignal}
-          interactionDisabled={
-            !viewModel.interactionFlags.shouldRenderArcTrack || isGhostAnimating
-          }
           onGhostNodeChange={handleArcTrackGhostNodeChange}
           onPopInsertionPlannerChange={handlePopInsertionPlannerChange}
           onPushItem={(source: ArcTrackPushTransitionSource) => {
