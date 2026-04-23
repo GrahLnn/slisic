@@ -60,8 +60,34 @@ export function MaskMiddle() {
 
 const TOOL_LABEL_OVERLAY_CLASS_NAME =
   "z-200 inline-flex cursor-default items-center overflow-visible";
+const TOOL_LABEL_PLAIN_TEXT_CLASS_NAME = "inline-block leading-[18px]";
 type ToolLabelAnchor = "left" | "right";
 type ToolLabelTextRenderMode = "torph" | "plain";
+
+export function resolveToolLabelPlainTextClassName() {
+  return TOOL_LABEL_PLAIN_TEXT_CLASS_NAME;
+}
+
+function ToolLabelTextSurface({
+  text,
+  textRenderMode,
+}: {
+  text: string;
+  textRenderMode: ToolLabelTextRenderMode;
+}) {
+  if (textRenderMode === "plain") {
+    return (
+      <span
+        data-tool-label-debug-role="text-surface"
+        className={resolveToolLabelPlainTextClassName()}
+      >
+        {text}
+      </span>
+    );
+  }
+
+  return <Torph text={text} />;
+}
 
 export function resolveToolLabelOverlayVisibility(args: {
   isHovered: boolean;
@@ -509,6 +535,10 @@ export function ToolLabel({
         <motion.div
           ref={textRef}
           layoutId={layoutId}
+          data-tool-label-debug-role="text-container"
+          data-tool-label-debug-layout-animating={isLayoutAnimating ? "true" : "false"}
+          data-tool-label-debug-text-render-mode={textRenderMode}
+          data-tool-label-debug-layout-id={layoutId}
           onLayoutAnimationStart={() => {
             clearPendingHoverSync();
             setIsLayoutAnimating(true);
@@ -520,7 +550,7 @@ export function ToolLabel({
           }}
           className={cn("inline-flex w-fit", resolvedTextClassName)}
         >
-          {textRenderMode === "plain" ? text : <Torph text={text} />}
+          <ToolLabelTextSurface text={text} textRenderMode={textRenderMode} />
         </motion.div>
         <AnimatePresence initial={false}>
           {isOverlayVisible &&

@@ -28,6 +28,7 @@ export type GhostMotionState = {
   settleTargetAngle: number;
   top: number;
   trackedAngle: number;
+  transformOrigin: GhostPoint;
   width: number;
 };
 
@@ -134,8 +135,25 @@ export function resolveGhostBezierDerivative(path: GhostPath, progress: number):
   };
 }
 
-function resolveGhostPathAngleProgressSteps(progress: number) {
-  return Math.max(1, Math.ceil(progress * 48));
+export function resolveGhostPathTangentAngle(args: {
+  path: GhostPath;
+  progress: number;
+}) {
+  return resolveGhostAngleFromPoint(
+    resolveGhostBezierDerivative(args.path, clampGhostValue(args.progress, 0, 1)),
+  );
+}
+
+/**
+ * Ghost labels track the rail orientation, not the signed travel direction.
+ * Anchoring the half-turn choice to the source heading prevents low-to-high pushes
+ * from drifting into the upside-down tangent branch while keeping the same curve.
+ */
+function resolveGhostRailOrientationAngle(args: {
+  sourceAngle: number;
+  tangentAngle: number;
+}) {
+  return resolveGhostOrientedAngle(args.tangentAngle, args.sourceAngle);
 }
 
 export function resolveGhostContinuousPathAngle(args: {
@@ -149,19 +167,13 @@ export function resolveGhostContinuousPathAngle(args: {
     return args.sourceAngle;
   }
 
-  const steps = resolveGhostPathAngleProgressSteps(progress);
-  let continuousAngle = args.sourceAngle;
-
-  for (let stepIndex = 1; stepIndex <= steps; stepIndex += 1) {
-    const stepProgress = (progress * stepIndex) / steps;
-    const rawAngle = resolveGhostAngleFromPoint(
-      resolveGhostBezierDerivative(args.path, stepProgress),
-    );
-
-    continuousAngle = resolveGhostOrientedAngle(rawAngle, continuousAngle);
-  }
-
-  return continuousAngle;
+  return resolveGhostRailOrientationAngle({
+    sourceAngle: args.sourceAngle,
+    tangentAngle: resolveGhostPathTangentAngle({
+      path: args.path,
+      progress,
+    }),
+  });
 }
 
 export function resolveGhostMotionPath(args: {
@@ -204,15 +216,19 @@ export function resolveGhostMotionState(args: {
   progress: number;
   sourceAngle: number;
   sourceFrame: GhostFrame;
+  sourceTransformOrigin: GhostPoint;
+  targetAngle: number;
   targetFrame: GhostFrame;
+  targetTransformOrigin: GhostPoint;
 }) {
   const progress = clampGhostValue(args.progress, 0, 1);
-  const width = lerpGhostValue(args.sourceFrame.width, args.targetFrame.width, progress);
-  const height = lerpGhostValue(args.sourceFrame.height, args.targetFrame.height, progress);
-  const center = resolveGhostBezierPoint(args.path, progress);
-  const rawPathAngle = resolveGhostAngleFromPoint(
-    resolveGhostBezierDerivative(args.path, progress),
-  );
+  const followWidth = lerpGhostValue(args.sourceFrame.width, args.targetFrame.width, progress);
+  const followHeight = lerpGhostValue(args.sourceFrame.height, args.targetFrame.height, progress);
+  const followCenter = resolveGhostBezierPoint(args.path, progress);
+  const rawPathAngle = resolveGhostPathTangentAngle({
+    path: args.path,
+    progress,
+  });
   const pathAngle = resolveGhostContinuousPathAngle({
     path: args.path,
     progress,
@@ -229,17 +245,26 @@ export function resolveGhostMotionState(args: {
     pathAngle,
     smoothstepGhostProgress(followProgress),
   );
+  const transformOriginProgress = smoothstepGhostProgress(followProgress);
   const settleProgress = clampGhostValue(
     (progress - GHOST_ANGLE_SETTLE_PROGRESS) / (1 - GHOST_ANGLE_SETTLE_PROGRESS),
     0,
     1,
   );
-  const settleTargetAngle = resolveGhostUnwrappedAngle(0, trackedAngle);
+  const settleTargetAngle = resolveGhostUnwrappedAngle(args.targetAngle, trackedAngle);
   const angle = lerpGhostValue(
     trackedAngle,
     settleTargetAngle,
     easeInGhostProgress(settleProgress),
   );
+  const dockingProgress = easeInGhostProgress(settleProgress);
+  const targetCenter = resolveGhostFrameCenter(args.targetFrame);
+  const center = {
+    x: lerpGhostValue(followCenter.x, targetCenter.x, dockingProgress),
+    y: lerpGhostValue(followCenter.y, targetCenter.y, dockingProgress),
+  } satisfies GhostPoint;
+  const width = lerpGhostValue(followWidth, args.targetFrame.width, dockingProgress);
+  const height = lerpGhostValue(followHeight, args.targetFrame.height, dockingProgress);
 
   return {
     angle,
@@ -256,6 +281,18 @@ export function resolveGhostMotionState(args: {
     settleTargetAngle,
     top: center.y - height / 2,
     trackedAngle,
+    transformOrigin: {
+      x: lerpGhostValue(
+        args.sourceTransformOrigin.x,
+        args.targetTransformOrigin.x,
+        transformOriginProgress,
+      ),
+      y: lerpGhostValue(
+        args.sourceTransformOrigin.y,
+        args.targetTransformOrigin.y,
+        transformOriginProgress,
+      ),
+    },
     width,
   } satisfies GhostMotionState;
 }
@@ -272,7 +309,10 @@ export function resolveGhostMotionPlaybackProgress(args: {
 export function createGhostMotionModel(args: {
   sourceAngle: number;
   sourceFrame: GhostFrame;
+  sourceTransformOrigin: GhostPoint;
+  targetAngle: number;
   targetFrame: GhostFrame;
+  targetTransformOrigin: GhostPoint;
 }) {
   const path = resolveGhostMotionPath(args);
 

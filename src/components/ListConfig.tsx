@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { me } from "@grahlnn/fn";
 import { getName } from "@tauri-apps/api/app";
@@ -51,6 +51,11 @@ const contentFadeProps = {
 const iconStrokeTransition = {
   duration: 0.22,
   ease: [0.22, 1, 0.36, 1],
+} as const;
+
+const LIST_CONFIG_GHOST_NODE_OWNER = {
+  arcTrack: "arc-track",
+  toolLabel: "tool-label",
 } as const;
 
 function BackActionIcon({ hasDraftChanges }: { hasDraftChanges: boolean }) {
@@ -130,7 +135,12 @@ function BackActionIcon({ hasDraftChanges }: { hasDraftChanges: boolean }) {
 
 function resolveListConfigToolLabelTool(args: {
   item: ListConfigToolLabelItem;
-  onRemoveDraftItem: (ref: ConfigSidebarItemRef) => void;
+  resolveSourceNode: () => HTMLDivElement | null;
+  onRemoveDraftItem: (source: {
+    layoutId: string;
+    ref: ConfigSidebarItemRef;
+    sourceNode: HTMLDivElement | null;
+  }) => void;
   onDeleteCandidateItem: (id: string) => void;
 }): ReactNode {
   if (args.item.kind === "playlist") {
@@ -170,7 +180,11 @@ function resolveListConfigToolLabelTool(args: {
           <CoverTool
             text="Pop"
             onClick={() => {
-              args.onRemoveDraftItem(playlistItem.ref);
+              args.onRemoveDraftItem({
+                layoutId: playlistItem.id,
+                ref: playlistItem.ref,
+                sourceNode: args.resolveSourceNode(),
+              });
             }}
           />
         </div>
@@ -226,10 +240,75 @@ type ListConfigRenderData = {
   viewModel: ReturnType<typeof resolveListConfigViewModel>;
 };
 
+type ListConfigToolLabelRowProps = {
+  item: ListConfigToolLabelItem;
+  activeGhostLayoutId: string | null;
+  interactionDisabled: boolean;
+  registerGhostNode: (layoutId: string, ownerId: string, node: HTMLDivElement | null) => void;
+  onRemoveDraftItem: (source: {
+    layoutId: string;
+    ref: ConfigSidebarItemRef;
+    sourceNode: HTMLDivElement | null;
+  }) => void;
+  onDeleteCandidateItem: (id: string) => void;
+};
+
 function waitForNextFrame() {
   return new Promise<void>((resolve) => {
     requestAnimationFrame(() => resolve());
   });
+}
+
+function ListConfigToolLabelRow({
+  item,
+  activeGhostLayoutId,
+  interactionDisabled,
+  registerGhostNode,
+  onRemoveDraftItem,
+  onDeleteCandidateItem,
+}: ListConfigToolLabelRowProps) {
+  const sourceNodeRef = useRef<HTMLDivElement | null>(null);
+  const handleRootNodeChange = useCallback(
+    (node: HTMLDivElement | null) => {
+      sourceNodeRef.current = node;
+      registerGhostNode(item.id, LIST_CONFIG_GHOST_NODE_OWNER.toolLabel, node);
+    },
+    [item.id, registerGhostNode],
+  );
+
+  return (
+    <motion.div
+      className="group"
+      initial={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
+      animate={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
+      exit={{ height: 0, paddingTop: 0, paddingBottom: 0 }}
+    >
+      <div
+        className={cn(
+          "flex items-center backdrop-blur-md w-fit gap-2 pr-1.5",
+          "rounded-full",
+        )}
+      >
+        <ToolLabel
+          className={cn("")}
+          hoverMode="group"
+          interactionDisabled={interactionDisabled}
+          onRootNodeChange={item.kind === "playlist" ? handleRootNodeChange : undefined}
+          layoutId={item.kind === "playlist" && activeGhostLayoutId !== item.id ? item.id : undefined}
+          toolLayer="portal"
+          text={item.text}
+          textClassName={resolveListConfigToolLabelTextClassName(item)}
+          tool={resolveListConfigToolLabelTool({
+            item,
+            resolveSourceNode: () => sourceNodeRef.current,
+            onRemoveDraftItem,
+            onDeleteCandidateItem,
+          })}
+        />
+        {shouldShowListConfigAutoDownloadIcon(item) && <icons.autoDownload size={12} />}
+      </div>
+    </motion.div>
+  );
 }
 
 async function waitForTitleShareSourceReady() {
@@ -308,11 +387,19 @@ export function ListConfig() {
   const renderData = pageRenderFreeze.renderValue;
   const { savePath: renderedSavePath, viewModel } = renderData;
   emptyStateRef.current = viewModel.emptyState;
-  const ghostTargetIdsKey = viewModel.toolLabelItems
-    .filter((item) => item.kind === "playlist")
-    .map((item) => item.id)
-    .join("|");
-  const ghostTransition = useListConfigGhostTransition(ghostTargetIdsKey);
+  const {
+    activeLayoutId: activeGhostLayoutId,
+    dismissHoverSignal,
+    isAnimating: isGhostAnimating,
+    registerGhostNode,
+    startGhostTransition,
+  } = useListConfigGhostTransition();
+  const handleArcTrackGhostNodeChange = useCallback(
+    (layoutId: string, node: HTMLDivElement | null) => {
+      registerGhostNode(layoutId, LIST_CONFIG_GHOST_NODE_OWNER.arcTrack, node);
+    },
+    [registerGhostNode],
+  );
 
   async function handleChangeSavePath() {
     try {
@@ -570,53 +657,24 @@ export function ListConfig() {
             >
               <AnimatePresence initial={false}>
                 {viewModel.toolLabelItems.map((item) => (
-                  <motion.div
+                  <ListConfigToolLabelRow
                     key={item.id}
-                    className="group"
-                    initial={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
-                    animate={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
-                    exit={{ height: 0, paddingTop: 0, paddingBottom: 0 }}
-                  >
-                    <div
-                      className={cn(
-                        "flex items-center backdrop-blur-md w-fit gap-2 pr-1.5",
-                        "rounded-full",
-                      )}
-                    >
-                      <ToolLabel
-                        className={cn("")}
-                        hoverMode="group"
-                        interactionDisabled={
-                          viewModel.interactionFlags.isToolListInteractionDisabled
-                        }
-                        onRootNodeChange={
-                          item.kind === "playlist"
-                            ? (node) => ghostTransition.registerTargetNode(item.id, node)
-                            : undefined
-                        }
-                        layoutId={
-                          item.kind === "playlist" && ghostTransition.activeLayoutId !== item.id
-                            ? item.id
-                            : undefined
-                        }
-                        toolLayer="portal"
-                        text={item.text}
-                        textClassName={resolveListConfigToolLabelTextClassName(item)}
-                        tool={resolveListConfigToolLabelTool({
-                          item,
-                          onRemoveDraftItem: (ref) => {
-                            appLogicAction.removeDraftItem(ref);
-                          },
-                          onDeleteCandidateItem: (id) => {
-                            pasteDownloadAction.delete(id);
-                          },
-                        })}
-                      />
-                      {shouldShowListConfigAutoDownloadIcon(item) && (
-                        <icons.autoDownload size={12} />
-                      )}
-                    </div>
-                  </motion.div>
+                    item={item}
+                    activeGhostLayoutId={activeGhostLayoutId}
+                    interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
+                    registerGhostNode={registerGhostNode}
+                    onRemoveDraftItem={({ layoutId, ref, sourceNode }) => {
+                      startGhostTransition({
+                        layoutId,
+                        sourceNode,
+                        targetOwnerId: LIST_CONFIG_GHOST_NODE_OWNER.arcTrack,
+                      });
+                      appLogicAction.removeDraftItem(ref);
+                    }}
+                    onDeleteCandidateItem={(id) => {
+                      pasteDownloadAction.delete(id);
+                    }}
+                  />
                 ))}
               </AnimatePresence>
             </motion.div>
@@ -626,17 +684,19 @@ export function ListConfig() {
       {viewModel.interactionFlags.shouldRenderArcTrack && (
         <ArcTrackList
           items={viewModel.arcTrackItems}
-          dismissHoverSignal={ghostTransition.dismissHoverSignal}
+          dismissHoverSignal={dismissHoverSignal}
           interactionDisabled={
-            !viewModel.interactionFlags.shouldRenderArcTrack || ghostTransition.isAnimating
+            !viewModel.interactionFlags.shouldRenderArcTrack || isGhostAnimating
           }
+          onGhostNodeChange={handleArcTrackGhostNodeChange}
           onPushItem={(source: ArcTrackPushTransitionSource) => {
             const sourceNode = source.sourceNode;
             const layoutRef = createConfigSidebarItemRef(source.item);
 
-            ghostTransition.startGhostTransition({
+            startGhostTransition({
               layoutId: source.layoutId,
               sourceNode,
+              targetOwnerId: LIST_CONFIG_GHOST_NODE_OWNER.toolLabel,
             });
             appLogicAction.includeDraftItem(layoutRef);
           }}

@@ -64,6 +64,10 @@ function parseGhostOrigin(transformOrigin: string): GhostPoint {
   };
 }
 
+export function resolveGhostOriginFromTransformOrigin(transformOrigin: string) {
+  return parseGhostOrigin(transformOrigin);
+}
+
 function transformGhostPoint(
   point: GhostPoint,
   origin: GhostPoint,

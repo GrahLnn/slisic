@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { resolveToolLabelOverlayVisibility } from "./toollabel";
+import {
+  resolveToolLabelOverlayVisibility,
+  resolveToolLabelPlainTextClassName,
+} from "./toollabel";
 
 describe("ToolLabel overlay visibility", () => {
   test("shows the overlay only when hovered and enabled", () => {
@@ -34,5 +37,9 @@ describe("ToolLabel overlay visibility", () => {
       }),
       false,
     );
+  });
+
+  test("uses the same canonical line-height wrapper for plain text rendering", () => {
+    assert.equal(resolveToolLabelPlainTextClassName(), "inline-block leading-[18px]");
   });
 });

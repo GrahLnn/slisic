@@ -36,6 +36,7 @@ export type ArcTrackPushTransitionSource = {
 type ArcTrackListProps = {
   items: readonly ConfigSidebarItem[];
   onPushItem?: (source: ArcTrackPushTransitionSource) => void;
+  onGhostNodeChange?: (layoutId: string, node: HTMLDivElement | null) => void;
   motionProps?: MotionProps;
   interactionDisabled?: boolean;
   dismissHoverSignal?: number;
@@ -79,6 +80,7 @@ type ArcTrackItemProps = {
   scrollElementRef: RefObject<HTMLDivElement | null>;
   scrollOffsetRef: RefObject<number>;
   onPushItem?: (source: ArcTrackPushTransitionSource) => void;
+  onGhostNodeChange?: (layoutId: string, node: HTMLDivElement | null) => void;
   start: number;
   interactionDisabled?: boolean;
   dismissHoverSignal?: number;
@@ -89,7 +91,7 @@ type ArcTrackPushToolProps = {
   item: ConfigSidebarItem;
   layoutId: string;
   onPushItem?: (source: ArcTrackPushTransitionSource) => void;
-  sourceNodeRef: RefObject<HTMLDivElement | null>;
+  labelNodeRef: RefObject<HTMLDivElement | null>;
 };
 
 type ArcTrackLabelHostProps = {
@@ -98,7 +100,8 @@ type ArcTrackLabelHostProps = {
   dismissHoverSignal?: number;
   interactionDisabled: boolean;
   onPushItem?: (source: ArcTrackPushTransitionSource) => void;
-  sourceNodeRef: RefObject<HTMLDivElement | null>;
+  onGhostNodeChange?: (layoutId: string, node: HTMLDivElement | null) => void;
+  labelNodeRef: RefObject<HTMLDivElement | null>;
 };
 
 type ArcTrackIndicatorProps = {
@@ -569,7 +572,7 @@ function syncArcTrackScrollElement(args: {
   };
 }
 
-function ArcTrackPushTool({ item, layoutId, onPushItem, sourceNodeRef }: ArcTrackPushToolProps) {
+function ArcTrackPushTool({ item, layoutId, onPushItem, labelNodeRef }: ArcTrackPushToolProps) {
   return (
     <div className="flex w-full items-center justify-between">
       <div />
@@ -582,7 +585,7 @@ function ArcTrackPushTool({ item, layoutId, onPushItem, sourceNodeRef }: ArcTrac
               onPushItem?.({
                 item,
                 layoutId,
-                sourceNode: sourceNodeRef.current,
+                sourceNode: labelNodeRef.current,
               });
             });
           }}
@@ -598,11 +601,20 @@ function ArcTrackLabelHost({
   dismissHoverSignal,
   interactionDisabled,
   onPushItem,
-  sourceNodeRef,
+  onGhostNodeChange,
+  labelNodeRef,
 }: ArcTrackLabelHostProps) {
+  const handleLabelNodeChange = useCallback(
+    (node: HTMLDivElement | null) => {
+      labelNodeRef.current = node;
+      onGhostNodeChange?.(layoutId, node);
+    },
+    [layoutId, onGhostNodeChange, labelNodeRef],
+  );
+
   return (
     <div
-      ref={sourceNodeRef}
+      ref={handleLabelNodeChange}
       className="inline-flex w-fit origin-right will-change-transform"
       style={{ transform: "rotate(var(--arc-item-angle, 0deg))" }}
     >
@@ -618,7 +630,7 @@ function ArcTrackLabelHost({
             item={item}
             layoutId={layoutId}
             onPushItem={onPushItem}
-            sourceNodeRef={sourceNodeRef}
+            labelNodeRef={labelNodeRef}
           />
         }
       />
@@ -644,12 +656,13 @@ const ArcTrackItem = memo(function ArcTrackItem({
   scrollElementRef,
   scrollOffsetRef,
   onPushItem,
+  onGhostNodeChange,
   start,
   interactionDisabled = false,
   dismissHoverSignal,
   detachedItemRegistryRef,
 }: ArcTrackItemProps) {
-  const sourceNodeRef = useRef<HTMLDivElement | null>(null);
+  const labelNodeRef = useRef<HTMLDivElement | null>(null);
   const layoutId = createListConfigToolLabelLayoutId({
     kind: item.kind,
     url: item.url,
@@ -677,7 +690,8 @@ const ArcTrackItem = memo(function ArcTrackItem({
           dismissHoverSignal={dismissHoverSignal}
           interactionDisabled={interactionDisabled}
           onPushItem={onPushItem}
-          sourceNodeRef={sourceNodeRef}
+          onGhostNodeChange={onGhostNodeChange}
+          labelNodeRef={labelNodeRef}
         />
         <ArcTrackIndicator itemKind={item.kind} />
       </div>
@@ -688,9 +702,13 @@ const ArcTrackItem = memo(function ArcTrackItem({
 function ArcTrackListBody({
   items,
   onPushItem,
+  onGhostNodeChange,
   interactionDisabled = false,
   dismissHoverSignal,
-}: Pick<ArcTrackListProps, "items" | "onPushItem" | "interactionDisabled" | "dismissHoverSignal">) {
+}: Pick<
+  ArcTrackListProps,
+  "items" | "onPushItem" | "onGhostNodeChange" | "interactionDisabled" | "dismissHoverSignal"
+>) {
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
   const itemRegistryRef = useRef<ArcTrackItemNodeRegistry>(new Map());
   const detachedItemRegistryRef = useRef<ArcTrackDetachedNodeRegistry>(new Map());
@@ -789,6 +807,7 @@ function ArcTrackListBody({
                     scrollElementRef={scrollElementRef}
                     scrollOffsetRef={scrollOffsetRef}
                     onPushItem={onPushItem}
+                    onGhostNodeChange={onGhostNodeChange}
                     start={virtualItem.start}
                     interactionDisabled={interactionDisabled}
                     dismissHoverSignal={dismissHoverSignal}
@@ -808,6 +827,7 @@ export function ArcTrackList({
   items,
   motionProps,
   onPushItem,
+  onGhostNodeChange,
   interactionDisabled = false,
   dismissHoverSignal,
 }: ArcTrackListProps) {
@@ -820,6 +840,7 @@ export function ArcTrackList({
       <ArcTrackListBody
         items={items}
         onPushItem={onPushItem}
+        onGhostNodeChange={onGhostNodeChange}
         interactionDisabled={interactionDisabled}
         dismissHoverSignal={dismissHoverSignal}
       />

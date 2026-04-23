@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   createGhostMotionModel,
+  resolveGhostBezierPoint,
   resolveGhostContinuousPathAngle,
   resolveGhostMotionPath,
   resolveGhostMotionState,
@@ -25,6 +26,49 @@ function createTargetFrame() {
   };
 }
 
+function createSourceTransformOrigin() {
+  return {
+    x: 89.0938,
+    y: 9,
+  };
+}
+
+function createTargetTransformOrigin() {
+  return {
+    x: 35.90625,
+    y: 9,
+  };
+}
+
+function createLowerArcPushSourceFrame() {
+  return {
+    left: 1170.1354494901875,
+    top: 445.0000019921875,
+    width: 87.6667,
+    height: 18,
+  };
+}
+
+function createLowerArcPushTargetFrame() {
+  return {
+    left: 380,
+    top: 371.3333435058594,
+    width: 87.6667,
+    height: 18,
+  };
+}
+
+function createLowerArcPushTransformOrigin() {
+  return {
+    x: 87.6667,
+    y: 9,
+  };
+}
+
+function lerpValue(from: number, to: number, progress: number) {
+  return from + (to - from) * progress;
+}
+
 describe("ListConfig ghost motion", () => {
   test("uses a curved motion path instead of a straight midpoint interpolation", () => {
     const sourceFrame = createSourceFrame();
@@ -39,7 +83,10 @@ describe("ListConfig ghost motion", () => {
       progress: 0.5,
       sourceAngle: -10.6,
       sourceFrame,
+      sourceTransformOrigin: createSourceTransformOrigin(),
+      targetAngle: 0,
       targetFrame,
+      targetTransformOrigin: createTargetTransformOrigin(),
     });
     const linearMidpointY =
       (sourceFrame.top + sourceFrame.height / 2 + targetFrame.top + targetFrame.height / 2) / 2;
@@ -75,7 +122,10 @@ describe("ListConfig ghost motion", () => {
       progress: 0.08,
       sourceAngle,
       sourceFrame,
+      sourceTransformOrigin: createSourceTransformOrigin(),
+      targetAngle: 0,
       targetFrame: createTargetFrame(),
+      targetTransformOrigin: createTargetTransformOrigin(),
     });
     const sourceHeadingInRadians = (sourceAngle * Math.PI) / 180;
     const sourceHeading = {
@@ -106,7 +156,10 @@ describe("ListConfig ghost motion", () => {
       progress: 0.05,
       sourceAngle: -10.6,
       sourceFrame,
+      sourceTransformOrigin: createSourceTransformOrigin(),
+      targetAngle: 0,
       targetFrame,
+      targetTransformOrigin: createTargetTransformOrigin(),
     });
 
     assert.ok(Math.abs(state.angle + 10.6) < 0.01);
@@ -145,19 +198,61 @@ describe("ListConfig ghost motion", () => {
       progress: 0,
       sourceAngle,
       sourceFrame,
+      sourceTransformOrigin: createSourceTransformOrigin(),
+      targetAngle: 0,
       targetFrame,
+      targetTransformOrigin: createTargetTransformOrigin(),
     });
     const earlyFollowState = resolveGhostMotionState({
       path,
       progress: 0.26698276343715577,
       sourceAngle,
       sourceFrame,
+      sourceTransformOrigin: createSourceTransformOrigin(),
+      targetAngle: 0,
       targetFrame,
+      targetTransformOrigin: createTargetTransformOrigin(),
     });
 
     assert.ok(Math.abs(earlyFollowState.pathAngle - sourceAngle) < 5);
     assert.ok(Math.abs(earlyFollowState.rawPathAngle - earlyFollowState.pathAngle) > 150);
     assert.ok(Math.abs(earlyFollowState.angle - initialState.angle) < 5);
+  });
+
+  test("keeps lower push trajectories on the source-facing rail branch", () => {
+    const sourceFrame = createLowerArcPushSourceFrame();
+    const targetFrame = createLowerArcPushTargetFrame();
+    const sourceAngle = -5.397855224449131;
+    const path = resolveGhostMotionPath({
+      sourceAngle,
+      sourceFrame,
+      targetFrame,
+    });
+    const sampledStates = [0.15, 0.2, 0.3, 0.5, 0.8].map((progress) =>
+      resolveGhostMotionState({
+        path,
+        progress,
+        sourceAngle,
+        sourceFrame,
+        sourceTransformOrigin: createLowerArcPushTransformOrigin(),
+        targetAngle: 0,
+        targetFrame,
+        targetTransformOrigin: createLowerArcPushTransformOrigin(),
+      }),
+    );
+
+    assert.ok(sampledStates.some((state) => Math.abs(state.rawPathAngle - state.pathAngle) > 120));
+
+    for (const state of sampledStates) {
+      assert.ok(
+        Math.abs(state.pathAngle - sourceAngle) < 90,
+        `expected pathAngle ${state.pathAngle} to stay on the source-facing branch`,
+      );
+      assert.ok(
+        Math.abs(state.trackedAngle - sourceAngle) < 20,
+        `expected trackedAngle ${state.trackedAngle} to avoid the upside-down branch`,
+      );
+    }
   });
 
   test("does not drop sharply when the settle phase begins", () => {
@@ -174,18 +269,54 @@ describe("ListConfig ghost motion", () => {
       progress: 0.8160851117462358,
       sourceAngle,
       sourceFrame,
+      sourceTransformOrigin: createSourceTransformOrigin(),
+      targetAngle: 0,
       targetFrame,
+      targetTransformOrigin: createTargetTransformOrigin(),
     });
     const settleEntryState = resolveGhostMotionState({
       path,
       progress: 0.8394319016413956,
       sourceAngle,
       sourceFrame,
+      sourceTransformOrigin: createSourceTransformOrigin(),
+      targetAngle: 0,
       targetFrame,
+      targetTransformOrigin: createTargetTransformOrigin(),
     });
 
     assert.ok(Math.abs(settleEntryState.angle - preSettleState.angle) < 25);
     assert.ok(Math.abs(settleEntryState.trackedAngle - settleEntryState.angle) < 5);
+  });
+
+  test("docks the terminal frame before the final handoff", () => {
+    const sourceFrame = createSourceFrame();
+    const targetFrame = createTargetFrame();
+    const progress = 0.95;
+    const path = resolveGhostMotionPath({
+      sourceAngle: -10.6,
+      sourceFrame,
+      targetFrame,
+    });
+    const state = resolveGhostMotionState({
+      path,
+      progress,
+      sourceAngle: -10.6,
+      sourceFrame,
+      sourceTransformOrigin: createSourceTransformOrigin(),
+      targetAngle: 0,
+      targetFrame,
+      targetTransformOrigin: createTargetTransformOrigin(),
+    });
+    const followCenter = resolveGhostBezierPoint(path, progress);
+    const followWidth = lerpValue(sourceFrame.width, targetFrame.width, progress);
+    const followHeight = lerpValue(sourceFrame.height, targetFrame.height, progress);
+    const followLeft = followCenter.x - followWidth / 2;
+    const followTop = followCenter.y - followHeight / 2;
+
+    assert.ok(Math.abs(state.left - targetFrame.left) < Math.abs(followLeft - targetFrame.left));
+    assert.ok(Math.abs(state.top - targetFrame.top) < Math.abs(followTop - targetFrame.top));
+    assert.ok(Math.abs(state.width - targetFrame.width) < Math.abs(followWidth - targetFrame.width));
   });
 
   test("lands on the target frame and settles back to the horizontal label pose", () => {
@@ -201,7 +332,10 @@ describe("ListConfig ghost motion", () => {
       progress: 1,
       sourceAngle: -10.6,
       sourceFrame,
+      sourceTransformOrigin: createSourceTransformOrigin(),
+      targetAngle: 0,
       targetFrame,
+      targetTransformOrigin: createTargetTransformOrigin(),
     });
 
     assert.ok(Math.abs(state.left - targetFrame.left) < 0.001);
@@ -209,6 +343,61 @@ describe("ListConfig ghost motion", () => {
     assert.ok(Math.abs(state.width - targetFrame.width) < 0.001);
     assert.ok(Math.abs(state.height - targetFrame.height) < 0.001);
     assert.ok(Math.abs(((state.angle % 360) + 360) % 360) < 0.001);
+    assert.ok(Math.abs(state.transformOrigin.x - createTargetTransformOrigin().x) < 0.001);
+    assert.ok(Math.abs(state.transformOrigin.y - createTargetTransformOrigin().y) < 0.001);
+  });
+
+  test("lands on the target frame and settles to the target rail angle", () => {
+    const sourceFrame = createSourceFrame();
+    const targetFrame = createTargetFrame();
+    const targetAngle = -10.6;
+    const path = resolveGhostMotionPath({
+      sourceAngle: -10.6,
+      sourceFrame,
+      targetFrame,
+    });
+    const state = resolveGhostMotionState({
+      path,
+      progress: 1,
+      sourceAngle: -10.6,
+      sourceFrame,
+      sourceTransformOrigin: createTargetTransformOrigin(),
+      targetAngle,
+      targetFrame,
+      targetTransformOrigin: createSourceTransformOrigin(),
+    });
+
+    assert.ok(Math.abs(state.left - targetFrame.left) < 0.001);
+    assert.ok(Math.abs(state.top - targetFrame.top) < 0.001);
+    assert.ok(Math.abs(state.width - targetFrame.width) < 0.001);
+    assert.ok(Math.abs(state.height - targetFrame.height) < 0.001);
+    assert.ok(Math.abs(state.angle - targetAngle) < 0.001);
+    assert.ok(Math.abs(state.settleTargetAngle - targetAngle) < 0.001);
+    assert.ok(Math.abs(state.transformOrigin.x - createSourceTransformOrigin().x) < 0.001);
+    assert.ok(Math.abs(state.transformOrigin.y - createSourceTransformOrigin().y) < 0.001);
+  });
+
+  test("moves the rotation origin toward the target pose before the final handoff", () => {
+    const sourceFrame = createSourceFrame();
+    const targetFrame = createTargetFrame();
+    const state = resolveGhostMotionState({
+      path: resolveGhostMotionPath({
+        sourceAngle: -10.6,
+        sourceFrame,
+        targetFrame,
+      }),
+      progress: 0.65,
+      sourceAngle: -10.6,
+      sourceFrame,
+      sourceTransformOrigin: createSourceTransformOrigin(),
+      targetAngle: 0,
+      targetFrame,
+      targetTransformOrigin: createTargetTransformOrigin(),
+    });
+
+    assert.ok(state.transformOrigin.x < createSourceTransformOrigin().x);
+    assert.ok(state.transformOrigin.x > createTargetTransformOrigin().x);
+    assert.equal(state.transformOrigin.y, 9);
   });
 
   test("composes the planned path and sampled state through a single motion model", () => {
@@ -218,7 +407,10 @@ describe("ListConfig ghost motion", () => {
     const model = createGhostMotionModel({
       sourceAngle,
       sourceFrame,
+      sourceTransformOrigin: createSourceTransformOrigin(),
+      targetAngle: 0,
       targetFrame,
+      targetTransformOrigin: createTargetTransformOrigin(),
     });
     const sample = model.sample(0.5);
     const path = resolveGhostMotionPath({
@@ -231,7 +423,10 @@ describe("ListConfig ghost motion", () => {
       progress: 0.5,
       sourceAngle,
       sourceFrame,
+      sourceTransformOrigin: createSourceTransformOrigin(),
+      targetAngle: 0,
       targetFrame,
+      targetTransformOrigin: createTargetTransformOrigin(),
     });
 
     assert.deepEqual(sample.path, path);
