@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { resolvePlayItemColorHandoff } from "./playItem";
+import {
+  resolvePlayItemColorHandoff,
+  resolvePlayItemLayoutAnimationEnabled,
+} from "./playItem";
 
 describe("playItem", () => {
   test("uses the target color directly when there is no handoff tone", () => {
@@ -42,6 +45,49 @@ describe("playItem", () => {
         initialColor: "rgba(246, 246, 246, 1)",
         shouldAnimate: true,
       },
+    );
+  });
+
+  test("keeps layout position animation enabled only while Torph is idle and text is stable", () => {
+    assert.equal(
+      resolvePlayItemLayoutAnimationEnabled({
+        requested: true,
+        torphStage: "idle",
+        textChanged: false,
+      }),
+      true,
+    );
+    assert.equal(
+      resolvePlayItemLayoutAnimationEnabled({
+        requested: true,
+        torphStage: "prepare",
+        textChanged: false,
+      }),
+      false,
+    );
+    assert.equal(
+      resolvePlayItemLayoutAnimationEnabled({
+        requested: true,
+        torphStage: "animate",
+        textChanged: false,
+      }),
+      false,
+    );
+    assert.equal(
+      resolvePlayItemLayoutAnimationEnabled({
+        requested: false,
+        torphStage: "idle",
+        textChanged: false,
+      }),
+      false,
+    );
+    assert.equal(
+      resolvePlayItemLayoutAnimationEnabled({
+        requested: true,
+        torphStage: "idle",
+        textChanged: true,
+      }),
+      false,
     );
   });
 });

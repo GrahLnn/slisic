@@ -46,6 +46,14 @@ type PlayItemTextProps = Pick<
 
 export type PlayItemProps = PlayItemBaseProps;
 
+export function resolvePlayItemLayoutAnimationEnabled(args: {
+  requested: boolean;
+  torphStage: TorphStage;
+  textChanged: boolean;
+}) {
+  return args.requested && !args.textChanged && args.torphStage === "idle";
+}
+
 export function resolvePlayItemColorHandoff(args: {
   targetColor: string;
   handoffColor: string;
@@ -148,7 +156,10 @@ function PlayItemText({
   });
 
   return (
-    <div ref={scope} className={cn(collectionTitleTextClassName, textClassName)}>
+    <div
+      ref={scope}
+      className={cn(collectionTitleTextClassName, textClassName)}
+    >
       <Torph text={text} onStageChange={onTorphStageChange} />
     </div>
   );

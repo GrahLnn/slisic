@@ -1,4 +1,4 @@
-import type { Ref } from "react";
+import { useLayoutEffect, useRef, useState, type Ref } from "react";
 import { motion, useIsPresent } from "motion/react";
 import type { TorphStage } from "@grahlnn/comps";
 import { cn } from "@/lib/utils";
@@ -8,7 +8,10 @@ import {
   collectionTitleLayoutTransition,
   collectionTitleTextHoverClassName,
 } from "./collectionTitle";
-import { PlayItem } from "./playItem";
+import {
+  PlayItem,
+  resolvePlayItemLayoutAnimationEnabled,
+} from "./playItem";
 import {
   resolvePlayListPageItemFadeProps,
   shouldCommitPlayListPageItem,
@@ -33,15 +36,28 @@ export function PlayListPageItem({
   onCommit: () => void;
 }) {
   const isPresent = useIsPresent();
+  const [torphStage, setTorphStage] = useState<TorphStage>("idle");
+  const previousTextRef = useRef(viewModel.text);
+  const textChanged = previousTextRef.current !== viewModel.text;
   const fadeProps = resolvePlayListPageItemFadeProps({
     isPresent,
     suppressFade: viewModel.suppressFade,
   });
 
+  useLayoutEffect(() => {
+    previousTextRef.current = viewModel.text;
+  }, [viewModel.text]);
+
+  const shouldEnableLayoutAnimation = resolvePlayItemLayoutAnimationEnabled({
+    requested: viewModel.shouldAnimateLayoutPosition,
+    torphStage,
+    textChanged,
+  });
+
   return (
     <motion.div
       ref={containerRef}
-      layout={viewModel.shouldAnimateLayoutPosition ? "position" : false}
+      layout={shouldEnableLayoutAnimation ? "position" : false}
       className="shrink-0 snap-center"
       initial={fadeProps.initial}
       animate={fadeProps.animate}
@@ -62,12 +78,15 @@ export function PlayListPageItem({
           className={collectionTitleClassName}
           handoffTone={viewModel.handoffTone}
           layoutId={viewModel.layoutId}
-          shouldAnimateLayoutPosition={viewModel.shouldAnimateLayoutPosition}
+          shouldAnimateLayoutPosition={shouldEnableLayoutAnimation}
           text={viewModel.text}
           textClassName={
             viewModel.isCommitted ? collectionTitleTextHoverClassName : undefined
           }
-          onTorphStageChange={onTorphStageChange}
+          onTorphStageChange={(stage) => {
+            setTorphStage(stage);
+            onTorphStageChange?.(stage);
+          }}
           onPointerDown={(event) => {
             if (event.button === 0) {
               onPrimaryPointerDown?.();
