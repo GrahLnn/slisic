@@ -70,9 +70,79 @@ const TOOL_LABEL_OVERLAY_CLASS_NAME =
 const TOOL_LABEL_PLAIN_TEXT_CLASS_NAME = "inline-block leading-[18px]";
 type ToolLabelAnchor = "left" | "right";
 type ToolLabelTextRenderMode = "torph" | "plain";
+type ToolLabelPointerPosition = {
+  clientX: number;
+  clientY: number;
+};
+
+type ToolLabelPointerTracker = {
+  position: ToolLabelPointerPosition | null;
+  refCount: number;
+  updatePosition: (event: PointerEvent) => void;
+  clearPosition: () => void;
+};
+
+const toolLabelPointerTrackers = new WeakMap<Document, ToolLabelPointerTracker>();
 
 export function resolveToolLabelPlainTextClassName() {
   return TOOL_LABEL_PLAIN_TEXT_CLASS_NAME;
+}
+
+function retainToolLabelPointerTracker(ownerDocument: Document) {
+  let tracker = toolLabelPointerTrackers.get(ownerDocument);
+
+  if (!tracker) {
+    tracker = {
+      position: null,
+      refCount: 0,
+      updatePosition: (event) => {
+        tracker!.position = {
+          clientX: event.clientX,
+          clientY: event.clientY,
+        };
+      },
+      clearPosition: () => {
+        tracker!.position = null;
+      },
+    };
+    toolLabelPointerTrackers.set(ownerDocument, tracker);
+    ownerDocument.addEventListener("pointerdown", tracker.updatePosition, {
+      passive: true,
+    });
+    ownerDocument.addEventListener("pointermove", tracker.updatePosition, {
+      passive: true,
+    });
+    ownerDocument.addEventListener("pointerleave", tracker.clearPosition, {
+      passive: true,
+    });
+    ownerDocument.defaultView?.addEventListener("blur", tracker.clearPosition);
+  }
+
+  tracker.refCount += 1;
+
+  return () => {
+    const currentTracker = toolLabelPointerTrackers.get(ownerDocument);
+
+    if (!currentTracker) {
+      return;
+    }
+
+    currentTracker.refCount -= 1;
+
+    if (currentTracker.refCount > 0) {
+      return;
+    }
+
+    ownerDocument.removeEventListener("pointerdown", currentTracker.updatePosition);
+    ownerDocument.removeEventListener("pointermove", currentTracker.updatePosition);
+    ownerDocument.removeEventListener("pointerleave", currentTracker.clearPosition);
+    ownerDocument.defaultView?.removeEventListener("blur", currentTracker.clearPosition);
+    toolLabelPointerTrackers.delete(ownerDocument);
+  };
+}
+
+function readToolLabelPointerPosition(ownerDocument: Document | null) {
+  return ownerDocument ? toolLabelPointerTrackers.get(ownerDocument)?.position ?? null : null;
 }
 
 function ToolLabelTextSurface({
@@ -102,6 +172,51 @@ export function resolveToolLabelOverlayVisibility(args: {
   interactionDisabled: boolean;
 }) {
   return args.isHovered && args.hasTool && !args.interactionDisabled;
+}
+
+function isPointInsideRect(point: ToolLabelPointerPosition, rect: DOMRect | DOMRectReadOnly) {
+  return (
+    point.clientX >= rect.left &&
+    point.clientX <= rect.right &&
+    point.clientY >= rect.top &&
+    point.clientY <= rect.bottom
+  );
+}
+
+/**
+ * Layout changes can move a label underneath a stationary pointer without
+ * producing another enter event. Re-probe against geometry instead of relying
+ * on `:hover`, otherwise overlays stay stale until the mouse moves again.
+ */
+export function resolveToolLabelHoverFromPointerProbe(args: {
+  interactionDisabled: boolean;
+  hasTool: boolean;
+  pointerPosition: ToolLabelPointerPosition | null;
+  hoverTarget: HTMLElement | null;
+  overlay: HTMLElement | null;
+}) {
+  if (args.interactionDisabled || !args.hasTool || !args.pointerPosition || !args.hoverTarget) {
+    return false;
+  }
+
+  const hoverTarget = args.hoverTarget;
+  const overlay = args.overlay;
+  const { clientX, clientY } = args.pointerPosition;
+  const hitElements = hoverTarget.ownerDocument.elementsFromPoint(clientX, clientY);
+
+  if (overlay && hitElements.some((element) => element === overlay || overlay.contains(element))) {
+    return true;
+  }
+
+  if (
+    hitElements.some(
+      (element) => element === hoverTarget || hoverTarget.contains(element),
+    )
+  ) {
+    return true;
+  }
+
+  return isPointInsideRect(args.pointerPosition, hoverTarget.getBoundingClientRect());
 }
 
 function ToolLabelOverlayBody({ tool }: { tool: React.ReactNode }) {
@@ -378,10 +493,12 @@ export function ToolLabel({
   const textRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const hoverSyncFrameRef = useRef<number | null>(null);
+  const hasTool = Boolean(tool);
   const effectiveInteractionDisabled = interactionDisabled || isLayoutAnimating;
+  const previousEffectiveInteractionDisabledRef = useRef(effectiveInteractionDisabled);
   const isOverlayVisible = resolveToolLabelOverlayVisibility({
     isHovered,
-    hasTool: Boolean(tool),
+    hasTool,
     interactionDisabled: effectiveInteractionDisabled,
   });
 
@@ -405,13 +522,17 @@ export function ToolLabel({
     const root = rootRef.current;
     const hoverTarget = hoverMode === "group" ? root?.closest(".group") : root;
     const shouldShowHover =
-      !interactionDisabled &&
-      !!tool &&
       hoverTarget instanceof HTMLElement &&
-      hoverTarget.matches(":hover");
+      resolveToolLabelHoverFromPointerProbe({
+        interactionDisabled: effectiveInteractionDisabled,
+        hasTool,
+        pointerPosition: readToolLabelPointerPosition(root?.ownerDocument ?? null),
+        hoverTarget,
+        overlay: overlayRef.current,
+      });
 
     setIsHovered(shouldShowHover);
-  }, [hoverMode, interactionDisabled, tool]);
+  }, [effectiveInteractionDisabled, hasTool, hoverMode]);
 
   const scheduleHoverSync = useCallback(() => {
     const ownerWindow = rootRef.current?.ownerDocument.defaultView;
@@ -478,6 +599,26 @@ export function ToolLabel({
   }, [clearPendingHoverSync, effectiveInteractionDisabled]);
 
   useLayoutEffect(() => {
+    if (!hasTool) {
+      clearPendingHoverSync();
+      setIsHovered(false);
+      return;
+    }
+
+    scheduleHoverSync();
+  }, [clearPendingHoverSync, hasTool, scheduleHoverSync, text]);
+
+  useLayoutEffect(() => {
+    const wasInteractionDisabled = previousEffectiveInteractionDisabledRef.current;
+
+    previousEffectiveInteractionDisabledRef.current = effectiveInteractionDisabled;
+
+    if (wasInteractionDisabled && !effectiveInteractionDisabled) {
+      scheduleHoverSync();
+    }
+  }, [effectiveInteractionDisabled, scheduleHoverSync]);
+
+  useLayoutEffect(() => {
     if (dismissHoverSignal == null) {
       return;
     }
@@ -491,6 +632,16 @@ export function ToolLabel({
       clearPendingHoverSync();
     };
   }, [clearPendingHoverSync]);
+
+  useLayoutEffect(() => {
+    const ownerDocument = rootRef.current?.ownerDocument;
+
+    if (!ownerDocument) {
+      return;
+    }
+
+    return retainToolLabelPointerTracker(ownerDocument);
+  }, []);
 
   useLayoutEffect(() => {
     if (hoverMode !== "group") {
@@ -566,7 +717,6 @@ export function ToolLabel({
           }}
           onLayoutAnimationComplete={() => {
             setIsLayoutAnimating(false);
-            scheduleHoverSync();
           }}
           className={cn("inline-flex w-fit", resolvedTextClassName)}
         >
