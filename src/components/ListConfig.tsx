@@ -494,7 +494,16 @@ export function ListConfig() {
         ...draft,
         name: titleResolution.name,
       };
-      const committedPlaylist = createPlayListFromDraft(committedDraft);
+      const preservedCreatedAt =
+        draft.mode === "edit"
+          ? (
+              playlists.find((playlist) => playlist.name === draftBaseline?.name)
+                ?.created_at ?? null
+            )
+          : null;
+      const committedPlaylist = createPlayListFromDraft(committedDraft, {
+        createdAt: preservedCreatedAt,
+      });
       const commitRequest = {
         playlist: committedPlaylist,
         previousName: draft.mode === "edit" ? (draftBaseline?.name ?? null) : null,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import type { PlayList } from "@/src/cmd";
 import {
   resolvePlayListPageItemFadeProps,
   resolvePlayListPageViewModel,
@@ -7,6 +8,20 @@ import {
   shouldCommitPlayListPageItem,
   shouldRenderPlayListPageContent,
 } from "./PlayListPage.view-model";
+
+function createPlayListFixture(args: {
+  name: string;
+  collections?: PlayList["collections"];
+  groups?: PlayList["groups"];
+  created_at?: PlayList["created_at"];
+}): PlayList {
+  return {
+    name: args.name,
+    collections: args.collections ?? [],
+    groups: args.groups ?? [],
+    created_at: args.created_at ?? "2026-04-13T00:00:00Z",
+  };
+}
 
 describe("PlayListPage", () => {
   test("keeps a stable fade host while suppressing opacity changes for shared items", () => {
@@ -136,16 +151,8 @@ describe("PlayListPage", () => {
       activeLayoutId: null,
       hasPlayList: true,
       playlists: [
-        {
-          name: "Night Drive",
-          collections: [],
-          groups: [],
-        },
-        {
-          name: "Quiet Morning",
-          collections: [],
-          groups: [],
-        },
+        createPlayListFixture({ name: "Night Drive" }),
+        createPlayListFixture({ name: "Quiet Morning" }),
       ],
       pendingPlaylistPreview: null,
       titleToneHandoff: null,
@@ -168,7 +175,7 @@ describe("PlayListPage", () => {
         suppressFade: false,
         isPlaybackTarget: false,
         isHiddenInPlay: true,
-        shouldAnimateLayoutPosition: false,
+        shouldAnimateSlotPosition: false,
         isCommitted: false,
         commitGesture: "disabled",
         playlistName: "Night Drive",
@@ -181,7 +188,7 @@ describe("PlayListPage", () => {
         suppressFade: true,
         isPlaybackTarget: true,
         isHiddenInPlay: false,
-        shouldAnimateLayoutPosition: false,
+        shouldAnimateSlotPosition: false,
         isCommitted: false,
         commitGesture: "disabled",
         playlistName: "Quiet Morning",
@@ -198,11 +205,7 @@ describe("PlayListPage", () => {
       activeLayoutId: null,
       hasPlayList: true,
       playlists: [
-        {
-          name: "Quiet Morning",
-          collections: [],
-          groups: [],
-        },
+        createPlayListFixture({ name: "Quiet Morning" }),
       ],
       pendingPlaylistPreview: null,
       titleToneHandoff: null,
@@ -228,11 +231,7 @@ describe("PlayListPage", () => {
       activeLayoutId: null,
       hasPlayList: true,
       playlists: [
-        {
-          name: "Quiet Morning",
-          collections: [],
-          groups: [],
-        },
+        createPlayListFixture({ name: "Quiet Morning" }),
       ],
       pendingPlaylistPreview: null,
       titleToneHandoff: null,
@@ -247,7 +246,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.shouldLockScroll, true);
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
-    assert.equal(viewModel.itemViewModels[0]?.shouldAnimateLayoutPosition, false);
+    assert.equal(viewModel.itemViewModels[0]?.shouldAnimateSlotPosition, false);
     assert.equal(viewModel.shouldRenderCreateItem, true);
     assert.equal(viewModel.shouldShowCreateItem, false);
     assert.equal(viewModel.createItemViewModel.isHiddenInPlay, true);
@@ -259,11 +258,7 @@ describe("PlayListPage", () => {
       activeLayoutId: null,
       hasPlayList: true,
       playlists: [
-        {
-          name: "Quiet Morning",
-          collections: [],
-          groups: [],
-        },
+        createPlayListFixture({ name: "Quiet Morning" }),
       ],
       pendingPlaylistPreview: null,
       titleToneHandoff: null,
@@ -278,7 +273,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.shouldLockScroll, true);
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
-    assert.equal(viewModel.itemViewModels[0]?.shouldAnimateLayoutPosition, false);
+    assert.equal(viewModel.itemViewModels[0]?.shouldAnimateSlotPosition, false);
     assert.equal(viewModel.shouldRenderCreateItem, true);
     assert.equal(viewModel.shouldShowCreateItem, false);
     assert.equal(viewModel.createItemViewModel.isHiddenInPlay, true);

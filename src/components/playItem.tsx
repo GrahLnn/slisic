@@ -1,39 +1,31 @@
 import {
   useLayoutEffect,
-  type ComponentProps,
   type MouseEvent,
   type MouseEventHandler,
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
-import { motion, useAnimate } from "motion/react";
+import { motion, useAnimate, type HTMLMotionProps } from "motion/react";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import {
   collectionTitleColorTransition,
   collectionTitleTextClassName,
   useCollectionTitleColor,
 } from "./collectionTitle";
+import { resolvePlayItemFrameProjection } from "./playItem.motion";
 import { Torph, type TorphStage } from "@grahlnn/comps";
 
-type PlayItemBaseProps = Omit<ComponentProps<"div">, "children"> & {
+type PlayItemBaseProps = Omit<HTMLMotionProps<"div">, "children"> & {
   text: string;
   layoutId?: string;
   tone?: CollectionTitleTone;
   handoffTone?: CollectionTitleTone | null;
-  shouldAnimateLayoutPosition?: boolean;
   textClassName?: string;
   onTorphStageChange?: (stage: TorphStage) => void;
 };
 
-type PlayItemFrameProps = Pick<
-  PlayItemBaseProps,
-  | "className"
-  | "layoutId"
-  | "onClick"
-  | "onContextMenu"
-  | "onPointerDown"
-  | "shouldAnimateLayoutPosition"
-> & {
+type PlayItemFrameProps = Omit<HTMLMotionProps<"div">, "children"> & {
+  layoutId?: string;
   children: ReactNode;
 };
 
@@ -45,14 +37,6 @@ type PlayItemTextProps = Pick<
 };
 
 export type PlayItemProps = PlayItemBaseProps;
-
-export function resolvePlayItemLayoutAnimationEnabled(args: {
-  requested: boolean;
-  torphStage: TorphStage;
-  textChanged: boolean;
-}) {
-  return args.requested && !args.textChanged && args.torphStage === "idle";
-}
 
 export function resolvePlayItemColorHandoff(args: {
   targetColor: string;
@@ -127,16 +111,19 @@ function PlayItemFrame({
   onClick,
   onContextMenu,
   onPointerDown,
-  shouldAnimateLayoutPosition = true,
+  ...domProps
 }: PlayItemFrameProps) {
+  const frameProjection = resolvePlayItemFrameProjection({ layoutId });
+
   return (
     <motion.div
       className={cn(className)}
-      layout={shouldAnimateLayoutPosition ? "position" : false}
-      layoutId={layoutId}
+      layout={frameProjection.layout}
+      layoutId={frameProjection.layoutId}
       onClick={onClick}
       onContextMenu={createContextMenuHandler(onContextMenu)}
       onPointerDown={onPointerDown}
+      {...domProps}
     >
       {children}
     </motion.div>
@@ -173,10 +160,10 @@ export function PlayItem({
   layoutId,
   tone = "solid",
   handoffTone = null,
-  shouldAnimateLayoutPosition = true,
   text,
   textClassName,
   onTorphStageChange,
+  ...domProps
 }: PlayItemProps) {
   return (
     <PlayItemFrame
@@ -185,7 +172,7 @@ export function PlayItem({
       onClick={onClick}
       onContextMenu={onContextMenu}
       onPointerDown={onPointerDown}
-      shouldAnimateLayoutPosition={shouldAnimateLayoutPosition}
+      {...domProps}
     >
       <PlayItemText
         handoffTone={handoffTone}

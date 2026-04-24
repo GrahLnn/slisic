@@ -74,7 +74,9 @@ export function playlistTitleLayoutId(name: string) {
   return `playlist-title:${name}`;
 }
 
-export function createEmptyPlayList(): PlayList {
+type PlayListEditableFields = Pick<PlayList, "name" | "collections" | "groups">;
+
+function createEmptyPlayListFields(): PlayListEditableFields {
   return {
     name: "",
     collections: [],
@@ -85,7 +87,7 @@ export function createEmptyPlayList(): PlayList {
 export function createDraft(): ConfigDraft {
   return {
     mode: "create",
-    ...createEmptyPlayList(),
+    ...createEmptyPlayListFields(),
   };
 }
 
@@ -102,11 +104,22 @@ export function normalizeDraftName(name: string) {
   return name.trim();
 }
 
-export function createPlayListFromDraft(draft: ConfigDraft): PlayList {
+/**
+ * Draft state owns only user-editable playlist fields. Persistence metadata
+ * like `created_at` must be injected at commit time so edit flows preserve the
+ * existing record identity while new playlists still enter with a pending fill.
+ */
+export function createPlayListFromDraft(
+  draft: ConfigDraft,
+  options?: {
+    createdAt?: PlayList["created_at"];
+  },
+): PlayList {
   return {
     name: draft.name,
     collections: [...draft.collections],
     groups: [...draft.groups],
+    created_at: options?.createdAt ?? null,
   };
 }
 

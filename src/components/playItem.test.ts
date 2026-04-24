@@ -2,10 +2,38 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   resolvePlayItemColorHandoff,
-  resolvePlayItemLayoutAnimationEnabled,
 } from "./playItem";
+import { resolvePlayItemFrameProjection } from "./playItem.motion";
 
 describe("playItem", () => {
+  test("keeps shared projection position-only so text changes do not scale glyphs", () => {
+    assert.deepEqual(
+      resolvePlayItemFrameProjection({
+        layoutId: " playlist-title:Quiet Morning ",
+      }),
+      {
+        layout: "position",
+        layoutId: "playlist-title:Quiet Morning",
+      },
+    );
+    assert.deepEqual(
+      resolvePlayItemFrameProjection({
+        layoutId: "   ",
+      }),
+      {
+        layout: false,
+        layoutId: undefined,
+      },
+    );
+    assert.deepEqual(
+      resolvePlayItemFrameProjection({}),
+      {
+        layout: false,
+        layoutId: undefined,
+      },
+    );
+  });
+
   test("uses the target color directly when there is no handoff tone", () => {
     assert.deepEqual(
       resolvePlayItemColorHandoff({
@@ -45,49 +73,6 @@ describe("playItem", () => {
         initialColor: "rgba(246, 246, 246, 1)",
         shouldAnimate: true,
       },
-    );
-  });
-
-  test("keeps layout position animation enabled only while Torph is idle and text is stable", () => {
-    assert.equal(
-      resolvePlayItemLayoutAnimationEnabled({
-        requested: true,
-        torphStage: "idle",
-        textChanged: false,
-      }),
-      true,
-    );
-    assert.equal(
-      resolvePlayItemLayoutAnimationEnabled({
-        requested: true,
-        torphStage: "prepare",
-        textChanged: false,
-      }),
-      false,
-    );
-    assert.equal(
-      resolvePlayItemLayoutAnimationEnabled({
-        requested: true,
-        torphStage: "animate",
-        textChanged: false,
-      }),
-      false,
-    );
-    assert.equal(
-      resolvePlayItemLayoutAnimationEnabled({
-        requested: false,
-        torphStage: "idle",
-        textChanged: false,
-      }),
-      false,
-    );
-    assert.equal(
-      resolvePlayItemLayoutAnimationEnabled({
-        requested: true,
-        torphStage: "idle",
-        textChanged: true,
-      }),
-      false,
     );
   });
 });

@@ -10,13 +10,13 @@ import {
 } from "./collectionTitle";
 import {
   PlayItem,
-  resolvePlayItemLayoutAnimationEnabled,
 } from "./playItem";
 import {
   resolvePlayListPageItemFadeProps,
   shouldCommitPlayListPageItem,
   type PlayListPageItemViewModel,
 } from "./PlayListPage.view-model";
+import { resolvePlayListPageItemSlotPositionAnimationEnabled } from "./PlayListPageItem.motion";
 
 export function PlayListPageItem({
   viewModel,
@@ -48,16 +48,17 @@ export function PlayListPageItem({
     previousTextRef.current = viewModel.text;
   }, [viewModel.text]);
 
-  const shouldEnableLayoutAnimation = resolvePlayItemLayoutAnimationEnabled({
-    requested: viewModel.shouldAnimateLayoutPosition,
-    torphStage,
-    textChanged,
-  });
+  const shouldEnableSlotPositionAnimation =
+    resolvePlayListPageItemSlotPositionAnimationEnabled({
+      requested: viewModel.shouldAnimateSlotPosition,
+      torphStage,
+      textChanged,
+    });
 
   return (
     <motion.div
       ref={containerRef}
-      layout={shouldEnableLayoutAnimation ? "position" : false}
+      layout={shouldEnableSlotPositionAnimation ? "position" : false}
       className="shrink-0 snap-center"
       initial={fadeProps.initial}
       animate={fadeProps.animate}
@@ -78,7 +79,6 @@ export function PlayListPageItem({
           className={collectionTitleClassName}
           handoffTone={viewModel.handoffTone}
           layoutId={viewModel.layoutId}
-          shouldAnimateLayoutPosition={shouldEnableLayoutAnimation}
           text={viewModel.text}
           textClassName={
             viewModel.isCommitted ? collectionTitleTextHoverClassName : undefined

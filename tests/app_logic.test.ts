@@ -98,6 +98,7 @@ const samplePlaylist: PlayList = {
       folder: "Disc 1",
     },
   ],
+  created_at: "2026-04-13T00:00:00Z",
 };
 
 const syncedCollection: Collection = {

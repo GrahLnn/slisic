@@ -49,7 +49,7 @@ export interface PlayListPageItemViewModel {
   suppressFade: boolean;
   isPlaybackTarget: boolean;
   isHiddenInPlay: boolean;
-  shouldAnimateLayoutPosition: boolean;
+  shouldAnimateSlotPosition: boolean;
   isCommitted: boolean;
   commitGesture: PlayListPageCommitGesture;
   playlistName?: string;
@@ -134,7 +134,7 @@ function createPlayListPageItemViewModel(args: {
   titleToneHandoff: CollectionTitleHandoff | null;
   isPlaybackTarget: boolean;
   isHiddenInPlay: boolean;
-  shouldAnimateLayoutPosition: boolean;
+  shouldAnimateSlotPosition: boolean;
   commitGesture: PlayListPageCommitGesture;
 }) {
   const itemLayoutId = playlistTitleLayoutId(args.playlist.name);
@@ -152,7 +152,7 @@ function createPlayListPageItemViewModel(args: {
       shouldSuppressTitleShareFade(itemLayoutId, args.transition),
     isPlaybackTarget: args.isPlaybackTarget,
     isHiddenInPlay: args.isHiddenInPlay,
-    shouldAnimateLayoutPosition: args.shouldAnimateLayoutPosition,
+    shouldAnimateSlotPosition: args.shouldAnimateSlotPosition,
     isCommitted: args.transition.committedLayoutId === itemLayoutId,
     commitGesture: args.commitGesture,
     playlistName: args.playlist.name,
@@ -165,7 +165,7 @@ function resolvePlayListPageVisibleItems(args: {
   titleShareEnabled: boolean;
   transition: TitleSharePageTransition;
   titleToneHandoff: CollectionTitleHandoff | null;
-  shouldAnimateLayoutPosition: boolean;
+  shouldAnimateSlotPosition: boolean;
   itemCommitGesture: PlayListPageCommitGesture;
 }) {
   const playbackSurfacePlaylistName = args.playbackSurface?.playlistName ?? null;
@@ -190,7 +190,7 @@ function resolvePlayListPageVisibleItems(args: {
         hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName,
       isHiddenInPlay:
         hasPlaybackTarget && playlist.name !== playbackSurfacePlaylistName,
-      shouldAnimateLayoutPosition: args.shouldAnimateLayoutPosition,
+      shouldAnimateSlotPosition: args.shouldAnimateSlotPosition,
       commitGesture: args.itemCommitGesture,
     }),
   );
@@ -244,7 +244,7 @@ export function resolvePlayListPageViewModel(
     visiblePlaylists.some(
       (playlist) => playlist.name === renderData.playbackSurface?.playlistName,
     );
-  const shouldAnimateLayoutPosition = !hasPlaybackSurfaceTarget;
+  const shouldAnimateSlotPosition = !hasPlaybackSurfaceTarget;
   const itemCommitGesture =
     renderData.pageState === "ready" ? "secondary-only" : "disabled";
   const itemViewModels = resolvePlayListPageVisibleItems({
@@ -253,7 +253,7 @@ export function resolvePlayListPageViewModel(
     titleShareEnabled,
     transition,
     titleToneHandoff: renderData.titleToneHandoff,
-    shouldAnimateLayoutPosition,
+    shouldAnimateSlotPosition,
     itemCommitGesture,
   });
   const shouldLockScroll = resolvePlayListPageShouldLockScroll({
@@ -292,7 +292,7 @@ export function resolvePlayListPageViewModel(
       ),
       isPlaybackTarget: false,
       isHiddenInPlay: shouldLockScroll,
-      shouldAnimateLayoutPosition,
+      shouldAnimateSlotPosition,
       isCommitted: committedLayoutId === CREATE_COLLECTION_LAYOUT_ID,
       commitGesture: "primary-and-secondary",
     },

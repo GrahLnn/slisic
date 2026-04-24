@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import type { PlayList } from "@/src/cmd";
 import {
   createDraftFromPlaylistName,
   createPlayListFromDraft,
@@ -17,6 +18,20 @@ import {
   upsertCollectionIntoDraft,
   upsertCollectionIntoCollections,
 } from "./core";
+
+function createPlayListFixture(args: {
+  name: string;
+  collections?: PlayList["collections"];
+  groups?: PlayList["groups"];
+  created_at?: PlayList["created_at"];
+}): PlayList {
+  return {
+    name: args.name,
+    collections: args.collections ?? [],
+    groups: args.groups ?? [],
+    created_at: args.created_at ?? "2026-04-13T00:00:00Z",
+  };
+}
 
 describe("createInitialContext", () => {
   test("creates fresh collection-backed fields for each context instance", () => {
@@ -194,7 +209,7 @@ describe("draft commit naming", () => {
     assert.deepEqual(
       createDraftFromPlaylistName(
         [
-          {
+          createPlayListFixture({
             name: "Quiet Morning",
             collections: [
               {
@@ -213,7 +228,7 @@ describe("draft commit naming", () => {
                 folder: "Disc 1",
               },
             ],
-          },
+          }),
         ],
         "Quiet Morning",
       ),
@@ -308,16 +323,8 @@ describe("draft commit naming", () => {
           groups: [],
         },
         playlists: [
-          {
-            name: "PlayList 1",
-            collections: [],
-            groups: [],
-          },
-          {
-            name: "PlayList 2",
-            collections: [],
-            groups: [],
-          },
+          createPlayListFixture({ name: "PlayList 1" }),
+          createPlayListFixture({ name: "PlayList 2" }),
         ],
       }),
       {
@@ -330,16 +337,8 @@ describe("draft commit naming", () => {
   test("finds the first available generated playlist name", () => {
     assert.equal(
       resolveNextGeneratedPlaylistName([
-        {
-          name: "PlayList 1",
-          collections: [],
-          groups: [],
-        },
-        {
-          name: "PlayList 3",
-          collections: [],
-          groups: [],
-        },
+        createPlayListFixture({ name: "PlayList 1" }),
+        createPlayListFixture({ name: "PlayList 3" }),
       ]),
       "PlayList 2",
     );
@@ -372,54 +371,48 @@ describe("draft commit naming", () => {
       name: "Quiet Morning",
       collections: draft.collections,
       groups: draft.groups,
+      created_at: null,
     });
+    assert.deepEqual(
+      createPlayListFromDraft(draft, {
+        createdAt: "2026-04-13T00:00:00Z",
+      }),
+      {
+        name: "Quiet Morning",
+        collections: draft.collections,
+        groups: draft.groups,
+        created_at: "2026-04-13T00:00:00Z",
+      },
+    );
   });
 
 });
 
 describe("upsertPlaylistIntoPlaylists", () => {
   test("appends a newly committed playlist when it did not exist before", () => {
-    const next = {
+    const next = createPlayListFixture({
       name: "Quiet Morning",
-      collections: [],
-      groups: [],
-    };
+    });
 
     assert.deepEqual(upsertPlaylistIntoPlaylists([], next), [next]);
     assert.deepEqual(
       upsertPlaylistIntoPlaylists(
         [
-          {
-            name: "Existing",
-            collections: [],
-            groups: [],
-          },
+          createPlayListFixture({ name: "Existing" }),
         ],
         next,
       ),
       [
-        {
-          name: "Existing",
-          collections: [],
-          groups: [],
-        },
+        createPlayListFixture({ name: "Existing" }),
         next,
       ],
     );
   });
 
   test("replaces an existing playlist in place when the name matches", () => {
-    const first = {
-      name: "First",
-      collections: [],
-      groups: [],
-    };
-    const second = {
-      name: "Second",
-      collections: [],
-      groups: [],
-    };
-    const updated = {
+    const first = createPlayListFixture({ name: "First" });
+    const second = createPlayListFixture({ name: "Second" });
+    const updated = createPlayListFixture({
       name: "Second",
       collections: [
         {
@@ -432,7 +425,7 @@ describe("upsertPlaylistIntoPlaylists", () => {
         },
       ],
       groups: [],
-    };
+    });
 
     assert.deepEqual(upsertPlaylistIntoPlaylists([first, second], updated), [
       first,
@@ -441,20 +434,12 @@ describe("upsertPlaylistIntoPlaylists", () => {
   });
 
   test("replaces a renamed playlist by its previous name", () => {
-    const renamed = {
-      name: "Renamed",
-      collections: [],
-      groups: [],
-    };
+    const renamed = createPlayListFixture({ name: "Renamed" });
 
     assert.deepEqual(
       upsertPlaylistIntoPlaylists(
         [
-          {
-            name: "Original",
-            collections: [],
-            groups: [],
-          },
+          createPlayListFixture({ name: "Original" }),
         ],
         renamed,
         "Original",
@@ -469,35 +454,15 @@ describe("removePlaylistFromPlaylists", () => {
     assert.deepEqual(
       removePlaylistFromPlaylists(
         [
-          {
-            name: "First",
-            collections: [],
-            groups: [],
-          },
-          {
-            name: "Second",
-            collections: [],
-            groups: [],
-          },
-          {
-            name: "Third",
-            collections: [],
-            groups: [],
-          },
+          createPlayListFixture({ name: "First" }),
+          createPlayListFixture({ name: "Second" }),
+          createPlayListFixture({ name: "Third" }),
         ],
         "Second",
       ),
       [
-        {
-          name: "First",
-          collections: [],
-          groups: [],
-        },
-        {
-          name: "Third",
-          collections: [],
-          groups: [],
-        },
+        createPlayListFixture({ name: "First" }),
+        createPlayListFixture({ name: "Third" }),
       ],
     );
   });
@@ -506,11 +471,7 @@ describe("removePlaylistFromPlaylists", () => {
 describe("resolvePlaylistsWithPreview", () => {
   test("returns a detached copy when there is no pending preview", () => {
     const playlists = [
-      {
-        name: "Existing",
-        collections: [],
-        groups: [],
-      },
+      createPlayListFixture({ name: "Existing" }),
     ];
 
     const resolved = resolvePlaylistsWithPreview(playlists, null);
@@ -523,32 +484,16 @@ describe("resolvePlaylistsWithPreview", () => {
     assert.deepEqual(
       resolvePlaylistsWithPreview(
         [
-          {
-            name: "Existing",
-            collections: [],
-            groups: [],
-          },
+          createPlayListFixture({ name: "Existing" }),
         ],
         {
-          playlist: {
-            name: "PlayList 1",
-            collections: [],
-            groups: [],
-          },
+          playlist: createPlayListFixture({ name: "PlayList 1" }),
           previousName: null,
         },
       ),
       [
-        {
-          name: "Existing",
-          collections: [],
-          groups: [],
-        },
-        {
-          name: "PlayList 1",
-          collections: [],
-          groups: [],
-        },
+        createPlayListFixture({ name: "Existing" }),
+        createPlayListFixture({ name: "PlayList 1" }),
       ],
     );
   });
@@ -557,27 +502,15 @@ describe("resolvePlaylistsWithPreview", () => {
     assert.deepEqual(
       resolvePlaylistsWithPreview(
         [
-          {
-            name: "Original",
-            collections: [],
-            groups: [],
-          },
+          createPlayListFixture({ name: "Original" }),
         ],
         {
-          playlist: {
-            name: "Renamed",
-            collections: [],
-            groups: [],
-          },
+          playlist: createPlayListFixture({ name: "Renamed" }),
           previousName: "Original",
         },
       ),
       [
-        {
-          name: "Renamed",
-          collections: [],
-          groups: [],
-        },
+        createPlayListFixture({ name: "Renamed" }),
       ],
     );
   });
