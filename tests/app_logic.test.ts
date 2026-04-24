@@ -115,6 +115,28 @@ const sampleGroupSidebarItemRef = {
   url: "https://example.com/quiet-morning#disc-1",
 };
 
+function createExpectedAppLogicContext(
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    hasPlayList: null,
+    playlists: [],
+    pendingPlaylistPreview: null,
+    collections: [],
+    savePath: "",
+    playingPlaylistName: null,
+    nowPlayingTrackName: null,
+    activeLayoutId: null,
+    titleToneHandoff: null,
+    pendingPlaylistName: null,
+    pendingCollectionUpdatesChange: null,
+    draftBaseline: null,
+    draft: null,
+    error: null,
+    ...overrides,
+  };
+}
+
 function currentConfigSidebarItems(actor: AnyActorRef) {
   return createConfigSidebarItems(actor.getSnapshot().context.collections);
 }
@@ -225,36 +247,19 @@ describe("appLogic machine", () => {
     actor.start();
 
     expect(actor.getSnapshot().value).toBe(ss.mainx.State.idle);
-    expect(actor.getSnapshot().context).toEqual({
-      hasPlayList: null,
-      playlists: [],
-      collections: [],
-      savePath: "",
-      activeLayoutId: null,
-      titleToneHandoff: null,
-      pendingPlaylistName: null,
-      pendingCollectionUpdatesChange: null,
-      draftBaseline: null,
-      draft: null,
-      error: null,
-    });
+    expect(actor.getSnapshot().context).toEqual(createExpectedAppLogicContext());
 
     actor.send(sig.mainx.run);
     await waitForState(actor, ss.mainx.State.ready);
 
-    expect(actor.getSnapshot().context).toEqual({
-      hasPlayList: true,
-      playlists: [samplePlaylist],
-      collections: [sampleCollection],
-      savePath: sampleSavePath,
-      activeLayoutId: null,
-      titleToneHandoff: null,
-      pendingPlaylistName: null,
-      pendingCollectionUpdatesChange: null,
-      draftBaseline: null,
-      draft: null,
-      error: null,
-    });
+    expect(actor.getSnapshot().context).toEqual(
+      createExpectedAppLogicContext({
+        hasPlayList: true,
+        playlists: [samplePlaylist],
+        collections: [sampleCollection],
+        savePath: sampleSavePath,
+      }),
+    );
   });
 
   test("keeps ready state even when playlist table is empty", async () => {
@@ -267,19 +272,12 @@ describe("appLogic machine", () => {
 
     await waitForState(actor, ss.mainx.State.ready);
 
-    expect(actor.getSnapshot().context).toEqual({
-      hasPlayList: false,
-      playlists: [],
-      collections: [],
-      savePath: sampleSavePath,
-      activeLayoutId: null,
-      titleToneHandoff: null,
-      pendingPlaylistName: null,
-      pendingCollectionUpdatesChange: null,
-      draftBaseline: null,
-      draft: null,
-      error: null,
-    });
+    expect(actor.getSnapshot().context).toEqual(
+      createExpectedAppLogicContext({
+        hasPlayList: false,
+        savePath: sampleSavePath,
+      }),
+    );
   });
 
   test("records errors when the startup check fails", async () => {
@@ -292,19 +290,12 @@ describe("appLogic machine", () => {
 
     await waitForState(actor, ss.mainx.State.error);
 
-    expect(actor.getSnapshot().context).toEqual({
-      hasPlayList: null,
-      playlists: [],
-      collections: [],
-      savePath: sampleSavePath,
-      activeLayoutId: null,
-      titleToneHandoff: null,
-      pendingPlaylistName: null,
-      pendingCollectionUpdatesChange: null,
-      draftBaseline: null,
-      draft: null,
-      error: "db unavailable",
-    });
+    expect(actor.getSnapshot().context).toEqual(
+      createExpectedAppLogicContext({
+        savePath: sampleSavePath,
+        error: "db unavailable",
+      }),
+    );
   });
 
   test("moves into config with a create draft and back to ready", async () => {
@@ -350,7 +341,7 @@ describe("appLogic machine", () => {
     expect(currentConfigSidebarItems(actor)).toEqual(expectedConfigSidebarItems);
     expect(actor.getSnapshot().context.activeLayoutId).toBeNull();
     expect(actor.getSnapshot().context.titleToneHandoff).toEqual({
-      layoutId: CREATE_COLLECTION_LAYOUT_ID,
+      layoutId: playlistTitleLayoutId("New Draft"),
       tone: "solid",
     });
     expect(actor.getSnapshot().context.pendingPlaylistName).toBeNull();
@@ -642,19 +633,16 @@ describe("appLogic machine", () => {
     actor.send(openPlaylist.load("Missing"));
     await waitForState(actor, ss.mainx.State.error);
 
-    expect(actor.getSnapshot().context).toEqual({
-      hasPlayList: true,
-      playlists: [samplePlaylist],
-      collections: [sampleCollection],
-      savePath: sampleSavePath,
-      activeLayoutId: playlistTitleLayoutId("Missing"),
-      titleToneHandoff: null,
-      pendingPlaylistName: null,
-      pendingCollectionUpdatesChange: null,
-      draftBaseline: null,
-      draft: null,
-      error: "playlist `Missing` not found",
-    });
+    expect(actor.getSnapshot().context).toEqual(
+      createExpectedAppLogicContext({
+        hasPlayList: true,
+        playlists: [samplePlaylist],
+        collections: [sampleCollection],
+        savePath: sampleSavePath,
+        activeLayoutId: playlistTitleLayoutId("Missing"),
+        error: "playlist `Missing` not found",
+      }),
+    );
   });
 });
 
@@ -687,19 +675,14 @@ describe("ensureAppLogicStarted", () => {
       expect(checkCalls).toBe(1);
       expect(listPlaylistCalls).toBe(1);
       expect(listCalls).toBe(1);
-      expect(mod.actor.getSnapshot().context).toEqual({
-        hasPlayList: true,
-        playlists: [samplePlaylist],
-        collections: [sampleCollection],
-        savePath: sampleSavePath,
-        activeLayoutId: null,
-        titleToneHandoff: null,
-        pendingPlaylistName: null,
-        pendingCollectionUpdatesChange: null,
-        draftBaseline: null,
-        draft: null,
-        error: null,
-      });
+      expect(mod.actor.getSnapshot().context).toEqual(
+        createExpectedAppLogicContext({
+          hasPlayList: true,
+          playlists: [samplePlaylist],
+          collections: [sampleCollection],
+          savePath: sampleSavePath,
+        }),
+      );
     } finally {
       mod.stop();
     }

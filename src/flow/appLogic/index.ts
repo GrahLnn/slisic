@@ -122,6 +122,13 @@ function shouldStopPlaybackForSnapshot(snapshot: ActorSnapshot) {
 }
 
 function attachNowPlayingTrackListener() {
+  if (
+    typeof window === "undefined" ||
+    !("__TAURI_INTERNALS__" in window)
+  ) {
+    return;
+  }
+
   void crab
     .evt("nowPlayingTrackChangedEvent")((payload) => {
       send(nowPlayingTrackChanged.load(payload));

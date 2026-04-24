@@ -508,7 +508,9 @@ export const machine = src.createMachine({
       },
     },
     [ss.mainx.State.error]: {
-      always: ss.mainx.State.loading,
+      on: {
+        run: ss.mainx.State.loading,
+      },
     },
   },
 });
