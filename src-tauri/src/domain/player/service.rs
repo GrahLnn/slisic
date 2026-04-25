@@ -184,9 +184,6 @@ async fn wait_until_track_finishes(
 ) -> Result<()> {
     loop {
         if runtime.generation.load(Ordering::SeqCst) != generation {
-            if let Err(error) = playback.stop().await {
-                eprintln!("[player] failed to stop interrupted playback: {error}");
-            }
             return Ok(());
         }
 
