@@ -5,6 +5,8 @@ use crate::domain::downloads::model::DownloadTask;
 use crate::domain::downloads::repo as download_repo;
 #[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
+#[cfg(not(test))]
+use crate::domain::player::event::NowPlayingTrackChangedEvent;
 use crate::domain::player::model::PlaybackTrack;
 #[cfg(not(test))]
 use crate::domain::player::service as player_service;
@@ -19,9 +21,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 #[cfg(not(test))]
 use tauri::AppHandle;
+#[cfg(not(test))]
+use tauri_specta::Event;
 
 #[cfg(not(test))]
 const DOWNLOAD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+#[cfg(not(test))]
+const PLAYLIST_PREPARING_MESSAGE: &str = "Preparing...";
 
 #[cfg(not(test))]
 pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylistSession> {
@@ -67,6 +73,7 @@ async fn build_playlist_playback_material(
     playlist_name: &str,
 ) -> Result<PlaylistPlaybackMaterial> {
     let mut source = load_playlist_track_resolution(app, playlist_name).await?;
+    let mut preparing_emitted = false;
 
     if !source.resolution.tracks.is_empty() {
         return Ok(PlaylistPlaybackMaterial {
@@ -78,6 +85,11 @@ async fn build_playlist_playback_material(
     loop {
         if !playlist_has_active_downloads(&source.playlist).await? {
             bail!("{}", source.resolution.failure_description);
+        }
+
+        if !preparing_emitted {
+            emit_playlist_preparing(app, &source.playlist_name)?;
+            preparing_emitted = true;
         }
 
         tokio::time::sleep(DOWNLOAD_WAIT_POLL_INTERVAL).await;
@@ -115,6 +127,20 @@ async fn load_playlist_track_resolution(
         playlist,
         resolution,
     })
+}
+
+#[cfg(not(test))]
+fn emit_playlist_preparing(app: &AppHandle, playlist_name: &str) -> Result<()> {
+    NowPlayingTrackChangedEvent {
+        playlist_name: playlist_name.to_string(),
+        music_name: PLAYLIST_PREPARING_MESSAGE.to_string(),
+        music_url: String::new(),
+        start: 0,
+        end: 0,
+    }
+    .emit(app)?;
+
+    Ok(())
 }
 
 #[cfg(not(test))]

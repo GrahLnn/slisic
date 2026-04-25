@@ -261,6 +261,26 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.createItemViewModel.isHiddenInPlay, true);
   });
 
+  test("uses the playback status text while waiting for the first track", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "play",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [createPlayListFixture({ name: "Quiet Morning" })],
+      pendingPlaylistPreview: null,
+      titleToneHandoff: null,
+      pressedLayoutId: null,
+      playbackSurface: {
+        phase: "playing",
+        playlistName: "Quiet Morning",
+        displayedTrackName: "Preparing...",
+      },
+    });
+
+    assert.equal(viewModel.itemViewModels[0]?.text, "Preparing...");
+    assert.equal(viewModel.shouldLockScroll, true);
+  });
+
   test("keeps the playback surface locked while restoring the original playlist title", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "ready",
