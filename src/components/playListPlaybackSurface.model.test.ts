@@ -69,6 +69,25 @@ describe("playListPlaybackSurface model", () => {
     );
   });
 
+  test("shows the current track as soon as playback reports it while centering", () => {
+    assert.deepEqual(
+      syncPlaybackSurfaceState({
+        current: {
+          phase: "centering",
+          playlistName: "Quiet Morning",
+          displayedTrackName: null,
+        },
+        machinePlaybackTarget: "Quiet Morning",
+        nowPlayingTrackName: "Track A",
+      }),
+      {
+        phase: "centering",
+        playlistName: "Quiet Morning",
+        displayedTrackName: "Track A",
+      },
+    );
+  });
+
   test("moves into restoring when machine playback ends but the visual surface still owns a playlist", () => {
     assert.deepEqual(
       syncPlaybackSurfaceState({

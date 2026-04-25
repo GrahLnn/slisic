@@ -16,15 +16,28 @@ import {
   type DownloadResourceProbe,
   type DownloadTask,
   type EnqueuedCollectionDownload,
+  type PastedDownloadUrlResolution,
 } from "@/src/cmd";
 
 export const ss = defineSS(
-  ns("mainx", sst(["idle", "probing", "enqueueing"], ["reset"])),
+  ns("mainx", sst(["idle", "checking", "probing", "enqueueing"], ["reset"])),
 );
 export const state = allState(ss);
 export const sig = allSignal(ss);
 
 export const deps = {
+  resolvePastedDownloadUrl: async (
+    url: string,
+  ): Promise<PastedDownloadUrlResolution> => {
+    const result = await crab.resolvePastedDownloadUrl(url);
+
+    return result.match({
+      Ok: (resolution) => resolution,
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+  },
   probeDownloadResource: async (url: string): Promise<DownloadResourceProbe> => {
     const result = await crab.probeDownloadResource(url);
 
@@ -48,6 +61,8 @@ export const deps = {
 };
 
 export const invoker = createActors({
+  resolvePastedDownloadUrl: async (url: string): Promise<PastedDownloadUrlResolution> =>
+    deps.resolvePastedDownloadUrl(url),
   probeDownloadResource: async (url: string): Promise<DownloadResourceProbe> =>
     deps.probeDownloadResource(url),
   enqueueCollectionDownload: async (url: string): Promise<EnqueuedCollectionDownload> =>

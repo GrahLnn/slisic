@@ -17,7 +17,7 @@ use crate::domain::playlists::repo as playlist_repo;
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 use anyhow::{Context, Result, anyhow, bail};
 #[cfg(not(test))]
-use ffplayr::Playback;
+use ffplayr::{Playback, PlaybackRequest, PlaybackTimeRange};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -394,12 +394,30 @@ async fn run_playlist_session(
         };
 
         NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&runtime.app)?;
+        let request = playback_request_for_track(&track)?;
         playback
-            .play(track.file_path.clone())
+            .play_request(request)
             .await
             .map_err(|error| anyhow!("failed to play `{}`: {error}", track.music_name))?;
         wait_until_track_finishes(&runtime, &playback, generation, &track.file_path).await?;
     }
+}
+
+#[cfg(not(test))]
+fn playback_request_for_track(track: &PlaybackTrack) -> Result<PlaybackRequest> {
+    let request = PlaybackRequest::new(track.file_path.clone());
+
+    if track.end > track.start {
+        let range = PlaybackTimeRange::bounded_seconds(track.start, track.end)
+            .map_err(|error| anyhow!(error))?;
+        return Ok(request.with_time_range(range));
+    }
+
+    if track.start > 0 {
+        return Ok(request.with_time_range(PlaybackTimeRange::from_start_seconds(track.start)));
+    }
+
+    Ok(request)
 }
 
 #[cfg(not(test))]

@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  activateNextCandidateCheck,
   activateNextCandidate,
+  applyActiveCandidateUrlResolution,
   appendCandidateItem,
   candidateItemAllowsDelete,
   candidateItemIsErrored,
   createDraftCollectionFromProbe,
   createInitialContext,
   deleteCandidateItem,
+  hasPendingCandidateToCheck,
   hasPendingCandidateToProbe,
   parseClipboardDownloadUrl,
   removeActiveCandidate,
@@ -17,6 +20,7 @@ describe("createInitialContext", () => {
   test("creates an empty paste download context", () => {
     assert.deepEqual(createInitialContext(), {
       items: [],
+      pendingCheckItemIds: [],
       pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 0,
@@ -69,7 +73,7 @@ describe("candidate item helpers", () => {
     );
   });
 
-  test("prepends new pasted items and queues only valid urls for probing", () => {
+  test("prepends new pasted items and queues them for url checks", () => {
     const withFirst = appendCandidateItem(
       createInitialContext(),
       "https://example.com/watch?v=abc",
@@ -77,24 +81,42 @@ describe("candidate item helpers", () => {
     const withSecond = appendCandidateItem(withFirst, "not a url");
 
     assert.equal(withSecond.items[0]?.displayText, "not a url");
-    assert.equal(withSecond.items[0]?.status, "invalid_url");
+    assert.equal(withSecond.items[0]?.status, "checking");
     assert.equal(withSecond.items[1]?.displayText, "https://example.com/watch?v=abc");
-    assert.equal(withSecond.items[1]?.status, "probing");
-    assert.deepEqual(withSecond.pendingProbeItemIds, ["candidate:0"]);
+    assert.equal(withSecond.items[1]?.status, "checking");
+    assert.deepEqual(withSecond.pendingCheckItemIds, ["candidate:0", "candidate:1"]);
   });
 
-  test("activates the next pending candidate probe", () => {
+  test("activates the next pending candidate check", () => {
     const context = appendCandidateItem(
       appendCandidateItem(createInitialContext(), "https://example.com/watch?v=abc"),
       "https://example.com/watch?v=def",
     );
 
-    assert.equal(hasPendingCandidateToProbe(context), true);
+    assert.equal(hasPendingCandidateToCheck(context), true);
 
-    const next = activateNextCandidate(context);
+    const next = activateNextCandidateCheck(context);
 
     assert.equal(next.activeItemId, "candidate:0");
-    assert.deepEqual(next.pendingProbeItemIds, ["candidate:1"]);
+    assert.deepEqual(next.pendingCheckItemIds, ["candidate:1"]);
+  });
+
+  test("turns a checked new url into a probe candidate", () => {
+    const context = activateNextCandidateCheck(
+      appendCandidateItem(createInitialContext(), "https://example.com/watch?v=abc"),
+    );
+
+    const next = applyActiveCandidateUrlResolution(context, {
+      status: "new_url",
+      url: "https://example.com/watch?v=abc",
+      error: null,
+      collection: null,
+    });
+
+    assert.equal(hasPendingCandidateToProbe(next), false);
+    assert.equal(next.items[0]?.sourceUrl, "https://example.com/watch?v=abc");
+    assert.equal(next.items[0]?.displayText, "https://example.com/watch?v=abc");
+    assert.equal(next.items[0]?.status, "probing");
   });
 
   test("deletes a candidate item and removes it from every tracking list", () => {
@@ -102,6 +124,7 @@ describe("candidate item helpers", () => {
       ...activateNextCandidate(
         appendCandidateItem(createInitialContext(), "https://example.com/watch?v=abc"),
       ),
+      pendingCheckItemIds: ["candidate:2"],
       pendingProbeItemIds: ["candidate:1"],
       items: [
         {
@@ -130,6 +153,7 @@ describe("candidate item helpers", () => {
     assert.deepEqual(deleteCandidateItem(context, "candidate:0"), {
       ...context,
       items: [context.items[0]!],
+      pendingCheckItemIds: ["candidate:2"],
       pendingProbeItemIds: ["candidate:1"],
       activeItemId: null,
     });
@@ -137,9 +161,8 @@ describe("candidate item helpers", () => {
 
   test("removes the active candidate once ownership transfers away from paste state", () => {
     const context = {
-      ...activateNextCandidate(
-        appendCandidateItem(createInitialContext(), "https://example.com/watch?v=abc"),
-      ),
+      ...createInitialContext(),
+      activeItemId: "candidate:0",
       items: [
         {
           id: "candidate:0",
@@ -165,6 +188,7 @@ describe("candidate item helpers", () => {
     assert.equal(candidateItemAllowsDelete("invalid_url"), true);
     assert.equal(candidateItemAllowsDelete("probe_failed"), true);
     assert.equal(candidateItemAllowsDelete("enqueue_failed"), true);
+    assert.equal(candidateItemAllowsDelete("checking"), false);
     assert.equal(candidateItemAllowsDelete("probing"), false);
     assert.equal(candidateItemAllowsDelete("resolved"), false);
     assert.equal(candidateItemIsErrored("probe_failed"), true);

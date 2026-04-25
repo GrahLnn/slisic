@@ -99,6 +99,28 @@ pub async fn get_collection_by_url(url: &str) -> Result<Option<Collection>> {
     Ok(Some(Collection::get_record(record).await?))
 }
 
+pub async fn find_collection_by_url(url: &str) -> Result<Option<Collection>> {
+    ensure_collection_graph_schema().await?;
+
+    let lookup = Collection {
+        name: String::new(),
+        url: url.to_string(),
+        folder: String::new(),
+        musics: vec![],
+        last_updated: String::new(),
+        enable_updates: None,
+    };
+    let record = match Repo::<Collection>::find_unique_id_for(&lookup).await {
+        Ok(record) => record,
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(Some(Collection::get_record(record).await?))
+}
+
 pub async fn get_playlist_by_name(name: &str) -> Result<Option<PlayList>> {
     let Some(record) = find_unique_record_id_by_string_field::<PlayList>("name", name).await?
     else {

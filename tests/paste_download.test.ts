@@ -7,6 +7,7 @@ import { machine } from "../src/flow/pasteDownload/machine";
 
 const originalProbeDownloadResource = deps.probeDownloadResource;
 const originalEnqueueCollectionDownload = deps.enqueueCollectionDownload;
+const originalResolvePastedDownloadUrl = deps.resolvePastedDownloadUrl;
 
 const sampleProbe: DownloadResourceProbe = {
   url: "https://www.youtube.com/watch?v=abc123",
@@ -73,6 +74,10 @@ function setProbeDownloadResourceMock(mock: typeof deps.probeDownloadResource) {
   deps.probeDownloadResource = mock;
 }
 
+function setResolvePastedDownloadUrlMock(mock: typeof deps.resolvePastedDownloadUrl) {
+  deps.resolvePastedDownloadUrl = mock;
+}
+
 function setEnqueueCollectionDownloadMock(mock: typeof deps.enqueueCollectionDownload) {
   deps.enqueueCollectionDownload = mock;
 }
@@ -130,6 +135,12 @@ function waitForContext<T>(
 }
 
 beforeEach(() => {
+  setResolvePastedDownloadUrlMock(async (url: string) => ({
+    status: "new_url",
+    url: url.trim(),
+    error: null,
+    collection: null,
+  }));
   setProbeDownloadResourceMock(async () => sampleProbe);
   setEnqueueCollectionDownloadMock(async () => ({
     task: sampleTask,
@@ -138,6 +149,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setResolvePastedDownloadUrlMock(originalResolvePastedDownloadUrl);
   setProbeDownloadResourceMock(originalProbeDownloadResource);
   setEnqueueCollectionDownloadMock(originalEnqueueCollectionDownload);
 });
@@ -150,6 +162,7 @@ describe("pasteDownload machine", () => {
     expect(actor.getSnapshot().value).toBe(ss.mainx.State.idle);
     expect(actor.getSnapshot().context).toEqual({
       items: [],
+      pendingCheckItemIds: [],
       pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 0,
@@ -167,6 +180,7 @@ describe("pasteDownload machine", () => {
 
     expect(actor.getSnapshot().context).toEqual({
       items: [],
+      pendingCheckItemIds: [],
       pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 1,
@@ -175,6 +189,12 @@ describe("pasteDownload machine", () => {
 
   test("keeps invalid pasted text as a delete-only candidate without probing", async () => {
     let probeCalls = 0;
+    setResolvePastedDownloadUrlMock(async () => ({
+      status: "invalid_url",
+      url: null,
+      error: "Clipboard does not contain a valid URL.",
+      collection: null,
+    }));
     setProbeDownloadResourceMock(async () => {
       probeCalls += 1;
       return sampleProbe;
@@ -200,6 +220,7 @@ describe("pasteDownload machine", () => {
           task: null,
         },
       ],
+      pendingCheckItemIds: [],
       pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 1,
@@ -232,6 +253,47 @@ describe("pasteDownload machine", () => {
           task: null,
         },
       ],
+      pendingCheckItemIds: [],
+      pendingProbeItemIds: [],
+      activeItemId: null,
+      nextItemSequence: 1,
+    });
+  });
+
+  test("adds an existing collection directly to the draft without probing", async () => {
+    let probeCalls = 0;
+    let enqueueCalls = 0;
+    setResolvePastedDownloadUrlMock(async () => ({
+      status: "existing_collection",
+      url: sampleCollection.url,
+      error: null,
+      collection: sampleCollection,
+    }));
+    setProbeDownloadResourceMock(async () => {
+      probeCalls += 1;
+      return sampleProbe;
+    });
+    setEnqueueCollectionDownloadMock(async () => {
+      enqueueCalls += 1;
+      return {
+        task: sampleTask,
+        collection: sampleCollection,
+      };
+    });
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(pasteRequested.load(sampleProbe.url));
+
+    await waitForContext(actor, (context: { items: Array<unknown> }) => {
+      return context.items.length === 0;
+    });
+
+    expect(probeCalls).toBe(0);
+    expect(enqueueCalls).toBe(0);
+    expect(actor.getSnapshot().context).toEqual({
+      items: [],
+      pendingCheckItemIds: [],
       pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 1,
@@ -276,9 +338,9 @@ describe("pasteDownload machine", () => {
       {
         id: "candidate:1",
         rawText: secondProbe.url,
-        sourceUrl: secondProbe.url,
+        sourceUrl: null,
         displayText: secondProbe.url,
-        status: "probing",
+        status: "checking",
         error: null,
         probe: null,
         task: null,
@@ -304,6 +366,13 @@ describe("pasteDownload machine", () => {
   });
 
   test("deletes failed candidates by id", async () => {
+    setResolvePastedDownloadUrlMock(async () => ({
+      status: "invalid_url",
+      url: null,
+      error: "Clipboard does not contain a valid URL.",
+      collection: null,
+    }));
+
     const actor = createActor(machine);
     actor.start();
     actor.send(pasteRequested.load("not a url"));
@@ -313,6 +382,7 @@ describe("pasteDownload machine", () => {
 
     expect(actor.getSnapshot().context).toEqual({
       items: [],
+      pendingCheckItemIds: [],
       pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 1,
@@ -320,6 +390,13 @@ describe("pasteDownload machine", () => {
   });
 
   test("resets the entire candidate list", async () => {
+    setResolvePastedDownloadUrlMock(async () => ({
+      status: "invalid_url",
+      url: null,
+      error: "Clipboard does not contain a valid URL.",
+      collection: null,
+    }));
+
     const actor = createActor(machine);
     actor.start();
     actor.send(pasteRequested.load("not a url"));
@@ -329,6 +406,7 @@ describe("pasteDownload machine", () => {
 
     expect(actor.getSnapshot().context).toEqual({
       items: [],
+      pendingCheckItemIds: [],
       pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 0,

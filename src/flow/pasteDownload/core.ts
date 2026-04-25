@@ -1,10 +1,16 @@
 import { type as arkType } from "arktype";
-import type { Collection, DownloadResourceProbe, DownloadTask } from "@/src/cmd";
+import type {
+  Collection,
+  DownloadResourceProbe,
+  DownloadTask,
+  PastedDownloadUrlResolution,
+} from "@/src/cmd";
 
 const downloadUrl = arkType("string.url");
 const EMPTY_CLIPBOARD_TEXT = "Empty clipboard";
 
 export type ConfigCandidateItemStatus =
+  | "checking"
   | "probing"
   | "resolved"
   | "invalid_url"
@@ -24,6 +30,7 @@ export interface ConfigCandidateItem {
 
 export interface Context {
   items: ConfigCandidateItem[];
+  pendingCheckItemIds: string[];
   pendingProbeItemIds: string[];
   activeItemId: string | null;
   nextItemSequence: number;
@@ -42,6 +49,7 @@ export type ParsedClipboardDownloadUrl =
 export function createInitialContext(): Context {
   return {
     items: [],
+    pendingCheckItemIds: [],
     pendingProbeItemIds: [],
     activeItemId: null,
     nextItemSequence: 0,
@@ -91,37 +99,37 @@ function toDisplayText(rawText: string) {
 }
 
 export function appendCandidateItem(context: Context, rawText: string): Context {
-  const parsed = parseClipboardDownloadUrl(rawText);
   const id = createCandidateItemId(context.nextItemSequence);
-  const item: ConfigCandidateItem = parsed.ok
-    ? {
-        id,
-        rawText,
-        sourceUrl: parsed.url,
-        displayText: parsed.url,
-        status: "probing",
-        error: null,
-        probe: null,
-        task: null,
-      }
-    : {
-        id,
-        rawText,
-        sourceUrl: null,
-        displayText: toDisplayText(rawText),
-        status: "invalid_url",
-        error: parsed.error,
-        probe: null,
-        task: null,
-      };
+  const item: ConfigCandidateItem = {
+    id,
+    rawText,
+    sourceUrl: null,
+    displayText: toDisplayText(rawText),
+    status: "checking",
+    error: null,
+    probe: null,
+    task: null,
+  };
 
   return {
     ...context,
     items: [item, ...context.items],
-    pendingProbeItemIds: parsed.ok
-      ? [...context.pendingProbeItemIds, item.id]
-      : context.pendingProbeItemIds,
+    pendingCheckItemIds: [...context.pendingCheckItemIds, item.id],
     nextItemSequence: context.nextItemSequence + 1,
+  };
+}
+
+export function activateNextCandidateCheck(context: Context): Context {
+  const [activeItemId, ...pendingCheckItemIds] = context.pendingCheckItemIds;
+
+  if (!activeItemId) {
+    return context;
+  }
+
+  return {
+    ...context,
+    activeItemId,
+    pendingCheckItemIds,
   };
 }
 
@@ -137,6 +145,10 @@ export function activateNextCandidate(context: Context): Context {
     activeItemId,
     pendingProbeItemIds,
   };
+}
+
+export function hasPendingCandidateToCheck(context: Context) {
+  return context.activeItemId === null && context.pendingCheckItemIds.length > 0;
 }
 
 export function hasPendingCandidateToProbe(context: Context) {
@@ -179,6 +191,38 @@ export function completeActiveCandidateProbe(
     error: null,
     probe,
   }));
+}
+
+export function applyActiveCandidateUrlResolution(
+  context: Context,
+  resolution: PastedDownloadUrlResolution,
+): Context {
+  return updateActiveCandidateItem(context, (item) => {
+    switch (resolution.status) {
+      case "invalid_url":
+        return {
+          ...item,
+          sourceUrl: null,
+          displayText: toDisplayText(item.rawText),
+          status: "invalid_url",
+          error: resolution.error ?? "Clipboard does not contain a valid URL.",
+        };
+      case "new_url": {
+        const url = resolution.url ?? item.rawText.trim();
+        return {
+          ...item,
+          sourceUrl: url,
+          displayText: url,
+          status: "probing",
+          error: null,
+        };
+      }
+      case "existing_collection":
+        return item;
+      default:
+        return item;
+    }
+  });
 }
 
 export function createDraftCollectionFromProbe(
@@ -234,6 +278,7 @@ export function deleteCandidateItem(context: Context, id: string): Context {
   return {
     ...context,
     items: context.items.filter((item) => item.id !== id),
+    pendingCheckItemIds: context.pendingCheckItemIds.filter((itemId) => itemId !== id),
     pendingProbeItemIds: context.pendingProbeItemIds.filter((itemId) => itemId !== id),
     activeItemId: context.activeItemId === id ? null : context.activeItemId,
   };

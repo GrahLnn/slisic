@@ -40,6 +40,7 @@ pub fn run() {
             domain::player::stop_playback,
             domain::downloads::enqueue_collection_download,
             domain::downloads::probe_download_resource,
+            domain::downloads::resolve_pasted_download_url,
             domain::downloads::resume_download_task,
             domain::downloads::get_download_task,
             domain::downloads::list_download_tasks,

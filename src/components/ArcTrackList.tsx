@@ -18,7 +18,6 @@ import { CoverTool } from "./coverTool";
 
 const ARC_VIEWBOX_WIDTH = 288;
 const ARC_LEADING_PADDING = 220;
-const ARC_TRAILING_PADDING = 112;
 const ARC_ITEM_GAP = 78;
 const ARC_ITEM_SHIFT_DURATION = 280;
 const ARC_VIEWPORT_FALLBACK_HEIGHT = 640;
@@ -144,8 +143,13 @@ export function resolveArcTrackViewportScrollTop(args: {
   return Math.min(Math.max(args.currentScrollTop, 0), maxScrollTop);
 }
 
-export function resolveArcTrackVirtualPaddingEnd(itemCount: number) {
-  return itemCount > 0 ? Math.max(ARC_TRAILING_PADDING - ARC_ITEM_GAP, 0) : ARC_TRAILING_PADDING;
+export function resolveArcTrackVirtualPaddingEnd(args: {
+  itemCount: number;
+  viewportHeight: number;
+}) {
+  const bottomPadding = Math.max(args.viewportHeight / 2, 0);
+
+  return args.itemCount > 0 ? Math.max(bottomPadding - ARC_ITEM_GAP, 0) : bottomPadding;
 }
 
 export function resolveArcTrackPathClassName(itemCount: number) {
@@ -973,7 +977,11 @@ function ArcTrackListBody({
     };
   }, [onPopInsertionPlannerChange, preparePopInsertion]);
 
-  const virtualPaddingEnd = resolveArcTrackVirtualPaddingEnd(items.length);
+  const arcViewportHeight = resolveArcTrackViewportHeight(scrollElement);
+  const virtualPaddingEnd = resolveArcTrackVirtualPaddingEnd({
+    itemCount: items.length,
+    viewportHeight: arcViewportHeight,
+  });
   const arcPathClassName = resolveArcTrackPathClassName(items.length);
   const arcPathStrokeWidth = resolveArcTrackPathStrokeWidth(items.length);
   const displayResolution = resolveArcTrackDisplayItems({
@@ -1007,8 +1015,6 @@ function ArcTrackListBody({
     useAnimationFrameWithResizeObserver: false,
   });
 
-  const arcViewportHeight =
-    rowVirtualizer.scrollRect?.height ?? resolveArcTrackViewportHeight(scrollElement);
   const arcPath = getArcPath(arcViewportHeight);
   const arcTrackHeight = rowVirtualizer.getTotalSize();
   const virtualItems = rowVirtualizer.getVirtualItems();

@@ -160,6 +160,51 @@ pub struct DownloadResourceProbe {
     pub enable_updates: Option<bool>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PastedDownloadUrlResolutionStatus {
+    InvalidUrl,
+    ExistingCollection,
+    NewUrl,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct PastedDownloadUrlResolution {
+    pub status: PastedDownloadUrlResolutionStatus,
+    pub url: Option<String>,
+    pub error: Option<String>,
+    pub collection: Option<Collection>,
+}
+
+impl PastedDownloadUrlResolution {
+    pub fn invalid_url(error: impl Into<String>) -> Self {
+        Self {
+            status: PastedDownloadUrlResolutionStatus::InvalidUrl,
+            url: None,
+            error: Some(error.into()),
+            collection: None,
+        }
+    }
+
+    pub fn existing_collection(url: String, collection: Collection) -> Self {
+        Self {
+            status: PastedDownloadUrlResolutionStatus::ExistingCollection,
+            url: Some(url),
+            error: None,
+            collection: Some(collection),
+        }
+    }
+
+    pub fn new_url(url: String) -> Self {
+        Self {
+            status: PastedDownloadUrlResolutionStatus::NewUrl,
+            url: Some(url),
+            error: None,
+            collection: None,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct EnqueuedCollectionDownload {
     pub task: DownloadTask,

@@ -84,6 +84,7 @@ export const commands = {
 	stopPlayback: () => typedError<boolean, string>(__TAURI_INVOKE("stop_playback")),
 	enqueueCollectionDownload: (url: string) => typedError<EnqueuedCollectionDownload, string>(__TAURI_INVOKE("enqueue_collection_download", { url })),
 	probeDownloadResource: (url: string) => typedError<DownloadResourceProbe, string>(__TAURI_INVOKE("probe_download_resource", { url })),
+	resolvePastedDownloadUrl: (url: string) => typedError<PastedDownloadUrlResolution, string>(__TAURI_INVOKE("resolve_pasted_download_url", { url })),
 	resumeDownloadTask: (taskId: string) => typedError<DownloadTask, string>(__TAURI_INVOKE("resume_download_task", { taskId })),
 	getDownloadTask: (taskId: string) => typedError<DownloadTask, string>(__TAURI_INVOKE("get_download_task", { taskId })),
 	listDownloadTasks: () => typedError<DownloadTask[], string>(__TAURI_INVOKE("list_download_tasks")),
@@ -237,6 +238,15 @@ export type NowPlayingTrackChangedEvent = {
 	start: number,
 	end: number,
 };
+
+export type PastedDownloadUrlResolution = {
+	status: PastedDownloadUrlResolutionStatus,
+	url: string | null,
+	error: string | null,
+	collection: Collection | null,
+};
+
+export type PastedDownloadUrlResolutionStatus = "invalid_url" | "existing_collection" | "new_url";
 
 export type PlayList = {
 	name: string,

@@ -5,8 +5,10 @@ import {
   send as sendAppLogic,
 } from "../appLogic/runtime";
 import {
+  activateNextCandidateCheck,
   activateNextCandidate,
   appendCandidateItem,
+  applyActiveCandidateUrlResolution,
   clearActiveCandidate,
   completeActiveCandidateProbe,
   createDraftCollectionFromProbe,
@@ -15,6 +17,7 @@ import {
   failActiveCandidateEnqueue,
   failActiveCandidateProbe,
   findActiveCandidateItem,
+  hasPendingCandidateToCheck,
   hasPendingCandidateToProbe,
   removeActiveCandidate,
   toErrorMessage,
@@ -44,11 +47,68 @@ export const machine = src.createMachine({
     [ss.mainx.State.idle]: {
       always: [
         {
+          guard: ({ context }) => hasPendingCandidateToCheck(context),
+          target: ss.mainx.State.checking,
+          actions: assign(({ context }) => activateNextCandidateCheck(context)),
+        },
+        {
           guard: ({ context }) => hasPendingCandidateToProbe(context),
           target: ss.mainx.State.probing,
           actions: assign(({ context }) => activateNextCandidate(context)),
         },
       ],
+    },
+    [ss.mainx.State.checking]: {
+      invoke: {
+        id: invoker.resolvePastedDownloadUrl.id,
+        src: invoker.resolvePastedDownloadUrl.src,
+        input: ({ context }) => {
+          const item = findActiveCandidateItem(context);
+
+          if (!item) {
+            throw new Error("missing candidate text for paste url check");
+          }
+
+          return item.rawText;
+        },
+        onDone: [
+          {
+            guard: ({ event }) => event.output.status === "new_url",
+            target: ss.mainx.State.probing,
+            actions: assign(({ context, event }) =>
+              applyActiveCandidateUrlResolution(context, event.output),
+            ),
+          },
+          {
+            guard: ({ event }) => event.output.status === "existing_collection",
+            target: ss.mainx.State.idle,
+            actions: [
+              assign(({ context }) => removeActiveCandidate(context)),
+              ({ event }) => {
+                if (event.output.collection) {
+                  sendAppLogic(draftCollectionUpserted.load(event.output.collection));
+                }
+              },
+            ],
+          },
+          {
+            target: ss.mainx.State.idle,
+            actions: assign(({ context, event }) =>
+              clearActiveCandidate(
+                applyActiveCandidateUrlResolution(context, event.output),
+              ),
+            ),
+          },
+        ],
+        onError: {
+          target: ss.mainx.State.idle,
+          actions: assign(({ context, event }) =>
+            clearActiveCandidate(
+              failActiveCandidateProbe(context, toErrorMessage(event.error)),
+            ),
+          ),
+        },
+      },
     },
     [ss.mainx.State.probing]: {
       invoke: {

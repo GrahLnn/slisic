@@ -21,6 +21,8 @@ import {
   type ConfigSidebarItemRef,
 } from "@/src/flow/appLogic/core";
 import { collectionTitleLayoutTransition } from "./collectionTitle";
+import { resolveBackActionVisualState } from "./ListConfig.back-action";
+import { BackActionIcon, BackActionTraceOwner } from "./ListConfig.back-action-icon";
 import {
   ArcTrackList,
   type ArcTrackPopInsertionPlanner,
@@ -52,11 +54,6 @@ const contentFadeProps = {
   transition: collectionTitleLayoutTransition,
 } as const;
 
-const iconStrokeTransition = {
-  duration: 0.22,
-  ease: [0.22, 1, 0.36, 1],
-} as const;
-
 const toolLabelRowHeightTransition = {
   duration: 0.24,
   ease: [0.22, 1, 0.36, 1],
@@ -66,81 +63,6 @@ const LIST_CONFIG_GHOST_NODE_OWNER = {
   arcTrack: "arc-track",
   toolLabel: "tool-label",
 } as const;
-
-function BackActionIcon({ hasDraftChanges }: { hasDraftChanges: boolean }) {
-  return (
-    <span className="relative block size-4.5">
-      <AnimatePresence initial={false} mode="wait">
-        {hasDraftChanges ? (
-          <motion.svg
-            key="check"
-            xmlns="http://www.w3.org/2000/svg"
-            width="18"
-            height="18"
-            viewBox="0 0 18 18"
-            className={cn(
-              "absolute inset-0 block",
-              "text-[#737373] dark:text-[#8a8a8a] group-hover:text-[#262626] dark:group-hover:text-[#d4d4d4]",
-            )}
-          >
-            <motion.path
-              d="M2.75 9.25L6.75 14.25L15.25 3.75"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              initial={{ pathLength: 0 }}
-              animate={{ pathLength: 1 }}
-              exit={{ pathLength: 0 }}
-              transition={iconStrokeTransition}
-            />
-          </motion.svg>
-        ) : (
-          <motion.svg
-            key="back"
-            xmlns="http://www.w3.org/2000/svg"
-            width="18"
-            height="18"
-            viewBox="0 0 18 18"
-            className={cn(
-              "absolute inset-0 block rotate-90",
-              "text-[#737373] dark:text-[#8a8a8a] group-hover:text-[#262626] dark:group-hover:text-[#d4d4d4]",
-            )}
-          >
-            <motion.line
-              x1="9"
-              y1="15.25"
-              x2="9"
-              y2="2.75"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              initial={{ pathLength: 0 }}
-              animate={{ pathLength: 1 }}
-              exit={{ pathLength: 0 }}
-              transition={iconStrokeTransition}
-            />
-            <motion.polyline
-              points="13.25 11 9 15.25 4.75 11"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              initial={{ pathLength: 0 }}
-              animate={{ pathLength: 1 }}
-              exit={{ pathLength: 0 }}
-              transition={iconStrokeTransition}
-            />
-          </motion.svg>
-        )}
-      </AnimatePresence>
-    </span>
-  );
-}
 
 function resolveListConfigToolLabelTool(args: {
   item: ListConfigToolLabelItem;
@@ -327,7 +249,9 @@ function ListConfigToolLabelRow({
           hoverMode="group"
           interactionDisabled={interactionDisabled}
           onRootNodeChange={item.kind === "playlist" ? handleRootNodeChange : undefined}
-          layoutId={item.kind === "playlist" && activeGhostLayoutId !== item.id ? item.id : undefined}
+          layoutId={
+            item.kind === "playlist" && activeGhostLayoutId !== item.id ? item.id : undefined
+          }
           toolLayer="portal"
           text={item.text}
           textClassName={resolveListConfigToolLabelTextClassName(item)}
@@ -420,6 +344,12 @@ export function ListConfig() {
   const renderData = pageRenderFreeze.renderValue;
   const { savePath: renderedSavePath, viewModel } = renderData;
   emptyStateRef.current = viewModel.emptyState;
+  const backActionVisualState = resolveBackActionVisualState({
+    hasDraftChanges: viewModel.hasDraftChanges,
+    isParsing: viewModel.isBackActionParsing,
+  });
+  const isBackActionLocked =
+    isBackNavigationPending || viewModel.interactionFlags.isBackActionInteractionLocked;
   const {
     activeLayoutId: activeGhostLayoutId,
     activeTargetOwnerId: activeGhostTargetOwnerId,
@@ -472,7 +402,7 @@ export function ListConfig() {
   }
 
   async function handleBackAction() {
-    if (isBackNavigationPending) {
+    if (isBackActionLocked) {
       return;
     }
     setIsBackNavigationPending(true);
@@ -496,10 +426,8 @@ export function ListConfig() {
       };
       const preservedCreatedAt =
         draft.mode === "edit"
-          ? (
-              playlists.find((playlist) => playlist.name === draftBaseline?.name)
-                ?.created_at ?? null
-            )
+          ? (playlists.find((playlist) => playlist.name === draftBaseline?.name)?.created_at ??
+            null)
           : null;
       const committedPlaylist = createPlayListFromDraft(committedDraft, {
         createdAt: preservedCreatedAt,
@@ -600,15 +528,29 @@ export function ListConfig() {
         !isPresent && "pointer-events-none",
       )}
     >
+      <BackActionTraceOwner
+        candidateItems={candidateItems}
+        isBackActionParsing={viewModel.isBackActionParsing}
+      />
       <div className={cn("relative z-20 flex flex-col")}>
         <motion.div {...contentFadeProps}>
           <button
             type="button"
-            onClick={() => {
+            aria-disabled={isBackActionLocked}
+            onClick={(event) => {
+              if (isBackActionLocked) {
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+              }
+
               void handleBackAction();
             }}
             className={cn(
-              "group relative isolate inline-flex w-fit cursor-pointer select-none py-2 pr-2",
+              "group relative isolate inline-flex w-fit select-none py-2 pr-2",
+              viewModel.interactionFlags.isBackActionInteractionLocked
+                ? "cursor-wait"
+                : "cursor-pointer",
               isBackNavigationPending && "pointer-events-none",
               "before:absolute before:inset-y-0 before:-left-2 before:right-0 before:-z-10",
               "before:rounded-[25px] before:bg-transparent before:transition before:duration-300",
@@ -616,7 +558,7 @@ export function ListConfig() {
               "hover:before:bg-[#e5e5e5] dark:hover:before:bg-[#262626]",
             )}
           >
-            <BackActionIcon hasDraftChanges={viewModel.hasDraftChanges} />
+            <BackActionIcon visualState={backActionVisualState} />
           </button>
         </motion.div>
         <motion.div {...contentFadeProps} className="flex items-center gap-4">

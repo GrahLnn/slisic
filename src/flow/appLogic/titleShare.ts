@@ -13,7 +13,11 @@ export interface TitleSharePageTransition {
   committedLayoutId: string | null;
 }
 
-function serializeConfigDraftComparable(draft: ConfigDraft) {
+export function createConfigDraftComparableKey(draft: ConfigDraft | null) {
+  if (!draft) {
+    return "null";
+  }
+
   return JSON.stringify({
     mode: draft.mode,
     name: draft.name,
@@ -30,7 +34,7 @@ export function hasConfigDraftChanges(
     return false;
   }
 
-  return serializeConfigDraftComparable(draft) !== serializeConfigDraftComparable(draftBaseline);
+  return createConfigDraftComparableKey(draft) !== createConfigDraftComparableKey(draftBaseline);
 }
 
 export function resolveTitleShareToneFromDraft(

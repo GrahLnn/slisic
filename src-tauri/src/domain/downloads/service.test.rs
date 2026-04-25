@@ -9,16 +9,19 @@ use super::service::{
     derive_youtube_channel_url_from_uploads_playlist, describe_download_resource,
     existing_leaf_urls, expand_root_entries_to_planned_leafs, extract_olak_playlist_ids,
     materialize_music_entries, persist_enqueued_collection_state, prepare_task_enqueue,
-    provider_segment, resume_download_task, sanitize_path_component, should_reprobe_single_leaf,
-    try_claim_enqueue_url,
+    provider_segment, resolve_pasted_download_url, resume_download_task, sanitize_path_component,
+    should_reprobe_single_leaf, try_claim_enqueue_url,
 };
 use super::yt_dlp::{
     DownloadProgress, DownloadedLeaf, LeafChapter, LeafProbe, LeafReference, PlaylistRoot,
     RootProbe, YtDlpClient,
 };
-use crate::domain::downloads::model::{DownloadTask, DownloadTaskStatus, DownloadTrigger};
+use crate::domain::downloads::model::{
+    DownloadTask, DownloadTaskStatus, DownloadTrigger, PastedDownloadUrlResolutionStatus,
+};
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use crate::domain::playlists::model::{Collection, Group, Music};
+use crate::domain::playlists::repo::upsert_collection;
 use anyhow::{Result, anyhow};
 use appdb::Id;
 use appdb::connection::{InitDbOptions, reinit_db_with_options, reset_db};
@@ -242,6 +245,84 @@ async fn ensure_db() {
     )
     .await
     .expect("download service database should initialize");
+}
+
+#[test]
+fn resolve_pasted_download_url_rejects_invalid_urls_before_lookup() {
+    let resolution = run_async(resolve_pasted_download_url("not a url".to_string()))
+        .expect("invalid pasted text should resolve into a candidate error");
+
+    assert_eq!(
+        resolution.status,
+        PastedDownloadUrlResolutionStatus::InvalidUrl
+    );
+    assert_eq!(
+        resolution.error.as_deref(),
+        Some("Clipboard does not contain a valid URL.")
+    );
+    assert!(resolution.url.is_none());
+    assert!(resolution.collection.is_none());
+}
+
+#[test]
+fn resolve_pasted_download_url_returns_new_url_when_library_has_no_match() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let resolution = resolve_pasted_download_url(" https://example.com/fresh ".to_string())
+            .await
+            .expect("fresh pasted url should resolve");
+
+        assert_eq!(resolution.status, PastedDownloadUrlResolutionStatus::NewUrl);
+        assert_eq!(resolution.url.as_deref(), Some("https://example.com/fresh"));
+        assert!(resolution.error.is_none());
+        assert!(resolution.collection.is_none());
+
+        reset_db();
+    });
+}
+
+#[test]
+fn resolve_pasted_download_url_returns_existing_collection_for_known_url() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let collection = Collection {
+            name: "Known".to_string(),
+            url: "https://example.com/known".to_string(),
+            folder: "example/known".to_string(),
+            musics: vec![],
+            last_updated: "2026-04-24T00:00:00+00:00".to_string(),
+            enable_updates: None,
+        };
+        upsert_collection(&collection)
+            .await
+            .expect("known collection should be saved");
+
+        let resolution = resolve_pasted_download_url(collection.url.clone())
+            .await
+            .expect("known pasted url should resolve");
+
+        assert_eq!(
+            resolution.status,
+            PastedDownloadUrlResolutionStatus::ExistingCollection
+        );
+        assert_eq!(resolution.url.as_deref(), Some(collection.url.as_str()));
+        assert!(resolution.error.is_none());
+        assert_eq!(
+            resolution
+                .collection
+                .as_ref()
+                .map(|value| value.url.as_str()),
+            Some(collection.url.as_str())
+        );
+
+        reset_db();
+    });
 }
 
 #[test]

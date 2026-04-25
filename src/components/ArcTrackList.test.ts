@@ -22,12 +22,24 @@ function createItem(name: string, url: string) {
 }
 
 describe("resolveArcTrackVirtualPaddingEnd", () => {
-  test("keeps the trailing padding intact when there are no items", () => {
-    assert.equal(resolveArcTrackVirtualPaddingEnd(0), 112);
+  test("uses half of the viewport as the visible bottom padding for populated tracks", () => {
+    assert.equal(
+      resolveArcTrackVirtualPaddingEnd({
+        itemCount: 3,
+        viewportHeight: 800,
+      }),
+      322,
+    );
   });
 
-  test("subtracts one gap when virtual rows represent point spacing", () => {
-    assert.equal(resolveArcTrackVirtualPaddingEnd(3), 34);
+  test("keeps empty tracks at the literal half-viewport padding", () => {
+    assert.equal(
+      resolveArcTrackVirtualPaddingEnd({
+        itemCount: 0,
+        viewportHeight: 800,
+      }),
+      400,
+    );
   });
 });
 
@@ -256,10 +268,7 @@ describe("resolveArcTrackDisplayItems", () => {
         createItem("Bravo", "bravo"),
         createItem("Charlie", "charlie"),
       ],
-      previousLayoutOrder: [
-        "playlist:collection:bravo",
-        "playlist:collection:alpha",
-      ],
+      previousLayoutOrder: ["playlist:collection:bravo", "playlist:collection:alpha"],
       pendingInsertion: null,
     });
 

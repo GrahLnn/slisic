@@ -15,6 +15,8 @@ import {
   createListConfigPlaylistToolLabelItems,
   createListConfigToolLabelLayoutId,
   createListConfigTitleSnapshot,
+  countListConfigParsingCandidateItems,
+  hasListConfigParsingCandidateItems,
   resolveListConfigTitlePlaceholder,
   resolveListConfigEmptyState,
   resolveListConfigInteractionFlags,
@@ -257,8 +259,10 @@ describe("ListConfig title view model", () => {
       resolveListConfigInteractionFlags({
         isPresent: false,
         arcTrackItemCount: 0,
+        isBackActionProcessing: false,
       }),
       {
+        isBackActionInteractionLocked: false,
         isTitleInteractionDisabled: true,
         isToolListInteractionDisabled: true,
         shouldRenderArcTrack: false,
@@ -268,8 +272,23 @@ describe("ListConfig title view model", () => {
       resolveListConfigInteractionFlags({
         isPresent: true,
         arcTrackItemCount: 2,
+        isBackActionProcessing: false,
       }),
       {
+        isBackActionInteractionLocked: false,
+        isTitleInteractionDisabled: false,
+        isToolListInteractionDisabled: false,
+        shouldRenderArcTrack: true,
+      },
+    );
+    assert.deepEqual(
+      resolveListConfigInteractionFlags({
+        isPresent: true,
+        arcTrackItemCount: 2,
+        isBackActionProcessing: true,
+      }),
+      {
+        isBackActionInteractionLocked: true,
         isTitleInteractionDisabled: false,
         isToolListInteractionDisabled: false,
         shouldRenderArcTrack: true,
@@ -874,6 +893,8 @@ describe("ListConfig title view model", () => {
     assert.equal(viewModel.title.value, "Focus Session");
     assert.equal(viewModel.title.layoutId, "playlist-title:Focus Session");
     assert.equal(viewModel.hasDraftChanges, true);
+    assert.equal(viewModel.isBackActionParsing, false);
+    assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, false);
     assert.equal(viewModel.interactionFlags.isToolListInteractionDisabled, false);
     assert.equal(viewModel.interactionFlags.shouldRenderArcTrack, true);
     assert.equal(viewModel.shouldShowEmptyState, false);
@@ -885,5 +906,64 @@ describe("ListConfig title view model", () => {
         folder: "youtube/late-night-tape",
       },
     ]);
+  });
+
+  test("marks the back action as parsing while candidate checks or probes still exist", () => {
+    assert.equal(
+      countListConfigParsingCandidateItems([
+        ...candidateItems,
+        {
+          id: "candidate:checking",
+          rawText: "https://example.com/pending",
+          sourceUrl: null,
+          displayText: "https://example.com/pending",
+          status: "checking",
+          error: null,
+          probe: null,
+          task: null,
+        },
+        {
+          id: "candidate:probing",
+          rawText: "https://example.com/live",
+          sourceUrl: "https://example.com/live",
+          displayText: "https://example.com/live",
+          status: "probing",
+          error: null,
+          probe: null,
+          task: null,
+        },
+      ]),
+      2,
+    );
+    assert.equal(hasListConfigParsingCandidateItems(candidateItems), false);
+
+    const viewModel = resolveListConfigViewModel({
+      activeLayoutId: "playlist-title:Focus Session",
+      draft: draftWithGroup,
+      draftBaseline: draftWithGroup,
+      pendingPlaylistName: null,
+      titleToneHandoff: null,
+      isPresent: true,
+      libraryItems: librarySidebarItems,
+      candidateItems: [
+        ...candidateItems,
+        {
+          id: "candidate:probing",
+          rawText: "https://example.com/live",
+          sourceUrl: "https://example.com/live",
+          displayText: "https://example.com/live",
+          status: "probing",
+          error: null,
+          probe: null,
+          task: null,
+        },
+      ],
+      previousEmptyState: null,
+    });
+
+    assert.equal(viewModel.isBackActionParsing, true);
+    assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, true);
+    assert.equal(viewModel.interactionFlags.isTitleInteractionDisabled, false);
+    assert.equal(viewModel.interactionFlags.isToolListInteractionDisabled, false);
   });
 });

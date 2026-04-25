@@ -33,6 +33,7 @@ export interface ListConfigTitleViewModel {
 }
 
 export interface ListConfigInteractionFlags {
+  isBackActionInteractionLocked: boolean;
   isTitleInteractionDisabled: boolean;
   isToolListInteractionDisabled: boolean;
   shouldRenderArcTrack: boolean;
@@ -79,14 +80,12 @@ export function resolveListConfigTitlePlaceholder(args: {
   return baselineName.length > 0 ? baselineName : undefined;
 }
 
-export function createListConfigTitleSnapshot(
-  args: {
-    activeLayoutId: string | null;
-    draft: ConfigDraft | null;
-    draftBaseline: ConfigDraft | null;
-    pendingPlaylistName?: string | null;
-  },
-): ListConfigTitleSnapshot | null {
+export function createListConfigTitleSnapshot(args: {
+  activeLayoutId: string | null;
+  draft: ConfigDraft | null;
+  draftBaseline: ConfigDraft | null;
+  pendingPlaylistName?: string | null;
+}): ListConfigTitleSnapshot | null {
   if (!args.activeLayoutId) {
     return null;
   }
@@ -235,18 +234,13 @@ export function resolveListConfigToolLabelItems(args: {
   playlistItems: readonly ListConfigPlaylistSidebarItem[];
   candidateItems: readonly ConfigCandidateItem[];
 }): ListConfigToolLabelItem[] {
-  const playlistToolLabelItems = createListConfigPlaylistToolLabelItems(
-    args.playlistItems,
-  );
+  const playlistToolLabelItems = createListConfigPlaylistToolLabelItems(args.playlistItems);
   const playlistIds = new Set(playlistToolLabelItems.map((item) => item.id));
   const candidateToolLabelItems = createListConfigCandidateToolLabelItems(
     args.candidateItems,
   ).filter((item) => !playlistIds.has(item.id));
 
-  return [
-    ...candidateToolLabelItems,
-    ...playlistToolLabelItems,
-  ];
+  return [...candidateToolLabelItems, ...playlistToolLabelItems];
 }
 
 export function createListConfigArcTrackItems(args: {
@@ -365,11 +359,24 @@ export function resolveListConfigSavePath(
   return savePath ?? defaultSavePath;
 }
 
+export function countListConfigParsingCandidateItems(
+  candidateItems: readonly ConfigCandidateItem[],
+) {
+  return candidateItems.filter((item) => item.status === "checking" || item.status === "probing")
+    .length;
+}
+
+export function hasListConfigParsingCandidateItems(candidateItems: readonly ConfigCandidateItem[]) {
+  return countListConfigParsingCandidateItems(candidateItems) > 0;
+}
+
 export function resolveListConfigInteractionFlags(args: {
   isPresent: boolean;
   arcTrackItemCount: number;
+  isBackActionProcessing: boolean;
 }): ListConfigInteractionFlags {
   return {
+    isBackActionInteractionLocked: args.isPresent && args.isBackActionProcessing,
     isTitleInteractionDisabled: !args.isPresent,
     isToolListInteractionDisabled: !args.isPresent,
     shouldRenderArcTrack: args.arcTrackItemCount > 0,
@@ -407,14 +414,17 @@ export function resolveListConfigViewModel(args: {
     playlistItems,
     candidateItems: args.candidateItems,
   });
+  const isBackActionParsing = hasListConfigParsingCandidateItems(args.candidateItems);
   const interactionFlags = resolveListConfigInteractionFlags({
     isPresent: args.isPresent,
     arcTrackItemCount: arcTrackItems.length,
+    isBackActionProcessing: isBackActionParsing,
   });
 
   return {
     title,
     hasDraftChanges: hasConfigDraftChanges(args.draft, args.draftBaseline),
+    isBackActionParsing,
     playlistItems,
     toolLabelItems: resolveListConfigToolLabelItems({
       playlistItems,

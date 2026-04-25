@@ -1,6 +1,7 @@
 use super::model::{
     CollectionSourceKind, DownloadLeaf, DownloadLeafStatus, DownloadResourceProbe, DownloadTask,
-    DownloadTaskStatus, DownloadTrigger, EnqueuedCollectionDownload, now_timestamp,
+    DownloadTaskStatus, DownloadTrigger, EnqueuedCollectionDownload, PastedDownloadUrlResolution,
+    now_timestamp,
 };
 use super::repo;
 #[cfg(not(test))]
@@ -133,6 +134,22 @@ pub async fn get_download_task(task_id: String) -> Result<DownloadTask> {
 
 pub async fn list_download_tasks() -> Result<Vec<DownloadTask>> {
     repo::list_tasks().await
+}
+
+pub async fn resolve_pasted_download_url(url: String) -> Result<PastedDownloadUrlResolution> {
+    let parsed_url = match parse_download_url(&url) {
+        Ok(parsed_url) => parsed_url,
+        Err(error) => return Ok(PastedDownloadUrlResolution::invalid_url(error)),
+    };
+    let normalized_url = normalize_url(&parsed_url)?;
+
+    match collection_repo::find_collection_by_url(&normalized_url).await? {
+        Some(collection) => Ok(PastedDownloadUrlResolution::existing_collection(
+            normalized_url,
+            collection,
+        )),
+        None => Ok(PastedDownloadUrlResolution::new_url(normalized_url)),
+    }
 }
 
 pub(crate) async fn describe_download_resource(
@@ -1252,6 +1269,20 @@ fn normalize_url(url: &str) -> Result<String> {
     }
 
     Ok(trimmed.to_string())
+}
+
+fn parse_download_url(text: &str) -> std::result::Result<String, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("Clipboard does not contain a URL.".to_string());
+    }
+
+    let parsed =
+        Url::parse(trimmed).map_err(|_| "Clipboard does not contain a valid URL.".to_string())?;
+    match parsed.scheme() {
+        "http" | "https" => Ok(trimmed.to_string()),
+        _ => Err("Only http and https URLs can be downloaded.".to_string()),
+    }
 }
 
 fn normalize_youtube_direct_leaf_url(url: &str) -> Option<String> {

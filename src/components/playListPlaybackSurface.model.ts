@@ -78,7 +78,7 @@ export function syncPlaybackSurfaceState(args: {
     }
 
     if (
-      args.current.phase === "playing" &&
+      (args.current.phase === "centering" || args.current.phase === "playing") &&
       args.nowPlayingTrackName !== null &&
       args.current.displayedTrackName !== args.nowPlayingTrackName
     ) {
