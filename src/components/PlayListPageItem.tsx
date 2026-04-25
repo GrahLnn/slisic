@@ -8,15 +8,15 @@ import {
   collectionTitleLayoutTransition,
   collectionTitleTextHoverClassName,
 } from "./collectionTitle";
-import {
-  PlayItem,
-} from "./playItem";
+import { PlayItem } from "./playItem";
 import {
   resolvePlayListPageItemFadeProps,
+  shouldFallbackPrimaryCommitOnClick,
   shouldCommitPlayListPageItem,
   type PlayListPageItemViewModel,
 } from "./PlayListPage.view-model";
 import { resolvePlayListPageItemSlotPositionAnimationEnabled } from "./PlayListPageItem.motion";
+import { recordPlaybackTrace } from "@/src/debug/playbackTrace";
 
 export function PlayListPageItem({
   viewModel,
@@ -48,12 +48,11 @@ export function PlayListPageItem({
     previousTextRef.current = viewModel.text;
   }, [viewModel.text]);
 
-  const shouldEnableSlotPositionAnimation =
-    resolvePlayListPageItemSlotPositionAnimationEnabled({
-      requested: viewModel.shouldAnimateSlotPosition,
-      torphStage,
-      textChanged,
-    });
+  const shouldEnableSlotPositionAnimation = resolvePlayListPageItemSlotPositionAnimationEnabled({
+    requested: viewModel.shouldAnimateSlotPosition,
+    torphStage,
+    textChanged,
+  });
 
   return (
     <motion.div
@@ -65,9 +64,7 @@ export function PlayListPageItem({
       transition={collectionTitleLayoutTransition}
     >
       <motion.div
-        className={cn(
-          viewModel.isHiddenInPlay && "pointer-events-none select-none",
-        )}
+        className={cn(viewModel.isHiddenInPlay && "pointer-events-none select-none")}
         animate={
           viewModel.isHiddenInPlay
             ? { filter: "blur(6px)", opacity: 0 }
@@ -80,16 +77,31 @@ export function PlayListPageItem({
           handoffTone={viewModel.handoffTone}
           layoutId={viewModel.layoutId}
           text={viewModel.text}
-          textClassName={
-            viewModel.isCommitted ? collectionTitleTextHoverClassName : undefined
-          }
+          textClassName={viewModel.isCommitted ? collectionTitleTextHoverClassName : undefined}
           onTorphStageChange={(stage) => {
             setTorphStage(stage);
             onTorphStageChange?.(stage);
           }}
           onPointerDown={(event) => {
+            recordPlaybackTrace("playlist-item-pointer-down", {
+              button: event.button,
+              key: viewModel.key,
+              text: viewModel.text,
+              playlistName: viewModel.playlistName ?? null,
+              isHiddenInPlay: viewModel.isHiddenInPlay,
+              isPlaybackTarget: viewModel.isPlaybackTarget,
+              shouldAnimateSlotPosition: viewModel.shouldAnimateSlotPosition,
+              torphStage,
+            });
+
             if (event.button === 0) {
+              recordPlaybackTrace("playlist-item-primary-pointer-commit", {
+                key: viewModel.key,
+                playlistName: viewModel.playlistName ?? null,
+                text: viewModel.text,
+              });
               onPrimaryPointerDown?.();
+              onPrimaryCommit?.();
             }
 
             if (
@@ -101,8 +113,25 @@ export function PlayListPageItem({
               onPointerDown?.();
             }
           }}
-          onClick={() => {
-            onPrimaryCommit?.();
+          onClick={(event) => {
+            recordPlaybackTrace("playlist-item-click", {
+              detail: event.detail,
+              key: viewModel.key,
+              text: viewModel.text,
+              playlistName: viewModel.playlistName ?? null,
+              isHiddenInPlay: viewModel.isHiddenInPlay,
+              isPlaybackTarget: viewModel.isPlaybackTarget,
+              torphStage,
+            });
+
+            if (shouldFallbackPrimaryCommitOnClick({ eventDetail: event.detail })) {
+              recordPlaybackTrace("playlist-item-primary-click-fallback", {
+                key: viewModel.key,
+                playlistName: viewModel.playlistName ?? null,
+                text: viewModel.text,
+              });
+              onPrimaryCommit?.();
+            }
 
             if (
               shouldCommitPlayListPageItem({

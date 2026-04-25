@@ -151,6 +151,22 @@ class AppBootstrapStore {
     this.syncWarmTarget(name);
   }
 
+  resetDevDatabaseAndRestart() {
+    void crab
+      .resetDevDatabaseAndRestart()
+      .then((result) => {
+        result.match({
+          Ok: () => {},
+          Err: (error) => {
+            console.error("Failed to reset dev database and restart", error);
+          },
+        });
+      })
+      .catch((error) => {
+        console.error("Failed to reset dev database and restart", error);
+      });
+  }
+
   private canSyncWarmTargets() {
     return (
       this.snapshot.status === "ready" &&

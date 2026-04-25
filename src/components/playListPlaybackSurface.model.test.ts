@@ -35,7 +35,7 @@ describe("playListPlaybackSurface model", () => {
     );
   });
 
-  test("promotes the surface into centering when play starts for a different playlist", () => {
+  test("shows the playback surface immediately when play starts", () => {
     assert.deepEqual(
       syncPlaybackSurfaceState({
         current: INACTIVE_PLAYBACK_SURFACE,
@@ -43,7 +43,7 @@ describe("playListPlaybackSurface model", () => {
         nowPlayingTrackName: null,
       }),
       {
-        phase: "centering",
+        phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
       },
@@ -69,19 +69,15 @@ describe("playListPlaybackSurface model", () => {
     );
   });
 
-  test("shows the current track as soon as playback reports it while centering", () => {
+  test("starts with the current track when playback reports before the first render sync", () => {
     assert.deepEqual(
       syncPlaybackSurfaceState({
-        current: {
-          phase: "centering",
-          playlistName: "Quiet Morning",
-          displayedTrackName: null,
-        },
+        current: INACTIVE_PLAYBACK_SURFACE,
         machinePlaybackTarget: "Quiet Morning",
         nowPlayingTrackName: "Track A",
       }),
       {
-        phase: "centering",
+        phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Track A",
       },
@@ -117,6 +113,25 @@ describe("playListPlaybackSurface model", () => {
       }),
       {
         phase: "restoring",
+        playlistName: "Quiet Morning",
+        displayedTrackName: null,
+      },
+    );
+  });
+
+  test("keeps the playlist title until the player reports a track", () => {
+    assert.deepEqual(
+      syncPlaybackSurfaceState({
+        current: {
+          phase: "playing",
+          playlistName: "Quiet Morning",
+          displayedTrackName: null,
+        },
+        machinePlaybackTarget: "Quiet Morning",
+        nowPlayingTrackName: null,
+      }),
+      {
+        phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
       },

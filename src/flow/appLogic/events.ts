@@ -18,13 +18,18 @@ import {
   type PlayList,
   type PlayPlaylistSession,
 } from "@/src/cmd";
+import { getName } from "@tauri-apps/api/app";
+import { documentDir, join } from "@tauri-apps/api/path";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   createDraftFromPlayList,
+  resolveSavedPath,
   type CollectionUpdatesChange,
   type ConfigSidebarItemRef,
   type ConfigDraft,
   type PlaylistUpsertResult,
 } from "./core";
+import { recordPlaybackTrace } from "@/src/debug/playbackTrace";
 
 export interface BootstrapResult {
   hasPlayList: boolean;
@@ -50,6 +55,62 @@ async function resolveBootstrapSavePath() {
     Ok: (meta) => meta?.save_path ?? "",
     Err: () => "",
   });
+}
+
+export async function resolveDefaultSavePath() {
+  return join(await documentDir(), await getName());
+}
+
+export async function chooseSavePath(currentSavePath: string): Promise<string | null> {
+  const defaultPath = currentSavePath || (await resolveDefaultSavePath());
+  const selectedPath = await open({
+    directory: true,
+    multiple: false,
+    defaultPath,
+  });
+
+  return typeof selectedPath === "string" ? selectedPath : null;
+}
+
+export async function persistSavePath(selectedPath: string): Promise<string> {
+  const result = await crab.saveMetaInfo({
+    save_path: selectedPath,
+  });
+
+  return result.match({
+    Ok: (meta) => resolveSavedPath(meta.save_path, selectedPath),
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+}
+
+export async function deletePlaylistRecord(playlistName: string): Promise<boolean> {
+  const result = await crab.deletePlaylist(playlistName);
+
+  return result.match({
+    Ok: () => true,
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+}
+
+export async function stopPlayback(): Promise<boolean> {
+  const result = await crab.stopPlayback();
+
+  return result.match({
+    Ok: (stopped) => stopped,
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+}
+
+export async function listenNowPlayingTrackChanged(
+  handler: (payload: NowPlayingTrackChangedEvent) => void,
+): Promise<() => void> {
+  return crab.evt("nowPlayingTrackChangedEvent")(handler);
 }
 
 export const ss = defineSS(
@@ -148,11 +209,24 @@ export const invoker = createActors({
     });
   },
   playPlaylist: async (playlistName: string): Promise<PlayPlaylistSession> => {
+    recordPlaybackTrace("app-logic-invoker-play-playlist-start", {
+      playlistName,
+    });
     const result = await crab.playPlaylist(playlistName);
 
     return result.match({
-      Ok: (session) => session,
+      Ok: (session) => {
+        recordPlaybackTrace("app-logic-invoker-play-playlist-ok", {
+          playlistName,
+          session,
+        });
+        return session;
+      },
       Err: (error) => {
+        recordPlaybackTrace("app-logic-invoker-play-playlist-error", {
+          playlistName,
+          error,
+        });
         throw new Error(error);
       },
     });

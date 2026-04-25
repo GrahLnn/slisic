@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { me } from "@grahlnn/fn";
-import { createConfigSidebarItemRef, type ConfigDraft } from "@/src/flow/appLogic/core";
+import {
+  createConfigSidebarItemRef,
+  resolveSavedPath,
+  type ConfigDraft,
+} from "@/src/flow/appLogic/core";
 import { hasConfigDraftChanges } from "@/src/flow/appLogic/titleShare";
 import type { ConfigCandidateItem } from "@/src/flow/pasteDownload/core";
 import {
@@ -21,7 +25,6 @@ import {
   resolveListConfigEmptyState,
   resolveListConfigInteractionFlags,
   resolveListConfigCollectionUpdatesToolText,
-  resolveListConfigSavePath,
   resolveListConfigToolLabelAffordance,
   resolveListConfigToolLabelItems,
   resolveListConfigToolLabelTextClassName,
@@ -298,14 +301,18 @@ describe("ListConfig title view model", () => {
 
   test("prefers meta.save_path over the generated default save path", () => {
     assert.equal(
-      resolveListConfigSavePath("D:\\MediaLibrary", "C:\\Users\\admin\\Documents\\ransic"),
+      resolveSavedPath("D:\\MediaLibrary", "C:\\Users\\admin\\Documents\\ransic"),
       "D:\\MediaLibrary",
     );
   });
 
   test("falls back to the generated default save path when meta.save_path is empty", () => {
     assert.equal(
-      resolveListConfigSavePath(null, "C:\\Users\\admin\\Documents\\ransic"),
+      resolveSavedPath(null, "C:\\Users\\admin\\Documents\\ransic"),
+      "C:\\Users\\admin\\Documents\\ransic",
+    );
+    assert.equal(
+      resolveSavedPath("", "C:\\Users\\admin\\Documents\\ransic"),
       "C:\\Users\\admin\\Documents\\ransic",
     );
   });

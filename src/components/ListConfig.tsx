@@ -1,12 +1,8 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { me } from "@grahlnn/fn";
-import { getName } from "@tauri-apps/api/app";
-import { documentDir, join } from "@tauri-apps/api/path";
-import { open } from "@tauri-apps/plugin-dialog";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
-import { crab } from "@/src/cmd";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { action as playlistCommitAction } from "@/src/flow/playlistCommit";
 import { action as pasteDownloadAction, hook as pasteDownloadHook } from "@/src/flow/pasteDownload";
@@ -35,7 +31,6 @@ import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import {
   resolveListConfigToolLabelAffordance,
   resolveListConfigCollectionUpdatesToolText,
-  resolveListConfigSavePath,
   resolveListConfigToolLabelTextClassName,
   resolveListConfigViewModel,
   shouldShowListConfigAutoDownloadIcon,
@@ -140,10 +135,6 @@ function resolveListConfigToolLabelTool(args: {
       </div>
     ),
   });
-}
-
-export async function getDefaultListConfigSavePath() {
-  return join(await documentDir(), await getName());
 }
 
 function FnButton({ text, onClick }: { text: string; onClick?: () => void }) {
@@ -372,33 +363,7 @@ export function ListConfig() {
   );
 
   async function handleChangeSavePath() {
-    try {
-      const defaultSavePath = renderedSavePath || (await getDefaultListConfigSavePath());
-      const selectedPath = await open({
-        directory: true,
-        multiple: false,
-        defaultPath: defaultSavePath,
-      });
-
-      if (typeof selectedPath !== "string") {
-        return;
-      }
-
-      const result = await crab.saveMetaInfo({
-        save_path: selectedPath,
-      });
-
-      result.match({
-        Ok: (meta) => {
-          appLogicAction.changeSavePath(resolveListConfigSavePath(meta.save_path, selectedPath));
-        },
-        Err: (error) => {
-          console.error("Failed to persist the selected save path", error);
-        },
-      });
-    } catch (error) {
-      console.error("Failed to choose a save path", error);
-    }
+    await appLogicAction.chooseSavePath(renderedSavePath);
   }
 
   async function handleBackAction() {
@@ -487,30 +452,23 @@ export function ListConfig() {
     setIsDeletePending(true);
 
     try {
-      const result = await crab.deletePlaylist(playlistName);
+      const didDeletePlaylist = await appLogicAction.deletePlaylist(playlistName);
 
-      result.match({
-        Ok: () => {
-          flushSync(() => {
-            appLogicAction.deletePlaylist(playlistName);
-            pageRenderFreeze.freeze(
-              createFrozenListConfigRenderData({
-                renderData: liveRenderData,
-                titleLayoutId: null,
-              }),
-            );
-          });
-          pasteDownloadAction.reset();
-          appLogicAction.back();
-        },
-        Err: (error) => {
-          console.error("Failed to delete playlist", {
-            playlistName,
-            error,
-          });
-          setIsDeletePending(false);
-        },
+      if (!didDeletePlaylist) {
+        setIsDeletePending(false);
+        return;
+      }
+
+      flushSync(() => {
+        pageRenderFreeze.freeze(
+          createFrozenListConfigRenderData({
+            renderData: liveRenderData,
+            titleLayoutId: null,
+          }),
+        );
       });
+      pasteDownloadAction.reset();
+      appLogicAction.back();
     } catch (error) {
       console.error("Failed to delete playlist", {
         playlistName,

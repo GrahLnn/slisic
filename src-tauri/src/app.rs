@@ -36,7 +36,7 @@ pub fn run() {
             domain::playlists::set_collection_updates,
             domain::playlists::add_exclude,
             domain::playlists::remove_exclude,
-            domain::player::play_playlist,
+            domain::playlist_playback::play_playlist,
             domain::player::stop_playback,
             domain::downloads::enqueue_collection_download,
             domain::downloads::probe_download_resource,

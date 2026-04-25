@@ -352,13 +352,6 @@ export function resolveListConfigEmptyState(
   });
 }
 
-export function resolveListConfigSavePath(
-  savePath: string | null | undefined,
-  defaultSavePath: string,
-) {
-  return savePath ?? defaultSavePath;
-}
-
 export function countListConfigParsingCandidateItems(
   candidateItems: readonly ConfigCandidateItem[],
 ) {

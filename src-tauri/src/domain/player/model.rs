@@ -3,12 +3,6 @@ use specta::Type;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct PlayPlaylistSession {
-    pub playlist_name: String,
-    pub track_count: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct PlaybackTrackPayload {
     pub playlist_name: String,
     pub music_name: String,

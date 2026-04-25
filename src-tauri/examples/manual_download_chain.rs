@@ -56,6 +56,13 @@ mod domain {
             ));
         }
 
+        pub mod naming {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/downloads/naming.rs"
+            ));
+        }
+
         pub mod yt_dlp {
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -69,6 +76,13 @@ mod domain {
                 "/src/domain/downloads/service.rs"
             ));
         }
+    }
+
+    pub mod collection_import {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/domain/collection_import.rs"
+        ));
     }
 
     pub mod player {
@@ -100,6 +114,22 @@ mod domain {
             ));
         }
     }
+
+    pub mod playlist_playback {
+        pub mod model {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/playlist_playback/model.rs"
+            ));
+        }
+
+        pub mod service {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/playlist_playback/service.rs"
+            ));
+        }
+    }
 }
 
 mod utils {
@@ -111,13 +141,14 @@ mod utils {
     }
 }
 
+use appdb::AutoFill;
 use appdb::connection::{InitDbOptions, reinit_db_with_options, reset_db};
 use domain::downloads::model::DownloadTaskStatus;
 use domain::downloads::service::enqueue_collection_download_for_test;
 use domain::downloads::yt_dlp::CliYtDlpClient;
 use domain::meta::model::MetaInfo;
 use domain::meta::repo::save_meta_info;
-use domain::player::service::{collect_playlist_tracks, resolve_selected_collections};
+use domain::playlist_playback::service::{collect_playlist_tracks, resolve_selected_collections};
 use domain::playlists::model::PlayList;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -225,6 +256,7 @@ fn main() {
                 ..collection.clone()
             }],
             groups: vec![],
+            created_at: AutoFill::pending(),
         };
         domain::playlists::repo::upsert_playlist(&playlist, None)
             .await

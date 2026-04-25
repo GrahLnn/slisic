@@ -321,6 +321,15 @@ export function removePlaylistFromPlaylists(
   return playlists.filter((playlist) => playlist.name !== name);
 }
 
+export function resolveSavedPath(
+  savePath: string | null | undefined,
+  fallbackSavePath: string,
+) {
+  const resolvedPath = savePath?.trim();
+
+  return resolvedPath || fallbackSavePath;
+}
+
 export function resolvePlaylistsWithPreview(
   playlists: readonly PlayList[],
   preview: PlaylistUpsertResult | null,

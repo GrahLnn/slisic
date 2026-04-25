@@ -1,20 +1,23 @@
-/// Appdb-style domain tests stay inside a local Tokio runtime and a temporary
-/// appdb instance. Keep this file free of Tauri host setup and `AppHandle`
-/// dependencies so `cargo test` only exercises pure download-domain contracts.
-/// Manual end-to-end download checks belong in `examples/manual_download_chain.rs`.
 use super::model::CollectionSourceKind;
+use super::naming::{provider_segment, sanitize_path_component};
 use super::repo::{list_tasks, save_task};
 use super::service::{
-    CollectionSyncPlan, PlannedLeaf, apply_collection_plan_to_task, create_collection_shell,
-    derive_youtube_channel_url_from_uploads_playlist, describe_download_resource,
-    existing_leaf_urls, expand_root_entries_to_planned_leafs, extract_olak_playlist_ids,
-    materialize_music_entries, persist_enqueued_collection_state, prepare_task_enqueue,
-    provider_segment, resolve_pasted_download_url, resume_download_task, sanitize_path_component,
-    should_reprobe_single_leaf, try_claim_enqueue_url,
+    derive_youtube_channel_url_from_uploads_playlist, expand_root_entries_to_planned_leafs,
+    extract_olak_playlist_ids, prepare_task_enqueue, resolve_pasted_download_url,
+    resume_download_task, should_reprobe_single_leaf, try_claim_enqueue_url,
 };
 use super::yt_dlp::{
     DownloadProgress, DownloadedLeaf, LeafChapter, LeafProbe, LeafReference, PlaylistRoot,
     RootProbe, YtDlpClient,
+};
+/// Appdb-style domain tests stay inside a local Tokio runtime and a temporary
+/// appdb instance. Keep this file free of Tauri host setup and `AppHandle`
+/// dependencies so `cargo test` only exercises pure download-domain contracts.
+/// Manual end-to-end download checks belong in `examples/manual_download_chain.rs`.
+use crate::domain::collection_import::{
+    CollectionSyncPlan, PlannedLeaf, apply_collection_plan_to_task, create_collection_shell,
+    describe_download_resource, existing_leaf_urls, materialize_music_entries,
+    persist_enqueued_collection_state,
 };
 use crate::domain::downloads::model::{
     DownloadTask, DownloadTaskStatus, DownloadTrigger, PastedDownloadUrlResolutionStatus,

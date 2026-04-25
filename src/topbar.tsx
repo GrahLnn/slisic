@@ -3,7 +3,7 @@ import { icons } from "@/src/assets/icons";
 import { AnimatePresence, motion } from "motion/react";
 import type React from "react";
 import { type PropsWithChildren, type ReactNode, memo } from "react";
-import { crab } from "./cmd";
+import { app as bootstrapApp } from "./flow/bootstrap";
 import { useIsBarVisible } from "./flow/barVisible";
 import { useIsWindowFocus } from "./flow/windowFocus";
 import { os } from "@/lib/utils";
@@ -57,14 +57,7 @@ const CtrlButton = memo(function CtrlButtonComp({
 
 export const LeftControls = memo(function LeftControlsComponent() {
   const handleResetDevDatabase = () => {
-    void crab.resetDevDatabaseAndRestart().then((result) => {
-      result.match({
-        Ok: () => {},
-        Err: (error) => {
-          console.error("Failed to reset dev database and restart", error);
-        },
-      });
-    });
+    bootstrapApp.resetDevDatabaseAndRestart();
   };
 
   return (

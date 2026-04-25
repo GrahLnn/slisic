@@ -1,10 +1,6 @@
 import type { MainStateT } from "@/src/flow/appLogic/events";
 
-export type PlayListPlaybackSurfacePhase =
-  | "inactive"
-  | "centering"
-  | "playing"
-  | "restoring";
+export type PlayListPlaybackSurfacePhase = "inactive" | "playing" | "restoring";
 
 export interface PlayListPlaybackSurfaceState {
   phase: PlayListPlaybackSurfacePhase;
@@ -61,24 +57,18 @@ export function syncPlaybackSurfaceState(args: {
   nowPlayingTrackName: string | null;
 }) {
   if (args.machinePlaybackTarget !== null) {
-    if (args.current.playlistName !== args.machinePlaybackTarget) {
+    if (
+      args.current.playlistName !== args.machinePlaybackTarget ||
+      args.current.phase !== "playing"
+    ) {
       return {
-        phase: "centering",
+        phase: "playing",
         playlistName: args.machinePlaybackTarget,
-        displayedTrackName: null,
-      } satisfies PlayListPlaybackSurfaceState;
-    }
-
-    if (args.current.phase === "inactive") {
-      return {
-        phase: "centering",
-        playlistName: args.machinePlaybackTarget,
-        displayedTrackName: null,
+        displayedTrackName: args.nowPlayingTrackName,
       } satisfies PlayListPlaybackSurfaceState;
     }
 
     if (
-      (args.current.phase === "centering" || args.current.phase === "playing") &&
       args.nowPlayingTrackName !== null &&
       args.current.displayedTrackName !== args.nowPlayingTrackName
     ) {
@@ -92,15 +82,10 @@ export function syncPlaybackSurfaceState(args: {
   }
 
   if (args.current.playlistName === null) {
-    return args.current.phase === "inactive"
-      ? args.current
-      : INACTIVE_PLAYBACK_SURFACE;
+    return args.current.phase === "inactive" ? args.current : INACTIVE_PLAYBACK_SURFACE;
   }
 
-  if (
-    args.current.phase === "restoring" &&
-    args.current.displayedTrackName === null
-  ) {
+  if (args.current.phase === "restoring" && args.current.displayedTrackName === null) {
     return args.current;
   }
 

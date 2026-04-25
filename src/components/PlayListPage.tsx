@@ -1,15 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { CREATE_COLLECTION_LAYOUT_ID } from "@/src/flow/appLogic/core";
-import {
-  action as appLogicAction,
-  hook as appLogicHook,
-} from "@/src/flow/appLogic";
+import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import { PlayListPageItem, CreateNewPlayListItem } from "./PlayListPageItem";
 import { usePlayListPlaybackSurface } from "./usePlayListPlaybackSurface";
 import { resolvePlayListPageViewModel } from "./PlayListPage.view-model";
+import { installPlaybackTrace, recordPlaybackTrace } from "@/src/debug/playbackTrace";
 
 export function PlayListPage() {
   const isPresent = useIsPresent();
@@ -31,8 +29,7 @@ export function PlayListPage() {
     play: () => "play" as const,
     configLoading: () => "configLoading" as const,
     config: () => "config" as const,
-    configUpdatingCollectionUpdates: () =>
-      "configUpdatingCollectionUpdates" as const,
+    configUpdatingCollectionUpdates: () => "configUpdatingCollectionUpdates" as const,
     error: () => "error" as const,
   });
   const playbackSurface = usePlayListPlaybackSurface({
@@ -58,6 +55,39 @@ export function PlayListPage() {
   const renderData = pageRenderFreeze.renderValue;
   const viewModel = resolvePlayListPageViewModel(renderData);
 
+  useEffect(() => {
+    installPlaybackTrace();
+  }, []);
+
+  useEffect(() => {
+    recordPlaybackTrace("playlist-page-view", {
+      pageState: pageStateValue,
+      playingPlaylistName,
+      nowPlayingTrackName,
+      playbackSurface: playbackSurface.playbackSurfaceSnapshot,
+      shouldLockScroll: viewModel.shouldLockScroll,
+      playbackTargetKey: viewModel.playbackTargetKey,
+      hiddenItems: viewModel.itemViewModels
+        .filter((item) => item.isHiddenInPlay)
+        .map((item) => item.key),
+      visibleItems: viewModel.itemViewModels
+        .filter((item) => !item.isHiddenInPlay)
+        .map((item) => ({
+          key: item.key,
+          text: item.text,
+          isPlaybackTarget: item.isPlaybackTarget,
+        })),
+    });
+  }, [
+    nowPlayingTrackName,
+    pageStateValue,
+    playbackSurface.playbackSurfaceSnapshot,
+    playingPlaylistName,
+    viewModel.itemViewModels,
+    viewModel.playbackTargetKey,
+    viewModel.shouldLockScroll,
+  ]);
+
   return (
     <div
       data-page-state="playlist"
@@ -73,10 +103,7 @@ export function PlayListPage() {
               viewModel.shouldLockScroll ? "overflow-hidden" : "overflow-y-auto",
             )}
           >
-            <div
-              aria-hidden
-              className="h-[calc(50vh-1rem)] shrink-0 snap-none"
-            />
+            <div aria-hidden className="h-[calc(50vh-1rem)] shrink-0 snap-none" />
             {viewModel.itemViewModels.map((itemViewModel) => (
               <PlayListPageItem
                 key={itemViewModel.key}
@@ -90,6 +117,14 @@ export function PlayListPage() {
                     return;
                   }
 
+                  recordPlaybackTrace("playlist-page-play-request", {
+                    playlistName: itemViewModel.playlistName,
+                    itemKey: itemViewModel.key,
+                    itemText: itemViewModel.text,
+                    isHiddenInPlay: itemViewModel.isHiddenInPlay,
+                    isPlaybackTarget: itemViewModel.isPlaybackTarget,
+                    pageState: pageStateValue,
+                  });
                   appLogicAction.playPlaylist(itemViewModel.playlistName);
                 }}
                 onPointerDown={() => {
@@ -117,10 +152,7 @@ export function PlayListPage() {
                 }}
               />
             ) : null}
-            <div
-              aria-hidden
-              className="h-[calc(50vh-1rem)] shrink-0 snap-none"
-            />
+            <div aria-hidden className="h-[calc(50vh-1rem)] shrink-0 snap-none" />
           </div>
         </div>
       ) : null}

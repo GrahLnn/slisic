@@ -1,8 +1,15 @@
 import { useSelector } from "@xstate/react";
 import { me } from "@grahlnn/fn";
-import { crab } from "@/src/cmd";
 import type { ConfigSidebarItemRef, PlaylistUpsertResult } from "./core";
-import { MainStateT, sig } from "./events";
+import {
+  chooseSavePath,
+  deletePlaylistRecord,
+  listenNowPlayingTrackChanged,
+  MainStateT,
+  persistSavePath,
+  sig,
+  stopPlayback,
+} from "./events";
 import {
   actor,
   collectionUpserted,
@@ -21,6 +28,7 @@ import {
   send,
 } from "./runtime";
 import { action as pasteDownloadAction } from "../pasteDownload";
+import { recordPlaybackTrace } from "@/src/debug/playbackTrace";
 
 export { actor } from "./runtime";
 
@@ -73,6 +81,10 @@ function attachDebugLogger() {
   let prevContextKey = JSON.stringify(prevContextSummary);
 
   console.log(`[appLogic] enter ${prevState}`);
+  recordPlaybackTrace("app-logic-enter", {
+    state: prevState,
+    context: prevContextSummary,
+  });
   if (prevContextSummary.error) {
     console.error(`[appLogic:error] ${prevState}`, prevContextSummary.error);
   }
@@ -86,6 +98,12 @@ function attachDebugLogger() {
     }
 
     console.log(`[appLogic] ${prevState} -> ${nextState}`);
+    recordPlaybackTrace("app-logic-transition", {
+      previousState: prevState,
+      nextState,
+      previousContext: prevContextSummary,
+      nextContext: contextSummary,
+    });
     if (
       contextSummary.error &&
       (contextSummary.error !== prevContextSummary.error || nextState === "error")
@@ -102,17 +120,14 @@ function attachDebugLogger() {
 }
 
 function requestPlaybackStop() {
-  void crab
-    .stopPlayback()
-    .then((result) =>
-      result.match({
-        Ok: () => undefined,
-        Err: (error) => {
-          console.error("Failed to stop playlist playback", error);
-        },
-      }),
-    )
+  recordPlaybackTrace("app-logic-stop-playback-request");
+  void stopPlayback()
+    .then(() => {
+      recordPlaybackTrace("app-logic-stop-playback-ok");
+      return undefined;
+    })
     .catch((error) => {
+      recordPlaybackTrace("app-logic-stop-playback-error", { error });
       console.error("Failed to stop playlist playback", error);
     });
 }
@@ -122,17 +137,13 @@ function shouldStopPlaybackForSnapshot(snapshot: ActorSnapshot) {
 }
 
 function attachNowPlayingTrackListener() {
-  if (
-    typeof window === "undefined" ||
-    !("__TAURI_INTERNALS__" in window)
-  ) {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
     return;
   }
 
-  void crab
-    .evt("nowPlayingTrackChangedEvent")((payload) => {
-      send(nowPlayingTrackChanged.load(payload));
-    })
+  void listenNowPlayingTrackChanged((payload) => {
+    send(nowPlayingTrackChanged.load(payload));
+  })
     .then((unlisten) => {
       unsubscribeNowPlayingTrackChanged = unlisten;
     })
@@ -171,18 +182,29 @@ export const action = {
     send(openPlaylist.load(playlistName));
   },
   playPlaylist: (playlistName: string) => {
+    recordPlaybackTrace("app-logic-action-play-playlist-enter", {
+      playlistName,
+    });
     ensureStarted();
     pasteDownloadAction.reset();
     const snapshot = actor.getSnapshot();
-    if (
-      snapshot.value === "play" &&
-      snapshot.context.playingPlaylistName === playlistName
-    ) {
+    recordPlaybackTrace("app-logic-action-play-playlist-snapshot", {
+      playlistName,
+      state: formatStateValue(snapshot.value),
+      context: summarizeContext(snapshot.context),
+    });
+    if (snapshot.value === "play" && snapshot.context.playingPlaylistName === playlistName) {
+      recordPlaybackTrace("app-logic-action-play-playlist-toggle-stop", {
+        playlistName,
+      });
       requestPlaybackStop();
       actor.send(sig.mainx.back);
       return;
     }
 
+    recordPlaybackTrace("app-logic-action-play-playlist-send", {
+      playlistName,
+    });
     send(playPlaylist.load(playlistName));
   },
   back: () => {
@@ -196,9 +218,29 @@ export const action = {
     ensureStarted();
     send(draftNameChanged.load(name));
   },
-  changeSavePath: (savePath: string) => {
+  changeSavePath: async (savePath: string) => {
     ensureStarted();
-    send(savePathChanged.load(savePath));
+    try {
+      send(savePathChanged.load(await persistSavePath(savePath)));
+      return true;
+    } catch (error) {
+      console.error("Failed to persist the selected save path", error);
+      return false;
+    }
+  },
+  chooseSavePath: async (currentSavePath: string) => {
+    ensureStarted();
+    try {
+      const selectedPath = await chooseSavePath(currentSavePath);
+      if (!selectedPath) {
+        return false;
+      }
+
+      return action.changeSavePath(selectedPath);
+    } catch (error) {
+      console.error("Failed to choose a save path", error);
+      return false;
+    }
   },
   upsertCollection: (collection: ActorSnapshot["context"]["collections"][number]) => {
     ensureStarted();
@@ -208,9 +250,19 @@ export const action = {
     ensureStarted();
     send(playlistUpserted.load(payload));
   },
-  deletePlaylist: (playlistName: string) => {
+  deletePlaylist: async (playlistName: string) => {
     ensureStarted();
-    send(playlistDeleted.load(playlistName));
+    try {
+      await deletePlaylistRecord(playlistName);
+      send(playlistDeleted.load(playlistName));
+      return true;
+    } catch (error) {
+      console.error("Failed to delete playlist", {
+        playlistName,
+        error,
+      });
+      return false;
+    }
   },
   previewPlaylist: (payload: PlaylistUpsertResult | null) => {
     ensureStarted();

@@ -5,6 +5,7 @@ import {
   resolvePlayListPageItemFadeProps,
   resolvePlayListPageViewModel,
   shouldEnablePlayListPageTitleShare,
+  shouldFallbackPrimaryCommitOnClick,
   shouldCommitPlayListPageItem,
   shouldRenderPlayListPageContent,
 } from "./PlayListPage.view-model";
@@ -98,6 +99,21 @@ describe("PlayListPage", () => {
     );
   });
 
+  test("uses click for primary playback only as a non-pointer activation fallback", () => {
+    assert.equal(
+      shouldFallbackPrimaryCommitOnClick({
+        eventDetail: 1,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldFallbackPrimaryCommitOnClick({
+        eventDetail: 0,
+      }),
+      true,
+    );
+  });
+
   test("enables title share only after the playlist page is ready to hand off titles", () => {
     assert.equal(shouldEnablePlayListPageTitleShare("idle"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("loading"), false);
@@ -105,10 +121,7 @@ describe("PlayListPage", () => {
     assert.equal(shouldEnablePlayListPageTitleShare("play"), true);
     assert.equal(shouldEnablePlayListPageTitleShare("config"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("configLoading"), false);
-    assert.equal(
-      shouldEnablePlayListPageTitleShare("configUpdatingCollectionUpdates"),
-      false,
-    );
+    assert.equal(shouldEnablePlayListPageTitleShare("configUpdatingCollectionUpdates"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("error"), false);
   });
 
@@ -204,9 +217,7 @@ describe("PlayListPage", () => {
       pageState: "play",
       activeLayoutId: null,
       hasPlayList: true,
-      playlists: [
-        createPlayListFixture({ name: "Quiet Morning" }),
-      ],
+      playlists: [createPlayListFixture({ name: "Quiet Morning" })],
       pendingPlaylistPreview: null,
       titleToneHandoff: null,
       pressedLayoutId: null,
@@ -225,19 +236,17 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.createItemViewModel.isHiddenInPlay, false);
   });
 
-  test("keeps the playlist title until the playback surface finishes centering", () => {
+  test("locks the playback target immediately before the first track is known", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "play",
       activeLayoutId: null,
       hasPlayList: true,
-      playlists: [
-        createPlayListFixture({ name: "Quiet Morning" }),
-      ],
+      playlists: [createPlayListFixture({ name: "Quiet Morning" })],
       pendingPlaylistPreview: null,
       titleToneHandoff: null,
       pressedLayoutId: null,
       playbackSurface: {
-        phase: "centering",
+        phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
       },
@@ -257,9 +266,7 @@ describe("PlayListPage", () => {
       pageState: "ready",
       activeLayoutId: null,
       hasPlayList: true,
-      playlists: [
-        createPlayListFixture({ name: "Quiet Morning" }),
-      ],
+      playlists: [createPlayListFixture({ name: "Quiet Morning" })],
       pendingPlaylistPreview: null,
       titleToneHandoff: null,
       pressedLayoutId: null,

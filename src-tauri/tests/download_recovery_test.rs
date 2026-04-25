@@ -56,6 +56,13 @@ mod domain {
             ));
         }
 
+        pub mod naming {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/downloads/naming.rs"
+            ));
+        }
+
         pub mod yt_dlp {
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -70,6 +77,13 @@ mod domain {
             ));
         }
     }
+
+    pub mod collection_import {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/domain/collection_import.rs"
+        ));
+    }
 }
 
 mod utils {
@@ -83,11 +97,11 @@ mod utils {
 
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
 use appdb::model::meta::ModelMeta;
+use domain::collection_import::repair_stale_single_source_collections;
 use domain::downloads::model::{
     CollectionSourceKind, DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTrigger,
 };
 use domain::downloads::repo::save_task;
-use domain::downloads::service::repair_stale_single_source_collections;
 use domain::playlists::model::Collection;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};

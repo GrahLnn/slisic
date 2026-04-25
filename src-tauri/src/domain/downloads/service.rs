@@ -3,22 +3,22 @@ use super::model::{
     DownloadTaskStatus, DownloadTrigger, EnqueuedCollectionDownload, PastedDownloadUrlResolution,
     now_timestamp,
 };
+use super::naming::{sanitize_path_component, short_hash, stable_id};
 use super::repo;
 #[cfg(not(test))]
 use super::yt_dlp::CliYtDlpClient;
 use super::yt_dlp::{
     DownloadProgress, LeafProbe, LeafReference, RootProbe, YtDlpClient, classify_root_preference,
 };
+use crate::domain::collection_import::{self, CollectionSyncPlan, PlannedLeaf};
 #[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
-use crate::domain::playlists::model::{Collection, Group, Music};
-use crate::domain::playlists::repo as collection_repo;
+use crate::domain::playlists::model::{Collection, Group};
 #[cfg(not(test))]
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary, managed_bin_dir};
 use anyhow::{Context, Result, anyhow, bail};
 use appdb::Id;
 use reqwest::{Url, blocking::Client as BlockingHttpClient};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -45,28 +45,9 @@ pub struct DownloadRuntime {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct CollectionSyncPlan {
-    pub(crate) source_kind: CollectionSourceKind,
-    pub(crate) collection_name: String,
-    pub(crate) collection_url: String,
-    pub(crate) collection_folder: String,
-    pub(crate) enable_updates: Option<bool>,
-    pub(crate) leaves: Vec<PlannedLeaf>,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) enum PreparedTaskEnqueue {
     Existing(DownloadTask),
     New(DownloadTask),
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct PlannedLeaf {
-    pub(crate) id: Id,
-    pub(crate) url: String,
-    pub(crate) sequence: u32,
-    pub(crate) initial_probe: Option<LeafProbe>,
-    pub(crate) group_hint: Option<Group>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,7 +97,7 @@ pub async fn probe_download_resource(url: String) -> Result<DownloadResourceProb
         run_blocking(move || client.probe_root(&probe_url)).await?
     };
 
-    describe_download_resource(root_probe).await
+    collection_import::describe_download_resource(root_probe).await
 }
 
 pub async fn resume_download_task(task_id: String) -> Result<DownloadTask> {
@@ -143,60 +124,7 @@ pub async fn resolve_pasted_download_url(url: String) -> Result<PastedDownloadUr
     };
     let normalized_url = normalize_url(&parsed_url)?;
 
-    match collection_repo::find_collection_by_url(&normalized_url).await? {
-        Some(collection) => Ok(PastedDownloadUrlResolution::existing_collection(
-            normalized_url,
-            collection,
-        )),
-        None => Ok(PastedDownloadUrlResolution::new_url(normalized_url)),
-    }
-}
-
-pub(crate) async fn describe_download_resource(
-    root_probe: RootProbe,
-) -> Result<DownloadResourceProbe> {
-    match root_probe {
-        RootProbe::Single(leaf) => {
-            let existing = collection_repo::get_collection_by_url(&leaf.webpage_url).await?;
-            Ok(DownloadResourceProbe {
-                url: leaf.webpage_url.clone(),
-                source_kind: CollectionSourceKind::Single,
-                title: leaf.title.clone(),
-                item_count: 1,
-                collection_folder: resolve_collection_folder(
-                    &leaf.webpage_url,
-                    &leaf.title,
-                    existing.as_ref(),
-                )
-                .await?,
-                enable_updates: None,
-            })
-        }
-        RootProbe::List(list) => {
-            if list.entries.is_empty() {
-                bail!("download resource does not contain any downloadable entries");
-            }
-
-            let existing = collection_repo::get_collection_by_url(&list.webpage_url).await?;
-            Ok(DownloadResourceProbe {
-                url: list.webpage_url.clone(),
-                source_kind: CollectionSourceKind::List,
-                title: list.title.clone(),
-                item_count: list.entries.len() as u32,
-                collection_folder: resolve_collection_folder(
-                    &list.webpage_url,
-                    &list.title,
-                    existing.as_ref(),
-                )
-                .await?,
-                enable_updates: Some(
-                    existing
-                        .and_then(|collection| collection.enable_updates)
-                        .unwrap_or(false),
-                ),
-            })
-        }
-    }
+    collection_import::resolve_pasted_download_url(normalized_url).await
 }
 
 #[cfg(not(test))]
@@ -209,7 +137,7 @@ async fn enqueue_collection_download_with_trigger(
     let (task, collection) = match prepared {
         PreparedTaskEnqueue::Existing(task) => {
             let app = runtime()?.app.clone();
-            match resolve_existing_enqueued_collection(&task).await {
+            match collection_import::resolve_existing_enqueued_collection(&task).await {
                 Ok(collection) => (task, collection),
                 Err(_) => bootstrap_enqueued_collection(task, app).await?,
             }
@@ -242,7 +170,7 @@ pub(crate) async fn enqueue_collection_download_for_test(
 
     let (mut task, mut collection) = match prepared {
         PreparedTaskEnqueue::Existing(task) => {
-            match resolve_existing_enqueued_collection(&task).await {
+            match collection_import::resolve_existing_enqueued_collection(&task).await {
                 Ok(collection) => (task, collection),
                 Err(_) => bootstrap_enqueued_collection_with_deps(task, deps.clone()).await?,
             }
@@ -256,7 +184,7 @@ pub(crate) async fn enqueue_collection_download_for_test(
         run_task_with_deps(task.id.to_string(), deps).await?;
         task = repo::get_task(&task.id.to_string()).await?;
         if let Some(collection_url) = task.collection_url.as_deref()
-            && let Some(updated) = collection_repo::get_collection_by_url(collection_url).await?
+            && let Some(updated) = collection_import::get_collection_by_url(collection_url).await?
         {
             collection = updated;
         }
@@ -332,72 +260,6 @@ fn spawn_task(_task_id: String) -> Result<()> {
 }
 
 #[cfg(not(test))]
-async fn resolve_existing_enqueued_collection(task: &DownloadTask) -> Result<Collection> {
-    if let Some(collection_url) = &task.collection_url
-        && let Some(collection) = collection_repo::get_collection_by_url(collection_url).await?
-    {
-        return Ok(collection);
-    }
-
-    bail!(
-        "active download task `{}` does not have a persisted collection yet",
-        task.id
-    );
-}
-
-pub(crate) fn create_collection_shell(
-    plan: &CollectionSyncPlan,
-    existing: Option<Collection>,
-) -> Collection {
-    let mut collection = existing.unwrap_or_else(|| Collection {
-        name: plan.collection_name.clone(),
-        url: plan.collection_url.clone(),
-        folder: plan.collection_folder.clone(),
-        musics: vec![],
-        last_updated: now_timestamp(),
-        enable_updates: plan.enable_updates,
-    });
-
-    collection.name = plan.collection_name.clone();
-    collection.url = plan.collection_url.clone();
-    collection.folder = plan.collection_folder.clone();
-    collection.enable_updates = plan.enable_updates;
-    collection
-}
-
-pub(crate) fn apply_collection_plan_to_task(task: &mut DownloadTask, plan: &CollectionSyncPlan) {
-    task.collection_url = Some(plan.collection_url.clone());
-    task.collection_name = Some(plan.collection_name.clone());
-    task.collection_folder = Some(plan.collection_folder.clone());
-    task.source_kind = Some(plan.source_kind);
-    task.leafs = plan
-        .leaves
-        .iter()
-        .map(|leaf| DownloadLeaf::new(leaf.id.clone(), leaf.url.clone(), leaf.sequence))
-        .collect();
-    task.refresh_counts();
-}
-
-pub(crate) async fn persist_enqueued_collection_state(
-    mut task: DownloadTask,
-    plan: &CollectionSyncPlan,
-) -> Result<(DownloadTask, Collection)> {
-    let existing = collection_repo::get_collection_by_url(&plan.collection_url).await?;
-    let collection =
-        collection_repo::upsert_collection(&create_collection_shell(plan, existing)).await?;
-    apply_collection_plan_to_task(&mut task, plan);
-
-    if plan.leaves.is_empty() {
-        task.status = DownloadTaskStatus::Completed;
-        task.last_error = None;
-        task.refresh_counts();
-    }
-
-    let task = repo::save_task(task).await?;
-    Ok((task, collection))
-}
-
-#[cfg(not(test))]
 async fn bootstrap_enqueued_collection(
     task: DownloadTask,
     app: AppHandle,
@@ -412,7 +274,7 @@ async fn bootstrap_enqueued_collection_with_deps(
     deps: DownloadExecutionDeps,
 ) -> Result<(DownloadTask, Collection)> {
     let plan = resolve_collection_plan(&task, deps.client, &deps.save_root).await?;
-    persist_enqueued_collection_state(task, &plan).await
+    collection_import::persist_enqueued_collection_state(task, &plan).await
 }
 
 #[cfg(not(test))]
@@ -429,17 +291,13 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
     let client = deps.client;
     let save_root = deps.save_root;
     let plan = resolve_collection_plan(&task_snapshot, client.clone(), &save_root).await?;
-    let mut collection = create_collection_shell(
-        &plan,
-        collection_repo::get_collection_by_url(&plan.collection_url).await?,
-    );
+    let mut collection = collection_import::load_collection_shell(&plan).await?;
     let mut group_catalog = GroupCatalog::seed(&collection);
-    apply_collection_plan_to_task(&mut task_snapshot, &plan);
+    collection_import::apply_collection_plan_to_task(&mut task_snapshot, &plan);
     repo::save_task(task_snapshot.clone()).await?;
 
     if plan.leaves.is_empty() {
-        collection.last_updated = now_timestamp();
-        let _ = collection_repo::upsert_collection(&collection).await?;
+        collection_import::persist_empty_collection(&mut collection).await?;
         update_task_status(&mut task_snapshot, DownloadTaskStatus::Completed, None).await?;
         return Ok(());
     }
@@ -550,7 +408,7 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
         };
 
         let music_group = resolve_music_group(group, &collection);
-        let file_name = finalize_downloaded_leaf(
+        let file_name = collection_import::finalize_downloaded_leaf(
             &collection,
             &probe.webpage_url,
             &music_group,
@@ -558,17 +416,14 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
             &file_stem,
             downloaded.absolute_path,
         )?;
-        let mut materialized = materialize_music_entries(&probe, &file_name, music_group);
-        if plan.source_kind == CollectionSourceKind::Single {
-            collection.musics = materialized.clone();
-        } else {
-            collection
-                .musics
-                .retain(|music| music.url != probe.webpage_url);
-            collection.musics.append(&mut materialized);
-        }
-        collection.last_updated = now_timestamp();
-        let _ = collection_repo::upsert_collection(&collection).await?;
+        collection_import::persist_downloaded_leaf_music(
+            &mut collection,
+            plan.source_kind,
+            &probe,
+            &file_name,
+            music_group,
+        )
+        .await?;
 
         leaf_snapshot.file_name = Some(file_name.clone());
         leaf_snapshot.relative_path = Some(file_name);
@@ -626,12 +481,12 @@ async fn resolve_collection_plan(
     match root_probe {
         RootProbe::Single(leaf) => {
             let collection_url = leaf.webpage_url.clone();
-            let existing = collection_repo::get_collection_by_url(&collection_url).await?;
+            let existing = collection_import::get_collection_by_url(&collection_url).await?;
             Ok(CollectionSyncPlan {
                 source_kind: CollectionSourceKind::Single,
                 collection_name: leaf.title.clone(),
                 collection_url: collection_url.clone(),
-                collection_folder: resolve_collection_folder(
+                collection_folder: collection_import::resolve_collection_folder(
                     &collection_url,
                     &leaf.title,
                     existing.as_ref(),
@@ -649,8 +504,9 @@ async fn resolve_collection_plan(
         }
         RootProbe::List(list) => {
             let collection_url = list.webpage_url.clone();
-            let existing = collection_repo::get_collection_by_url(&collection_url).await?;
-            let existing_leafs = existing_leaf_urls(existing.as_ref(), save_root);
+            let existing = collection_import::get_collection_by_url(&collection_url).await?;
+            let existing_leafs =
+                collection_import::existing_leaf_urls(existing.as_ref(), save_root);
             let leaves =
                 expand_root_entries_to_planned_leafs(&task.id, client.clone(), list.entries, None)
                     .await?
@@ -662,7 +518,7 @@ async fn resolve_collection_plan(
                 source_kind: CollectionSourceKind::List,
                 collection_name: list.title.clone(),
                 collection_url: collection_url.clone(),
-                collection_folder: resolve_collection_folder(
+                collection_folder: collection_import::resolve_collection_folder(
                     &collection_url,
                     &list.title,
                     existing.as_ref(),
@@ -763,50 +619,6 @@ fn temporary_download_stem(file_stem: &str, task_id: &Id, leaf_id: &Id) -> Strin
         "{file_stem}.__ransic_tmp__{}",
         short_hash(&format!("{task_id}|{leaf_id}"))
     )
-}
-
-#[cfg(not(test))]
-fn finalize_downloaded_leaf(
-    collection: &Collection,
-    leaf_url: &str,
-    group: &Group,
-    save_root: &Path,
-    file_stem: &str,
-    downloaded_path: PathBuf,
-) -> Result<String> {
-    let extension = downloaded_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let final_file_name = extension
-        .map(|extension| format!("{file_stem}.{extension}"))
-        .unwrap_or_else(|| file_stem.to_string());
-    let relative_path = relative_music_path(collection, &final_file_name, group);
-    let final_path = save_root.join(&collection.folder).join(&relative_path);
-
-    remove_existing_leaf_files(collection, leaf_url, save_root)?;
-    if final_path.exists() && final_path != downloaded_path {
-        std::fs::remove_file(&final_path)
-            .with_context(|| format!("failed to remove existing file {}", final_path.display()))?;
-    }
-
-    if downloaded_path != final_path {
-        if let Some(parent) = final_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-
-        std::fs::rename(&downloaded_path, &final_path).with_context(|| {
-            format!(
-                "failed to move downloaded audio from {} to {}",
-                downloaded_path.display(),
-                final_path.display()
-            )
-        })?;
-    }
-
-    Ok(relative_path)
 }
 
 #[cfg(not(test))]
@@ -929,34 +741,6 @@ fn group_discovery_source_urls(source_url: &str) -> Vec<String> {
     urls
 }
 
-async fn resolve_collection_folder(
-    collection_url: &str,
-    collection_name: &str,
-    existing: Option<&Collection>,
-) -> Result<String> {
-    if let Some(existing) = existing {
-        return Ok(existing.folder.clone());
-    }
-
-    let prefix = provider_segment(collection_url);
-    let base_name = sanitize_path_component(collection_name);
-    let mut candidate = PathBuf::from(&prefix);
-    candidate.push(&base_name);
-
-    let collections = collection_repo::list_collections().await?;
-    let candidate_text = candidate.to_string_lossy().to_string();
-    if collections
-        .iter()
-        .all(|collection| collection.folder != candidate_text || collection.url == collection_url)
-    {
-        return Ok(candidate_text);
-    }
-
-    let mut fallback = PathBuf::from(prefix);
-    fallback.push(format!("{}__{}", base_name, short_hash(collection_url)));
-    Ok(fallback.to_string_lossy().to_string())
-}
-
 async fn update_task_status(
     task: &mut DownloadTask,
     status: DownloadTaskStatus,
@@ -1030,7 +814,7 @@ fn spawn_recovery(app: AppHandle) {
                 }
 
                 match resolve_save_root(&app).await {
-                    Ok(save_root) => match repair_stale_single_source_collections(&save_root).await {
+                    Ok(save_root) => match collection_import::repair_stale_single_source_collections(&save_root).await {
                         Ok(repaired) if repaired > 0 => {
                             eprintln!(
                                 "[downloads] repaired {repaired} stale single-source collections"
@@ -1055,110 +839,6 @@ fn spawn_recovery(app: AppHandle) {
         });
 }
 
-/// Interrupted single-resource imports can leave behind a collection shell
-/// even though the downloaded leaf file already exists on disk. Recovery
-/// repairs that persisted state so playback stays data-driven.
-pub(crate) async fn repair_stale_single_source_collections(save_root: &Path) -> Result<usize> {
-    let mut repaired = 0;
-    let mut tasks_by_collection = HashMap::<String, Vec<DownloadTask>>::new();
-
-    for task in repo::list_tasks().await? {
-        if task.source_kind != Some(CollectionSourceKind::Single) {
-            continue;
-        }
-
-        let Some(collection_url) = task.collection_url.as_ref() else {
-            continue;
-        };
-
-        tasks_by_collection
-            .entry(collection_url.clone())
-            .or_default()
-            .push(task);
-    }
-
-    for (collection_url, mut tasks) in tasks_by_collection {
-        tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-
-        let Some(mut collection) = collection_repo::get_collection_by_url(&collection_url).await?
-        else {
-            continue;
-        };
-        if !collection.musics.is_empty() {
-            continue;
-        }
-
-        for task in tasks {
-            let restored = restore_single_source_musics_from_task(&collection, &task, save_root);
-            if restored.is_empty() {
-                continue;
-            }
-
-            collection.musics = restored;
-            collection.last_updated = now_timestamp();
-            let _ = collection_repo::upsert_collection(&collection).await?;
-            repaired += 1;
-            break;
-        }
-    }
-
-    Ok(repaired)
-}
-
-pub(crate) fn restore_single_source_musics_from_task(
-    collection: &Collection,
-    task: &DownloadTask,
-    save_root: &Path,
-) -> Vec<Music> {
-    if task.source_kind != Some(CollectionSourceKind::Single) {
-        return vec![];
-    }
-
-    let default_group = Group {
-        name: collection.name.clone(),
-        url: collection.url.clone(),
-        folder: collection.folder.clone(),
-    };
-    let mut restored = Vec::new();
-    let mut seen_urls = HashSet::new();
-
-    for leaf in &task.leafs {
-        let Some(relative_path) = leaf.relative_path.as_ref() else {
-            continue;
-        };
-        let relative_path = relative_path.trim();
-        if relative_path.is_empty() {
-            continue;
-        }
-
-        let absolute_path = save_root.join(&collection.folder).join(relative_path);
-        if !absolute_path.is_file() {
-            continue;
-        }
-
-        if !seen_urls.insert(leaf.url.clone()) {
-            continue;
-        }
-
-        restored.push(Music {
-            name: leaf
-                .title
-                .as_deref()
-                .map(str::trim)
-                .filter(|title| !title.is_empty())
-                .unwrap_or(&collection.name)
-                .to_string(),
-            group: default_group.clone(),
-            url: leaf.url.clone(),
-            path: Some(relative_path.to_string()),
-            start: 0,
-            end: leaf.duration_seconds.unwrap_or(0),
-        });
-    }
-
-    restored
-}
-
 #[cfg(not(test))]
 fn spawn_auto_update_loop(app: AppHandle) {
     let _ = thread::Builder::new()
@@ -1179,14 +859,14 @@ fn spawn_auto_update_loop(app: AppHandle) {
 #[cfg(not(test))]
 async fn run_auto_update_cycle() -> Result<()> {
     let mut errors = Vec::new();
-    for collection in collection_repo::list_auto_update_collections().await? {
+    for collection_url in collection_import::list_auto_update_collection_urls().await? {
         if let Err(error) = enqueue_collection_download_with_trigger(
-            collection.url.clone(),
+            collection_url.clone(),
             DownloadTrigger::AutoUpdate,
         )
         .await
         {
-            errors.push(format!("{}: {error}", collection.url));
+            errors.push(format!("{collection_url}: {error}"));
         }
     }
 
@@ -1246,16 +926,6 @@ fn task_id_for(url: &str, trigger: DownloadTrigger) -> String {
 
 fn leaf_id_for(task_id: &Id, leaf_url: &str) -> Id {
     Id::from(stable_id(&format!("{task_id}|{leaf_url}")))
-}
-
-fn stable_id(seed: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(seed.as_bytes());
-    hex::encode(hasher.finalize())
-}
-
-fn short_hash(seed: &str) -> String {
-    stable_id(seed)[..8].to_string()
 }
 
 fn normalize_url(url: &str) -> Result<String> {
@@ -1330,146 +1000,6 @@ fn normalize_youtube_direct_leaf_url(url: &str) -> Option<String> {
 /// reused when the input was already classified as a direct leaf URL.
 pub(crate) fn should_reprobe_single_leaf(preference: CollectionSourceKind) -> bool {
     preference != CollectionSourceKind::Single
-}
-
-pub(crate) fn sanitize_path_component(text: &str) -> String {
-    let mut sanitized = text
-        .trim()
-        .chars()
-        .map(|ch| match ch {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '-',
-            ch if ch.is_control() => '-',
-            _ => ch,
-        })
-        .collect::<String>();
-
-    while sanitized.ends_with('.') || sanitized.ends_with(' ') {
-        sanitized.pop();
-    }
-
-    if sanitized.is_empty() {
-        "untitled".to_string()
-    } else {
-        sanitized
-    }
-}
-
-pub(crate) fn provider_segment(url: &str) -> String {
-    let Ok(parsed) = reqwest::Url::parse(url) else {
-        return "downloads".to_string();
-    };
-
-    let Some(host) = parsed.host_str() else {
-        return "downloads".to_string();
-    };
-
-    if host.ends_with("youtube.com") || host.eq_ignore_ascii_case("youtu.be") {
-        return "youtube".to_string();
-    }
-
-    host.trim_start_matches("www.")
-        .split('.')
-        .next()
-        .filter(|segment| !segment.is_empty())
-        .unwrap_or("downloads")
-        .to_string()
-}
-
-pub(crate) fn materialize_music_entries(
-    probe: &LeafProbe,
-    relative_path: &str,
-    group: Group,
-) -> Vec<Music> {
-    if probe.chapters.is_empty() {
-        return vec![Music {
-            name: probe.title.clone(),
-            group,
-            url: probe.webpage_url.clone(),
-            path: Some(relative_path.to_string()),
-            start: 0,
-            end: probe.duration_seconds.unwrap_or(0),
-        }];
-    }
-
-    probe
-        .chapters
-        .iter()
-        .map(|chapter| Music {
-            name: chapter.title.clone(),
-            group: group.clone(),
-            url: probe.webpage_url.clone(),
-            path: Some(relative_path.to_string()),
-            start: chapter.start_seconds,
-            end: chapter.end_seconds,
-        })
-        .collect()
-}
-
-pub(crate) fn existing_leaf_urls(
-    collection: Option<&Collection>,
-    save_root: &Path,
-) -> HashSet<String> {
-    collection
-        .map(|collection| {
-            collection
-                .musics
-                .iter()
-                .filter(|music| {
-                    music
-                        .path
-                        .as_deref()
-                        .map(|relative_path| {
-                            save_root
-                                .join(&collection.folder)
-                                .join(relative_path)
-                                .is_file()
-                        })
-                        .unwrap_or(false)
-                })
-                .map(|music| music.url.clone())
-                .collect::<HashSet<String>>()
-        })
-        .unwrap_or_default()
-}
-
-fn relative_music_path(collection: &Collection, file_name: &str, group: &Group) -> String {
-    if group.url == collection.url || group.folder == collection.folder {
-        return file_name.to_string();
-    }
-
-    PathBuf::from(&group.folder)
-        .join(file_name)
-        .to_string_lossy()
-        .to_string()
-}
-
-fn remove_existing_leaf_files(
-    collection: &Collection,
-    leaf_url: &str,
-    save_root: &Path,
-) -> Result<()> {
-    let mut seen_paths = BTreeSet::new();
-    for music in &collection.musics {
-        if music.url != leaf_url {
-            continue;
-        }
-
-        let Some(relative_path) = &music.path else {
-            continue;
-        };
-        if !seen_paths.insert(relative_path.clone()) {
-            continue;
-        }
-
-        let absolute_path = save_root.join(&collection.folder).join(relative_path);
-        if absolute_path.exists() {
-            std::fs::remove_file(&absolute_path).with_context(|| {
-                format!("failed to remove existing file {}", absolute_path.display())
-            })?;
-        }
-    }
-
-    Ok(())
 }
 
 impl GroupCatalog {

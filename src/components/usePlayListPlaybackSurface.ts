@@ -9,12 +9,9 @@ import {
   type PlayListPlaybackSurfaceState,
   type PlayListPlaybackSurfaceTracePayload,
 } from "./playListPlaybackSurface.model";
+import { recordPlaybackTrace } from "@/src/debug/playbackTrace";
 
-function isPlaybackItemCentered(
-  container: HTMLElement,
-  item: HTMLElement,
-  tolerancePx = 1.5,
-) {
+function isPlaybackItemCentered(container: HTMLElement, item: HTMLElement, tolerancePx = 1.5) {
   const containerRect = container.getBoundingClientRect();
   const itemRect = item.getBoundingClientRect();
   const containerCenterY = containerRect.top + containerRect.height / 2;
@@ -32,12 +29,12 @@ export function usePlayListPlaybackSurface(args: {
   onCenteringExecute?: (payload: PlayListPlaybackSurfaceTracePayload) => void;
   onCentered?: (payload: PlayListPlaybackSurfaceTracePayload) => void;
 }) {
-  const [playbackSurface, setPlaybackSurface] = useState<PlayListPlaybackSurfaceState>(
-    INACTIVE_PLAYBACK_SURFACE,
-  );
+  const [playbackSurface, setPlaybackSurface] =
+    useState<PlayListPlaybackSurfaceState>(INACTIVE_PLAYBACK_SURFACE);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const torphStagesRef = useRef<Record<string, TorphStage>>({});
+  const lastCenteredTargetRef = useRef<string | null>(null);
   const machinePlaybackTarget = resolveMachinePlaybackTarget({
     pageState: args.pageState,
     playlists: args.playlists,
@@ -73,53 +70,64 @@ export function usePlayListPlaybackSurface(args: {
   }, []);
 
   useLayoutEffect(() => {
-    setPlaybackSurface((current) =>
-      syncPlaybackSurfaceState({
+    setPlaybackSurface((current) => {
+      const next = syncPlaybackSurfaceState({
         current,
         machinePlaybackTarget,
         nowPlayingTrackName: args.nowPlayingTrackName,
-      }),
-    );
+      });
+
+      if (next !== current) {
+        recordPlaybackTrace("playback-surface-sync", {
+          previous: current,
+          next,
+          machinePlaybackTarget,
+          nowPlayingTrackName: args.nowPlayingTrackName,
+        });
+      }
+
+      return next;
+    });
   }, [args.nowPlayingTrackName, machinePlaybackTarget]);
 
   useLayoutEffect(() => {
-    if (
-      playbackSurface.phase !== "centering" ||
-      playbackSurface.playlistName === null
-    ) {
+    if (playbackSurface.phase !== "playing" || playbackSurface.playlistName === null) {
       return;
     }
 
     const key = playbackSurface.playlistName;
-    const item = itemRefs.current[key];
-    const container = containerRef.current;
-    if (!item || !container) {
+    if (lastCenteredTargetRef.current === key) {
+      recordPlaybackTrace("playback-surface-center-skip", {
+        playlistName: key,
+        reason: "already-centered",
+        phase: playbackSurface.phase,
+      });
       return;
     }
 
+    const item = itemRefs.current[key];
+    const container = containerRef.current;
+    if (!item || !container) {
+      recordPlaybackTrace("playback-surface-center-missing-node", {
+        playlistName: key,
+        hasItem: Boolean(item),
+        hasContainer: Boolean(container),
+        phase: playbackSurface.phase,
+      });
+      return;
+    }
+
+    lastCenteredTargetRef.current = key;
     const payload = {
       playbackTargetKey: key,
       phase: playbackSurface.phase,
       containerScrollTop: container.scrollTop,
     } satisfies PlayListPlaybackSurfaceTracePayload;
     args.onCenteringSchedule?.(payload);
+    recordPlaybackTrace("playback-surface-center-schedule", payload);
 
     let cancelled = false;
     let settleFrame: number | null = null;
-
-    const promoteToPlaying = () => {
-      setPlaybackSurface((current) => {
-        if (current.phase !== "centering" || current.playlistName !== key) {
-          return current;
-        }
-
-        return {
-          phase: "playing",
-          playlistName: key,
-          displayedTrackName: args.nowPlayingTrackName,
-        };
-      });
-    };
 
     const waitForCenter = () => {
       if (cancelled) {
@@ -133,12 +141,14 @@ export function usePlayListPlaybackSurface(args: {
       }
 
       if (isPlaybackItemCentered(currentContainer, currentItem)) {
-        args.onCentered?.({
+        const centeredPayload = {
           playbackTargetKey: key,
           phase: playbackSurface.phase,
           containerScrollTop: currentContainer.scrollTop,
-        });
-        promoteToPlaying();
+        } satisfies PlayListPlaybackSurfaceTracePayload;
+
+        args.onCentered?.(centeredPayload);
+        recordPlaybackTrace("playback-surface-centered", centeredPayload);
         return;
       }
 
@@ -148,6 +158,11 @@ export function usePlayListPlaybackSurface(args: {
     const frame = requestAnimationFrame(() => {
       const currentContainer = containerRef.current;
       args.onCenteringExecute?.({
+        playbackTargetKey: key,
+        phase: playbackSurface.phase,
+        containerScrollTop: currentContainer?.scrollTop ?? 0,
+      });
+      recordPlaybackTrace("playback-surface-center-execute", {
         playbackTargetKey: key,
         phase: playbackSurface.phase,
         containerScrollTop: currentContainer?.scrollTop ?? 0,
@@ -167,7 +182,6 @@ export function usePlayListPlaybackSurface(args: {
       }
     };
   }, [
-    args.nowPlayingTrackName,
     args.onCentered,
     args.onCenteringExecute,
     args.onCenteringSchedule,
@@ -176,10 +190,13 @@ export function usePlayListPlaybackSurface(args: {
   ]);
 
   useLayoutEffect(() => {
-    if (
-      playbackSurface.phase !== "restoring" ||
-      playbackSurface.playlistName === null
-    ) {
+    if (playbackSurface.phase === "inactive" || playbackSurface.phase === "restoring") {
+      lastCenteredTargetRef.current = null;
+    }
+  }, [playbackSurface.phase]);
+
+  useLayoutEffect(() => {
+    if (playbackSurface.phase !== "restoring" || playbackSurface.playlistName === null) {
       return;
     }
 
@@ -188,10 +205,7 @@ export function usePlayListPlaybackSurface(args: {
     }
 
     setPlaybackSurface((current) => {
-      if (
-        current.phase !== "restoring" ||
-        current.playlistName !== playbackSurface.playlistName
-      ) {
+      if (current.phase !== "restoring" || current.playlistName !== playbackSurface.playlistName) {
         return current;
       }
 
