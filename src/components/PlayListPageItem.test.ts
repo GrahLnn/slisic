@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { resolvePlayListPageItemSlotPositionAnimationEnabled } from "./PlayListPageItem.motion";
+import {
+  resolvePlayListPageItemSlotPositionAnimationEnabled,
+  resolvePlayListPageItemTitleProjectionLayoutId,
+} from "./PlayListPageItem.motion";
 
 describe("PlayListPageItem", () => {
   test("enables slot position animation only while Torph is idle and text is stable", () => {
@@ -43,6 +46,33 @@ describe("PlayListPageItem", () => {
         textChanged: true,
       }),
       false,
+    );
+  });
+
+  test("uses title projection only while the PlayItem text is stable", () => {
+    assert.equal(
+      resolvePlayListPageItemTitleProjectionLayoutId({
+        layoutId: "playlist-title:Quiet Morning",
+        torphStage: "idle",
+        textChanged: false,
+      }),
+      "playlist-title:Quiet Morning",
+    );
+    assert.equal(
+      resolvePlayListPageItemTitleProjectionLayoutId({
+        layoutId: "playlist-title:Quiet Morning",
+        torphStage: "idle",
+        textChanged: true,
+      }),
+      undefined,
+    );
+    assert.equal(
+      resolvePlayListPageItemTitleProjectionLayoutId({
+        layoutId: "playlist-title:Quiet Morning",
+        torphStage: "animate",
+        textChanged: false,
+      }),
+      undefined,
     );
   });
 });

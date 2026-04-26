@@ -141,13 +141,16 @@ function createPlayListPageItemViewModel(args: {
   commitGesture: PlayListPageCommitGesture;
 }) {
   const itemLayoutId = playlistTitleLayoutId(args.playlist.name);
+  const shouldShareTitleLayout = args.titleShareEnabled && !args.isPlaybackTarget;
 
   return {
     key: args.playlist.name,
     text: args.text,
-    layoutId: args.titleShareEnabled ? itemLayoutId : undefined,
+    layoutId: shouldShareTitleLayout ? itemLayoutId : undefined,
     handoffTone:
-      (args.transition.returnTargetLayoutId === itemLayoutId && args.titleToneHandoff?.tone) ||
+      (shouldShareTitleLayout &&
+        args.transition.returnTargetLayoutId === itemLayoutId &&
+        args.titleToneHandoff?.tone) ||
       null,
     suppressFade:
       args.isPlaybackTarget || shouldSuppressTitleShareFade(itemLayoutId, args.transition),
@@ -156,7 +159,7 @@ function createPlayListPageItemViewModel(args: {
     ...(args.playbackIconWidthText && { playbackIconWidthText: args.playbackIconWidthText }),
     isHiddenInPlay: args.isHiddenInPlay,
     shouldAnimateSlotPosition: args.shouldAnimateSlotPosition,
-    isCommitted: args.transition.committedLayoutId === itemLayoutId,
+    isCommitted: !args.isPlaybackTarget && args.transition.committedLayoutId === itemLayoutId,
     commitGesture: args.commitGesture,
     playlistName: args.playlist.name,
   } satisfies PlayListPageItemViewModel;

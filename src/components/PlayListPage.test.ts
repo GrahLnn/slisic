@@ -197,7 +197,7 @@ describe("PlayListPage", () => {
       {
         key: "Quiet Morning",
         text: "Track A",
-        layoutId: "playlist-title:Quiet Morning",
+        layoutId: undefined,
         handoffTone: null,
         suppressFade: true,
         isPlaybackTarget: true,
@@ -258,6 +258,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.shouldLockScroll, true);
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[0]?.layoutId, undefined);
     assert.equal(viewModel.itemViewModels[0]?.shouldAnimateSlotPosition, false);
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
     assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, undefined);
@@ -283,6 +284,7 @@ describe("PlayListPage", () => {
     });
 
     assert.equal(viewModel.itemViewModels[0]?.text, "Preparing...");
+    assert.equal(viewModel.itemViewModels[0]?.layoutId, undefined);
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, true);
     assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Preparing...");
     assert.equal(viewModel.shouldLockScroll, true);
@@ -307,6 +309,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.shouldLockScroll, true);
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[0]?.layoutId, undefined);
     assert.equal(viewModel.itemViewModels[0]?.shouldAnimateSlotPosition, false);
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
     assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, undefined);

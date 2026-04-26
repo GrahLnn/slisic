@@ -15,7 +15,10 @@ import {
   shouldCommitPlayListPageItem,
   type PlayListPageItemViewModel,
 } from "./PlayListPage.view-model";
-import { resolvePlayListPageItemSlotPositionAnimationEnabled } from "./PlayListPageItem.motion";
+import {
+  resolvePlayListPageItemSlotPositionAnimationEnabled,
+  resolvePlayListPageItemTitleProjectionLayoutId,
+} from "./PlayListPageItem.motion";
 
 export function PlayListPageItem({
   viewModel,
@@ -52,13 +55,19 @@ export function PlayListPageItem({
     torphStage,
     textChanged,
   });
+  const titleProjectionLayoutId = resolvePlayListPageItemTitleProjectionLayoutId({
+    layoutId: viewModel.layoutId,
+    torphStage,
+    textChanged,
+  });
 
   return (
     <motion.div
       ref={containerRef}
       data-torph-trace-hidden-in-play={viewModel.isHiddenInPlay}
       data-torph-trace-item-key={viewModel.key}
-      data-torph-trace-layout-id={viewModel.layoutId}
+      data-torph-trace-layout-id={titleProjectionLayoutId}
+      data-torph-trace-requested-layout-id={viewModel.layoutId}
       data-torph-trace-playback-target={viewModel.isPlaybackTarget}
       data-torph-trace-role={viewModel.playlistName ? "playlist" : "create"}
       data-torph-trace-text={viewModel.text}
@@ -80,7 +89,7 @@ export function PlayListPageItem({
         <PlayItem
           className={collectionTitleClassName}
           handoffTone={viewModel.handoffTone}
-          layoutId={viewModel.layoutId}
+          layoutId={titleProjectionLayoutId}
           playbackIconWidthText={viewModel.playbackIconWidthText}
           showPlaybackIcons={viewModel.shouldShowPlaybackIcons}
           text={viewModel.text}
