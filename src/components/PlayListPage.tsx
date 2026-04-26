@@ -8,6 +8,7 @@ import { PlayListPageItem, CreateNewPlayListItem } from "./PlayListPageItem";
 import { usePlayListPlaybackSurface } from "./usePlayListPlaybackSurface";
 import { resolvePlayListPageViewModel } from "./PlayListPage.view-model";
 import { installPlaybackTrace } from "@/src/debug/playbackTrace";
+import { installTorphTrace } from "@/src/debug/torphTrace";
 
 export function PlayListPage() {
   const isPresent = useIsPresent();
@@ -57,11 +58,13 @@ export function PlayListPage() {
 
   useEffect(() => {
     installPlaybackTrace();
+    installTorphTrace();
   }, []);
 
   return (
     <div
       data-page-state="playlist"
+      data-torph-trace-root
       className="relative h-[calc(100vh-2rem)] w-full overflow-hidden px-6"
       style={{ fontFamily: "var(--font-noto-sans)" }}
     >
@@ -69,6 +72,7 @@ export function PlayListPage() {
         <div className="relative z-0 flex h-full w-full flex-col items-center">
           <div
             ref={playbackSurface.containerRef}
+            data-torph-trace-scroll-root
             className={cn(
               "hide-scrollbar flex h-full w-full flex-col items-center gap-8 snap-y snap-mandatory overscroll-y-contain",
               viewModel.shouldLockScroll ? "overflow-hidden" : "overflow-y-auto",

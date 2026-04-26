@@ -56,6 +56,12 @@ export function PlayListPageItem({
   return (
     <motion.div
       ref={containerRef}
+      data-torph-trace-hidden-in-play={viewModel.isHiddenInPlay}
+      data-torph-trace-item-key={viewModel.key}
+      data-torph-trace-layout-id={viewModel.layoutId}
+      data-torph-trace-playback-target={viewModel.isPlaybackTarget}
+      data-torph-trace-role={viewModel.playlistName ? "playlist" : "create"}
+      data-torph-trace-text={viewModel.text}
       layout={shouldEnableSlotPositionAnimation ? "position" : false}
       className="shrink-0 snap-center"
       initial={fadeProps.initial}

@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import {
-  resolvePlayItemColorHandoff,
-} from "./playItem";
+import { resolvePlayItemColorHandoff, resolvePlaybackIconLayerBox } from "./playItem";
 import { resolvePlayItemFrameProjection } from "./playItem.motion";
 
 describe("playItem", () => {
@@ -25,13 +23,10 @@ describe("playItem", () => {
         layoutId: undefined,
       },
     );
-    assert.deepEqual(
-      resolvePlayItemFrameProjection({}),
-      {
-        layout: false,
-        layoutId: undefined,
-      },
-    );
+    assert.deepEqual(resolvePlayItemFrameProjection({}), {
+      layout: false,
+      layoutId: undefined,
+    });
   });
 
   test("uses the target color directly when there is no handoff tone", () => {
@@ -72,6 +67,33 @@ describe("playItem", () => {
       {
         initialColor: "rgba(246, 246, 246, 1)",
         shouldAnimate: true,
+      },
+    );
+  });
+
+  test("centers playback icons from text width without using the play item x position", () => {
+    assert.deepEqual(
+      resolvePlaybackIconLayerBox({
+        anchorBottom: 120,
+        textWidth: 180.2,
+        viewportWidth: 500,
+      }),
+      {
+        left: 159.5,
+        top: 132,
+        width: 181,
+      },
+    );
+    assert.deepEqual(
+      resolvePlaybackIconLayerBox({
+        anchorBottom: 120,
+        textWidth: 720,
+        viewportWidth: 500,
+      }),
+      {
+        left: 0,
+        top: 132,
+        width: 500,
       },
     );
   });
