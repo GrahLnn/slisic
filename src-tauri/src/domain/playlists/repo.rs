@@ -5,7 +5,7 @@ use appdb::error::{DBError, classify_db_error};
 use appdb::graph;
 use appdb::model::meta::ModelMeta;
 use appdb::repository::Repo;
-use appdb::{Crud, Id, Order, Store};
+use appdb::{AutoFill, Crud, Id, Order, Store};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -50,7 +50,11 @@ pub async fn add_exclude(music: Music) -> Result<Exclude> {
     let record = exclude_record_id(&music);
     let saved = Repo::<StoredExclude>::upsert_at(
         RecordId::new(StoredExclude::table_name(), record.to_string()),
-        StoredExclude { id: record, music },
+        StoredExclude {
+            id: record,
+            music,
+            created_at: AutoFill::pending(),
+        },
     )
     .await?;
 
@@ -388,11 +392,17 @@ struct StoredExclude {
     id: Id,
     #[foreign]
     music: Music,
+    #[pagin]
+    #[fill(now)]
+    created_at: AutoFill,
 }
 
 impl StoredExclude {
     fn into_public(self) -> Exclude {
-        Exclude { music: self.music }
+        Exclude {
+            music: self.music,
+            created_at: self.created_at,
+        }
     }
 }
 

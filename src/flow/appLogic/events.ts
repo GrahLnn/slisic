@@ -29,7 +29,6 @@ import {
   type ConfigDraft,
   type PlaylistUpsertResult,
 } from "./core";
-import { recordPlaybackTrace } from "@/src/debug/playbackTrace";
 
 export interface BootstrapResult {
   hasPlayList: boolean;
@@ -209,24 +208,11 @@ export const invoker = createActors({
     });
   },
   playPlaylist: async (playlistName: string): Promise<PlayPlaylistSession> => {
-    recordPlaybackTrace("app-logic-invoker-play-playlist-start", {
-      playlistName,
-    });
     const result = await crab.playPlaylist(playlistName);
 
     return result.match({
-      Ok: (session) => {
-        recordPlaybackTrace("app-logic-invoker-play-playlist-ok", {
-          playlistName,
-          session,
-        });
-        return session;
-      },
+      Ok: (session) => session,
       Err: (error) => {
-        recordPlaybackTrace("app-logic-invoker-play-playlist-error", {
-          playlistName,
-          error,
-        });
         throw new Error(error);
       },
     });

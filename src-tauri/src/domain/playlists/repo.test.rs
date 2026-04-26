@@ -475,7 +475,9 @@ fn add_exclude_is_idempotent_and_remove_exclude_deletes_the_row() {
         let exclude_count = count_excludes().await;
 
         assert_eq!(first.music.url, music.url);
+        assert!(!first.created_at.is_pending());
         assert_eq!(second.music.url, music.url);
+        assert!(!second.created_at.is_pending());
         assert_eq!(exclude_count, 1);
 
         let removed = remove_exclude(&music)

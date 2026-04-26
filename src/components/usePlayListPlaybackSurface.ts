@@ -9,7 +9,6 @@ import {
   type PlayListPlaybackSurfaceState,
   type PlayListPlaybackSurfaceTracePayload,
 } from "./playListPlaybackSurface.model";
-import { recordPlaybackTrace } from "@/src/debug/playbackTrace";
 
 function isPlaybackItemCentered(container: HTMLElement, item: HTMLElement, tolerancePx = 1.5) {
   const containerRect = container.getBoundingClientRect();
@@ -20,7 +19,15 @@ function isPlaybackItemCentered(container: HTMLElement, item: HTMLElement, toler
   return Math.abs(itemCenterY - containerCenterY) <= tolerancePx;
 }
 
-export function usePlayListPlaybackSurface(args: {
+export function usePlayListPlaybackSurface({
+  pageState,
+  playlists,
+  playingPlaylistName,
+  nowPlayingTrackName,
+  onCenteringSchedule,
+  onCenteringExecute,
+  onCentered,
+}: {
   pageState: MainStateT;
   playlists: readonly { name: string }[];
   playingPlaylistName: string | null;
@@ -36,9 +43,9 @@ export function usePlayListPlaybackSurface(args: {
   const torphStagesRef = useRef<Record<string, TorphStage>>({});
   const lastCenteredTargetRef = useRef<string | null>(null);
   const machinePlaybackTarget = resolveMachinePlaybackTarget({
-    pageState: args.pageState,
-    playlists: args.playlists,
-    playingPlaylistName: args.playingPlaylistName,
+    pageState,
+    playlists,
+    playingPlaylistName,
   });
 
   const setItemRef = useCallback(
@@ -74,21 +81,12 @@ export function usePlayListPlaybackSurface(args: {
       const next = syncPlaybackSurfaceState({
         current,
         machinePlaybackTarget,
-        nowPlayingTrackName: args.nowPlayingTrackName,
+        nowPlayingTrackName,
       });
-
-      if (next !== current) {
-        recordPlaybackTrace("playback-surface-sync", {
-          previous: current,
-          next,
-          machinePlaybackTarget,
-          nowPlayingTrackName: args.nowPlayingTrackName,
-        });
-      }
 
       return next;
     });
-  }, [args.nowPlayingTrackName, machinePlaybackTarget]);
+  }, [machinePlaybackTarget, nowPlayingTrackName]);
 
   useLayoutEffect(() => {
     if (playbackSurface.phase !== "playing" || playbackSurface.playlistName === null) {
@@ -97,23 +95,12 @@ export function usePlayListPlaybackSurface(args: {
 
     const key = playbackSurface.playlistName;
     if (lastCenteredTargetRef.current === key) {
-      recordPlaybackTrace("playback-surface-center-skip", {
-        playlistName: key,
-        reason: "already-centered",
-        phase: playbackSurface.phase,
-      });
       return;
     }
 
     const item = itemRefs.current[key];
     const container = containerRef.current;
     if (!item || !container) {
-      recordPlaybackTrace("playback-surface-center-missing-node", {
-        playlistName: key,
-        hasItem: Boolean(item),
-        hasContainer: Boolean(container),
-        phase: playbackSurface.phase,
-      });
       return;
     }
 
@@ -123,8 +110,7 @@ export function usePlayListPlaybackSurface(args: {
       phase: playbackSurface.phase,
       containerScrollTop: container.scrollTop,
     } satisfies PlayListPlaybackSurfaceTracePayload;
-    args.onCenteringSchedule?.(payload);
-    recordPlaybackTrace("playback-surface-center-schedule", payload);
+    onCenteringSchedule?.(payload);
 
     let cancelled = false;
     let settleFrame: number | null = null;
@@ -147,8 +133,7 @@ export function usePlayListPlaybackSurface(args: {
           containerScrollTop: currentContainer.scrollTop,
         } satisfies PlayListPlaybackSurfaceTracePayload;
 
-        args.onCentered?.(centeredPayload);
-        recordPlaybackTrace("playback-surface-centered", centeredPayload);
+        onCentered?.(centeredPayload);
         return;
       }
 
@@ -157,12 +142,7 @@ export function usePlayListPlaybackSurface(args: {
 
     const frame = requestAnimationFrame(() => {
       const currentContainer = containerRef.current;
-      args.onCenteringExecute?.({
-        playbackTargetKey: key,
-        phase: playbackSurface.phase,
-        containerScrollTop: currentContainer?.scrollTop ?? 0,
-      });
-      recordPlaybackTrace("playback-surface-center-execute", {
+      onCenteringExecute?.({
         playbackTargetKey: key,
         phase: playbackSurface.phase,
         containerScrollTop: currentContainer?.scrollTop ?? 0,
@@ -182,9 +162,9 @@ export function usePlayListPlaybackSurface(args: {
       }
     };
   }, [
-    args.onCentered,
-    args.onCenteringExecute,
-    args.onCenteringSchedule,
+    onCentered,
+    onCenteringExecute,
+    onCenteringSchedule,
     playbackSurface.phase,
     playbackSurface.playlistName,
   ]);

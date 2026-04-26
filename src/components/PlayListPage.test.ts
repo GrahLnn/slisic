@@ -187,6 +187,7 @@ describe("PlayListPage", () => {
         handoffTone: null,
         suppressFade: false,
         isPlaybackTarget: false,
+        shouldShowPlaybackIcons: false,
         isHiddenInPlay: true,
         shouldAnimateSlotPosition: false,
         isCommitted: false,
@@ -200,6 +201,8 @@ describe("PlayListPage", () => {
         handoffTone: null,
         suppressFade: true,
         isPlaybackTarget: true,
+        shouldShowPlaybackIcons: true,
+        playbackIconWidthText: "Track A",
         isHiddenInPlay: false,
         shouldAnimateSlotPosition: false,
         isCommitted: false,
@@ -256,6 +259,8 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.shouldAnimateSlotPosition, false);
+    assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
+    assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, undefined);
     assert.equal(viewModel.shouldRenderCreateItem, true);
     assert.equal(viewModel.shouldShowCreateItem, false);
     assert.equal(viewModel.createItemViewModel.isHiddenInPlay, true);
@@ -278,6 +283,8 @@ describe("PlayListPage", () => {
     });
 
     assert.equal(viewModel.itemViewModels[0]?.text, "Preparing...");
+    assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, true);
+    assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Preparing...");
     assert.equal(viewModel.shouldLockScroll, true);
   });
 
@@ -301,6 +308,8 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.shouldAnimateSlotPosition, false);
+    assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
+    assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, undefined);
     assert.equal(viewModel.shouldRenderCreateItem, true);
     assert.equal(viewModel.shouldShowCreateItem, false);
     assert.equal(viewModel.createItemViewModel.isHiddenInPlay, true);

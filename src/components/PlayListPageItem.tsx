@@ -16,7 +16,6 @@ import {
   type PlayListPageItemViewModel,
 } from "./PlayListPage.view-model";
 import { resolvePlayListPageItemSlotPositionAnimationEnabled } from "./PlayListPageItem.motion";
-import { recordPlaybackTrace } from "@/src/debug/playbackTrace";
 
 export function PlayListPageItem({
   viewModel,
@@ -76,6 +75,8 @@ export function PlayListPageItem({
           className={collectionTitleClassName}
           handoffTone={viewModel.handoffTone}
           layoutId={viewModel.layoutId}
+          playbackIconWidthText={viewModel.playbackIconWidthText}
+          showPlaybackIcons={viewModel.shouldShowPlaybackIcons}
           text={viewModel.text}
           textClassName={viewModel.isCommitted ? collectionTitleTextHoverClassName : undefined}
           onTorphStageChange={(stage) => {
@@ -83,23 +84,7 @@ export function PlayListPageItem({
             onTorphStageChange?.(stage);
           }}
           onPointerDown={(event) => {
-            recordPlaybackTrace("playlist-item-pointer-down", {
-              button: event.button,
-              key: viewModel.key,
-              text: viewModel.text,
-              playlistName: viewModel.playlistName ?? null,
-              isHiddenInPlay: viewModel.isHiddenInPlay,
-              isPlaybackTarget: viewModel.isPlaybackTarget,
-              shouldAnimateSlotPosition: viewModel.shouldAnimateSlotPosition,
-              torphStage,
-            });
-
             if (event.button === 0) {
-              recordPlaybackTrace("playlist-item-primary-pointer-commit", {
-                key: viewModel.key,
-                playlistName: viewModel.playlistName ?? null,
-                text: viewModel.text,
-              });
               onPrimaryPointerDown?.();
               onPrimaryCommit?.();
             }
@@ -114,22 +99,7 @@ export function PlayListPageItem({
             }
           }}
           onClick={(event) => {
-            recordPlaybackTrace("playlist-item-click", {
-              detail: event.detail,
-              key: viewModel.key,
-              text: viewModel.text,
-              playlistName: viewModel.playlistName ?? null,
-              isHiddenInPlay: viewModel.isHiddenInPlay,
-              isPlaybackTarget: viewModel.isPlaybackTarget,
-              torphStage,
-            });
-
             if (shouldFallbackPrimaryCommitOnClick({ eventDetail: event.detail })) {
-              recordPlaybackTrace("playlist-item-primary-click-fallback", {
-                key: viewModel.key,
-                playlistName: viewModel.playlistName ?? null,
-                text: viewModel.text,
-              });
               onPrimaryCommit?.();
             }
 

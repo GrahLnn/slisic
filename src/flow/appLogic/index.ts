@@ -28,7 +28,6 @@ import {
   send,
 } from "./runtime";
 import { action as pasteDownloadAction } from "../pasteDownload";
-import { recordPlaybackTrace } from "@/src/debug/playbackTrace";
 
 export { actor } from "./runtime";
 
@@ -81,10 +80,6 @@ function attachDebugLogger() {
   let prevContextKey = JSON.stringify(prevContextSummary);
 
   console.log(`[appLogic] enter ${prevState}`);
-  recordPlaybackTrace("app-logic-enter", {
-    state: prevState,
-    context: prevContextSummary,
-  });
   if (prevContextSummary.error) {
     console.error(`[appLogic:error] ${prevState}`, prevContextSummary.error);
   }
@@ -98,12 +93,6 @@ function attachDebugLogger() {
     }
 
     console.log(`[appLogic] ${prevState} -> ${nextState}`);
-    recordPlaybackTrace("app-logic-transition", {
-      previousState: prevState,
-      nextState,
-      previousContext: prevContextSummary,
-      nextContext: contextSummary,
-    });
     if (
       contextSummary.error &&
       (contextSummary.error !== prevContextSummary.error || nextState === "error")
@@ -120,14 +109,9 @@ function attachDebugLogger() {
 }
 
 function requestPlaybackStop() {
-  recordPlaybackTrace("app-logic-stop-playback-request");
   void stopPlayback()
-    .then(() => {
-      recordPlaybackTrace("app-logic-stop-playback-ok");
-      return undefined;
-    })
+    .then(() => undefined)
     .catch((error) => {
-      recordPlaybackTrace("app-logic-stop-playback-error", { error });
       console.error("Failed to stop playlist playback", error);
     });
 }
@@ -182,29 +166,15 @@ export const action = {
     send(openPlaylist.load(playlistName));
   },
   playPlaylist: (playlistName: string) => {
-    recordPlaybackTrace("app-logic-action-play-playlist-enter", {
-      playlistName,
-    });
     ensureStarted();
     pasteDownloadAction.reset();
     const snapshot = actor.getSnapshot();
-    recordPlaybackTrace("app-logic-action-play-playlist-snapshot", {
-      playlistName,
-      state: formatStateValue(snapshot.value),
-      context: summarizeContext(snapshot.context),
-    });
     if (snapshot.value === "play" && snapshot.context.playingPlaylistName === playlistName) {
-      recordPlaybackTrace("app-logic-action-play-playlist-toggle-stop", {
-        playlistName,
-      });
       requestPlaybackStop();
       actor.send(sig.mainx.back);
       return;
     }
 
-    recordPlaybackTrace("app-logic-action-play-playlist-send", {
-      playlistName,
-    });
     send(playPlaylist.load(playlistName));
   },
   back: () => {

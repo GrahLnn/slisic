@@ -83,7 +83,6 @@ export function installPlaybackTrace() {
     clear() {
       entries.length = 0;
       sequence = 0;
-      recordPlaybackTrace("trace-cleared");
     },
     entries() {
       return entries.slice();
@@ -94,8 +93,4 @@ export function installPlaybackTrace() {
   window.__playbackTraceInstalled = true;
   window.__playbackTraceApi = api;
   window.savePlaybackTrace = api.save;
-
-  recordPlaybackTrace("trace-installed", {
-    href: window.location.href,
-  });
 }

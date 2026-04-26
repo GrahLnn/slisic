@@ -187,6 +187,7 @@ export type EnqueuedCollectionDownload = {
 
 export type Exclude = {
 	music: Music,
+	created_at: AutoFill,
 };
 
 export type FullScreenEvent = {

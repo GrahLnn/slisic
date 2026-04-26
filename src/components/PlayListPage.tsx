@@ -7,7 +7,7 @@ import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import { PlayListPageItem, CreateNewPlayListItem } from "./PlayListPageItem";
 import { usePlayListPlaybackSurface } from "./usePlayListPlaybackSurface";
 import { resolvePlayListPageViewModel } from "./PlayListPage.view-model";
-import { installPlaybackTrace, recordPlaybackTrace } from "@/src/debug/playbackTrace";
+import { installPlaybackTrace } from "@/src/debug/playbackTrace";
 
 export function PlayListPage() {
   const isPresent = useIsPresent();
@@ -59,35 +59,6 @@ export function PlayListPage() {
     installPlaybackTrace();
   }, []);
 
-  useEffect(() => {
-    recordPlaybackTrace("playlist-page-view", {
-      pageState: pageStateValue,
-      playingPlaylistName,
-      nowPlayingTrackName,
-      playbackSurface: playbackSurface.playbackSurfaceSnapshot,
-      shouldLockScroll: viewModel.shouldLockScroll,
-      playbackTargetKey: viewModel.playbackTargetKey,
-      hiddenItems: viewModel.itemViewModels
-        .filter((item) => item.isHiddenInPlay)
-        .map((item) => item.key),
-      visibleItems: viewModel.itemViewModels
-        .filter((item) => !item.isHiddenInPlay)
-        .map((item) => ({
-          key: item.key,
-          text: item.text,
-          isPlaybackTarget: item.isPlaybackTarget,
-        })),
-    });
-  }, [
-    nowPlayingTrackName,
-    pageStateValue,
-    playbackSurface.playbackSurfaceSnapshot,
-    playingPlaylistName,
-    viewModel.itemViewModels,
-    viewModel.playbackTargetKey,
-    viewModel.shouldLockScroll,
-  ]);
-
   return (
     <div
       data-page-state="playlist"
@@ -117,14 +88,6 @@ export function PlayListPage() {
                     return;
                   }
 
-                  recordPlaybackTrace("playlist-page-play-request", {
-                    playlistName: itemViewModel.playlistName,
-                    itemKey: itemViewModel.key,
-                    itemText: itemViewModel.text,
-                    isHiddenInPlay: itemViewModel.isHiddenInPlay,
-                    isPlaybackTarget: itemViewModel.isPlaybackTarget,
-                    pageState: pageStateValue,
-                  });
                   appLogicAction.playPlaylist(itemViewModel.playlistName);
                 }}
                 onPointerDown={() => {

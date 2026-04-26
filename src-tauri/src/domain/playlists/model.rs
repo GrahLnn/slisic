@@ -51,4 +51,7 @@ pub struct Music {
 pub struct Exclude {
     #[foreign]
     pub music: Music,
+    #[pagin]
+    #[fill(now)]
+    pub created_at: AutoFill,
 }
