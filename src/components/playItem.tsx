@@ -8,18 +8,9 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import {
-  measureNaturalWidth,
-  prepareWithSegments,
-  type PrepareOptions,
-} from "@chenglou/pretext";
+import { measureNaturalWidth, prepareWithSegments, type PrepareOptions } from "@chenglou/pretext";
 import { cn } from "@/lib/utils";
-import {
-  AnimatePresence,
-  motion,
-  useAnimate,
-  type HTMLMotionProps,
-} from "motion/react";
+import { AnimatePresence, motion, useAnimate, type HTMLMotionProps } from "motion/react";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import {
   collectionTitleColorTransition,
@@ -29,10 +20,8 @@ import {
 import { resolvePlayItemFrameProjection } from "./playItem.motion";
 import { Torph, type TorphStage } from "@grahlnn/comps";
 import { icons } from "@/src/assets/icons";
-import {
-  captureTorphHostFrames,
-  recordTorphHostTrace,
-} from "@/src/debug/torphTrace";
+import { captureTorphHostFrames, recordTorphHostTrace } from "@/src/debug/torphTrace";
+import { useWindowPointerPresence } from "./windowPointerPresence";
 
 type PlayItemBaseProps = Omit<HTMLMotionProps<"div">, "children"> & {
   text: string;
@@ -90,9 +79,7 @@ export function resolvePlayItemColorHandoff(args: {
   } as const;
 }
 
-function createContextMenuHandler(
-  onContextMenu?: MouseEventHandler<HTMLDivElement>,
-) {
+function createContextMenuHandler(onContextMenu?: MouseEventHandler<HTMLDivElement>) {
   return (event: MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
     onContextMenu?.(event);
@@ -125,11 +112,7 @@ function usePlayItemColorHandoff(args: {
 
     let stopAnimation: (() => void) | undefined;
     const frame = requestAnimationFrame(() => {
-      const controls = animate(
-        node,
-        { color: targetColor },
-        collectionTitleColorTransition,
-      );
+      const controls = animate(node, { color: targetColor }, collectionTitleColorTransition);
       stopAnimation = () => {
         controls.stop();
       };
@@ -169,9 +152,7 @@ function readPretextFont(style: CSSStyleDeclaration) {
     .join(" ");
 }
 
-function readPretextWhiteSpace(
-  style: CSSStyleDeclaration,
-): PrepareOptions["whiteSpace"] {
+function readPretextWhiteSpace(style: CSSStyleDeclaration): PrepareOptions["whiteSpace"] {
   return style.whiteSpace === "pre-wrap" ? "pre-wrap" : "normal";
 }
 
@@ -186,10 +167,7 @@ function transformPretextText(text: string, textTransform: string) {
   }
 }
 
-function measurePlayItemTextWidthWithPretext(args: {
-  source: HTMLElement;
-  text: string;
-}) {
+function measurePlayItemTextWidthWithPretext(args: { source: HTMLElement; text: string }) {
   if (args.text.length === 0) {
     return undefined;
   }
@@ -209,11 +187,7 @@ function measurePlayItemTextWidthWithPretext(args: {
   }
 
   const measuredWidth = measureNaturalWidth(
-    prepareWithSegments(
-      transformPretextText(args.text, style.textTransform),
-      font,
-      options,
-    ),
+    prepareWithSegments(transformPretextText(args.text, style.textTransform), font, options),
   );
 
   return (measuredWidth > 0 && measuredWidth) || undefined;
@@ -352,6 +326,9 @@ function PlayItemText({
     tone,
     handoffTone,
   });
+  const isWindowPointerInside = useWindowPointerPresence(
+    showPlaybackIcons && playbackIconLayerBox !== undefined,
+  );
 
   useLayoutEffect(() => {
     const node = scope.current;
@@ -458,11 +435,7 @@ function PlayItemText({
         data-torph-trace-text-host
         data-torph-trace-text={text}
         data-torph-trace-text-playback-icons={showPlaybackIcons}
-        className={cn(
-          "relative inline-flex",
-          collectionTitleTextClassName,
-          textClassName,
-        )}
+        className={cn("relative inline-flex", collectionTitleTextClassName, textClassName)}
         onPointerEnter={handleTextShellPointerEnter}
         onPointerLeave={handleTextShellPointerLeave}
         onTransitionEnd={(event) => {
@@ -488,18 +461,15 @@ function PlayItemText({
           });
         }}
         onTransitionStart={(event) => {
-          recordPlayItemTextShellTrace(
-            "play-item-text-shell-transition-start",
-            {
-              node: event.currentTarget,
-              playbackIconWidthText,
-              showPlaybackIcons,
-              text,
-              extra: {
-                propertyName: event.propertyName,
-              },
+          recordPlayItemTextShellTrace("play-item-text-shell-transition-start", {
+            node: event.currentTarget,
+            playbackIconWidthText,
+            showPlaybackIcons,
+            text,
+            extra: {
+              propertyName: event.propertyName,
             },
-          );
+          });
         }}
       >
         <Torph
@@ -528,38 +498,37 @@ function PlayItemText({
         />
       </div>
 
-      {portalHost
-        ? createPortal(
-            <AnimatePresence>
-              {showPlaybackIcons && playbackIconLayerBox && (
-                <motion.div
-                  aria-hidden
-                  className="pointer-events-none fixed z-10 flex max-w-[100vw] items-center justify-center"
-                  style={{
-                    left: playbackIconLayerBox.left,
-                    top: playbackIconLayerBox.top,
-                    width: playbackIconLayerBox.width,
-                  }}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 0.7 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.3, ease: "easeOut" }}
-                >
-                  <div className="flex w-full items-center justify-between px-2">
-                    <div>
-                      <icons.suitHearts size={12} />
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <icons.waveformLines size={12} />
-                      <icons.brush2 size={12} />
-                    </div>
+      {portalHost &&
+        createPortal(
+          <AnimatePresence>
+            {showPlaybackIcons && playbackIconLayerBox && isWindowPointerInside && (
+              <motion.div
+                aria-hidden
+                className="pointer-events-none fixed z-10 flex max-w-[100vw] items-center justify-center"
+                style={{
+                  left: playbackIconLayerBox.left,
+                  top: playbackIconLayerBox.top,
+                  width: playbackIconLayerBox.width,
+                }}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 0.7 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.3, ease: "easeOut" }}
+              >
+                <div className="flex w-full items-center justify-between px-2">
+                  <div>
+                    <icons.suitHearts size={12} />
                   </div>
-                </motion.div>
-              )}
-            </AnimatePresence>,
-            portalHost,
-          )
-        : null}
+                  <div className="flex items-center gap-4">
+                    <icons.waveformLines size={12} />
+                    <icons.brush2 size={12} />
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>,
+          portalHost,
+        )}
     </>
   );
 }

@@ -14,34 +14,26 @@ import { ListConfig } from "./components/ListConfig";
 import { hook as appLogicHook } from "./flow/appLogic";
 import { useAppBootstrap } from "./flow/bootstrap";
 import TopBar from "./topbar";
+import {
+  recordStoredScrollTop,
+  restoreStoredScrollTop,
+  type ScrollPositionRef,
+} from "./components/scrollPosition";
 
 type PageScrollKey = "list" | "config";
 
 function restorePageViewportScrollPosition(args: {
   node: HTMLElement | null;
-  scrollKey: PageScrollKey;
-  scrollPositionsRef: { current: Record<PageScrollKey, number> };
+  scrollPositionRef: ScrollPositionRef;
 }) {
-  if (!args.node) {
-    return;
-  }
-
-  const nextScrollTop = args.scrollPositionsRef.current[args.scrollKey];
-  if (Math.abs(args.node.scrollTop - nextScrollTop) < 1) {
-    return;
-  }
-
-  args.node.scrollTop = nextScrollTop;
+  restoreStoredScrollTop(args.node, args.scrollPositionRef);
 }
 
 function WindowMainArea({ children }: PropsWithChildren) {
   return (
     <motion.main
       layoutRoot
-      className={cn(
-        "fixed top-0 left-0 h-screen w-full overflow-hidden",
-        "flex-1 hide-scrollbar",
-      )}
+      className={cn("fixed top-0 left-0 h-screen w-full overflow-hidden", "flex-1 hide-scrollbar")}
     >
       {children}
     </motion.main>
@@ -52,23 +44,20 @@ function PageViewport({
   children,
   pageKey,
   pageState,
-  scrollKey,
-  scrollPositionsRef,
+  scrollPositionRef,
 }: PropsWithChildren<{
   pageKey: string;
   pageState: string;
-  scrollKey: PageScrollKey;
-  scrollPositionsRef: { current: Record<PageScrollKey, number> };
+  scrollPositionRef: ScrollPositionRef;
 }>) {
   const viewportRef = useRef<HTMLElement | null>(null);
 
   useLayoutEffect(() => {
     restorePageViewportScrollPosition({
       node: viewportRef.current,
-      scrollKey,
-      scrollPositionsRef,
+      scrollPositionRef,
     });
-  }, [pageKey, scrollKey, scrollPositionsRef]);
+  }, [pageKey, scrollPositionRef]);
 
   return (
     <motion.section
@@ -76,21 +65,18 @@ function PageViewport({
         viewportRef.current = node;
         restorePageViewportScrollPosition({
           node,
-          scrollKey,
-          scrollPositionsRef,
+          scrollPositionRef,
         });
       }}
       layoutScroll
       data-page-state={pageState}
       className={cn(
         "absolute inset-0 pt-8",
-        pageState === "play"
-          ? "overflow-hidden"
-          : "overflow-y-auto overscroll-y-contain",
+        pageState === "play" ? "overflow-hidden" : "overflow-y-auto overscroll-y-contain",
         "hide-scrollbar",
       )}
-      onScrollCapture={(event) => {
-        scrollPositionsRef.current[scrollKey] = event.currentTarget.scrollTop;
+      onScroll={(event) => {
+        recordStoredScrollTop(event.currentTarget, scrollPositionRef);
       }}
     >
       {children}
@@ -120,10 +106,11 @@ function SupportWindowContent() {
 
 function MainWindowApp() {
   const appLogicState = appLogicHook.useState();
-  const scrollPositionsRef = useRef<Record<PageScrollKey, number>>({
-    list: 0,
-    config: 0,
+  const pageScrollPositionRefs = useRef<Record<PageScrollKey, ScrollPositionRef>>({
+    list: { current: 0 },
+    config: { current: 0 },
   });
+  const playListScrollPositionRef = useRef(0);
 
   return (
     <Base>
@@ -134,8 +121,7 @@ function MainWindowApp() {
               key="config"
               pageKey="config"
               pageState="config"
-              scrollKey="config"
-              scrollPositionsRef={scrollPositionsRef}
+              scrollPositionRef={pageScrollPositionRefs.current.config}
             >
               <ListConfig />
             </PageViewport>
@@ -145,8 +131,7 @@ function MainWindowApp() {
               key="config"
               pageKey="config"
               pageState="config-loading"
-              scrollKey="config"
-              scrollPositionsRef={scrollPositionsRef}
+              scrollPositionRef={pageScrollPositionRefs.current.config}
             >
               <ListConfig />
             </PageViewport>
@@ -156,8 +141,7 @@ function MainWindowApp() {
               key="config"
               pageKey="config"
               pageState="config-updating"
-              scrollKey="config"
-              scrollPositionsRef={scrollPositionsRef}
+              scrollPositionRef={pageScrollPositionRefs.current.config}
             >
               <ListConfig />
             </PageViewport>
@@ -167,10 +151,9 @@ function MainWindowApp() {
               key="list"
               pageKey="list"
               pageState="idle"
-              scrollKey="list"
-              scrollPositionsRef={scrollPositionsRef}
+              scrollPositionRef={pageScrollPositionRefs.current.list}
             >
-              <PlayListPage />
+              <PlayListPage scrollPositionRef={playListScrollPositionRef} />
             </PageViewport>
           ),
           loading: () => (
@@ -178,10 +161,9 @@ function MainWindowApp() {
               key="list"
               pageKey="list"
               pageState="loading"
-              scrollKey="list"
-              scrollPositionsRef={scrollPositionsRef}
+              scrollPositionRef={pageScrollPositionRefs.current.list}
             >
-              <PlayListPage />
+              <PlayListPage scrollPositionRef={playListScrollPositionRef} />
             </PageViewport>
           ),
           ready: () => (
@@ -189,10 +171,9 @@ function MainWindowApp() {
               key="list"
               pageKey="list"
               pageState="ready"
-              scrollKey="list"
-              scrollPositionsRef={scrollPositionsRef}
+              scrollPositionRef={pageScrollPositionRefs.current.list}
             >
-              <PlayListPage />
+              <PlayListPage scrollPositionRef={playListScrollPositionRef} />
             </PageViewport>
           ),
           play: () => (
@@ -200,10 +181,9 @@ function MainWindowApp() {
               key="list"
               pageKey="list"
               pageState="play"
-              scrollKey="list"
-              scrollPositionsRef={scrollPositionsRef}
+              scrollPositionRef={pageScrollPositionRefs.current.list}
             >
-              <PlayListPage />
+              <PlayListPage scrollPositionRef={playListScrollPositionRef} />
             </PageViewport>
           ),
           error: () => (
@@ -211,10 +191,9 @@ function MainWindowApp() {
               key="list"
               pageKey="list"
               pageState="error"
-              scrollKey="list"
-              scrollPositionsRef={scrollPositionsRef}
+              scrollPositionRef={pageScrollPositionRefs.current.list}
             >
-              <PlayListPage />
+              <PlayListPage scrollPositionRef={playListScrollPositionRef} />
             </PageViewport>
           ),
         })}
