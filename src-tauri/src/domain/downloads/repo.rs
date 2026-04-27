@@ -1,4 +1,6 @@
-use super::model::{DownloadTask, DownloadTaskStatus};
+use super::model::DownloadTask;
+#[cfg(test)]
+use super::model::DownloadTaskStatus;
 use anyhow::Result;
 use appdb::error::{DBError, classify_db_error};
 use std::time::Duration;
@@ -48,6 +50,7 @@ pub async fn find_latest_active_task_for_url(url: &str) -> Result<Option<Downloa
         .find(|task| task.url == url && task.status.is_active()))
 }
 
+#[cfg(test)]
 pub async fn mark_interrupted_tasks() -> Result<Vec<DownloadTask>> {
     let tasks = list_tasks().await?;
     let mut updated = Vec::new();

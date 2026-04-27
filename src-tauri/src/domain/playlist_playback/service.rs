@@ -4,6 +4,8 @@ use crate::domain::downloads::model::DownloadTask;
 #[cfg(not(test))]
 use crate::domain::downloads::repo as download_repo;
 #[cfg(not(test))]
+use crate::domain::downloads::service as download_service;
+#[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
 #[cfg(not(test))]
 use crate::domain::player::event::NowPlayingTrackChangedEvent;
@@ -18,24 +20,30 @@ use anyhow::{Result, anyhow, bail};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 #[cfg(not(test))]
-use std::time::Duration;
-#[cfg(not(test))]
 use tauri::AppHandle;
 #[cfg(not(test))]
 use tauri_specta::Event;
 
 #[cfg(not(test))]
-const DOWNLOAD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
-#[cfg(not(test))]
 const PLAYLIST_PREPARING_MESSAGE: &str = "Preparing...";
 
 #[cfg(not(test))]
 pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylistSession> {
-    let material = build_playlist_playback_material(app, &name).await?;
+    let mut download_changes = download_service::subscribe_download_task_changes();
+    let material = build_playlist_playback_material(app, &name, &mut download_changes).await?;
     let playlist_name = material.playlist_name;
     let track_count = material.tracks.len() as u32;
+    let has_relevant_active_downloads = material.has_relevant_active_downloads;
 
-    player_service::play_tracks(playlist_name.clone(), material.tracks).await?;
+    let session = player_service::play_tracks(playlist_name.clone(), material.tracks).await?;
+    if has_relevant_active_downloads {
+        spawn_playlist_track_refresh(
+            app.clone(),
+            playlist_name.clone(),
+            session,
+            download_changes,
+        );
+    }
 
     Ok(PlayPlaylistSession {
         playlist_name,
@@ -47,6 +55,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
 struct PlaylistPlaybackMaterial {
     playlist_name: String,
     tracks: Vec<PlaybackTrack>,
+    has_relevant_active_downloads: bool,
 }
 
 #[cfg(not(test))]
@@ -71,19 +80,24 @@ pub(crate) struct PlaylistPlaybackInventory {
 async fn build_playlist_playback_material(
     app: &AppHandle,
     playlist_name: &str,
+    download_changes: &mut tokio::sync::broadcast::Receiver<
+        download_service::DownloadTaskChangeSignal,
+    >,
 ) -> Result<PlaylistPlaybackMaterial> {
     let mut source = load_playlist_track_resolution(app, playlist_name).await?;
     let mut preparing_emitted = false;
+    let mut has_relevant_active_downloads = playlist_has_active_downloads(&source.playlist).await?;
 
     if !source.resolution.tracks.is_empty() {
         return Ok(PlaylistPlaybackMaterial {
             playlist_name: source.playlist_name,
             tracks: source.resolution.tracks,
+            has_relevant_active_downloads,
         });
     }
 
     loop {
-        if !playlist_has_active_downloads(&source.playlist).await? {
+        if !has_relevant_active_downloads {
             bail!("{}", source.resolution.failure_description);
         }
 
@@ -92,14 +106,92 @@ async fn build_playlist_playback_material(
             preparing_emitted = true;
         }
 
-        tokio::time::sleep(DOWNLOAD_WAIT_POLL_INTERVAL).await;
+        wait_for_download_task_change(download_changes).await?;
         source = load_playlist_track_resolution(app, playlist_name).await?;
+        has_relevant_active_downloads = playlist_has_active_downloads(&source.playlist).await?;
 
         if !source.resolution.tracks.is_empty() {
             return Ok(PlaylistPlaybackMaterial {
                 playlist_name: source.playlist_name,
                 tracks: source.resolution.tracks,
+                has_relevant_active_downloads,
             });
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn spawn_playlist_track_refresh(
+    app: AppHandle,
+    playlist_name: String,
+    session: player_service::PlaybackSessionHandle,
+    download_changes: tokio::sync::broadcast::Receiver<download_service::DownloadTaskChangeSignal>,
+) {
+    let task_playlist_name = playlist_name.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = refresh_playlist_tracks_until_downloads_finish(
+            app,
+            playlist_name,
+            session,
+            download_changes,
+        )
+        .await
+        {
+            eprintln!(
+                "[playlist_playback] failed to refresh playback tracks for `{task_playlist_name}`: {error}"
+            );
+        }
+    });
+}
+
+#[cfg(not(test))]
+async fn refresh_playlist_tracks_until_downloads_finish(
+    app: AppHandle,
+    playlist_name: String,
+    session: player_service::PlaybackSessionHandle,
+    mut download_changes: tokio::sync::broadcast::Receiver<
+        download_service::DownloadTaskChangeSignal,
+    >,
+) -> Result<()> {
+    loop {
+        wait_for_download_task_change(&mut download_changes).await?;
+        if !player_service::is_session_current(&session)? {
+            return Ok(());
+        }
+
+        let source = load_playlist_track_resolution(&app, &playlist_name).await?;
+        let has_relevant_active_downloads = playlist_has_active_downloads(&source.playlist).await?;
+
+        if !source.resolution.tracks.is_empty() {
+            let updated =
+                player_service::update_session_tracks(&session, source.resolution.tracks)?;
+            if !updated {
+                return Ok(());
+            }
+        }
+
+        if !has_relevant_active_downloads {
+            return Ok(());
+        }
+    }
+}
+
+#[cfg(not(test))]
+async fn wait_for_download_task_change(
+    download_changes: &mut tokio::sync::broadcast::Receiver<
+        download_service::DownloadTaskChangeSignal,
+    >,
+) -> Result<()> {
+    loop {
+        match download_changes.recv().await {
+            Ok(signal) => {
+                let _ = (&signal.task_id, &signal.task_url, &signal.collection_url);
+                return Ok(());
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => return Ok(()),
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                bail!("download task change channel closed");
+            }
         }
     }
 }

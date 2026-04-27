@@ -13,3 +13,7 @@ pub use cmd::*;
 #[cfg(test)]
 #[path = "strategy.test.rs"]
 mod strategy_test;
+
+#[cfg(test)]
+#[path = "service.test.rs"]
+mod service_test;

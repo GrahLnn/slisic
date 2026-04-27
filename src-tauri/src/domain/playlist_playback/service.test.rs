@@ -260,3 +260,84 @@ fn resolve_playlist_playback_inventory_waits_for_matching_downloads_when_tracks_
             .contains("does not contain any playable tracks")
     );
 }
+
+#[test]
+fn resolve_playlist_playback_inventory_sees_downloaded_collection_growth() {
+    let root = temp_root();
+    let folder = "youtube/album";
+    let first_path = root.join(folder).join("track-a.m4a");
+    let second_path = root.join(folder).join("track-b.m4a");
+    std::fs::create_dir_all(root.join(folder)).expect("collection folder should be created");
+    std::fs::write(&first_path, b"ok").expect("first audio file should be created");
+    std::fs::write(&second_path, b"ok").expect("second audio file should be created");
+
+    let album = group("Album", "https://example.com/album", folder);
+    let playlist = PlayList {
+        name: "Focus".to_string(),
+        collections: vec![collection(
+            "Album",
+            "https://example.com/album",
+            folder,
+            vec![],
+        )],
+        groups: vec![],
+        created_at: AutoFill::pending(),
+    };
+    let initial_collection = collection(
+        "Album",
+        "https://example.com/album",
+        folder,
+        vec![music(
+            "Track A",
+            "https://example.com/watch?v=track-a",
+            "track-a.m4a",
+            album.clone(),
+        )],
+    );
+    let refreshed_collection = collection(
+        "Album",
+        "https://example.com/album",
+        folder,
+        vec![
+            music(
+                "Track A",
+                "https://example.com/watch?v=track-a",
+                "track-a.m4a",
+                album.clone(),
+            ),
+            music(
+                "Track B",
+                "https://example.com/watch?v=track-b",
+                "track-b.m4a",
+                album,
+            ),
+        ],
+    );
+    let active_downloads = [download_task(
+        "https://example.com/album",
+        Some("https://example.com/album"),
+        DownloadTaskStatus::Downloading,
+    )];
+
+    let initial = resolve_playlist_playback_inventory(
+        &playlist,
+        std::slice::from_ref(&initial_collection),
+        std::slice::from_ref(&initial_collection),
+        &active_downloads,
+        &root,
+    );
+    let refreshed = resolve_playlist_playback_inventory(
+        &playlist,
+        std::slice::from_ref(&refreshed_collection),
+        std::slice::from_ref(&refreshed_collection),
+        &active_downloads,
+        &root,
+    );
+
+    assert_eq!(initial.tracks.len(), 1);
+    assert!(initial.has_relevant_active_downloads);
+    assert_eq!(refreshed.tracks.len(), 2);
+    assert!(refreshed.has_relevant_active_downloads);
+
+    let _ = std::fs::remove_dir_all(root);
+}

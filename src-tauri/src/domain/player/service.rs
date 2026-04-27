@@ -1,6 +1,5 @@
 #[cfg(not(test))]
 use super::event::NowPlayingTrackChangedEvent;
-#[cfg(not(test))]
 use super::model::PlaybackTrack;
 #[cfg(not(test))]
 use super::strategy::{PlaybackStrategy, RandomPlaybackStrategy};
@@ -15,7 +14,7 @@ use std::path::Path;
 #[cfg(not(test))]
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(test))]
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 #[cfg(not(test))]
 use std::time::Duration;
 #[cfg(not(test))]
@@ -30,7 +29,25 @@ static PLAYER_RUNTIME: OnceLock<Arc<PlayerRuntime>> = OnceLock::new();
 pub struct PlayerRuntime {
     app: AppHandle,
     playback: Mutex<Option<Playback>>,
+    session: Mutex<Option<ActivePlaybackSession>>,
     generation: AtomicU64,
+}
+
+#[cfg(not(test))]
+type SharedPlaybackTracks = Arc<RwLock<Vec<PlaybackTrack>>>;
+
+#[cfg(not(test))]
+struct ActivePlaybackSession {
+    playlist_name: String,
+    generation: u64,
+    tracks: SharedPlaybackTracks,
+}
+
+#[cfg(not(test))]
+#[derive(Clone)]
+pub(crate) struct PlaybackSessionHandle {
+    playlist_name: String,
+    generation: u64,
 }
 
 #[cfg(not(test))]
@@ -39,13 +56,17 @@ pub fn initialize_runtime(app: AppHandle) {
         Arc::new(PlayerRuntime {
             app,
             playback: Mutex::new(None),
+            session: Mutex::new(None),
             generation: AtomicU64::new(0),
         })
     });
 }
 
 #[cfg(not(test))]
-pub async fn play_tracks(playlist_name: String, tracks: Vec<PlaybackTrack>) -> Result<()> {
+pub async fn play_tracks(
+    playlist_name: String,
+    tracks: Vec<PlaybackTrack>,
+) -> Result<PlaybackSessionHandle> {
     if tracks.is_empty() {
         bail!("playback session `{playlist_name}` does not contain any playable tracks");
     }
@@ -58,28 +79,57 @@ pub async fn play_tracks(playlist_name: String, tracks: Vec<PlaybackTrack>) -> R
         eprintln!("[player] failed to stop previous playback before restart: {error}");
     }
 
+    let shared_tracks = Arc::new(RwLock::new(tracks));
+    runtime.replace_active_session(
+        playlist_name.clone(),
+        generation,
+        Arc::clone(&shared_tracks),
+    )?;
+
     let session = PlaybackSession {
-        tracks,
+        tracks: shared_tracks,
         strategy: Box::new(RandomPlaybackStrategy::new()),
     };
     let runtime_for_task = Arc::clone(runtime);
     let playback_for_task = playback.clone();
+    let task_playlist_name = playlist_name.clone();
 
     tauri::async_runtime::spawn(async move {
         if let Err(error) =
             run_playback_session(runtime_for_task, playback_for_task, generation, session).await
         {
-            eprintln!("[player] playback session failed for `{playlist_name}`: {error}");
+            eprintln!("[player] playback session failed for `{task_playlist_name}`: {error}");
         }
     });
 
-    Ok(())
+    Ok(PlaybackSessionHandle {
+        playlist_name,
+        generation,
+    })
+}
+
+#[cfg(not(test))]
+pub(crate) fn update_session_tracks(
+    handle: &PlaybackSessionHandle,
+    tracks: Vec<PlaybackTrack>,
+) -> Result<bool> {
+    if tracks.is_empty() {
+        return Ok(is_session_current(handle)?);
+    }
+
+    runtime()?.replace_session_tracks(handle, tracks)
+}
+
+#[cfg(not(test))]
+pub(crate) fn is_session_current(handle: &PlaybackSessionHandle) -> Result<bool> {
+    runtime()?.is_session_current(handle)
 }
 
 #[cfg(not(test))]
 pub async fn stop_playback() -> Result<bool> {
     let runtime = runtime()?;
     runtime.generation.fetch_add(1, Ordering::SeqCst);
+    runtime.clear_active_session()?;
     let Some(playback) = runtime.current_playback()? else {
         return Ok(false);
     };
@@ -124,12 +174,96 @@ impl PlayerRuntime {
             .map(|playback| playback.clone())
             .map_err(|_| anyhow!("player runtime playback lock is poisoned"))
     }
+
+    fn replace_active_session(
+        &self,
+        playlist_name: String,
+        generation: u64,
+        tracks: SharedPlaybackTracks,
+    ) -> Result<()> {
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
+
+        *session = Some(ActivePlaybackSession {
+            playlist_name,
+            generation,
+            tracks,
+        });
+        Ok(())
+    }
+
+    fn replace_session_tracks(
+        &self,
+        handle: &PlaybackSessionHandle,
+        tracks: Vec<PlaybackTrack>,
+    ) -> Result<bool> {
+        if self.generation.load(Ordering::SeqCst) != handle.generation {
+            return Ok(false);
+        }
+
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
+        let Some(active) = session.as_ref() else {
+            return Ok(false);
+        };
+        if active.generation != handle.generation || active.playlist_name != handle.playlist_name {
+            return Ok(false);
+        }
+
+        let mut current_tracks = active
+            .tracks
+            .write()
+            .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))?;
+        if playback_tracks_match(&current_tracks, &tracks) {
+            return Ok(true);
+        }
+
+        *current_tracks = tracks;
+        Ok(true)
+    }
+
+    fn is_session_current(&self, handle: &PlaybackSessionHandle) -> Result<bool> {
+        if self.generation.load(Ordering::SeqCst) != handle.generation {
+            return Ok(false);
+        }
+
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
+        Ok(session.as_ref().is_some_and(|active| {
+            active.generation == handle.generation && active.playlist_name == handle.playlist_name
+        }))
+    }
+
+    fn clear_active_session(&self) -> Result<()> {
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
+        *session = None;
+        Ok(())
+    }
 }
 
 #[cfg(not(test))]
 struct PlaybackSession {
-    tracks: Vec<PlaybackTrack>,
+    tracks: SharedPlaybackTracks,
     strategy: Box<dyn PlaybackStrategy>,
+}
+
+#[cfg(not(test))]
+impl PlaybackSession {
+    fn tracks_snapshot(&self) -> Result<Vec<PlaybackTrack>> {
+        self.tracks
+            .read()
+            .map(|tracks| tracks.clone())
+            .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))
+    }
 }
 
 #[cfg(not(test))]
@@ -144,7 +278,8 @@ async fn run_playback_session(
             return Ok(());
         }
 
-        let Some(track) = session.strategy.next_track(&session.tracks).cloned() else {
+        let tracks = session.tracks_snapshot()?;
+        let Some(track) = session.strategy.next_track(&tracks).cloned() else {
             return Ok(());
         };
 
@@ -156,6 +291,18 @@ async fn run_playback_session(
             .map_err(|error| anyhow!("failed to play `{}`: {error}", track.music_name))?;
         wait_until_track_finishes(&runtime, &playback, generation, &track.file_path).await?;
     }
+}
+
+pub(crate) fn playback_tracks_match(left: &[PlaybackTrack], right: &[PlaybackTrack]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right.iter()).all(|(left, right)| {
+            left.playlist_name == right.playlist_name
+                && left.music_name == right.music_name
+                && left.music_url == right.music_url
+                && left.file_path == right.file_path
+                && left.start == right.start
+                && left.end == right.end
+        })
 }
 
 #[cfg(not(test))]

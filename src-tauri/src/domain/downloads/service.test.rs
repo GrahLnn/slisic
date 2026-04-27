@@ -3,8 +3,9 @@ use super::naming::{provider_segment, sanitize_path_component};
 use super::repo::{list_tasks, save_task};
 use super::service::{
     derive_youtube_channel_url_from_uploads_playlist, expand_root_entries_to_planned_leafs,
-    extract_olak_playlist_ids, prepare_task_enqueue, resolve_pasted_download_url,
-    resume_download_task, should_reprobe_single_leaf, try_claim_enqueue_url,
+    extract_olak_playlist_ids, leaf_download_parallelism, prepare_task_enqueue,
+    resolve_pasted_download_url, resume_download_task, should_reprobe_single_leaf,
+    should_resume_download_task_after_restart, try_claim_enqueue_url,
 };
 use super::yt_dlp::{
     DownloadProgress, DownloadedLeaf, LeafChapter, LeafProbe, LeafReference, PlaylistRoot,
@@ -55,6 +56,45 @@ fn provider_segment_normalizes_youtube_hosts() {
 fn only_direct_leaf_roots_can_reuse_initial_leaf_probe() {
     assert!(!should_reprobe_single_leaf(CollectionSourceKind::Single));
     assert!(should_reprobe_single_leaf(CollectionSourceKind::List));
+}
+
+#[test]
+fn leaf_download_parallelism_keeps_single_downloads_serial_and_batches_lists() {
+    assert_eq!(
+        leaf_download_parallelism(CollectionSourceKind::Single, 0),
+        0
+    );
+    assert_eq!(
+        leaf_download_parallelism(CollectionSourceKind::Single, 3),
+        1
+    );
+    assert_eq!(leaf_download_parallelism(CollectionSourceKind::List, 3), 3);
+    assert_eq!(leaf_download_parallelism(CollectionSourceKind::List, 8), 4);
+}
+
+#[test]
+fn restart_recovery_resumes_only_unfinished_download_tasks() {
+    assert!(should_resume_download_task_after_restart(
+        DownloadTaskStatus::Queued
+    ));
+    assert!(should_resume_download_task_after_restart(
+        DownloadTaskStatus::Downloading
+    ));
+    assert!(should_resume_download_task_after_restart(
+        DownloadTaskStatus::Interrupted
+    ));
+    assert!(!should_resume_download_task_after_restart(
+        DownloadTaskStatus::Completed
+    ));
+    assert!(!should_resume_download_task_after_restart(
+        DownloadTaskStatus::CompletedWithErrors
+    ));
+    assert!(!should_resume_download_task_after_restart(
+        DownloadTaskStatus::Failed
+    ));
+    assert!(!should_resume_download_task_after_restart(
+        DownloadTaskStatus::Cancelled
+    ));
 }
 
 #[test]

@@ -269,6 +269,7 @@ impl DownloadTask {
         self.refresh_counts();
     }
 
+    #[cfg(test)]
     pub fn mark_interrupted(&mut self) {
         if self.status.is_active() {
             self.status = DownloadTaskStatus::Interrupted;

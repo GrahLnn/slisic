@@ -12,6 +12,7 @@ use std::thread;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const AUDIO_ONLY_FORMAT_SELECTOR: &str = "bestaudio[ext=m4a]/bestaudio";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistRoot {
@@ -164,28 +165,11 @@ impl YtDlpClient for CliYtDlpClient {
             .to_string_lossy()
             .to_string();
         let mut command = self.base_command();
-        command.args([
-            "--no-warnings",
-            "--ignore-errors",
-            "--no-playlist",
-            "--extract-audio",
-            "--audio-format",
-            "m4a",
-            "--audio-quality",
-            "0",
-            "--ffmpeg-location",
-        ]);
-        command.arg(&self.ffmpeg_dir);
-        command.args([
-            "-o",
+        command.args(build_leaf_audio_download_args(
+            &self.ffmpeg_dir,
             &output_template,
-            "--newline",
-            "--progress-template",
-            "download:progress:%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.speed)s|%(progress.eta)s|%(progress.status)s",
-            "--print",
-            "after_move:after_move:%(filepath)s",
             url,
-        ]);
+        ));
 
         let mut child = command.spawn().with_context(|| {
             format!(
@@ -232,6 +216,40 @@ impl YtDlpClient for CliYtDlpClient {
 
         Ok(DownloadedLeaf { absolute_path })
     }
+}
+
+pub(crate) fn build_leaf_audio_download_args(
+    ffmpeg_dir: &Path,
+    output_template: &str,
+    url: &str,
+) -> Vec<String> {
+    let ffmpeg_dir = ffmpeg_dir.to_string_lossy().to_string();
+
+    [
+            "--no-warnings",
+            "--ignore-errors",
+            "--no-playlist",
+            "--format",
+            AUDIO_ONLY_FORMAT_SELECTOR,
+            "--extract-audio",
+            "--audio-format",
+            "m4a",
+            "--audio-quality",
+            "0",
+            "--ffmpeg-location",
+            &ffmpeg_dir,
+            "-o",
+            output_template,
+            "--newline",
+            "--progress-template",
+            "download:progress:%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.speed)s|%(progress.eta)s|%(progress.status)s",
+            "--print",
+            "after_move:after_move:%(filepath)s",
+            url,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 pub fn classify_root_preference(url: &str) -> CollectionSourceKind {

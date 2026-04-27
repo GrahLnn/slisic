@@ -1,7 +1,7 @@
 use super::model::CollectionSourceKind;
 use super::yt_dlp::{
-    RootProbe, classify_root_preference, looks_like_direct_leaf_url, parse_leaf_probe,
-    parse_progress_line, parse_root_probe,
+    RootProbe, build_leaf_audio_download_args, classify_root_preference,
+    looks_like_direct_leaf_url, parse_leaf_probe, parse_progress_line, parse_root_probe,
 };
 use serde_json::json;
 
@@ -166,4 +166,28 @@ fn parses_structured_progress_template_lines() {
     assert_eq!(progress.speed_bytes_per_second, Some(512));
     assert_eq!(progress.eta_seconds, Some(9));
     assert_eq!(progress.phase.as_deref(), Some("downloading"));
+}
+
+#[test]
+fn leaf_audio_download_args_select_audio_only_formats_before_extracting() {
+    let args = build_leaf_audio_download_args(
+        std::path::Path::new("C:/tools/ffmpeg"),
+        "C:/music/%(ext)s",
+        "https://www.youtube.com/watch?v=leaf1",
+    );
+
+    let format_index = args
+        .iter()
+        .position(|arg| arg == "--format")
+        .expect("download args should choose a format explicitly");
+
+    assert_eq!(
+        args.get(format_index + 1).map(String::as_str),
+        Some("bestaudio[ext=m4a]/bestaudio")
+    );
+    assert!(args.iter().any(|arg| arg == "--extract-audio"));
+    assert!(
+        !args.iter().any(|arg| arg.contains("bestvideo")),
+        "audio downloads should never select a video stream"
+    );
 }

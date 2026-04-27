@@ -27,15 +27,23 @@ use std::thread;
 use std::time::Duration;
 #[cfg(not(test))]
 use tauri::AppHandle;
+#[cfg(not(test))]
+use tokio::sync::broadcast;
 use tokio::task;
+#[cfg(not(test))]
+use tokio::task::JoinSet;
 
 #[cfg(not(test))]
 const AUTO_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
+const MAX_PARALLEL_LEAF_DOWNLOADS: usize = 4;
 const GROUP_DISCOVERY_USER_AGENT: &str =
     concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
 #[cfg(not(test))]
 static DOWNLOAD_RUNTIME: OnceLock<DownloadRuntime> = OnceLock::new();
+#[cfg(not(test))]
+static DOWNLOAD_TASK_CHANGES: OnceLock<broadcast::Sender<DownloadTaskChangeSignal>> =
+    OnceLock::new();
 static PENDING_ENQUEUE_URLS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[cfg(not(test))]
@@ -71,6 +79,42 @@ struct DownloadExecutionDeps {
 }
 
 #[cfg(not(test))]
+struct LeafDownloadInput {
+    leaf: DownloadLeaf,
+    probe: LeafProbe,
+    group: Option<Group>,
+    url: String,
+    target_dir: PathBuf,
+    temp_file_stem: String,
+}
+
+#[cfg(not(test))]
+struct CompletedLeafDownload {
+    leaf: DownloadLeaf,
+    probe: LeafProbe,
+    group: Option<Group>,
+    downloaded: super::yt_dlp::DownloadedLeaf,
+    progress: DownloadProgress,
+}
+
+#[cfg(not(test))]
+struct FailedLeafDownload {
+    leaf: DownloadLeaf,
+    error: String,
+}
+
+#[cfg(not(test))]
+type LeafDownloadOutcome = std::result::Result<CompletedLeafDownload, FailedLeafDownload>;
+
+#[cfg(not(test))]
+#[derive(Debug, Clone)]
+pub(crate) struct DownloadTaskChangeSignal {
+    pub(crate) task_id: String,
+    pub(crate) task_url: String,
+    pub(crate) collection_url: Option<String>,
+}
+
+#[cfg(not(test))]
 pub fn initialize_runtime(app: AppHandle) {
     let runtime = DOWNLOAD_RUNTIME.get_or_init(|| DownloadRuntime {
         app: app.clone(),
@@ -79,6 +123,11 @@ pub fn initialize_runtime(app: AppHandle) {
 
     spawn_recovery(runtime.app.clone());
     spawn_auto_update_loop(runtime.app.clone());
+}
+
+#[cfg(not(test))]
+pub(crate) fn subscribe_download_task_changes() -> broadcast::Receiver<DownloadTaskChangeSignal> {
+    download_task_change_sender().subscribe()
 }
 
 #[cfg(not(test))]
@@ -302,8 +351,20 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
         return Ok(());
     }
 
-    let mut failure_count = 0_u32;
+    let mut active_downloads = JoinSet::new();
+    let parallelism = leaf_download_parallelism(plan.source_kind, plan.leaves.len());
     for planned in &plan.leaves {
+        while active_downloads.len() >= parallelism {
+            handle_finished_leaf_download(
+                &mut active_downloads,
+                &mut task_snapshot,
+                &mut collection,
+                plan.source_kind,
+                &save_root,
+            )
+            .await?;
+        }
+
         let mut leaf_snapshot = task_snapshot
             .leafs
             .iter()
@@ -330,7 +391,6 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
                 match run_blocking(move || client.probe_leaf(&url)).await {
                     Ok(probe) => probe,
                     Err(error) => {
-                        failure_count += 1;
                         mark_leaf_failed(&mut task_snapshot, leaf_snapshot, error.to_string())
                             .await?;
 
@@ -351,13 +411,6 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
             }
         };
 
-        leaf_snapshot.title = Some(probe.title.clone());
-        leaf_snapshot.duration_seconds = probe.duration_seconds;
-        leaf_snapshot.chapter_count = Some(probe.chapters.len() as u32);
-        leaf_snapshot.status = DownloadLeafStatus::Downloading;
-        leaf_snapshot.touch();
-        task_snapshot.replace_leaf(leaf_snapshot.clone());
-        repo::save_task(task_snapshot.clone()).await?;
         let group = match planned.group_hint.clone() {
             Some(group) => Some(group),
             None => {
@@ -372,74 +425,45 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
             }
         };
 
+        leaf_snapshot.title = Some(probe.title.clone());
+        leaf_snapshot.duration_seconds = probe.duration_seconds;
+        leaf_snapshot.chapter_count = Some(probe.chapters.len() as u32);
+        leaf_snapshot.status = DownloadLeafStatus::Downloading;
+        leaf_snapshot.touch();
+        task_snapshot.replace_leaf(leaf_snapshot.clone());
+        repo::save_task(task_snapshot.clone()).await?;
+
         let file_stem = sanitize_path_component(&probe.title);
         let target_dir = save_root.join(&collection.folder);
         let leaf_url = planned.url.clone();
         let temp_file_stem = temporary_download_stem(&file_stem, &task_snapshot.id, &planned.id);
         let client = client.clone();
-        let download_result = run_blocking(move || {
-            let mut latest_progress = DownloadProgress::default();
-            let downloaded = client.download_leaf_audio(
-                &leaf_url,
-                &target_dir,
-                &temp_file_stem,
-                &mut |progress| {
-                    latest_progress = progress;
-                },
-            )?;
-            Ok::<_, anyhow::Error>((downloaded, latest_progress))
-        })
-        .await;
+        active_downloads.spawn(download_leaf_audio_worker(
+            client,
+            LeafDownloadInput {
+                leaf: leaf_snapshot,
+                probe,
+                group,
+                url: leaf_url,
+                target_dir,
+                temp_file_stem,
+            },
+        ));
+    }
 
-        let (downloaded, progress) = match download_result {
-            Ok(result) => result,
-            Err(error) => {
-                failure_count += 1;
-                mark_leaf_failed(&mut task_snapshot, leaf_snapshot, error.to_string()).await?;
-
-                if plan.source_kind == CollectionSourceKind::Single {
-                    let last_error = task_snapshot.last_error.clone();
-                    update_task_status(&mut task_snapshot, DownloadTaskStatus::Failed, last_error)
-                        .await?;
-                    return Ok(());
-                }
-                continue;
-            }
-        };
-
-        let music_group = resolve_music_group(group, &collection);
-        let file_name = collection_import::finalize_downloaded_leaf(
-            &collection,
-            &probe.webpage_url,
-            &music_group,
-            &save_root,
-            &file_stem,
-            downloaded.absolute_path,
-        )?;
-        collection_import::persist_downloaded_leaf_music(
+    while !active_downloads.is_empty() {
+        handle_finished_leaf_download(
+            &mut active_downloads,
+            &mut task_snapshot,
             &mut collection,
             plan.source_kind,
-            &probe,
-            &file_name,
-            music_group,
+            &save_root,
         )
         .await?;
-
-        leaf_snapshot.file_name = Some(file_name.clone());
-        leaf_snapshot.relative_path = Some(file_name);
-        leaf_snapshot.downloaded_bytes = progress.downloaded_bytes;
-        leaf_snapshot.total_bytes = progress.total_bytes;
-        leaf_snapshot.speed_bytes_per_second = progress.speed_bytes_per_second;
-        leaf_snapshot.eta_seconds = progress.eta_seconds;
-        leaf_snapshot.status = DownloadLeafStatus::Completed;
-        leaf_snapshot.last_error = None;
-        leaf_snapshot.touch();
-        task_snapshot.replace_leaf(leaf_snapshot);
-        repo::save_task(task_snapshot.clone()).await?;
     }
 
     let completed = task_snapshot.completed_leaves;
-    let next_status = if failure_count == 0 {
+    let next_status = if task_snapshot.failed_leaves == 0 {
         DownloadTaskStatus::Completed
     } else if completed > 0 {
         DownloadTaskStatus::CompletedWithErrors
@@ -448,6 +472,102 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
     };
     let last_error = task_snapshot.last_error.clone();
     update_task_status(&mut task_snapshot, next_status, last_error).await?;
+    Ok(())
+}
+
+#[cfg(not(test))]
+async fn download_leaf_audio_worker(
+    client: Arc<dyn YtDlpClient>,
+    input: LeafDownloadInput,
+) -> LeafDownloadOutcome {
+    let url = input.url.clone();
+    let target_dir = input.target_dir.clone();
+    let temp_file_stem = input.temp_file_stem.clone();
+    let download_result = run_blocking(move || {
+        let mut latest_progress = DownloadProgress::default();
+        let downloaded =
+            client.download_leaf_audio(&url, &target_dir, &temp_file_stem, &mut |progress| {
+                latest_progress = progress;
+            })?;
+        Ok::<_, anyhow::Error>((downloaded, latest_progress))
+    })
+    .await;
+
+    match download_result {
+        Ok((downloaded, progress)) => Ok(CompletedLeafDownload {
+            leaf: input.leaf,
+            probe: input.probe,
+            group: input.group,
+            downloaded,
+            progress,
+        }),
+        Err(error) => Err(FailedLeafDownload {
+            leaf: input.leaf,
+            error: error.to_string(),
+        }),
+    }
+}
+
+#[cfg(not(test))]
+async fn handle_finished_leaf_download(
+    active_downloads: &mut JoinSet<LeafDownloadOutcome>,
+    task_snapshot: &mut DownloadTask,
+    collection: &mut Collection,
+    source_kind: CollectionSourceKind,
+    save_root: &Path,
+) -> Result<()> {
+    let outcome = active_downloads
+        .join_next()
+        .await
+        .context("download worker set was unexpectedly empty")?
+        .context("download worker panicked")?;
+
+    let completed = match outcome {
+        Ok(completed) => completed,
+        Err(failed) => {
+            mark_leaf_failed(task_snapshot, failed.leaf, failed.error).await?;
+
+            if source_kind == CollectionSourceKind::Single {
+                let last_error = task_snapshot.last_error.clone();
+                update_task_status(task_snapshot, DownloadTaskStatus::Failed, last_error).await?;
+            }
+            return Ok(());
+        }
+    };
+
+    let mut leaf_snapshot = completed.leaf;
+    let file_stem = sanitize_path_component(&completed.probe.title);
+    let music_group = resolve_music_group(completed.group, collection);
+    let file_name = collection_import::finalize_downloaded_leaf(
+        collection,
+        &completed.probe.webpage_url,
+        &music_group,
+        save_root,
+        &file_stem,
+        completed.downloaded.absolute_path,
+    )?;
+    collection_import::persist_downloaded_leaf_music(
+        collection,
+        source_kind,
+        &completed.probe,
+        &file_name,
+        music_group,
+    )
+    .await?;
+
+    leaf_snapshot.file_name = Some(file_name.clone());
+    leaf_snapshot.relative_path = Some(file_name);
+    leaf_snapshot.downloaded_bytes = completed.progress.downloaded_bytes;
+    leaf_snapshot.total_bytes = completed.progress.total_bytes;
+    leaf_snapshot.speed_bytes_per_second = completed.progress.speed_bytes_per_second;
+    leaf_snapshot.eta_seconds = completed.progress.eta_seconds;
+    leaf_snapshot.status = DownloadLeafStatus::Completed;
+    leaf_snapshot.last_error = None;
+    leaf_snapshot.touch();
+    task_snapshot.replace_leaf(leaf_snapshot);
+    let saved = repo::save_task(task_snapshot.clone()).await?;
+    publish_download_task_change(&saved);
+    *task_snapshot = saved;
     Ok(())
 }
 
@@ -461,7 +581,9 @@ async fn mark_leaf_failed(
     leaf_snapshot.touch();
     task_snapshot.last_error = Some(error);
     task_snapshot.replace_leaf(leaf_snapshot);
-    repo::save_task(task_snapshot.clone()).await?;
+    let saved = repo::save_task(task_snapshot.clone()).await?;
+    publish_download_task_change(&saved);
+    *task_snapshot = saved;
     Ok(())
 }
 
@@ -751,6 +873,9 @@ async fn update_task_status(
     task.touch();
     task.refresh_counts();
     let saved = repo::save_task(task.clone()).await?;
+    if saved.status.is_terminal() {
+        publish_download_task_change(&saved);
+    }
     *task = saved;
     Ok(())
 }
@@ -804,13 +929,36 @@ fn release_task(task_id: &str) {
 }
 
 #[cfg(not(test))]
+fn download_task_change_sender() -> &'static broadcast::Sender<DownloadTaskChangeSignal> {
+    DOWNLOAD_TASK_CHANGES.get_or_init(|| broadcast::channel(64).0)
+}
+
+#[cfg(not(test))]
+fn publish_download_task_change(task: &DownloadTask) {
+    let _ = download_task_change_sender().send(DownloadTaskChangeSignal {
+        task_id: task.id.to_string(),
+        task_url: task.url.clone(),
+        collection_url: task.collection_url.clone(),
+    });
+}
+
+#[cfg(test)]
+fn publish_download_task_change(_task: &DownloadTask) {}
+
+#[cfg(not(test))]
 fn spawn_recovery(app: AppHandle) {
     let _ = thread::Builder::new()
         .name("download-recovery".to_string())
         .spawn(move || {
             tauri::async_runtime::block_on(async move {
-                if let Err(error) = repo::mark_interrupted_tasks().await {
-                    eprintln!("[downloads] failed to mark interrupted tasks: {error}");
+                match recover_incomplete_download_tasks().await {
+                    Ok(recovered) if recovered > 0 => {
+                        eprintln!("[downloads] resumed {recovered} incomplete download tasks");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        eprintln!("[downloads] failed to resume incomplete download tasks: {error}");
+                    }
                 }
 
                 match resolve_save_root(&app).await {
@@ -837,6 +985,28 @@ fn spawn_recovery(app: AppHandle) {
                 }
             });
         });
+}
+
+#[cfg(not(test))]
+async fn recover_incomplete_download_tasks() -> Result<usize> {
+    let tasks = repo::list_tasks().await?;
+    let mut recovered = 0_usize;
+
+    for mut task in tasks {
+        if !should_resume_download_task_after_restart(task.status) {
+            continue;
+        }
+
+        if task.status == DownloadTaskStatus::Interrupted {
+            let last_error = task.last_error.clone();
+            update_task_status(&mut task, DownloadTaskStatus::Queued, last_error).await?;
+        }
+
+        spawn_task(task.id.to_string())?;
+        recovered += 1;
+    }
+
+    Ok(recovered)
 }
 
 #[cfg(not(test))]
@@ -1000,6 +1170,21 @@ fn normalize_youtube_direct_leaf_url(url: &str) -> Option<String> {
 /// reused when the input was already classified as a direct leaf URL.
 pub(crate) fn should_reprobe_single_leaf(preference: CollectionSourceKind) -> bool {
     preference != CollectionSourceKind::Single
+}
+
+pub(crate) fn leaf_download_parallelism(
+    source_kind: CollectionSourceKind,
+    leaf_count: usize,
+) -> usize {
+    if leaf_count == 0 || source_kind == CollectionSourceKind::Single {
+        return leaf_count.min(1);
+    }
+
+    leaf_count.min(MAX_PARALLEL_LEAF_DOWNLOADS)
+}
+
+pub(crate) fn should_resume_download_task_after_restart(status: DownloadTaskStatus) -> bool {
+    status.is_active() || status == DownloadTaskStatus::Interrupted
 }
 
 impl GroupCatalog {
