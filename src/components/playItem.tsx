@@ -42,6 +42,8 @@ type PlayItemTextProps = Pick<
   PlayItemBaseProps,
   | "handoffTone"
   | "isPlaybackPreparing"
+  | "onClick"
+  | "onPointerDown"
   | "onTorphStageChange"
   | "playbackIconWidthText"
   | "showPlaybackIcons"
@@ -59,7 +61,8 @@ type PlaybackIconLayerBox = {
   width: number;
 };
 
-const PLAYBACK_ICON_LAYER_VERTICAL_GAP = 12;
+const PLAYBACK_ICON_LAYER_VERTICAL_GAP = 4;
+const PLAY_ITEM_HEART_ACTIVE_COLOR = "#f91880";
 
 export function resolvePlayItemColorHandoff(args: {
   targetColor: string;
@@ -240,9 +243,7 @@ function PlayItemFrame({
   className,
   children,
   layoutId,
-  onClick,
   onContextMenu,
-  onPointerDown,
   ...domProps
 }: PlayItemFrameProps) {
   const frameProjection = resolvePlayItemFrameProjection({ layoutId });
@@ -252,9 +253,7 @@ function PlayItemFrame({
       className={cn(className)}
       layout={frameProjection.layout}
       layoutId={frameProjection.layoutId}
-      onClick={onClick}
       onContextMenu={createContextMenuHandler(onContextMenu)}
-      onPointerDown={onPointerDown}
       {...domProps}
     >
       {children}
@@ -262,9 +261,63 @@ function PlayItemFrame({
   );
 }
 
+function PlayItemFn({
+  activeColor,
+  icon,
+  onClick,
+}: {
+  activeColor?: string;
+  icon: ReactNode;
+  onClick?: () => void;
+}) {
+  const [isActive, setIsActive] = useState(false);
+  const inactiveColorRef = useRef<string | undefined>(undefined);
+  const animatedColor =
+    activeColor && (isActive || inactiveColorRef.current)
+      ? isActive
+        ? activeColor
+        : inactiveColorRef.current
+      : undefined;
+
+  return (
+    <motion.div
+      className="p-2"
+      animate={animatedColor ? { color: animatedColor, opacity: 0.7 } : { opacity: 0.7 }}
+      whileHover={{
+        scale: 1.1,
+        opacity: 1,
+        transition: { duration: 0.1 },
+      }}
+      whileTap={{
+        scale: 1.3,
+        transition: { duration: 0.08, ease: "easeOut" },
+      }}
+      transition={{
+        color: { duration: 0.25, ease: "easeOut" },
+        opacity: { duration: 0.5 },
+        scale: { duration: 0.18, ease: "easeOut" },
+      }}
+      initial={{ opacity: 0.7 }}
+      onPointerDown={(event) => {
+        if (event.button === 0 && activeColor) {
+          inactiveColorRef.current ||= window.getComputedStyle(event.currentTarget).color;
+          setIsActive((current) => !current);
+        }
+      }}
+      onClick={() => {
+        onClick?.();
+      }}
+    >
+      {icon}
+    </motion.div>
+  );
+}
+
 function PlayItemText({
   handoffTone = null,
   isPlaybackPreparing = false,
+  onClick,
+  onPointerDown,
   onTorphStageChange,
   playbackIconWidthText,
   showPlaybackIcons = false,
@@ -355,6 +408,8 @@ function PlayItemText({
       <div
         ref={scope}
         className={cn("relative inline-flex", collectionTitleTextClassName, textClassName)}
+        onClick={onClick}
+        onPointerDown={onPointerDown}
       >
         <Torph
           text={text}
@@ -371,24 +426,33 @@ function PlayItemText({
             {shouldRenderPlaybackIconLayer && playbackIconLayerBox && !isPlaybackPreparing && (
               <motion.div
                 aria-hidden
-                className="pointer-events-none fixed z-10 flex max-w-[100vw] items-center justify-center"
+                className="fixed z-10 flex max-w-[100vw] items-center justify-center"
                 style={{
                   left: playbackIconLayerBox.left,
                   top: playbackIconLayerBox.top,
                   width: playbackIconLayerBox.width,
                 }}
                 initial={{ opacity: 0 }}
-                animate={{ opacity: 0.7 }}
+                animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.3, ease: "easeOut" }}
+                onClick={(event) => {
+                  event.stopPropagation();
+                }}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                }}
               >
-                <div className="flex w-full items-center justify-between px-2">
+                <div className="flex w-full items-center justify-between">
                   <div>
-                    <icons.suitHearts size={12} />
+                    <PlayItemFn
+                      activeColor={PLAY_ITEM_HEART_ACTIVE_COLOR}
+                      icon={<icons.suitHearts size={14} />}
+                    />
                   </div>
-                  <div className="flex items-center gap-4">
-                    <icons.waveformLines size={12} />
-                    <icons.brush2 size={12} />
+                  <div className="flex items-center">
+                    <PlayItemFn icon={<icons.waveformLines size={14} />} />
+                    <PlayItemFn icon={<icons.brush2 size={14} />} />
                   </div>
                 </div>
               </motion.div>
@@ -420,14 +484,14 @@ export function PlayItem({
     <PlayItemFrame
       className={className}
       layoutId={layoutId}
-      onClick={onClick}
       onContextMenu={onContextMenu}
-      onPointerDown={onPointerDown}
       {...domProps}
     >
       <PlayItemText
         handoffTone={handoffTone}
         isPlaybackPreparing={isPlaybackPreparing}
+        onClick={onClick}
+        onPointerDown={onPointerDown}
         onTorphStageChange={onTorphStageChange}
         playbackIconWidthText={playbackIconWidthText}
         showPlaybackIcons={showPlaybackIcons}
