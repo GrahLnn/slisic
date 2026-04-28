@@ -81,6 +81,7 @@ export const commands = {
 	addExclude: (music: Music) => typedError<Exclude, string>(__TAURI_INVOKE("add_exclude", { music })),
 	removeExclude: (music: Music) => typedError<boolean, string>(__TAURI_INVOKE("remove_exclude", { music })),
 	playPlaylist: (name: string) => typedError<PlayPlaylistSession, string>(__TAURI_INVOKE("play_playlist", { name })),
+	setPlaybackContinuationMode: (mode: PlaybackContinuationMode) => typedError<null, string>(__TAURI_INVOKE("set_playback_continuation_mode", { mode })),
 	stopPlayback: () => typedError<boolean, string>(__TAURI_INVOKE("stop_playback")),
 	enqueueCollectionDownload: (url: string) => typedError<EnqueuedCollectionDownload, string>(__TAURI_INVOKE("enqueue_collection_download", { url })),
 	probeDownloadResource: (url: string) => typedError<DownloadResourceProbe, string>(__TAURI_INVOKE("probe_download_resource", { url })),
@@ -260,6 +261,8 @@ export type PlayPlaylistSession = {
 	playlist_name: string,
 	track_count: number,
 };
+
+export type PlaybackContinuationMode = "random" | "repeatCurrent";
 
 export type WindowKindInfo = {
 	window: WindowName | null,

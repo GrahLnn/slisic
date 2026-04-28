@@ -1,5 +1,6 @@
+use super::model::PlaybackContinuationMode;
 use super::model::PlaybackTrack;
-use super::strategy::{PlaybackStrategy, RandomPlaybackStrategy};
+use super::strategy::{PlaybackStrategy, PlaybackStrategySet, RandomPlaybackStrategy};
 use std::path::PathBuf;
 
 fn track(name: &str) -> PlaybackTrack {
@@ -82,6 +83,41 @@ fn random_strategy_resets_when_track_count_changes() {
     let next = strategy
         .next_track(&resized_tracks)
         .expect("strategy should recover after track count changes");
+
+    assert!(
+        resized_tracks
+            .iter()
+            .any(|track| track.music_url == next.music_url)
+    );
+}
+
+#[test]
+fn playback_strategy_set_repeats_current_track_in_repeat_current_mode() {
+    let mut strategy = PlaybackStrategySet::new();
+    let tracks = vec![track("a"), track("b"), track("c")];
+
+    let first = strategy
+        .next_track(PlaybackContinuationMode::Random, &tracks)
+        .expect("first track should exist");
+    let repeated = strategy
+        .next_track(PlaybackContinuationMode::RepeatCurrent, &tracks)
+        .expect("repeat mode should keep the current track");
+
+    assert_eq!(repeated.music_url, first.music_url);
+}
+
+#[test]
+fn playback_strategy_set_falls_back_to_random_when_current_track_disappears() {
+    let mut strategy = PlaybackStrategySet::new();
+    let original_tracks = vec![track("a")];
+    let resized_tracks = vec![track("b"), track("c")];
+
+    let _ = strategy
+        .next_track(PlaybackContinuationMode::Random, &original_tracks)
+        .expect("first track should exist");
+    let next = strategy
+        .next_track(PlaybackContinuationMode::RepeatCurrent, &resized_tracks)
+        .expect("repeat mode should recover when the current track is removed");
 
     assert!(
         resized_tracks

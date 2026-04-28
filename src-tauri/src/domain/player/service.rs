@@ -1,8 +1,10 @@
 #[cfg(not(test))]
 use super::event::NowPlayingTrackChangedEvent;
+#[cfg(not(test))]
+use super::model::PlaybackContinuationMode;
 use super::model::PlaybackTrack;
 #[cfg(not(test))]
-use super::strategy::{PlaybackStrategy, RandomPlaybackStrategy};
+use super::strategy::PlaybackStrategySet;
 #[cfg(not(test))]
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 #[cfg(not(test))]
@@ -30,6 +32,7 @@ pub struct PlayerRuntime {
     app: AppHandle,
     playback: Mutex<Option<Playback>>,
     session: Mutex<Option<ActivePlaybackSession>>,
+    continuation_mode: RwLock<PlaybackContinuationMode>,
     generation: AtomicU64,
 }
 
@@ -57,6 +60,7 @@ pub fn initialize_runtime(app: AppHandle) {
             app,
             playback: Mutex::new(None),
             session: Mutex::new(None),
+            continuation_mode: RwLock::new(PlaybackContinuationMode::Random),
             generation: AtomicU64::new(0),
         })
     });
@@ -88,7 +92,7 @@ pub async fn play_tracks(
 
     let session = PlaybackSession {
         tracks: shared_tracks,
-        strategy: Box::new(RandomPlaybackStrategy::new()),
+        strategy: PlaybackStrategySet::new(),
     };
     let runtime_for_task = Arc::clone(runtime);
     let playback_for_task = playback.clone();
@@ -140,6 +144,11 @@ pub async fn stop_playback() -> Result<bool> {
         .map_err(|error| anyhow!("failed to stop playback: {error}"))?;
 
     Ok(true)
+}
+
+#[cfg(not(test))]
+pub fn set_playback_continuation_mode(mode: PlaybackContinuationMode) -> Result<()> {
+    runtime()?.set_continuation_mode(mode)
 }
 
 #[cfg(not(test))]
@@ -248,12 +257,28 @@ impl PlayerRuntime {
         *session = None;
         Ok(())
     }
+
+    fn set_continuation_mode(&self, mode: PlaybackContinuationMode) -> Result<()> {
+        let mut current = self
+            .continuation_mode
+            .write()
+            .map_err(|_| anyhow!("player runtime continuation mode lock is poisoned"))?;
+        *current = mode;
+        Ok(())
+    }
+
+    fn continuation_mode(&self) -> Result<PlaybackContinuationMode> {
+        self.continuation_mode
+            .read()
+            .map(|mode| *mode)
+            .map_err(|_| anyhow!("player runtime continuation mode lock is poisoned"))
+    }
 }
 
 #[cfg(not(test))]
 struct PlaybackSession {
     tracks: SharedPlaybackTracks,
-    strategy: Box<dyn PlaybackStrategy>,
+    strategy: PlaybackStrategySet,
 }
 
 #[cfg(not(test))]
@@ -278,8 +303,9 @@ async fn run_playback_session(
             return Ok(());
         }
 
+        let mode = runtime.continuation_mode()?;
         let tracks = session.tracks_snapshot()?;
-        let Some(track) = session.strategy.next_track(&tracks).cloned() else {
+        let Some(track) = session.strategy.next_track(mode, &tracks) else {
             return Ok(());
         };
 

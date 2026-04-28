@@ -7,6 +7,7 @@ import {
   listenNowPlayingTrackChanged,
   MainStateT,
   persistSavePath,
+  setPlaybackContinuationMode,
   sig,
   stopPlayback,
 } from "./events";
@@ -121,8 +122,23 @@ function requestPlaybackStop() {
     });
 }
 
+function requestPlaybackContinuationMode(mode: Parameters<typeof setPlaybackContinuationMode>[0]) {
+  void setPlaybackContinuationMode(mode)
+    .then(() => undefined)
+    .catch((error) => {
+      console.error("Failed to set playback continuation mode", {
+        mode,
+        error,
+      });
+    });
+}
+
 function shouldStopPlaybackForSnapshot(snapshot: ActorSnapshot) {
   return snapshot.value === "play" && snapshot.context.playingPlaylistName !== null;
+}
+
+function shouldRestoreRandomPlaybackForSnapshot(snapshot: ActorSnapshot) {
+  return snapshot.value === "spectrum";
 }
 
 function attachNowPlayingTrackListener() {
@@ -144,7 +160,11 @@ function attachNowPlayingTrackListener() {
 export const action = {
   run: () => {
     ensureStarted();
-    if (shouldStopPlaybackForSnapshot(actor.getSnapshot())) {
+    const snapshot = actor.getSnapshot();
+    if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
+      requestPlaybackContinuationMode("random");
+    }
+    if (shouldStopPlaybackForSnapshot(snapshot)) {
       requestPlaybackStop();
     }
     actor.send(sig.mainx.run);
@@ -152,7 +172,11 @@ export const action = {
   openCreate: (playlistName?: string) => {
     ensureStarted();
     pasteDownloadAction.reset();
-    if (shouldStopPlaybackForSnapshot(actor.getSnapshot())) {
+    const snapshot = actor.getSnapshot();
+    if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
+      requestPlaybackContinuationMode("random");
+    }
+    if (shouldStopPlaybackForSnapshot(snapshot)) {
       requestPlaybackStop();
     }
     if (playlistName) {
@@ -165,7 +189,11 @@ export const action = {
   openPlaylist: (playlistName: string) => {
     ensureStarted();
     pasteDownloadAction.reset();
-    if (shouldStopPlaybackForSnapshot(actor.getSnapshot())) {
+    const snapshot = actor.getSnapshot();
+    if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
+      requestPlaybackContinuationMode("random");
+    }
+    if (shouldStopPlaybackForSnapshot(snapshot)) {
       requestPlaybackStop();
     }
     send(openPlaylist.load(playlistName));
@@ -174,6 +202,9 @@ export const action = {
     ensureStarted();
     pasteDownloadAction.reset();
     const snapshot = actor.getSnapshot();
+    if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
+      requestPlaybackContinuationMode("random");
+    }
     if (snapshot.value === "play" && snapshot.context.playingPlaylistName === playlistName) {
       requestPlaybackStop();
       actor.send(sig.mainx.back);
@@ -184,11 +215,18 @@ export const action = {
   },
   openSpectrum: () => {
     ensureStarted();
+    if (actor.getSnapshot().value === "play") {
+      requestPlaybackContinuationMode("repeatCurrent");
+    }
     actor.send(sig.mainx.openspectrum);
   },
   back: () => {
     ensureStarted();
-    if (shouldStopPlaybackForSnapshot(actor.getSnapshot())) {
+    const snapshot = actor.getSnapshot();
+    if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
+      requestPlaybackContinuationMode("random");
+    }
+    if (shouldStopPlaybackForSnapshot(snapshot)) {
       requestPlaybackStop();
     }
     actor.send(sig.mainx.back);

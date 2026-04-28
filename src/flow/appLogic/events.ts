@@ -16,6 +16,7 @@ import {
   type Collection,
   type NowPlayingTrackChangedEvent,
   type PlayList,
+  type PlaybackContinuationMode,
   type PlayPlaylistSession,
 } from "@/src/cmd";
 import { getName } from "@tauri-apps/api/app";
@@ -105,6 +106,19 @@ export async function stopPlayback(): Promise<boolean> {
 
   return result.match({
     Ok: (stopped) => stopped,
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+}
+
+export async function setPlaybackContinuationMode(
+  mode: PlaybackContinuationMode,
+): Promise<boolean> {
+  const result = await crab.setPlaybackContinuationMode(mode);
+
+  return result.match({
+    Ok: () => true,
     Err: (error) => {
       throw new Error(error);
     },
