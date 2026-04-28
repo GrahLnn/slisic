@@ -18,7 +18,7 @@ import {
 } from "@/src/flow/appLogic/core";
 import { collectionTitleLayoutTransition } from "./collectionTitle";
 import { resolveBackActionVisualState } from "./ListConfig.back-action";
-import { BackActionIcon, BackActionTraceOwner } from "./ListConfig.back-action-icon";
+import { BackActionIcon } from "./ListConfig.back-action-icon";
 import {
   ArcTrackList,
   type ArcTrackPopInsertionPlanner,
@@ -486,10 +486,6 @@ export function ListConfig() {
         !isPresent && "pointer-events-none",
       )}
     >
-      <BackActionTraceOwner
-        candidateItems={candidateItems}
-        isBackActionParsing={viewModel.isBackActionParsing}
-      />
       <div className={cn("relative z-20 flex flex-col")}>
         <motion.div {...contentFadeProps}>
           <button

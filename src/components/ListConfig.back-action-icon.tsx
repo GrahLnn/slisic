@@ -146,31 +146,12 @@ function BackActionProcessingOwner() {
     };
   }, []);
 
-  useEffect(() => {
-    recordBackActionTrace("back-action-visual", {
-      isParsing: true,
-      flickerCycle,
-      visual: "processing",
-      visualKey: "processing",
-    });
-    recordBackActionTrace("back-action-flicker-cycle", {
-      flickerCycle,
-      cellOpacities: BACK_ACTION_PROCESSING_GRID_CELLS.map((_, index) =>
-        resolveBackActionProcessingCellOpacity(index, flickerCycle),
-      ),
-    });
-  }, [flickerCycle]);
-
   return (
     <motion.span
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={backActionProcessingTransition}
-      data-back-action-trace-visual="processing"
-      data-back-action-trace-visual-key="processing"
-      data-back-action-trace-flicker-cycle={String(flickerCycle)}
-      data-back-action-trace-is-parsing="true"
       className="absolute inset-0 block"
     >
       <BackActionProcessingGrid flickerCycle={flickerCycle} />
@@ -179,26 +160,13 @@ function BackActionProcessingOwner() {
 }
 
 function BackActionSymbolOwner({ visualState }: { visualState: BackActionVisualState }) {
-  useEffect(() => {
-    recordBackActionTrace("back-action-visual", {
-      isParsing: false,
-      flickerCycle: 0,
-      visual: visualState.kind,
-      visualKey: visualState.key,
-    });
-  }, [visualState.key, visualState.kind]);
-
   return (
-    <span
-      data-back-action-trace-visual={visualState.kind}
-      data-back-action-trace-visual-key={visualState.key}
-      data-back-action-trace-flicker-cycle="0"
-      data-back-action-trace-is-parsing="false"
-      className="absolute inset-0 block"
-    >
-      {visualState.kind === "check"
-        ? <BackActionCheckIcon replayKey={visualState.key} />
-        : <BackActionArrowIcon replayKey={visualState.key} />}
+    <span className="absolute inset-0 block">
+      {visualState.kind === "check" ? (
+        <BackActionCheckIcon replayKey={visualState.key} />
+      ) : (
+        <BackActionArrowIcon replayKey={visualState.key} />
+      )}
     </span>
   );
 }
@@ -207,9 +175,11 @@ export function BackActionIcon({ visualState }: { visualState: BackActionVisualS
   return (
     <span className="relative block size-4.5">
       <AnimatePresence initial={false} mode="wait">
-        {visualState.kind === "processing"
-          ? <BackActionProcessingOwner key="processing" />
-          : <BackActionSymbolOwner key={visualState.kind} visualState={visualState} />}
+        {visualState.kind === "processing" ? (
+          <BackActionProcessingOwner key="processing" />
+        ) : (
+          <BackActionSymbolOwner key={visualState.kind} visualState={visualState} />
+        )}
       </AnimatePresence>
     </span>
   );

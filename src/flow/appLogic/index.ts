@@ -52,6 +52,7 @@ function summarizeContext(context: ActorSnapshot["context"]) {
     pendingPlaylistName: context.pendingPlaylistName,
     playingPlaylistName: context.playingPlaylistName,
     nowPlayingTrackName: context.nowPlayingTrackName,
+    nowPlayingTrackUrl: context.nowPlayingTrackUrl,
     error: context.error,
     titleToneHandoffLayoutId: context.titleToneHandoff?.layoutId ?? null,
     titleToneHandoffTone: context.titleToneHandoff?.tone ?? null,
@@ -73,7 +74,11 @@ function summarizeContext(context: ActorSnapshot["context"]) {
   };
 }
 
-function attachDebugLogger() {
+export function attachDebugLogger() {
+  if (unsubscribeDebug !== null) {
+    return;
+  }
+
   const initialSnapshot = actor.getSnapshot();
   let prevState = formatStateValue(initialSnapshot.value);
   let prevContextSummary = summarizeContext(initialSnapshot.context);
@@ -268,7 +273,6 @@ export function ensureStarted() {
   }
 
   actor.start();
-  attachDebugLogger();
   attachNowPlayingTrackListener();
   started = true;
 }

@@ -4,7 +4,6 @@ import {
   useState,
   type MouseEvent,
   type MouseEventHandler,
-  type PointerEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -20,7 +19,6 @@ import {
 import { resolvePlayItemFrameProjection } from "./playItem.motion";
 import { Torph, type TorphStage } from "@grahlnn/comps";
 import { icons } from "@/src/assets/icons";
-import { captureTorphHostFrames, recordTorphHostTrace } from "@/src/debug/torphTrace";
 import { useWindowPointerPresence } from "./windowPointerPresence";
 
 type PlayItemBaseProps = Omit<HTMLMotionProps<"div">, "children"> & {
@@ -31,6 +29,7 @@ type PlayItemBaseProps = Omit<HTMLMotionProps<"div">, "children"> & {
   textClassName?: string;
   showPlaybackIcons?: boolean;
   playbackIconWidthText?: string;
+  isPlaybackPreparing?: boolean;
   onTorphStageChange?: (stage: TorphStage) => void;
 };
 
@@ -42,6 +41,7 @@ type PlayItemFrameProps = Omit<HTMLMotionProps<"div">, "children"> & {
 type PlayItemTextProps = Pick<
   PlayItemBaseProps,
   | "handoffTone"
+  | "isPlaybackPreparing"
   | "onTorphStageChange"
   | "playbackIconWidthText"
   | "showPlaybackIcons"
@@ -222,64 +222,18 @@ function arePlaybackIconLayerBoxesEqual(
   );
 }
 
-function snapshotPlayItemTextShell(node: HTMLElement) {
-  const rect = node.getBoundingClientRect();
-  const style = window.getComputedStyle(node);
-
-  return {
-    rect: {
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      height: rect.height,
-      top: rect.top,
-      right: rect.right,
-      bottom: rect.bottom,
-      left: rect.left,
-    },
-    offsetWidth: node.offsetWidth,
-    scrollWidth: node.scrollWidth,
-    clientWidth: node.clientWidth,
-    display: style.display,
-    width: style.width,
-    font: readPretextFont(style),
-    fontWeight: style.fontWeight,
-    fontVariationSettings: style.fontVariationSettings,
-    letterSpacing: style.letterSpacing,
-    transitionProperty: style.transitionProperty,
-    transitionDuration: style.transitionDuration,
-    transform: style.transform,
-    willChange: style.willChange,
-  };
-}
-
-function recordPlayItemTextShellTrace(
-  event: string,
-  args: {
-    node: HTMLElement;
-    playbackIconWidthText?: string;
-    showPlaybackIcons: boolean;
-    text: string;
-    extra?: Record<string, unknown>;
-  },
-) {
-  if (!args.showPlaybackIcons && !args.playbackIconWidthText) {
-    return;
-  }
-
-  recordTorphHostTrace(event, {
-    text: args.text,
-    playbackIconWidthText: args.playbackIconWidthText ?? null,
-    showPlaybackIcons: args.showPlaybackIcons,
-    textShell: snapshotPlayItemTextShell(args.node),
-    pretextWidth:
-      args.playbackIconWidthText &&
-      measurePlayItemTextWidthWithPretext({
-        source: args.node,
-        text: args.playbackIconWidthText,
-      }),
-    ...args.extra,
-  });
+export function shouldShowPlaybackIconLayer(args: {
+  hasLayerBox: boolean;
+  isWindowPointerInside: boolean;
+  showPlaybackIcons: boolean;
+  torphStage: TorphStage;
+}) {
+  return (
+    args.showPlaybackIcons &&
+    args.hasLayerBox &&
+    args.isWindowPointerInside &&
+    args.torphStage !== "prepare"
+  );
 }
 
 function PlayItemFrame({
@@ -310,6 +264,7 @@ function PlayItemFrame({
 
 function PlayItemText({
   handoffTone = null,
+  isPlaybackPreparing = false,
   onTorphStageChange,
   playbackIconWidthText,
   showPlaybackIcons = false,
@@ -320,6 +275,7 @@ function PlayItemText({
   const [playbackIconLayerBox, setPlaybackIconLayerBox] = useState<
     PlaybackIconLayerBox | undefined
   >();
+  const [torphStage, setTorphStage] = useState<TorphStage>("idle");
   const portalHost = typeof document === "undefined" ? null : document.body;
   const latestMeasuredTextWidthRef = useRef<number | undefined>(undefined);
   const scope = usePlayItemColorHandoff({
@@ -327,8 +283,14 @@ function PlayItemText({
     handoffTone,
   });
   const isWindowPointerInside = useWindowPointerPresence(
-    showPlaybackIcons && playbackIconLayerBox !== undefined,
+    showPlaybackIcons && playbackIconLayerBox !== undefined && torphStage !== "prepare",
   );
+  const shouldRenderPlaybackIconLayer = shouldShowPlaybackIconLayer({
+    hasLayerBox: playbackIconLayerBox !== undefined,
+    isWindowPointerInside,
+    showPlaybackIcons,
+    torphStage,
+  });
 
   useLayoutEffect(() => {
     const node = scope.current;
@@ -388,111 +350,16 @@ function PlayItemText({
     };
   }, [playbackIconWidthText, scope, showPlaybackIcons]);
 
-  const handleTextShellPointerEnter = (event: PointerEvent<HTMLDivElement>) => {
-    recordPlayItemTextShellTrace("play-item-text-shell-pointer-enter", {
-      node: event.currentTarget,
-      playbackIconWidthText,
-      showPlaybackIcons,
-      text,
-      extra: {
-        pointerType: event.pointerType,
-      },
-    });
-    captureTorphHostFrames("play-item-text-shell-hover-enter", {
-      frames: 36,
-      payload: {
-        text,
-        playbackIconWidthText: playbackIconWidthText ?? null,
-        showPlaybackIcons,
-      },
-    });
-  };
-
-  const handleTextShellPointerLeave = (event: PointerEvent<HTMLDivElement>) => {
-    recordPlayItemTextShellTrace("play-item-text-shell-pointer-leave", {
-      node: event.currentTarget,
-      playbackIconWidthText,
-      showPlaybackIcons,
-      text,
-      extra: {
-        pointerType: event.pointerType,
-      },
-    });
-    captureTorphHostFrames("play-item-text-shell-hover-leave", {
-      frames: 36,
-      payload: {
-        text,
-        playbackIconWidthText: playbackIconWidthText ?? null,
-        showPlaybackIcons,
-      },
-    });
-  };
-
   return (
     <>
       <div
         ref={scope}
-        data-torph-trace-text-host
-        data-torph-trace-text={text}
-        data-torph-trace-text-playback-icons={showPlaybackIcons}
         className={cn("relative inline-flex", collectionTitleTextClassName, textClassName)}
-        onPointerEnter={handleTextShellPointerEnter}
-        onPointerLeave={handleTextShellPointerLeave}
-        onTransitionEnd={(event) => {
-          recordPlayItemTextShellTrace("play-item-text-shell-transition-end", {
-            node: event.currentTarget,
-            playbackIconWidthText,
-            showPlaybackIcons,
-            text,
-            extra: {
-              propertyName: event.propertyName,
-            },
-          });
-        }}
-        onTransitionRun={(event) => {
-          recordPlayItemTextShellTrace("play-item-text-shell-transition-run", {
-            node: event.currentTarget,
-            playbackIconWidthText,
-            showPlaybackIcons,
-            text,
-            extra: {
-              propertyName: event.propertyName,
-            },
-          });
-        }}
-        onTransitionStart={(event) => {
-          recordPlayItemTextShellTrace("play-item-text-shell-transition-start", {
-            node: event.currentTarget,
-            playbackIconWidthText,
-            showPlaybackIcons,
-            text,
-            extra: {
-              propertyName: event.propertyName,
-            },
-          });
-        }}
       >
         <Torph
-          debugLabel="play-item-text-shell"
-          debugMeta={{
-            playbackIconWidthText: playbackIconWidthText ?? null,
-            showPlaybackIcons,
-            text,
-          }}
           text={text}
           onStageChange={(stage) => {
-            const node = scope.current;
-            if (node) {
-              recordPlayItemTextShellTrace("play-item-text-shell-torph-stage", {
-                node,
-                playbackIconWidthText,
-                showPlaybackIcons,
-                text,
-                extra: {
-                  stage,
-                },
-              });
-            }
+            setTorphStage(stage);
             onTorphStageChange?.(stage);
           }}
         />
@@ -501,7 +368,7 @@ function PlayItemText({
       {portalHost &&
         createPortal(
           <AnimatePresence>
-            {showPlaybackIcons && playbackIconLayerBox && isWindowPointerInside && (
+            {shouldRenderPlaybackIconLayer && playbackIconLayerBox && !isPlaybackPreparing && (
               <motion.div
                 aria-hidden
                 className="pointer-events-none fixed z-10 flex max-w-[100vw] items-center justify-center"
@@ -541,6 +408,7 @@ export function PlayItem({
   layoutId,
   tone = "solid",
   handoffTone = null,
+  isPlaybackPreparing = false,
   text,
   textClassName,
   playbackIconWidthText,
@@ -559,6 +427,7 @@ export function PlayItem({
     >
       <PlayItemText
         handoffTone={handoffTone}
+        isPlaybackPreparing={isPlaybackPreparing}
         onTorphStageChange={onTorphStageChange}
         playbackIconWidthText={playbackIconWidthText}
         showPlaybackIcons={showPlaybackIcons}

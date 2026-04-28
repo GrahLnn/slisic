@@ -6,24 +6,21 @@ export interface PlayListPlaybackSurfaceState {
   phase: PlayListPlaybackSurfacePhase;
   playlistName: string | null;
   displayedTrackName: string | null;
+  displayedTrackIsPlayable: boolean;
 }
 
 export interface PlayListPlaybackSurfaceSnapshot {
   phase: Exclude<PlayListPlaybackSurfacePhase, "inactive">;
   playlistName: string;
   displayedTrackName: string | null;
-}
-
-export interface PlayListPlaybackSurfaceTracePayload {
-  playbackTargetKey: string;
-  phase: PlayListPlaybackSurfacePhase;
-  containerScrollTop: number;
+  displayedTrackIsPlayable: boolean;
 }
 
 export const INACTIVE_PLAYBACK_SURFACE: PlayListPlaybackSurfaceState = {
   phase: "inactive",
   playlistName: null,
   displayedTrackName: null,
+  displayedTrackIsPlayable: false,
 };
 
 export function hasVisiblePlaylist(
@@ -54,8 +51,11 @@ export function resolveMachinePlaybackTarget(args: {
 export function syncPlaybackSurfaceState(args: {
   current: PlayListPlaybackSurfaceState;
   machinePlaybackTarget: string | null;
-  nowPlayingTrackName: string | null;
+  nowPlayingTrack: { name: string; url: string } | null;
 }) {
+  const displayedTrackName = args.nowPlayingTrack?.name ?? null;
+  const displayedTrackIsPlayable = !!args.nowPlayingTrack?.url;
+
   if (args.machinePlaybackTarget !== null) {
     if (
       args.current.playlistName !== args.machinePlaybackTarget ||
@@ -64,17 +64,20 @@ export function syncPlaybackSurfaceState(args: {
       return {
         phase: "playing",
         playlistName: args.machinePlaybackTarget,
-        displayedTrackName: args.nowPlayingTrackName,
+        displayedTrackName,
+        displayedTrackIsPlayable,
       } satisfies PlayListPlaybackSurfaceState;
     }
 
     if (
-      args.nowPlayingTrackName !== null &&
-      args.current.displayedTrackName !== args.nowPlayingTrackName
+      displayedTrackName !== null &&
+      (args.current.displayedTrackName !== displayedTrackName ||
+        args.current.displayedTrackIsPlayable !== displayedTrackIsPlayable)
     ) {
       return {
         ...args.current,
-        displayedTrackName: args.nowPlayingTrackName,
+        displayedTrackName,
+        displayedTrackIsPlayable,
       };
     }
 
@@ -93,6 +96,7 @@ export function syncPlaybackSurfaceState(args: {
     phase: "restoring",
     playlistName: args.current.playlistName,
     displayedTrackName: null,
+    displayedTrackIsPlayable: false,
   } satisfies PlayListPlaybackSurfaceState;
 }
 
@@ -107,5 +111,6 @@ export function toPlayListPlaybackSurfaceSnapshot(
     phase: state.phase,
     playlistName: state.playlistName,
     displayedTrackName: state.displayedTrackName,
+    displayedTrackIsPlayable: state.displayedTrackIsPlayable,
   };
 }

@@ -47,6 +47,7 @@ export interface PlayListPageItemViewModel {
   isPlaybackTarget: boolean;
   shouldShowPlaybackIcons: boolean;
   playbackIconWidthText?: string;
+  isPlaybackPreparing: boolean;
   isHiddenInPlay: boolean;
   shouldAnimateSlotPosition: boolean;
   isCommitted: boolean;
@@ -136,6 +137,7 @@ function createPlayListPageItemViewModel(args: {
   isPlaybackTarget: boolean;
   shouldShowPlaybackIcons: boolean;
   playbackIconWidthText?: string;
+  isPlaybackPreparing: boolean;
   isHiddenInPlay: boolean;
   shouldAnimateSlotPosition: boolean;
   commitGesture: PlayListPageCommitGesture;
@@ -157,6 +159,7 @@ function createPlayListPageItemViewModel(args: {
     isPlaybackTarget: args.isPlaybackTarget,
     shouldShowPlaybackIcons: args.shouldShowPlaybackIcons,
     ...(args.playbackIconWidthText && { playbackIconWidthText: args.playbackIconWidthText }),
+    isPlaybackPreparing: args.isPlaybackPreparing,
     isHiddenInPlay: args.isHiddenInPlay,
     shouldAnimateSlotPosition: args.shouldAnimateSlotPosition,
     isCommitted: !args.isPlaybackTarget && args.transition.committedLayoutId === itemLayoutId,
@@ -176,6 +179,7 @@ function resolvePlayListPageVisibleItems(args: {
 }) {
   const playbackSurfacePlaylistName = args.playbackSurface?.playlistName;
   const playbackSurfaceTrackName = args.playbackSurface?.displayedTrackName || undefined;
+  const playbackSurfaceTrackIsPlayable = args.playbackSurface?.displayedTrackIsPlayable ?? false;
   const isPlaybackSurfacePlaying = args.playbackSurface?.phase === "playing";
   const hasPlaybackTarget =
     !!playbackSurfacePlaylistName &&
@@ -197,6 +201,12 @@ function resolvePlayListPageVisibleItems(args: {
         hasPlaybackTarget &&
         playlist.name === playbackSurfacePlaylistName &&
         !!playbackSurfaceTrackName,
+      isPlaybackPreparing:
+        isPlaybackSurfacePlaying &&
+        hasPlaybackTarget &&
+        playlist.name === playbackSurfacePlaylistName &&
+        !!playbackSurfaceTrackName &&
+        !playbackSurfaceTrackIsPlayable,
       playbackIconWidthText:
         (isPlaybackSurfacePlaying &&
           playlist.name === playbackSurfacePlaylistName &&
@@ -288,6 +298,7 @@ export function resolvePlayListPageViewModel(
       suppressFade: shouldSuppressTitleShareFade(CREATE_COLLECTION_LAYOUT_ID, transition),
       isPlaybackTarget: false,
       shouldShowPlaybackIcons: false,
+      isPlaybackPreparing: false,
       isHiddenInPlay: shouldLockScroll,
       shouldAnimateSlotPosition,
       isCommitted: committedLayoutId === CREATE_COLLECTION_LAYOUT_ID,

@@ -57,6 +57,7 @@ export interface Context {
   savePath: string;
   playingPlaylistName: string | null;
   nowPlayingTrackName: string | null;
+  nowPlayingTrackUrl: string | null;
   activeLayoutId: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   pendingPlaylistName: string | null;
@@ -309,22 +310,14 @@ export function upsertPlaylistIntoPlaylists(
     return [...playlists, nextPlaylist];
   }
 
-  return playlists.map((playlist, index) =>
-    index === currentIndex ? nextPlaylist : playlist,
-  );
+  return playlists.map((playlist, index) => (index === currentIndex ? nextPlaylist : playlist));
 }
 
-export function removePlaylistFromPlaylists(
-  playlists: readonly PlayList[],
-  name: string,
-) {
+export function removePlaylistFromPlaylists(playlists: readonly PlayList[], name: string) {
   return playlists.filter((playlist) => playlist.name !== name);
 }
 
-export function resolveSavedPath(
-  savePath: string | null | undefined,
-  fallbackSavePath: string,
-) {
+export function resolveSavedPath(savePath: string | null | undefined, fallbackSavePath: string) {
   const resolvedPath = savePath?.trim();
 
   return resolvedPath || fallbackSavePath;
@@ -338,11 +331,7 @@ export function resolvePlaylistsWithPreview(
     return [...playlists];
   }
 
-  return upsertPlaylistIntoPlaylists(
-    playlists,
-    preview.playlist,
-    preview.previousName,
-  );
+  return upsertPlaylistIntoPlaylists(playlists, preview.playlist, preview.previousName);
 }
 
 export function includeDraftSidebarItem(
@@ -419,6 +408,7 @@ export function createInitialContext(): Context {
     savePath: "",
     playingPlaylistName: null,
     nowPlayingTrackName: null,
+    nowPlayingTrackUrl: null,
     activeLayoutId: null,
     titleToneHandoff: null,
     pendingPlaylistName: null,

@@ -115,9 +115,7 @@ const sampleGroupSidebarItemRef = {
   url: "https://example.com/quiet-morning#disc-1",
 };
 
-function createExpectedAppLogicContext(
-  overrides: Record<string, unknown> = {},
-) {
+function createExpectedAppLogicContext(overrides: Record<string, unknown> = {}) {
   return {
     hasPlayList: null,
     playlists: [],
@@ -126,6 +124,7 @@ function createExpectedAppLogicContext(
     savePath: "",
     playingPlaylistName: null,
     nowPlayingTrackName: null,
+    nowPlayingTrackUrl: null,
     activeLayoutId: null,
     titleToneHandoff: null,
     pendingPlaylistName: null,
@@ -684,56 +683,6 @@ describe("ensureAppLogicStarted", () => {
         }),
       );
     } finally {
-      mod.stop();
-    }
-  });
-
-  test("prints appLogic state transitions", async () => {
-    const logs: string[] = [];
-    const originalLog = console.log;
-    let checkCalls = 0;
-    let listCalls = 0;
-    let listPlaylistCalls = 0;
-
-    console.log = (...args: unknown[]) => {
-      logs.push(args.map(String).join(" "));
-    };
-
-    setCheckListMock(async () => {
-      checkCalls += 1;
-      return Ok(true);
-    });
-    setListPlaylistsMock(async () => {
-      listPlaylistCalls += 1;
-      return Ok([samplePlaylist]);
-    });
-    setListCollectionsMock(async () => {
-      listCalls += 1;
-      return Ok([sampleCollection]);
-    });
-
-    const mod = await import(`../src/flow/appLogic/index.ts?case=debug-logger`);
-
-    try {
-      mod.ensureAppLogicStarted();
-      await waitForState(mod.actor, ss.mainx.State.ready);
-
-      mod.action.openCreate();
-      await waitForState(mod.actor, ss.mainx.State.config);
-
-      expect(checkCalls).toBe(1);
-      expect(listPlaylistCalls).toBe(1);
-      expect(listCalls).toBe(1);
-      expect(logs).toEqual(
-        expect.arrayContaining([
-          "[appLogic] enter idle",
-          "[appLogic] idle -> loading",
-          "[appLogic] loading -> ready",
-          "[appLogic] ready -> config",
-        ]),
-      );
-    } finally {
-      console.log = originalLog;
       mod.stop();
     }
   });

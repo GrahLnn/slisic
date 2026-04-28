@@ -174,6 +174,7 @@ describe("PlayListPage", () => {
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Track A",
+        displayedTrackIsPlayable: true,
       },
     });
 
@@ -188,6 +189,7 @@ describe("PlayListPage", () => {
         suppressFade: false,
         isPlaybackTarget: false,
         shouldShowPlaybackIcons: false,
+        isPlaybackPreparing: false,
         isHiddenInPlay: true,
         shouldAnimateSlotPosition: false,
         isCommitted: false,
@@ -203,6 +205,7 @@ describe("PlayListPage", () => {
         isPlaybackTarget: true,
         shouldShowPlaybackIcons: true,
         playbackIconWidthText: "Track A",
+        isPlaybackPreparing: false,
         isHiddenInPlay: false,
         shouldAnimateSlotPosition: false,
         isCommitted: false,
@@ -228,6 +231,7 @@ describe("PlayListPage", () => {
         phase: "playing",
         playlistName: "Missing",
         displayedTrackName: "Track A",
+        displayedTrackIsPlayable: true,
       },
     });
 
@@ -252,6 +256,7 @@ describe("PlayListPage", () => {
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
+        displayedTrackIsPlayable: false,
       },
     });
 
@@ -280,6 +285,7 @@ describe("PlayListPage", () => {
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Preparing...",
+        displayedTrackIsPlayable: false,
       },
     });
 
@@ -287,6 +293,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.layoutId, undefined);
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, true);
     assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Preparing...");
+    assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, true);
     assert.equal(viewModel.shouldLockScroll, true);
   });
 
@@ -303,6 +310,7 @@ describe("PlayListPage", () => {
         phase: "restoring",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
+        displayedTrackIsPlayable: false,
       },
     });
 

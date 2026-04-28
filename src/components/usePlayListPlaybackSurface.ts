@@ -7,7 +7,6 @@ import {
   syncPlaybackSurfaceState,
   toPlayListPlaybackSurfaceSnapshot,
   type PlayListPlaybackSurfaceState,
-  type PlayListPlaybackSurfaceTracePayload,
 } from "./playListPlaybackSurface.model";
 
 function isPlaybackItemCentered(container: HTMLElement, item: HTMLElement, tolerancePx = 1.5) {
@@ -24,17 +23,13 @@ export function usePlayListPlaybackSurface({
   playlists,
   playingPlaylistName,
   nowPlayingTrackName,
-  onCenteringSchedule,
-  onCenteringExecute,
-  onCentered,
+  nowPlayingTrackUrl,
 }: {
   pageState: MainStateT;
   playlists: readonly { name: string }[];
   playingPlaylistName: string | null;
   nowPlayingTrackName: string | null;
-  onCenteringSchedule?: (payload: PlayListPlaybackSurfaceTracePayload) => void;
-  onCenteringExecute?: (payload: PlayListPlaybackSurfaceTracePayload) => void;
-  onCentered?: (payload: PlayListPlaybackSurfaceTracePayload) => void;
+  nowPlayingTrackUrl: string | null;
 }) {
   const [playbackSurface, setPlaybackSurface] =
     useState<PlayListPlaybackSurfaceState>(INACTIVE_PLAYBACK_SURFACE);
@@ -81,12 +76,18 @@ export function usePlayListPlaybackSurface({
       const next = syncPlaybackSurfaceState({
         current,
         machinePlaybackTarget,
-        nowPlayingTrackName,
+        nowPlayingTrack:
+          nowPlayingTrackName === null
+            ? null
+            : {
+                name: nowPlayingTrackName,
+                url: nowPlayingTrackUrl ?? "",
+              },
       });
 
       return next;
     });
-  }, [machinePlaybackTarget, nowPlayingTrackName]);
+  }, [machinePlaybackTarget, nowPlayingTrackName, nowPlayingTrackUrl]);
 
   useLayoutEffect(() => {
     if (playbackSurface.phase !== "playing" || playbackSurface.playlistName === null) {
@@ -105,12 +106,6 @@ export function usePlayListPlaybackSurface({
     }
 
     lastCenteredTargetRef.current = key;
-    const payload = {
-      playbackTargetKey: key,
-      phase: playbackSurface.phase,
-      containerScrollTop: container.scrollTop,
-    } satisfies PlayListPlaybackSurfaceTracePayload;
-    onCenteringSchedule?.(payload);
 
     let cancelled = false;
     let settleFrame: number | null = null;
@@ -127,13 +122,6 @@ export function usePlayListPlaybackSurface({
       }
 
       if (isPlaybackItemCentered(currentContainer, currentItem)) {
-        const centeredPayload = {
-          playbackTargetKey: key,
-          phase: playbackSurface.phase,
-          containerScrollTop: currentContainer.scrollTop,
-        } satisfies PlayListPlaybackSurfaceTracePayload;
-
-        onCentered?.(centeredPayload);
         return;
       }
 
@@ -141,12 +129,6 @@ export function usePlayListPlaybackSurface({
     };
 
     const frame = requestAnimationFrame(() => {
-      const currentContainer = containerRef.current;
-      onCenteringExecute?.({
-        playbackTargetKey: key,
-        phase: playbackSurface.phase,
-        containerScrollTop: currentContainer?.scrollTop ?? 0,
-      });
       item.scrollIntoView({
         block: "center",
         behavior: "smooth",
@@ -161,13 +143,7 @@ export function usePlayListPlaybackSurface({
         cancelAnimationFrame(settleFrame);
       }
     };
-  }, [
-    onCentered,
-    onCenteringExecute,
-    onCenteringSchedule,
-    playbackSurface.phase,
-    playbackSurface.playlistName,
-  ]);
+  }, [playbackSurface.phase, playbackSurface.playlistName]);
 
   useLayoutEffect(() => {
     if (playbackSurface.phase === "inactive" || playbackSurface.phase === "restoring") {

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { resolvePlayItemColorHandoff, resolvePlaybackIconLayerBox } from "./playItem";
+import {
+  resolvePlayItemColorHandoff,
+  resolvePlaybackIconLayerBox,
+  shouldShowPlaybackIconLayer,
+} from "./playItem";
 import { resolvePlayItemFrameProjection } from "./playItem.motion";
 
 describe("playItem", () => {
@@ -95,6 +99,27 @@ describe("playItem", () => {
         top: 132,
         width: 500,
       },
+    );
+  });
+
+  test("hides playback icons while Torph is preparing the text transition", () => {
+    assert.equal(
+      shouldShowPlaybackIconLayer({
+        hasLayerBox: true,
+        isWindowPointerInside: true,
+        showPlaybackIcons: true,
+        torphStage: "prepare",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldShowPlaybackIconLayer({
+        hasLayerBox: true,
+        isWindowPointerInside: true,
+        showPlaybackIcons: true,
+        torphStage: "animate",
+      }),
+      true,
     );
   });
 });

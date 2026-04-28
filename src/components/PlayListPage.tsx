@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type RefCallback } from "react";
+import { useCallback, useState, type RefCallback } from "react";
 import { useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { CREATE_COLLECTION_LAYOUT_ID } from "@/src/flow/appLogic/core";
@@ -7,8 +7,6 @@ import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import { PlayListPageItem, CreateNewPlayListItem } from "./PlayListPageItem";
 import { usePlayListPlaybackSurface } from "./usePlayListPlaybackSurface";
 import { resolvePlayListPageViewModel } from "./PlayListPage.view-model";
-import { installPlaybackTrace } from "@/src/debug/playbackTrace";
-import { installTorphTrace } from "@/src/debug/torphTrace";
 import {
   recordStoredScrollTop,
   restoreStoredScrollTop,
@@ -24,6 +22,7 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     pendingPlaylistPreview,
     playingPlaylistName,
     nowPlayingTrackName,
+    nowPlayingTrackUrl,
     titleToneHandoff,
   } = appLogicHook.useContext();
   const pageState = appLogicHook.useState();
@@ -43,6 +42,7 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     playlists,
     playingPlaylistName,
     nowPlayingTrackName,
+    nowPlayingTrackUrl,
   });
   const handleScrollContainerRef = useCallback<RefCallback<HTMLDivElement>>(
     (node) => {
@@ -68,15 +68,9 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
   const renderData = pageRenderFreeze.renderValue;
   const viewModel = resolvePlayListPageViewModel(renderData);
 
-  useEffect(() => {
-    installPlaybackTrace();
-    installTorphTrace();
-  }, []);
-
   return (
     <div
       data-page-state="playlist"
-      data-torph-trace-root
       className="relative h-[calc(100vh-2rem)] w-full overflow-hidden px-6"
       style={{ fontFamily: "var(--font-noto-sans)" }}
     >
@@ -84,7 +78,6 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
         <div className="relative z-0 flex h-full w-full flex-col items-center">
           <div
             ref={handleScrollContainerRef}
-            data-torph-trace-scroll-root
             className={cn(
               "hide-scrollbar flex h-full w-full flex-col items-center gap-8 snap-y snap-mandatory overscroll-y-contain",
               viewModel.shouldLockScroll ? "overflow-hidden" : "overflow-y-auto",

@@ -40,12 +40,13 @@ describe("playListPlaybackSurface model", () => {
       syncPlaybackSurfaceState({
         current: INACTIVE_PLAYBACK_SURFACE,
         machinePlaybackTarget: "Quiet Morning",
-        nowPlayingTrackName: null,
+        nowPlayingTrack: null,
       }),
       {
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
+        displayedTrackIsPlayable: false,
       },
     );
   });
@@ -57,14 +58,19 @@ describe("playListPlaybackSurface model", () => {
           phase: "playing",
           playlistName: "Quiet Morning",
           displayedTrackName: "Track A",
+          displayedTrackIsPlayable: true,
         },
         machinePlaybackTarget: "Quiet Morning",
-        nowPlayingTrackName: "Track B",
+        nowPlayingTrack: {
+          name: "Track B",
+          url: "https://example.com/track-b",
+        },
       }),
       {
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Track B",
+        displayedTrackIsPlayable: true,
       },
     );
   });
@@ -74,12 +80,35 @@ describe("playListPlaybackSurface model", () => {
       syncPlaybackSurfaceState({
         current: INACTIVE_PLAYBACK_SURFACE,
         machinePlaybackTarget: "Quiet Morning",
-        nowPlayingTrackName: "Track A",
+        nowPlayingTrack: {
+          name: "Track A",
+          url: "https://example.com/track-a",
+        },
       }),
       {
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Track A",
+        displayedTrackIsPlayable: true,
+      },
+    );
+  });
+
+  test("marks non-playable playback status text separately from its label", () => {
+    assert.deepEqual(
+      syncPlaybackSurfaceState({
+        current: INACTIVE_PLAYBACK_SURFACE,
+        machinePlaybackTarget: "Quiet Morning",
+        nowPlayingTrack: {
+          name: "Preparing...",
+          url: "",
+        },
+      }),
+      {
+        phase: "playing",
+        playlistName: "Quiet Morning",
+        displayedTrackName: "Preparing...",
+        displayedTrackIsPlayable: false,
       },
     );
   });
@@ -91,14 +120,16 @@ describe("playListPlaybackSurface model", () => {
           phase: "playing",
           playlistName: "Quiet Morning",
           displayedTrackName: "Track B",
+          displayedTrackIsPlayable: true,
         },
         machinePlaybackTarget: null,
-        nowPlayingTrackName: null,
+        nowPlayingTrack: null,
       }),
       {
         phase: "restoring",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
+        displayedTrackIsPlayable: false,
       },
     );
   });
@@ -110,11 +141,13 @@ describe("playListPlaybackSurface model", () => {
         phase: "restoring",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
+        displayedTrackIsPlayable: false,
       }),
       {
         phase: "restoring",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
+        displayedTrackIsPlayable: false,
       },
     );
   });
@@ -126,14 +159,16 @@ describe("playListPlaybackSurface model", () => {
           phase: "playing",
           playlistName: "Quiet Morning",
           displayedTrackName: null,
+          displayedTrackIsPlayable: false,
         },
         machinePlaybackTarget: "Quiet Morning",
-        nowPlayingTrackName: null,
+        nowPlayingTrack: null,
       }),
       {
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
+        displayedTrackIsPlayable: false,
       },
     );
   });

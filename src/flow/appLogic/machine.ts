@@ -16,10 +16,7 @@ import {
   upsertCollectionIntoDraft,
   upsertCollectionIntoCollections,
 } from "./core";
-import {
-  resolveConfigBackTitleSharePlan,
-  resolveTitleShareToneFromDraft,
-} from "./titleShare";
+import { resolveConfigBackTitleSharePlan, resolveTitleShareToneFromDraft } from "./titleShare";
 import { BootstrapLoadError, invoker, payloads, ss } from "./events";
 import { src } from "./src";
 
@@ -75,20 +72,15 @@ export const machine = src.createMachine({
     },
     [playlistDeleted.evt]: {
       actions: assign(({ context, event }) => {
-        const playlists = removePlaylistFromPlaylists(
-          context.playlists,
-          event.output,
-        );
+        const playlists = removePlaylistFromPlaylists(context.playlists, event.output);
 
         return {
           hasPlayList: playlists.length > 0,
           playlists,
           pendingPlaylistPreview:
             context.pendingPlaylistPreview &&
-            (
-              context.pendingPlaylistPreview.playlist.name === event.output ||
-              context.pendingPlaylistPreview.previousName === event.output
-            )
+            (context.pendingPlaylistPreview.playlist.name === event.output ||
+              context.pendingPlaylistPreview.previousName === event.output)
               ? null
               : context.pendingPlaylistPreview,
         };
@@ -130,6 +122,7 @@ export const machine = src.createMachine({
 
         return {
           nowPlayingTrackName: event.output.music_name,
+          nowPlayingTrackUrl: event.output.music_url,
         };
       }),
     },
@@ -209,10 +202,7 @@ export const machine = src.createMachine({
               context.playlists,
               context.pendingPlaylistPreview,
             );
-            const cachedDraft = createDraftFromPlaylistName(
-              visiblePlaylists,
-              event.output,
-            );
+            const cachedDraft = createDraftFromPlaylistName(visiblePlaylists, event.output);
 
             return resetContextWith({
               hasPlayList: context.hasPlayList,
@@ -252,6 +242,7 @@ export const machine = src.createMachine({
               savePath: context.savePath,
               playingPlaylistName: context.playingPlaylistName,
               nowPlayingTrackName: context.nowPlayingTrackName,
+              nowPlayingTrackUrl: context.nowPlayingTrackUrl,
               error: toErrorMessage(event.error),
             }),
           ),
@@ -310,10 +301,7 @@ export const machine = src.createMachine({
               context.playlists,
               context.pendingPlaylistPreview,
             );
-            const cachedDraft = createDraftFromPlaylistName(
-              visiblePlaylists,
-              event.output,
-            );
+            const cachedDraft = createDraftFromPlaylistName(visiblePlaylists, event.output);
 
             return resetContextWith({
               hasPlayList: context.hasPlayList,
@@ -440,10 +428,7 @@ export const machine = src.createMachine({
               context.playlists,
               context.pendingPlaylistPreview,
             );
-            const cachedDraft = createDraftFromPlaylistName(
-              visiblePlaylists,
-              event.output,
-            );
+            const cachedDraft = createDraftFromPlaylistName(visiblePlaylists, event.output);
 
             return resetContextWith({
               hasPlayList: context.hasPlayList,
