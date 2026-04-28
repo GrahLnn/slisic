@@ -2,8 +2,6 @@ import { motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { collectionTitleLayoutTransition } from "./collectionTitle";
-import { BackActionIcon } from "./ListConfig.back-action-icon";
-import { resolveBackActionVisualState } from "./ListConfig.back-action";
 import { EditableTitle } from "./EditableTitle";
 import { usePageRenderFreeze } from "./usePageRenderFreeze";
 
@@ -13,6 +11,14 @@ const contentFadeProps = {
   exit: { opacity: 0 },
   transition: collectionTitleLayoutTransition,
 } as const;
+
+const spectrumBackIconStrokeTransition = {
+  duration: 0.22,
+  ease: [0.22, 1, 0.36, 1],
+} as const;
+
+const spectrumBackIconToneClassName =
+  "text-[#737373] dark:text-[#8a8a8a] group-hover:text-[#262626] dark:group-hover:text-[#d4d4d4]";
 
 type SpectrumRenderData = {
   handoffTone: "solid" | "muted" | null;
@@ -34,6 +40,54 @@ function resolveSpectrumTitle(args: {
 
 function ignoreSpectrumTitleChange() {}
 
+function SpectrumBackIcon() {
+  return (
+    <span className="relative block size-4.5">
+      <motion.svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="18"
+        height="18"
+        viewBox="0 0 18 18"
+        className={cn("absolute inset-0 block rotate-90", spectrumBackIconToneClassName)}
+      >
+        <motion.line
+          x1="9"
+          y1="15.25"
+          x2="9"
+          y2="2.75"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          initial={{ pathLength: 0 }}
+          animate={{ pathLength: 1 }}
+          exit={{ pathLength: 0 }}
+          transition={{
+            ...spectrumBackIconStrokeTransition,
+            delay: 0.02,
+          }}
+        />
+        <motion.polyline
+          points="13.25 11 9 15.25 4.75 11"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          initial={{ pathLength: 0 }}
+          animate={{ pathLength: 1 }}
+          exit={{ pathLength: 0 }}
+          transition={{
+            ...spectrumBackIconStrokeTransition,
+            delay: 0.02,
+          }}
+        />
+      </motion.svg>
+    </span>
+  );
+}
+
 export function SpectrumPage() {
   const isPresent = useIsPresent();
   const { activeLayoutId, nowPlayingTrackName, playingPlaylistName, titleToneHandoff } =
@@ -54,10 +108,6 @@ export function SpectrumPage() {
     freezeOnExit: true,
   });
   const renderData = pageRenderFreeze.renderValue;
-  const backActionVisualState = resolveBackActionVisualState({
-    hasDraftChanges: false,
-    isParsing: false,
-  });
 
   function handleBackAction() {
     pageRenderFreeze.freeze();
@@ -85,7 +135,7 @@ export function SpectrumPage() {
               "hover:before:bg-[#e5e5e5] dark:hover:before:bg-[#262626]",
             )}
           >
-            <BackActionIcon visualState={backActionVisualState} />
+            <SpectrumBackIcon />
           </button>
         </motion.div>
         <motion.div {...contentFadeProps} className="flex items-center gap-4">
