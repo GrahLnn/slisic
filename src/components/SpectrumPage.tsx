@@ -1,7 +1,7 @@
 import { motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
-import { collectionTitleLayoutTransition } from "./collectionTitle";
+import { collectionTitleClassName, collectionTitleLayoutTransition } from "./collectionTitle";
 import { EditableTitle } from "./EditableTitle";
 import { usePageRenderFreeze } from "./usePageRenderFreeze";
 
@@ -140,7 +140,7 @@ export function SpectrumPage() {
         </motion.div>
         <motion.div {...contentFadeProps} className="flex items-center gap-4">
           <EditableTitle
-            className={cn("text-4xl font-bold", "w-fit")}
+            className={collectionTitleClassName}
             handoffTone={renderData.handoffTone}
             interactionDisabled
             layoutId={renderData.titleLayoutId}
