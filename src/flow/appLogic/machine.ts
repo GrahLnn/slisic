@@ -442,6 +442,7 @@ export const machine = src.createMachine({
             return resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
               savePath: context.savePath,
               playingPlaylistName: null,

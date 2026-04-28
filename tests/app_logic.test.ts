@@ -7,6 +7,7 @@ import {
   CREATE_COLLECTION_LAYOUT_ID,
   createConfigSidebarItems,
   playlistTitleLayoutId,
+  resolvePlaylistsWithPreview,
 } from "../src/flow/appLogic/core";
 import { payloads, ss, sig } from "../src/flow/appLogic/events";
 import { machine } from "../src/flow/appLogic/machine";
@@ -26,6 +27,7 @@ const draftCollectionUpserted = payloads["draft.collection.upserted"];
 const draftItemIncluded = payloads["draft.item.included"];
 const draftItemRemoved = payloads["draft.item.removed"];
 const collectionUpdatesRequested = payloads["collection.updates.requested"];
+const playlistPreviewChanged = payloads["playlist.preview.changed"];
 const sampleSavePath = "C:\\Users\\admin\\Documents\\ransic";
 
 const sampleCollection: Collection = {
@@ -373,6 +375,47 @@ describe("appLogic machine", () => {
       layoutId: CREATE_COLLECTION_LAYOUT_ID,
       tone: "muted",
     });
+  });
+
+  test("keeps edited playlist title preview available when returning from config", async () => {
+    setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
+    setListCollectionsMock(async () => Ok([sampleCollection]));
+    setGetPlaylistMock(async () => Ok(samplePlaylist));
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(sig.mainx.run);
+
+    await waitForState(actor, ss.mainx.State.ready);
+    actor.send(openPlaylist.load(samplePlaylist.name));
+    await waitForState(actor, ss.mainx.State.config);
+
+    const renamedPlaylist = {
+      ...samplePlaylist,
+      name: "Renamed Session",
+    };
+    const titlePreview = {
+      playlist: renamedPlaylist,
+      previousName: samplePlaylist.name,
+    };
+
+    actor.send(draftNameChanged.load(renamedPlaylist.name));
+    actor.send(playlistPreviewChanged.load(titlePreview));
+    actor.send(sig.mainx.back);
+
+    expect(actor.getSnapshot().value).toBe(ss.mainx.State.ready);
+    expect(actor.getSnapshot().context.pendingPlaylistPreview).toEqual(titlePreview);
+    expect(actor.getSnapshot().context.titleToneHandoff).toEqual({
+      layoutId: playlistTitleLayoutId(renamedPlaylist.name),
+      tone: "solid",
+    });
+    expect(
+      resolvePlaylistsWithPreview(
+        actor.getSnapshot().context.playlists,
+        actor.getSnapshot().context.pendingPlaylistPreview,
+      ),
+    ).toEqual([renamedPlaylist]);
   });
 
   test("keeps savePath in context across config transitions and updates", async () => {
