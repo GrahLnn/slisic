@@ -118,7 +118,7 @@ export function SpectrumPage() {
     <div
       data-page-state="spectrum"
       className={cn(
-        "relative mx-auto mt-24 flex w-160 flex-col",
+        "relative mx-auto mt-12 px-12 flex w-7xl flex-col",
         !isPresent && "pointer-events-none",
       )}
     >
