@@ -182,6 +182,10 @@ export const action = {
 
     send(playPlaylist.load(playlistName));
   },
+  openSpectrum: () => {
+    ensureStarted();
+    actor.send(sig.mainx.openspectrum);
+  },
   back: () => {
     ensureStarted();
     if (shouldStopPlaybackForSnapshot(actor.getSnapshot())) {

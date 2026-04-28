@@ -192,6 +192,7 @@ export const machine = src.createMachine({
               savePath: context.savePath,
               playingPlaylistName: event.output,
               nowPlayingTrackName: null,
+              shouldStartPlayback: true,
             }),
           ),
         },
@@ -230,7 +231,10 @@ export const machine = src.createMachine({
             throw new Error("missing playlist name for playback");
           }
 
-          return context.playingPlaylistName;
+          return {
+            playlistName: context.playingPlaylistName,
+            shouldStartPlayback: context.shouldStartPlayback,
+          };
         },
         onError: {
           target: ss.mainx.State.error,
@@ -291,6 +295,7 @@ export const machine = src.createMachine({
               savePath: context.savePath,
               playingPlaylistName: event.output,
               nowPlayingTrackName: null,
+              shouldStartPlayback: true,
             }),
           ),
         },
@@ -316,6 +321,49 @@ export const machine = src.createMachine({
               draft: cachedDraft,
             });
           }),
+        },
+        openspectrum: {
+          target: ss.mainx.State.spectrum,
+          actions: assign(({ context }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
+              collections: context.collections,
+              savePath: context.savePath,
+              playingPlaylistName: context.playingPlaylistName,
+              nowPlayingTrackName: context.nowPlayingTrackName,
+              nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+              shouldStartPlayback: false,
+              activeLayoutId: context.playingPlaylistName
+                ? playlistTitleLayoutId(context.playingPlaylistName)
+                : null,
+            }),
+          ),
+        },
+      },
+    },
+    [ss.mainx.State.spectrum]: {
+      on: {
+        run: ss.mainx.State.loading,
+        back: {
+          target: ss.mainx.State.play,
+          actions: assign(({ context }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
+              collections: context.collections,
+              savePath: context.savePath,
+              playingPlaylistName: context.playingPlaylistName,
+              nowPlayingTrackName: context.nowPlayingTrackName,
+              nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+              shouldStartPlayback: false,
+              titleToneHandoff: context.activeLayoutId
+                ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
+                : null,
+            }),
+          ),
         },
       },
     },

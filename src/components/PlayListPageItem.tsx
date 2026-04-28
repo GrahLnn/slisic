@@ -28,6 +28,8 @@ export function PlayListPageItem({
   onPointerDown,
   onTorphStageChange,
   onCommit,
+  onOpenSpectrum,
+  onOpenSpectrumPointerDown,
 }: {
   viewModel: PlayListPageItemViewModel;
   containerRef?: Ref<HTMLDivElement>;
@@ -36,6 +38,8 @@ export function PlayListPageItem({
   onPointerDown?: () => void;
   onTorphStageChange?: (stage: TorphStage) => void;
   onCommit: () => void;
+  onOpenSpectrum?: () => void;
+  onOpenSpectrumPointerDown?: () => void;
 }) {
   const isPresent = useIsPresent();
   const [torphStage, setTorphStage] = useState<TorphStage>("idle");
@@ -88,6 +92,8 @@ export function PlayListPageItem({
           showPlaybackIcons={viewModel.shouldShowPlaybackIcons}
           text={viewModel.text}
           textClassName={viewModel.isCommitted ? collectionTitleTextHoverClassName : undefined}
+          onOpenSpectrum={onOpenSpectrum}
+          onOpenSpectrumPointerDown={onOpenSpectrumPointerDown}
           onTorphStageChange={(stage) => {
             setTorphStage(stage);
             onTorphStageChange?.(stage);

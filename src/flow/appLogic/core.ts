@@ -58,6 +58,7 @@ export interface Context {
   playingPlaylistName: string | null;
   nowPlayingTrackName: string | null;
   nowPlayingTrackUrl: string | null;
+  shouldStartPlayback: boolean;
   activeLayoutId: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   pendingPlaylistName: string | null;
@@ -409,6 +410,7 @@ export function createInitialContext(): Context {
     playingPlaylistName: null,
     nowPlayingTrackName: null,
     nowPlayingTrackUrl: null,
+    shouldStartPlayback: false,
     activeLayoutId: null,
     titleToneHandoff: null,
     pendingPlaylistName: null,

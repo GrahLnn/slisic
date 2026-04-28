@@ -17,6 +17,7 @@ const originalListPlaylists = crab.listPlaylists;
 const originalGetPlaylist = crab.getPlaylist;
 const originalGetMetaInfo = crab.getMetaInfo;
 const originalSetCollectionUpdates = crab.setCollectionUpdates;
+const originalPlayPlaylist = crab.playPlaylist;
 const openPlaylist = payloads["playlist.open"];
 const draftNameChanged = payloads["draft.name.changed"];
 const savePathChanged = payloads["save_path.changed"];
@@ -125,6 +126,7 @@ function createExpectedAppLogicContext(overrides: Record<string, unknown> = {}) 
     playingPlaylistName: null,
     nowPlayingTrackName: null,
     nowPlayingTrackUrl: null,
+    shouldStartPlayback: false,
     activeLayoutId: null,
     titleToneHandoff: null,
     pendingPlaylistName: null,
@@ -162,6 +164,10 @@ function setGetMetaInfoMock(mock: typeof crab.getMetaInfo) {
 
 function setSetCollectionUpdatesMock(mock: typeof crab.setCollectionUpdates) {
   (crab as { setCollectionUpdates: typeof crab.setCollectionUpdates }).setCollectionUpdates = mock;
+}
+
+function setPlayPlaylistMock(mock: typeof crab.playPlaylist) {
+  (crab as { playPlaylist: typeof crab.playPlaylist }).playPlaylist = mock;
 }
 
 function waitForState(actor: AnyActorRef, expected: string, timeoutMs = 1000) {
@@ -228,6 +234,7 @@ afterEach(() => {
   setGetPlaylistMock(originalGetPlaylist);
   setGetMetaInfoMock(originalGetMetaInfo);
   setSetCollectionUpdatesMock(originalSetCollectionUpdates);
+  setPlayPlaylistMock(originalPlayPlaylist);
 });
 
 describe("createConfigSidebarItems", () => {
@@ -615,6 +622,70 @@ describe("appLogic machine", () => {
       name: "",
       collections: [],
       groups: [],
+    });
+  });
+
+  test("opens spectrum from playback and returns without restarting playback", async () => {
+    let playCalls = 0;
+
+    setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
+    setListCollectionsMock(async () => Ok([sampleCollection]));
+    setPlayPlaylistMock(async (name) => {
+      playCalls += 1;
+      expect(name).toBe(samplePlaylist.name);
+      return Ok({
+        playlist_name: samplePlaylist.name,
+        track_count: 2,
+      });
+    });
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(sig.mainx.run);
+
+    await waitForState(actor, ss.mainx.State.ready);
+    actor.send(payloads["playlist.play"].load(samplePlaylist.name));
+    await waitForState(actor, ss.mainx.State.play);
+    await waitForContext(
+      actor,
+      (context: { shouldStartPlayback: boolean }) => context.shouldStartPlayback,
+    );
+
+    actor.send(
+      payloads["player.now_playing_track.changed"].load({
+        playlist_name: samplePlaylist.name,
+        music_name: "Disc 1 Opening",
+        music_url: "https://example.com/quiet-morning#disc-1-opening",
+      }),
+    );
+    actor.send(sig.mainx.openspectrum);
+
+    expect(actor.getSnapshot().value).toBe(ss.mainx.State.spectrum);
+    expect(actor.getSnapshot().context).toEqual(
+      createExpectedAppLogicContext({
+        hasPlayList: true,
+        playlists: [samplePlaylist],
+        pendingPlaylistPreview: null,
+        collections: [sampleCollection],
+        savePath: sampleSavePath,
+        playingPlaylistName: samplePlaylist.name,
+        nowPlayingTrackName: "Disc 1 Opening",
+        nowPlayingTrackUrl: "https://example.com/quiet-morning#disc-1-opening",
+        shouldStartPlayback: false,
+        activeLayoutId: playlistTitleLayoutId(samplePlaylist.name),
+      }),
+    );
+
+    actor.send(sig.mainx.back);
+    await waitForState(actor, ss.mainx.State.play);
+
+    expect(playCalls).toBe(1);
+    expect(actor.getSnapshot().context.playingPlaylistName).toBe(samplePlaylist.name);
+    expect(actor.getSnapshot().context.shouldStartPlayback).toBe(false);
+    expect(actor.getSnapshot().context.titleToneHandoff).toEqual({
+      layoutId: playlistTitleLayoutId(samplePlaylist.name),
+      tone: "solid",
     });
   });
 

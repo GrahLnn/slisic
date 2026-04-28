@@ -10,6 +10,7 @@ import { useTheme } from "next-themes";
 import { Toaster } from "sileo";
 import { PlayListPage } from "./components/PlayListPage";
 import { ListConfig } from "./components/ListConfig";
+import { SpectrumPage } from "./components/SpectrumPage";
 
 import { hook as appLogicHook } from "./flow/appLogic";
 import { useAppBootstrap } from "./flow/bootstrap";
@@ -20,7 +21,7 @@ import {
   type ScrollPositionRef,
 } from "./components/scrollPosition";
 
-type PageScrollKey = "list" | "config";
+type PageScrollKey = "list" | "config" | "spectrum";
 
 function restorePageViewportScrollPosition(args: {
   node: HTMLElement | null;
@@ -109,6 +110,7 @@ function MainWindowApp() {
   const pageScrollPositionRefs = useRef<Record<PageScrollKey, ScrollPositionRef>>({
     list: { current: 0 },
     config: { current: 0 },
+    spectrum: { current: 0 },
   });
   const playListScrollPositionRef = useRef(0);
 
@@ -184,6 +186,16 @@ function MainWindowApp() {
               scrollPositionRef={pageScrollPositionRefs.current.list}
             >
               <PlayListPage scrollPositionRef={playListScrollPositionRef} />
+            </PageViewport>
+          ),
+          spectrum: () => (
+            <PageViewport
+              key="spectrum"
+              pageKey="spectrum"
+              pageState="spectrum"
+              scrollPositionRef={pageScrollPositionRefs.current.spectrum}
+            >
+              <SpectrumPage />
             </PageViewport>
           ),
           error: () => (

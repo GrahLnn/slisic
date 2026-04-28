@@ -143,7 +143,9 @@ function createPlayListPageItemViewModel(args: {
   commitGesture: PlayListPageCommitGesture;
 }) {
   const itemLayoutId = playlistTitleLayoutId(args.playlist.name);
-  const shouldShareTitleLayout = args.titleShareEnabled && !args.isPlaybackTarget;
+  const shouldShareTitleLayout =
+    args.titleShareEnabled &&
+    (!args.isPlaybackTarget || args.transition.committedLayoutId === itemLayoutId);
 
   return {
     key: args.playlist.name,

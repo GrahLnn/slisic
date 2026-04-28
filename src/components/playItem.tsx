@@ -30,6 +30,8 @@ type PlayItemBaseProps = Omit<HTMLMotionProps<"div">, "children"> & {
   showPlaybackIcons?: boolean;
   playbackIconWidthText?: string;
   isPlaybackPreparing?: boolean;
+  onOpenSpectrum?: () => void;
+  onOpenSpectrumPointerDown?: () => void;
   onTorphStageChange?: (stage: TorphStage) => void;
 };
 
@@ -43,6 +45,8 @@ type PlayItemTextProps = Pick<
   | "handoffTone"
   | "isPlaybackPreparing"
   | "onClick"
+  | "onOpenSpectrum"
+  | "onOpenSpectrumPointerDown"
   | "onPointerDown"
   | "onTorphStageChange"
   | "playbackIconWidthText"
@@ -265,10 +269,12 @@ function PlayItemFn({
   activeColor,
   icon,
   onClick,
+  onPointerDown,
 }: {
   activeColor?: string;
   icon: ReactNode;
   onClick?: () => void;
+  onPointerDown?: () => void;
 }) {
   const [isActive, setIsActive] = useState(false);
   const inactiveColorRef = useRef<string | undefined>(undefined);
@@ -299,10 +305,15 @@ function PlayItemFn({
       }}
       initial={{ opacity: 0.7 }}
       onPointerDown={(event) => {
-        if (event.button === 0 && activeColor) {
+        if (event.button !== 0) {
+          return;
+        }
+
+        if (activeColor) {
           inactiveColorRef.current ||= window.getComputedStyle(event.currentTarget).color;
           setIsActive((current) => !current);
         }
+        onPointerDown?.();
       }}
       onClick={() => {
         onClick?.();
@@ -317,6 +328,8 @@ function PlayItemText({
   handoffTone = null,
   isPlaybackPreparing = false,
   onClick,
+  onOpenSpectrum,
+  onOpenSpectrumPointerDown,
   onPointerDown,
   onTorphStageChange,
   playbackIconWidthText,
@@ -451,7 +464,11 @@ function PlayItemText({
                     />
                   </div>
                   <div className="flex items-center">
-                    <PlayItemFn icon={<icons.waveformLines size={14} />} />
+                    <PlayItemFn
+                      icon={<icons.waveformLines size={14} />}
+                      onClick={onOpenSpectrum}
+                      onPointerDown={onOpenSpectrumPointerDown}
+                    />
                     <PlayItemFn icon={<icons.brush2 size={14} />} />
                   </div>
                 </div>
@@ -468,6 +485,8 @@ export function PlayItem({
   className,
   onClick,
   onContextMenu,
+  onOpenSpectrum,
+  onOpenSpectrumPointerDown,
   onPointerDown,
   layoutId,
   tone = "solid",
@@ -491,6 +510,8 @@ export function PlayItem({
         handoffTone={handoffTone}
         isPlaybackPreparing={isPlaybackPreparing}
         onClick={onClick}
+        onOpenSpectrum={onOpenSpectrum}
+        onOpenSpectrumPointerDown={onOpenSpectrumPointerDown}
         onPointerDown={onPointerDown}
         onTorphStageChange={onTorphStageChange}
         playbackIconWidthText={playbackIconWidthText}

@@ -119,6 +119,7 @@ describe("PlayListPage", () => {
     assert.equal(shouldEnablePlayListPageTitleShare("loading"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("ready"), true);
     assert.equal(shouldEnablePlayListPageTitleShare("play"), true);
+    assert.equal(shouldEnablePlayListPageTitleShare("spectrum"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("config"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("configLoading"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("configUpdatingCollectionUpdates"), false);
@@ -295,6 +296,28 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Preparing...");
     assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, true);
     assert.equal(viewModel.shouldLockScroll, true);
+  });
+
+  test("keeps the playback target title shareable when opening spectrum", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "play",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [createPlayListFixture({ name: "Quiet Morning" })],
+      pendingPlaylistPreview: null,
+      titleToneHandoff: null,
+      pressedLayoutId: "playlist-title:Quiet Morning",
+      playbackSurface: {
+        phase: "playing",
+        playlistName: "Quiet Morning",
+        displayedTrackName: "Track A",
+        displayedTrackIsPlayable: true,
+      },
+    });
+
+    assert.equal(viewModel.itemViewModels[0]?.layoutId, "playlist-title:Quiet Morning");
+    assert.equal(viewModel.itemViewModels[0]?.text, "Track A");
+    assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, true);
   });
 
   test("keeps the playback surface locked while restoring the original playlist title", () => {

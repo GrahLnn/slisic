@@ -37,6 +37,11 @@ export interface BootstrapResult {
   savePath: string;
 }
 
+export interface PlayPlaylistInput {
+  playlistName: string;
+  shouldStartPlayback: boolean;
+}
+
 export class BootstrapLoadError extends Error {
   constructor(
     message: string,
@@ -121,12 +126,13 @@ export const ss = defineSS(
         "loading",
         "ready",
         "play",
+        "spectrum",
         "configLoading",
         "config",
         "configUpdatingCollectionUpdates",
         "error",
       ],
-      ["run", "opencreate", "back"],
+      ["run", "opencreate", "openspectrum", "back"],
     ),
   ),
 );
@@ -207,8 +213,12 @@ export const invoker = createActors({
       },
     });
   },
-  playPlaylist: async (playlistName: string): Promise<PlayPlaylistSession> => {
-    const result = await crab.playPlaylist(playlistName);
+  playPlaylist: async (input: PlayPlaylistInput): Promise<PlayPlaylistSession | null> => {
+    if (!input.shouldStartPlayback) {
+      return null;
+    }
+
+    const result = await crab.playPlaylist(input.playlistName);
 
     return result.match({
       Ok: (session) => session,

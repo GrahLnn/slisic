@@ -32,6 +32,7 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     loading: () => "loading" as const,
     ready: () => "ready" as const,
     play: () => "play" as const,
+    spectrum: () => "spectrum" as const,
     configLoading: () => "configLoading" as const,
     config: () => "config" as const,
     configUpdatingCollectionUpdates: () => "configUpdatingCollectionUpdates" as const,
@@ -115,6 +116,16 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
                   }
 
                   appLogicAction.openPlaylist(itemViewModel.playlistName);
+                }}
+                onOpenSpectrumPointerDown={() => {
+                  if (!itemViewModel.layoutId) {
+                    return;
+                  }
+
+                  setPressedLayoutId(itemViewModel.layoutId);
+                }}
+                onOpenSpectrum={() => {
+                  appLogicAction.openSpectrum();
                 }}
               />
             ))}
