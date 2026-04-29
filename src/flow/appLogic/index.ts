@@ -55,6 +55,7 @@ function summarizeContext(context: ActorSnapshot["context"]) {
     playingPlaylistName: context.playingPlaylistName,
     nowPlayingTrackName: context.nowPlayingTrackName,
     nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+    nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
     nowPlayingTrackStart: context.nowPlayingTrackStart,
     nowPlayingTrackEnd: context.nowPlayingTrackEnd,
     spectrumMusicTitleDraft: context.spectrumMusicTitleDraft,

@@ -133,6 +133,7 @@ function createExpectedAppLogicContext(overrides: Record<string, unknown> = {}) 
     playingPlaylistName: null,
     nowPlayingTrackName: null,
     nowPlayingTrackUrl: null,
+    nowPlayingTrackFilePath: null,
     nowPlayingTrackStart: null,
     nowPlayingTrackEnd: null,
     spectrumMusicTitleDraft: null,
@@ -713,6 +714,8 @@ describe("appLogic machine", () => {
         playlist_name: samplePlaylist.name,
         music_name: "Disc 1 Opening",
         music_url: "https://example.com/quiet-morning#disc-1-opening",
+        file_path:
+          "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start: 0,
         end: 120,
       }),
@@ -730,6 +733,8 @@ describe("appLogic machine", () => {
         playingPlaylistName: samplePlaylist.name,
         nowPlayingTrackName: "Disc 1 Opening",
         nowPlayingTrackUrl: "https://example.com/quiet-morning#disc-1-opening",
+        nowPlayingTrackFilePath:
+          "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         nowPlayingTrackStart: 0,
         nowPlayingTrackEnd: 120,
         spectrumMusicTitleDraft: {
@@ -792,6 +797,8 @@ describe("appLogic machine", () => {
         playlist_name: samplePlaylist.name,
         music_name: "Disc 1 Opening",
         music_url: "https://example.com/quiet-morning#disc-1-opening",
+        file_path:
+          "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start: 0,
         end: 120,
       }),

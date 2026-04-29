@@ -1,10 +1,12 @@
 #[cfg(not(test))]
 use super::event::NowPlayingTrackChangedEvent;
-#[cfg(not(test))]
-use super::model::PlaybackContinuationMode;
 use super::model::PlaybackTrack;
 #[cfg(not(test))]
+use super::model::{PlaybackContinuationMode, PlaybackStatusPayload};
+#[cfg(not(test))]
 use super::strategy::PlaybackStrategySet;
+#[cfg(not(test))]
+use super::waveform::{self, TrackWaveform, TrackWaveformSummary, TrackWaveformTile};
 #[cfg(not(test))]
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 #[cfg(not(test))]
@@ -20,7 +22,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 #[cfg(not(test))]
 use std::time::Duration;
 #[cfg(not(test))]
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 #[cfg(not(test))]
 use tauri_specta::Event;
 
@@ -147,6 +149,93 @@ pub async fn stop_playback() -> Result<bool> {
 }
 
 #[cfg(not(test))]
+pub async fn get_playback_status() -> Result<Option<PlaybackStatusPayload>> {
+    let Some(playback) = runtime()?.current_playback()? else {
+        return Ok(None);
+    };
+
+    let status = playback
+        .status()
+        .await
+        .map_err(|error| anyhow!("failed to read playback status: {error}"))?;
+
+    Ok(Some(PlaybackStatusPayload {
+        path: status.path,
+        playing: status.playing,
+        paused: status.paused,
+        position_ms: status.position_ms,
+        duration_ms: status.duration_ms,
+    }))
+}
+
+#[cfg(not(test))]
+pub async fn analyze_track_waveform(
+    app: &AppHandle,
+    file_path: String,
+    start: Option<u32>,
+    end: Option<u32>,
+) -> Result<TrackWaveform> {
+    let ffmpeg_path =
+        ensure_managed_binary(app, ManagedBinary::Ffmpeg).map_err(|error| anyhow!(error))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        waveform::analyze_track_waveform_with_binary(&ffmpeg_path, file_path, start, end)
+    })
+    .await
+    .map_err(|error| anyhow!("waveform analysis task failed: {error}"))?
+    .map_err(|error| anyhow!(error))
+}
+
+#[cfg(not(test))]
+pub async fn prepare_track_waveform(
+    app: &AppHandle,
+    file_path: String,
+    start: Option<u32>,
+    end: Option<u32>,
+) -> Result<TrackWaveformSummary> {
+    let ffmpeg_path =
+        ensure_managed_binary(app, ManagedBinary::Ffmpeg).map_err(|error| anyhow!(error))?;
+    let cache_root = waveform_cache_root(app)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        waveform::prepare_track_waveform_cache(&ffmpeg_path, &cache_root, file_path, start, end)
+    })
+    .await
+    .map_err(|error| anyhow!("waveform cache preparation task failed: {error}"))?
+    .map_err(|error| anyhow!(error))
+}
+
+#[cfg(not(test))]
+pub async fn get_track_waveform_tile(
+    app: &AppHandle,
+    file_path: String,
+    start: Option<u32>,
+    end: Option<u32>,
+    pixels_per_second: f64,
+    tile_start_px: u32,
+    tile_width: u32,
+) -> Result<TrackWaveformTile> {
+    let ffmpeg_path =
+        ensure_managed_binary(app, ManagedBinary::Ffmpeg).map_err(|error| anyhow!(error))?;
+    let cache_root = waveform_cache_root(app)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        waveform::get_track_waveform_tile_with_binary(
+            &ffmpeg_path,
+            &cache_root,
+            file_path,
+            start,
+            end,
+            pixels_per_second,
+            tile_start_px,
+            tile_width,
+        )
+    })
+    .await
+    .map_err(|error| anyhow!("waveform tile task failed: {error}"))?
+    .map_err(|error| anyhow!(error))
+}
+
+#[cfg(not(test))]
 pub fn set_playback_continuation_mode(mode: PlaybackContinuationMode) -> Result<()> {
     runtime()?.set_continuation_mode(mode)
 }
@@ -156,6 +245,18 @@ fn runtime() -> Result<&'static Arc<PlayerRuntime>> {
     PLAYER_RUNTIME
         .get()
         .context("player runtime has not been initialized")
+}
+
+#[cfg(not(test))]
+fn waveform_cache_root(app: &AppHandle) -> Result<std::path::PathBuf> {
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .context("failed to resolve app cache directory")?
+        .join("waveforms");
+    std::fs::create_dir_all(&cache_dir)
+        .with_context(|| format!("failed to create waveform cache `{}`", cache_dir.display()))?;
+    Ok(cache_dir)
 }
 
 #[cfg(not(test))]

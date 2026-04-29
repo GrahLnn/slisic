@@ -92,6 +92,16 @@ export const commands = {
 	playPlaylist: (name: string) => typedError<PlayPlaylistSession, string>(__TAURI_INVOKE("play_playlist", { name })),
 	setPlaybackContinuationMode: (mode: PlaybackContinuationMode) => typedError<null, string>(__TAURI_INVOKE("set_playback_continuation_mode", { mode })),
 	stopPlayback: () => typedError<boolean, string>(__TAURI_INVOKE("stop_playback")),
+	getPlaybackStatus: () => typedError<{
+	path: string | null,
+	playing: boolean,
+	paused: boolean,
+	position_ms: number,
+	duration_ms: number | null,
+} | null, string>(__TAURI_INVOKE("get_playback_status")),
+	analyzeTrackWaveform: (filePath: string, start: number | null, end: number | null) => typedError<TrackWaveform, string>(__TAURI_INVOKE("analyze_track_waveform", { filePath, start, end })),
+	prepareTrackWaveform: (filePath: string, start: number | null, end: number | null) => typedError<TrackWaveformSummary, string>(__TAURI_INVOKE("prepare_track_waveform", { filePath, start, end })),
+	getTrackWaveformTile: (filePath: string, start: number | null, end: number | null, pixelsPerSecond: number, tileStartPx: number, tileWidth: number) => typedError<TrackWaveformTile, string>(__TAURI_INVOKE("get_track_waveform_tile", { filePath, start, end, pixelsPerSecond, tileStartPx, tileWidth })),
 	enqueueCollectionDownload: (url: string) => typedError<EnqueuedCollectionDownload, string>(__TAURI_INVOKE("enqueue_collection_download", { url })),
 	probeDownloadResource: (url: string) => typedError<DownloadResourceProbe, string>(__TAURI_INVOKE("probe_download_resource", { url })),
 	resolvePastedDownloadUrl: (url: string) => typedError<PastedDownloadUrlResolution, string>(__TAURI_INVOKE("resolve_pasted_download_url", { url })),
@@ -247,6 +257,7 @@ export type NowPlayingTrackChangedEvent = {
 	playlist_name: string,
 	music_name: string,
 	music_url: string,
+	file_path: string,
 	start: number,
 	end: number,
 };
@@ -273,6 +284,47 @@ export type PlayPlaylistSession = {
 };
 
 export type PlaybackContinuationMode = "random" | "repeatCurrent";
+
+export type PlaybackStatusPayload = {
+	path: string | null,
+	playing: boolean,
+	paused: boolean,
+	position_ms: number,
+	duration_ms: number | null,
+};
+
+export type TrackWaveform = {
+	sample_rate: number,
+	samples_per_point: number,
+	points_per_second: number,
+	start_ms: number,
+	duration_ms: number,
+	peaks: WaveformPeak[],
+};
+
+export type TrackWaveformSummary = {
+	cache_key: string,
+	sample_rate: number,
+	samples_per_point: number,
+	base_points_per_second: number,
+	chunk_duration_ms: number,
+	start_ms: number,
+	duration_ms: number,
+	levels: number[],
+};
+
+export type TrackWaveformTile = {
+	start_px: number,
+	width_px: number,
+	points_per_second: number,
+	min: number[],
+	max: number[],
+};
+
+export type WaveformPeak = {
+	min: number,
+	max: number,
+};
 
 export type WindowKindInfo = {
 	window: WindowName | null,

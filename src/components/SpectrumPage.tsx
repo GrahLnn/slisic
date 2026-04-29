@@ -11,6 +11,7 @@ import {
   resolveSpectrumTitle,
   type SpectrumBackActionVisualState,
 } from "./SpectrumPage.view-model";
+import { TrackSpectrum } from "./SpectrumVisualizer";
 import { usePageRenderFreeze } from "./usePageRenderFreeze";
 
 const contentFadeProps = {
@@ -39,6 +40,9 @@ type SpectrumRenderData = {
   backActionVisualState: SpectrumBackActionVisualState;
   handoffTone: "solid" | "muted" | null;
   interactionDisabled: boolean;
+  trackEnd: number | null;
+  trackFilePath: string | null;
+  trackStart: number | null;
   titleLayoutId?: string;
   titleValue: string;
 };
@@ -162,7 +166,10 @@ export function SpectrumPage() {
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
   const {
     activeLayoutId,
+    nowPlayingTrackEnd,
+    nowPlayingTrackFilePath,
     nowPlayingTrackName,
+    nowPlayingTrackStart,
     playingPlaylistName,
     spectrumMusicTitleDraft,
     titleToneHandoff,
@@ -176,6 +183,9 @@ export function SpectrumPage() {
         ? titleToneHandoff.tone
         : null,
     interactionDisabled: !isPresent || spectrumMusicTitleDraft === null,
+    trackEnd: nowPlayingTrackEnd,
+    trackFilePath: nowPlayingTrackFilePath,
+    trackStart: nowPlayingTrackStart,
     titleLayoutId: activeLayoutId ?? undefined,
     titleValue: resolveSpectrumTitle({
       musicTitleDraft: spectrumMusicTitleDraft,
@@ -278,6 +288,16 @@ export function SpectrumPage() {
             style={{ fontFamily: "var(--font-noto-sans)" }}
             value={renderData.titleValue}
             onChange={appLogicAction.changeSpectrumMusicTitle}
+          />
+        </motion.div>
+        <motion.div
+          {...contentFadeProps}
+          className="relative left-1/2 mt-10 w-screen -translate-x-1/2"
+        >
+          <TrackSpectrum
+            filePath={renderData.trackFilePath}
+            start={renderData.trackStart}
+            end={renderData.trackEnd}
           />
         </motion.div>
       </div>

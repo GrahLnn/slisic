@@ -227,6 +227,7 @@ fn emit_playlist_preparing(app: &AppHandle, playlist_name: &str) -> Result<()> {
         playlist_name: playlist_name.to_string(),
         music_name: PLAYLIST_PREPARING_MESSAGE.to_string(),
         music_url: String::new(),
+        file_path: String::new(),
         start: 0,
         end: 0,
     }

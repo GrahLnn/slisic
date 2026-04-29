@@ -66,6 +66,7 @@ export interface Context {
   playingPlaylistName: string | null;
   nowPlayingTrackName: string | null;
   nowPlayingTrackUrl: string | null;
+  nowPlayingTrackFilePath: string | null;
   nowPlayingTrackStart: number | null;
   nowPlayingTrackEnd: number | null;
   spectrumMusicTitleDraft: SpectrumMusicTitleDraft | null;
@@ -421,6 +422,7 @@ export function createInitialContext(): Context {
     playingPlaylistName: null,
     nowPlayingTrackName: null,
     nowPlayingTrackUrl: null,
+    nowPlayingTrackFilePath: null,
     nowPlayingTrackStart: null,
     nowPlayingTrackEnd: null,
     spectrumMusicTitleDraft: null,
