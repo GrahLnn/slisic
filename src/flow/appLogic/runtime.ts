@@ -12,6 +12,7 @@ export const playlistUpserted = payloads["playlist.upserted"];
 export const playlistDeleted = payloads["playlist.deleted"];
 export const playlistPreviewChanged = payloads["playlist.preview.changed"];
 export const draftNameChanged = payloads["draft.name.changed"];
+export const spectrumMusicTitleChanged = payloads["spectrum.music_title.changed"];
 export const savePathChanged = payloads["save_path.changed"];
 export const collectionUpserted = payloads["collection.upserted"];
 export const draftCollectionUpserted = payloads["draft.collection.upserted"];

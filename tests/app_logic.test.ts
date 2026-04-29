@@ -21,6 +21,7 @@ const originalSetCollectionUpdates = crab.setCollectionUpdates;
 const originalPlayPlaylist = crab.playPlaylist;
 const openPlaylist = payloads["playlist.open"];
 const draftNameChanged = payloads["draft.name.changed"];
+const spectrumMusicTitleChanged = payloads["spectrum.music_title.changed"];
 const savePathChanged = payloads["save_path.changed"];
 const collectionUpserted = payloads["collection.upserted"];
 const draftCollectionUpserted = payloads["draft.collection.upserted"];
@@ -128,6 +129,7 @@ function createExpectedAppLogicContext(overrides: Record<string, unknown> = {}) 
     playingPlaylistName: null,
     nowPlayingTrackName: null,
     nowPlayingTrackUrl: null,
+    spectrumMusicTitleDraft: null,
     shouldStartPlayback: false,
     activeLayoutId: null,
     titleToneHandoff: null,
@@ -715,6 +717,11 @@ describe("appLogic machine", () => {
         playingPlaylistName: samplePlaylist.name,
         nowPlayingTrackName: "Disc 1 Opening",
         nowPlayingTrackUrl: "https://example.com/quiet-morning#disc-1-opening",
+        spectrumMusicTitleDraft: {
+          baselineName: "Disc 1 Opening",
+          name: "Disc 1 Opening",
+          url: "https://example.com/quiet-morning#disc-1-opening",
+        },
         shouldStartPlayback: false,
         activeLayoutId: playlistTitleLayoutId(samplePlaylist.name),
       }),
@@ -726,6 +733,49 @@ describe("appLogic machine", () => {
     expect(playCalls).toBe(1);
     expect(actor.getSnapshot().context.playingPlaylistName).toBe(samplePlaylist.name);
     expect(actor.getSnapshot().context.shouldStartPlayback).toBe(false);
+    expect(actor.getSnapshot().context.titleToneHandoff).toEqual({
+      layoutId: playlistTitleLayoutId(samplePlaylist.name),
+      tone: "solid",
+    });
+  });
+
+  test("commits edited spectrum music title back to the current playback data", async () => {
+    setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
+    setListCollectionsMock(async () => Ok([sampleCollection]));
+    setPlayPlaylistMock(async () =>
+      Ok({
+        playlist_name: samplePlaylist.name,
+        track_count: 2,
+      }),
+    );
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(sig.mainx.run);
+
+    await waitForState(actor, ss.mainx.State.ready);
+    actor.send(payloads["playlist.play"].load(samplePlaylist.name));
+    await waitForState(actor, ss.mainx.State.play);
+    actor.send(
+      payloads["player.now_playing_track.changed"].load({
+        playlist_name: samplePlaylist.name,
+        music_name: "Disc 1 Opening",
+        music_url: "https://example.com/quiet-morning#disc-1-opening",
+      }),
+    );
+    actor.send(sig.mainx.openspectrum);
+    actor.send(spectrumMusicTitleChanged.load("Disc 1 Prelude"));
+    actor.send(sig.mainx.back);
+
+    await waitForState(actor, ss.mainx.State.play);
+
+    expect(actor.getSnapshot().context.nowPlayingTrackName).toBe("Disc 1 Prelude");
+    expect(actor.getSnapshot().context.spectrumMusicTitleDraft).toBeNull();
+    expect(actor.getSnapshot().context.collections[0]?.musics[1]?.name).toBe("Disc 1 Prelude");
+    expect(actor.getSnapshot().context.playlists[0]?.collections[0]?.musics[1]?.name).toBe(
+      "Disc 1 Prelude",
+    );
     expect(actor.getSnapshot().context.titleToneHandoff).toEqual({
       layoutId: playlistTitleLayoutId(samplePlaylist.name),
       tone: "solid",

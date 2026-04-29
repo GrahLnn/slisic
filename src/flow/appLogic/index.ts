@@ -27,6 +27,7 @@ import {
   resetRuntimeActor,
   savePathChanged,
   send,
+  spectrumMusicTitleChanged,
 } from "./runtime";
 import { action as pasteDownloadAction } from "../pasteDownload";
 
@@ -54,6 +55,7 @@ function summarizeContext(context: ActorSnapshot["context"]) {
     playingPlaylistName: context.playingPlaylistName,
     nowPlayingTrackName: context.nowPlayingTrackName,
     nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+    spectrumMusicTitleDraft: context.spectrumMusicTitleDraft,
     error: context.error,
     titleToneHandoffLayoutId: context.titleToneHandoff?.layoutId ?? null,
     titleToneHandoffTone: context.titleToneHandoff?.tone ?? null,
@@ -234,6 +236,10 @@ export const action = {
   changeDraftName: (name: string) => {
     ensureStarted();
     send(draftNameChanged.load(name));
+  },
+  changeSpectrumMusicTitle: (name: string) => {
+    ensureStarted();
+    send(spectrumMusicTitleChanged.load(name));
   },
   changeSavePath: async (savePath: string) => {
     ensureStarted();

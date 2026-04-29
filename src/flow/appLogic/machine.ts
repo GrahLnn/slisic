@@ -16,6 +16,14 @@ import {
   upsertCollectionIntoDraft,
   upsertCollectionIntoCollections,
 } from "./core";
+import {
+  createSpectrumMusicTitleDraft,
+  hasSpectrumMusicTitleChanges,
+  renameMusicInCollections,
+  renameMusicInPlaylistPreview,
+  renameMusicInPlaylists,
+  resolveSpectrumMusicTitleCommit,
+} from "./musicTitle";
 import { resolveConfigBackTitleSharePlan, resolveTitleShareToneFromDraft } from "./titleShare";
 import { BootstrapLoadError, invoker, payloads, ss } from "./events";
 import { src } from "./src";
@@ -34,6 +42,7 @@ const playlistUpserted = payloads["playlist.upserted"];
 const playlistDeleted = payloads["playlist.deleted"];
 const playlistPreviewChanged = payloads["playlist.preview.changed"];
 const draftNameChanged = payloads["draft.name.changed"];
+const spectrumMusicTitleChanged = payloads["spectrum.music_title.changed"];
 const savePathChanged = payloads["save_path.changed"];
 const collectionUpserted = payloads["collection.upserted"];
 const draftCollectionUpserted = payloads["draft.collection.upserted"];
@@ -120,9 +129,19 @@ export const machine = src.createMachine({
           return {};
         }
 
+        const nextSpectrumMusicTitleDraft =
+          context.spectrumMusicTitleDraft &&
+          !hasSpectrumMusicTitleChanges(context.spectrumMusicTitleDraft)
+            ? createSpectrumMusicTitleDraft({
+                nowPlayingTrackName: event.output.music_name,
+                nowPlayingTrackUrl: event.output.music_url,
+              })
+            : context.spectrumMusicTitleDraft;
+
         return {
           nowPlayingTrackName: event.output.music_name,
           nowPlayingTrackUrl: event.output.music_url,
+          spectrumMusicTitleDraft: nextSpectrumMusicTitleDraft,
         };
       }),
     },
@@ -334,6 +353,10 @@ export const machine = src.createMachine({
               playingPlaylistName: context.playingPlaylistName,
               nowPlayingTrackName: context.nowPlayingTrackName,
               nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+              spectrumMusicTitleDraft: createSpectrumMusicTitleDraft({
+                nowPlayingTrackName: context.nowPlayingTrackName,
+                nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+              }),
               shouldStartPlayback: false,
               activeLayoutId: context.playingPlaylistName
                 ? playlistTitleLayoutId(context.playingPlaylistName)
@@ -346,24 +369,50 @@ export const machine = src.createMachine({
     [ss.mainx.State.spectrum]: {
       on: {
         run: ss.mainx.State.loading,
+        [spectrumMusicTitleChanged.evt]: {
+          actions: assign(({ context, event }) => ({
+            spectrumMusicTitleDraft: context.spectrumMusicTitleDraft
+              ? {
+                  ...context.spectrumMusicTitleDraft,
+                  name: event.output,
+                }
+              : null,
+          })),
+        },
         back: {
           target: ss.mainx.State.play,
-          actions: assign(({ context }) =>
-            resetContextWith({
+          actions: assign(({ context }) => {
+            const titleCommit = resolveSpectrumMusicTitleCommit(context.spectrumMusicTitleDraft);
+            const hasTitleChanges = hasSpectrumMusicTitleChanges(context.spectrumMusicTitleDraft);
+            const musicTitleEdit =
+              hasTitleChanges && titleCommit && context.nowPlayingTrackUrl
+                ? {
+                    name: titleCommit.name,
+                    url: context.nowPlayingTrackUrl,
+                  }
+                : null;
+
+            return resetContextWith({
               hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              pendingPlaylistPreview: context.pendingPlaylistPreview,
-              collections: context.collections,
+              playlists: musicTitleEdit
+                ? renameMusicInPlaylists(context.playlists, musicTitleEdit)
+                : context.playlists,
+              pendingPlaylistPreview: musicTitleEdit
+                ? renameMusicInPlaylistPreview(context.pendingPlaylistPreview, musicTitleEdit)
+                : context.pendingPlaylistPreview,
+              collections: musicTitleEdit
+                ? renameMusicInCollections(context.collections, musicTitleEdit)
+                : context.collections,
               savePath: context.savePath,
               playingPlaylistName: context.playingPlaylistName,
-              nowPlayingTrackName: context.nowPlayingTrackName,
+              nowPlayingTrackName: titleCommit?.name ?? context.nowPlayingTrackName,
               nowPlayingTrackUrl: context.nowPlayingTrackUrl,
               shouldStartPlayback: false,
               titleToneHandoff: context.activeLayoutId
                 ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
                 : null,
-            }),
-          ),
+            });
+          }),
         },
       },
     },

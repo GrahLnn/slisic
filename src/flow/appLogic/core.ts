@@ -49,6 +49,12 @@ export interface PlaylistUpsertResult {
   previousName: string | null;
 }
 
+export interface SpectrumMusicTitleDraft {
+  baselineName: string;
+  name: string;
+  url: string | null;
+}
+
 export interface Context {
   hasPlayList: boolean | null;
   playlists: PlayList[];
@@ -58,6 +64,7 @@ export interface Context {
   playingPlaylistName: string | null;
   nowPlayingTrackName: string | null;
   nowPlayingTrackUrl: string | null;
+  spectrumMusicTitleDraft: SpectrumMusicTitleDraft | null;
   shouldStartPlayback: boolean;
   activeLayoutId: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
@@ -410,6 +417,7 @@ export function createInitialContext(): Context {
     playingPlaylistName: null,
     nowPlayingTrackName: null,
     nowPlayingTrackUrl: null,
+    spectrumMusicTitleDraft: null,
     shouldStartPlayback: false,
     activeLayoutId: null,
     titleToneHandoff: null,
