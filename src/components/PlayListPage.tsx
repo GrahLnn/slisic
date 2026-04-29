@@ -58,6 +58,7 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     hasPlayList,
     playlists,
     pendingPlaylistPreview,
+    playingPlaylistName,
     titleToneHandoff,
     pressedLayoutId,
     playbackSurface: playbackSurface.playbackSurfaceSnapshot,
@@ -117,14 +118,17 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
 
                   appLogicAction.openPlaylist(itemViewModel.playlistName);
                 }}
-                onOpenSpectrumPointerDown={() => {
-                  if (!itemViewModel.layoutId) {
-                    return;
+                onOpenSpectrum={() => {
+                  const sourceLayoutId =
+                    itemViewModel.layoutId ?? itemViewModel.sourceLayoutId ?? null;
+
+                  if (sourceLayoutId) {
+                    pageRenderFreeze.freeze({
+                      ...renderData,
+                      pressedLayoutId: sourceLayoutId,
+                    });
                   }
 
-                  setPressedLayoutId(itemViewModel.layoutId);
-                }}
-                onOpenSpectrum={() => {
                   appLogicAction.openSpectrum();
                 }}
               />

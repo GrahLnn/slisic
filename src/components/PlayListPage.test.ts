@@ -169,6 +169,7 @@ describe("PlayListPage", () => {
         createPlayListFixture({ name: "Quiet Morning" }),
       ],
       pendingPlaylistPreview: null,
+      playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: null,
       playbackSurface: {
@@ -186,12 +187,14 @@ describe("PlayListPage", () => {
         key: "Night Drive",
         text: "Night Drive",
         layoutId: "playlist-title:Night Drive",
+        sourceLayoutId: "playlist-title:Night Drive",
         handoffTone: null,
         suppressFade: false,
         isPlaybackTarget: false,
         shouldShowPlaybackIcons: false,
         isPlaybackPreparing: false,
         isHiddenInPlay: true,
+        shouldStartHiddenInPlay: false,
         shouldAnimateSlotPosition: false,
         isCommitted: false,
         commitGesture: "disabled",
@@ -201,6 +204,7 @@ describe("PlayListPage", () => {
         key: "Quiet Morning",
         text: "Track A",
         layoutId: undefined,
+        sourceLayoutId: "playlist-title:Quiet Morning",
         handoffTone: null,
         suppressFade: true,
         isPlaybackTarget: true,
@@ -208,6 +212,7 @@ describe("PlayListPage", () => {
         playbackIconWidthText: "Track A",
         isPlaybackPreparing: false,
         isHiddenInPlay: false,
+        shouldStartHiddenInPlay: false,
         shouldAnimateSlotPosition: false,
         isCommitted: false,
         commitGesture: "disabled",
@@ -217,6 +222,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.shouldRenderCreateItem, true);
     assert.equal(viewModel.shouldShowCreateItem, false);
     assert.equal(viewModel.createItemViewModel.isHiddenInPlay, true);
+    assert.equal(viewModel.createItemViewModel.shouldStartHiddenInPlay, false);
   });
 
   test("falls back to the normal list when the playing playlist snapshot is missing", () => {
@@ -226,6 +232,7 @@ describe("PlayListPage", () => {
       hasPlayList: true,
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
       pendingPlaylistPreview: null,
+      playingPlaylistName: null,
       titleToneHandoff: null,
       pressedLayoutId: null,
       playbackSurface: {
@@ -244,6 +251,54 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.createItemViewModel.isHiddenInPlay, false);
   });
 
+  test("keeps the normal ready to play container path before the playback surface syncs", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "play",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [
+        createPlayListFixture({ name: "Night Drive" }),
+        createPlayListFixture({ name: "Quiet Morning" }),
+      ],
+      pendingPlaylistPreview: null,
+      playingPlaylistName: "Quiet Morning",
+      titleToneHandoff: null,
+      pressedLayoutId: null,
+      playbackSurface: null,
+    });
+
+    assert.equal(viewModel.shouldLockScroll, false);
+    assert.equal(viewModel.playbackTargetKey, null);
+    assert.equal(viewModel.shouldRenderCreateItem, true);
+    assert.equal(viewModel.shouldShowCreateItem, true);
+    assert.equal(viewModel.createItemViewModel.isHiddenInPlay, false);
+    assert.deepEqual(
+      viewModel.itemViewModels.map((item) => ({
+        key: item.key,
+        layoutId: item.layoutId,
+        isPlaybackTarget: item.isPlaybackTarget,
+        isHiddenInPlay: item.isHiddenInPlay,
+        shouldStartHiddenInPlay: item.shouldStartHiddenInPlay,
+      })),
+      [
+        {
+          key: "Night Drive",
+          layoutId: "playlist-title:Night Drive",
+          isPlaybackTarget: false,
+          isHiddenInPlay: false,
+          shouldStartHiddenInPlay: false,
+        },
+        {
+          key: "Quiet Morning",
+          layoutId: "playlist-title:Quiet Morning",
+          isPlaybackTarget: false,
+          isHiddenInPlay: false,
+          shouldStartHiddenInPlay: false,
+        },
+      ],
+    );
+  });
+
   test("locks the playback target immediately before the first track is known", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "play",
@@ -251,6 +306,7 @@ describe("PlayListPage", () => {
       hasPlayList: true,
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
       pendingPlaylistPreview: null,
+      playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: null,
       playbackSurface: {
@@ -265,6 +321,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.layoutId, undefined);
+    assert.equal(viewModel.itemViewModels[0]?.sourceLayoutId, "playlist-title:Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.shouldAnimateSlotPosition, false);
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
     assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, undefined);
@@ -280,6 +337,7 @@ describe("PlayListPage", () => {
       hasPlayList: true,
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
       pendingPlaylistPreview: null,
+      playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: null,
       playbackSurface: {
@@ -292,6 +350,7 @@ describe("PlayListPage", () => {
 
     assert.equal(viewModel.itemViewModels[0]?.text, "Preparing...");
     assert.equal(viewModel.itemViewModels[0]?.layoutId, undefined);
+    assert.equal(viewModel.itemViewModels[0]?.sourceLayoutId, "playlist-title:Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, true);
     assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Preparing...");
     assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, true);
@@ -305,6 +364,7 @@ describe("PlayListPage", () => {
       hasPlayList: true,
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
       pendingPlaylistPreview: null,
+      playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: "playlist-title:Quiet Morning",
       playbackSurface: {
@@ -316,8 +376,71 @@ describe("PlayListPage", () => {
     });
 
     assert.equal(viewModel.itemViewModels[0]?.layoutId, "playlist-title:Quiet Morning");
+    assert.equal(viewModel.itemViewModels[0]?.sourceLayoutId, "playlist-title:Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.text, "Track A");
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, true);
+  });
+
+  test("locks the list while returning from spectrum before playback surface restores", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "play",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [
+        createPlayListFixture({ name: "Night Drive" }),
+        createPlayListFixture({ name: "Quiet Morning" }),
+      ],
+      pendingPlaylistPreview: null,
+      playingPlaylistName: "Quiet Morning",
+      titleToneHandoff: {
+        layoutId: "playlist-title:Quiet Morning",
+        tone: "solid",
+      },
+      pressedLayoutId: null,
+      playbackSurface: null,
+    });
+
+    assert.equal(viewModel.shouldLockScroll, true);
+    assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
+    assert.equal(viewModel.shouldRenderCreateItem, true);
+    assert.equal(viewModel.shouldShowCreateItem, false);
+    assert.equal(viewModel.createItemViewModel.isHiddenInPlay, true);
+    assert.equal(viewModel.createItemViewModel.shouldStartHiddenInPlay, true);
+    assert.equal(viewModel.itemViewModels.length, 2);
+    assert.deepEqual(
+      viewModel.itemViewModels.map((item) => ({
+        key: item.key,
+        text: item.text,
+        layoutId: item.layoutId,
+        sourceLayoutId: item.sourceLayoutId,
+        isPlaybackTarget: item.isPlaybackTarget,
+        isHiddenInPlay: item.isHiddenInPlay,
+        shouldStartHiddenInPlay: item.shouldStartHiddenInPlay,
+        shouldShowPlaybackIcons: item.shouldShowPlaybackIcons,
+      })),
+      [
+        {
+          key: "Night Drive",
+          text: "Night Drive",
+          layoutId: "playlist-title:Night Drive",
+          sourceLayoutId: "playlist-title:Night Drive",
+          isPlaybackTarget: false,
+          isHiddenInPlay: true,
+          shouldStartHiddenInPlay: true,
+          shouldShowPlaybackIcons: false,
+        },
+        {
+          key: "Quiet Morning",
+          text: "Quiet Morning",
+          layoutId: "playlist-title:Quiet Morning",
+          sourceLayoutId: "playlist-title:Quiet Morning",
+          isPlaybackTarget: false,
+          isHiddenInPlay: false,
+          shouldStartHiddenInPlay: false,
+          shouldShowPlaybackIcons: false,
+        },
+      ],
+    );
   });
 
   test("keeps the playback surface locked while restoring the original playlist title", () => {
@@ -327,6 +450,7 @@ describe("PlayListPage", () => {
       hasPlayList: true,
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
       pendingPlaylistPreview: null,
+      playingPlaylistName: null,
       titleToneHandoff: null,
       pressedLayoutId: null,
       playbackSurface: {
@@ -341,6 +465,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.layoutId, undefined);
+    assert.equal(viewModel.itemViewModels[0]?.sourceLayoutId, "playlist-title:Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.shouldAnimateSlotPosition, false);
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
     assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, undefined);

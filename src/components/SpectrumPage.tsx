@@ -12,6 +12,13 @@ const contentFadeProps = {
   transition: collectionTitleLayoutTransition,
 } as const;
 
+const sharedTitleFadeProps = {
+  initial: { opacity: 1 },
+  animate: { opacity: 1 },
+  exit: { opacity: 1 },
+  transition: collectionTitleLayoutTransition,
+} as const;
+
 const spectrumBackIconStrokeTransition = {
   duration: 0.22,
   ease: [0.22, 1, 0.36, 1],
@@ -39,6 +46,10 @@ function resolveSpectrumTitle(args: {
 }
 
 function ignoreSpectrumTitleChange() {}
+
+export function resolveSpectrumTitleFadeProps(args: { hasSharedTitleLayout: boolean }) {
+  return args.hasSharedTitleLayout ? sharedTitleFadeProps : contentFadeProps;
+}
 
 function SpectrumBackIcon() {
   return (
@@ -138,7 +149,12 @@ export function SpectrumPage() {
             <SpectrumBackIcon />
           </button>
         </motion.div>
-        <motion.div {...contentFadeProps} className="flex items-center gap-4">
+        <motion.div
+          {...resolveSpectrumTitleFadeProps({
+            hasSharedTitleLayout: renderData.titleLayoutId !== undefined,
+          })}
+          className="flex items-center gap-4"
+        >
           <EditableTitle
             className={collectionTitleClassName}
             handoffTone={renderData.handoffTone}

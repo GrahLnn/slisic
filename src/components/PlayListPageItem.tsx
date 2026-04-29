@@ -76,6 +76,9 @@ export function PlayListPageItem({
     >
       <motion.div
         className={cn(viewModel.isHiddenInPlay && "pointer-events-none select-none")}
+        initial={
+          viewModel.shouldStartHiddenInPlay ? { filter: "blur(6px)", opacity: 0 } : undefined
+        }
         animate={
           viewModel.isHiddenInPlay
             ? { filter: "blur(6px)", opacity: 0 }
