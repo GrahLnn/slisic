@@ -15,17 +15,26 @@ import {
   upsertPlaylistIntoPlaylists,
   upsertCollectionIntoDraft,
   upsertCollectionIntoCollections,
+  type Context,
 } from "./core";
 import {
   createSpectrumMusicTitleDraft,
   hasSpectrumMusicTitleChanges,
-  renameMusicInCollections,
-  renameMusicInPlaylistPreview,
-  renameMusicInPlaylists,
   resolveSpectrumMusicTitleCommit,
+  updateMusicAliasInCollections,
+  updateMusicAliasInPlaylistPreview,
+  updateMusicAliasInPlaylists,
+  type MusicAliasEdit,
 } from "./musicTitle";
 import { resolveConfigBackTitleSharePlan, resolveTitleShareToneFromDraft } from "./titleShare";
-import { BootstrapLoadError, invoker, payloads, ss } from "./events";
+import {
+  BootstrapLoadError,
+  invoker,
+  payloads,
+  ss,
+  type MusicAliasUpdateInput,
+  type MusicAliasUpdateResult,
+} from "./events";
 import { src } from "./src";
 
 function toErrorMessage(error: unknown) {
@@ -34,6 +43,64 @@ function toErrorMessage(error: unknown) {
 
 function resolveSavePathFromLoadingError(error: unknown, fallback: string) {
   return error instanceof BootstrapLoadError ? error.savePath : fallback;
+}
+
+function hasSpectrumMusicAliasUpdate(context: Context) {
+  return hasSpectrumMusicTitleChanges(context.spectrumMusicTitleDraft);
+}
+
+function resolveSpectrumMusicAliasUpdateInput(context: Context): MusicAliasUpdateInput {
+  const titleCommit = resolveSpectrumMusicTitleCommit(context.spectrumMusicTitleDraft);
+  const draft = context.spectrumMusicTitleDraft;
+
+  if (!titleCommit || !draft || !hasSpectrumMusicTitleChanges(draft)) {
+    throw new Error("missing spectrum music alias update");
+  }
+
+  if (draft.url === null || draft.start === null || draft.end === null) {
+    throw new Error("missing spectrum music identity for alias update");
+  }
+
+  return {
+    url: draft.url,
+    start: draft.start,
+    end: draft.end,
+    alias: titleCommit.alias,
+  };
+}
+
+function createMusicAliasEditFromUpdate(result: MusicAliasUpdateResult): MusicAliasEdit {
+  return {
+    url: result.input.url,
+    start: result.input.start,
+    end: result.input.end,
+    alias: result.music.alias,
+  };
+}
+
+function createSpectrumPlayReturnContext(context: Context, musicAliasEdit: MusicAliasEdit | null) {
+  return resetContextWith({
+    hasPlayList: context.hasPlayList,
+    playlists: musicAliasEdit
+      ? updateMusicAliasInPlaylists(context.playlists, musicAliasEdit)
+      : context.playlists,
+    pendingPlaylistPreview: musicAliasEdit
+      ? updateMusicAliasInPlaylistPreview(context.pendingPlaylistPreview, musicAliasEdit)
+      : context.pendingPlaylistPreview,
+    collections: musicAliasEdit
+      ? updateMusicAliasInCollections(context.collections, musicAliasEdit)
+      : context.collections,
+    savePath: context.savePath,
+    playingPlaylistName: context.playingPlaylistName,
+    nowPlayingTrackName: musicAliasEdit?.alias ?? context.nowPlayingTrackName,
+    nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+    nowPlayingTrackStart: context.nowPlayingTrackStart,
+    nowPlayingTrackEnd: context.nowPlayingTrackEnd,
+    shouldStartPlayback: false,
+    titleToneHandoff: context.activeLayoutId
+      ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
+      : null,
+  });
 }
 
 const openPlaylist = payloads["playlist.open"];
@@ -135,12 +202,16 @@ export const machine = src.createMachine({
             ? createSpectrumMusicTitleDraft({
                 nowPlayingTrackName: event.output.music_name,
                 nowPlayingTrackUrl: event.output.music_url,
+                nowPlayingTrackStart: event.output.start,
+                nowPlayingTrackEnd: event.output.end,
               })
             : context.spectrumMusicTitleDraft;
 
         return {
           nowPlayingTrackName: event.output.music_name,
           nowPlayingTrackUrl: event.output.music_url,
+          nowPlayingTrackStart: event.output.start,
+          nowPlayingTrackEnd: event.output.end,
           spectrumMusicTitleDraft: nextSpectrumMusicTitleDraft,
         };
       }),
@@ -266,6 +337,8 @@ export const machine = src.createMachine({
               playingPlaylistName: context.playingPlaylistName,
               nowPlayingTrackName: context.nowPlayingTrackName,
               nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+              nowPlayingTrackStart: context.nowPlayingTrackStart,
+              nowPlayingTrackEnd: context.nowPlayingTrackEnd,
               error: toErrorMessage(event.error),
             }),
           ),
@@ -353,9 +426,13 @@ export const machine = src.createMachine({
               playingPlaylistName: context.playingPlaylistName,
               nowPlayingTrackName: context.nowPlayingTrackName,
               nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+              nowPlayingTrackStart: context.nowPlayingTrackStart,
+              nowPlayingTrackEnd: context.nowPlayingTrackEnd,
               spectrumMusicTitleDraft: createSpectrumMusicTitleDraft({
                 nowPlayingTrackName: context.nowPlayingTrackName,
                 nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+                nowPlayingTrackStart: context.nowPlayingTrackStart,
+                nowPlayingTrackEnd: context.nowPlayingTrackEnd,
               }),
               shouldStartPlayback: false,
               activeLayoutId: context.playingPlaylistName
@@ -379,40 +456,45 @@ export const machine = src.createMachine({
               : null,
           })),
         },
-        back: {
+        back: [
+          {
+            guard: ({ context }) => hasSpectrumMusicAliasUpdate(context),
+            target: ss.mainx.State.spectrumUpdatingMusicAlias,
+          },
+          {
+            target: ss.mainx.State.play,
+            actions: assign(({ context }) => createSpectrumPlayReturnContext(context, null)),
+          },
+        ],
+      },
+    },
+    [ss.mainx.State.spectrumUpdatingMusicAlias]: {
+      invoke: {
+        id: invoker.updateMusicAlias.id,
+        src: invoker.updateMusicAlias.src,
+        input: ({ context }) => resolveSpectrumMusicAliasUpdateInput(context),
+        onDone: {
           target: ss.mainx.State.play,
-          actions: assign(({ context }) => {
-            const titleCommit = resolveSpectrumMusicTitleCommit(context.spectrumMusicTitleDraft);
-            const hasTitleChanges = hasSpectrumMusicTitleChanges(context.spectrumMusicTitleDraft);
-            const musicTitleEdit =
-              hasTitleChanges && titleCommit && context.nowPlayingTrackUrl
-                ? {
-                    name: titleCommit.name,
-                    url: context.nowPlayingTrackUrl,
-                  }
-                : null;
-
-            return resetContextWith({
+          actions: assign(({ context, event }) =>
+            createSpectrumPlayReturnContext(context, createMusicAliasEditFromUpdate(event.output)),
+          ),
+        },
+        onError: {
+          target: ss.mainx.State.error,
+          actions: assign(({ context, event }) =>
+            resetContextWith({
               hasPlayList: context.hasPlayList,
-              playlists: musicTitleEdit
-                ? renameMusicInPlaylists(context.playlists, musicTitleEdit)
-                : context.playlists,
-              pendingPlaylistPreview: musicTitleEdit
-                ? renameMusicInPlaylistPreview(context.pendingPlaylistPreview, musicTitleEdit)
-                : context.pendingPlaylistPreview,
-              collections: musicTitleEdit
-                ? renameMusicInCollections(context.collections, musicTitleEdit)
-                : context.collections,
+              playlists: context.playlists,
+              collections: context.collections,
               savePath: context.savePath,
               playingPlaylistName: context.playingPlaylistName,
-              nowPlayingTrackName: titleCommit?.name ?? context.nowPlayingTrackName,
+              nowPlayingTrackName: context.nowPlayingTrackName,
               nowPlayingTrackUrl: context.nowPlayingTrackUrl,
-              shouldStartPlayback: false,
-              titleToneHandoff: context.activeLayoutId
-                ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
-                : null,
-            });
-          }),
+              nowPlayingTrackStart: context.nowPlayingTrackStart,
+              nowPlayingTrackEnd: context.nowPlayingTrackEnd,
+              error: toErrorMessage(event.error),
+            }),
+          ),
         },
       },
     },

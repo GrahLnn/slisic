@@ -496,7 +496,7 @@ fn append_collection_tracks(
 
         tracks.push(PlaybackTrack {
             playlist_name: playlist.name.clone(),
-            music_name: music.name.clone(),
+            music_name: music.alias.clone(),
             music_url: music.url.clone(),
             file_path,
             start: music.start,

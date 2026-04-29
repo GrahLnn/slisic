@@ -173,6 +173,30 @@ pub async fn set_collection_updates(url: &str, enabled: bool) -> Result<Option<C
     Ok(Some(upsert_collection(&collection).await?))
 }
 
+pub async fn update_music_alias(
+    url: &str,
+    start: u32,
+    end: u32,
+    alias: &str,
+) -> Result<Option<Music>> {
+    ensure_collection_graph_schema().await?;
+
+    let records = find_music_record_ids_by_identity(url, start, end).await?;
+    let mut first_updated = None;
+
+    for record in records {
+        let mut music = Music::get_record(record.clone()).await?;
+        music.alias = alias.to_string();
+        let updated = Repo::<Music>::update_at(record, music).await?;
+
+        if first_updated.is_none() {
+            first_updated = Some(updated);
+        }
+    }
+
+    Ok(first_updated)
+}
+
 pub async fn list_auto_update_collections() -> Result<Vec<Collection>> {
     Ok(list_collections()
         .await?
@@ -244,6 +268,36 @@ async fn load_collection_music_ids(record: &RecordId) -> Result<Vec<RecordId>> {
 
     let rows: Vec<CollectionEdgeRow> = result.take(0)?;
     Ok(rows.into_iter().map(|row| row.out).collect())
+}
+
+async fn find_music_record_ids_by_identity(
+    url: &str,
+    start: u32,
+    end: u32,
+) -> Result<Vec<RecordId>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query("SELECT VALUE id FROM $table WHERE url = $url AND start = $start AND end = $end;")
+        .bind(("table", Table::from(Music::table_name())))
+        .bind(("url", url.to_string()))
+        .bind(("start", start))
+        .bind(("end", end))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(vec![]),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(vec![]),
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(result.take(0)?)
 }
 
 async fn find_unique_record_id_by_string_field<T>(

@@ -14,6 +14,7 @@ import {
 import {
   crab,
   type Collection,
+  type Music,
   type NowPlayingTrackChangedEvent,
   type PlayList,
   type PlaybackContinuationMode,
@@ -41,6 +42,18 @@ export interface BootstrapResult {
 export interface PlayPlaylistInput {
   playlistName: string;
   shouldStartPlayback: boolean;
+}
+
+export interface MusicAliasUpdateInput {
+  url: string;
+  start: number;
+  end: number;
+  alias: string;
+}
+
+export interface MusicAliasUpdateResult {
+  music: Music;
+  input: MusicAliasUpdateInput;
 }
 
 export class BootstrapLoadError extends Error {
@@ -141,6 +154,7 @@ export const ss = defineSS(
         "ready",
         "play",
         "spectrum",
+        "spectrumUpdatingMusicAlias",
         "configLoading",
         "config",
         "configUpdatingCollectionUpdates",
@@ -221,6 +235,25 @@ export const invoker = createActors({
         }
 
         return collection;
+      },
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+  },
+  updateMusicAlias: async (input: MusicAliasUpdateInput): Promise<MusicAliasUpdateResult> => {
+    const result = await crab.updateMusicAlias(input.url, input.start, input.end, input.alias);
+
+    return result.match({
+      Ok: (music) => {
+        if (!music) {
+          throw new Error(`music \`${input.url}\` not found`);
+        }
+
+        return {
+          music,
+          input,
+        };
       },
       Err: (error) => {
         throw new Error(error);

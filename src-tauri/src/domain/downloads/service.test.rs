@@ -128,7 +128,9 @@ fn materialize_music_entries_expands_chapters_without_splitting_files() {
 
     assert_eq!(musics.len(), 2);
     assert_eq!(musics[0].name, "Intro");
+    assert_eq!(musics[0].alias, "Intro");
     assert_eq!(musics[1].name, "Main");
+    assert_eq!(musics[1].alias, "Main");
     assert_eq!(musics[0].group.name, group.name);
     assert_eq!(musics[0].group.url, group.url);
     assert_eq!(musics[0].group.folder, group.folder);
@@ -157,6 +159,7 @@ fn materialize_music_entries_falls_back_to_single_full_track_when_no_chapters_ex
 
     assert_eq!(musics.len(), 1);
     assert_eq!(musics[0].name, "Single Track");
+    assert_eq!(musics[0].alias, "Single Track");
     assert_eq!(musics[0].group.name, group.name);
     assert_eq!(musics[0].group.url, group.url);
     assert_eq!(musics[0].group.folder, group.folder);
@@ -384,6 +387,7 @@ fn existing_leaf_urls_only_counts_entries_with_present_files() {
         musics: vec![
             Music {
                 name: "Present".to_string(),
+                alias: "Present".to_string(),
                 group: collection_group("Demo", "https://example.com/playlist", folder),
                 url: "https://example.com/watch?v=present".to_string(),
                 path: Some("present.m4a".to_string()),
@@ -392,6 +396,7 @@ fn existing_leaf_urls_only_counts_entries_with_present_files() {
             },
             Music {
                 name: "Missing".to_string(),
+                alias: "Missing".to_string(),
                 group: collection_group("Demo", "https://example.com/playlist", folder),
                 url: "https://example.com/watch?v=missing".to_string(),
                 path: Some("missing.m4a".to_string()),
@@ -698,6 +703,7 @@ fn create_collection_shell_reuses_existing_music_and_updates_collection_metadata
         folder: "youtube/original-list".to_string(),
         musics: vec![Music {
             name: "Track 1".to_string(),
+            alias: "Track 1".to_string(),
             group: collection_group("Disc 1", "https://example.com/list#disc-1", "Disc 1"),
             url: "https://example.com/watch?v=track-1".to_string(),
             path: Some("Disc 1/track-1.m4a".to_string()),

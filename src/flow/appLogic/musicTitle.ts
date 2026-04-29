@@ -1,16 +1,18 @@
 import type { Collection, PlayList } from "@/src/cmd";
 import type { PlaylistUpsertResult, SpectrumMusicTitleDraft } from "./core";
 
-export interface MusicTitleEdit {
-  name: string;
+export interface MusicAliasEdit {
+  alias: string;
   url: string;
+  start: number;
+  end: number;
 }
 
 export type SpectrumMusicTitleCommitKind = "keep" | "restore";
 
 export interface SpectrumMusicTitleCommitResolution {
   kind: SpectrumMusicTitleCommitKind;
-  name: string;
+  alias: string;
 }
 
 export function normalizeSpectrumMusicTitleName(name: string) {
@@ -20,6 +22,8 @@ export function normalizeSpectrumMusicTitleName(name: string) {
 export function createSpectrumMusicTitleDraft(args: {
   nowPlayingTrackName: string | null;
   nowPlayingTrackUrl: string | null;
+  nowPlayingTrackStart: number | null;
+  nowPlayingTrackEnd: number | null;
 }): SpectrumMusicTitleDraft | null {
   if (args.nowPlayingTrackName === null) {
     return null;
@@ -29,6 +33,8 @@ export function createSpectrumMusicTitleDraft(args: {
     baselineName: args.nowPlayingTrackName,
     name: args.nowPlayingTrackName,
     url: args.nowPlayingTrackUrl,
+    start: args.nowPlayingTrackStart,
+    end: args.nowPlayingTrackEnd,
   };
 }
 
@@ -47,27 +53,31 @@ export function resolveSpectrumMusicTitleCommit(
   if (currentName.length > 0) {
     return {
       kind: "keep",
-      name: currentName,
+      alias: currentName,
     };
   }
 
   return {
     kind: "restore",
-    name: draft.baselineName,
+    alias: draft.baselineName,
   };
 }
 
-function renameMusicInCollection(collection: Collection, edit: MusicTitleEdit): Collection {
+function isMusicAliasEditTarget(music: Collection["musics"][number], edit: MusicAliasEdit) {
+  return music.url === edit.url && music.start === edit.start && music.end === edit.end;
+}
+
+function updateMusicAliasInCollection(collection: Collection, edit: MusicAliasEdit): Collection {
   let didRename = false;
   const musics = collection.musics.map((music) => {
-    if (music.url !== edit.url) {
+    if (!isMusicAliasEditTarget(music, edit)) {
       return music;
     }
 
     didRename = true;
     return {
       ...music,
-      name: edit.name,
+      alias: edit.alias,
     };
   });
 
@@ -79,26 +89,26 @@ function renameMusicInCollection(collection: Collection, edit: MusicTitleEdit): 
     : collection;
 }
 
-export function renameMusicInCollections(
+export function updateMusicAliasInCollections(
   collections: readonly Collection[],
-  edit: MusicTitleEdit,
+  edit: MusicAliasEdit,
 ): Collection[] {
-  return collections.map((collection) => renameMusicInCollection(collection, edit));
+  return collections.map((collection) => updateMusicAliasInCollection(collection, edit));
 }
 
-export function renameMusicInPlaylists(
+export function updateMusicAliasInPlaylists(
   playlists: readonly PlayList[],
-  edit: MusicTitleEdit,
+  edit: MusicAliasEdit,
 ): PlayList[] {
   return playlists.map((playlist) => ({
     ...playlist,
-    collections: renameMusicInCollections(playlist.collections, edit),
+    collections: updateMusicAliasInCollections(playlist.collections, edit),
   }));
 }
 
-export function renameMusicInPlaylistPreview(
+export function updateMusicAliasInPlaylistPreview(
   preview: PlaylistUpsertResult | null,
-  edit: MusicTitleEdit,
+  edit: MusicAliasEdit,
 ): PlaylistUpsertResult | null {
   if (!preview) {
     return null;
@@ -108,7 +118,7 @@ export function renameMusicInPlaylistPreview(
     ...preview,
     playlist: {
       ...preview.playlist,
-      collections: renameMusicInCollections(preview.playlist.collections, edit),
+      collections: updateMusicAliasInCollections(preview.playlist.collections, edit),
     },
   };
 }

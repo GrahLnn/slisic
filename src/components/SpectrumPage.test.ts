@@ -39,6 +39,8 @@ describe("SpectrumPage", () => {
           baselineName: "Disc 1 Opening",
           name: "Disc 1 Prelude",
           url: "https://example.com/quiet-morning#disc-1-opening",
+          start: 0,
+          end: 120,
         },
         nowPlayingTrackName: "Disc 1 Opening",
         playingPlaylistName: "Focus Session",
@@ -52,6 +54,8 @@ describe("SpectrumPage", () => {
       baselineName: "Disc 1 Opening",
       name: "Disc 1 Opening",
       url: "https://example.com/quiet-morning#disc-1-opening",
+      start: 0,
+      end: 120,
     };
 
     assert.deepEqual(resolveSpectrumBackActionVisualState({ musicTitleDraft: draft }), {
@@ -91,12 +95,14 @@ describe("SpectrumPage", () => {
           baselineName: "Disc 1 Opening",
           name: "",
           url: "https://example.com/quiet-morning#disc-1-opening",
+          start: 0,
+          end: 120,
         },
         renderedTitle: "",
       }),
       {
         kind: "restore",
-        name: "Disc 1 Opening",
+        alias: "Disc 1 Opening",
       },
     );
   });

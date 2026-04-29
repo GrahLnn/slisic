@@ -210,15 +210,15 @@ export function SpectrumPage() {
       }
 
       await editableTitleRef.current?.commitResolvedValue({
-        value: committedTitle.name,
+        value: committedTitle.alias,
         animateTyping: committedTitle.kind !== "keep",
       });
 
       flushSync(() => {
-        appLogicAction.changeSpectrumMusicTitle(committedTitle.name);
+        appLogicAction.changeSpectrumMusicTitle(committedTitle.alias);
         pageRenderFreeze.freeze({
           ...liveRenderData,
-          titleValue: committedTitle.name,
+          titleValue: committedTitle.alias,
         });
       });
       await waitForTitleShareSourceReady();

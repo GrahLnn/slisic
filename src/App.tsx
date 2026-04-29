@@ -198,6 +198,16 @@ function MainWindowApp() {
               <SpectrumPage />
             </PageViewport>
           ),
+          spectrumUpdatingMusicAlias: () => (
+            <PageViewport
+              key="spectrum"
+              pageKey="spectrum"
+              pageState="spectrum-updating"
+              scrollPositionRef={pageScrollPositionRefs.current.spectrum}
+            >
+              <SpectrumPage />
+            </PageViewport>
+          ),
           error: () => (
             <PageViewport
               key="list"

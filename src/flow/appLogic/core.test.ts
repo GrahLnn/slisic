@@ -135,6 +135,7 @@ describe("upsertCollectionIntoCollections", () => {
       musics: [
         {
           name: "Opening",
+          alias: "Opening",
           group: {
             name: "Night Drive",
             url: "https://example.com/night-drive",
@@ -386,7 +387,6 @@ describe("draft commit naming", () => {
       },
     );
   });
-
 });
 
 describe("upsertPlaylistIntoPlaylists", () => {
@@ -397,16 +397,8 @@ describe("upsertPlaylistIntoPlaylists", () => {
 
     assert.deepEqual(upsertPlaylistIntoPlaylists([], next), [next]);
     assert.deepEqual(
-      upsertPlaylistIntoPlaylists(
-        [
-          createPlayListFixture({ name: "Existing" }),
-        ],
-        next,
-      ),
-      [
-        createPlayListFixture({ name: "Existing" }),
-        next,
-      ],
+      upsertPlaylistIntoPlaylists([createPlayListFixture({ name: "Existing" })], next),
+      [createPlayListFixture({ name: "Existing" }), next],
     );
   });
 
@@ -428,10 +420,7 @@ describe("upsertPlaylistIntoPlaylists", () => {
       groups: [],
     });
 
-    assert.deepEqual(upsertPlaylistIntoPlaylists([first, second], updated), [
-      first,
-      updated,
-    ]);
+    assert.deepEqual(upsertPlaylistIntoPlaylists([first, second], updated), [first, updated]);
   });
 
   test("replaces a renamed playlist by its previous name", () => {
@@ -439,9 +428,7 @@ describe("upsertPlaylistIntoPlaylists", () => {
 
     assert.deepEqual(
       upsertPlaylistIntoPlaylists(
-        [
-          createPlayListFixture({ name: "Original" }),
-        ],
+        [createPlayListFixture({ name: "Original" })],
         renamed,
         "Original",
       ),
@@ -461,10 +448,7 @@ describe("removePlaylistFromPlaylists", () => {
         ],
         "Second",
       ),
-      [
-        createPlayListFixture({ name: "First" }),
-        createPlayListFixture({ name: "Third" }),
-      ],
+      [createPlayListFixture({ name: "First" }), createPlayListFixture({ name: "Third" })],
     );
   });
 });
@@ -498,9 +482,7 @@ describe("resolveSavedPath", () => {
 
 describe("resolvePlaylistsWithPreview", () => {
   test("returns a detached copy when there is no pending preview", () => {
-    const playlists = [
-      createPlayListFixture({ name: "Existing" }),
-    ];
+    const playlists = [createPlayListFixture({ name: "Existing" })];
 
     const resolved = resolvePlaylistsWithPreview(playlists, null);
 
@@ -510,36 +492,21 @@ describe("resolvePlaylistsWithPreview", () => {
 
   test("materializes the returning playlist immediately while the commit is still pending", () => {
     assert.deepEqual(
-      resolvePlaylistsWithPreview(
-        [
-          createPlayListFixture({ name: "Existing" }),
-        ],
-        {
-          playlist: createPlayListFixture({ name: "PlayList 1" }),
-          previousName: null,
-        },
-      ),
-      [
-        createPlayListFixture({ name: "Existing" }),
-        createPlayListFixture({ name: "PlayList 1" }),
-      ],
+      resolvePlaylistsWithPreview([createPlayListFixture({ name: "Existing" })], {
+        playlist: createPlayListFixture({ name: "PlayList 1" }),
+        previousName: null,
+      }),
+      [createPlayListFixture({ name: "Existing" }), createPlayListFixture({ name: "PlayList 1" })],
     );
   });
 
   test("replaces the previous title immediately for rename previews", () => {
     assert.deepEqual(
-      resolvePlaylistsWithPreview(
-        [
-          createPlayListFixture({ name: "Original" }),
-        ],
-        {
-          playlist: createPlayListFixture({ name: "Renamed" }),
-          previousName: "Original",
-        },
-      ),
-      [
-        createPlayListFixture({ name: "Renamed" }),
-      ],
+      resolvePlaylistsWithPreview([createPlayListFixture({ name: "Original" })], {
+        playlist: createPlayListFixture({ name: "Renamed" }),
+        previousName: "Original",
+      }),
+      [createPlayListFixture({ name: "Renamed" })],
     );
   });
 });
@@ -598,6 +565,7 @@ describe("includeDraftSidebarItem", () => {
       musics: [
         {
           name: "Disc 1 Opening",
+          alias: "Disc 1 Opening",
           group: {
             name: "Disc 1",
             url: "https://example.com/disc-1",

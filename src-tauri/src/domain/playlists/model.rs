@@ -39,6 +39,7 @@ pub struct Group {
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, Store, Type)]
 pub struct Music {
     pub name: String,
+    pub alias: String,
     #[back_relate("grouped")]
     pub group: Group,
     pub url: String,

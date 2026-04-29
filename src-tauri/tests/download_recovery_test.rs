@@ -217,6 +217,7 @@ fn repair_stale_single_source_collections_restores_playable_music_from_completed
         assert_eq!(repaired, 1);
         assert_eq!(restored.musics.len(), 1);
         assert_eq!(restored.musics[0].name, "Recovered Single");
+        assert_eq!(restored.musics[0].alias, "Recovered Single");
         assert_eq!(restored.musics[0].url, collection.url);
         assert_eq!(
             restored.musics[0].path.as_deref(),

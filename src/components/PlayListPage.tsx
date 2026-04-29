@@ -33,6 +33,7 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     ready: () => "ready" as const,
     play: () => "play" as const,
     spectrum: () => "spectrum" as const,
+    spectrumUpdatingMusicAlias: () => "spectrumUpdatingMusicAlias" as const,
     configLoading: () => "configLoading" as const,
     config: () => "config" as const,
     configUpdatingCollectionUpdates: () => "configUpdatingCollectionUpdates" as const,

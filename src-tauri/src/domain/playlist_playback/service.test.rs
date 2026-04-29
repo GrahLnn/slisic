@@ -27,6 +27,19 @@ fn group(name: &str, url: &str, folder: &str) -> Group {
 fn music(name: &str, url: &str, path: &str, group: Group) -> Music {
     Music {
         name: name.to_string(),
+        alias: name.to_string(),
+        group,
+        url: url.to_string(),
+        path: Some(path.to_string()),
+        start: 0,
+        end: 180,
+    }
+}
+
+fn music_with_alias(name: &str, alias: &str, url: &str, path: &str, group: Group) -> Music {
+    Music {
+        name: name.to_string(),
+        alias: alias.to_string(),
         group,
         url: url.to_string(),
         path: Some(path.to_string()),
@@ -79,8 +92,9 @@ fn collect_playlist_tracks_includes_group_only_entries_from_library() {
         "Library",
         "https://example.com/library",
         folder,
-        vec![music(
+        vec![music_with_alias(
             "Track A",
+            "Track Alpha",
             "https://example.com/watch?v=track-a",
             "disc-1/track-a.m4a",
             disc.clone(),
@@ -96,7 +110,7 @@ fn collect_playlist_tracks_includes_group_only_entries_from_library() {
     let tracks = collect_playlist_tracks(&playlist, &[], &library, &root);
 
     assert_eq!(tracks.len(), 1);
-    assert_eq!(tracks[0].music_name, "Track A");
+    assert_eq!(tracks[0].music_name, "Track Alpha");
     assert_eq!(tracks[0].file_path, audio_path);
 
     let _ = std::fs::remove_dir_all(root);

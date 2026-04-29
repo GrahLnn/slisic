@@ -55,6 +55,8 @@ function summarizeContext(context: ActorSnapshot["context"]) {
     playingPlaylistName: context.playingPlaylistName,
     nowPlayingTrackName: context.nowPlayingTrackName,
     nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+    nowPlayingTrackStart: context.nowPlayingTrackStart,
+    nowPlayingTrackEnd: context.nowPlayingTrackEnd,
     spectrumMusicTitleDraft: context.spectrumMusicTitleDraft,
     error: context.error,
     titleToneHandoffLayoutId: context.titleToneHandoff?.layoutId ?? null,
@@ -140,7 +142,7 @@ function shouldStopPlaybackForSnapshot(snapshot: ActorSnapshot) {
 }
 
 function shouldRestoreRandomPlaybackForSnapshot(snapshot: ActorSnapshot) {
-  return snapshot.value === "spectrum";
+  return snapshot.value === "spectrum" || snapshot.value === "spectrumUpdatingMusicAlias";
 }
 
 function attachNowPlayingTrackListener() {

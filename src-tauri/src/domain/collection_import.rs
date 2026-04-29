@@ -9,7 +9,7 @@ use crate::domain::playlists::model::{Collection, Group, Music};
 use crate::domain::playlists::repo as collection_repo;
 use anyhow::{Context, Result, bail};
 use appdb::Id;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -177,6 +177,7 @@ pub(crate) async fn persist_downloaded_leaf_music(
     group: Group,
 ) -> Result<()> {
     let mut materialized = materialize_music_entries(probe, file_name, group);
+    inherit_existing_music_aliases(&mut materialized, &collection.musics);
     if source_kind == CollectionSourceKind::Single {
         collection.musics = materialized.clone();
     } else {
@@ -282,8 +283,10 @@ pub(crate) fn materialize_music_entries(
     group: Group,
 ) -> Vec<Music> {
     if probe.chapters.is_empty() {
+        let name = probe.title.clone();
         return vec![Music {
-            name: probe.title.clone(),
+            name: name.clone(),
+            alias: name,
             group,
             url: probe.webpage_url.clone(),
             path: Some(relative_path.to_string()),
@@ -297,6 +300,7 @@ pub(crate) fn materialize_music_entries(
         .iter()
         .map(|chapter| Music {
             name: chapter.title.clone(),
+            alias: chapter.title.clone(),
             group: group.clone(),
             url: probe.webpage_url.clone(),
             path: Some(relative_path.to_string()),
@@ -331,6 +335,24 @@ pub(crate) fn existing_leaf_urls(
                 .collect::<HashSet<String>>()
         })
         .unwrap_or_default()
+}
+
+fn inherit_existing_music_aliases(musics: &mut [Music], existing_musics: &[Music]) {
+    let aliases = existing_musics
+        .iter()
+        .map(|music| {
+            (
+                (music.url.as_str(), music.start, music.end),
+                music.alias.as_str(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    for music in musics {
+        if let Some(alias) = aliases.get(&(music.url.as_str(), music.start, music.end)) {
+            music.alias = (*alias).to_string();
+        }
+    }
 }
 
 fn relative_music_path(collection: &Collection, file_name: &str, group: &Group) -> String {
@@ -455,14 +477,16 @@ pub(crate) fn restore_single_source_musics_from_task(
             continue;
         }
 
+        let name = leaf
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .unwrap_or(&collection.name)
+            .to_string();
         restored.push(Music {
-            name: leaf
-                .title
-                .as_deref()
-                .map(str::trim)
-                .filter(|title| !title.is_empty())
-                .unwrap_or(&collection.name)
-                .to_string(),
+            name: name.clone(),
+            alias: name,
             group: default_group.clone(),
             url: leaf.url.clone(),
             path: Some(relative_path.to_string()),

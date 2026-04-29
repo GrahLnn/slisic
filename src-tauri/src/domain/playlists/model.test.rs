@@ -326,6 +326,7 @@ fn sample_collection(
         musics: vec![
             Music {
                 name: format!("{name} intro"),
+                alias: format!("{name} intro"),
                 group: group.clone(),
                 url: format!("{url}#intro"),
                 path: Some(format!("{name}.m4a")),
@@ -334,6 +335,7 @@ fn sample_collection(
             },
             Music {
                 name: format!("{name} outro"),
+                alias: format!("{name} outro"),
                 group,
                 url: format!("{url}#outro"),
                 path: Some(format!("{name}.m4a")),
@@ -387,6 +389,7 @@ fn assert_group_eq(actual: &Group, expected: &Group) {
 
 fn assert_music_eq(actual: &Music, expected: &Music) {
     assert_eq!(actual.name, expected.name);
+    assert_eq!(actual.alias, expected.alias);
     assert_eq!(actual.group.name, expected.group.name);
     assert_eq!(actual.group.url, expected.group.url);
     assert_eq!(actual.group.folder, expected.group.folder);
@@ -442,6 +445,10 @@ fn serializes_playlist_with_nested_collections_and_musics() {
         "playlist-alpha intro"
     );
     assert_eq!(
+        value["collections"][0]["musics"][0]["alias"],
+        "playlist-alpha intro"
+    );
+    assert_eq!(
         value["collections"][0]["musics"][0]["group"]["url"],
         "https://example.com/playlist-alpha"
     );
@@ -478,6 +485,7 @@ fn deserializes_playlist_with_collection_update_flags() {
                 "musics": [
                     {
                         "name": "track-a",
+                        "alias": "track-a",
                         "group": {
                             "name": "playlist-a",
                             "url": "https://example.com/playlist-a",
@@ -499,6 +507,7 @@ fn deserializes_playlist_with_collection_update_flags() {
                 "musics": [
                     {
                         "name": "track-b",
+                        "alias": "track-b",
                         "group": {
                             "name": "single-b",
                             "url": "https://example.com/single-b",
@@ -539,6 +548,7 @@ fn clone_keeps_nested_collection_data_independent() {
     cloned.groups[0].name = "playlist-alpha-group-copy".to_string();
     cloned.collections[0].name = "playlist-alpha-copy".to_string();
     cloned.collections[0].musics[0].name = "playlist-alpha remix".to_string();
+    cloned.collections[0].musics[0].alias = "playlist-alpha remix".to_string();
 
     assert_eq!(playlist.name, "favorites");
     assert_eq!(playlist.groups[0].name, "playlist-alpha");
@@ -547,11 +557,19 @@ fn clone_keeps_nested_collection_data_independent() {
         playlist.collections[0].musics[0].name,
         "playlist-alpha intro"
     );
+    assert_eq!(
+        playlist.collections[0].musics[0].alias,
+        "playlist-alpha intro"
+    );
 
     assert_eq!(cloned.name, "favorites-copy");
     assert_eq!(cloned.groups[0].name, "playlist-alpha-group-copy");
     assert_eq!(cloned.collections[0].name, "playlist-alpha-copy");
     assert_eq!(cloned.collections[0].musics[0].name, "playlist-alpha remix");
+    assert_eq!(
+        cloned.collections[0].musics[0].alias,
+        "playlist-alpha remix"
+    );
 }
 
 #[test]

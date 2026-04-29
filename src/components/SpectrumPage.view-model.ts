@@ -46,7 +46,7 @@ export function resolveSpectrumCommittedTitle(args: {
   return (
     resolveSpectrumMusicTitleCommit(args.musicTitleDraft) ?? {
       kind: "keep" as const,
-      name: args.renderedTitle,
+      alias: args.renderedTitle,
     }
   );
 }

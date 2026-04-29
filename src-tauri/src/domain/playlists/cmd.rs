@@ -72,6 +72,19 @@ pub async fn set_collection_updates(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn update_music_alias(
+    url: String,
+    start: u32,
+    end: u32,
+    alias: String,
+) -> Result<Option<Music>, String> {
+    super::repo::update_music_alias(&url, start, end, &alias)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn add_exclude(music: Music) -> Result<Exclude, String> {
     super::repo::add_exclude(music)
         .await

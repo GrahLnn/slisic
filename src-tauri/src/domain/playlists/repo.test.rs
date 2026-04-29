@@ -2,7 +2,7 @@ use super::model::{Collection, Exclude, Group, Music, PlayList};
 use super::repo::{
     add_exclude, delete_playlist_by_name, get_collection_by_url, get_playlist_by_name,
     has_collections, list_collections, list_playlists, remove_exclude, set_collection_updates,
-    upsert_collection, upsert_playlist,
+    update_music_alias, upsert_collection, upsert_playlist,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -111,6 +111,7 @@ fn grouped_collection(url: &str) -> Collection {
         folder: "youtube/grouped-demo".to_string(),
         musics: vec![Music {
             name: "Track".to_string(),
+            alias: "Track".to_string(),
             group: Group {
                 name: "Disc 1".to_string(),
                 url: format!("{url}#disc-1"),
@@ -150,6 +151,7 @@ fn collection_with_musics(
 fn shared_music(collection_url: &str, collection_folder: &str) -> Music {
     Music {
         name: "Shared Track".to_string(),
+        alias: "Shared Track".to_string(),
         group: collection_group("Demo", collection_url, collection_folder),
         url: "https://example.com/watch/shared".to_string(),
         path: Some("Shared Track.m4a".to_string()),
@@ -181,6 +183,7 @@ fn sample_playlist(name: &str) -> PlayList {
 fn sample_excluded_music() -> Music {
     Music {
         name: "Blocked Track".to_string(),
+        alias: "Blocked Track".to_string(),
         group: Group {
             name: "Blocked Collection".to_string(),
             url: "https://example.com/blocked-collection".to_string(),
@@ -592,6 +595,7 @@ fn list_collections_returns_hydrated_music_rows() {
 
         assert_eq!(loaded.musics.len(), 1);
         assert_eq!(loaded.musics[0].name, "Track");
+        assert_eq!(loaded.musics[0].alias, "Track");
         assert_eq!(loaded.musics[0].path.as_deref(), Some("Disc 1\\Track.m4a"));
 
         reset_db();
@@ -612,6 +616,7 @@ fn upsert_collection_bootstraps_collection_graph_schema_on_clean_db() {
             None,
             vec![Music {
                 name: "Minus Sixty One".to_string(),
+                alias: "Minus Sixty One".to_string(),
                 group: collection_group("Minus Sixty One", url, "youtube/self-bootstrapped-single"),
                 url: url.to_string(),
                 path: Some("Minus Sixty One.m4a".to_string()),
@@ -634,6 +639,7 @@ fn upsert_collection_bootstraps_collection_graph_schema_on_clean_db() {
         assert_eq!(saved.musics.len(), 1);
         assert_eq!(reloaded.musics.len(), 1);
         assert_eq!(reloaded.musics[0].name, "Minus Sixty One");
+        assert_eq!(reloaded.musics[0].alias, "Minus Sixty One");
         assert_eq!(
             reloaded.musics[0].path.as_deref(),
             Some("Minus Sixty One.m4a")
@@ -667,10 +673,41 @@ fn upsert_collection_round_trips_grouped_music() {
         assert_eq!(reloaded.musics.len(), 1);
         let music = &reloaded.musics[0];
         assert_eq!(music.name, "Track");
+        assert_eq!(music.alias, "Track");
         let group = &music.group;
         assert_eq!(group.name, "Disc 1");
         assert_eq!(group.url, "https://example.com/grouped#disc-1");
         assert_eq!(group.folder, "Disc 1");
+
+        reset_db();
+    });
+}
+
+#[test]
+fn update_music_alias_changes_display_name_without_overwriting_source_name() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let collection = upsert_collection(&grouped_collection("https://example.com/alias-edit"))
+            .await
+            .expect("grouped collection should save before alias update");
+        let updated =
+            update_music_alias(&format!("{}#track", collection.url), 0, 180, "Track Alias")
+                .await
+                .expect("music alias update should succeed")
+                .expect("music alias target should exist");
+        let reloaded = get_collection_by_url(&collection.url)
+            .await
+            .expect("aliased collection should reload")
+            .expect("aliased collection should exist");
+
+        assert_eq!(updated.name, "Track");
+        assert_eq!(updated.alias, "Track Alias");
+        assert_eq!(reloaded.musics[0].name, "Track");
+        assert_eq!(reloaded.musics[0].alias, "Track Alias");
 
         reset_db();
     });
@@ -761,6 +798,7 @@ fn upsert_collection_reuses_existing_legacy_record_id_and_removes_old_music() {
         let legacy_record = insert_collection_row("legacy-grouped", &legacy_collection).await;
         let stale_music = Music {
             name: "Stale Track".to_string(),
+            alias: "Stale Track".to_string(),
             group: collection_group("Demo", url, "youtube/demo"),
             url: format!("{url}#stale"),
             path: Some("Stale Track.m4a".to_string()),
