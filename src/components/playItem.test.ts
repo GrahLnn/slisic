@@ -84,7 +84,7 @@ describe("playItem", () => {
       }),
       {
         left: 159.5,
-        top: 132,
+        top: 124,
         width: 181,
       },
     );
@@ -96,7 +96,7 @@ describe("playItem", () => {
       }),
       {
         left: 0,
-        top: 132,
+        top: 124,
         width: 500,
       },
     );
@@ -120,6 +120,19 @@ describe("playItem", () => {
         torphStage: "animate",
       }),
       true,
+    );
+  });
+
+  test("keeps playback icons dismissed once spectrum opening starts", () => {
+    assert.equal(
+      shouldShowPlaybackIconLayer({
+        hasLayerBox: true,
+        isDismissed: true,
+        isWindowPointerInside: true,
+        showPlaybackIcons: true,
+        torphStage: "idle",
+      }),
+      false,
     );
   });
 });

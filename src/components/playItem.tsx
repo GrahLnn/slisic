@@ -231,11 +231,13 @@ function arePlaybackIconLayerBoxesEqual(
 
 export function shouldShowPlaybackIconLayer(args: {
   hasLayerBox: boolean;
+  isDismissed?: boolean;
   isWindowPointerInside: boolean;
   showPlaybackIcons: boolean;
   torphStage: TorphStage;
 }) {
   return (
+    !args.isDismissed &&
     args.showPlaybackIcons &&
     args.hasLayerBox &&
     args.isWindowPointerInside &&
@@ -268,16 +270,19 @@ function PlayItemFrame({
 function PlayItemFn({
   activeColor,
   icon,
+  label,
   onClick,
   onPointerDown,
 }: {
   activeColor?: string;
   icon: ReactNode;
+  label: string;
   onClick?: () => void;
   onPointerDown?: () => void;
 }) {
   const [isActive, setIsActive] = useState(false);
   const inactiveColorRef = useRef<string | undefined>(undefined);
+  const isInteractive = Boolean(activeColor || onClick || onPointerDown);
   const animatedColor =
     activeColor && (isActive || inactiveColorRef.current)
       ? isActive
@@ -286,8 +291,14 @@ function PlayItemFn({
       : undefined;
 
   return (
-    <motion.div
-      className="p-2"
+    <motion.button
+      type="button"
+      aria-label={label}
+      disabled={!isInteractive}
+      className={cn(
+        "inline-flex items-center justify-center border-0 bg-transparent p-2 text-current",
+        isInteractive ? "cursor-pointer" : "cursor-default",
+      )}
       animate={animatedColor ? { color: animatedColor, opacity: 0.7 } : { opacity: 0.7 }}
       whileHover={{
         scale: 1.1,
@@ -320,7 +331,7 @@ function PlayItemFn({
       }}
     >
       {icon}
-    </motion.div>
+    </motion.button>
   );
 }
 
@@ -341,6 +352,7 @@ function PlayItemText({
   const [playbackIconLayerBox, setPlaybackIconLayerBox] = useState<
     PlaybackIconLayerBox | undefined
   >();
+  const [isPlaybackIconLayerDismissed, setPlaybackIconLayerDismissed] = useState(false);
   const [torphStage, setTorphStage] = useState<TorphStage>("idle");
   const portalHost = typeof document === "undefined" ? null : document.body;
   const latestMeasuredTextWidthRef = useRef<number | undefined>(undefined);
@@ -356,7 +368,22 @@ function PlayItemText({
     isWindowPointerInside,
     showPlaybackIcons,
     torphStage,
+    isDismissed: isPlaybackIconLayerDismissed,
   });
+
+  const dismissPlaybackIconLayer = () => {
+    setPlaybackIconLayerDismissed(true);
+  };
+
+  const handleOpenSpectrum = () => {
+    dismissPlaybackIconLayer();
+    onOpenSpectrum?.();
+  };
+
+  const handleOpenSpectrumPointerDown = () => {
+    dismissPlaybackIconLayer();
+    onOpenSpectrumPointerDown?.();
+  };
 
   useLayoutEffect(() => {
     const node = scope.current;
@@ -416,6 +443,10 @@ function PlayItemText({
     };
   }, [playbackIconWidthText, scope, showPlaybackIcons]);
 
+  useLayoutEffect(() => {
+    setPlaybackIconLayerDismissed(false);
+  }, [playbackIconWidthText, showPlaybackIcons]);
+
   return (
     <>
       <div
@@ -438,7 +469,8 @@ function PlayItemText({
           <AnimatePresence>
             {shouldRenderPlaybackIconLayer && playbackIconLayerBox && !isPlaybackPreparing && (
               <motion.div
-                aria-hidden
+                aria-label="Playback actions"
+                role="toolbar"
                 className="fixed z-10 flex max-w-[100vw] items-center justify-center"
                 style={{
                   left: playbackIconLayerBox.left,
@@ -461,15 +493,17 @@ function PlayItemText({
                     <PlayItemFn
                       activeColor={PLAY_ITEM_HEART_ACTIVE_COLOR}
                       icon={<icons.suitHearts size={14} />}
+                      label="Toggle favorite"
                     />
                   </div>
                   <div className="flex items-center">
                     <PlayItemFn
                       icon={<icons.waveformLines size={14} />}
-                      onClick={onOpenSpectrum}
-                      onPointerDown={onOpenSpectrumPointerDown}
+                      label="Open spectrum"
+                      onClick={handleOpenSpectrum}
+                      onPointerDown={handleOpenSpectrumPointerDown}
                     />
-                    <PlayItemFn icon={<icons.brush2 size={14} />} />
+                    <PlayItemFn icon={<icons.brush2 size={14} />} label="Open style controls" />
                   </div>
                 </div>
               </motion.div>
