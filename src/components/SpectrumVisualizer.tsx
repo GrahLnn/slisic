@@ -9,7 +9,6 @@ import {
   useState,
   type RefObject,
 } from "react";
-import { flushSync } from "react-dom";
 import { motion } from "motion/react";
 import {
   OverlayScrollbarsComponent,
@@ -40,7 +39,8 @@ const WAVEFORM_INITIAL_PIXELS_PER_SECOND = 24;
 const WAVEFORM_WHEEL_DELTA_FOR_DOUBLE_ZOOM = 360;
 const WAVEFORM_MAX_WHEEL_ZOOM_DELTA = WAVEFORM_WHEEL_DELTA_FOR_DOUBLE_ZOOM / 2;
 const WAVEFORM_ZOOM_PROGRESSIVE_RENDER_INTERVAL_MS = 34;
-const WAVEFORM_ZOOM_SETTLE_DELAY_MS = 90;
+const WAVEFORM_ZOOM_SETTLE_DELAY_MS = 420;
+const WAVEFORM_SCROLL_SETTLE_DELAY_MS = 120;
 const WAVEFORM_PIXELS_PER_SECOND_PRECISION = 100;
 const WAVEFORM_INACTIVE_OPACITY = 0.42;
 const WAVEFORM_RENDER_TARGET_PIXELS_PER_SECOND = WAVEFORM_MAX_PIXELS_PER_SECOND;
@@ -165,6 +165,7 @@ type WaveformZoomFrame = {
 
 type WaveformZoomCommit = WaveformZoomFrame & {
   controller: WaveformTileController;
+  generation: number;
   scrollElements: WaveformScrollElements;
   setPixelsPerSecond: Dispatch<SetStateAction<number>>;
 };
@@ -197,7 +198,16 @@ type WaveformTileRenderPlan = {
   visibleTileLoadOrder: number[];
 };
 
-type WaveformTileRenderMode = "complete" | "visible-only";
+type WaveformTileRenderMode = "active-scroll" | "complete" | "visible-only";
+
+type WaveformTileVisibilityPlan = {
+  hiddenIndexes: number[];
+  visibleIndexes: number[];
+};
+
+type WaveformTileLoadQueueOptions = {
+  retainPendingQueue?: boolean;
+};
 
 type WaveformIdleDeadline = {
   didTimeout: boolean;
@@ -457,6 +467,29 @@ export function clampWaveformZoomDeltaY(deltaY: number) {
   return clampNumber(deltaY, -WAVEFORM_MAX_WHEEL_ZOOM_DELTA, WAVEFORM_MAX_WHEEL_ZOOM_DELTA);
 }
 
+export function resolveWaveformZoomScaleFrame(args: {
+  currentPixelsPerSecond: number;
+  deltaY: number;
+  durationMs: number;
+  viewportWidth: number;
+}) {
+  const currentPixelsPerSecond = resolveWaveformPixelsPerSecond(args.currentPixelsPerSecond, {
+    durationMs: args.durationMs,
+    viewportWidth: args.viewportWidth,
+  });
+  const pixelsPerSecond = resolveWaveformWheelPixelsPerSecond({
+    currentPixelsPerSecond,
+    deltaY: args.deltaY,
+    durationMs: args.durationMs,
+    viewportWidth: args.viewportWidth,
+  });
+
+  return {
+    changed: Math.abs(pixelsPerSecond - currentPixelsPerSecond) >= 0.01,
+    pixelsPerSecond,
+  };
+}
+
 export function resolveWaveformZoomFrame(args: {
   anchorViewportX: number;
   currentPixelsPerSecond: number;
@@ -492,6 +525,17 @@ export function resolveWaveformZoomFrame(args: {
     pixelsPerSecond,
     scrollLeft,
   };
+}
+
+export function resolveWaveformZoomSettleDelayMs(args: {
+  lastCommitMs: number;
+  nowMs: number;
+  settleDelayMs?: number;
+}) {
+  const settleDelayMs = Math.max(0, args.settleDelayMs ?? WAVEFORM_ZOOM_SETTLE_DELAY_MS);
+  const quietMs = Math.max(0, args.nowMs - args.lastCommitMs);
+
+  return Math.max(0, settleDelayMs - quietMs);
 }
 
 export function resolveWaveformTileWindow(args: {
@@ -589,6 +633,34 @@ export function resolveWaveformTileRenderPlan(args: {
     retainedSyncIndexes,
     tileLoadOrder,
     visibleTileLoadOrder,
+  };
+}
+
+export function resolveWaveformTileRenderMode(
+  current: WaveformTileRenderMode,
+  requested: WaveformTileRenderMode,
+): WaveformTileRenderMode {
+  const priority: Record<WaveformTileRenderMode, number> = {
+    "visible-only": 0,
+    "active-scroll": 1,
+    complete: 2,
+  };
+
+  return priority[requested] > priority[current] ? requested : current;
+}
+
+export function resolveWaveformTileVisibilityPlan(args: {
+  mountedTileIndexes: Iterable<number>;
+  visibleTileIndexes: Iterable<number>;
+}): WaveformTileVisibilityPlan {
+  const mountedTileIndexes = Array.from(new Set(args.mountedTileIndexes)).sort(
+    (left, right) => left - right,
+  );
+  const visibleIndexes = new Set(args.visibleTileIndexes);
+
+  return {
+    hiddenIndexes: mountedTileIndexes.filter((index) => !visibleIndexes.has(index)),
+    visibleIndexes: mountedTileIndexes.filter((index) => visibleIndexes.has(index)),
   };
 }
 
@@ -975,6 +1047,7 @@ class WaveformTileController {
   private offscreenRenderHandle: number | null = null;
   private offscreenRenderHandleType: "frame" | "idle" | null = null;
   private offscreenRenderOwnerWindow: Window | null = null;
+  private pendingTileRenderMode: WaveformTileRenderMode = "complete";
   private playhead: HTMLDivElement | null = null;
   private playbackSnapshot: PlaybackSnapshot | null = null;
   private playheadFrameId: number | null = null;
@@ -984,6 +1057,12 @@ class WaveformTileController {
   private renderFrameId: number | null = null;
   private renderGeneration = 0;
   private renderLayer: HTMLDivElement | null = null;
+  private renderLayerTransformStyle = "";
+  private renderLayerWidthStyle = "";
+  private renderLayerWillChangeStyle = "";
+  private renderedTileWindow: WaveformTileWindow | null = null;
+  private scrollSettleOwnerWindow: Window | null = null;
+  private scrollSettleTimerId: number | null = null;
   private scrollLeft = 0;
   private tileLayer: HTMLDivElement | null = null;
   private tileLoadQueue = new Set<number>();
@@ -995,6 +1074,7 @@ class WaveformTileController {
     this.cancelRenderFrame();
     this.cancelPlayheadFrame();
     this.cancelTileLoadFrame();
+    this.cancelScrollSettleRender();
     this.cancelOffscreenTileRender();
     this.invalidateTileLoads();
     this.playbackSnapshot = null;
@@ -1002,6 +1082,7 @@ class WaveformTileController {
     this.clearTiles("dispose");
     this.renderLayer?.remove();
     this.renderLayer = null;
+    this.resetRenderLayerStyleCache();
   }
 
   setHost(host: HTMLElement | null) {
@@ -1073,20 +1154,58 @@ class WaveformTileController {
   }
 
   setScrollLeft(scrollLeft: number) {
-    this.setViewportScroll({
+    this.beginViewportScroll();
+    const changed = this.setActiveViewportScroll({
       scrollLeft,
       visualScrollLeft: scrollLeft,
     });
+
+    if (changed) {
+      this.settleViewportScroll();
+    }
   }
 
-  setViewportScroll(args: { scrollLeft: number; visualScrollLeft?: number }) {
+  beginViewportScroll() {
+    if (this.zoomPresentation) {
+      return;
+    }
+
+    this.cancelOffscreenTileRender();
+    this.cancelScrollSettleRender();
+  }
+
+  settleViewportScroll() {
+    if (this.zoomPresentation) {
+      return;
+    }
+
+    this.scheduleScrollSettleRender();
+  }
+
+  setActiveViewportScroll(args: { scrollLeft: number; visualScrollLeft?: number }) {
+    const changed = this.setViewportPosition(args);
+
+    if (!changed) {
+      return false;
+    }
+
+    if (!this.zoomPresentation) {
+      this.requestActiveScrollTileWindowRender();
+    } else {
+      this.updatePresentationTileVisibility();
+    }
+    this.requestPlayheadRender();
+    return true;
+  }
+
+  private setViewportPosition(args: { scrollLeft: number; visualScrollLeft?: number }) {
     const nextScrollLeft = Math.max(0, args.scrollLeft);
     const nextVisualScrollLeft = Math.max(0, args.visualScrollLeft ?? nextScrollLeft);
     if (
       Math.abs(nextScrollLeft - this.scrollLeft) < 0.5 &&
       Math.abs(nextVisualScrollLeft - this.visualScrollLeft) < 0.5
     ) {
-      return;
+      return false;
     }
 
     recordSpectrumWaveformTrace("controller-scroll-left", {
@@ -1099,13 +1218,7 @@ class WaveformTileController {
     this.scrollLeft = nextScrollLeft;
     this.visualScrollLeft = nextVisualScrollLeft;
     this.updateRenderLayerPresentation();
-
-    if (!this.zoomPresentation) {
-      this.requestTileWindowRender();
-    } else {
-      this.updatePresentationTileVisibility();
-    }
-    this.requestPlayheadRender();
+    return true;
   }
 
   getScrollLeft() {
@@ -1213,6 +1326,68 @@ class WaveformTileController {
     this.renderTileWindow(mode);
   }
 
+  private requestActiveScrollTileWindowRender() {
+    const inputs = this.inputs;
+    if (!inputs || inputs.viewportWidth <= 0) {
+      return;
+    }
+
+    const renderMetrics = resolveWaveformRenderMetrics(inputs);
+    const visibleTileWindow = resolveWaveformRenderTileWindow({
+      contentWidth: renderMetrics.contentWidth,
+      overscanTiles: 0,
+      renderScale: renderMetrics.scale,
+      scrollLeft: this.scrollLeft,
+      tileWidth: WAVEFORM_TILE_WIDTH,
+      viewportWidth: inputs.viewportWidth,
+    });
+
+    if (visibleTileWindow && this.isTileWindowReadyForViewport(visibleTileWindow, renderMetrics)) {
+      return;
+    }
+
+    this.requestTileWindowRender("active-scroll");
+  }
+
+  private isTileWindowReadyForViewport(
+    visibleTileWindow: WaveformTileWindow,
+    renderMetrics: ReturnType<typeof resolveWaveformRenderMetrics>,
+  ) {
+    if (
+      !this.renderedTileWindow ||
+      !isWaveformTileWindowCoveringWindow(this.renderedTileWindow, visibleTileWindow)
+    ) {
+      return false;
+    }
+
+    for (
+      let index = visibleTileWindow.startIndex;
+      index <= visibleTileWindow.endIndex;
+      index += 1
+    ) {
+      const tile = this.tiles.get(index);
+      if (!tile || !tile.visibleDuringPresentation) {
+        return false;
+      }
+
+      const geometry = resolveWaveformTileGeometry({
+        contentWidth: this.inputs?.contentWidth ?? 0,
+        index,
+        renderMetrics,
+      });
+      if (
+        tile.sourceStartPx !== geometry.sourceStartPx ||
+        tile.sourceWidthPx !== geometry.sourceWidthPx ||
+        tile.displayStartPx !== geometry.displayStartPx ||
+        tile.displayWidthPx !== geometry.displayWidthPx
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   recordAnchorSnapshot(args: { anchorViewportX: number; event: string; pixelsPerSecond: number }) {
     if (!isSpectrumWaveformTraceEnabled()) {
       return;
@@ -1272,7 +1447,9 @@ class WaveformTileController {
           sourceWidthPx: tile.sourceWidthPx,
           status: tile.status,
           styleLeft: tile.canvas.style.left,
+          styleVisibility: tile.canvas.style.visibility || null,
           styleWidth: tile.canvas.style.width,
+          visibleDuringPresentation: tile.visibleDuringPresentation,
         };
       })
       .filter((tile) => tile.coversAnchor || Math.abs(tile.localCssX) < 400)
@@ -1311,6 +1488,7 @@ class WaveformTileController {
     this.clearTiles("tile-layer-change");
     this.renderLayer?.remove();
     this.renderLayer = null;
+    this.resetRenderLayerStyleCache();
     this.tileLayer = tileLayer;
     this.ensureRenderLayer();
     this.requestTileWindowRender();
@@ -1344,11 +1522,13 @@ class WaveformTileController {
 
   private cancelRenderFrame() {
     if (this.renderFrameId === null) {
+      this.pendingTileRenderMode = "complete";
       return;
     }
 
     this.getOwnerWindow()?.cancelAnimationFrame(this.renderFrameId);
     this.renderFrameId = null;
+    this.pendingTileRenderMode = "complete";
   }
 
   private cancelOffscreenTileRender() {
@@ -1370,6 +1550,33 @@ class WaveformTileController {
     this.pendingOffscreenRenderJob = null;
   }
 
+  private cancelScrollSettleRender() {
+    if (this.scrollSettleTimerId === null) {
+      return;
+    }
+
+    this.scrollSettleOwnerWindow?.clearTimeout(this.scrollSettleTimerId);
+    this.scrollSettleOwnerWindow = null;
+    this.scrollSettleTimerId = null;
+  }
+
+  private scheduleScrollSettleRender() {
+    this.cancelScrollSettleRender();
+
+    const ownerWindow = this.getOwnerWindow();
+    if (!ownerWindow) {
+      this.requestTileWindowRender("complete");
+      return;
+    }
+
+    this.scrollSettleOwnerWindow = ownerWindow;
+    this.scrollSettleTimerId = ownerWindow.setTimeout(() => {
+      this.scrollSettleOwnerWindow = null;
+      this.scrollSettleTimerId = null;
+      this.requestTileWindowRender("complete");
+    }, WAVEFORM_SCROLL_SETTLE_DELAY_MS);
+  }
+
   private cancelTileLoadFrame() {
     if (this.loadFrameId === null) {
       return;
@@ -1384,6 +1591,7 @@ class WaveformTileController {
     const queuedCount = this.tileLoadQueue.size;
 
     this.cancelOffscreenTileRender();
+    this.cancelScrollSettleRender();
     this.invalidateTileLoads();
 
     for (const tile of this.tiles.values()) {
@@ -1391,6 +1599,7 @@ class WaveformTileController {
     }
 
     this.tiles.clear();
+    this.renderedTileWindow = null;
 
     recordSpectrumWaveformTrace("tiles-cleared", {
       queuedCount,
@@ -1467,6 +1676,7 @@ class WaveformTileController {
     renderLayer.style.transformOrigin = "left top";
     tileLayer.append(renderLayer);
     this.renderLayer = renderLayer;
+    this.resetRenderLayerStyleCache();
     this.applyContentWidth(this.zoomPresentation?.contentWidth ?? this.inputs?.contentWidth ?? 1);
     this.updateRenderLayerPresentation();
 
@@ -1713,6 +1923,7 @@ class WaveformTileController {
 
     if (!tileWindow || !visibleTileWindow || !retentionTileWindow) {
       this.clearTiles("empty-window");
+      this.renderedTileWindow = null;
       recordSpectrumWaveformTrace("tile-window-empty", {
         contentWidth: inputs.contentWidth,
         durationMs: this.getNow() - renderStartMs,
@@ -1742,11 +1953,13 @@ class WaveformTileController {
     }
 
     const visibleTileIndexes = new Set(renderPlan.visibleTileLoadOrder);
+    const renderIndexes =
+      mode === "active-scroll" ? renderPlan.tileLoadOrder : renderPlan.visibleTileLoadOrder;
     const retainedSyncIndexes =
-      mode === "visible-only"
-        ? []
-        : renderPlan.retainedSyncIndexes.filter((index) => !visibleTileIndexes.has(index));
-    const offscreenTileLoadOrder = mode === "visible-only" ? [] : renderPlan.offscreenTileLoadOrder;
+      mode === "complete"
+        ? renderPlan.retainedSyncIndexes.filter((index) => !visibleTileIndexes.has(index))
+        : [];
+    const offscreenTileLoadOrder = mode === "complete" ? renderPlan.offscreenTileLoadOrder : [];
 
     for (const index of retainedSyncIndexes) {
       const tile = this.tiles.get(index);
@@ -1755,9 +1968,19 @@ class WaveformTileController {
       }
     }
 
-    this.renderTileIndexes(renderPlan.visibleTileLoadOrder, inputs, renderMetrics, stats);
-    this.queueTileLoads(renderPlan.visibleTileLoadOrder);
-    if (mode === "visible-only") {
+    this.renderTileIndexes(renderIndexes, inputs, renderMetrics, stats);
+    const visibilityTileIndexes =
+      mode === "visible-only" ? renderPlan.visibleTileLoadOrder : renderPlan.tileLoadOrder;
+    const visibilityPlan = resolveWaveformTileVisibilityPlan({
+      mountedTileIndexes: this.tiles.keys(),
+      visibleTileIndexes: visibilityTileIndexes,
+    });
+    this.applyTileVisibilityPlan(visibilityPlan);
+    this.queueTileLoads(renderIndexes, {
+      retainPendingQueue: mode === "complete",
+    });
+    this.renderedTileWindow = mode === "visible-only" ? visibleTileWindow : tileWindow;
+    if (mode !== "complete") {
       this.cancelOffscreenTileRender();
     } else {
       this.scheduleOffscreenTileRender({
@@ -1772,9 +1995,9 @@ class WaveformTileController {
       contentWidth: inputs.contentWidth,
       durationMs: this.getNow() - renderStartMs,
       geometry: {
-        host: this.host ? snapshotWaveformScrollElement(this.host) : null,
-        renderLayer: this.renderLayer ? snapshotWaveformScrollElement(this.renderLayer) : null,
-        tileLayer: this.tileLayer ? snapshotWaveformScrollElement(this.tileLayer) : null,
+        host: snapshotWaveformLayerState(this.host),
+        renderLayer: snapshotWaveformLayerState(this.renderLayer),
+        tileLayer: snapshotWaveformLayerState(this.tileLayer),
       },
       loadQueueSize: this.tileLoadQueue.size,
       mode,
@@ -1790,6 +2013,7 @@ class WaveformTileController {
       retainedSyncIndexes,
       tileLoadOrder: renderPlan.tileLoadOrder,
       tileWindow,
+      visibilityPlan,
       visibleTileLoadOrder: renderPlan.visibleTileLoadOrder,
       visibleTileWindow,
       visualScrollLeft: this.visualScrollLeft,
@@ -1822,6 +2046,22 @@ class WaveformTileController {
       const drawResult = this.drawTile(tile, inputs, renderMetrics.scale);
 
       applyWaveformTileRenderStats(stats, syncResult, drawResult);
+    }
+  }
+
+  private applyTileVisibilityPlan(plan: WaveformTileVisibilityPlan) {
+    for (const index of plan.visibleIndexes) {
+      const tile = this.tiles.get(index);
+      if (tile) {
+        this.setTilePresentationVisibility(tile, true);
+      }
+    }
+
+    for (const index of plan.hiddenIndexes) {
+      const tile = this.tiles.get(index);
+      if (tile) {
+        this.setTilePresentationVisibility(tile, false);
+      }
     }
   }
 
@@ -1897,7 +2137,9 @@ class WaveformTileController {
       return;
     }
 
-    this.drawTile(tile, inputs, resolveWaveformRenderMetrics(inputs).scale);
+    const renderMetrics = resolveWaveformRenderMetrics(inputs);
+    this.syncTileGeometry(tile, inputs, renderMetrics);
+    this.drawTile(tile, inputs, renderMetrics.scale);
   }
 
   private scheduleOffscreenTileRender(job: WaveformOffscreenTileRenderJob) {
@@ -2025,8 +2267,9 @@ class WaveformTileController {
     }
   }
 
-  private queueTileLoads(indexes: readonly number[]) {
+  private queueTileLoads(indexes: readonly number[], options: WaveformTileLoadQueueOptions = {}) {
     const nextQueue = new Set<number>();
+    const retainPendingQueue = options.retainPendingQueue ?? true;
 
     for (const index of indexes) {
       const tile = this.tiles.get(index);
@@ -2035,10 +2278,12 @@ class WaveformTileController {
       }
     }
 
-    for (const index of this.tileLoadQueue) {
-      const tile = this.tiles.get(index);
-      if (tile?.status === "pending") {
-        nextQueue.add(index);
+    if (retainPendingQueue) {
+      for (const index of this.tileLoadQueue) {
+        const tile = this.tiles.get(index);
+        if (tile?.status === "pending") {
+          nextQueue.add(index);
+        }
       }
     }
 
@@ -2073,20 +2318,27 @@ class WaveformTileController {
     });
   }
 
-  private requestTileWindowRender() {
+  private requestTileWindowRender(mode: WaveformTileRenderMode = "complete") {
     if (this.renderFrameId !== null) {
+      this.pendingTileRenderMode = resolveWaveformTileRenderMode(this.pendingTileRenderMode, mode);
       return;
     }
 
+    this.pendingTileRenderMode = mode;
+
     const ownerWindow = this.getOwnerWindow();
     if (!ownerWindow) {
-      this.renderTileWindow();
+      const pendingMode = this.pendingTileRenderMode;
+      this.pendingTileRenderMode = "complete";
+      this.renderTileWindow(pendingMode);
       return;
     }
 
     this.renderFrameId = ownerWindow.requestAnimationFrame(() => {
       this.renderFrameId = null;
-      this.renderTileWindow();
+      const pendingMode = this.pendingTileRenderMode;
+      this.pendingTileRenderMode = "complete";
+      this.renderTileWindow(pendingMode);
     });
   }
 
@@ -2106,6 +2358,12 @@ class WaveformTileController {
     });
   }
 
+  private resetRenderLayerStyleCache() {
+    this.renderLayerTransformStyle = "";
+    this.renderLayerWidthStyle = "";
+    this.renderLayerWillChangeStyle = "";
+  }
+
   private updateRenderLayerPresentation() {
     const inputs = this.inputs;
     const renderLayer = this.renderLayer;
@@ -2113,7 +2371,12 @@ class WaveformTileController {
       return;
     }
 
-    renderLayer.style.width = `${inputs.contentWidth}px`;
+    const nextWidthStyle = `${inputs.contentWidth}px`;
+    if (this.renderLayerWidthStyle !== nextWidthStyle) {
+      renderLayer.style.width = nextWidthStyle;
+      this.renderLayerWidthStyle = nextWidthStyle;
+    }
+
     const alignment = resolveWaveformRasterAlignment({
       sampleScrollLeft: this.scrollLeft,
       scrollLeft: this.visualScrollLeft,
@@ -2121,12 +2384,21 @@ class WaveformTileController {
     const presentationPixelsPerSecond =
       this.zoomPresentation?.pixelsPerSecond ?? inputs.pixelsPerSecond;
 
-    renderLayer.style.transform = resolveWaveformPresentationTransform({
+    const nextTransformStyle = resolveWaveformPresentationTransform({
       exactPixelsPerSecond: inputs.pixelsPerSecond,
       pixelsPerSecond: presentationPixelsPerSecond,
       transformPx: alignment.transformPx,
     });
-    renderLayer.style.willChange = this.zoomPresentation ? "transform" : "";
+    if (this.renderLayerTransformStyle !== nextTransformStyle) {
+      renderLayer.style.transform = nextTransformStyle;
+      this.renderLayerTransformStyle = nextTransformStyle;
+    }
+
+    const nextWillChangeStyle = this.zoomPresentation ? "transform" : "";
+    if (this.renderLayerWillChangeStyle !== nextWillChangeStyle) {
+      renderLayer.style.willChange = nextWillChangeStyle;
+      this.renderLayerWillChangeStyle = nextWillChangeStyle;
+    }
   }
 
   private updatePresentationTileVisibility() {
@@ -2237,11 +2509,15 @@ class WaveformTileController {
 }
 
 class WaveformZoomController {
+  private commitGeneration = 0;
+  private lastCommitMs = 0;
   private lastMaterializeMs = 0;
   private materializeOwnerWindow: Window | null = null;
   private progressiveMaterializeFrameId: number | null = null;
   private materializeTimerId: number | null = null;
   private pendingMaterialize: WaveformZoomCommit | null = null;
+  private stateSyncFrameId: number | null = null;
+  private stateSyncOwnerWindow: Window | null = null;
 
   dispose() {
     if (this.materializeTimerId !== null) {
@@ -2252,6 +2528,7 @@ class WaveformZoomController {
       this.materializeOwnerWindow?.cancelAnimationFrame(this.progressiveMaterializeFrameId);
     }
 
+    this.cancelStateSync();
     this.materializeOwnerWindow = null;
     this.progressiveMaterializeFrameId = null;
     this.materializeTimerId = null;
@@ -2295,6 +2572,7 @@ class WaveformZoomController {
     const commit = {
       ...nextFrame,
       controller: args.wheelState.controller,
+      generation: this.commitGeneration + 1,
       scrollElements: args.scrollElements,
       setPixelsPerSecond: args.wheelState.setPixelsPerSecond,
     };
@@ -2303,6 +2581,7 @@ class WaveformZoomController {
     recordSpectrumWaveformTrace("zoom-schedule", () => ({
       base,
       deltaY: args.deltaY,
+      generation: commit.generation,
       mode: "presentation",
       nextFrame,
       pendingWheelCount: 1,
@@ -2322,7 +2601,9 @@ class WaveformZoomController {
       ownerWindow: Window | null;
     },
   ) {
+    this.commitGeneration = pending.generation;
     const ownerWindow = args.ownerWindow;
+    const generation = this.commitGeneration;
     const commitStartMs = readWaveformPerformanceNow(ownerWindow);
     const presentationStartMs = commitStartMs;
     pending.controller.prepareZoomPresentation({
@@ -2366,6 +2647,7 @@ class WaveformZoomController {
       firstScheduleToCommitMs: commitStartMs - args.applyStartMs,
       lastScheduleToCommitMs: commitStartMs - args.applyStartMs,
       pendingWheelCount: 1,
+      generation,
       pixelsPerSecond: pending.pixelsPerSecond,
       scrollLeft: pending.scrollLeft,
       timing: {
@@ -2382,6 +2664,15 @@ class WaveformZoomController {
 
     if (isSpectrumWaveformTraceEnabled()) {
       ownerWindow?.requestAnimationFrame(() => {
+        if (generation !== this.commitGeneration) {
+          recordSpectrumWaveformTrace("zoom-commit-next-frame-stale", {
+            currentGeneration: this.commitGeneration,
+            generation,
+            pixelsPerSecond: pending.pixelsPerSecond,
+          });
+          return;
+        }
+
         const nextFrameActualScrollLeft = readWaveformScrollLeft(pending.scrollElements);
         const nextFrameActualAnchorSeconds =
           (nextFrameActualScrollLeft + pending.anchorViewportX) / pending.pixelsPerSecond;
@@ -2397,6 +2688,7 @@ class WaveformZoomController {
           domAnchorDriftPx:
             (nextFrameActualAnchorSeconds - pending.anchorSeconds) * pending.pixelsPerSecond,
           elapsedMs: readWaveformPerformanceNow(ownerWindow) - commitStartMs,
+          generation,
           pixelsPerSecond: pending.pixelsPerSecond,
           scroll: snapshotWaveformScrollElements(pending.scrollElements),
         }));
@@ -2414,6 +2706,7 @@ class WaveformZoomController {
       this.materializeOwnerWindow?.clearTimeout(this.materializeTimerId);
     }
 
+    this.cancelStateSync();
     this.pendingMaterialize = pending;
     this.materializeOwnerWindow = ownerWindow;
 
@@ -2423,12 +2716,13 @@ class WaveformZoomController {
     }
 
     const now = readWaveformPerformanceNow(ownerWindow);
+    this.lastCommitMs = now;
     if (now - this.lastMaterializeMs >= WAVEFORM_ZOOM_PROGRESSIVE_RENDER_INTERVAL_MS) {
       this.requestProgressiveMaterialize(ownerWindow);
     }
 
     this.materializeTimerId = ownerWindow.setTimeout(() => {
-      this.materialize("settled");
+      this.materializeAfterQuiet();
     }, WAVEFORM_ZOOM_SETTLE_DELAY_MS);
   }
 
@@ -2441,6 +2735,34 @@ class WaveformZoomController {
       this.progressiveMaterializeFrameId = null;
       this.materialize("progressive");
     });
+  }
+
+  private materializeAfterQuiet() {
+    const ownerWindow = this.materializeOwnerWindow;
+    if (!ownerWindow) {
+      this.materialize("settled");
+      return;
+    }
+
+    const now = readWaveformPerformanceNow(ownerWindow);
+    const waitMs = resolveWaveformZoomSettleDelayMs({
+      lastCommitMs: this.lastCommitMs,
+      nowMs: now,
+    });
+
+    if (waitMs > 0) {
+      this.materializeTimerId = ownerWindow.setTimeout(() => {
+        this.materializeAfterQuiet();
+      }, waitMs);
+      recordSpectrumWaveformTrace("zoom-materialize-wait", {
+        generation: this.pendingMaterialize?.generation ?? null,
+        quietMs: now - this.lastCommitMs,
+        waitMs,
+      });
+      return;
+    }
+
+    this.materialize("settled");
   }
 
   private materialize(reason: "progressive" | "settled") {
@@ -2466,17 +2788,22 @@ class WaveformZoomController {
       return;
     }
 
-    const materializeStartMs = readWaveformPerformanceNow(ownerWindow);
-    const flushSyncStartMs = materializeStartMs;
-    if (reason === "settled") {
-      flushSync(() => {
-        pending.setPixelsPerSecond((current) =>
-          Math.abs(current - pending.pixelsPerSecond) < 0.01 ? current : pending.pixelsPerSecond,
-        );
+    if (pending.generation !== this.commitGeneration) {
+      recordSpectrumWaveformTrace("zoom-materialize-stale", {
+        currentGeneration: this.commitGeneration,
+        generation: pending.generation,
+        reason,
       });
+      return;
     }
-    const flushSyncEndMs = readWaveformPerformanceNow(ownerWindow);
-    const renderStartMs = flushSyncEndMs;
+
+    const materializeStartMs = readWaveformPerformanceNow(ownerWindow);
+    const stateSyncStartMs = materializeStartMs;
+    if (reason === "settled") {
+      this.scheduleStateSync(pending, ownerWindow);
+    }
+    const stateSyncEndMs = readWaveformPerformanceNow(ownerWindow);
+    const renderStartMs = stateSyncEndMs;
     pending.controller.materializeZoomPresentation({
       contentWidth: pending.contentWidth,
       mode: reason === "progressive" ? "visible-only" : "complete",
@@ -2494,14 +2821,119 @@ class WaveformZoomController {
       anchorViewportX: pending.anchorViewportX,
       contentWidth: pending.contentWidth,
       durationMs: renderEndMs - materializeStartMs,
+      generation: pending.generation,
       pixelsPerSecond: pending.pixelsPerSecond,
       reason,
       scrollLeft: pending.scrollLeft,
       timing: {
-        flushSyncMs: flushSyncEndMs - flushSyncStartMs,
+        flushSyncMs: 0,
         renderTileWindowMs: renderEndMs - renderStartMs,
+        stateSyncScheduleMs: stateSyncEndMs - stateSyncStartMs,
       },
     }));
+  }
+
+  private scheduleStateSync(pending: WaveformZoomCommit, ownerWindow: Window | null) {
+    this.cancelStateSync();
+
+    if (!ownerWindow) {
+      this.syncPixelsPerSecondState(pending);
+      return;
+    }
+
+    const generation = pending.generation;
+    this.stateSyncOwnerWindow = ownerWindow;
+    this.stateSyncFrameId = ownerWindow.requestAnimationFrame(() => {
+      this.stateSyncFrameId = null;
+      this.stateSyncOwnerWindow = null;
+
+      if (generation !== this.commitGeneration) {
+        recordSpectrumWaveformTrace("zoom-state-sync-stale", {
+          currentGeneration: this.commitGeneration,
+          generation,
+          pixelsPerSecond: pending.pixelsPerSecond,
+        });
+        return;
+      }
+
+      this.syncPixelsPerSecondState(pending);
+      recordSpectrumWaveformTrace("zoom-state-sync", {
+        generation,
+        pixelsPerSecond: pending.pixelsPerSecond,
+      });
+    });
+  }
+
+  private syncPixelsPerSecondState(pending: WaveformZoomCommit) {
+    pending.setPixelsPerSecond((current) =>
+      Math.abs(current - pending.pixelsPerSecond) < 0.01 ? current : pending.pixelsPerSecond,
+    );
+  }
+
+  private cancelStateSync() {
+    if (this.stateSyncFrameId === null) {
+      return;
+    }
+
+    this.stateSyncOwnerWindow?.cancelAnimationFrame(this.stateSyncFrameId);
+    this.stateSyncFrameId = null;
+    this.stateSyncOwnerWindow = null;
+  }
+}
+
+class WaveformPanController {
+  apply(args: {
+    deltaX: number;
+    scrollElements: WaveformScrollElements;
+    wheelState: WaveformWheelState;
+  }) {
+    const scrollElement = args.scrollElements.viewport;
+    const viewportWidth = Math.max(1, scrollElement.clientWidth || args.wheelState.viewportWidth);
+    const targetFrame = resolveWaveformHorizontalPanFrame({
+      contentWidth: args.wheelState.contentWidth,
+      deltaX: args.deltaX,
+      scrollLeft: args.wheelState.controller.getScrollLeft(),
+      viewportWidth,
+    });
+
+    args.wheelState.controller.beginViewportScroll();
+
+    if (!targetFrame.changed) {
+      recordSpectrumWaveformTrace("pan-ignored", {
+        deltaX: args.deltaX,
+        eventCount: 1,
+        reason: "clamped",
+        scroll: snapshotWaveformScrollPosition(args.scrollElements),
+        scrollLeft: args.wheelState.controller.getScrollLeft(),
+        targetScrollLeft: targetFrame.scrollLeft,
+        viewportWidth,
+      });
+
+      args.wheelState.controller.settleViewportScroll();
+      return;
+    }
+
+    const scrollLeft = args.wheelState.controller.getScrollLeft();
+    writeWaveformScrollLeft(args.scrollElements, targetFrame.scrollLeft);
+    const actualScrollLeft = readWaveformScrollLeft(args.scrollElements);
+
+    args.wheelState.controller.setActiveViewportScroll({
+      scrollLeft: targetFrame.scrollLeft,
+      visualScrollLeft: actualScrollLeft,
+    });
+    args.wheelState.controller.settleViewportScroll();
+
+    recordSpectrumWaveformTrace("pan-commit", {
+      actualScrollLeft,
+      deltaX: args.deltaX,
+      eventCount: 1,
+      nextScrollLeft: targetFrame.scrollLeft,
+      scroll: snapshotWaveformScrollPosition(args.scrollElements),
+      scrollLeft,
+      targetScrollLeft: targetFrame.scrollLeft,
+      trigger: "direct",
+      viewportWidth,
+    });
   }
 }
 
@@ -2510,6 +2942,16 @@ function useWaveformTileController() {
 
   if (controllerRef.current === null) {
     controllerRef.current = new WaveformTileController();
+  }
+
+  return controllerRef.current;
+}
+
+function useWaveformPanController() {
+  const controllerRef = useRef<WaveformPanController | null>(null);
+
+  if (controllerRef.current === null) {
+    controllerRef.current = new WaveformPanController();
   }
 
   return controllerRef.current;
@@ -2533,6 +2975,7 @@ export function TrackSpectrum(props: {
 }) {
   const placeholderSummary = useMemo(() => createPlaceholderWaveformSummary(), []);
   const controller = useWaveformTileController();
+  const panController = useWaveformPanController();
   const zoomController = useWaveformZoomController();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const scrollbarsRef = useRef<OverlayScrollbarsComponentRef<"div"> | null>(null);
@@ -2599,12 +3042,13 @@ export function TrackSpectrum(props: {
 
       handleWaveformViewportWheel({
         event,
+        panController,
         scrollElements,
         wheelState,
         zoomController,
       });
     },
-    [zoomController],
+    [panController, zoomController],
   );
   const scrollEvents = useMemo<EventListeners>(
     () => ({
@@ -2612,10 +3056,10 @@ export function TrackSpectrum(props: {
         const elements = instance.elements();
         const scrollLeft = readWaveformScrollLeft(elements);
 
-        recordSpectrumWaveformTrace("overlay-scroll", () => ({
-          scroll: snapshotWaveformScrollElements(elements),
+        recordSpectrumWaveformTrace("overlay-scroll", {
+          scroll: snapshotWaveformScrollPosition(elements),
           scrollLeft,
-        }));
+        });
         controller.setScrollLeft(scrollLeft);
       },
     }),
@@ -2721,7 +3165,7 @@ export function TrackSpectrum(props: {
       zoomController.dispose();
       controller.dispose();
     };
-  }, [controller, zoomController]);
+  }, [controller, panController, zoomController]);
 
   useEffect(() => {
     const filePath = props.filePath?.trim();
@@ -3085,6 +3529,13 @@ function isWaveformTileIndexInWindow(index: number, window: WaveformTileWindow) 
   return index >= window.startIndex && index <= window.endIndex;
 }
 
+export function isWaveformTileWindowCoveringWindow(
+  container: WaveformTileWindow,
+  contained: WaveformTileWindow,
+) {
+  return container.startIndex <= contained.startIndex && container.endIndex >= contained.endIndex;
+}
+
 function isWaveformTileDataCoveringGeometry(
   data: TrackWaveformTile | null,
   geometry: WaveformTileGeometry,
@@ -3157,14 +3608,13 @@ function applyWaveformTileSyncStats(
 
 function handleWaveformViewportWheel(args: {
   event: WaveformWheelEvent;
+  panController: WaveformPanController;
   scrollElements: WaveformScrollElements;
   wheelState: WaveformWheelState;
   zoomController: WaveformZoomController;
 }) {
   const { viewportWidth } = args.wheelState;
   const scrollElement = args.scrollElements.viewport;
-  const visualScrollLeft = readWaveformScrollLeft(args.scrollElements);
-  const scrollLeft = args.wheelState.controller.getScrollLeft();
   const viewportHeight = Math.max(1, scrollElement.clientHeight || WAVEFORM_CANVAS_HEIGHT);
   const wheelViewportWidth = Math.max(1, scrollElement.clientWidth || viewportWidth);
   const wheelDeltas = resolveWaveformWheelDeltas({
@@ -3192,35 +3642,60 @@ function handleWaveformViewportWheel(args: {
     deltaY: normalizedDeltaY,
     shiftKey: readWaveformWheelBoolean(args.event, "shiftKey"),
   });
-  recordSpectrumWaveformTrace("wheel-start", () => ({
+
+  if (intent.kind === "none") {
+    return;
+  }
+
+  const visualScrollLeft = readWaveformScrollLeft(args.scrollElements);
+  const scrollLeft = args.wheelState.controller.getScrollLeft();
+
+  recordSpectrumWaveformTrace("wheel-start", {
     coordinates: snapshotWaveformWheelCoordinates(args.event),
     deltaMode: wheelDeltas.deltaMode,
     intent,
     normalizedDeltaX,
     normalizedDeltaY,
     pixelsPerSecond: args.wheelState.pixelsPerSecond,
-    scroll: snapshotWaveformScrollElements(args.scrollElements),
-    scrollLeft,
+    scroll: {
+      contentWidth: args.wheelState.contentWidth,
+      scrollLeft,
+      visualScrollLeft,
+      viewportScrollLeft: scrollElement.scrollLeft,
+    },
     visualScrollLeft,
     wheelViewportWidth,
-  }));
+  });
 
   if (intent.kind === "horizontal-pan") {
     preventWaveformWheelDefault(args.event);
     handleWaveformHorizontalPanWheel({
       deltaX: intent.deltaX,
+      panController: args.panController,
       scrollElements: args.scrollElements,
-      scrollLeft: visualScrollLeft,
       wheelState: args.wheelState,
     });
     return;
   }
 
-  if (intent.kind === "none") {
+  preventWaveformWheelDefault(args.event);
+  const zoomScaleFrame = resolveWaveformZoomScaleFrame({
+    currentPixelsPerSecond: args.wheelState.pixelsPerSecond,
+    deltaY: intent.deltaY,
+    durationMs: args.wheelState.summary.duration_ms,
+    viewportWidth: wheelViewportWidth,
+  });
+
+  if (!zoomScaleFrame.changed) {
+    recordSpectrumWaveformTrace("zoom-scale-ignored", {
+      currentPixelsPerSecond: args.wheelState.pixelsPerSecond,
+      deltaY: intent.deltaY,
+      nextPixelsPerSecond: zoomScaleFrame.pixelsPerSecond,
+      reason: "clamped",
+    });
     return;
   }
 
-  preventWaveformWheelDefault(args.event);
   handleWaveformZoomWheel({
     deltaY: intent.deltaY,
     event: args.event,
@@ -3233,46 +3708,15 @@ function handleWaveformViewportWheel(args: {
 
 function handleWaveformHorizontalPanWheel(args: {
   deltaX: number;
+  panController: WaveformPanController;
   scrollElements: WaveformScrollElements;
-  scrollLeft: number;
   wheelState: WaveformWheelState;
 }) {
-  const scrollElement = args.scrollElements.viewport;
-  const viewportWidth = Math.max(1, scrollElement.clientWidth || args.wheelState.viewportWidth);
-  const frame = resolveWaveformHorizontalPanFrame({
-    contentWidth: args.wheelState.contentWidth,
+  args.panController.apply({
     deltaX: args.deltaX,
-    scrollLeft: args.scrollLeft,
-    viewportWidth,
+    scrollElements: args.scrollElements,
+    wheelState: args.wheelState,
   });
-
-  if (!frame.changed) {
-    recordSpectrumWaveformTrace("pan-ignored", () => ({
-      deltaX: args.deltaX,
-      reason: "clamped",
-      scroll: snapshotWaveformScrollElements(args.scrollElements),
-      scrollLeft: args.scrollLeft,
-      viewportWidth,
-    }));
-    return;
-  }
-
-  writeWaveformScrollLeft(args.scrollElements, frame.scrollLeft);
-  const actualScrollLeft = readWaveformScrollLeft(args.scrollElements);
-
-  args.wheelState.controller.setViewportScroll({
-    scrollLeft: frame.scrollLeft,
-    visualScrollLeft: actualScrollLeft,
-  });
-
-  recordSpectrumWaveformTrace("pan-commit", () => ({
-    actualScrollLeft,
-    deltaX: args.deltaX,
-    nextScrollLeft: frame.scrollLeft,
-    scroll: snapshotWaveformScrollElements(args.scrollElements),
-    scrollLeft: args.scrollLeft,
-    viewportWidth,
-  }));
 }
 
 function handleWaveformZoomWheel(args: {
@@ -3358,6 +3802,30 @@ function snapshotWaveformScrollElements(elements: WaveformScrollElements) {
       isSameAsViewport: elements.scrollOffsetElement === elements.viewport,
     }),
     viewport: snapshotWaveformScrollElement(elements.viewport),
+  };
+}
+
+function snapshotWaveformScrollPosition(elements: WaveformScrollElements) {
+  return {
+    offsetScrollLeft: elements.scrollOffsetElement.scrollLeft,
+    viewportScrollLeft: elements.viewport.scrollLeft,
+  };
+}
+
+function snapshotWaveformLayerState(element: HTMLElement | null) {
+  if (!element) {
+    return null;
+  }
+
+  return {
+    className: readWaveformElementClassName(element),
+    clientWidth: element.clientWidth,
+    offsetWidth: element.offsetWidth,
+    scrollLeft: element.scrollLeft,
+    scrollWidth: element.scrollWidth,
+    styleTransform: element.style.transform,
+    styleWidth: element.style.width,
+    tagName: element.tagName,
   };
 }
 

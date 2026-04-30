@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   clampWaveformZoomDeltaY,
+  isWaveformTileWindowCoveringWindow,
   normalizeWaveformPathKey,
   resolveAnchoredWaveformScrollLeft,
   resolveCenteredWaveformScrollLeft,
@@ -22,6 +23,8 @@ import {
   resolveWaveformRenderScale,
   resolveWaveformRenderTileWindow,
   resolveWaveformRenderViewport,
+  resolveWaveformTileRenderMode,
+  resolveWaveformTileVisibilityPlan,
   resolveWaveformTileDisplayRange,
   resolveWaveformTileDisplayWidth,
   resolveWaveformTileLoadOrder,
@@ -36,7 +39,9 @@ import {
   resolveWaveformWheelIntent,
   resolveWaveformWheelPanDelta,
   resolveWaveformWheelPixelsPerSecond,
+  resolveWaveformZoomScaleFrame,
   resolveWaveformZoomFrame,
+  resolveWaveformZoomSettleDelayMs,
 } from "./SpectrumVisualizer";
 
 describe("SpectrumVisualizer", () => {
@@ -101,6 +106,33 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
+  test("detects clamped zoom before measuring a viewport anchor", () => {
+    assert.deepEqual(
+      resolveWaveformZoomScaleFrame({
+        currentPixelsPerSecond: 320,
+        deltaY: -100,
+        durationMs: 140_000,
+        viewportWidth: 1_400,
+      }),
+      {
+        changed: false,
+        pixelsPerSecond: 320,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformZoomScaleFrame({
+        currentPixelsPerSecond: 217.73,
+        deltaY: -100,
+        durationMs: 140_000,
+        viewportWidth: 1_400,
+      }),
+      {
+        changed: true,
+        pixelsPerSecond: 263.96,
+      },
+    );
+  });
+
   test("fits the whole track at the minimum zoom when the viewport is wider", () => {
     const pixelsPerSecond = resolveWaveformPixelsPerSecond(12, {
       durationMs: 85_000,
@@ -148,6 +180,32 @@ describe("SpectrumVisualizer", () => {
       Math.abs(
         (second.scrollLeft + second.anchorViewportX) / second.pixelsPerSecond - first.anchorSeconds,
       ) < 0.000001,
+    );
+  });
+
+  test("waits for a quiet zoom window before settling the presentation", () => {
+    assert.equal(
+      resolveWaveformZoomSettleDelayMs({
+        lastCommitMs: 1_000,
+        nowMs: 1_360,
+      }),
+      60,
+    );
+    assert.equal(
+      resolveWaveformZoomSettleDelayMs({
+        lastCommitMs: 1_000,
+        nowMs: 1_110,
+        settleDelayMs: 240,
+      }),
+      130,
+    );
+    assert.equal(
+      resolveWaveformZoomSettleDelayMs({
+        lastCommitMs: 1_000,
+        nowMs: 1_240,
+        settleDelayMs: 240,
+      }),
+      0,
     );
   });
 
@@ -480,6 +538,69 @@ describe("SpectrumVisualizer", () => {
     assert.ok(!plan.tileLoadOrder.includes(13));
     assert.ok(!plan.visibleTileLoadOrder.includes(13));
     assert.ok(!plan.offscreenTileLoadOrder.includes(13));
+  });
+
+  test("does not downgrade a scheduled complete tile render to visible only", () => {
+    assert.equal(resolveWaveformTileRenderMode("visible-only", "visible-only"), "visible-only");
+    assert.equal(resolveWaveformTileRenderMode("visible-only", "active-scroll"), "active-scroll");
+    assert.equal(resolveWaveformTileRenderMode("active-scroll", "visible-only"), "active-scroll");
+    assert.equal(resolveWaveformTileRenderMode("visible-only", "complete"), "complete");
+    assert.equal(resolveWaveformTileRenderMode("complete", "active-scroll"), "complete");
+  });
+
+  test("keeps the active render window while it still covers the viewport", () => {
+    assert.equal(
+      isWaveformTileWindowCoveringWindow(
+        {
+          startIndex: 8,
+          endIndex: 14,
+        },
+        {
+          startIndex: 10,
+          endIndex: 12,
+        },
+      ),
+      true,
+    );
+    assert.equal(
+      isWaveformTileWindowCoveringWindow(
+        {
+          startIndex: 8,
+          endIndex: 14,
+        },
+        {
+          startIndex: 7,
+          endIndex: 12,
+        },
+      ),
+      false,
+    );
+  });
+
+  test("hides mounted tiles outside the active visibility window", () => {
+    assert.deepEqual(
+      resolveWaveformTileVisibilityPlan({
+        mountedTileIndexes: [3, 4, 5, 9],
+        visibleTileIndexes: [4, 5],
+      }),
+      {
+        hiddenIndexes: [3, 9],
+        visibleIndexes: [4, 5],
+      },
+    );
+  });
+
+  test("shows overscan indexes supplied by the render plan", () => {
+    assert.deepEqual(
+      resolveWaveformTileVisibilityPlan({
+        mountedTileIndexes: [3, 4, 5, 9],
+        visibleTileIndexes: [3, 4, 5],
+      }),
+      {
+        hiddenIndexes: [9],
+        visibleIndexes: [3, 4, 5],
+      },
+    );
   });
 
   test("uses a layer transform for continuous zoom presentation", () => {
