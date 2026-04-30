@@ -39,6 +39,7 @@ import {
   resolveWaveformWheelIntent,
   resolveWaveformWheelPanDelta,
   resolveWaveformWheelPixelsPerSecond,
+  resolveQueuedWaveformZoomFrame,
   resolveWaveformZoomScaleFrame,
   resolveWaveformZoomFrame,
   resolveWaveformZoomSettleDelayMs,
@@ -176,6 +177,35 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.ok(second.pixelsPerSecond > first.pixelsPerSecond);
+    assert.ok(
+      Math.abs(
+        (second.scrollLeft + second.anchorViewportX) / second.pixelsPerSecond - first.anchorSeconds,
+      ) < 0.000001,
+    );
+  });
+
+  test("queues repeated wheel zoom deltas from the pending frame", () => {
+    const first = resolveQueuedWaveformZoomFrame({
+      anchorViewportX: 120,
+      currentPixelsPerSecond: 24,
+      deltaY: -90,
+      durationMs: 120_000,
+      pendingFrame: null,
+      scrollLeft: 360,
+      viewportWidth: 800,
+    });
+    const second = resolveQueuedWaveformZoomFrame({
+      anchorViewportX: 120,
+      currentPixelsPerSecond: 24,
+      deltaY: -90,
+      durationMs: 120_000,
+      pendingFrame: first,
+      scrollLeft: 360,
+      viewportWidth: 800,
+    });
+
+    assert.equal(second.pixelsPerSecond, 33.94);
+    assert.ok(second.scrollLeft > first.scrollLeft);
     assert.ok(
       Math.abs(
         (second.scrollLeft + second.anchorViewportX) / second.pixelsPerSecond - first.anchorSeconds,
