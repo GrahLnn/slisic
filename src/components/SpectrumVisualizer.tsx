@@ -261,15 +261,13 @@ export function resolveAnchoredWaveformScrollLeft(args: {
 }
 
 export function resolveWaveformPointerAnchorViewportX(args: {
-  clientX: number | null;
-  fallbackViewportWidth: number;
+  clientX: number;
   viewportLeft: number;
   viewportWidth: number;
 }) {
-  const viewportWidth = Math.max(1, args.viewportWidth || args.fallbackViewportWidth);
-  const clientX = args.clientX ?? args.viewportLeft + viewportWidth / 2;
+  const viewportWidth = Math.max(1, args.viewportWidth);
 
-  return clampNumber(clientX - args.viewportLeft, 0, viewportWidth);
+  return clampNumber(args.clientX - args.viewportLeft, 0, viewportWidth);
 }
 
 export function resolveWaveformHorizontalWheelScrollLeft(args: {
@@ -392,19 +390,6 @@ export function resolveWaveformWheelPixelsPerSecond(args: {
   return resolveWaveformPixelsPerSecond(
     args.currentPixelsPerSecond * 2 ** (-args.deltaY / WAVEFORM_WHEEL_DELTA_FOR_DOUBLE_ZOOM),
   );
-}
-
-export function isWaveformZoomDeltaClamped(args: {
-  currentPixelsPerSecond: number;
-  deltaY: number;
-}) {
-  const currentPixelsPerSecond = resolveWaveformPixelsPerSecond(args.currentPixelsPerSecond);
-  const nextPixelsPerSecond = resolveWaveformWheelPixelsPerSecond({
-    currentPixelsPerSecond,
-    deltaY: args.deltaY,
-  });
-
-  return Math.abs(nextPixelsPerSecond - currentPixelsPerSecond) < 0.01;
 }
 
 export function resolveWaveformZoomFrame(args: {
@@ -2761,7 +2746,6 @@ function handleWaveformViewportWheel(args: {
     scrollElements: args.scrollElements,
     scrollLeft,
     wheelState: args.wheelState,
-    wheelViewportWidth,
     zoomController: args.zoomController,
   });
 }
@@ -2772,24 +2756,26 @@ function handleWaveformZoomWheel(args: {
   scrollElements: WaveformScrollElements;
   scrollLeft: number;
   wheelState: WaveformWheelState;
-  wheelViewportWidth: number;
   zoomController: WaveformZoomController;
 }) {
-  const { viewportWidth } = args.wheelState;
   const scrollElement = args.scrollElements.viewport;
 
   const rect = scrollElement.getBoundingClientRect();
-  const anchorClientX = readWaveformWheelNumber(args.event, "clientX", null);
+  const viewportWidth = Math.max(1, scrollElement.clientWidth || args.wheelState.viewportWidth);
+  const anchorClientX = readWaveformWheelNumber(
+    args.event,
+    "clientX",
+    rect.left + viewportWidth / 2,
+  );
   const anchorViewportX = resolveWaveformPointerAnchorViewportX({
     clientX: anchorClientX,
-    fallbackViewportWidth: args.wheelViewportWidth,
     viewportLeft: rect.left,
-    viewportWidth: Math.max(1, scrollElement.clientWidth || viewportWidth),
+    viewportWidth,
   });
 
   recordSpectrumWaveformTrace("zoom-anchor", () => ({
     anchorClientX,
-    anchorRatio: anchorViewportX / Math.max(1, scrollElement.clientWidth || viewportWidth),
+    anchorRatio: anchorViewportX / viewportWidth,
     anchorViewportX,
     coordinates: snapshotWaveformWheelCoordinates(args.event),
     pixelsPerSecond: args.wheelState.pixelsPerSecond,
@@ -2811,15 +2797,7 @@ function handleWaveformZoomWheel(args: {
 function getWaveformScrollElements(
   ref: OverlayScrollbarsComponentRef<"div"> | null,
 ): WaveformScrollElements | null {
-  const elements = ref?.osInstance()?.elements();
-  if (elements) {
-    return elements;
-  }
-
-  const element = ref?.getElement();
-  return element
-    ? { content: element, host: element, scrollOffsetElement: element, viewport: element }
-    : null;
+  return ref?.osInstance()?.elements() ?? null;
 }
 
 function isWaveformWheelTargetInViewport(
@@ -3015,12 +2993,6 @@ function getWaveformNativeEvent(event: WaveformWheelEvent) {
 function preventWaveformWheelDefault(event: WaveformWheelEvent) {
   event.preventDefault();
   event.stopPropagation();
-
-  const nativeEvent = getWaveformNativeEvent(event);
-  if (nativeEvent && nativeEvent !== event) {
-    nativeEvent.preventDefault();
-    nativeEvent.stopPropagation();
-  }
 }
 
 function isPlaybackStatusForTrack(status: PlaybackStatusPayload, filePath: string) {

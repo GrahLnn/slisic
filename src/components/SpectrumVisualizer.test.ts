@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
-  isWaveformZoomDeltaClamped,
   normalizeWaveformPathKey,
   resolveAnchoredWaveformScrollLeft,
   resolveCenteredWaveformScrollLeft,
@@ -85,30 +84,6 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
-  test("detects no-op zoom deltas at zoom boundaries", () => {
-    assert.equal(
-      isWaveformZoomDeltaClamped({
-        currentPixelsPerSecond: 320,
-        deltaY: -100,
-      }),
-      true,
-    );
-    assert.equal(
-      isWaveformZoomDeltaClamped({
-        currentPixelsPerSecond: 320,
-        deltaY: 100,
-      }),
-      false,
-    );
-    assert.equal(
-      isWaveformZoomDeltaClamped({
-        currentPixelsPerSecond: 12,
-        deltaY: 100,
-      }),
-      true,
-    );
-  });
-
   test("composes repeated wheel zoom deltas around the pointer anchor", () => {
     const first = resolveWaveformZoomFrame({
       anchorViewportX: 120,
@@ -174,7 +149,6 @@ describe("SpectrumVisualizer", () => {
     assert.equal(
       resolveWaveformPointerAnchorViewportX({
         clientX: 620,
-        fallbackViewportWidth: 1_400,
         viewportLeft: 200,
         viewportWidth: 1_000,
       }),
@@ -182,12 +156,11 @@ describe("SpectrumVisualizer", () => {
     );
     assert.equal(
       resolveWaveformPointerAnchorViewportX({
-        clientX: null,
-        fallbackViewportWidth: 1_400,
+        clientX: 1_800,
         viewportLeft: 200,
-        viewportWidth: 0,
+        viewportWidth: 1_000,
       }),
-      700,
+      1_000,
     );
   });
 
