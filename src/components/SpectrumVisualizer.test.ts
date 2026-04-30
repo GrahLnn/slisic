@@ -21,6 +21,7 @@ import {
   resolveWaveformTileWindow,
   resolveWaveformWheelDeltas,
   resolveWaveformWheelDeltaX,
+  resolveWaveformWheelIntent,
   resolveWaveformWheelPanDelta,
   resolveWaveformWheelPixelsPerSecond,
 } from "./SpectrumVisualizer";
@@ -142,6 +143,50 @@ describe("SpectrumVisualizer", () => {
         shiftKey: false,
       }),
       0,
+    );
+  });
+
+  test("classifies wheel intent without mixing pan and zoom effects", () => {
+    assert.deepEqual(
+      resolveWaveformWheelIntent({
+        deltaX: 48,
+        deltaY: 90,
+        shiftKey: false,
+      }),
+      {
+        deltaX: 48,
+        kind: "horizontal-pan",
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelIntent({
+        deltaX: 0,
+        deltaY: 90,
+        shiftKey: true,
+      }),
+      {
+        deltaX: 90,
+        kind: "horizontal-pan",
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelIntent({
+        deltaX: 0,
+        deltaY: -90,
+        shiftKey: false,
+      }),
+      {
+        deltaY: -90,
+        kind: "zoom",
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelIntent({
+        deltaX: 0,
+        deltaY: 0,
+        shiftKey: false,
+      }),
+      { kind: "none" },
     );
   });
 
