@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  clampWaveformZoomDeltaY,
   normalizeWaveformPathKey,
   resolveAnchoredWaveformScrollLeft,
   resolveCenteredWaveformScrollLeft,
+  resolveWaveformMinimumPixelsPerSecond,
   resolvePlaybackPositionMs,
   resolveQuantizedWaveformDisplayPeak,
   resolveWaveformContentWidth,
-  resolveWaveformHorizontalWheelScrollLeft,
+  resolveWaveformHorizontalPanFrame,
+  resolveWaveformHorizontalScrollLeft,
   resolveWaveformPeakRange,
   resolveWaveformPixelsPerSecond,
   resolveWaveformPlayheadX,
@@ -17,6 +20,7 @@ import {
   resolveWaveformRenderContentWidth,
   resolveWaveformRenderPixelsPerSecond,
   resolveWaveformRenderScale,
+  resolveWaveformRenderTileWindow,
   resolveWaveformRenderViewport,
   resolveWaveformTileDisplayRange,
   resolveWaveformTileDisplayWidth,
@@ -26,6 +30,7 @@ import {
   resolveWaveformTileSourcePadding,
   resolveWaveformTileSourcePixelRange,
   resolveWaveformTileWindow,
+  resolveWaveformPresentationTransform,
   resolveWaveformWheelDeltas,
   resolveWaveformWheelDeltaX,
   resolveWaveformWheelIntent,
@@ -81,6 +86,42 @@ describe("SpectrumVisualizer", () => {
         deltaY: -900,
       }),
       320,
+    );
+  });
+
+  test("limits one wheel zoom step so large device deltas do not jump to the boundary", () => {
+    assert.equal(clampWaveformZoomDeltaY(14_200), 180);
+    assert.equal(clampWaveformZoomDeltaY(-14_200), -180);
+    assert.equal(
+      resolveWaveformWheelPixelsPerSecond({
+        currentPixelsPerSecond: 122.19,
+        deltaY: 14_200,
+      }),
+      86.4,
+    );
+  });
+
+  test("fits the whole track at the minimum zoom when the viewport is wider", () => {
+    const pixelsPerSecond = resolveWaveformPixelsPerSecond(12, {
+      durationMs: 85_000,
+      viewportWidth: 1_400,
+    });
+
+    assert.equal(
+      resolveWaveformMinimumPixelsPerSecond({
+        durationMs: 85_000,
+        viewportWidth: 1_400,
+      }),
+      1_400 / 85,
+    );
+    assert.equal(pixelsPerSecond, 16.47);
+    assert.equal(
+      resolveWaveformContentWidth({
+        durationMs: 85_000,
+        pixelsPerSecond,
+        viewportWidth: 1_400,
+      }),
+      1_400,
     );
   });
 
@@ -284,9 +325,9 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
-  test("clamps horizontal wheel pan to scrollable waveform bounds", () => {
+  test("clamps horizontal scroll to scrollable waveform bounds", () => {
     assert.equal(
-      resolveWaveformHorizontalWheelScrollLeft({
+      resolveWaveformHorizontalScrollLeft({
         contentWidth: 1_000,
         deltaX: 90,
         scrollLeft: 120,
@@ -295,13 +336,40 @@ describe("SpectrumVisualizer", () => {
       210,
     );
     assert.equal(
-      resolveWaveformHorizontalWheelScrollLeft({
+      resolveWaveformHorizontalScrollLeft({
         contentWidth: 1_000,
         deltaX: 900,
         scrollLeft: 120,
         viewportWidth: 300,
       }),
       700,
+    );
+  });
+
+  test("resolves horizontal pan as a single scroll frame", () => {
+    assert.deepEqual(
+      resolveWaveformHorizontalPanFrame({
+        contentWidth: 1_000,
+        deltaX: 90,
+        scrollLeft: 120,
+        viewportWidth: 300,
+      }),
+      {
+        changed: true,
+        scrollLeft: 210,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformHorizontalPanFrame({
+        contentWidth: 1_000,
+        deltaX: -90,
+        scrollLeft: 0,
+        viewportWidth: 300,
+      }),
+      {
+        changed: false,
+        scrollLeft: 0,
+      },
     );
   });
 
@@ -412,6 +480,26 @@ describe("SpectrumVisualizer", () => {
     assert.ok(!plan.tileLoadOrder.includes(13));
     assert.ok(!plan.visibleTileLoadOrder.includes(13));
     assert.ok(!plan.offscreenTileLoadOrder.includes(13));
+  });
+
+  test("uses a layer transform for continuous zoom presentation", () => {
+    assert.equal(
+      resolveWaveformPresentationTransform({
+        exactPixelsPerSecond: 24,
+        pixelsPerSecond: 48,
+        transformPx: 0.25,
+      }),
+      "translate3d(0.25px, 0, 0) scaleX(2)",
+    );
+
+    assert.equal(
+      resolveWaveformPresentationTransform({
+        exactPixelsPerSecond: 24,
+        pixelsPerSecond: 24,
+        transformPx: 0,
+      }),
+      "none",
+    );
   });
 
   test("keeps source fetch windows padded for low zoom edge pixels", () => {
@@ -573,6 +661,32 @@ describe("SpectrumVisualizer", () => {
         scrollLeft: 4_000,
         viewportWidth: 16_000,
       },
+    );
+  });
+
+  test("shrinks the rendered tile window as zoom increases", () => {
+    const lowZoomWindow = resolveWaveformRenderTileWindow({
+      contentWidth: 400_000,
+      overscanTiles: 0,
+      renderScale: 12 / 400,
+      scrollLeft: 4_800,
+      tileWidth: 2_048,
+      viewportWidth: 800,
+    });
+    const highZoomWindow = resolveWaveformRenderTileWindow({
+      contentWidth: 400_000,
+      overscanTiles: 0,
+      renderScale: 320 / 400,
+      scrollLeft: 4_800,
+      tileWidth: 2_048,
+      viewportWidth: 800,
+    });
+
+    assert.ok(lowZoomWindow);
+    assert.ok(highZoomWindow);
+    assert.ok(
+      highZoomWindow.endIndex - highZoomWindow.startIndex <
+        lowZoomWindow.endIndex - lowZoomWindow.startIndex,
     );
   });
 
