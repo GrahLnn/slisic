@@ -40,6 +40,8 @@ pub fn run() {
             domain::playlist_playback::play_playlist,
             domain::player::set_playback_continuation_mode,
             domain::player::stop_playback,
+            domain::player::pause_playback,
+            domain::player::resume_playback,
             domain::player::get_playback_status,
             domain::player::analyze_track_waveform,
             domain::player::prepare_track_waveform,

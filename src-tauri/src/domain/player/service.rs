@@ -149,6 +149,34 @@ pub async fn stop_playback() -> Result<bool> {
 }
 
 #[cfg(not(test))]
+pub async fn pause_playback() -> Result<bool> {
+    let Some(playback) = runtime()?.current_playback()? else {
+        return Ok(false);
+    };
+
+    playback
+        .pause()
+        .await
+        .map_err(|error| anyhow!("failed to pause playback: {error}"))?;
+
+    Ok(true)
+}
+
+#[cfg(not(test))]
+pub async fn resume_playback() -> Result<bool> {
+    let Some(playback) = runtime()?.current_playback()? else {
+        return Ok(false);
+    };
+
+    playback
+        .resume()
+        .await
+        .map_err(|error| anyhow!("failed to resume playback: {error}"))?;
+
+    Ok(true)
+}
+
+#[cfg(not(test))]
 pub async fn get_playback_status() -> Result<Option<PlaybackStatusPayload>> {
     let Some(playback) = runtime()?.current_playback()? else {
         return Ok(None);

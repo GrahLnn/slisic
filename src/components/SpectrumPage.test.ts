@@ -4,6 +4,7 @@ import { resolveSpectrumTitleFadeProps } from "./SpectrumPage";
 import {
   resolveSpectrumBackActionVisualState,
   resolveSpectrumCommittedTitle,
+  resolveSpectrumPlaybackActionVisualState,
   resolveSpectrumTitle,
 } from "./SpectrumPage.view-model";
 
@@ -103,6 +104,85 @@ describe("SpectrumPage", () => {
       {
         kind: "restore",
         alias: "Disc 1 Opening",
+      },
+    );
+  });
+
+  test("shows pause while the current spectrum track is playing", () => {
+    assert.deepEqual(
+      resolveSpectrumPlaybackActionVisualState({
+        hasCurrentTrack: true,
+        isPending: false,
+        isPresent: true,
+        paused: false,
+      }),
+      {
+        ariaLabel: "Pause playback",
+        disabled: false,
+        key: "pause",
+        kind: "pause",
+      },
+    );
+  });
+
+  test("shows play while the current spectrum track is paused", () => {
+    assert.deepEqual(
+      resolveSpectrumPlaybackActionVisualState({
+        hasCurrentTrack: true,
+        isPending: false,
+        isPresent: true,
+        paused: true,
+      }),
+      {
+        ariaLabel: "Resume playback",
+        disabled: false,
+        key: "play",
+        kind: "play",
+      },
+    );
+  });
+
+  test("disables the spectrum playback action outside active playback", () => {
+    assert.deepEqual(
+      resolveSpectrumPlaybackActionVisualState({
+        hasCurrentTrack: false,
+        isPending: false,
+        isPresent: true,
+        paused: false,
+      }),
+      {
+        ariaLabel: "Pause playback",
+        disabled: true,
+        key: "pause",
+        kind: "pause",
+      },
+    );
+    assert.deepEqual(
+      resolveSpectrumPlaybackActionVisualState({
+        hasCurrentTrack: true,
+        isPending: true,
+        isPresent: true,
+        paused: false,
+      }),
+      {
+        ariaLabel: "Pause playback",
+        disabled: true,
+        key: "pause",
+        kind: "pause",
+      },
+    );
+    assert.deepEqual(
+      resolveSpectrumPlaybackActionVisualState({
+        hasCurrentTrack: true,
+        isPending: false,
+        isPresent: false,
+        paused: false,
+      }),
+      {
+        ariaLabel: "Pause playback",
+        disabled: true,
+        key: "pause",
+        kind: "pause",
       },
     );
   });

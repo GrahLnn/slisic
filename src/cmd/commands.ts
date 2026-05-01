@@ -92,6 +92,8 @@ export const commands = {
 	playPlaylist: (name: string) => typedError<PlayPlaylistSession, string>(__TAURI_INVOKE("play_playlist", { name })),
 	setPlaybackContinuationMode: (mode: PlaybackContinuationMode) => typedError<null, string>(__TAURI_INVOKE("set_playback_continuation_mode", { mode })),
 	stopPlayback: () => typedError<boolean, string>(__TAURI_INVOKE("stop_playback")),
+	pausePlayback: () => typedError<boolean, string>(__TAURI_INVOKE("pause_playback")),
+	resumePlayback: () => typedError<boolean, string>(__TAURI_INVOKE("resume_playback")),
 	getPlaybackStatus: () => typedError<{
 	path: string | null,
 	playing: boolean,

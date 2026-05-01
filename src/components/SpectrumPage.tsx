@@ -11,6 +11,7 @@ import {
   resolveSpectrumTitle,
   type SpectrumBackActionVisualState,
 } from "./SpectrumPage.view-model";
+import { SpectrumPlaybackAction } from "./SpectrumPlaybackAction";
 import { TrackSpectrum } from "./SpectrumVisualizer";
 import { usePageRenderFreeze } from "./usePageRenderFreeze";
 
@@ -277,18 +278,21 @@ export function SpectrumPage() {
           {...resolveSpectrumTitleFadeProps({
             hasSharedTitleLayout: renderData.titleLayoutId !== undefined,
           })}
-          className="flex items-center gap-4"
+          className="flex items-center justify-between gap-4"
         >
-          <EditableTitle
-            ref={editableTitleRef}
-            className={collectionTitleClassName}
-            handoffTone={renderData.handoffTone}
-            interactionDisabled={renderData.interactionDisabled}
-            layoutId={renderData.titleLayoutId}
-            style={{ fontFamily: "var(--font-noto-sans)" }}
-            value={renderData.titleValue}
-            onChange={appLogicAction.changeSpectrumMusicTitle}
-          />
+          <div className="min-w-0">
+            <EditableTitle
+              ref={editableTitleRef}
+              className={collectionTitleClassName}
+              handoffTone={renderData.handoffTone}
+              interactionDisabled={renderData.interactionDisabled}
+              layoutId={renderData.titleLayoutId}
+              style={{ fontFamily: "var(--font-noto-sans)" }}
+              value={renderData.titleValue}
+              onChange={appLogicAction.changeSpectrumMusicTitle}
+            />
+          </div>
+          <SpectrumPlaybackAction filePath={renderData.trackFilePath} />
         </motion.div>
         <motion.div
           {...contentFadeProps}

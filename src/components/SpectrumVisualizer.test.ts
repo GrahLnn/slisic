@@ -4,6 +4,10 @@ import {
   clampWaveformZoomDeltaY,
   isWaveformTileWindowCoveringWindow,
   normalizeWaveformPathKey,
+  resolveWaveformHorizontalPanFrame,
+  resolveWaveformHorizontalScrollLeft,
+  resolveWaveformScrollReadValue,
+  resolveWaveformScrollWritePlan,
   resolveAnchoredWaveformScrollLeft,
   resolveCenteredWaveformScrollLeft,
   resolveWaveformMinimumPixelsPerSecond,
@@ -32,9 +36,11 @@ import {
   resolveWaveformTileSourcePixelRange,
   resolveWaveformTileWindow,
   resolveWaveformPresentationTransform,
+  shouldPreventWaveformWheelDefault,
   resolveWaveformWheelDeltas,
   resolveWaveformWheelDeltaX,
   resolveWaveformWheelIntent,
+  resolveWaveformWheelOperation,
   resolveWaveformWheelPanDelta,
   resolveWaveformWheelPixelsPerSecond,
   resolveQueuedWaveformZoomFrame,
@@ -367,6 +373,154 @@ describe("SpectrumVisualizer", () => {
         shiftKey: false,
       }),
       { kind: "none" },
+    );
+  });
+
+  test("normalizes raw wheel input into one affine waveform operation", () => {
+    assert.deepEqual(
+      resolveWaveformWheelOperation({
+        deltaMode: 1,
+        deltaX: 3,
+        deltaY: 9,
+        shiftKey: false,
+        viewportHeight: 200,
+        viewportWidth: 800,
+      }),
+      {
+        deltaX: 48,
+        kind: "horizontal-pan",
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelOperation({
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: 90,
+        shiftKey: true,
+        viewportHeight: 200,
+        viewportWidth: 800,
+      }),
+      {
+        deltaX: 90,
+        kind: "horizontal-pan",
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelOperation({
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: -90,
+        shiftKey: false,
+        viewportHeight: 200,
+        viewportWidth: 800,
+      }),
+      {
+        deltaY: -90,
+        kind: "zoom",
+      },
+    );
+  });
+
+  test("prevents default browser behavior only for handled waveform wheel intents", () => {
+    assert.equal(shouldPreventWaveformWheelDefault({ kind: "none" }), false);
+    assert.equal(
+      shouldPreventWaveformWheelDefault({
+        deltaX: 48,
+        kind: "horizontal-pan",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldPreventWaveformWheelDefault({
+        deltaY: -90,
+        kind: "zoom",
+      }),
+      true,
+    );
+  });
+
+  test("clamps horizontal wheel pan to scrollable waveform bounds", () => {
+    assert.equal(
+      resolveWaveformHorizontalScrollLeft({
+        contentWidth: 1_000,
+        deltaX: 90,
+        scrollLeft: 120,
+        viewportWidth: 300,
+      }),
+      210,
+    );
+    assert.equal(
+      resolveWaveformHorizontalScrollLeft({
+        contentWidth: 1_000,
+        deltaX: 900,
+        scrollLeft: 120,
+        viewportWidth: 300,
+      }),
+      700,
+    );
+  });
+
+  test("resolves horizontal wheel pan as a single scroll frame", () => {
+    assert.deepEqual(
+      resolveWaveformHorizontalPanFrame({
+        contentWidth: 1_000,
+        deltaX: 90,
+        scrollLeft: 120,
+        viewportWidth: 300,
+      }),
+      {
+        changed: true,
+        scrollLeft: 210,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformHorizontalPanFrame({
+        contentWidth: 1_000,
+        deltaX: -90,
+        scrollLeft: 0,
+        viewportWidth: 300,
+      }),
+      {
+        changed: false,
+        scrollLeft: 0,
+      },
+    );
+  });
+
+  test("models OverlayScrollbars scroll state as one logical waveform position", () => {
+    assert.equal(
+      resolveWaveformScrollReadValue({
+        scrollOffsetElementScrollLeft: 210,
+        viewportScrollLeft: 0,
+      }),
+      210,
+    );
+    assert.equal(
+      resolveWaveformScrollReadValue({
+        scrollOffsetElementScrollLeft: 0,
+        viewportScrollLeft: 210,
+      }),
+      210,
+    );
+    assert.deepEqual(
+      resolveWaveformScrollWritePlan({
+        hasSeparateScrollOffsetElement: true,
+        scrollLeft: 320,
+      }),
+      {
+        scrollOffsetElementScrollLeft: 320,
+        viewportScrollLeft: 320,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformScrollWritePlan({
+        hasSeparateScrollOffsetElement: false,
+        scrollLeft: 320,
+      }),
+      {
+        scrollOffsetElementScrollLeft: null,
+        viewportScrollLeft: 320,
+      },
     );
   });
 

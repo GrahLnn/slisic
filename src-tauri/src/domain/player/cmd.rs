@@ -18,6 +18,22 @@ pub async fn stop_playback() -> Result<bool, String> {
 
 #[tauri::command]
 #[specta::specta]
+pub async fn pause_playback() -> Result<bool, String> {
+    super::service::pause_playback()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn resume_playback() -> Result<bool, String> {
+    super::service::resume_playback()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn get_playback_status() -> Result<Option<PlaybackStatusPayload>, String> {
     super::service::get_playback_status()
         .await
