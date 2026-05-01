@@ -165,6 +165,10 @@ type WaveformZoomCommit = WaveformZoomFrame & {
   setPixelsPerSecond: Dispatch<SetStateAction<number>>;
 };
 
+type WaveformWheelListenerRef = {
+  current: (() => void) | null;
+};
+
 type PendingWaveformZoomCommit = {
   commit: WaveformZoomCommit;
 };
@@ -311,33 +315,6 @@ export function resolveWaveformPointerAnchorViewportX(args: {
   const viewportWidth = Math.max(1, args.viewportWidth);
 
   return clampNumber(args.clientX - args.viewportLeft, 0, viewportWidth);
-}
-
-export function resolveWaveformHorizontalScrollLeft(args: {
-  contentWidth: number;
-  deltaX: number;
-  scrollLeft: number;
-  viewportWidth: number;
-}) {
-  return clampNumber(
-    args.scrollLeft + args.deltaX,
-    0,
-    Math.max(0, args.contentWidth - args.viewportWidth),
-  );
-}
-
-export function resolveWaveformHorizontalPanFrame(args: {
-  contentWidth: number;
-  deltaX: number;
-  scrollLeft: number;
-  viewportWidth: number;
-}) {
-  const scrollLeft = resolveWaveformHorizontalScrollLeft(args);
-
-  return {
-    changed: Math.abs(scrollLeft - args.scrollLeft) >= 0.5,
-    scrollLeft,
-  };
 }
 
 export function resolveWaveformWheelPanDelta(args: {
@@ -2555,54 +2532,11 @@ class WaveformZoomController {
   }
 }
 
-class WaveformPanController {
-  apply(args: {
-    deltaX: number;
-    scrollElements: WaveformScrollElements;
-    wheelState: WaveformWheelState;
-  }) {
-    const scrollElement = args.scrollElements.viewport;
-    const viewportWidth = Math.max(1, scrollElement.clientWidth || args.wheelState.viewportWidth);
-    const targetFrame = resolveWaveformHorizontalPanFrame({
-      contentWidth: args.wheelState.contentWidth,
-      deltaX: args.deltaX,
-      scrollLeft: args.wheelState.controller.getScrollLeft(),
-      viewportWidth,
-    });
-
-    args.wheelState.controller.beginViewportScroll();
-
-    if (!targetFrame.changed) {
-      args.wheelState.controller.settleViewportScroll();
-      return;
-    }
-
-    writeWaveformScrollLeft(args.scrollElements, targetFrame.scrollLeft);
-    const actualScrollLeft = readWaveformScrollLeft(args.scrollElements);
-
-    args.wheelState.controller.setActiveViewportScroll({
-      scrollLeft: targetFrame.scrollLeft,
-      visualScrollLeft: actualScrollLeft,
-    });
-    args.wheelState.controller.settleViewportScroll();
-  }
-}
-
 function useWaveformTileController() {
   const controllerRef = useRef<WaveformTileController | null>(null);
 
   if (controllerRef.current === null) {
     controllerRef.current = new WaveformTileController();
-  }
-
-  return controllerRef.current;
-}
-
-function useWaveformPanController() {
-  const controllerRef = useRef<WaveformPanController | null>(null);
-
-  if (controllerRef.current === null) {
-    controllerRef.current = new WaveformPanController();
   }
 
   return controllerRef.current;
@@ -2626,10 +2560,10 @@ export function TrackSpectrum(props: {
 }) {
   const placeholderSummary = useMemo(() => createPlaceholderWaveformSummary(), []);
   const controller = useWaveformTileController();
-  const panController = useWaveformPanController();
   const zoomController = useWaveformZoomController();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const scrollbarsRef = useRef<OverlayScrollbarsComponentRef<"div"> | null>(null);
+  const wheelListenerCleanupRef = useRef<(() => void) | null>(null);
   const wheelStateRef = useRef<WaveformWheelState | null>(null);
   const [viewportWidth, setViewportWidth] = useState(1);
   const [requestedPixelsPerSecond, setPixelsPerSecond] = useState(
@@ -2687,30 +2621,40 @@ export function TrackSpectrum(props: {
         return;
       }
 
-      if (!isWaveformWheelTargetInViewport(event, scrollElements)) {
+      const isInViewport = isWaveformWheelTargetInViewport(event, scrollElements);
+      if (!isInViewport) {
         return;
       }
 
       handleWaveformViewportWheel({
         event,
-        panController,
         scrollElements,
         wheelState,
         zoomController,
       });
     },
-    [panController, zoomController],
+    [zoomController],
   );
   const scrollEvents = useMemo<EventListeners>(
     () => ({
+      initialized: (instance) => {
+        attachWaveformViewportWheelListener({
+          cleanupRef: wheelListenerCleanupRef,
+          handleViewportWheel,
+          scrollElements: instance.elements(),
+        });
+      },
       scroll: (instance) => {
         const elements = instance.elements();
         const scrollLeft = readWaveformScrollLeft(elements);
 
         controller.setScrollLeft(scrollLeft);
       },
+      destroyed: () => {
+        detachWaveformViewportWheelListener(wheelListenerCleanupRef);
+      },
     }),
-    [controller],
+    [controller, handleViewportWheel],
   );
 
   useLayoutEffect(() => {
@@ -2746,22 +2690,6 @@ export function TrackSpectrum(props: {
   }, []);
 
   useLayoutEffect(() => {
-    const host = hostRef.current;
-    if (!host) {
-      return undefined;
-    }
-
-    host.addEventListener("wheel", handleViewportWheel, {
-      capture: true,
-      passive: false,
-    });
-
-    return () => {
-      host.removeEventListener("wheel", handleViewportWheel, true);
-    };
-  }, [handleViewportWheel]);
-
-  useLayoutEffect(() => {
     controller.setRenderInputs({
       contentWidth,
       end: props.end,
@@ -2787,10 +2715,11 @@ export function TrackSpectrum(props: {
 
   useEffect(() => {
     return () => {
+      detachWaveformViewportWheelListener(wheelListenerCleanupRef);
       zoomController.dispose();
       controller.dispose();
     };
-  }, [controller, panController, zoomController]);
+  }, [controller, zoomController]);
 
   useEffect(() => {
     const filePath = props.filePath?.trim();
@@ -2906,7 +2835,7 @@ export function TrackSpectrum(props: {
       aria-label="Current track waveform"
       data-waveform-status={state.status}
       className={cn(
-        "relative h-[13rem] w-full overflow-hidden text-[#262626] dark:text-white",
+        "relative h-[13rem] w-full overflow-hidden text-[#262626] dark:text-[#f5f5f5]",
         props.className,
       )}
       initial={{ opacity: 0 }}
@@ -2935,7 +2864,7 @@ export function TrackSpectrum(props: {
       <div
         ref={handlePlayheadRef}
         aria-hidden
-        className="pointer-events-none absolute inset-y-0 left-0 z-[2] w-px bg-[#404040] opacity-0 will-change-transform dark:bg-current"
+        className="pointer-events-none absolute inset-y-0 left-0 z-[2] w-px bg-[#404040] opacity-0 will-change-transform dark:bg-[#a3a3a3]"
       />
     </motion.div>
   );
@@ -3233,7 +3162,6 @@ function applyWaveformTileSyncStats(
 
 function handleWaveformViewportWheel(args: {
   event: WaveformWheelEvent;
-  panController: WaveformPanController;
   scrollElements: WaveformScrollElements;
   wheelState: WaveformWheelState;
   zoomController: WaveformZoomController;
@@ -3273,13 +3201,6 @@ function handleWaveformViewportWheel(args: {
   }
 
   if (intent.kind === "horizontal-pan") {
-    preventWaveformWheelDefault(args.event);
-    handleWaveformHorizontalPanWheel({
-      deltaX: intent.deltaX,
-      panController: args.panController,
-      scrollElements: args.scrollElements,
-      wheelState: args.wheelState,
-    });
     return;
   }
 
@@ -3304,19 +3225,6 @@ function handleWaveformViewportWheel(args: {
     scrollLeft,
     wheelState: args.wheelState,
     zoomController: args.zoomController,
-  });
-}
-
-function handleWaveformHorizontalPanWheel(args: {
-  deltaX: number;
-  panController: WaveformPanController;
-  scrollElements: WaveformScrollElements;
-  wheelState: WaveformWheelState;
-}) {
-  args.panController.apply({
-    deltaX: args.deltaX,
-    scrollElements: args.scrollElements,
-    wheelState: args.wheelState,
   });
 }
 
@@ -3356,6 +3264,27 @@ function getWaveformScrollElements(
   ref: OverlayScrollbarsComponentRef<"div"> | null,
 ): WaveformScrollElements | null {
   return ref?.osInstance()?.elements() ?? null;
+}
+
+function attachWaveformViewportWheelListener(args: {
+  cleanupRef: WaveformWheelListenerRef;
+  handleViewportWheel: (event: WaveformWheelEvent) => void;
+  scrollElements: WaveformScrollElements;
+}) {
+  detachWaveformViewportWheelListener(args.cleanupRef);
+
+  const { viewport } = args.scrollElements;
+  viewport.addEventListener("wheel", args.handleViewportWheel, {
+    passive: false,
+  });
+  args.cleanupRef.current = () => {
+    viewport.removeEventListener("wheel", args.handleViewportWheel);
+  };
+}
+
+function detachWaveformViewportWheelListener(cleanupRef: WaveformWheelListenerRef) {
+  cleanupRef.current?.();
+  cleanupRef.current = null;
 }
 
 function isWaveformWheelTargetInViewport(

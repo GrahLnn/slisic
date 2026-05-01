@@ -859,6 +859,51 @@ export const icons = {
       </motion.svg>
     );
   },
+  mediaPause({ size, color, className, ...props }: IconProps) {
+    return (
+      <motion.svg
+        xmlns="http://www.w3.org/2000/svg"
+        width={size || 18}
+        height={size || 18}
+        viewBox="0 0 18 18"
+        className={className}
+        {...props}
+      >
+        <g fill={color || "currentColor"}>
+          <path
+            fillRule="evenodd"
+            clipRule="evenodd"
+            d="M2 3.75C2 2.78334 2.78393 2 3.75 2H5.25C6.21607 2 7 2.78334 7 3.75V14.25C7 15.2167 6.21607 16 5.25 16H3.75C2.78393 16 2 15.2167 2 14.25V3.75Z"
+            fillOpacity="0.4"
+          />
+          <path
+            fillRule="evenodd"
+            clipRule="evenodd"
+            d="M11 3.75C11 2.78334 11.7839 2 12.75 2H14.25C15.2161 2 16 2.78334 16 3.75V14.25C16 15.2167 15.2161 16 14.25 16H12.75C11.7839 16 11 15.2167 11 14.25V3.75Z"
+          />
+        </g>
+      </motion.svg>
+    );
+  },
+  mediaPlay({ size, color, className, ...props }: IconProps) {
+    return (
+      <motion.svg
+        xmlns="http://www.w3.org/2000/svg"
+        width={size || 18}
+        height={size || 18}
+        viewBox="0 0 18 18"
+        className={className}
+        {...props}
+      >
+        <g fill={color || "currentColor"}>
+          <path
+            d="M15.1 7.478L5.608 2.222C5.055 1.916 4.402 1.925 3.859 2.245C3.321 2.562 3 3.122 3 3.744V14.256C3 14.878 3.321 15.438 3.859 15.755C4.138 15.919 4.445 16.002 4.754 16.002C5.047 16.002 5.34 15.927 5.608 15.779L15.099 10.523C15.655 10.216 16 9.632 16 9.001C16 8.37 15.655 7.785 15.1 7.478Z"
+            fillOpacity="0.4"
+          />
+        </g>
+      </motion.svg>
+    );
+  },
   suitHearts({ size, color, className, ...props }: IconProps) {
     return (
       <motion.svg

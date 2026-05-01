@@ -10,8 +10,6 @@ import {
   resolvePlaybackPositionMs,
   resolveQuantizedWaveformDisplayPeak,
   resolveWaveformContentWidth,
-  resolveWaveformHorizontalPanFrame,
-  resolveWaveformHorizontalScrollLeft,
   resolveWaveformPeakRange,
   resolveWaveformPixelsPerSecond,
   resolveWaveformPlayheadX,
@@ -410,54 +408,6 @@ describe("SpectrumVisualizer", () => {
         horizontalAxis: 1,
       }),
       120,
-    );
-  });
-
-  test("clamps horizontal scroll to scrollable waveform bounds", () => {
-    assert.equal(
-      resolveWaveformHorizontalScrollLeft({
-        contentWidth: 1_000,
-        deltaX: 90,
-        scrollLeft: 120,
-        viewportWidth: 300,
-      }),
-      210,
-    );
-    assert.equal(
-      resolveWaveformHorizontalScrollLeft({
-        contentWidth: 1_000,
-        deltaX: 900,
-        scrollLeft: 120,
-        viewportWidth: 300,
-      }),
-      700,
-    );
-  });
-
-  test("resolves horizontal pan as a single scroll frame", () => {
-    assert.deepEqual(
-      resolveWaveformHorizontalPanFrame({
-        contentWidth: 1_000,
-        deltaX: 90,
-        scrollLeft: 120,
-        viewportWidth: 300,
-      }),
-      {
-        changed: true,
-        scrollLeft: 210,
-      },
-    );
-    assert.deepEqual(
-      resolveWaveformHorizontalPanFrame({
-        contentWidth: 1_000,
-        deltaX: -90,
-        scrollLeft: 0,
-        viewportWidth: 300,
-      }),
-      {
-        changed: false,
-        scrollLeft: 0,
-      },
     );
   });
 
