@@ -8,6 +8,7 @@ import {
   resolveWaveformHorizontalScrollLeft,
   resolveWaveformScrollReadValue,
   resolveWaveformScrollWritePlan,
+  resolveWaveformViewportScrollEventFrame,
   resolveAnchoredWaveformScrollLeft,
   resolveCenteredWaveformScrollLeft,
   resolveWaveformMinimumPixelsPerSecond,
@@ -16,6 +17,7 @@ import {
   resolveWaveformContentWidth,
   resolveWaveformPeakRange,
   resolveWaveformPixelsPerSecond,
+  resolveWaveformPlayheadStyle,
   resolveWaveformPlayheadX,
   resolveWaveformPointerAnchorViewportX,
   resolveWaveformRasterAlignment,
@@ -43,6 +45,8 @@ import {
   resolveWaveformWheelOperation,
   resolveWaveformWheelPanDelta,
   resolveWaveformWheelPixelsPerSecond,
+  resolveWaveformZoomMaterializationCadence,
+  resolveWaveformZoomInputFrame,
   resolveQueuedWaveformZoomFrame,
   resolveWaveformZoomScaleFrame,
   resolveWaveformZoomFrame,
@@ -217,6 +221,45 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
+  test("keeps queued zoom in the committed frame until state catches up", () => {
+    const committed = resolveQueuedWaveformZoomFrame({
+      anchorViewportX: 408,
+      currentPixelsPerSecond: 148.13,
+      deltaY: 100,
+      durationMs: 140_000,
+      pendingFrame: null,
+      scrollLeft: 2_110.3353195359014,
+      viewportWidth: 1_400,
+    });
+    const next = resolveQueuedWaveformZoomFrame({
+      anchorViewportX: 408,
+      currentPixelsPerSecond: 148.13,
+      deltaY: -100,
+      durationMs: 140_000,
+      pendingFrame: {
+        durationMs: 140_000,
+        pixelsPerSecond: committed.pixelsPerSecond,
+        scrollLeft: committed.scrollLeft,
+        viewportWidth: 1_400,
+      },
+      scrollLeft: 2_110.3353195359014,
+      viewportWidth: 1_400,
+    });
+    const fromStaleState = resolveQueuedWaveformZoomFrame({
+      anchorViewportX: 408,
+      currentPixelsPerSecond: 148.13,
+      deltaY: -100,
+      durationMs: 140_000,
+      pendingFrame: null,
+      scrollLeft: committed.scrollLeft,
+      viewportWidth: 1_400,
+    });
+
+    assert.equal(committed.pixelsPerSecond, 122.19);
+    assert.ok(Math.abs(next.pixelsPerSecond - 148.13) < 0.01);
+    assert.ok(Math.abs(fromStaleState.pixelsPerSecond - 179.58) < 0.01);
+  });
+
   test("waits for a quiet zoom window before settling the presentation", () => {
     assert.equal(
       resolveWaveformZoomSettleDelayMs({
@@ -240,6 +283,30 @@ describe("SpectrumVisualizer", () => {
         settleDelayMs: 240,
       }),
       0,
+    );
+  });
+
+  test("materializes visible tiles during zoom-out but defers zoom-in work", () => {
+    assert.equal(
+      resolveWaveformZoomMaterializationCadence({
+        basePixelsPerSecond: 160,
+        targetPixelsPerSecond: 120,
+      }),
+      "progressive-visible",
+    );
+    assert.equal(
+      resolveWaveformZoomMaterializationCadence({
+        basePixelsPerSecond: 120,
+        targetPixelsPerSecond: 160,
+      }),
+      "defer-until-settled",
+    );
+    assert.equal(
+      resolveWaveformZoomMaterializationCadence({
+        basePixelsPerSecond: 160,
+        targetPixelsPerSecond: 160,
+      }),
+      "defer-until-settled",
     );
   });
 
@@ -682,6 +749,15 @@ describe("SpectrumVisualizer", () => {
     assert.equal(resolveWaveformTileRenderMode("complete", "active-scroll"), "complete");
   });
 
+  test("keeps tile render mode composition associative and monotonic", () => {
+    const compose = (modes: Array<"active-scroll" | "complete" | "visible-only">) =>
+      modes.reduce(resolveWaveformTileRenderMode, "visible-only");
+
+    assert.equal(compose(["active-scroll", "visible-only", "complete"]), "complete");
+    assert.equal(compose(["complete", "visible-only", "active-scroll"]), "complete");
+    assert.equal(compose(["visible-only", "active-scroll", "visible-only"]), "active-scroll");
+  });
+
   test("keeps the active render window while it still covers the viewport", () => {
     assert.equal(
       isWaveformTileWindowCoveringWindow(
@@ -865,6 +941,114 @@ describe("SpectrumVisualizer", () => {
     assert.ok(Math.abs(quantized.scrollLeft - logical.scrollLeft) > 0.27);
   });
 
+  test("keeps programmatic scroll echoes from overwriting logical scroll", () => {
+    assert.deepEqual(
+      resolveWaveformViewportScrollEventFrame({
+        currentScrollLeft: 2_110.3353195359014,
+        incomingVisualScrollLeft: 2_110.666748046875,
+        isLogicalScrollLocked: false,
+        pendingProgrammaticScrollEcho: {
+          visualScrollLeft: 2_110.666748046875,
+        },
+      }),
+      {
+        kind: "programmatic-echo",
+        scrollLeft: 2_110.3353195359014,
+        visualScrollLeft: 2_110.666748046875,
+      },
+    );
+  });
+
+  test("treats non-echo viewport scroll as the new logical scroll", () => {
+    assert.deepEqual(
+      resolveWaveformViewportScrollEventFrame({
+        currentScrollLeft: 2_110.3353195359014,
+        incomingVisualScrollLeft: 2_320,
+        isLogicalScrollLocked: false,
+        pendingProgrammaticScrollEcho: {
+          visualScrollLeft: 2_110.666748046875,
+        },
+      }),
+      {
+        kind: "external-scroll",
+        scrollLeft: 2_320,
+        visualScrollLeft: 2_320,
+      },
+    );
+  });
+
+  test("locks logical scroll while zoom presentation is active", () => {
+    assert.deepEqual(
+      resolveWaveformViewportScrollEventFrame({
+        currentScrollLeft: 1_669.3333740234375,
+        incomingVisualScrollLeft: 2_110.666748046875,
+        isLogicalScrollLocked: true,
+        pendingProgrammaticScrollEcho: {
+          visualScrollLeft: 1_669.3333740234375,
+        },
+      }),
+      {
+        kind: "programmatic-echo",
+        scrollLeft: 1_669.3333740234375,
+        visualScrollLeft: 2_110.666748046875,
+      },
+    );
+  });
+
+  test("holds the presentation base while React inputs are behind the visible zoom", () => {
+    assert.deepEqual(
+      resolveWaveformZoomInputFrame({
+        incomingContentWidth: 3_600,
+        incomingPixelsPerSecond: 24,
+        presentationBaseContentWidth: 3_600,
+        presentationBasePixelsPerSecond: 24,
+        targetContentWidth: 7_200,
+        targetPixelsPerSecond: 48,
+      }),
+      {
+        contentWidth: 3_600,
+        pixelsPerSecond: 24,
+        shouldClearPresentation: false,
+      },
+    );
+  });
+
+  test("keeps materialized zoom inputs stable until React catches up", () => {
+    assert.deepEqual(
+      resolveWaveformZoomInputFrame({
+        incomingContentWidth: 3_600,
+        incomingPixelsPerSecond: 24,
+        presentationBaseContentWidth: 7_200,
+        presentationBasePixelsPerSecond: 48,
+        targetContentWidth: 7_200,
+        targetPixelsPerSecond: 48,
+      }),
+      {
+        contentWidth: 7_200,
+        pixelsPerSecond: 48,
+        shouldClearPresentation: false,
+      },
+    );
+  });
+
+  test("clears zoom presentation only after React inputs match the materialized target", () => {
+    assert.deepEqual(
+      resolveWaveformZoomInputFrame({
+        incomingContentWidth: 7_200,
+        incomingPixelsPerSecond: 48,
+        presentationBaseContentWidth: 7_200,
+        presentationBasePixelsPerSecond: 48,
+        targetContentWidth: 7_200,
+        targetPixelsPerSecond: 48,
+      }),
+      {
+        contentWidth: 7_200,
+        pixelsPerSecond: 48,
+        shouldClearPresentation: true,
+      },
+    );
+  });
+
   test("uses actual backing-store scale for fractional device pixels", () => {
     assert.deepEqual(
       resolveWaveformCanvasBackingMetrics({
@@ -1021,6 +1205,33 @@ describe("SpectrumVisualizer", () => {
         scrollLeft: 50,
       }),
       150,
+    );
+  });
+
+  test("resolves playhead visibility without touching DOM state", () => {
+    assert.deepEqual(
+      resolveWaveformPlayheadStyle({
+        positionMs: 2_000,
+        pixelsPerSecond: 100,
+        scrollLeft: 50,
+        viewportWidth: 300,
+      }),
+      {
+        opacity: "0.86",
+        transform: "translate3d(150px, 0, 0)",
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformPlayheadStyle({
+        positionMs: 2_000,
+        pixelsPerSecond: 100,
+        scrollLeft: 400,
+        viewportWidth: 300,
+      }),
+      {
+        opacity: "0",
+        transform: "translate3d(-9999px, 0, 0)",
+      },
     );
   });
 

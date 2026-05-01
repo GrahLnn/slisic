@@ -3,7 +3,6 @@ import {
   type Dispatch,
   useEffect,
   useLayoutEffect,
-  memo,
   useMemo,
   useRef,
   type SetStateAction,
@@ -35,7 +34,6 @@ const WAVEFORM_MAX_PIXELS_PER_SECOND = 320;
 const WAVEFORM_INITIAL_PIXELS_PER_SECOND = 24;
 const WAVEFORM_WHEEL_DELTA_FOR_DOUBLE_ZOOM = 360;
 const WAVEFORM_MAX_WHEEL_ZOOM_DELTA = WAVEFORM_WHEEL_DELTA_FOR_DOUBLE_ZOOM / 2;
-const WAVEFORM_ZOOM_PROGRESSIVE_RENDER_INTERVAL_MS = 34;
 const WAVEFORM_ZOOM_SETTLE_DELAY_MS = 420;
 const WAVEFORM_SCROLL_SETTLE_DELAY_MS = 120;
 const WAVEFORM_PIXELS_PER_SECOND_PRECISION = 100;
@@ -47,6 +45,7 @@ const WAVEFORM_TILE_OVERSCAN = 2;
 const WAVEFORM_TILE_RETENTION_OVERSCAN = 8;
 const WAVEFORM_TILE_LOAD_CONCURRENCY = 2;
 const WAVEFORM_OFFSCREEN_RENDER_IDLE_TIMEOUT_MS = 160;
+const WAVEFORM_SCROLL_ECHO_TOLERANCE_PX = 0.5;
 const PLAYBACK_STATUS_POLL_MS = 250;
 
 type WaveformStatus = "idle" | "loading" | "ready" | "error";
@@ -134,7 +133,12 @@ type WaveformTileNodeState = {
   status: "loading" | "pending" | "ready";
 };
 
-type WaveformZoomPresentation = Pick<WaveformRenderInputs, "contentWidth" | "pixelsPerSecond">;
+type WaveformZoomTarget = Pick<WaveformRenderInputs, "contentWidth" | "pixelsPerSecond">;
+
+type WaveformZoomPresentation = WaveformZoomTarget & {
+  baseContentWidth: number;
+  basePixelsPerSecond: number;
+};
 
 type WaveformScrollElements = Pick<
   Elements,
@@ -166,9 +170,16 @@ type WaveformWheelEvent = Event & {
 
 type WaveformWheelState = {
   contentWidth: number;
-  controller: WaveformTileController;
-  pixelsPerSecond: number;
+  controller: WaveformPresentationController;
+  requestedPixelsPerSecond: number;
   setPixelsPerSecond: Dispatch<SetStateAction<number>>;
+  summary: TrackWaveformSummary;
+  viewportWidth: number;
+};
+
+type WaveformPresentedViewport = {
+  pixelsPerSecond: number;
+  scrollLeft: number;
   summary: TrackWaveformSummary;
   viewportWidth: number;
 };
@@ -186,11 +197,33 @@ type WaveformZoomFrame = {
   scrollLeft: number;
 };
 
-type WaveformZoomCommit = WaveformZoomFrame & {
-  controller: WaveformTileController;
-  generation: number;
-  scrollElements: WaveformScrollElements;
-  setPixelsPerSecond: Dispatch<SetStateAction<number>>;
+type WaveformZoomContext = {
+  durationMs: number;
+  viewportWidth: number;
+};
+
+type WaveformZoomBaseFrame = Pick<WaveformZoomFrame, "pixelsPerSecond" | "scrollLeft"> &
+  WaveformZoomContext;
+
+type WaveformZoomMaterializationCadence = "defer-until-settled" | "progressive-visible";
+
+type WaveformZoomCommit = WaveformZoomFrame &
+  WaveformZoomContext & {
+    controller: WaveformPresentationController;
+    generation: number;
+    materializationCadence: WaveformZoomMaterializationCadence;
+    scrollElements: WaveformScrollElements;
+    setPixelsPerSecond: Dispatch<SetStateAction<number>>;
+  };
+
+type WaveformViewportScrollEventFrame = {
+  kind: "external-scroll" | "programmatic-echo";
+  scrollLeft: number;
+  visualScrollLeft: number;
+};
+
+type WaveformProgrammaticScrollEcho = {
+  visualScrollLeft: number;
 };
 
 type PendingWaveformZoomCommit = {
@@ -236,6 +269,8 @@ type WaveformTileLoadQueueOptions = {
   retainPendingQueue?: boolean;
 };
 
+type WaveformTileLoadResult = "done" | "retry" | "stale";
+
 type WaveformIdleDeadline = {
   didTimeout: boolean;
   timeRemaining: () => number;
@@ -254,6 +289,41 @@ type WaveformOffscreenTileRenderJob = {
   indexes: number[];
   inputs: WaveformRenderInputs;
   renderMetrics: ReturnType<typeof resolveWaveformRenderMetrics>;
+};
+
+type WaveformTileRenderFrameOwner = {
+  getOwnerWindow: () => Window | null;
+  renderTileWindow: (mode: WaveformTileRenderMode) => void;
+};
+
+type WaveformScrollSettleOwner = {
+  getOwnerWindow: () => Window | null;
+  renderSettledTileWindow: () => void;
+};
+
+type WaveformOffscreenTileRenderOwner = {
+  getOwnerWindow: () => Window | null;
+  isOffscreenTileRenderJobCurrent: (job: WaveformOffscreenTileRenderJob) => boolean;
+  renderOffscreenTileIndexes: (args: {
+    indexes: readonly number[];
+    job: WaveformOffscreenTileRenderJob;
+  }) => void;
+};
+
+type WaveformTileLoadOwner = {
+  getOwnerWindow: () => Window | null;
+  getTileLoadInputs: () => WaveformRenderInputs | null;
+  getTileLoadNode: (index: number) => WaveformTileNodeState | undefined;
+  applyTileLoadError: (tile: WaveformTileNodeState) => void;
+  applyTileLoadSuccess: (args: {
+    tile: WaveformTileNodeState;
+    tileData: TrackWaveformTile;
+  }) => WaveformTileLoadResult;
+};
+
+type TrackWaveformSummaryState = {
+  status: WaveformStatus;
+  summary: TrackWaveformSummary;
 };
 
 const waveformScrollOptions = {
@@ -426,6 +496,76 @@ export function resolveWaveformScrollWritePlan(args: {
   return {
     scrollOffsetElementScrollLeft: args.hasSeparateScrollOffsetElement ? args.scrollLeft : null,
     viewportScrollLeft: args.scrollLeft,
+  };
+}
+
+export function resolveWaveformViewportScrollEventFrame(args: {
+  currentScrollLeft: number;
+  incomingVisualScrollLeft: number;
+  isLogicalScrollLocked: boolean;
+  pendingProgrammaticScrollEcho: WaveformProgrammaticScrollEcho | null;
+}): WaveformViewportScrollEventFrame {
+  const visualScrollLeft = Math.max(0, args.incomingVisualScrollLeft);
+  const pendingEcho = args.pendingProgrammaticScrollEcho;
+
+  if (args.isLogicalScrollLocked) {
+    return {
+      kind: "programmatic-echo",
+      scrollLeft: Math.max(0, args.currentScrollLeft),
+      visualScrollLeft,
+    };
+  }
+
+  if (
+    pendingEcho &&
+    Math.abs(visualScrollLeft - pendingEcho.visualScrollLeft) < WAVEFORM_SCROLL_ECHO_TOLERANCE_PX
+  ) {
+    return {
+      kind: "programmatic-echo",
+      scrollLeft: Math.max(0, args.currentScrollLeft),
+      visualScrollLeft,
+    };
+  }
+
+  return {
+    kind: "external-scroll",
+    scrollLeft: visualScrollLeft,
+    visualScrollLeft,
+  };
+}
+
+export function resolveWaveformZoomInputFrame(args: {
+  incomingContentWidth: number;
+  incomingPixelsPerSecond: number;
+  presentationBaseContentWidth: number;
+  presentationBasePixelsPerSecond: number;
+  targetContentWidth: number;
+  targetPixelsPerSecond: number;
+}) {
+  /**
+   * React can resend stale zoom props while the imperative presentation owns
+   * the visible zoom. Pick the one coordinate snapshot that matches the active
+   * presentation instead of letting stale props create a mixed first frame.
+   */
+  const presentationMaterialized =
+    Math.abs(args.presentationBaseContentWidth - args.targetContentWidth) < 0.5 &&
+    Math.abs(args.presentationBasePixelsPerSecond - args.targetPixelsPerSecond) < 0.01;
+  const targetMatched =
+    Math.abs(args.incomingContentWidth - args.targetContentWidth) < 0.5 &&
+    Math.abs(args.incomingPixelsPerSecond - args.targetPixelsPerSecond) < 0.01;
+
+  if (!presentationMaterialized) {
+    return {
+      contentWidth: args.presentationBaseContentWidth,
+      pixelsPerSecond: args.presentationBasePixelsPerSecond,
+      shouldClearPresentation: false,
+    };
+  }
+
+  return {
+    contentWidth: targetMatched ? args.incomingContentWidth : args.targetContentWidth,
+    pixelsPerSecond: targetMatched ? args.incomingPixelsPerSecond : args.targetPixelsPerSecond,
+    shouldClearPresentation: targetMatched,
   };
 }
 
@@ -649,7 +789,9 @@ export function resolveQueuedWaveformZoomFrame(args: {
   currentPixelsPerSecond: number;
   deltaY: number;
   durationMs: number;
-  pendingFrame: Pick<WaveformZoomFrame, "pixelsPerSecond" | "scrollLeft"> | null;
+  pendingFrame:
+    | (Pick<WaveformZoomFrame, "pixelsPerSecond" | "scrollLeft"> & Partial<WaveformZoomContext>)
+    | null;
   scrollLeft: number;
   viewportWidth: number;
 }) {
@@ -657,14 +799,16 @@ export function resolveQueuedWaveformZoomFrame(args: {
     pixelsPerSecond: args.currentPixelsPerSecond,
     scrollLeft: args.scrollLeft,
   };
+  const durationMs = base.durationMs ?? args.durationMs;
+  const viewportWidth = base.viewportWidth ?? args.viewportWidth;
 
   return resolveWaveformZoomFrame({
     anchorViewportX: args.anchorViewportX,
     currentPixelsPerSecond: base.pixelsPerSecond,
     deltaY: args.deltaY,
-    durationMs: args.durationMs,
+    durationMs,
     scrollLeft: base.scrollLeft,
-    viewportWidth: args.viewportWidth,
+    viewportWidth,
   });
 }
 
@@ -677,6 +821,24 @@ export function resolveWaveformZoomSettleDelayMs(args: {
   const quietMs = Math.max(0, args.nowMs - args.lastCommitMs);
 
   return Math.max(0, settleDelayMs - quietMs);
+}
+
+export function resolveWaveformZoomMaterializationCadence(args: {
+  basePixelsPerSecond: number;
+  targetPixelsPerSecond: number;
+}): WaveformZoomMaterializationCadence {
+  /**
+   * Zoom-out expands the source range visible in the viewport, so it needs a
+   * visible-only materialization pass to avoid blank edges. Zoom-in can keep the
+   * existing tiles under a transform until the gesture settles, avoiding repeated
+   * canvas work on the hottest interaction path.
+   */
+  const basePixelsPerSecond = Math.max(0.001, args.basePixelsPerSecond);
+  const targetPixelsPerSecond = Math.max(0.001, args.targetPixelsPerSecond);
+
+  return targetPixelsPerSecond < basePixelsPerSecond - 0.01
+    ? "progressive-visible"
+    : "defer-until-settled";
 }
 
 export function resolveWaveformTileWindow(args: {
@@ -1174,61 +1336,60 @@ export function resolveWaveformPlayheadX(args: {
   return (args.positionMs / 1000) * args.pixelsPerSecond - args.scrollLeft;
 }
 
+export function resolveWaveformPlayheadStyle(args: {
+  pixelsPerSecond: number;
+  positionMs: number | null;
+  scrollLeft: number;
+  viewportWidth: number;
+}) {
+  const playheadX = resolveWaveformPlayheadX({
+    pixelsPerSecond: args.pixelsPerSecond,
+    positionMs: args.positionMs,
+    scrollLeft: args.scrollLeft,
+  });
+  const isVisible =
+    playheadX !== null && playheadX >= 0 && playheadX <= Math.max(1, args.viewportWidth);
+
+  return {
+    opacity: isVisible ? "0.86" : "0",
+    transform: isVisible
+      ? `translate3d(${Math.round(playheadX)}px, 0, 0)`
+      : "translate3d(-9999px, 0, 0)",
+  };
+}
+
 export function normalizeWaveformPathKey(path: string | null | undefined) {
   return normalizeMediaPathKey(path);
 }
 
-class WaveformTileController {
-  private activeTileLoadCount = 0;
+class WaveformPlayheadController {
   private host: HTMLElement | null = null;
-  private inputs: WaveformRenderInputs | null = null;
-  private layerKey = "";
-  private loadFrameId: number | null = null;
-  private loadGeneration = 0;
-  private offscreenRenderHandle: number | null = null;
-  private offscreenRenderHandleType: "frame" | "idle" | null = null;
-  private offscreenRenderOwnerWindow: Window | null = null;
-  private pendingTileRenderMode: WaveformTileRenderMode = "complete";
   private playhead: HTMLDivElement | null = null;
   private playbackSnapshot: PlaybackSnapshot | null = null;
+  private presentation: WaveformPresentedViewport | null = null;
   private playheadFrameId: number | null = null;
-  private pendingOffscreenRenderJob: WaveformOffscreenTileRenderJob | null = null;
   private playheadOpacity = "";
   private playheadTransform = "";
-  private renderFrameId: number | null = null;
-  private renderGeneration = 0;
-  private renderLayer: HTMLDivElement | null = null;
-  private renderLayerTransformStyle = "";
-  private renderLayerWidthStyle = "";
-  private renderLayerWillChangeStyle = "";
-  private renderedTileWindow: WaveformTileWindow | null = null;
-  private scrollSettleOwnerWindow: Window | null = null;
-  private scrollSettleTimerId: number | null = null;
-  private scrollLeft = 0;
-  private tileLayer: HTMLDivElement | null = null;
-  private tileLoadQueue = new Set<number>();
-  private tiles = new Map<number, WaveformTileNodeState>();
-  private visualScrollLeft = 0;
-  private zoomPresentation: WaveformZoomPresentation | null = null;
 
   dispose() {
-    this.cancelRenderFrame();
     this.cancelPlayheadFrame();
-    this.cancelTileLoadFrame();
-    this.cancelScrollSettleRender();
-    this.cancelOffscreenTileRender();
-    this.invalidateTileLoads();
     this.playbackSnapshot = null;
-    this.zoomPresentation = null;
-    this.clearTiles();
-    this.renderLayer?.remove();
-    this.renderLayer = null;
-    this.resetRenderLayerStyleCache();
+    this.presentation = null;
+    this.playhead = null;
+    this.host = null;
+    this.playheadOpacity = "";
+    this.playheadTransform = "";
   }
 
   setHost(host: HTMLElement | null) {
     this.host = host;
-    this.requestTileWindowRender();
+    this.requestPlayheadRender();
+  }
+
+  setPlayhead(playhead: HTMLDivElement | null) {
+    this.playhead = playhead;
+    this.playheadOpacity = "";
+    this.playheadTransform = "";
     this.requestPlayheadRender();
   }
 
@@ -1244,19 +1405,513 @@ class WaveformTileController {
     this.renderPlayhead();
   }
 
-  setPlayhead(playhead: HTMLDivElement | null) {
-    this.playhead = playhead;
-    this.playheadOpacity = "";
-    this.playheadTransform = "";
+  setPresentation(presentation: WaveformPresentedViewport | null) {
+    this.presentation = presentation;
     this.requestPlayheadRender();
   }
 
+  private applyPlayheadStyle(args: { opacity: string; transform: string }) {
+    const playhead = this.playhead;
+    if (!playhead) {
+      return;
+    }
+
+    if (this.playheadOpacity !== args.opacity) {
+      playhead.style.opacity = args.opacity;
+      this.playheadOpacity = args.opacity;
+    }
+
+    if (this.playheadTransform !== args.transform) {
+      playhead.style.transform = args.transform;
+      this.playheadTransform = args.transform;
+    }
+  }
+
+  private cancelPlayheadFrame() {
+    if (this.playheadFrameId === null) {
+      return;
+    }
+
+    this.getOwnerWindow()?.cancelAnimationFrame(this.playheadFrameId);
+    this.playheadFrameId = null;
+  }
+
+  getOwnerWindow() {
+    return (
+      this.host?.ownerDocument.defaultView ??
+      this.playhead?.ownerDocument.defaultView ??
+      (typeof window === "undefined" ? null : window)
+    );
+  }
+
+  private isPlaybackAdvancing() {
+    return this.playbackSnapshot?.playing === true && this.playbackSnapshot.paused === false;
+  }
+
+  private renderPlayhead() {
+    const snapshot = this.playbackSnapshot;
+    const presentation = this.presentation;
+    if (!snapshot || !presentation) {
+      this.applyPlayheadStyle({
+        opacity: "0",
+        transform: "translate3d(-9999px, 0, 0)",
+      });
+      return;
+    }
+
+    const positionMs = resolvePlaybackPositionMs({
+      durationMs: presentation.summary.duration_ms,
+      nowMs: readWaveformPerformanceNow(this.getOwnerWindow()),
+      snapshot,
+    });
+
+    this.applyPlayheadStyle(
+      resolveWaveformPlayheadStyle({
+        pixelsPerSecond: presentation.pixelsPerSecond,
+        positionMs,
+        scrollLeft: presentation.scrollLeft,
+        viewportWidth: presentation.viewportWidth,
+      }),
+    );
+  }
+
+  private requestPlayheadRender() {
+    if (this.playheadFrameId !== null) {
+      return;
+    }
+
+    const ownerWindow = this.getOwnerWindow();
+    if (!ownerWindow) {
+      this.renderPlayhead();
+      return;
+    }
+
+    this.playheadFrameId = ownerWindow.requestAnimationFrame(() => {
+      this.playheadFrameId = null;
+      this.renderPlayhead();
+
+      if (this.isPlaybackAdvancing()) {
+        this.requestPlayheadRender();
+      }
+    });
+  }
+}
+
+class WaveformTileRenderFrameController {
+  private frameId: number | null = null;
+  private pendingMode: WaveformTileRenderMode = "complete";
+
+  constructor(private readonly owner: WaveformTileRenderFrameOwner) {}
+
+  dispose() {
+    this.cancel();
+  }
+
+  cancel() {
+    if (this.frameId === null) {
+      this.pendingMode = "complete";
+      return;
+    }
+
+    this.owner.getOwnerWindow()?.cancelAnimationFrame(this.frameId);
+    this.frameId = null;
+    this.pendingMode = "complete";
+  }
+
+  request(mode: WaveformTileRenderMode = "complete") {
+    if (this.frameId !== null) {
+      this.pendingMode = resolveWaveformTileRenderMode(this.pendingMode, mode);
+      return;
+    }
+
+    this.pendingMode = mode;
+
+    const ownerWindow = this.owner.getOwnerWindow();
+    if (!ownerWindow) {
+      const pendingMode = this.flushPendingMode();
+      this.owner.renderTileWindow(pendingMode);
+      return;
+    }
+
+    this.frameId = ownerWindow.requestAnimationFrame(() => {
+      this.frameId = null;
+      const pendingMode = this.flushPendingMode();
+      this.owner.renderTileWindow(pendingMode);
+    });
+  }
+
+  private flushPendingMode() {
+    const pendingMode = this.pendingMode;
+    this.pendingMode = "complete";
+    return pendingMode;
+  }
+}
+
+class WaveformScrollSettleController {
+  private ownerWindow: Window | null = null;
+  private timerId: number | null = null;
+
+  constructor(private readonly owner: WaveformScrollSettleOwner) {}
+
+  dispose() {
+    this.cancel();
+  }
+
+  cancel() {
+    if (this.timerId === null) {
+      return;
+    }
+
+    this.ownerWindow?.clearTimeout(this.timerId);
+    this.ownerWindow = null;
+    this.timerId = null;
+  }
+
+  schedule() {
+    this.cancel();
+
+    const ownerWindow = this.owner.getOwnerWindow();
+    if (!ownerWindow) {
+      this.owner.renderSettledTileWindow();
+      return;
+    }
+
+    this.ownerWindow = ownerWindow;
+    this.timerId = ownerWindow.setTimeout(() => {
+      this.ownerWindow = null;
+      this.timerId = null;
+      this.owner.renderSettledTileWindow();
+    }, WAVEFORM_SCROLL_SETTLE_DELAY_MS);
+  }
+}
+
+class WaveformOffscreenTileRenderController {
+  private handle: number | null = null;
+  private handleType: "frame" | "idle" | null = null;
+  private ownerWindow: Window | null = null;
+  private pendingJob: WaveformOffscreenTileRenderJob | null = null;
+
+  constructor(private readonly owner: WaveformOffscreenTileRenderOwner) {}
+
+  dispose() {
+    this.cancel();
+  }
+
+  cancel() {
+    if (this.handle === null) {
+      this.pendingJob = null;
+      return;
+    }
+
+    const ownerWindow = this.ownerWindow as WaveformIdleWindow | null;
+    if (this.handleType === "idle") {
+      ownerWindow?.cancelIdleCallback?.(this.handle);
+    } else {
+      ownerWindow?.cancelAnimationFrame(this.handle);
+    }
+
+    this.handle = null;
+    this.handleType = null;
+    this.ownerWindow = null;
+    this.pendingJob = null;
+  }
+
+  schedule(job: WaveformOffscreenTileRenderJob) {
+    if (job.indexes.length === 0) {
+      this.cancel();
+      return;
+    }
+
+    this.pendingJob = job;
+
+    if (this.handle !== null) {
+      return;
+    }
+
+    const ownerWindow = this.owner.getOwnerWindow() as WaveformIdleWindow | null;
+    if (!ownerWindow) {
+      this.run({
+        didTimeout: true,
+        timeRemaining: () => Number.POSITIVE_INFINITY,
+      });
+      return;
+    }
+
+    this.ownerWindow = ownerWindow;
+
+    if (ownerWindow.requestIdleCallback) {
+      this.handleType = "idle";
+      this.handle = ownerWindow.requestIdleCallback(
+        (deadline) => {
+          this.run(deadline);
+        },
+        { timeout: WAVEFORM_OFFSCREEN_RENDER_IDLE_TIMEOUT_MS },
+      );
+      return;
+    }
+
+    this.handleType = "frame";
+    this.handle = ownerWindow.requestAnimationFrame(() => {
+      this.run({
+        didTimeout: true,
+        timeRemaining: () => Number.POSITIVE_INFINITY,
+      });
+    });
+  }
+
+  private run(deadline: WaveformIdleDeadline) {
+    const job = this.pendingJob;
+
+    this.handle = null;
+    this.handleType = null;
+    this.ownerWindow = null;
+    this.pendingJob = null;
+
+    if (!job || !this.owner.isOffscreenTileRenderJobCurrent(job)) {
+      return;
+    }
+
+    const indexes: number[] = [];
+    let remainingIndexes: number[] = [];
+
+    for (const index of job.indexes) {
+      if (indexes.length > 0 && !deadline.didTimeout && deadline.timeRemaining() < 2) {
+        remainingIndexes = job.indexes.slice(indexes.length);
+        break;
+      }
+
+      indexes.push(index);
+    }
+
+    this.owner.renderOffscreenTileIndexes({ indexes, job });
+
+    if (remainingIndexes.length > 0) {
+      this.schedule({
+        ...job,
+        indexes: remainingIndexes,
+      });
+    }
+  }
+}
+
+class WaveformTileLoadController {
+  private activeCount = 0;
+  private frameId: number | null = null;
+  private generation = 0;
+  private queue = new Set<number>();
+
+  constructor(private readonly owner: WaveformTileLoadOwner) {}
+
+  dispose() {
+    this.invalidate();
+  }
+
+  delete(index: number) {
+    this.queue.delete(index);
+  }
+
+  invalidate() {
+    this.generation += 1;
+    this.activeCount = 0;
+    this.queue.clear();
+    this.cancelFrame();
+  }
+
+  queueIndexes(indexes: readonly number[], options: WaveformTileLoadQueueOptions = {}) {
+    const nextQueue = new Set<number>();
+    const retainPendingQueue = options.retainPendingQueue ?? true;
+
+    for (const index of indexes) {
+      const tile = this.owner.getTileLoadNode(index);
+      if (tile?.status === "pending") {
+        nextQueue.add(index);
+      }
+    }
+
+    if (retainPendingQueue) {
+      for (const index of this.queue) {
+        const tile = this.owner.getTileLoadNode(index);
+        if (tile?.status === "pending") {
+          nextQueue.add(index);
+        }
+      }
+    }
+
+    this.queue = nextQueue;
+    this.requestPump();
+  }
+
+  private cancelFrame() {
+    if (this.frameId === null) {
+      return;
+    }
+
+    this.owner.getOwnerWindow()?.cancelAnimationFrame(this.frameId);
+    this.frameId = null;
+  }
+
+  private finishLoad(generation: number) {
+    if (this.generation !== generation) {
+      return;
+    }
+
+    this.activeCount = Math.max(0, this.activeCount - 1);
+    this.requestPump();
+  }
+
+  private pump() {
+    this.frameId = null;
+
+    const inputs = this.owner.getTileLoadInputs();
+    if (!inputs || inputs.status !== "ready" || !inputs.filePath) {
+      this.queue.clear();
+      return;
+    }
+
+    const generation = this.generation;
+    const renderMetrics = resolveWaveformRenderMetrics(inputs);
+
+    while (this.activeCount < WAVEFORM_TILE_LOAD_CONCURRENCY && this.queue.size > 0) {
+      const nextEntry = this.queue.values().next();
+      if (nextEntry.done) {
+        break;
+      }
+
+      const nextIndex = nextEntry.value;
+      this.queue.delete(nextIndex);
+
+      const tile = this.owner.getTileLoadNode(nextIndex);
+      if (!tile || tile.status !== "pending") {
+        continue;
+      }
+
+      tile.status = "loading";
+      this.activeCount += 1;
+      void this.loadTileNode({
+        inputs,
+        renderPixelsPerSecond: renderMetrics.pixelsPerSecond,
+        tile,
+      })
+        .then((result) => {
+          if (result === "retry") {
+            this.queueIndexes([tile.index]);
+          }
+        })
+        .finally(() => {
+          this.finishLoad(generation);
+        });
+    }
+  }
+
+  private async loadTileNode(args: {
+    inputs: WaveformRenderInputs;
+    renderPixelsPerSecond: number;
+    tile: WaveformTileNodeState;
+  }): Promise<WaveformTileLoadResult> {
+    const { inputs, renderPixelsPerSecond, tile } = args;
+    const filePath = inputs.filePath;
+
+    if (!filePath) {
+      return "done";
+    }
+
+    try {
+      const tileData = await inputs.waveformPort.getTrackWaveformTile(
+        filePath,
+        normalizeWaveformBoundary(inputs.start),
+        normalizeWaveformBoundary(inputs.end),
+        renderPixelsPerSecond,
+        tile.fetchStartPx,
+        tile.fetchWidthPx,
+      );
+
+      return this.owner.applyTileLoadSuccess({ tile, tileData });
+    } catch (error) {
+      console.error("Failed to render waveform tile", error);
+      this.owner.applyTileLoadError(tile);
+      return "done";
+    }
+  }
+
+  private requestPump() {
+    if (this.frameId !== null || this.queue.size === 0) {
+      return;
+    }
+
+    const ownerWindow = this.owner.getOwnerWindow();
+    if (!ownerWindow) {
+      this.pump();
+      return;
+    }
+
+    this.frameId = ownerWindow.requestAnimationFrame(() => {
+      this.pump();
+    });
+  }
+}
+
+class WaveformTileController {
+  private host: HTMLElement | null = null;
+  private inputs: WaveformRenderInputs | null = null;
+  private layerKey = "";
+  private renderGeneration = 0;
+  private renderLayer: HTMLDivElement | null = null;
+  private renderLayerTransformStyle = "";
+  private renderLayerWidthStyle = "";
+  private renderLayerWillChangeStyle = "";
+  private renderedTileWindow: WaveformTileWindow | null = null;
+  private scrollLeft = 0;
+  private tileLayer: HTMLDivElement | null = null;
+  private tiles = new Map<number, WaveformTileNodeState>();
+  private visualScrollLeft = 0;
+  private zoomPresentation: WaveformZoomPresentation | null = null;
+  private programmaticScrollEcho: WaveformProgrammaticScrollEcho | null = null;
+  private readonly offscreenTileRenderController = new WaveformOffscreenTileRenderController(this);
+  private readonly renderFrameController = new WaveformTileRenderFrameController(this);
+  private readonly scrollSettleController = new WaveformScrollSettleController(this);
+  private readonly tileLoadController = new WaveformTileLoadController(this);
+
+  dispose() {
+    this.renderFrameController.dispose();
+    this.zoomPresentation = null;
+    this.programmaticScrollEcho = null;
+    this.clearTiles();
+    this.renderLayer?.remove();
+    this.renderLayer = null;
+    this.resetRenderLayerStyleCache();
+  }
+
+  setHost(host: HTMLElement | null) {
+    this.host = host;
+    this.requestTileWindowRender();
+  }
+
   setRenderInputs(inputs: WaveformRenderInputs) {
-    const nextLayerKey = createWaveformTileIdentity(inputs);
+    const rawLayerKey = createWaveformTileIdentity(inputs);
+    const rawLayerChanged = this.layerKey !== rawLayerKey;
+    const zoomFrame =
+      this.zoomPresentation && !rawLayerChanged
+        ? resolveWaveformZoomInputFrame({
+            incomingContentWidth: inputs.contentWidth,
+            incomingPixelsPerSecond: inputs.pixelsPerSecond,
+            presentationBaseContentWidth: this.zoomPresentation.baseContentWidth,
+            presentationBasePixelsPerSecond: this.zoomPresentation.basePixelsPerSecond,
+            targetContentWidth: this.zoomPresentation.contentWidth,
+            targetPixelsPerSecond: this.zoomPresentation.pixelsPerSecond,
+          })
+        : null;
+    const nextInputs = zoomFrame
+      ? {
+          ...inputs,
+          contentWidth: zoomFrame.contentWidth,
+          pixelsPerSecond: zoomFrame.pixelsPerSecond,
+        }
+      : inputs;
+    const nextLayerKey = rawLayerChanged ? rawLayerKey : createWaveformTileIdentity(nextInputs);
     const previousLayerKey = this.layerKey;
     const layerChanged = previousLayerKey !== nextLayerKey;
 
-    this.inputs = inputs;
+    this.inputs = nextInputs;
 
     if (layerChanged) {
       this.zoomPresentation = null;
@@ -1264,16 +1919,20 @@ class WaveformTileController {
       this.clearTiles();
     }
 
-    this.applyContentWidth(this.zoomPresentation?.contentWidth ?? inputs.contentWidth);
+    if (zoomFrame?.shouldClearPresentation) {
+      this.zoomPresentation = null;
+    }
+
+    this.applyContentWidth(this.zoomPresentation?.contentWidth ?? nextInputs.contentWidth);
     this.updateRenderLayerPresentation();
 
     if (!this.zoomPresentation) {
       this.requestTileWindowRender();
     }
-    this.requestPlayheadRender();
   }
 
   setScrollLeft(scrollLeft: number) {
+    this.programmaticScrollEcho = null;
     this.beginViewportScroll();
     const changed = this.setActiveViewportScroll({
       scrollLeft,
@@ -1285,13 +1944,47 @@ class WaveformTileController {
     }
   }
 
+  applyViewportScrollEvent(visualScrollLeft: number) {
+    const frame = resolveWaveformViewportScrollEventFrame({
+      currentScrollLeft: this.scrollLeft,
+      incomingVisualScrollLeft: visualScrollLeft,
+      isLogicalScrollLocked: Boolean(this.zoomPresentation),
+      pendingProgrammaticScrollEcho: this.programmaticScrollEcho,
+    });
+
+    if (frame.kind === "external-scroll") {
+      this.programmaticScrollEcho = null;
+      this.beginViewportScroll();
+    }
+
+    const changed = this.setActiveViewportScroll({
+      scrollLeft: frame.scrollLeft,
+      visualScrollLeft: frame.visualScrollLeft,
+    });
+
+    if (frame.kind === "external-scroll" && changed) {
+      this.settleViewportScroll();
+    }
+
+    return changed;
+  }
+
+  applyProgrammaticViewportScroll(args: { scrollLeft: number; visualScrollLeft?: number }) {
+    const visualScrollLeft = Math.max(0, args.visualScrollLeft ?? args.scrollLeft);
+    this.programmaticScrollEcho = { visualScrollLeft };
+    return this.setActiveViewportScroll({
+      scrollLeft: args.scrollLeft,
+      visualScrollLeft,
+    });
+  }
+
   beginViewportScroll() {
     if (this.zoomPresentation) {
       return;
     }
 
-    this.cancelOffscreenTileRender();
-    this.cancelScrollSettleRender();
+    this.offscreenTileRenderController.cancel();
+    this.scrollSettleController.cancel();
   }
 
   settleViewportScroll() {
@@ -1299,7 +1992,7 @@ class WaveformTileController {
       return;
     }
 
-    this.scheduleScrollSettleRender();
+    this.scrollSettleController.schedule();
   }
 
   setActiveViewportScroll(args: { scrollLeft: number; visualScrollLeft?: number }) {
@@ -1314,7 +2007,6 @@ class WaveformTileController {
     } else {
       this.updatePresentationTileVisibility();
     }
-    this.requestPlayheadRender();
     return true;
   }
 
@@ -1344,23 +2036,30 @@ class WaveformTileController {
     scrollLeft: number;
     visualScrollLeft: number;
   }) {
-    this.zoomPresentation = {
+    const visualScrollLeft = Math.max(0, args.visualScrollLeft);
+    const inputs = this.inputs;
+    this.zoomPresentation = createWaveformZoomPresentation({
+      baseContentWidth: inputs?.contentWidth ?? args.contentWidth,
+      basePixelsPerSecond: inputs?.pixelsPerSecond ?? args.pixelsPerSecond,
       contentWidth: args.contentWidth,
       pixelsPerSecond: args.pixelsPerSecond,
-    };
+    });
     this.scrollLeft = Math.max(0, args.scrollLeft);
-    this.visualScrollLeft = Math.max(0, args.visualScrollLeft);
+    this.visualScrollLeft = visualScrollLeft;
+    this.programmaticScrollEcho = { visualScrollLeft };
     this.applyContentWidth(args.contentWidth);
     this.updateRenderLayerPresentation();
     this.updatePresentationTileVisibility();
-    this.renderPlayhead();
   }
 
   prepareZoomPresentation(args: { contentWidth: number; pixelsPerSecond: number }) {
-    this.zoomPresentation = {
+    const inputs = this.inputs;
+    this.zoomPresentation = createWaveformZoomPresentation({
+      baseContentWidth: inputs?.contentWidth ?? args.contentWidth,
+      basePixelsPerSecond: inputs?.pixelsPerSecond ?? args.pixelsPerSecond,
       contentWidth: args.contentWidth,
       pixelsPerSecond: args.pixelsPerSecond,
-    };
+    });
     this.applyContentWidth(args.contentWidth);
   }
 
@@ -1375,7 +2074,6 @@ class WaveformTileController {
     }
     this.updateRenderLayerPresentation();
     this.requestTileWindowRender();
-    this.requestPlayheadRender();
   }
 
   materializeZoomPresentation(args: {
@@ -1396,9 +2094,15 @@ class WaveformTileController {
     };
     const nextLayerKey = createWaveformTileIdentity(nextInputs);
     const layerChanged = this.layerKey !== nextLayerKey;
+    const materializedPresentation = createWaveformZoomPresentation({
+      baseContentWidth: nextInputs.contentWidth,
+      basePixelsPerSecond: nextInputs.pixelsPerSecond,
+      contentWidth: nextInputs.contentWidth,
+      pixelsPerSecond: nextInputs.pixelsPerSecond,
+    });
 
     this.inputs = nextInputs;
-    this.zoomPresentation = null;
+    this.zoomPresentation = materializedPresentation;
 
     if (layerChanged) {
       this.layerKey = nextLayerKey;
@@ -1407,12 +2111,48 @@ class WaveformTileController {
 
     this.applyContentWidth(nextInputs.contentWidth);
     this.updateRenderLayerPresentation();
-    this.renderTileWindowNow(args.mode);
-    this.requestPlayheadRender();
+    this.renderMaterializedTileWindow(args.mode);
+  }
+
+  getPresentedViewport(): WaveformPresentedViewport | null {
+    const inputs = this.getPresentedInputs();
+    if (!inputs) {
+      return null;
+    }
+
+    return {
+      pixelsPerSecond: inputs.pixelsPerSecond,
+      scrollLeft: this.scrollLeft,
+      summary: inputs.summary,
+      viewportWidth: inputs.viewportWidth,
+    };
+  }
+
+  private renderMaterializedTileWindow(mode: WaveformTileRenderMode) {
+    const presentation = this.zoomPresentation;
+    if (!presentation) {
+      return;
+    }
+
+    /**
+     * Materialization is the only place where tile geometry must briefly ignore
+     * the active presentation. renderTileWindow is the canonical tile renderer,
+     * and it intentionally refuses to run while presentation owns the visible
+     * layer. This scoped suspension lets tiles be created from the materialized
+     * inputs while the finally block restores the presentation transform before
+     * the next paint can observe a mixed coordinate frame.
+     */
+    this.zoomPresentation = null;
+    try {
+      this.renderTileWindowNow(mode);
+    } finally {
+      this.zoomPresentation = presentation;
+      this.updateRenderLayerPresentation();
+    }
   }
 
   renderTileWindowNow(mode: WaveformTileRenderMode = "complete") {
-    this.cancelRenderFrame();
+    this.renderFrameController.cancel();
     this.renderTileWindow(mode);
   }
 
@@ -1492,102 +2232,10 @@ class WaveformTileController {
     this.requestTileWindowRender();
   }
 
-  private applyPlayheadStyle(args: { opacity: string; transform: string }) {
-    const playhead = this.playhead;
-    if (!playhead) {
-      return;
-    }
-
-    if (this.playheadOpacity !== args.opacity) {
-      playhead.style.opacity = args.opacity;
-      this.playheadOpacity = args.opacity;
-    }
-
-    if (this.playheadTransform !== args.transform) {
-      playhead.style.transform = args.transform;
-      this.playheadTransform = args.transform;
-    }
-  }
-
-  private cancelPlayheadFrame() {
-    if (this.playheadFrameId === null) {
-      return;
-    }
-
-    this.getOwnerWindow()?.cancelAnimationFrame(this.playheadFrameId);
-    this.playheadFrameId = null;
-  }
-
-  private cancelRenderFrame() {
-    if (this.renderFrameId === null) {
-      this.pendingTileRenderMode = "complete";
-      return;
-    }
-
-    this.getOwnerWindow()?.cancelAnimationFrame(this.renderFrameId);
-    this.renderFrameId = null;
-    this.pendingTileRenderMode = "complete";
-  }
-
-  private cancelOffscreenTileRender() {
-    if (this.offscreenRenderHandle === null) {
-      this.pendingOffscreenRenderJob = null;
-      return;
-    }
-
-    const ownerWindow = this.offscreenRenderOwnerWindow as WaveformIdleWindow | null;
-    if (this.offscreenRenderHandleType === "idle") {
-      ownerWindow?.cancelIdleCallback?.(this.offscreenRenderHandle);
-    } else {
-      ownerWindow?.cancelAnimationFrame(this.offscreenRenderHandle);
-    }
-
-    this.offscreenRenderHandle = null;
-    this.offscreenRenderHandleType = null;
-    this.offscreenRenderOwnerWindow = null;
-    this.pendingOffscreenRenderJob = null;
-  }
-
-  private cancelScrollSettleRender() {
-    if (this.scrollSettleTimerId === null) {
-      return;
-    }
-
-    this.scrollSettleOwnerWindow?.clearTimeout(this.scrollSettleTimerId);
-    this.scrollSettleOwnerWindow = null;
-    this.scrollSettleTimerId = null;
-  }
-
-  private scheduleScrollSettleRender() {
-    this.cancelScrollSettleRender();
-
-    const ownerWindow = this.getOwnerWindow();
-    if (!ownerWindow) {
-      this.requestTileWindowRender("complete");
-      return;
-    }
-
-    this.scrollSettleOwnerWindow = ownerWindow;
-    this.scrollSettleTimerId = ownerWindow.setTimeout(() => {
-      this.scrollSettleOwnerWindow = null;
-      this.scrollSettleTimerId = null;
-      this.requestTileWindowRender("complete");
-    }, WAVEFORM_SCROLL_SETTLE_DELAY_MS);
-  }
-
-  private cancelTileLoadFrame() {
-    if (this.loadFrameId === null) {
-      return;
-    }
-
-    this.getOwnerWindow()?.cancelAnimationFrame(this.loadFrameId);
-    this.loadFrameId = null;
-  }
-
   private clearTiles() {
-    this.cancelOffscreenTileRender();
-    this.cancelScrollSettleRender();
-    this.invalidateTileLoads();
+    this.offscreenTileRenderController.cancel();
+    this.scrollSettleController.cancel();
+    this.tileLoadController.invalidate();
 
     for (const tile of this.tiles.values()) {
       tile.canvas.remove();
@@ -1683,83 +2331,12 @@ class WaveformTileController {
     }
   }
 
-  private getOwnerWindow() {
+  getOwnerWindow() {
     return (
       this.host?.ownerDocument.defaultView ??
       this.tileLayer?.ownerDocument.defaultView ??
-      this.playhead?.ownerDocument.defaultView ??
       (typeof window === "undefined" ? null : window)
     );
-  }
-
-  private isPlaybackAdvancing() {
-    return this.playbackSnapshot?.playing === true && this.playbackSnapshot.paused === false;
-  }
-
-  private getNow() {
-    return this.getOwnerWindow()?.performance.now() ?? globalThis.performance?.now() ?? Date.now();
-  }
-
-  private invalidateTileLoads() {
-    this.loadGeneration += 1;
-    this.activeTileLoadCount = 0;
-    this.tileLoadQueue.clear();
-    this.cancelTileLoadFrame();
-  }
-
-  private async loadTile(
-    tile: WaveformTileNodeState,
-    inputs: WaveformRenderInputs,
-    renderPixelsPerSecond: number,
-    generation: number,
-  ) {
-    const filePath = inputs.filePath;
-
-    if (!filePath || !this.host) {
-      if (this.loadGeneration === generation) {
-        this.activeTileLoadCount = Math.max(0, this.activeTileLoadCount - 1);
-        this.requestTileLoadPump();
-      }
-
-      return;
-    }
-
-    try {
-      const tileData = await inputs.waveformPort.getTrackWaveformTile(
-        filePath,
-        normalizeWaveformBoundary(inputs.start),
-        normalizeWaveformBoundary(inputs.end),
-        renderPixelsPerSecond,
-        tile.fetchStartPx,
-        tile.fetchWidthPx,
-      );
-
-      if (this.loadGeneration !== generation || this.tiles.get(tile.index) !== tile) {
-        return;
-      }
-
-      if (tile.fetchStartPx !== tileData.start_px || tile.fetchWidthPx !== tileData.width_px) {
-        tile.status = "pending";
-        this.queueTileLoads([tile.index]);
-        return;
-      }
-
-      tile.data = tileData;
-      tile.status = "ready";
-      this.drawTileWithCurrentInputs(tile);
-    } catch (error) {
-      console.error("Failed to render waveform tile", error);
-      if (this.loadGeneration === generation && this.tiles.get(tile.index) === tile) {
-        tile.data = null;
-        tile.status = "ready";
-        this.drawTileWithCurrentInputs(tile);
-      }
-    } finally {
-      if (this.loadGeneration === generation) {
-        this.activeTileLoadCount = Math.max(0, this.activeTileLoadCount - 1);
-        this.requestTileLoadPump();
-      }
-    }
   }
 
   private getPresentedInputs() {
@@ -1770,45 +2347,12 @@ class WaveformTileController {
 
     return {
       ...inputs,
-      contentWidth: this.zoomPresentation.contentWidth,
+      contentWidth: this.zoomPresentation.baseContentWidth,
       pixelsPerSecond: this.zoomPresentation.pixelsPerSecond,
     };
   }
 
-  private renderPlayhead() {
-    const inputs = this.getPresentedInputs();
-    const snapshot = this.playbackSnapshot;
-    if (!inputs || !snapshot) {
-      this.applyPlayheadStyle({
-        opacity: "0",
-        transform: "translate3d(-9999px, 0, 0)",
-      });
-      return;
-    }
-
-    const positionMs = resolvePlaybackPositionMs({
-      durationMs: inputs.summary.duration_ms,
-      nowMs:
-        this.getOwnerWindow()?.performance.now() ?? globalThis.performance?.now() ?? Date.now(),
-      snapshot,
-    });
-    const playheadX = resolveWaveformPlayheadX({
-      pixelsPerSecond: inputs.pixelsPerSecond,
-      positionMs,
-      scrollLeft: this.scrollLeft,
-    });
-    const isVisible =
-      playheadX !== null && playheadX >= 0 && playheadX <= Math.max(1, inputs.viewportWidth);
-
-    this.applyPlayheadStyle({
-      opacity: isVisible ? "0.86" : "0",
-      transform: isVisible
-        ? `translate3d(${Math.round(playheadX)}px, 0, 0)`
-        : "translate3d(-9999px, 0, 0)",
-    });
-  }
-
-  private renderTileWindow(mode: WaveformTileRenderMode = "complete") {
+  renderTileWindow(mode: WaveformTileRenderMode = "complete") {
     const inputs = this.inputs;
     const renderLayer = this.ensureRenderLayer();
     if (!inputs || !renderLayer || !this.host || inputs.viewportWidth <= 0) {
@@ -1897,14 +2441,14 @@ class WaveformTileController {
       visibleTileIndexes: visibilityTileIndexes,
     });
     this.applyTileVisibilityPlan(visibilityPlan);
-    this.queueTileLoads(renderIndexes, {
+    this.tileLoadController.queueIndexes(renderIndexes, {
       retainPendingQueue: mode === "complete",
     });
     this.renderedTileWindow = mode === "visible-only" ? visibleTileWindow : tileWindow;
     if (mode !== "complete") {
-      this.cancelOffscreenTileRender();
+      this.offscreenTileRenderController.cancel();
     } else {
-      this.scheduleOffscreenTileRender({
+      this.offscreenTileRenderController.schedule({
         generation,
         indexes: offscreenTileLoadOrder,
         inputs,
@@ -2034,212 +2578,73 @@ class WaveformTileController {
     this.drawTile(tile, inputs, renderMetrics.scale);
   }
 
-  private scheduleOffscreenTileRender(job: WaveformOffscreenTileRenderJob) {
-    if (job.indexes.length === 0) {
-      this.cancelOffscreenTileRender();
-      return;
-    }
-
-    this.pendingOffscreenRenderJob = job;
-
-    if (this.offscreenRenderHandle !== null) {
-      return;
-    }
-
-    const ownerWindow = this.getOwnerWindow() as WaveformIdleWindow | null;
-    if (!ownerWindow) {
-      this.runOffscreenTileRender({
-        didTimeout: true,
-        timeRemaining: () => Number.POSITIVE_INFINITY,
-      });
-      return;
-    }
-
-    this.offscreenRenderOwnerWindow = ownerWindow;
-
-    if (ownerWindow.requestIdleCallback) {
-      this.offscreenRenderHandleType = "idle";
-      this.offscreenRenderHandle = ownerWindow.requestIdleCallback(
-        (deadline) => {
-          this.runOffscreenTileRender(deadline);
-        },
-        { timeout: WAVEFORM_OFFSCREEN_RENDER_IDLE_TIMEOUT_MS },
-      );
-      return;
-    }
-
-    this.offscreenRenderHandleType = "frame";
-    this.offscreenRenderHandle = ownerWindow.requestAnimationFrame(() => {
-      this.runOffscreenTileRender({
-        didTimeout: true,
-        timeRemaining: () => Number.POSITIVE_INFINITY,
-      });
-    });
-  }
-
-  private runOffscreenTileRender(deadline: WaveformIdleDeadline) {
-    const job = this.pendingOffscreenRenderJob;
-
-    this.offscreenRenderHandle = null;
-    this.offscreenRenderHandleType = null;
-    this.offscreenRenderOwnerWindow = null;
-    this.pendingOffscreenRenderJob = null;
-
-    if (!job || job.generation !== this.renderGeneration || job.inputs !== this.inputs) {
-      return;
-    }
-
-    const indexes: number[] = [];
-    let remainingIndexes: number[] = [];
-
-    for (const index of job.indexes) {
-      if (indexes.length > 0 && !deadline.didTimeout && deadline.timeRemaining() < 2) {
-        remainingIndexes = job.indexes.slice(indexes.length);
-        break;
-      }
-
-      indexes.push(index);
-    }
-
+  renderOffscreenTileIndexes(args: {
+    indexes: readonly number[];
+    job: WaveformOffscreenTileRenderJob;
+  }) {
     const stats = createWaveformTileRenderStats({
       removedTileCount: 0,
       tileCountBefore: this.tiles.size,
     });
-    this.renderTileIndexes(indexes, job.inputs, job.renderMetrics, stats);
-    this.queueTileLoads(indexes);
-
-    if (remainingIndexes.length > 0) {
-      this.scheduleOffscreenTileRender({
-        ...job,
-        indexes: remainingIndexes,
-      });
-    }
-  }
-
-  private pumpTileLoads() {
-    this.loadFrameId = null;
-
-    const inputs = this.inputs;
-    if (!inputs || inputs.status !== "ready" || !inputs.filePath) {
-      this.tileLoadQueue.clear();
-      return;
-    }
-
-    const generation = this.loadGeneration;
-    const renderMetrics = resolveWaveformRenderMetrics(inputs);
-
-    while (
-      this.activeTileLoadCount < WAVEFORM_TILE_LOAD_CONCURRENCY &&
-      this.tileLoadQueue.size > 0
-    ) {
-      const nextEntry = this.tileLoadQueue.values().next();
-      if (nextEntry.done) {
-        break;
-      }
-
-      const nextIndex = nextEntry.value;
-      this.tileLoadQueue.delete(nextIndex);
-
-      const tile = this.tiles.get(nextIndex);
-      if (!tile || tile.status !== "pending") {
-        continue;
-      }
-
-      tile.status = "loading";
-      this.activeTileLoadCount += 1;
-      void this.loadTile(tile, inputs, renderMetrics.pixelsPerSecond, generation);
-    }
-  }
-
-  private queueTileLoads(indexes: readonly number[], options: WaveformTileLoadQueueOptions = {}) {
-    const nextQueue = new Set<number>();
-    const retainPendingQueue = options.retainPendingQueue ?? true;
-
-    for (const index of indexes) {
-      const tile = this.tiles.get(index);
-      if (tile?.status === "pending") {
-        nextQueue.add(index);
-      }
-    }
-
-    if (retainPendingQueue) {
-      for (const index of this.tileLoadQueue) {
-        const tile = this.tiles.get(index);
-        if (tile?.status === "pending") {
-          nextQueue.add(index);
-        }
-      }
-    }
-
-    this.tileLoadQueue = nextQueue;
-    this.requestTileLoadPump();
+    this.renderTileIndexes(args.indexes, args.job.inputs, args.job.renderMetrics, stats);
+    this.tileLoadController.queueIndexes(args.indexes);
   }
 
   private removeTile(index: number, tile: WaveformTileNodeState) {
     tile.canvas.remove();
     this.tiles.delete(index);
-    this.tileLoadQueue.delete(index);
-  }
-
-  private requestPlayheadRender() {
-    if (this.playheadFrameId !== null) {
-      return;
-    }
-
-    const ownerWindow = this.getOwnerWindow();
-    if (!ownerWindow) {
-      this.renderPlayhead();
-      return;
-    }
-
-    this.playheadFrameId = ownerWindow.requestAnimationFrame(() => {
-      this.playheadFrameId = null;
-      this.renderPlayhead();
-
-      if (this.isPlaybackAdvancing()) {
-        this.requestPlayheadRender();
-      }
-    });
+    this.tileLoadController.delete(index);
   }
 
   private requestTileWindowRender(mode: WaveformTileRenderMode = "complete") {
-    if (this.renderFrameId !== null) {
-      this.pendingTileRenderMode = resolveWaveformTileRenderMode(this.pendingTileRenderMode, mode);
-      return;
-    }
-
-    this.pendingTileRenderMode = mode;
-
-    const ownerWindow = this.getOwnerWindow();
-    if (!ownerWindow) {
-      const pendingMode = this.pendingTileRenderMode;
-      this.pendingTileRenderMode = "complete";
-      this.renderTileWindow(pendingMode);
-      return;
-    }
-
-    this.renderFrameId = ownerWindow.requestAnimationFrame(() => {
-      this.renderFrameId = null;
-      const pendingMode = this.pendingTileRenderMode;
-      this.pendingTileRenderMode = "complete";
-      this.renderTileWindow(pendingMode);
-    });
+    this.renderFrameController.request(mode);
   }
 
-  private requestTileLoadPump() {
-    if (this.loadFrameId !== null || this.tileLoadQueue.size === 0) {
+  renderSettledTileWindow() {
+    this.requestTileWindowRender("complete");
+  }
+
+  isOffscreenTileRenderJobCurrent(job: WaveformOffscreenTileRenderJob) {
+    return job.generation === this.renderGeneration && job.inputs === this.inputs;
+  }
+
+  getTileLoadInputs() {
+    return this.inputs;
+  }
+
+  getTileLoadNode(index: number) {
+    return this.tiles.get(index);
+  }
+
+  applyTileLoadError(tile: WaveformTileNodeState) {
+    if (this.tiles.get(tile.index) !== tile) {
       return;
     }
 
-    const ownerWindow = this.getOwnerWindow();
-    if (!ownerWindow) {
-      this.pumpTileLoads();
-      return;
+    tile.data = null;
+    tile.status = "ready";
+    this.drawTileWithCurrentInputs(tile);
+  }
+
+  applyTileLoadSuccess(args: {
+    tile: WaveformTileNodeState;
+    tileData: TrackWaveformTile;
+  }): WaveformTileLoadResult {
+    const { tile, tileData } = args;
+
+    if (this.tiles.get(tile.index) !== tile) {
+      return "stale";
     }
 
-    this.loadFrameId = ownerWindow.requestAnimationFrame(() => {
-      this.pumpTileLoads();
-    });
+    if (tile.fetchStartPx !== tileData.start_px || tile.fetchWidthPx !== tileData.width_px) {
+      tile.status = "pending";
+      return "retry";
+    }
+
+    tile.data = tileData;
+    tile.status = "ready";
+    this.drawTileWithCurrentInputs(tile);
+    return "done";
   }
 
   private resetRenderLayerStyleCache() {
@@ -2255,7 +2660,7 @@ class WaveformTileController {
       return;
     }
 
-    const nextWidthStyle = `${inputs.contentWidth}px`;
+    const nextWidthStyle = `${this.zoomPresentation?.baseContentWidth ?? inputs.contentWidth}px`;
     if (this.renderLayerWidthStyle !== nextWidthStyle) {
       renderLayer.style.width = nextWidthStyle;
       this.renderLayerWidthStyle = nextWidthStyle;
@@ -2269,7 +2674,7 @@ class WaveformTileController {
       this.zoomPresentation?.pixelsPerSecond ?? inputs.pixelsPerSecond;
 
     const nextTransformStyle = resolveWaveformPresentationTransform({
-      exactPixelsPerSecond: inputs.pixelsPerSecond,
+      exactPixelsPerSecond: this.zoomPresentation?.basePixelsPerSecond ?? inputs.pixelsPerSecond,
       pixelsPerSecond: presentationPixelsPerSecond,
       transformPx: alignment.transformPx,
     });
@@ -2301,18 +2706,9 @@ class WaveformTileController {
       viewportWidth: inputs.viewportWidth,
     });
 
-    let hiddenCount = 0;
-    let visibleCount = 0;
-
     for (const tile of this.tiles.values()) {
       const visible = tileWindow ? isWaveformTileIndexInWindow(tile.index, tileWindow) : false;
       this.setTilePresentationVisibility(tile, visible);
-
-      if (visible) {
-        visibleCount += 1;
-      } else {
-        hiddenCount += 1;
-      }
     }
   }
 
@@ -2381,10 +2777,127 @@ class WaveformTileController {
   }
 }
 
+class WaveformPresentationController {
+  constructor(
+    private readonly tiles: WaveformTileController,
+    private readonly playhead: WaveformPlayheadController,
+  ) {}
+
+  dispose() {
+    this.tiles.dispose();
+    this.playhead.dispose();
+  }
+
+  setHost(host: HTMLElement | null) {
+    this.tiles.setHost(host);
+    this.playhead.setHost(host);
+  }
+
+  setPlayhead(playhead: HTMLDivElement | null) {
+    this.playhead.setPlayhead(playhead);
+  }
+
+  setTileLayer(tileLayer: HTMLDivElement | null) {
+    this.tiles.setTileLayer(tileLayer);
+    this.syncPlayheadPresentation();
+  }
+
+  setPlaybackSnapshot(snapshot: PlaybackSnapshot | null) {
+    this.playhead.setPlaybackSnapshot(snapshot);
+  }
+
+  setRenderInputs(inputs: WaveformRenderInputs) {
+    this.tiles.setRenderInputs(inputs);
+    this.syncPlayheadPresentation();
+  }
+
+  setScrollLeft(scrollLeft: number) {
+    this.tiles.setScrollLeft(scrollLeft);
+    this.syncPlayheadPresentation();
+  }
+
+  applyViewportScrollEvent(visualScrollLeft: number) {
+    const changed = this.tiles.applyViewportScrollEvent(visualScrollLeft);
+    if (changed) {
+      this.syncPlayheadPresentation();
+    }
+    return changed;
+  }
+
+  beginViewportScroll() {
+    this.tiles.beginViewportScroll();
+  }
+
+  settleViewportScroll() {
+    this.tiles.settleViewportScroll();
+  }
+
+  setActiveViewportScroll(args: { scrollLeft: number; visualScrollLeft?: number }) {
+    const changed = this.tiles.setActiveViewportScroll(args);
+    if (changed) {
+      this.syncPlayheadPresentation();
+    }
+    return changed;
+  }
+
+  applyProgrammaticViewportScroll(args: { scrollLeft: number; visualScrollLeft?: number }) {
+    const changed = this.tiles.applyProgrammaticViewportScroll(args);
+    if (changed) {
+      this.syncPlayheadPresentation();
+    }
+    return changed;
+  }
+
+  getScrollLeft() {
+    return this.tiles.getScrollLeft();
+  }
+
+  prepareZoomPresentation(args: { contentWidth: number; pixelsPerSecond: number }) {
+    this.tiles.prepareZoomPresentation(args);
+    this.syncPlayheadPresentation();
+  }
+
+  applyZoomPresentation(args: {
+    contentWidth: number;
+    pixelsPerSecond: number;
+    scrollLeft: number;
+    visualScrollLeft: number;
+  }) {
+    this.tiles.applyZoomPresentation(args);
+    this.syncPlayheadPresentation();
+  }
+
+  materializeZoomPresentation(args: {
+    contentWidth: number;
+    mode: WaveformTileRenderMode;
+    pixelsPerSecond: number;
+  }) {
+    this.tiles.materializeZoomPresentation(args);
+    this.syncPlayheadPresentation();
+  }
+
+  private syncPlayheadPresentation() {
+    this.playhead.setPresentation(this.tiles.getPresentedViewport());
+  }
+}
+
+function createWaveformZoomPresentation(args: {
+  baseContentWidth: number;
+  basePixelsPerSecond: number;
+  contentWidth: number;
+  pixelsPerSecond: number;
+}): WaveformZoomPresentation {
+  return {
+    baseContentWidth: args.baseContentWidth,
+    basePixelsPerSecond: args.basePixelsPerSecond,
+    contentWidth: args.contentWidth,
+    pixelsPerSecond: args.pixelsPerSecond,
+  };
+}
+
 class WaveformZoomController {
   private commitGeneration = 0;
   private lastCommitMs = 0;
-  private lastMaterializeMs = 0;
   private scheduledCommitFrameId: number | null = null;
   private scheduledCommitOwnerWindow: Window | null = null;
   private materializeOwnerWindow: Window | null = null;
@@ -2392,10 +2905,11 @@ class WaveformZoomController {
   private materializeTimerId: number | null = null;
   private pendingCommit: PendingWaveformZoomCommit | null = null;
   private pendingMaterialize: WaveformZoomCommit | null = null;
+  private activePixelsPerSecond: number | null = null;
   private stateSyncFrameId: number | null = null;
   private stateSyncOwnerWindow: Window | null = null;
 
-  dispose() {
+  reset() {
     this.cancelScheduledCommit();
 
     if (this.materializeTimerId !== null) {
@@ -2412,6 +2926,12 @@ class WaveformZoomController {
     this.materializeTimerId = null;
     this.pendingCommit = null;
     this.pendingMaterialize = null;
+    this.activePixelsPerSecond = null;
+  }
+
+  dispose() {
+    this.reset();
+    this.materializeOwnerWindow = null;
   }
 
   apply(args: {
@@ -2419,22 +2939,25 @@ class WaveformZoomController {
     deltaY: number;
     scrollElements: WaveformScrollElements;
     scrollLeft: number;
+    viewportWidth: number;
     wheelState: WaveformWheelState;
   }) {
     const ownerWindow = args.scrollElements.viewport.ownerDocument.defaultView;
     const previousPending = this.pendingCommit;
-    const base = {
-      pixelsPerSecond: previousPending?.commit.pixelsPerSecond ?? args.wheelState.pixelsPerSecond,
-      scrollLeft: previousPending?.commit.scrollLeft ?? args.scrollLeft,
+    const base: WaveformZoomBaseFrame = previousPending?.commit ?? {
+      durationMs: args.wheelState.summary.duration_ms,
+      pixelsPerSecond: this.activePixelsPerSecond ?? args.wheelState.requestedPixelsPerSecond,
+      scrollLeft: args.scrollLeft,
+      viewportWidth: args.viewportWidth,
     };
     const nextFrame = resolveQueuedWaveformZoomFrame({
       anchorViewportX: args.anchorViewportX,
-      currentPixelsPerSecond: args.wheelState.pixelsPerSecond,
+      currentPixelsPerSecond: args.wheelState.requestedPixelsPerSecond,
       deltaY: args.deltaY,
       durationMs: args.wheelState.summary.duration_ms,
-      pendingFrame: previousPending?.commit ?? null,
+      pendingFrame: base,
       scrollLeft: args.scrollLeft,
-      viewportWidth: args.wheelState.viewportWidth,
+      viewportWidth: args.viewportWidth,
     });
     const changed =
       Math.abs(nextFrame.pixelsPerSecond - base.pixelsPerSecond) >= 0.01 ||
@@ -2447,17 +2970,22 @@ class WaveformZoomController {
     const commit = {
       ...nextFrame,
       controller: args.wheelState.controller,
+      durationMs: base.durationMs,
       generation: previousPending?.commit.generation ?? this.commitGeneration + 1,
+      materializationCadence: resolveWaveformZoomMaterializationCadence({
+        basePixelsPerSecond: base.pixelsPerSecond,
+        targetPixelsPerSecond: nextFrame.pixelsPerSecond,
+      }),
       scrollElements: args.scrollElements,
       setPixelsPerSecond: args.wheelState.setPixelsPerSecond,
+      viewportWidth: base.viewportWidth,
     };
     const pendingCommit = {
       commit,
     };
 
     this.pendingCommit = pendingCommit;
-    args.wheelState.contentWidth = nextFrame.contentWidth;
-    args.wheelState.pixelsPerSecond = nextFrame.pixelsPerSecond;
+    this.activePixelsPerSecond = commit.pixelsPerSecond;
     this.scheduleCommit(ownerWindow);
     return true;
   }
@@ -2546,7 +3074,7 @@ class WaveformZoomController {
 
     const now = readWaveformPerformanceNow(ownerWindow);
     this.lastCommitMs = now;
-    if (now - this.lastMaterializeMs >= WAVEFORM_ZOOM_PROGRESSIVE_RENDER_INTERVAL_MS) {
+    if (pending.materializationCadence === "progressive-visible") {
       this.requestProgressiveMaterialize(ownerWindow);
     }
 
@@ -2624,7 +3152,6 @@ class WaveformZoomController {
       mode: reason === "progressive" ? "visible-only" : "complete",
       pixelsPerSecond: pending.pixelsPerSecond,
     });
-    this.lastMaterializeMs = readWaveformPerformanceNow(ownerWindow);
   }
 
   private scheduleStateSync(pending: WaveformZoomCommit, ownerWindow: Window | null) {
@@ -2691,7 +3218,7 @@ class WaveformPanController {
     writeWaveformScrollLeft(args.scrollElements, targetFrame.scrollLeft);
     const actualScrollLeft = readWaveformScrollLeft(args.scrollElements);
 
-    args.wheelState.controller.setActiveViewportScroll({
+    args.wheelState.controller.applyProgrammaticViewportScroll({
       scrollLeft: targetFrame.scrollLeft,
       visualScrollLeft: actualScrollLeft,
     });
@@ -2699,11 +3226,14 @@ class WaveformPanController {
   }
 }
 
-function useWaveformTileController() {
-  const controllerRef = useRef<WaveformTileController | null>(null);
+function useWaveformPresentationController() {
+  const controllerRef = useRef<WaveformPresentationController | null>(null);
 
   if (controllerRef.current === null) {
-    controllerRef.current = new WaveformTileController();
+    controllerRef.current = new WaveformPresentationController(
+      new WaveformTileController(),
+      new WaveformPlayheadController(),
+    );
   }
 
   return controllerRef.current;
@@ -2729,7 +3259,125 @@ function useWaveformZoomController() {
   return controllerRef.current;
 }
 
-export const TrackSpectrum = memo(function TrackSpectrum(props: {
+function useTrackWaveformSummary(args: {
+  end: number | null;
+  filePath: string | null;
+  placeholderSummary: TrackWaveformSummary;
+  start: number | null;
+  waveformPort: TrackSpectrumWaveformPort;
+}) {
+  const [state, setState] = useState<TrackWaveformSummaryState>({
+    status: "idle",
+    summary: args.placeholderSummary,
+  });
+
+  useEffect(() => {
+    const filePath = args.filePath?.trim();
+
+    if (!filePath) {
+      setState({
+        status: "idle",
+        summary: args.placeholderSummary,
+      });
+      return;
+    }
+
+    let cancelled = false;
+    setState({
+      status: "loading",
+      summary: args.placeholderSummary,
+    });
+
+    void args.waveformPort
+      .prepareTrackWaveform(
+        filePath,
+        normalizeWaveformBoundary(args.start),
+        normalizeWaveformBoundary(args.end),
+      )
+      .then((summary) => {
+        if (cancelled) {
+          return;
+        }
+
+        setState({
+          status: "ready",
+          summary,
+        });
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+
+        console.error("Failed to prepare track waveform", error);
+        setState({
+          status: "error",
+          summary: args.placeholderSummary,
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [args.end, args.filePath, args.placeholderSummary, args.start, args.waveformPort]);
+
+  return state;
+}
+
+function useTrackPlaybackSnapshot(args: {
+  filePath: string | null;
+  playbackPort: TrackSpectrumPlaybackPort;
+}) {
+  const [snapshot, setSnapshot] = useState<PlaybackSnapshot | null>(null);
+
+  useEffect(() => {
+    const filePath = args.filePath?.trim();
+    setSnapshot(null);
+
+    if (!filePath) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const refreshPlaybackStatus = async () => {
+      try {
+        const status = await args.playbackPort.getPlaybackStatus();
+        if (cancelled) {
+          return;
+        }
+
+        if (!status || !isPlaybackStatusForTrack(status, filePath)) {
+          setSnapshot(null);
+          return;
+        }
+
+        setSnapshot({
+          ...status,
+          received_at_ms: performance.now(),
+        });
+      } catch (error) {
+        if (!cancelled) {
+          console.error("Failed to refresh playback status", error);
+          setSnapshot(null);
+        }
+      }
+    };
+
+    void refreshPlaybackStatus();
+    const intervalId = window.setInterval(() => {
+      void refreshPlaybackStatus();
+    }, PLAYBACK_STATUS_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [args.filePath, args.playbackPort]);
+
+  return snapshot;
+}
+
+export function TrackSpectrum(props: {
   className?: string;
   filePath: string | null;
   ports?: TrackSpectrumPorts;
@@ -2738,7 +3386,7 @@ export const TrackSpectrum = memo(function TrackSpectrum(props: {
 }) {
   const placeholderSummary = useMemo(() => createPlaceholderWaveformSummary(), []);
   const ports = props.ports ?? crabTrackSpectrumPorts;
-  const controller = useWaveformTileController();
+  const controller = useWaveformPresentationController();
   const panController = useWaveformPanController();
   const zoomController = useWaveformZoomController();
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -2748,9 +3396,16 @@ export const TrackSpectrum = memo(function TrackSpectrum(props: {
   const [requestedPixelsPerSecond, setPixelsPerSecond] = useState(
     WAVEFORM_INITIAL_PIXELS_PER_SECOND,
   );
-  const [state, setState] = useState<{ status: WaveformStatus; summary: TrackWaveformSummary }>({
-    status: "idle",
-    summary: placeholderSummary,
+  const state = useTrackWaveformSummary({
+    end: props.end,
+    filePath: props.filePath,
+    placeholderSummary,
+    start: props.start,
+    waveformPort: ports.waveform,
+  });
+  const playbackSnapshot = useTrackPlaybackSnapshot({
+    filePath: props.filePath,
+    playbackPort: ports.playback,
   });
   const summary = state.summary;
   const pixelsPerSecond = resolveWaveformPixelsPerSecond(requestedPixelsPerSecond, {
@@ -2766,7 +3421,7 @@ export const TrackSpectrum = memo(function TrackSpectrum(props: {
   wheelStateRef.current = {
     contentWidth,
     controller,
-    pixelsPerSecond,
+    requestedPixelsPerSecond: pixelsPerSecond,
     setPixelsPerSecond,
     summary,
     viewportWidth,
@@ -2816,7 +3471,7 @@ export const TrackSpectrum = memo(function TrackSpectrum(props: {
         const elements = instance.elements();
         const scrollLeft = readWaveformScrollLeft(elements);
 
-        controller.setScrollLeft(scrollLeft);
+        controller.applyViewportScrollEvent(scrollLeft);
       },
     }),
     [controller],
@@ -2906,107 +3561,19 @@ export const TrackSpectrum = memo(function TrackSpectrum(props: {
       zoomController.dispose();
       controller.dispose();
     };
-  }, [controller, panController, zoomController]);
+  }, [controller, zoomController]);
 
   useEffect(() => {
-    const filePath = props.filePath?.trim();
     resetWaveformScrollPosition({
       controller,
+      zoomController,
       scrollbarsRef,
     });
-
-    if (!filePath) {
-      setState({
-        status: "idle",
-        summary: placeholderSummary,
-      });
-      controller.setPlaybackSnapshot(null);
-      return;
-    }
-
-    let cancelled = false;
-    setState({
-      status: "loading",
-      summary: placeholderSummary,
-    });
-
-    void ports.waveform
-      .prepareTrackWaveform(
-        filePath,
-        normalizeWaveformBoundary(props.start),
-        normalizeWaveformBoundary(props.end),
-      )
-      .then((summary) => {
-        if (cancelled) {
-          return;
-        }
-
-        setState({
-          status: "ready",
-          summary,
-        });
-      })
-      .catch((error) => {
-        if (cancelled) {
-          return;
-        }
-
-        console.error("Failed to prepare track waveform", error);
-        setState({
-          status: "error",
-          summary: placeholderSummary,
-        });
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [controller, placeholderSummary, props.end, props.filePath, props.start, ports.waveform]);
+  }, [controller, zoomController, props.end, props.filePath, props.start]);
 
   useEffect(() => {
-    const filePath = props.filePath?.trim();
-    controller.setPlaybackSnapshot(null);
-
-    if (!filePath) {
-      return undefined;
-    }
-
-    let cancelled = false;
-    const refreshPlaybackStatus = async () => {
-      try {
-        const status = await ports.playback.getPlaybackStatus();
-        if (cancelled) {
-          return;
-        }
-
-        if (!status || !isPlaybackStatusForTrack(status, filePath)) {
-          controller.setPlaybackSnapshot(null);
-          return;
-        }
-
-        controller.setPlaybackSnapshot({
-          ...status,
-          received_at_ms: performance.now(),
-        });
-      } catch (error) {
-        if (!cancelled) {
-          console.error("Failed to refresh playback status", error);
-          controller.setPlaybackSnapshot(null);
-        }
-      }
-    };
-
-    void refreshPlaybackStatus();
-    const intervalId = window.setInterval(() => {
-      void refreshPlaybackStatus();
-    }, PLAYBACK_STATUS_POLL_MS);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-      controller.setPlaybackSnapshot(null);
-    };
-  }, [controller, props.filePath, ports.playback]);
+    controller.setPlaybackSnapshot(playbackSnapshot);
+  }, [controller, playbackSnapshot]);
 
   return (
     <motion.div
@@ -3047,7 +3614,7 @@ export const TrackSpectrum = memo(function TrackSpectrum(props: {
       />
     </motion.div>
   );
-});
+}
 
 function createPlaceholderWaveformSummary(): TrackWaveformSummary {
   return {
@@ -3247,9 +3814,11 @@ function resolveWaveformPeakIndexRange(args: {
 }
 
 function resetWaveformScrollPosition(args: {
-  controller: WaveformTileController;
+  controller: Pick<WaveformPresentationController, "setScrollLeft">;
+  zoomController?: Pick<WaveformZoomController, "reset">;
   scrollbarsRef: RefObject<OverlayScrollbarsComponentRef<"div"> | null>;
 }) {
+  args.zoomController?.reset();
   const scrollElements = getWaveformScrollElements(args.scrollbarsRef.current);
   if (scrollElements) {
     writeWaveformScrollLeft(scrollElements, 0);
@@ -3391,17 +3960,6 @@ function handleWaveformViewportWheel(args: {
     return;
   }
 
-  const zoomScaleFrame = resolveWaveformZoomScaleFrame({
-    currentPixelsPerSecond: args.wheelState.pixelsPerSecond,
-    deltaY: intent.deltaY,
-    durationMs: args.wheelState.summary.duration_ms,
-    viewportWidth: wheelViewportWidth,
-  });
-
-  if (!zoomScaleFrame.changed) {
-    return;
-  }
-
   const scrollLeft = args.wheelState.controller.getScrollLeft();
 
   handleWaveformZoomWheel({
@@ -3455,6 +4013,7 @@ function handleWaveformZoomWheel(args: {
     deltaY: args.deltaY,
     scrollElements: args.scrollElements,
     scrollLeft: args.scrollLeft,
+    viewportWidth,
     wheelState: args.wheelState,
   });
 }
