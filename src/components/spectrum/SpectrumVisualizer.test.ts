@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import type { TrackWaveformSummary } from "@/src/cmd";
 import {
   clampWaveformZoomDeltaY,
+  createWaveformLoadingGridCells,
   createWaveformDataRequestKey,
   createWaveformDataScopeKey,
   hasWaveformViewportPositionChanged,
@@ -19,6 +20,7 @@ import {
   resolveWaveformDataWindow,
   resolveWaveformHorizontalPanFrame,
   resolveWaveformHorizontalScrollLeft,
+  resolveWaveformLoadingGridSize,
   resolveWaveformMaximumPixelsPerSecond,
   resolveWaveformMinimumPixelsPerSecond,
   resolveWaveformNextRenderPixelsPerSecond,
@@ -63,6 +65,54 @@ describe("SpectrumVisualizer", () => {
     assert.equal(resolveTrackWaveformInitialStatus("C:/music/demo.flac"), "loading");
     assert.equal(resolveTrackWaveformInitialStatus("   "), "idle");
     assert.equal(resolveTrackWaveformInitialStatus(null), "idle");
+  });
+
+  test("adapts waveform loading grid density to the container", () => {
+    const compact = resolveWaveformLoadingGridSize({
+      height: 60,
+      width: 120,
+    });
+    const wide = resolveWaveformLoadingGridSize({
+      height: 208,
+      width: 900,
+    });
+
+    assert.deepEqual(compact, {
+      columns: 8,
+      rows: 4,
+    });
+    assert.deepEqual(wide, {
+      columns: 35,
+      rows: 9,
+    });
+    assert.ok(wide.columns > compact.columns);
+    assert.ok(wide.rows > compact.rows);
+  });
+
+  test("builds stable waveform loading cells inside opacity bounds", () => {
+    const size = {
+      columns: 10,
+      rows: 5,
+    };
+    const cells = createWaveformLoadingGridCells(size);
+    const repeatedCells = createWaveformLoadingGridCells(size);
+
+    assert.equal(cells.length, size.columns * size.rows);
+    assert.deepEqual(
+      cells.map((cell) => cell.key),
+      repeatedCells.map((cell) => cell.key),
+    );
+    assert.deepEqual(cells, repeatedCells);
+    assert.ok(
+      cells.every(
+        (cell) =>
+          cell.opacity >= 0.1 &&
+          cell.opacity <= 0.84 &&
+          cell.delayMs >= 0 &&
+          cell.durationMs >= 620 &&
+          cell.durationMs <= 1_080,
+      ),
+    );
   });
 
   test("keeps waveform at least as wide as the viewport", () => {

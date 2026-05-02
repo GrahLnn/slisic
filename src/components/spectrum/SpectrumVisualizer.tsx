@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type RefObject,
 } from "react";
 import { motion } from "motion/react";
@@ -38,6 +39,11 @@ const WAVEFORM_DATA_OVERSCAN_VIEWPORTS = 1.25;
 const WAVEFORM_DATA_CACHE_LIMIT = 384;
 const WAVEFORM_DATA_LOAD_CONCURRENCY = 3;
 const WAVEFORM_INITIAL_PREPARE_FRAME_COUNT = 2;
+const WAVEFORM_LOADING_DOT_PITCH_PX = 12;
+const WAVEFORM_LOADING_MIN_FIELD_WIDTH_PX = 96;
+const WAVEFORM_LOADING_MAX_FIELD_WIDTH_PX = 420;
+const WAVEFORM_LOADING_MIN_FIELD_HEIGHT_PX = 44;
+const WAVEFORM_LOADING_MAX_FIELD_HEIGHT_PX = 112;
 const PLAYBACK_STATUS_POLL_MS = 250;
 const WAVEFORM_VIEWPORT_POSITION_EPSILON_PX = 0.000001;
 const WAVEFORM_WHEEL_AXIS_NOISE_RATIO = 0.66;
@@ -198,6 +204,29 @@ type WaveformLevelTileIndex = {
 type WaveformPeakSample = {
   max: number;
   min: number;
+};
+
+type WaveformLoadingGridSize = {
+  columns: number;
+  rows: number;
+};
+
+type WaveformLoadingGridCell = {
+  delayMs: number;
+  durationMs: number;
+  key: string;
+  opacity: number;
+};
+
+type WaveformLoadingGridStyle = CSSProperties & {
+  "--waveform-loading-columns": number;
+  "--waveform-loading-rows": number;
+};
+
+type WaveformLoadingDotStyle = CSSProperties & {
+  "--waveform-loading-dot-delay": string;
+  "--waveform-loading-dot-duration": string;
+  "--waveform-loading-dot-opacity": number;
 };
 
 const waveformScrollOptions = {
@@ -1005,6 +1034,49 @@ export function resolveTrackWaveformInitialStatus(filePath: string | null | unde
   return filePath?.trim() ? "loading" : "idle";
 }
 
+export function resolveWaveformLoadingGridSize(args: {
+  height: number;
+  width: number;
+}): WaveformLoadingGridSize {
+  const width = Number.isFinite(args.width) ? Math.max(0, args.width) : 0;
+  const height = Number.isFinite(args.height) ? Math.max(0, args.height) : 0;
+  const fieldWidth = clampNumber(
+    Math.floor(width * 0.62),
+    WAVEFORM_LOADING_MIN_FIELD_WIDTH_PX,
+    WAVEFORM_LOADING_MAX_FIELD_WIDTH_PX,
+  );
+  const fieldHeight = clampNumber(
+    Math.floor(height * 0.52),
+    WAVEFORM_LOADING_MIN_FIELD_HEIGHT_PX,
+    WAVEFORM_LOADING_MAX_FIELD_HEIGHT_PX,
+  );
+
+  return {
+    columns: clampInteger(Math.floor(fieldWidth / WAVEFORM_LOADING_DOT_PITCH_PX), 8, 36),
+    rows: clampInteger(Math.floor(fieldHeight / WAVEFORM_LOADING_DOT_PITCH_PX), 4, 12),
+  };
+}
+
+export function createWaveformLoadingGridCells(size: WaveformLoadingGridSize) {
+  const columns = Math.max(1, Math.trunc(Number.isFinite(size.columns) ? size.columns : 1));
+  const rows = Math.max(1, Math.trunc(Number.isFinite(size.rows) ? size.rows : 1));
+
+  return Array.from({ length: columns * rows }, (_, index): WaveformLoadingGridCell => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    const seed = (column + 1) * 97 + (row + 1) * 173 + columns * 19 + rows * 23;
+    const sample = Math.sin(seed * 12.9898) * 43_758.5453;
+    const normalized = sample - Math.floor(sample);
+
+    return {
+      key: `waveform-loading-${columns}-${rows}-${index}`,
+      delayMs: Math.round(((column * 13 + row * 29) % 19) * 18),
+      durationMs: 620 + Math.round(normalized * 460),
+      opacity: 0.1 + normalized * 0.74,
+    };
+  });
+}
+
 export function TrackSpectrum(props: {
   className?: string;
   end: number | null;
@@ -1036,6 +1108,13 @@ function TrackSpectrumSession(props: {
   const spacerRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<WaveformViewportModel | null>(null);
   const tileCacheRef = useRef(new Map<string, WaveformCachedTile>());
+  const [loadingGridSize, setLoadingGridSize] = useState<WaveformLoadingGridSize>(() =>
+    resolveWaveformLoadingGridSize({
+      height: WAVEFORM_CANVAS_HEIGHT,
+      width: WAVEFORM_LOADING_MAX_FIELD_WIDTH_PX,
+    }),
+  );
+  const [hasVisibleWaveformData, setHasVisibleWaveformData] = useState(false);
   const waveformState = useTrackWaveformSummary({
     end: props.end,
     filePath: props.filePath,
@@ -1079,6 +1158,7 @@ function TrackSpectrumSession(props: {
     canvasRef,
     end: props.end,
     filePath: props.filePath?.trim() || null,
+    onDataVisibilityChange: setHasVisibleWaveformData,
     start: props.start,
     status: waveformState.status,
     summary: waveformState.summary,
@@ -1102,6 +1182,17 @@ function TrackSpectrumSession(props: {
     summary: waveformState.summary,
     viewportRef,
   });
+  const loadingGridCells = useMemo(
+    () => createWaveformLoadingGridCells(loadingGridSize),
+    [loadingGridSize],
+  );
+  const shouldShowLoadingGrid =
+    waveformState.status === "loading" ||
+    (waveformState.status === "ready" && !hasVisibleWaveformData);
+  const loadingGridStyle: WaveformLoadingGridStyle = {
+    "--waveform-loading-columns": loadingGridSize.columns,
+    "--waveform-loading-rows": loadingGridSize.rows,
+  };
 
   const commitViewport = useCallback(
     (next: WaveformViewportState, source: WaveformViewportCommitSource = "wheel") => {
@@ -1241,6 +1332,10 @@ function TrackSpectrumSession(props: {
     waveformState.summary.duration_ms,
   ]);
 
+  useEffect(() => {
+    setHasVisibleWaveformData(false);
+  }, [props.end, props.filePath, props.start, waveformState.summary.cache_key]);
+
   useLayoutEffect(() => {
     const host = hostRef.current;
     if (!host) {
@@ -1248,7 +1343,19 @@ function TrackSpectrumSession(props: {
     }
 
     const syncWidth = () => {
-      const nextViewportWidth = Math.max(1, Math.ceil(host.getBoundingClientRect().width));
+      const hostRect = host.getBoundingClientRect();
+      const nextViewportWidth = Math.max(1, Math.ceil(hostRect.width));
+      const nextLoadingGridSize = resolveWaveformLoadingGridSize({
+        height: hostRect.height || WAVEFORM_CANVAS_HEIGHT,
+        width: nextViewportWidth,
+      });
+
+      setLoadingGridSize((current) =>
+        current.columns === nextLoadingGridSize.columns && current.rows === nextLoadingGridSize.rows
+          ? current
+          : nextLoadingGridSize,
+      );
+
       const current = viewportRef.current;
       if (!current || current.viewportWidth === nextViewportWidth) {
         return;
@@ -1343,8 +1450,30 @@ function TrackSpectrumSession(props: {
       <canvas
         ref={canvasRef}
         aria-hidden
-        className="pointer-events-none absolute inset-0 z-[1] h-full w-full text-inherit"
+        className={cn(
+          "pointer-events-none absolute inset-0 z-[1] h-full w-full text-inherit transition-opacity duration-150",
+          shouldShowLoadingGrid ? "opacity-0" : "opacity-100",
+        )}
       />
+      {shouldShowLoadingGrid ? (
+        <div
+          aria-hidden
+          className="spectrum-waveform-loading-grid pointer-events-none absolute inset-0 z-[1] text-inherit"
+          style={loadingGridStyle}
+        >
+          {loadingGridCells.map((cell) => {
+            const dotStyle: WaveformLoadingDotStyle = {
+              "--waveform-loading-dot-delay": `${cell.delayMs}ms`,
+              "--waveform-loading-dot-duration": `${cell.durationMs}ms`,
+              "--waveform-loading-dot-opacity": cell.opacity,
+            };
+
+            return (
+              <span key={cell.key} className="spectrum-waveform-loading-dot" style={dotStyle} />
+            );
+          })}
+        </div>
+      ) : null}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-y-0 left-0 z-[2] w-px bg-[#404040] will-change-transform dark:bg-[#a3a3a3]"
@@ -1737,6 +1866,7 @@ function useWaveformCanvasRenderer(args: {
   canvasRef: RefObject<HTMLCanvasElement | null>;
   end: number | null;
   filePath: string | null;
+  onDataVisibilityChange: (visible: boolean) => void;
   start: number | null;
   status: WaveformStatus;
   summary: TrackWaveformSummary;
@@ -1759,7 +1889,7 @@ function useWaveformCanvasRenderer(args: {
       return;
     }
 
-    drawWaveformCanvas({
+    const hasVisibleData = drawWaveformCanvas({
       canvas,
       end: latest.end,
       filePath: latest.filePath,
@@ -1769,6 +1899,8 @@ function useWaveformCanvasRenderer(args: {
       tileCache: latest.tileCacheRef.current,
       viewport,
     });
+
+    latest.onDataVisibilityChange(hasVisibleData);
   }, []);
 
   const requestDraw = useCallback(() => {
@@ -1820,7 +1952,7 @@ function drawWaveformCanvas(args: {
   summary: TrackWaveformSummary;
   tileCache: Map<string, WaveformCachedTile>;
   viewport: WaveformViewportModel;
-}) {
+}): boolean {
   const viewportWidth = Math.max(1, Math.ceil(args.viewport.viewportWidth));
   const devicePixelRatio = clampNumber(
     args.canvas.ownerDocument.defaultView?.devicePixelRatio ?? 1,
@@ -1843,21 +1975,21 @@ function drawWaveformCanvas(args: {
 
   const context = args.canvas.getContext("2d");
   if (!context) {
-    return;
+    return false;
   }
 
   context.resetTransform();
   context.clearRect(0, 0, backingWidth, backingHeight);
+
+  if (args.status !== "ready" || !args.filePath) {
+    return false;
+  }
+
   context.scale(devicePixelRatio, devicePixelRatio);
   context.imageSmoothingEnabled = false;
   context.lineWidth = resolveWaveformBarWidthPx();
   context.lineCap = "butt";
   context.strokeStyle = readCanvasWaveformColor(args.canvas);
-
-  if (args.status !== "ready" || !args.filePath) {
-    drawPlaceholderWaveform(context, viewportWidth);
-    return;
-  }
 
   const plan = resolveWaveformDataPlan({
     contentWidth: args.viewport.contentWidth,
@@ -1913,33 +2045,11 @@ function drawWaveformCanvas(args: {
     hasDrawnColumn = true;
   }
 
-  context.stroke();
-
-  if (!hasDrawnColumn) {
-    context.save();
-    context.globalAlpha = 0.18;
-    drawPlaceholderWaveform(context, viewportWidth);
-    context.restore();
+  if (hasDrawnColumn) {
+    context.stroke();
   }
-}
 
-function drawPlaceholderWaveform(context: CanvasRenderingContext2D, viewportWidth: number) {
-  const centerY = WAVEFORM_CANVAS_HEIGHT / 2;
-  const amplitude = centerY - WAVEFORM_VERTICAL_PADDING;
-
-  context.save();
-  context.globalAlpha = Math.min(context.globalAlpha, 0.26);
-  context.beginPath();
-  for (let x = 0; x < viewportWidth; x += 3) {
-    const wave = Math.sin(x * 0.025) * 0.4 + Math.sin(x * 0.011 + 1.7) * 0.35;
-    const height = Math.max(4, Math.abs(wave) * amplitude);
-    const barX = x + 0.5;
-
-    context.moveTo(barX, centerY - height);
-    context.lineTo(barX, centerY + height);
-  }
-  context.stroke();
-  context.restore();
+  return hasDrawnColumn;
 }
 
 function applyWaveformViewportDom(args: {

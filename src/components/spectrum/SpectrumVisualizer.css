@@ -30,6 +30,41 @@ body:has(.spectrum-waveform-scroll:hover) .os-scrollbar.os-theme-spectrum-wavefo
   opacity: 1;
 }
 
+.spectrum-waveform-loading-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--waveform-loading-columns, 18), 4px);
+  grid-template-rows: repeat(var(--waveform-loading-rows, 7), 4px);
+  place-content: center;
+  place-items: center;
+  gap: 8px;
+}
+
+.spectrum-waveform-loading-dot {
+  display: block;
+  width: 2px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: var(--waveform-loading-dot-opacity, 0.5);
+  transform: scale(0.72);
+  animation: spectrum-waveform-loading-dot var(--waveform-loading-dot-duration, 820ms) linear
+    var(--waveform-loading-dot-delay, 0ms) infinite alternate;
+  will-change: opacity, transform;
+}
+
+@keyframes spectrum-waveform-loading-dot {
+  0%,
+  100% {
+    opacity: 0.08;
+    transform: scale(0.72);
+  }
+
+  55% {
+    opacity: var(--waveform-loading-dot-opacity, 0.5);
+    transform: scale(1);
+  }
+}
+
 .os-scrollbar.os-theme-spectrum-waveform.os-scrollbar-horizontal:hover {
   height: 3px;
 }
@@ -43,5 +78,13 @@ body:has(.spectrum-waveform-scroll:hover) .os-scrollbar.os-theme-spectrum-wavefo
     --os-handle-bg: rgba(255, 255, 255, 0.28);
     --os-handle-bg-hover: rgba(255, 255, 255, 0.42);
     --os-handle-bg-active: rgba(255, 255, 255, 0.56);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spectrum-waveform-loading-dot {
+    animation: none;
+    opacity: var(--waveform-loading-dot-opacity, 0.5);
+    transform: scale(1);
   }
 }
