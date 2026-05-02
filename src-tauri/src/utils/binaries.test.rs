@@ -1,12 +1,26 @@
 use super::binaries::{
-    BinaryInstallState, GitHubLatestReleaseAsset, GitHubReleaseAssetMatcher, ManagedBinary,
-    RemoteIdentity, build_github_api_url, build_github_relay_url, needs_install_or_update,
-    parse_sha256, release_asset_matcher_matches, select_release_asset_name, with_binary_kind_lock,
+    BinaryInstallState, BinaryMaintenanceActivity, GitHubLatestReleaseAsset,
+    GitHubReleaseAssetMatcher, ManagedBinary, RemoteIdentity, StagedBinary, activate_staged_binary,
+    build_github_api_url, build_github_relay_url, needs_install_or_update, parse_sha256,
+    release_asset_matcher_matches, select_release_asset_name, with_binary_kind_lock,
 };
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+fn temp_binary_test_dir(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+
+    std::env::temp_dir().join(format!(
+        "ransic-binary-{prefix}-{}-{nanos}",
+        std::process::id()
+    ))
+}
 
 #[test]
 fn build_github_relay_url_uses_single_canonical_base() {
@@ -216,4 +230,102 @@ fn binary_kind_lock_allows_different_binaries_to_progress_independently() {
 
     ffmpeg.join().expect("ffmpeg worker should join");
     ytdlp.join().expect("yt-dlp worker should join");
+}
+
+#[test]
+fn binary_maintenance_activity_reports_busy_from_either_runtime() {
+    let active_player_binary_tasks = Arc::new(AtomicUsize::new(0));
+    let active_tasks = Arc::new(AtomicUsize::new(0));
+    let player_binary_task_probe = Arc::clone(&active_player_binary_tasks);
+    let task_probe = Arc::clone(&active_tasks);
+    let activity = BinaryMaintenanceActivity::new(
+        move || player_binary_task_probe.load(Ordering::SeqCst) > 0,
+        move || task_probe.load(Ordering::SeqCst) > 0,
+    );
+
+    assert!(!activity.is_busy());
+
+    active_player_binary_tasks.store(1, Ordering::SeqCst);
+    assert!(activity.is_busy());
+
+    active_player_binary_tasks.store(0, Ordering::SeqCst);
+    active_tasks.store(1, Ordering::SeqCst);
+    assert!(activity.is_busy());
+}
+
+#[test]
+fn activate_staged_binary_replaces_current_binary_only_when_called() {
+    let root = temp_binary_test_dir("activation");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("temp activation root should be created");
+
+    let install_path = root.join("yt-dlp.exe");
+    let staged_dir = root.join("staged");
+    let staged_path = staged_dir.join("yt-dlp.exe");
+    let state_path = root.join("yt-dlp.state.json");
+    std::fs::create_dir_all(&staged_dir).expect("staged dir should be created");
+    std::fs::write(&install_path, b"old").expect("old binary should be written");
+    std::fs::write(&staged_path, b"new").expect("staged binary should be written");
+
+    let staged = StagedBinary {
+        executable_path: staged_path,
+        remote: RemoteIdentity {
+            etag: Some("\"next\"".to_string()),
+            last_modified: None,
+            content_length: Some(3),
+        },
+        stage_dir: staged_dir,
+        version: Some("2026.05.02".to_string()),
+    };
+
+    activate_staged_binary(ManagedBinary::YtDlp, &install_path, &state_path, &staged)
+        .expect("staged binary should activate");
+
+    assert_eq!(
+        std::fs::read(&install_path).expect("installed binary should read"),
+        b"new"
+    );
+    let state = std::fs::read_to_string(&state_path).expect("state should be written");
+    assert!(state.contains("2026.05.02"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn activate_staged_binary_keeps_current_binary_when_staged_source_is_missing() {
+    let root = temp_binary_test_dir("activation-missing-source");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("temp activation root should be created");
+
+    let install_path = root.join("ffmpeg.exe");
+    let staged_dir = root.join("staged");
+    let staged_path = staged_dir.join("ffmpeg.exe");
+    let state_path = root.join("ffmpeg.state.json");
+    std::fs::create_dir_all(&staged_dir).expect("staged dir should be created");
+    std::fs::write(&install_path, b"old").expect("old binary should be written");
+
+    let staged = StagedBinary {
+        executable_path: staged_path,
+        remote: RemoteIdentity {
+            etag: Some("\"next\"".to_string()),
+            last_modified: None,
+            content_length: Some(3),
+        },
+        stage_dir: staged_dir,
+        version: Some("N-124300".to_string()),
+    };
+
+    let result = activate_staged_binary(ManagedBinary::Ffmpeg, &install_path, &state_path, &staged);
+
+    assert!(result.is_err());
+    assert_eq!(
+        std::fs::read(&install_path).expect("current binary should still read"),
+        b"old"
+    );
+    assert!(
+        !state_path.exists(),
+        "failed activation should not record the staged version"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }

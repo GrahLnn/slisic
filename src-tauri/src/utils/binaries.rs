@@ -9,7 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
@@ -20,6 +20,7 @@ const BIN_DIR_NAME: &str = "bin";
 const GITHUB_API_BASE: &str = "https://api.github.com/repos";
 const GITHUB_RELAY_BASE: &str = "https://xget.r2g2.org/gh";
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60 * 5);
+const ACTIVATION_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 static BINARY_OPERATION_LOCKS: LazyLock<[Mutex<()>; 2]> =
     LazyLock::new(|| [Mutex::new(()), Mutex::new(())]);
@@ -52,6 +53,19 @@ struct DownloadPlan {
     archive_kind: ArchiveKind,
 }
 
+pub(crate) struct StagedBinary {
+    pub(crate) executable_path: PathBuf,
+    pub(crate) remote: RemoteIdentity,
+    pub(crate) stage_dir: PathBuf,
+    pub(crate) version: Option<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct BinaryMaintenanceActivity {
+    has_active_player_binary_tasks: Arc<dyn Fn() -> bool + Send + Sync>,
+    has_active_download_tasks: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct GitHubLatestRelease {
     assets: Vec<GitHubLatestReleaseAsset>,
@@ -73,6 +87,22 @@ pub(crate) struct RemoteIdentity {
 pub(crate) struct BinaryInstallState {
     pub(crate) remote: RemoteIdentity,
     pub(crate) installed_version: Option<String>,
+}
+
+impl BinaryMaintenanceActivity {
+    pub(crate) fn new(
+        has_active_player_binary_tasks: impl Fn() -> bool + Send + Sync + 'static,
+        has_active_download_tasks: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            has_active_player_binary_tasks: Arc::new(has_active_player_binary_tasks),
+            has_active_download_tasks: Arc::new(has_active_download_tasks),
+        }
+    }
+
+    pub(crate) fn is_busy(&self) -> bool {
+        (self.has_active_player_binary_tasks)() || (self.has_active_download_tasks)()
+    }
 }
 
 impl ManagedBinary {
@@ -120,13 +150,13 @@ impl RemoteIdentity {
 
 /// Keep maintenance work off the startup critical path while still running an
 /// immediate first sync as soon as the app is ready.
-pub fn spawn_binary_maintenance(app: AppHandle) {
+pub fn spawn_binary_maintenance(app: AppHandle, activity: BinaryMaintenanceActivity) {
     let builder = thread::Builder::new().name("binary-maintenance".to_string());
     if let Err(error) = builder.spawn(move || {
-        run_maintenance_cycle(&app);
+        run_maintenance_cycle(&app, &activity);
         loop {
             thread::sleep(UPDATE_INTERVAL);
-            run_maintenance_cycle(&app);
+            run_maintenance_cycle(&app, &activity);
         }
     }) {
         eprintln!("[binary-maintenance] failed to spawn worker: {error}");
@@ -155,9 +185,9 @@ pub(crate) fn ensure_managed_binary(
     })
 }
 
-fn run_maintenance_cycle(app: &AppHandle) {
+fn run_maintenance_cycle(app: &AppHandle, activity: &BinaryMaintenanceActivity) {
     for kind in ManagedBinary::all() {
-        if let Err(error) = maintain_binary(app, kind) {
+        if let Err(error) = maintain_binary(app, kind, activity) {
             eprintln!(
                 "[binary-maintenance] {} maintenance failed: {}",
                 kind.key(),
@@ -167,46 +197,54 @@ fn run_maintenance_cycle(app: &AppHandle) {
     }
 }
 
-fn maintain_binary(app: &AppHandle, kind: ManagedBinary) -> Result<(), String> {
-    with_binary_kind_lock(kind, || {
-        let install_path = installed_bin_path(app, install_name_for_kind(kind))?;
-        let client = http_client()?;
-        let plan = plan_for_current_platform(&client, kind)?;
-        let state_path = install_state_path(app, kind)?;
+fn maintain_binary(
+    app: &AppHandle,
+    kind: ManagedBinary,
+    activity: &BinaryMaintenanceActivity,
+) -> Result<(), String> {
+    let install_path = installed_bin_path(app, install_name_for_kind(kind))?;
+    let client = http_client()?;
+    let plan = plan_for_current_platform(&client, kind)?;
+    let state_path = install_state_path(app, kind)?;
 
-        if !install_path.exists() {
+    if !install_path.exists() {
+        return with_binary_kind_lock(kind, || {
+            if install_path.exists() {
+                return Ok(());
+            }
+
             println!(
                 "[binary-maintenance] {} missing, downloading latest managed copy",
                 kind.key()
             );
-            install_binary(app, kind, &plan, &install_path, &state_path, &client)?;
+            install_binary(app, kind, &plan, &install_path, &state_path, &client)
+        });
+    }
+
+    let remote = match head_remote_identity(&client, &plan.download_url) {
+        Ok(remote) => remote,
+        Err(error) => {
+            eprintln!(
+                "[binary-maintenance] failed to inspect remote {} asset {}: {}",
+                kind.key(),
+                plan.download_url,
+                error
+            );
             return Ok(());
         }
+    };
 
-        let remote = match head_remote_identity(&client, &plan.download_url) {
-            Ok(remote) => remote,
-            Err(error) => {
-                eprintln!(
-                    "[binary-maintenance] failed to inspect remote {} asset {}: {}",
-                    kind.key(),
-                    plan.download_url,
-                    error
-                );
-                return Ok(());
-            }
-        };
+    let state = read_install_state(&state_path);
+    if !needs_install_or_update(true, state.as_ref(), &remote) {
+        return Ok(());
+    }
 
-        let state = read_install_state(&state_path);
-        if !needs_install_or_update(true, state.as_ref(), &remote) {
-            return Ok(());
-        }
-
-        println!(
-            "[binary-maintenance] {} remote asset changed, updating managed copy",
-            kind.key()
-        );
-        install_binary(app, kind, &plan, &install_path, &state_path, &client)
-    })
+    println!(
+        "[binary-maintenance] {} remote asset changed, downloading managed update",
+        kind.key()
+    );
+    let staged = stage_binary_update(app, kind, &plan, &client)?;
+    activate_staged_binary_when_idle(kind, &install_path, &state_path, staged, activity)
 }
 
 pub(crate) fn with_binary_kind_lock<T>(
@@ -280,6 +318,125 @@ fn install_binary(
         kind.key(),
         install_path.display(),
         installed_version
+            .as_deref()
+            .map(|version| format!(" ({version})"))
+            .unwrap_or_default()
+    );
+
+    Ok(())
+}
+
+fn stage_binary_update(
+    app: &AppHandle,
+    kind: ManagedBinary,
+    plan: &DownloadPlan,
+    client: &Client,
+) -> Result<StagedBinary, String> {
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| error.to_string())?;
+    let stage_dir = cache_dir.join(format!("{}.staged", kind.key()));
+    if stage_dir.exists() {
+        let _ = fs::remove_dir_all(&stage_dir);
+    }
+    fs::create_dir_all(&stage_dir).map_err(|error| error.to_string())?;
+
+    let download_path = stage_dir.join(format!("{}.download", kind.key()));
+    let executable_path = stage_dir.join(plan.install_name);
+    let remote = download_to_path(
+        client,
+        &plan.download_url,
+        &download_path,
+        checksum_for_plan(client, plan)?.as_deref(),
+    )?;
+
+    match plan.archive_kind {
+        ArchiveKind::Raw => replace_file(&download_path, &executable_path)?,
+        ArchiveKind::Zip | ArchiveKind::TarXz => {
+            extract_and_place_executable(&download_path, &executable_path, plan.archive_kind)?
+        }
+    }
+
+    make_executable(&executable_path)?;
+    remove_quarantine(&executable_path);
+    let version = read_binary_version(kind, &executable_path);
+
+    Ok(StagedBinary {
+        executable_path,
+        remote,
+        stage_dir,
+        version,
+    })
+}
+
+fn activate_staged_binary_when_idle(
+    kind: ManagedBinary,
+    install_path: &Path,
+    state_path: &Path,
+    staged: StagedBinary,
+    activity: &BinaryMaintenanceActivity,
+) -> Result<(), String> {
+    let mut deferred_logged = false;
+    loop {
+        if activity.is_busy() {
+            if !deferred_logged {
+                println!(
+                    "[binary-maintenance] {} update downloaded; activation deferred until playback and tasks are idle",
+                    kind.key()
+                );
+                deferred_logged = true;
+            }
+            thread::sleep(ACTIVATION_RETRY_INTERVAL);
+            continue;
+        }
+
+        let activated = with_binary_kind_lock(kind, || {
+            if activity.is_busy() {
+                return Ok(false);
+            }
+
+            activate_staged_binary(kind, install_path, state_path, &staged)?;
+            Ok(true)
+        })?;
+
+        if activated {
+            let _ = fs::remove_dir_all(&staged.stage_dir);
+            return Ok(());
+        }
+
+        thread::sleep(ACTIVATION_RETRY_INTERVAL);
+    }
+}
+
+pub(crate) fn activate_staged_binary(
+    kind: ManagedBinary,
+    install_path: &Path,
+    state_path: &Path,
+    staged: &StagedBinary,
+) -> Result<(), String> {
+    if let Some(parent) = install_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    replace_installed_binary(&staged.executable_path, install_path)?;
+    make_executable(install_path)?;
+    remove_quarantine(install_path);
+
+    write_install_state(
+        state_path,
+        &BinaryInstallState {
+            remote: staged.remote.clone(),
+            installed_version: staged.version.clone(),
+        },
+    )?;
+
+    println!(
+        "[binary-maintenance] {} ready at {}{}",
+        kind.key(),
+        install_path.display(),
+        staged
+            .version
             .as_deref()
             .map(|version| format!(" ({version})"))
             .unwrap_or_default()
@@ -406,6 +563,51 @@ fn replace_file(source: &Path, dest: &Path) -> Result<(), String> {
         fs::remove_file(dest).map_err(|error| error.to_string())?;
     }
     fs::rename(source, dest).map_err(|error| error.to_string())
+}
+
+fn replace_installed_binary(source: &Path, dest: &Path) -> Result<(), String> {
+    let parent = dest
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", dest.display()))?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+
+    let file_name = dest
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("{} has no file name", dest.display()))?;
+    let pending = parent.join(format!("{file_name}.next"));
+    let backup = parent.join(format!("{file_name}.previous"));
+
+    let _ = fs::remove_file(&pending);
+    fs::copy(source, &pending).map_err(|error| error.to_string())?;
+
+    if backup.exists() {
+        let _ = fs::remove_file(&backup);
+    }
+
+    if dest.exists() {
+        if let Err(error) = fs::rename(dest, &backup) {
+            let _ = fs::remove_file(&pending);
+            return Err(error.to_string());
+        }
+    }
+
+    if let Err(error) = fs::rename(&pending, dest) {
+        let activation_error = error.to_string();
+        if backup.exists() {
+            if let Err(restore_error) = fs::rename(&backup, dest) {
+                let _ = fs::remove_file(&pending);
+                return Err(format!(
+                    "{activation_error}; failed to restore previous binary: {restore_error}"
+                ));
+            }
+        }
+        let _ = fs::remove_file(&pending);
+        return Err(activation_error);
+    }
+
+    let _ = fs::remove_file(&backup);
+    Ok(())
 }
 
 fn extract_and_place_executable(

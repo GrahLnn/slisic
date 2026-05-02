@@ -16,7 +16,7 @@ use ffplayr::{Playback, PlaybackRequest, PlaybackTimeRange};
 #[cfg(not(test))]
 use std::path::Path;
 #[cfg(not(test))]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 #[cfg(not(test))]
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 #[cfg(not(test))]
@@ -36,6 +36,7 @@ pub struct PlayerRuntime {
     session: Mutex<Option<ActivePlaybackSession>>,
     continuation_mode: RwLock<PlaybackContinuationMode>,
     generation: AtomicU64,
+    active_binary_tasks: AtomicUsize,
 }
 
 #[cfg(not(test))]
@@ -46,6 +47,28 @@ struct ActivePlaybackSession {
     playlist_name: String,
     generation: u64,
     tracks: SharedPlaybackTracks,
+}
+
+#[cfg(not(test))]
+struct ActiveBinaryTaskGuard {
+    runtime: Arc<PlayerRuntime>,
+}
+
+#[cfg(not(test))]
+impl ActiveBinaryTaskGuard {
+    fn new(runtime: Arc<PlayerRuntime>) -> Self {
+        runtime.active_binary_tasks.fetch_add(1, Ordering::SeqCst);
+        Self { runtime }
+    }
+}
+
+#[cfg(not(test))]
+impl Drop for ActiveBinaryTaskGuard {
+    fn drop(&mut self) {
+        self.runtime
+            .active_binary_tasks
+            .fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 #[cfg(not(test))]
@@ -64,8 +87,18 @@ pub fn initialize_runtime(app: AppHandle) {
             session: Mutex::new(None),
             continuation_mode: RwLock::new(PlaybackContinuationMode::Random),
             generation: AtomicU64::new(0),
+            active_binary_tasks: AtomicUsize::new(0),
         })
     });
+}
+
+#[cfg(not(test))]
+pub(crate) fn has_active_player_binary_tasks() -> bool {
+    let Some(runtime) = PLAYER_RUNTIME.get() else {
+        return false;
+    };
+
+    runtime.active_binary_tasks.load(Ordering::SeqCst) > 0
 }
 
 #[cfg(not(test))]
@@ -78,6 +111,7 @@ pub async fn play_tracks(
     }
 
     let runtime = runtime()?;
+    let active_binary_task = ActiveBinaryTaskGuard::new(Arc::clone(runtime));
     let playback = runtime.playback()?;
     let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
@@ -101,8 +135,14 @@ pub async fn play_tracks(
     let task_playlist_name = playlist_name.clone();
 
     tauri::async_runtime::spawn(async move {
-        if let Err(error) =
-            run_playback_session(runtime_for_task, playback_for_task, generation, session).await
+        let _active_binary_task = active_binary_task;
+        if let Err(error) = run_playback_session(
+            Arc::clone(&runtime_for_task),
+            playback_for_task,
+            generation,
+            session,
+        )
+        .await
         {
             eprintln!("[player] playback session failed for `{task_playlist_name}`: {error}");
         }
@@ -203,9 +243,12 @@ pub async fn analyze_track_waveform(
     start: Option<u32>,
     end: Option<u32>,
 ) -> Result<TrackWaveform> {
+    let runtime = runtime()?;
+    let active_binary_task = ActiveBinaryTaskGuard::new(Arc::clone(runtime));
     let ffmpeg_path =
         ensure_managed_binary(app, ManagedBinary::Ffmpeg).map_err(|error| anyhow!(error))?;
     tauri::async_runtime::spawn_blocking(move || {
+        let _active_binary_task = active_binary_task;
         waveform::analyze_track_waveform_with_binary(&ffmpeg_path, file_path, start, end)
     })
     .await
@@ -220,11 +263,14 @@ pub async fn prepare_track_waveform(
     start: Option<u32>,
     end: Option<u32>,
 ) -> Result<TrackWaveformSummary> {
+    let runtime = runtime()?;
+    let active_binary_task = ActiveBinaryTaskGuard::new(Arc::clone(runtime));
     let ffmpeg_path =
         ensure_managed_binary(app, ManagedBinary::Ffmpeg).map_err(|error| anyhow!(error))?;
     let cache_root = waveform_cache_root(app)?;
 
     tauri::async_runtime::spawn_blocking(move || {
+        let _active_binary_task = active_binary_task;
         waveform::prepare_track_waveform_cache(&ffmpeg_path, &cache_root, file_path, start, end)
     })
     .await
@@ -242,11 +288,14 @@ pub async fn get_track_waveform_tile(
     tile_start_px: u32,
     tile_width: u32,
 ) -> Result<TrackWaveformTile> {
+    let runtime = runtime()?;
+    let active_binary_task = ActiveBinaryTaskGuard::new(Arc::clone(runtime));
     let ffmpeg_path =
         ensure_managed_binary(app, ManagedBinary::Ffmpeg).map_err(|error| anyhow!(error))?;
     let cache_root = waveform_cache_root(app)?;
 
     tauri::async_runtime::spawn_blocking(move || {
+        let _active_binary_task = active_binary_task;
         waveform::get_track_waveform_tile_with_binary(
             &ffmpeg_path,
             &cache_root,

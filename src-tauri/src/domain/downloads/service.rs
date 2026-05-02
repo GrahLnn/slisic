@@ -21,6 +21,8 @@ use appdb::Id;
 use reqwest::{Url, blocking::Client as BlockingHttpClient};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+#[cfg(not(test))]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(not(test))]
 use std::thread;
@@ -50,6 +52,29 @@ static PENDING_ENQUEUE_URLS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 pub struct DownloadRuntime {
     app: AppHandle,
     active_task_ids: Mutex<HashSet<String>>,
+    active_binary_tasks: AtomicUsize,
+}
+
+#[cfg(not(test))]
+struct ActiveBinaryTaskGuard {
+    runtime: &'static DownloadRuntime,
+}
+
+#[cfg(not(test))]
+impl ActiveBinaryTaskGuard {
+    fn new(runtime: &'static DownloadRuntime) -> Self {
+        runtime.active_binary_tasks.fetch_add(1, Ordering::SeqCst);
+        Self { runtime }
+    }
+}
+
+#[cfg(not(test))]
+impl Drop for ActiveBinaryTaskGuard {
+    fn drop(&mut self) {
+        self.runtime
+            .active_binary_tasks
+            .fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -119,10 +144,26 @@ pub fn initialize_runtime(app: AppHandle) {
     let runtime = DOWNLOAD_RUNTIME.get_or_init(|| DownloadRuntime {
         app: app.clone(),
         active_task_ids: Mutex::new(HashSet::new()),
+        active_binary_tasks: AtomicUsize::new(0),
     });
 
     spawn_recovery(runtime.app.clone());
     spawn_auto_update_loop(runtime.app.clone());
+}
+
+#[cfg(not(test))]
+pub(crate) fn has_active_download_tasks() -> bool {
+    let Some(runtime) = DOWNLOAD_RUNTIME.get() else {
+        return false;
+    };
+
+    let has_active_task = runtime
+        .active_task_ids
+        .lock()
+        .ok()
+        .is_some_and(|active| !active.is_empty());
+
+    has_active_task || runtime.active_binary_tasks.load(Ordering::SeqCst) > 0
 }
 
 #[cfg(not(test))]
@@ -139,11 +180,16 @@ pub async fn enqueue_collection_download(url: String) -> Result<EnqueuedCollecti
 pub async fn probe_download_resource(url: String) -> Result<DownloadResourceProbe> {
     let normalized_url = normalize_url(&url)?;
     let app = runtime()?.app.clone();
+    let active_binary_task = ActiveBinaryTaskGuard::new(runtime()?);
     let deps = resolve_execution_deps(&app).await?;
     let root_probe = {
         let client = deps.client.clone();
         let probe_url = normalized_url.clone();
-        run_blocking(move || client.probe_root(&probe_url)).await?
+        run_blocking(move || {
+            let _active_binary_task = active_binary_task;
+            client.probe_root(&probe_url)
+        })
+        .await?
     };
 
     collection_import::describe_download_resource(root_probe).await
@@ -313,8 +359,11 @@ async fn bootstrap_enqueued_collection(
     task: DownloadTask,
     app: AppHandle,
 ) -> Result<(DownloadTask, Collection)> {
+    let active_binary_task = ActiveBinaryTaskGuard::new(runtime()?);
     let deps = resolve_execution_deps(&app).await?;
-    bootstrap_enqueued_collection_with_deps(task, deps).await
+    let result = bootstrap_enqueued_collection_with_deps(task, deps).await;
+    drop(active_binary_task);
+    result
 }
 
 #[cfg(not(test))]
@@ -328,8 +377,11 @@ async fn bootstrap_enqueued_collection_with_deps(
 
 #[cfg(not(test))]
 async fn run_task(task_id: String, app: AppHandle) -> Result<()> {
+    let active_binary_task = ActiveBinaryTaskGuard::new(runtime()?);
     let deps = resolve_execution_deps(&app).await?;
-    run_task_with_deps(task_id, deps).await
+    let result = run_task_with_deps(task_id, deps).await;
+    drop(active_binary_task);
+    result
 }
 
 #[cfg(not(test))]

@@ -106,9 +106,15 @@ pub fn run() {
                     init_db_with_options(db_path, db_options).await?;
 
                     utils::window::configure_existing_primary_windows(&handle);
-                    utils::binaries::spawn_binary_maintenance(handle.clone());
                     domain::downloads::service::initialize_runtime(handle.clone());
                     domain::player::service::initialize_runtime(handle.clone());
+                    utils::binaries::spawn_binary_maintenance(
+                        handle.clone(),
+                        utils::binaries::BinaryMaintenanceActivity::new(
+                            domain::player::service::has_active_player_binary_tasks,
+                            domain::downloads::service::has_active_download_tasks,
+                        ),
+                    );
                     Ok(())
                 })
             })
