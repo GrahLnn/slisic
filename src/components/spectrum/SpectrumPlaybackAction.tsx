@@ -17,6 +17,13 @@ const spectrumPlaybackIconTransition = {
 
 type SpectrumPlaybackSnapshot = Pick<PlaybackStatusPayload, "paused">;
 
+export function areSpectrumPlaybackSnapshotsEqual(
+  left: SpectrumPlaybackSnapshot | null,
+  right: SpectrumPlaybackSnapshot | null,
+) {
+  return left?.paused === right?.paused;
+}
+
 function useSpectrumPlaybackStatus(filePath: string | null) {
   const [snapshot, setSnapshot] = useState<SpectrumPlaybackSnapshot | null>(null);
 
@@ -42,7 +49,9 @@ function useSpectrumPlaybackStatus(filePath: string | null) {
 
   const refresh = useCallback(async () => {
     const nextSnapshot = await read();
-    setSnapshot(nextSnapshot);
+    setSnapshot((current) =>
+      areSpectrumPlaybackSnapshotsEqual(current, nextSnapshot) ? current : nextSnapshot,
+    );
     return nextSnapshot;
   }, [read]);
 
@@ -55,11 +64,15 @@ function useSpectrumPlaybackStatus(filePath: string | null) {
         if (disposed) {
           return;
         }
-        setSnapshot(result);
+        setSnapshot((current) =>
+          areSpectrumPlaybackSnapshotsEqual(current, result) ? current : result,
+        );
       } catch (error) {
         if (!disposed) {
           console.error("Failed to refresh spectrum playback status", error);
-          setSnapshot(null);
+          setSnapshot((current) =>
+            areSpectrumPlaybackSnapshotsEqual(current, null) ? current : null,
+          );
         }
       }
     }

@@ -36,14 +36,12 @@ import {
   resolveWaveformTilePeakAtSeconds,
   resolveWaveformWheelDeltaX,
   resolveWaveformWheelDeltas,
-  resolveWaveformWheelIntent,
   resolveWaveformWheelOperation,
   resolveWaveformWheelPanContentWidth,
   resolveWaveformWheelPanDelta,
   resolveWaveformWheelPixelsPerSecond,
   resolveWaveformZoomFrame,
   resolveWaveformZoomScaleFrame,
-  shouldPreventWaveformWheelDefault,
 } from "./SpectrumVisualizer";
 
 function createWaveformTestSummary(overrides: Partial<TrackWaveformSummary> = {}) {
@@ -78,11 +76,11 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.deepEqual(compact, {
-      columns: 8,
+      columns: 10,
       rows: 4,
     });
     assert.deepEqual(wide, {
-      columns: 35,
+      columns: 75,
       rows: 9,
     });
     assert.ok(wide.columns > compact.columns);
@@ -258,19 +256,6 @@ describe("SpectrumVisualizer", () => {
         deltaY: 0,
       },
     );
-  });
-
-  test("keeps deltaX as horizontal pan and deltaY as zoom only when deltaX is absent", () => {
-    assert.deepEqual(resolveWaveformWheelIntent({ deltaX: 24, deltaY: 120, shiftKey: false }), {
-      deltaX: 24,
-      kind: "horizontal-pan",
-    });
-    assert.deepEqual(resolveWaveformWheelIntent({ deltaX: 0, deltaY: 120, shiftKey: false }), {
-      deltaY: 120,
-      kind: "zoom",
-    });
-    assert.equal(shouldPreventWaveformWheelDefault({ kind: "none" }), false);
-    assert.equal(shouldPreventWaveformWheelDefault({ deltaX: 1, kind: "horizontal-pan" }), true);
   });
 
   test("clamps horizontal pan to the scrollable waveform bounds", () => {

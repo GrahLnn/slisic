@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { resolveSpectrumTitleFadeProps } from "./SpectrumPage";
+import { areSpectrumPlaybackSnapshotsEqual } from "./SpectrumPlaybackAction";
 import {
   resolveSpectrumBackActionVisualState,
   resolveSpectrumCommittedTitle,
@@ -185,5 +186,13 @@ describe("SpectrumPage", () => {
         kind: "pause",
       },
     );
+  });
+
+  test("keeps equivalent playback snapshots stable", () => {
+    assert.equal(areSpectrumPlaybackSnapshotsEqual(null, null), true);
+    assert.equal(areSpectrumPlaybackSnapshotsEqual({ paused: false }, { paused: false }), true);
+    assert.equal(areSpectrumPlaybackSnapshotsEqual({ paused: true }, { paused: true }), true);
+    assert.equal(areSpectrumPlaybackSnapshotsEqual(null, { paused: false }), false);
+    assert.equal(areSpectrumPlaybackSnapshotsEqual({ paused: false }, { paused: true }), false);
   });
 });
