@@ -23,6 +23,7 @@ src-tauri/dev-reset-trigger.txt
 .tmp/bun-runtime/
 
 .gitnexus
+.tmp
 
 # FM tooling
 /fm_*/

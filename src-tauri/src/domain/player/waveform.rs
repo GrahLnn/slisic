@@ -18,9 +18,11 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const WAVEFORM_SAMPLE_RATE: u32 = 48_000;
 const WAVEFORM_BASE_POINTS_PER_SECOND: u32 = 800;
 const WAVEFORM_SAMPLES_PER_POINT: u32 = WAVEFORM_SAMPLE_RATE / WAVEFORM_BASE_POINTS_PER_SECOND;
-const WAVEFORM_CACHE_VERSION: &str = "waveform-v2";
-const WAVEFORM_CHUNK_DURATION_MS: u32 = 2_000;
+const WAVEFORM_CACHE_VERSION: &str = "waveform-v5";
+const WAVEFORM_CHUNK_DURATION_MS: u32 = 60_000;
 const WAVEFORM_CACHE_LEVELS: [u32; 5] = [50, 100, 200, 400, 800];
+const WAVEFORM_POINT_INDEX_EPSILON: f64 = 1.0e-9;
+const WAVEFORM_RESAMPLE_FILTER_SIZE: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
 pub struct WaveformPeak {
@@ -132,6 +134,11 @@ pub fn build_waveform_ffmpeg_args(input: &Path, range: WaveformDecodeRange) -> V
         OsString::from("1"),
         OsString::from("-ar"),
         OsString::from(WAVEFORM_SAMPLE_RATE.to_string()),
+        OsString::from("-filter:a"),
+        OsString::from(format!(
+            "aresample={}:filter_size={}:phase_shift=0:linear_interp=1",
+            WAVEFORM_SAMPLE_RATE, WAVEFORM_RESAMPLE_FILTER_SIZE
+        )),
         OsString::from("-f"),
         OsString::from("f32le"),
         OsString::from("-c:a"),
@@ -241,24 +248,12 @@ pub fn get_track_waveform_tile_with_binary(
         })?;
     let width_px = tile_width.clamp(1, 4096);
     let mut tile_reader = WaveformTileReader::new(cache_dir, level);
-    let mut min = Vec::with_capacity(width_px as usize);
-    let mut max = Vec::with_capacity(width_px as usize);
-    let safe_pixels_per_second = pixels_per_second.max(1.0);
-
-    for pixel_offset in 0..width_px {
-        let pixel_start = tile_start_px.saturating_add(pixel_offset) as f64;
-        let pixel_end = pixel_start + 1.0;
-        let start_index = ((pixel_start / safe_pixels_per_second) * source_points_per_second as f64)
-            .floor()
-            .max(0.0) as u64;
-        let end_index = ((pixel_end / safe_pixels_per_second) * source_points_per_second as f64)
-            .ceil()
-            .max(start_index.saturating_add(1) as f64) as u64;
-        let peak = tile_reader.resolve_range(start_index, end_index)?;
-
-        min.push(peak.min);
-        max.push(peak.max);
-    }
+    let (min, max) = tile_reader.resolve_tile(
+        tile_start_px,
+        width_px,
+        pixels_per_second,
+        source_points_per_second,
+    )?;
 
     Ok(TrackWaveformTile {
         start_px: tile_start_px,
@@ -568,7 +563,7 @@ impl WaveformLevelChunkWriter {
             )
         })?;
 
-        let points_per_chunk = points_per_second * (WAVEFORM_CHUNK_DURATION_MS / 1000);
+        let points_per_chunk = resolve_waveform_points_per_chunk(points_per_second);
         let source_peaks_per_point =
             (WAVEFORM_BASE_POINTS_PER_SECOND / points_per_second.max(1)).max(1);
 
@@ -671,6 +666,64 @@ struct QuantizedWaveformPeak {
     max: i8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WaveformTilePointRange {
+    pub end_index: u64,
+    pub start_index: u64,
+}
+
+pub(crate) fn resolve_waveform_points_per_chunk(points_per_second: u32) -> u32 {
+    points_per_second.max(1) * (WAVEFORM_CHUNK_DURATION_MS / 1000).max(1)
+}
+
+pub(crate) fn resolve_waveform_tile_point_range(
+    tile_start_px: u32,
+    pixel_offset: u32,
+    pixels_per_second: f64,
+    points_per_second: u32,
+) -> WaveformTilePointRange {
+    let safe_pixels_per_second = pixels_per_second.max(1.0);
+    let safe_points_per_second = points_per_second.max(1) as f64;
+    let pixel_start = tile_start_px.saturating_add(pixel_offset) as f64;
+    let pixel_end = pixel_start + 1.0;
+    let start_index =
+        floor_waveform_point_index((pixel_start / safe_pixels_per_second) * safe_points_per_second);
+    let end_index =
+        ceil_waveform_point_index((pixel_end / safe_pixels_per_second) * safe_points_per_second)
+            .max(start_index.saturating_add(1));
+
+    WaveformTilePointRange {
+        end_index,
+        start_index,
+    }
+}
+
+fn floor_waveform_point_index(value: f64) -> u64 {
+    let nearest = value.round();
+    let epsilon = waveform_point_index_epsilon(value);
+
+    if (value - nearest).abs() <= epsilon {
+        return nearest.max(0.0) as u64;
+    }
+
+    value.floor().max(0.0) as u64
+}
+
+fn ceil_waveform_point_index(value: f64) -> u64 {
+    let nearest = value.round();
+    let epsilon = waveform_point_index_epsilon(value);
+
+    if (value - nearest).abs() <= epsilon {
+        return nearest.max(0.0) as u64;
+    }
+
+    value.ceil().max(0.0) as u64
+}
+
+fn waveform_point_index_epsilon(value: f64) -> f64 {
+    (value.abs() * f64::EPSILON * 16.0).max(WAVEFORM_POINT_INDEX_EPSILON)
+}
+
 struct WaveformTileReader<'a> {
     cache_dir: PathBuf,
     chunks: HashMap<u32, Vec<u8>>,
@@ -684,26 +737,6 @@ impl<'a> WaveformTileReader<'a> {
             chunks: HashMap::new(),
             level,
         }
-    }
-
-    fn peak_at(&mut self, index: u64) -> Result<QuantizedWaveformPeak, String> {
-        if index >= self.level.point_count {
-            return Ok(QuantizedWaveformPeak { min: 0, max: 0 });
-        }
-
-        let chunk_index = (index / self.level.points_per_chunk as u64) as u32;
-        let chunk_offset = (index % self.level.points_per_chunk as u64) as usize;
-        let bytes = self.read_chunk(chunk_index)?;
-        let byte_offset = chunk_offset * 2;
-
-        if byte_offset + 1 >= bytes.len() {
-            return Ok(QuantizedWaveformPeak { min: 0, max: 0 });
-        }
-
-        Ok(QuantizedWaveformPeak {
-            min: bytes[byte_offset] as i8,
-            max: bytes[byte_offset + 1] as i8,
-        })
     }
 
     fn read_chunk(&mut self, chunk_index: u32) -> Result<&[u8], String> {
@@ -729,6 +762,32 @@ impl<'a> WaveformTileReader<'a> {
             .unwrap_or(&[]))
     }
 
+    fn resolve_tile(
+        &mut self,
+        tile_start_px: u32,
+        width_px: u32,
+        pixels_per_second: f64,
+        points_per_second: u32,
+    ) -> Result<(Vec<i8>, Vec<i8>), String> {
+        let mut min = Vec::with_capacity(width_px as usize);
+        let mut max = Vec::with_capacity(width_px as usize);
+
+        for pixel_offset in 0..width_px {
+            let point_range = resolve_waveform_tile_point_range(
+                tile_start_px,
+                pixel_offset,
+                pixels_per_second,
+                points_per_second,
+            );
+            let peak = self.resolve_range(point_range.start_index, point_range.end_index)?;
+
+            min.push(peak.min);
+            max.push(peak.max);
+        }
+
+        Ok((min, max))
+    }
+
     fn resolve_range(
         &mut self,
         start_index: u64,
@@ -742,11 +801,40 @@ impl<'a> WaveformTileReader<'a> {
         let mut max = i8::MIN;
         let mut found = false;
 
-        for index in start..end {
-            let peak = self.peak_at(index)?;
-            min = min.min(peak.min);
-            max = max.max(peak.max);
-            found = true;
+        if start >= self.level.point_count {
+            return Ok(QuantizedWaveformPeak { min: 0, max: 0 });
+        }
+
+        let mut index = start;
+        let end = end.min(self.level.point_count);
+        let points_per_chunk = self.level.points_per_chunk.max(1) as u64;
+
+        while index < end {
+            let chunk_index = (index / points_per_chunk) as u32;
+            let chunk_offset = (index % points_per_chunk) as usize;
+            let chunk_end = ((chunk_index as u64 + 1) * points_per_chunk).min(end);
+            let expected_points = (chunk_end - index) as usize;
+            let bytes = self.read_chunk(chunk_index)?;
+            let available_points = bytes.len() / 2;
+            let available_end = (chunk_offset + expected_points).min(available_points);
+
+            if available_end > chunk_offset {
+                let byte_start = chunk_offset * 2;
+                let byte_end = available_end * 2;
+                for pair in bytes[byte_start..byte_end].chunks_exact(2) {
+                    min = min.min(pair[0] as i8);
+                    max = max.max(pair[1] as i8);
+                    found = true;
+                }
+            }
+
+            if available_end < chunk_offset + expected_points {
+                min = min.min(0);
+                max = max.max(0);
+                found = true;
+            }
+
+            index = chunk_end;
         }
 
         if !found {

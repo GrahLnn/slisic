@@ -1,17 +1,22 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import type { TrackWaveformSummary } from "@/src/cmd";
 import {
   clampWaveformZoomDeltaY,
   isWaveformTileWindowCoveringWindow,
   normalizeWaveformPathKey,
   resolveWaveformHorizontalPanFrame,
   resolveWaveformHorizontalScrollLeft,
+  resolveWaveformWheelPanContentWidth,
+  hasWaveformViewportPositionChanged,
   resolveWaveformScrollReadValue,
   resolveWaveformScrollWritePlan,
   resolveWaveformViewportScrollEventFrame,
+  resolveTrackWaveformInitialStatus,
   resolveAnchoredWaveformScrollLeft,
   resolveCenteredWaveformScrollLeft,
   resolveWaveformMinimumPixelsPerSecond,
+  resolveWaveformMaximumPixelsPerSecond,
   resolvePlaybackPositionMs,
   resolveQuantizedWaveformDisplayPeak,
   resolveWaveformContentWidth,
@@ -20,17 +25,30 @@ import {
   resolveWaveformPlayheadStyle,
   resolveWaveformPlayheadX,
   resolveWaveformPointerAnchorViewportX,
+  WaveformZoomController,
   resolveWaveformRasterAlignment,
   resolveWaveformCanvasBackingMetrics,
+  resolveWaveformBarWidthPx,
   resolveWaveformRenderContentWidth,
   resolveWaveformRenderPixelsPerSecond,
+  resolveWaveformNextRenderPixelsPerSecond,
+  resolveWaveformNextDensityPrefetchEntries,
   resolveWaveformRenderScale,
   resolveWaveformRenderTileWindow,
   resolveWaveformRenderViewport,
+  resolveWaveformSourceTileWidth,
+  resolveWaveformDeferredRenderIndexes,
+  resolveWaveformTileLoadGroups,
+  resolveWaveformTileLoadQueue,
+  resolveWaveformTilePriorityIndex,
+  resolveWaveformTileRenderBatch,
   resolveWaveformTileRenderMode,
+  resolveWaveformTileRenderScope,
   resolveWaveformTileVisibilityPlan,
   resolveWaveformTileDisplayRange,
   resolveWaveformTileDisplayWidth,
+  resolveWaveformTileDrawIntent,
+  resolveWaveformTileDrawOpacity,
   resolveWaveformTileLoadOrder,
   resolveWaveformTileRenderPlan,
   resolveWaveformTileSourceFetchRange,
@@ -45,15 +63,111 @@ import {
   resolveWaveformWheelOperation,
   resolveWaveformWheelPanDelta,
   resolveWaveformWheelPixelsPerSecond,
-  resolveWaveformZoomMaterializationCadence,
-  resolveWaveformZoomInputFrame,
   resolveQueuedWaveformZoomFrame,
   resolveWaveformZoomScaleFrame,
   resolveWaveformZoomFrame,
+  resolveWaveformZoomCommitMaterializeMode,
   resolveWaveformZoomSettleDelayMs,
 } from "./SpectrumVisualizer";
 
+function createWaveformTestSummary(overrides: Partial<TrackWaveformSummary> = {}) {
+  return {
+    base_points_per_second: 800,
+    cache_key: "track",
+    chunk_duration_ms: 2_000,
+    duration_ms: 120_000,
+    levels: [50, 100, 200, 400, 800],
+    sample_rate: 48_000,
+    samples_per_point: 60,
+    start_ms: 0,
+    ...overrides,
+  };
+}
+
+function createWaveformTestWindow() {
+  let nextFrameId = 1;
+  let nextTimerId = 1;
+  let nowMs = 0;
+  const timers = new Map<number, () => void>();
+
+  return {
+    advanceTime(ms: number) {
+      nowMs += ms;
+    },
+    cancelAnimationFrame() {},
+    clearTimeout(timerId: number) {
+      timers.delete(timerId);
+    },
+    flushTimers() {
+      const callbacks = [...timers.entries()];
+      timers.clear();
+
+      for (const [, callback] of callbacks) {
+        callback();
+      }
+    },
+    performance: {
+      now: () => nowMs,
+    },
+    requestAnimationFrame(callback: FrameRequestCallback) {
+      const frameId = nextFrameId;
+      nextFrameId += 1;
+      callback(nowMs);
+      return frameId;
+    },
+    setTimeout(callback: () => void) {
+      const timerId = nextTimerId;
+      nextTimerId += 1;
+      timers.set(timerId, callback);
+      return timerId;
+    },
+  };
+}
+
+type WaveformZoomApplyArgs = Parameters<WaveformZoomController["apply"]>[0];
+
 describe("SpectrumVisualizer", () => {
+  test("starts waveform preparation as loading when a track is present", () => {
+    assert.equal(resolveTrackWaveformInitialStatus("C:/music/demo.flac"), "loading");
+    assert.equal(resolveTrackWaveformInitialStatus("   "), "idle");
+    assert.equal(resolveTrackWaveformInitialStatus(null), "idle");
+  });
+
+  test("keeps first track tiles blank until waveform data is available", () => {
+    assert.equal(resolveWaveformTileDrawIntent({ hasData: false, status: "idle" }), "placeholder");
+    assert.equal(resolveWaveformTileDrawIntent({ hasData: false, status: "loading" }), "blank");
+    assert.equal(resolveWaveformTileDrawIntent({ hasData: false, status: "ready" }), "blank");
+    assert.equal(resolveWaveformTileDrawIntent({ hasData: false, status: "error" }), "blank");
+    assert.equal(resolveWaveformTileDrawIntent({ hasData: true, status: "loading" }), "data");
+  });
+
+  test("keeps draw opacity dependent on the resolved draw intent", () => {
+    assert.equal(
+      resolveWaveformTileDrawOpacity({
+        intent: "placeholder",
+        opacity: 1,
+        status: "ready",
+      }),
+      0.42,
+    );
+    assert.equal(
+      resolveWaveformTileDrawOpacity({
+        intent: "data",
+        opacity: 1,
+        status: "ready",
+      }),
+      1,
+    );
+    assert.equal(
+      resolveWaveformTileDrawOpacity({
+        intent: "blank",
+        opacity: 0.42,
+        status: "loading",
+      }),
+      0.42,
+    );
+  });
+
   test("keeps the waveform at least as wide as the viewport", () => {
     assert.equal(
       resolveWaveformContentWidth({
@@ -101,6 +215,48 @@ describe("SpectrumVisualizer", () => {
       }),
       320,
     );
+    assert.equal(
+      resolveWaveformWheelPixelsPerSecond({
+        currentPixelsPerSecond: 48,
+        deltaY: -900,
+        durationMs: 120_000,
+        maximumPixelsPerSecond: 50,
+        viewportWidth: 800,
+      }),
+      50,
+    );
+  });
+
+  test("limits maximum zoom at zero bar spacing", () => {
+    assert.equal(resolveWaveformMaximumPixelsPerSecond({ maximumPixelsPerSecond: 50 }), 50);
+    assert.equal(
+      resolveWaveformPixelsPerSecond(320, {
+        durationMs: 120_000,
+        maximumPixelsPerSecond: 50,
+        viewportWidth: 800,
+      }),
+      50,
+    );
+    assert.deepEqual(
+      resolveWaveformZoomScaleFrame({
+        currentPixelsPerSecond: 50,
+        deltaY: -100,
+        durationMs: 120_000,
+        maximumPixelsPerSecond: 50,
+        viewportWidth: 800,
+      }),
+      {
+        changed: false,
+        pixelsPerSecond: 50,
+      },
+    );
+    assert.equal(
+      resolveWaveformRenderScale({
+        pixelsPerSecond: 50,
+        renderPixelsPerSecond: 50,
+      }),
+      1,
+    );
   });
 
   test("limits one wheel zoom step so large device deltas do not jump to the boundary", () => {
@@ -140,6 +296,74 @@ describe("SpectrumVisualizer", () => {
         pixelsPerSecond: 263.96,
       },
     );
+  });
+
+  test("settles only the latest zoom commit", () => {
+    const ownerWindow = createWaveformTestWindow();
+    const materializedPixelsPerSecond: number[] = [];
+    const syncedPixelsPerSecond: number[] = [];
+    const controller = new WaveformZoomController();
+    const scrollElement = {
+      clientHeight: 208,
+      clientWidth: 800,
+      getBoundingClientRect: () => ({ left: 0 }),
+      ownerDocument: {
+        defaultView: ownerWindow,
+      },
+      scrollLeft: 0,
+      scrollWidth: 96_000,
+    };
+    const scrollElements = {
+      content: scrollElement,
+      host: scrollElement,
+      scrollOffsetElement: scrollElement,
+      viewport: scrollElement,
+    } as unknown as WaveformZoomApplyArgs["scrollElements"];
+    const wheelState = {
+      contentWidth: 3_000,
+      controller: {
+        applyZoomViewportState(args: { scrollLeft: number }) {
+          scrollElement.scrollLeft = args.scrollLeft;
+        },
+        createTraceSnapshot: () => null,
+        materializeZoomTiles(args: { pixelsPerSecond: number }) {
+          materializedPixelsPerSecond.push(args.pixelsPerSecond);
+        },
+        prepareZoomScrollRange() {},
+      },
+      maximumPixelsPerSecond: 800,
+      requestedPixelsPerSecond: 24,
+      setPixelsPerSecond(update: (current: number) => number) {
+        syncedPixelsPerSecond.push(update(syncedPixelsPerSecond.at(-1) ?? 24));
+      },
+      summary: createWaveformTestSummary(),
+      viewportWidth: 800,
+    } as unknown as WaveformZoomApplyArgs["wheelState"];
+
+    controller.apply({
+      anchorViewportX: 400,
+      deltaY: -100,
+      scrollElements,
+      scrollLeft: 0,
+      viewportWidth: 800,
+      wheelState,
+    });
+    ownerWindow.advanceTime(100);
+    controller.apply({
+      anchorViewportX: 400,
+      deltaY: -100,
+      scrollElements,
+      scrollLeft: 0,
+      viewportWidth: 800,
+      wheelState,
+    });
+    ownerWindow.advanceTime(420);
+    ownerWindow.flushTimers();
+
+    assert.equal(materializedPixelsPerSecond.length, 3);
+    assert.ok(materializedPixelsPerSecond[1] > materializedPixelsPerSecond[0]);
+    assert.equal(materializedPixelsPerSecond[2], materializedPixelsPerSecond[1]);
+    assert.deepEqual(syncedPixelsPerSecond, [materializedPixelsPerSecond[1]]);
   });
 
   test("fits the whole track at the minimum zoom when the viewport is wider", () => {
@@ -260,6 +484,10 @@ describe("SpectrumVisualizer", () => {
     assert.ok(Math.abs(fromStaleState.pixelsPerSecond - 179.58) < 0.01);
   });
 
+  test("materializes zoom commits beyond the exact viewport", () => {
+    assert.equal(resolveWaveformZoomCommitMaterializeMode(), "active-scroll");
+  });
+
   test("waits for a quiet zoom window before settling the presentation", () => {
     assert.equal(
       resolveWaveformZoomSettleDelayMs({
@@ -283,30 +511,6 @@ describe("SpectrumVisualizer", () => {
         settleDelayMs: 240,
       }),
       0,
-    );
-  });
-
-  test("materializes visible tiles during zoom-out but defers zoom-in work", () => {
-    assert.equal(
-      resolveWaveformZoomMaterializationCadence({
-        basePixelsPerSecond: 160,
-        targetPixelsPerSecond: 120,
-      }),
-      "progressive-visible",
-    );
-    assert.equal(
-      resolveWaveformZoomMaterializationCadence({
-        basePixelsPerSecond: 120,
-        targetPixelsPerSecond: 160,
-      }),
-      "defer-until-settled",
-    );
-    assert.equal(
-      resolveWaveformZoomMaterializationCadence({
-        basePixelsPerSecond: 160,
-        targetPixelsPerSecond: 160,
-      }),
-      "defer-until-settled",
     );
   });
 
@@ -554,6 +758,39 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
+  test("keeps subpixel horizontal pan input in logical scroll state", () => {
+    assert.deepEqual(
+      resolveWaveformHorizontalPanFrame({
+        contentWidth: 1_000,
+        deltaX: 0.25,
+        scrollLeft: 120,
+        viewportWidth: 300,
+      }),
+      {
+        changed: true,
+        scrollLeft: 120.25,
+      },
+    );
+    assert.equal(
+      hasWaveformViewportPositionChanged({
+        currentScrollLeft: 120,
+        currentVisualScrollLeft: 120,
+        nextScrollLeft: 120.25,
+        nextVisualScrollLeft: 120,
+      }),
+      true,
+    );
+    assert.equal(
+      hasWaveformViewportPositionChanged({
+        currentScrollLeft: 120,
+        currentVisualScrollLeft: 120,
+        nextScrollLeft: 120,
+        nextVisualScrollLeft: 120,
+      }),
+      false,
+    );
+  });
+
   test("models OverlayScrollbars scroll state as one logical waveform position", () => {
     assert.equal(
       resolveWaveformScrollReadValue({
@@ -630,6 +867,79 @@ describe("SpectrumVisualizer", () => {
       }),
       120,
     );
+    assert.deepEqual(
+      resolveWaveformWheelDeltas({
+        axis: 1,
+        deltaX: 0,
+        deltaY: 100,
+        horizontalAxis: 1,
+      }),
+      {
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: 100,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelOperation({
+        ...resolveWaveformWheelDeltas({
+          axis: 1,
+          deltaX: 0,
+          deltaY: 100,
+          horizontalAxis: 1,
+        }),
+        shiftKey: false,
+        viewportHeight: 200,
+        viewportWidth: 800,
+      }),
+      {
+        deltaY: 100,
+        kind: "zoom",
+      },
+    );
+  });
+
+  test("does not synthesize horizontal pan from vertical wheel fields", () => {
+    assert.deepEqual(
+      resolveWaveformWheelDeltas({
+        axis: 1,
+        deltaX: 0,
+        deltaY: 0,
+        horizontalAxis: 1,
+        wheelDeltaY: -120,
+      }),
+      {
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: 120,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelDeltas({
+        axis: 1,
+        deltaX: 0,
+        deltaY: 0,
+        horizontalAxis: 1,
+        wheelDelta: 0,
+      }),
+      {
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: 0,
+      },
+    );
+  });
+
+  test("uses the scroll container as the pan extent source", () => {
+    assert.equal(
+      resolveWaveformWheelPanContentWidth({
+        scrollOffsetElementScrollWidth: 12_000,
+        viewportScrollWidth: 11_500,
+        viewportWidth: 800,
+        wheelStateContentWidth: 3_000,
+      }),
+      12_000,
+    );
   });
 
   test("keeps only the visible waveform tiles plus overscan mounted", () => {
@@ -660,19 +970,576 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
-  test("uses a stable source density that covers the maximum zoom", () => {
+  test("loads waveform tiles around the zoom anchor before visible edges", () => {
+    assert.deepEqual(
+      resolveWaveformTileLoadOrder({
+        startIndex: 2,
+        endIndex: 8,
+        priorityIndex: 6.2,
+        visibleStartIndex: 4,
+        visibleEndIndex: 6,
+      }),
+      [6, 5, 4, 7, 8, 3, 2],
+    );
+  });
+
+  test("maps zoom anchor seconds into source tile priority space", () => {
+    assert.equal(
+      resolveWaveformTilePriorityIndex({
+        anchorSeconds: 12.8,
+        renderPixelsPerSecond: 50,
+        sourceTileWidth: 128,
+      }),
+      5,
+    );
+    assert.equal(
+      resolveWaveformTilePriorityIndex({
+        anchorSeconds: null,
+        renderPixelsPerSecond: 50,
+        sourceTileWidth: 128,
+      }),
+      null,
+    );
+  });
+
+  test("keeps tile work bounded near the first visible priority", () => {
+    assert.deepEqual(
+      resolveWaveformTileRenderBatch({
+        indexes: [6, 5, 4, 7, 8, 3],
+        limit: 3,
+        mode: "visible-only",
+      }),
+      {
+        immediateIndexes: [6, 5, 4],
+        deferredIndexes: [7, 8, 3],
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformTileRenderBatch({
+        indexes: [6, 5, 4, 7, 8, 3],
+        limit: 3,
+        mode: "complete",
+      }),
+      {
+        immediateIndexes: [6, 5, 4],
+        deferredIndexes: [7, 8, 3],
+      },
+    );
+  });
+
+  test("keeps deferred visible tiles in the complete render pipeline", () => {
+    assert.deepEqual(
+      resolveWaveformDeferredRenderIndexes({
+        allowOffscreen: true,
+        deferredIndexes: [8, 3],
+        mode: "complete",
+        offscreenTileLoadOrder: [2, 9],
+      }),
+      [8, 3, 2, 9],
+    );
+    assert.deepEqual(
+      resolveWaveformDeferredRenderIndexes({
+        deferredIndexes: [8, 3],
+        mode: "visible-only",
+        offscreenTileLoadOrder: [2, 9],
+      }),
+      [8, 3],
+    );
+  });
+
+  test("keeps active zoom rendering limited to the visible tiles", () => {
+    assert.deepEqual(
+      resolveWaveformTileRenderScope({
+        mode: "active-scroll",
+        renderBatch: {
+          immediateIndexes: [6, 5, 4, 7],
+          deferredIndexes: [8, 3],
+        },
+        tileLoadOrder: [6, 5, 4, 7, 8, 3],
+        visibleTileLoadOrder: [6, 5],
+      }),
+      {
+        allowOffscreen: false,
+        immediateIndexes: [6, 5],
+        loadIndexes: [6, 5, 4, 7, 8, 3],
+        visibilityIndexes: [6, 5],
+      },
+    );
+  });
+
+  test("keeps complete rendering responsible for overscan tiles", () => {
+    assert.deepEqual(
+      resolveWaveformTileRenderScope({
+        mode: "complete",
+        renderBatch: {
+          immediateIndexes: [6, 5, 4],
+          deferredIndexes: [7, 8, 3],
+        },
+        tileLoadOrder: [6, 5, 4, 7, 8, 3],
+        visibleTileLoadOrder: [6, 5],
+      }),
+      {
+        allowOffscreen: true,
+        immediateIndexes: [6, 5, 4],
+        loadIndexes: [6, 5, 4],
+        visibilityIndexes: [6, 5, 4, 7, 8, 3],
+      },
+    );
+  });
+
+  test("defers offscreen detail until the visible window has pixels", () => {
+    assert.deepEqual(
+      resolveWaveformDeferredRenderIndexes({
+        allowOffscreen: false,
+        deferredIndexes: [8, 3],
+        mode: "complete",
+        offscreenTileLoadOrder: [2, 9],
+      }),
+      [8, 3],
+    );
+  });
+
+  test("keeps visible tile loads ahead of retained offscreen work", () => {
+    const offscreenQueued = resolveWaveformTileLoadQueue({
+      current: {
+        entries: [],
+        nextOrder: 0,
+      },
+      indexes: [2, 3],
+      shouldQueue: () => true,
+      priority: "offscreen",
+      reason: "render-window-offscreen",
+      queuedAtMs: 10,
+      retainPendingQueue: true,
+    });
+    const visibleQueued = resolveWaveformTileLoadQueue({
+      current: offscreenQueued,
+      indexes: [0, 1],
+      shouldQueue: () => true,
+      priority: "visible",
+      reason: "render-window-visible",
+      queuedAtMs: 20,
+      retainPendingQueue: true,
+    });
+
+    assert.deepEqual(
+      visibleQueued.entries.map((entry) => ({
+        index: entry.index,
+        priority: entry.priority,
+      })),
+      [
+        { index: 0, priority: "visible" },
+        { index: 1, priority: "visible" },
+        { index: 2, priority: "offscreen" },
+        { index: 3, priority: "offscreen" },
+      ],
+    );
+  });
+
+  test("promotes a pending offscreen tile when it becomes visible", () => {
+    const queued = resolveWaveformTileLoadQueue({
+      current: {
+        entries: [
+          {
+            index: 2,
+            order: 0,
+            priority: "offscreen",
+            queuedAtMs: 10,
+            reason: "render-window-offscreen",
+          },
+          {
+            index: 3,
+            order: 1,
+            priority: "offscreen",
+            queuedAtMs: 12,
+            reason: "render-window-offscreen",
+          },
+        ],
+        nextOrder: 2,
+      },
+      indexes: [3],
+      shouldQueue: () => true,
+      priority: "visible",
+      reason: "render-window-visible",
+      queuedAtMs: 30,
+      retainPendingQueue: true,
+    });
+
+    assert.deepEqual(
+      queued.entries.map((entry) => ({
+        index: entry.index,
+        priority: entry.priority,
+      })),
+      [
+        { index: 3, priority: "visible" },
+        { index: 2, priority: "offscreen" },
+      ],
+    );
+  });
+
+  test("keeps queue timestamps stable when a pending tile is promoted", () => {
+    const queued = resolveWaveformTileLoadQueue({
+      current: {
+        entries: [
+          {
+            index: 2,
+            order: 0,
+            priority: "offscreen",
+            queuedAtMs: 10,
+            reason: "render-window-offscreen",
+          },
+          {
+            index: 3,
+            order: 1,
+            priority: "offscreen",
+            queuedAtMs: 12,
+            reason: "render-window-offscreen",
+          },
+        ],
+        nextOrder: 2,
+      },
+      indexes: [3, 4],
+      shouldQueue: () => true,
+      priority: "visible",
+      reason: "render-window-visible",
+      queuedAtMs: 30,
+      retainPendingQueue: true,
+    });
+
+    assert.deepEqual(
+      queued.entries.map((entry) => ({
+        index: entry.index,
+        priority: entry.priority,
+        queuedAtMs: entry.queuedAtMs,
+      })),
+      [
+        { index: 3, priority: "visible", queuedAtMs: 12 },
+        { index: 4, priority: "visible", queuedAtMs: 30 },
+        { index: 2, priority: "offscreen", queuedAtMs: 10 },
+      ],
+    );
+  });
+
+  test("queues next-density prefetch as its own target tile", () => {
+    const queued = resolveWaveformTileLoadQueue({
+      current: {
+        entries: [],
+        nextOrder: 0,
+      },
+      entries: [
+        {
+          cacheKey: "next-density",
+          fetchStartPx: 2_037,
+          fetchWidthPx: 2_070,
+          index: 1,
+          renderPixelsPerSecond: 100,
+        },
+      ],
+      indexes: [1],
+      shouldQueue: (index) => index === 1,
+      priority: "prefetch",
+      reason: "prefetch-next-density",
+      queuedAtMs: 40,
+      retainPendingQueue: true,
+    });
+
+    assert.deepEqual(queued.entries, [
+      {
+        cacheKey: "next-density",
+        fetchStartPx: 2_037,
+        fetchWidthPx: 2_070,
+        index: 1,
+        order: 0,
+        priority: "prefetch",
+        queuedAtMs: 40,
+        reason: "prefetch-next-density",
+        renderPixelsPerSecond: 100,
+      },
+    ]);
+  });
+
+  test("keeps prefetch and visible load entries independent for the same index", () => {
+    const queued = resolveWaveformTileLoadQueue({
+      current: {
+        entries: [
+          {
+            cacheKey: "next-density",
+            fetchStartPx: 2_037,
+            fetchWidthPx: 2_070,
+            index: 1,
+            order: 0,
+            priority: "prefetch",
+            queuedAtMs: 40,
+            reason: "prefetch-next-density",
+            renderPixelsPerSecond: 100,
+          },
+        ],
+        nextOrder: 1,
+      },
+      indexes: [1],
+      shouldQueue: () => true,
+      priority: "visible",
+      reason: "render-window-visible",
+      queuedAtMs: 50,
+      retainPendingQueue: true,
+    });
+
+    assert.deepEqual(
+      queued.entries.map((entry) => ({
+        cacheKey: entry.cacheKey ?? null,
+        index: entry.index,
+        priority: entry.priority,
+        reason: entry.reason,
+      })),
+      [
+        {
+          cacheKey: null,
+          index: 1,
+          priority: "visible",
+          reason: "render-window-visible",
+        },
+        {
+          cacheKey: "next-density",
+          index: 1,
+          priority: "prefetch",
+          reason: "prefetch-next-density",
+        },
+      ],
+    );
+  });
+
+  test("keeps next-density prefetch ahead of retained offscreen work", () => {
+    const queued = resolveWaveformTileLoadQueue({
+      current: {
+        entries: [
+          {
+            index: 8,
+            order: 0,
+            priority: "offscreen",
+            queuedAtMs: 10,
+            reason: "render-window-offscreen",
+          },
+        ],
+        nextOrder: 1,
+      },
+      entries: [
+        {
+          cacheKey: "next-density",
+          fetchStartPx: 4_085,
+          fetchWidthPx: 2_070,
+          index: 2,
+          renderPixelsPerSecond: 100,
+        },
+      ],
+      indexes: [2],
+      shouldQueue: () => true,
+      priority: "prefetch",
+      reason: "prefetch-next-density",
+      queuedAtMs: 30,
+      retainPendingQueue: true,
+    });
+
+    assert.deepEqual(
+      queued.entries.map((entry) => ({
+        index: entry.index,
+        priority: entry.priority,
+        reason: entry.reason,
+      })),
+      [
+        { index: 2, priority: "prefetch", reason: "prefetch-next-density" },
+        { index: 8, priority: "offscreen", reason: "render-window-offscreen" },
+      ],
+    );
+  });
+
+  test("classifies tile loads at the render layer boundary", () => {
+    assert.deepEqual(
+      resolveWaveformTileLoadGroups({
+        indexes: [0, 1, 2, 3],
+        visibleTileWindow: {
+          startIndex: 1,
+          endIndex: 2,
+        },
+      }),
+      {
+        visibleIndexes: [1, 2],
+        offscreenIndexes: [0, 3],
+      },
+    );
+  });
+
+  test("selects the lowest source density that keeps zoom detail continuous", () => {
+    const summary = createWaveformTestSummary();
+
     assert.equal(
       resolveWaveformRenderPixelsPerSecond({
-        base_points_per_second: 800,
-        cache_key: "track",
-        chunk_duration_ms: 2_000,
-        duration_ms: 120_000,
-        levels: [50, 100, 200, 400, 800],
-        sample_rate: 48_000,
-        samples_per_point: 60,
-        start_ms: 0,
+        pixelsPerSecond: 24,
+        summary,
+      }),
+      50,
+    );
+    assert.equal(
+      resolveWaveformRenderPixelsPerSecond({
+        pixelsPerSecond: 192,
+        summary,
+      }),
+      200,
+    );
+    assert.equal(
+      resolveWaveformRenderPixelsPerSecond({
+        pixelsPerSecond: 900,
+        summary,
+      }),
+      800,
+    );
+    assert.equal(
+      resolveWaveformRenderPixelsPerSecond({
+        summary,
+      }),
+      800,
+    );
+  });
+
+  test("refines source density before one displayed bar has to represent too much data", () => {
+    const summary = createWaveformTestSummary();
+    const renderPixelsPerSecond = resolveWaveformRenderPixelsPerSecond({
+      pixelsPerSecond: 293.31,
+      summary,
+    });
+    const renderScale = resolveWaveformRenderScale({
+      pixelsPerSecond: 293.31,
+      renderPixelsPerSecond,
+    });
+
+    assert.equal(renderPixelsPerSecond, 400);
+    assert.ok(renderScale < 1);
+  });
+
+  test("loads the next source density while zoom still feels continuous", () => {
+    const summary = createWaveformTestSummary();
+
+    assert.equal(
+      resolveWaveformNextRenderPixelsPerSecond({
+        pixelsPerSecond: 37,
+        summary,
+      }),
+      100,
+    );
+    assert.equal(
+      resolveWaveformNextRenderPixelsPerSecond({
+        pixelsPerSecond: 86,
+        summary,
+      }),
+      200,
+    );
+    assert.equal(
+      resolveWaveformNextRenderPixelsPerSecond({
+        pixelsPerSecond: 120,
+        summary,
+      }),
+      null,
+    );
+    assert.equal(
+      resolveWaveformNextRenderPixelsPerSecond({
+        pixelsPerSecond: 800,
+        summary,
+      }),
+      null,
+    );
+    assert.equal(
+      resolveWaveformRenderPixelsPerSecond({
+        pixelsPerSecond: 51.85,
+        summary,
+      }),
+      100,
+    );
+    assert.equal(
+      resolveWaveformRenderPixelsPerSecond({
+        pixelsPerSecond: 79.38,
+        summary,
+      }),
+      100,
+    );
+    assert.equal(
+      resolveWaveformRenderPixelsPerSecond({
+        pixelsPerSecond: 80.01,
+        summary,
+      }),
+      100,
+    );
+    assert.equal(
+      resolveWaveformRenderPixelsPerSecond({
+        pixelsPerSecond: 160.01,
+        summary,
+      }),
+      200,
+    );
+    assert.equal(
+      resolveWaveformRenderPixelsPerSecond({
+        pixelsPerSecond: 320.01,
+        summary,
       }),
       400,
+    );
+  });
+
+  test("maps the visible tile window to next-density target tiles", () => {
+    assert.deepEqual(
+      resolveWaveformNextDensityPrefetchEntries({
+        contentWidth: 12_000,
+        currentRenderPixelsPerSecond: 50,
+        durationMs: 120_000,
+        nextRenderPixelsPerSecond: 100,
+        pixelsPerSecond: 42,
+        visibleTileWindow: {
+          startIndex: 0,
+          endIndex: 1,
+        },
+      }),
+      [
+        {
+          fetchStartPx: 2037,
+          fetchWidthPx: 2070,
+          index: 1,
+          renderPixelsPerSecond: 100,
+        },
+        {
+          fetchStartPx: 4085,
+          fetchWidthPx: 2070,
+          index: 2,
+          renderPixelsPerSecond: 100,
+        },
+        {
+          fetchStartPx: 0,
+          fetchWidthPx: 2059,
+          index: 0,
+          renderPixelsPerSecond: 100,
+        },
+        {
+          fetchStartPx: 6133,
+          fetchWidthPx: 2070,
+          index: 3,
+          renderPixelsPerSecond: 100,
+        },
+      ],
+    );
+  });
+
+  test("prioritizes next-density prefetch around the zoom anchor", () => {
+    assert.deepEqual(
+      resolveWaveformNextDensityPrefetchEntries({
+        contentWidth: 24_000,
+        currentRenderPixelsPerSecond: 50,
+        durationMs: 120_000,
+        nextRenderPixelsPerSecond: 100,
+        pixelsPerSecond: 42,
+        priorityIndex: 1,
+        visibleTileWindow: {
+          startIndex: 0,
+          endIndex: 2,
+        },
+      }).map((entry) => entry.index),
+      [2, 1, 3, 0, 4, 5],
     );
   });
 
@@ -692,6 +1559,27 @@ describe("SpectrumVisualizer", () => {
       }),
       {
         startIndex: 4,
+        endIndex: 8,
+      },
+    );
+  });
+
+  test("does not stretch a lower-density tile when display scale exceeds one", () => {
+    assert.equal(
+      resolveWaveformTileDisplayWidth({
+        widthPx: 640,
+        renderScale: 3.2,
+      }),
+      640,
+    );
+    assert.deepEqual(
+      resolveWaveformTileSourcePixelRange({
+        displayPixelX: 7,
+        renderScale: 3.2,
+        sourcePixelCount: 16,
+      }),
+      {
+        startIndex: 7,
         endIndex: 8,
       },
     );
@@ -813,32 +1701,34 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
-  test("uses a layer transform for continuous zoom presentation", () => {
+  test("keeps presentation transform limited to raster alignment", () => {
     assert.equal(
       resolveWaveformPresentationTransform({
-        exactPixelsPerSecond: 24,
-        pixelsPerSecond: 48,
         transformPx: 0.25,
       }),
-      "translate3d(0.25px, 0, 0) scaleX(2)",
+      "translate3d(0.25px, 0, 0)",
     );
 
     assert.equal(
       resolveWaveformPresentationTransform({
-        exactPixelsPerSecond: 24,
-        pixelsPerSecond: 24,
         transformPx: 0,
       }),
       "none",
     );
   });
 
-  test("keeps source fetch windows padded for low zoom edge pixels", () => {
+  test("keeps waveform bars one css pixel wide across render scales", () => {
+    assert.equal(resolveWaveformBarWidthPx({ renderScale: 0.12 }), 1);
+    assert.equal(resolveWaveformBarWidthPx({ renderScale: 1 }), 1);
+    assert.equal(resolveWaveformBarWidthPx({ renderScale: 2.4 }), 1);
+  });
+
+  test("keeps source fetch windows padded for the lowest zoom edge pixels", () => {
     const sourcePaddingPx = resolveWaveformTileSourcePadding({
-      renderPixelsPerSecond: 400,
+      renderPixelsPerSecond: 50,
     });
 
-    assert.equal(sourcePaddingPx, 36);
+    assert.equal(sourcePaddingPx, 7);
     assert.deepEqual(
       resolveWaveformTileSourceFetchRange({
         sourceContentWidth: 10_000,
@@ -847,8 +1737,8 @@ describe("SpectrumVisualizer", () => {
         sourceWidthPx: 2_048,
       }),
       {
-        fetchStartPx: 2_012,
-        fetchWidthPx: 2_120,
+        fetchStartPx: 2_041,
+        fetchWidthPx: 2_062,
       },
     );
   });
@@ -870,7 +1760,9 @@ describe("SpectrumVisualizer", () => {
   });
 
   test("aligns fractional scroll rasterization to viewport pixels", () => {
-    assert.deepEqual(resolveWaveformRasterAlignment({ scrollLeft: 771.3333129882812 }), {
+    const scrollLeft = 771 + 0.33331298828125;
+
+    assert.deepEqual(resolveWaveformRasterAlignment({ scrollLeft }), {
       sampleDisplayOffsetPx: 0.33331298828125,
       snappedScrollLeft: 771,
       transformPx: 0.33331298828125,
@@ -894,7 +1786,7 @@ describe("SpectrumVisualizer", () => {
   });
 
   test("samples the source range under the viewport pixel after fractional scroll snapping", () => {
-    const scrollLeft = 771.3333129882812;
+    const scrollLeft = 771 + 0.33331298828125;
     const anchorViewportX = 665;
     const renderScale = 51.85 / 400;
     const alignment = resolveWaveformRasterAlignment({ scrollLeft });
@@ -948,6 +1840,7 @@ describe("SpectrumVisualizer", () => {
         incomingVisualScrollLeft: 2_110.666748046875,
         isLogicalScrollLocked: false,
         pendingProgrammaticScrollEcho: {
+          trace: null,
           visualScrollLeft: 2_110.666748046875,
         },
       }),
@@ -966,6 +1859,7 @@ describe("SpectrumVisualizer", () => {
         incomingVisualScrollLeft: 2_320,
         isLogicalScrollLocked: false,
         pendingProgrammaticScrollEcho: {
+          trace: null,
           visualScrollLeft: 2_110.666748046875,
         },
       }),
@@ -977,13 +1871,14 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
-  test("locks logical scroll while zoom presentation is active", () => {
+  test("keeps explicit logical scroll locks separate from presentation state", () => {
     assert.deepEqual(
       resolveWaveformViewportScrollEventFrame({
         currentScrollLeft: 1_669.3333740234375,
         incomingVisualScrollLeft: 2_110.666748046875,
         isLogicalScrollLocked: true,
         pendingProgrammaticScrollEcho: {
+          trace: null,
           visualScrollLeft: 1_669.3333740234375,
         },
       }),
@@ -991,60 +1886,6 @@ describe("SpectrumVisualizer", () => {
         kind: "programmatic-echo",
         scrollLeft: 1_669.3333740234375,
         visualScrollLeft: 2_110.666748046875,
-      },
-    );
-  });
-
-  test("holds the presentation base while React inputs are behind the visible zoom", () => {
-    assert.deepEqual(
-      resolveWaveformZoomInputFrame({
-        incomingContentWidth: 3_600,
-        incomingPixelsPerSecond: 24,
-        presentationBaseContentWidth: 3_600,
-        presentationBasePixelsPerSecond: 24,
-        targetContentWidth: 7_200,
-        targetPixelsPerSecond: 48,
-      }),
-      {
-        contentWidth: 3_600,
-        pixelsPerSecond: 24,
-        shouldClearPresentation: false,
-      },
-    );
-  });
-
-  test("keeps materialized zoom inputs stable until React catches up", () => {
-    assert.deepEqual(
-      resolveWaveformZoomInputFrame({
-        incomingContentWidth: 3_600,
-        incomingPixelsPerSecond: 24,
-        presentationBaseContentWidth: 7_200,
-        presentationBasePixelsPerSecond: 48,
-        targetContentWidth: 7_200,
-        targetPixelsPerSecond: 48,
-      }),
-      {
-        contentWidth: 7_200,
-        pixelsPerSecond: 48,
-        shouldClearPresentation: false,
-      },
-    );
-  });
-
-  test("clears zoom presentation only after React inputs match the materialized target", () => {
-    assert.deepEqual(
-      resolveWaveformZoomInputFrame({
-        incomingContentWidth: 7_200,
-        incomingPixelsPerSecond: 48,
-        presentationBaseContentWidth: 7_200,
-        presentationBasePixelsPerSecond: 48,
-        targetContentWidth: 7_200,
-        targetPixelsPerSecond: 48,
-      }),
-      {
-        contentWidth: 7_200,
-        pixelsPerSecond: 48,
-        shouldClearPresentation: true,
       },
     );
   });
@@ -1082,62 +1923,97 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
-  test("maps viewport scroll into the fixed render coordinate space", () => {
+  test("maps viewport scroll into the slot coordinate space", () => {
     assert.equal(
       resolveWaveformRenderScale({
         pixelsPerSecond: 20,
-        renderPixelsPerSecond: 400,
+        renderPixelsPerSecond: 50,
       }),
-      0.05,
+      0.4,
     );
     assert.deepEqual(
       resolveWaveformRenderViewport({
-        renderScale: 0.05,
+        renderScale: 0.4,
         scrollLeft: 200,
         viewportWidth: 800,
       }),
       {
-        scrollLeft: 4_000,
-        viewportWidth: 16_000,
+        scrollLeft: 500,
+        viewportWidth: 2_000,
       },
     );
   });
 
-  test("shrinks the rendered tile window as zoom increases", () => {
+  test("keeps waveform bar width constant while zoom changes slot spacing", () => {
+    const lowScale = resolveWaveformRenderScale({
+      pixelsPerSecond: 20,
+      renderPixelsPerSecond: 50,
+    });
+    const highScale = resolveWaveformRenderScale({
+      pixelsPerSecond: 160,
+      renderPixelsPerSecond: 50,
+    });
+
+    assert.equal(lowScale, 0.4);
+    assert.equal(highScale, 1);
+    assert.equal(resolveWaveformBarWidthPx({ renderScale: lowScale }), 1);
+    assert.equal(resolveWaveformBarWidthPx({ renderScale: highScale }), 1);
+  });
+
+  test("keeps source tile width independent from presentation spacing", () => {
+    assert.equal(resolveWaveformSourceTileWidth({ renderScale: 0.4 }), 2_048);
+    assert.equal(resolveWaveformSourceTileWidth({ renderScale: 3.2 }), 2_048);
+    assert.equal(resolveWaveformSourceTileWidth({ renderScale: 3.6 }), 2_048);
+    assert.equal(resolveWaveformSourceTileWidth({ renderScale: 4.1 }), 2_048);
+  });
+
+  test("keeps the rendered tile window bounded as slot spacing changes", () => {
+    const lowZoomScale = 12 / 50;
+    const highZoomScale = 320 / 50;
     const lowZoomWindow = resolveWaveformRenderTileWindow({
-      contentWidth: 400_000,
+      contentWidth: 50_000,
       overscanTiles: 0,
-      renderScale: 12 / 400,
+      renderScale: lowZoomScale,
       scrollLeft: 4_800,
-      tileWidth: 2_048,
+      tileWidth: resolveWaveformSourceTileWidth({ renderScale: lowZoomScale }),
       viewportWidth: 800,
     });
     const highZoomWindow = resolveWaveformRenderTileWindow({
-      contentWidth: 400_000,
+      contentWidth: 320_000,
       overscanTiles: 0,
-      renderScale: 320 / 400,
+      renderScale: highZoomScale,
       scrollLeft: 4_800,
-      tileWidth: 2_048,
+      tileWidth: resolveWaveformSourceTileWidth({ renderScale: highZoomScale }),
       viewportWidth: 800,
     });
 
     assert.ok(lowZoomWindow);
     assert.ok(highZoomWindow);
+    assertWaveformTileWindow(lowZoomWindow);
+    assertWaveformTileWindow(highZoomWindow);
     assert.ok(
       highZoomWindow.endIndex - highZoomWindow.startIndex <
         lowZoomWindow.endIndex - lowZoomWindow.startIndex,
     );
   });
 
-  test("keeps the fixed render layer wide enough after visual scaling", () => {
+  test("keeps source density width tied to audio duration", () => {
     assert.equal(
       resolveWaveformRenderContentWidth({
         durationMs: 2_000,
-        pixelsPerSecond: 20,
-        renderPixelsPerSecond: 400,
-        viewportWidth: 800,
+        renderPixelsPerSecond: 50,
       }),
-      16_000,
+      100,
+    );
+  });
+
+  test("keeps source density width independent from viewport fill width", () => {
+    assert.equal(
+      resolveWaveformRenderContentWidth({
+        durationMs: 99_000,
+        renderPixelsPerSecond: 50,
+      }),
+      4_950,
     );
   });
 
@@ -1242,3 +2118,9 @@ describe("SpectrumVisualizer", () => {
     );
   });
 });
+
+function assertWaveformTileWindow(
+  window: ReturnType<typeof resolveWaveformRenderTileWindow>,
+): asserts window is NonNullable<ReturnType<typeof resolveWaveformRenderTileWindow>> {
+  assert.ok(window);
+}

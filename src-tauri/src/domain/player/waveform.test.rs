@@ -1,6 +1,7 @@
 use super::waveform::{
     WaveformDecodeRange, WaveformPeak, WaveformPeakAccumulator, build_waveform_ffmpeg_args,
     quantize_waveform_peak, resolve_waveform_decode_range, resolve_waveform_level,
+    resolve_waveform_points_per_chunk, resolve_waveform_tile_point_range,
 };
 use std::path::Path;
 
@@ -48,9 +49,41 @@ fn waveform_accumulator_keeps_negative_and_positive_peak_per_bucket() {
 
 #[test]
 fn waveform_level_uses_the_lowest_resolution_that_preserves_pixel_density() {
-    assert_eq!(resolve_waveform_level(12, &[50, 100, 200, 400, 800]), 50);
-    assert_eq!(resolve_waveform_level(192, &[50, 100, 200, 400, 800]), 200);
-    assert_eq!(resolve_waveform_level(900, &[50, 100, 200, 400, 800]), 800);
+    let levels = [50, 100, 200, 400, 800];
+
+    assert_eq!(resolve_waveform_level(12, &levels), 50);
+    assert_eq!(resolve_waveform_level(50, &levels), 50);
+    assert_eq!(resolve_waveform_level(51, &levels), 100);
+    assert_eq!(resolve_waveform_level(192, &levels), 200);
+    assert_eq!(resolve_waveform_level(401, &levels), 800);
+    assert_eq!(resolve_waveform_level(900, &levels), 800);
+}
+
+#[test]
+fn waveform_cache_chunks_are_large_enough_for_viewport_tile_reads() {
+    assert_eq!(resolve_waveform_points_per_chunk(50), 3_000);
+    assert_eq!(resolve_waveform_points_per_chunk(100), 6_000);
+    assert_eq!(resolve_waveform_points_per_chunk(200), 12_000);
+    assert_eq!(resolve_waveform_points_per_chunk(400), 24_000);
+    assert_eq!(resolve_waveform_points_per_chunk(800), 48_000);
+}
+
+#[test]
+fn waveform_tile_point_range_maps_display_pixels_to_source_points() {
+    assert_eq!(
+        resolve_waveform_tile_point_range(2_041, 0, 50.0, 50),
+        super::waveform::WaveformTilePointRange {
+            start_index: 2_041,
+            end_index: 2_042,
+        }
+    );
+    assert_eq!(
+        resolve_waveform_tile_point_range(2_041, 0, 24.0, 50),
+        super::waveform::WaveformTilePointRange {
+            start_index: 4_252,
+            end_index: 4_255,
+        }
+    );
 }
 
 #[test]
@@ -79,9 +112,16 @@ fn waveform_ffmpeg_args_seek_before_input_and_limit_bounded_output() {
     let thread_index = args.iter().position(|arg| arg == "-threads").unwrap();
 
     assert!(thread_index < input_index);
+    assert_eq!(args[thread_index + 1], "0");
     assert!(seek_index < input_index);
     assert!(duration_index > input_index);
     assert_eq!(args[seek_index + 1], "2.500");
     assert_eq!(args[duration_index + 1], "8.000");
+    assert!(args.windows(2).any(|pair| {
+        pair == [
+            "-filter:a",
+            "aresample=48000:filter_size=8:phase_shift=0:linear_interp=1",
+        ]
+    }));
     assert!(args.windows(2).any(|pair| pair == ["-f", "f32le"]));
 }
