@@ -11,8 +11,7 @@ import { useTheme } from "next-themes";
 import { Toaster } from "sileo";
 import { PlayListPage } from "./components/PlayListPage";
 import { ListConfig } from "./components/ListConfig";
-import { SpectrumPage } from "./components/SpectrumPage";
-import "./components/SpectrumVisualizer.css";
+import { SpectrumPage } from "./components/spectrum/SpectrumPage";
 
 import { hook as appLogicHook } from "./flow/appLogic";
 import { useAppBootstrap } from "./flow/bootstrap";

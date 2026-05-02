@@ -3,8 +3,9 @@ import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
-import { collectionTitleClassName, collectionTitleLayoutTransition } from "./collectionTitle";
-import { EditableTitle, type EditableTitleHandle } from "./EditableTitle";
+import { collectionTitleClassName, collectionTitleLayoutTransition } from "../collectionTitle";
+import { EditableTitle, type EditableTitleHandle } from "../EditableTitle";
+import "./SpectrumVisualizer.css";
 import {
   resolveSpectrumBackActionVisualState,
   resolveSpectrumCommittedTitle,
@@ -13,7 +14,7 @@ import {
 } from "./SpectrumPage.view-model";
 import { SpectrumPlaybackAction } from "./SpectrumPlaybackAction";
 import { TrackSpectrum } from "./SpectrumVisualizer";
-import { usePageRenderFreeze } from "./usePageRenderFreeze";
+import { usePageRenderFreeze } from "../usePageRenderFreeze";
 
 const contentFadeProps = {
   initial: { opacity: 0 },
