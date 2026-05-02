@@ -47,6 +47,7 @@ const WAVEFORM_TRACE_SAMPLE_LIMIT = 12;
 const PLAYBACK_STATUS_POLL_MS = 250;
 const WAVEFORM_VIEWPORT_POSITION_EPSILON_PX = 0.000001;
 const WAVEFORM_WHEEL_AXIS_NOISE_RATIO = 0.66;
+const WAVEFORM_HOT_TRACE_MIN_INTERVAL_MS = 120;
 
 type WaveformStatus = "idle" | "loading" | "ready" | "error";
 
@@ -130,6 +131,8 @@ type WaveformWheelIntent =
       kind: "none";
     };
 
+type WaveformViewportCommitSource = "scroll" | "wheel" | "resize" | "summary";
+
 type WaveformDataWindow = {
   endPx: number;
   startPx: number;
@@ -169,6 +172,17 @@ type WaveformCachedTile = {
   lastUsedAt: number;
   pixelsPerSecond: number;
   scopeKey: string;
+};
+
+type WaveformCachePruneResult = {
+  removedCount: number;
+  removedSamples: {
+    key: string;
+    pixelsPerSecond: number;
+    scopeKey: string;
+    startPx: number;
+    widthPx: number;
+  }[];
 };
 
 type WaveformTileLoadQueueEntry = WaveformDataRequest & {
@@ -1142,12 +1156,16 @@ function TrackSpectrumSession(props: {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const spacerRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<WaveformViewportModel | null>(null);
-  const [viewportState, setViewportState] = useState<WaveformViewportState>({
-    focusSeconds: null,
-    pixelsPerSecond: WAVEFORM_INITIAL_PIXELS_PER_SECOND,
-    scrollLeft: 0,
-    viewportWidth: 1,
-  });
+  const tileCacheRef = useRef(new Map<string, WaveformCachedTile>());
+  const sessionTraceKey = useMemo(
+    () =>
+      [
+        normalizeWaveformPathKey(props.filePath),
+        normalizeWaveformBoundary(props.start) ?? "",
+        normalizeWaveformBoundary(props.end) ?? "",
+      ].join("|"),
+    [props.end, props.filePath, props.start],
+  );
   const waveformState = useTrackWaveformSummary({
     end: props.end,
     filePath: props.filePath,
@@ -1159,40 +1177,57 @@ function TrackSpectrumSession(props: {
     filePath: props.filePath,
     playbackPort: ports.playback,
   });
-  const playbackNow = usePlaybackNow(playbackSnapshot);
   const maximumPixelsPerSecond = resolveWaveformRenderPixelsPerSecond({
     summary: waveformState.summary,
   });
-  const pixelsPerSecond = resolveWaveformPixelsPerSecond(
-    viewportState.pixelsPerSecond,
-    {
-      durationMs: waveformState.summary.duration_ms,
-      maximumPixelsPerSecond,
-      viewportWidth: viewportState.viewportWidth,
-    },
-  );
-  const contentWidth = resolveWaveformContentWidth({
-    durationMs: waveformState.summary.duration_ms,
-    pixelsPerSecond,
-    viewportWidth: viewportState.viewportWidth,
-  });
-  const scrollLeft = clampNumber(
-    viewportState.scrollLeft,
-    0,
-    Math.max(0, contentWidth - viewportState.viewportWidth),
-  );
-  const viewportModel: WaveformViewportModel = {
-    contentWidth,
-    durationMs: waveformState.summary.duration_ms,
-    focusSeconds: viewportState.focusSeconds,
-    maximumPixelsPerSecond,
-    pixelsPerSecond,
-    scrollLeft,
-    viewportWidth: viewportState.viewportWidth,
-  };
-  viewportRef.current = viewportModel;
 
-  const tileCacheRef = useRef(new Map<string, WaveformCachedTile>());
+  if (viewportRef.current === null) {
+    const viewportWidth = 1;
+    const pixelsPerSecond = resolveWaveformPixelsPerSecond(
+      WAVEFORM_INITIAL_PIXELS_PER_SECOND,
+      {
+        durationMs: waveformState.summary.duration_ms,
+        maximumPixelsPerSecond,
+        viewportWidth,
+      },
+    );
+    const contentWidth = resolveWaveformContentWidth({
+      durationMs: waveformState.summary.duration_ms,
+      pixelsPerSecond,
+      viewportWidth,
+    });
+
+    viewportRef.current = {
+      contentWidth,
+      durationMs: waveformState.summary.duration_ms,
+      focusSeconds: null,
+      maximumPixelsPerSecond,
+      pixelsPerSecond,
+      scrollLeft: 0,
+      viewportWidth,
+    };
+  }
+
+  useEffect(() => {
+    installWaveformTrace();
+  }, []);
+
+  useEffect(() => {
+    recordWaveformTrace("session.mount", {
+      end: props.end,
+      filePath: props.filePath?.trim() || null,
+      normalizedFilePath: normalizeWaveformPathKey(props.filePath),
+      sessionKey: sessionTraceKey,
+      start: props.start,
+    });
+
+    return () => {
+      recordWaveformTrace("session.unmount", {
+        sessionKey: sessionTraceKey,
+      });
+    };
+  }, [props.end, props.filePath, props.start, sessionTraceKey]);
+
   const drawCanvas = useWaveformCanvasRenderer({
     canvasRef,
     end: props.end,
@@ -1203,8 +1238,7 @@ function TrackSpectrumSession(props: {
     tileCacheRef,
     viewportRef,
   });
-
-  useWaveformDataLoader({
+  const requestDataPlan = useWaveformDataLoader({
     end: props.end,
     filePath: props.filePath?.trim() || null,
     onTileAvailable: drawCanvas,
@@ -1212,14 +1246,20 @@ function TrackSpectrumSession(props: {
     status: waveformState.status,
     summary: waveformState.summary,
     tileCacheRef,
-    viewport: viewportModel,
+    viewportRef,
     waveformPort: ports.waveform,
+  });
+  const syncPlayhead = useWaveformPlayheadController({
+    hostRef,
+    playbackSnapshot,
+    summary: waveformState.summary,
+    viewportRef,
   });
 
   const commitViewport = useCallback(
     (
       next: WaveformViewportState,
-      source: "scroll" | "wheel" | "resize" = "wheel",
+      source: WaveformViewportCommitSource = "wheel",
     ) => {
       const nextPixelsPerSecond = resolveWaveformPixelsPerSecond(
         next.pixelsPerSecond,
@@ -1239,11 +1279,6 @@ function TrackSpectrumSession(props: {
         0,
         Math.max(0, nextContentWidth - next.viewportWidth),
       );
-      const normalizedNext: WaveformViewportState = {
-        ...next,
-        pixelsPerSecond: nextPixelsPerSecond,
-        scrollLeft: nextScrollLeft,
-      };
       const normalizedModel: WaveformViewportModel = {
         contentWidth: nextContentWidth,
         durationMs: waveformState.summary.duration_ms,
@@ -1253,30 +1288,73 @@ function TrackSpectrumSession(props: {
         scrollLeft: nextScrollLeft,
         viewportWidth: next.viewportWidth,
       };
+      const previous = viewportRef.current;
+      const changed =
+        !previous ||
+        previous.focusSeconds !== normalizedModel.focusSeconds ||
+        Math.abs(previous.pixelsPerSecond - normalizedModel.pixelsPerSecond) >=
+          0.01 ||
+        Math.abs(previous.scrollLeft - normalizedModel.scrollLeft) >= 0.5 ||
+        previous.viewportWidth !== normalizedModel.viewportWidth ||
+        previous.contentWidth !== normalizedModel.contentWidth ||
+        previous.durationMs !== normalizedModel.durationMs ||
+        previous.maximumPixelsPerSecond !==
+          normalizedModel.maximumPixelsPerSecond;
 
       viewportRef.current = normalizedModel;
+      applyWaveformViewportDom({
+        host: hostRef.current,
+        scrollElements: getWaveformScrollElements(scrollbarsRef),
+        source,
+        spacer: spacerRef.current,
+        viewport: normalizedModel,
+      });
 
-      if (spacerRef.current) {
-        spacerRef.current.style.width = `${nextContentWidth}px`;
+      if (
+        previous?.contentWidth !== normalizedModel.contentWidth ||
+        previous?.viewportWidth !== normalizedModel.viewportWidth
+      ) {
+        scrollbarsRef.current?.osInstance()?.update(true);
       }
 
-      const scrollElements = getWaveformScrollElements(scrollbarsRef);
-      if (scrollElements && source !== "scroll") {
-        writeWaveformScrollLeft(scrollElements, nextScrollLeft);
+      syncPlayhead();
+
+      if (!changed) {
+        recordWaveformHotTrace("viewport.commit.noop", () => ({
+          pixelsPerSecond: normalizedModel.pixelsPerSecond,
+          scrollLeft: normalizedModel.scrollLeft,
+          source,
+          viewportWidth: normalizedModel.viewportWidth,
+        }));
+        return;
       }
 
-      drawCanvas();
-      setViewportState((current) =>
-        current.focusSeconds === normalizedNext.focusSeconds &&
-        Math.abs(current.pixelsPerSecond - normalizedNext.pixelsPerSecond) <
-          0.01 &&
-        Math.abs(current.scrollLeft - normalizedNext.scrollLeft) < 0.5 &&
-        current.viewportWidth === normalizedNext.viewportWidth
-          ? current
-          : normalizedNext,
-      );
+      recordWaveformHotTrace("viewport.commit", () => ({
+        contentWidth: normalizedModel.contentWidth,
+        durationMs: normalizedModel.durationMs,
+        focusSeconds: normalizedModel.focusSeconds,
+        pixelsPerSecond: normalizedModel.pixelsPerSecond,
+        previousContentWidth: previous?.contentWidth ?? null,
+        previousPixelsPerSecond: previous?.pixelsPerSecond ?? null,
+        previousScrollLeft: previous?.scrollLeft ?? null,
+        previousViewportWidth: previous?.viewportWidth ?? null,
+        requestedPixelsPerSecond: next.pixelsPerSecond,
+        requestedScrollLeft: next.scrollLeft,
+        requestedViewportWidth: next.viewportWidth,
+        scrollLeft: normalizedModel.scrollLeft,
+        source,
+        viewportWidth: normalizedModel.viewportWidth,
+      }));
+      drawCanvas(`viewport.${source}`);
+      requestDataPlan(`viewport.${source}`);
     },
-    [drawCanvas, maximumPixelsPerSecond, waveformState.summary.duration_ms],
+    [
+      drawCanvas,
+      maximumPixelsPerSecond,
+      requestDataPlan,
+      syncPlayhead,
+      waveformState.summary.duration_ms,
+    ],
   );
 
   const handleScroll = useCallback(() => {
@@ -1304,11 +1382,11 @@ function TrackSpectrumSession(props: {
       },
       "scroll",
     );
-    recordWaveformTrace("viewport.scroll", {
+    recordWaveformHotTrace("viewport.scroll", () => ({
       pixelsPerSecond: current.pixelsPerSecond,
       scrollLeft: nextScrollLeft,
       viewportWidth: current.viewportWidth,
-    });
+    }));
   }, [commitViewport]);
 
   const handleWheel = useCallback(
@@ -1329,9 +1407,27 @@ function TrackSpectrumSession(props: {
     [commitViewport],
   );
 
-  useEffect(() => {
-    installWaveformTrace();
-  }, []);
+  useLayoutEffect(() => {
+    const current = viewportRef.current;
+    if (!current) {
+      return;
+    }
+
+    commitViewport(
+      {
+        focusSeconds: current.focusSeconds,
+        pixelsPerSecond: current.pixelsPerSecond,
+        scrollLeft: current.scrollLeft,
+        viewportWidth: current.viewportWidth,
+      },
+      "summary",
+    );
+  }, [
+    commitViewport,
+    maximumPixelsPerSecond,
+    waveformState.summary.cache_key,
+    waveformState.summary.duration_ms,
+  ]);
 
   useLayoutEffect(() => {
     const host = hostRef.current;
@@ -1345,14 +1441,14 @@ function TrackSpectrumSession(props: {
         Math.ceil(host.getBoundingClientRect().width),
       );
       const current = viewportRef.current;
-      if (!current) {
+      if (!current || current.viewportWidth === nextViewportWidth) {
         return;
       }
 
-      if (current.viewportWidth === nextViewportWidth) {
-        return;
-      }
-
+      recordWaveformTrace("viewport.resize", {
+        previousViewportWidth: current.viewportWidth,
+        viewportWidth: nextViewportWidth,
+      });
       commitViewport(
         {
           focusSeconds: current.focusSeconds,
@@ -1371,30 +1467,23 @@ function TrackSpectrumSession(props: {
     ).ResizeObserver;
 
     if (!ResizeObserverConstructor) {
+      recordWaveformTrace("viewport.resize-observer.unavailable");
       window.addEventListener("resize", syncWidth);
       return () => {
+        recordWaveformTrace("viewport.resize-listener.remove");
         window.removeEventListener("resize", syncWidth);
       };
     }
 
     const observer = new ResizeObserverConstructor(syncWidth);
     observer.observe(host);
+    recordWaveformTrace("viewport.resize-observer.install");
 
     return () => {
+      recordWaveformTrace("viewport.resize-observer.disconnect");
       observer.disconnect();
     };
   }, [commitViewport]);
-
-  useLayoutEffect(() => {
-    const scrollElements = getWaveformScrollElements(scrollbarsRef);
-    if (!scrollElements) {
-      return;
-    }
-
-    if (Math.abs(readWaveformScrollLeft(scrollElements) - scrollLeft) >= 0.5) {
-      writeWaveformScrollLeft(scrollElements, scrollLeft);
-    }
-  }, [contentWidth, scrollLeft]);
 
   const scrollEvents = useMemo<EventListeners>(
     () => ({
@@ -1414,23 +1503,13 @@ function TrackSpectrumSession(props: {
       capture: true,
       passive: false,
     });
+    recordWaveformTrace("wheel.listener.install");
 
     return () => {
+      recordWaveformTrace("wheel.listener.remove");
       host.removeEventListener("wheel", handleWheel, true);
     };
   }, [handleWheel]);
-
-  const positionMs = resolvePlaybackPositionMs({
-    durationMs: waveformState.summary.duration_ms,
-    nowMs: playbackNow,
-    snapshot: playbackSnapshot,
-  });
-  const playheadStyle = resolveWaveformPlayheadStyle({
-    pixelsPerSecond,
-    positionMs,
-    scrollLeft,
-    viewportWidth: viewportState.viewportWidth,
-  });
 
   return (
     <motion.div
@@ -1459,7 +1538,7 @@ function TrackSpectrumSession(props: {
           ref={spacerRef}
           aria-hidden
           className="pointer-events-none h-full"
-          style={{ width: contentWidth }}
+          style={{ width: "var(--waveform-content-width, 1px)" }}
         />
       </OverlayScrollbarsComponent>
       <canvas
@@ -1470,7 +1549,10 @@ function TrackSpectrumSession(props: {
       <div
         aria-hidden
         className="pointer-events-none absolute inset-y-0 left-0 z-[2] w-px bg-[#404040] will-change-transform dark:bg-[#a3a3a3]"
-        style={playheadStyle}
+        style={{
+          opacity: "var(--waveform-playhead-opacity, 0)",
+          transform: "translate3d(var(--waveform-playhead-x, -9999px), 0, 0)",
+        }}
       />
     </motion.div>
   );
@@ -1495,6 +1577,9 @@ function useTrackWaveformSummary(args: {
       setState({
         status: "idle",
         summary: args.placeholderSummary,
+      });
+      recordWaveformTrace("summary.prepare.idle", {
+        filePath: args.filePath ?? null,
       });
       return undefined;
     }
@@ -1526,6 +1611,10 @@ function useTrackWaveformSummary(args: {
         )
         .then((summary) => {
           if (cancelled) {
+            recordWaveformTrace("summary.prepare.done.cancelled", {
+              filePath,
+              summaryCacheKey: summary.cache_key,
+            });
             return;
           }
 
@@ -1543,6 +1632,10 @@ function useTrackWaveformSummary(args: {
         })
         .catch((error) => {
           if (cancelled) {
+            recordWaveformTrace("summary.prepare.error.cancelled", {
+              filePath,
+              message: error instanceof Error ? error.message : String(error),
+            });
             return;
           }
 
@@ -1582,28 +1675,84 @@ function useTrackPlaybackSnapshot(args: {
   playbackPort: TrackSpectrumPlaybackPort;
 }) {
   const [snapshot, setSnapshot] = useState<PlaybackSnapshot | null>(null);
+  const previousStatusTraceRef = useRef<string | null>(null);
 
   useEffect(() => {
     const filePath = args.filePath?.trim();
+    const tracePlayback = (
+      event: string,
+      payload: Record<string, unknown> = {},
+    ) => {
+      recordWaveformTrace(event, {
+        filePath: filePath ?? null,
+        ...payload,
+      });
+    };
+
     setSnapshot(null);
 
     if (!filePath) {
+      previousStatusTraceRef.current = null;
+      tracePlayback("playback.poll.idle", {
+        rawFilePath: args.filePath ?? null,
+      });
       return undefined;
     }
 
     let cancelled = false;
     const refreshPlaybackStatus = async () => {
+      const requestedAt = readWaveformPerformanceNow(window);
+
       try {
         const status = await args.playbackPort.getPlaybackStatus();
         if (cancelled) {
+          tracePlayback("playback.poll.cancelled", {
+            durationMs: readWaveformPerformanceNow(window) - requestedAt,
+          });
           return;
         }
 
         if (!status || !isPlaybackStatusForTrack(status, filePath)) {
+          const statusKey = status
+            ? [
+                "mismatch",
+                normalizeWaveformPathKey(status.path),
+                status.playing,
+                status.paused,
+                status.position_ms,
+                status.duration_ms ?? "",
+              ].join("|")
+            : "empty";
+
+          if (previousStatusTraceRef.current !== statusKey) {
+            previousStatusTraceRef.current = statusKey;
+            tracePlayback("playback.poll.miss", {
+              durationMs: readWaveformPerformanceNow(window) - requestedAt,
+              receivedPath: status?.path ?? null,
+              receivedPathKey: normalizeWaveformPathKey(status?.path),
+            });
+          }
           setSnapshot(null);
           return;
         }
 
+        const statusKey = [
+          "match",
+          status.playing,
+          status.paused,
+          status.position_ms,
+          status.duration_ms ?? "",
+        ].join("|");
+        if (previousStatusTraceRef.current !== statusKey) {
+          previousStatusTraceRef.current = statusKey;
+          tracePlayback("playback.poll.match", {
+            durationMs: readWaveformPerformanceNow(window) - requestedAt,
+            playbackDurationMs: status.duration_ms,
+            paused: status.paused,
+            playing: status.playing,
+            positionMs: status.position_ms,
+          });
+        }
         setSnapshot({
           ...status,
           received_at_ms: performance.now(),
@@ -1611,11 +1760,17 @@ function useTrackPlaybackSnapshot(args: {
       } catch (error) {
         if (!cancelled) {
           console.error("Failed to refresh playback status", error);
+          previousStatusTraceRef.current = null;
+          tracePlayback("playback.poll.error", {
+            durationMs: readWaveformPerformanceNow(window) - requestedAt,
+            message: error instanceof Error ? error.message : String(error),
+          });
           setSnapshot(null);
         }
       }
     };
 
+    tracePlayback("playback.poll.start");
     void refreshPlaybackStatus();
     const intervalId = window.setInterval(() => {
       void refreshPlaybackStatus();
@@ -1624,58 +1779,111 @@ function useTrackPlaybackSnapshot(args: {
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
+      tracePlayback("playback.poll.stop");
     };
   }, [args.filePath, args.playbackPort]);
 
   return snapshot;
 }
 
-function usePlaybackNow(snapshot: PlaybackSnapshot | null) {
-  const [now, setNow] = useState(() =>
-    typeof performance === "undefined" ? Date.now() : performance.now(),
-  );
+function useWaveformPlayheadController(args: {
+  hostRef: RefObject<HTMLDivElement | null>;
+  playbackSnapshot: PlaybackSnapshot | null;
+  summary: TrackWaveformSummary;
+  viewportRef: RefObject<WaveformViewportModel | null>;
+}) {
+  const latestArgsRef = useRef(args);
+  latestArgsRef.current = args;
+
+  const syncPlayhead = useCallback((nowMs?: number) => {
+    const latest = latestArgsRef.current;
+    const host = latest.hostRef.current;
+    const viewport = latest.viewportRef.current;
+    if (!host || !viewport) {
+      return;
+    }
+
+    const ownerWindow = host.ownerDocument.defaultView;
+    const positionMs = resolvePlaybackPositionMs({
+      durationMs: latest.summary.duration_ms,
+      nowMs: nowMs ?? readWaveformPerformanceNow(ownerWindow),
+      snapshot: latest.playbackSnapshot,
+    });
+    const cssVars = resolveWaveformPlayheadCssVariables({
+      pixelsPerSecond: viewport.pixelsPerSecond,
+      positionMs,
+      scrollLeft: viewport.scrollLeft,
+      viewportWidth: viewport.viewportWidth,
+    });
+
+    host.style.setProperty("--waveform-playhead-opacity", cssVars.opacity);
+    host.style.setProperty("--waveform-playhead-x", cssVars.x);
+  }, []);
+
+  useLayoutEffect(() => {
+    syncPlayhead();
+  }, [args.playbackSnapshot, args.summary.duration_ms, syncPlayhead]);
 
   useEffect(() => {
+    const snapshot = latestArgsRef.current.playbackSnapshot;
+
     if (!snapshot?.playing || snapshot.paused) {
-      setNow(
-        typeof performance === "undefined" ? Date.now() : performance.now(),
-      );
+      recordWaveformTrace("playback.clock.idle", {
+        paused: snapshot?.paused ?? null,
+        playing: snapshot?.playing ?? null,
+      });
       return undefined;
     }
 
     let frameId: number | null = null;
+    let frameCount = 0;
+    const startedAt = performance.now();
     const tick = () => {
-      setNow(performance.now());
+      frameCount += 1;
+      syncPlayhead(performance.now());
       frameId = window.requestAnimationFrame(tick);
     };
 
+    recordWaveformTrace("playback.clock.start", {
+      positionMs: snapshot.position_ms,
+      receivedAtMs: snapshot.received_at_ms,
+    });
     frameId = window.requestAnimationFrame(tick);
 
     return () => {
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
+      recordWaveformTrace("playback.clock.stop", {
+        durationMs: performance.now() - startedAt,
+        frameCount,
+      });
     };
-  }, [snapshot?.paused, snapshot?.playing]);
+  }, [
+    args.playbackSnapshot?.paused,
+    args.playbackSnapshot?.playing,
+    syncPlayhead,
+  ]);
 
-  return now;
+  return syncPlayhead;
 }
 
 function useWaveformDataLoader(args: {
   end: number | null;
   filePath: string | null;
-  onTileAvailable: () => void;
+  onTileAvailable: (reason?: string) => void;
   start: number | null;
   status: WaveformStatus;
   summary: TrackWaveformSummary;
   tileCacheRef: RefObject<Map<string, WaveformCachedTile>>;
-  viewport: WaveformViewportModel;
+  viewportRef: RefObject<WaveformViewportModel | null>;
   waveformPort: TrackSpectrumWaveformPort;
 }) {
   const activeCountRef = useRef(0);
   const inFlightKeysRef = useRef(new Set<string>());
   const latestPlanKeySetRef = useRef(new Set<string>());
   const nextOrderRef = useRef(0);
+  const previousPlanSignatureRef = useRef<string | null>(null);
   const queueRef = useRef<WaveformTileLoadQueueEntry[]>([]);
   const loadContextRef = useRef<{
     end: number | null;
@@ -1683,15 +1891,50 @@ function useWaveformDataLoader(args: {
     start: number | null;
     waveformPort: TrackSpectrumWaveformPort;
   } | null>(null);
+  const latestArgsRef = useRef(args);
+  latestArgsRef.current = args;
   const onTileAvailableRef = useRef(args.onTileAvailable);
   onTileAvailableRef.current = args.onTileAvailable;
+
+  const resetLoader = useCallback((reason: string) => {
+    const latest = latestArgsRef.current;
+    if (
+      previousPlanSignatureRef.current === null &&
+      queueRef.current.length === 0 &&
+      activeCountRef.current === 0 &&
+      latestPlanKeySetRef.current.size === 0 &&
+      loadContextRef.current === null
+    ) {
+      return;
+    }
+
+    recordWaveformTrace("data.plan.inactive", {
+      activeCount: activeCountRef.current,
+      cacheSize: latest.tileCacheRef.current.size,
+      filePath: latest.filePath,
+      inFlightCount: inFlightKeysRef.current.size,
+      previousQueueSize: queueRef.current.length,
+      reason,
+      status: latest.status,
+    });
+    queueRef.current = [];
+    latestPlanKeySetRef.current = new Set();
+    previousPlanSignatureRef.current = null;
+    loadContextRef.current = null;
+  }, []);
 
   const pumpRef = useRef<() => void>(() => {});
   pumpRef.current = () => {
     const context = loadContextRef.current;
-    const cache = args.tileCacheRef.current;
+    const cache = latestArgsRef.current.tileCacheRef.current;
 
     if (!context) {
+      if (queueRef.current.length > 0 || activeCountRef.current > 0) {
+        recordWaveformTrace("data.pump.no-context", {
+          activeCount: activeCountRef.current,
+          queueSize: queueRef.current.length,
+        });
+      }
       return;
     }
 
@@ -1708,16 +1951,25 @@ function useWaveformDataLoader(args: {
         cache.has(entry.cacheKey) ||
         inFlightKeysRef.current.has(entry.cacheKey)
       ) {
+        recordWaveformHotTrace("data.load.skip", () => ({
+          cached: cache.has(entry.cacheKey),
+          dataPixelsPerSecond: entry.dataPixelsPerSecond,
+          inFlight: inFlightKeysRef.current.has(entry.cacheKey),
+          index: entry.index,
+          queueSize: queueRef.current.length,
+        }));
         continue;
       }
 
       activeCountRef.current += 1;
       inFlightKeysRef.current.add(entry.cacheKey);
       recordWaveformTrace("data.load.start", {
+        activeCount: activeCountRef.current,
         dataPixelsPerSecond: entry.dataPixelsPerSecond,
         index: entry.index,
         priority: entry.priority,
         queueWaitMs: readWaveformPerformanceNow(window) - entry.queuedAtMs,
+        scopeKey: entry.scopeKey,
         startPx: entry.startPx,
         widthPx: entry.widthPx,
       });
@@ -1741,6 +1993,8 @@ function useWaveformDataLoader(args: {
               scopeKey: entry.scopeKey,
             });
             recordWaveformTrace("data.load.done", {
+              activeCount: activeCountRef.current,
+              cacheSize: cache.size,
               dataPixelsPerSecond: entry.dataPixelsPerSecond,
               index: entry.index,
               maxLength: tileData.max.length,
@@ -1748,12 +2002,14 @@ function useWaveformDataLoader(args: {
               resultPointsPerSecond: tileData.points_per_second,
               resultStartPx: tileData.start_px,
               resultWidthPx: tileData.width_px,
+              scopeKey: entry.scopeKey,
             });
-            onTileAvailableRef.current();
+            onTileAvailableRef.current("tile.available");
           } else {
             recordWaveformTrace("data.load.stale", {
               dataPixelsPerSecond: entry.dataPixelsPerSecond,
               index: entry.index,
+              scopeKey: entry.scopeKey,
             });
           }
         })
@@ -1763,99 +2019,148 @@ function useWaveformDataLoader(args: {
             dataPixelsPerSecond: entry.dataPixelsPerSecond,
             index: entry.index,
             message: error instanceof Error ? error.message : String(error),
+            scopeKey: entry.scopeKey,
+            startPx: entry.startPx,
+            widthPx: entry.widthPx,
           });
         })
         .finally(() => {
           activeCountRef.current = Math.max(0, activeCountRef.current - 1);
           inFlightKeysRef.current.delete(entry.cacheKey);
+          recordWaveformTrace("data.load.finish", {
+            activeCount: activeCountRef.current,
+            index: entry.index,
+            inFlightCount: inFlightKeysRef.current.size,
+            queueSize: queueRef.current.length,
+            scopeKey: entry.scopeKey,
+          });
           pumpRef.current();
         });
     }
   };
 
-  useEffect(() => {
-    if (args.status !== "ready" || !args.filePath) {
-      queueRef.current = [];
-      latestPlanKeySetRef.current = new Set();
-      loadContextRef.current = null;
-      return;
-    }
+  const requestDataPlan = useCallback(
+    (reason = "viewport") => {
+      const latest = latestArgsRef.current;
+      const viewport = latest.viewportRef.current;
 
-    const filePath = args.filePath;
-    loadContextRef.current = {
-      end: args.end,
-      filePath,
-      start: args.start,
-      waveformPort: args.waveformPort,
-    };
-    const plan = resolveWaveformDataPlan({
-      contentWidth: args.viewport.contentWidth,
-      end: args.end,
-      filePath,
-      focusSeconds: args.viewport.focusSeconds,
-      pixelsPerSecond: args.viewport.pixelsPerSecond,
-      scrollLeft: args.viewport.scrollLeft,
-      start: args.start,
-      summary: args.summary,
-      viewportWidth: args.viewport.viewportWidth,
-    });
-    const cache = args.tileCacheRef.current;
-    const neededKeys = new Set(
-      plan.requests.map((request) => request.cacheKey),
-    );
-    latestPlanKeySetRef.current = neededKeys;
-    queueRef.current = queueRef.current.filter(
-      (entry) =>
-        entry.scopeKey === plan.scopeKey && neededKeys.has(entry.cacheKey),
-    );
-
-    const queuedKeys = new Set(queueRef.current.map((entry) => entry.cacheKey));
-    const now = readWaveformPerformanceNow(
-      typeof window === "undefined" ? null : window,
-    );
-    for (const request of plan.requests) {
-      const cached = cache.get(request.cacheKey);
-      if (cached) {
-        cached.lastUsedAt = now;
-        continue;
+      if (latest.status !== "ready" || !latest.filePath || !viewport) {
+        resetLoader(reason);
+        return;
       }
+
+      const filePath = latest.filePath;
+      loadContextRef.current = {
+        end: latest.end,
+        filePath,
+        start: latest.start,
+        waveformPort: latest.waveformPort,
+      };
+
+      const plan = resolveWaveformDataPlan({
+        contentWidth: viewport.contentWidth,
+        end: latest.end,
+        filePath,
+        focusSeconds: viewport.focusSeconds,
+        pixelsPerSecond: viewport.pixelsPerSecond,
+        scrollLeft: viewport.scrollLeft,
+        start: latest.start,
+        summary: latest.summary,
+        viewportWidth: viewport.viewportWidth,
+      });
+      const cache = latest.tileCacheRef.current;
+      const planSignature = createWaveformDataPlanSignature(plan);
+      const queuedKeys = new Set(
+        queueRef.current.map((entry) => entry.cacheKey),
+      );
+      const hasUnscheduledMissingRequest = plan.requests.some(
+        (request) =>
+          !cache.has(request.cacheKey) &&
+          !inFlightKeysRef.current.has(request.cacheKey) &&
+          !queuedKeys.has(request.cacheKey),
+      );
 
       if (
-        inFlightKeysRef.current.has(request.cacheKey) ||
-        queuedKeys.has(request.cacheKey)
+        previousPlanSignatureRef.current === planSignature &&
+        !hasUnscheduledMissingRequest
       ) {
-        continue;
+        return;
       }
 
-      queueRef.current.push({
-        ...request,
-        order: nextOrderRef.current,
-        queuedAtMs: now,
-      });
-      queuedKeys.add(request.cacheKey);
-      nextOrderRef.current += 1;
-    }
+      const neededKeys = new Set(
+        plan.requests.map((request) => request.cacheKey),
+      );
+      previousPlanSignatureRef.current = planSignature;
+      latestPlanKeySetRef.current = neededKeys;
+      queueRef.current = queueRef.current.filter(
+        (entry) =>
+          entry.scopeKey === plan.scopeKey && neededKeys.has(entry.cacheKey),
+      );
 
-    queueRef.current.sort(compareWaveformTileLoadQueueEntries);
-    pruneWaveformTileCache(cache, neededKeys);
-    recordWaveformTrace("data.plan", {
-      cacheSize: cache.size,
-      dataPixelsPerSecond: plan.dataPixelsPerSecond,
-      displayPixelsPerSecond: args.viewport.pixelsPerSecond,
-      missingCount: plan.requests.filter(
-        (request) => !cache.has(request.cacheKey),
-      ).length,
-      queueSize: queueRef.current.length,
-      requestCount: plan.requests.length,
-      scrollLeft: args.viewport.scrollLeft,
-      visibleIndexes: sampleWaveformTraceItems(
-        plan.visibleIndexes,
-        (index) => index,
-      ),
-      visibleSecondsWindow: plan.visibleSecondsWindow,
-      visibleWindow: plan.visibleWindow,
-    });
-    pumpRef.current();
+      const nextQueuedKeys = new Set(
+        queueRef.current.map((entry) => entry.cacheKey),
+      );
+      const now = readWaveformPerformanceNow(
+        typeof window === "undefined" ? null : window,
+      );
+      let queuedCount = 0;
+      for (const request of plan.requests) {
+        const cached = cache.get(request.cacheKey);
+        if (cached) {
+          cached.lastUsedAt = now;
+          continue;
+        }
+
+        if (
+          inFlightKeysRef.current.has(request.cacheKey) ||
+          nextQueuedKeys.has(request.cacheKey)
+        ) {
+          continue;
+        }
+
+        queueRef.current.push({
+          ...request,
+          order: nextOrderRef.current,
+          queuedAtMs: now,
+        });
+        nextQueuedKeys.add(request.cacheKey);
+        nextOrderRef.current += 1;
+        queuedCount += 1;
+      }
+
+      queueRef.current.sort(compareWaveformTileLoadQueueEntries);
+      const pruneResult = pruneWaveformTileCache(cache, neededKeys);
+      recordWaveformTrace("data.plan", {
+        activeCount: activeCountRef.current,
+        cacheSize: cache.size,
+        dataPixelsPerSecond: plan.dataPixelsPerSecond,
+        displayPixelsPerSecond: viewport.pixelsPerSecond,
+        inFlightCount: inFlightKeysRef.current.size,
+        missingCount: plan.requests.filter(
+          (request) => !cache.has(request.cacheKey),
+        ).length,
+        prunedCount: pruneResult.removedCount,
+        prunedSamples: pruneResult.removedSamples,
+        queuedCount,
+        queueSize: queueRef.current.length,
+        reason,
+        requestCount: plan.requests.length,
+        scopeKey: plan.scopeKey,
+        scrollLeft: viewport.scrollLeft,
+        visibleIndexes: sampleWaveformTraceItems(
+          plan.visibleIndexes,
+          (index) => index,
+        ),
+        visibleSecondsWindow: plan.visibleSecondsWindow,
+        visibleWindow: plan.visibleWindow,
+      });
+      pumpRef.current();
+    },
+    [resetLoader],
+  );
+
+  useEffect(() => {
+    requestDataPlan("context");
   }, [
     args.end,
     args.filePath,
@@ -1863,13 +2168,11 @@ function useWaveformDataLoader(args: {
     args.status,
     args.summary,
     args.tileCacheRef,
-    args.viewport.contentWidth,
-    args.viewport.focusSeconds,
-    args.viewport.pixelsPerSecond,
-    args.viewport.scrollLeft,
-    args.viewport.viewportWidth,
     args.waveformPort,
+    requestDataPlan,
   ]);
+
+  return requestDataPlan;
 }
 
 function useWaveformCanvasRenderer(args: {
@@ -1884,12 +2187,24 @@ function useWaveformCanvasRenderer(args: {
 }) {
   const latestArgsRef = useRef(args);
   latestArgsRef.current = args;
+  const frameIdRef = useRef<number | null>(null);
+  const pendingReasonRef = useRef<string>("initial");
 
-  const draw = useCallback(() => {
+  const drawNow = useCallback((reason = "sync") => {
     const latest = latestArgsRef.current;
     const canvas = latest.canvasRef.current;
     const viewport = latest.viewportRef.current;
-    if (!canvas || !viewport) {
+    if (!canvas) {
+      recordWaveformHotTrace("canvas.draw.skip", () => ({
+        reason: "missing-canvas",
+      }));
+      return;
+    }
+
+    if (!viewport) {
+      recordWaveformHotTrace("canvas.draw.skip", () => ({
+        reason: "missing-viewport",
+      }));
       return;
     }
 
@@ -1897,6 +2212,7 @@ function useWaveformCanvasRenderer(args: {
       canvas,
       end: latest.end,
       filePath: latest.filePath,
+      reason,
       start: latest.start,
       status: latest.status,
       summary: latest.summary,
@@ -1905,27 +2221,62 @@ function useWaveformCanvasRenderer(args: {
     });
   }, []);
 
+  const requestDraw = useCallback(
+    (reason = "external") => {
+      pendingReasonRef.current = reason;
+      if (frameIdRef.current !== null) {
+        return;
+      }
+
+      const latest = latestArgsRef.current;
+      const ownerWindow =
+        latest.canvasRef.current?.ownerDocument.defaultView ??
+        (typeof window === "undefined" ? null : window);
+
+      if (!ownerWindow) {
+        drawNow(reason);
+        return;
+      }
+
+      frameIdRef.current = ownerWindow.requestAnimationFrame(() => {
+        const drawReason = pendingReasonRef.current;
+        frameIdRef.current = null;
+        drawNow(drawReason);
+      });
+    },
+    [drawNow],
+  );
+
   useLayoutEffect(() => {
-    draw();
+    requestDraw("external-sync");
   }, [
     args.end,
     args.filePath,
     args.start,
     args.status,
     args.summary,
-    args.viewportRef.current?.contentWidth,
-    args.viewportRef.current?.pixelsPerSecond,
-    args.viewportRef.current?.scrollLeft,
-    args.viewportRef.current?.viewportWidth,
-    draw,
+    requestDraw,
   ]);
 
-  return draw;
+  useEffect(
+    () => () => {
+      const latest = latestArgsRef.current;
+      const ownerWindow = latest.canvasRef.current?.ownerDocument.defaultView;
+      if (frameIdRef.current !== null && ownerWindow) {
+        ownerWindow.cancelAnimationFrame(frameIdRef.current);
+      }
+      frameIdRef.current = null;
+    },
+    [],
+  );
+
+  return requestDraw;
 }
 
 function drawWaveformCanvas(args: {
   canvas: HTMLCanvasElement;
   end: number | null;
+  reason?: string;
   filePath: string | null;
   start: number | null;
   status: WaveformStatus;
@@ -1961,6 +2312,12 @@ function drawWaveformCanvas(args: {
 
   const context = args.canvas.getContext("2d");
   if (!context) {
+    recordWaveformHotTrace("canvas.draw.skip", () => ({
+      backingHeight,
+      backingWidth,
+      reason: "missing-2d-context",
+      viewportWidth,
+    }));
     return;
   }
 
@@ -1974,13 +2331,19 @@ function drawWaveformCanvas(args: {
 
   if (args.status !== "ready" || !args.filePath) {
     drawPlaceholderWaveform(context, viewportWidth);
-    recordWaveformTrace("canvas.draw", {
+    recordWaveformHotTrace("canvas.draw", () => ({
+      backingHeight,
+      backingWidth,
+      cacheSize: args.tileCache.size,
+      devicePixelRatio,
       durationMs:
         readWaveformPerformanceNow(args.canvas.ownerDocument.defaultView) -
         startedAt,
       mode: "placeholder",
+      reason: args.reason ?? null,
+      status: args.status,
       viewportWidth,
-    });
+    }));
     return;
   }
 
@@ -2056,9 +2419,12 @@ function drawWaveformCanvas(args: {
     context.restore();
   }
 
-  recordWaveformTrace("canvas.draw", {
+  recordWaveformHotTrace("canvas.draw", () => ({
+    backingHeight,
+    backingWidth,
     cacheSize: args.tileCache.size,
     dataPixelsPerSecond: plan.dataPixelsPerSecond,
+    devicePixelRatio,
     displayPixelsPerSecond: args.viewport.pixelsPerSecond,
     drawnColumns,
     durationMs:
@@ -2067,6 +2433,7 @@ function drawWaveformCanvas(args: {
     fallbackColumns,
     missingColumns,
     mode: "data",
+    reason: args.reason ?? null,
     renderScale: resolveWaveformRenderScale({
       pixelsPerSecond: args.viewport.pixelsPerSecond,
       renderPixelsPerSecond: plan.dataPixelsPerSecond,
@@ -2092,7 +2459,7 @@ function drawWaveformCanvas(args: {
           ),
         }
       : {}),
-  });
+  }));
 }
 
 function drawPlaceholderWaveform(
@@ -2115,6 +2482,48 @@ function drawPlaceholderWaveform(
   }
   context.stroke();
   context.restore();
+}
+
+function applyWaveformViewportDom(args: {
+  host: HTMLDivElement | null;
+  scrollElements: WaveformScrollElements | null;
+  source: WaveformViewportCommitSource;
+  spacer: HTMLDivElement | null;
+  viewport: WaveformViewportModel;
+}) {
+  const contentWidth = `${args.viewport.contentWidth}px`;
+
+  args.host?.style.setProperty("--waveform-content-width", contentWidth);
+
+  if (args.spacer) {
+    args.spacer.style.width = contentWidth;
+  }
+
+  if (args.scrollElements && args.source !== "scroll") {
+    writeWaveformScrollLeft(args.scrollElements, args.viewport.scrollLeft);
+  }
+}
+
+function resolveWaveformPlayheadCssVariables(args: {
+  pixelsPerSecond: number;
+  positionMs: number | null;
+  scrollLeft: number;
+  viewportWidth: number;
+}) {
+  const playheadX = resolveWaveformPlayheadX({
+    pixelsPerSecond: args.pixelsPerSecond,
+    positionMs: args.positionMs,
+    scrollLeft: args.scrollLeft,
+  });
+  const isVisible =
+    playheadX !== null &&
+    playheadX >= 0 &&
+    playheadX <= Math.max(1, args.viewportWidth);
+
+  return {
+    opacity: isVisible ? "0.86" : "0",
+    x: isVisible ? `${Math.round(playheadX)}px` : "-9999px",
+  };
 }
 
 function handleWaveformViewportWheel(args: {
@@ -2149,14 +2558,14 @@ function handleWaveformViewportWheel(args: {
     viewportWidth,
   });
 
-  recordWaveformTrace("wheel.operation", {
+  recordWaveformHotTrace("wheel.operation", () => ({
     deltaMode: wheelDeltas.deltaMode,
     deltaX: wheelDeltas.deltaX,
     deltaY: wheelDeltas.deltaY,
     intent,
     pixelsPerSecond: args.viewport.pixelsPerSecond,
     scrollLeft: args.viewport.scrollLeft,
-  });
+  }));
 
   if (!shouldPreventWaveformWheelDefault(intent)) {
     return;
@@ -2209,14 +2618,14 @@ function handleWaveformHorizontalPanWheel(args: {
   });
 
   if (!targetFrame.changed) {
-    recordWaveformTrace("wheel.pan", {
+    recordWaveformHotTrace("wheel.pan", () => ({
       actualScrollLeft: previousScrollLeft,
       changed: false,
       contentWidth,
       deltaX: args.deltaX,
       requestedScrollLeft: targetFrame.scrollLeft,
       viewportWidth,
-    });
+    }));
     return;
   }
 
@@ -2227,7 +2636,7 @@ function handleWaveformHorizontalPanWheel(args: {
     scrollLeft: targetFrame.scrollLeft,
     viewportWidth: args.viewport.viewportWidth,
   });
-  recordWaveformTrace("wheel.pan", {
+  recordWaveformHotTrace("wheel.pan", () => ({
     actualScrollLeft: readWaveformScrollLeft(args.scrollElements),
     changed: true,
     contentWidth,
@@ -2241,7 +2650,7 @@ function handleWaveformHorizontalPanWheel(args: {
     viewportScrollLeft: args.scrollElements.viewport.scrollLeft,
     viewportScrollWidth: args.scrollElements.viewport.scrollWidth,
     viewportWidth,
-  });
+  }));
 }
 
 function handleWaveformZoomWheel(args: {
@@ -2284,7 +2693,7 @@ function handleWaveformZoomWheel(args: {
     scrollLeft: frame.scrollLeft,
     viewportWidth: args.viewport.viewportWidth,
   });
-  recordWaveformTrace("wheel.zoom", {
+  recordWaveformHotTrace("wheel.zoom", () => ({
     anchorSeconds: frame.anchorSeconds,
     anchorViewportX,
     contentWidth: frame.contentWidth,
@@ -2292,7 +2701,7 @@ function handleWaveformZoomWheel(args: {
     pixelsPerSecond: frame.pixelsPerSecond,
     scrollLeft: frame.scrollLeft,
     viewportWidth,
-  });
+  }));
 }
 
 function getWaveformScrollElements(
@@ -2379,19 +2788,34 @@ function compareWaveformTileLoadQueueEntries(
 function pruneWaveformTileCache(
   cache: Map<string, WaveformCachedTile>,
   protectedKeys: Set<string>,
-) {
+): WaveformCachePruneResult {
   if (cache.size <= WAVEFORM_DATA_CACHE_LIMIT) {
-    return;
+    return {
+      removedCount: 0,
+      removedSamples: [],
+    };
   }
 
   const removable = Array.from(cache.values())
     .filter((entry) => !protectedKeys.has(entry.key))
     .sort((left, right) => left.lastUsedAt - right.lastUsedAt);
   const removeCount = Math.max(0, cache.size - WAVEFORM_DATA_CACHE_LIMIT);
+  const removed = removable.slice(0, removeCount);
 
-  for (const entry of removable.slice(0, removeCount)) {
+  for (const entry of removed) {
     cache.delete(entry.key);
   }
+
+  return {
+    removedCount: removed.length,
+    removedSamples: sampleWaveformTraceItems(removed, (entry) => ({
+      key: entry.key,
+      pixelsPerSecond: entry.pixelsPerSecond,
+      scopeKey: entry.scopeKey,
+      startPx: entry.data.start_px,
+      widthPx: entry.data.width_px,
+    })),
+  };
 }
 
 function isWaveformTileOverlappingSeconds(args: {
@@ -2630,6 +3054,39 @@ function resolveWaveformDataPixelWindow(args: {
   );
 
   return { endPx, startPx };
+}
+
+const waveformHotTraceLastAt = new Map<string, number>();
+
+function recordWaveformHotTrace(
+  event: string,
+  payload: Record<string, unknown> | (() => Record<string, unknown>),
+) {
+  const now = readWaveformPerformanceNow(
+    typeof window === "undefined" ? null : window,
+  );
+
+  if (!isWaveformTraceDetailEnabled()) {
+    const lastAt =
+      waveformHotTraceLastAt.get(event) ?? Number.NEGATIVE_INFINITY;
+    if (now - lastAt < WAVEFORM_HOT_TRACE_MIN_INTERVAL_MS) {
+      return;
+    }
+    waveformHotTraceLastAt.set(event, now);
+  }
+
+  recordWaveformTrace(
+    event,
+    typeof payload === "function" ? payload() : payload,
+  );
+}
+
+function createWaveformDataPlanSignature(plan: WaveformDataPlan) {
+  return [
+    plan.scopeKey,
+    roundWaveformDataPixelsPerSecondForKey(plan.dataPixelsPerSecond).toFixed(2),
+    plan.requests.map((request) => request.cacheKey).join(","),
+  ].join("|");
 }
 
 function readCanvasWaveformColor(canvas: HTMLCanvasElement) {
