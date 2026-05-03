@@ -33,8 +33,10 @@ import {
   resolveWaveformScrollReadValue,
   resolveWaveformScrollWritePlan,
   resolveWaveformTilePeakAtSeconds,
+  resolveWaveformVerticalBackedHorizontalPanDelta,
   resolveWaveformWheelDeltaX,
   resolveWaveformWheelDeltas,
+  resolveWaveformWheelInput,
   resolveWaveformWheelStreamIntent,
   resolveWaveformWheelOperation,
   resolveWaveformWheelPanContentWidth,
@@ -285,6 +287,100 @@ describe("SpectrumVisualizer", () => {
         kind: "horizontal-pan",
       },
     );
+  });
+
+  test("keeps Logitech reverse horizontal packets in the horizontal input stream", () => {
+    const first = resolveWaveformWheelInput({
+      deltaMode: 0,
+      deltaX: 100,
+      deltaY: 0,
+      horizontalInputContext: {
+        acceptsVerticalBackedHorizontal: false,
+        lastConfirmedDeltaX: null,
+        stream: null,
+      },
+      nowMs: 1_000,
+      shiftKey: false,
+      verticalBackedHorizontalDeltaX: 0,
+      viewportHeight: 200,
+      viewportWidth: 900,
+    });
+    const zeroTail = resolveWaveformWheelInput({
+      deltaMode: 0,
+      deltaX: 0,
+      deltaY: 0,
+      horizontalInputContext: first.horizontalInputContext,
+      nowMs: 1_016,
+      shiftKey: false,
+      verticalBackedHorizontalDeltaX: 0,
+      viewportHeight: 200,
+      viewportWidth: 900,
+    });
+    const reverseCandidate = resolveWaveformVerticalBackedHorizontalPanDelta({
+      deltaX: 0,
+      deltaY: -100,
+      wheelDelta: 120,
+      wheelDeltaX: 0,
+      wheelDeltaY: 120,
+    });
+    const reversed = resolveWaveformWheelInput({
+      deltaMode: 0,
+      deltaX: 0,
+      deltaY: -100,
+      horizontalInputContext: zeroTail.horizontalInputContext,
+      nowMs: 1_120,
+      shiftKey: false,
+      verticalBackedHorizontalDeltaX: reverseCandidate,
+      viewportHeight: 200,
+      viewportWidth: 900,
+    });
+
+    assert.deepEqual(first.intent, {
+      deltaX: 100,
+      kind: "horizontal-pan",
+    });
+    assert.deepEqual(zeroTail.intent, {
+      deltaX: 100,
+      kind: "horizontal-pan",
+    });
+    assert.equal(reverseCandidate, -100);
+    assert.deepEqual(reversed.intent, {
+      deltaX: -100,
+      kind: "horizontal-pan",
+    });
+  });
+
+  test("does not turn isolated vertical-looking packets into horizontal input", () => {
+    const reverseCandidate = resolveWaveformVerticalBackedHorizontalPanDelta({
+      deltaX: 0,
+      deltaY: -100,
+      wheelDelta: 120,
+      wheelDeltaX: 0,
+      wheelDeltaY: 120,
+    });
+    const result = resolveWaveformWheelInput({
+      deltaMode: 0,
+      deltaX: 0,
+      deltaY: -100,
+      horizontalInputContext: {
+        acceptsVerticalBackedHorizontal: false,
+        lastConfirmedDeltaX: null,
+        stream: null,
+      },
+      nowMs: 1_000,
+      shiftKey: false,
+      verticalBackedHorizontalDeltaX: reverseCandidate,
+      viewportHeight: 200,
+      viewportWidth: 900,
+    });
+
+    assert.deepEqual(result.intent, {
+      deltaY: -100,
+      kind: "zoom",
+    });
+    assert.equal(result.horizontalInputContext.acceptsVerticalBackedHorizontal, false);
+    assert.equal(result.horizontalInputContext.lastConfirmedDeltaX, null);
+    assert.equal(result.horizontalInputContext.stream, null);
   });
 
   test("continues zero-delta horizontal wheel tails with the confirmed horizontal step", () => {

@@ -25,7 +25,7 @@ import {
   recordWaveformWheelTrace,
   snapshotWaveformWheelComposedPath,
   snapshotWaveformWheelEvent,
-} from "@/src/debug/waveformWheelTrace";
+} from "../../debug/waveformWheelTrace";
 import { normalizeMediaPathKey } from "../mediaPath";
 
 const WAVEFORM_CANVAS_HEIGHT = 208;
@@ -189,6 +189,12 @@ type WaveformHorizontalWheelStream = {
   startedAtMs: number;
 };
 
+type WaveformHorizontalWheelInputContext = {
+  acceptsVerticalBackedHorizontal: boolean;
+  lastConfirmedDeltaX: number | null;
+  stream: WaveformHorizontalWheelStream | null;
+};
+
 type WaveformWheelStreamResolution = {
   continued: boolean;
   intent: WaveformWheelIntent;
@@ -200,6 +206,16 @@ type WaveformWheelStreamResolution = {
     | "non-horizontal-input"
     | "zero-step-empty";
   state: WaveformHorizontalWheelStream | null;
+};
+
+type WaveformWheelInputResolution = {
+  baseIntent: WaveformWheelIntent;
+  continued: boolean;
+  horizontalInputContext: WaveformHorizontalWheelInputContext;
+  intent: WaveformWheelIntent;
+  streamReason: WaveformWheelStreamResolution["reason"];
+  verticalBackedHorizontalDeltaX: number;
+  zeroSeededFromContext: boolean;
 };
 
 type WaveformWheelTraceEventContext = {
@@ -269,6 +285,10 @@ type WaveformTileLoadQueueEntry = WaveformDataRequest & {
 };
 
 type WaveformScrollElements = Pick<Elements, "scrollOffsetElement" | "viewport">;
+
+type WaveformHorizontalWheelInputWindow = Window & {
+  __waveformHorizontalWheelInputContext?: WaveformHorizontalWheelInputContext;
+};
 
 type WaveformOverlayScrollbarsInstance =
   NonNullable<OverlayScrollbarsComponentRef<"div">["osInstance"]> extends () => infer Instance
@@ -708,7 +728,9 @@ export function resolveWaveformWheelIntent(args: {
 
 export function resolveWaveformWheelOperation(
   args: WaveformWheelDeltas & {
+    allowVerticalBackedHorizontal?: boolean;
     shiftKey: boolean;
+    verticalBackedHorizontalDeltaX?: number;
     viewportHeight: number;
     viewportWidth: number;
   },
@@ -723,12 +745,59 @@ export function resolveWaveformWheelOperation(
     deltaY: args.deltaY,
     viewportHeight: args.viewportHeight,
   });
+  const verticalBackedHorizontalDeltaX =
+    args.allowVerticalBackedHorizontal && !args.shiftKey
+      ? normalizeWheelDeltaY({
+          deltaMode: args.deltaMode,
+          deltaY: args.verticalBackedHorizontalDeltaX ?? 0,
+          viewportHeight: args.viewportHeight,
+        })
+      : 0;
+
+  if (deltaX === 0 && verticalBackedHorizontalDeltaX !== 0) {
+    return {
+      deltaX: verticalBackedHorizontalDeltaX,
+      kind: "horizontal-pan",
+    };
+  }
 
   return resolveWaveformWheelIntent({
     deltaX,
     deltaY,
     shiftKey: args.shiftKey,
   });
+}
+
+export function resolveWaveformVerticalBackedHorizontalPanDelta(args: {
+  deltaX?: number | null;
+  deltaY?: number | null;
+  wheelDelta?: number | null;
+  wheelDeltaX?: number | null;
+  wheelDeltaY?: number | null;
+}) {
+  const nativeDeltaX = resolveFiniteWheelDelta(args.deltaX);
+  const nativeDeltaY = resolveFiniteWheelDelta(args.deltaY);
+  const wheelDelta = resolveFiniteWheelDelta(args.wheelDelta);
+  const wheelDeltaX = resolveFiniteWheelDelta(args.wheelDeltaX);
+  const wheelDeltaY = resolveFiniteWheelDelta(args.wheelDeltaY);
+
+  /**
+   * Logitech horizontal wheel input can arrive as a vertical-looking Chromium
+   * wheel packet in the reverse direction. This function only exposes the
+   * candidate value; accepting it requires a previously confirmed horizontal
+   * input stream so ordinary vertical wheel input remains zoom.
+   */
+  if (
+    nativeDeltaX === 0 &&
+    wheelDeltaX === 0 &&
+    nativeDeltaY < 0 &&
+    wheelDelta > 0 &&
+    wheelDeltaY > 0
+  ) {
+    return nativeDeltaY;
+  }
+
+  return 0;
 }
 
 export function resolveWaveformHorizontalWheelStreamDelta(args: { deltaX: number }) {
@@ -847,6 +916,93 @@ export function resolveWaveformWheelStreamIntent(args: {
       continuedCount: args.state.continuedCount + 1,
       expiresAtMs: args.nowMs + WAVEFORM_ZERO_DELTA_HORIZONTAL_IDLE_MS,
     },
+  };
+}
+
+function createWaveformHorizontalWheelInputContext(
+  seed?: Partial<WaveformHorizontalWheelInputContext>,
+): WaveformHorizontalWheelInputContext {
+  return {
+    acceptsVerticalBackedHorizontal: seed?.acceptsVerticalBackedHorizontal ?? false,
+    lastConfirmedDeltaX: seed?.lastConfirmedDeltaX ?? null,
+    stream: seed?.stream ?? null,
+  };
+}
+
+function resolveWaveformHorizontalInputContextAfterIntent(args: {
+  current: WaveformHorizontalWheelInputContext;
+  intent: WaveformWheelIntent;
+  rawDeltaX: number;
+  shiftKey: boolean;
+  stream: WaveformHorizontalWheelStream | null;
+}): WaveformHorizontalWheelInputContext {
+  if (args.intent.kind === "horizontal-pan") {
+    return {
+      acceptsVerticalBackedHorizontal:
+        !args.shiftKey && args.rawDeltaX !== 0
+          ? true
+          : args.current.acceptsVerticalBackedHorizontal,
+      lastConfirmedDeltaX: args.intent.deltaX,
+      stream: args.stream,
+    };
+  }
+
+  if (args.intent.kind === "zoom") {
+    return {
+      acceptsVerticalBackedHorizontal: false,
+      lastConfirmedDeltaX: null,
+      stream: null,
+    };
+  }
+
+  return {
+    ...args.current,
+    stream: args.stream,
+  };
+}
+
+export function resolveWaveformWheelInput(
+  args: WaveformWheelDeltas & {
+    horizontalInputContext: WaveformHorizontalWheelInputContext;
+    nowMs: number;
+    shiftKey: boolean;
+    verticalBackedHorizontalDeltaX: number;
+    viewportHeight: number;
+    viewportWidth: number;
+  },
+): WaveformWheelInputResolution {
+  /**
+   * The waveform viewport is a virtual coordinate system. Some Logitech
+   * horizontal wheel streams expose their direction once, then continue with
+   * zero-delta wheel packets; Chromium can also expose the reverse direction as
+   * a vertical-looking packet. The input layer turns those packets into one
+   * horizontal-pan stream so the viewport owner is the only horizontal scroll
+   * implementation.
+   */
+  const baseIntent = resolveWaveformWheelOperation({
+    ...args,
+    allowVerticalBackedHorizontal: args.horizontalInputContext.acceptsVerticalBackedHorizontal,
+  });
+  const streamResolution = resolveWaveformWheelStreamIntent({
+    baseIntent,
+    nowMs: args.nowMs,
+    state: args.horizontalInputContext.stream,
+  });
+
+  return {
+    baseIntent,
+    continued: streamResolution.continued,
+    horizontalInputContext: resolveWaveformHorizontalInputContextAfterIntent({
+      current: args.horizontalInputContext,
+      intent: streamResolution.intent,
+      rawDeltaX: args.deltaX,
+      shiftKey: args.shiftKey,
+      stream: streamResolution.state,
+    }),
+    intent: streamResolution.intent,
+    streamReason: streamResolution.reason,
+    verticalBackedHorizontalDeltaX: args.verticalBackedHorizontalDeltaX,
+    zeroSeededFromContext: false,
   };
 }
 
@@ -1426,7 +1582,9 @@ function TrackSpectrumSession(props: {
   const traceInitialSnapshotRef = useRef<WaveformTraceInitialSnapshot>(null);
   const viewportRef = useRef<WaveformViewportModel | null>(null);
   const wheelTraceEventContextRef = useRef<WaveformWheelTraceEventContext>(null);
-  const horizontalWheelStreamRef = useRef<WaveformHorizontalWheelStream | null>(null);
+  const horizontalWheelInputContextRef = useRef<WaveformHorizontalWheelInputContext>(
+    createWaveformHorizontalWheelInputContext(),
+  );
   const tileCacheRef = useRef(new Map<string, WaveformCachedTile>());
   const overscanTimerRef = useRef<number | null>(null);
   const [loadingGridSize, setLoadingGridSize] = useState<WaveformLoadingGridSize>(() =>
@@ -1457,6 +1615,12 @@ function TrackSpectrumSession(props: {
       },
       waveformStatus: waveformState.status,
     };
+  }
+  if (typeof window !== "undefined") {
+    const inputWindow = window as WaveformHorizontalWheelInputWindow;
+    horizontalWheelInputContextRef.current =
+      inputWindow.__waveformHorizontalWheelInputContext ?? horizontalWheelInputContextRef.current;
+    inputWindow.__waveformHorizontalWheelInputContext = horizontalWheelInputContextRef.current;
   }
 
   if (viewportRef.current === null) {
@@ -1698,12 +1862,12 @@ function TrackSpectrumSession(props: {
       recordWaveformWheelTrace("viewport-wheel-owner-entry", {
         event: eventSnapshot,
         host: hostRef.current ? describeWaveformHostElement(hostRef.current) : null,
-        horizontalWheelStream: horizontalWheelStreamRef.current,
         osInstance: describeWaveformOverlayScrollbarsInstance(scrollbarsRef.current?.osInstance()),
         scroll: scrollElements ? describeWaveformScrollElements(scrollElements) : null,
         sessionId: traceSessionIdRef.current,
         viewport: current ? describeWaveformViewport(current) : null,
         waveformStatus: waveformState.status,
+        horizontalWheelInputContext: horizontalWheelInputContextRef.current,
       });
 
       if (!scrollElements || !current) {
@@ -1732,7 +1896,7 @@ function TrackSpectrumSession(props: {
         scrollElements,
         traceContext: wheelTraceEventContextRef.current,
         viewport: current,
-        horizontalWheelStreamRef,
+        horizontalWheelInputContextRef,
       });
       wheelTraceEventContextRef.current = null;
     },
@@ -3418,7 +3582,7 @@ function recordWaveformViewportNextFrameTrace(args: {
 function handleWaveformViewportWheel(args: {
   commitViewport: (state: WaveformViewportState) => void;
   event: WheelEvent;
-  horizontalWheelStreamRef: RefObject<WaveformHorizontalWheelStream | null>;
+  horizontalWheelInputContextRef: RefObject<WaveformHorizontalWheelInputContext>;
   scrollElements: WaveformScrollElements;
   traceContext: NonNullable<WaveformWheelTraceEventContext>;
   viewport: WaveformViewportModel;
@@ -3444,22 +3608,31 @@ function handleWaveformViewportWheel(args: {
     wheelDeltaX: readWaveformWheelNumber(args.event, "wheelDeltaX", 0),
     wheelDeltaY: readWaveformWheelNumber(args.event, "wheelDeltaY", 0),
   });
-  const baseIntent = resolveWaveformWheelOperation({
+  const wheelInput = resolveWaveformWheelInput({
     ...wheelDeltas,
+    horizontalInputContext: args.horizontalWheelInputContextRef.current,
+    nowMs: args.event.timeStamp,
     shiftKey: args.event.shiftKey,
+    verticalBackedHorizontalDeltaX: resolveWaveformVerticalBackedHorizontalPanDelta({
+      deltaX: readWaveformWheelNumber(args.event, "deltaX", 0),
+      deltaY: readWaveformWheelNumber(args.event, "deltaY", 0),
+      wheelDelta: readWaveformWheelNumber(args.event, "wheelDelta", 0),
+      wheelDeltaX: readWaveformWheelNumber(args.event, "wheelDeltaX", 0),
+      wheelDeltaY: readWaveformWheelNumber(args.event, "wheelDeltaY", 0),
+    }),
     viewportHeight,
     viewportWidth,
   });
-  const streamResolution = resolveWaveformWheelStreamIntent({
-    baseIntent,
-    nowMs: args.event.timeStamp,
-    state: args.horizontalWheelStreamRef.current,
-  });
-  args.horizontalWheelStreamRef.current = streamResolution.state;
-  const intent = streamResolution.intent;
+  args.horizontalWheelInputContextRef.current = wheelInput.horizontalInputContext;
+  const ownerWindow = args.scrollElements.viewport.ownerDocument.defaultView;
+  if (ownerWindow) {
+    (ownerWindow as WaveformHorizontalWheelInputWindow).__waveformHorizontalWheelInputContext =
+      wheelInput.horizontalInputContext;
+  }
+  const intent = wheelInput.intent;
   recordWaveformWheelTrace("viewport-wheel", {
-    baseIntent,
-    continuedIntent: streamResolution.continued,
+    baseIntent: wheelInput.baseIntent,
+    continuedIntent: wheelInput.continued,
     defaultPreventedBefore: args.event.defaultPrevented,
     event: snapshotWaveformWheelEvent(args.event),
     intent,
@@ -3481,16 +3654,19 @@ function handleWaveformViewportWheel(args: {
     scroll: describeWaveformScrollElements(args.scrollElements),
     traceContext: args.traceContext,
     viewport: describeWaveformViewport(args.viewport),
-    horizontalWheelStream: streamResolution.state,
-    streamReason: streamResolution.reason,
+    horizontalWheelInputContext: wheelInput.horizontalInputContext,
+    horizontalWheelStream: wheelInput.horizontalInputContext.stream,
+    streamReason: wheelInput.streamReason,
+    verticalBackedHorizontalDeltaX: wheelInput.verticalBackedHorizontalDeltaX,
     wheelDeltas,
+    zeroSeededFromContext: wheelInput.zeroSeededFromContext,
   });
 
   if (!shouldPreventWaveformWheelDefault(intent)) {
     recordWaveformWheelTrace("viewport-wheel-skip", {
       intent,
       reason: "none-intent",
-      streamReason: streamResolution.reason,
+      streamReason: wheelInput.streamReason,
       traceContext: args.traceContext,
     });
     recordWaveformWheelPostDefaultTrace({
@@ -3504,10 +3680,10 @@ function handleWaveformViewportWheel(args: {
 
   args.event.preventDefault();
   recordWaveformWheelTrace("viewport-wheel-prevented", {
-    continuedIntent: streamResolution.continued,
+    continuedIntent: wheelInput.continued,
     defaultPreventedAfter: args.event.defaultPrevented,
     intent,
-    streamReason: streamResolution.reason,
+    streamReason: wheelInput.streamReason,
     traceContext: args.traceContext,
   });
   recordWaveformViewportNextFrameTrace({
