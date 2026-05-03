@@ -330,6 +330,7 @@ describe("SpectrumVisualizer", () => {
         intent: {
           kind: "none",
         },
+        reason: "expired-zero-tail",
         state: null,
       },
     );
@@ -384,6 +385,7 @@ describe("SpectrumVisualizer", () => {
         intent: {
           kind: "none",
         },
+        reason: "expired-zero-tail",
         state: null,
       },
     );
@@ -423,9 +425,142 @@ describe("SpectrumVisualizer", () => {
         intent: {
           kind: "none",
         },
+        reason: "expired-zero-tail",
         state: null,
       },
     );
+  });
+
+  test("does not reuse a stale horizontal pulse for later zero-delta wheel packets", () => {
+    const started = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        deltaX: 100,
+        kind: "horizontal-pan",
+      },
+      nowMs: 1_000,
+      state: null,
+    });
+
+    const revived = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        kind: "none",
+      },
+      nowMs: 42_000,
+      state: started.state,
+    });
+
+    assert.equal(revived.reason, "expired-zero-tail");
+    assert.equal(revived.continued, false);
+    assert.deepEqual(revived.intent, {
+      kind: "none",
+    });
+    assert.equal(revived.state, null);
+  });
+
+  test("ends horizontal pulse reuse after non-horizontal wheel input", () => {
+    const started = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        deltaX: 100,
+        kind: "horizontal-pan",
+      },
+      nowMs: 1_000,
+      state: null,
+    });
+    const zoomed = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        deltaY: -100,
+        kind: "zoom",
+      },
+      nowMs: 1_100,
+      state: started.state,
+    });
+
+    assert.equal(zoomed.reason, "non-horizontal-input");
+    assert.deepEqual(zoomed.intent, {
+      deltaY: -100,
+      kind: "zoom",
+    });
+    assert.equal(zoomed.state, null);
+
+    assert.deepEqual(
+      resolveWaveformWheelStreamIntent({
+        baseIntent: {
+          kind: "none",
+        },
+        nowMs: 1_120,
+        state: zoomed.state,
+      }),
+      {
+        continued: false,
+        intent: {
+          kind: "none",
+        },
+        reason: "empty-zero",
+        state: null,
+      },
+    );
+  });
+
+  test("does not treat explicit vertical wheel packets as horizontal", () => {
+    const started = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        deltaX: 100,
+        kind: "horizontal-pan",
+      },
+      nowMs: 1_000,
+      state: null,
+    });
+    const continued = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        deltaY: -100,
+        kind: "zoom",
+      },
+      nowMs: 1_100,
+      state: started.state,
+    });
+
+    assert.equal(continued.reason, "non-horizontal-input");
+    assert.equal(continued.continued, false);
+    assert.deepEqual(continued.intent, {
+      deltaY: -100,
+      kind: "zoom",
+    });
+    assert.equal(continued.state, null);
+  });
+
+  test("lets a later confirmed horizontal pulse replace the old direction", () => {
+    const started = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        deltaX: 100,
+        kind: "horizontal-pan",
+      },
+      nowMs: 1_000,
+      state: null,
+    });
+    const reversed = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        deltaX: -100,
+        kind: "horizontal-pan",
+      },
+      nowMs: 1_120,
+      state: started.state,
+    });
+    const zeroTail = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        kind: "none",
+      },
+      nowMs: 1_130,
+      state: reversed.state,
+    });
+
+    assert.deepEqual(reversed.intent, {
+      deltaX: -100,
+      kind: "horizontal-pan",
+    });
+    assert.deepEqual(zeroTail.intent, {
+      deltaX: -100,
+      kind: "horizontal-pan",
+    });
   });
 
   test("clamps horizontal pan to the scrollable waveform bounds", () => {

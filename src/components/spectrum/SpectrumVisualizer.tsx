@@ -95,6 +95,8 @@ const PLAYBACK_STATUS_POLL_MS = 250;
 const WAVEFORM_VIEWPORT_POSITION_EPSILON_PX = 0.000001;
 const WAVEFORM_WHEEL_AXIS_NOISE_RATIO = 0.66;
 
+let waveformTraceSessionSequence = 0;
+
 type WaveformStatus = "idle" | "loading" | "ready" | "error";
 
 type PlaybackSnapshot = PlaybackStatusPayload & {
@@ -190,13 +192,32 @@ type WaveformHorizontalWheelStream = {
 type WaveformWheelStreamResolution = {
   continued: boolean;
   intent: WaveformWheelIntent;
+  reason:
+    | "active-zero-tail"
+    | "empty-zero"
+    | "expired-zero-tail"
+    | "horizontal-input"
+    | "non-horizontal-input"
+    | "zero-step-empty";
   state: WaveformHorizontalWheelStream | null;
 };
 
 type WaveformWheelTraceEventContext = {
+  defaultPreventedAtOwnerEntry: boolean | null;
+  eventTraceId: number | null;
+  sessionId: number;
   timeStamp: number;
   type: string;
 } | null;
+
+type WaveformTraceInitialSnapshot = {
+  props: {
+    end: number | null;
+    filePath: string | null;
+    start: number | null;
+  };
+  waveformStatus: WaveformStatus;
+};
 
 type WaveformViewportCommitSource = "scroll" | "wheel" | "resize" | "summary";
 
@@ -721,6 +742,37 @@ export function resolveWaveformHorizontalWheelStreamDelta(args: { deltaX: number
   return direction * magnitude;
 }
 
+function createWaveformHorizontalWheelStream(args: {
+  deltaX: number;
+  nowMs: number;
+}): WaveformHorizontalWheelStream | null {
+  const deltaX = resolveWaveformHorizontalWheelStreamDelta({
+    deltaX: args.deltaX,
+  });
+
+  if (Math.abs(deltaX) < WAVEFORM_VIEWPORT_POSITION_EPSILON_PX) {
+    return null;
+  }
+
+  return {
+    continuedCount: 0,
+    deltaX,
+    expiresAtMs: args.nowMs + WAVEFORM_ZERO_DELTA_HORIZONTAL_IDLE_MS,
+    startedAtMs: args.nowMs,
+  };
+}
+
+function isWaveformHorizontalWheelStreamActive(args: {
+  nowMs: number;
+  state: WaveformHorizontalWheelStream;
+}) {
+  return (
+    args.nowMs <= args.state.expiresAtMs &&
+    args.nowMs - args.state.startedAtMs <= WAVEFORM_ZERO_DELTA_HORIZONTAL_MAX_DURATION_MS &&
+    args.state.continuedCount < WAVEFORM_ZERO_DELTA_HORIZONTAL_MAX_CONTINUED_EVENTS
+  );
+}
+
 export function resolveWaveformWheelStreamIntent(args: {
   baseIntent: WaveformWheelIntent;
   nowMs: number;
@@ -730,31 +782,42 @@ export function resolveWaveformWheelStreamIntent(args: {
     return {
       continued: false,
       intent: args.baseIntent,
-      state: {
-        continuedCount: 0,
-        deltaX: resolveWaveformHorizontalWheelStreamDelta({
-          deltaX: args.baseIntent.deltaX,
-        }),
-        expiresAtMs: args.nowMs + WAVEFORM_ZERO_DELTA_HORIZONTAL_IDLE_MS,
-        startedAtMs: args.nowMs,
-      },
+      reason: "horizontal-input",
+      state: createWaveformHorizontalWheelStream({
+        deltaX: args.baseIntent.deltaX,
+        nowMs: args.nowMs,
+      }),
     };
   }
 
-  const streamExpiredByDuration =
-    !!args.state &&
-    args.nowMs - args.state.startedAtMs > WAVEFORM_ZERO_DELTA_HORIZONTAL_MAX_DURATION_MS;
+  if (args.baseIntent.kind !== "none") {
+    return {
+      continued: false,
+      intent: args.baseIntent,
+      reason: "non-horizontal-input",
+      state: null,
+    };
+  }
+
+  if (!args.state) {
+    return {
+      continued: false,
+      intent: args.baseIntent,
+      reason: "empty-zero",
+      state: null,
+    };
+  }
 
   if (
-    args.baseIntent.kind !== "none" ||
-    !args.state ||
-    args.nowMs > args.state.expiresAtMs ||
-    streamExpiredByDuration ||
-    args.state.continuedCount >= WAVEFORM_ZERO_DELTA_HORIZONTAL_MAX_CONTINUED_EVENTS
+    !isWaveformHorizontalWheelStreamActive({
+      nowMs: args.nowMs,
+      state: args.state,
+    })
   ) {
     return {
       continued: false,
       intent: args.baseIntent,
+      reason: "expired-zero-tail",
       state: null,
     };
   }
@@ -767,6 +830,7 @@ export function resolveWaveformWheelStreamIntent(args: {
     return {
       continued: false,
       intent: args.baseIntent,
+      reason: "zero-step-empty",
       state: null,
     };
   }
@@ -777,11 +841,11 @@ export function resolveWaveformWheelStreamIntent(args: {
       deltaX,
       kind: "horizontal-pan",
     },
+    reason: "active-zero-tail",
     state: {
+      ...args.state,
       continuedCount: args.state.continuedCount + 1,
-      deltaX: args.state.deltaX,
       expiresAtMs: args.nowMs + WAVEFORM_ZERO_DELTA_HORIZONTAL_IDLE_MS,
-      startedAtMs: args.state.startedAtMs,
     },
   };
 }
@@ -1358,6 +1422,8 @@ function TrackSpectrumSession(props: {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const loadingCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const spacerRef = useRef<HTMLDivElement | null>(null);
+  const traceSessionIdRef = useRef(0);
+  const traceInitialSnapshotRef = useRef<WaveformTraceInitialSnapshot>(null);
   const viewportRef = useRef<WaveformViewportModel | null>(null);
   const wheelTraceEventContextRef = useRef<WaveformWheelTraceEventContext>(null);
   const horizontalWheelStreamRef = useRef<WaveformHorizontalWheelStream | null>(null);
@@ -1379,6 +1445,19 @@ function TrackSpectrumSession(props: {
   const maximumPixelsPerSecond = resolveWaveformRenderPixelsPerSecond({
     summary: waveformState.summary,
   });
+  if (traceSessionIdRef.current === 0) {
+    traceSessionIdRef.current = ++waveformTraceSessionSequence;
+  }
+  if (traceInitialSnapshotRef.current === null) {
+    traceInitialSnapshotRef.current = {
+      props: {
+        end: props.end,
+        filePath: props.filePath,
+        start: props.start,
+      },
+      waveformStatus: waveformState.status,
+    };
+  }
 
   if (viewportRef.current === null) {
     const viewportWidth = 1;
@@ -1615,19 +1694,35 @@ function TrackSpectrumSession(props: {
     (event: Event) => {
       const scrollElements = getWaveformScrollElements(scrollbarsRef);
       const current = viewportRef.current;
+      const eventSnapshot = snapshotWaveformWheelEvent(event as WheelEvent);
+      recordWaveformWheelTrace("viewport-wheel-owner-entry", {
+        event: eventSnapshot,
+        host: hostRef.current ? describeWaveformHostElement(hostRef.current) : null,
+        horizontalWheelStream: horizontalWheelStreamRef.current,
+        osInstance: describeWaveformOverlayScrollbarsInstance(scrollbarsRef.current?.osInstance()),
+        scroll: scrollElements ? describeWaveformScrollElements(scrollElements) : null,
+        sessionId: traceSessionIdRef.current,
+        viewport: current ? describeWaveformViewport(current) : null,
+        waveformStatus: waveformState.status,
+      });
+
       if (!scrollElements || !current) {
         recordWaveformWheelTrace("viewport-wheel-missing-context", {
-          event: snapshotWaveformWheelEvent(event as WheelEvent),
+          event: eventSnapshot,
           hasCurrent: !!current,
           hasScrollElements: !!scrollElements,
           osInstance: describeWaveformOverlayScrollbarsInstance(
             scrollbarsRef.current?.osInstance(),
           ),
+          sessionId: traceSessionIdRef.current,
         });
         return;
       }
 
       wheelTraceEventContextRef.current = {
+        defaultPreventedAtOwnerEntry: eventSnapshot.defaultPrevented,
+        eventTraceId: eventSnapshot.eventTraceId,
+        sessionId: traceSessionIdRef.current,
         timeStamp: (event as WheelEvent).timeStamp,
         type: event.type,
       };
@@ -1635,13 +1730,78 @@ function TrackSpectrumSession(props: {
         commitViewport,
         event: event as WheelEvent,
         scrollElements,
+        traceContext: wheelTraceEventContextRef.current,
         viewport: current,
         horizontalWheelStreamRef,
       });
       wheelTraceEventContextRef.current = null;
     },
-    [commitViewport],
+    [commitViewport, waveformState.status],
   );
+
+  useLayoutEffect(() => {
+    const mountedHost = hostRef.current;
+    const mountedSnapshot =
+      traceInitialSnapshotRef.current ??
+      ({
+        props: {
+          end: null,
+          filePath: null,
+          start: null,
+        },
+        waveformStatus: "idle",
+      } satisfies WaveformTraceInitialSnapshot);
+    const mountedSessionId = traceSessionIdRef.current;
+    recordWaveformWheelTrace("track-spectrum-session-mounted", {
+      host: mountedHost ? describeWaveformHostElement(mountedHost) : null,
+      osInstance: describeWaveformOverlayScrollbarsInstance(scrollbarsRef.current?.osInstance()),
+      props: mountedSnapshot.props,
+      scroll: describeNullableWaveformScrollElements(getWaveformScrollElements(scrollbarsRef)),
+      sessionId: mountedSessionId,
+      viewport: viewportRef.current ? describeWaveformViewport(viewportRef.current) : null,
+      waveformStatus: mountedSnapshot.waveformStatus,
+    });
+
+    return () => {
+      recordWaveformWheelTrace("track-spectrum-session-unmounted", {
+        host: mountedHost ? describeWaveformHostElement(mountedHost) : null,
+        scroll: describeNullableWaveformScrollElements(getWaveformScrollElements(scrollbarsRef)),
+        sessionId: mountedSessionId,
+        viewport: viewportRef.current ? describeWaveformViewport(viewportRef.current) : null,
+        waveformStatus: mountedSnapshot.waveformStatus,
+      });
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    recordWaveformWheelTrace("track-spectrum-session-state", {
+      host: hostRef.current ? describeWaveformHostElement(hostRef.current) : null,
+      maximumPixelsPerSecond,
+      props: {
+        end: props.end,
+        filePath: props.filePath,
+        start: props.start,
+      },
+      scroll: describeNullableWaveformScrollElements(getWaveformScrollElements(scrollbarsRef)),
+      sessionId: traceSessionIdRef.current,
+      summary: {
+        cacheKey: waveformState.summary.cache_key,
+        durationMs: waveformState.summary.duration_ms,
+        levels: waveformState.summary.levels,
+      },
+      viewport: viewportRef.current ? describeWaveformViewport(viewportRef.current) : null,
+      waveformStatus: waveformState.status,
+    });
+  }, [
+    maximumPixelsPerSecond,
+    props.end,
+    props.filePath,
+    props.start,
+    waveformState.status,
+    waveformState.summary.cache_key,
+    waveformState.summary.duration_ms,
+    waveformState.summary.levels,
+  ]);
 
   useLayoutEffect(() => {
     const current = viewportRef.current;
@@ -1686,7 +1846,21 @@ function TrackSpectrumSession(props: {
       );
 
       const current = viewportRef.current;
+      recordWaveformWheelTrace("viewport-resize-measure", {
+        current: current ? describeWaveformViewport(current) : null,
+        host: describeWaveformHostElement(host),
+        nextLoadingGridSize,
+        nextViewportWidth,
+        scroll: describeNullableWaveformScrollElements(getWaveformScrollElements(scrollbarsRef)),
+        sessionId: traceSessionIdRef.current,
+      });
       if (!current || current.viewportWidth === nextViewportWidth) {
+        recordWaveformWheelTrace("viewport-resize-skip", {
+          current: current ? describeWaveformViewport(current) : null,
+          nextViewportWidth,
+          reason: current ? "unchanged" : "missing-current",
+          sessionId: traceSessionIdRef.current,
+        });
         return;
       }
 
@@ -1756,6 +1930,7 @@ function TrackSpectrumSession(props: {
       host: describeWaveformHostElement(host),
       osInstance: describeWaveformOverlayScrollbarsInstance(scrollbarsRef.current?.osInstance()),
       scroll: describeNullableWaveformScrollElements(getWaveformScrollElements(scrollbarsRef)),
+      sessionId: traceSessionIdRef.current,
     });
     host.addEventListener("wheel", handleWheel, {
       capture: true,
@@ -1769,6 +1944,7 @@ function TrackSpectrumSession(props: {
     return () => {
       recordWaveformWheelTrace("viewport-wheel-listeners-detached", {
         host: describeWaveformHostElement(host),
+        sessionId: traceSessionIdRef.current,
       });
       host.removeEventListener("wheel", handleWheel, true);
       host.removeEventListener("mousewheel", handleWheel, true);
@@ -3244,6 +3420,7 @@ function handleWaveformViewportWheel(args: {
   event: WheelEvent;
   horizontalWheelStreamRef: RefObject<WaveformHorizontalWheelStream | null>;
   scrollElements: WaveformScrollElements;
+  traceContext: NonNullable<WaveformWheelTraceEventContext>;
   viewport: WaveformViewportModel;
 }) {
   const viewportHeight = Math.max(
@@ -3254,6 +3431,7 @@ function handleWaveformViewportWheel(args: {
   recordWaveformWheelTrace("viewport-wheel-enter", {
     event: snapshotWaveformWheelEvent(args.event),
     overlayscrollbarsScroll: describeWaveformScrollElements(args.scrollElements),
+    traceContext: args.traceContext,
     viewport: describeWaveformViewport(args.viewport),
   });
   const wheelDeltas = resolveWaveformWheelDeltas({
@@ -3301,8 +3479,10 @@ function handleWaveformViewportWheel(args: {
     },
     path: snapshotWaveformWheelComposedPath(args.event),
     scroll: describeWaveformScrollElements(args.scrollElements),
+    traceContext: args.traceContext,
     viewport: describeWaveformViewport(args.viewport),
     horizontalWheelStream: streamResolution.state,
+    streamReason: streamResolution.reason,
     wheelDeltas,
   });
 
@@ -3310,6 +3490,8 @@ function handleWaveformViewportWheel(args: {
     recordWaveformWheelTrace("viewport-wheel-skip", {
       intent,
       reason: "none-intent",
+      streamReason: streamResolution.reason,
+      traceContext: args.traceContext,
     });
     recordWaveformWheelPostDefaultTrace({
       event: args.event,
@@ -3325,6 +3507,8 @@ function handleWaveformViewportWheel(args: {
     continuedIntent: streamResolution.continued,
     defaultPreventedAfter: args.event.defaultPrevented,
     intent,
+    streamReason: streamResolution.reason,
+    traceContext: args.traceContext,
   });
   recordWaveformViewportNextFrameTrace({
     label: "viewport-wheel-next-frame-after-prevented",
