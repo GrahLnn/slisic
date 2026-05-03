@@ -3,7 +3,6 @@ import { describe, test } from "node:test";
 import type { TrackWaveformSummary } from "@/src/cmd";
 import {
   clampWaveformZoomDeltaY,
-  createWaveformLoadingGridCells,
   createWaveformDataRequestKey,
   createWaveformDataScopeKey,
   hasWaveformViewportPositionChanged,
@@ -36,12 +35,14 @@ import {
   resolveWaveformTilePeakAtSeconds,
   resolveWaveformWheelDeltaX,
   resolveWaveformWheelDeltas,
+  resolveWaveformWheelStreamIntent,
   resolveWaveformWheelOperation,
   resolveWaveformWheelPanContentWidth,
   resolveWaveformWheelPanDelta,
   resolveWaveformWheelPixelsPerSecond,
   resolveWaveformZoomFrame,
   resolveWaveformZoomScaleFrame,
+  shouldPreventWaveformWheelDefault,
 } from "./SpectrumVisualizer";
 
 function createWaveformTestSummary(overrides: Partial<TrackWaveformSummary> = {}) {
@@ -85,32 +86,6 @@ describe("SpectrumVisualizer", () => {
     });
     assert.ok(wide.columns > compact.columns);
     assert.ok(wide.rows > compact.rows);
-  });
-
-  test("builds stable waveform loading cells inside opacity bounds", () => {
-    const size = {
-      columns: 10,
-      rows: 5,
-    };
-    const cells = createWaveformLoadingGridCells(size);
-    const repeatedCells = createWaveformLoadingGridCells(size);
-
-    assert.equal(cells.length, size.columns * size.rows);
-    assert.deepEqual(
-      cells.map((cell) => cell.key),
-      repeatedCells.map((cell) => cell.key),
-    );
-    assert.deepEqual(cells, repeatedCells);
-    assert.ok(
-      cells.every(
-        (cell) =>
-          cell.opacity >= 0.1 &&
-          cell.opacity <= 0.84 &&
-          cell.delayMs >= 0 &&
-          cell.durationMs >= 620 &&
-          cell.durationMs <= 1_080,
-      ),
-    );
   });
 
   test("keeps waveform at least as wide as the viewport", () => {
@@ -234,6 +209,29 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
+  test("prevents default scrolling for every concrete waveform wheel operation", () => {
+    assert.equal(
+      shouldPreventWaveformWheelDefault({
+        deltaX: 100,
+        kind: "horizontal-pan",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldPreventWaveformWheelDefault({
+        deltaY: 100,
+        kind: "zoom",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldPreventWaveformWheelDefault({
+        kind: "none",
+      }),
+      false,
+    );
+  });
+
   test("recovers horizontal wheel deltas from legacy horizontal axis fields", () => {
     assert.equal(
       resolveWaveformWheelDeltaX({
@@ -254,6 +252,178 @@ describe("SpectrumVisualizer", () => {
         deltaMode: 0,
         deltaX: 100,
         deltaY: 0,
+      },
+    );
+  });
+
+  test("does not synthesize zoom input from legacy horizontal wheel fields", () => {
+    assert.deepEqual(
+      resolveWaveformWheelDeltas({
+        deltaX: 100,
+        deltaY: 0,
+        wheelDelta: -120,
+        wheelDeltaX: -120,
+        wheelDeltaY: 0,
+      }),
+      {
+        deltaMode: 0,
+        deltaX: 100,
+        deltaY: 0,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelOperation({
+        deltaMode: 0,
+        deltaX: 100,
+        deltaY: 0,
+        shiftKey: false,
+        viewportHeight: 200,
+        viewportWidth: 900,
+      }),
+      {
+        deltaX: 100,
+        kind: "horizontal-pan",
+      },
+    );
+  });
+
+  test("continues zero-delta horizontal wheel tails with the confirmed horizontal step", () => {
+    const started = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        deltaX: 100,
+        kind: "horizontal-pan",
+      },
+      nowMs: 1_000,
+      state: null,
+    });
+
+    assert.equal(started.continued, false);
+    assert.deepEqual(started.intent, {
+      deltaX: 100,
+      kind: "horizontal-pan",
+    });
+
+    const continued = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        kind: "none",
+      },
+      nowMs: 1_016,
+      state: started.state,
+    });
+
+    assert.equal(continued.continued, true);
+    assert.deepEqual(continued.intent, {
+      deltaX: 100,
+      kind: "horizontal-pan",
+    });
+
+    assert.deepEqual(
+      resolveWaveformWheelStreamIntent({
+        baseIntent: {
+          kind: "none",
+        },
+        nowMs: 2_000,
+        state: continued.state,
+      }),
+      {
+        continued: false,
+        intent: {
+          kind: "none",
+        },
+        state: null,
+      },
+    );
+  });
+
+  test("keeps zero-delta horizontal wheel tails alive while the wheel event stream continues", () => {
+    let resolution = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        deltaX: 100,
+        kind: "horizontal-pan",
+      },
+      nowMs: 1_000,
+      state: null,
+    });
+
+    for (let index = 0; index < 96; index += 1) {
+      resolution = resolveWaveformWheelStreamIntent({
+        baseIntent: {
+          kind: "none",
+        },
+        nowMs: 1_016 + index * 22,
+        state: resolution.state,
+      });
+      assert.equal(resolution.continued, true);
+      assert.deepEqual(resolution.intent, {
+        deltaX: 100,
+        kind: "horizontal-pan",
+      });
+    }
+  });
+
+  test("stops continuing zero-delta horizontal wheel tails when the stream goes idle", () => {
+    const started = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        deltaX: 100,
+        kind: "horizontal-pan",
+      },
+      nowMs: 1_000,
+      state: null,
+    });
+
+    assert.deepEqual(
+      resolveWaveformWheelStreamIntent({
+        baseIntent: {
+          kind: "none",
+        },
+        nowMs: 1_451,
+        state: started.state,
+      }),
+      {
+        continued: false,
+        intent: {
+          kind: "none",
+        },
+        state: null,
+      },
+    );
+  });
+
+  test("stops continuing zero-delta horizontal wheel tails at the stream duration bound", () => {
+    let resolution = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        deltaX: 100,
+        kind: "horizontal-pan",
+      },
+      nowMs: 1_000,
+      state: null,
+    });
+
+    for (let nowMs = 1_030; nowMs <= 5_980; nowMs += 330) {
+      resolution = resolveWaveformWheelStreamIntent({
+        baseIntent: {
+          kind: "none",
+        },
+        nowMs,
+        state: resolution.state,
+      });
+      assert.equal(resolution.continued, true);
+    }
+
+    assert.deepEqual(
+      resolveWaveformWheelStreamIntent({
+        baseIntent: {
+          kind: "none",
+        },
+        nowMs: 6_030,
+        state: resolution.state,
+      }),
+      {
+        continued: false,
+        intent: {
+          kind: "none",
+        },
+        state: null,
       },
     );
   });
