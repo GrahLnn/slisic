@@ -493,6 +493,33 @@ export function resolveWaveformWheelPanDelta(args: { deltaX: number }) {
   return args.deltaX;
 }
 
+/**
+ * Shift+Wheel is an input-axis projection for this virtual viewport. Unit
+ * conversion and intent selection remain separate so vertical zoom and
+ * horizontal pan keep one owner each.
+ */
+export function resolveWaveformWheelAxisDeltas(
+  args: WaveformWheelDeltas & {
+    shiftKey?: boolean;
+  },
+): WaveformWheelDeltas {
+  const shouldProjectVerticalToHorizontal = args.shiftKey === true && args.deltaX === 0;
+
+  if (!shouldProjectVerticalToHorizontal) {
+    return {
+      deltaMode: args.deltaMode,
+      deltaX: args.deltaX,
+      deltaY: args.deltaY,
+    };
+  }
+
+  return {
+    deltaMode: args.deltaMode,
+    deltaX: args.deltaY,
+    deltaY: 0,
+  };
+}
+
 export function resolveWaveformWheelIntent(args: {
   deltaX: number;
   deltaY: number;
@@ -538,11 +565,18 @@ export function resolveWaveformWheelPixelDeltas(
 
 export function resolveWaveformWheelOperation(
   args: WaveformWheelDeltas & {
+    shiftKey?: boolean;
     viewportHeight: number;
     viewportWidth: number;
   },
 ): WaveformWheelIntent {
-  return resolveWaveformWheelIntent(resolveWaveformWheelPixelDeltas(args));
+  return resolveWaveformWheelIntent(
+    resolveWaveformWheelPixelDeltas({
+      ...resolveWaveformWheelAxisDeltas(args),
+      viewportHeight: args.viewportHeight,
+      viewportWidth: args.viewportWidth,
+    }),
+  );
 }
 
 export function resolveWaveformWheelStreamIntent(args: {
@@ -2551,7 +2585,10 @@ function handleWaveformViewportWheel(args: {
     deltaY: readWaveformWheelNumber(args.event, "deltaY", 0),
   });
   const pixelDeltas = resolveWaveformWheelPixelDeltas({
-    ...wheelDeltas,
+    ...resolveWaveformWheelAxisDeltas({
+      ...wheelDeltas,
+      shiftKey: args.event.shiftKey,
+    }),
     viewportHeight,
     viewportWidth,
   });

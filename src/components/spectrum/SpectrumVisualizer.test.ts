@@ -30,6 +30,7 @@ import {
   resolveWaveformRenderPixelsPerSecond,
   resolveWaveformRenderScale,
   resolveWaveformTilePeakAtSeconds,
+  resolveWaveformWheelAxisDeltas,
   resolveWaveformWheelDeltaX,
   resolveWaveformWheelDeltas,
   resolveWaveformWheelOperation,
@@ -199,6 +200,62 @@ describe("SpectrumVisualizer", () => {
       {
         deltaY: 80,
         kind: "zoom",
+      },
+    );
+  });
+
+  test("projects shift vertical wheel input onto the horizontal waveform axis", () => {
+    assert.deepEqual(
+      resolveWaveformWheelAxisDeltas({
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: 100,
+        shiftKey: true,
+      }),
+      {
+        deltaMode: 0,
+        deltaX: 100,
+        deltaY: 0,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelAxisDeltas({
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: -100,
+        shiftKey: true,
+      }),
+      {
+        deltaMode: 0,
+        deltaX: -100,
+        deltaY: 0,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelAxisDeltas({
+        deltaMode: 0,
+        deltaX: -80,
+        deltaY: 100,
+        shiftKey: true,
+      }),
+      {
+        deltaMode: 0,
+        deltaX: -80,
+        deltaY: 100,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelOperation({
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: -120,
+        shiftKey: true,
+        viewportHeight: 200,
+        viewportWidth: 900,
+      }),
+      {
+        deltaX: -120,
+        kind: "horizontal-pan",
       },
     );
   });
@@ -542,35 +599,6 @@ describe("SpectrumVisualizer", () => {
         source: "confirmed-delta-x",
       },
     });
-  });
-
-  test("keeps vertical wheel packets as zoom even when shift is pressed", () => {
-    assert.deepEqual(
-      resolveWaveformWheelOperation({
-        deltaMode: 0,
-        deltaX: 0,
-        deltaY: -100,
-        viewportHeight: 200,
-        viewportWidth: 900,
-      }),
-      {
-        deltaY: -100,
-        kind: "zoom",
-      },
-    );
-    assert.deepEqual(
-      resolveWaveformWheelOperation({
-        deltaMode: 0,
-        deltaX: 0,
-        deltaY: -100,
-        viewportHeight: 200,
-        viewportWidth: 900,
-      }),
-      {
-        deltaY: -100,
-        kind: "zoom",
-      },
-    );
   });
 
   test("clamps horizontal pan to the scrollable waveform bounds", () => {
