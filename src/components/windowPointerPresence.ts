@@ -1,18 +1,10 @@
 import { useEffect, useState } from "react";
-import type { MouseWindowInfo } from "@/src/cmd";
+import { crab, type MouseWindowInfo } from "@/src/cmd";
 
 const WINDOW_POINTER_POLL_INTERVAL_MS = 120;
 
-let commandAdapterPromise: Promise<typeof import("@/src/cmd")> | null = null;
-
 function hasTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
-
-function loadCommandAdapter() {
-  commandAdapterPromise ??= import("@/src/cmd");
-
-  return commandAdapterPromise;
 }
 
 export function resolveWindowPointerPresence(info: MouseWindowInfo) {
@@ -42,7 +34,6 @@ export function useWindowPointerPresence(enabled: boolean) {
       }
 
       try {
-        const { crab } = await loadCommandAdapter();
         const result = await crab.getMouseAndWindowPosition();
 
         result.match({

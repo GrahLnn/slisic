@@ -5,7 +5,6 @@ import {
   clampWaveformZoomDeltaY,
   createWaveformDataRequestKey,
   createWaveformDataScopeKey,
-  hasWaveformViewportPositionChanged,
   normalizeWaveformPathKey,
   resolveAnchoredWaveformScrollLeft,
   resolveCenteredWaveformScrollLeft,
@@ -30,18 +29,14 @@ import {
   resolveWaveformPointerAnchorViewportX,
   resolveWaveformRenderPixelsPerSecond,
   resolveWaveformRenderScale,
-  resolveWaveformScrollReadValue,
-  resolveWaveformScrollWritePlan,
   resolveWaveformTilePeakAtSeconds,
-  resolveWaveformVerticalBackedHorizontalPanDelta,
   resolveWaveformWheelDeltaX,
   resolveWaveformWheelDeltas,
-  resolveWaveformWheelInput,
-  resolveWaveformWheelStreamIntent,
   resolveWaveformWheelOperation,
-  resolveWaveformWheelPanContentWidth,
   resolveWaveformWheelPanDelta,
+  resolveWaveformWheelPixelDeltas,
   resolveWaveformWheelPixelsPerSecond,
+  resolveWaveformWheelStreamIntent,
   resolveWaveformZoomFrame,
   resolveWaveformZoomScaleFrame,
   shouldPreventWaveformWheelDefault,
@@ -172,7 +167,6 @@ describe("SpectrumVisualizer", () => {
         deltaMode: 0,
         deltaX: 100,
         deltaY: 80,
-        shiftKey: false,
         viewportHeight: 200,
         viewportWidth: 900,
       }),
@@ -186,7 +180,6 @@ describe("SpectrumVisualizer", () => {
         deltaMode: 0,
         deltaX: 0,
         deltaY: 80,
-        shiftKey: false,
         viewportHeight: 200,
         viewportWidth: 900,
       }),
@@ -200,13 +193,12 @@ describe("SpectrumVisualizer", () => {
         deltaMode: 0,
         deltaX: 0,
         deltaY: 80,
-        shiftKey: true,
         viewportHeight: 200,
         viewportWidth: 900,
       }),
       {
-        deltaX: 80,
-        kind: "horizontal-pan",
+        deltaY: 80,
+        kind: "zoom",
       },
     );
   });
@@ -234,38 +226,13 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
-  test("recovers horizontal wheel deltas from legacy horizontal axis fields", () => {
-    assert.equal(
-      resolveWaveformWheelDeltaX({
-        axis: 1,
-        horizontalAxis: 1,
-        wheelDelta: -100,
-      }),
-      100,
-    );
-    assert.deepEqual(
-      resolveWaveformWheelDeltas({
-        axis: 1,
-        deltaY: 0,
-        horizontalAxis: 1,
-        wheelDelta: -100,
-      }),
-      {
-        deltaMode: 0,
-        deltaX: 100,
-        deltaY: 0,
-      },
-    );
-  });
-
-  test("does not synthesize zoom input from legacy horizontal wheel fields", () => {
+  test("uses wheel deltaX as the only horizontal wheel value", () => {
+    assert.equal(resolveWaveformWheelDeltaX({ deltaX: 100 }), 100);
+    assert.equal(resolveWaveformWheelDeltaX({ deltaX: -100 }), -100);
     assert.deepEqual(
       resolveWaveformWheelDeltas({
         deltaX: 100,
         deltaY: 0,
-        wheelDelta: -120,
-        wheelDeltaX: -120,
-        wheelDeltaY: 0,
       }),
       {
         deltaMode: 0,
@@ -276,194 +243,177 @@ describe("SpectrumVisualizer", () => {
     assert.deepEqual(
       resolveWaveformWheelOperation({
         deltaMode: 0,
-        deltaX: 100,
+        deltaX: -100,
         deltaY: 0,
-        shiftKey: false,
         viewportHeight: 200,
         viewportWidth: 900,
       }),
       {
-        deltaX: 100,
+        deltaX: -100,
+        kind: "horizontal-pan",
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelOperation({
+        deltaMode: 0,
+        deltaX: 500,
+        deltaY: 0,
+        viewportHeight: 200,
+        viewportWidth: 900,
+      }),
+      {
+        deltaX: 500,
         kind: "horizontal-pan",
       },
     );
   });
 
-  test("keeps Logitech reverse horizontal packets in the horizontal input stream", () => {
-    const first = resolveWaveformWheelInput({
-      deltaMode: 0,
-      deltaX: 100,
-      deltaY: 0,
-      horizontalInputContext: {
-        acceptsVerticalBackedHorizontal: false,
-        lastConfirmedDeltaX: null,
-        stream: null,
+  test("exposes the wheel pixel-delta conversion independently of intent choice", () => {
+    assert.deepEqual(
+      resolveWaveformWheelPixelDeltas({
+        deltaMode: 1,
+        deltaX: -3,
+        deltaY: 4,
+        viewportHeight: 200,
+        viewportWidth: 900,
+      }),
+      {
+        deltaX: -48,
+        deltaY: 64,
       },
-      nowMs: 1_000,
-      shiftKey: false,
-      verticalBackedHorizontalDeltaX: 0,
-      viewportHeight: 200,
-      viewportWidth: 900,
-    });
-    const zeroTail = resolveWaveformWheelInput({
-      deltaMode: 0,
-      deltaX: 0,
-      deltaY: 0,
-      horizontalInputContext: first.horizontalInputContext,
-      nowMs: 1_016,
-      shiftKey: false,
-      verticalBackedHorizontalDeltaX: 0,
-      viewportHeight: 200,
-      viewportWidth: 900,
-    });
-    const reverseCandidate = resolveWaveformVerticalBackedHorizontalPanDelta({
-      deltaX: 0,
-      deltaY: -100,
-      wheelDelta: 120,
-      wheelDeltaX: 0,
-      wheelDeltaY: 120,
-    });
-    const reversed = resolveWaveformWheelInput({
-      deltaMode: 0,
-      deltaX: 0,
-      deltaY: -100,
-      horizontalInputContext: zeroTail.horizontalInputContext,
-      nowMs: 1_120,
-      shiftKey: false,
-      verticalBackedHorizontalDeltaX: reverseCandidate,
-      viewportHeight: 200,
-      viewportWidth: 900,
-    });
-
-    assert.deepEqual(first.intent, {
-      deltaX: 100,
-      kind: "horizontal-pan",
-    });
-    assert.deepEqual(zeroTail.intent, {
-      deltaX: 100,
-      kind: "horizontal-pan",
-    });
-    assert.equal(reverseCandidate, -100);
-    assert.deepEqual(reversed.intent, {
-      deltaX: -100,
-      kind: "horizontal-pan",
-    });
+    );
+    assert.deepEqual(
+      resolveWaveformWheelPixelDeltas({
+        deltaMode: 2,
+        deltaX: 1,
+        deltaY: -1,
+        viewportHeight: 200,
+        viewportWidth: 900,
+      }),
+      {
+        deltaX: 900,
+        deltaY: -200,
+      },
+    );
   });
 
-  test("does not turn isolated vertical-looking packets into horizontal input", () => {
-    const reverseCandidate = resolveWaveformVerticalBackedHorizontalPanDelta({
-      deltaX: 0,
-      deltaY: -100,
-      wheelDelta: 120,
-      wheelDeltaX: 0,
-      wheelDeltaY: 120,
-    });
-    const result = resolveWaveformWheelInput({
-      deltaMode: 0,
-      deltaX: 0,
-      deltaY: -100,
-      horizontalInputContext: {
-        acceptsVerticalBackedHorizontal: false,
-        lastConfirmedDeltaX: null,
-        stream: null,
+  test("keeps isolated zero-delta wheel packets inert", () => {
+    assert.deepEqual(
+      resolveWaveformWheelOperation({
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: 0,
+        viewportHeight: 200,
+        viewportWidth: 900,
+      }),
+      {
+        kind: "none",
       },
-      nowMs: 1_000,
-      shiftKey: false,
-      verticalBackedHorizontalDeltaX: reverseCandidate,
-      viewportHeight: 200,
-      viewportWidth: 900,
-    });
-
-    assert.deepEqual(result.intent, {
-      deltaY: -100,
-      kind: "zoom",
-    });
-    assert.equal(result.horizontalInputContext.acceptsVerticalBackedHorizontal, false);
-    assert.equal(result.horizontalInputContext.lastConfirmedDeltaX, null);
-    assert.equal(result.horizontalInputContext.stream, null);
+    );
   });
 
-  test("continues zero-delta horizontal wheel tails with the confirmed horizontal step", () => {
+  test("continues same-stream zero-valued packets after a confirmed horizontal wheel packet", () => {
     const started = resolveWaveformWheelStreamIntent({
       baseIntent: {
         deltaX: 100,
         kind: "horizontal-pan",
       },
+      isZeroValuedPacket: false,
       nowMs: 1_000,
       state: null,
     });
 
-    assert.equal(started.continued, false);
-    assert.deepEqual(started.intent, {
-      deltaX: 100,
-      kind: "horizontal-pan",
+    assert.deepEqual(started, {
+      continued: false,
+      intent: {
+        deltaX: 100,
+        kind: "horizontal-pan",
+      },
+      reason: "confirmed-horizontal",
+      state: {
+        deltaX: 100,
+        lastPacketTimeMs: 1_000,
+        source: "confirmed-delta-x",
+      },
     });
 
     const continued = resolveWaveformWheelStreamIntent({
       baseIntent: {
         kind: "none",
       },
+      isZeroValuedPacket: true,
       nowMs: 1_016,
       state: started.state,
     });
 
-    assert.equal(continued.continued, true);
-    assert.deepEqual(continued.intent, {
-      deltaX: 100,
-      kind: "horizontal-pan",
+    assert.deepEqual(continued, {
+      continued: true,
+      intent: {
+        deltaX: 100,
+        kind: "horizontal-pan",
+      },
+      reason: "continued-zero-packet",
+      state: {
+        deltaX: 100,
+        lastPacketTimeMs: 1_016,
+        source: "confirmed-delta-x",
+      },
     });
+  });
 
+  test("infers a horizontal wheel step for zero-valued packets only when the owner opts in", () => {
     assert.deepEqual(
       resolveWaveformWheelStreamIntent({
         baseIntent: {
           kind: "none",
         },
-        nowMs: 2_000,
-        state: continued.state,
+        isZeroValuedPacket: true,
+        nowMs: 1_000,
+        state: null,
       }),
       {
         continued: false,
         intent: {
           kind: "none",
         },
-        reason: "expired-zero-tail",
+        reason: "empty-zero-packet",
         state: null,
+      },
+    );
+
+    assert.deepEqual(
+      resolveWaveformWheelStreamIntent({
+        baseIntent: {
+          kind: "none",
+        },
+        inferZeroValuedHorizontalPacket: true,
+        isZeroValuedPacket: true,
+        nowMs: 1_000,
+        state: null,
+      }),
+      {
+        continued: false,
+        intent: {
+          deltaX: 100,
+          kind: "horizontal-pan",
+        },
+        reason: "inferred-zero-packet",
+        state: {
+          deltaX: 100,
+          lastPacketTimeMs: 1_000,
+          source: "inferred-zero-packet",
+        },
       },
     );
   });
 
-  test("keeps zero-delta horizontal wheel tails alive while the wheel event stream continues", () => {
-    let resolution = resolveWaveformWheelStreamIntent({
-      baseIntent: {
-        deltaX: 100,
-        kind: "horizontal-pan",
-      },
-      nowMs: 1_000,
-      state: null,
-    });
-
-    for (let index = 0; index < 96; index += 1) {
-      resolution = resolveWaveformWheelStreamIntent({
-        baseIntent: {
-          kind: "none",
-        },
-        nowMs: 1_016 + index * 22,
-        state: resolution.state,
-      });
-      assert.equal(resolution.continued, true);
-      assert.deepEqual(resolution.intent, {
-        deltaX: 100,
-        kind: "horizontal-pan",
-      });
-    }
-  });
-
-  test("stops continuing zero-delta horizontal wheel tails when the stream goes idle", () => {
+  test("expires zero-valued horizontal continuation after the wheel stream goes idle", () => {
     const started = resolveWaveformWheelStreamIntent({
       baseIntent: {
         deltaX: 100,
         kind: "horizontal-pan",
       },
+      isZeroValuedPacket: false,
       nowMs: 1_000,
       state: null,
     });
@@ -473,6 +423,7 @@ describe("SpectrumVisualizer", () => {
         baseIntent: {
           kind: "none",
         },
+        isZeroValuedPacket: true,
         nowMs: 1_451,
         state: started.state,
       }),
@@ -481,155 +432,52 @@ describe("SpectrumVisualizer", () => {
         intent: {
           kind: "none",
         },
-        reason: "expired-zero-tail",
+        reason: "expired-zero-packet",
         state: null,
       },
     );
   });
 
-  test("stops continuing zero-delta horizontal wheel tails at the stream duration bound", () => {
-    let resolution = resolveWaveformWheelStreamIntent({
+  test("does not continue non-zero vertical input as horizontal pan", () => {
+    const started = resolveWaveformWheelStreamIntent({
       baseIntent: {
         deltaX: 100,
         kind: "horizontal-pan",
       },
+      isZeroValuedPacket: false,
       nowMs: 1_000,
       state: null,
     });
-
-    for (let nowMs = 1_030; nowMs <= 5_980; nowMs += 330) {
-      resolution = resolveWaveformWheelStreamIntent({
-        baseIntent: {
-          kind: "none",
-        },
-        nowMs,
-        state: resolution.state,
-      });
-      assert.equal(resolution.continued, true);
-    }
 
     assert.deepEqual(
       resolveWaveformWheelStreamIntent({
         baseIntent: {
-          kind: "none",
+          deltaY: -100,
+          kind: "zoom",
         },
-        nowMs: 6_030,
-        state: resolution.state,
+        isZeroValuedPacket: false,
+        nowMs: 1_030,
+        state: started.state,
       }),
       {
         continued: false,
         intent: {
-          kind: "none",
+          deltaY: -100,
+          kind: "zoom",
         },
-        reason: "expired-zero-tail",
+        reason: "non-horizontal-input",
         state: null,
       },
     );
   });
 
-  test("does not reuse a stale horizontal pulse for later zero-delta wheel packets", () => {
+  test("lets a later confirmed horizontal packet replace the continued direction", () => {
     const started = resolveWaveformWheelStreamIntent({
       baseIntent: {
         deltaX: 100,
         kind: "horizontal-pan",
       },
-      nowMs: 1_000,
-      state: null,
-    });
-
-    const revived = resolveWaveformWheelStreamIntent({
-      baseIntent: {
-        kind: "none",
-      },
-      nowMs: 42_000,
-      state: started.state,
-    });
-
-    assert.equal(revived.reason, "expired-zero-tail");
-    assert.equal(revived.continued, false);
-    assert.deepEqual(revived.intent, {
-      kind: "none",
-    });
-    assert.equal(revived.state, null);
-  });
-
-  test("ends horizontal pulse reuse after non-horizontal wheel input", () => {
-    const started = resolveWaveformWheelStreamIntent({
-      baseIntent: {
-        deltaX: 100,
-        kind: "horizontal-pan",
-      },
-      nowMs: 1_000,
-      state: null,
-    });
-    const zoomed = resolveWaveformWheelStreamIntent({
-      baseIntent: {
-        deltaY: -100,
-        kind: "zoom",
-      },
-      nowMs: 1_100,
-      state: started.state,
-    });
-
-    assert.equal(zoomed.reason, "non-horizontal-input");
-    assert.deepEqual(zoomed.intent, {
-      deltaY: -100,
-      kind: "zoom",
-    });
-    assert.equal(zoomed.state, null);
-
-    assert.deepEqual(
-      resolveWaveformWheelStreamIntent({
-        baseIntent: {
-          kind: "none",
-        },
-        nowMs: 1_120,
-        state: zoomed.state,
-      }),
-      {
-        continued: false,
-        intent: {
-          kind: "none",
-        },
-        reason: "empty-zero",
-        state: null,
-      },
-    );
-  });
-
-  test("does not treat explicit vertical wheel packets as horizontal", () => {
-    const started = resolveWaveformWheelStreamIntent({
-      baseIntent: {
-        deltaX: 100,
-        kind: "horizontal-pan",
-      },
-      nowMs: 1_000,
-      state: null,
-    });
-    const continued = resolveWaveformWheelStreamIntent({
-      baseIntent: {
-        deltaY: -100,
-        kind: "zoom",
-      },
-      nowMs: 1_100,
-      state: started.state,
-    });
-
-    assert.equal(continued.reason, "non-horizontal-input");
-    assert.equal(continued.continued, false);
-    assert.deepEqual(continued.intent, {
-      deltaY: -100,
-      kind: "zoom",
-    });
-    assert.equal(continued.state, null);
-  });
-
-  test("lets a later confirmed horizontal pulse replace the old direction", () => {
-    const started = resolveWaveformWheelStreamIntent({
-      baseIntent: {
-        deltaX: 100,
-        kind: "horizontal-pan",
-      },
+      isZeroValuedPacket: false,
       nowMs: 1_000,
       state: null,
     });
@@ -638,14 +486,16 @@ describe("SpectrumVisualizer", () => {
         deltaX: -100,
         kind: "horizontal-pan",
       },
-      nowMs: 1_120,
+      isZeroValuedPacket: false,
+      nowMs: 1_030,
       state: started.state,
     });
-    const zeroTail = resolveWaveformWheelStreamIntent({
+    const continued = resolveWaveformWheelStreamIntent({
       baseIntent: {
         kind: "none",
       },
-      nowMs: 1_130,
+      isZeroValuedPacket: true,
+      nowMs: 1_046,
       state: reversed.state,
     });
 
@@ -653,10 +503,74 @@ describe("SpectrumVisualizer", () => {
       deltaX: -100,
       kind: "horizontal-pan",
     });
-    assert.deepEqual(zeroTail.intent, {
+    assert.deepEqual(continued.intent, {
       deltaX: -100,
       kind: "horizontal-pan",
     });
+  });
+
+  test("lets a confirmed horizontal packet replace an inferred zero-packet direction", () => {
+    const inferred = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        kind: "none",
+      },
+      inferZeroValuedHorizontalPacket: true,
+      isZeroValuedPacket: true,
+      nowMs: 1_000,
+      state: null,
+    });
+    const confirmed = resolveWaveformWheelStreamIntent({
+      baseIntent: {
+        deltaX: -100,
+        kind: "horizontal-pan",
+      },
+      isZeroValuedPacket: false,
+      nowMs: 1_020,
+      state: inferred.state,
+    });
+
+    assert.deepEqual(confirmed, {
+      continued: false,
+      intent: {
+        deltaX: -100,
+        kind: "horizontal-pan",
+      },
+      reason: "confirmed-horizontal",
+      state: {
+        deltaX: -100,
+        lastPacketTimeMs: 1_020,
+        source: "confirmed-delta-x",
+      },
+    });
+  });
+
+  test("keeps vertical wheel packets as zoom even when shift is pressed", () => {
+    assert.deepEqual(
+      resolveWaveformWheelOperation({
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: -100,
+        viewportHeight: 200,
+        viewportWidth: 900,
+      }),
+      {
+        deltaY: -100,
+        kind: "zoom",
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelOperation({
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: -100,
+        viewportHeight: 200,
+        viewportWidth: 900,
+      }),
+      {
+        deltaY: -100,
+        kind: "zoom",
+      },
+    );
   });
 
   test("clamps horizontal pan to the scrollable waveform bounds", () => {
@@ -692,62 +606,30 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
-  test("uses viewport scroll width when DOM can scroll farther than state width", () => {
-    assert.equal(
-      resolveWaveformWheelPanContentWidth({
-        viewportScrollWidth: 2_000,
-        viewportWidth: 700,
-        wheelStateContentWidth: 1_200,
-      }),
-      2_000,
-    );
-    assert.equal(
-      resolveWaveformWheelPanContentWidth({
-        scrollOffsetElementScrollWidth: 2_400,
-        viewportScrollWidth: 700,
-        viewportWidth: 700,
-        wheelStateContentWidth: 1_200,
-      }),
-      2_400,
-    );
-  });
-
-  test("models scroll reads and writes as explicit plans", () => {
-    assert.equal(
-      resolveWaveformScrollReadValue({
-        scrollOffsetElementScrollLeft: 20,
-        viewportScrollLeft: 42,
-      }),
-      42,
-    );
+  test("computes horizontal pan from the virtual viewport state only", () => {
     assert.deepEqual(
-      resolveWaveformScrollWritePlan({
-        hasSeparateScrollOffsetElement: true,
-        scrollLeft: 140,
+      resolveWaveformHorizontalPanFrame({
+        contentWidth: 1_000,
+        deltaX: -120,
+        scrollLeft: 350,
+        viewportWidth: 400,
       }),
       {
-        scrollOffsetElementScrollLeft: 140,
-        viewportScrollLeft: 140,
+        changed: true,
+        scrollLeft: 230,
       },
     );
     assert.deepEqual(
-      resolveWaveformScrollWritePlan({
-        hasSeparateScrollOffsetElement: false,
-        scrollLeft: 140,
+      resolveWaveformHorizontalPanFrame({
+        contentWidth: 1_000,
+        deltaX: -120,
+        scrollLeft: 0,
+        viewportWidth: 400,
       }),
       {
-        scrollOffsetElementScrollLeft: null,
-        viewportScrollLeft: 140,
+        changed: false,
+        scrollLeft: 0,
       },
-    );
-    assert.equal(
-      hasWaveformViewportPositionChanged({
-        currentScrollLeft: 1,
-        currentVisualScrollLeft: 1,
-        nextScrollLeft: 1,
-        nextVisualScrollLeft: 1,
-      }),
-      false,
     );
   });
 
@@ -1020,15 +902,14 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
-  test("normalizes shift wheel into horizontal pan", () => {
+  test("uses only deltaX for horizontal pan delta", () => {
     assert.equal(
       resolveWaveformWheelPanDelta({
         deltaX: 0,
-        deltaY: 100,
-        shiftKey: true,
       }),
-      100,
+      0,
     );
+    assert.equal(resolveWaveformWheelPanDelta({ deltaX: -100 }), -100);
     assert.equal(
       resolveWaveformWheelPixelsPerSecond({
         currentPixelsPerSecond: 100,

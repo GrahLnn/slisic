@@ -2,16 +2,9 @@ import { useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
-import {
-  action as appLogicAction,
-  hook as appLogicHook,
-} from "@/src/flow/appLogic";
-import {
-  collectionTitleClassName,
-  collectionTitleLayoutTransition,
-} from "../collectionTitle";
+import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
+import { collectionTitleClassName, collectionTitleLayoutTransition } from "../collectionTitle";
 import { EditableTitle, type EditableTitleHandle } from "../EditableTitle";
-import "./SpectrumVisualizer.css";
 import {
   resolveSpectrumBackActionVisualState,
   resolveSpectrumCommittedTitle,
@@ -55,9 +48,7 @@ type SpectrumRenderData = {
   titleValue: string;
 };
 
-export function resolveSpectrumTitleFadeProps(args: {
-  hasSharedTitleLayout: boolean;
-}) {
+export function resolveSpectrumTitleFadeProps(args: { hasSharedTitleLayout: boolean }) {
   return args.hasSharedTitleLayout ? sharedTitleFadeProps : contentFadeProps;
 }
 
@@ -109,10 +100,7 @@ function SpectrumBackArrowIcon({ replayKey }: { replayKey: string }) {
       width="18"
       height="18"
       viewBox="0 0 18 18"
-      className={cn(
-        "absolute inset-0 block rotate-90",
-        spectrumBackIconToneClassName,
-      )}
+      className={cn("absolute inset-0 block rotate-90", spectrumBackIconToneClassName)}
     >
       <motion.line
         x1="9"
@@ -151,11 +139,7 @@ function SpectrumBackArrowIcon({ replayKey }: { replayKey: string }) {
   );
 }
 
-function SpectrumBackSymbolOwner({
-  visualState,
-}: {
-  visualState: SpectrumBackActionVisualState;
-}) {
+function SpectrumBackSymbolOwner({ visualState }: { visualState: SpectrumBackActionVisualState }) {
   return (
     <span className="absolute inset-0 block">
       {visualState.kind === "check" ? (
@@ -167,18 +151,11 @@ function SpectrumBackSymbolOwner({
   );
 }
 
-function SpectrumBackIcon({
-  visualState,
-}: {
-  visualState: SpectrumBackActionVisualState;
-}) {
+function SpectrumBackIcon({ visualState }: { visualState: SpectrumBackActionVisualState }) {
   return (
     <span className="relative block size-4.5">
       <AnimatePresence initial={false} mode="wait">
-        <SpectrumBackSymbolOwner
-          key={visualState.kind}
-          visualState={visualState}
-        />
+        <SpectrumBackSymbolOwner key={visualState.kind} visualState={visualState} />
       </AnimatePresence>
     </span>
   );
@@ -287,9 +264,7 @@ export function SpectrumPage() {
             }}
             className={cn(
               "group relative isolate inline-flex w-fit select-none py-2 pr-2",
-              isBackActionLocked
-                ? "pointer-events-none cursor-default"
-                : "cursor-pointer",
+              isBackActionLocked ? "pointer-events-none cursor-default" : "cursor-pointer",
               "before:absolute before:inset-y-0 before:-left-2 before:right-0 before:-z-10",
               "before:rounded-[25px] before:bg-transparent before:transition before:duration-300",
               "before:[corner-shape:squircle_squircle_squircle_squircle]",

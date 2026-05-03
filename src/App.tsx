@@ -3,7 +3,6 @@ import "./fonts.css";
 import "@fontsource-variable/noto-sans";
 import "@fontsource-variable/noto-serif";
 import "./App.css";
-import "overlayscrollbars/styles/overlayscrollbars.css";
 import "sileo/styles.css";
 import { useLayoutEffect, useRef, type PropsWithChildren } from "react";
 import { AnimatePresence, motion } from "motion/react";
