@@ -10,6 +10,10 @@ import {
 import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import {
+  installHardwareWheelTrace,
+  recordHardwareWheelTrace,
+} from "@/src/debug/hardwareWheelTrace";
+import {
   crab,
   type HardwareHorizontalWheelEvent,
   type PlaybackStatusPayload,
@@ -28,13 +32,6 @@ const WAVEFORM_FALLBACK_MAX_PIXELS_PER_SECOND = 320;
 const WAVEFORM_INITIAL_PIXELS_PER_SECOND = 24;
 const WAVEFORM_WHEEL_DELTA_FOR_DOUBLE_ZOOM = 360;
 const WAVEFORM_MAX_WHEEL_ZOOM_DELTA = WAVEFORM_WHEEL_DELTA_FOR_DOUBLE_ZOOM / 2;
-const WAVEFORM_ZERO_DELTA_HORIZONTAL_IDLE_MS = 450;
-/**
- * WebView reports healthy Logitech horizontal wheel packets as +/-100px.
- * When the same hardware stream arrives as trusted zero-valued packets, this
- * is the only local value we can use without introducing another scroll owner.
- */
-const WAVEFORM_INFERRED_HORIZONTAL_WHEEL_DELTA_X = 100;
 const WAVEFORM_PIXELS_PER_SECOND_PRECISION = 100;
 const WAVEFORM_DATA_TILE_WIDTH = 2_048;
 const WAVEFORM_DATA_OVERSCAN_VIEWPORTS = 1.25;
@@ -173,25 +170,6 @@ type WaveformWheelIntent =
   | {
       kind: "none";
     };
-
-type WaveformHorizontalWheelStreamState = {
-  deltaX: number;
-  lastPacketTimeMs: number;
-  source: "confirmed-delta-x" | "inferred-zero-packet";
-};
-
-type WaveformWheelStreamIntentResolution = {
-  continued: boolean;
-  intent: WaveformWheelIntent;
-  reason:
-    | "confirmed-horizontal"
-    | "continued-zero-packet"
-    | "empty-zero-packet"
-    | "expired-zero-packet"
-    | "inferred-zero-packet"
-    | "non-horizontal-input";
-  state: WaveformHorizontalWheelStreamState | null;
-};
 
 type WaveformViewportCommit = (state: WaveformViewportState) => void;
 
@@ -495,29 +473,31 @@ export function resolveWaveformWheelPanDelta(args: { deltaX: number }) {
 }
 
 /**
- * Shift+Wheel is an input-axis projection for this virtual viewport. Unit
- * conversion and intent selection remain separate so vertical zoom and
- * horizontal pan keep one owner each.
+ * Frontend wheel owns only browser vertical zoom and the explicit Shift+Wheel
+ * projection. Native horizontal wheel packets are owned by the Windows
+ * hardware event path because Chromium/WebView can expose native horizontal
+ * packets as zero-valued or one-shot DOM deltas. Keeping direct `deltaX` inert here
+ * prevents a second horizontal-scroll owner from reappearing.
  */
 export function resolveWaveformWheelAxisDeltas(
   args: WaveformWheelDeltas & {
     shiftKey?: boolean;
   },
 ): WaveformWheelDeltas {
-  const shouldProjectVerticalToHorizontal = args.shiftKey === true && args.deltaX === 0;
+  const shouldProjectVerticalToHorizontal = args.shiftKey === true && args.deltaY !== 0;
 
-  if (!shouldProjectVerticalToHorizontal) {
+  if (shouldProjectVerticalToHorizontal) {
     return {
       deltaMode: args.deltaMode,
-      deltaX: args.deltaX,
-      deltaY: args.deltaY,
+      deltaX: args.deltaY,
+      deltaY: 0,
     };
   }
 
   return {
     deltaMode: args.deltaMode,
-    deltaX: args.deltaY,
-    deltaY: 0,
+    deltaX: 0,
+    deltaY: args.deltaY,
   };
 }
 
@@ -578,96 +558,6 @@ export function resolveWaveformWheelOperation(
       viewportWidth: args.viewportWidth,
     }),
   );
-}
-
-export function resolveWaveformWheelStreamIntent(args: {
-  baseIntent: WaveformWheelIntent;
-  inferZeroValuedHorizontalPacket?: boolean;
-  isZeroValuedPacket: boolean;
-  nowMs: number;
-  state: WaveformHorizontalWheelStreamState | null;
-}): WaveformWheelStreamIntentResolution {
-  if (args.baseIntent.kind === "horizontal-pan") {
-    return {
-      continued: false,
-      intent: args.baseIntent,
-      reason: "confirmed-horizontal",
-      state: {
-        deltaX: args.baseIntent.deltaX,
-        lastPacketTimeMs: args.nowMs,
-        source: "confirmed-delta-x",
-      },
-    };
-  }
-
-  if (args.baseIntent.kind !== "none") {
-    return {
-      continued: false,
-      intent: args.baseIntent,
-      reason: "non-horizontal-input",
-      state: null,
-    };
-  }
-
-  if (!args.isZeroValuedPacket) {
-    return {
-      continued: false,
-      intent: args.baseIntent,
-      reason: "empty-zero-packet",
-      state: null,
-    };
-  }
-
-  if (
-    args.state &&
-    args.nowMs - args.state.lastPacketTimeMs <= WAVEFORM_ZERO_DELTA_HORIZONTAL_IDLE_MS
-  ) {
-    return {
-      continued: true,
-      intent: {
-        deltaX: args.state.deltaX,
-        kind: "horizontal-pan",
-      },
-      reason: "continued-zero-packet",
-      state: {
-        deltaX: args.state.deltaX,
-        lastPacketTimeMs: args.nowMs,
-        source: args.state.source,
-      },
-    };
-  }
-
-  if (args.inferZeroValuedHorizontalPacket) {
-    return {
-      continued: false,
-      intent: {
-        deltaX: WAVEFORM_INFERRED_HORIZONTAL_WHEEL_DELTA_X,
-        kind: "horizontal-pan",
-      },
-      reason: "inferred-zero-packet",
-      state: {
-        deltaX: WAVEFORM_INFERRED_HORIZONTAL_WHEEL_DELTA_X,
-        lastPacketTimeMs: args.nowMs,
-        source: "inferred-zero-packet",
-      },
-    };
-  }
-
-  if (args.state) {
-    return {
-      continued: false,
-      intent: args.baseIntent,
-      reason: "expired-zero-packet",
-      state: null,
-    };
-  }
-
-  return {
-    continued: false,
-    intent: args.baseIntent,
-    reason: "empty-zero-packet",
-    state: null,
-  };
 }
 
 export function resolveWaveformWheelDeltaX(args: { deltaX?: number | null }) {
@@ -1213,7 +1103,6 @@ function TrackSpectrumSession(props: {
   const loadingCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewportRef = useRef<WaveformViewportModel | null>(null);
   const commitViewportRef = useRef<WaveformViewportCommit | null>(null);
-  const horizontalWheelStreamRef = useRef<WaveformHorizontalWheelStreamState | null>(null);
   const tileCacheRef = useRef(new Map<string, WaveformCachedTile>());
   const overscanTimerRef = useRef<number | null>(null);
   const [loadingGridSize, setLoadingGridSize] = useState<WaveformLoadingGridSize>(() =>
@@ -1349,43 +1238,97 @@ function TrackSpectrumSession(props: {
 
   const handleWheel = useCallback((event: Event) => {
     const current = viewportRef.current;
+    const wheelEvent = event as WheelEvent;
 
     if (!current) {
+      recordHardwareWheelTrace("frontend.dom-wheel.no-viewport", {
+        deltaMode: readWaveformWheelNumber(wheelEvent, "deltaMode", 0),
+        deltaX: readWaveformWheelNumber(wheelEvent, "deltaX", 0),
+        deltaY: readWaveformWheelNumber(wheelEvent, "deltaY", 0),
+        shiftKey: wheelEvent.shiftKey,
+      });
       return;
     }
 
+    recordHardwareWheelTrace("frontend.dom-wheel.before", {
+      altKey: wheelEvent.altKey,
+      cancelable: wheelEvent.cancelable,
+      clientX: wheelEvent.clientX,
+      clientY: wheelEvent.clientY,
+      composedPath: snapshotTraceEventPath(wheelEvent),
+      ctrlKey: wheelEvent.ctrlKey,
+      deltaMode: readWaveformWheelNumber(wheelEvent, "deltaMode", 0),
+      deltaX: readWaveformWheelNumber(wheelEvent, "deltaX", 0),
+      deltaY: readWaveformWheelNumber(wheelEvent, "deltaY", 0),
+      defaultPrevented: wheelEvent.defaultPrevented,
+      eventPhase: wheelEvent.eventPhase,
+      hostRect: hostRef.current ? snapshotTraceRect(hostRef.current.getBoundingClientRect()) : null,
+      isTrusted: wheelEvent.isTrusted,
+      metaKey: wheelEvent.metaKey,
+      scrollLeft: current.scrollLeft,
+      shiftKey: wheelEvent.shiftKey,
+      target: snapshotTraceEventTarget(wheelEvent.target),
+      timeStamp: wheelEvent.timeStamp,
+      viewportWidth: current.viewportWidth,
+      wheelDelta: readWaveformWheelNumber(wheelEvent, "wheelDelta", 0),
+      wheelDeltaX: readWaveformWheelNumber(wheelEvent, "wheelDeltaX", 0),
+      wheelDeltaY: readWaveformWheelNumber(wheelEvent, "wheelDeltaY", 0),
+    });
     handleWaveformViewportWheel({
       commitViewport: (next) => {
+        recordHardwareWheelTrace("frontend.dom-wheel.commit", {
+          nextScrollLeft: next.scrollLeft,
+          previousScrollLeft: current.scrollLeft,
+        });
         commitViewportRef.current?.(next);
       },
-      event: event as WheelEvent,
-      horizontalWheelStream: horizontalWheelStreamRef.current,
-      setHorizontalWheelStream: (nextStream) => {
-        horizontalWheelStreamRef.current = nextStream;
-      },
+      event: wheelEvent,
       viewport: current,
     });
   }, []);
 
   const handleHardwareHorizontalWheel = useCallback((payload: HardwareHorizontalWheelEvent) => {
-    if (
-      !shouldAcceptWaveformHardwareHorizontalWheel({
-        clientX: payload.client_x,
-        clientY: payload.client_y,
-        host: hostRef.current,
-      })
-    ) {
+    const host = hostRef.current;
+    const current = viewportRef.current;
+    const accepted = shouldAcceptWaveformHardwareHorizontalWheel({
+      clientX: payload.client_x,
+      clientY: payload.client_y,
+      host,
+    });
+    recordHardwareWheelTrace("frontend.hardware-event.received", {
+      accepted,
+      clientX: payload.client_x,
+      clientY: payload.client_y,
+      deltaX: payload.delta_x,
+      hostRect: host ? snapshotTraceRect(host.getBoundingClientRect()) : null,
+      viewport: current
+        ? {
+            contentWidth: current.contentWidth,
+            scrollLeft: current.scrollLeft,
+            viewportWidth: current.viewportWidth,
+          }
+        : null,
+      windowLabel: payload.window_label,
+    });
+
+    if (!accepted) {
       return;
     }
 
-    const current = viewportRef.current;
-
     if (!current) {
+      recordHardwareWheelTrace("frontend.hardware-event.no-viewport", {
+        deltaX: payload.delta_x,
+      });
       return;
     }
 
     handleWaveformHardwareHorizontalWheel({
       commitViewport: (next) => {
+        recordHardwareWheelTrace("frontend.hardware-event.commit", {
+          deltaX: payload.delta_x,
+          nextScrollLeft: next.scrollLeft,
+          previousScrollLeft: current.scrollLeft,
+        });
         commitViewportRef.current?.(next);
       },
       deltaX: payload.delta_x,
@@ -1476,13 +1419,19 @@ function TrackSpectrumSession(props: {
       capture: true,
       passive: false,
     });
+    recordHardwareWheelTrace("frontend.dom-wheel.listener-installed", {
+      hostRect: snapshotTraceRect(host.getBoundingClientRect()),
+    });
 
     return () => {
+      recordHardwareWheelTrace("frontend.dom-wheel.listener-removed");
       host.removeEventListener("wheel", handleWheel, true);
     };
   }, [handleWheel]);
 
   useEffect(() => {
+    installHardwareWheelTrace();
+    recordHardwareWheelTrace("frontend.hardware-event.listener-install-start");
     let disposed = false;
     let unlisten: (() => void) | null = null;
 
@@ -1491,16 +1440,19 @@ function TrackSpectrumSession(props: {
         handleHardwareHorizontalWheel,
       );
       if (disposed) {
+        recordHardwareWheelTrace("frontend.hardware-event.listener-disposed-before-ready");
         nextUnlisten();
         return;
       }
       unlisten = nextUnlisten;
+      recordHardwareWheelTrace("frontend.hardware-event.listener-installed");
     };
 
     void listenHardwareHorizontalWheel();
 
     return () => {
       disposed = true;
+      recordHardwareWheelTrace("frontend.hardware-event.listener-removed");
       unlisten?.();
     };
   }, [handleHardwareHorizontalWheel]);
@@ -2607,28 +2559,10 @@ function resolveWaveformPlayheadCssVariables(args: {
 export function handleWaveformViewportWheel(args: {
   commitViewport: (state: WaveformViewportState) => void;
   event: WheelEvent;
-  horizontalWheelStream: WaveformHorizontalWheelStreamState | null;
-  setHorizontalWheelStream: (state: WaveformHorizontalWheelStreamState | null) => void;
   viewport: WaveformViewportModel;
 }) {
   const viewportHeight = WAVEFORM_CANVAS_HEIGHT;
   const viewportWidth = args.viewport.viewportWidth;
-  /**
-   * The waveform is not backed by native DOM scroll. It is rendered in virtual
-   * world coordinates, so horizontal wheel input must be consumed here and
-   * translated into a viewport commit. Do not reintroduce browser scrolling,
-   * `mousewheel`, or legacy `wheelDelta*` as parallel owners.
-   *
-   * Chromium/WebView can deliver Logitech horizontal-wheel streams whose
-   * packets are trusted `wheel` events but whose numeric axes are all zero.
-   * When that happens there is no recoverable direction in JavaScript. The
-   * component therefore owns a local horizontal-wheel stream: real `deltaX`
-   * packets set the exact direction; zero-valued packets continue that stream;
-   * if the stream starts with zero-valued trusted packets, we use the same
-   * 100px step that WebView reports for healthy horizontal packets. This is a
-   * component-level input fallback only. It must not leak to global state or
-   * become a generic wheel parser rule.
-   */
   const rawWheelDeltas = resolveWaveformWheelDeltas({
     deltaMode: readWaveformWheelNumber(args.event, "deltaMode", 0),
     deltaX: readWaveformWheelNumber(args.event, "deltaX", 0),
@@ -2643,21 +2577,7 @@ export function handleWaveformViewportWheel(args: {
     viewportHeight,
     viewportWidth,
   });
-  const baseIntent = resolveWaveformWheelIntent(pixelDeltas);
-  const isZeroValuedPacket =
-    rawWheelDeltas.deltaX === 0 &&
-    rawWheelDeltas.deltaY === 0 &&
-    readWaveformWheelNumber(args.event, "deltaZ", 0) === 0;
-  const inferZeroValuedHorizontalPacket = isZeroValuedPacket && args.event.isTrusted;
-  const streamResolution = resolveWaveformWheelStreamIntent({
-    baseIntent,
-    inferZeroValuedHorizontalPacket,
-    isZeroValuedPacket,
-    nowMs: args.event.timeStamp,
-    state: args.horizontalWheelStream,
-  });
-  const intent = streamResolution.intent;
-  args.setHorizontalWheelStream(streamResolution.state);
+  const intent = resolveWaveformWheelIntent(pixelDeltas);
 
   if (!shouldPreventWaveformWheelDefault(intent)) {
     return;
@@ -2666,10 +2586,6 @@ export function handleWaveformViewportWheel(args: {
   args.event.preventDefault();
 
   if (intent.kind === "horizontal-pan") {
-    if (!args.event.shiftKey) {
-      return;
-    }
-
     handleWaveformHorizontalPanWheel({
       commitViewport: args.commitViewport,
       deltaX: intent.deltaX,
@@ -2731,6 +2647,9 @@ function handleWaveformHardwareHorizontalWheel(args: {
   handleWaveformHorizontalPanWheel({
     commitViewport: args.commitViewport,
     deltaX,
+    trace: (payload) => {
+      recordHardwareWheelTrace("frontend.hardware-event.pan-frame", payload);
+    },
     viewport: args.viewport,
   });
 }
@@ -2739,6 +2658,7 @@ function handleWaveformHorizontalPanWheel(args: {
   commitViewport: (state: WaveformViewportState) => void;
   deltaX: number;
   viewport: WaveformViewportModel;
+  trace?: (payload: Record<string, unknown>) => void;
 }) {
   const viewportWidth = args.viewport.viewportWidth;
   const previousScrollLeft = args.viewport.scrollLeft;
@@ -2746,6 +2666,15 @@ function handleWaveformHorizontalPanWheel(args: {
     contentWidth: args.viewport.contentWidth,
     deltaX: args.deltaX,
     scrollLeft: previousScrollLeft,
+    viewportWidth,
+  });
+
+  args.trace?.({
+    changed: targetFrame.changed,
+    contentWidth: args.viewport.contentWidth,
+    deltaX: args.deltaX,
+    nextScrollLeft: targetFrame.scrollLeft,
+    previousScrollLeft,
     viewportWidth,
   });
 
@@ -3096,6 +3025,38 @@ function readWaveformWheelNumber(event: WheelEvent, key: string, fallback: numbe
   const value = (event as unknown as Record<string, unknown>)[key];
 
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function snapshotTraceRect(rect: DOMRect) {
+  return {
+    bottom: rect.bottom,
+    height: rect.height,
+    left: rect.left,
+    right: rect.right,
+    top: rect.top,
+    width: rect.width,
+  };
+}
+
+function snapshotTraceEventTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) {
+    return null;
+  }
+
+  return {
+    ariaLabel: target.getAttribute("aria-label"),
+    className: typeof target.className === "string" ? target.className : null,
+    id: target.id,
+    tagName: target.tagName,
+  };
+}
+
+function snapshotTraceEventPath(event: Event) {
+  return event
+    .composedPath()
+    .slice(0, 8)
+    .map((target) => snapshotTraceEventTarget(target))
+    .filter((target) => target !== null);
 }
 
 function isPlaybackStatusForTrack(status: PlaybackStatusPayload, filePath: string) {

@@ -47,6 +47,8 @@ export const commands = {
 	height: number | null,
 } | null) => __TAURI_INVOKE<void>("create_window", { name, options }),
 	runBunHelloSidecar: (input: string | null) => typedError<BunSidecarOutput, string>(__TAURI_INVOKE("run_bun_hello_sidecar", { input })),
+	clearHardwareHorizontalWheelTrace: () => __TAURI_INVOKE<void>("clear_hardware_horizontal_wheel_trace"),
+	getHardwareHorizontalWheelTraceEntries: () => __TAURI_INVOKE<HardwareHorizontalWheelTraceEntry[]>("get_hardware_horizontal_wheel_trace_entries"),
 	getMetaInfo: () => typedError<{
 	save_path: string | null,
 } | null, string>(__TAURI_INVOKE("get_meta_info")),
@@ -229,6 +231,15 @@ export type HardwareHorizontalWheelEvent = {
 	delta_x: number,
 	wheel_delta_unit: number,
 	window_label: string,
+};
+
+export type HardwareHorizontalWheelTraceEntry = {
+	elapsed_ms: number,
+	event: string,
+	payload_json: string,
+	seq: number,
+	thread: string,
+	unix_ms: number,
 };
 
 // Application-facing id type that accepts either string or integer ids.
