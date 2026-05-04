@@ -10,10 +10,6 @@ import {
 import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import {
-  installHardwareWheelTrace,
-  recordHardwareWheelTrace,
-} from "@/src/debug/hardwareWheelTrace";
-import {
   crab,
   type HardwareHorizontalWheelEvent,
   type PlaybackStatusPayload,
@@ -1241,47 +1237,11 @@ function TrackSpectrumSession(props: {
     const wheelEvent = event as WheelEvent;
 
     if (!current) {
-      recordHardwareWheelTrace("frontend.dom-wheel.no-viewport", {
-        deltaMode: readWaveformWheelNumber(wheelEvent, "deltaMode", 0),
-        deltaX: readWaveformWheelNumber(wheelEvent, "deltaX", 0),
-        deltaY: readWaveformWheelNumber(wheelEvent, "deltaY", 0),
-        shiftKey: wheelEvent.shiftKey,
-      });
       return;
     }
 
-    recordHardwareWheelTrace("frontend.dom-wheel.before", {
-      altKey: wheelEvent.altKey,
-      cancelable: wheelEvent.cancelable,
-      clientX: wheelEvent.clientX,
-      clientY: wheelEvent.clientY,
-      composedPath: snapshotTraceEventPath(wheelEvent),
-      ctrlKey: wheelEvent.ctrlKey,
-      deltaMode: readWaveformWheelNumber(wheelEvent, "deltaMode", 0),
-      deltaX: readWaveformWheelNumber(wheelEvent, "deltaX", 0),
-      deltaY: readWaveformWheelNumber(wheelEvent, "deltaY", 0),
-      defaultPrevented: wheelEvent.defaultPrevented,
-      eventPhase: wheelEvent.eventPhase,
-      hostRect: hostRef.current ? snapshotTraceRect(hostRef.current.getBoundingClientRect()) : null,
-      isTrusted: wheelEvent.isTrusted,
-      metaKey: wheelEvent.metaKey,
-      scrollLeft: current.scrollLeft,
-      shiftKey: wheelEvent.shiftKey,
-      target: snapshotTraceEventTarget(wheelEvent.target),
-      timeStamp: wheelEvent.timeStamp,
-      viewportWidth: current.viewportWidth,
-      wheelDelta: readWaveformWheelNumber(wheelEvent, "wheelDelta", 0),
-      wheelDeltaX: readWaveformWheelNumber(wheelEvent, "wheelDeltaX", 0),
-      wheelDeltaY: readWaveformWheelNumber(wheelEvent, "wheelDeltaY", 0),
-    });
     handleWaveformViewportWheel({
-      commitViewport: (next) => {
-        recordHardwareWheelTrace("frontend.dom-wheel.commit", {
-          nextScrollLeft: next.scrollLeft,
-          previousScrollLeft: current.scrollLeft,
-        });
-        commitViewportRef.current?.(next);
-      },
+      commitViewport: (next) => commitViewportRef.current?.(next),
       event: wheelEvent,
       viewport: current,
     });
@@ -1295,42 +1255,17 @@ function TrackSpectrumSession(props: {
       clientY: payload.client_y,
       host,
     });
-    recordHardwareWheelTrace("frontend.hardware-event.received", {
-      accepted,
-      clientX: payload.client_x,
-      clientY: payload.client_y,
-      deltaX: payload.delta_x,
-      hostRect: host ? snapshotTraceRect(host.getBoundingClientRect()) : null,
-      viewport: current
-        ? {
-            contentWidth: current.contentWidth,
-            scrollLeft: current.scrollLeft,
-            viewportWidth: current.viewportWidth,
-          }
-        : null,
-      windowLabel: payload.window_label,
-    });
 
     if (!accepted) {
       return;
     }
 
     if (!current) {
-      recordHardwareWheelTrace("frontend.hardware-event.no-viewport", {
-        deltaX: payload.delta_x,
-      });
       return;
     }
 
     handleWaveformHardwareHorizontalWheel({
-      commitViewport: (next) => {
-        recordHardwareWheelTrace("frontend.hardware-event.commit", {
-          deltaX: payload.delta_x,
-          nextScrollLeft: next.scrollLeft,
-          previousScrollLeft: current.scrollLeft,
-        });
-        commitViewportRef.current?.(next);
-      },
+      commitViewport: (next) => commitViewportRef.current?.(next),
       deltaX: payload.delta_x,
       viewport: current,
     });
@@ -1419,19 +1354,13 @@ function TrackSpectrumSession(props: {
       capture: true,
       passive: false,
     });
-    recordHardwareWheelTrace("frontend.dom-wheel.listener-installed", {
-      hostRect: snapshotTraceRect(host.getBoundingClientRect()),
-    });
 
     return () => {
-      recordHardwareWheelTrace("frontend.dom-wheel.listener-removed");
       host.removeEventListener("wheel", handleWheel, true);
     };
   }, [handleWheel]);
 
   useEffect(() => {
-    installHardwareWheelTrace();
-    recordHardwareWheelTrace("frontend.hardware-event.listener-install-start");
     let disposed = false;
     let unlisten: (() => void) | null = null;
 
@@ -1440,19 +1369,16 @@ function TrackSpectrumSession(props: {
         handleHardwareHorizontalWheel,
       );
       if (disposed) {
-        recordHardwareWheelTrace("frontend.hardware-event.listener-disposed-before-ready");
         nextUnlisten();
         return;
       }
       unlisten = nextUnlisten;
-      recordHardwareWheelTrace("frontend.hardware-event.listener-installed");
     };
 
     void listenHardwareHorizontalWheel();
 
     return () => {
       disposed = true;
-      recordHardwareWheelTrace("frontend.hardware-event.listener-removed");
       unlisten?.();
     };
   }, [handleHardwareHorizontalWheel]);
@@ -2647,9 +2573,6 @@ function handleWaveformHardwareHorizontalWheel(args: {
   handleWaveformHorizontalPanWheel({
     commitViewport: args.commitViewport,
     deltaX,
-    trace: (payload) => {
-      recordHardwareWheelTrace("frontend.hardware-event.pan-frame", payload);
-    },
     viewport: args.viewport,
   });
 }
@@ -2658,23 +2581,12 @@ function handleWaveformHorizontalPanWheel(args: {
   commitViewport: (state: WaveformViewportState) => void;
   deltaX: number;
   viewport: WaveformViewportModel;
-  trace?: (payload: Record<string, unknown>) => void;
 }) {
   const viewportWidth = args.viewport.viewportWidth;
-  const previousScrollLeft = args.viewport.scrollLeft;
   const targetFrame = resolveWaveformHorizontalPanFrame({
     contentWidth: args.viewport.contentWidth,
     deltaX: args.deltaX,
-    scrollLeft: previousScrollLeft,
-    viewportWidth,
-  });
-
-  args.trace?.({
-    changed: targetFrame.changed,
-    contentWidth: args.viewport.contentWidth,
-    deltaX: args.deltaX,
-    nextScrollLeft: targetFrame.scrollLeft,
-    previousScrollLeft,
+    scrollLeft: args.viewport.scrollLeft,
     viewportWidth,
   });
 
@@ -3025,38 +2937,6 @@ function readWaveformWheelNumber(event: WheelEvent, key: string, fallback: numbe
   const value = (event as unknown as Record<string, unknown>)[key];
 
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function snapshotTraceRect(rect: DOMRect) {
-  return {
-    bottom: rect.bottom,
-    height: rect.height,
-    left: rect.left,
-    right: rect.right,
-    top: rect.top,
-    width: rect.width,
-  };
-}
-
-function snapshotTraceEventTarget(target: EventTarget | null) {
-  if (!(target instanceof Element)) {
-    return null;
-  }
-
-  return {
-    ariaLabel: target.getAttribute("aria-label"),
-    className: typeof target.className === "string" ? target.className : null,
-    id: target.id,
-    tagName: target.tagName,
-  };
-}
-
-function snapshotTraceEventPath(event: Event) {
-  return event
-    .composedPath()
-    .slice(0, 8)
-    .map((target) => snapshotTraceEventTarget(target))
-    .filter((target) => target !== null);
 }
 
 function isPlaybackStatusForTrack(status: PlaybackStatusPayload, filePath: string) {

@@ -24,8 +24,6 @@ pub fn run() {
             utils::window::record_renderer_bootstrap_ready,
             utils::window::create_window,
             utils::sidecar::run_bun_hello_sidecar,
-            utils::hardware_wheel::clear_hardware_horizontal_wheel_trace,
-            utils::hardware_wheel::get_hardware_horizontal_wheel_trace_entries,
             domain::meta::get_meta_info,
             domain::meta::save_meta_info,
             domain::playlists::check_list,

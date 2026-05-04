@@ -8,10 +8,6 @@
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::WebviewWindow;
 use tauri_specta::Event;
 
@@ -29,82 +25,8 @@ pub struct HardwareHorizontalWheelEvent {
     pub window_label: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct HardwareHorizontalWheelTraceEntry {
-    pub elapsed_ms: u64,
-    pub event: String,
-    pub payload_json: String,
-    pub seq: u64,
-    pub thread: String,
-    pub unix_ms: u64,
-}
-
-const HARDWARE_HORIZONTAL_WHEEL_TRACE_LIMIT: usize = 20_000;
-
-fn hardware_horizontal_wheel_trace_entries()
--> &'static Mutex<VecDeque<HardwareHorizontalWheelTraceEntry>> {
-    static HARDWARE_HORIZONTAL_WHEEL_TRACE_ENTRIES: OnceLock<
-        Mutex<VecDeque<HardwareHorizontalWheelTraceEntry>>,
-    > = OnceLock::new();
-    HARDWARE_HORIZONTAL_WHEEL_TRACE_ENTRIES.get_or_init(|| Mutex::new(VecDeque::new()))
-}
-
-fn hardware_horizontal_wheel_trace_start() -> &'static Instant {
-    static HARDWARE_HORIZONTAL_WHEEL_TRACE_START: OnceLock<Instant> = OnceLock::new();
-    HARDWARE_HORIZONTAL_WHEEL_TRACE_START.get_or_init(Instant::now)
-}
-
-fn hardware_horizontal_wheel_trace_seq() -> &'static AtomicU64 {
-    static HARDWARE_HORIZONTAL_WHEEL_TRACE_SEQ: AtomicU64 = AtomicU64::new(0);
-    &HARDWARE_HORIZONTAL_WHEEL_TRACE_SEQ
-}
-
-fn record_hardware_horizontal_wheel_trace(event: &str, payload: serde_json::Value) {
-    let unix_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0);
-    let entry = HardwareHorizontalWheelTraceEntry {
-        elapsed_ms: hardware_horizontal_wheel_trace_start()
-            .elapsed()
-            .as_millis() as u64,
-        event: event.to_string(),
-        payload_json: payload.to_string(),
-        seq: hardware_horizontal_wheel_trace_seq().fetch_add(1, Ordering::Relaxed),
-        thread: format!("{:?}", std::thread::current().id()),
-        unix_ms,
-    };
-
-    if let Ok(mut entries) = hardware_horizontal_wheel_trace_entries().lock() {
-        entries.push_back(entry);
-        while entries.len() > HARDWARE_HORIZONTAL_WHEEL_TRACE_LIMIT {
-            entries.pop_front();
-        }
-    }
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn get_hardware_horizontal_wheel_trace_entries() -> Vec<HardwareHorizontalWheelTraceEntry> {
-    hardware_horizontal_wheel_trace_entries()
-        .lock()
-        .map(|entries| entries.iter().cloned().collect())
-        .unwrap_or_default()
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn clear_hardware_horizontal_wheel_trace() {
-    if let Ok(mut entries) = hardware_horizontal_wheel_trace_entries().lock() {
-        entries.clear();
-    }
-    hardware_horizontal_wheel_trace_seq().store(0, Ordering::Relaxed);
-    record_hardware_horizontal_wheel_trace("trace-cleared", serde_json::json!({}));
-}
-
 #[cfg(target_os = "windows")]
 mod platform {
-    use serde_json::json;
     use std::collections::HashMap;
     use std::mem;
     use std::ptr;
@@ -117,23 +39,22 @@ mod platform {
     use windows_sys::Win32::Devices::HumanInterfaceDevice::{
         HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC, HID_USAGE_PAGE_VENDOR_DEFINED_BEGIN,
     };
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows_sys::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
     use windows_sys::Win32::UI::Input::{
         GetRawInputData, GetRawInputDeviceInfoW, HRAWINPUT, RAWHID, RAWINPUT, RAWINPUTDEVICE,
-        RAWINPUTHEADER, RID_DEVICE_INFO, RID_INPUT, RIDEV_INPUTSINK, RIDI_DEVICEINFO,
-        RIDI_DEVICENAME, RIM_TYPEHID, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE,
+        RAWINPUTHEADER, RID_DEVICE_INFO, RID_INPUT, RIDEV_INPUTSINK, RIDI_DEVICEINFO, RIM_TYPEHID,
+        RIM_TYPEMOUSE,
     };
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, DispatchMessageW, EnumChildWindows, GA_ROOT, GetAncestor, GetClassNameW,
-        GetForegroundWindow, GetMessageW, GetWindowRect, GetWindowThreadProcessId, HC_ACTION,
-        HHOOK, IsChild, IsWindow, MSG, MSLLHOOKSTRUCT, PM_NOREMOVE, PeekMessageW,
-        PostThreadMessageW, RI_MOUSE_HWHEEL, RI_MOUSE_WHEEL, SetWindowsHookExW, TranslateMessage,
-        UnhookWindowsHookEx, WH_MOUSE_LL, WHEEL_DELTA, WM_INPUT, WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
-        WM_NCDESTROY, WM_QUIT, WindowFromPoint,
+        GetMessageW, GetWindowRect, GetWindowThreadProcessId, HC_ACTION, HHOOK, IsChild, IsWindow,
+        MSG, MSLLHOOKSTRUCT, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, RI_MOUSE_HWHEEL,
+        SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_MOUSE_LL, WHEEL_DELTA,
+        WM_INPUT, WM_MOUSEHWHEEL, WM_NCDESTROY, WM_QUIT, WindowFromPoint,
     };
 
     const HARDWARE_HORIZONTAL_WHEEL_SUBCLASS_ID: usize = 0x7261_6E73_4857;
@@ -146,7 +67,6 @@ mod platform {
             is_duplicate_hardware_horizontal_wheel_packet,
         },
         hardware_wheel_hid::resolve_raw_hid_horizontal_wheel_delta,
-        record_hardware_horizontal_wheel_trace,
     };
 
     struct HardwareHorizontalWheelMonitor {
@@ -232,12 +152,6 @@ mod platform {
 
         if sink.is_some_and(|sink_hwnd| sink_hwnd == hwnd as isize) {
             *sink = None;
-            record_hardware_horizontal_wheel_trace(
-                "backend.raw-input.sink-cleared",
-                json!({
-                    "hwnd": trace_hwnd(hwnd),
-                }),
-            );
         }
     }
 
@@ -272,13 +186,6 @@ mod platform {
         delta_x: i32,
     ) {
         let Some(window) = target.app.get_webview_window(&target.window_label) else {
-            record_hardware_horizontal_wheel_trace(
-                "backend.emit.window-missing",
-                json!({
-                    "deltaX": delta_x,
-                    "targetWindowLabel": target.window_label,
-                }),
-            );
             return;
         };
         let event = HardwareHorizontalWheelEvent {
@@ -289,15 +196,6 @@ mod platform {
             window_label: target.window_label.clone(),
         };
 
-        record_hardware_horizontal_wheel_trace(
-            "backend.emit.before",
-            json!({
-                "clientX": client_x,
-                "clientY": client_y,
-                "deltaX": delta_x,
-                "targetWindowLabel": target.window_label,
-            }),
-        );
         let _ = event.emit(&window);
     }
 
@@ -331,90 +229,7 @@ mod platform {
         String::from_utf16_lossy(&buffer[..len as usize])
     }
 
-    fn trace_point(point: POINT) -> serde_json::Value {
-        json!({
-            "x": point.x,
-            "y": point.y,
-        })
-    }
-
-    fn trace_hwnd(hwnd: HWND) -> serde_json::Value {
-        json!({
-            "class": class_name(hwnd),
-            "hwnd": format!("0x{:x}", hwnd as usize),
-            "isNull": hwnd.is_null(),
-        })
-    }
-
-    fn trace_process_hwnd(hwnd: HWND) -> serde_json::Value {
-        let mut process_id = 0u32;
-        let thread_id = if hwnd.is_null() {
-            0
-        } else {
-            unsafe { GetWindowThreadProcessId(hwnd, &mut process_id) }
-        };
-
-        json!({
-            "class": class_name(hwnd),
-            "hwnd": format!("0x{:x}", hwnd as usize),
-            "isCurrentProcess": thread_id != 0 && process_id == unsafe { GetCurrentProcessId() },
-            "isNull": hwnd.is_null(),
-            "processId": process_id,
-            "root": trace_hwnd(root_hwnd(hwnd)),
-            "threadId": thread_id,
-        })
-    }
-
-    fn trace_pointer_context(point: POINT) -> serde_json::Value {
-        let foreground_hwnd = unsafe { GetForegroundWindow() };
-        let hit_hwnd = unsafe { WindowFromPoint(point) };
-
-        json!({
-            "foregroundHwnd": trace_process_hwnd(foreground_hwnd),
-            "hitHwnd": trace_process_hwnd(hit_hwnd),
-            "point": trace_point(point),
-        })
-    }
-
-    fn raw_input_device_name(device: windows_sys::Win32::Foundation::HANDLE) -> Option<String> {
-        if device.is_null() {
-            return None;
-        }
-
-        let mut minimum_size = 0u32;
-        let status = unsafe {
-            GetRawInputDeviceInfoW(device, RIDI_DEVICENAME, ptr::null_mut(), &mut minimum_size)
-        };
-
-        if status != 0 || minimum_size == 0 {
-            return None;
-        }
-
-        let mut name = Vec::<u16>::with_capacity(minimum_size as usize);
-        let status = unsafe {
-            GetRawInputDeviceInfoW(
-                device,
-                RIDI_DEVICENAME,
-                name.as_mut_ptr() as *mut _,
-                &mut minimum_size,
-            )
-        };
-
-        if status == u32::MAX || status == 0 {
-            return None;
-        }
-
-        unsafe { name.set_len(minimum_size as usize) };
-        let end = name
-            .iter()
-            .position(|unit| *unit == 0)
-            .unwrap_or(name.len());
-        Some(String::from_utf16_lossy(&name[..end]))
-    }
-
-    fn raw_input_device_info(
-        device: windows_sys::Win32::Foundation::HANDLE,
-    ) -> Option<serde_json::Value> {
+    fn raw_input_hid_usage_page(device: HANDLE) -> Option<u16> {
         if device.is_null() {
             return None;
         }
@@ -435,65 +250,7 @@ mod platform {
             return None;
         }
 
-        Some(match info.dwType {
-            RIM_TYPEMOUSE => {
-                let mouse = unsafe { info.Anonymous.mouse };
-                json!({
-                    "fHasHorizontalWheel": mouse.fHasHorizontalWheel != 0,
-                    "kind": "mouse",
-                    "mouseId": mouse.dwId,
-                    "numberOfButtons": mouse.dwNumberOfButtons,
-                    "sampleRate": mouse.dwSampleRate,
-                })
-            }
-            RIM_TYPEKEYBOARD => {
-                let keyboard = unsafe { info.Anonymous.keyboard };
-                json!({
-                    "functionKeys": keyboard.dwNumberOfFunctionKeys,
-                    "indicators": keyboard.dwNumberOfIndicators,
-                    "kind": "keyboard",
-                    "keyboardMode": keyboard.dwKeyboardMode,
-                    "numberOfKeysTotal": keyboard.dwNumberOfKeysTotal,
-                    "subType": keyboard.dwSubType,
-                    "type": keyboard.dwType,
-                })
-            }
-            RIM_TYPEHID => {
-                let hid = unsafe { info.Anonymous.hid };
-                json!({
-                    "kind": "hid",
-                    "productId": hid.dwProductId,
-                    "usage": hid.usUsage,
-                    "usagePage": hid.usUsagePage,
-                    "vendorId": hid.dwVendorId,
-                    "versionNumber": hid.dwVersionNumber,
-                })
-            }
-            other => json!({
-                "kind": "unknown",
-                "type": other,
-            }),
-        })
-    }
-
-    fn trace_raw_input_device(device: windows_sys::Win32::Foundation::HANDLE) -> serde_json::Value {
-        json!({
-            "handle": format!("0x{:x}", device as usize),
-            "info": raw_input_device_info(device),
-            "name": raw_input_device_name(device),
-        })
-    }
-
-    fn trace_packet(packet: HardwareHorizontalWheelPacket) -> serde_json::Value {
-        json!({
-            "deltaX": packet.delta_x,
-            "point": trace_point(packet.point),
-            "source": match packet.source {
-                HardwareHorizontalWheelPacketSource::LowLevelHook => "low-level-hook",
-                HardwareHorizontalWheelPacketSource::RawInput => "raw-input",
-                HardwareHorizontalWheelPacketSource::RawInputHid => "raw-input-hid",
-            },
-        })
+        (info.dwType == RIM_TYPEHID).then(|| unsafe { info.Anonymous.hid }.usUsagePage)
     }
 
     fn read_cursor_point() -> Option<POINT> {
@@ -517,35 +274,6 @@ mod platform {
 
         let first_byte = ptr::addr_of!(hid.bRawData) as *const u8;
         unsafe { std::slice::from_raw_parts(first_byte, byte_len).to_vec() }
-    }
-
-    fn hex_bytes(bytes: &[u8]) -> String {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut output = String::with_capacity(bytes.len() * 2);
-
-        for byte in bytes {
-            output.push(HEX[(byte >> 4) as usize] as char);
-            output.push(HEX[(byte & 0x0f) as usize] as char);
-        }
-
-        output
-    }
-
-    fn trace_low_level_mouse(message: u32, hook: &MSLLHOOKSTRUCT) -> serde_json::Value {
-        json!({
-            "context": trace_pointer_context(hook.pt),
-            "delta": i32::from(signed_high_word(hook.mouseData as usize)),
-            "flags": hook.flags,
-            "mouseData": format!("0x{:x}", hook.mouseData),
-            "point": trace_point(hook.pt),
-            "time": hook.time,
-            "message": message,
-            "messageName": match message {
-                WM_MOUSEHWHEEL => "WM_MOUSEHWHEEL",
-                WM_MOUSEWHEEL => "WM_MOUSEWHEEL",
-                _ => "other",
-            },
-        })
     }
 
     fn root_hwnd(hwnd: HWND) -> HWND {
@@ -640,26 +368,15 @@ mod platform {
             .map(|(_, hwnd, target)| (hwnd, target))
     }
 
-    fn target_for_screen_point(
-        point: POINT,
-    ) -> Option<(HWND, HardwareHorizontalWheelTarget, &'static str)> {
+    fn target_for_screen_point(point: POINT) -> Option<(HWND, HardwareHorizontalWheelTarget)> {
         let hit_hwnd = unsafe { WindowFromPoint(point) };
 
-        record_hardware_horizontal_wheel_trace(
-            "backend.hit.start",
-            json!({
-                "hitHwnd": trace_hwnd(hit_hwnd),
-                "point": trace_point(point),
-            }),
-        );
-
         if let Some((client_hwnd, target)) = target_for_related_hit_hwnd(hit_hwnd) {
-            return Some((client_hwnd, target, "hwnd-tree"));
+            return Some((client_hwnd, target));
         }
 
         if hit_hwnd_belongs_to_current_process(hit_hwnd) {
-            return target_for_window_rect(point)
-                .map(|(client_hwnd, target)| (client_hwnd, target, "process-rect"));
+            return target_for_window_rect(point);
         }
 
         None
@@ -668,20 +385,10 @@ mod platform {
     fn emit_hardware_horizontal_wheel_event_from_screen_point(
         target: &HardwareHorizontalWheelTarget,
         client_hwnd: HWND,
-        hit_reason: &str,
         point: POINT,
         delta_x: i32,
     ) {
         let Some(window) = target.app.get_webview_window(&target.window_label) else {
-            record_hardware_horizontal_wheel_trace(
-                "backend.emit-screen.window-missing",
-                json!({
-                    "deltaX": delta_x,
-                    "hitReason": hit_reason,
-                    "point": trace_point(point),
-                    "targetWindowLabel": target.window_label,
-                }),
-            );
             return;
         };
         let scale_factor = window
@@ -702,67 +409,28 @@ mod platform {
             f64::NAN
         };
 
-        record_hardware_horizontal_wheel_trace(
-            "backend.emit-screen.resolved",
-            json!({
-                "clientHwnd": trace_hwnd(client_hwnd),
-                "clientPoint": trace_point(client_point),
-                "clientX": client_x,
-                "clientY": client_y,
-                "deltaX": delta_x,
-                "hitReason": hit_reason,
-                "point": trace_point(point),
-                "pointIsClient": point_is_client,
-                "scaleFactor": scale_factor,
-                "targetWindowLabel": target.window_label,
-            }),
-        );
         emit_hardware_horizontal_wheel_event_at_client_point(target, client_x, client_y, delta_x);
     }
 
     fn handle_hardware_horizontal_wheel_packet(packet: HardwareHorizontalWheelPacket) {
-        let Some((client_hwnd, target, hit_reason)) = target_for_screen_point(packet.point) else {
-            record_hardware_horizontal_wheel_trace(
-                "backend.packet.no-target",
-                trace_packet(packet),
-            );
+        let Some((client_hwnd, target)) = target_for_screen_point(packet.point) else {
             return;
         };
 
-        record_hardware_horizontal_wheel_trace(
-            "backend.packet.target",
-            json!({
-                "clientHwnd": trace_hwnd(client_hwnd),
-                "hitReason": hit_reason,
-                "packet": trace_packet(packet),
-                "targetWindowLabel": target.window_label,
-            }),
-        );
         emit_hardware_horizontal_wheel_event_from_screen_point(
             &target,
             client_hwnd,
-            hit_reason,
             packet.point,
             packet.delta_x,
         );
     }
 
     fn send_hardware_horizontal_wheel_packet(packet: HardwareHorizontalWheelPacket) {
-        record_hardware_horizontal_wheel_trace("backend.packet.queue", trace_packet(packet));
         if let Some(sender) = hardware_horizontal_wheel_packet_sender().get() {
             match sender.try_send(packet) {
                 Ok(()) => {}
-                Err(TrySendError::Full(_)) => {
-                    record_hardware_horizontal_wheel_trace(
-                        "backend.packet.queue-full",
-                        trace_packet(packet),
-                    );
-                }
+                Err(TrySendError::Full(_)) => {}
                 Err(TrySendError::Disconnected(_)) => {
-                    record_hardware_horizontal_wheel_trace(
-                        "backend.packet.queue-disconnected",
-                        trace_packet(packet),
-                    );
                     eprintln!("[hardwareHorizontalWheel] packet worker disconnected");
                 }
             }
@@ -786,10 +454,6 @@ mod platform {
                     now.duration_since(previous.queued_at).as_millis(),
                 )
             }) {
-                record_hardware_horizontal_wheel_trace(
-                    "backend.packet.duplicate",
-                    trace_packet(packet),
-                );
                 return;
             }
 
@@ -807,25 +471,10 @@ mod platform {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        if code == HC_ACTION as i32 && matches!(wparam as u32, WM_MOUSEHWHEEL | WM_MOUSEWHEEL) {
-            let hook = unsafe { (lparam as *const MSLLHOOKSTRUCT).as_ref() };
-
-            if let Some(hook) = hook {
-                record_hardware_horizontal_wheel_trace(
-                    "backend.low-level.mouse-wheel-message",
-                    trace_low_level_mouse(wparam as u32, hook),
-                );
-            }
-        }
-
         if code == HC_ACTION as i32 && wparam as u32 == WM_MOUSEHWHEEL {
             let hook = unsafe { (lparam as *const MSLLHOOKSTRUCT).as_ref() };
 
             if let Some(hook) = hook {
-                record_hardware_horizontal_wheel_trace(
-                    "backend.source.low-level",
-                    trace_low_level_mouse(wparam as u32, hook),
-                );
                 queue_hardware_horizontal_wheel_packet(HardwareHorizontalWheelPacket {
                     delta_x: i32::from(signed_high_word(hook.mouseData as usize)),
                     point: hook.pt,
@@ -839,7 +488,6 @@ mod platform {
 
     fn spawn_packet_worker() -> Result<(), String> {
         if hardware_horizontal_wheel_packet_sender().get().is_some() {
-            record_hardware_horizontal_wheel_trace("backend.worker.already-started", json!({}));
             return Ok(());
         }
 
@@ -851,7 +499,6 @@ mod platform {
         thread::Builder::new()
             .name("hardware-horizontal-wheel-worker".to_string())
             .spawn(move || {
-                record_hardware_horizontal_wheel_trace("backend.worker.started", json!({}));
                 while let Ok(packet) = receiver.recv() {
                     handle_hardware_horizontal_wheel_packet(packet);
                 }
@@ -883,22 +530,12 @@ mod platform {
                 };
 
                 if handle.is_null() {
-                    record_hardware_horizontal_wheel_trace(
-                        "backend.low-level.install-failed",
-                        json!({}),
-                    );
                     let _ = sender.send(Err(
                         "failed to install hardware horizontal wheel low-level hook".to_string(),
                     ));
                     return;
                 }
 
-                record_hardware_horizontal_wheel_trace(
-                    "backend.low-level.installed",
-                    json!({
-                        "threadId": thread_id,
-                    }),
-                );
                 let _ = sender.send(Ok((thread_id, handle as usize)));
 
                 while unsafe { GetMessageW(&mut message, ptr::null_mut(), 0, 0) } > 0 {
@@ -955,13 +592,6 @@ mod platform {
         };
 
         if status == u32::MAX || data_size == 0 {
-            record_hardware_horizontal_wheel_trace(
-                "backend.raw-input.read-failed",
-                json!({
-                    "dataSize": data_size,
-                    "status": status,
-                }),
-            );
             return None;
         }
 
@@ -979,13 +609,6 @@ mod platform {
         };
 
         if status == u32::MAX || status == 0 {
-            record_hardware_horizontal_wheel_trace(
-                "backend.raw-input.read-failed",
-                json!({
-                    "dataSize": data_size,
-                    "status": status,
-                }),
-            );
             return None;
         }
 
@@ -1000,78 +623,24 @@ mod platform {
 
         if raw_input.header.dwType != RIM_TYPEMOUSE {
             queue_raw_hid_horizontal_wheel(raw_input);
-            record_hardware_horizontal_wheel_trace(
-                "backend.raw-input.not-mouse",
-                json!({
-                    "device": trace_raw_input_device(raw_input.header.hDevice),
-                    "dwType": raw_input.header.dwType,
-                    "rawInputHeaderWparam": raw_input.header.wParam,
-                }),
-            );
             return;
         }
 
         let mouse = unsafe { raw_input.data.mouse };
         let buttons = unsafe { mouse.Anonymous.Anonymous };
-        let cursor_point = read_cursor_point();
-        let point = cursor_point.unwrap_or_default();
-        let has_point = cursor_point.is_some();
-        let pointer_context = has_point.then(|| trace_pointer_context(point));
-        let raw_trace = json!({
-            "buttonData": buttons.usButtonData,
-            "buttonFlags": buttons.usButtonFlags,
-            "cursorPoint": has_point.then(|| trace_point(point)),
-            "isHorizontalWheel": buttons.usButtonFlags & RI_MOUSE_HWHEEL as u16 != 0,
-            "isVerticalWheel": buttons.usButtonFlags & RI_MOUSE_WHEEL as u16 != 0,
-            "lastX": mouse.lLastX,
-            "lastY": mouse.lLastY,
-            "pointerContext": pointer_context,
-            "rawButtons": mouse.ulRawButtons,
-            "rawInputDevice": trace_raw_input_device(raw_input.header.hDevice),
-            "rawInputHeaderDevice": format!("0x{:x}", raw_input.header.hDevice as usize),
-            "rawInputHeaderWparam": raw_input.header.wParam,
-            "usFlags": mouse.usFlags,
-        });
-
-        record_hardware_horizontal_wheel_trace("backend.raw-input.mouse", raw_trace.clone());
 
         if buttons.usButtonFlags & RI_MOUSE_HWHEEL as u16 == 0 {
-            if buttons.usButtonFlags != 0 {
-                record_hardware_horizontal_wheel_trace(
-                    "backend.raw-input.non-horizontal",
-                    raw_trace,
-                );
-            }
             return;
         }
 
         let delta_x = i32::from(buttons.usButtonData as i16);
         if delta_x == 0 {
-            record_hardware_horizontal_wheel_trace("backend.raw-input.zero-horizontal", raw_trace);
             return;
         }
 
-        if !has_point {
-            record_hardware_horizontal_wheel_trace(
-                "backend.raw-input.cursor-missing",
-                json!({
-                    "buttonData": buttons.usButtonData,
-                    "buttonFlags": buttons.usButtonFlags,
-                    "deltaX": delta_x,
-                }),
-            );
+        let Some(point) = read_cursor_point() else {
             return;
-        }
-
-        record_hardware_horizontal_wheel_trace(
-            "backend.source.raw-input",
-            json!({
-                "buttonData": buttons.usButtonData,
-                "buttonFlags": buttons.usButtonFlags,
-                "deltaX": delta_x,
-                "point": trace_point(point),
-            }),
-        );
+        };
         queue_hardware_horizontal_wheel_packet(HardwareHorizontalWheelPacket {
             delta_x,
             point,
@@ -1090,14 +659,9 @@ mod platform {
         // as the standard Windows wheel sources: a signed horizontal detent at
         // the current cursor point. It must not grow into brand-specific policy
         // or component viewport behavior.
-        let device_info = raw_input_device_info(raw_input.header.hDevice);
-        let usage_page = device_info
-            .as_ref()
-            .and_then(|info| info.get("usagePage"))
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0);
+        let usage_page = raw_input_hid_usage_page(raw_input.header.hDevice).unwrap_or(0);
 
-        if usage_page < u64::from(HID_USAGE_PAGE_VENDOR_DEFINED_BEGIN) {
+        if usage_page < HID_USAGE_PAGE_VENDOR_DEFINED_BEGIN {
             return;
         }
 
@@ -1117,17 +681,6 @@ mod platform {
                 continue;
             };
 
-            record_hardware_horizontal_wheel_trace(
-                "backend.source.raw-input-hid",
-                json!({
-                    "deltaX": delta_x,
-                    "point": trace_point(point),
-                    "rawDataHex": hex_bytes(report),
-                    "rawInputDevice": trace_raw_input_device(raw_input.header.hDevice),
-                    "rawInputHeaderDevice": format!("0x{:x}", raw_input.header.hDevice as usize),
-                    "rawInputHeaderWparam": raw_input.header.wParam,
-                }),
-            );
             queue_hardware_horizontal_wheel_packet(HardwareHorizontalWheelPacket {
                 delta_x,
                 point,
@@ -1145,13 +698,6 @@ mod platform {
         _ref_data: usize,
     ) -> LRESULT {
         if message == WM_INPUT {
-            record_hardware_horizontal_wheel_trace(
-                "backend.window-message.wm-input",
-                json!({
-                    "hwnd": trace_hwnd(hwnd),
-                    "wparam": wparam,
-                }),
-            );
             queue_raw_input_horizontal_wheel(lparam);
             return unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
         }
@@ -1212,23 +758,9 @@ mod platform {
         if let Some(existing_hwnd) = *sink {
             let existing_hwnd = existing_hwnd as HWND;
             if unsafe { IsWindow(existing_hwnd) } != 0 {
-                record_hardware_horizontal_wheel_trace(
-                    "backend.raw-input.register-skip-existing",
-                    json!({
-                        "existingHwnd": trace_hwnd(existing_hwnd),
-                        "requestedHwnd": trace_hwnd(hwnd),
-                    }),
-                );
                 return Ok(());
             }
 
-            record_hardware_horizontal_wheel_trace(
-                "backend.raw-input.sink-stale",
-                json!({
-                    "existingHwnd": trace_hwnd(existing_hwnd),
-                    "requestedHwnd": trace_hwnd(hwnd),
-                }),
-            );
             *sink = None;
         }
 
@@ -1244,30 +776,8 @@ mod platform {
 
         if registered {
             *sink = Some(hwnd as isize);
-            record_hardware_horizontal_wheel_trace(
-                "backend.raw-input.registered",
-                json!({
-                    "hwnd": trace_hwnd(hwnd),
-                    "registeredDevices": devices
-                        .iter()
-                        .map(|device| {
-                            json!({
-                                "flags": device.dwFlags,
-                                "usage": device.usUsage,
-                                "usagePage": device.usUsagePage,
-                            })
-                        })
-                        .collect::<Vec<_>>(),
-                }),
-            );
             Ok(())
         } else {
-            record_hardware_horizontal_wheel_trace(
-                "backend.raw-input.register-failed",
-                json!({
-                    "hwnd": trace_hwnd(hwnd),
-                }),
-            );
             Err(format!(
                 "failed to register raw mouse input hwnd=0x{:x}",
                 hwnd as usize
@@ -1304,13 +814,6 @@ mod platform {
                 .lock()
                 .map_err(|_| "hardware wheel monitor state poisoned".to_string())?;
             monitored.insert(hwnd_key, monitor);
-            record_hardware_horizontal_wheel_trace(
-                "backend.monitor.installed",
-                json!({
-                    "hwnd": trace_hwnd(hwnd),
-                    "windowLabel": window.label(),
-                }),
-            );
             Ok(true)
         } else {
             let _ = unsafe { Box::from_raw(monitor as *mut HardwareHorizontalWheelMonitor) };
@@ -1331,12 +834,6 @@ mod platform {
     }
 
     pub fn install(window: &WebviewWindow) -> Result<(), String> {
-        record_hardware_horizontal_wheel_trace(
-            "backend.install.start",
-            json!({
-                "windowLabel": window.label(),
-            }),
-        );
         install_packet_workers()?;
         install_low_level_hook()?;
 
