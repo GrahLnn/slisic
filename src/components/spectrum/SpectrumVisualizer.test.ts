@@ -5,6 +5,7 @@ import {
   clampWaveformZoomDeltaY,
   createWaveformDataRequestKey,
   createWaveformDataScopeKey,
+  handleWaveformViewportWheel,
   normalizeWaveformPathKey,
   resolveAnchoredWaveformScrollLeft,
   resolveCenteredWaveformScrollLeft,
@@ -16,6 +17,7 @@ import {
   resolveWaveformDataPlan,
   resolveWaveformDataTileIndexes,
   resolveWaveformDataWindow,
+  resolveWaveformHardwareHorizontalWheelDelta,
   resolveWaveformHorizontalPanFrame,
   resolveWaveformHorizontalScrollLeft,
   resolveWaveformLoadingGridSize,
@@ -40,6 +42,7 @@ import {
   resolveWaveformWheelStreamIntent,
   resolveWaveformZoomFrame,
   resolveWaveformZoomScaleFrame,
+  shouldAcceptWaveformHardwareHorizontalWheel,
   shouldPreventWaveformWheelDefault,
 } from "./SpectrumVisualizer";
 
@@ -659,6 +662,106 @@ describe("SpectrumVisualizer", () => {
         scrollLeft: 0,
       },
     );
+  });
+
+  test("uses backend hardware horizontal wheel deltas as viewport pan deltas", () => {
+    assert.equal(resolveWaveformHardwareHorizontalWheelDelta({ deltaX: 120 }), 120);
+    assert.equal(resolveWaveformHardwareHorizontalWheelDelta({ deltaX: -120 }), -120);
+    assert.equal(resolveWaveformHardwareHorizontalWheelDelta({ deltaX: Number.NaN }), 0);
+    assert.deepEqual(
+      resolveWaveformHorizontalPanFrame({
+        contentWidth: 1_000,
+        deltaX: resolveWaveformHardwareHorizontalWheelDelta({ deltaX: -120 }),
+        scrollLeft: 350,
+        viewportWidth: 400,
+      }),
+      {
+        changed: true,
+        scrollLeft: 230,
+      },
+    );
+  });
+
+  test("accepts backend hardware horizontal wheel only while the waveform host is hovered", () => {
+    const host = {
+      getBoundingClientRect: () => ({
+        bottom: 250,
+        left: 100,
+        right: 500,
+        top: 50,
+      }),
+    } as Element;
+
+    assert.equal(
+      shouldAcceptWaveformHardwareHorizontalWheel({
+        clientX: 200,
+        clientY: 120,
+        host: null,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldAcceptWaveformHardwareHorizontalWheel({
+        clientX: Number.NaN,
+        clientY: 120,
+        host,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldAcceptWaveformHardwareHorizontalWheel({
+        clientX: 99,
+        clientY: 120,
+        host,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldAcceptWaveformHardwareHorizontalWheel({
+        clientX: 200,
+        clientY: 120,
+        host,
+      }),
+      true,
+    );
+  });
+
+  test("short-circuits non-shift frontend horizontal wheel pan while backend owns hardware pan", () => {
+    let committed = false;
+    let prevented = false;
+
+    handleWaveformViewportWheel({
+      commitViewport: () => {
+        committed = true;
+      },
+      event: {
+        currentTarget: null,
+        deltaMode: 0,
+        deltaX: 120,
+        deltaY: 0,
+        deltaZ: 0,
+        isTrusted: true,
+        preventDefault: () => {
+          prevented = true;
+        },
+        shiftKey: false,
+        timeStamp: 1_000,
+      } as WheelEvent,
+      horizontalWheelStream: null,
+      setHorizontalWheelStream: () => {},
+      viewport: {
+        contentWidth: 1_000,
+        durationMs: 120_000,
+        focusSeconds: null,
+        maximumPixelsPerSecond: 800,
+        pixelsPerSecond: 100,
+        scrollLeft: 350,
+        viewportWidth: 400,
+      },
+    });
+
+    assert.equal(prevented, true);
+    assert.equal(committed, false);
   });
 
   test("zooms around the pointer anchor without drifting", () => {

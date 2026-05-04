@@ -11,6 +11,7 @@ import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import {
   crab,
+  type HardwareHorizontalWheelEvent,
   type PlaybackStatusPayload,
   type TrackWaveformSummary,
   type TrackWaveformTile,
@@ -1366,6 +1367,32 @@ function TrackSpectrumSession(props: {
     });
   }, []);
 
+  const handleHardwareHorizontalWheel = useCallback((payload: HardwareHorizontalWheelEvent) => {
+    if (
+      !shouldAcceptWaveformHardwareHorizontalWheel({
+        clientX: payload.client_x,
+        clientY: payload.client_y,
+        host: hostRef.current,
+      })
+    ) {
+      return;
+    }
+
+    const current = viewportRef.current;
+
+    if (!current) {
+      return;
+    }
+
+    handleWaveformHardwareHorizontalWheel({
+      commitViewport: (next) => {
+        commitViewportRef.current?.(next);
+      },
+      deltaX: payload.delta_x,
+      viewport: current,
+    });
+  }, []);
+
   useLayoutEffect(() => {
     const current = viewportRef.current;
     if (!current) {
@@ -1454,6 +1481,29 @@ function TrackSpectrumSession(props: {
       host.removeEventListener("wheel", handleWheel, true);
     };
   }, [handleWheel]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+
+    const listenHardwareHorizontalWheel = async () => {
+      const nextUnlisten = await crab.evt("hardwareHorizontalWheelEvent")(
+        handleHardwareHorizontalWheel,
+      );
+      if (disposed) {
+        nextUnlisten();
+        return;
+      }
+      unlisten = nextUnlisten;
+    };
+
+    void listenHardwareHorizontalWheel();
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [handleHardwareHorizontalWheel]);
 
   useEffect(
     () => () => {
@@ -2554,7 +2604,7 @@ function resolveWaveformPlayheadCssVariables(args: {
   };
 }
 
-function handleWaveformViewportWheel(args: {
+export function handleWaveformViewportWheel(args: {
   commitViewport: (state: WaveformViewportState) => void;
   event: WheelEvent;
   horizontalWheelStream: WaveformHorizontalWheelStreamState | null;
@@ -2579,23 +2629,24 @@ function handleWaveformViewportWheel(args: {
    * component-level input fallback only. It must not leak to global state or
    * become a generic wheel parser rule.
    */
-  const wheelDeltas = resolveWaveformWheelDeltas({
+  const rawWheelDeltas = resolveWaveformWheelDeltas({
     deltaMode: readWaveformWheelNumber(args.event, "deltaMode", 0),
     deltaX: readWaveformWheelNumber(args.event, "deltaX", 0),
     deltaY: readWaveformWheelNumber(args.event, "deltaY", 0),
   });
+  const wheelDeltas = resolveWaveformWheelAxisDeltas({
+    ...rawWheelDeltas,
+    shiftKey: args.event.shiftKey,
+  });
   const pixelDeltas = resolveWaveformWheelPixelDeltas({
-    ...resolveWaveformWheelAxisDeltas({
-      ...wheelDeltas,
-      shiftKey: args.event.shiftKey,
-    }),
+    ...wheelDeltas,
     viewportHeight,
     viewportWidth,
   });
   const baseIntent = resolveWaveformWheelIntent(pixelDeltas);
   const isZeroValuedPacket =
-    wheelDeltas.deltaX === 0 &&
-    wheelDeltas.deltaY === 0 &&
+    rawWheelDeltas.deltaX === 0 &&
+    rawWheelDeltas.deltaY === 0 &&
     readWaveformWheelNumber(args.event, "deltaZ", 0) === 0;
   const inferZeroValuedHorizontalPacket = isZeroValuedPacket && args.event.isTrusted;
   const streamResolution = resolveWaveformWheelStreamIntent({
@@ -2615,6 +2666,10 @@ function handleWaveformViewportWheel(args: {
   args.event.preventDefault();
 
   if (intent.kind === "horizontal-pan") {
+    if (!args.event.shiftKey) {
+      return;
+    }
+
     handleWaveformHorizontalPanWheel({
       commitViewport: args.commitViewport,
       deltaX: intent.deltaX,
@@ -2627,6 +2682,55 @@ function handleWaveformViewportWheel(args: {
     commitViewport: args.commitViewport,
     deltaY: intent.deltaY,
     event: args.event,
+    viewport: args.viewport,
+  });
+}
+
+export function resolveWaveformHardwareHorizontalWheelDelta(args: { deltaX?: number | null }) {
+  return resolveFiniteWheelDelta(args.deltaX);
+}
+
+export function shouldAcceptWaveformHardwareHorizontalWheel(args: {
+  clientX?: number | null;
+  clientY?: number | null;
+  host: Element | null;
+}) {
+  const clientX = args.clientX;
+  const clientY = args.clientY;
+
+  if (
+    !args.host ||
+    typeof clientX !== "number" ||
+    typeof clientY !== "number" ||
+    !Number.isFinite(clientX) ||
+    !Number.isFinite(clientY)
+  ) {
+    return false;
+  }
+
+  const rect = args.host.getBoundingClientRect();
+
+  return (
+    clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom
+  );
+}
+
+function handleWaveformHardwareHorizontalWheel(args: {
+  commitViewport: (state: WaveformViewportState) => void;
+  deltaX: number;
+  viewport: WaveformViewportModel;
+}) {
+  const deltaX = resolveWaveformHardwareHorizontalWheelDelta({
+    deltaX: args.deltaX,
+  });
+
+  if (deltaX === 0) {
+    return;
+  }
+
+  handleWaveformHorizontalPanWheel({
+    commitViewport: args.commitViewport,
+    deltaX,
     viewport: args.viewport,
   });
 }

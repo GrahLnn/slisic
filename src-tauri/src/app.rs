@@ -55,6 +55,7 @@ pub fn run() {
         ])
         .events(collect_events![
             event::FullScreenEvent,
+            utils::hardware_wheel::HardwareHorizontalWheelEvent,
             domain::player::event::NowPlayingTrackChangedEvent
         ]);
 

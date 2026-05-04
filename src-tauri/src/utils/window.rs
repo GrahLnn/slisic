@@ -695,6 +695,7 @@ pub fn apply_window_setup(window: &WebviewWindow, is_main: bool) {
     #[cfg(target_os = "windows")]
     {
         let _ = window.set_decorations(false);
+        super::hardware_wheel::install_hardware_horizontal_wheel_monitor(window);
     }
 
     #[cfg(target_os = "macos")]

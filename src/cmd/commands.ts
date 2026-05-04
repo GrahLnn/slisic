@@ -115,6 +115,7 @@ export const commands = {
 /** Events */
 export const events = {
 	fullScreenEvent: makeEvent<FullScreenEvent>("full-screen-event"),
+	hardwareHorizontalWheelEvent: makeEvent<HardwareHorizontalWheelEvent>("hardware-horizontal-wheel-event"),
 	nowPlayingTrackChangedEvent: makeEvent<NowPlayingTrackChangedEvent>("now-playing-track-changed-event"),
 };
 
@@ -220,6 +221,14 @@ export type Group = {
 	name: string,
 	url: string,
 	folder: string,
+};
+
+export type HardwareHorizontalWheelEvent = {
+	client_x: number,
+	client_y: number,
+	delta_x: number,
+	wheel_delta_unit: number,
+	window_label: string,
 };
 
 // Application-facing id type that accepts either string or integer ids.
