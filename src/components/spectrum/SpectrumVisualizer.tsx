@@ -3,20 +3,12 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
-  Profiler,
   useRef,
   useState,
-  type ProfilerOnRenderCallback,
   type RefObject,
 } from "react";
 import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
-import {
-  measureSpectrumInitialRenderWork,
-  recordSpectrumInitialRenderProfiler,
-  recordSpectrumInitialRenderWork,
-  startSpectrumInitialRenderTraceCapture,
-} from "@/src/debug/spectrumInitialRenderTrace";
 import {
   crab,
   type HardwareHorizontalWheelEvent,
@@ -565,18 +557,6 @@ const crabTrackSpectrumPorts: TrackSpectrumPorts = {
 };
 
 let waveformCanvasRenderJobSequence = 0;
-
-function resolveSpectrumInitialRenderSessionKey(args: {
-  end: number | null;
-  filePath: string | null;
-  start: number | null;
-}) {
-  return [
-    normalizeWaveformPathKey(args.filePath),
-    normalizeWaveformBoundary(args.start) ?? "",
-    normalizeWaveformBoundary(args.end) ?? "",
-  ].join("|");
-}
 
 export function resolveWaveformPixelsPerSecond(
   value: number,
@@ -1802,19 +1782,13 @@ export function TrackSpectrum(props: {
   ports?: TrackSpectrumPorts;
   start: number | null;
 }) {
-  const identity = resolveSpectrumInitialRenderSessionKey(props);
-  const profiler = useSpectrumInitialRenderProfiler({
-    end: props.end,
-    filePath: props.filePath,
-    sessionKey: identity,
-    start: props.start,
-  });
+  const identity = [
+    normalizeWaveformPathKey(props.filePath),
+    normalizeWaveformBoundary(props.start) ?? "",
+    normalizeWaveformBoundary(props.end) ?? "",
+  ].join("|");
 
-  return (
-    <Profiler id="TrackSpectrum" onRender={profiler}>
-      <TrackSpectrumSession key={identity} sessionKey={identity} {...props} />
-    </Profiler>
-  );
+  return <TrackSpectrumSession key={identity} {...props} />;
 }
 
 function TrackSpectrumSession(props: {
@@ -1822,7 +1796,6 @@ function TrackSpectrumSession(props: {
   end: number | null;
   filePath: string | null;
   ports?: TrackSpectrumPorts;
-  sessionKey: string;
   start: number | null;
 }) {
   const placeholderSummary = useMemo(() => createPlaceholderWaveformSummary(), []);
@@ -1834,7 +1807,6 @@ function TrackSpectrumSession(props: {
   const commitViewportRef = useRef<WaveformViewportCommit | null>(null);
   const tileCacheRef = useRef(new Map<string, WaveformCachedTile>());
   const completeDataPlanTimerRef = useRef<number | null>(null);
-  const initialRenderTraceStartedRef = useRef(false);
   const lastInteractiveDataDemandRef = useRef<WaveformInteractiveDataDemand | null>(null);
   const [loadingGridSize, setLoadingGridSize] = useState<WaveformLoadingGridSize>(() =>
     resolveWaveformLoadingGridSize({
@@ -1846,7 +1818,6 @@ function TrackSpectrumSession(props: {
     end: props.end,
     filePath: props.filePath,
     placeholderSummary,
-    sessionKey: props.sessionKey,
     start: props.start,
     waveformPort: ports.waveform,
   });
@@ -1874,7 +1845,6 @@ function TrackSpectrumSession(props: {
     canvasRef,
     end: props.end,
     filePath: props.filePath?.trim() || null,
-    sessionKey: props.sessionKey,
     start: props.start,
     status: waveformState.status,
     summary: waveformState.summary,
@@ -1885,7 +1855,6 @@ function TrackSpectrumSession(props: {
     end: props.end,
     filePath: props.filePath?.trim() || null,
     onTileAvailable: drawCanvas,
-    sessionKey: props.sessionKey,
     start: props.start,
     status: waveformState.status,
     summary: waveformState.summary,
@@ -1904,7 +1873,6 @@ function TrackSpectrumSession(props: {
   useWaveformLoadingRenderer({
     canvasRef: loadingCanvasRef,
     gridSize: loadingGridSize,
-    sessionKey: props.sessionKey,
     visible: shouldShowLoadingGrid,
   });
 
@@ -2113,19 +2081,6 @@ function TrackSpectrumSession(props: {
       return;
     }
 
-    if (!initialRenderTraceStartedRef.current) {
-      initialRenderTraceStartedRef.current = true;
-      startSpectrumInitialRenderTraceCapture({
-        durationMs: waveformState.summary.duration_ms,
-        filePathKey: normalizeWaveformPathKey(props.filePath),
-        hasFilePath: Boolean(props.filePath?.trim()),
-        reason: "layout-mount",
-        sessionKey: props.sessionKey,
-        status: waveformState.status,
-        summaryCacheKey: waveformState.summary.cache_key,
-      });
-    }
-
     commitViewport({
       state: {
         focusSeconds: current.focusSeconds,
@@ -2137,9 +2092,6 @@ function TrackSpectrumSession(props: {
   }, [
     commitViewport,
     maximumPixelsPerSecond,
-    props.filePath,
-    props.sessionKey,
-    waveformState.status,
     waveformState.summary.cache_key,
     waveformState.summary.duration_ms,
   ]);
@@ -2151,26 +2103,12 @@ function TrackSpectrumSession(props: {
     }
 
     const syncWidth = () => {
-      const { nextLoadingGridSize, nextViewportWidth } = measureSpectrumInitialRenderWork(
-        "layout-sync-width-read",
-        {
-          sessionKey: props.sessionKey,
-        },
-        () => {
-          const hostRect = host.getBoundingClientRect();
-          const nextViewportWidth = Math.max(1, Math.ceil(hostRect.width));
-          const nextLoadingGridSize = resolveWaveformLoadingGridSize({
-            height: hostRect.height || WAVEFORM_CANVAS_HEIGHT,
-            width: nextViewportWidth,
-          });
-
-          return {
-            hostRect,
-            nextLoadingGridSize,
-            nextViewportWidth,
-          };
-        },
-      );
+      const hostRect = host.getBoundingClientRect();
+      const nextViewportWidth = Math.max(1, Math.ceil(hostRect.width));
+      const nextLoadingGridSize = resolveWaveformLoadingGridSize({
+        height: hostRect.height || WAVEFORM_CANVAS_HEIGHT,
+        width: nextViewportWidth,
+      });
 
       setLoadingGridSize((current) =>
         current.columns === nextLoadingGridSize.columns && current.rows === nextLoadingGridSize.rows
@@ -2193,13 +2131,7 @@ function TrackSpectrumSession(props: {
       });
     };
 
-    measureSpectrumInitialRenderWork(
-      "layout-sync-width",
-      {
-        sessionKey: props.sessionKey,
-      },
-      syncWidth,
-    );
+    syncWidth();
 
     const ResizeObserverConstructor = (
       window as typeof window & { ResizeObserver?: typeof ResizeObserver }
@@ -2218,7 +2150,7 @@ function TrackSpectrumSession(props: {
     return () => {
       observer.disconnect();
     };
-  }, [commitViewport, props.sessionKey]);
+  }, [commitViewport]);
 
   useLayoutEffect(() => {
     const host = hostRef.current;
@@ -2280,38 +2212,6 @@ function TrackSpectrumSession(props: {
         }}
       />
     </motion.div>
-  );
-}
-
-function useSpectrumInitialRenderProfiler(args: {
-  end: number | null;
-  filePath: string | null;
-  sessionKey: string;
-  start: number | null;
-}): ProfilerOnRenderCallback {
-  const latestArgsRef = useRef(args);
-  latestArgsRef.current = args;
-
-  return useCallback<ProfilerOnRenderCallback>(
-    (id, phase, actualDuration, baseDuration, startTime, commitTime) => {
-      const latest = latestArgsRef.current;
-      recordSpectrumInitialRenderProfiler({
-        actualDuration,
-        baseDuration,
-        commitTime,
-        durationMs: 0,
-        filePathKey: normalizeWaveformPathKey(latest.filePath),
-        hasFilePath: Boolean(latest.filePath?.trim()),
-        id,
-        phase,
-        reason: "react-profiler",
-        sessionKey: latest.sessionKey,
-        startTime,
-        status: "react-commit",
-        summaryCacheKey: "",
-      });
-    },
-    [],
   );
 }
 
@@ -2495,7 +2395,6 @@ function useTrackWaveformSummary(args: {
   end: number | null;
   filePath: string | null;
   placeholderSummary: TrackWaveformSummary;
-  sessionKey: string;
   start: number | null;
   waveformPort: TrackSpectrumWaveformPort;
 }) {
@@ -2507,10 +2406,6 @@ function useTrackWaveformSummary(args: {
     const filePath = args.filePath?.trim();
 
     if (!filePath) {
-      recordSpectrumInitialRenderWork("summary-idle", {
-        reason: "missing-file",
-        sessionKey: args.sessionKey,
-      });
       setState({
         status: "idle",
         summary: args.placeholderSummary,
@@ -2524,20 +2419,8 @@ function useTrackWaveformSummary(args: {
       status: "loading",
       summary: args.placeholderSummary,
     });
-    recordSpectrumInitialRenderWork("summary-loading", {
-      end: args.end,
-      filePathKey: normalizeWaveformPathKey(filePath),
-      sessionKey: args.sessionKey,
-      start: args.start,
-    });
 
     const handle = scheduleWaveformInitialPrepare(ownerWindow, () => {
-      const startedAt = readWaveformPerformanceNow(ownerWindow);
-      recordSpectrumInitialRenderWork("summary-prepare-start", {
-        filePathKey: normalizeWaveformPathKey(filePath),
-        sessionKey: args.sessionKey,
-      });
-
       void args.waveformPort
         .prepareTrackWaveform(
           filePath,
@@ -2549,13 +2432,6 @@ function useTrackWaveformSummary(args: {
             return;
           }
 
-          recordSpectrumInitialRenderWork("summary-prepare-resolve", {
-            durationMs: readWaveformPerformanceNow(ownerWindow) - startedAt,
-            levels: summary.levels,
-            sessionKey: args.sessionKey,
-            summaryCacheKey: summary.cache_key,
-            summaryDurationMs: summary.duration_ms,
-          });
           setState({
             status: "ready",
             summary,
@@ -2567,11 +2443,6 @@ function useTrackWaveformSummary(args: {
           }
 
           console.error("Failed to prepare track waveform", error);
-          recordSpectrumInitialRenderWork("summary-prepare-error", {
-            durationMs: readWaveformPerformanceNow(ownerWindow) - startedAt,
-            error: error instanceof Error ? error.message : String(error),
-            sessionKey: args.sessionKey,
-          });
           setState({
             status: "error",
             summary: args.placeholderSummary,
@@ -2583,14 +2454,7 @@ function useTrackWaveformSummary(args: {
       cancelled = true;
       cancelWaveformInitialPrepare(ownerWindow, handle);
     };
-  }, [
-    args.end,
-    args.filePath,
-    args.placeholderSummary,
-    args.sessionKey,
-    args.start,
-    args.waveformPort,
-  ]);
+  }, [args.end, args.filePath, args.placeholderSummary, args.start, args.waveformPort]);
 
   return state;
 }
@@ -2598,7 +2462,6 @@ function useTrackWaveformSummary(args: {
 function useWaveformLoadingRenderer(args: {
   canvasRef: RefObject<HTMLCanvasElement | null>;
   gridSize: WaveformLoadingGridSize;
-  sessionKey: string;
   visible: boolean;
 }) {
   const latestArgsRef = useRef(args);
@@ -2623,16 +2486,7 @@ function useWaveformLoadingRenderer(args: {
       return undefined;
     }
 
-    const renderer =
-      rendererRef.current ??
-      measureSpectrumInitialRenderWork(
-        "loading-renderer-create",
-        {
-          gridSize: args.gridSize,
-          sessionKey: args.sessionKey,
-        },
-        () => createWaveformLoadingRenderer(canvas),
-      );
+    const renderer = rendererRef.current ?? createWaveformLoadingRenderer(canvas);
     rendererRef.current = renderer;
 
     if (!renderer) {
@@ -2649,20 +2503,12 @@ function useWaveformLoadingRenderer(args: {
         return;
       }
 
-      measureSpectrumInitialRenderWork(
-        "loading-renderer-draw",
-        {
-          gridSize: latest.gridSize,
-          sessionKey: latest.sessionKey,
-        },
-        () =>
-          drawWaveformLoadingRenderer({
-            canvas: currentCanvas,
-            gridSize: latest.gridSize,
-            nowMs: readWaveformPerformanceNow(ownerWindow),
-            renderer,
-          }),
-      );
+      drawWaveformLoadingRenderer({
+        canvas: currentCanvas,
+        gridSize: latest.gridSize,
+        nowMs: readWaveformPerformanceNow(ownerWindow),
+        renderer,
+      });
       renderer.animationOwnerWindow = ownerWindow;
       renderer.animationFrameId = ownerWindow.requestAnimationFrame(render);
     };
@@ -2672,7 +2518,7 @@ function useWaveformLoadingRenderer(args: {
     return () => {
       stopWaveformLoadingRenderer(renderer);
     };
-  }, [args.canvasRef, args.gridSize, args.sessionKey, args.visible]);
+  }, [args.canvasRef, args.gridSize, args.visible]);
 
   useEffect(
     () => () => {
@@ -2838,7 +2684,6 @@ function useWaveformDataLoader(args: {
   end: number | null;
   filePath: string | null;
   onTileAvailable: (plan: WaveformDataPlan) => void;
-  sessionKey: string;
   start: number | null;
   status: WaveformStatus;
   summary: TrackWaveformSummary;
@@ -2940,14 +2785,6 @@ function useWaveformDataLoader(args: {
       const mode = request.mode ?? request.plan?.mode ?? "settled";
 
       if (latest.status !== "ready" || !latest.filePath || !viewport) {
-        recordSpectrumInitialRenderWork("data-plan-reset", {
-          hasFilePath: Boolean(latest.filePath),
-          hasViewport: Boolean(viewport),
-          mode,
-          scope,
-          sessionKey: latest.sessionKey,
-          status: latest.status,
-        });
         resetLoader();
         return;
       }
@@ -2962,29 +2799,18 @@ function useWaveformDataLoader(args: {
 
       const plan =
         request.plan ??
-        measureSpectrumInitialRenderWork(
-          "data-plan-resolve",
-          {
-            mode,
-            scope,
-            sessionKey: latest.sessionKey,
-            status: latest.status,
-            viewportWidth: viewport.viewportWidth,
-          },
-          () =>
-            resolveWaveformDataPlan({
-              contentWidth: viewport.contentWidth,
-              end: latest.end,
-              filePath,
-              focusSeconds: viewport.focusSeconds,
-              mode,
-              pixelsPerSecond: viewport.pixelsPerSecond,
-              scrollLeft: viewport.scrollLeft,
-              start: latest.start,
-              summary: latest.summary,
-              viewportWidth: viewport.viewportWidth,
-            }),
-        );
+        resolveWaveformDataPlan({
+          contentWidth: viewport.contentWidth,
+          end: latest.end,
+          filePath,
+          focusSeconds: viewport.focusSeconds,
+          mode,
+          pixelsPerSecond: viewport.pixelsPerSecond,
+          scrollLeft: viewport.scrollLeft,
+          start: latest.start,
+          summary: latest.summary,
+          viewportWidth: viewport.viewportWidth,
+        });
       const scopedRequests =
         scope === "visible"
           ? plan.requests.filter((request) => isWaveformVisibleDemandPriority(request.priority))
@@ -3000,13 +2826,6 @@ function useWaveformDataLoader(args: {
       );
 
       if (previousPlanSignatureRef.current === planSignature && !hasUnscheduledMissingRequest) {
-        recordSpectrumInitialRenderWork("data-plan-reuse", {
-          dataPixelsPerSecond: plan.dataPixelsPerSecond,
-          mode,
-          requestCount: scopedRequests.length,
-          scope,
-          sessionKey: latest.sessionKey,
-        });
         return;
       }
 
@@ -3042,20 +2861,6 @@ function useWaveformDataLoader(args: {
 
       queueRef.current.sort(compareWaveformTileLoadQueueEntries);
       pruneWaveformTileCache(cache, protectedKeys);
-      recordSpectrumInitialRenderWork("data-plan-commit", {
-        dataPixelsPerSecond: plan.dataPixelsPerSecond,
-        missingRequestCount: scopedRequests.filter(
-          (request) =>
-            !cache.has(request.cacheKey) &&
-            !inFlightKeysRef.current.has(request.cacheKey) &&
-            !nextQueuedKeys.has(request.cacheKey),
-        ).length,
-        mode,
-        queuedCount: queueRef.current.length,
-        requestCount: scopedRequests.length,
-        scope,
-        sessionKey: latest.sessionKey,
-      });
       pumpRef.current();
     },
     [resetLoader],
@@ -3069,7 +2874,6 @@ function useWaveformDataLoader(args: {
   }, [
     args.end,
     args.filePath,
-    args.sessionKey,
     args.start,
     args.status,
     args.summary,
@@ -3085,7 +2889,6 @@ function useWaveformCanvasRenderer(args: {
   canvasRef: RefObject<HTMLCanvasElement | null>;
   end: number | null;
   filePath: string | null;
-  sessionKey: string;
   start: number | null;
   status: WaveformStatus;
   summary: TrackWaveformSummary;
@@ -3111,12 +2914,6 @@ function useWaveformCanvasRenderer(args: {
     const canvas = latest.canvasRef.current;
     const viewport = latest.viewportRef.current;
     if (!canvas || !viewport) {
-      recordSpectrumInitialRenderWork("canvas-run-frame-empty", {
-        hasCanvas: Boolean(canvas),
-        hasViewport: Boolean(viewport),
-        sessionKey: latest.sessionKey,
-        status: latest.status,
-      });
       controller.job = null;
       return;
     }
@@ -3126,69 +2923,35 @@ function useWaveformCanvasRenderer(args: {
     let job = controller.job;
 
     if (!job) {
-      const geometry = measureSpectrumInitialRenderWork(
-        "canvas-frame-geometry",
-        {
-          sessionKey: latest.sessionKey,
-          viewportWidth: viewport.viewportWidth,
-        },
-        () =>
-          resolveWaveformCanvasFrameGeometry({
-            devicePixelRatio: ownerWindow?.devicePixelRatio ?? 1,
-            viewportWidth: viewport.viewportWidth,
-          }),
-      );
-      const plan = measureSpectrumInitialRenderWork(
-        "canvas-render-plan",
-        {
-          hasDataPlan: Boolean(controller.dataPlan),
-          sessionKey: latest.sessionKey,
-          status: latest.status,
-        },
-        () =>
-          resolveWaveformCanvasRenderPlan({
-            dataPlan: controller.dataPlan,
-            end: latest.end,
-            filePath: latest.filePath,
-            geometry,
-            start: latest.start,
-            status: latest.status,
-            summary: latest.summary,
-            tileCache: latest.tileCacheRef.current,
-            viewport,
-          }),
-      );
+      const geometry = resolveWaveformCanvasFrameGeometry({
+        devicePixelRatio: ownerWindow?.devicePixelRatio ?? 1,
+        viewportWidth: viewport.viewportWidth,
+      });
+      const plan = resolveWaveformCanvasRenderPlan({
+        dataPlan: controller.dataPlan,
+        end: latest.end,
+        filePath: latest.filePath,
+        geometry,
+        start: latest.start,
+        status: latest.status,
+        summary: latest.summary,
+        tileCache: latest.tileCacheRef.current,
+        viewport,
+      });
 
       if (plan.kind === "empty") {
-        recordSpectrumInitialRenderWork("canvas-render-plan-empty", {
-          reason: plan.empty.kind,
-          sessionKey: latest.sessionKey,
-          status: latest.status,
-        });
         controller.job = null;
         return;
       }
 
-      const target = measureSpectrumInitialRenderWork(
-        "canvas-raster-target-create",
-        {
-          kind: controller.presentedFrame ? "buffered" : "visible",
-          sessionKey: latest.sessionKey,
-        },
-        () =>
-          createWaveformCanvasRasterTarget({
-            canvas,
-            color: readCanvasWaveformColor(canvas),
-            geometry,
-            kind: controller.presentedFrame ? "buffered" : "visible",
-          }),
-      );
+      const target = createWaveformCanvasRasterTarget({
+        canvas,
+        color: readCanvasWaveformColor(canvas),
+        geometry,
+        kind: controller.presentedFrame ? "buffered" : "visible",
+      });
 
       if (target.kind === "empty") {
-        recordSpectrumInitialRenderWork("canvas-raster-target-empty", {
-          reason: target.empty.kind,
-          sessionKey: latest.sessionKey,
-        });
         controller.job = null;
         return;
       }
@@ -3206,51 +2969,23 @@ function useWaveformCanvasRenderer(args: {
       return;
     }
 
-    const chunk = measureSpectrumInitialRenderWork(
-      "canvas-job-chunk",
-      {
-        cursorX: job.cursor.nextX,
-        jobId: job.id,
-        revision: job.revision,
-        sessionKey: latest.sessionKey,
-        viewportWidth: job.plan.geometry.viewportWidth,
-      },
-      () =>
-        drawWaveformCanvasJobChunk({
-          deadlineMs: readWaveformPerformanceNow(ownerWindow) + WAVEFORM_CANVAS_FRAME_BUDGET_MS,
-          cursor: job.cursor,
-          now: () => readWaveformPerformanceNow(ownerWindow),
-          plan: job.plan,
-          target: job.target,
-        }),
-    );
+    const chunk = drawWaveformCanvasJobChunk({
+      deadlineMs: readWaveformPerformanceNow(ownerWindow) + WAVEFORM_CANVAS_FRAME_BUDGET_MS,
+      cursor: job.cursor,
+      now: () => readWaveformPerformanceNow(ownerWindow),
+      plan: job.plan,
+      target: job.target,
+    });
     job.cursor = chunk.cursor;
 
     if (chunk.completed) {
       const accepted = job.revision === controller.requestedRevision;
-      recordSpectrumInitialRenderWork("canvas-job-complete", {
-        accepted,
-        jobId: job.id,
-        missingPeakColumns: job.cursor.missingPeakColumnCount,
-        resolvedPeakCount: job.cursor.resolvedPeakColumnCount,
-        revision: job.revision,
-        sessionKey: latest.sessionKey,
-      });
 
       if (accepted) {
-        const committed = measureSpectrumInitialRenderWork(
-          "canvas-frame-commit",
-          {
-            jobId: job.id,
-            revision: job.revision,
-            sessionKey: latest.sessionKey,
-          },
-          () =>
-            commitWaveformCanvasFrame({
-              canvas,
-              job,
-            }),
-        );
+        const committed = commitWaveformCanvasFrame({
+          canvas,
+          job,
+        });
         if (committed) {
           controller.presentedFrame = createWaveformCanvasFrameDescriptor(job.plan);
         }
@@ -3277,63 +3012,34 @@ function useWaveformCanvasRenderer(args: {
       const canvas = latest.canvasRef.current;
       const geometry =
         canvas && viewport
-          ? measureSpectrumInitialRenderWork(
-              "canvas-request-geometry",
-              {
-                revision: nextRevision,
-                sessionKey: latest.sessionKey,
-                viewportWidth: viewport.viewportWidth,
-              },
-              () =>
-                resolveWaveformCanvasFrameGeometry({
-                  devicePixelRatio: canvas.ownerDocument.defaultView?.devicePixelRatio ?? 1,
-                  viewportWidth: viewport.viewportWidth,
-                }),
-            )
+          ? resolveWaveformCanvasFrameGeometry({
+              devicePixelRatio: canvas.ownerDocument.defaultView?.devicePixelRatio ?? 1,
+              viewportWidth: viewport.viewportWidth,
+            })
           : null;
       const renderPlan =
         geometry && viewport
-          ? measureSpectrumInitialRenderWork(
-              "canvas-request-render-plan",
-              {
-                hasDataPlan: Boolean(dataPlan),
-                revision: nextRevision,
-                sessionKey: latest.sessionKey,
-                status: latest.status,
-              },
-              () =>
-                resolveWaveformCanvasRenderPlan({
-                  dataPlan: dataPlan ?? null,
-                  end: latest.end,
-                  filePath: latest.filePath,
-                  geometry,
-                  start: latest.start,
-                  status: latest.status,
-                  summary: latest.summary,
-                  tileCache: latest.tileCacheRef.current,
-                  viewport,
-                }),
-            )
+          ? resolveWaveformCanvasRenderPlan({
+              dataPlan: dataPlan ?? null,
+              end: latest.end,
+              filePath: latest.filePath,
+              geometry,
+              start: latest.start,
+              status: latest.status,
+              summary: latest.summary,
+              tileCache: latest.tileCacheRef.current,
+              viewport,
+            })
           : null;
       const descriptor =
         renderPlan?.kind === "ready" ? createWaveformCanvasFrameDescriptor(renderPlan.plan) : null;
-      const presented = measureSpectrumInitialRenderWork(
-        "canvas-fast-present",
-        {
-          hasDescriptor: Boolean(descriptor),
-          hasRenderPlan: renderPlan?.kind === "ready",
-          revision: nextRevision,
-          sessionKey: latest.sessionKey,
-        },
-        () =>
-          presentWaveformCanvasFrameFast({
-            canvas,
-            descriptor,
-            plan: renderPlan?.kind === "ready" ? renderPlan.plan : null,
-            previous: controller.presentedFrame,
-            reuseFrame: controller.reuseFrame,
-          }),
-      );
+      const presented = presentWaveformCanvasFrameFast({
+        canvas,
+        descriptor,
+        plan: renderPlan?.kind === "ready" ? renderPlan.plan : null,
+        previous: controller.presentedFrame,
+        reuseFrame: controller.reuseFrame,
+      });
       if (presented.kind === "presented") {
         controller.presentedFrame = presented.descriptor;
         controller.reuseFrame = presented.reuseFrame;
