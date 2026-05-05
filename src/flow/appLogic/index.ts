@@ -4,9 +4,11 @@ import type { ConfigSidebarItemRef, PlaylistUpsertResult } from "./core";
 import {
   chooseSavePath,
   deletePlaylistRecord,
+  getPlaybackStatus,
   listenNowPlayingTrackChanged,
   MainStateT,
   persistSavePath,
+  resumePlayback,
   setPlaybackContinuationMode,
   sig,
   stopPlayback,
@@ -30,6 +32,11 @@ import {
   spectrumMusicTitleChanged,
 } from "./runtime";
 import { action as pasteDownloadAction } from "../pasteDownload";
+import {
+  resolveSpectrumBackResumeEffects,
+  resolveSpectrumExitPlaybackModeEffects,
+  type PlaybackModeEffect,
+} from "./playbackMode";
 
 export { actor } from "./runtime";
 
@@ -138,6 +145,55 @@ function requestPlaybackContinuationMode(mode: Parameters<typeof setPlaybackCont
     });
 }
 
+async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
+  if (effect.kind === "setRandomContinuationMode") {
+    await setPlaybackContinuationMode("random");
+    return;
+  }
+
+  await resumePlayback();
+}
+
+async function applyPlaybackModeEffects(effects: PlaybackModeEffect[]) {
+  for (const effect of effects) {
+    await applyPlaybackModeEffect(effect);
+  }
+}
+
+async function restoreRandomPlaybackBeforeLeavingSpectrum() {
+  await applyPlaybackModeEffects(resolveSpectrumExitPlaybackModeEffects());
+}
+
+async function restorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnapshot) {
+  await applyPlaybackModeEffects(resolveSpectrumExitPlaybackModeEffects());
+
+  const spectrumTrackPath = snapshot.context.nowPlayingTrackFilePath?.trim();
+  if (!spectrumTrackPath) {
+    return;
+  }
+
+  const status = await getPlaybackStatus();
+  await applyPlaybackModeEffects(
+    resolveSpectrumBackResumeEffects({
+      currentPlaybackPath: status?.path ?? null,
+      paused: status?.paused === true,
+      spectrumTrackPath,
+    }),
+  );
+}
+
+function requestRestoreRandomPlaybackBeforeLeavingSpectrum() {
+  void restoreRandomPlaybackBeforeLeavingSpectrum().catch((error) => {
+    console.error("Failed to restore playback before leaving spectrum", error);
+  });
+}
+
+function requestRestorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnapshot) {
+  void restorePlaybackPageModeBeforeBackFromSpectrum(snapshot).catch((error) => {
+    console.error("Failed to restore playback before returning from spectrum", error);
+  });
+}
+
 function shouldStopPlaybackForSnapshot(snapshot: ActorSnapshot) {
   return snapshot.value === "play" && snapshot.context.playingPlaylistName !== null;
 }
@@ -167,7 +223,7 @@ export const action = {
     ensureStarted();
     const snapshot = actor.getSnapshot();
     if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
-      requestPlaybackContinuationMode("random");
+      requestRestoreRandomPlaybackBeforeLeavingSpectrum();
     }
     if (shouldStopPlaybackForSnapshot(snapshot)) {
       requestPlaybackStop();
@@ -179,7 +235,7 @@ export const action = {
     pasteDownloadAction.reset();
     const snapshot = actor.getSnapshot();
     if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
-      requestPlaybackContinuationMode("random");
+      requestRestoreRandomPlaybackBeforeLeavingSpectrum();
     }
     if (shouldStopPlaybackForSnapshot(snapshot)) {
       requestPlaybackStop();
@@ -196,7 +252,7 @@ export const action = {
     pasteDownloadAction.reset();
     const snapshot = actor.getSnapshot();
     if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
-      requestPlaybackContinuationMode("random");
+      requestRestoreRandomPlaybackBeforeLeavingSpectrum();
     }
     if (shouldStopPlaybackForSnapshot(snapshot)) {
       requestPlaybackStop();
@@ -208,7 +264,7 @@ export const action = {
     pasteDownloadAction.reset();
     const snapshot = actor.getSnapshot();
     if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
-      requestPlaybackContinuationMode("random");
+      requestRestoreRandomPlaybackBeforeLeavingSpectrum();
     }
     if (snapshot.value === "play" && snapshot.context.playingPlaylistName === playlistName) {
       requestPlaybackStop();
@@ -229,7 +285,7 @@ export const action = {
     ensureStarted();
     const snapshot = actor.getSnapshot();
     if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
-      requestPlaybackContinuationMode("random");
+      requestRestorePlaybackPageModeBeforeBackFromSpectrum(snapshot);
     }
     if (shouldStopPlaybackForSnapshot(snapshot)) {
       requestPlaybackStop();

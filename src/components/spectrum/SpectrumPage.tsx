@@ -2,14 +2,12 @@ import { useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
-import { crab, type PlaybackStatusPayload } from "@/src/cmd";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { collectionTitleClassName, collectionTitleLayoutTransition } from "../collectionTitle";
 import { EditableTitle, type EditableTitleHandle } from "../EditableTitle";
 import {
   resolveSpectrumBackActionVisualState,
   resolveSpectrumCommittedTitle,
-  shouldResumeSpectrumPlaybackBeforeBack,
   resolveSpectrumTitle,
   type SpectrumBackActionVisualState,
 } from "./SpectrumPage.view-model";
@@ -50,15 +48,6 @@ type SpectrumRenderData = {
   titleValue: string;
 };
 
-type SpectrumPlaybackResumePort = {
-  getPlaybackStatus: () => ReturnType<typeof crab.getPlaybackStatus>;
-  resumePlayback: () => ReturnType<typeof crab.resumePlayback>;
-};
-
-type SpectrumPlaybackResult<T> = {
-  match: <R>(handlers: { Err: (error: string) => R; Ok: (value: T) => R }) => R;
-};
-
 export function resolveSpectrumTitleFadeProps(args: { hasSharedTitleLayout: boolean }) {
   return args.hasSharedTitleLayout ? sharedTitleFadeProps : contentFadeProps;
 }
@@ -67,53 +56,6 @@ function waitForNextFrame() {
   return new Promise<void>((resolve) => {
     requestAnimationFrame(() => resolve());
   });
-}
-
-function unwrapSpectrumPlaybackResult<T>(result: SpectrumPlaybackResult<T>) {
-  return result.match({
-    Ok: (value) => value as T,
-    Err: (error) => {
-      throw new Error(error);
-    },
-  });
-}
-
-async function resumeSpectrumPlaybackBeforeBack(args: {
-  filePath: string | null;
-  playbackPort?: SpectrumPlaybackResumePort;
-}) {
-  const filePath = args.filePath?.trim();
-  if (!filePath) {
-    return;
-  }
-
-  const playbackPort = args.playbackPort ?? crab;
-  const status = unwrapSpectrumPlaybackResult<PlaybackStatusPayload | null>(
-    await playbackPort.getPlaybackStatus(),
-  );
-
-  if (
-    !shouldResumeSpectrumPlaybackBeforeBack({
-      currentPlaybackPath: status?.path ?? null,
-      filePath,
-      paused: status?.paused === true,
-    })
-  ) {
-    return;
-  }
-
-  unwrapSpectrumPlaybackResult<boolean>(await playbackPort.resumePlayback());
-}
-
-async function tryResumeSpectrumPlaybackBeforeBack(args: {
-  filePath: string | null;
-  playbackPort?: SpectrumPlaybackResumePort;
-}) {
-  try {
-    await resumeSpectrumPlaybackBeforeBack(args);
-  } catch (error) {
-    console.error("Failed to resume spectrum playback before back navigation", error);
-  }
 }
 
 async function waitForTitleShareSourceReady() {
@@ -271,9 +213,6 @@ export function SpectrumPage() {
         musicTitleDraft: spectrumMusicTitleDraft,
         renderedTitle: renderData.titleValue,
       });
-      void tryResumeSpectrumPlaybackBeforeBack({
-        filePath: renderData.trackFilePath,
-      });
 
       if (renderData.backActionVisualState.kind === "back") {
         pageRenderFreeze.freeze();
@@ -345,6 +284,7 @@ export function SpectrumPage() {
             <EditableTitle
               ref={editableTitleRef}
               className={collectionTitleClassName}
+              focusHitSlopWidthClassName="w-4"
               handoffTone={renderData.handoffTone}
               interactionDisabled={renderData.interactionDisabled}
               layoutId={renderData.titleLayoutId}

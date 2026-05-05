@@ -3,7 +3,6 @@ import {
   resolveSpectrumMusicTitleCommit,
 } from "@/src/flow/appLogic/musicTitle";
 import type { SpectrumMusicTitleDraft } from "@/src/flow/appLogic/core";
-import { normalizeMediaPathKey } from "../mediaPath";
 
 export type SpectrumBackActionVisualKind = "back" | "check";
 export type SpectrumPlaybackActionKind = "pause" | "play";
@@ -76,19 +75,4 @@ export function resolveSpectrumPlaybackActionVisualState(args: {
     key: kind,
     kind,
   };
-}
-
-export function shouldResumeSpectrumPlaybackBeforeBack(args: {
-  currentPlaybackPath: string | null;
-  filePath: string | null;
-  paused: boolean;
-}) {
-  const filePath = args.filePath?.trim();
-
-  return (
-    args.paused &&
-    !!filePath &&
-    args.currentPlaybackPath !== null &&
-    normalizeMediaPathKey(args.currentPlaybackPath) === normalizeMediaPathKey(filePath)
-  );
 }

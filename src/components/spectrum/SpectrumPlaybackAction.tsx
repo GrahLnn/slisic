@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { crab, type PlaybackStatusPayload } from "@/src/cmd";
-import { normalizeMediaPathKey } from "../mediaPath";
+import { normalizeMediaPathKey } from "@/src/mediaPath";
 import {
   resolveSpectrumPlaybackActionVisualState,
   type SpectrumPlaybackActionVisualState,

@@ -9,6 +9,7 @@ import {
 } from "react";
 import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
+import { normalizeMediaPathKey } from "@/src/mediaPath";
 import {
   crab,
   type HardwareHorizontalWheelEvent,
@@ -17,7 +18,6 @@ import {
   type TrackWaveformTile,
   type WaveformPeak,
 } from "@/src/cmd";
-import { normalizeMediaPathKey } from "../mediaPath";
 
 const WAVEFORM_CANVAS_HEIGHT = 208;
 const WAVEFORM_VERTICAL_PADDING = 18;

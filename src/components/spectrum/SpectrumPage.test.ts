@@ -7,7 +7,6 @@ import {
   resolveSpectrumCommittedTitle,
   resolveSpectrumPlaybackActionVisualState,
   resolveSpectrumTitle,
-  shouldResumeSpectrumPlaybackBeforeBack,
 } from "./SpectrumPage.view-model";
 
 describe("SpectrumPage", () => {
@@ -194,33 +193,6 @@ describe("SpectrumPage", () => {
         key: "pause",
         kind: "pause",
       },
-    );
-  });
-
-  test("resumes only the paused current spectrum track before back navigation", () => {
-    assert.equal(
-      shouldResumeSpectrumPlaybackBeforeBack({
-        currentPlaybackPath: "C:/Music/Track.flac",
-        filePath: "c:/music/track.flac",
-        paused: true,
-      }),
-      true,
-    );
-    assert.equal(
-      shouldResumeSpectrumPlaybackBeforeBack({
-        currentPlaybackPath: "C:/Music/Other.flac",
-        filePath: "C:/Music/Track.flac",
-        paused: true,
-      }),
-      false,
-    );
-    assert.equal(
-      shouldResumeSpectrumPlaybackBeforeBack({
-        currentPlaybackPath: "C:/Music/Track.flac",
-        filePath: "C:/Music/Track.flac",
-        paused: false,
-      }),
-      false,
     );
   });
 
