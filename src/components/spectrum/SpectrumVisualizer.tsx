@@ -236,9 +236,8 @@ type WaveformDataPlan = {
 type WaveformDataPlanScope = "visible" | "complete";
 
 type WaveformDataPlanRequest = {
-  mode?: WaveformDataPlanMode;
-  plan?: WaveformDataPlan;
-  scope?: WaveformDataPlanScope;
+  plan: WaveformDataPlan;
+  scope: WaveformDataPlanScope;
 };
 
 type WaveformTransaction = {
@@ -1536,9 +1535,18 @@ export function resolveWaveformTransaction(args: {
       presentation: {
         plan: args.plan,
       },
-      shouldScheduleCompleteData: args.mode === "settled",
+      shouldScheduleCompleteData: args.mode === "settled" && args.plan !== null,
     },
   };
+}
+
+export function resolveWaveformDataPlanScopedRequests(
+  plan: WaveformDataPlan,
+  scope: WaveformDataPlanScope,
+) {
+  return scope === "visible"
+    ? plan.requests.filter((request) => isWaveformVisibleDemandPriority(request.priority))
+    : plan.requests;
 }
 
 function resolveWaveformPrefetchRenderLevels(args: {
@@ -2007,9 +2015,7 @@ function TrackSpectrumSession(props: {
     onTileAvailable: drawCanvas,
     start: props.start,
     status: waveformState.status,
-    summary: waveformState.summary,
     tileCacheRef,
-    viewportRef,
     waveformPort: ports.waveform,
   });
   const syncPlayhead = useWaveformPlayheadController({
@@ -2066,9 +2072,13 @@ function TrackSpectrumSession(props: {
       hostRef.current?.ownerDocument.defaultView ?? (typeof window === "undefined" ? null : window);
 
     if (!ownerWindow) {
+      const plan = resolveCurrentDataPlan("settled");
+      if (!plan) {
+        return;
+      }
+
       requestDataPlan({
-        mode: "settled",
-        plan: resolveCurrentDataPlan("settled") ?? undefined,
+        plan,
         scope: "complete",
       });
       return;
@@ -2078,9 +2088,13 @@ function TrackSpectrumSession(props: {
 
     completeDataPlanTimerRef.current = ownerWindow.setTimeout(() => {
       completeDataPlanTimerRef.current = null;
+      const plan = resolveCurrentDataPlan("settled");
+      if (!plan) {
+        return;
+      }
+
       requestDataPlan({
-        mode: "settled",
-        plan: resolveCurrentDataPlan("settled") ?? undefined,
+        plan,
         scope: "complete",
       });
     }, WAVEFORM_DATA_IDLE_OVERSCAN_DELAY_MS);
@@ -2100,25 +2114,27 @@ function TrackSpectrumSession(props: {
         plan,
       });
 
-      lastInteractiveDataDemandRef.current = resolution.nextInteractiveDataDemand;
-
-      return resolution.transaction;
+      return resolution;
     },
     [resolveCurrentDataPlan],
   );
 
   const applyWaveformTransaction = useCallback(
-    (transaction: WaveformTransaction) => {
+    (resolution: WaveformTransactionResolution) => {
+      const transaction = resolution.transaction;
       if (transaction.mode === "interactive") {
         cancelCompleteDataPlan();
       }
 
-      drawCanvas(transaction.presentation.plan ?? undefined);
+      lastInteractiveDataDemandRef.current = resolution.nextInteractiveDataDemand;
 
-      if (!transaction.dataDemand.skipped) {
+      if (transaction.presentation.plan) {
+        drawCanvas(transaction.presentation.plan);
+      }
+
+      if (!transaction.dataDemand.skipped && transaction.dataDemand.plan) {
         requestDataPlan({
-          mode: transaction.mode,
-          plan: transaction.dataDemand.plan ?? undefined,
+          plan: transaction.dataDemand.plan,
           scope: transaction.dataDemand.scope,
         });
       }
@@ -2231,19 +2247,22 @@ function TrackSpectrumSession(props: {
       return;
     }
 
-    commitViewport({
-      state: {
-        focusSeconds: current.focusSeconds,
-        pixelsPerSecond: current.pixelsPerSecond,
-        scrollLeft: current.scrollLeft,
-        viewportWidth: current.viewportWidth,
-      },
+    const changed = commitViewportModel({
+      focusSeconds: current.focusSeconds,
+      pixelsPerSecond: current.pixelsPerSecond,
+      scrollLeft: current.scrollLeft,
+      viewportWidth: current.viewportWidth,
     });
+    if (changed || waveformState.status === "ready") {
+      runViewportEffects("settled");
+    }
   }, [
-    commitViewport,
+    commitViewportModel,
     maximumPixelsPerSecond,
+    runViewportEffects,
     waveformState.summary.cache_key,
     waveformState.summary.duration_ms,
+    waveformState.status,
   ]);
 
   useLayoutEffect(() => {
@@ -2836,14 +2855,12 @@ function useWaveformDataLoader(args: {
   onTileAvailable: (plan: WaveformDataPlan) => void;
   start: number | null;
   status: WaveformStatus;
-  summary: TrackWaveformSummary;
   tileCacheRef: RefObject<Map<string, WaveformCachedTile>>;
-  viewportRef: RefObject<WaveformViewportModel | null>;
   waveformPort: TrackSpectrumWaveformPort;
 }) {
   const activeCountRef = useRef(0);
   const inFlightKeysRef = useRef(new Set<string>());
-  const latestPlanKeySetRef = useRef(new Set<string>());
+  const latestAcceptedRequestKeySetRef = useRef(new Set<string>());
   const nextOrderRef = useRef(0);
   const previousPlanSignatureRef = useRef<string | null>(null);
   const queueRef = useRef<WaveformTileLoadQueueEntry[]>([]);
@@ -2861,7 +2878,7 @@ function useWaveformDataLoader(args: {
 
   const resetLoader = useCallback(() => {
     queueRef.current = [];
-    latestPlanKeySetRef.current = new Set();
+    latestAcceptedRequestKeySetRef.current = new Set();
     latestAcceptedPlanRef.current = null;
     previousPlanSignatureRef.current = null;
     loadContextRef.current = null;
@@ -2899,9 +2916,11 @@ function useWaveformDataLoader(args: {
           entry.widthPx,
         )
         .then((tileData) => {
-          const acceptedByCurrentPlan = latestPlanKeySetRef.current.has(entry.cacheKey);
+          const acceptedByCurrentDemand = latestAcceptedRequestKeySetRef.current.has(
+            entry.cacheKey,
+          );
 
-          if (acceptedByCurrentPlan) {
+          if (acceptedByCurrentDemand) {
             cache.set(entry.cacheKey, {
               data: tileData,
               key: entry.cacheKey,
@@ -2928,13 +2947,11 @@ function useWaveformDataLoader(args: {
   };
 
   const requestDataPlan = useCallback(
-    (request: WaveformDataPlanRequest = {}) => {
+    (request: WaveformDataPlanRequest) => {
       const latest = latestArgsRef.current;
-      const viewport = latest.viewportRef.current;
-      const scope = request.scope ?? "visible";
-      const mode = request.mode ?? request.plan?.mode ?? "settled";
+      const scope = request.scope;
 
-      if (latest.status !== "ready" || !latest.filePath || !viewport) {
+      if (latest.status !== "ready" || !latest.filePath) {
         resetLoader();
         return;
       }
@@ -2947,24 +2964,8 @@ function useWaveformDataLoader(args: {
         waveformPort: latest.waveformPort,
       };
 
-      const plan =
-        request.plan ??
-        resolveWaveformDataPlan({
-          contentWidth: viewport.contentWidth,
-          end: latest.end,
-          filePath,
-          focusSeconds: viewport.focusSeconds,
-          mode,
-          pixelsPerSecond: viewport.pixelsPerSecond,
-          scrollLeft: viewport.scrollLeft,
-          start: latest.start,
-          summary: latest.summary,
-          viewportWidth: viewport.viewportWidth,
-        });
-      const scopedRequests =
-        scope === "visible"
-          ? plan.requests.filter((request) => isWaveformVisibleDemandPriority(request.priority))
-          : plan.requests;
+      const plan = request.plan;
+      const scopedRequests = resolveWaveformDataPlanScopedRequests(plan, scope);
       const cache = latest.tileCacheRef.current;
       const planSignature = createWaveformDataPlanSignature(plan, scope);
       const queuedKeys = new Set(queueRef.current.map((entry) => entry.cacheKey));
@@ -2982,7 +2983,7 @@ function useWaveformDataLoader(args: {
       const scheduledKeys = new Set(scopedRequests.map((request) => request.cacheKey));
       const protectedKeys = new Set([...scheduledKeys, ...plan.protectedCacheKeys]);
       previousPlanSignatureRef.current = planSignature;
-      latestPlanKeySetRef.current = protectedKeys;
+      latestAcceptedRequestKeySetRef.current = scheduledKeys;
       latestAcceptedPlanRef.current = plan;
       queueRef.current = queueRef.current.filter(
         (entry) => entry.scopeKey === plan.scopeKey && scheduledKeys.has(entry.cacheKey),
@@ -3015,22 +3016,6 @@ function useWaveformDataLoader(args: {
     },
     [resetLoader],
   );
-
-  useEffect(() => {
-    requestDataPlan({
-      mode: "settled",
-      scope: "visible",
-    });
-  }, [
-    args.end,
-    args.filePath,
-    args.start,
-    args.status,
-    args.summary,
-    args.tileCacheRef,
-    args.waveformPort,
-    requestDataPlan,
-  ]);
 
   return requestDataPlan;
 }
@@ -3162,12 +3147,12 @@ function useWaveformCanvasRenderer(args: {
   }, []);
 
   const requestDraw = useCallback(
-    (dataPlan?: WaveformDataPlan) => {
+    (dataPlan: WaveformDataPlan) => {
       const latest = latestArgsRef.current;
       const controller = controllerRef.current;
       const nextRevision = controller.requestedRevision + 1;
       controller.requestedRevision = nextRevision;
-      controller.dataPlan = dataPlan ?? null;
+      controller.dataPlan = dataPlan;
       const viewport = latest.viewportRef.current;
       const canvas = latest.canvasRef.current;
       const geometry =
@@ -3180,7 +3165,7 @@ function useWaveformCanvasRenderer(args: {
       const renderPlan =
         geometry && viewport
           ? resolveWaveformCanvasRenderPlan({
-              dataPlan: dataPlan ?? null,
+              dataPlan,
               end: latest.end,
               filePath: latest.filePath,
               geometry,
@@ -3234,10 +3219,6 @@ function useWaveformCanvasRenderer(args: {
     },
     [runFrame],
   );
-
-  useLayoutEffect(() => {
-    requestDraw();
-  }, [args.end, args.filePath, args.start, args.status, args.summary, requestDraw]);
 
   useWaveformCanvasRendererCleanup({
     canvasRef: args.canvasRef,

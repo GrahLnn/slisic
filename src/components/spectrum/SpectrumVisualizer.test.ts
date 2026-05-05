@@ -16,6 +16,7 @@ import {
   resolveWaveformBarWidthPx,
   resolveWaveformContentWidth,
   resolveWaveformDataPlan,
+  resolveWaveformDataPlanScopedRequests,
   resolveWaveformDataTileIndexes,
   resolveWaveformDataWindow,
   resolveWaveformHardwareHorizontalWheelDelta,
@@ -1057,6 +1058,34 @@ describe("SpectrumVisualizer", () => {
     assert.deepEqual(reversePrefetchLevels, [100, 50]);
     assert.ok(currentVisibleKeys.every((key) => plan.protectedCacheKeys.includes(key)));
     assert.ok(plan.protectedCacheKeys.includes(lowerVisibleKey));
+  });
+
+  test("keeps visible demand separate from cache protection", () => {
+    const summary = createWaveformTestSummary();
+    const plan = resolveWaveformDataPlan({
+      contentWidth: 12_000,
+      end: null,
+      filePath: "C:/music/demo.flac",
+      focusSeconds: 6,
+      pixelsPerSecond: 200,
+      scrollLeft: 1_000,
+      start: null,
+      summary,
+      tileWidth: 1_000,
+      viewportWidth: 1_000,
+    });
+    const visibleRequests = resolveWaveformDataPlanScopedRequests(plan, "visible");
+    const visibleKeys = new Set(visibleRequests.map((request) => request.cacheKey));
+
+    assert.ok(visibleRequests.every((request) => request.priority !== "prefetch-focus"));
+    assert.ok(visibleRequests.every((request) => request.priority !== "prefetch-visible"));
+    assert.ok(visibleRequests.every((request) => request.priority !== "overscan"));
+    assert.ok(plan.protectedCacheKeys.every((key) => visibleKeys.has(key)));
+    assert.ok(
+      plan.requests
+        .filter((request) => request.priority === "prefetch-focus")
+        .every((request) => !visibleKeys.has(request.cacheKey)),
+    );
   });
 
   test("keeps interactive zoom data demand visible-only", () => {
