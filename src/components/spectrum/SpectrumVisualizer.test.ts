@@ -14,7 +14,6 @@ import {
   resolveQuantizedWaveformDisplayPeak,
   resolveTrackWaveformInitialStatus,
   resolveWaveformBarWidthPx,
-  resolveWaveformCanvasSeamBoundaryProbes,
   resolveWaveformContentWidth,
   resolveWaveformDataPlan,
   resolveWaveformDataTileIndexes,
@@ -50,7 +49,6 @@ import {
   resolveWaveformZoomScaleFrame,
   shouldAcceptWaveformHardwareHorizontalWheel,
   shouldPreventWaveformWheelDefault,
-  summarizeWaveformCanvasSeamPixelColumn,
 } from "./SpectrumVisualizer";
 
 function createWaveformTestSummary(overrides: Partial<TrackWaveformSummary> = {}) {
@@ -696,133 +694,6 @@ describe("SpectrumVisualizer", () => {
       {
         kind: "none",
         reason: "content-changed",
-      },
-    );
-  });
-
-  test("probes waveform seam evidence at data tile and render chunk boundaries", () => {
-    const tile = {
-      max: Array.from({ length: 2_048 }, () => 64),
-      min: Array.from({ length: 2_048 }, () => -64),
-      points_per_second: 100,
-      start_px: 2_048,
-      width_px: 2_048,
-    };
-    const plan = {
-      amplitude: 86,
-      availableLevels: [100],
-      candidateLevels: [
-        {
-          pixelsPerSecond: 100,
-          tilesByIndex: new Map([[1, tile]]),
-        },
-      ],
-      centerY: 104,
-      dataPixelsPerSecond: 100,
-      geometry: {
-        backingHeight: 208,
-        backingWidth: 1_000,
-        devicePixelRatio: 1,
-        viewportWidth: 1_000,
-      },
-      scopeKey: "track",
-      viewport: {
-        contentWidth: 10_000,
-        durationMs: 100_000,
-        focusSeconds: null,
-        maximumPixelsPerSecond: 800,
-        pixelsPerSecond: 100,
-        scrollLeft: 1_548,
-        viewportWidth: 1_000,
-      },
-      visibleSecondsWindow: {
-        endSeconds: 25.48,
-        startSeconds: 15.48,
-      },
-      visibleWindow: {
-        endPx: 2_548,
-        startPx: 1_548,
-      },
-    };
-
-    const probes = resolveWaveformCanvasSeamBoundaryProbes({
-      chunkBoundaries: [320, 640],
-      plan,
-    });
-
-    assert.deepEqual(
-      probes.map((probe) => ({
-        kind: probe.kind,
-        roundedViewportX: probe.roundedViewportX,
-      })),
-      [
-        {
-          kind: "render-chunk",
-          roundedViewportX: 320,
-        },
-        {
-          kind: "data-tile",
-          roundedViewportX: 500,
-        },
-        {
-          kind: "render-chunk",
-          roundedViewportX: 640,
-        },
-      ],
-    );
-
-    const dataTileProbe = probes.find((probe) => probe.kind === "data-tile");
-    assert.ok(dataTileProbe);
-    assert.equal(dataTileProbe.tileIndex, 1);
-    assert.equal(dataTileProbe.nearestDataTileBoundaryDistancePx, 0);
-    assert.equal(dataTileProbe.nearestRenderChunkBoundaryDistancePx, 140);
-    assert.deepEqual(
-      dataTileProbe.samples.map((sample) => ({
-        hasPeak: sample.hasPeak,
-        offsetX: sample.offsetX,
-      })),
-      [
-        { hasPeak: false, offsetX: -2 },
-        { hasPeak: false, offsetX: -1 },
-        { hasPeak: true, offsetX: 0 },
-        { hasPeak: true, offsetX: 1 },
-        { hasPeak: true, offsetX: 2 },
-      ],
-    );
-  });
-
-  test("summarizes seam readback columns without reusing the whole strip", () => {
-    const data = new Uint8ClampedArray(3 * 2 * 4);
-    data[3] = 16;
-    data[7] = 32;
-    data[11] = 48;
-    data[15] = 64;
-    data[19] = 80;
-    data[23] = 96;
-
-    assert.deepEqual(
-      summarizeWaveformCanvasSeamPixelColumn({
-        backingEndX: 2,
-        backingStartX: 1,
-        cssX: 10,
-        image: {
-          data,
-          height: 2,
-          width: 3,
-        },
-      }),
-      {
-        alphaCoverageRatio: 1,
-        alphaMax: 80,
-        alphaMean: 56,
-        alphaSum: 112,
-        backingEndX: 2,
-        backingStartX: 1,
-        cssX: 10,
-        drawnPixelCount: 2,
-        firstDrawnBackingY: 0,
-        lastDrawnBackingY: 1,
-        totalPixelCount: 2,
       },
     );
   });

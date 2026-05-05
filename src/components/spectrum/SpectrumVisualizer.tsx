@@ -9,7 +9,6 @@ import {
 } from "react";
 import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
-import { installSpectrumTrace, recordSpectrumTrace } from "@/src/debug/spectrumTrace";
 import {
   crab,
   type HardwareHorizontalWheelEvent,
@@ -45,9 +44,6 @@ const WAVEFORM_CANVAS_MIN_CHUNK_WIDTH_PX = 96;
 const WAVEFORM_CANVAS_MAX_CHUNK_WIDTH_PX = 320;
 const WAVEFORM_CANVAS_REUSE_MIN_SHIFT_PX = 1;
 const WAVEFORM_CANVAS_STROKE_ALPHA = 0.88;
-const WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX = 2;
-const WAVEFORM_CANVAS_SEAM_PROBE_MAX_BOUNDARIES = 12;
-const WAVEFORM_CANVAS_SEAM_PIXEL_TRACE_GLOBAL_KEY = "__SPECTRUM_TRACE_SEAM_PIXELS__";
 const WAVEFORM_INITIAL_PREPARE_FRAME_COUNT = 2;
 const WAVEFORM_LOADING_DOT_PITCH_PX = 12;
 const WAVEFORM_LOADING_MIN_FIELD_WIDTH_PX = 96;
@@ -313,11 +309,6 @@ type WaveformPeakSample = {
   min: number;
 };
 
-type SpectrumTraceEvent = {
-  event: string;
-  payload: Record<string, unknown>;
-};
-
 type WaveformCanvasFrameGeometry = {
   backingHeight: number;
   backingWidth: number;
@@ -389,36 +380,21 @@ type WaveformCanvasRenderCursor = {
 };
 
 type WaveformCanvasChunkResult = {
-  candidateLevelProbeCount: number;
   completed: boolean;
   cursor: WaveformCanvasRenderCursor;
-  elapsedMs: number;
   firstMissingX: number | null;
-  fallbackLevelHits: number;
   hasChunkColumn: boolean;
   lastMissingX: number | null;
-  levelHitCounts: Record<string, number>;
-  levelMissCounts: Record<string, number>;
-  levelProbeCounts: Record<string, number>;
   missingPeakColumns: number;
-  preferredLevelHits: number;
   resolvedPeakCount: number;
   scannedColumns: number;
-  startX: number;
 };
 
 type WaveformCanvasColumnRangeResult = {
-  candidateLevelProbeCount: number;
-  elapsedMs: number;
-  fallbackLevelHits: number;
   firstMissingX: number | null;
   hasColumn: boolean;
   lastMissingX: number | null;
-  levelHitCounts: Record<string, number>;
-  levelMissCounts: Record<string, number>;
-  levelProbeCounts: Record<string, number>;
   missingPeakColumns: number;
-  preferredLevelHits: number;
   resolvedPeakCount: number;
   scannedColumns: number;
 };
@@ -428,82 +404,9 @@ type WaveformCanvasColumnRange = {
   startX: number;
 };
 
-type WaveformCanvasSeamBoundaryKind = "data-tile" | "render-chunk";
-
-type WaveformCanvasSeamPeakSampleProbe = {
-  dataEndPx: number;
-  dataStartPx: number;
-  hasPeak: boolean;
-  levelPixelsPerSecond: number | null;
-  max: number | null;
-  min: number | null;
-  offsetX: number;
-  x: number;
-};
-
-type WaveformCanvasSeamBoundaryProbe = {
-  boundaryDataPx: number;
-  boundaryId: string;
-  boundarySeconds: number;
-  distanceToNearestColumnCenterPx: number;
-  distanceToNearestPixelEdgePx: number;
-  kind: WaveformCanvasSeamBoundaryKind;
-  nearestDataTileBoundaryDistancePx: number | null;
-  nearestRenderChunkBoundaryDistancePx: number | null;
-  roundedViewportX: number;
-  samples: WaveformCanvasSeamPeakSampleProbe[];
-  tileIndex: number | null;
-  viewportX: number;
-};
-
-type WaveformCanvasSeamPixelColumnProbe = {
-  alphaCoverageRatio: number;
-  alphaMax: number;
-  alphaMean: number;
-  alphaSum: number;
-  backingEndX: number;
-  backingStartX: number;
-  cssX: number;
-  drawnPixelCount: number;
-  firstDrawnBackingY: number | null;
-  lastDrawnBackingY: number | null;
-  totalPixelCount: number;
-};
-
-type WaveformCanvasSeamPixelBoundaryProbe = {
-  boundaryId: string;
-  columns: WaveformCanvasSeamPixelColumnProbe[];
-  kind: WaveformCanvasSeamBoundaryKind;
-  roundedViewportX: number;
-  viewportX: number;
-};
-
-type WaveformCanvasSeamReadbackTarget = {
-  canvas: HTMLCanvasElement;
-  context: CanvasRenderingContext2D;
-};
-
-type WaveformCanvasSeamPixelProbeResult =
-  | {
-      boundaries: WaveformCanvasSeamPixelBoundaryProbe[];
-      kind: "ready";
-    }
-  | {
-      kind: "empty";
-      message?: string;
-      reason: "missing-readback-context" | "read-failed";
-    };
-
 type WaveformCanvasColumnSample = {
   levelPixelsPerSecond: number;
   peak: WaveformPeakSample;
-};
-
-type WaveformCanvasLevelProbeStats = {
-  candidateLevelProbeCount: number;
-  levelHitCounts: Record<string, number>;
-  levelMissCounts: Record<string, number>;
-  levelProbeCounts: Record<string, number>;
 };
 
 type WaveformCanvasFastPresentationResult =
@@ -545,7 +448,6 @@ type WaveformCanvasFastPresentationPlan =
   | Extract<WaveformCanvasFrameReusePlan, { kind: "none" }>;
 
 type WaveformCanvasRenderJob = {
-  chunkBoundaries: number[];
   cursor: WaveformCanvasRenderCursor;
   id: number;
   plan: WaveformCanvasRenderPlan;
@@ -559,7 +461,6 @@ type WaveformCanvasRenderController = {
   job: WaveformCanvasRenderJob | null;
   presentedFrame: WaveformCanvasFrameDescriptor | null;
   requestedRevision: number;
-  seamReadbackTarget: WaveformCanvasSeamReadbackTarget | null;
   reuseFrame: HTMLCanvasElement | null;
 };
 
@@ -1635,67 +1536,6 @@ function isWaveformVisibleDemandPriority(priority: WaveformDataRequestPriority) 
   return priority === "visible" || priority === "visible-guard" || priority === "prefetch-reverse";
 }
 
-function summarizeWaveformDataRequestPriorities(requests: readonly WaveformDataRequest[]) {
-  return requests.reduce<Record<WaveformDataRequestPriority, number>>(
-    (counts, request) => {
-      counts[request.priority] += 1;
-      return counts;
-    },
-    {
-      overscan: 0,
-      "prefetch-focus": 0,
-      "prefetch-reverse": 0,
-      "prefetch-visible": 0,
-      visible: 0,
-      "visible-guard": 0,
-    },
-  );
-}
-
-function summarizeWaveformDataRequestLevels(requests: readonly WaveformDataRequest[]) {
-  return requests.reduce<Record<WaveformDataRequestPriority, Record<string, number>>>(
-    (counts, request) => {
-      const levelKey = String(request.dataPixelsPerSecond);
-      counts[request.priority][levelKey] = (counts[request.priority][levelKey] ?? 0) + 1;
-      return counts;
-    },
-    {
-      overscan: {},
-      "prefetch-focus": {},
-      "prefetch-reverse": {},
-      "prefetch-visible": {},
-      visible: {},
-      "visible-guard": {},
-    },
-  );
-}
-
-function summarizeWaveformDataRequestWindow(requests: readonly WaveformDataRequest[]) {
-  if (requests.length === 0) {
-    return {
-      maxEndPx: null,
-      maxFocusDistancePx: null,
-      minStartPx: null,
-    };
-  }
-
-  let maxEndPx = -Infinity;
-  let maxFocusDistancePx = -Infinity;
-  let minStartPx = Infinity;
-
-  for (const request of requests) {
-    maxEndPx = Math.max(maxEndPx, request.endPx);
-    maxFocusDistancePx = Math.max(maxFocusDistancePx, request.focusDistancePx);
-    minStartPx = Math.min(minStartPx, request.startPx);
-  }
-
-  return {
-    maxEndPx,
-    maxFocusDistancePx,
-    minStartPx,
-  };
-}
-
 export function resolveQuantizedWaveformDisplayPeak(args: {
   max: readonly number[];
   min: readonly number[];
@@ -1980,17 +1820,6 @@ function TrackSpectrumSession(props: {
     });
   }
 
-  useSpectrumTraceInstallation();
-  useSpectrumSessionTrace({
-    end: props.end,
-    filePath: props.filePath,
-    start: props.start,
-  });
-  useWaveformSummaryStateTrace({
-    maximumPixelsPerSecond,
-    state: waveformState,
-  });
-
   const drawCanvas = useWaveformCanvasRenderer({
     canvasRef,
     end: props.end,
@@ -2102,12 +1931,6 @@ function TrackSpectrumSession(props: {
 
       lastInteractiveDataDemandRef.current = resolution.nextInteractiveDataDemand;
 
-      recordSpectrumTrace("spectrum-transaction", {
-        dataDemandSkipped: resolution.transaction.dataDemand.skipped,
-        hasPlan: Boolean(plan),
-        mode,
-      });
-
       return resolution.transaction;
     },
     [resolveCurrentDataPlan],
@@ -2163,28 +1986,6 @@ function TrackSpectrumSession(props: {
         previous.contentWidth !== normalizedModel.contentWidth ||
         previous.durationMs !== normalizedModel.durationMs ||
         previous.maximumPixelsPerSecond !== normalizedModel.maximumPixelsPerSecond;
-
-      const changedReasons = {
-        contentWidthChanged: !previous || previous.contentWidth !== normalizedModel.contentWidth,
-        durationMsChanged: !previous || previous.durationMs !== normalizedModel.durationMs,
-        focusSecondsChanged: !previous || previous.focusSeconds !== normalizedModel.focusSeconds,
-        maximumPixelsPerSecondChanged:
-          !previous || previous.maximumPixelsPerSecond !== normalizedModel.maximumPixelsPerSecond,
-        pixelsPerSecondChanged:
-          !previous || Math.abs(previous.pixelsPerSecond - normalizedModel.pixelsPerSecond) >= 0.01,
-        scrollLeftChanged:
-          !previous || Math.abs(previous.scrollLeft - normalizedModel.scrollLeft) >= 0.5,
-        viewportWidthChanged: !previous || previous.viewportWidth !== normalizedModel.viewportWidth,
-      };
-
-      recordSpectrumTrace("spectrum-viewport-commit", {
-        changed,
-        contentWidth: normalizedModel.contentWidth,
-        pixelsPerSecond: normalizedModel.pixelsPerSecond,
-        reason: changedReasons,
-        scrollLeft: normalizedModel.scrollLeft,
-        viewportWidth: normalizedModel.viewportWidth,
-      });
 
       viewportRef.current = normalizedModel;
 
@@ -2393,57 +2194,6 @@ function TrackSpectrumSession(props: {
   );
 }
 
-function useSpectrumTraceInstallation() {
-  useEffect(() => {
-    installSpectrumTrace();
-  }, []);
-}
-
-function useSpectrumSessionTrace(args: {
-  end: number | null;
-  filePath: string | null;
-  start: number | null;
-}) {
-  const filePath = args.filePath?.trim() || null;
-
-  useEffect(() => {
-    recordSpectrumTrace("spectrum-session-mounted", {
-      end: args.end,
-      filePath,
-      start: args.start,
-    });
-
-    return () => {
-      recordSpectrumTrace("spectrum-session-unmounted", {
-        end: args.end,
-        filePath,
-        start: args.start,
-      });
-    };
-  }, [args.end, filePath, args.start]);
-}
-
-function useWaveformSummaryStateTrace(args: {
-  maximumPixelsPerSecond: number;
-  state: TrackWaveformSummaryState;
-}) {
-  useEffect(() => {
-    recordSpectrumTrace("spectrum-summary-state", {
-      durationMs: args.state.summary.duration_ms,
-      levels: args.state.summary.levels,
-      maximumPixelsPerSecond: args.maximumPixelsPerSecond,
-      status: args.state.status,
-      summaryCacheKey: args.state.summary.cache_key,
-    });
-  }, [
-    args.maximumPixelsPerSecond,
-    args.state.status,
-    args.state.summary.cache_key,
-    args.state.summary.duration_ms,
-    args.state.summary.levels,
-  ]);
-}
-
 function useWaveformHardwareHorizontalWheelSubscription(
   handleHardwareHorizontalWheel: (payload: HardwareHorizontalWheelEvent) => void,
 ) {
@@ -2571,17 +2321,6 @@ function useWaveformZoomViewportScheduler(args: {
         Math.abs(frame.pixelsPerSecond - command.viewport.pixelsPerSecond) >= 0.01 ||
         Math.abs(frame.scrollLeft - command.viewport.scrollLeft) >= 0.5;
 
-      recordSpectrumTrace("spectrum-zoom-frame", {
-        anchorViewportX: command.anchorViewportX,
-        changed,
-        deltaY: command.deltaY,
-        pixelsPerSecond: frame.pixelsPerSecond,
-        pending: Boolean(pendingCommandRef.current),
-        scrollLeft: frame.scrollLeft,
-        viewportPixelsPerSecond: command.viewport.pixelsPerSecond,
-        viewportScrollLeft: command.viewport.scrollLeft,
-      });
-
       if (!changed) {
         pendingCommandRef.current = null;
         pendingFrameRef.current = null;
@@ -2647,9 +2386,6 @@ function useTrackWaveformSummary(args: {
     const filePath = args.filePath?.trim();
 
     if (!filePath) {
-      recordSpectrumTrace("spectrum-summary-idle", {
-        reason: "missing-file",
-      });
       setState({
         status: "idle",
         summary: args.placeholderSummary,
@@ -2663,20 +2399,8 @@ function useTrackWaveformSummary(args: {
       status: "loading",
       summary: args.placeholderSummary,
     });
-    recordSpectrumTrace("spectrum-summary-prepare-scheduled", {
-      end: args.end,
-      filePath,
-      start: args.start,
-    });
 
     const handle = scheduleWaveformInitialPrepare(ownerWindow, () => {
-      const startedAt = readWaveformPerformanceNow(ownerWindow);
-      recordSpectrumTrace("spectrum-summary-prepare-start", {
-        end: args.end,
-        filePath,
-        start: args.start,
-      });
-
       void args.waveformPort
         .prepareTrackWaveform(
           filePath,
@@ -2692,12 +2416,6 @@ function useTrackWaveformSummary(args: {
             status: "ready",
             summary,
           });
-          recordSpectrumTrace("spectrum-summary-prepare-resolve", {
-            durationMs: summary.duration_ms,
-            elapsedMs: readWaveformPerformanceNow(ownerWindow) - startedAt,
-            levels: summary.levels,
-            summaryCacheKey: summary.cache_key,
-          });
         })
         .catch((error) => {
           if (cancelled) {
@@ -2705,10 +2423,6 @@ function useTrackWaveformSummary(args: {
           }
 
           console.error("Failed to prepare track waveform", error);
-          recordSpectrumTrace("spectrum-summary-prepare-error", {
-            elapsedMs: readWaveformPerformanceNow(ownerWindow) - startedAt,
-            error: String(error),
-          });
           setState({
             status: "error",
             summary: args.placeholderSummary,
@@ -2719,11 +2433,6 @@ function useTrackWaveformSummary(args: {
     return () => {
       cancelled = true;
       cancelWaveformInitialPrepare(ownerWindow, handle);
-      recordSpectrumTrace("spectrum-summary-prepare-cancel", {
-        end: args.end,
-        filePath,
-        start: args.start,
-      });
     };
   }, [args.end, args.filePath, args.placeholderSummary, args.start, args.waveformPort]);
 
@@ -3004,40 +2713,11 @@ function useWaveformDataLoader(args: {
       }
 
       if (cache.has(entry.cacheKey) || inFlightKeysRef.current.has(entry.cacheKey)) {
-        recordSpectrumTrace("spectrum-tile-request-skip", {
-          activeCount: activeCountRef.current,
-          cacheKey: entry.cacheKey,
-          inCache: cache.has(entry.cacheKey),
-          inFlight: inFlightKeysRef.current.has(entry.cacheKey),
-          dataPixelsPerSecond: entry.dataPixelsPerSecond,
-          focusDistancePx: entry.focusDistancePx,
-          index: entry.index,
-          lodDepth: entry.lodDepth,
-          priority: entry.priority,
-          queueLength: queueRef.current.length,
-          scopeKey: entry.scopeKey,
-          startPx: entry.startPx,
-          widthPx: entry.widthPx,
-        });
         continue;
       }
 
       activeCountRef.current += 1;
       inFlightKeysRef.current.add(entry.cacheKey);
-      const startedAt = readWaveformPerformanceNow(typeof window === "undefined" ? null : window);
-      recordSpectrumTrace("spectrum-tile-request-start", {
-        activeCount: activeCountRef.current,
-        cacheKey: entry.cacheKey,
-        dataPixelsPerSecond: entry.dataPixelsPerSecond,
-        focusDistancePx: entry.focusDistancePx,
-        index: entry.index,
-        lodDepth: entry.lodDepth,
-        priority: entry.priority,
-        queueLength: queueRef.current.length,
-        scopeKey: entry.scopeKey,
-        startPx: entry.startPx,
-        widthPx: entry.widthPx,
-      });
 
       void context.waveformPort
         .getTrackWaveformTile(
@@ -3050,23 +2730,6 @@ function useWaveformDataLoader(args: {
         )
         .then((tileData) => {
           const acceptedByCurrentPlan = latestPlanKeySetRef.current.has(entry.cacheKey);
-          recordSpectrumTrace("spectrum-tile-request-resolve", {
-            acceptedByCurrentPlan,
-            cacheKey: entry.cacheKey,
-            dataPixelsPerSecond: entry.dataPixelsPerSecond,
-            elapsedMs:
-              readWaveformPerformanceNow(typeof window === "undefined" ? null : window) - startedAt,
-            focusDistancePx: entry.focusDistancePx,
-            index: entry.index,
-            lodDepth: entry.lodDepth,
-            maxLength: tileData.max.length,
-            minLength: tileData.min.length,
-            pointsPerSecond: tileData.points_per_second,
-            priority: entry.priority,
-            scopeKey: entry.scopeKey,
-            startPx: tileData.start_px,
-            widthPx: tileData.width_px,
-          });
 
           if (acceptedByCurrentPlan) {
             cache.set(entry.cacheKey, {
@@ -3085,20 +2748,6 @@ function useWaveformDataLoader(args: {
         })
         .catch((error) => {
           console.error("Failed to load waveform tile", error);
-          recordSpectrumTrace("spectrum-tile-request-error", {
-            cacheKey: entry.cacheKey,
-            dataPixelsPerSecond: entry.dataPixelsPerSecond,
-            elapsedMs:
-              readWaveformPerformanceNow(typeof window === "undefined" ? null : window) - startedAt,
-            error: String(error),
-            focusDistancePx: entry.focusDistancePx,
-            index: entry.index,
-            lodDepth: entry.lodDepth,
-            priority: entry.priority,
-            scopeKey: entry.scopeKey,
-            startPx: entry.startPx,
-            widthPx: entry.widthPx,
-          });
         })
         .finally(() => {
           activeCountRef.current = Math.max(0, activeCountRef.current - 1);
@@ -3116,13 +2765,6 @@ function useWaveformDataLoader(args: {
       const mode = request.mode ?? request.plan?.mode ?? "settled";
 
       if (latest.status !== "ready" || !latest.filePath || !viewport) {
-        recordSpectrumTrace("spectrum-data-reset", {
-          hasFilePath: Boolean(latest.filePath),
-          hasViewport: Boolean(viewport),
-          mode,
-          scope,
-          status: latest.status,
-        });
         resetLoader();
         return;
       }
@@ -3162,51 +2804,8 @@ function useWaveformDataLoader(args: {
           !inFlightKeysRef.current.has(request.cacheKey) &&
           !queuedKeys.has(request.cacheKey),
       );
-      const cachedRequestCount = scopedRequests.filter((request) =>
-        cache.has(request.cacheKey),
-      ).length;
-      const inFlightRequestCount = scopedRequests.filter((request) =>
-        inFlightKeysRef.current.has(request.cacheKey),
-      ).length;
-      const queuedRequestCount = scopedRequests.filter((request) =>
-        queuedKeys.has(request.cacheKey),
-      ).length;
-      const missingRequestCount =
-        scopedRequests.length - cachedRequestCount - inFlightRequestCount - queuedRequestCount;
-
-      recordSpectrumTrace("spectrum-data-plan", {
-        cacheSize: cache.size,
-        dataPixelsPerSecond: plan.dataPixelsPerSecond,
-        hasUnscheduledMissingRequest,
-        inFlightCount: inFlightKeysRef.current.size,
-        mode: plan.mode,
-        requestCounts: {
-          cached: cachedRequestCount,
-          inFlight: inFlightRequestCount,
-          missing: missingRequestCount,
-          queued: queuedRequestCount,
-          scoped: scopedRequests.length,
-          total: plan.requests.length,
-        },
-        priorityCounts: summarizeWaveformDataRequestPriorities(scopedRequests),
-        priorityLevelCounts: summarizeWaveformDataRequestLevels(scopedRequests),
-        protectedCacheKeyCount: plan.protectedCacheKeys.length,
-        requestWindow: summarizeWaveformDataRequestWindow(scopedRequests),
-        scope,
-        scopeKey: plan.scopeKey,
-        viewport,
-        visibleIndexes: plan.visibleIndexes,
-        visibleSecondsWindow: plan.visibleSecondsWindow,
-        visibleWindow: plan.visibleWindow,
-      });
 
       if (previousPlanSignatureRef.current === planSignature && !hasUnscheduledMissingRequest) {
-        recordSpectrumTrace("spectrum-data-plan-reuse", {
-          planSignature,
-          mode: plan.mode,
-          scope,
-          scopeKey: plan.scopeKey,
-        });
         return;
       }
 
@@ -3225,34 +2824,10 @@ function useWaveformDataLoader(args: {
         const cached = cache.get(request.cacheKey);
         if (cached) {
           cached.lastUsedAt = now;
-          recordSpectrumTrace("spectrum-tile-request-hit-cache", {
-            cacheKey: request.cacheKey,
-            dataPixelsPerSecond: request.dataPixelsPerSecond,
-            focusDistancePx: request.focusDistancePx,
-            index: request.index,
-            lodDepth: request.lodDepth,
-            priority: request.priority,
-            scopeKey: request.scopeKey,
-            startPx: request.startPx,
-            widthPx: request.widthPx,
-          });
           continue;
         }
 
         if (inFlightKeysRef.current.has(request.cacheKey) || nextQueuedKeys.has(request.cacheKey)) {
-          recordSpectrumTrace("spectrum-tile-request-skip-inflight-or-queued", {
-            cacheKey: request.cacheKey,
-            dataPixelsPerSecond: request.dataPixelsPerSecond,
-            focusDistancePx: request.focusDistancePx,
-            inFlight: inFlightKeysRef.current.has(request.cacheKey),
-            index: request.index,
-            lodDepth: request.lodDepth,
-            priority: request.priority,
-            queued: nextQueuedKeys.has(request.cacheKey),
-            scopeKey: request.scopeKey,
-            startPx: request.startPx,
-            widthPx: request.widthPx,
-          });
           continue;
         }
 
@@ -3261,31 +2836,11 @@ function useWaveformDataLoader(args: {
           order: nextOrderRef.current,
         });
         nextQueuedKeys.add(request.cacheKey);
-        recordSpectrumTrace("spectrum-tile-request-queued", {
-          cacheKey: request.cacheKey,
-          dataPixelsPerSecond: request.dataPixelsPerSecond,
-          focusDistancePx: request.focusDistancePx,
-          index: request.index,
-          lodDepth: request.lodDepth,
-          order: nextOrderRef.current,
-          priority: request.priority,
-          scopeKey: request.scopeKey,
-          startPx: request.startPx,
-          widthPx: request.widthPx,
-        });
         nextOrderRef.current += 1;
       }
 
       queueRef.current.sort(compareWaveformTileLoadQueueEntries);
-      const cacheSizeBeforePrune = cache.size;
       pruneWaveformTileCache(cache, protectedKeys);
-      if (cache.size !== cacheSizeBeforePrune) {
-        recordSpectrumTrace("spectrum-cache-prune", {
-          afterSize: cache.size,
-          beforeSize: cacheSizeBeforePrune,
-          protectedKeyCount: protectedKeys.size,
-        });
-      }
       pumpRef.current();
     },
     [resetLoader],
@@ -3328,7 +2883,6 @@ function useWaveformCanvasRenderer(args: {
     job: null,
     presentedFrame: null,
     requestedRevision: 0,
-    seamReadbackTarget: null,
     reuseFrame: null,
   });
 
@@ -3340,12 +2894,6 @@ function useWaveformCanvasRenderer(args: {
     const canvas = latest.canvasRef.current;
     const viewport = latest.viewportRef.current;
     if (!canvas || !viewport) {
-      recordSpectrumTrace("spectrum-render-job-empty", {
-        hasCanvas: Boolean(canvas),
-        hasViewport: Boolean(viewport),
-        reason: !canvas ? "missing-canvas" : "missing-viewport",
-        status: latest.status,
-      });
       controller.job = null;
       return;
     }
@@ -3372,10 +2920,6 @@ function useWaveformCanvasRenderer(args: {
       });
 
       if (plan.kind === "empty") {
-        recordSpectrumTrace(
-          "spectrum-render-job-empty",
-          createWaveformRenderPlanEmptyTrace(plan.empty),
-        );
         controller.job = null;
         return;
       }
@@ -3387,11 +2931,6 @@ function useWaveformCanvasRenderer(args: {
       });
 
       if (target.kind === "empty") {
-        recordSpectrumTrace("spectrum-render-job-empty", {
-          ...createWaveformRasterTargetEmptyTrace(target.empty),
-          viewport,
-          viewportWidth: geometry.viewportWidth,
-        });
         controller.job = null;
         return;
       }
@@ -3403,7 +2942,6 @@ function useWaveformCanvasRenderer(args: {
         target: target.target,
       });
       controller.job = job;
-      recordSpectrumTrace("spectrum-render-job-created", createWaveformRenderJobTrace(job));
     }
 
     if (!job) {
@@ -3418,86 +2956,19 @@ function useWaveformCanvasRenderer(args: {
       target: job.target,
     });
     job.cursor = chunk.cursor;
-    if (chunk.cursor.nextX < job.plan.geometry.viewportWidth) {
-      job.chunkBoundaries.push(chunk.cursor.nextX);
-    }
-    recordSpectrumTrace("spectrum-render-frame", {
-      ...createWaveformCanvasChunkTrace(chunk),
-      jobId: job.id,
-      revision: job.revision,
-      viewport: job.plan.viewport,
-      viewportWidth: job.plan.geometry.viewportWidth,
-    });
 
     if (chunk.completed) {
       const accepted = job.revision === controller.requestedRevision;
-      recordSpectrumTrace("spectrum-render-commit", {
-        accepted,
-        currentRevision: controller.requestedRevision,
-        firstMissingX: job.cursor.firstMissingX,
-        hasDrawnColumn: job.cursor.hasDrawnColumn,
-        jobId: job.id,
-        lastMissingX: job.cursor.lastMissingX,
-        missingPeakColumns: job.cursor.missingPeakColumnCount,
-        resolvedPeakCount: job.cursor.resolvedPeakColumnCount,
-        revision: job.revision,
-        viewport: job.plan.viewport,
-        viewportWidth: job.plan.geometry.viewportWidth,
-      });
-      const seamBoundaries = resolveWaveformCanvasSeamBoundaryProbes({
-        chunkBoundaries: job.chunkBoundaries,
-        plan: job.plan,
-      });
-      recordSpectrumTrace("spectrum-render-seam-probe", {
-        ...createWaveformCanvasSeamTrace(job, seamBoundaries),
-        accepted,
-      });
 
       if (accepted) {
-        const commit = commitWaveformCanvasFrame({
+        const committed = commitWaveformCanvasFrame({
           canvas,
           job,
         });
-        recordSpectrumTrace(commit.event, commit.payload);
-        if (shouldReadWaveformCanvasSeamPixels()) {
-          controller.seamReadbackTarget ??= createWaveformCanvasSeamReadbackTarget(canvas);
-          recordSpectrumTrace("spectrum-render-seam-pixels", {
-            ...createWaveformCanvasSeamPixelTrace(
-              job,
-              readWaveformCanvasSeamPixelProbes({
-                canvas,
-                boundaries: seamBoundaries,
-                plan: job.plan,
-                readbackTarget: controller.seamReadbackTarget,
-              }),
-            ),
-            committed: commit.event === "spectrum-render-commit-complete",
-          });
-        }
-        if (commit.payload.accepted !== false) {
+        if (committed) {
           controller.presentedFrame = createWaveformCanvasFrameDescriptor(job.plan);
         }
-      } else {
-        recordSpectrumTrace("spectrum-render-commit-skip", {
-          currentRevision: controller.requestedRevision,
-          jobId: job.id,
-          reason: "stale-revision",
-          revision: job.revision,
-          viewport: job.plan.viewport,
-          viewportWidth: job.plan.geometry.viewportWidth,
-        });
       }
-      recordSpectrumTrace("spectrum-render-complete", {
-        firstMissingX: job.cursor.firstMissingX,
-        hasDrawnColumn: job.cursor.hasDrawnColumn,
-        jobId: job.id,
-        lastMissingX: job.cursor.lastMissingX,
-        missingPeakColumns: job.cursor.missingPeakColumnCount,
-        resolvedPeakCount: job.cursor.resolvedPeakColumnCount,
-        revision: job.revision,
-        viewport: job.plan.viewport,
-        viewportWidth: job.plan.geometry.viewportWidth,
-      });
       controller.job = null;
       return;
     }
@@ -3513,7 +2984,6 @@ function useWaveformCanvasRenderer(args: {
     (dataPlan?: WaveformDataPlan) => {
       const latest = latestArgsRef.current;
       const controller = controllerRef.current;
-      const previousJob = controller.job;
       const nextRevision = controller.requestedRevision + 1;
       controller.requestedRevision = nextRevision;
       controller.dataPlan = dataPlan ?? null;
@@ -3554,43 +3024,6 @@ function useWaveformCanvasRenderer(args: {
         controller.reuseFrame = presented.reuseFrame;
       }
 
-      recordSpectrumTrace("spectrum-draw-request", {
-        abandonedJobId: previousJob?.id ?? null,
-        abandonedRevision: previousJob?.revision ?? null,
-        hasActiveJob: Boolean(previousJob),
-        hasCanvas: Boolean(latest.canvasRef.current),
-        hasScheduledFrame: controller.frameId !== null,
-        reuse:
-          presented.kind === "presented"
-            ? createWaveformCanvasFastPresentationTrace(presented)
-            : {
-                descriptorReason:
-                  renderPlan?.kind === "empty"
-                    ? renderPlan.empty.kind
-                    : !geometry
-                      ? !canvas
-                        ? "missing-canvas"
-                        : "missing-viewport"
-                      : null,
-                reason: presented.reason,
-              },
-        revision: nextRevision,
-        status: latest.status,
-        summaryCacheKey: latest.summary.cache_key,
-        viewport: latest.viewportRef.current,
-      });
-
-      if (previousJob) {
-        recordSpectrumTrace("spectrum-render-abandon", {
-          completedPixels: previousJob.cursor.nextX,
-          jobId: previousJob.id,
-          revision: previousJob.revision,
-          targetRevision: nextRevision,
-          viewport: previousJob.plan.viewport,
-          viewportWidth: previousJob.plan.geometry.viewportWidth,
-        });
-      }
-
       controller.job = null;
 
       if (
@@ -3600,13 +3033,6 @@ function useWaveformCanvasRenderer(args: {
         presented.draw.missingPeakColumns === 0 &&
         presented.draw.scannedColumns === presented.descriptor.geometry.viewportWidth
       ) {
-        recordSpectrumTrace("spectrum-render-skip-after-fast-present", {
-          mode: presented.mode,
-          revision: nextRevision,
-          scannedColumns: presented.draw.scannedColumns,
-          viewport: presented.descriptor.viewport,
-          viewportWidth: presented.descriptor.geometry.viewportWidth,
-        });
         return;
       }
 
@@ -3877,7 +3303,6 @@ function createWaveformCanvasRenderJob(args: {
   target: WaveformCanvasRasterTarget;
 }): WaveformCanvasRenderJob {
   return {
-    chunkBoundaries: [],
     cursor: createWaveformCanvasRenderCursor(),
     id: args.id,
     plan: args.plan,
@@ -3908,329 +3333,13 @@ function createWaveformCanvasFrameDescriptor(
   };
 }
 
-function createWaveformRenderPlanEmptyTrace(empty: WaveformCanvasRenderPlanEmpty) {
-  if (empty.kind !== "missing-candidate-levels") {
-    return {
-      backingHeight: empty.geometry.backingHeight,
-      backingWidth: empty.geometry.backingWidth,
-      hasFilePath: "filePath" in empty ? Boolean(empty.filePath) : null,
-      reason: empty.kind,
-      status: empty.status,
-      viewport: empty.viewport,
-      viewportWidth: empty.geometry.viewportWidth,
-    };
-  }
-
-  return {
-    availableLevels: Array.from(empty.levelIndexes.keys()).sort((left, right) => left - right),
-    backingHeight: empty.geometry.backingHeight,
-    backingWidth: empty.geometry.backingWidth,
-    dataPixelsPerSecond: empty.plan.dataPixelsPerSecond,
-    reason: empty.kind,
-    scopeKey: empty.plan.scopeKey,
-    tileCacheSize: empty.tileCacheSize,
-    viewport: empty.viewport,
-    viewportWidth: empty.geometry.viewportWidth,
-    visibleSecondsWindow: empty.plan.visibleSecondsWindow,
-    visibleWindow: empty.plan.visibleWindow,
-  };
-}
-
-export function resolveWaveformCanvasSeamBoundaryProbes(args: {
-  chunkBoundaries: readonly number[];
-  plan: WaveformCanvasRenderPlan;
-}): WaveformCanvasSeamBoundaryProbe[] {
-  const dataTileBoundaryXSet = resolveWaveformCanvasDataTileBoundaryXs(args.plan);
-  const dataTileBoundaries = dataTileBoundaryXSet.map((viewportX) =>
-    resolveWaveformCanvasSeamBoundaryProbe({
-      kind: "data-tile",
-      plan: args.plan,
-      renderChunkBoundaryXs: args.chunkBoundaries,
-      viewportX,
-    }),
-  );
-  const chunkBoundaries = args.chunkBoundaries
-    .filter((viewportX) => viewportX > 0 && viewportX < args.plan.geometry.viewportWidth)
-    .map((viewportX) =>
-      resolveWaveformCanvasSeamBoundaryProbe({
-        kind: "render-chunk",
-        plan: args.plan,
-        renderChunkBoundaryXs: args.chunkBoundaries,
-        viewportX,
-      }),
-    );
-
-  return dedupeWaveformCanvasSeamBoundaryProbes([...dataTileBoundaries, ...chunkBoundaries]).slice(
-    0,
-    WAVEFORM_CANVAS_SEAM_PROBE_MAX_BOUNDARIES,
-  );
-}
-
-function resolveWaveformCanvasDataTileBoundaryXs(
-  plan: WaveformCanvasRenderPlan,
-): WaveformCanvasSeamBoundaryProbe["viewportX"][] {
-  const dataPixelsPerSecond = Math.max(1, plan.dataPixelsPerSecond);
-  const pixelsPerSecond = Math.max(1, plan.viewport.pixelsPerSecond);
-  const firstBoundaryIndex = Math.floor(plan.visibleWindow.startPx / WAVEFORM_DATA_TILE_WIDTH) + 1;
-  const lastBoundaryIndex = Math.floor((plan.visibleWindow.endPx - 1) / WAVEFORM_DATA_TILE_WIDTH);
-  const boundaries: number[] = [];
-
-  for (let tileIndex = firstBoundaryIndex; tileIndex <= lastBoundaryIndex; tileIndex += 1) {
-    const boundaryDataPx = tileIndex * WAVEFORM_DATA_TILE_WIDTH;
-    const boundarySeconds = boundaryDataPx / dataPixelsPerSecond;
-    const viewportX = boundarySeconds * pixelsPerSecond - plan.viewport.scrollLeft;
-
-    if (viewportX <= 0 || viewportX >= plan.geometry.viewportWidth) {
-      continue;
-    }
-
-    boundaries.push(viewportX);
-  }
-
-  return boundaries;
-}
-
-function resolveWaveformCanvasSeamBoundaryProbe(args: {
-  kind: WaveformCanvasSeamBoundaryKind;
-  plan: WaveformCanvasRenderPlan;
-  renderChunkBoundaryXs: readonly number[];
-  viewportX: number;
-}): WaveformCanvasSeamBoundaryProbe {
-  const dataPixelsPerSecond = Math.max(1, args.plan.dataPixelsPerSecond);
-  const pixelsPerSecond = Math.max(1, args.plan.viewport.pixelsPerSecond);
-  const boundarySeconds = (args.plan.viewport.scrollLeft + args.viewportX) / pixelsPerSecond;
-  const boundaryDataPx = boundarySeconds * dataPixelsPerSecond;
-  const roundedViewportX = Math.round(args.viewportX);
-  const tileIndex =
-    args.kind === "data-tile"
-      ? Math.round(boundaryDataPx / WAVEFORM_DATA_TILE_WIDTH)
-      : Math.floor(boundaryDataPx / WAVEFORM_DATA_TILE_WIDTH);
-
-  return {
-    boundaryDataPx,
-    boundaryId: `${args.kind}:${roundedViewportX}:${Math.round(boundaryDataPx)}`,
-    boundarySeconds,
-    distanceToNearestColumnCenterPx: Math.abs(args.viewportX - (Math.floor(args.viewportX) + 0.5)),
-    distanceToNearestPixelEdgePx: Math.abs(args.viewportX - Math.round(args.viewportX)),
-    kind: args.kind,
-    nearestDataTileBoundaryDistancePx: resolveWaveformCanvasNearestDataTileBoundaryDistancePx({
-      plan: args.plan,
-      viewportX: args.viewportX,
-    }),
-    nearestRenderChunkBoundaryDistancePx: resolveNearestNumberDistance(
-      args.renderChunkBoundaryXs,
-      args.viewportX,
-    ),
-    roundedViewportX,
-    samples: resolveWaveformCanvasSeamPeakSampleProbes({
-      plan: args.plan,
-      roundedViewportX,
-    }),
-    tileIndex,
-    viewportX: args.viewportX,
-  };
-}
-
-function resolveWaveformCanvasNearestDataTileBoundaryDistancePx(args: {
-  plan: WaveformCanvasRenderPlan;
-  viewportX: number;
-}) {
-  const boundaryStridePx =
-    (WAVEFORM_DATA_TILE_WIDTH / Math.max(1, args.plan.dataPixelsPerSecond)) *
-    Math.max(1, args.plan.viewport.pixelsPerSecond);
-  if (!Number.isFinite(boundaryStridePx) || boundaryStridePx <= 0) {
-    return null;
-  }
-
-  const dataPxAtViewportX =
-    ((args.plan.viewport.scrollLeft + args.viewportX) /
-      Math.max(1, args.plan.viewport.pixelsPerSecond)) *
-    Math.max(1, args.plan.dataPixelsPerSecond);
-  const nearestDataBoundaryPx =
-    Math.round(dataPxAtViewportX / WAVEFORM_DATA_TILE_WIDTH) * WAVEFORM_DATA_TILE_WIDTH;
-  const nearestBoundarySeconds = nearestDataBoundaryPx / Math.max(1, args.plan.dataPixelsPerSecond);
-  const nearestBoundaryViewportX =
-    nearestBoundarySeconds * Math.max(1, args.plan.viewport.pixelsPerSecond) -
-    args.plan.viewport.scrollLeft;
-
-  return Math.abs(nearestBoundaryViewportX - args.viewportX);
-}
-
-function resolveNearestNumberDistance(values: readonly number[], target: number) {
-  let distance: number | null = null;
-
-  for (const value of values) {
-    const nextDistance = Math.abs(value - target);
-    distance = distance === null ? nextDistance : Math.min(distance, nextDistance);
-  }
-
-  return distance;
-}
-
-function resolveWaveformCanvasSeamPeakSampleProbes(args: {
-  plan: WaveformCanvasRenderPlan;
-  roundedViewportX: number;
-}): WaveformCanvasSeamPeakSampleProbe[] {
-  const samples: WaveformCanvasSeamPeakSampleProbe[] = [];
-
-  for (
-    let offsetX = -WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX;
-    offsetX <= WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX;
-    offsetX += 1
-  ) {
-    const x = args.roundedViewportX + offsetX;
-    if (x < 0 || x >= args.plan.geometry.viewportWidth) {
-      continue;
-    }
-
-    const peak = resolveWaveformCanvasColumnPeak({
-      candidateLevels: args.plan.candidateLevels,
-      tileWidth: WAVEFORM_DATA_TILE_WIDTH,
-      viewport: args.plan.viewport,
-      x,
-    });
-    const dataStartPx =
-      ((args.plan.viewport.scrollLeft + x) / Math.max(1, args.plan.viewport.pixelsPerSecond)) *
-      Math.max(1, args.plan.dataPixelsPerSecond);
-    const dataEndPx =
-      ((args.plan.viewport.scrollLeft + x + 1) / Math.max(1, args.plan.viewport.pixelsPerSecond)) *
-      Math.max(1, args.plan.dataPixelsPerSecond);
-
-    samples.push({
-      dataEndPx,
-      dataStartPx,
-      hasPeak: Boolean(peak),
-      levelPixelsPerSecond: peak?.levelPixelsPerSecond ?? null,
-      max: peak?.peak.max ?? null,
-      min: peak?.peak.min ?? null,
-      offsetX,
-      x,
-    });
-  }
-
-  return samples;
-}
-
-function dedupeWaveformCanvasSeamBoundaryProbes(
-  probes: WaveformCanvasSeamBoundaryProbe[],
-): WaveformCanvasSeamBoundaryProbe[] {
-  const byKey = new Map<string, WaveformCanvasSeamBoundaryProbe>();
-
-  for (const probe of probes) {
-    byKey.set(`${probe.kind}:${probe.roundedViewportX}`, probe);
-  }
-
-  return Array.from(byKey.values()).sort(
-    (left, right) =>
-      left.roundedViewportX - right.roundedViewportX || left.kind.localeCompare(right.kind),
-  );
-}
-
-function createWaveformCanvasSeamTrace(
-  job: WaveformCanvasRenderJob,
-  boundaries: readonly WaveformCanvasSeamBoundaryProbe[],
-) {
-  return {
-    backingHeight: job.plan.geometry.backingHeight,
-    backingWidth: job.plan.geometry.backingWidth,
-    boundaries,
-    boundaryCount: boundaries.length,
-    chunkBoundaries: job.chunkBoundaries,
-    dataPixelsPerSecond: job.plan.dataPixelsPerSecond,
-    devicePixelRatio: job.plan.geometry.devicePixelRatio,
-    jobId: job.id,
-    probeRadiusPx: WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX,
-    revision: job.revision,
-    scopeKey: job.plan.scopeKey,
-    tileWidth: WAVEFORM_DATA_TILE_WIDTH,
-    viewport: job.plan.viewport,
-    viewportWidth: job.plan.geometry.viewportWidth,
-    visibleWindow: job.plan.visibleWindow,
-  };
-}
-
-function createWaveformRasterTargetEmptyTrace(empty: WaveformCanvasRasterTargetEmpty) {
-  return {
-    backingHeight: empty.geometry.backingHeight,
-    backingWidth: empty.geometry.backingWidth,
-    reason: empty.kind,
-  };
-}
-
-function createWaveformCanvasChunkTrace(chunk: WaveformCanvasChunkResult) {
-  return {
-    candidateLevelProbeCount: chunk.candidateLevelProbeCount,
-    completed: chunk.completed,
-    elapsedMs: chunk.elapsedMs,
-    endX: chunk.cursor.nextX,
-    fallbackLevelHits: chunk.fallbackLevelHits,
-    firstMissingX: chunk.firstMissingX,
-    firstMissingXInJob: chunk.cursor.firstMissingX,
-    hasChunkColumn: chunk.hasChunkColumn,
-    hasDrawnColumn: chunk.cursor.hasDrawnColumn,
-    lastMissingX: chunk.lastMissingX,
-    lastMissingXInJob: chunk.cursor.lastMissingX,
-    levelHitCounts: chunk.levelHitCounts,
-    levelMissCounts: chunk.levelMissCounts,
-    levelProbeCounts: chunk.levelProbeCounts,
-    missingPeakColumns: chunk.missingPeakColumns,
-    missingPeakColumnsInJob: chunk.cursor.missingPeakColumnCount,
-    preferredLevelHits: chunk.preferredLevelHits,
-    resolvedPeakCount: chunk.resolvedPeakCount,
-    resolvedPeakCountInJob: chunk.cursor.resolvedPeakColumnCount,
-    scannedColumns: chunk.scannedColumns,
-    startX: chunk.startX,
-  };
-}
-
-function createWaveformRenderJobTrace(job: WaveformCanvasRenderJob) {
-  return {
-    availableLevels: job.plan.availableLevels,
-    backingHeight: job.plan.geometry.backingHeight,
-    backingWidth: job.plan.geometry.backingWidth,
-    candidateLevels: job.plan.candidateLevels.map((level) => ({
-      pixelsPerSecond: level.pixelsPerSecond,
-      tileCount: level.tilesByIndex.size,
-      tileIndexes: Array.from(level.tilesByIndex.keys()).sort((left, right) => left - right),
-    })),
-    dataPixelsPerSecond: job.plan.dataPixelsPerSecond,
-    devicePixelRatio: job.plan.geometry.devicePixelRatio,
-    jobId: job.id,
-    revision: job.revision,
-    scopeKey: job.plan.scopeKey,
-    viewport: job.plan.viewport,
-    viewportWidth: job.plan.geometry.viewportWidth,
-    visibleSecondsWindow: job.plan.visibleSecondsWindow,
-    visibleWindow: job.plan.visibleWindow,
-  };
-}
-
-function createWaveformCanvasCommitTrace(
-  event: string,
-  job: WaveformCanvasRenderJob,
-  payload: Record<string, unknown>,
-): SpectrumTraceEvent {
-  return {
-    event,
-    payload: {
-      ...payload,
-      jobId: job.id,
-      revision: job.revision,
-      viewport: job.plan.viewport,
-      viewportWidth: job.plan.geometry.viewportWidth,
-    },
-  };
-}
-
 function commitWaveformCanvasFrame(args: {
   canvas: HTMLCanvasElement;
   job: WaveformCanvasRenderJob;
-}): SpectrumTraceEvent {
+}): boolean {
   const context = args.canvas.getContext("2d");
   if (!context) {
-    return createWaveformCanvasCommitTrace("spectrum-render-commit-empty", args.job, {
-      reason: "missing-visible-context",
-    });
+    return false;
   }
 
   if (args.canvas.width !== args.job.plan.geometry.backingWidth) {
@@ -4254,259 +3363,7 @@ function commitWaveformCanvasFrame(args: {
   context.globalCompositeOperation = "source-over";
   context.drawImage(args.job.target.frame, 0, 0);
 
-  return createWaveformCanvasCommitTrace("spectrum-render-commit-complete", args.job, {
-    backingHeight: args.job.plan.geometry.backingHeight,
-    backingWidth: args.job.plan.geometry.backingWidth,
-  });
-}
-
-function readWaveformCanvasSeamPixelProbes(args: {
-  boundaries: readonly WaveformCanvasSeamBoundaryProbe[];
-  canvas: HTMLCanvasElement;
-  plan: WaveformCanvasRenderPlan;
-  readbackTarget: WaveformCanvasSeamReadbackTarget | null;
-}): WaveformCanvasSeamPixelProbeResult {
-  if (!args.readbackTarget) {
-    return {
-      kind: "empty",
-      reason: "missing-readback-context",
-    };
-  }
-
-  const readbackTarget = args.readbackTarget;
-
-  try {
-    return {
-      boundaries: args.boundaries.map((boundary) =>
-        readWaveformCanvasSeamPixelBoundaryProbe({
-          boundary,
-          canvas: args.canvas,
-          plan: args.plan,
-          readbackTarget,
-        }),
-      ),
-      kind: "ready",
-    };
-  } catch (error) {
-    return {
-      kind: "empty",
-      message: error instanceof Error ? error.message : String(error),
-      reason: "read-failed",
-    };
-  }
-}
-
-function readWaveformCanvasSeamPixelBoundaryProbe(args: {
-  boundary: WaveformCanvasSeamBoundaryProbe;
-  canvas: HTMLCanvasElement;
-  plan: WaveformCanvasRenderPlan;
-  readbackTarget: WaveformCanvasSeamReadbackTarget;
-}): WaveformCanvasSeamPixelBoundaryProbe {
-  const devicePixelRatio = Math.max(1, args.plan.geometry.devicePixelRatio);
-  const backingStartX = clampInteger(
-    Math.floor(
-      (args.boundary.roundedViewportX - WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX) * devicePixelRatio,
-    ),
-    0,
-    Math.max(0, args.plan.geometry.backingWidth - 1),
-  );
-  const backingEndX = clampInteger(
-    Math.ceil(
-      (args.boundary.roundedViewportX + WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX + 1) *
-        devicePixelRatio,
-    ),
-    backingStartX + 1,
-    args.plan.geometry.backingWidth,
-  );
-
-  args.readbackTarget.canvas.width = backingEndX - backingStartX;
-  args.readbackTarget.canvas.height = args.plan.geometry.backingHeight;
-  args.readbackTarget.context.resetTransform();
-  args.readbackTarget.context.clearRect(
-    0,
-    0,
-    args.readbackTarget.canvas.width,
-    args.readbackTarget.canvas.height,
-  );
-  args.readbackTarget.context.drawImage(
-    args.canvas,
-    backingStartX,
-    0,
-    args.readbackTarget.canvas.width,
-    args.readbackTarget.canvas.height,
-    0,
-    0,
-    args.readbackTarget.canvas.width,
-    args.readbackTarget.canvas.height,
-  );
-  const image = args.readbackTarget.context.getImageData(
-    0,
-    0,
-    args.readbackTarget.canvas.width,
-    args.readbackTarget.canvas.height,
-  );
-
-  return {
-    boundaryId: args.boundary.boundaryId,
-    columns: resolveWaveformCanvasSeamProbeCssXs({
-      roundedViewportX: args.boundary.roundedViewportX,
-      viewportWidth: args.plan.geometry.viewportWidth,
-    }).map((cssX) =>
-      summarizeWaveformCanvasSeamPixelColumn({
-        backingEndX: resolveWaveformCanvasSeamColumnBackingEndX({
-          cssX,
-          devicePixelRatio,
-          viewportBackingEndX: backingEndX,
-          viewportBackingStartX: backingStartX,
-        }),
-        backingStartX: resolveWaveformCanvasSeamColumnBackingStartX({
-          cssX,
-          devicePixelRatio,
-          viewportBackingStartX: backingStartX,
-        }),
-        cssX,
-        image,
-      }),
-    ),
-    kind: args.boundary.kind,
-    roundedViewportX: args.boundary.roundedViewportX,
-    viewportX: args.boundary.viewportX,
-  };
-}
-
-function resolveWaveformCanvasSeamProbeCssXs(args: {
-  roundedViewportX: number;
-  viewportWidth: number;
-}) {
-  const xs: number[] = [];
-
-  for (
-    let offsetX = -WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX;
-    offsetX <= WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX;
-    offsetX += 1
-  ) {
-    const x = args.roundedViewportX + offsetX;
-    if (x < 0 || x >= args.viewportWidth) {
-      continue;
-    }
-
-    xs.push(x);
-  }
-
-  return xs;
-}
-
-function resolveWaveformCanvasSeamColumnBackingStartX(args: {
-  cssX: number;
-  devicePixelRatio: number;
-  viewportBackingStartX: number;
-}) {
-  return Math.max(0, Math.floor(args.cssX * args.devicePixelRatio) - args.viewportBackingStartX);
-}
-
-function resolveWaveformCanvasSeamColumnBackingEndX(args: {
-  cssX: number;
-  devicePixelRatio: number;
-  viewportBackingEndX: number;
-  viewportBackingStartX: number;
-}) {
-  return clampInteger(
-    Math.ceil((args.cssX + 1) * args.devicePixelRatio) - args.viewportBackingStartX,
-    resolveWaveformCanvasSeamColumnBackingStartX(args) + 1,
-    args.viewportBackingEndX - args.viewportBackingStartX,
-  );
-}
-
-function createWaveformCanvasSeamReadbackTarget(
-  canvas: HTMLCanvasElement,
-): WaveformCanvasSeamReadbackTarget | null {
-  const readbackCanvas = canvas.ownerDocument.createElement("canvas");
-  const context = readbackCanvas.getContext("2d", {
-    willReadFrequently: true,
-  });
-
-  return context
-    ? {
-        canvas: readbackCanvas,
-        context,
-      }
-    : null;
-}
-
-export function summarizeWaveformCanvasSeamPixelColumn(args: {
-  backingEndX: number;
-  backingStartX: number;
-  cssX: number;
-  image: Pick<ImageData, "data" | "height" | "width">;
-}): WaveformCanvasSeamPixelColumnProbe {
-  let alphaSum = 0;
-  let alphaMax = 0;
-  let drawnPixelCount = 0;
-  let firstDrawnBackingY: number | null = null;
-  let lastDrawnBackingY: number | null = null;
-  const backingStartX = clampInteger(args.backingStartX, 0, args.image.width);
-  const backingEndX = clampInteger(args.backingEndX, backingStartX, args.image.width);
-  const columnWidth = backingEndX - backingStartX;
-  const totalPixelCount = columnWidth * args.image.height;
-
-  for (let backingY = 0; backingY < args.image.height; backingY += 1) {
-    for (let backingX = backingStartX; backingX < backingEndX; backingX += 1) {
-      const pixelIndex = backingY * args.image.width + backingX;
-      const alpha = args.image.data[pixelIndex * 4 + 3] ?? 0;
-      alphaSum += alpha;
-      alphaMax = Math.max(alphaMax, alpha);
-
-      if (alpha <= 0) {
-        continue;
-      }
-
-      firstDrawnBackingY ??= backingY;
-      lastDrawnBackingY = backingY;
-      drawnPixelCount += 1;
-    }
-  }
-
-  return {
-    alphaCoverageRatio: totalPixelCount > 0 ? drawnPixelCount / totalPixelCount : 0,
-    alphaMax,
-    alphaMean: totalPixelCount > 0 ? alphaSum / totalPixelCount : 0,
-    alphaSum,
-    backingEndX,
-    backingStartX,
-    cssX: args.cssX,
-    drawnPixelCount,
-    firstDrawnBackingY,
-    lastDrawnBackingY,
-    totalPixelCount,
-  };
-}
-
-function createWaveformCanvasSeamPixelTrace(
-  job: WaveformCanvasRenderJob,
-  result: WaveformCanvasSeamPixelProbeResult,
-) {
-  return {
-    backingHeight: job.plan.geometry.backingHeight,
-    backingWidth: job.plan.geometry.backingWidth,
-    dataPixelsPerSecond: job.plan.dataPixelsPerSecond,
-    devicePixelRatio: job.plan.geometry.devicePixelRatio,
-    jobId: job.id,
-    probeRadiusPx: WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX,
-    revision: job.revision,
-    scopeKey: job.plan.scopeKey,
-    tileWidth: WAVEFORM_DATA_TILE_WIDTH,
-    viewport: job.plan.viewport,
-    viewportWidth: job.plan.geometry.viewportWidth,
-    ...result,
-  };
-}
-
-function shouldReadWaveformCanvasSeamPixels() {
-  return (
-    typeof window !== "undefined" &&
-    (window as unknown as Record<string, unknown>)[WAVEFORM_CANVAS_SEAM_PIXEL_TRACE_GLOBAL_KEY] ===
-      true
-  );
+  return true;
 }
 
 function resolveWaveformCanvasFastPresentationPlan(args: {
@@ -4530,26 +3387,6 @@ function resolveWaveformCanvasFastPresentationPlan(args: {
   }
 
   return reusePlan;
-}
-
-function createWaveformCanvasFastPresentationTrace(
-  presented: Extract<WaveformCanvasFastPresentationResult, { kind: "presented" }>,
-) {
-  if (presented.mode === "data-redraw") {
-    return {
-      draw: presented.draw,
-      mode: presented.mode,
-      plan: presented.plan,
-    };
-  }
-
-  return {
-    draws: presented.draws,
-    exposedRanges: presented.exposedRanges,
-    exposedWidthPx: presented.exposedWidthPx,
-    mode: presented.mode,
-    plan: presented.plan,
-  };
 }
 
 function presentWaveformCanvasFrameFast(args: {
@@ -4721,7 +3558,6 @@ function resolveWaveformCanvasChunkWindow(args: { startX: number; viewportWidth:
 
 function resolveWaveformCanvasColumnPeak(args: {
   candidateLevels: WaveformLevelTileIndex[];
-  onLevelProbe?: (levelPixelsPerSecond: number, hit: boolean) => void;
   tileWidth: number;
   viewport: WaveformViewportModel;
   x: number;
@@ -4732,7 +3568,6 @@ function resolveWaveformCanvasColumnPeak(args: {
   return resolveWaveformPeakFromCandidateLevels({
     candidateLevels: args.candidateLevels,
     endSeconds,
-    onLevelProbe: args.onLevelProbe,
     startSeconds,
     tileWidth: args.tileWidth,
   });
@@ -4752,49 +3587,18 @@ function drawWaveformCanvasColumn(args: {
   args.context.lineTo(barX, Math.max(yTop + 1, yBottom));
 }
 
-function createWaveformCanvasLevelProbeStats(): WaveformCanvasLevelProbeStats {
-  return {
-    candidateLevelProbeCount: 0,
-    levelHitCounts: {},
-    levelMissCounts: {},
-    levelProbeCounts: {},
-  };
-}
-
-function recordWaveformCanvasLevelProbe(
-  stats: WaveformCanvasLevelProbeStats,
-  levelPixelsPerSecond: number,
-  hit: boolean,
-) {
-  const levelKey = String(levelPixelsPerSecond);
-  stats.candidateLevelProbeCount += 1;
-  stats.levelProbeCounts[levelKey] = (stats.levelProbeCounts[levelKey] ?? 0) + 1;
-
-  if (hit) {
-    stats.levelHitCounts[levelKey] = (stats.levelHitCounts[levelKey] ?? 0) + 1;
-    return;
-  }
-
-  stats.levelMissCounts[levelKey] = (stats.levelMissCounts[levelKey] ?? 0) + 1;
-}
-
 function drawWaveformCanvasColumnRange(args: {
   context: CanvasRenderingContext2D;
   endX: number;
   plan: WaveformCanvasRenderPlan;
   startX: number;
 }): WaveformCanvasColumnRangeResult {
-  const startedAt = readWaveformPerformanceNow(null);
   const startX = clampInteger(args.startX, 0, args.plan.geometry.viewportWidth);
   const endX = clampInteger(args.endX, startX, args.plan.geometry.viewportWidth);
-  const preferredLevel = args.plan.candidateLevels[0]?.pixelsPerSecond ?? null;
   let firstMissingX: number | null = null;
-  let fallbackLevelHits = 0;
   let lastMissingX: number | null = null;
   let hasColumn = false;
-  const levelStats = createWaveformCanvasLevelProbeStats();
   let missingPeakColumns = 0;
-  let preferredLevelHits = 0;
   let resolvedPeakCount = 0;
   let scannedColumns = 0;
 
@@ -4807,9 +3611,6 @@ function drawWaveformCanvasColumnRange(args: {
       tileWidth: WAVEFORM_DATA_TILE_WIDTH,
       viewport: args.plan.viewport,
       x,
-      onLevelProbe: (levelPixelsPerSecond, hit) => {
-        recordWaveformCanvasLevelProbe(levelStats, levelPixelsPerSecond, hit);
-      },
     });
 
     if (peak) {
@@ -4820,11 +3621,6 @@ function drawWaveformCanvasColumnRange(args: {
         x,
       });
       hasColumn = true;
-      if (peak.levelPixelsPerSecond === preferredLevel) {
-        preferredLevelHits += 1;
-      } else {
-        fallbackLevelHits += 1;
-      }
       resolvedPeakCount += 1;
     } else {
       firstMissingX ??= x;
@@ -4838,17 +3634,10 @@ function drawWaveformCanvasColumnRange(args: {
   }
 
   return {
-    candidateLevelProbeCount: levelStats.candidateLevelProbeCount,
-    elapsedMs: readWaveformPerformanceNow(null) - startedAt,
-    fallbackLevelHits,
     firstMissingX,
     hasColumn,
     lastMissingX,
-    levelHitCounts: levelStats.levelHitCounts,
-    levelMissCounts: levelStats.levelMissCounts,
-    levelProbeCounts: levelStats.levelProbeCounts,
     missingPeakColumns,
-    preferredLevelHits,
     resolvedPeakCount,
     scannedColumns,
   };
@@ -4861,17 +3650,10 @@ function drawWaveformCanvasDataFrame(args: {
   const context = args.canvas.getContext("2d");
   if (!context) {
     return {
-      candidateLevelProbeCount: 0,
-      elapsedMs: 0,
-      fallbackLevelHits: 0,
       firstMissingX: 0,
       hasColumn: false,
       lastMissingX: Math.max(0, args.plan.geometry.viewportWidth - 1),
-      levelHitCounts: {},
-      levelMissCounts: {},
-      levelProbeCounts: {},
       missingPeakColumns: args.plan.geometry.viewportWidth,
-      preferredLevelHits: 0,
       resolvedPeakCount: 0,
       scannedColumns: args.plan.geometry.viewportWidth,
     };
@@ -4933,23 +3715,18 @@ export function drawWaveformCanvasJobChunk(args: {
   plan: WaveformCanvasRenderPlan;
   target: WaveformCanvasRasterTarget;
 }): WaveformCanvasChunkResult {
-  const startedAt = args.now();
   const context = args.target.context;
   const plan = args.plan;
   const startX = args.cursor.nextX;
-  const preferredLevel = plan.candidateLevels[0]?.pixelsPerSecond ?? null;
   const { maxChunkEndX, minChunkEndX } = resolveWaveformCanvasChunkWindow({
     startX,
     viewportWidth: plan.geometry.viewportWidth,
   });
   let x = startX;
-  let fallbackLevelHits = 0;
   let hasChunkColumn = false;
   let firstMissingX: number | null = null;
   let lastMissingX: number | null = null;
-  const levelStats = createWaveformCanvasLevelProbeStats();
   let missingPeakColumns = 0;
-  let preferredLevelHits = 0;
   let resolvedPeakCount = 0;
   let scannedColumns = 0;
 
@@ -4964,9 +3741,6 @@ export function drawWaveformCanvasJobChunk(args: {
       tileWidth: WAVEFORM_DATA_TILE_WIDTH,
       viewport: plan.viewport,
       x,
-      onLevelProbe: (levelPixelsPerSecond, hit) => {
-        recordWaveformCanvasLevelProbe(levelStats, levelPixelsPerSecond, hit);
-      },
     });
 
     if (peak) {
@@ -4977,11 +3751,6 @@ export function drawWaveformCanvasJobChunk(args: {
         x,
       });
       hasChunkColumn = true;
-      if (peak.levelPixelsPerSecond === preferredLevel) {
-        preferredLevelHits += 1;
-      } else {
-        fallbackLevelHits += 1;
-      }
       resolvedPeakCount += 1;
     } else {
       firstMissingX ??= x;
@@ -5013,22 +3782,14 @@ export function drawWaveformCanvasJobChunk(args: {
   }
 
   return {
-    candidateLevelProbeCount: levelStats.candidateLevelProbeCount,
     completed,
     cursor,
-    elapsedMs: args.now() - startedAt,
-    fallbackLevelHits,
     firstMissingX,
     hasChunkColumn,
     lastMissingX,
-    levelHitCounts: levelStats.levelHitCounts,
-    levelMissCounts: levelStats.levelMissCounts,
-    levelProbeCounts: levelStats.levelProbeCounts,
     missingPeakColumns,
-    preferredLevelHits,
     resolvedPeakCount,
     scannedColumns,
-    startX,
   };
 }
 
@@ -5055,7 +3816,6 @@ function resolveWaveformCandidateLevels(args: {
 function resolveWaveformPeakFromCandidateLevels(args: {
   candidateLevels: WaveformLevelTileIndex[];
   endSeconds: number;
-  onLevelProbe?: (levelPixelsPerSecond: number, hit: boolean) => void;
   startSeconds: number;
   tileWidth: number;
 }): WaveformCanvasColumnSample | null {
@@ -5066,7 +3826,6 @@ function resolveWaveformPeakFromCandidateLevels(args: {
       startSeconds: args.startSeconds,
       tileWidth: args.tileWidth,
     });
-    args.onLevelProbe?.(level.pixelsPerSecond, Boolean(peak));
 
     if (peak) {
       return {
