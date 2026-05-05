@@ -359,10 +359,40 @@ type WaveformCanvasRenderPlanEmpty =
       viewport: WaveformViewportModel;
     };
 
-type WaveformCanvasRasterTarget = {
+type WaveformCanvasRasterTargetBase = {
   context: CanvasRenderingContext2D;
   frame: HTMLCanvasElement;
   geometry: WaveformCanvasFrameGeometry;
+};
+
+type WaveformCanvasBufferedRasterTarget = WaveformCanvasRasterTargetBase & {
+  kind: "buffered";
+};
+
+type WaveformCanvasVisibleRasterTarget = WaveformCanvasRasterTargetBase & {
+  kind: "visible";
+};
+
+type WaveformCanvasRasterTarget =
+  | WaveformCanvasBufferedRasterTarget
+  | WaveformCanvasVisibleRasterTarget;
+
+type WaveformCanvasFrameCommitResult =
+  | {
+      kind: "committed";
+    }
+  | {
+      kind: "empty";
+      reason: "missing-context";
+    };
+
+type WaveformCanvasRenderJobCompletion =
+  | WaveformCanvasFrameCommitResult
+  | {
+      kind: "already-presented";
+    };
+
+type WaveformCanvasPaintTargetPlan = {
   kind: WaveformCanvasRasterTargetKind;
 };
 
@@ -420,15 +450,15 @@ type WaveformCanvasFastPresentationResult =
       exposedWidthPx: number;
       kind: "presented";
       mode: "horizontal-pan";
-      plan: Extract<WaveformCanvasFastPresentationPlan, { kind: "horizontal-pan" }>;
+      plan: Extract<WaveformCanvasFrameReusePlan, { kind: "horizontal-pan" }>;
       reuseFrame: HTMLCanvasElement;
     }
   | {
-      descriptor: WaveformCanvasFrameDescriptor;
       draw: WaveformCanvasColumnRangeResult;
+      descriptor: WaveformCanvasFrameDescriptor;
       kind: "presented";
-      mode: "data-redraw";
-      plan: Extract<WaveformCanvasFastPresentationPlan, { kind: "data-redraw" }>;
+      mode: "exact-cache-redraw";
+      plan: Extract<WaveformCanvasFastPresentationPlan, { kind: "exact-cache-redraw" }>;
       reuseFrame: HTMLCanvasElement | null;
     }
   | {
@@ -446,7 +476,7 @@ type WaveformCanvasFastPresentationResult =
 type WaveformCanvasFastPresentationPlan =
   | Extract<WaveformCanvasFrameReusePlan, { kind: "horizontal-pan" }>
   | {
-      kind: "data-redraw";
+      kind: "exact-cache-redraw";
     }
   | Extract<WaveformCanvasFrameReusePlan, { kind: "none" }>;
 
@@ -792,6 +822,28 @@ export function resolveWaveformCanvasFrameReusePlan(args: {
     scrollDeltaPx,
     shiftX: -scrollDeltaPx,
   };
+}
+
+function resolveWaveformCanvasFastPresentationPlan(args: {
+  current: WaveformCanvasFrameDescriptor;
+  hasExactPlan: boolean;
+  previous: WaveformCanvasFrameDescriptor | null;
+}): WaveformCanvasFastPresentationPlan {
+  const reusePlan = resolveWaveformCanvasFrameReusePlan({
+    current: args.current,
+    previous: args.previous,
+  });
+  if (reusePlan.kind === "horizontal-pan") {
+    return reusePlan;
+  }
+
+  if (reusePlan.reason === "scale-changed" && args.hasExactPlan) {
+    return {
+      kind: "exact-cache-redraw",
+    };
+  }
+
+  return reusePlan;
 }
 
 export function shouldBeginWaveformCanvasChunkPath(args: {
@@ -1241,90 +1293,52 @@ export function resolveWaveformDataPlan(args: {
     typeof args.focusSeconds === "number" && Number.isFinite(args.focusSeconds)
       ? clampNumber(args.focusSeconds, 0, durationSeconds)
       : (visibleSecondsWindow.startSeconds + visibleSecondsWindow.endSeconds) / 2;
-  const currentLevelRequests = createWaveformDataRequestsForLevel({
+  const currentLevelRequests = resolveWaveformCurrentDemandRequests({
     dataPixelsPerSecond,
+    dataDemandWindow,
     focusSeconds,
-    priorityForIndex: (index) =>
-      visibleIndexSet.has(index)
-        ? "visible"
-        : mode === "interactive"
-          ? "visible-guard"
-          : "overscan",
+    mode,
     scopeKey,
     tileWidth,
-    window: dataDemandWindow,
+    visibleIndexSet,
     durationSeconds,
   });
-  const visiblePrefetchRequests = resolveWaveformPrefetchRenderLevels({
+  const visiblePrefetchRequests = resolveWaveformVisiblePrefetchRequests({
     currentDataPixelsPerSecond: dataPixelsPerSecond,
+    durationSeconds,
+    focusSeconds,
     levelCount: visiblePrefetchLevelCount,
     levels: renderLevels,
-  }).flatMap((prefetchLevel, lodDepth) =>
-    createWaveformDataRequestsForLevel({
-      dataPixelsPerSecond: prefetchLevel,
-      durationSeconds,
-      focusSeconds,
-      lodDepth: lodDepth + 1,
-      priorityForIndex: () => "prefetch-visible",
-      scopeKey,
-      tileWidth,
-      window: resolveWaveformDataPixelWindow({
-        dataContentWidth: Math.max(1, Math.ceil(durationSeconds * prefetchLevel)),
-        dataPixelsPerSecond: prefetchLevel,
-        window: visibleSecondsWindow,
-      }),
-    }),
-  );
-  const focusPrefetchRequests = resolveWaveformPrefetchRenderLevels({
+    scopeKey,
+    tileWidth,
+    visibleSecondsWindow,
+  });
+  const focusPrefetchRequests = resolveWaveformFocusPrefetchRequests({
     currentDataPixelsPerSecond: dataPixelsPerSecond,
+    durationSeconds,
+    focusSeconds,
     levelCount: focusPrefetchLevelCount,
     levels: renderLevels,
-  }).flatMap((prefetchLevel, lodDepth) => {
-    const focusWindow = resolveWaveformFocusedPrefetchWindow({
-      dataContentWidth: Math.max(1, Math.ceil(durationSeconds * prefetchLevel)),
-      focusSeconds,
-      pixelsPerSecond: prefetchLevel,
-      tileWidth,
-    });
-
-    return createWaveformDataRequestsForLevel({
-      dataPixelsPerSecond: prefetchLevel,
-      durationSeconds,
-      focusSeconds,
-      lodDepth: lodDepth + 1,
-      priorityForIndex: () => "prefetch-focus",
-      scopeKey,
-      tileWidth,
-      window: focusWindow,
-    });
+    scopeKey,
+    tileWidth,
   });
-  const reversePrefetchRequests = resolveWaveformReversePrefetchRenderLevels({
+  const reversePrefetchRequests = resolveWaveformReversePrefetchRequests({
     currentDataPixelsPerSecond: dataPixelsPerSecond,
+    durationSeconds,
+    focusSeconds,
     levelCount: reversePrefetchLevelCount,
     levels: renderLevels,
-  }).flatMap((prefetchLevel, lodDepth) =>
-    createWaveformDataRequestsForLevel({
-      dataPixelsPerSecond: prefetchLevel,
-      durationSeconds,
-      focusSeconds,
-      lodDepth: lodDepth + 1,
-      priorityForIndex: () => "prefetch-reverse",
-      scopeKey,
-      tileWidth,
-      window: resolveWaveformDataPixelWindow({
-        dataContentWidth: Math.max(1, Math.ceil(durationSeconds * prefetchLevel)),
-        dataPixelsPerSecond: prefetchLevel,
-        window: visibleSecondsWindow,
-      }),
-    }),
-  );
+    scopeKey,
+    tileWidth,
+    visibleSecondsWindow,
+  });
   const requests = dedupeWaveformDataRequests([
     ...currentLevelRequests,
     ...focusPrefetchRequests,
     ...visiblePrefetchRequests,
     ...reversePrefetchRequests,
   ]).sort(compareWaveformDataRequests);
-  const protectedCacheKeys = createWaveformReverseCacheRequests({
+  const protectedCacheKeys = resolveWaveformProtectedCacheKeys({
     currentDataPixelsPerSecond: dataPixelsPerSecond,
     durationSeconds,
     focusSeconds,
@@ -1332,7 +1346,7 @@ export function resolveWaveformDataPlan(args: {
     scopeKey,
     tileWidth,
     visibleSecondsWindow,
-  }).map((request) => request.cacheKey);
+  });
 
   return {
     dataContentWidth,
@@ -1347,6 +1361,142 @@ export function resolveWaveformDataPlan(args: {
     visibleSecondsWindow,
     visibleWindow,
   };
+}
+
+function resolveWaveformCurrentDemandRequests(args: {
+  dataDemandWindow: WaveformDataWindow;
+  dataPixelsPerSecond: number;
+  durationSeconds: number;
+  focusSeconds: number;
+  mode: WaveformDataPlanMode;
+  scopeKey: string;
+  tileWidth: number;
+  visibleIndexSet: ReadonlySet<number>;
+}) {
+  return createWaveformDataRequestsForLevel({
+    dataPixelsPerSecond: args.dataPixelsPerSecond,
+    durationSeconds: args.durationSeconds,
+    focusSeconds: args.focusSeconds,
+    priorityForIndex: (index) =>
+      args.visibleIndexSet.has(index)
+        ? "visible"
+        : args.mode === "interactive"
+          ? "visible-guard"
+          : "overscan",
+    scopeKey: args.scopeKey,
+    tileWidth: args.tileWidth,
+    window: args.dataDemandWindow,
+  });
+}
+
+function resolveWaveformVisiblePrefetchRequests(args: {
+  currentDataPixelsPerSecond: number;
+  durationSeconds: number;
+  focusSeconds: number;
+  levelCount: number;
+  levels: readonly number[];
+  scopeKey: string;
+  tileWidth: number;
+  visibleSecondsWindow: WaveformSecondsWindow;
+}) {
+  return resolveWaveformPrefetchRenderLevels({
+    currentDataPixelsPerSecond: args.currentDataPixelsPerSecond,
+    levelCount: args.levelCount,
+    levels: args.levels,
+  }).flatMap((prefetchLevel, lodDepth) =>
+    createWaveformDataRequestsForLevel({
+      dataPixelsPerSecond: prefetchLevel,
+      durationSeconds: args.durationSeconds,
+      focusSeconds: args.focusSeconds,
+      lodDepth: lodDepth + 1,
+      priorityForIndex: () => "prefetch-visible",
+      scopeKey: args.scopeKey,
+      tileWidth: args.tileWidth,
+      window: resolveWaveformDataPixelWindow({
+        dataContentWidth: Math.max(1, Math.ceil(args.durationSeconds * prefetchLevel)),
+        dataPixelsPerSecond: prefetchLevel,
+        window: args.visibleSecondsWindow,
+      }),
+    }),
+  );
+}
+
+function resolveWaveformFocusPrefetchRequests(args: {
+  currentDataPixelsPerSecond: number;
+  durationSeconds: number;
+  focusSeconds: number;
+  levelCount: number;
+  levels: readonly number[];
+  scopeKey: string;
+  tileWidth: number;
+}) {
+  return resolveWaveformPrefetchRenderLevels({
+    currentDataPixelsPerSecond: args.currentDataPixelsPerSecond,
+    levelCount: args.levelCount,
+    levels: args.levels,
+  }).flatMap((prefetchLevel, lodDepth) => {
+    const focusWindow = resolveWaveformFocusedPrefetchWindow({
+      dataContentWidth: Math.max(1, Math.ceil(args.durationSeconds * prefetchLevel)),
+      focusSeconds: args.focusSeconds,
+      pixelsPerSecond: prefetchLevel,
+      tileWidth: args.tileWidth,
+    });
+
+    return createWaveformDataRequestsForLevel({
+      dataPixelsPerSecond: prefetchLevel,
+      durationSeconds: args.durationSeconds,
+      focusSeconds: args.focusSeconds,
+      lodDepth: lodDepth + 1,
+      priorityForIndex: () => "prefetch-focus",
+      scopeKey: args.scopeKey,
+      tileWidth: args.tileWidth,
+      window: focusWindow,
+    });
+  });
+}
+
+function resolveWaveformReversePrefetchRequests(args: {
+  currentDataPixelsPerSecond: number;
+  durationSeconds: number;
+  focusSeconds: number;
+  levelCount: number;
+  levels: readonly number[];
+  scopeKey: string;
+  tileWidth: number;
+  visibleSecondsWindow: WaveformSecondsWindow;
+}) {
+  return resolveWaveformReversePrefetchRenderLevels({
+    currentDataPixelsPerSecond: args.currentDataPixelsPerSecond,
+    levelCount: args.levelCount,
+    levels: args.levels,
+  }).flatMap((prefetchLevel, lodDepth) =>
+    createWaveformDataRequestsForLevel({
+      dataPixelsPerSecond: prefetchLevel,
+      durationSeconds: args.durationSeconds,
+      focusSeconds: args.focusSeconds,
+      lodDepth: lodDepth + 1,
+      priorityForIndex: () => "prefetch-reverse",
+      scopeKey: args.scopeKey,
+      tileWidth: args.tileWidth,
+      window: resolveWaveformDataPixelWindow({
+        dataContentWidth: Math.max(1, Math.ceil(args.durationSeconds * prefetchLevel)),
+        dataPixelsPerSecond: prefetchLevel,
+        window: args.visibleSecondsWindow,
+      }),
+    }),
+  );
+}
+
+function resolveWaveformProtectedCacheKeys(args: {
+  currentDataPixelsPerSecond: number;
+  durationSeconds: number;
+  focusSeconds: number;
+  levels: readonly number[];
+  scopeKey: string;
+  tileWidth: number;
+  visibleSecondsWindow: WaveformSecondsWindow;
+}) {
+  return createWaveformReverseCacheRequests(args).map((request) => request.cacheKey);
 }
 
 export function resolveWaveformTransaction(args: {
@@ -2944,16 +3094,26 @@ function useWaveformCanvasRenderer(args: {
         return;
       }
 
+      const targetPlan = resolveWaveformCanvasPaintTargetPlan({
+        hasPresentedFrame: controller.presentedFrame !== null,
+      });
       const target = createWaveformCanvasRasterTarget({
         canvas,
         color: readCanvasWaveformColor(canvas),
         geometry,
-        kind: controller.presentedFrame ? "buffered" : "visible",
+        kind: targetPlan.kind,
       });
 
       if (target.kind === "empty") {
         controller.job = null;
         return;
+      }
+
+      if (target.target.kind === "visible") {
+        applyWaveformVisibleCanvasGeometry({
+          canvas,
+          geometry,
+        });
       }
 
       job = createWaveformCanvasRenderJob({
@@ -2982,11 +3142,11 @@ function useWaveformCanvasRenderer(args: {
       const accepted = job.revision === controller.requestedRevision;
 
       if (accepted) {
-        const committed = commitWaveformCanvasFrame({
+        const completion = completeWaveformCanvasRenderJob({
           canvas,
           job,
         });
-        if (committed) {
+        if (completion.kind === "committed" || completion.kind === "already-presented") {
           controller.presentedFrame = createWaveformCanvasFrameDescriptor(job.plan);
         }
       }
@@ -3049,7 +3209,7 @@ function useWaveformCanvasRenderer(args: {
 
       if (
         presented.kind === "presented" &&
-        presented.mode === "data-redraw" &&
+        presented.mode === "exact-cache-redraw" &&
         presented.draw.hasColumn &&
         presented.draw.missingPeakColumns === 0 &&
         presented.draw.scannedColumns === presented.descriptor.geometry.viewportWidth
@@ -3234,6 +3394,14 @@ function resolveWaveformCanvasRenderPlan(args: {
   };
 }
 
+function resolveWaveformCanvasPaintTargetPlan(args: {
+  hasPresentedFrame: boolean;
+}): WaveformCanvasPaintTargetPlan {
+  return {
+    kind: args.hasPresentedFrame ? "buffered" : "visible",
+  };
+}
+
 function resolveWaveformLevelTileIndexes(args: {
   endSeconds: number;
   scopeKey: string;
@@ -3306,11 +3474,6 @@ function createWaveformCanvasRasterTarget(args: {
     };
   }
 
-  if (args.kind === "visible") {
-    frame.style.width = `${args.geometry.viewportWidth}px`;
-    frame.style.height = `${WAVEFORM_CANVAS_HEIGHT}px`;
-  }
-
   context.resetTransform();
   context.clearRect(0, 0, args.geometry.backingWidth, args.geometry.backingHeight);
   context.scale(args.geometry.devicePixelRatio, args.geometry.devicePixelRatio);
@@ -3368,64 +3531,66 @@ function createWaveformCanvasFrameDescriptor(
   };
 }
 
-function commitWaveformCanvasFrame(args: {
+function applyWaveformVisibleCanvasGeometry(args: {
   canvas: HTMLCanvasElement;
-  job: WaveformCanvasRenderJob;
-}): boolean {
-  if (args.job.target.kind === "visible") {
-    return true;
+  geometry: WaveformCanvasFrameGeometry;
+}) {
+  if (args.canvas.width !== args.geometry.backingWidth) {
+    args.canvas.width = args.geometry.backingWidth;
   }
 
-  const context = args.canvas.getContext("2d");
-  if (!context) {
-    return false;
+  if (args.canvas.height !== args.geometry.backingHeight) {
+    args.canvas.height = args.geometry.backingHeight;
   }
 
-  if (args.canvas.width !== args.job.plan.geometry.backingWidth) {
-    args.canvas.width = args.job.plan.geometry.backingWidth;
-  }
-
-  if (args.canvas.height !== args.job.plan.geometry.backingHeight) {
-    args.canvas.height = args.job.plan.geometry.backingHeight;
-  }
-
-  args.canvas.style.width = `${args.job.plan.geometry.viewportWidth}px`;
+  args.canvas.style.width = `${args.geometry.viewportWidth}px`;
   args.canvas.style.height = `${WAVEFORM_CANVAS_HEIGHT}px`;
-  context.resetTransform();
-  context.clearRect(
-    0,
-    0,
-    args.job.plan.geometry.backingWidth,
-    args.job.plan.geometry.backingHeight,
-  );
-  context.globalAlpha = 1;
-  context.globalCompositeOperation = "source-over";
-  context.drawImage(args.job.target.frame, 0, 0);
-
-  return true;
 }
 
-function resolveWaveformCanvasFastPresentationPlan(args: {
-  current: WaveformCanvasFrameDescriptor;
-  hasExactPlan: boolean;
-  previous: WaveformCanvasFrameDescriptor | null;
-}): WaveformCanvasFastPresentationPlan {
-  const reusePlan = resolveWaveformCanvasFrameReusePlan({
-    current: args.current,
-    previous: args.previous,
-  });
-
-  if (reusePlan.kind === "horizontal-pan") {
-    return reusePlan;
-  }
-
-  if (reusePlan.reason === "scale-changed" && args.hasExactPlan) {
+function completeWaveformCanvasRenderJob(args: {
+  canvas: HTMLCanvasElement;
+  job: WaveformCanvasRenderJob;
+}): WaveformCanvasRenderJobCompletion {
+  const job = args.job;
+  if (job.target.kind === "visible") {
     return {
-      kind: "data-redraw",
+      kind: "already-presented",
     };
   }
 
-  return reusePlan;
+  return commitWaveformCanvasFrame({
+    canvas: args.canvas,
+    plan: job.plan,
+    target: job.target,
+  });
+}
+
+function commitWaveformCanvasFrame(args: {
+  canvas: HTMLCanvasElement;
+  plan: WaveformCanvasRenderPlan;
+  target: WaveformCanvasBufferedRasterTarget;
+}): WaveformCanvasFrameCommitResult {
+  const context = args.canvas.getContext("2d");
+  if (!context) {
+    return {
+      kind: "empty",
+      reason: "missing-context",
+    };
+  }
+
+  applyWaveformVisibleCanvasGeometry({
+    canvas: args.canvas,
+    geometry: args.plan.geometry,
+  });
+  context.resetTransform();
+  context.clearRect(0, 0, args.plan.geometry.backingWidth, args.plan.geometry.backingHeight);
+  context.globalAlpha = 1;
+  context.globalCompositeOperation = "source-over";
+  context.drawImage(args.target.frame, 0, 0);
+
+  return {
+    kind: "committed",
+  };
 }
 
 function presentWaveformCanvasFrameFast(args: {
@@ -3478,7 +3643,7 @@ function presentWaveformCanvasFrameFast(args: {
     };
   }
 
-  if (presentationPlan.kind === "data-redraw") {
+  if (presentationPlan.kind === "exact-cache-redraw") {
     const plan = args.plan;
     if (!plan) {
       return {
@@ -3492,7 +3657,7 @@ function presentWaveformCanvasFrameFast(args: {
       };
     }
 
-    const draw = drawWaveformCanvasDataFrame({
+    const draw = drawWaveformCanvasExactDataFrame({
       canvas: args.canvas,
       plan,
     });
@@ -3501,7 +3666,7 @@ function presentWaveformCanvasFrameFast(args: {
       descriptor: args.descriptor,
       draw,
       kind: "presented",
-      mode: "data-redraw",
+      mode: "exact-cache-redraw",
       plan: presentationPlan,
       reuseFrame: args.reuseFrame,
     };
@@ -3682,7 +3847,7 @@ function drawWaveformCanvasColumnRange(args: {
   };
 }
 
-function drawWaveformCanvasDataFrame(args: {
+function drawWaveformCanvasExactDataFrame(args: {
   canvas: HTMLCanvasElement;
   plan: WaveformCanvasRenderPlan;
 }): WaveformCanvasColumnRangeResult {
@@ -3698,16 +3863,10 @@ function drawWaveformCanvasDataFrame(args: {
     };
   }
 
-  if (args.canvas.width !== args.plan.geometry.backingWidth) {
-    args.canvas.width = args.plan.geometry.backingWidth;
-  }
-
-  if (args.canvas.height !== args.plan.geometry.backingHeight) {
-    args.canvas.height = args.plan.geometry.backingHeight;
-  }
-
-  args.canvas.style.width = `${args.plan.geometry.viewportWidth}px`;
-  args.canvas.style.height = `${WAVEFORM_CANVAS_HEIGHT}px`;
+  applyWaveformVisibleCanvasGeometry({
+    canvas: args.canvas,
+    geometry: args.plan.geometry,
+  });
   context.resetTransform();
   context.clearRect(0, 0, args.plan.geometry.backingWidth, args.plan.geometry.backingHeight);
   context.scale(args.plan.geometry.devicePixelRatio, args.plan.geometry.devicePixelRatio);
