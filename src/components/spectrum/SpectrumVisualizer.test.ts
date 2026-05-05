@@ -636,15 +636,23 @@ describe("SpectrumVisualizer", () => {
 
     assert.deepEqual(
       resolveWaveformCanvasFrameReusePlan({
-        current: createWaveformTestFrameDescriptor({
-          dataPixelsPerSecond: 200,
-          scrollLeft: 120,
-        }),
+        current: {
+          ...createWaveformTestFrameDescriptor({
+            scrollLeft: 2_500,
+          }),
+          viewport: {
+            ...createWaveformTestFrameDescriptor({
+              scrollLeft: 2_500,
+            }).viewport,
+            contentWidth: 20_000,
+            pixelsPerSecond: 200,
+          },
+        },
         previous,
       }),
       {
         kind: "none",
-        reason: "render-density-changed",
+        reason: "scale-changed",
       },
     );
     assert.deepEqual(
@@ -670,6 +678,23 @@ describe("SpectrumVisualizer", () => {
       {
         kind: "none",
         reason: "scroll-delta-fractional",
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformCanvasFrameReusePlan({
+        current: {
+          ...createWaveformTestFrameDescriptor(),
+          dataPixelsPerSecond: 200,
+          viewport: {
+            ...createWaveformTestFrameDescriptor().viewport,
+            contentWidth: 10_100,
+          },
+        },
+        previous,
+      }),
+      {
+        kind: "none",
+        reason: "content-changed",
       },
     );
   });
@@ -910,6 +935,9 @@ describe("SpectrumVisualizer", () => {
         shiftKey: false,
         timeStamp: 1_000,
       } as WheelEvent,
+      queueZoomViewport: () => {
+        committed = true;
+      },
       viewport: {
         contentWidth: 1_000,
         durationMs: 120_000,
@@ -1018,8 +1046,79 @@ describe("SpectrumVisualizer", () => {
 
     assert.deepEqual(plan.visibleIndexes, [1]);
     assert.equal(plan.requests[0]?.priority, "visible");
+    assert.ok(
+      plan.requests.findIndex((request) => request.priority === "prefetch-focus") <
+        plan.requests.findIndex((request) => request.priority === "prefetch-visible"),
+    );
+    assert.ok(
+      plan.requests.findIndex((request) => request.priority === "prefetch-visible") <
+        plan.requests.findIndex((request) => request.priority === "overscan"),
+    );
+    assert.ok(plan.requests.some((request) => request.priority === "prefetch-visible"));
     assert.ok(plan.requests.some((request) => request.priority === "overscan"));
     assert.ok(plan.requests.length > plan.visibleIndexes.length);
+  });
+
+  test("prefetches deeper zoom data around the focus while protecting coarser visible data", () => {
+    const summary = createWaveformTestSummary();
+    const plan = resolveWaveformDataPlan({
+      contentWidth: 12_000,
+      end: null,
+      filePath: "C:/music/demo.flac",
+      focusSeconds: 6,
+      pixelsPerSecond: 200,
+      scrollLeft: 1_000,
+      start: null,
+      summary,
+      tileWidth: 1_000,
+      viewportWidth: 1_000,
+    });
+    const focusPrefetchLevels = plan.requests
+      .filter((request) => request.priority === "prefetch-focus")
+      .map((request) => request.dataPixelsPerSecond);
+    const visiblePrefetchLevels = plan.requests
+      .filter((request) => request.priority === "prefetch-visible")
+      .map((request) => request.dataPixelsPerSecond);
+    const currentVisibleKeys = plan.requests
+      .filter((request) => request.priority === "visible")
+      .map((request) => request.cacheKey);
+    const lowerVisibleKey = createWaveformDataRequestKey({
+      pixelsPerSecond: 50,
+      scopeKey: plan.scopeKey,
+      startPx: 0,
+      widthPx: 1_000,
+    });
+
+    assert.deepEqual(focusPrefetchLevels, [400, 800]);
+    assert.deepEqual(visiblePrefetchLevels, [400]);
+    assert.ok(currentVisibleKeys.every((key) => plan.protectedCacheKeys.includes(key)));
+    assert.ok(plan.protectedCacheKeys.includes(lowerVisibleKey));
+  });
+
+  test("keeps interactive zoom data demand visible-only", () => {
+    const summary = createWaveformTestSummary();
+    const plan = resolveWaveformDataPlan({
+      contentWidth: 12_000,
+      end: null,
+      filePath: "C:/music/demo.flac",
+      focusSeconds: 6,
+      mode: "interactive",
+      pixelsPerSecond: 200,
+      scrollLeft: 1_000,
+      start: null,
+      summary,
+      tileWidth: 1_000,
+      viewportWidth: 1_000,
+    });
+
+    assert.equal(plan.mode, "interactive");
+    assert.deepEqual(plan.visibleIndexes, [1]);
+    assert.deepEqual(
+      plan.requests.map((request) => request.priority),
+      ["visible"],
+    );
+    assert.deepEqual(plan.overscanSecondsWindow, plan.visibleSecondsWindow);
+    assert.deepEqual(plan.overscanWindow, plan.visibleWindow);
   });
 
   test("changes data request keys on every render density change", () => {
@@ -1072,6 +1171,33 @@ describe("SpectrumVisualizer", () => {
     assert.equal(first.anchorSeconds, 10);
     assert.equal(second.anchorSeconds, 10);
     assert.equal((second.scrollLeft + second.anchorViewportX) / second.pixelsPerSecond, 10);
+  });
+
+  test("can cancel a pending zoom with an opposite same-frame packet", () => {
+    const first = resolveQueuedWaveformZoomFrame({
+      anchorViewportX: 250,
+      currentPixelsPerSecond: 100,
+      deltaY: -180,
+      durationMs: 120_000,
+      maximumPixelsPerSecond: 800,
+      pendingFrame: null,
+      scrollLeft: 750,
+      viewportWidth: 1_000,
+    });
+    const cancelled = resolveQueuedWaveformZoomFrame({
+      anchorViewportX: 250,
+      currentPixelsPerSecond: 100,
+      deltaY: 180,
+      durationMs: 120_000,
+      maximumPixelsPerSecond: 800,
+      pendingFrame: first,
+      scrollLeft: 750,
+      viewportWidth: 1_000,
+    });
+
+    assert.ok(Math.abs(cancelled.pixelsPerSecond - 100) < 0.01);
+    assert.ok(Math.abs(cancelled.scrollLeft - 750) < 0.5);
+    assert.equal(cancelled.anchorSeconds, 10);
   });
 
   test("reads one quantized value per display column without widening bars", () => {

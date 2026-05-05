@@ -17,6 +17,8 @@ const spectrumPlaybackIconTransition = {
 
 type SpectrumPlaybackSnapshot = Pick<PlaybackStatusPayload, "paused">;
 
+type SpectrumPlaybackSnapshotCommit = (snapshot: SpectrumPlaybackSnapshot | null) => void;
+
 export function areSpectrumPlaybackSnapshotsEqual(
   left: SpectrumPlaybackSnapshot | null,
   right: SpectrumPlaybackSnapshot | null,
@@ -26,6 +28,11 @@ export function areSpectrumPlaybackSnapshotsEqual(
 
 function useSpectrumPlaybackStatus(filePath: string | null) {
   const [snapshot, setSnapshot] = useState<SpectrumPlaybackSnapshot | null>(null);
+  const commitSnapshot = useCallback<SpectrumPlaybackSnapshotCommit>((nextSnapshot) => {
+    setSnapshot((current) =>
+      areSpectrumPlaybackSnapshotsEqual(current, nextSnapshot) ? current : nextSnapshot,
+    );
+  }, []);
 
   const read = useCallback(async () => {
     if (!filePath) {
@@ -49,11 +56,23 @@ function useSpectrumPlaybackStatus(filePath: string | null) {
 
   const refresh = useCallback(async () => {
     const nextSnapshot = await read();
-    setSnapshot((current) =>
-      areSpectrumPlaybackSnapshotsEqual(current, nextSnapshot) ? current : nextSnapshot,
-    );
+    commitSnapshot(nextSnapshot);
     return nextSnapshot;
-  }, [read]);
+  }, [commitSnapshot, read]);
+
+  useSpectrumPlaybackStatusPolling({
+    commitSnapshot,
+    read,
+  });
+
+  return { refresh, snapshot };
+}
+
+function useSpectrumPlaybackStatusPolling(args: {
+  commitSnapshot: SpectrumPlaybackSnapshotCommit;
+  read: () => Promise<SpectrumPlaybackSnapshot | null>;
+}) {
+  const { commitSnapshot, read } = args;
 
   useEffect(() => {
     let disposed = false;
@@ -64,15 +83,11 @@ function useSpectrumPlaybackStatus(filePath: string | null) {
         if (disposed) {
           return;
         }
-        setSnapshot((current) =>
-          areSpectrumPlaybackSnapshotsEqual(current, result) ? current : result,
-        );
+        commitSnapshot(result);
       } catch (error) {
         if (!disposed) {
           console.error("Failed to refresh spectrum playback status", error);
-          setSnapshot((current) =>
-            areSpectrumPlaybackSnapshotsEqual(current, null) ? current : null,
-          );
+          commitSnapshot(null);
         }
       }
     }
@@ -84,9 +99,7 @@ function useSpectrumPlaybackStatus(filePath: string | null) {
       disposed = true;
       window.clearInterval(intervalId);
     };
-  }, [read]);
-
-  return { refresh, snapshot };
+  }, [commitSnapshot, read]);
 }
 
 function isSpectrumPlaybackStatusForTrack(status: PlaybackStatusPayload, filePath: string) {
