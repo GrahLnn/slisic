@@ -1,4 +1,4 @@
-import { Profiler, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
@@ -14,12 +14,6 @@ import {
 import { SpectrumPlaybackAction } from "./SpectrumPlaybackAction";
 import { TrackSpectrum } from "./SpectrumVisualizer";
 import { usePageRenderFreeze } from "../usePageRenderFreeze";
-import {
-  captureSpectrumTitleFrames,
-  installSpectrumFrameTrace,
-  recordSpectrumReactProfilerTrace,
-  recordSpectrumFrameTrace,
-} from "@/src/debug/spectrumFrameTrace";
 
 const contentFadeProps = {
   initial: { opacity: 0 },
@@ -170,16 +164,6 @@ function SpectrumBackIcon({ visualState }: { visualState: SpectrumBackActionVisu
 export function SpectrumPage() {
   const isPresent = useIsPresent();
   const editableTitleRef = useRef<EditableTitleHandle | null>(null);
-  const titleTraceRef = useRef<HTMLDivElement | null>(null);
-  const titleTraceDataRef = useRef<{
-    isPresent: boolean;
-    titleLayoutId: string | null;
-    titleValue: string;
-  }>({
-    isPresent,
-    titleLayoutId: null,
-    titleValue: "",
-  });
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
   const {
     activeLayoutId,
@@ -216,27 +200,6 @@ export function SpectrumPage() {
   });
   const renderData = pageRenderFreeze.renderValue;
   const isBackActionLocked = isBackNavigationPending;
-  titleTraceDataRef.current = {
-    isPresent,
-    titleLayoutId: renderData.titleLayoutId ?? null,
-    titleValue: renderData.titleValue,
-  };
-
-  useEffect(() => {
-    installSpectrumFrameTrace();
-    const titleTraceData = titleTraceDataRef.current;
-    recordSpectrumFrameTrace("spectrum-page-mounted", {
-      hasTitleLayoutId: titleTraceData.titleLayoutId !== null,
-      isPresent: titleTraceData.isPresent,
-      titleLayoutId: titleTraceData.titleLayoutId,
-      titleValue: titleTraceData.titleValue,
-    });
-    captureSpectrumTitleFrames("spectrum-page-title-layout", {
-      frames: 120,
-      sample: () => titleTraceDataRef.current,
-      titleNode: titleTraceRef.current,
-    });
-  }, [isPresent, renderData.titleLayoutId]);
 
   async function handleBackAction() {
     if (isBackActionLocked) {
@@ -317,62 +280,29 @@ export function SpectrumPage() {
           })}
           className="flex items-center justify-between gap-4"
         >
-          <Profiler
-            id="spectrum-title"
-            onRender={(id, phase, actualDuration, baseDuration, startTime, commitTime) => {
-              recordSpectrumReactProfilerTrace({
-                actualDurationMs: actualDuration,
-                baseDurationMs: baseDuration,
-                commitTime,
-                id,
-                phase,
-                startTime,
-              });
-            }}
-          >
-            <div
-              ref={titleTraceRef}
-              className="min-w-0"
-              data-spectrum-title-layout-id={renderData.titleLayoutId ?? ""}
-              data-spectrum-title-trace="true"
-            >
-              <EditableTitle
-                ref={editableTitleRef}
-                className={collectionTitleClassName}
-                handoffTone={renderData.handoffTone}
-                interactionDisabled={renderData.interactionDisabled}
-                layoutId={renderData.titleLayoutId}
-                style={{ fontFamily: "var(--font-noto-sans)" }}
-                value={renderData.titleValue}
-                onChange={appLogicAction.changeSpectrumMusicTitle}
-              />
-            </div>
-          </Profiler>
+          <div className="min-w-0">
+            <EditableTitle
+              ref={editableTitleRef}
+              className={collectionTitleClassName}
+              handoffTone={renderData.handoffTone}
+              interactionDisabled={renderData.interactionDisabled}
+              layoutId={renderData.titleLayoutId}
+              style={{ fontFamily: "var(--font-noto-sans)" }}
+              value={renderData.titleValue}
+              onChange={appLogicAction.changeSpectrumMusicTitle}
+            />
+          </div>
           <SpectrumPlaybackAction filePath={renderData.trackFilePath} />
         </motion.div>
         <motion.div
           {...contentFadeProps}
           className="relative left-1/2 mt-10 w-screen -translate-x-1/2"
         >
-          <Profiler
-            id="spectrum-track"
-            onRender={(id, phase, actualDuration, baseDuration, startTime, commitTime) => {
-              recordSpectrumReactProfilerTrace({
-                actualDurationMs: actualDuration,
-                baseDurationMs: baseDuration,
-                commitTime,
-                id,
-                phase,
-                startTime,
-              });
-            }}
-          >
-            <TrackSpectrum
-              filePath={renderData.trackFilePath}
-              start={renderData.trackStart}
-              end={renderData.trackEnd}
-            />
-          </Profiler>
+          <TrackSpectrum
+            filePath={renderData.trackFilePath}
+            start={renderData.trackStart}
+            end={renderData.trackEnd}
+          />
         </motion.div>
       </div>
     </div>
