@@ -39,6 +39,7 @@ const WAVEFORM_CANVAS_FRAME_BUDGET_MS = 3.25;
 const WAVEFORM_CANVAS_MIN_CHUNK_WIDTH_PX = 96;
 const WAVEFORM_CANVAS_MAX_CHUNK_WIDTH_PX = 320;
 const WAVEFORM_CANVAS_REUSE_MIN_SHIFT_PX = 1;
+const WAVEFORM_CANVAS_STROKE_ALPHA = 0.88;
 const WAVEFORM_INITIAL_PREPARE_FRAME_COUNT = 2;
 const WAVEFORM_LOADING_DOT_PITCH_PX = 12;
 const WAVEFORM_LOADING_MIN_FIELD_WIDTH_PX = 96;
@@ -2921,7 +2922,7 @@ function createWaveformCanvasRasterTarget(args: {
   context.lineWidth = resolveWaveformBarWidthPx();
   context.lineCap = "butt";
   context.strokeStyle = args.color;
-  context.globalAlpha = 0.88;
+  context.globalAlpha = WAVEFORM_CANVAS_STROKE_ALPHA;
 
   return {
     kind: "ready",
@@ -3091,6 +3092,8 @@ function commitWaveformCanvasFrame(args: {
     args.job.plan.geometry.backingWidth,
     args.job.plan.geometry.backingHeight,
   );
+  context.globalAlpha = 1;
+  context.globalCompositeOperation = "source-over";
   context.drawImage(args.job.target.frame, 0, 0);
 
   return createWaveformCanvasCommitTrace("spectrum-render-commit-complete", args.job, {
@@ -3178,6 +3181,8 @@ function reusePresentedWaveformCanvasFrame(args: {
     args.descriptor.geometry.backingWidth,
     args.descriptor.geometry.backingHeight,
   );
+  context.globalAlpha = 1;
+  context.globalCompositeOperation = "source-over";
   context.drawImage(reuseFrame, reusePlan.shiftX * args.descriptor.geometry.devicePixelRatio, 0);
   context.scale(
     args.descriptor.geometry.devicePixelRatio,
@@ -3187,7 +3192,7 @@ function reusePresentedWaveformCanvasFrame(args: {
   context.lineWidth = resolveWaveformBarWidthPx();
   context.lineCap = "butt";
   context.strokeStyle = readCanvasWaveformColor(args.canvas);
-  context.globalAlpha = 0.88;
+  context.globalAlpha = WAVEFORM_CANVAS_STROKE_ALPHA;
   const draw = args.plan
     ? drawWaveformCanvasColumnRange({
         context,
