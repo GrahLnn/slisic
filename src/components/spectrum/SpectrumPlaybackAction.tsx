@@ -258,7 +258,8 @@ export function SpectrumPlaybackAction({ filePath }: { filePath: string | null }
         "before:transition before:duration-300 before:[corner-shape:squircle_squircle_squircle_squircle]",
         "hover:text-[#262626] hover:before:bg-[#e5e5e5]",
         "dark:text-[#8a8a8a] dark:hover:text-[#d4d4d4] dark:hover:before:bg-[#262626]",
-        visualState.disabled && "pointer-events-none opacity-35",
+        visualState.disabled && "pointer-events-none",
+        visualState.dimmed && "opacity-35",
       )}
     >
       <SpectrumPlaybackIcon visualState={visualState} />

@@ -2,12 +2,14 @@ import { useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
+import { crab, type PlaybackStatusPayload } from "@/src/cmd";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { collectionTitleClassName, collectionTitleLayoutTransition } from "../collectionTitle";
 import { EditableTitle, type EditableTitleHandle } from "../EditableTitle";
 import {
   resolveSpectrumBackActionVisualState,
   resolveSpectrumCommittedTitle,
+  shouldResumeSpectrumPlaybackBeforeBack,
   resolveSpectrumTitle,
   type SpectrumBackActionVisualState,
 } from "./SpectrumPage.view-model";
@@ -48,6 +50,15 @@ type SpectrumRenderData = {
   titleValue: string;
 };
 
+type SpectrumPlaybackResumePort = {
+  getPlaybackStatus: () => ReturnType<typeof crab.getPlaybackStatus>;
+  resumePlayback: () => ReturnType<typeof crab.resumePlayback>;
+};
+
+type SpectrumPlaybackResult<T> = {
+  match: <R>(handlers: { Err: (error: string) => R; Ok: (value: T) => R }) => R;
+};
+
 export function resolveSpectrumTitleFadeProps(args: { hasSharedTitleLayout: boolean }) {
   return args.hasSharedTitleLayout ? sharedTitleFadeProps : contentFadeProps;
 }
@@ -56,6 +67,53 @@ function waitForNextFrame() {
   return new Promise<void>((resolve) => {
     requestAnimationFrame(() => resolve());
   });
+}
+
+function unwrapSpectrumPlaybackResult<T>(result: SpectrumPlaybackResult<T>) {
+  return result.match({
+    Ok: (value) => value as T,
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+}
+
+async function resumeSpectrumPlaybackBeforeBack(args: {
+  filePath: string | null;
+  playbackPort?: SpectrumPlaybackResumePort;
+}) {
+  const filePath = args.filePath?.trim();
+  if (!filePath) {
+    return;
+  }
+
+  const playbackPort = args.playbackPort ?? crab;
+  const status = unwrapSpectrumPlaybackResult<PlaybackStatusPayload | null>(
+    await playbackPort.getPlaybackStatus(),
+  );
+
+  if (
+    !shouldResumeSpectrumPlaybackBeforeBack({
+      currentPlaybackPath: status?.path ?? null,
+      filePath,
+      paused: status?.paused === true,
+    })
+  ) {
+    return;
+  }
+
+  unwrapSpectrumPlaybackResult<boolean>(await playbackPort.resumePlayback());
+}
+
+async function tryResumeSpectrumPlaybackBeforeBack(args: {
+  filePath: string | null;
+  playbackPort?: SpectrumPlaybackResumePort;
+}) {
+  try {
+    await resumeSpectrumPlaybackBeforeBack(args);
+  } catch (error) {
+    console.error("Failed to resume spectrum playback before back navigation", error);
+  }
 }
 
 async function waitForTitleShareSourceReady() {
@@ -213,6 +271,9 @@ export function SpectrumPage() {
         musicTitleDraft: spectrumMusicTitleDraft,
         renderedTitle: renderData.titleValue,
       });
+      void tryResumeSpectrumPlaybackBeforeBack({
+        filePath: renderData.trackFilePath,
+      });
 
       if (renderData.backActionVisualState.kind === "back") {
         pageRenderFreeze.freeze();
@@ -274,13 +335,13 @@ export function SpectrumPage() {
             <SpectrumBackIcon visualState={renderData.backActionVisualState} />
           </button>
         </motion.div>
-        <motion.div
-          {...resolveSpectrumTitleFadeProps({
-            hasSharedTitleLayout: renderData.titleLayoutId !== undefined,
-          })}
-          className="flex items-center justify-between gap-4"
-        >
-          <div className="min-w-0">
+        <div className="flex items-center justify-between gap-4">
+          <motion.div
+            {...resolveSpectrumTitleFadeProps({
+              hasSharedTitleLayout: renderData.titleLayoutId !== undefined,
+            })}
+            className="min-w-0"
+          >
             <EditableTitle
               ref={editableTitleRef}
               className={collectionTitleClassName}
@@ -291,9 +352,11 @@ export function SpectrumPage() {
               value={renderData.titleValue}
               onChange={appLogicAction.changeSpectrumMusicTitle}
             />
-          </div>
-          <SpectrumPlaybackAction filePath={renderData.trackFilePath} />
-        </motion.div>
+          </motion.div>
+          <motion.div {...contentFadeProps}>
+            <SpectrumPlaybackAction filePath={renderData.trackFilePath} />
+          </motion.div>
+        </div>
         <motion.div
           {...contentFadeProps}
           className="relative left-1/2 mt-10 w-screen -translate-x-1/2"

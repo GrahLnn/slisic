@@ -7,6 +7,7 @@ import {
   resolveSpectrumCommittedTitle,
   resolveSpectrumPlaybackActionVisualState,
   resolveSpectrumTitle,
+  shouldResumeSpectrumPlaybackBeforeBack,
 } from "./SpectrumPage.view-model";
 
 describe("SpectrumPage", () => {
@@ -120,6 +121,7 @@ describe("SpectrumPage", () => {
       {
         ariaLabel: "Pause playback",
         disabled: false,
+        dimmed: false,
         key: "pause",
         kind: "pause",
       },
@@ -137,6 +139,7 @@ describe("SpectrumPage", () => {
       {
         ariaLabel: "Resume playback",
         disabled: false,
+        dimmed: false,
         key: "play",
         kind: "play",
       },
@@ -154,6 +157,7 @@ describe("SpectrumPage", () => {
       {
         ariaLabel: "Pause playback",
         disabled: true,
+        dimmed: true,
         key: "pause",
         kind: "pause",
       },
@@ -168,10 +172,14 @@ describe("SpectrumPage", () => {
       {
         ariaLabel: "Pause playback",
         disabled: true,
+        dimmed: true,
         key: "pause",
         kind: "pause",
       },
     );
+  });
+
+  test("does not dim the spectrum playback action only because the page is exiting", () => {
     assert.deepEqual(
       resolveSpectrumPlaybackActionVisualState({
         hasCurrentTrack: true,
@@ -182,9 +190,37 @@ describe("SpectrumPage", () => {
       {
         ariaLabel: "Pause playback",
         disabled: true,
+        dimmed: false,
         key: "pause",
         kind: "pause",
       },
+    );
+  });
+
+  test("resumes only the paused current spectrum track before back navigation", () => {
+    assert.equal(
+      shouldResumeSpectrumPlaybackBeforeBack({
+        currentPlaybackPath: "C:/Music/Track.flac",
+        filePath: "c:/music/track.flac",
+        paused: true,
+      }),
+      true,
+    );
+    assert.equal(
+      shouldResumeSpectrumPlaybackBeforeBack({
+        currentPlaybackPath: "C:/Music/Other.flac",
+        filePath: "C:/Music/Track.flac",
+        paused: true,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldResumeSpectrumPlaybackBeforeBack({
+        currentPlaybackPath: "C:/Music/Track.flac",
+        filePath: "C:/Music/Track.flac",
+        paused: false,
+      }),
+      false,
     );
   });
 
