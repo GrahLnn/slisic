@@ -17,6 +17,10 @@ import {
   type TrackWaveformTile,
   type WaveformPeak,
 } from "@/src/cmd";
+import {
+  installSpectrumFrameTrace,
+  recordSpectrumFrameTrace,
+} from "@/src/debug/spectrumFrameTrace";
 import { normalizeMediaPathKey } from "../mediaPath";
 
 const WAVEFORM_CANVAS_HEIGHT = 208;
@@ -1549,6 +1553,19 @@ export function resolveWaveformDataPlanScopedRequests(
     : plan.requests;
 }
 
+export function shouldPresentWaveformTileAvailability(priority: WaveformDataRequestPriority) {
+  switch (priority) {
+    case "visible":
+    case "visible-guard":
+    case "prefetch-reverse":
+      return true;
+    case "prefetch-focus":
+    case "prefetch-visible":
+    case "overscan":
+      return false;
+  }
+}
+
 function resolveWaveformPrefetchRenderLevels(args: {
   currentDataPixelsPerSecond: number;
   levelCount: number;
@@ -1958,6 +1975,9 @@ function TrackSpectrumSession(props: {
 }) {
   const placeholderSummary = useMemo(() => createPlaceholderWaveformSummary(), []);
   const ports = props.ports ?? crabTrackSpectrumPorts;
+  const traceSessionIdRef = useRef(
+    `spectrum-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+  );
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const loadingCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -1982,6 +2002,25 @@ function TrackSpectrumSession(props: {
   const maximumPixelsPerSecond = resolveWaveformRenderPixelsPerSecond({
     summary: waveformState.summary,
   });
+  useEffect(() => {
+    installSpectrumFrameTrace();
+    recordSpectrumFrameTrace("spectrum-waveform-session", {
+      end: props.end,
+      filePathKey: normalizeWaveformPathKey(props.filePath),
+      sessionId: traceSessionIdRef.current,
+      start: props.start,
+      status: waveformState.status,
+      summaryCacheKey: waveformState.summary.cache_key,
+      summaryDurationMs: waveformState.summary.duration_ms,
+    });
+  }, [
+    props.end,
+    props.filePath,
+    props.start,
+    waveformState.status,
+    waveformState.summary.cache_key,
+    waveformState.summary.duration_ms,
+  ]);
   if (viewportRef.current === null) {
     const viewportWidth = 1;
     const pixelsPerSecond = resolveWaveformPixelsPerSecond(WAVEFORM_INITIAL_PIXELS_PER_SECOND, {
@@ -2113,6 +2152,18 @@ function TrackSpectrumSession(props: {
         now,
         plan,
       });
+      recordSpectrumFrameTrace("spectrum-transaction-built", {
+        dataDemandSkipped: resolution.transaction.dataDemand.skipped,
+        hasPlan: plan !== null,
+        mode,
+        nextInteractiveDataDemandAt: resolution.nextInteractiveDataDemandAt,
+        planMode: plan?.mode ?? null,
+        requestCount: plan?.requests.length ?? 0,
+        scopeKey: plan?.scopeKey ?? null,
+        sessionId: traceSessionIdRef.current,
+        shouldScheduleCompleteData: resolution.transaction.shouldScheduleCompleteData,
+        visibleIndexes: plan?.visibleIndexes.length ?? 0,
+      });
 
       return resolution;
     },
@@ -2129,10 +2180,25 @@ function TrackSpectrumSession(props: {
       lastInteractiveDataDemandRef.current = resolution.nextInteractiveDataDemand;
 
       if (transaction.presentation.plan) {
+        recordSpectrumFrameTrace("spectrum-presentation-demand", {
+          dataPixelsPerSecond: transaction.presentation.plan.dataPixelsPerSecond,
+          mode: transaction.mode,
+          requestCount: transaction.presentation.plan.requests.length,
+          scopeKey: transaction.presentation.plan.scopeKey,
+          sessionId: traceSessionIdRef.current,
+          visibleIndexes: transaction.presentation.plan.visibleIndexes.length,
+        });
         drawCanvas(transaction.presentation.plan);
       }
 
       if (!transaction.dataDemand.skipped && transaction.dataDemand.plan) {
+        recordSpectrumFrameTrace("spectrum-data-demand", {
+          mode: transaction.mode,
+          requestCount: transaction.dataDemand.plan.requests.length,
+          scope: transaction.dataDemand.scope,
+          scopeKey: transaction.dataDemand.plan.scopeKey,
+          sessionId: traceSessionIdRef.current,
+        });
         requestDataPlan({
           plan: transaction.dataDemand.plan,
           scope: transaction.dataDemand.scope,
@@ -2860,7 +2926,8 @@ function useWaveformDataLoader(args: {
 }) {
   const activeCountRef = useRef(0);
   const inFlightKeysRef = useRef(new Set<string>());
-  const latestAcceptedRequestKeySetRef = useRef(new Set<string>());
+  const latestCacheAcceptedRequestKeySetRef = useRef(new Set<string>());
+  const latestPresentationRequestKeySetRef = useRef(new Set<string>());
   const nextOrderRef = useRef(0);
   const previousPlanSignatureRef = useRef<string | null>(null);
   const queueRef = useRef<WaveformTileLoadQueueEntry[]>([]);
@@ -2878,7 +2945,8 @@ function useWaveformDataLoader(args: {
 
   const resetLoader = useCallback(() => {
     queueRef.current = [];
-    latestAcceptedRequestKeySetRef.current = new Set();
+    latestCacheAcceptedRequestKeySetRef.current = new Set();
+    latestPresentationRequestKeySetRef.current = new Set();
     latestAcceptedPlanRef.current = null;
     previousPlanSignatureRef.current = null;
     loadContextRef.current = null;
@@ -2905,6 +2973,19 @@ function useWaveformDataLoader(args: {
 
       activeCountRef.current += 1;
       inFlightKeysRef.current.add(entry.cacheKey);
+      const requestStartedAt = readWaveformPerformanceNow(
+        typeof window === "undefined" ? null : window,
+      );
+      recordSpectrumFrameTrace("spectrum-tile-request-start", {
+        activeCount: activeCountRef.current,
+        dataPixelsPerSecond: entry.dataPixelsPerSecond,
+        index: entry.index,
+        priority: entry.priority,
+        queueLength: queueRef.current.length,
+        scopeKey: entry.scopeKey,
+        startPx: entry.startPx,
+        widthPx: entry.widthPx,
+      });
 
       void context.waveformPort
         .getTrackWaveformTile(
@@ -2916,9 +2997,26 @@ function useWaveformDataLoader(args: {
           entry.widthPx,
         )
         .then((tileData) => {
-          const acceptedByCurrentDemand = latestAcceptedRequestKeySetRef.current.has(
+          const acceptedByCurrentDemand = latestCacheAcceptedRequestKeySetRef.current.has(
             entry.cacheKey,
           );
+          const shouldRequestPresentation = latestPresentationRequestKeySetRef.current.has(
+            entry.cacheKey,
+          );
+          const requestFinishedAt = readWaveformPerformanceNow(
+            typeof window === "undefined" ? null : window,
+          );
+          recordSpectrumFrameTrace("spectrum-tile-request-finish", {
+            acceptedByCurrentDemand,
+            dataPixelsPerSecond: entry.dataPixelsPerSecond,
+            durationMs: requestFinishedAt - requestStartedAt,
+            index: entry.index,
+            priority: entry.priority,
+            shouldRequestPresentation,
+            scopeKey: entry.scopeKey,
+            startPx: entry.startPx,
+            widthPx: entry.widthPx,
+          });
 
           if (acceptedByCurrentDemand) {
             cache.set(entry.cacheKey, {
@@ -2929,13 +3027,20 @@ function useWaveformDataLoader(args: {
               scopeKey: entry.scopeKey,
             });
             const acceptedPlan = latestAcceptedPlanRef.current;
-            if (acceptedPlan) {
+            if (acceptedPlan && shouldRequestPresentation) {
               onTileAvailableRef.current(acceptedPlan);
             }
             return;
           }
         })
         .catch((error) => {
+          recordSpectrumFrameTrace("spectrum-tile-request-error", {
+            dataPixelsPerSecond: entry.dataPixelsPerSecond,
+            error: error instanceof Error ? error.message : String(error),
+            index: entry.index,
+            priority: entry.priority,
+            scopeKey: entry.scopeKey,
+          });
           console.error("Failed to load waveform tile", error);
         })
         .finally(() => {
@@ -2969,21 +3074,53 @@ function useWaveformDataLoader(args: {
       const cache = latest.tileCacheRef.current;
       const planSignature = createWaveformDataPlanSignature(plan, scope);
       const queuedKeys = new Set(queueRef.current.map((entry) => entry.cacheKey));
+      const missingRequestCount = scopedRequests.reduce(
+        (count, request) =>
+          cache.has(request.cacheKey) || inFlightKeysRef.current.has(request.cacheKey)
+            ? count
+            : count + 1,
+        0,
+      );
       const hasUnscheduledMissingRequest = scopedRequests.some(
         (request) =>
           !cache.has(request.cacheKey) &&
           !inFlightKeysRef.current.has(request.cacheKey) &&
           !queuedKeys.has(request.cacheKey),
       );
+      recordSpectrumFrameTrace("spectrum-data-plan-request", {
+        activeCount: activeCountRef.current,
+        cacheSize: cache.size,
+        hasUnscheduledMissingRequest,
+        inFlightCount: inFlightKeysRef.current.size,
+        missingRequestCount,
+        planMode: plan.mode,
+        requestCount: scopedRequests.length,
+        scope,
+        scopeKey: plan.scopeKey,
+        visibleIndexes: plan.visibleIndexes.length,
+      });
 
       if (previousPlanSignatureRef.current === planSignature && !hasUnscheduledMissingRequest) {
+        recordSpectrumFrameTrace("spectrum-data-plan-skipped", {
+          planMode: plan.mode,
+          reason: "same-signature",
+          requestCount: scopedRequests.length,
+          scope,
+          scopeKey: plan.scopeKey,
+        });
         return;
       }
 
       const scheduledKeys = new Set(scopedRequests.map((request) => request.cacheKey));
+      const presentationKeys = new Set(
+        scopedRequests
+          .filter((request) => shouldPresentWaveformTileAvailability(request.priority))
+          .map((request) => request.cacheKey),
+      );
       const protectedKeys = new Set([...scheduledKeys, ...plan.protectedCacheKeys]);
       previousPlanSignatureRef.current = planSignature;
-      latestAcceptedRequestKeySetRef.current = scheduledKeys;
+      latestCacheAcceptedRequestKeySetRef.current = scheduledKeys;
+      latestPresentationRequestKeySetRef.current = presentationKeys;
       latestAcceptedPlanRef.current = plan;
       queueRef.current = queueRef.current.filter(
         (entry) => entry.scopeKey === plan.scopeKey && scheduledKeys.has(entry.cacheKey),
@@ -3012,6 +3149,16 @@ function useWaveformDataLoader(args: {
 
       queueRef.current.sort(compareWaveformTileLoadQueueEntries);
       pruneWaveformTileCache(cache, protectedKeys);
+      recordSpectrumFrameTrace("spectrum-data-plan-queued", {
+        activeCount: activeCountRef.current,
+        cacheSize: cache.size,
+        inFlightCount: inFlightKeysRef.current.size,
+        presentationCount: presentationKeys.size,
+        queueLength: queueRef.current.length,
+        scheduledCount: scheduledKeys.size,
+        scope,
+        scopeKey: plan.scopeKey,
+      });
       pumpRef.current();
     },
     [resetLoader],
@@ -3044,12 +3191,20 @@ function useWaveformCanvasRenderer(args: {
   const runFrame = useCallback(() => {
     const controller = controllerRef.current;
     controller.frameId = null;
+    const frameStartedAt = readWaveformPerformanceNow(
+      typeof window === "undefined" ? null : window,
+    );
 
     const latest = latestArgsRef.current;
     const canvas = latest.canvasRef.current;
     const viewport = latest.viewportRef.current;
     if (!canvas || !viewport) {
       controller.job = null;
+      recordSpectrumFrameTrace("spectrum-render-frame-empty", {
+        hasCanvas: Boolean(canvas),
+        hasViewport: Boolean(viewport),
+        reason: "missing-target",
+      });
       return;
     }
 
@@ -3076,6 +3231,12 @@ function useWaveformCanvasRenderer(args: {
 
       if (plan.kind === "empty") {
         controller.job = null;
+        recordSpectrumFrameTrace("spectrum-render-plan-empty", {
+          emptyKind: plan.empty.kind,
+          revision: controller.requestedRevision,
+          tileCacheSize: latest.tileCacheRef.current.size,
+          viewportWidth: viewport.viewportWidth,
+        });
         return;
       }
 
@@ -3091,6 +3252,11 @@ function useWaveformCanvasRenderer(args: {
 
       if (target.kind === "empty") {
         controller.job = null;
+        recordSpectrumFrameTrace("spectrum-render-target-empty", {
+          reason: target.empty.kind,
+          revision: controller.requestedRevision,
+          viewportWidth: viewport.viewportWidth,
+        });
         return;
       }
 
@@ -3108,12 +3274,20 @@ function useWaveformCanvasRenderer(args: {
         target: target.target,
       });
       controller.job = job;
+      recordSpectrumFrameTrace("spectrum-render-job-created", {
+        dataPixelsPerSecond: job.plan.dataPixelsPerSecond,
+        id: job.id,
+        revision: job.revision,
+        targetKind: job.target.kind,
+        viewportWidth: job.plan.geometry.viewportWidth,
+      });
     }
 
     if (!job) {
       return;
     }
 
+    const chunkStartedAt = readWaveformPerformanceNow(ownerWindow);
     const chunk = drawWaveformCanvasJobChunk({
       deadlineMs: readWaveformPerformanceNow(ownerWindow) + WAVEFORM_CANVAS_FRAME_BUDGET_MS,
       cursor: job.cursor,
@@ -3122,6 +3296,21 @@ function useWaveformCanvasRenderer(args: {
       target: job.target,
     });
     job.cursor = chunk.cursor;
+    const chunkFinishedAt = readWaveformPerformanceNow(ownerWindow);
+    recordSpectrumFrameTrace("spectrum-render-chunk", {
+      completed: chunk.completed,
+      durationMs: chunkFinishedAt - chunkStartedAt,
+      frameDurationMs: chunkFinishedAt - frameStartedAt,
+      firstMissingX: chunk.firstMissingX,
+      jobId: job.id,
+      lastMissingX: chunk.lastMissingX,
+      missingPeakColumns: chunk.missingPeakColumns,
+      nextX: job.cursor.nextX,
+      resolvedPeakCount: chunk.resolvedPeakCount,
+      revision: job.revision,
+      scannedColumns: chunk.scannedColumns,
+      targetKind: job.target.kind,
+    });
 
     if (chunk.completed) {
       const accepted = job.revision === controller.requestedRevision;
@@ -3134,6 +3323,14 @@ function useWaveformCanvasRenderer(args: {
         if (completion.kind === "committed" || completion.kind === "already-presented") {
           controller.presentedFrame = createWaveformCanvasFrameDescriptor(job.plan);
         }
+        recordSpectrumFrameTrace("spectrum-render-job-completed", {
+          accepted,
+          completionKind: completion.kind,
+          frameDurationMs: readWaveformPerformanceNow(ownerWindow) - frameStartedAt,
+          jobId: job.id,
+          revision: job.revision,
+          targetKind: job.target.kind,
+        });
       }
       controller.job = null;
       return;
@@ -3178,6 +3375,16 @@ function useWaveformCanvasRenderer(args: {
           : null;
       const descriptor =
         renderPlan?.kind === "ready" ? createWaveformCanvasFrameDescriptor(renderPlan.plan) : null;
+      recordSpectrumFrameTrace("spectrum-draw-request", {
+        cacheSize: latest.tileCacheRef.current.size,
+        dataPlanMode: dataPlan.mode,
+        dataRequestCount: dataPlan.requests.length,
+        geometryReady: geometry !== null,
+        renderPlanKind: renderPlan?.kind ?? "missing-geometry",
+        revision: nextRevision,
+        scopeKey: dataPlan.scopeKey,
+        viewportWidth: viewport?.viewportWidth ?? null,
+      });
       const presented = presentWaveformCanvasFrameFast({
         canvas,
         descriptor,
@@ -3186,6 +3393,15 @@ function useWaveformCanvasRenderer(args: {
         reuseFrame: controller.reuseFrame,
       });
       if (presented.kind === "presented") {
+        recordSpectrumFrameTrace("spectrum-fast-presented", {
+          mode: presented.mode,
+          revision: nextRevision,
+          scannedColumns:
+            presented.mode === "exact-cache-redraw"
+              ? presented.draw.scannedColumns
+              : presented.draws.reduce((sum, draw) => sum + draw.scannedColumns, 0),
+          viewportWidth: presented.descriptor.geometry.viewportWidth,
+        });
         controller.presentedFrame = presented.descriptor;
         controller.reuseFrame = presented.reuseFrame;
       }
@@ -3203,6 +3419,9 @@ function useWaveformCanvasRenderer(args: {
       }
 
       if (controller.frameId !== null) {
+        recordSpectrumFrameTrace("spectrum-render-frame-already-scheduled", {
+          revision: nextRevision,
+        });
         return;
       }
 
@@ -3211,10 +3430,16 @@ function useWaveformCanvasRenderer(args: {
         (typeof window === "undefined" ? null : window);
 
       if (!ownerWindow) {
+        recordSpectrumFrameTrace("spectrum-render-run-without-window", {
+          revision: nextRevision,
+        });
         runFrame();
         return;
       }
 
+      recordSpectrumFrameTrace("spectrum-render-frame-scheduled", {
+        revision: nextRevision,
+      });
       controller.frameId = ownerWindow.requestAnimationFrame(runFrame);
     },
     [runFrame],
@@ -3638,9 +3863,22 @@ function presentWaveformCanvasFrameFast(args: {
       };
     }
 
+    const startedAt = readWaveformPerformanceNow(
+      args.canvas.ownerDocument.defaultView ?? (typeof window === "undefined" ? null : window),
+    );
     const draw = drawWaveformCanvasExactDataFrame({
       canvas: args.canvas,
       plan,
+    });
+    recordSpectrumFrameTrace("spectrum-exact-cache-redraw", {
+      durationMs:
+        readWaveformPerformanceNow(
+          args.canvas.ownerDocument.defaultView ?? (typeof window === "undefined" ? null : window),
+        ) - startedAt,
+      missingPeakColumns: draw.missingPeakColumns,
+      resolvedPeakCount: draw.resolvedPeakCount,
+      scannedColumns: draw.scannedColumns,
+      viewportWidth: plan.geometry.viewportWidth,
     });
 
     return {

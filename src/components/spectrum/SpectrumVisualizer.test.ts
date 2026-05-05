@@ -51,6 +51,7 @@ import {
   resolveWaveformZoomScaleFrame,
   shouldAcceptWaveformHardwareHorizontalWheel,
   shouldStrokeWaveformCanvasChunkPath,
+  shouldPresentWaveformTileAvailability,
   shouldPreventWaveformWheelDefault,
 } from "./SpectrumVisualizer";
 
@@ -1086,6 +1087,15 @@ describe("SpectrumVisualizer", () => {
         .filter((request) => request.priority === "prefetch-focus")
         .every((request) => !visibleKeys.has(request.cacheKey)),
     );
+  });
+
+  test("keeps prefetch and overscan cache fills from requesting presentation", () => {
+    assert.equal(shouldPresentWaveformTileAvailability("visible"), true);
+    assert.equal(shouldPresentWaveformTileAvailability("visible-guard"), true);
+    assert.equal(shouldPresentWaveformTileAvailability("prefetch-reverse"), true);
+    assert.equal(shouldPresentWaveformTileAvailability("prefetch-focus"), false);
+    assert.equal(shouldPresentWaveformTileAvailability("prefetch-visible"), false);
+    assert.equal(shouldPresentWaveformTileAvailability("overscan"), false);
   });
 
   test("keeps interactive zoom data demand visible-only", () => {
