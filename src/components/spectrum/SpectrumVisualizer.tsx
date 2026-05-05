@@ -37,6 +37,7 @@ const WAVEFORM_DATA_LOAD_CONCURRENCY = 2;
 const WAVEFORM_DATA_IDLE_OVERSCAN_DELAY_MS = 180;
 const WAVEFORM_INTERACTIVE_DATA_DEMAND_INTERVAL_MS = 64;
 const WAVEFORM_INTERACTIVE_GUARD_VIEWPORTS = 0.5;
+const WAVEFORM_DATA_PREFETCH_REVERSE_LEVEL_COUNT = 3;
 const WAVEFORM_DATA_PREFETCH_VISIBLE_LEVEL_COUNT = 1;
 const WAVEFORM_DATA_PREFETCH_FOCUS_LEVEL_COUNT = 3;
 const WAVEFORM_CANVAS_FRAME_BUDGET_MS = 3.25;
@@ -202,6 +203,7 @@ type WaveformSecondsWindow = {
 type WaveformDataRequestPriority =
   | "visible"
   | "visible-guard"
+  | "prefetch-reverse"
   | "prefetch-focus"
   | "prefetch-visible"
   | "overscan";
@@ -1269,6 +1271,8 @@ export function resolveWaveformDataPlan(args: {
   const visiblePrefetchLevelCount =
     mode === "settled" ? WAVEFORM_DATA_PREFETCH_VISIBLE_LEVEL_COUNT : 0;
   const focusPrefetchLevelCount = mode === "settled" ? WAVEFORM_DATA_PREFETCH_FOCUS_LEVEL_COUNT : 0;
+  const reversePrefetchLevelCount =
+    mode === "settled" ? WAVEFORM_DATA_PREFETCH_REVERSE_LEVEL_COUNT : 0;
   const visibleSecondsWindow = resolveWaveformVisibleSecondsWindow({
     durationSeconds,
     overscanViewports: 0,
@@ -1372,10 +1376,31 @@ export function resolveWaveformDataPlan(args: {
       window: focusWindow,
     });
   });
+  const reversePrefetchRequests = resolveWaveformReversePrefetchRenderLevels({
+    currentDataPixelsPerSecond: dataPixelsPerSecond,
+    levelCount: reversePrefetchLevelCount,
+    levels: renderLevels,
+  }).flatMap((prefetchLevel, lodDepth) =>
+    createWaveformDataRequestsForLevel({
+      dataPixelsPerSecond: prefetchLevel,
+      durationSeconds,
+      focusSeconds,
+      lodDepth: lodDepth + 1,
+      priorityForIndex: () => "prefetch-reverse",
+      scopeKey,
+      tileWidth,
+      window: resolveWaveformDataPixelWindow({
+        dataContentWidth: Math.max(1, Math.ceil(durationSeconds * prefetchLevel)),
+        dataPixelsPerSecond: prefetchLevel,
+        window: visibleSecondsWindow,
+      }),
+    }),
+  );
   const requests = dedupeWaveformDataRequests([
     ...currentLevelRequests,
     ...focusPrefetchRequests,
     ...visiblePrefetchRequests,
+    ...reversePrefetchRequests,
   ]).sort(compareWaveformDataRequests);
   const protectedCacheKeys = createWaveformReverseCacheRequests({
     currentDataPixelsPerSecond: dataPixelsPerSecond,
@@ -1455,6 +1480,21 @@ function resolveWaveformPrefetchRenderLevels(args: {
 
   return args.levels
     .filter((level) => level > args.currentDataPixelsPerSecond)
+    .slice(0, args.levelCount);
+}
+
+function resolveWaveformReversePrefetchRenderLevels(args: {
+  currentDataPixelsPerSecond: number;
+  levelCount: number;
+  levels: readonly number[];
+}) {
+  if (args.levelCount <= 0) {
+    return [];
+  }
+
+  return args.levels
+    .filter((level) => level < args.currentDataPixelsPerSecond)
+    .sort((left, right) => right - left)
     .slice(0, args.levelCount);
 }
 
@@ -1578,19 +1618,21 @@ function resolveWaveformDataRequestPriorityRank(priority: WaveformDataRequestPri
       return 0;
     case "visible-guard":
       return 1;
-    case "prefetch-focus":
+    case "prefetch-reverse":
       return 2;
-    case "prefetch-visible":
+    case "prefetch-focus":
       return 3;
-    case "overscan":
+    case "prefetch-visible":
       return 4;
+    case "overscan":
+      return 5;
   }
 
-  return 4;
+  return 5;
 }
 
 function isWaveformVisibleDemandPriority(priority: WaveformDataRequestPriority) {
-  return priority === "visible" || priority === "visible-guard";
+  return priority === "visible" || priority === "visible-guard" || priority === "prefetch-reverse";
 }
 
 function summarizeWaveformDataRequestPriorities(requests: readonly WaveformDataRequest[]) {
@@ -1602,6 +1644,7 @@ function summarizeWaveformDataRequestPriorities(requests: readonly WaveformDataR
     {
       overscan: 0,
       "prefetch-focus": 0,
+      "prefetch-reverse": 0,
       "prefetch-visible": 0,
       visible: 0,
       "visible-guard": 0,
@@ -1619,6 +1662,7 @@ function summarizeWaveformDataRequestLevels(requests: readonly WaveformDataReque
     {
       overscan: {},
       "prefetch-focus": {},
+      "prefetch-reverse": {},
       "prefetch-visible": {},
       visible: {},
       "visible-guard": {},

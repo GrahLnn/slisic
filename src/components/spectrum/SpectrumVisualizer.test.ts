@@ -1130,6 +1130,9 @@ describe("SpectrumVisualizer", () => {
     const visiblePrefetchLevels = plan.requests
       .filter((request) => request.priority === "prefetch-visible")
       .map((request) => request.dataPixelsPerSecond);
+    const reversePrefetchLevels = plan.requests
+      .filter((request) => request.priority === "prefetch-reverse")
+      .map((request) => request.dataPixelsPerSecond);
     const currentVisibleKeys = plan.requests
       .filter((request) => request.priority === "visible")
       .map((request) => request.cacheKey);
@@ -1142,6 +1145,7 @@ describe("SpectrumVisualizer", () => {
 
     assert.deepEqual(focusPrefetchLevels, [400, 800]);
     assert.deepEqual(visiblePrefetchLevels, [400]);
+    assert.deepEqual(reversePrefetchLevels, [100, 50]);
     assert.ok(currentVisibleKeys.every((key) => plan.protectedCacheKeys.includes(key)));
     assert.ok(plan.protectedCacheKeys.includes(lowerVisibleKey));
   });
