@@ -22,6 +22,7 @@ import {
   resolveWaveformHorizontalPanFrame,
   resolveWaveformHorizontalScrollLeft,
   resolveWaveformCanvasFrameReusePlan,
+  shouldBeginWaveformCanvasChunkPath,
   resolveWaveformLoadingGridSize,
   resolveWaveformMaximumPixelsPerSecond,
   resolveWaveformMinimumPixelsPerSecond,
@@ -48,6 +49,7 @@ import {
   resolveWaveformZoomFrame,
   resolveWaveformZoomScaleFrame,
   shouldAcceptWaveformHardwareHorizontalWheel,
+  shouldStrokeWaveformCanvasChunkPath,
   shouldPreventWaveformWheelDefault,
 } from "./SpectrumVisualizer";
 
@@ -705,6 +707,7 @@ describe("SpectrumVisualizer", () => {
       context: context as unknown as CanvasRenderingContext2D,
       frame: {} as HTMLCanvasElement,
       geometry: plan.geometry,
+      kind: "buffered" as const,
     };
     const firstChunk = drawWaveformCanvasJobChunk({
       cursor: {
@@ -740,6 +743,41 @@ describe("SpectrumVisualizer", () => {
     assert.equal(context.strokeCount, 1);
     assert.equal(context.moveToCount, 120);
     assert.equal(context.lineToCount, 120);
+  });
+
+  test("strokes visible first paint chunks independently", () => {
+    assert.equal(
+      shouldBeginWaveformCanvasChunkPath({
+        startX: 120,
+        targetKind: "buffered",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldBeginWaveformCanvasChunkPath({
+        startX: 120,
+        targetKind: "visible",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldStrokeWaveformCanvasChunkPath({
+        completed: false,
+        cursorHasDrawnColumn: true,
+        hasChunkColumn: true,
+        targetKind: "buffered",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldStrokeWaveformCanvasChunkPath({
+        completed: false,
+        cursorHasDrawnColumn: true,
+        hasChunkColumn: true,
+        targetKind: "visible",
+      }),
+      true,
+    );
   });
 
   test("accepts backend hardware horizontal wheel only while the waveform host is hovered", () => {
