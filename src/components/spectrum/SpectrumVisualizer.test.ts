@@ -20,6 +20,7 @@ import {
   resolveWaveformHardwareHorizontalWheelDelta,
   resolveWaveformHorizontalPanFrame,
   resolveWaveformHorizontalScrollLeft,
+  resolveWaveformCanvasFrameReusePlan,
   resolveWaveformLoadingGridSize,
   resolveWaveformMaximumPixelsPerSecond,
   resolveWaveformMinimumPixelsPerSecond,
@@ -29,8 +30,11 @@ import {
   resolveWaveformPlayheadStyle,
   resolveWaveformPlayheadX,
   resolveWaveformPointerAnchorViewportX,
+  resolveQueuedWaveformZoomFrame,
   resolveWaveformRenderPixelsPerSecond,
   resolveWaveformRenderScale,
+  resolveWaveformTileIndexPeakRangeAtPixels,
+  resolveWaveformTilePeakRangeAtPixels,
   resolveWaveformTilePeakAtSeconds,
   resolveWaveformWheelAxisDeltas,
   resolveWaveformWheelDeltaX,
@@ -56,6 +60,37 @@ function createWaveformTestSummary(overrides: Partial<TrackWaveformSummary> = {}
     samples_per_point: 60,
     start_ms: 0,
     ...overrides,
+  };
+}
+
+function createWaveformTestFrameDescriptor(
+  overrides: {
+    dataPixelsPerSecond?: number;
+    scopeKey?: string;
+    scrollLeft?: number;
+    viewportWidth?: number;
+  } = {},
+) {
+  const viewportWidth = overrides.viewportWidth ?? 1_000;
+
+  return {
+    dataPixelsPerSecond: overrides.dataPixelsPerSecond ?? 100,
+    geometry: {
+      backingHeight: 208,
+      backingWidth: viewportWidth,
+      devicePixelRatio: 1,
+      viewportWidth,
+    },
+    scopeKey: overrides.scopeKey ?? "track",
+    viewport: {
+      contentWidth: 10_000,
+      durationMs: 100_000,
+      focusSeconds: null,
+      maximumPixelsPerSecond: 800,
+      pixelsPerSecond: 100,
+      scrollLeft: overrides.scrollLeft ?? 0,
+      viewportWidth,
+    },
   };
 }
 
@@ -455,6 +490,18 @@ describe("SpectrumVisualizer", () => {
         scrollLeft: 0,
       },
     );
+    assert.deepEqual(
+      resolveWaveformHorizontalPanFrame({
+        contentWidth: 1_000,
+        deltaX: 0.0000001,
+        scrollLeft: 350,
+        viewportWidth: 400,
+      }),
+      {
+        changed: false,
+        scrollLeft: 350,
+      },
+    );
   });
 
   test("uses backend hardware horizontal wheel deltas as viewport pan deltas", () => {
@@ -471,6 +518,86 @@ describe("SpectrumVisualizer", () => {
       {
         changed: true,
         scrollLeft: 230,
+      },
+    );
+  });
+
+  test("reuses the presented waveform frame only for affine horizontal pan", () => {
+    const previous = createWaveformTestFrameDescriptor({
+      scrollLeft: 1_000,
+    });
+
+    assert.deepEqual(
+      resolveWaveformCanvasFrameReusePlan({
+        current: createWaveformTestFrameDescriptor({
+          scrollLeft: 1_120,
+        }),
+        previous,
+      }),
+      {
+        exposedEndX: 1_000,
+        exposedStartX: 880,
+        kind: "horizontal-pan",
+        scrollDeltaPx: 120,
+        shiftX: -120,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformCanvasFrameReusePlan({
+        current: createWaveformTestFrameDescriptor({
+          scrollLeft: 880,
+        }),
+        previous,
+      }),
+      {
+        exposedEndX: 120,
+        exposedStartX: 0,
+        kind: "horizontal-pan",
+        scrollDeltaPx: -120,
+        shiftX: 120,
+      },
+    );
+  });
+
+  test("rejects waveform frame reuse when the affine identity changes", () => {
+    const previous = createWaveformTestFrameDescriptor();
+
+    assert.deepEqual(
+      resolveWaveformCanvasFrameReusePlan({
+        current: createWaveformTestFrameDescriptor({
+          dataPixelsPerSecond: 200,
+          scrollLeft: 120,
+        }),
+        previous,
+      }),
+      {
+        kind: "none",
+        reason: "render-density-changed",
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformCanvasFrameReusePlan({
+        current: createWaveformTestFrameDescriptor({
+          scopeKey: "other-track",
+          scrollLeft: 120,
+        }),
+        previous,
+      }),
+      {
+        kind: "none",
+        reason: "content-changed",
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformCanvasFrameReusePlan({
+        current: createWaveformTestFrameDescriptor({
+          scrollLeft: 0.5,
+        }),
+        previous,
+      }),
+      {
+        kind: "none",
+        reason: "scroll-delta-fractional",
       },
     );
   });
@@ -676,6 +803,34 @@ describe("SpectrumVisualizer", () => {
     assert.notEqual(low, high);
   });
 
+  test("resolves queued zoom from the pending viewport instead of the stale viewport", () => {
+    const first = resolveQueuedWaveformZoomFrame({
+      anchorViewportX: 250,
+      currentPixelsPerSecond: 100,
+      deltaY: -180,
+      durationMs: 120_000,
+      maximumPixelsPerSecond: 800,
+      pendingFrame: null,
+      scrollLeft: 750,
+      viewportWidth: 1_000,
+    });
+    const second = resolveQueuedWaveformZoomFrame({
+      anchorViewportX: 250,
+      currentPixelsPerSecond: 100,
+      deltaY: -180,
+      durationMs: 120_000,
+      maximumPixelsPerSecond: 800,
+      pendingFrame: first,
+      scrollLeft: 750,
+      viewportWidth: 1_000,
+    });
+
+    assert.ok(second.pixelsPerSecond > first.pixelsPerSecond);
+    assert.equal(first.anchorSeconds, 10);
+    assert.equal(second.anchorSeconds, 10);
+    assert.equal((second.scrollLeft + second.anchorViewportX) / second.pixelsPerSecond, 10);
+  });
+
   test("reads one quantized value per display column without widening bars", () => {
     assert.deepEqual(
       resolveQuantizedWaveformDisplayPeak({
@@ -718,6 +873,83 @@ describe("SpectrumVisualizer", () => {
         },
       }),
       null,
+    );
+  });
+
+  test("aggregates quantized tile ranges without dropping boundary columns", () => {
+    assert.deepEqual(
+      resolveWaveformTilePeakRangeAtPixels({
+        endPx: 2_049,
+        startPx: 2_047,
+        tile: {
+          max: [0, 127],
+          min: [0, -127],
+          start_px: 2_047,
+        },
+      }),
+      {
+        max: 1,
+        min: -1,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformTilePeakRangeAtPixels({
+        endPx: 2_049,
+        startPx: 2_047,
+        tile: {
+          max: [64],
+          min: [-64],
+          start_px: 2_048,
+        },
+      }),
+      {
+        max: 64 / 127,
+        min: -64 / 127,
+      },
+    );
+    assert.equal(
+      resolveWaveformTilePeakRangeAtPixels({
+        endPx: 2_049,
+        startPx: 2_047,
+        tile: {
+          max: [127],
+          min: [-127],
+          start_px: 2_050,
+        },
+      }),
+      null,
+    );
+  });
+
+  test("aggregates indexed tile ranges across render-area boundaries", () => {
+    assert.deepEqual(
+      resolveWaveformTileIndexPeakRangeAtPixels({
+        endPx: 2_049,
+        startPx: 2_047,
+        tileWidth: 2_048,
+        tilesByIndex: new Map([
+          [
+            0,
+            {
+              max: [0],
+              min: [0],
+              start_px: 2_047,
+            },
+          ],
+          [
+            1,
+            {
+              max: [127],
+              min: [-127],
+              start_px: 2_048,
+            },
+          ],
+        ]),
+      }),
+      {
+        max: 1,
+        min: -1,
+      },
     );
   });
 
