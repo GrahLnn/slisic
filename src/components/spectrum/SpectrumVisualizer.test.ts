@@ -5,6 +5,7 @@ import {
   clampWaveformZoomDeltaY,
   createWaveformDataRequestKey,
   createWaveformDataScopeKey,
+  drawWaveformCanvasJobChunk,
   handleWaveformViewportWheel,
   normalizeWaveformPathKey,
   resolveAnchoredWaveformScrollLeft,
@@ -13,6 +14,7 @@ import {
   resolveQuantizedWaveformDisplayPeak,
   resolveTrackWaveformInitialStatus,
   resolveWaveformBarWidthPx,
+  resolveWaveformCanvasSeamBoundaryProbes,
   resolveWaveformContentWidth,
   resolveWaveformDataPlan,
   resolveWaveformDataTileIndexes,
@@ -47,6 +49,7 @@ import {
   resolveWaveformZoomScaleFrame,
   shouldAcceptWaveformHardwareHorizontalWheel,
   shouldPreventWaveformWheelDefault,
+  summarizeWaveformCanvasSeamPixelColumn,
 } from "./SpectrumVisualizer";
 
 function createWaveformTestSummary(overrides: Partial<TrackWaveformSummary> = {}) {
@@ -90,6 +93,75 @@ function createWaveformTestFrameDescriptor(
       pixelsPerSecond: 100,
       scrollLeft: overrides.scrollLeft ?? 0,
       viewportWidth,
+    },
+  };
+}
+
+function createWaveformCanvasTestContext() {
+  return {
+    beginPathCount: 0,
+    lineToCount: 0,
+    moveToCount: 0,
+    strokeCount: 0,
+    beginPath() {
+      this.beginPathCount += 1;
+    },
+    lineTo() {
+      this.lineToCount += 1;
+    },
+    moveTo() {
+      this.moveToCount += 1;
+    },
+    stroke() {
+      this.strokeCount += 1;
+    },
+  };
+}
+
+function createWaveformCanvasTestPlan(overrides: { viewportWidth?: number } = {}) {
+  const viewportWidth = overrides.viewportWidth ?? 4;
+  const tile = {
+    max: Array.from({ length: viewportWidth }, () => 64),
+    min: Array.from({ length: viewportWidth }, () => -64),
+    points_per_second: 100,
+    start_px: 0,
+    width_px: viewportWidth,
+  };
+
+  return {
+    amplitude: 86,
+    availableLevels: [100],
+    candidateLevels: [
+      {
+        pixelsPerSecond: 100,
+        tilesByIndex: new Map([[0, tile]]),
+      },
+    ],
+    centerY: 104,
+    dataPixelsPerSecond: 100,
+    geometry: {
+      backingHeight: 208,
+      backingWidth: viewportWidth,
+      devicePixelRatio: 1,
+      viewportWidth,
+    },
+    scopeKey: "track",
+    viewport: {
+      contentWidth: viewportWidth,
+      durationMs: 100_000,
+      focusSeconds: null,
+      maximumPixelsPerSecond: 800,
+      pixelsPerSecond: 100,
+      scrollLeft: 0,
+      viewportWidth,
+    },
+    visibleSecondsWindow: {
+      endSeconds: viewportWidth / 100,
+      startSeconds: 0,
+    },
+    visibleWindow: {
+      endPx: viewportWidth,
+      startPx: 0,
     },
   };
 }
@@ -600,6 +672,177 @@ describe("SpectrumVisualizer", () => {
         reason: "scroll-delta-fractional",
       },
     );
+  });
+
+  test("probes waveform seam evidence at data tile and render chunk boundaries", () => {
+    const tile = {
+      max: Array.from({ length: 2_048 }, () => 64),
+      min: Array.from({ length: 2_048 }, () => -64),
+      points_per_second: 100,
+      start_px: 2_048,
+      width_px: 2_048,
+    };
+    const plan = {
+      amplitude: 86,
+      availableLevels: [100],
+      candidateLevels: [
+        {
+          pixelsPerSecond: 100,
+          tilesByIndex: new Map([[1, tile]]),
+        },
+      ],
+      centerY: 104,
+      dataPixelsPerSecond: 100,
+      geometry: {
+        backingHeight: 208,
+        backingWidth: 1_000,
+        devicePixelRatio: 1,
+        viewportWidth: 1_000,
+      },
+      scopeKey: "track",
+      viewport: {
+        contentWidth: 10_000,
+        durationMs: 100_000,
+        focusSeconds: null,
+        maximumPixelsPerSecond: 800,
+        pixelsPerSecond: 100,
+        scrollLeft: 1_548,
+        viewportWidth: 1_000,
+      },
+      visibleSecondsWindow: {
+        endSeconds: 25.48,
+        startSeconds: 15.48,
+      },
+      visibleWindow: {
+        endPx: 2_548,
+        startPx: 1_548,
+      },
+    };
+
+    const probes = resolveWaveformCanvasSeamBoundaryProbes({
+      chunkBoundaries: [320, 640],
+      plan,
+    });
+
+    assert.deepEqual(
+      probes.map((probe) => ({
+        kind: probe.kind,
+        roundedViewportX: probe.roundedViewportX,
+      })),
+      [
+        {
+          kind: "render-chunk",
+          roundedViewportX: 320,
+        },
+        {
+          kind: "data-tile",
+          roundedViewportX: 500,
+        },
+        {
+          kind: "render-chunk",
+          roundedViewportX: 640,
+        },
+      ],
+    );
+
+    const dataTileProbe = probes.find((probe) => probe.kind === "data-tile");
+    assert.ok(dataTileProbe);
+    assert.equal(dataTileProbe.tileIndex, 1);
+    assert.equal(dataTileProbe.nearestDataTileBoundaryDistancePx, 0);
+    assert.equal(dataTileProbe.nearestRenderChunkBoundaryDistancePx, 140);
+    assert.deepEqual(
+      dataTileProbe.samples.map((sample) => ({
+        hasPeak: sample.hasPeak,
+        offsetX: sample.offsetX,
+      })),
+      [
+        { hasPeak: false, offsetX: -2 },
+        { hasPeak: false, offsetX: -1 },
+        { hasPeak: true, offsetX: 0 },
+        { hasPeak: true, offsetX: 1 },
+        { hasPeak: true, offsetX: 2 },
+      ],
+    );
+  });
+
+  test("summarizes seam readback columns without reusing the whole strip", () => {
+    const data = new Uint8ClampedArray(3 * 2 * 4);
+    data[3] = 16;
+    data[7] = 32;
+    data[11] = 48;
+    data[15] = 64;
+    data[19] = 80;
+    data[23] = 96;
+
+    assert.deepEqual(
+      summarizeWaveformCanvasSeamPixelColumn({
+        backingEndX: 2,
+        backingStartX: 1,
+        cssX: 10,
+        image: {
+          data,
+          height: 2,
+          width: 3,
+        },
+      }),
+      {
+        alphaCoverageRatio: 1,
+        alphaMax: 80,
+        alphaMean: 56,
+        alphaSum: 112,
+        backingEndX: 2,
+        backingStartX: 1,
+        cssX: 10,
+        drawnPixelCount: 2,
+        firstDrawnBackingY: 0,
+        lastDrawnBackingY: 1,
+        totalPixelCount: 2,
+      },
+    );
+  });
+
+  test("strokes a complete waveform canvas job only after all chunks are accumulated", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 120 });
+    const target = {
+      context: context as unknown as CanvasRenderingContext2D,
+      frame: {} as HTMLCanvasElement,
+      geometry: plan.geometry,
+    };
+    const firstChunk = drawWaveformCanvasJobChunk({
+      cursor: {
+        firstMissingX: null,
+        hasDrawnColumn: false,
+        lastMissingX: null,
+        missingPeakColumnCount: 0,
+        nextX: 0,
+        resolvedPeakColumnCount: 0,
+      },
+      deadlineMs: 0,
+      now: () => 1,
+      plan,
+      target,
+    });
+
+    assert.equal(firstChunk.completed, false);
+    assert.equal(firstChunk.cursor.nextX, 97);
+    assert.equal(context.beginPathCount, 1);
+    assert.equal(context.strokeCount, 0);
+
+    const secondChunk = drawWaveformCanvasJobChunk({
+      cursor: firstChunk.cursor,
+      deadlineMs: Number.POSITIVE_INFINITY,
+      now: () => 1,
+      plan,
+      target,
+    });
+
+    assert.equal(secondChunk.completed, true);
+    assert.equal(secondChunk.cursor.nextX, 120);
+    assert.equal(context.beginPathCount, 1);
+    assert.equal(context.strokeCount, 1);
+    assert.equal(context.moveToCount, 120);
+    assert.equal(context.lineToCount, 120);
   });
 
   test("accepts backend hardware horizontal wheel only while the waveform host is hovered", () => {

@@ -40,6 +40,8 @@ const WAVEFORM_CANVAS_MIN_CHUNK_WIDTH_PX = 96;
 const WAVEFORM_CANVAS_MAX_CHUNK_WIDTH_PX = 320;
 const WAVEFORM_CANVAS_REUSE_MIN_SHIFT_PX = 1;
 const WAVEFORM_CANVAS_STROKE_ALPHA = 0.88;
+const WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX = 2;
+const WAVEFORM_CANVAS_SEAM_PROBE_MAX_BOUNDARIES = 12;
 const WAVEFORM_INITIAL_PREPARE_FRAME_COUNT = 2;
 const WAVEFORM_LOADING_DOT_PITCH_PX = 12;
 const WAVEFORM_LOADING_MIN_FIELD_WIDTH_PX = 96;
@@ -334,6 +336,71 @@ type WaveformCanvasColumnRangeResult = {
   resolvedPeakCount: number;
 };
 
+type WaveformCanvasSeamBoundaryKind = "data-tile" | "render-chunk";
+
+type WaveformCanvasSeamPeakSampleProbe = {
+  dataEndPx: number;
+  dataStartPx: number;
+  hasPeak: boolean;
+  max: number | null;
+  min: number | null;
+  offsetX: number;
+  x: number;
+};
+
+type WaveformCanvasSeamBoundaryProbe = {
+  boundaryDataPx: number;
+  boundaryId: string;
+  boundarySeconds: number;
+  distanceToNearestColumnCenterPx: number;
+  distanceToNearestPixelEdgePx: number;
+  kind: WaveformCanvasSeamBoundaryKind;
+  nearestDataTileBoundaryDistancePx: number | null;
+  nearestRenderChunkBoundaryDistancePx: number | null;
+  roundedViewportX: number;
+  samples: WaveformCanvasSeamPeakSampleProbe[];
+  tileIndex: number | null;
+  viewportX: number;
+};
+
+type WaveformCanvasSeamPixelColumnProbe = {
+  alphaCoverageRatio: number;
+  alphaMax: number;
+  alphaMean: number;
+  alphaSum: number;
+  backingEndX: number;
+  backingStartX: number;
+  cssX: number;
+  drawnPixelCount: number;
+  firstDrawnBackingY: number | null;
+  lastDrawnBackingY: number | null;
+  totalPixelCount: number;
+};
+
+type WaveformCanvasSeamPixelBoundaryProbe = {
+  boundaryId: string;
+  columns: WaveformCanvasSeamPixelColumnProbe[];
+  kind: WaveformCanvasSeamBoundaryKind;
+  roundedViewportX: number;
+  viewportX: number;
+};
+
+type WaveformCanvasSeamReadbackTarget = {
+  canvas: HTMLCanvasElement;
+  context: CanvasRenderingContext2D;
+};
+
+type WaveformCanvasSeamPixelProbeResult =
+  | {
+      boundaries: WaveformCanvasSeamPixelBoundaryProbe[];
+      kind: "ready";
+    }
+  | {
+      kind: "empty";
+      message?: string;
+      reason: "missing-readback-context" | "read-failed";
+    };
+
 type WaveformCanvasFrameReuseResult =
   | {
       draw: WaveformCanvasColumnRangeResult | null;
@@ -356,6 +423,7 @@ type WaveformCanvasFrameReuseResult =
     };
 
 type WaveformCanvasRenderJob = {
+  chunkBoundaries: number[];
   cursor: WaveformCanvasRenderCursor;
   id: number;
   plan: WaveformCanvasRenderPlan;
@@ -368,6 +436,7 @@ type WaveformCanvasRenderController = {
   job: WaveformCanvasRenderJob | null;
   presentedFrame: WaveformCanvasFrameDescriptor | null;
   requestedRevision: number;
+  seamReadbackTarget: WaveformCanvasSeamReadbackTarget | null;
   reuseFrame: HTMLCanvasElement | null;
 };
 
@@ -2453,6 +2522,7 @@ function useWaveformCanvasRenderer(args: {
     job: null,
     presentedFrame: null,
     requestedRevision: 0,
+    seamReadbackTarget: null,
     reuseFrame: null,
   });
 
@@ -2541,6 +2611,9 @@ function useWaveformCanvasRenderer(args: {
       target: job.target,
     });
     job.cursor = chunk.cursor;
+    if (chunk.cursor.nextX < job.plan.geometry.viewportWidth) {
+      job.chunkBoundaries.push(chunk.cursor.nextX);
+    }
     recordSpectrumTrace("spectrum-render-frame", {
       ...createWaveformCanvasChunkTrace(chunk),
       jobId: job.id,
@@ -2564,6 +2637,14 @@ function useWaveformCanvasRenderer(args: {
         viewport: job.plan.viewport,
         viewportWidth: job.plan.geometry.viewportWidth,
       });
+      const seamBoundaries = resolveWaveformCanvasSeamBoundaryProbes({
+        chunkBoundaries: job.chunkBoundaries,
+        plan: job.plan,
+      });
+      recordSpectrumTrace("spectrum-render-seam-probe", {
+        ...createWaveformCanvasSeamTrace(job, seamBoundaries),
+        accepted,
+      });
 
       if (accepted) {
         const commit = commitWaveformCanvasFrame({
@@ -2571,6 +2652,19 @@ function useWaveformCanvasRenderer(args: {
           job,
         });
         recordSpectrumTrace(commit.event, commit.payload);
+        controller.seamReadbackTarget ??= createWaveformCanvasSeamReadbackTarget(canvas);
+        recordSpectrumTrace("spectrum-render-seam-pixels", {
+          ...createWaveformCanvasSeamPixelTrace(
+            job,
+            readWaveformCanvasSeamPixelProbes({
+              canvas,
+              boundaries: seamBoundaries,
+              plan: job.plan,
+              readbackTarget: controller.seamReadbackTarget,
+            }),
+          ),
+          committed: commit.event === "spectrum-render-commit-complete",
+        });
         if (commit.payload.accepted !== false) {
           controller.presentedFrame = createWaveformCanvasFrameDescriptor(job.plan);
         }
@@ -2941,6 +3035,7 @@ function createWaveformCanvasRenderJob(args: {
   target: WaveformCanvasRasterTarget;
 }): WaveformCanvasRenderJob {
   return {
+    chunkBoundaries: [],
     cursor: createWaveformCanvasRenderCursor(),
     id: args.id,
     plan: args.plan,
@@ -2996,6 +3091,218 @@ function createWaveformRenderPlanEmptyTrace(empty: WaveformCanvasRenderPlanEmpty
     viewportWidth: empty.geometry.viewportWidth,
     visibleSecondsWindow: empty.plan.visibleSecondsWindow,
     visibleWindow: empty.plan.visibleWindow,
+  };
+}
+
+export function resolveWaveformCanvasSeamBoundaryProbes(args: {
+  chunkBoundaries: readonly number[];
+  plan: WaveformCanvasRenderPlan;
+}): WaveformCanvasSeamBoundaryProbe[] {
+  const dataTileBoundaryXSet = resolveWaveformCanvasDataTileBoundaryXs(args.plan);
+  const dataTileBoundaries = dataTileBoundaryXSet.map((viewportX) =>
+    resolveWaveformCanvasSeamBoundaryProbe({
+      kind: "data-tile",
+      plan: args.plan,
+      renderChunkBoundaryXs: args.chunkBoundaries,
+      viewportX,
+    }),
+  );
+  const chunkBoundaries = args.chunkBoundaries
+    .filter((viewportX) => viewportX > 0 && viewportX < args.plan.geometry.viewportWidth)
+    .map((viewportX) =>
+      resolveWaveformCanvasSeamBoundaryProbe({
+        kind: "render-chunk",
+        plan: args.plan,
+        renderChunkBoundaryXs: args.chunkBoundaries,
+        viewportX,
+      }),
+    );
+
+  return dedupeWaveformCanvasSeamBoundaryProbes([...dataTileBoundaries, ...chunkBoundaries]).slice(
+    0,
+    WAVEFORM_CANVAS_SEAM_PROBE_MAX_BOUNDARIES,
+  );
+}
+
+function resolveWaveformCanvasDataTileBoundaryXs(
+  plan: WaveformCanvasRenderPlan,
+): WaveformCanvasSeamBoundaryProbe["viewportX"][] {
+  const dataPixelsPerSecond = Math.max(1, plan.dataPixelsPerSecond);
+  const pixelsPerSecond = Math.max(1, plan.viewport.pixelsPerSecond);
+  const firstBoundaryIndex = Math.floor(plan.visibleWindow.startPx / WAVEFORM_DATA_TILE_WIDTH) + 1;
+  const lastBoundaryIndex = Math.floor((plan.visibleWindow.endPx - 1) / WAVEFORM_DATA_TILE_WIDTH);
+  const boundaries: number[] = [];
+
+  for (let tileIndex = firstBoundaryIndex; tileIndex <= lastBoundaryIndex; tileIndex += 1) {
+    const boundaryDataPx = tileIndex * WAVEFORM_DATA_TILE_WIDTH;
+    const boundarySeconds = boundaryDataPx / dataPixelsPerSecond;
+    const viewportX = boundarySeconds * pixelsPerSecond - plan.viewport.scrollLeft;
+
+    if (viewportX <= 0 || viewportX >= plan.geometry.viewportWidth) {
+      continue;
+    }
+
+    boundaries.push(viewportX);
+  }
+
+  return boundaries;
+}
+
+function resolveWaveformCanvasSeamBoundaryProbe(args: {
+  kind: WaveformCanvasSeamBoundaryKind;
+  plan: WaveformCanvasRenderPlan;
+  renderChunkBoundaryXs: readonly number[];
+  viewportX: number;
+}): WaveformCanvasSeamBoundaryProbe {
+  const dataPixelsPerSecond = Math.max(1, args.plan.dataPixelsPerSecond);
+  const pixelsPerSecond = Math.max(1, args.plan.viewport.pixelsPerSecond);
+  const boundarySeconds = (args.plan.viewport.scrollLeft + args.viewportX) / pixelsPerSecond;
+  const boundaryDataPx = boundarySeconds * dataPixelsPerSecond;
+  const roundedViewportX = Math.round(args.viewportX);
+  const tileIndex =
+    args.kind === "data-tile"
+      ? Math.round(boundaryDataPx / WAVEFORM_DATA_TILE_WIDTH)
+      : Math.floor(boundaryDataPx / WAVEFORM_DATA_TILE_WIDTH);
+
+  return {
+    boundaryDataPx,
+    boundaryId: `${args.kind}:${roundedViewportX}:${Math.round(boundaryDataPx)}`,
+    boundarySeconds,
+    distanceToNearestColumnCenterPx: Math.abs(args.viewportX - (Math.floor(args.viewportX) + 0.5)),
+    distanceToNearestPixelEdgePx: Math.abs(args.viewportX - Math.round(args.viewportX)),
+    kind: args.kind,
+    nearestDataTileBoundaryDistancePx: resolveWaveformCanvasNearestDataTileBoundaryDistancePx({
+      plan: args.plan,
+      viewportX: args.viewportX,
+    }),
+    nearestRenderChunkBoundaryDistancePx: resolveNearestNumberDistance(
+      args.renderChunkBoundaryXs,
+      args.viewportX,
+    ),
+    roundedViewportX,
+    samples: resolveWaveformCanvasSeamPeakSampleProbes({
+      plan: args.plan,
+      roundedViewportX,
+    }),
+    tileIndex,
+    viewportX: args.viewportX,
+  };
+}
+
+function resolveWaveformCanvasNearestDataTileBoundaryDistancePx(args: {
+  plan: WaveformCanvasRenderPlan;
+  viewportX: number;
+}) {
+  const boundaryStridePx =
+    (WAVEFORM_DATA_TILE_WIDTH / Math.max(1, args.plan.dataPixelsPerSecond)) *
+    Math.max(1, args.plan.viewport.pixelsPerSecond);
+  if (!Number.isFinite(boundaryStridePx) || boundaryStridePx <= 0) {
+    return null;
+  }
+
+  const dataPxAtViewportX =
+    ((args.plan.viewport.scrollLeft + args.viewportX) /
+      Math.max(1, args.plan.viewport.pixelsPerSecond)) *
+    Math.max(1, args.plan.dataPixelsPerSecond);
+  const nearestDataBoundaryPx =
+    Math.round(dataPxAtViewportX / WAVEFORM_DATA_TILE_WIDTH) * WAVEFORM_DATA_TILE_WIDTH;
+  const nearestBoundarySeconds = nearestDataBoundaryPx / Math.max(1, args.plan.dataPixelsPerSecond);
+  const nearestBoundaryViewportX =
+    nearestBoundarySeconds * Math.max(1, args.plan.viewport.pixelsPerSecond) -
+    args.plan.viewport.scrollLeft;
+
+  return Math.abs(nearestBoundaryViewportX - args.viewportX);
+}
+
+function resolveNearestNumberDistance(values: readonly number[], target: number) {
+  let distance: number | null = null;
+
+  for (const value of values) {
+    const nextDistance = Math.abs(value - target);
+    distance = distance === null ? nextDistance : Math.min(distance, nextDistance);
+  }
+
+  return distance;
+}
+
+function resolveWaveformCanvasSeamPeakSampleProbes(args: {
+  plan: WaveformCanvasRenderPlan;
+  roundedViewportX: number;
+}): WaveformCanvasSeamPeakSampleProbe[] {
+  const samples: WaveformCanvasSeamPeakSampleProbe[] = [];
+
+  for (
+    let offsetX = -WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX;
+    offsetX <= WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX;
+    offsetX += 1
+  ) {
+    const x = args.roundedViewportX + offsetX;
+    if (x < 0 || x >= args.plan.geometry.viewportWidth) {
+      continue;
+    }
+
+    const peak = resolveWaveformCanvasColumnPeak({
+      candidateLevels: args.plan.candidateLevels,
+      tileWidth: WAVEFORM_DATA_TILE_WIDTH,
+      viewport: args.plan.viewport,
+      x,
+    });
+    const dataStartPx =
+      ((args.plan.viewport.scrollLeft + x) / Math.max(1, args.plan.viewport.pixelsPerSecond)) *
+      Math.max(1, args.plan.dataPixelsPerSecond);
+    const dataEndPx =
+      ((args.plan.viewport.scrollLeft + x + 1) / Math.max(1, args.plan.viewport.pixelsPerSecond)) *
+      Math.max(1, args.plan.dataPixelsPerSecond);
+
+    samples.push({
+      dataEndPx,
+      dataStartPx,
+      hasPeak: Boolean(peak),
+      max: peak?.max ?? null,
+      min: peak?.min ?? null,
+      offsetX,
+      x,
+    });
+  }
+
+  return samples;
+}
+
+function dedupeWaveformCanvasSeamBoundaryProbes(
+  probes: WaveformCanvasSeamBoundaryProbe[],
+): WaveformCanvasSeamBoundaryProbe[] {
+  const byKey = new Map<string, WaveformCanvasSeamBoundaryProbe>();
+
+  for (const probe of probes) {
+    byKey.set(`${probe.kind}:${probe.roundedViewportX}`, probe);
+  }
+
+  return Array.from(byKey.values()).sort(
+    (left, right) =>
+      left.roundedViewportX - right.roundedViewportX || left.kind.localeCompare(right.kind),
+  );
+}
+
+function createWaveformCanvasSeamTrace(
+  job: WaveformCanvasRenderJob,
+  boundaries: readonly WaveformCanvasSeamBoundaryProbe[],
+) {
+  return {
+    backingHeight: job.plan.geometry.backingHeight,
+    backingWidth: job.plan.geometry.backingWidth,
+    boundaries,
+    boundaryCount: boundaries.length,
+    chunkBoundaries: job.chunkBoundaries,
+    dataPixelsPerSecond: job.plan.dataPixelsPerSecond,
+    devicePixelRatio: job.plan.geometry.devicePixelRatio,
+    jobId: job.id,
+    probeRadiusPx: WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX,
+    revision: job.revision,
+    scopeKey: job.plan.scopeKey,
+    tileWidth: WAVEFORM_DATA_TILE_WIDTH,
+    viewport: job.plan.viewport,
+    viewportWidth: job.plan.geometry.viewportWidth,
+    visibleWindow: job.plan.visibleWindow,
   };
 }
 
@@ -3100,6 +3407,247 @@ function commitWaveformCanvasFrame(args: {
     backingHeight: args.job.plan.geometry.backingHeight,
     backingWidth: args.job.plan.geometry.backingWidth,
   });
+}
+
+function readWaveformCanvasSeamPixelProbes(args: {
+  boundaries: readonly WaveformCanvasSeamBoundaryProbe[];
+  canvas: HTMLCanvasElement;
+  plan: WaveformCanvasRenderPlan;
+  readbackTarget: WaveformCanvasSeamReadbackTarget | null;
+}): WaveformCanvasSeamPixelProbeResult {
+  if (!args.readbackTarget) {
+    return {
+      kind: "empty",
+      reason: "missing-readback-context",
+    };
+  }
+
+  const readbackTarget = args.readbackTarget;
+
+  try {
+    return {
+      boundaries: args.boundaries.map((boundary) =>
+        readWaveformCanvasSeamPixelBoundaryProbe({
+          boundary,
+          canvas: args.canvas,
+          plan: args.plan,
+          readbackTarget,
+        }),
+      ),
+      kind: "ready",
+    };
+  } catch (error) {
+    return {
+      kind: "empty",
+      message: error instanceof Error ? error.message : String(error),
+      reason: "read-failed",
+    };
+  }
+}
+
+function readWaveformCanvasSeamPixelBoundaryProbe(args: {
+  boundary: WaveformCanvasSeamBoundaryProbe;
+  canvas: HTMLCanvasElement;
+  plan: WaveformCanvasRenderPlan;
+  readbackTarget: WaveformCanvasSeamReadbackTarget;
+}): WaveformCanvasSeamPixelBoundaryProbe {
+  const devicePixelRatio = Math.max(1, args.plan.geometry.devicePixelRatio);
+  const backingStartX = clampInteger(
+    Math.floor(
+      (args.boundary.roundedViewportX - WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX) * devicePixelRatio,
+    ),
+    0,
+    Math.max(0, args.plan.geometry.backingWidth - 1),
+  );
+  const backingEndX = clampInteger(
+    Math.ceil(
+      (args.boundary.roundedViewportX + WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX + 1) *
+        devicePixelRatio,
+    ),
+    backingStartX + 1,
+    args.plan.geometry.backingWidth,
+  );
+
+  args.readbackTarget.canvas.width = backingEndX - backingStartX;
+  args.readbackTarget.canvas.height = args.plan.geometry.backingHeight;
+  args.readbackTarget.context.resetTransform();
+  args.readbackTarget.context.clearRect(
+    0,
+    0,
+    args.readbackTarget.canvas.width,
+    args.readbackTarget.canvas.height,
+  );
+  args.readbackTarget.context.drawImage(
+    args.canvas,
+    backingStartX,
+    0,
+    args.readbackTarget.canvas.width,
+    args.readbackTarget.canvas.height,
+    0,
+    0,
+    args.readbackTarget.canvas.width,
+    args.readbackTarget.canvas.height,
+  );
+  const image = args.readbackTarget.context.getImageData(
+    0,
+    0,
+    args.readbackTarget.canvas.width,
+    args.readbackTarget.canvas.height,
+  );
+
+  return {
+    boundaryId: args.boundary.boundaryId,
+    columns: resolveWaveformCanvasSeamProbeCssXs({
+      roundedViewportX: args.boundary.roundedViewportX,
+      viewportWidth: args.plan.geometry.viewportWidth,
+    }).map((cssX) =>
+      summarizeWaveformCanvasSeamPixelColumn({
+        backingEndX: resolveWaveformCanvasSeamColumnBackingEndX({
+          cssX,
+          devicePixelRatio,
+          viewportBackingEndX: backingEndX,
+          viewportBackingStartX: backingStartX,
+        }),
+        backingStartX: resolveWaveformCanvasSeamColumnBackingStartX({
+          cssX,
+          devicePixelRatio,
+          viewportBackingStartX: backingStartX,
+        }),
+        cssX,
+        image,
+      }),
+    ),
+    kind: args.boundary.kind,
+    roundedViewportX: args.boundary.roundedViewportX,
+    viewportX: args.boundary.viewportX,
+  };
+}
+
+function resolveWaveformCanvasSeamProbeCssXs(args: {
+  roundedViewportX: number;
+  viewportWidth: number;
+}) {
+  const xs: number[] = [];
+
+  for (
+    let offsetX = -WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX;
+    offsetX <= WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX;
+    offsetX += 1
+  ) {
+    const x = args.roundedViewportX + offsetX;
+    if (x < 0 || x >= args.viewportWidth) {
+      continue;
+    }
+
+    xs.push(x);
+  }
+
+  return xs;
+}
+
+function resolveWaveformCanvasSeamColumnBackingStartX(args: {
+  cssX: number;
+  devicePixelRatio: number;
+  viewportBackingStartX: number;
+}) {
+  return Math.max(0, Math.floor(args.cssX * args.devicePixelRatio) - args.viewportBackingStartX);
+}
+
+function resolveWaveformCanvasSeamColumnBackingEndX(args: {
+  cssX: number;
+  devicePixelRatio: number;
+  viewportBackingEndX: number;
+  viewportBackingStartX: number;
+}) {
+  return clampInteger(
+    Math.ceil((args.cssX + 1) * args.devicePixelRatio) - args.viewportBackingStartX,
+    resolveWaveformCanvasSeamColumnBackingStartX(args) + 1,
+    args.viewportBackingEndX - args.viewportBackingStartX,
+  );
+}
+
+function createWaveformCanvasSeamReadbackTarget(
+  canvas: HTMLCanvasElement,
+): WaveformCanvasSeamReadbackTarget | null {
+  const readbackCanvas = canvas.ownerDocument.createElement("canvas");
+  const context = readbackCanvas.getContext("2d", {
+    willReadFrequently: true,
+  });
+
+  return context
+    ? {
+        canvas: readbackCanvas,
+        context,
+      }
+    : null;
+}
+
+export function summarizeWaveformCanvasSeamPixelColumn(args: {
+  backingEndX: number;
+  backingStartX: number;
+  cssX: number;
+  image: Pick<ImageData, "data" | "height" | "width">;
+}): WaveformCanvasSeamPixelColumnProbe {
+  let alphaSum = 0;
+  let alphaMax = 0;
+  let drawnPixelCount = 0;
+  let firstDrawnBackingY: number | null = null;
+  let lastDrawnBackingY: number | null = null;
+  const backingStartX = clampInteger(args.backingStartX, 0, args.image.width);
+  const backingEndX = clampInteger(args.backingEndX, backingStartX, args.image.width);
+  const columnWidth = backingEndX - backingStartX;
+  const totalPixelCount = columnWidth * args.image.height;
+
+  for (let backingY = 0; backingY < args.image.height; backingY += 1) {
+    for (let backingX = backingStartX; backingX < backingEndX; backingX += 1) {
+      const pixelIndex = backingY * args.image.width + backingX;
+      const alpha = args.image.data[pixelIndex * 4 + 3] ?? 0;
+      alphaSum += alpha;
+      alphaMax = Math.max(alphaMax, alpha);
+
+      if (alpha <= 0) {
+        continue;
+      }
+
+      firstDrawnBackingY ??= backingY;
+      lastDrawnBackingY = backingY;
+      drawnPixelCount += 1;
+    }
+  }
+
+  return {
+    alphaCoverageRatio: totalPixelCount > 0 ? drawnPixelCount / totalPixelCount : 0,
+    alphaMax,
+    alphaMean: totalPixelCount > 0 ? alphaSum / totalPixelCount : 0,
+    alphaSum,
+    backingEndX,
+    backingStartX,
+    cssX: args.cssX,
+    drawnPixelCount,
+    firstDrawnBackingY,
+    lastDrawnBackingY,
+    totalPixelCount,
+  };
+}
+
+function createWaveformCanvasSeamPixelTrace(
+  job: WaveformCanvasRenderJob,
+  result: WaveformCanvasSeamPixelProbeResult,
+) {
+  return {
+    backingHeight: job.plan.geometry.backingHeight,
+    backingWidth: job.plan.geometry.backingWidth,
+    dataPixelsPerSecond: job.plan.dataPixelsPerSecond,
+    devicePixelRatio: job.plan.geometry.devicePixelRatio,
+    jobId: job.id,
+    probeRadiusPx: WAVEFORM_CANVAS_SEAM_PROBE_RADIUS_PX,
+    revision: job.revision,
+    scopeKey: job.plan.scopeKey,
+    tileWidth: WAVEFORM_DATA_TILE_WIDTH,
+    viewport: job.plan.viewport,
+    viewportWidth: job.plan.geometry.viewportWidth,
+    ...result,
+  };
 }
 
 function reusePresentedWaveformCanvasFrame(args: {
@@ -3327,7 +3875,7 @@ function mergeWaveformCanvasChunkCursor(args: {
   };
 }
 
-function drawWaveformCanvasJobChunk(args: {
+export function drawWaveformCanvasJobChunk(args: {
   cursor: WaveformCanvasRenderCursor;
   deadlineMs: number;
   now: () => number;
@@ -3348,7 +3896,9 @@ function drawWaveformCanvasJobChunk(args: {
   let missingPeakColumns = 0;
   let resolvedPeakCount = 0;
 
-  context.beginPath();
+  if (startX === 0) {
+    context.beginPath();
+  }
 
   for (; x < plan.geometry.viewportWidth; x += 1) {
     const peak = resolveWaveformCanvasColumnPeak({
@@ -3379,10 +3929,6 @@ function drawWaveformCanvasJobChunk(args: {
     }
   }
 
-  if (hasChunkColumn) {
-    context.stroke();
-  }
-
   const cursor = mergeWaveformCanvasChunkCursor({
     chunk: {
       firstMissingX,
@@ -3395,6 +3941,10 @@ function drawWaveformCanvasJobChunk(args: {
     endX: x,
   });
   const completed = cursor.nextX >= plan.geometry.viewportWidth;
+
+  if (completed && cursor.hasDrawnColumn) {
+    context.stroke();
+  }
 
   return {
     completed,
