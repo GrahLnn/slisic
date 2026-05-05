@@ -35,6 +35,8 @@ const WAVEFORM_DATA_OVERSCAN_VIEWPORTS = 1.25;
 const WAVEFORM_DATA_CACHE_LIMIT = 384;
 const WAVEFORM_DATA_LOAD_CONCURRENCY = 2;
 const WAVEFORM_DATA_IDLE_OVERSCAN_DELAY_MS = 180;
+const WAVEFORM_INTERACTIVE_DATA_DEMAND_INTERVAL_MS = 64;
+const WAVEFORM_INTERACTIVE_GUARD_VIEWPORTS = 0.5;
 const WAVEFORM_DATA_PREFETCH_VISIBLE_LEVEL_COUNT = 1;
 const WAVEFORM_DATA_PREFETCH_FOCUS_LEVEL_COUNT = 3;
 const WAVEFORM_CANVAS_FRAME_BUDGET_MS = 3.25;
@@ -175,7 +177,7 @@ type WaveformWheelIntent =
       kind: "none";
     };
 
-type WaveformViewportCommit = (state: WaveformViewportState) => void;
+type WaveformViewportCommit = (request: WaveformViewportCommitRequest) => void;
 
 type WaveformZoomCommand = {
   anchorViewportX: number;
@@ -184,6 +186,8 @@ type WaveformZoomCommand = {
 };
 
 type WaveformZoomQueue = (command: WaveformZoomCommand) => void;
+
+type WaveformInteractionMode = "interactive" | "settled";
 
 type WaveformDataWindow = {
   endPx: number;
@@ -195,9 +199,14 @@ type WaveformSecondsWindow = {
   startSeconds: number;
 };
 
-type WaveformDataRequestPriority = "visible" | "prefetch-focus" | "prefetch-visible" | "overscan";
+type WaveformDataRequestPriority =
+  | "visible"
+  | "visible-guard"
+  | "prefetch-focus"
+  | "prefetch-visible"
+  | "overscan";
 
-type WaveformDataPlanMode = "interactive" | "settled";
+type WaveformDataPlanMode = WaveformInteractionMode;
 
 type WaveformDataRequest = {
   cacheKey: string;
@@ -232,6 +241,35 @@ type WaveformDataPlanRequest = {
   mode?: WaveformDataPlanMode;
   plan?: WaveformDataPlan;
   scope?: WaveformDataPlanScope;
+};
+
+type WaveformTransaction = {
+  dataDemand: {
+    plan: WaveformDataPlan | null;
+    scope: WaveformDataPlanScope;
+    skipped: boolean;
+  };
+  mode: WaveformDataPlanMode;
+  presentation: {
+    plan: WaveformDataPlan | null;
+  };
+  shouldScheduleCompleteData: boolean;
+};
+
+type WaveformTransactionResolution = {
+  nextInteractiveDataDemand: WaveformInteractiveDataDemand | null;
+  nextInteractiveDataDemandAt: number | null;
+  transaction: WaveformTransaction;
+};
+
+type WaveformInteractiveDataDemand = {
+  at: number;
+  signature: string | null;
+};
+
+type WaveformViewportCommitRequest = {
+  mode?: WaveformInteractionMode;
+  state: WaveformViewportState;
 };
 
 type WaveformCachedTile = {
@@ -306,6 +344,12 @@ type WaveformCanvasFrameDescriptor = {
 };
 
 type WaveformCanvasRenderPlanEmpty =
+  | {
+      geometry: WaveformCanvasFrameGeometry;
+      kind: "missing-data-plan";
+      status: WaveformStatus;
+      viewport: WaveformViewportModel;
+    }
   | {
       geometry: WaveformCanvasFrameGeometry;
       kind: "missing-candidate-levels";
@@ -1221,6 +1265,7 @@ export function resolveWaveformDataPlan(args: {
   const durationSeconds = Math.max(0, args.summary.duration_ms) / 1000;
   const dataContentWidth = Math.max(1, Math.ceil(durationSeconds * dataPixelsPerSecond));
   const overscanViewports = mode === "settled" ? WAVEFORM_DATA_OVERSCAN_VIEWPORTS : 0;
+  const guardViewports = mode === "interactive" ? WAVEFORM_INTERACTIVE_GUARD_VIEWPORTS : 0;
   const visiblePrefetchLevelCount =
     mode === "settled" ? WAVEFORM_DATA_PREFETCH_VISIBLE_LEVEL_COUNT : 0;
   const focusPrefetchLevelCount = mode === "settled" ? WAVEFORM_DATA_PREFETCH_FOCUS_LEVEL_COUNT : 0;
@@ -1238,6 +1283,13 @@ export function resolveWaveformDataPlan(args: {
     scrollLeft: args.scrollLeft,
     viewportWidth: args.viewportWidth,
   });
+  const dataDemandSecondsWindow = resolveWaveformVisibleSecondsWindow({
+    durationSeconds,
+    overscanViewports: Math.max(overscanViewports, guardViewports),
+    pixelsPerSecond: displayPixelsPerSecond,
+    scrollLeft: args.scrollLeft,
+    viewportWidth: args.viewportWidth,
+  });
   const visibleWindow = resolveWaveformDataPixelWindow({
     dataContentWidth,
     dataPixelsPerSecond,
@@ -1247,6 +1299,11 @@ export function resolveWaveformDataPlan(args: {
     dataContentWidth,
     dataPixelsPerSecond,
     window: overscanSecondsWindow,
+  });
+  const dataDemandWindow = resolveWaveformDataPixelWindow({
+    dataContentWidth,
+    dataPixelsPerSecond,
+    window: dataDemandSecondsWindow,
   });
   const visibleIndexSet = new Set(
     resolveWaveformDataTileIndexes({
@@ -1261,10 +1318,15 @@ export function resolveWaveformDataPlan(args: {
   const currentLevelRequests = createWaveformDataRequestsForLevel({
     dataPixelsPerSecond,
     focusSeconds,
-    priorityForIndex: (index) => (visibleIndexSet.has(index) ? "visible" : "overscan"),
+    priorityForIndex: (index) =>
+      visibleIndexSet.has(index)
+        ? "visible"
+        : mode === "interactive"
+          ? "visible-guard"
+          : "overscan",
     scopeKey,
     tileWidth,
-    window: overscanWindow,
+    window: dataDemandWindow,
     durationSeconds,
   });
   const visiblePrefetchRequests = resolveWaveformPrefetchRenderLevels({
@@ -1337,6 +1399,48 @@ export function resolveWaveformDataPlan(args: {
     visibleIndexes: Array.from(visibleIndexSet).sort((left, right) => left - right),
     visibleSecondsWindow,
     visibleWindow,
+  };
+}
+
+export function resolveWaveformTransaction(args: {
+  lastInteractiveDataDemand: WaveformInteractiveDataDemand | null;
+  mode: WaveformDataPlanMode;
+  now: number;
+  plan: WaveformDataPlan | null;
+}): WaveformTransactionResolution {
+  const dataDemandSignature = args.plan
+    ? createWaveformDataPlanSignature(args.plan, "visible")
+    : null;
+  const shouldSkipInteractiveDemand =
+    args.mode === "interactive" &&
+    args.lastInteractiveDataDemand !== null &&
+    dataDemandSignature === args.lastInteractiveDataDemand.signature &&
+    args.now - args.lastInteractiveDataDemand.at < WAVEFORM_INTERACTIVE_DATA_DEMAND_INTERVAL_MS;
+  const nextInteractiveDataDemand =
+    args.mode === "settled"
+      ? null
+      : shouldSkipInteractiveDemand
+        ? args.lastInteractiveDataDemand
+        : {
+            at: args.now,
+            signature: dataDemandSignature,
+          };
+
+  return {
+    nextInteractiveDataDemandAt: nextInteractiveDataDemand?.at ?? null,
+    nextInteractiveDataDemand,
+    transaction: {
+      dataDemand: {
+        plan: args.plan,
+        scope: "visible",
+        skipped: shouldSkipInteractiveDemand,
+      },
+      mode: args.mode,
+      presentation: {
+        plan: args.plan,
+      },
+      shouldScheduleCompleteData: args.mode === "settled",
+    },
   };
 }
 
@@ -1472,15 +1576,21 @@ function resolveWaveformDataRequestPriorityRank(priority: WaveformDataRequestPri
   switch (priority) {
     case "visible":
       return 0;
-    case "prefetch-focus":
+    case "visible-guard":
       return 1;
-    case "prefetch-visible":
+    case "prefetch-focus":
       return 2;
-    case "overscan":
+    case "prefetch-visible":
       return 3;
+    case "overscan":
+      return 4;
   }
 
-  return 3;
+  return 4;
+}
+
+function isWaveformVisibleDemandPriority(priority: WaveformDataRequestPriority) {
+  return priority === "visible" || priority === "visible-guard";
 }
 
 function summarizeWaveformDataRequestPriorities(requests: readonly WaveformDataRequest[]) {
@@ -1494,6 +1604,7 @@ function summarizeWaveformDataRequestPriorities(requests: readonly WaveformDataR
       "prefetch-focus": 0,
       "prefetch-visible": 0,
       visible: 0,
+      "visible-guard": 0,
     },
   );
 }
@@ -1510,6 +1621,7 @@ function summarizeWaveformDataRequestLevels(requests: readonly WaveformDataReque
       "prefetch-focus": {},
       "prefetch-visible": {},
       visible: {},
+      "visible-guard": {},
     },
   );
 }
@@ -1790,6 +1902,7 @@ function TrackSpectrumSession(props: {
   const commitViewportRef = useRef<WaveformViewportCommit | null>(null);
   const tileCacheRef = useRef(new Map<string, WaveformCachedTile>());
   const completeDataPlanTimerRef = useRef<number | null>(null);
+  const lastInteractiveDataDemandRef = useRef<WaveformInteractiveDataDemand | null>(null);
   const [loadingGridSize, setLoadingGridSize] = useState<WaveformLoadingGridSize>(() =>
     resolveWaveformLoadingGridSize({
       height: WAVEFORM_CANVAS_HEIGHT,
@@ -1929,31 +2042,61 @@ function TrackSpectrumSession(props: {
     }, WAVEFORM_DATA_IDLE_OVERSCAN_DELAY_MS);
   }, [cancelCompleteDataPlan, requestDataPlan, resolveCurrentDataPlan]);
 
-  const runViewportEffects = useCallback(
+  const buildWaveformTransaction = useCallback(
     (mode: WaveformDataPlanMode) => {
-      if (mode === "interactive") {
+      const plan = resolveCurrentDataPlan(mode);
+      const ownerWindow =
+        hostRef.current?.ownerDocument.defaultView ??
+        (typeof window === "undefined" ? null : window);
+      const now = readWaveformPerformanceNow(ownerWindow);
+      const resolution = resolveWaveformTransaction({
+        lastInteractiveDataDemand: lastInteractiveDataDemandRef.current,
+        mode,
+        now,
+        plan,
+      });
+
+      lastInteractiveDataDemandRef.current = resolution.nextInteractiveDataDemand;
+
+      recordSpectrumTrace("spectrum-transaction", {
+        dataDemandSkipped: resolution.transaction.dataDemand.skipped,
+        hasPlan: Boolean(plan),
+        mode,
+      });
+
+      return resolution.transaction;
+    },
+    [resolveCurrentDataPlan],
+  );
+
+  const applyWaveformTransaction = useCallback(
+    (transaction: WaveformTransaction) => {
+      if (transaction.mode === "interactive") {
         cancelCompleteDataPlan();
       }
 
-      const plan = resolveCurrentDataPlan(mode);
-      drawCanvas(plan ?? undefined);
-      requestDataPlan({
-        mode,
-        plan: plan ?? undefined,
-        scope: "visible",
-      });
+      drawCanvas(transaction.presentation.plan ?? undefined);
 
-      if (mode === "settled") {
+      if (!transaction.dataDemand.skipped) {
+        requestDataPlan({
+          mode: transaction.mode,
+          plan: transaction.dataDemand.plan ?? undefined,
+          scope: transaction.dataDemand.scope,
+        });
+      }
+
+      if (transaction.shouldScheduleCompleteData) {
         scheduleCompleteDataPlan();
       }
     },
-    [
-      cancelCompleteDataPlan,
-      drawCanvas,
-      requestDataPlan,
-      resolveCurrentDataPlan,
-      scheduleCompleteDataPlan,
-    ],
+    [cancelCompleteDataPlan, drawCanvas, requestDataPlan, scheduleCompleteDataPlan],
+  );
+
+  const runViewportEffects = useCallback(
+    (mode: WaveformDataPlanMode) => {
+      applyWaveformTransaction(buildWaveformTransaction(mode));
+    },
+    [applyWaveformTransaction, buildWaveformTransaction],
   );
 
   const commitViewportModel = useCallback(
@@ -1977,25 +2120,26 @@ function TrackSpectrumSession(props: {
         previous.durationMs !== normalizedModel.durationMs ||
         previous.maximumPixelsPerSecond !== normalizedModel.maximumPixelsPerSecond;
 
+      const changedReasons = {
+        contentWidthChanged: !previous || previous.contentWidth !== normalizedModel.contentWidth,
+        durationMsChanged: !previous || previous.durationMs !== normalizedModel.durationMs,
+        focusSecondsChanged: !previous || previous.focusSeconds !== normalizedModel.focusSeconds,
+        maximumPixelsPerSecondChanged:
+          !previous || previous.maximumPixelsPerSecond !== normalizedModel.maximumPixelsPerSecond,
+        pixelsPerSecondChanged:
+          !previous || Math.abs(previous.pixelsPerSecond - normalizedModel.pixelsPerSecond) >= 0.01,
+        scrollLeftChanged:
+          !previous || Math.abs(previous.scrollLeft - normalizedModel.scrollLeft) >= 0.5,
+        viewportWidthChanged: !previous || previous.viewportWidth !== normalizedModel.viewportWidth,
+      };
+
       recordSpectrumTrace("spectrum-viewport-commit", {
         changed,
-        next: normalizedModel,
-        previous,
-        reason: {
-          contentWidthChanged: !previous || previous.contentWidth !== normalizedModel.contentWidth,
-          durationMsChanged: !previous || previous.durationMs !== normalizedModel.durationMs,
-          focusSecondsChanged: !previous || previous.focusSeconds !== normalizedModel.focusSeconds,
-          maximumPixelsPerSecondChanged:
-            !previous || previous.maximumPixelsPerSecond !== normalizedModel.maximumPixelsPerSecond,
-          pixelsPerSecondChanged:
-            !previous ||
-            Math.abs(previous.pixelsPerSecond - normalizedModel.pixelsPerSecond) >= 0.01,
-          scrollLeftChanged:
-            !previous || Math.abs(previous.scrollLeft - normalizedModel.scrollLeft) >= 0.5,
-          viewportWidthChanged:
-            !previous || previous.viewportWidth !== normalizedModel.viewportWidth,
-        },
-        requested: next,
+        contentWidth: normalizedModel.contentWidth,
+        pixelsPerSecond: normalizedModel.pixelsPerSecond,
+        reason: changedReasons,
+        scrollLeft: normalizedModel.scrollLeft,
+        viewportWidth: normalizedModel.viewportWidth,
       });
 
       viewportRef.current = normalizedModel;
@@ -2007,9 +2151,9 @@ function TrackSpectrumSession(props: {
     [maximumPixelsPerSecond, syncPlayhead, waveformState.summary.duration_ms],
   );
   const commitViewport = useCallback(
-    (next: WaveformViewportState) => {
-      if (commitViewportModel(next)) {
-        runViewportEffects("settled");
+    (request: WaveformViewportCommitRequest) => {
+      if (commitViewportModel(request.state)) {
+        runViewportEffects(request.mode ?? "settled");
       }
     },
     [commitViewportModel, runViewportEffects],
@@ -2032,7 +2176,7 @@ function TrackSpectrumSession(props: {
       }
 
       handleWaveformViewportWheel({
-        commitViewport: (next) => commitViewportRef.current?.(next),
+        commitViewport: (request) => commitViewportRef.current?.(request),
         event: wheelEvent,
         queueZoomViewport,
         viewport: current,
@@ -2050,18 +2194,6 @@ function TrackSpectrumSession(props: {
       host,
     });
 
-    recordSpectrumTrace("spectrum-hardware-horizontal-wheel", {
-      accepted,
-      clientX: payload.client_x,
-      clientY: payload.client_y,
-      deltaX: payload.delta_x,
-      hasCurrentViewport: Boolean(current),
-      hasHost: Boolean(host),
-      viewport: current,
-      wheelDeltaUnit: payload.wheel_delta_unit,
-      windowLabel: payload.window_label,
-    });
-
     if (!accepted) {
       return;
     }
@@ -2071,7 +2203,7 @@ function TrackSpectrumSession(props: {
     }
 
     handleWaveformHardwareHorizontalWheel({
-      commitViewport: (next) => commitViewportRef.current?.(next),
+      commitViewport: (request) => commitViewportRef.current?.(request),
       deltaX: payload.delta_x,
       viewport: current,
     });
@@ -2084,10 +2216,12 @@ function TrackSpectrumSession(props: {
     }
 
     commitViewport({
-      focusSeconds: current.focusSeconds,
-      pixelsPerSecond: current.pixelsPerSecond,
-      scrollLeft: current.scrollLeft,
-      viewportWidth: current.viewportWidth,
+      state: {
+        focusSeconds: current.focusSeconds,
+        pixelsPerSecond: current.pixelsPerSecond,
+        scrollLeft: current.scrollLeft,
+        viewportWidth: current.viewportWidth,
+      },
     });
   }, [
     commitViewport,
@@ -2122,10 +2256,12 @@ function TrackSpectrumSession(props: {
       }
 
       commitViewport({
-        focusSeconds: current.focusSeconds,
-        pixelsPerSecond: current.pixelsPerSecond,
-        scrollLeft: current.scrollLeft,
-        viewportWidth: nextViewportWidth,
+        state: {
+          focusSeconds: current.focusSeconds,
+          pixelsPerSecond: current.pixelsPerSecond,
+          scrollLeft: current.scrollLeft,
+          viewportWidth: nextViewportWidth,
+        },
       });
     };
 
@@ -2395,9 +2531,11 @@ function useWaveformZoomViewportScheduler(args: {
         anchorViewportX: command.anchorViewportX,
         changed,
         deltaY: command.deltaY,
-        frame,
+        pixelsPerSecond: frame.pixelsPerSecond,
         pending: Boolean(pendingCommandRef.current),
-        viewport: command.viewport,
+        scrollLeft: frame.scrollLeft,
+        viewportPixelsPerSecond: command.viewport.pixelsPerSecond,
+        viewportScrollLeft: command.viewport.scrollLeft,
       });
 
       if (!changed) {
@@ -2969,7 +3107,7 @@ function useWaveformDataLoader(args: {
         });
       const scopedRequests =
         scope === "visible"
-          ? plan.requests.filter((request) => request.priority === "visible")
+          ? plan.requests.filter((request) => isWaveformVisibleDemandPriority(request.priority))
           : plan.requests;
       const cache = latest.tileCacheRef.current;
       const planSignature = createWaveformDataPlanSignature(plan, scope);
@@ -3178,7 +3316,7 @@ function useWaveformCanvasRenderer(args: {
         viewportWidth: viewport.viewportWidth,
       });
       const plan = resolveWaveformCanvasRenderPlan({
-        dataPlan: controller.dataPlan ?? undefined,
+        dataPlan: controller.dataPlan,
         end: latest.end,
         filePath: latest.filePath,
         geometry,
@@ -3347,7 +3485,7 @@ function useWaveformCanvasRenderer(args: {
       const renderPlan =
         geometry && viewport
           ? resolveWaveformCanvasRenderPlan({
-              dataPlan,
+              dataPlan: dataPlan ?? null,
               end: latest.end,
               filePath: latest.filePath,
               geometry,
@@ -3514,7 +3652,7 @@ function isWaveformCanvasFrameGeometryEqual(
 }
 
 function resolveWaveformCanvasRenderPlan(args: {
-  dataPlan?: WaveformDataPlan;
+  dataPlan: WaveformDataPlan | null;
   end: number | null;
   filePath: string | null;
   geometry: WaveformCanvasFrameGeometry;
@@ -3545,20 +3683,19 @@ function resolveWaveformCanvasRenderPlan(args: {
     };
   }
 
-  const plan =
-    args.dataPlan ??
-    resolveWaveformDataPlan({
-      contentWidth: args.viewport.contentWidth,
-      end: args.end,
-      filePath: args.filePath,
-      focusSeconds: args.viewport.focusSeconds,
-      mode: "settled",
-      pixelsPerSecond: args.viewport.pixelsPerSecond,
-      scrollLeft: args.viewport.scrollLeft,
-      start: args.start,
-      summary: args.summary,
-      viewportWidth: args.geometry.viewportWidth,
-    });
+  if (!args.dataPlan) {
+    return {
+      empty: {
+        geometry: args.geometry,
+        kind: "missing-data-plan",
+        status: args.status,
+        viewport: args.viewport,
+      },
+      kind: "empty",
+    };
+  }
+
+  const plan = args.dataPlan;
   const levelIndexes = resolveWaveformLevelTileIndexes({
     endSeconds: plan.visibleSecondsWindow.endSeconds,
     scopeKey: plan.scopeKey,
@@ -3732,7 +3869,7 @@ function createWaveformRenderPlanEmptyTrace(empty: WaveformCanvasRenderPlanEmpty
     return {
       backingHeight: empty.geometry.backingHeight,
       backingWidth: empty.geometry.backingWidth,
-      hasFilePath: Boolean(empty.filePath),
+      hasFilePath: "filePath" in empty ? Boolean(empty.filePath) : null,
       reason: empty.kind,
       status: empty.status,
       viewport: empty.viewport,
@@ -5236,7 +5373,7 @@ function resolveWaveformPlayheadCssVariables(args: {
 }
 
 export function handleWaveformViewportWheel(args: {
-  commitViewport: (state: WaveformViewportState) => void;
+  commitViewport: WaveformViewportCommit;
   event: WheelEvent;
   queueZoomViewport: WaveformZoomQueue;
   viewport: WaveformViewportModel;
@@ -5259,16 +5396,6 @@ export function handleWaveformViewportWheel(args: {
   });
   const intent = resolveWaveformWheelIntent(pixelDeltas);
   const preventDefault = shouldPreventWaveformWheelDefault(intent);
-
-  recordSpectrumTrace("spectrum-wheel", {
-    intent,
-    pixelDeltas,
-    preventDefault,
-    rawWheelDeltas,
-    shiftKey: args.event.shiftKey,
-    viewport: args.viewport,
-    wheelDeltas,
-  });
 
   if (!preventDefault) {
     return;
@@ -5323,7 +5450,7 @@ export function shouldAcceptWaveformHardwareHorizontalWheel(args: {
 }
 
 function handleWaveformHardwareHorizontalWheel(args: {
-  commitViewport: (state: WaveformViewportState) => void;
+  commitViewport: WaveformViewportCommit;
   deltaX: number;
   viewport: WaveformViewportModel;
 }) {
@@ -5343,7 +5470,7 @@ function handleWaveformHardwareHorizontalWheel(args: {
 }
 
 function handleWaveformHorizontalPanWheel(args: {
-  commitViewport: (state: WaveformViewportState) => void;
+  commitViewport: WaveformViewportCommit;
   deltaX: number;
   viewport: WaveformViewportModel;
 }) {
@@ -5355,21 +5482,18 @@ function handleWaveformHorizontalPanWheel(args: {
     viewportWidth,
   });
 
-  recordSpectrumTrace("spectrum-horizontal-pan-frame", {
-    deltaX: args.deltaX,
-    targetFrame,
-    viewport: args.viewport,
-  });
-
   if (!targetFrame.changed) {
     return;
   }
 
   args.commitViewport({
-    focusSeconds: null,
-    pixelsPerSecond: args.viewport.pixelsPerSecond,
-    scrollLeft: targetFrame.scrollLeft,
-    viewportWidth: args.viewport.viewportWidth,
+    mode: "interactive",
+    state: {
+      focusSeconds: null,
+      pixelsPerSecond: args.viewport.pixelsPerSecond,
+      scrollLeft: targetFrame.scrollLeft,
+      viewportWidth: args.viewport.viewportWidth,
+    },
   });
 }
 
@@ -5522,7 +5646,7 @@ function resolveWaveformDataPixelWindow(args: {
 function createWaveformDataPlanSignature(plan: WaveformDataPlan, scope: WaveformDataPlanScope) {
   const requests =
     scope === "visible"
-      ? plan.requests.filter((request) => request.priority === "visible")
+      ? plan.requests.filter((request) => isWaveformVisibleDemandPriority(request.priority))
       : plan.requests;
 
   return [

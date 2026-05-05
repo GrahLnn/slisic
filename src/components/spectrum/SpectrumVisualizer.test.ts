@@ -38,6 +38,7 @@ import {
   resolveWaveformTileIndexPeakRangeAtPixels,
   resolveWaveformTilePeakRangeAtPixels,
   resolveWaveformTilePeakAtSeconds,
+  resolveWaveformTransaction,
   resolveWaveformWheelAxisDeltas,
   resolveWaveformWheelDeltaX,
   resolveWaveformWheelDeltas,
@@ -953,6 +954,56 @@ describe("SpectrumVisualizer", () => {
     assert.equal(committed, false);
   });
 
+  test("commits explicit shift-pan as interactive viewport work", () => {
+    let prevented = false;
+    let request:
+      | Parameters<Parameters<typeof handleWaveformViewportWheel>[0]["commitViewport"]>[0]
+      | null = null;
+
+    handleWaveformViewportWheel({
+      commitViewport: (nextRequest) => {
+        request = nextRequest;
+      },
+      event: {
+        currentTarget: null,
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: 120,
+        deltaZ: 0,
+        isTrusted: true,
+        preventDefault: () => {
+          prevented = true;
+        },
+        shiftKey: true,
+        timeStamp: 1_000,
+      } as WheelEvent,
+      queueZoomViewport: () => {
+        assert.fail("shift-pan should not enter the zoom scheduler");
+      },
+      viewport: {
+        contentWidth: 1_000,
+        durationMs: 120_000,
+        focusSeconds: 4,
+        maximumPixelsPerSecond: 800,
+        pixelsPerSecond: 100,
+        scrollLeft: 350,
+        viewportWidth: 400,
+      },
+    });
+
+    assert.equal(prevented, true);
+    assert.notEqual(request, null);
+    assert.deepEqual(request, {
+      mode: "interactive",
+      state: {
+        focusSeconds: null,
+        pixelsPerSecond: 100,
+        scrollLeft: 470,
+        viewportWidth: 400,
+      },
+    });
+  });
+
   test("zooms around the pointer anchor without drifting", () => {
     const frame = resolveWaveformZoomFrame({
       anchorViewportX: 250,
@@ -1115,10 +1166,97 @@ describe("SpectrumVisualizer", () => {
     assert.deepEqual(plan.visibleIndexes, [1]);
     assert.deepEqual(
       plan.requests.map((request) => request.priority),
-      ["visible"],
+      ["visible", "visible-guard", "visible-guard"],
     );
     assert.deepEqual(plan.overscanSecondsWindow, plan.visibleSecondsWindow);
     assert.deepEqual(plan.overscanWindow, plan.visibleWindow);
+  });
+
+  test("keeps interactive presentation independent from throttled data demand", () => {
+    const plan = resolveWaveformDataPlan({
+      contentWidth: 12_000,
+      end: null,
+      filePath: "C:/Music/track.wav",
+      focusSeconds: 5,
+      mode: "interactive",
+      pixelsPerSecond: 100,
+      scrollLeft: 500,
+      start: null,
+      summary: createWaveformTestSummary(),
+      viewportWidth: 1_000,
+    });
+
+    const first = resolveWaveformTransaction({
+      lastInteractiveDataDemand: null,
+      mode: "interactive",
+      now: 100,
+      plan,
+    });
+    const second = resolveWaveformTransaction({
+      lastInteractiveDataDemand: first.nextInteractiveDataDemand,
+      mode: "interactive",
+      now: 120,
+      plan,
+    });
+    const settled = resolveWaveformTransaction({
+      lastInteractiveDataDemand: second.nextInteractiveDataDemand,
+      mode: "settled",
+      now: 200,
+      plan,
+    });
+
+    assert.equal(first.transaction.dataDemand.skipped, false);
+    assert.equal(first.transaction.presentation.plan, plan);
+    assert.equal(first.nextInteractiveDataDemandAt, 100);
+    assert.equal(second.transaction.dataDemand.skipped, true);
+    assert.equal(second.transaction.presentation.plan, plan);
+    assert.equal(second.nextInteractiveDataDemandAt, 100);
+    assert.equal(settled.transaction.dataDemand.skipped, false);
+    assert.equal(settled.nextInteractiveDataDemandAt, null);
+    assert.equal(settled.transaction.shouldScheduleCompleteData, true);
+  });
+
+  test("does not throttle interactive data demand when the visible demand changes", () => {
+    const summary = createWaveformTestSummary();
+    const firstPlan = resolveWaveformDataPlan({
+      contentWidth: 12_000,
+      end: null,
+      filePath: "C:/Music/track.wav",
+      focusSeconds: 5,
+      mode: "interactive",
+      pixelsPerSecond: 100,
+      scrollLeft: 500,
+      start: null,
+      summary,
+      viewportWidth: 1_000,
+    });
+    const secondPlan = resolveWaveformDataPlan({
+      contentWidth: 12_000,
+      end: null,
+      filePath: "C:/Music/track.wav",
+      focusSeconds: 5,
+      mode: "interactive",
+      pixelsPerSecond: 100,
+      scrollLeft: 2_500,
+      start: null,
+      summary,
+      viewportWidth: 1_000,
+    });
+    const first = resolveWaveformTransaction({
+      lastInteractiveDataDemand: null,
+      mode: "interactive",
+      now: 100,
+      plan: firstPlan,
+    });
+    const second = resolveWaveformTransaction({
+      lastInteractiveDataDemand: first.nextInteractiveDataDemand,
+      mode: "interactive",
+      now: 120,
+      plan: secondPlan,
+    });
+
+    assert.equal(second.transaction.dataDemand.skipped, false);
+    assert.equal(second.nextInteractiveDataDemandAt, 120);
   });
 
   test("changes data request keys on every render density change", () => {
