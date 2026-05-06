@@ -35,7 +35,6 @@ import {
 } from "./runtime";
 import { action as pasteDownloadAction } from "../pasteDownload";
 import { createPlaybackContinuationModeEffectOwner } from "./playbackContinuationModeEffectOwner";
-import { installPlaybackTrace, recordPlaybackTrace } from "@/src/debug/playbackTrace";
 import {
   resolveSpectrumBackResumeEffects,
   resolveSpectrumEnterPlaybackModeEffects,
@@ -162,9 +161,6 @@ function requestPlaybackModeEffects(effects: PlaybackModeEffect[], errorMessage:
     return;
   }
 
-  recordPlaybackTrace("playback-mode-effects-request", {
-    effects,
-  });
   void applyPlaybackModeEffects(effects).catch((error) => {
     console.error(errorMessage, error);
   });
@@ -183,37 +179,19 @@ function isSpectrumOpenSourceStillCurrent(source: ActorSnapshot, current: ActorS
 }
 
 async function openSpectrumAfterPlaybackMode(sourceSnapshot: ActorSnapshot) {
-  recordPlaybackTrace("spectrum-open-repeat-current-start", {
-    context: summarizeContext(sourceSnapshot.context),
-    state: formatStateValue(sourceSnapshot.value),
-  });
   await applyPlaybackModeEffects(resolveSpectrumEnterPlaybackModeEffects());
 
   const currentSnapshot = actor.getSnapshot();
   const shouldCommit = isSpectrumOpenSourceStillCurrent(sourceSnapshot, currentSnapshot);
-  recordPlaybackTrace("spectrum-open-repeat-current-done", {
-    currentContext: summarizeContext(currentSnapshot.context),
-    currentState: formatStateValue(currentSnapshot.value),
-    shouldCommit,
-  });
 
   if (!shouldCommit) {
     return;
   }
 
   actor.send(sig.mainx.openspectrum);
-  const nextSnapshot = actor.getSnapshot();
-  recordPlaybackTrace("spectrum-open-committed", {
-    afterContext: summarizeContext(nextSnapshot.context),
-    afterState: formatStateValue(nextSnapshot.value),
-  });
 }
 
 async function restorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnapshot) {
-  recordPlaybackTrace("spectrum-back-restore-start", {
-    context: summarizeContext(snapshot.context),
-    state: formatStateValue(snapshot.value),
-  });
   await applyPlaybackModeEffects(resolveSpectrumExitPlaybackModeEffects());
 
   const spectrumTrackPath = snapshot.context.nowPlayingTrackFilePath?.trim();
@@ -222,13 +200,6 @@ async function restorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnap
   }
 
   const status = await getPlaybackStatus();
-  recordPlaybackTrace("spectrum-back-status", {
-    currentPlaybackPath: status?.path ?? null,
-    paused: status?.paused ?? null,
-    spectrumTrackPath,
-    statusPlaybackStartMs: status?.playback_start_ms ?? null,
-    statusPlaybackEndMs: status?.playback_end_ms ?? null,
-  });
   await applyPlaybackModeEffects(
     resolveSpectrumBackResumeEffects({
       currentPlaybackPath: status?.path ?? null,
@@ -265,13 +236,6 @@ function attachNowPlayingTrackListener() {
   }
 
   void listenNowPlayingTrackChanged((payload) => {
-    recordPlaybackTrace("now-playing-track-changed", {
-      endMs: payload.end_ms,
-      filePath: payload.file_path,
-      musicUrl: payload.music_url,
-      playlistName: payload.playlist_name,
-      startMs: payload.start_ms,
-    });
     send(nowPlayingTrackChanged.load(payload));
   })
     .then((unlisten) => {
@@ -341,10 +305,6 @@ export const action = {
   openSpectrum: () => {
     ensureStarted();
     const snapshot = actor.getSnapshot();
-    recordPlaybackTrace("spectrum-open-request", {
-      beforeContext: summarizeContext(snapshot.context),
-      beforeState: formatStateValue(snapshot.value),
-    });
 
     if (snapshot.value !== "play") {
       actor.send(sig.mainx.openspectrum);
@@ -358,10 +318,6 @@ export const action = {
   back: () => {
     ensureStarted();
     const snapshot = actor.getSnapshot();
-    recordPlaybackTrace("app-back-request", {
-      context: summarizeContext(snapshot.context),
-      state: formatStateValue(snapshot.value),
-    });
     if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
       requestRestorePlaybackPageModeBeforeBackFromSpectrum(snapshot);
     }
@@ -465,7 +421,6 @@ export function ensureStarted() {
     return;
   }
 
-  installPlaybackTrace();
   actor.start();
   attachNowPlayingTrackListener();
   started = true;

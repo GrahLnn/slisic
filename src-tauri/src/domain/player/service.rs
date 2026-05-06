@@ -1,5 +1,5 @@
 #[cfg(not(test))]
-use super::event::{NowPlayingTrackChangedEvent, PlaybackTraceEvent};
+use super::event::NowPlayingTrackChangedEvent;
 use super::model::PlaybackTrack;
 #[cfg(not(test))]
 use super::model::{PlaybackContinuationMode, PlaybackStatusPayload};
@@ -458,10 +458,6 @@ impl PlayerRuntime {
         ))
     }
 
-    fn emit_playback_trace(&self, event: PlaybackTraceEvent) {
-        let _ = event.emit(&self.app);
-    }
-
     fn replace_session_tracks(
         &self,
         handle: &PlaybackSessionHandle,
@@ -584,10 +580,6 @@ impl PlayerRuntime {
             .write()
             .map_err(|_| anyhow!("player runtime continuation mode lock is poisoned"))?;
         *current = mode;
-        self.emit_playback_trace(PlaybackTraceEvent {
-            mode: Some(mode),
-            ..PlaybackTraceEvent::new("player-continuation-mode-set")
-        });
         Ok(())
     }
 
@@ -645,16 +637,6 @@ async fn run_playback_session(
             return Ok(());
         };
 
-        runtime.emit_playback_trace(PlaybackTraceEvent {
-            generation: Some(generation),
-            mode: Some(mode),
-            path: Some(track.file_path.to_string_lossy().to_string()),
-            playlist_name: Some(track.playlist_name.clone()),
-            music_url: Some(track.music_url.clone()),
-            start_ms: Some(track.start_ms),
-            end_ms: Some(track.end_ms),
-            ..PlaybackTraceEvent::new("player-session-track-selected")
-        });
         NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&runtime.app)?;
         let request = playback_request_for_track(&track)?;
         playback
@@ -766,12 +748,6 @@ async fn wait_until_track_finishes(
 ) -> Result<()> {
     loop {
         if runtime.generation.load(Ordering::SeqCst) != generation {
-            runtime.emit_playback_trace(PlaybackTraceEvent {
-                generation: Some(generation),
-                path: Some(current_path.to_string_lossy().to_string()),
-                reason: Some("generation-changed".to_string()),
-                ..PlaybackTraceEvent::new("player-track-finish-wait-ended")
-            });
             return Ok(());
         }
 
@@ -780,28 +756,10 @@ async fn wait_until_track_finishes(
             .await
             .map_err(|error| anyhow!("failed to read playback status: {error}"))?;
         let Some(active_path) = status.path else {
-            runtime.emit_playback_trace(PlaybackTraceEvent {
-                generation: Some(generation),
-                path: Some(current_path.to_string_lossy().to_string()),
-                status_path: None,
-                position_ms: Some(status.position_ms),
-                duration_ms: status.duration_ms,
-                reason: Some("status-path-empty".to_string()),
-                ..PlaybackTraceEvent::new("player-track-finish-wait-ended")
-            });
             return Ok(());
         };
 
         if Path::new(&active_path) != current_path {
-            runtime.emit_playback_trace(PlaybackTraceEvent {
-                generation: Some(generation),
-                path: Some(current_path.to_string_lossy().to_string()),
-                status_path: Some(active_path),
-                position_ms: Some(status.position_ms),
-                duration_ms: status.duration_ms,
-                reason: Some("status-path-changed".to_string()),
-                ..PlaybackTraceEvent::new("player-track-finish-wait-ended")
-            });
             return Ok(());
         }
 

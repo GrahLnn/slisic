@@ -1,5 +1,4 @@
 import type { PlaybackContinuationMode } from "@/src/cmd";
-import { recordPlaybackTrace } from "@/src/debug/playbackTrace";
 
 export interface PlaybackContinuationModeEffectPort {
   setPlaybackContinuationMode: (mode: PlaybackContinuationMode) => Promise<boolean>;
@@ -27,14 +26,7 @@ export function createPlaybackContinuationModeEffectOwner(
         pendingMode = null;
         activeMode = mode;
 
-        recordPlaybackTrace("continuation-mode-write-start", {
-          mode,
-        });
         await port.setPlaybackContinuationMode(mode);
-        recordPlaybackTrace("continuation-mode-write-done", {
-          mode,
-          pendingMode,
-        });
 
         activeMode = null;
         if (pendingMode === mode) {
@@ -48,11 +40,6 @@ export function createPlaybackContinuationModeEffectOwner(
   }
 
   function request(mode: PlaybackContinuationMode) {
-    recordPlaybackTrace("continuation-mode-request", {
-      activeMode,
-      mode,
-      pendingMode,
-    });
     if (activeMode === mode) {
       pendingMode = null;
     } else {

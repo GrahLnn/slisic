@@ -121,7 +121,6 @@ export const events = {
 	fullScreenEvent: makeEvent<FullScreenEvent>("full-screen-event"),
 	hardwareHorizontalWheelEvent: makeEvent<HardwareHorizontalWheelEvent>("hardware-horizontal-wheel-event"),
 	nowPlayingTrackChangedEvent: makeEvent<NowPlayingTrackChangedEvent>("now-playing-track-changed-event"),
-	playbackTraceEvent: makeEvent<PlaybackTraceEvent>("playback-trace-event"),
 };
 
 /* Types */
@@ -311,21 +310,6 @@ export type PlaybackStatusPayload = {
 	music_url: string | null,
 	playback_start_ms: number | null,
 	playback_end_ms: number | null,
-};
-
-export type PlaybackTraceEvent = {
-	event: string,
-	generation: number | null,
-	mode: PlaybackContinuationMode | null,
-	path: string | null,
-	status_path: string | null,
-	playlist_name: string | null,
-	music_url: string | null,
-	start_ms: number | null,
-	end_ms: number | null,
-	position_ms: number | null,
-	duration_ms: number | null,
-	reason: string | null,
 };
 
 export type TrackWaveform = {

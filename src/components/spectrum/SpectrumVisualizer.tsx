@@ -19,7 +19,6 @@ import {
   type TrackWaveformTile,
   type WaveformPeak,
 } from "@/src/cmd";
-import { recordPlaybackTrace } from "@/src/debug/playbackTrace";
 
 const WAVEFORM_CANVAS_HEIGHT = 208;
 const WAVEFORM_VERTICAL_PADDING = 18;
@@ -3066,10 +3065,6 @@ function useWaveformPlayheadController(args: {
   const playbackSnapshotRef = useRef<PlaybackSnapshot | null>(null);
   const frameIdRef = useRef<number | null>(null);
   const frameOwnerWindowRef = useRef<Window | null>(null);
-  const lastPlayheadTraceRef = useRef<{
-    at: number;
-    x: string;
-  } | null>(null);
 
   const syncPlayhead = useCallback((nowMs?: number) => {
     const latest = latestArgsRef.current;
@@ -3099,25 +3094,6 @@ function useWaveformPlayheadController(args: {
 
     host.style.setProperty("--waveform-playhead-opacity", cssVars.opacity);
     host.style.setProperty("--waveform-playhead-x", cssVars.x);
-    const now = nowMs ?? readWaveformPerformanceNow(ownerWindow);
-    const lastTrace = lastPlayheadTraceRef.current;
-    const shouldTrace =
-      lastTrace === null || lastTrace.x !== cssVars.x || now - lastTrace.at >= 250;
-    if (shouldTrace) {
-      lastPlayheadTraceRef.current = {
-        at: now,
-        x: cssVars.x,
-      };
-      recordPlaybackTrace("spectrum-playhead-css", {
-        pageSelectionEnd: latest.playbackSelectionRef.current?.end ?? null,
-        pageSelectionStart: latest.playbackSelectionRef.current?.start ?? null,
-        playbackEndMs: snapshot?.playback_end_ms ?? null,
-        playbackStartMs: snapshot?.playback_start_ms ?? null,
-        positionMs,
-        statusPath: snapshot?.path ?? null,
-        x: cssVars.x,
-      });
-    }
   }, []);
 
   const stopPlayheadAnimation = useCallback(() => {
@@ -3200,16 +3176,6 @@ function useWaveformPlayheadController(args: {
         }
 
         const statusMatchesTrack = status ? isPlaybackStatusForTrack(status, filePath) : false;
-        recordPlaybackTrace("spectrum-playhead-status", {
-          filePath,
-          pageSelectionEnd: latestArgsRef.current.playbackSelectionRef.current?.end ?? null,
-          pageSelectionStart: latestArgsRef.current.playbackSelectionRef.current?.start ?? null,
-          playbackEndMs: status?.playback_end_ms ?? null,
-          playbackStartMs: status?.playback_start_ms ?? null,
-          positionMs: status?.position_ms ?? null,
-          statusMatchesTrack,
-          statusPath: status?.path ?? null,
-        });
 
         if (!status || !statusMatchesTrack) {
           commitPlaybackSnapshot(null);
