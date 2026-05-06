@@ -18,13 +18,11 @@ import {
   type Context,
 } from "./core";
 import {
-  changeSpectrumMusicTitleDraftName,
-  changeSpectrumMusicTitleDraftRange,
-  createSpectrumMusicTitleDraft,
-  hasSpectrumMusicTitleChanges,
-  normalizeSpectrumMusicRangeBoundary,
-  resolveSpectrumMusicTitleCommit,
-  resetSpectrumMusicTitleDraft,
+  changeSpectrumMusicDraftName,
+  changeSpectrumMusicDraftRange,
+  createMusicDraftEdits,
+  hasSpectrumMusicDraftUpdates,
+  resetSpectrumMusicDraft,
   updateMusicInCollections,
   updateMusicInPlaylistPreview,
   updateMusicInPlaylists,
@@ -36,8 +34,8 @@ import {
   invoker,
   payloads,
   ss,
-  type MusicUpdateInput,
   type MusicUpdateResult,
+  type MusicUpdatesResult,
 } from "./events";
 import { src } from "./src";
 
@@ -50,42 +48,7 @@ function resolveSavePathFromLoadingError(error: unknown, fallback: string) {
 }
 
 function hasSpectrumMusicUpdate(context: Context) {
-  return hasSpectrumMusicTitleChanges(context.spectrumMusicTitleDraft);
-}
-
-function resolveSpectrumMusicUpdateInput(context: Context): MusicUpdateInput {
-  const titleCommit = resolveSpectrumMusicTitleCommit(context.spectrumMusicTitleDraft);
-  const draft = context.spectrumMusicTitleDraft;
-
-  if (!titleCommit || !draft || !hasSpectrumMusicTitleChanges(draft)) {
-    throw new Error("missing spectrum music update");
-  }
-
-  if (
-    draft.url === null ||
-    draft.baselineStartMs === null ||
-    draft.baselineEndMs === null ||
-    draft.startMs === null ||
-    draft.endMs === null
-  ) {
-    throw new Error("missing spectrum music identity for update");
-  }
-
-  const startMs = normalizeSpectrumMusicRangeBoundary(draft.startMs);
-  const endMs = normalizeSpectrumMusicRangeBoundary(draft.endMs);
-
-  if (startMs === null || endMs === null) {
-    throw new Error("invalid spectrum music range for update");
-  }
-
-  return {
-    alias: titleCommit.alias,
-    endMs,
-    startMs,
-    targetEndMs: draft.baselineEndMs,
-    targetStartMs: draft.baselineStartMs,
-    url: draft.url,
-  };
+  return hasSpectrumMusicDraftUpdates(context.spectrumMusicDrafts);
 }
 
 function createMusicEditFromUpdate(result: MusicUpdateResult): MusicEdit {
@@ -99,23 +62,69 @@ function createMusicEditFromUpdate(result: MusicUpdateResult): MusicEdit {
   };
 }
 
-function createSpectrumPlayReturnContext(context: Context, musicEdit: MusicEdit | null) {
+function createMusicEditsFromUpdates(result: MusicUpdatesResult): MusicEdit[] {
+  return result.results.map(createMusicEditFromUpdate);
+}
+
+function updateCollectionsWithMusicEdits(collections: Context["collections"], edits: MusicEdit[]) {
+  return edits.reduce(
+    (currentCollections, edit) => updateMusicInCollections(currentCollections, edit),
+    collections,
+  );
+}
+
+function updatePlaylistsWithMusicEdits(playlists: Context["playlists"], edits: MusicEdit[]) {
+  return edits.reduce(
+    (currentPlaylists, edit) => updateMusicInPlaylists(currentPlaylists, edit),
+    playlists,
+  );
+}
+
+function updatePlaylistPreviewWithMusicEdits(
+  preview: Context["pendingPlaylistPreview"],
+  edits: MusicEdit[],
+) {
+  return edits.reduce(
+    (currentPreview, edit) => updateMusicInPlaylistPreview(currentPreview, edit),
+    preview,
+  );
+}
+
+function resolveCurrentMusicEdit(context: Context, edits: readonly MusicEdit[]) {
+  return (
+    edits.find(
+      (edit) =>
+        edit.url === context.nowPlayingTrackUrl &&
+        edit.targetStartMs === context.nowPlayingTrackStartMs &&
+        edit.targetEndMs === context.nowPlayingTrackEndMs,
+    ) ?? null
+  );
+}
+
+function createSpectrumPlayReturnContext(context: Context, musicEdits: readonly MusicEdit[]) {
+  const currentMusicEdit = resolveCurrentMusicEdit(context, musicEdits);
+
   return resetContextWith({
     hasPlayList: context.hasPlayList,
-    playlists: musicEdit ? updateMusicInPlaylists(context.playlists, musicEdit) : context.playlists,
-    pendingPlaylistPreview: musicEdit
-      ? updateMusicInPlaylistPreview(context.pendingPlaylistPreview, musicEdit)
-      : context.pendingPlaylistPreview,
-    collections: musicEdit
-      ? updateMusicInCollections(context.collections, musicEdit)
-      : context.collections,
+    playlists:
+      musicEdits.length > 0
+        ? updatePlaylistsWithMusicEdits(context.playlists, [...musicEdits])
+        : context.playlists,
+    pendingPlaylistPreview:
+      musicEdits.length > 0
+        ? updatePlaylistPreviewWithMusicEdits(context.pendingPlaylistPreview, [...musicEdits])
+        : context.pendingPlaylistPreview,
+    collections:
+      musicEdits.length > 0
+        ? updateCollectionsWithMusicEdits(context.collections, [...musicEdits])
+        : context.collections,
     savePath: context.savePath,
     playingPlaylistName: context.playingPlaylistName,
-    nowPlayingTrackName: musicEdit?.alias ?? context.nowPlayingTrackName,
+    nowPlayingTrackName: currentMusicEdit?.alias ?? context.nowPlayingTrackName,
     nowPlayingTrackUrl: context.nowPlayingTrackUrl,
     nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-    nowPlayingTrackStartMs: musicEdit?.startMs ?? context.nowPlayingTrackStartMs,
-    nowPlayingTrackEndMs: musicEdit?.endMs ?? context.nowPlayingTrackEndMs,
+    nowPlayingTrackStartMs: currentMusicEdit?.startMs ?? context.nowPlayingTrackStartMs,
+    nowPlayingTrackEndMs: currentMusicEdit?.endMs ?? context.nowPlayingTrackEndMs,
     shouldStartPlayback: false,
     titleToneHandoff: context.activeLayoutId
       ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
@@ -129,7 +138,7 @@ const playlistUpserted = payloads["playlist.upserted"];
 const playlistDeleted = payloads["playlist.deleted"];
 const playlistPreviewChanged = payloads["playlist.preview.changed"];
 const draftNameChanged = payloads["draft.name.changed"];
-const spectrumMusicTitleChanged = payloads["spectrum.music_title.changed"];
+const spectrumMusicNameChanged = payloads["spectrum.music_name.changed"];
 const spectrumMusicRangeChanged = payloads["spectrum.music_range.changed"];
 const spectrumMusicDraftReset = payloads["spectrum.music_draft.reset"];
 const savePathChanged = payloads["save_path.changed"];
@@ -218,24 +227,16 @@ export const machine = src.createMachine({
           return {};
         }
 
-        const nextSpectrumMusicTitleDraft =
-          context.spectrumMusicTitleDraft &&
-          !hasSpectrumMusicTitleChanges(context.spectrumMusicTitleDraft)
-            ? createSpectrumMusicTitleDraft({
-                nowPlayingTrackName: event.output.music_name,
-                nowPlayingTrackUrl: event.output.music_url,
-                nowPlayingTrackStartMs: event.output.start_ms,
-                nowPlayingTrackEndMs: event.output.end_ms,
-              })
-            : context.spectrumMusicTitleDraft;
-
         return {
           nowPlayingTrackName: event.output.music_name,
           nowPlayingTrackUrl: event.output.music_url,
           nowPlayingTrackFilePath: event.output.file_path,
           nowPlayingTrackStartMs: event.output.start_ms,
           nowPlayingTrackEndMs: event.output.end_ms,
-          spectrumMusicTitleDraft: nextSpectrumMusicTitleDraft,
+          spectrumMusicDrafts:
+            context.nowPlayingTrackFilePath === event.output.file_path
+              ? context.spectrumMusicDrafts
+              : [],
         };
       }),
     },
@@ -363,6 +364,7 @@ export const machine = src.createMachine({
               nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
               nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+              spectrumMusicDrafts: context.spectrumMusicDrafts,
               error: toErrorMessage(event.error),
             }),
           ),
@@ -439,7 +441,7 @@ export const machine = src.createMachine({
           }),
         },
         openspectrum: {
-          target: ss.mainx.State.spectrum,
+          target: ss.mainx.State.spectrumLoadingMusics,
           actions: assign(({ context }) =>
             resetContextWith({
               hasPlayList: context.hasPlayList,
@@ -453,12 +455,6 @@ export const machine = src.createMachine({
               nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
               nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
-              spectrumMusicTitleDraft: createSpectrumMusicTitleDraft({
-                nowPlayingTrackName: context.nowPlayingTrackName,
-                nowPlayingTrackUrl: context.nowPlayingTrackUrl,
-                nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
-                nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
-              }),
               shouldStartPlayback: false,
               activeLayoutId: context.playingPlaylistName
                 ? playlistTitleLayoutId(context.playingPlaylistName)
@@ -468,28 +464,95 @@ export const machine = src.createMachine({
         },
       },
     },
+    [ss.mainx.State.spectrumLoadingMusics]: {
+      invoke: {
+        id: invoker.loadSpectrumMusicDrafts.id,
+        src: invoker.loadSpectrumMusicDrafts.src,
+        input: ({ context }) => {
+          if (!context.nowPlayingTrackFilePath) {
+            throw new Error("missing spectrum file path for music loading");
+          }
+
+          return {
+            filePath: context.nowPlayingTrackFilePath,
+            nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+            nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+            nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+          };
+        },
+        onDone: {
+          target: ss.mainx.State.spectrum,
+          actions: assign(({ context, event }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
+              collections: context.collections,
+              savePath: context.savePath,
+              playingPlaylistName: context.playingPlaylistName,
+              nowPlayingTrackName: context.nowPlayingTrackName,
+              nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+              nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
+              nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+              nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+              spectrumMusicDrafts: event.output,
+              shouldStartPlayback: false,
+              activeLayoutId: context.activeLayoutId,
+              titleToneHandoff: context.titleToneHandoff,
+            }),
+          ),
+        },
+        onError: {
+          target: ss.mainx.State.error,
+          actions: assign(({ context, event }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
+              collections: context.collections,
+              savePath: context.savePath,
+              playingPlaylistName: context.playingPlaylistName,
+              nowPlayingTrackName: context.nowPlayingTrackName,
+              nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+              nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
+              nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+              nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+              spectrumMusicDrafts: context.spectrumMusicDrafts,
+              error: toErrorMessage(event.error),
+            }),
+          ),
+        },
+      },
+    },
     [ss.mainx.State.spectrum]: {
       on: {
         run: ss.mainx.State.loading,
-        [spectrumMusicTitleChanged.evt]: {
+        [spectrumMusicNameChanged.evt]: {
           actions: assign(({ context, event }) => ({
-            spectrumMusicTitleDraft: changeSpectrumMusicTitleDraftName(
-              context.spectrumMusicTitleDraft,
-              event.output,
+            spectrumMusicDrafts: changeSpectrumMusicDraftName(
+              context.spectrumMusicDrafts,
+              event.output.id,
+              event.output.name,
             ),
           })),
         },
         [spectrumMusicRangeChanged.evt]: {
           actions: assign(({ context, event }) => ({
-            spectrumMusicTitleDraft: changeSpectrumMusicTitleDraftRange(
-              context.spectrumMusicTitleDraft,
-              event.output,
+            spectrumMusicDrafts: changeSpectrumMusicDraftRange(
+              context.spectrumMusicDrafts,
+              event.output.id,
+              {
+                endMs: event.output.endMs,
+                startMs: event.output.startMs,
+              },
             ),
           })),
         },
         [spectrumMusicDraftReset.evt]: {
-          actions: assign(({ context }) => ({
-            spectrumMusicTitleDraft: resetSpectrumMusicTitleDraft(context.spectrumMusicTitleDraft),
+          actions: assign(({ context, event }) => ({
+            spectrumMusicDrafts: resetSpectrumMusicDraft(
+              context.spectrumMusicDrafts,
+              event.output.id,
+            ),
           })),
         },
         back: [
@@ -499,20 +562,20 @@ export const machine = src.createMachine({
           },
           {
             target: ss.mainx.State.play,
-            actions: assign(({ context }) => createSpectrumPlayReturnContext(context, null)),
+            actions: assign(({ context }) => createSpectrumPlayReturnContext(context, [])),
           },
         ],
       },
     },
     [ss.mainx.State.spectrumUpdatingMusic]: {
       invoke: {
-        id: invoker.updateMusic.id,
-        src: invoker.updateMusic.src,
-        input: ({ context }) => resolveSpectrumMusicUpdateInput(context),
+        id: invoker.updateMusics.id,
+        src: invoker.updateMusics.src,
+        input: ({ context }) => createMusicDraftEdits(context.spectrumMusicDrafts),
         onDone: {
           target: ss.mainx.State.play,
           actions: assign(({ context, event }) =>
-            createSpectrumPlayReturnContext(context, createMusicEditFromUpdate(event.output)),
+            createSpectrumPlayReturnContext(context, createMusicEditsFromUpdates(event.output)),
           ),
         },
         onError: {

@@ -8,7 +8,8 @@ use appdb::repository::Repo;
 use appdb::{AutoFill, Crud, Id, Order, Store};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use surrealdb::types::{RecordId, Table};
 use surrealdb_types::SurrealValue;
 
@@ -203,6 +204,36 @@ pub async fn update_music(
     }
 
     Ok(first_updated)
+}
+
+pub async fn list_musics_by_file_path(file_path: &Path, save_root: &Path) -> Result<Vec<Music>> {
+    ensure_collection_graph_schema().await?;
+
+    let target_key = normalize_music_file_path_key(file_path);
+    let collections = list_collections().await?;
+    let mut seen = HashSet::new();
+    let mut musics = Vec::new();
+
+    for collection in collections {
+        for music in &collection.musics {
+            let Some(resolved_path) =
+                resolve_music_file_path(save_root, &collection, music.path.as_deref())
+            else {
+                continue;
+            };
+
+            if normalize_music_file_path_key(&resolved_path) != target_key {
+                continue;
+            }
+
+            let key = format!("{}:{}:{}", music.url, music.start_ms, music.end_ms);
+            if seen.insert(key) {
+                musics.push(music.clone());
+            }
+        }
+    }
+
+    Ok(musics)
 }
 
 pub async fn list_auto_update_collections() -> Result<Vec<Collection>> {
@@ -449,6 +480,23 @@ fn stable_record_key(seed: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(seed.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+fn resolve_music_file_path(
+    save_root: &Path,
+    collection: &Collection,
+    relative_path: Option<&str>,
+) -> Option<PathBuf> {
+    let path = PathBuf::from(relative_path?);
+    if path.is_absolute() {
+        return Some(path);
+    }
+
+    Some(save_root.join(&collection.folder).join(path))
+}
+
+fn normalize_music_file_path_key(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/").to_lowercase()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Store)]

@@ -19,11 +19,14 @@ const originalGetPlaylist = crab.getPlaylist;
 const originalGetMetaInfo = crab.getMetaInfo;
 const originalSetCollectionUpdates = crab.setCollectionUpdates;
 const originalUpdateMusic = crab.updateMusic;
+const originalListMusicsByFilePath = crab.listMusicsByFilePath;
 const originalPlayPlaylist = crab.playPlaylist;
+const originalGetPlaybackStatus = crab.getPlaybackStatus;
+const originalResumePlayback = crab.resumePlayback;
 const originalSetPlaybackContinuationMode = crab.setPlaybackContinuationMode;
 const openPlaylist = payloads["playlist.open"];
 const draftNameChanged = payloads["draft.name.changed"];
-const spectrumMusicTitleChanged = payloads["spectrum.music_title.changed"];
+const spectrumMusicNameChanged = payloads["spectrum.music_name.changed"];
 const savePathChanged = payloads["save_path.changed"];
 const collectionUpserted = payloads["collection.upserted"];
 const draftCollectionUpserted = payloads["draft.collection.upserted"];
@@ -137,7 +140,7 @@ function createExpectedAppLogicContext(overrides: Record<string, unknown> = {}) 
     nowPlayingTrackFilePath: null,
     nowPlayingTrackStartMs: null,
     nowPlayingTrackEndMs: null,
-    spectrumMusicTitleDraft: null,
+    spectrumMusicDrafts: [],
     shouldStartPlayback: false,
     activeLayoutId: null,
     titleToneHandoff: null,
@@ -182,8 +185,20 @@ function setUpdateMusicMock(mock: typeof crab.updateMusic) {
   (crab as { updateMusic: typeof crab.updateMusic }).updateMusic = mock;
 }
 
+function setListMusicsByFilePathMock(mock: typeof crab.listMusicsByFilePath) {
+  (crab as { listMusicsByFilePath: typeof crab.listMusicsByFilePath }).listMusicsByFilePath = mock;
+}
+
 function setPlayPlaylistMock(mock: typeof crab.playPlaylist) {
   (crab as { playPlaylist: typeof crab.playPlaylist }).playPlaylist = mock;
+}
+
+function setGetPlaybackStatusMock(mock: typeof crab.getPlaybackStatus) {
+  (crab as { getPlaybackStatus: typeof crab.getPlaybackStatus }).getPlaybackStatus = mock;
+}
+
+function setResumePlaybackMock(mock: typeof crab.resumePlayback) {
+  (crab as { resumePlayback: typeof crab.resumePlayback }).resumePlayback = mock;
 }
 
 function setPlaybackContinuationModeMock(mock: typeof crab.setPlaybackContinuationMode) {
@@ -280,7 +295,10 @@ afterEach(() => {
   setGetMetaInfoMock(originalGetMetaInfo);
   setSetCollectionUpdatesMock(originalSetCollectionUpdates);
   setUpdateMusicMock(originalUpdateMusic);
+  setListMusicsByFilePathMock(originalListMusicsByFilePath);
   setPlayPlaylistMock(originalPlayPlaylist);
+  setGetPlaybackStatusMock(originalGetPlaybackStatus);
+  setResumePlaybackMock(originalResumePlayback);
   setPlaybackContinuationModeMock(originalSetPlaybackContinuationMode);
 });
 
@@ -719,6 +737,7 @@ describe("appLogic machine", () => {
     setCheckListMock(async () => Ok(true));
     setListPlaylistsMock(async () => Ok([samplePlaylist]));
     setListCollectionsMock(async () => Ok([sampleCollection]));
+    setListMusicsByFilePathMock(async () => Ok([sampleCollection.musics[1]!]));
     setPlayPlaylistMock(async (name) => {
       playCalls += 1;
       expect(name).toBe(samplePlaylist.name);
@@ -752,6 +771,7 @@ describe("appLogic machine", () => {
       }),
     );
     actor.send(sig.mainx.openspectrum);
+    await waitForState(actor, ss.mainx.State.spectrum);
 
     expect(actor.getSnapshot().value).toBe(ss.mainx.State.spectrum);
     expect(actor.getSnapshot().context).toEqual(
@@ -768,15 +788,17 @@ describe("appLogic machine", () => {
           "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         nowPlayingTrackStartMs: 0,
         nowPlayingTrackEndMs: 120_000,
-        spectrumMusicTitleDraft: {
-          baselineName: "Disc 1 Opening",
-          baselineStartMs: 0,
-          baselineEndMs: 120_000,
-          name: "Disc 1 Opening",
-          url: "https://example.com/quiet-morning#disc-1-opening",
-          startMs: 0,
-          endMs: 120_000,
-        },
+        spectrumMusicDrafts: [
+          {
+            baselineName: "Disc 1 Opening",
+            baselineStartMs: 0,
+            baselineEndMs: 120_000,
+            name: "Disc 1 Opening",
+            url: "https://example.com/quiet-morning#disc-1-opening",
+            startMs: 0,
+            endMs: 120_000,
+          },
+        ],
         shouldStartPlayback: false,
         activeLayoutId: playlistTitleLayoutId(samplePlaylist.name),
       }),
@@ -800,6 +822,7 @@ describe("appLogic machine", () => {
     setCheckListMock(async () => Ok(true));
     setListPlaylistsMock(async () => Ok([samplePlaylist]));
     setListCollectionsMock(async () => Ok([sampleCollection]));
+    setListMusicsByFilePathMock(async () => Ok([sampleCollection.musics[1]!]));
     setPlayPlaylistMock(async () =>
       Ok({
         playlist_name: samplePlaylist.name,
@@ -839,14 +862,20 @@ describe("appLogic machine", () => {
       }),
     );
     actor.send(sig.mainx.openspectrum);
-    actor.send(spectrumMusicTitleChanged.load("Disc 1 Prelude"));
+    await waitForState(actor, ss.mainx.State.spectrum);
+    actor.send(
+      spectrumMusicNameChanged.load({
+        id: "https://example.com/quiet-morning#disc-1-opening|0|120000",
+        name: "Disc 1 Prelude",
+      }),
+    );
     actor.send(sig.mainx.back);
 
     await waitForState(actor, ss.mainx.State.play);
 
     expect(musicUpdateCalls).toBe(1);
     expect(actor.getSnapshot().context.nowPlayingTrackName).toBe("Disc 1 Prelude");
-    expect(actor.getSnapshot().context.spectrumMusicTitleDraft).toBeNull();
+    expect(actor.getSnapshot().context.spectrumMusicDrafts).toEqual([]);
     expect(actor.getSnapshot().context.collections[0]?.musics[1]?.name).toBe("Disc 1 Opening");
     expect(actor.getSnapshot().context.collections[0]?.musics[1]?.alias).toBe("Disc 1 Prelude");
     expect(actor.getSnapshot().context.playlists[0]?.collections[0]?.musics[1]?.name).toBe(
@@ -867,6 +896,7 @@ describe("appLogic machine", () => {
     setCheckListMock(async () => Ok(true));
     setListPlaylistsMock(async () => Ok([samplePlaylist]));
     setListCollectionsMock(async () => Ok([sampleCollection]));
+    setListMusicsByFilePathMock(async () => Ok([sampleCollection.musics[1]!]));
     setPlayPlaylistMock(async () =>
       Ok({
         playlist_name: samplePlaylist.name,
@@ -907,7 +937,14 @@ describe("appLogic machine", () => {
       }),
     );
     actor.send(sig.mainx.openspectrum);
-    actor.send(payloads["spectrum.music_range.changed"].load({ startMs: 8_250, endMs: 112_750 }));
+    await waitForState(actor, ss.mainx.State.spectrum);
+    actor.send(
+      payloads["spectrum.music_range.changed"].load({
+        id: "https://example.com/quiet-morning#disc-1-opening|0|120000",
+        startMs: 8_250,
+        endMs: 112_750,
+      }),
+    );
     actor.send(sig.mainx.back);
 
     await waitForState(actor, ss.mainx.State.play);
@@ -1000,12 +1037,27 @@ describe("appLogic action playback mode effects", () => {
     setCheckListMock(async () => Ok(true));
     setListPlaylistsMock(async () => Ok([samplePlaylist]));
     setListCollectionsMock(async () => Ok([sampleCollection]));
+    setListMusicsByFilePathMock(async () => Ok([sampleCollection.musics[1]!]));
     setPlayPlaylistMock(async () =>
       Ok({
         playlist_name: samplePlaylist.name,
         track_count: 1,
       }),
     );
+    setGetPlaybackStatusMock(async () =>
+      Ok({
+        duration_ms: 120_000,
+        music_url: "https://example.com/quiet-morning#disc-1-opening",
+        path: "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+        paused: true,
+        playback_end_ms: 120_000,
+        playback_start_ms: 0,
+        playing: true,
+        playlist_name: samplePlaylist.name,
+        position_ms: 0,
+      }),
+    );
+    setResumePlaybackMock(async () => Ok(true));
 
     const randomRestore = deferred();
     const writes: PlaybackContinuationMode[] = [];
@@ -1026,6 +1078,18 @@ describe("appLogic action playback mode effects", () => {
 
       mod.action.playPlaylist(samplePlaylist.name);
       await waitForState(mod.actor, ss.mainx.State.play);
+
+      mod.actor.send(
+        payloads["player.now_playing_track.changed"].load({
+          playlist_name: samplePlaylist.name,
+          music_name: "Disc 1 Opening",
+          music_url: "https://example.com/quiet-morning#disc-1-opening",
+          file_path:
+            "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+          start_ms: 0,
+          end_ms: 120_000,
+        }),
+      );
 
       mod.action.openSpectrum();
       await waitForPredicate(

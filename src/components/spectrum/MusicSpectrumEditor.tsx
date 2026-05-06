@@ -94,7 +94,7 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
         </div>
         <motion.div
           {...musicSpectrumContentFadeProps}
-          className={cn("relative mt-10", waveformClassName)}
+          className={cn("relative mt-8", waveformClassName)}
         >
           <TrackSpectrum
             filePath={trackFilePath}

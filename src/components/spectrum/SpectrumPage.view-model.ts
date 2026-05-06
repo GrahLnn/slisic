@@ -1,8 +1,10 @@
 import {
-  hasSpectrumMusicTitleChanges,
-  resolveSpectrumMusicTitleCommit,
+  findSpectrumMusicDraft,
+  createSpectrumMusicDraftIdentity,
+  hasSpectrumMusicDraftChanges,
+  resolveSpectrumMusicCommit,
 } from "@/src/flow/appLogic/musicTitle";
-import type { SpectrumMusicTitleDraft } from "@/src/flow/appLogic/core";
+import type { SpectrumMusicDraft } from "@/src/flow/appLogic/core";
 
 export type SpectrumBackActionVisualKind = "back" | "check";
 export type SpectrumPlaybackActionKind = "pause" | "play";
@@ -20,19 +22,38 @@ export interface SpectrumPlaybackActionVisualState {
   kind: SpectrumPlaybackActionKind;
 }
 
-export function shouldShowSpectrumDraftResetAction(args: {
-  musicTitleDraft: SpectrumMusicTitleDraft | null;
-}) {
-  return hasSpectrumMusicTitleChanges(args.musicTitleDraft);
+export interface SpectrumMusicEditorViewModel {
+  handoffTone: "solid" | "muted" | null;
+  id: string;
+  interactionDisabled: boolean;
+  isCurrent: boolean;
+  selectionEnd: number | null;
+  selectionStart: number | null;
+  shouldShowResetAction: boolean;
+  titleLayoutId?: string;
+  titleValue: string;
 }
 
-export function resolveSpectrumTitle(args: {
-  musicTitleDraft: SpectrumMusicTitleDraft | null;
+export function findSpectrumMusicDraftById(
+  drafts: readonly SpectrumMusicDraft[],
+  id: string,
+): SpectrumMusicDraft | null {
+  return findSpectrumMusicDraft(drafts, id);
+}
+
+export function shouldShowSpectrumDraftResetAction(args: {
+  musicDraft: SpectrumMusicDraft | null;
+}) {
+  return hasSpectrumMusicDraftChanges(args.musicDraft);
+}
+
+export function resolveSpectrumMusicDisplayName(args: {
+  musicDraft: SpectrumMusicDraft | null;
   nowPlayingTrackName: string | null;
   playingPlaylistName: string | null;
 }) {
-  if (args.musicTitleDraft) {
-    return args.musicTitleDraft.name;
+  if (args.musicDraft) {
+    return args.musicDraft.name;
   }
 
   const trackName = args.nowPlayingTrackName?.trim();
@@ -44,14 +65,14 @@ export function resolveSpectrumTitle(args: {
 }
 
 export function resolveSpectrumSelectionRange(args: {
-  musicTitleDraft: SpectrumMusicTitleDraft | null;
+  musicDraft: SpectrumMusicDraft | null;
   nowPlayingTrackEndMs: number | null;
   nowPlayingTrackStartMs: number | null;
 }) {
-  if (args.musicTitleDraft) {
+  if (args.musicDraft) {
     return {
-      end: millisecondsToSeconds(args.musicTitleDraft.endMs),
-      start: millisecondsToSeconds(args.musicTitleDraft.startMs),
+      end: millisecondsToSeconds(args.musicDraft.endMs),
+      start: millisecondsToSeconds(args.musicDraft.startMs),
     };
   }
 
@@ -82,9 +103,11 @@ function secondsToMilliseconds(value: number | null) {
 }
 
 export function resolveSpectrumBackActionVisualState(args: {
-  musicTitleDraft: SpectrumMusicTitleDraft | null;
+  musicDrafts: readonly SpectrumMusicDraft[];
 }): SpectrumBackActionVisualState {
-  const kind = hasSpectrumMusicTitleChanges(args.musicTitleDraft) ? "check" : "back";
+  const kind = args.musicDrafts.some((draft) => hasSpectrumMusicDraftChanges(draft))
+    ? "check"
+    : "back";
 
   return {
     kind,
@@ -92,16 +115,62 @@ export function resolveSpectrumBackActionVisualState(args: {
   };
 }
 
-export function resolveSpectrumCommittedTitle(args: {
-  musicTitleDraft: SpectrumMusicTitleDraft | null;
-  renderedTitle: string;
+export function resolveSpectrumCommittedMusicName(args: {
+  musicDraft: SpectrumMusicDraft | null;
+  renderedName: string;
 }) {
   return (
-    resolveSpectrumMusicTitleCommit(args.musicTitleDraft) ?? {
+    resolveSpectrumMusicCommit(args.musicDraft) ?? {
       kind: "keep" as const,
-      alias: args.renderedTitle,
+      alias: args.renderedName,
     }
   );
+}
+
+export function resolveSpectrumMusicEditorViewModels(args: {
+  activeLayoutId: string | null;
+  handoffTone: "solid" | "muted" | null;
+  interactionDisabled: boolean;
+  nowPlayingTrackEndMs: number | null;
+  nowPlayingTrackStartMs: number | null;
+  nowPlayingTrackUrl: string | null;
+  playingPlaylistName: string | null;
+  spectrumMusicDrafts: readonly SpectrumMusicDraft[];
+}) {
+  return args.spectrumMusicDrafts.map((draft, index) => {
+    const selection = resolveSpectrumSelectionRange({
+      musicDraft: draft,
+      nowPlayingTrackEndMs: args.nowPlayingTrackEndMs,
+      nowPlayingTrackStartMs: args.nowPlayingTrackStartMs,
+    });
+    const id = createSpectrumMusicDraftIdentity({
+      baselineEndMs: draft.baselineEndMs,
+      baselineStartMs: draft.baselineStartMs,
+      url: draft.url,
+    });
+    const isCurrent =
+      draft.url === args.nowPlayingTrackUrl &&
+      draft.baselineStartMs === args.nowPlayingTrackStartMs &&
+      draft.baselineEndMs === args.nowPlayingTrackEndMs;
+
+    return {
+      handoffTone: index === 0 ? args.handoffTone : null,
+      id,
+      interactionDisabled: args.interactionDisabled,
+      isCurrent,
+      selectionEnd: selection.end,
+      selectionStart: selection.start,
+      shouldShowResetAction: shouldShowSpectrumDraftResetAction({
+        musicDraft: draft,
+      }),
+      titleLayoutId: index === 0 ? (args.activeLayoutId ?? undefined) : undefined,
+      titleValue: resolveSpectrumMusicDisplayName({
+        musicDraft: draft,
+        nowPlayingTrackName: null,
+        playingPlaylistName: args.playingPlaylistName,
+      }),
+    } satisfies SpectrumMusicEditorViewModel;
+  });
 }
 
 export function resolveSpectrumPlaybackActionVisualState(args: {

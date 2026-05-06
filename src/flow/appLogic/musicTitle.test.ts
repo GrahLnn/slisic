@@ -2,14 +2,16 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { Collection, PlayList } from "@/src/cmd";
 import {
-  createSpectrumMusicTitleDraft,
-  changeSpectrumMusicTitleDraftRange,
-  hasSpectrumMusicTitleChanges,
-  resolveSpectrumMusicTitleCommit,
-  resetSpectrumMusicTitleDraft,
+  changeSpectrumMusicDraftValueRange,
+  hasSpectrumMusicDraftChanges,
+  resolveSpectrumMusicCommit,
+  resetSpectrumMusicDraftValue,
   updateMusicInCollections,
   updateMusicInPlaylistPreview,
   updateMusicInPlaylists,
+  createSpectrumMusicDrafts,
+  changeSpectrumMusicDraftName,
+  createMusicDraftEdits,
 } from "./musicTitle";
 
 const sampleCollection: Collection = {
@@ -42,83 +44,101 @@ const samplePlaylist: PlayList = {
   created_at: "2026-04-13T00:00:00Z",
 };
 
-describe("musicTitle", () => {
-  test("creates a spectrum music draft only when a track title exists", () => {
-    assert.deepEqual(
-      createSpectrumMusicTitleDraft({
-        nowPlayingTrackName: "Track A",
-        nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
-        nowPlayingTrackStartMs: 0,
-        nowPlayingTrackEndMs: 120_000,
-      }),
-      {
-        baselineName: "Track A",
-        baselineStartMs: 0,
-        baselineEndMs: 120_000,
-        name: "Track A",
-        url: "https://example.com/quiet-morning#a",
-        startMs: 0,
+function createSampleSpectrumMusicDraft() {
+  return (
+    createSpectrumMusicDrafts({
+      currentMusicIdentity: {
         endMs: 120_000,
+        startMs: 0,
+        url: "https://example.com/quiet-morning#a",
       },
-    );
-    assert.equal(
-      createSpectrumMusicTitleDraft({
-        nowPlayingTrackName: null,
-        nowPlayingTrackUrl: null,
-        nowPlayingTrackStartMs: null,
-        nowPlayingTrackEndMs: null,
+      fileMusics: [
+        {
+          alias: "Track A",
+          url: "https://example.com/quiet-morning#a",
+          start_ms: 0,
+          end_ms: 120_000,
+        },
+      ],
+    })[0] ?? null
+  );
+}
+
+describe("musicDraft", () => {
+  test("creates spectrum music drafts only from database music records", () => {
+    assert.deepEqual(
+      createSpectrumMusicDrafts({
+        currentMusicIdentity: {
+          endMs: 120_000,
+          startMs: 0,
+          url: "https://example.com/quiet-morning#a",
+        },
+        fileMusics: [
+          {
+            alias: "Track A",
+            url: "https://example.com/quiet-morning#a",
+            start_ms: 0,
+            end_ms: 120_000,
+          },
+        ],
       }),
-      null,
+      [
+        {
+          baselineName: "Track A",
+          baselineStartMs: 0,
+          baselineEndMs: 120_000,
+          name: "Track A",
+          url: "https://example.com/quiet-morning#a",
+          startMs: 0,
+          endMs: 120_000,
+        },
+      ],
+    );
+    assert.deepEqual(
+      createSpectrumMusicDrafts({
+        currentMusicIdentity: {
+          endMs: null,
+          startMs: null,
+          url: null,
+        },
+        fileMusics: [],
+      }),
+      [],
     );
   });
 
   test("compares edits with the current music data instead of edit count", () => {
-    const draft = createSpectrumMusicTitleDraft({
-      nowPlayingTrackName: "Track A",
-      nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
-      nowPlayingTrackStartMs: 0,
-      nowPlayingTrackEndMs: 120_000,
-    });
+    const draft = createSampleSpectrumMusicDraft();
 
-    assert.equal(hasSpectrumMusicTitleChanges(draft), false);
-    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, name: "Track B" }), true);
-    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, name: " Track A " }), false);
-    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, startMs: 8_000 }), true);
-    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, endMs: 112_000 }), true);
+    assert.equal(hasSpectrumMusicDraftChanges(draft), false);
+    assert.equal(hasSpectrumMusicDraftChanges(draft && { ...draft, name: "Track B" }), true);
+    assert.equal(hasSpectrumMusicDraftChanges(draft && { ...draft, name: " Track A " }), false);
+    assert.equal(hasSpectrumMusicDraftChanges(draft && { ...draft, startMs: 8_000 }), true);
+    assert.equal(hasSpectrumMusicDraftChanges(draft && { ...draft, endMs: 112_000 }), true);
   });
 
   test("keeps spectrum draft range edits at millisecond precision", () => {
-    const draft = createSpectrumMusicTitleDraft({
-      nowPlayingTrackName: "Track A",
-      nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
-      nowPlayingTrackStartMs: 0,
-      nowPlayingTrackEndMs: 120_000,
-    });
+    const draft = createSampleSpectrumMusicDraft();
 
-    const edited = changeSpectrumMusicTitleDraftRange(draft, {
+    const edited = changeSpectrumMusicDraftValueRange(draft, {
       endMs: 112_750,
       startMs: 8_250,
     });
 
     assert.equal(edited?.startMs, 8_250);
     assert.equal(edited?.endMs, 112_750);
-    assert.equal(hasSpectrumMusicTitleChanges(edited), true);
-    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, startMs: 0 }), false);
-    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, startMs: 1 }), true);
+    assert.equal(hasSpectrumMusicDraftChanges(edited), true);
+    assert.equal(hasSpectrumMusicDraftChanges(draft && { ...draft, startMs: 0 }), false);
+    assert.equal(hasSpectrumMusicDraftChanges(draft && { ...draft, startMs: 1 }), true);
   });
 
   test("resets the spectrum music draft to the current music baseline", () => {
-    const draft = createSpectrumMusicTitleDraft({
-      nowPlayingTrackName: "Track A",
-      nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
-      nowPlayingTrackStartMs: 0,
-      nowPlayingTrackEndMs: 120_000,
-    });
+    const draft = createSampleSpectrumMusicDraft();
 
     assert.deepEqual(
-      resetSpectrumMusicTitleDraft(
+      resetSpectrumMusicDraftValue(
         draft &&
-          changeSpectrumMusicTitleDraftRange(
+          changeSpectrumMusicDraftValueRange(
             {
               ...draft,
               name: "Track B",
@@ -131,18 +151,13 @@ describe("musicTitle", () => {
   });
 
   test("restores the baseline title when the edit is empty", () => {
-    const draft = createSpectrumMusicTitleDraft({
-      nowPlayingTrackName: "Track A",
-      nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
-      nowPlayingTrackStartMs: 0,
-      nowPlayingTrackEndMs: 120_000,
-    });
+    const draft = createSampleSpectrumMusicDraft();
 
-    assert.deepEqual(resolveSpectrumMusicTitleCommit(draft && { ...draft, name: "" }), {
+    assert.deepEqual(resolveSpectrumMusicCommit(draft && { ...draft, name: "" }), {
       kind: "restore",
       alias: "Track A",
     });
-    assert.deepEqual(resolveSpectrumMusicTitleCommit(draft && { ...draft, name: " Track B " }), {
+    assert.deepEqual(resolveSpectrumMusicCommit(draft && { ...draft, name: " Track B " }), {
       kind: "keep",
       alias: "Track B",
     });
@@ -177,5 +192,138 @@ describe("musicTitle", () => {
       )?.playlist.collections[0]?.musics[0]?.end_ms,
       112_000,
     );
+  });
+
+  test("creates spectrum drafts with the current music first", () => {
+    const drafts = createSpectrumMusicDrafts({
+      currentMusicIdentity: {
+        endMs: 240_000,
+        startMs: 120_000,
+        url: "https://example.com/quiet-morning#b",
+      },
+      fileMusics: [
+        {
+          alias: "Track A",
+          url: "https://example.com/quiet-morning#a",
+          start_ms: 0,
+          end_ms: 120_000,
+        },
+        {
+          alias: "Track B",
+          url: "https://example.com/quiet-morning#b",
+          start_ms: 120_000,
+          end_ms: 240_000,
+        },
+      ],
+    });
+
+    assert.equal(drafts.length, 2);
+    assert.equal(drafts[0]?.name, "Track B");
+    assert.equal(drafts[1]?.name, "Track A");
+  });
+
+  test("keeps spectrum music draft edits isolated by identity", () => {
+    const drafts = createSpectrumMusicDrafts({
+      currentMusicIdentity: {
+        endMs: null,
+        startMs: null,
+        url: null,
+      },
+      fileMusics: [
+        {
+          alias: "Track A",
+          url: "https://example.com/quiet-morning#a",
+          start_ms: 0,
+          end_ms: 120_000,
+        },
+        {
+          alias: "Track B",
+          url: "https://example.com/quiet-morning#b",
+          start_ms: 120_000,
+          end_ms: 240_000,
+        },
+      ],
+    });
+
+    const edited = changeSpectrumMusicDraftName(
+      drafts,
+      "https://example.com/quiet-morning#b|120000|240000",
+      "Track B Edit",
+    );
+
+    assert.equal(edited[0]?.name, "Track A");
+    assert.equal(edited[1]?.name, "Track B Edit");
+    assert.deepEqual(createMusicDraftEdits(edited), [
+      {
+        id: "https://example.com/quiet-morning#b|120000|240000",
+        alias: "Track B Edit",
+        url: "https://example.com/quiet-morning#b",
+        targetStartMs: 120_000,
+        targetEndMs: 240_000,
+        startMs: 120_000,
+        endMs: 240_000,
+      },
+    ]);
+  });
+
+  test("creates one update for each changed spectrum music draft", () => {
+    const drafts = createSpectrumMusicDrafts({
+      currentMusicIdentity: {
+        endMs: 240_000,
+        startMs: 120_000,
+        url: "https://example.com/quiet-morning#b",
+      },
+      fileMusics: [
+        {
+          alias: "Track A",
+          url: "https://example.com/quiet-morning#a",
+          start_ms: 0,
+          end_ms: 120_000,
+        },
+        {
+          alias: "Track B",
+          url: "https://example.com/quiet-morning#b",
+          start_ms: 120_000,
+          end_ms: 240_000,
+        },
+      ],
+    });
+
+    const editedName = changeSpectrumMusicDraftName(
+      drafts,
+      "https://example.com/quiet-morning#a|0|120000",
+      "Track A Edit",
+    );
+    const editedBoth = changeSpectrumMusicDraftValueRange(
+      editedName.find((draft) => draft.url === "https://example.com/quiet-morning#b") ?? null,
+      {
+        startMs: 121_250,
+        endMs: 238_750,
+      },
+    );
+    const nextDrafts = editedName.map((draft) =>
+      draft.url === "https://example.com/quiet-morning#b" && editedBoth ? editedBoth : draft,
+    );
+
+    assert.deepEqual(createMusicDraftEdits(nextDrafts), [
+      {
+        id: "https://example.com/quiet-morning#b|120000|240000",
+        alias: "Track B",
+        url: "https://example.com/quiet-morning#b",
+        targetStartMs: 120_000,
+        targetEndMs: 240_000,
+        startMs: 121_250,
+        endMs: 238_750,
+      },
+      {
+        id: "https://example.com/quiet-morning#a|0|120000",
+        alias: "Track A Edit",
+        url: "https://example.com/quiet-morning#a",
+        targetStartMs: 0,
+        targetEndMs: 120_000,
+        startMs: 0,
+        endMs: 120_000,
+      },
+    ]);
   });
 });

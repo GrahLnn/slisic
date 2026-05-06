@@ -2,20 +2,22 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { areSpectrumPlaybackSnapshotsEqual } from "./SpectrumPlaybackAction";
 import {
+  findSpectrumMusicDraftById,
   resolveSpectrumBackActionVisualState,
-  resolveSpectrumCommittedTitle,
+  resolveSpectrumCommittedMusicName,
+  resolveSpectrumMusicDisplayName,
+  resolveSpectrumMusicEditorViewModels,
   resolveSpectrumMusicRangeChange,
   resolveSpectrumPlaybackActionVisualState,
   resolveSpectrumSelectionRange,
-  resolveSpectrumTitle,
   shouldShowSpectrumDraftResetAction,
 } from "./SpectrumPage.view-model";
 
 describe("SpectrumPage", () => {
-  test("uses the music title draft as the editable spectrum title", () => {
+  test("uses the music draft name as the editable spectrum title", () => {
     assert.equal(
-      resolveSpectrumTitle({
-        musicTitleDraft: {
+      resolveSpectrumMusicDisplayName({
+        musicDraft: {
           baselineName: "Disc 1 Opening",
           baselineStartMs: 0,
           baselineEndMs: 120_000,
@@ -42,16 +44,18 @@ describe("SpectrumPage", () => {
       endMs: 120_000,
     };
 
-    assert.deepEqual(resolveSpectrumBackActionVisualState({ musicTitleDraft: draft }), {
+    assert.deepEqual(resolveSpectrumBackActionVisualState({ musicDrafts: [draft] }), {
       kind: "back",
       key: "back",
     });
     assert.deepEqual(
       resolveSpectrumBackActionVisualState({
-        musicTitleDraft: {
-          ...draft,
-          name: "Disc 1 Prelude",
-        },
+        musicDrafts: [
+          {
+            ...draft,
+            name: "Disc 1 Prelude",
+          },
+        ],
       }),
       {
         kind: "check",
@@ -60,10 +64,12 @@ describe("SpectrumPage", () => {
     );
     assert.deepEqual(
       resolveSpectrumBackActionVisualState({
-        musicTitleDraft: {
-          ...draft,
-          startMs: 8_000,
-        },
+        musicDrafts: [
+          {
+            ...draft,
+            startMs: 8_000,
+          },
+        ],
       }),
       {
         kind: "check",
@@ -83,11 +89,11 @@ describe("SpectrumPage", () => {
       endMs: 120_000,
     };
 
-    assert.equal(shouldShowSpectrumDraftResetAction({ musicTitleDraft: null }), false);
-    assert.equal(shouldShowSpectrumDraftResetAction({ musicTitleDraft: draft }), false);
+    assert.equal(shouldShowSpectrumDraftResetAction({ musicDraft: null }), false);
+    assert.equal(shouldShowSpectrumDraftResetAction({ musicDraft: draft }), false);
     assert.equal(
       shouldShowSpectrumDraftResetAction({
-        musicTitleDraft: {
+        musicDraft: {
           ...draft,
           endMs: 112_000,
         },
@@ -99,7 +105,7 @@ describe("SpectrumPage", () => {
   test("resolves the spectrum selection from the editable draft first", () => {
     assert.deepEqual(
       resolveSpectrumSelectionRange({
-        musicTitleDraft: {
+        musicDraft: {
           baselineName: "Disc 1 Opening",
           baselineStartMs: 0,
           baselineEndMs: 120_000,
@@ -121,7 +127,7 @@ describe("SpectrumPage", () => {
   test("does not mix a draft selection with the current playback range", () => {
     assert.deepEqual(
       resolveSpectrumSelectionRange({
-        musicTitleDraft: {
+        musicDraft: {
           baselineName: "Disc 1 Opening",
           baselineStartMs: 0,
           baselineEndMs: 120_000,
@@ -153,8 +159,8 @@ describe("SpectrumPage", () => {
 
   test("resolves the committed spectrum title before returning to playback", () => {
     assert.deepEqual(
-      resolveSpectrumCommittedTitle({
-        musicTitleDraft: {
+      resolveSpectrumCommittedMusicName({
+        musicDraft: {
           baselineName: "Disc 1 Opening",
           baselineStartMs: 0,
           baselineEndMs: 120_000,
@@ -163,12 +169,71 @@ describe("SpectrumPage", () => {
           startMs: 0,
           endMs: 120_000,
         },
-        renderedTitle: "",
+        renderedName: "",
       }),
       {
         kind: "restore",
         alias: "Disc 1 Opening",
       },
+    );
+  });
+
+  test("orders the current file music draft first and keeps each draft independent", () => {
+    const currentDraft = {
+      baselineName: "Track B",
+      baselineStartMs: 120_000,
+      baselineEndMs: 240_000,
+      name: "Track B",
+      url: "https://example.com/quiet-morning#b",
+      startMs: 125_000,
+      endMs: 235_000,
+    };
+    const siblingDraft = {
+      baselineName: "Track A",
+      baselineStartMs: 0,
+      baselineEndMs: 120_000,
+      name: "Track A",
+      url: "https://example.com/quiet-morning#a",
+      startMs: 0,
+      endMs: 120_000,
+    };
+
+    const viewModels = resolveSpectrumMusicEditorViewModels({
+      activeLayoutId: "playlist-title:Focus Session",
+      handoffTone: "solid",
+      interactionDisabled: false,
+      nowPlayingTrackEndMs: 240_000,
+      nowPlayingTrackStartMs: 120_000,
+      nowPlayingTrackUrl: "https://example.com/quiet-morning#b",
+      playingPlaylistName: "Focus Session",
+      spectrumMusicDrafts: [currentDraft, siblingDraft],
+    });
+
+    assert.equal(viewModels[0]?.id, "https://example.com/quiet-morning#b|120000|240000");
+    assert.equal(viewModels[0]?.isCurrent, true);
+    assert.equal(viewModels[0]?.titleLayoutId, "playlist-title:Focus Session");
+    assert.equal(viewModels[0]?.handoffTone, "solid");
+    assert.equal(viewModels[0]?.selectionStart, 125);
+    assert.equal(viewModels[0]?.selectionEnd, 235);
+    assert.equal(viewModels[1]?.isCurrent, false);
+    assert.equal(viewModels[1]?.titleLayoutId, undefined);
+    assert.equal(viewModels[1]?.handoffTone, null);
+  });
+
+  test("finds a spectrum music draft through the shared identity rule", () => {
+    const draft = {
+      baselineName: "Track A",
+      baselineStartMs: 0,
+      baselineEndMs: 120_000,
+      name: "Track A",
+      url: "https://example.com/quiet-morning#a",
+      startMs: 0,
+      endMs: 120_000,
+    };
+
+    assert.equal(
+      findSpectrumMusicDraftById([draft], "https://example.com/quiet-morning#a|0|120000"),
+      draft,
     );
   });
 

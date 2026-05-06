@@ -2,6 +2,7 @@ use super::model::{Collection, Exclude, Music, PlayList};
 use crate::domain::player::service::{
     PlaybackTrackIdentityUpdate, update_current_session_track_identity,
 };
+use tauri::AppHandle;
 
 #[tauri::command]
 #[specta::specta]
@@ -101,6 +102,21 @@ pub async fn update_music(
     }
 
     Ok(updated)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn list_musics_by_file_path(
+    app: AppHandle,
+    file_path: String,
+) -> Result<Vec<Music>, String> {
+    let save_root = crate::domain::meta::service::resolve_save_root(&app)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    super::repo::list_musics_by_file_path(std::path::Path::new(&file_path), &save_root)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

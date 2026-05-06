@@ -1,8 +1,8 @@
 use super::model::{Collection, Exclude, Group, Music, PlayList};
 use super::repo::{
     add_exclude, delete_playlist_by_name, get_collection_by_url, get_playlist_by_name,
-    has_collections, list_collections, list_playlists, remove_exclude, set_collection_updates,
-    update_music, upsert_collection, upsert_playlist,
+    has_collections, list_collections, list_musics_by_file_path, list_playlists, remove_exclude,
+    set_collection_updates, update_music, upsert_collection, upsert_playlist,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -718,6 +718,79 @@ fn update_music_changes_display_alias_and_range_from_original_identity() {
         assert_eq!(reloaded.musics[0].alias, "Track Edit");
         assert_eq!(reloaded.musics[0].start_ms, 12_250);
         assert_eq!(reloaded.musics[0].end_ms, 132_750);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn list_musics_by_file_path_reads_matching_database_music_records() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let save_root = PathBuf::from("C:/Media");
+        let shared_path = PathBuf::from("Disc 1").join("Shared.m4a");
+        let collection = collection_with_musics(
+            "https://example.com/spectrum-source",
+            "youtube/spectrum-source",
+            Some(false),
+            vec![
+                Music {
+                    name: "Track A".to_string(),
+                    alias: "Track A".to_string(),
+                    group: collection_group(
+                        "Disc 1",
+                        "https://example.com/spectrum-source#disc-1",
+                        "Disc 1",
+                    ),
+                    url: "https://example.com/spectrum-source#a".to_string(),
+                    path: Some(shared_path.to_string_lossy().to_string()),
+                    start_ms: 0,
+                    end_ms: 120_000,
+                },
+                Music {
+                    name: "Track B".to_string(),
+                    alias: "Track B".to_string(),
+                    group: collection_group(
+                        "Disc 1",
+                        "https://example.com/spectrum-source#disc-1",
+                        "Disc 1",
+                    ),
+                    url: "https://example.com/spectrum-source#b".to_string(),
+                    path: Some(shared_path.to_string_lossy().to_string()),
+                    start_ms: 120_000,
+                    end_ms: 240_000,
+                },
+                Music {
+                    name: "Other".to_string(),
+                    alias: "Other".to_string(),
+                    group: collection_group(
+                        "Disc 1",
+                        "https://example.com/spectrum-source#disc-1",
+                        "Disc 1",
+                    ),
+                    url: "https://example.com/spectrum-source#other".to_string(),
+                    path: Some("Disc 1/Other.m4a".to_string()),
+                    start_ms: 0,
+                    end_ms: 60_000,
+                },
+            ],
+        );
+        let _ = upsert_collection(&collection)
+            .await
+            .expect("collection should save before file music lookup");
+
+        let lookup_path = save_root.join(&collection.folder).join(shared_path);
+        let musics = list_musics_by_file_path(&lookup_path, &save_root)
+        .await
+        .expect("music lookup by file path should succeed");
+
+        assert_eq!(musics.len(), 2);
+        assert_eq!(musics[0].alias, "Track A");
+        assert_eq!(musics[1].alias, "Track B");
 
         reset_db();
     });

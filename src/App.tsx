@@ -188,6 +188,16 @@ function MainWindowApp() {
               <PlayListPage scrollPositionRef={playListScrollPositionRef} />
             </PageViewport>
           ),
+          spectrumLoadingMusics: () => (
+            <PageViewport
+              key="spectrum"
+              pageKey="spectrum"
+              pageState="spectrum-loading-musics"
+              scrollPositionRef={pageScrollPositionRefs.current.spectrum}
+            >
+              <SpectrumPage />
+            </PageViewport>
+          ),
           spectrum: () => (
             <PageViewport
               key="spectrum"

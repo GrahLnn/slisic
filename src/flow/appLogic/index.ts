@@ -31,7 +31,7 @@ import {
   spectrumMusicDraftReset,
   spectrumMusicRangeChanged,
   send,
-  spectrumMusicTitleChanged,
+  spectrumMusicNameChanged,
 } from "./runtime";
 import { action as pasteDownloadAction } from "../pasteDownload";
 import { createPlaybackContinuationModeEffectOwner } from "./playbackContinuationModeEffectOwner";
@@ -72,7 +72,7 @@ function summarizeContext(context: ActorSnapshot["context"]) {
     nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
     nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
     nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
-    spectrumMusicTitleDraft: context.spectrumMusicTitleDraft,
+    spectrumMusicDraftCount: context.spectrumMusicDrafts.length,
     error: context.error,
     titleToneHandoffLayoutId: context.titleToneHandoff?.layoutId ?? null,
     titleToneHandoffTone: context.titleToneHandoff?.tone ?? null,
@@ -227,7 +227,11 @@ function shouldStopPlaybackForSnapshot(snapshot: ActorSnapshot) {
 }
 
 function shouldRestoreRandomPlaybackForSnapshot(snapshot: ActorSnapshot) {
-  return snapshot.value === "spectrum" || snapshot.value === "spectrumUpdatingMusic";
+  return (
+    snapshot.value === "spectrumLoadingMusics" ||
+    snapshot.value === "spectrum" ||
+    snapshot.value === "spectrumUpdatingMusic"
+  );
 }
 
 function attachNowPlayingTrackListener() {
@@ -330,17 +334,21 @@ export const action = {
     ensureStarted();
     send(draftNameChanged.load(name));
   },
-  changeSpectrumMusicTitle: (name: string) => {
+  changeSpectrumMusicName: (input: { id: string; name: string }) => {
     ensureStarted();
-    send(spectrumMusicTitleChanged.load(name));
+    send(spectrumMusicNameChanged.load(input));
   },
-  changeSpectrumMusicRange: (range: { endMs: number | null; startMs: number | null }) => {
+  changeSpectrumMusicRange: (range: {
+    endMs: number | null;
+    id: string;
+    startMs: number | null;
+  }) => {
     ensureStarted();
     send(spectrumMusicRangeChanged.load(range));
   },
-  resetSpectrumMusicDraft: () => {
+  resetSpectrumMusicDraft: (id: string) => {
     ensureStarted();
-    send(spectrumMusicDraftReset.load(null));
+    send(spectrumMusicDraftReset.load({ id }));
   },
   changeSavePath: async (savePath: string) => {
     ensureStarted();

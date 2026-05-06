@@ -5,6 +5,7 @@ import {
   clampWaveformZoomDeltaY,
   createWaveformDataRequestKey,
   createWaveformDataScopeKey,
+  createWaveformSharedTileCacheForFile,
   drawWaveformCanvasJobChunk,
   handleWaveformViewportWheel,
   normalizeWaveformPathKey,
@@ -179,6 +180,21 @@ describe("SpectrumVisualizer", () => {
     assert.equal(resolveTrackWaveformInitialStatus("C:/music/demo.flac"), "loading");
     assert.equal(resolveTrackWaveformInitialStatus("   "), "idle");
     assert.equal(resolveTrackWaveformInitialStatus(null), "idle");
+  });
+
+  test("shares waveform tile cache by normalized file path", () => {
+    const first = createWaveformSharedTileCacheForFile({
+      filePath: "C:/Music/Demo.flac",
+    });
+    const second = createWaveformSharedTileCacheForFile({
+      filePath: "c:\\music\\demo.flac",
+    });
+    const other = createWaveformSharedTileCacheForFile({
+      filePath: "C:/Music/Other.flac",
+    });
+
+    assert.equal(first, second);
+    assert.notEqual(first, other);
   });
 
   test("adapts waveform loading grid density to the container", () => {

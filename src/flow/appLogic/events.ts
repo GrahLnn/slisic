@@ -31,7 +31,9 @@ import {
   type ConfigSidebarItemRef,
   type ConfigDraft,
   type PlaylistUpsertResult,
+  type SpectrumMusicDraft,
 } from "./core";
+import { createSpectrumMusicDrafts } from "./musicTitle";
 
 export interface BootstrapResult {
   hasPlayList: boolean;
@@ -57,6 +59,17 @@ export interface MusicUpdateInput {
 export interface MusicUpdateResult {
   input: MusicUpdateInput;
   music: Music;
+}
+
+export interface MusicUpdatesResult {
+  results: MusicUpdateResult[];
+}
+
+export interface SpectrumMusicDraftBootstrapInput {
+  filePath: string;
+  nowPlayingTrackEndMs: number | null;
+  nowPlayingTrackStartMs: number | null;
+  nowPlayingTrackUrl: string | null;
 }
 
 export class BootstrapLoadError extends Error {
@@ -178,6 +191,7 @@ export const ss = defineSS(
         "loading",
         "ready",
         "play",
+        "spectrumLoadingMusics",
         "spectrum",
         "spectrumUpdatingMusic",
         "configLoading",
@@ -266,32 +280,6 @@ export const invoker = createActors({
       },
     });
   },
-  updateMusic: async (input: MusicUpdateInput): Promise<MusicUpdateResult> => {
-    const result = await crab.updateMusic(
-      input.url,
-      input.targetStartMs,
-      input.targetEndMs,
-      input.alias,
-      input.startMs,
-      input.endMs,
-    );
-
-    return result.match({
-      Ok: (music) => {
-        if (!music) {
-          throw new Error(`music \`${input.url}\` not found`);
-        }
-
-        return {
-          input,
-          music,
-        };
-      },
-      Err: (error) => {
-        throw new Error(error);
-      },
-    });
-  },
   playPlaylist: async (input: PlayPlaylistInput): Promise<PlayPlaylistSession | null> => {
     if (!input.shouldStartPlayback) {
       return null;
@@ -306,6 +294,59 @@ export const invoker = createActors({
       },
     });
   },
+  updateMusics: async (inputs: MusicUpdateInput[]): Promise<MusicUpdatesResult> => {
+    const results: MusicUpdateResult[] = [];
+
+    for (const input of inputs) {
+      const result = await crab.updateMusic(
+        input.url,
+        input.targetStartMs,
+        input.targetEndMs,
+        input.alias,
+        input.startMs,
+        input.endMs,
+      );
+
+      const updateResult = result.match({
+        Ok: (music) => {
+          if (!music) {
+            throw new Error(`music \`${input.url}\` not found`);
+          }
+
+          return {
+            input,
+            music,
+          };
+        },
+        Err: (error) => {
+          throw new Error(error);
+        },
+      });
+      results.push(updateResult);
+    }
+
+    return { results };
+  },
+  loadSpectrumMusicDrafts: async (
+    input: SpectrumMusicDraftBootstrapInput,
+  ): Promise<SpectrumMusicDraft[]> => {
+    const result = await crab.listMusicsByFilePath(input.filePath);
+
+    return result.match({
+      Ok: (fileMusics) =>
+        createSpectrumMusicDrafts({
+          currentMusicIdentity: {
+            endMs: input.nowPlayingTrackEndMs,
+            startMs: input.nowPlayingTrackStartMs,
+            url: input.nowPlayingTrackUrl,
+          },
+          fileMusics,
+        }),
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+  },
 });
 export const payloads = collect(
   ...event<string>()("playlist.open"),
@@ -314,9 +355,11 @@ export const payloads = collect(
   ...event<string>()("playlist.deleted"),
   ...event<PlaylistUpsertResult | null>()("playlist.preview.changed"),
   ...event<string>()("draft.name.changed"),
-  ...event<string>()("spectrum.music_title.changed"),
-  ...event<{ endMs: number | null; startMs: number | null }>()("spectrum.music_range.changed"),
-  ...event<null>()("spectrum.music_draft.reset"),
+  ...event<{ id: string; name: string }>()("spectrum.music_name.changed"),
+  ...event<{ endMs: number | null; id: string; startMs: number | null }>()(
+    "spectrum.music_range.changed",
+  ),
+  ...event<{ id: string }>()("spectrum.music_draft.reset"),
   ...event<string>()("save_path.changed"),
   ...event<Collection>()("collection.upserted"),
   ...event<Collection>()("draft.collection.upserted"),

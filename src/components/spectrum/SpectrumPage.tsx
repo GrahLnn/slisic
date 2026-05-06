@@ -7,13 +7,13 @@ import { collectionTitleLayoutTransition } from "../collectionTitle";
 import type { EditableTitleHandle } from "../EditableTitle";
 import { MusicSpectrumEditor } from "./MusicSpectrumEditor";
 import {
+  findSpectrumMusicDraftById,
   resolveSpectrumBackActionVisualState,
-  resolveSpectrumCommittedTitle,
+  resolveSpectrumCommittedMusicName,
   resolveSpectrumMusicRangeChange,
-  resolveSpectrumSelectionRange,
-  resolveSpectrumTitle,
-  shouldShowSpectrumDraftResetAction,
+  resolveSpectrumMusicEditorViewModels,
   type SpectrumBackActionVisualState,
+  type SpectrumMusicEditorViewModel,
 } from "./SpectrumPage.view-model";
 import { SpectrumPlaybackAction } from "./SpectrumPlaybackAction";
 import { usePageRenderFreeze } from "../usePageRenderFreeze";
@@ -35,14 +35,8 @@ const spectrumBackIconToneClassName =
 
 type SpectrumRenderData = {
   backActionVisualState: SpectrumBackActionVisualState;
-  handoffTone: "solid" | "muted" | null;
-  interactionDisabled: boolean;
-  selectionEnd: number | null;
-  selectionStart: number | null;
-  shouldShowDraftResetAction: boolean;
+  editorViewModels: SpectrumMusicEditorViewModel[];
   trackFilePath: string | null;
-  titleLayoutId?: string;
-  titleValue: string;
 };
 
 function waitForNextFrame() {
@@ -156,44 +150,36 @@ function SpectrumBackIcon({ visualState }: { visualState: SpectrumBackActionVisu
 
 export function SpectrumPage() {
   const isPresent = useIsPresent();
-  const editableTitleRef = useRef<EditableTitleHandle | null>(null);
+  const editableTitleRefs = useRef(new Map<string, EditableTitleHandle>());
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
   const {
     activeLayoutId,
     nowPlayingTrackEndMs,
     nowPlayingTrackFilePath,
-    nowPlayingTrackName,
+    nowPlayingTrackUrl,
     nowPlayingTrackStartMs,
     playingPlaylistName,
-    spectrumMusicTitleDraft,
+    spectrumMusicDrafts,
     titleToneHandoff,
   } = appLogicHook.useContext();
-  const liveSelectionRange = resolveSpectrumSelectionRange({
-    musicTitleDraft: spectrumMusicTitleDraft,
+  const handoffTone =
+    activeLayoutId && titleToneHandoff?.layoutId === activeLayoutId ? titleToneHandoff.tone : null;
+  const editorViewModels = resolveSpectrumMusicEditorViewModels({
+    activeLayoutId,
+    handoffTone,
+    interactionDisabled: !isPresent || spectrumMusicDrafts.length === 0,
     nowPlayingTrackEndMs,
     nowPlayingTrackStartMs,
+    nowPlayingTrackUrl,
+    playingPlaylistName,
+    spectrumMusicDrafts,
   });
   const liveRenderData = {
     backActionVisualState: resolveSpectrumBackActionVisualState({
-      musicTitleDraft: spectrumMusicTitleDraft,
+      musicDrafts: spectrumMusicDrafts,
     }),
-    handoffTone:
-      activeLayoutId && titleToneHandoff?.layoutId === activeLayoutId
-        ? titleToneHandoff.tone
-        : null,
-    interactionDisabled: !isPresent || spectrumMusicTitleDraft === null,
-    selectionEnd: liveSelectionRange.end,
-    selectionStart: liveSelectionRange.start,
-    shouldShowDraftResetAction: shouldShowSpectrumDraftResetAction({
-      musicTitleDraft: spectrumMusicTitleDraft,
-    }),
+    editorViewModels,
     trackFilePath: nowPlayingTrackFilePath,
-    titleLayoutId: activeLayoutId ?? undefined,
-    titleValue: resolveSpectrumTitle({
-      musicTitleDraft: spectrumMusicTitleDraft,
-      nowPlayingTrackName,
-      playingPlaylistName,
-    }),
   } satisfies SpectrumRenderData;
   const pageRenderFreeze = usePageRenderFreeze(liveRenderData, {
     isPresent,
@@ -210,27 +196,51 @@ export function SpectrumPage() {
     setIsBackNavigationPending(true);
 
     try {
-      const committedTitle = resolveSpectrumCommittedTitle({
-        musicTitleDraft: spectrumMusicTitleDraft,
-        renderedTitle: renderData.titleValue,
-      });
-
       if (renderData.backActionVisualState.kind === "back") {
         pageRenderFreeze.freeze();
         appLogicAction.back();
         return;
       }
 
-      await editableTitleRef.current?.commitResolvedValue({
-        value: committedTitle.alias,
-        animateTyping: committedTitle.kind !== "keep",
+      const committedTitles = renderData.editorViewModels.map((editor) => {
+        const draft = findSpectrumMusicDraftById(spectrumMusicDrafts, editor.id);
+        return {
+          editor,
+          title: resolveSpectrumCommittedMusicName({
+            musicDraft: draft,
+            renderedName: editor.titleValue,
+          }),
+        };
       });
 
+      for (const { editor, title } of committedTitles) {
+        await editableTitleRefs.current.get(editor.id)?.commitResolvedValue({
+          value: title.alias,
+          animateTyping: title.kind !== "keep",
+        });
+      }
+
       flushSync(() => {
-        appLogicAction.changeSpectrumMusicTitle(committedTitle.alias);
+        for (const { editor, title } of committedTitles) {
+          appLogicAction.changeSpectrumMusicName({
+            id: editor.id,
+            name: title.alias,
+          });
+        }
         pageRenderFreeze.freeze({
           ...liveRenderData,
-          titleValue: committedTitle.alias,
+          editorViewModels: liveRenderData.editorViewModels.map((editor) => {
+            const committed = committedTitles.find(
+              (candidate) => candidate.editor.id === editor.id,
+            );
+
+            return committed
+              ? {
+                  ...editor,
+                  titleValue: committed.title.alias,
+                }
+              : editor;
+          }),
         });
       });
       await waitForTitleShareSourceReady();
@@ -275,27 +285,51 @@ export function SpectrumPage() {
             <SpectrumBackIcon visualState={renderData.backActionVisualState} />
           </button>
         </motion.div>
-        <MusicSpectrumEditor
-          ref={editableTitleRef}
-          handoffTone={renderData.handoffTone}
-          interactionDisabled={renderData.interactionDisabled}
-          playbackAction={<SpectrumPlaybackAction filePath={renderData.trackFilePath} />}
-          playheadEnabled
-          selection={{
-            end: renderData.selectionEnd,
-            start: renderData.selectionStart,
-          }}
-          shouldShowResetAction={renderData.shouldShowDraftResetAction}
-          titleLayoutId={renderData.titleLayoutId}
-          titleValue={renderData.titleValue}
-          trackFilePath={renderData.trackFilePath}
-          waveformClassName="left-1/2 w-screen -translate-x-1/2"
-          onReset={appLogicAction.resetSpectrumMusicDraft}
-          onSelectionChange={(range) => {
-            appLogicAction.changeSpectrumMusicRange(resolveSpectrumMusicRangeChange(range));
-          }}
-          onTitleChange={appLogicAction.changeSpectrumMusicTitle}
-        />
+        <div className="flex flex-col gap-12 pb-16">
+          {renderData.editorViewModels.map((editor) => (
+            <MusicSpectrumEditor
+              key={editor.id}
+              ref={(handle) => {
+                if (handle) {
+                  editableTitleRefs.current.set(editor.id, handle);
+                  return;
+                }
+
+                editableTitleRefs.current.delete(editor.id);
+              }}
+              handoffTone={editor.handoffTone}
+              interactionDisabled={editor.interactionDisabled}
+              playbackAction={
+                editor.isCurrent ? (
+                  <SpectrumPlaybackAction filePath={renderData.trackFilePath} />
+                ) : null
+              }
+              playheadEnabled={editor.isCurrent}
+              selection={{
+                end: editor.selectionEnd,
+                start: editor.selectionStart,
+              }}
+              shouldShowResetAction={editor.shouldShowResetAction}
+              titleLayoutId={editor.titleLayoutId}
+              titleValue={editor.titleValue}
+              trackFilePath={renderData.trackFilePath}
+              waveformClassName="left-1/2 w-screen -translate-x-1/2"
+              onReset={() => appLogicAction.resetSpectrumMusicDraft(editor.id)}
+              onSelectionChange={(range) => {
+                appLogicAction.changeSpectrumMusicRange({
+                  id: editor.id,
+                  ...resolveSpectrumMusicRangeChange(range),
+                });
+              }}
+              onTitleChange={(name) =>
+                appLogicAction.changeSpectrumMusicName({
+                  id: editor.id,
+                  name,
+                })
+              }
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
