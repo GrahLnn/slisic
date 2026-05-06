@@ -61,16 +61,6 @@ export function resolveSpectrumSelectionRange(args: {
   };
 }
 
-export function resolveSpectrumPlaybackSelectionRange(args: {
-  nowPlayingTrackEndMs: number | null;
-  nowPlayingTrackStartMs: number | null;
-}) {
-  return {
-    end: millisecondsToSeconds(args.nowPlayingTrackEndMs),
-    start: millisecondsToSeconds(args.nowPlayingTrackStartMs),
-  };
-}
-
 export function resolveSpectrumMusicRangeChange(args: {
   end: number | null;
   start: number | null;

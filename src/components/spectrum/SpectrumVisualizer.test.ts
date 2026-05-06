@@ -40,6 +40,7 @@ import {
   resolveWaveformSelectionDrag,
   resolveWaveformSelectionGeometry,
   resolveWaveformSelectionStartScrollLeft,
+  resolveWaveformPlayheadDrag,
   resolveWaveformTileIndexPeakRangeAtPixels,
   resolveWaveformTilePeakRangeAtPixels,
   resolveWaveformTilePeakAtSeconds,
@@ -1632,6 +1633,60 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
+  test("clamps playback playhead drags to the current editable selection", () => {
+    const resolution = resolveWaveformPlayheadDrag({
+      hostRect: {
+        left: 10,
+        width: 4_000,
+      },
+      pointerClientX: 5_000,
+      selection: {
+        end: 40,
+        start: 20,
+      },
+      viewport: {
+        contentWidth: 12_000,
+        durationMs: 120_000,
+        focusSeconds: null,
+        maximumPixelsPerSecond: 800,
+        pixelsPerSecond: 100,
+        scrollLeft: 1_904,
+        viewportWidth: 1_000,
+      },
+    });
+
+    assert.deepEqual(resolution, {
+      endMs: 40_000,
+      positionMs: 40_000,
+    });
+  });
+
+  test("rejects playback playhead drags without a complete editable selection", () => {
+    assert.equal(
+      resolveWaveformPlayheadDrag({
+        hostRect: {
+          left: 0,
+          width: 1_000,
+        },
+        pointerClientX: 500,
+        selection: {
+          end: 40,
+          start: null,
+        },
+        viewport: {
+          contentWidth: 12_000,
+          durationMs: 120_000,
+          focusSeconds: null,
+          maximumPixelsPerSecond: 800,
+          pixelsPerSecond: 100,
+          scrollLeft: 0,
+          viewportWidth: 1_000,
+        },
+      }),
+      null,
+    );
+  });
+
   test("advances playback snapshots only while playing", () => {
     const snapshot = {
       duration_ms: 20_000,
@@ -1685,6 +1740,27 @@ describe("SpectrumVisualizer", () => {
         },
       }),
       20_000,
+    );
+  });
+
+  test("prefers playback request duration over stale player duration", () => {
+    assert.equal(
+      resolvePlaybackSnapshotDurationMs({
+        fallbackDurationMs: 120_000,
+        snapshot: {
+          duration_ms: 120_000,
+          music_url: "https://example.com/demo",
+          path: "C:/music/demo.flac",
+          paused: true,
+          playback_end_ms: 40_000,
+          playback_start_ms: 25_000,
+          playing: true,
+          playlist_name: "Focus",
+          position_ms: 2_000,
+          received_at_ms: 100,
+        },
+      }),
+      15_000,
     );
   });
 

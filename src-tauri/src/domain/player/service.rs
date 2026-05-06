@@ -35,6 +35,8 @@ pub struct PlayerRuntime {
     playback: Mutex<Option<Playback>>,
     session: Mutex<Option<ActivePlaybackSession>>,
     active_request_track: RwLock<Option<PlaybackTrack>>,
+    active_playback_range: RwLock<Option<ActivePlaybackRange>>,
+    temporary_playback_pause: RwLock<bool>,
     continuation_mode: RwLock<PlaybackContinuationMode>,
     generation: AtomicU64,
     active_binary_tasks: AtomicUsize,
@@ -52,6 +54,12 @@ struct ActivePlaybackSession {
     generation: u64,
     tracks: SharedPlaybackTracks,
     strategy: SharedPlaybackStrategy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActivePlaybackRange {
+    pub(crate) start_ms: u32,
+    pub(crate) end_ms: u32,
 }
 
 #[cfg(not(test))]
@@ -91,6 +99,8 @@ pub fn initialize_runtime(app: AppHandle) {
             playback: Mutex::new(None),
             session: Mutex::new(None),
             active_request_track: RwLock::new(None),
+            active_playback_range: RwLock::new(None),
+            temporary_playback_pause: RwLock::new(false),
             continuation_mode: RwLock::new(PlaybackContinuationMode::Random),
             generation: AtomicU64::new(0),
             active_binary_tasks: AtomicUsize::new(0),
@@ -124,6 +134,7 @@ pub async fn play_tracks(
     if let Err(error) = playback.stop().await {
         eprintln!("[player] failed to stop previous playback before restart: {error}");
     }
+    runtime.set_temporary_playback_pause(false)?;
 
     let shared_tracks = Arc::new(RwLock::new(tracks));
     let shared_strategy = Arc::new(Mutex::new(PlaybackStrategySet::new()));
@@ -201,6 +212,7 @@ pub async fn stop_playback() -> Result<bool> {
     let runtime = runtime()?;
     runtime.generation.fetch_add(1, Ordering::SeqCst);
     runtime.clear_active_session()?;
+    runtime.set_temporary_playback_pause(false)?;
     let Some(playback) = runtime.current_playback()? else {
         return Ok(false);
     };
@@ -215,7 +227,9 @@ pub async fn stop_playback() -> Result<bool> {
 
 #[cfg(not(test))]
 pub async fn pause_playback() -> Result<bool> {
-    let Some(playback) = runtime()?.current_playback()? else {
+    let runtime = runtime()?;
+    runtime.set_temporary_playback_pause(false)?;
+    let Some(playback) = runtime.current_playback()? else {
         return Ok(false);
     };
 
@@ -229,7 +243,9 @@ pub async fn pause_playback() -> Result<bool> {
 
 #[cfg(not(test))]
 pub async fn resume_playback() -> Result<bool> {
-    let Some(playback) = runtime()?.current_playback()? else {
+    let runtime = runtime()?;
+    runtime.set_temporary_playback_pause(false)?;
+    let Some(playback) = runtime.current_playback()? else {
         return Ok(false);
     };
 
@@ -239,6 +255,116 @@ pub async fn resume_playback() -> Result<bool> {
         .map_err(|error| anyhow!("failed to resume playback: {error}"))?;
 
     Ok(true)
+}
+
+#[cfg(not(test))]
+pub async fn begin_playback_seek() -> Result<Option<PlaybackStatusPayload>> {
+    let runtime = runtime()?;
+    let Some(playback) = runtime.current_playback()? else {
+        return Ok(None);
+    };
+    let Some(active_track) = runtime.active_request_track_snapshot()? else {
+        return Ok(None);
+    };
+
+    let status = playback
+        .status()
+        .await
+        .map_err(|error| anyhow!("failed to read playback status before seek drag: {error}"))?;
+    if resolve_playback_status_track_identity(status.path.as_deref(), Some(&active_track)).is_none()
+    {
+        return Ok(None);
+    }
+
+    if status.playing && !status.paused {
+        playback
+            .pause()
+            .await
+            .map_err(|error| anyhow!("failed to pause playback for seek drag: {error}"))?;
+        runtime.set_temporary_playback_pause(true)?;
+    } else {
+        runtime.set_temporary_playback_pause(false)?;
+    }
+
+    get_playback_status().await
+}
+
+#[cfg(not(test))]
+pub async fn cancel_playback_seek() -> Result<Option<PlaybackStatusPayload>> {
+    let runtime = runtime()?;
+    let Some(playback) = runtime.current_playback()? else {
+        runtime.set_temporary_playback_pause(false)?;
+        return Ok(None);
+    };
+
+    let status = playback
+        .status()
+        .await
+        .map_err(|error| anyhow!("failed to read playback status before seek cancel: {error}"))?;
+    let active_track = runtime.active_request_track_snapshot()?;
+    let status_matches_track =
+        resolve_playback_status_track_identity(status.path.as_deref(), active_track.as_ref())
+            .is_some();
+
+    if should_resume_playback_seek_cancel(
+        status_matches_track,
+        status.playing,
+        status.paused,
+        runtime.temporary_playback_pause()?,
+    ) {
+        playback
+            .resume()
+            .await
+            .map_err(|error| anyhow!("failed to resume playback after cancelled seek: {error}"))?;
+    }
+    runtime.set_temporary_playback_pause(false)?;
+
+    get_playback_status().await
+}
+
+#[cfg(not(test))]
+pub async fn seek_playback(position_ms: u32, end_ms: u32) -> Result<Option<PlaybackStatusPayload>> {
+    let runtime = runtime()?;
+    let Some(playback) = runtime.current_playback()? else {
+        return Ok(None);
+    };
+    let Some(active_track) = runtime.active_request_track_snapshot()? else {
+        return Ok(None);
+    };
+
+    let status = playback
+        .status()
+        .await
+        .map_err(|error| anyhow!("failed to read playback status before seek: {error}"))?;
+    if resolve_playback_status_track_identity(status.path.as_deref(), Some(&active_track)).is_none()
+    {
+        return Ok(None);
+    }
+    let pause_after_seek = resolve_playback_seek_pause_after_request(
+        status.playing,
+        status.paused,
+        runtime.temporary_playback_pause()?,
+    );
+
+    let Some(range) = resolve_playback_seek_range(position_ms, end_ms) else {
+        return Ok(None);
+    };
+    let request = playback_request_for_path_range(&active_track.file_path, range)?;
+    playback
+        .play_request(request)
+        .await
+        .map_err(|error| anyhow!("failed to seek playback: {error}"))?;
+    runtime.set_active_playback_range(Some(range))?;
+
+    if pause_after_seek {
+        playback
+            .pause()
+            .await
+            .map_err(|error| anyhow!("failed to pause playback after seek: {error}"))?;
+    }
+    runtime.set_temporary_playback_pause(false)?;
+
+    get_playback_status().await
 }
 
 #[cfg(not(test))]
@@ -254,11 +380,26 @@ pub async fn get_playback_status() -> Result<Option<PlaybackStatusPayload>> {
         .map_err(|error| anyhow!("failed to read playback status: {error}"))?;
     let active_request_track =
         runtime.active_request_track_for_status_path(status.path.as_deref())?;
+    let active_playback_range = if active_request_track.is_some() {
+        runtime.active_playback_range_snapshot()?
+    } else {
+        None
+    };
+    let temporary_playback_pause =
+        active_request_track.is_some() && runtime.temporary_playback_pause()?;
 
     Ok(Some(PlaybackStatusPayload {
         path: status.path,
-        playing: status.playing,
-        paused: status.paused,
+        playing: if temporary_playback_pause {
+            true
+        } else {
+            status.playing
+        },
+        paused: if temporary_playback_pause {
+            false
+        } else {
+            status.paused
+        },
         position_ms: status.position_ms,
         duration_ms: status.duration_ms,
         playlist_name: active_request_track
@@ -267,8 +408,14 @@ pub async fn get_playback_status() -> Result<Option<PlaybackStatusPayload>> {
         music_url: active_request_track
             .as_ref()
             .map(|track| track.music_url.clone()),
-        playback_start_ms: active_request_track.as_ref().map(|track| track.start_ms),
-        playback_end_ms: active_request_track.as_ref().map(|track| track.end_ms),
+        playback_start_ms: active_playback_range
+            .as_ref()
+            .map(|range| range.start_ms)
+            .or_else(|| active_request_track.as_ref().map(|track| track.start_ms)),
+        playback_end_ms: active_playback_range
+            .as_ref()
+            .map(|range| range.end_ms)
+            .or_else(|| active_request_track.as_ref().map(|track| track.end_ms)),
     }))
 }
 
@@ -428,6 +575,31 @@ impl PlayerRuntime {
         Ok(())
     }
 
+    fn set_active_playback_range(&self, range: Option<ActivePlaybackRange>) -> Result<()> {
+        let mut active_playback_range = self
+            .active_playback_range
+            .write()
+            .map_err(|_| anyhow!("player runtime active playback range lock is poisoned"))?;
+        *active_playback_range = range;
+        Ok(())
+    }
+
+    fn set_temporary_playback_pause(&self, value: bool) -> Result<()> {
+        let mut temporary_playback_pause = self
+            .temporary_playback_pause
+            .write()
+            .map_err(|_| anyhow!("player runtime temporary playback pause lock is poisoned"))?;
+        *temporary_playback_pause = value;
+        Ok(())
+    }
+
+    fn temporary_playback_pause(&self) -> Result<bool> {
+        self.temporary_playback_pause
+            .read()
+            .map(|value| *value)
+            .map_err(|_| anyhow!("player runtime temporary playback pause lock is poisoned"))
+    }
+
     fn clear_active_request_track(&self) -> Result<()> {
         let mut active_request_track = self
             .active_request_track
@@ -435,6 +607,10 @@ impl PlayerRuntime {
             .map_err(|_| anyhow!("player runtime active request track lock is poisoned"))?;
         *active_request_track = None;
         Ok(())
+    }
+
+    fn clear_active_playback_range(&self) -> Result<()> {
+        self.set_active_playback_range(None)
     }
 
     fn active_request_track_for_status_path(
@@ -525,6 +701,9 @@ impl PlayerRuntime {
                 self.active_request_track_snapshot()?.as_ref(),
                 update,
             );
+            let active_playback_range = self.active_playback_range_snapshot()?;
+            let next_active_playback_range =
+                resolve_active_playback_range_identity_update(active_playback_range, update);
             let reconciled = {
                 let mut strategy = active
                     .strategy
@@ -539,6 +718,9 @@ impl PlayerRuntime {
             *current_tracks = next_tracks;
             if let Some(track) = reconciled.as_ref() {
                 self.set_active_request_track(track.clone())?;
+            }
+            if active_playback_range.is_some() {
+                self.set_active_playback_range(next_active_playback_range)?;
             }
             reconciled
         };
@@ -571,6 +753,7 @@ impl PlayerRuntime {
             .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
         *session = None;
         self.clear_active_request_track()?;
+        self.clear_active_playback_range()?;
         Ok(())
     }
 
@@ -595,6 +778,13 @@ impl PlayerRuntime {
             .read()
             .map(|track| track.clone())
             .map_err(|_| anyhow!("player runtime active request track lock is poisoned"))
+    }
+
+    fn active_playback_range_snapshot(&self) -> Result<Option<ActivePlaybackRange>> {
+        self.active_playback_range
+            .read()
+            .map(|range| *range)
+            .map_err(|_| anyhow!("player runtime active playback range lock is poisoned"))
     }
 }
 
@@ -644,6 +834,10 @@ async fn run_playback_session(
             .await
             .map_err(|error| anyhow!("failed to play `{}`: {error}", track.music_name))?;
         runtime.set_active_request_track(track.clone())?;
+        runtime.set_active_playback_range(Some(ActivePlaybackRange {
+            start_ms: track.start_ms,
+            end_ms: track.end_ms,
+        }))?;
         wait_until_track_finishes(&runtime, &playback, generation, &track.file_path).await?;
     }
 }
@@ -718,25 +912,92 @@ pub(crate) fn resolve_active_request_track_identity_update(
     Some(next)
 }
 
+pub(crate) fn resolve_active_playback_range_identity_update(
+    active_range: Option<ActivePlaybackRange>,
+    update: &PlaybackTrackIdentityUpdate,
+) -> Option<ActivePlaybackRange> {
+    let range = active_range?;
+
+    if range.start_ms == update.start_ms && range.end_ms == update.end_ms {
+        return Some(ActivePlaybackRange {
+            start_ms: update.next_start_ms,
+            end_ms: update.next_end_ms,
+        });
+    }
+
+    if range.start_ms < update.next_start_ms || range.start_ms > update.next_end_ms {
+        return None;
+    }
+
+    Some(ActivePlaybackRange {
+        start_ms: range.start_ms,
+        end_ms: update.next_end_ms,
+    })
+}
+
 #[cfg(not(test))]
 fn playback_request_for_track(track: &PlaybackTrack) -> Result<PlaybackRequest> {
-    let request = PlaybackRequest::new(track.file_path.clone());
-
-    if track.end_ms > track.start_ms {
-        return Ok(request.with_time_range(PlaybackTimeRange {
+    playback_request_for_path_range(
+        &track.file_path,
+        ActivePlaybackRange {
             start_ms: track.start_ms,
-            duration_ms: track.end_ms.checked_sub(track.start_ms),
+            end_ms: track.end_ms,
+        },
+    )
+}
+
+#[cfg(not(test))]
+fn playback_request_for_path_range(
+    path: &Path,
+    range: ActivePlaybackRange,
+) -> Result<PlaybackRequest> {
+    let request = PlaybackRequest::new(path.to_path_buf());
+
+    if range.end_ms > range.start_ms {
+        return Ok(request.with_time_range(PlaybackTimeRange {
+            start_ms: range.start_ms,
+            duration_ms: range.end_ms.checked_sub(range.start_ms),
         }));
     }
 
-    if track.start_ms > 0 {
+    if range.start_ms > 0 {
         return Ok(request.with_time_range(PlaybackTimeRange {
-            start_ms: track.start_ms,
+            start_ms: range.start_ms,
             duration_ms: None,
         }));
     }
 
     Ok(request)
+}
+
+pub(crate) fn resolve_playback_seek_range(
+    position_ms: u32,
+    end_ms: u32,
+) -> Option<ActivePlaybackRange> {
+    if end_ms == 0 {
+        return None;
+    }
+
+    let start_ms = position_ms.min(end_ms.saturating_sub(1));
+
+    Some(ActivePlaybackRange { start_ms, end_ms })
+}
+
+pub(crate) fn resolve_playback_seek_pause_after_request(
+    playing: bool,
+    paused: bool,
+    temporary_playback_pause: bool,
+) -> bool {
+    !temporary_playback_pause && (!playing || paused)
+}
+
+pub(crate) fn should_resume_playback_seek_cancel(
+    status_matches_track: bool,
+    playing: bool,
+    paused: bool,
+    temporary_playback_pause: bool,
+) -> bool {
+    status_matches_track && temporary_playback_pause && playing && paused
 }
 
 #[cfg(not(test))]

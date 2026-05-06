@@ -7,7 +7,6 @@ import {
   resolveSpectrumCommittedTitle,
   resolveSpectrumMusicRangeChange,
   resolveSpectrumPlaybackActionVisualState,
-  resolveSpectrumPlaybackSelectionRange,
   resolveSpectrumSelectionRange,
   resolveSpectrumTitle,
   shouldShowSpectrumDraftResetAction,
@@ -162,19 +161,6 @@ describe("SpectrumPage", () => {
       {
         end: 90,
         start: null,
-      },
-    );
-  });
-
-  test("resolves playback selection from the current track instead of editable draft", () => {
-    assert.deepEqual(
-      resolveSpectrumPlaybackSelectionRange({
-        nowPlayingTrackEndMs: 120_000,
-        nowPlayingTrackStartMs: 0,
-      }),
-      {
-        end: 120,
-        start: 0,
       },
     );
   });

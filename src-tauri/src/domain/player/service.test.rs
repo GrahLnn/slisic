@@ -1,8 +1,10 @@
 use super::model::PlaybackTrack;
 use super::service::{
-    PlaybackTrackIdentityUpdate, playback_tracks_match,
-    resolve_active_request_track_identity_update, resolve_playback_status_track_identity,
-    resolve_session_track_identity_update,
+    ActivePlaybackRange, PlaybackTrackIdentityUpdate, playback_tracks_match,
+    resolve_active_playback_range_identity_update, resolve_active_request_track_identity_update,
+    resolve_playback_seek_pause_after_request, resolve_playback_seek_range,
+    resolve_playback_status_track_identity, resolve_session_track_identity_update,
+    should_resume_playback_seek_cancel,
 };
 use std::path::PathBuf;
 
@@ -133,4 +135,95 @@ fn resolve_active_request_track_identity_update_ignores_unrelated_updates() {
     );
 
     assert!(updated.is_none());
+}
+
+#[test]
+fn resolve_playback_seek_range_keeps_the_requested_position_and_region_end() {
+    assert_eq!(
+        resolve_playback_seek_range(25_250, 40_000),
+        Some(ActivePlaybackRange {
+            start_ms: 25_250,
+            end_ms: 40_000,
+        }),
+    );
+}
+
+#[test]
+fn resolve_playback_seek_range_never_starts_at_or_after_the_region_end() {
+    assert_eq!(
+        resolve_playback_seek_range(50_000, 40_000),
+        Some(ActivePlaybackRange {
+            start_ms: 39_999,
+            end_ms: 40_000,
+        }),
+    );
+    assert_eq!(resolve_playback_seek_range(0, 0), None);
+}
+
+#[test]
+fn resolve_active_playback_range_identity_update_preserves_seek_position_inside_new_region() {
+    assert_eq!(
+        resolve_active_playback_range_identity_update(
+            Some(ActivePlaybackRange {
+                start_ms: 25_000,
+                end_ms: 112_000,
+            }),
+            &PlaybackTrackIdentityUpdate {
+                music_name: "A edited".to_string(),
+                music_url: "https://example.com/a".to_string(),
+                start_ms: 8_000,
+                end_ms: 112_000,
+                next_start_ms: 9_250,
+                next_end_ms: 110_750,
+            },
+        ),
+        Some(ActivePlaybackRange {
+            start_ms: 25_000,
+            end_ms: 110_750,
+        }),
+    );
+}
+
+#[test]
+fn resolve_playback_seek_pause_after_request_keeps_temporary_pause_playing() {
+    assert_eq!(
+        resolve_playback_seek_pause_after_request(true, true, true),
+        false
+    );
+}
+
+#[test]
+fn resolve_playback_seek_pause_after_request_preserves_paused_state_without_temporary_pause() {
+    assert_eq!(
+        resolve_playback_seek_pause_after_request(true, true, false),
+        true
+    );
+    assert_eq!(
+        resolve_playback_seek_pause_after_request(false, false, false),
+        true
+    );
+    assert_eq!(
+        resolve_playback_seek_pause_after_request(true, false, false),
+        false
+    );
+}
+
+#[test]
+fn should_resume_playback_seek_cancel_only_restores_temporary_pause_on_current_track() {
+    assert_eq!(
+        should_resume_playback_seek_cancel(true, true, true, true),
+        true
+    );
+    assert_eq!(
+        should_resume_playback_seek_cancel(false, true, true, true),
+        false
+    );
+    assert_eq!(
+        should_resume_playback_seek_cancel(true, true, false, true),
+        false
+    );
+    assert_eq!(
+        should_resume_playback_seek_cancel(true, true, true, false),
+        false
+    );
 }

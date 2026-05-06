@@ -34,6 +34,33 @@ pub async fn resume_playback() -> Result<bool, String> {
 
 #[tauri::command]
 #[specta::specta]
+pub async fn begin_playback_seek() -> Result<Option<PlaybackStatusPayload>, String> {
+    super::service::begin_playback_seek()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn cancel_playback_seek() -> Result<Option<PlaybackStatusPayload>, String> {
+    super::service::cancel_playback_seek()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn seek_playback(
+    position_ms: u32,
+    end_ms: u32,
+) -> Result<Option<PlaybackStatusPayload>, String> {
+    super::service::seek_playback(position_ms, end_ms)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn get_playback_status() -> Result<Option<PlaybackStatusPayload>, String> {
     super::service::get_playback_status()
         .await
