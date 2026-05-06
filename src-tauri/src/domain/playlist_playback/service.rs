@@ -9,7 +9,7 @@ use crate::domain::downloads::service as download_service;
 use crate::domain::meta::service as meta_service;
 #[cfg(not(test))]
 use crate::domain::player::event::NowPlayingTrackChangedEvent;
-use crate::domain::player::model::PlaybackTrack;
+use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
 #[cfg(not(test))]
 use crate::domain::player::service as player_service;
 use crate::domain::playlists::model::{Collection, PlayList};
@@ -35,6 +35,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
     let track_count = material.tracks.len() as u32;
     let has_relevant_active_downloads = material.has_relevant_active_downloads;
 
+    player_service::set_playback_continuation_mode(resolve_playlist_playback_continuation_mode())?;
     let session = player_service::play_tracks(playlist_name.clone(), material.tracks).await?;
     if has_relevant_active_downloads {
         spawn_playlist_track_refresh(
@@ -49,6 +50,10 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
         playlist_name,
         track_count,
     })
+}
+
+pub(crate) fn resolve_playlist_playback_continuation_mode() -> PlaybackContinuationMode {
+    PlaybackContinuationMode::Random
 }
 
 #[cfg(not(test))]

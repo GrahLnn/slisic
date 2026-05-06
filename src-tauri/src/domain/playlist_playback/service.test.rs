@@ -1,8 +1,10 @@
 use super::service::{
     collect_playlist_tracks, playlist_has_relevant_active_downloads,
-    resolve_playlist_playback_inventory, resolve_selected_collections,
+    resolve_playlist_playback_continuation_mode, resolve_playlist_playback_inventory,
+    resolve_selected_collections,
 };
 use crate::domain::downloads::model::{DownloadTask, DownloadTaskStatus, DownloadTrigger};
+use crate::domain::player::model::PlaybackContinuationMode;
 use crate::domain::playlists::model::{Collection, Group, Music, PlayList};
 use appdb::{AutoFill, Id};
 use std::path::PathBuf;
@@ -232,6 +234,14 @@ fn playlist_has_relevant_active_downloads_matches_collection_and_group_domains()
     ];
 
     assert!(playlist_has_relevant_active_downloads(&playlist, &tasks));
+}
+
+#[test]
+fn playlist_playback_always_starts_in_random_continuation_mode() {
+    assert_eq!(
+        resolve_playlist_playback_continuation_mode(),
+        PlaybackContinuationMode::Random
+    );
 }
 
 #[test]
