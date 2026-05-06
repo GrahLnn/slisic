@@ -2,10 +2,10 @@ import { useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
-import { icons } from "@/src/assets/icons";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
-import { collectionTitleClassName, collectionTitleLayoutTransition } from "../collectionTitle";
-import { EditableTitle, type EditableTitleHandle } from "../EditableTitle";
+import { collectionTitleLayoutTransition } from "../collectionTitle";
+import type { EditableTitleHandle } from "../EditableTitle";
+import { MusicSpectrumEditor } from "./MusicSpectrumEditor";
 import {
   resolveSpectrumBackActionVisualState,
   resolveSpectrumCommittedTitle,
@@ -16,20 +16,12 @@ import {
   type SpectrumBackActionVisualState,
 } from "./SpectrumPage.view-model";
 import { SpectrumPlaybackAction } from "./SpectrumPlaybackAction";
-import { TrackSpectrum } from "./SpectrumVisualizer";
 import { usePageRenderFreeze } from "../usePageRenderFreeze";
 
 const contentFadeProps = {
   initial: { opacity: 0 },
   animate: { opacity: 1 },
   exit: { opacity: 0 },
-  transition: collectionTitleLayoutTransition,
-} as const;
-
-const sharedTitleFadeProps = {
-  initial: { opacity: 1 },
-  animate: { opacity: 1 },
-  exit: { opacity: 1 },
   transition: collectionTitleLayoutTransition,
 } as const;
 
@@ -52,10 +44,6 @@ type SpectrumRenderData = {
   titleLayoutId?: string;
   titleValue: string;
 };
-
-export function resolveSpectrumTitleFadeProps(args: { hasSharedTitleLayout: boolean }) {
-  return args.hasSharedTitleLayout ? sharedTitleFadeProps : contentFadeProps;
-}
 
 function waitForNextFrame() {
   return new Promise<void>((resolve) => {
@@ -287,68 +275,27 @@ export function SpectrumPage() {
             <SpectrumBackIcon visualState={renderData.backActionVisualState} />
           </button>
         </motion.div>
-        <div className="flex items-center justify-between gap-4">
-          <motion.div
-            {...resolveSpectrumTitleFadeProps({
-              hasSharedTitleLayout: renderData.titleLayoutId !== undefined,
-            })}
-            className="min-w-0"
-          >
-            <EditableTitle
-              ref={editableTitleRef}
-              className={collectionTitleClassName}
-              focusHitSlopWidthClassName="w-4"
-              handoffTone={renderData.handoffTone}
-              interactionDisabled={renderData.interactionDisabled}
-              layoutId={renderData.titleLayoutId}
-              style={{ fontFamily: "var(--font-noto-sans)" }}
-              value={renderData.titleValue}
-              onChange={appLogicAction.changeSpectrumMusicTitle}
-            />
-          </motion.div>
-          <motion.div {...contentFadeProps}>
-            <SpectrumPlaybackAction filePath={renderData.trackFilePath} />
-          </motion.div>
-        </div>
-        <motion.div
-          {...contentFadeProps}
-          className="relative left-1/2 mt-10 w-screen -translate-x-1/2"
-        >
-          <TrackSpectrum
-            filePath={renderData.trackFilePath}
-            selection={{
-              end: renderData.selectionEnd,
-              start: renderData.selectionStart,
-            }}
-            onSelectionChange={(range) => {
-              appLogicAction.changeSpectrumMusicRange(resolveSpectrumMusicRangeChange(range));
-            }}
-          />
-          <AnimatePresence initial={false}>
-            {renderData.shouldShowDraftResetAction && (
-              <motion.button
-                type="button"
-                aria-label="Reset spectrum edits"
-                className={cn(
-                  "group absolute top-0 right-12 z-10 isolate inline-flex size-8 items-center justify-center rounded-[25px] p-2",
-                  "text-[#737373] transition duration-300 [corner-shape:squircle_squircle_squircle_squircle]",
-                  "before:absolute before:inset-0 before:-z-10 before:rounded-[25px] before:bg-transparent",
-                  "before:transition before:duration-300 before:[corner-shape:squircle_squircle_squircle_squircle]",
-                  "hover:text-[#262626] hover:before:bg-[#e5e5e5]",
-                  "dark:text-[#8a8a8a] dark:hover:text-[#d4d4d4] dark:hover:before:bg-[#262626]",
-                  "cursor-pointer",
-                )}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={collectionTitleLayoutTransition}
-                onClick={appLogicAction.resetSpectrumMusicDraft}
-              >
-                <icons.arrowRotateAnticlockwise size={18} />
-              </motion.button>
-            )}
-          </AnimatePresence>
-        </motion.div>
+        <MusicSpectrumEditor
+          ref={editableTitleRef}
+          handoffTone={renderData.handoffTone}
+          interactionDisabled={renderData.interactionDisabled}
+          playbackAction={<SpectrumPlaybackAction filePath={renderData.trackFilePath} />}
+          playheadEnabled
+          selection={{
+            end: renderData.selectionEnd,
+            start: renderData.selectionStart,
+          }}
+          shouldShowResetAction={renderData.shouldShowDraftResetAction}
+          titleLayoutId={renderData.titleLayoutId}
+          titleValue={renderData.titleValue}
+          trackFilePath={renderData.trackFilePath}
+          waveformClassName="left-1/2 w-screen -translate-x-1/2"
+          onReset={appLogicAction.resetSpectrumMusicDraft}
+          onSelectionChange={(range) => {
+            appLogicAction.changeSpectrumMusicRange(resolveSpectrumMusicRangeChange(range));
+          }}
+          onTitleChange={appLogicAction.changeSpectrumMusicTitle}
+        />
       </div>
     </div>
   );

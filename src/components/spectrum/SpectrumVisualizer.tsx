@@ -321,6 +321,14 @@ type WaveformPlayheadController = {
   syncPlayhead: () => void;
 };
 
+const inertWaveformPlayheadController: WaveformPlayheadController = {
+  beginPlayheadDrag: () => undefined,
+  cancelPlayheadDrag: () => undefined,
+  commitPlayheadDrag: async () => undefined,
+  previewPlayheadDrag: () => undefined,
+  syncPlayhead: () => undefined,
+};
+
 type WaveformIdleDeadline = {
   didTimeout: boolean;
   timeRemaining: () => number;
@@ -2158,6 +2166,7 @@ export function TrackSpectrum(props: {
   className?: string;
   filePath: string | null;
   onSelectionChange?: (range: WaveformSelectionDragResolution) => void;
+  playheadEnabled?: boolean;
   ports?: TrackSpectrumPorts;
   selection?: WaveformSelectionRange | null;
 }) {
@@ -2170,6 +2179,7 @@ function TrackSpectrumSession(props: {
   className?: string;
   filePath: string | null;
   onSelectionChange?: (range: WaveformSelectionDragResolution) => void;
+  playheadEnabled?: boolean;
   ports?: TrackSpectrumPorts;
   selection?: WaveformSelectionRange | null;
 }) {
@@ -2244,6 +2254,7 @@ function TrackSpectrumSession(props: {
     waveformPort: ports.waveform,
   });
   const playheadController = useWaveformPlayheadController({
+    enabled: props.playheadEnabled === true,
     filePath: props.filePath?.trim() || null,
     hostRef,
     playbackPort: ports.playback,
@@ -2686,7 +2697,7 @@ function TrackSpectrumSession(props: {
         controller={playheadController}
         selectionRef={selectionRef}
         viewportRef={viewportRef}
-        visible={!shouldShowLoadingGrid}
+        visible={props.playheadEnabled === true && !shouldShowLoadingGrid}
       />
     </motion.div>
   );
@@ -3248,6 +3259,7 @@ function useWaveformLoadingRenderer(args: {
 }
 
 function useWaveformPlayheadController(args: {
+  enabled: boolean;
   filePath: string | null;
   hostRef: RefObject<HTMLDivElement | null>;
   playbackPort: TrackSpectrumPlaybackPort;
@@ -3341,6 +3353,12 @@ function useWaveformPlayheadController(args: {
 
   const commitPlaybackSnapshot = useCallback(
     (snapshot: PlaybackSnapshot | null) => {
+      if (!latestArgsRef.current.enabled) {
+        playbackSnapshotRef.current = null;
+        stopPlayheadAnimation();
+        return;
+      }
+
       playbackSnapshotRef.current = snapshot;
       syncPlayhead();
 
@@ -3472,10 +3490,19 @@ function useWaveformPlayheadController(args: {
   );
 
   useLayoutEffect(() => {
+    if (!args.enabled) {
+      return;
+    }
+
     syncPlayhead();
-  }, [args.summary.duration_ms, syncPlayhead]);
+  }, [args.enabled, args.summary.duration_ms, syncPlayhead]);
 
   useEffect(() => {
+    if (!args.enabled) {
+      commitPlaybackSnapshot(null);
+      return undefined;
+    }
+
     const filePath = args.filePath?.trim();
 
     commitPlaybackSnapshot(null);
@@ -3520,9 +3547,13 @@ function useWaveformPlayheadController(args: {
       ownerWindow.clearInterval(intervalId);
       commitPlaybackSnapshot(null);
     };
-  }, [args.filePath, args.playbackPort, commitPlaybackSnapshot]);
+  }, [args.enabled, args.filePath, args.playbackPort, commitPlaybackSnapshot]);
 
   useEffect(() => stopPlayheadAnimation, [stopPlayheadAnimation]);
+
+  if (!args.enabled) {
+    return inertWaveformPlayheadController;
+  }
 
   return {
     beginPlayheadDrag,
