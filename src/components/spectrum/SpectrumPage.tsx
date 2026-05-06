@@ -289,6 +289,7 @@ export function SpectrumPage() {
           {renderData.editorViewModels.map((editor) => (
             <MusicSpectrumEditor
               key={editor.id}
+              cascade={!editor.isCurrent}
               ref={(handle) => {
                 if (handle) {
                   editableTitleRefs.current.set(editor.id, handle);

@@ -3,7 +3,9 @@ import { describe, test } from "node:test";
 import type { Collection, PlayList } from "@/src/cmd";
 import {
   changeSpectrumMusicDraftValueRange,
+  createSpectrumCurrentMusicDraft,
   hasSpectrumMusicDraftChanges,
+  mergeSpectrumMusicDrafts,
   resolveSpectrumMusicCommit,
   resetSpectrumMusicDraftValue,
   updateMusicInCollections,
@@ -65,6 +67,36 @@ function createSampleSpectrumMusicDraft() {
 }
 
 describe("musicDraft", () => {
+  test("creates the current spectrum music draft from the active playback track", () => {
+    assert.deepEqual(
+      createSpectrumCurrentMusicDraft({
+        name: "Track B",
+        url: "https://example.com/quiet-morning#b",
+        startMs: 120_000,
+        endMs: 240_000,
+      }),
+      {
+        baselineName: "Track B",
+        baselineStartMs: 120_000,
+        baselineEndMs: 240_000,
+        name: "Track B",
+        url: "https://example.com/quiet-morning#b",
+        startMs: 120_000,
+        endMs: 240_000,
+      },
+    );
+
+    assert.equal(
+      createSpectrumCurrentMusicDraft({
+        name: "Track B",
+        url: null,
+        startMs: 120_000,
+        endMs: 240_000,
+      }),
+      null,
+    );
+  });
+
   test("creates spectrum music drafts only from database music records", () => {
     assert.deepEqual(
       createSpectrumMusicDrafts({
@@ -220,6 +252,55 @@ describe("musicDraft", () => {
     assert.equal(drafts.length, 2);
     assert.equal(drafts[0]?.name, "Track B");
     assert.equal(drafts[1]?.name, "Track A");
+  });
+
+  test("merges database spectrum drafts without replacing the active playback draft", () => {
+    const currentDraft = createSpectrumCurrentMusicDraft({
+      name: "Track B From Playback",
+      url: "https://example.com/quiet-morning#b",
+      startMs: 120_000,
+      endMs: 240_000,
+    });
+    const databaseDrafts = createSpectrumMusicDrafts({
+      currentMusicIdentity: {
+        endMs: 240_000,
+        startMs: 120_000,
+        url: "https://example.com/quiet-morning#b",
+      },
+      fileMusics: [
+        {
+          alias: "Track A",
+          url: "https://example.com/quiet-morning#a",
+          start_ms: 0,
+          end_ms: 120_000,
+        },
+        {
+          alias: "Track B From Database",
+          url: "https://example.com/quiet-morning#b",
+          start_ms: 120_000,
+          end_ms: 240_000,
+        },
+      ],
+    });
+
+    assert.deepEqual(
+      mergeSpectrumMusicDrafts({
+        baseDrafts: currentDraft ? [currentDraft] : [],
+        incomingDrafts: databaseDrafts,
+      }),
+      [
+        currentDraft,
+        {
+          baselineName: "Track A",
+          baselineStartMs: 0,
+          baselineEndMs: 120_000,
+          name: "Track A",
+          url: "https://example.com/quiet-morning#a",
+          startMs: 0,
+          endMs: 120_000,
+        },
+      ],
+    );
   });
 
   test("keeps spectrum music draft edits isolated by identity", () => {

@@ -770,7 +770,26 @@ describe("appLogic machine", () => {
         end_ms: 120_000,
       }),
     );
+    const listMusicsDeferred = deferred();
+    setListMusicsByFilePathMock(async () => {
+      await listMusicsDeferred.promise;
+      return Ok([sampleCollection.musics[1]!]);
+    });
     actor.send(sig.mainx.openspectrum);
+
+    await waitForState(actor, ss.mainx.State.spectrumLoadingMusics);
+    expect(actor.getSnapshot().context.spectrumMusicDrafts).toEqual([
+      {
+        baselineName: "Disc 1 Opening",
+        baselineStartMs: 0,
+        baselineEndMs: 120_000,
+        name: "Disc 1 Opening",
+        url: "https://example.com/quiet-morning#disc-1-opening",
+        startMs: 0,
+        endMs: 120_000,
+      },
+    ]);
+    listMusicsDeferred.resolve();
     await waitForState(actor, ss.mainx.State.spectrum);
 
     expect(actor.getSnapshot().value).toBe(ss.mainx.State.spectrum);
@@ -814,6 +833,59 @@ describe("appLogic machine", () => {
       layoutId: playlistTitleLayoutId(samplePlaylist.name),
       tone: "solid",
     });
+  });
+
+  test("adds sibling spectrum drafts after the active playback title can already share layout", async () => {
+    const listMusicsDeferred = deferred();
+
+    setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
+    setListCollectionsMock(async () => Ok([sampleCollection]));
+    setListMusicsByFilePathMock(async () => {
+      await listMusicsDeferred.promise;
+      return Ok([sampleCollection.musics[1]!, sampleCollection.musics[0]!]);
+    });
+    setPlayPlaylistMock(async () =>
+      Ok({
+        playlist_name: samplePlaylist.name,
+        track_count: 2,
+      }),
+    );
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(sig.mainx.run);
+
+    await waitForState(actor, ss.mainx.State.ready);
+    actor.send(payloads["playlist.play"].load(samplePlaylist.name));
+    await waitForState(actor, ss.mainx.State.play);
+    actor.send(
+      payloads["player.now_playing_track.changed"].load({
+        playlist_name: samplePlaylist.name,
+        music_name: "Disc 1 Opening",
+        music_url: "https://example.com/quiet-morning#disc-1-opening",
+        file_path:
+          "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+        start_ms: 0,
+        end_ms: 120_000,
+      }),
+    );
+    actor.send(sig.mainx.openspectrum);
+
+    await waitForState(actor, ss.mainx.State.spectrumLoadingMusics);
+    expect(actor.getSnapshot().context.activeLayoutId).toBe(
+      playlistTitleLayoutId(samplePlaylist.name),
+    );
+    expect(actor.getSnapshot().context.spectrumMusicDrafts).toHaveLength(1);
+    expect(actor.getSnapshot().context.spectrumMusicDrafts[0]?.name).toBe("Disc 1 Opening");
+
+    listMusicsDeferred.resolve();
+    await waitForState(actor, ss.mainx.State.spectrum);
+
+    expect(actor.getSnapshot().context.spectrumMusicDrafts.map((draft) => draft.name)).toEqual([
+      "Disc 1 Opening",
+      "Quiet Morning",
+    ]);
   });
 
   test("commits edited spectrum music title back to the current playback data", async () => {

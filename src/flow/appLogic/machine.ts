@@ -18,10 +18,12 @@ import {
   type Context,
 } from "./core";
 import {
+  createSpectrumCurrentMusicDraft,
   changeSpectrumMusicDraftName,
   changeSpectrumMusicDraftRange,
   createMusicDraftEdits,
   hasSpectrumMusicDraftUpdates,
+  mergeSpectrumMusicDrafts,
   resetSpectrumMusicDraft,
   updateMusicInCollections,
   updateMusicInPlaylistPreview,
@@ -130,6 +132,17 @@ function createSpectrumPlayReturnContext(context: Context, musicEdits: readonly 
       ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
       : null,
   });
+}
+
+function createCurrentSpectrumMusicDrafts(context: Context) {
+  const currentDraft = createSpectrumCurrentMusicDraft({
+    endMs: context.nowPlayingTrackEndMs,
+    name: context.nowPlayingTrackName,
+    startMs: context.nowPlayingTrackStartMs,
+    url: context.nowPlayingTrackUrl,
+  });
+
+  return currentDraft ? [currentDraft] : [];
 }
 
 const openPlaylist = payloads["playlist.open"];
@@ -455,6 +468,7 @@ export const machine = src.createMachine({
               nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
               nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+              spectrumMusicDrafts: createCurrentSpectrumMusicDrafts(context),
               shouldStartPlayback: false,
               activeLayoutId: context.playingPlaylistName
                 ? playlistTitleLayoutId(context.playingPlaylistName)
@@ -495,7 +509,10 @@ export const machine = src.createMachine({
               nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
               nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
-              spectrumMusicDrafts: event.output,
+              spectrumMusicDrafts: mergeSpectrumMusicDrafts({
+                baseDrafts: context.spectrumMusicDrafts,
+                incomingDrafts: event.output,
+              }),
               shouldStartPlayback: false,
               activeLayoutId: context.activeLayoutId,
               titleToneHandoff: context.titleToneHandoff,

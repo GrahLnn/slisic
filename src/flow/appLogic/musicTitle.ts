@@ -46,6 +46,47 @@ function areSpectrumMusicDraftRangeBoundariesEqual(left: number | null, right: n
   return normalizedLeft === normalizedRight;
 }
 
+function createSpectrumMusicDraftValue(args: {
+  name: string;
+  url: string;
+  startMs: number;
+  endMs: number;
+}): SpectrumMusicDraft {
+  const startMs = normalizeSpectrumMusicRangeBoundary(args.startMs);
+  const endMs = normalizeSpectrumMusicRangeBoundary(args.endMs);
+
+  return {
+    baselineName: args.name,
+    baselineStartMs: startMs,
+    baselineEndMs: endMs,
+    name: args.name,
+    url: args.url,
+    startMs,
+    endMs,
+  };
+}
+
+export function createSpectrumCurrentMusicDraft(args: {
+  name: string | null;
+  url: string | null;
+  startMs: number | null;
+  endMs: number | null;
+}): SpectrumMusicDraft | null {
+  const startMs = normalizeSpectrumMusicRangeBoundary(args.startMs);
+  const endMs = normalizeSpectrumMusicRangeBoundary(args.endMs);
+
+  if (args.name === null || args.url === null || startMs === null || endMs === null) {
+    return null;
+  }
+
+  return createSpectrumMusicDraftValue({
+    name: args.name,
+    url: args.url,
+    startMs,
+    endMs,
+  });
+}
+
 export function createSpectrumMusicDrafts(args: {
   currentMusicIdentity: {
     endMs: number | null;
@@ -73,15 +114,14 @@ export function createSpectrumMusicDrafts(args: {
     }
 
     seen.add(key);
-    drafts.push({
-      baselineName: music.alias,
-      baselineStartMs: normalizeSpectrumMusicRangeBoundary(music.start_ms),
-      baselineEndMs: normalizeSpectrumMusicRangeBoundary(music.end_ms),
-      name: music.alias,
-      url: music.url,
-      startMs: normalizeSpectrumMusicRangeBoundary(music.start_ms),
-      endMs: normalizeSpectrumMusicRangeBoundary(music.end_ms),
-    });
+    drafts.push(
+      createSpectrumMusicDraftValue({
+        name: music.alias,
+        url: music.url,
+        startMs: music.start_ms,
+        endMs: music.end_ms,
+      }),
+    );
   }
 
   const currentIdentity = createSpectrumMusicDraftIdentity({
@@ -108,6 +148,38 @@ export function createSpectrumMusicDrafts(args: {
   }
 
   return drafts;
+}
+
+export function mergeSpectrumMusicDrafts(args: {
+  baseDrafts: readonly SpectrumMusicDraft[];
+  incomingDrafts: readonly SpectrumMusicDraft[];
+}): SpectrumMusicDraft[] {
+  const seen = new Set(
+    args.baseDrafts.map((draft) =>
+      createSpectrumMusicDraftIdentity({
+        baselineEndMs: draft.baselineEndMs,
+        baselineStartMs: draft.baselineStartMs,
+        url: draft.url,
+      }),
+    ),
+  );
+  const merged = [...args.baseDrafts];
+
+  for (const draft of args.incomingDrafts) {
+    const key = createSpectrumMusicDraftIdentity({
+      baselineEndMs: draft.baselineEndMs,
+      baselineStartMs: draft.baselineStartMs,
+      url: draft.url,
+    });
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    merged.push(draft);
+  }
+
+  return merged;
 }
 
 export function createSpectrumMusicDraftIdentity(args: {

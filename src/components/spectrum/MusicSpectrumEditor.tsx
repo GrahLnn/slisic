@@ -14,6 +14,14 @@ const musicSpectrumContentFadeProps = {
   transition: collectionTitleLayoutTransition,
 } as const;
 
+const musicSpectrumCascadeContentFadeProps = {
+  ...musicSpectrumContentFadeProps,
+  transition: {
+    ...collectionTitleLayoutTransition,
+    delay: 0.04,
+  },
+} as const;
+
 const musicSpectrumSharedTitleFadeProps = {
   initial: { opacity: 1 },
   animate: { opacity: 1 },
@@ -27,6 +35,7 @@ export interface MusicSpectrumSelection {
 }
 
 export interface MusicSpectrumEditorProps {
+  cascade?: boolean;
   handoffTone: CollectionTitleTone | null;
   interactionDisabled: boolean;
   playbackAction: ReactNode;
@@ -48,9 +57,14 @@ export function resolveMusicSpectrumTitleFadeProps(args: { hasSharedTitleLayout:
     : musicSpectrumContentFadeProps;
 }
 
+export function resolveMusicSpectrumContentFadeProps(args: { cascade: boolean }) {
+  return args.cascade ? musicSpectrumCascadeContentFadeProps : musicSpectrumContentFadeProps;
+}
+
 export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrumEditorProps>(
   function MusicSpectrumEditor(
     {
+      cascade = false,
       handoffTone,
       interactionDisabled,
       playbackAction,
@@ -67,6 +81,8 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
     },
     ref,
   ) {
+    const contentFade = resolveMusicSpectrumContentFadeProps({ cascade });
+
     return (
       <>
         <div className="flex items-center justify-between gap-4">
@@ -88,14 +104,9 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
               onChange={onTitleChange}
             />
           </motion.div>
-          {playbackAction ? (
-            <motion.div {...musicSpectrumContentFadeProps}>{playbackAction}</motion.div>
-          ) : null}
+          {playbackAction ? <motion.div {...contentFade}>{playbackAction}</motion.div> : null}
         </div>
-        <motion.div
-          {...musicSpectrumContentFadeProps}
-          className={cn("relative mt-8", waveformClassName)}
-        >
+        <motion.div {...contentFade} className={cn("relative mt-8", waveformClassName)}>
           <TrackSpectrum
             filePath={trackFilePath}
             playheadEnabled={playheadEnabled}
