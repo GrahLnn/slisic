@@ -2,7 +2,7 @@ use super::model::{Collection, Exclude, Group, Music, PlayList};
 use super::repo::{
     add_exclude, delete_playlist_by_name, get_collection_by_url, get_playlist_by_name,
     has_collections, list_collections, list_playlists, remove_exclude, set_collection_updates,
-    update_music_alias, upsert_collection, upsert_playlist,
+    update_music, upsert_collection, upsert_playlist,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -684,30 +684,40 @@ fn upsert_collection_round_trips_grouped_music() {
 }
 
 #[test]
-fn update_music_alias_changes_display_name_without_overwriting_source_name() {
+fn update_music_changes_display_alias_and_range_from_original_identity() {
     let _guard = acquire_db_test_lock();
 
     run_async(async {
         ensure_db().await;
         bootstrap_collection_write_schema().await;
 
-        let collection = upsert_collection(&grouped_collection("https://example.com/alias-edit"))
+        let collection = upsert_collection(&grouped_collection("https://example.com/music-edit"))
             .await
-            .expect("grouped collection should save before alias update");
-        let updated =
-            update_music_alias(&format!("{}#track", collection.url), 0, 180, "Track Alias")
-                .await
-                .expect("music alias update should succeed")
-                .expect("music alias target should exist");
+            .expect("grouped collection should save before music update");
+        let updated = update_music(
+            &format!("{}#track", collection.url),
+            0,
+            180,
+            "Track Edit",
+            12,
+            132,
+        )
+        .await
+        .expect("music update should succeed")
+        .expect("music update target should exist");
         let reloaded = get_collection_by_url(&collection.url)
             .await
-            .expect("aliased collection should reload")
-            .expect("aliased collection should exist");
+            .expect("updated collection should reload")
+            .expect("updated collection should exist");
 
         assert_eq!(updated.name, "Track");
-        assert_eq!(updated.alias, "Track Alias");
+        assert_eq!(updated.alias, "Track Edit");
+        assert_eq!(updated.start, 12);
+        assert_eq!(updated.end, 132);
         assert_eq!(reloaded.musics[0].name, "Track");
-        assert_eq!(reloaded.musics[0].alias, "Track Alias");
+        assert_eq!(reloaded.musics[0].alias, "Track Edit");
+        assert_eq!(reloaded.musics[0].start, 12);
+        assert_eq!(reloaded.musics[0].end, 132);
 
         reset_db();
     });

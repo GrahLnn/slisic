@@ -28,6 +28,8 @@ import {
   playlistUpserted,
   resetRuntimeActor,
   savePathChanged,
+  spectrumMusicDraftReset,
+  spectrumMusicRangeChanged,
   send,
   spectrumMusicTitleChanged,
 } from "./runtime";
@@ -199,7 +201,7 @@ function shouldStopPlaybackForSnapshot(snapshot: ActorSnapshot) {
 }
 
 function shouldRestoreRandomPlaybackForSnapshot(snapshot: ActorSnapshot) {
-  return snapshot.value === "spectrum" || snapshot.value === "spectrumUpdatingMusicAlias";
+  return snapshot.value === "spectrum" || snapshot.value === "spectrumUpdatingMusic";
 }
 
 function attachNowPlayingTrackListener() {
@@ -299,6 +301,14 @@ export const action = {
   changeSpectrumMusicTitle: (name: string) => {
     ensureStarted();
     send(spectrumMusicTitleChanged.load(name));
+  },
+  changeSpectrumMusicRange: (range: { end: number; start: number }) => {
+    ensureStarted();
+    send(spectrumMusicRangeChanged.load(range));
+  },
+  resetSpectrumMusicDraft: () => {
+    ensureStarted();
+    send(spectrumMusicDraftReset.load(null));
   },
   changeSavePath: async (savePath: string) => {
     ensureStarted();

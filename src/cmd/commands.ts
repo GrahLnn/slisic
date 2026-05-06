@@ -78,7 +78,7 @@ export const commands = {
 	last_updated: string,
 	enable_updates: boolean | null,
 } | null, string>(__TAURI_INVOKE("set_collection_updates", { url, enabled })),
-	updateMusicAlias: (url: string, start: number, end: number, alias: string) => typedError<{
+	updateMusic: (url: string, start: number, end: number, alias: string, nextStart: number, nextEnd: number) => typedError<{
 	name: string,
 	alias: string,
 	group: Group,
@@ -86,7 +86,7 @@ export const commands = {
 	path: string | null,
 	start: number,
 	end: number,
-} | null, string>(__TAURI_INVOKE("update_music_alias", { url, start, end, alias })),
+} | null, string>(__TAURI_INVOKE("update_music", { url, start, end, alias, nextStart, nextEnd })),
 	addExclude: (music: Music) => typedError<Exclude, string>(__TAURI_INVOKE("add_exclude", { music })),
 	removeExclude: (music: Music) => typedError<boolean, string>(__TAURI_INVOKE("remove_exclude", { music })),
 	playPlaylist: (name: string) => typedError<PlayPlaylistSession, string>(__TAURI_INVOKE("play_playlist", { name })),
@@ -372,4 +372,3 @@ function makeEvent<T>(name: string) {
 
     return Object.assign(fn, base);
 }
-

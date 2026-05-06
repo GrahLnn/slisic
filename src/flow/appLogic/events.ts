@@ -45,16 +45,18 @@ export interface PlayPlaylistInput {
   shouldStartPlayback: boolean;
 }
 
-export interface MusicAliasUpdateInput {
-  url: string;
-  start: number;
-  end: number;
+export interface MusicUpdateInput {
   alias: string;
+  end: number;
+  start: number;
+  targetEnd: number;
+  targetStart: number;
+  url: string;
 }
 
-export interface MusicAliasUpdateResult {
+export interface MusicUpdateResult {
+  input: MusicUpdateInput;
   music: Music;
-  input: MusicAliasUpdateInput;
 }
 
 export class BootstrapLoadError extends Error {
@@ -177,7 +179,7 @@ export const ss = defineSS(
         "ready",
         "play",
         "spectrum",
-        "spectrumUpdatingMusicAlias",
+        "spectrumUpdatingMusic",
         "configLoading",
         "config",
         "configUpdatingCollectionUpdates",
@@ -264,8 +266,15 @@ export const invoker = createActors({
       },
     });
   },
-  updateMusicAlias: async (input: MusicAliasUpdateInput): Promise<MusicAliasUpdateResult> => {
-    const result = await crab.updateMusicAlias(input.url, input.start, input.end, input.alias);
+  updateMusic: async (input: MusicUpdateInput): Promise<MusicUpdateResult> => {
+    const result = await crab.updateMusic(
+      input.url,
+      input.targetStart,
+      input.targetEnd,
+      input.alias,
+      input.start,
+      input.end,
+    );
 
     return result.match({
       Ok: (music) => {
@@ -274,8 +283,8 @@ export const invoker = createActors({
         }
 
         return {
-          music,
           input,
+          music,
         };
       },
       Err: (error) => {
@@ -306,6 +315,8 @@ export const payloads = collect(
   ...event<PlaylistUpsertResult | null>()("playlist.preview.changed"),
   ...event<string>()("draft.name.changed"),
   ...event<string>()("spectrum.music_title.changed"),
+  ...event<{ end: number; start: number }>()("spectrum.music_range.changed"),
+  ...event<null>()("spectrum.music_draft.reset"),
   ...event<string>()("save_path.changed"),
   ...event<Collection>()("collection.upserted"),
   ...event<Collection>()("draft.collection.upserted"),

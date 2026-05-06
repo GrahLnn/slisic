@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
 import { motion } from "motion/react";
@@ -44,6 +45,7 @@ const WAVEFORM_CANVAS_MIN_CHUNK_WIDTH_PX = 96;
 const WAVEFORM_CANVAS_MAX_CHUNK_WIDTH_PX = 320;
 const WAVEFORM_CANVAS_REUSE_MIN_SHIFT_PX = 1;
 const WAVEFORM_CANVAS_STROKE_ALPHA = 0.88;
+const WAVEFORM_SELECTION_START_LEADING_SPACE_PX = 96;
 const WAVEFORM_INITIAL_PREPARE_FRAME_COUNT = 2;
 const WAVEFORM_LOADING_DOT_PITCH_PX = 12;
 const WAVEFORM_LOADING_MIN_FIELD_WIDTH_PX = 96;
@@ -189,6 +191,24 @@ type WaveformInteractionMode = "interactive" | "settled";
 type WaveformDataWindow = {
   endPx: number;
   startPx: number;
+};
+
+export type WaveformSelectionRange = {
+  end: number | null;
+  start: number | null;
+};
+
+type WaveformSelectionEdge = "end" | "start";
+
+export type WaveformSelectionGeometry = {
+  endX: number;
+  isComplete: boolean;
+  startX: number;
+};
+
+export type WaveformSelectionDragResolution = {
+  end: number;
+  start: number;
 };
 
 type WaveformSecondsWindow = {
@@ -692,6 +712,26 @@ export function resolveAnchoredWaveformScrollLeft(args: {
   );
 }
 
+export function resolveWaveformSelectionStartScrollLeft(args: {
+  contentWidth: number;
+  leadingSpacePx: number;
+  pixelsPerSecond: number;
+  selection: WaveformSelectionRange | null;
+  viewportWidth: number;
+}) {
+  const startSeconds = normalizeWaveformBoundary(args.selection?.start ?? null);
+
+  if (startSeconds === null) {
+    return 0;
+  }
+
+  return clampNumber(
+    startSeconds * args.pixelsPerSecond - Math.max(0, args.leadingSpacePx),
+    0,
+    Math.max(0, args.contentWidth - args.viewportWidth),
+  );
+}
+
 export function resolveWaveformPointerAnchorViewportX(args: {
   clientX: number;
   viewportLeft: number;
@@ -1188,17 +1228,10 @@ export function resolveWaveformDataTileIndexes(args: {
 }
 
 export function createWaveformDataScopeKey(args: {
-  end: number | null;
   filePath: string | null;
-  start: number | null;
   summary: TrackWaveformSummary;
 }) {
-  return [
-    normalizeWaveformPathKey(args.filePath),
-    normalizeWaveformBoundary(args.start) ?? "",
-    normalizeWaveformBoundary(args.end) ?? "",
-    args.summary.cache_key,
-  ].join("|");
+  return [normalizeWaveformPathKey(args.filePath), args.summary.cache_key].join("|");
 }
 
 export function createWaveformDataRequestKey(args: {
@@ -1217,13 +1250,11 @@ export function createWaveformDataRequestKey(args: {
 
 export function resolveWaveformDataPlan(args: {
   contentWidth: number;
-  end: number | null;
   filePath: string | null;
   focusSeconds: number | null;
   mode?: WaveformDataPlanMode;
   pixelsPerSecond: number;
   scrollLeft: number;
-  start: number | null;
   summary: TrackWaveformSummary;
   tileWidth?: number;
   viewportWidth: number;
@@ -1538,6 +1569,77 @@ export function resolveWaveformTransaction(args: {
       shouldScheduleCompleteData: args.mode === "settled" && args.plan !== null,
     },
   };
+}
+
+export function resolveWaveformSelectionGeometry(args: {
+  selection: WaveformSelectionRange | null;
+  viewport: WaveformViewportModel;
+}): WaveformSelectionGeometry {
+  const durationSeconds = Math.max(0, args.viewport.durationMs) / 1000;
+  const startSeconds = normalizeWaveformBoundary(args.selection?.start ?? null);
+  const endSeconds = normalizeWaveformBoundary(args.selection?.end ?? null);
+
+  if (
+    startSeconds === null ||
+    endSeconds === null ||
+    durationSeconds <= 0 ||
+    endSeconds <= startSeconds
+  ) {
+    return {
+      endX: args.viewport.viewportWidth,
+      isComplete: false,
+      startX: 0,
+    };
+  }
+
+  return {
+    endX: secondsToWaveformViewportX({
+      seconds: clampNumber(endSeconds, 0, durationSeconds),
+      viewport: args.viewport,
+    }),
+    isComplete: true,
+    startX: secondsToWaveformViewportX({
+      seconds: clampNumber(startSeconds, 0, durationSeconds),
+      viewport: args.viewport,
+    }),
+  };
+}
+
+export function resolveWaveformSelectionDrag(args: {
+  edge: WaveformSelectionEdge;
+  selection: WaveformSelectionRange | null;
+  pointerClientX: number;
+  viewport: WaveformViewportModel;
+  hostRect: Pick<DOMRect, "left">;
+}): WaveformSelectionDragResolution {
+  const durationSeconds = Math.max(0, args.viewport.durationMs) / 1000;
+  const currentStart = normalizeWaveformBoundary(args.selection?.start ?? null) ?? 0;
+  const currentEnd = normalizeWaveformBoundary(args.selection?.end ?? null) ?? durationSeconds;
+  const pointerSeconds = clampNumber(
+    (args.viewport.scrollLeft + args.pointerClientX - args.hostRect.left) /
+      Math.max(1, args.viewport.pixelsPerSecond),
+    0,
+    durationSeconds,
+  );
+  const boundary = normalizeWaveformBoundary(pointerSeconds) ?? 0;
+  const rangeStart = Math.min(currentStart, currentEnd);
+  const rangeEnd = Math.max(currentStart, currentEnd);
+
+  if (args.edge === "start") {
+    return {
+      start: clampNumber(boundary, 0, rangeEnd),
+      end: rangeEnd,
+    };
+  }
+
+  return {
+    start: rangeStart,
+    end: clampNumber(boundary, rangeStart, durationSeconds),
+  };
+}
+
+function secondsToWaveformViewportX(args: { seconds: number; viewport: WaveformViewportModel }) {
+  return args.seconds * args.viewport.pixelsPerSecond - args.viewport.scrollLeft;
 }
 
 export function resolveWaveformDataPlanScopedRequests(
@@ -1888,24 +1990,30 @@ export function resolvePlaybackPositionMs(args: {
 export function resolveWaveformPlayheadX(args: {
   pixelsPerSecond: number;
   positionMs: number | null;
+  selection: WaveformSelectionRange | null;
   scrollLeft: number;
 }) {
   if (args.positionMs === null) {
     return null;
   }
 
-  return (args.positionMs / 1000) * args.pixelsPerSecond - args.scrollLeft;
+  const startSeconds = normalizeWaveformBoundary(args.selection?.start ?? null) ?? 0;
+  const filePositionSeconds = startSeconds + args.positionMs / 1000;
+
+  return filePositionSeconds * args.pixelsPerSecond - args.scrollLeft;
 }
 
 export function resolveWaveformPlayheadStyle(args: {
   pixelsPerSecond: number;
   positionMs: number | null;
+  selection: WaveformSelectionRange | null;
   scrollLeft: number;
   viewportWidth: number;
 }) {
   const playheadX = resolveWaveformPlayheadX({
     pixelsPerSecond: args.pixelsPerSecond,
     positionMs: args.positionMs,
+    selection: args.selection,
     scrollLeft: args.scrollLeft,
   });
   const isVisible =
@@ -1948,26 +2056,22 @@ export function resolveWaveformLoadingGridSize(args: {
 
 export function TrackSpectrum(props: {
   className?: string;
-  end: number | null;
   filePath: string | null;
+  onSelectionChange?: (range: WaveformSelectionDragResolution) => void;
   ports?: TrackSpectrumPorts;
-  start: number | null;
+  selection?: WaveformSelectionRange | null;
 }) {
-  const identity = [
-    normalizeWaveformPathKey(props.filePath),
-    normalizeWaveformBoundary(props.start) ?? "",
-    normalizeWaveformBoundary(props.end) ?? "",
-  ].join("|");
+  const identity = normalizeWaveformPathKey(props.filePath);
 
   return <TrackSpectrumSession key={identity} {...props} />;
 }
 
 function TrackSpectrumSession(props: {
   className?: string;
-  end: number | null;
   filePath: string | null;
+  onSelectionChange?: (range: WaveformSelectionDragResolution) => void;
   ports?: TrackSpectrumPorts;
-  start: number | null;
+  selection?: WaveformSelectionRange | null;
 }) {
   const placeholderSummary = useMemo(() => createPlaceholderWaveformSummary(), []);
   const ports = props.ports ?? crabTrackSpectrumPorts;
@@ -1975,6 +2079,8 @@ function TrackSpectrumSession(props: {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const loadingCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewportRef = useRef<WaveformViewportModel | null>(null);
+  const selectionRef = useRef<WaveformSelectionRange | null>(props.selection ?? null);
+  const initialSelectionViewportAnchorRef = useRef<string | null>(null);
   const commitViewportRef = useRef<WaveformViewportCommit | null>(null);
   const tileCacheRef = useRef(new Map<string, WaveformCachedTile>());
   const completeDataPlanTimerRef = useRef<number | null>(null);
@@ -1986,10 +2092,8 @@ function TrackSpectrumSession(props: {
     }),
   );
   const waveformState = useTrackWaveformSummary({
-    end: props.end,
     filePath: props.filePath,
     placeholderSummary,
-    start: props.start,
     waveformPort: ports.waveform,
   });
   const maximumPixelsPerSecond = resolveWaveformRenderPixelsPerSecond({
@@ -2002,31 +2106,39 @@ function TrackSpectrumSession(props: {
       maximumPixelsPerSecond,
       viewportWidth,
     });
+    const contentWidth = resolveWaveformContentWidth({
+      durationMs: waveformState.summary.duration_ms,
+      pixelsPerSecond,
+      viewportWidth,
+    });
+    const scrollLeft = resolveWaveformSelectionStartScrollLeft({
+      contentWidth,
+      leadingSpacePx: WAVEFORM_SELECTION_START_LEADING_SPACE_PX,
+      pixelsPerSecond,
+      selection: props.selection ?? null,
+      viewportWidth,
+    });
     viewportRef.current = resolveWaveformViewportModel({
       durationMs: waveformState.summary.duration_ms,
       focusSeconds: null,
       maximumPixelsPerSecond,
       pixelsPerSecond,
-      scrollLeft: 0,
+      scrollLeft,
       viewportWidth,
     });
   }
 
   const drawCanvas = useWaveformCanvasRenderer({
     canvasRef,
-    end: props.end,
     filePath: props.filePath?.trim() || null,
-    start: props.start,
     status: waveformState.status,
     summary: waveformState.summary,
     tileCacheRef,
     viewportRef,
   });
   const requestDataPlan = useWaveformDataLoader({
-    end: props.end,
     filePath: props.filePath?.trim() || null,
     onTileAvailable: drawCanvas,
-    start: props.start,
     status: waveformState.status,
     tileCacheRef,
     waveformPort: ports.waveform,
@@ -2035,10 +2147,45 @@ function TrackSpectrumSession(props: {
     filePath: props.filePath?.trim() || null,
     hostRef,
     playbackPort: ports.playback,
+    selectionRef,
     summary: waveformState.summary,
     viewportRef,
   });
   const shouldShowLoadingGrid = waveformState.status === "loading";
+  selectionRef.current = props.selection ?? null;
+
+  const selectionPresentationRef = useRef({
+    visible: !shouldShowLoadingGrid,
+  });
+  selectionPresentationRef.current = {
+    visible: !shouldShowLoadingGrid,
+  };
+
+  const syncSelectionOverlay = useCallback(() => {
+    const host = hostRef.current;
+    const viewport = viewportRef.current;
+    if (!host || !viewport) {
+      return;
+    }
+
+    const geometry = resolveWaveformSelectionGeometry({
+      selection: selectionRef.current,
+      viewport,
+    });
+    const visible = geometry.isComplete && selectionPresentationRef.current.visible;
+    host.style.setProperty("--waveform-selection-opacity", visible ? "1" : "0");
+    host.style.setProperty("--waveform-selection-start-x", `${geometry.startX}px`);
+    host.style.setProperty("--waveform-selection-end-x", `${geometry.endX}px`);
+    host.style.setProperty(
+      "--waveform-selection-start-mask-width",
+      `${clampNumber(geometry.startX, 0, viewport.viewportWidth)}px`,
+    );
+    host.style.setProperty(
+      "--waveform-selection-end-mask-left",
+      `${clampNumber(geometry.endX, 0, viewport.viewportWidth)}px`,
+    );
+  }, []);
+
   useWaveformLoadingRenderer({
     canvasRef: loadingCanvasRef,
     gridSize: loadingGridSize,
@@ -2056,18 +2203,16 @@ function TrackSpectrumSession(props: {
 
       return resolveWaveformDataPlan({
         contentWidth: viewport.contentWidth,
-        end: props.end,
         filePath,
         focusSeconds: viewport.focusSeconds,
         mode,
         pixelsPerSecond: viewport.pixelsPerSecond,
         scrollLeft: viewport.scrollLeft,
-        start: props.start,
         summary: waveformState.summary,
         viewportWidth: viewport.viewportWidth,
       });
     },
-    [props.end, props.filePath, props.start, waveformState.status, waveformState.summary],
+    [props.filePath, waveformState.status, waveformState.summary],
   );
 
   const cancelCompleteDataPlan = useCallback(() => {
@@ -2190,10 +2335,11 @@ function TrackSpectrumSession(props: {
       viewportRef.current = normalizedModel;
 
       syncPlayhead();
+      syncSelectionOverlay();
 
       return changed;
     },
-    [maximumPixelsPerSecond, syncPlayhead, waveformState.summary.duration_ms],
+    [maximumPixelsPerSecond, syncPlayhead, syncSelectionOverlay, waveformState.summary.duration_ms],
   );
   const commitViewport = useCallback(
     (request: WaveformViewportCommitRequest) => {
@@ -2279,6 +2425,43 @@ function TrackSpectrumSession(props: {
   ]);
 
   useLayoutEffect(() => {
+    const current = viewportRef.current;
+    const filePath = props.filePath?.trim() || null;
+    const startSeconds = normalizeWaveformBoundary(selectionRef.current?.start ?? null);
+    if (waveformState.status !== "ready" || !current || !filePath || startSeconds === null) {
+      return;
+    }
+
+    const anchorKey = [
+      normalizeWaveformPathKey(filePath),
+      waveformState.summary.cache_key,
+      startSeconds,
+      current.viewportWidth,
+    ].join("|");
+    if (initialSelectionViewportAnchorRef.current === anchorKey) {
+      return;
+    }
+    initialSelectionViewportAnchorRef.current = anchorKey;
+
+    const scrollLeft = resolveWaveformSelectionStartScrollLeft({
+      contentWidth: current.contentWidth,
+      leadingSpacePx: WAVEFORM_SELECTION_START_LEADING_SPACE_PX,
+      pixelsPerSecond: current.pixelsPerSecond,
+      selection: selectionRef.current,
+      viewportWidth: current.viewportWidth,
+    });
+
+    commitViewport({
+      state: {
+        focusSeconds: current.focusSeconds,
+        pixelsPerSecond: current.pixelsPerSecond,
+        scrollLeft,
+        viewportWidth: current.viewportWidth,
+      },
+    });
+  }, [commitViewport, props.filePath, waveformState.status, waveformState.summary.cache_key]);
+
+  useLayoutEffect(() => {
     const host = hostRef.current;
     if (!host) {
       return undefined;
@@ -2355,6 +2538,9 @@ function TrackSpectrumSession(props: {
     completeDataPlanTimerRef,
     hostRef,
   });
+  useLayoutEffect(() => {
+    syncSelectionOverlay();
+  }, [props.selection, syncSelectionOverlay]);
 
   return (
     <motion.div
@@ -2385,6 +2571,12 @@ function TrackSpectrumSession(props: {
           className="spectrum-waveform-loading-canvas pointer-events-none absolute inset-0 z-[1] h-full w-full text-inherit"
         />
       )}
+      <WaveformSelectionOverlay
+        onSelectionChange={props.onSelectionChange}
+        selectionRef={selectionRef}
+        viewportRef={viewportRef}
+        visible={!shouldShowLoadingGrid}
+      />
       <div
         aria-hidden
         className="pointer-events-none absolute inset-y-0 left-0 z-[2] w-px bg-[#404040] will-change-transform dark:bg-[#a3a3a3]"
@@ -2394,6 +2586,126 @@ function TrackSpectrumSession(props: {
         }}
       />
     </motion.div>
+  );
+}
+
+function WaveformSelectionOverlay(args: {
+  onSelectionChange?: (range: WaveformSelectionDragResolution) => void;
+  selectionRef: RefObject<WaveformSelectionRange | null>;
+  viewportRef: RefObject<WaveformViewportModel | null>;
+  visible: boolean;
+}) {
+  const { onSelectionChange, selectionRef, viewportRef, visible } = args;
+  const beginDrag = useCallback(
+    (edge: WaveformSelectionEdge, event: ReactPointerEvent<HTMLButtonElement>) => {
+      const host = event.currentTarget.parentElement;
+      const viewport = viewportRef.current;
+      if (!host || !viewport || !onSelectionChange) {
+        return;
+      }
+
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+
+      const hostRect = host.getBoundingClientRect();
+      onSelectionChange(
+        resolveWaveformSelectionDrag({
+          edge,
+          hostRect,
+          pointerClientX: event.clientX,
+          selection: selectionRef.current,
+          viewport,
+        }),
+      );
+    },
+    [onSelectionChange, selectionRef, viewportRef],
+  );
+
+  const continueDrag = useCallback(
+    (edge: WaveformSelectionEdge, event: ReactPointerEvent<HTMLButtonElement>) => {
+      const host = event.currentTarget.parentElement;
+      const viewport = viewportRef.current;
+      if (
+        !host ||
+        !viewport ||
+        !onSelectionChange ||
+        !event.currentTarget.hasPointerCapture(event.pointerId)
+      ) {
+        return;
+      }
+
+      const hostRect = host.getBoundingClientRect();
+      onSelectionChange(
+        resolveWaveformSelectionDrag({
+          edge,
+          hostRect,
+          pointerClientX: event.clientX,
+          selection: selectionRef.current,
+          viewport,
+        }),
+      );
+    },
+    [onSelectionChange, selectionRef, viewportRef],
+  );
+
+  return (
+    <div
+      className="pointer-events-none absolute inset-0 z-[3]"
+      style={{
+        opacity: visible ? "var(--waveform-selection-opacity, 0)" : 0,
+      }}
+    >
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-y-0 bg-[#f5f5f5]/58 dark:bg-[#050505]/58"
+        style={{
+          left: 0,
+          width: "var(--waveform-selection-start-mask-width, 0px)",
+        }}
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-y-0 bg-[#f5f5f5]/58 dark:bg-[#050505]/58"
+        style={{
+          left: "var(--waveform-selection-end-mask-left, 100%)",
+          right: 0,
+        }}
+      />
+      <WaveformSelectionHandle
+        edge="start"
+        cssX="var(--waveform-selection-start-x, -9999px)"
+        onPointerDown={beginDrag}
+        onPointerMove={continueDrag}
+      />
+      <WaveformSelectionHandle
+        edge="end"
+        cssX="var(--waveform-selection-end-x, -9999px)"
+        onPointerDown={beginDrag}
+        onPointerMove={continueDrag}
+      />
+    </div>
+  );
+}
+
+function WaveformSelectionHandle(args: {
+  cssX: string;
+  edge: WaveformSelectionEdge;
+  onPointerDown: (edge: WaveformSelectionEdge, event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onPointerMove: (edge: WaveformSelectionEdge, event: ReactPointerEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={args.edge === "start" ? "Adjust start" : "Adjust end"}
+      className="pointer-events-auto absolute inset-y-0 w-5 -translate-x-1/2 cursor-ew-resize touch-none focus:outline-none"
+      style={{
+        left: args.cssX,
+      }}
+      onPointerDown={(event) => args.onPointerDown(args.edge, event)}
+      onPointerMove={(event) => args.onPointerMove(args.edge, event)}
+    >
+      <span className="absolute inset-y-0 left-1/2 block w-px -translate-x-1/2 bg-[#d4d4d4] shadow-[0_0_0_1px_rgba(245,245,245,0.65)] dark:bg-[#373737] dark:shadow-[0_0_0_1px_rgba(5,5,5,0.65)]" />
+    </button>
   );
 }
 
@@ -2574,10 +2886,8 @@ function useWaveformZoomViewportScheduler(args: {
 }
 
 function useTrackWaveformSummary(args: {
-  end: number | null;
   filePath: string | null;
   placeholderSummary: TrackWaveformSummary;
-  start: number | null;
   waveformPort: TrackSpectrumWaveformPort;
 }) {
   const [state, setState] = useState<TrackWaveformSummaryState>(() => ({
@@ -2604,11 +2914,7 @@ function useTrackWaveformSummary(args: {
 
     const handle = scheduleWaveformInitialPrepare(ownerWindow, () => {
       void args.waveformPort
-        .prepareTrackWaveform(
-          filePath,
-          normalizeWaveformBoundary(args.start),
-          normalizeWaveformBoundary(args.end),
-        )
+        .prepareTrackWaveform(filePath, null, null)
         .then((summary) => {
           if (cancelled) {
             return;
@@ -2636,7 +2942,7 @@ function useTrackWaveformSummary(args: {
       cancelled = true;
       cancelWaveformInitialPrepare(ownerWindow, handle);
     };
-  }, [args.end, args.filePath, args.placeholderSummary, args.start, args.waveformPort]);
+  }, [args.filePath, args.placeholderSummary, args.waveformPort]);
 
   return state;
 }
@@ -2715,6 +3021,7 @@ function useWaveformPlayheadController(args: {
   filePath: string | null;
   hostRef: RefObject<HTMLDivElement | null>;
   playbackPort: TrackSpectrumPlaybackPort;
+  selectionRef: RefObject<WaveformSelectionRange | null>;
   summary: TrackWaveformSummary;
   viewportRef: RefObject<WaveformViewportModel | null>;
 }) {
@@ -2741,6 +3048,7 @@ function useWaveformPlayheadController(args: {
     const cssVars = resolveWaveformPlayheadCssVariables({
       pixelsPerSecond: viewport.pixelsPerSecond,
       positionMs,
+      selection: latest.selectionRef.current,
       scrollLeft: viewport.scrollLeft,
       viewportWidth: viewport.viewportWidth,
     });
@@ -2863,10 +3171,8 @@ function useWaveformPlayheadController(args: {
 }
 
 function useWaveformDataLoader(args: {
-  end: number | null;
   filePath: string | null;
   onTileAvailable: (plan: WaveformDataPlan) => void;
-  start: number | null;
   status: WaveformStatus;
   tileCacheRef: RefObject<Map<string, WaveformCachedTile>>;
   waveformPort: TrackSpectrumWaveformPort;
@@ -2879,9 +3185,7 @@ function useWaveformDataLoader(args: {
   const previousPlanSignatureRef = useRef<string | null>(null);
   const queueRef = useRef<WaveformTileLoadQueueEntry[]>([]);
   const loadContextRef = useRef<{
-    end: number | null;
     filePath: string;
-    start: number | null;
     waveformPort: TrackSpectrumWaveformPort;
   } | null>(null);
   const latestArgsRef = useRef(args);
@@ -2924,8 +3228,8 @@ function useWaveformDataLoader(args: {
       void context.waveformPort
         .getTrackWaveformTile(
           context.filePath,
-          normalizeWaveformBoundary(context.start),
-          normalizeWaveformBoundary(context.end),
+          null,
+          null,
           entry.dataPixelsPerSecond,
           entry.startPx,
           entry.widthPx,
@@ -2976,9 +3280,7 @@ function useWaveformDataLoader(args: {
 
       const filePath = latest.filePath;
       loadContextRef.current = {
-        end: latest.end,
         filePath,
-        start: latest.start,
         waveformPort: latest.waveformPort,
       };
 
@@ -3046,9 +3348,7 @@ function useWaveformDataLoader(args: {
 
 function useWaveformCanvasRenderer(args: {
   canvasRef: RefObject<HTMLCanvasElement | null>;
-  end: number | null;
   filePath: string | null;
-  start: number | null;
   status: WaveformStatus;
   summary: TrackWaveformSummary;
   tileCacheRef: RefObject<Map<string, WaveformCachedTile>>;
@@ -3088,10 +3388,8 @@ function useWaveformCanvasRenderer(args: {
       });
       const plan = resolveWaveformCanvasRenderPlan({
         dataPlan: controller.dataPlan,
-        end: latest.end,
         filePath: latest.filePath,
         geometry,
-        start: latest.start,
         status: latest.status,
         summary: latest.summary,
         tileCache: latest.tileCacheRef.current,
@@ -3190,10 +3488,8 @@ function useWaveformCanvasRenderer(args: {
         geometry && viewport
           ? resolveWaveformCanvasRenderPlan({
               dataPlan,
-              end: latest.end,
               filePath: latest.filePath,
               geometry,
-              start: latest.start,
               status: latest.status,
               summary: latest.summary,
               tileCache: latest.tileCacheRef.current,
@@ -3309,10 +3605,8 @@ function isWaveformCanvasFrameGeometryEqual(
 
 function resolveWaveformCanvasRenderPlan(args: {
   dataPlan: WaveformDataPlan | null;
-  end: number | null;
   filePath: string | null;
   geometry: WaveformCanvasFrameGeometry;
-  start: number | null;
   status: WaveformStatus;
   summary: TrackWaveformSummary;
   tileCache: Map<string, WaveformCachedTile>;
@@ -4373,12 +4667,14 @@ function parseWaveformLoadingRgbChannel(value: string) {
 function resolveWaveformPlayheadCssVariables(args: {
   pixelsPerSecond: number;
   positionMs: number | null;
+  selection: WaveformSelectionRange | null;
   scrollLeft: number;
   viewportWidth: number;
 }) {
   const playheadX = resolveWaveformPlayheadX({
     pixelsPerSecond: args.pixelsPerSecond,
     positionMs: args.positionMs,
+    selection: args.selection,
     scrollLeft: args.scrollLeft,
   });
   const isVisible =

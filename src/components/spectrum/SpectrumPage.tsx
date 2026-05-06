@@ -2,13 +2,16 @@ import { useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
+import { icons } from "@/src/assets/icons";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { collectionTitleClassName, collectionTitleLayoutTransition } from "../collectionTitle";
 import { EditableTitle, type EditableTitleHandle } from "../EditableTitle";
 import {
   resolveSpectrumBackActionVisualState,
   resolveSpectrumCommittedTitle,
+  resolveSpectrumSelectionRange,
   resolveSpectrumTitle,
+  shouldShowSpectrumDraftResetAction,
   type SpectrumBackActionVisualState,
 } from "./SpectrumPage.view-model";
 import { SpectrumPlaybackAction } from "./SpectrumPlaybackAction";
@@ -41,9 +44,10 @@ type SpectrumRenderData = {
   backActionVisualState: SpectrumBackActionVisualState;
   handoffTone: "solid" | "muted" | null;
   interactionDisabled: boolean;
-  trackEnd: number | null;
+  selectionEnd: number | null;
+  selectionStart: number | null;
+  shouldShowDraftResetAction: boolean;
   trackFilePath: string | null;
-  trackStart: number | null;
   titleLayoutId?: string;
   titleValue: string;
 };
@@ -175,6 +179,11 @@ export function SpectrumPage() {
     spectrumMusicTitleDraft,
     titleToneHandoff,
   } = appLogicHook.useContext();
+  const liveSelectionRange = resolveSpectrumSelectionRange({
+    musicTitleDraft: spectrumMusicTitleDraft,
+    nowPlayingTrackEnd,
+    nowPlayingTrackStart,
+  });
   const liveRenderData = {
     backActionVisualState: resolveSpectrumBackActionVisualState({
       musicTitleDraft: spectrumMusicTitleDraft,
@@ -184,9 +193,12 @@ export function SpectrumPage() {
         ? titleToneHandoff.tone
         : null,
     interactionDisabled: !isPresent || spectrumMusicTitleDraft === null,
-    trackEnd: nowPlayingTrackEnd,
+    selectionEnd: liveSelectionRange.end,
+    selectionStart: liveSelectionRange.start,
+    shouldShowDraftResetAction: shouldShowSpectrumDraftResetAction({
+      musicTitleDraft: spectrumMusicTitleDraft,
+    }),
     trackFilePath: nowPlayingTrackFilePath,
-    trackStart: nowPlayingTrackStart,
     titleLayoutId: activeLayoutId ?? undefined,
     titleValue: resolveSpectrumTitle({
       musicTitleDraft: spectrumMusicTitleDraft,
@@ -303,9 +315,36 @@ export function SpectrumPage() {
         >
           <TrackSpectrum
             filePath={renderData.trackFilePath}
-            start={renderData.trackStart}
-            end={renderData.trackEnd}
+            selection={{
+              end: renderData.selectionEnd,
+              start: renderData.selectionStart,
+            }}
+            onSelectionChange={appLogicAction.changeSpectrumMusicRange}
           />
+          <AnimatePresence initial={false}>
+            {renderData.shouldShowDraftResetAction && (
+              <motion.button
+                type="button"
+                aria-label="Reset spectrum edits"
+                className={cn(
+                  "group absolute top-0 right-12 z-10 isolate inline-flex size-8 items-center justify-center rounded-[25px] p-2",
+                  "text-[#737373] transition duration-300 [corner-shape:squircle_squircle_squircle_squircle]",
+                  "before:absolute before:inset-0 before:-z-10 before:rounded-[25px] before:bg-transparent",
+                  "before:transition before:duration-300 before:[corner-shape:squircle_squircle_squircle_squircle]",
+                  "hover:text-[#262626] hover:before:bg-[#e5e5e5]",
+                  "dark:text-[#8a8a8a] dark:hover:text-[#d4d4d4] dark:hover:before:bg-[#262626]",
+                  "cursor-pointer",
+                )}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={collectionTitleLayoutTransition}
+                onClick={appLogicAction.resetSpectrumMusicDraft}
+              >
+                <icons.arrowRotateAnticlockwise size={18} />
+              </motion.button>
+            )}
+          </AnimatePresence>
         </motion.div>
       </div>
     </div>

@@ -198,7 +198,7 @@ function MainWindowApp() {
               <SpectrumPage />
             </PageViewport>
           ),
-          spectrumUpdatingMusicAlias: () => (
+          spectrumUpdatingMusic: () => (
             <PageViewport
               key="spectrum"
               pageKey="spectrum"

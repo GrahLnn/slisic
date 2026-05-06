@@ -173,11 +173,13 @@ pub async fn set_collection_updates(url: &str, enabled: bool) -> Result<Option<C
     Ok(Some(upsert_collection(&collection).await?))
 }
 
-pub async fn update_music_alias(
+pub async fn update_music(
     url: &str,
     start: u32,
     end: u32,
     alias: &str,
+    next_start: u32,
+    next_end: u32,
 ) -> Result<Option<Music>> {
     ensure_collection_graph_schema().await?;
 
@@ -187,6 +189,8 @@ pub async fn update_music_alias(
     for record in records {
         let mut music = Music::get_record(record.clone()).await?;
         music.alias = alias.to_string();
+        music.start = next_start;
+        music.end = next_end;
         let updated = Repo::<Music>::update_at(record, music).await?;
 
         if first_updated.is_none() {

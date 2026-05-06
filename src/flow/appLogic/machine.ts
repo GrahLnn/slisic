@@ -18,13 +18,16 @@ import {
   type Context,
 } from "./core";
 import {
+  changeSpectrumMusicTitleDraftName,
+  changeSpectrumMusicTitleDraftRange,
   createSpectrumMusicTitleDraft,
   hasSpectrumMusicTitleChanges,
   resolveSpectrumMusicTitleCommit,
-  updateMusicAliasInCollections,
-  updateMusicAliasInPlaylistPreview,
-  updateMusicAliasInPlaylists,
-  type MusicAliasEdit,
+  resetSpectrumMusicTitleDraft,
+  updateMusicInCollections,
+  updateMusicInPlaylistPreview,
+  updateMusicInPlaylists,
+  type MusicEdit,
 } from "./musicTitle";
 import { resolveConfigBackTitleSharePlan, resolveTitleShareToneFromDraft } from "./titleShare";
 import {
@@ -32,8 +35,8 @@ import {
   invoker,
   payloads,
   ss,
-  type MusicAliasUpdateInput,
-  type MusicAliasUpdateResult,
+  type MusicUpdateInput,
+  type MusicUpdateResult,
 } from "./events";
 import { src } from "./src";
 
@@ -45,58 +48,66 @@ function resolveSavePathFromLoadingError(error: unknown, fallback: string) {
   return error instanceof BootstrapLoadError ? error.savePath : fallback;
 }
 
-function hasSpectrumMusicAliasUpdate(context: Context) {
+function hasSpectrumMusicUpdate(context: Context) {
   return hasSpectrumMusicTitleChanges(context.spectrumMusicTitleDraft);
 }
 
-function resolveSpectrumMusicAliasUpdateInput(context: Context): MusicAliasUpdateInput {
+function resolveSpectrumMusicUpdateInput(context: Context): MusicUpdateInput {
   const titleCommit = resolveSpectrumMusicTitleCommit(context.spectrumMusicTitleDraft);
   const draft = context.spectrumMusicTitleDraft;
 
   if (!titleCommit || !draft || !hasSpectrumMusicTitleChanges(draft)) {
-    throw new Error("missing spectrum music alias update");
+    throw new Error("missing spectrum music update");
   }
 
-  if (draft.url === null || draft.start === null || draft.end === null) {
-    throw new Error("missing spectrum music identity for alias update");
+  if (
+    draft.url === null ||
+    draft.baselineStart === null ||
+    draft.baselineEnd === null ||
+    draft.start === null ||
+    draft.end === null
+  ) {
+    throw new Error("missing spectrum music identity for update");
   }
 
   return {
-    url: draft.url,
-    start: draft.start,
-    end: draft.end,
     alias: titleCommit.alias,
+    end: draft.end,
+    start: draft.start,
+    targetEnd: draft.baselineEnd,
+    targetStart: draft.baselineStart,
+    url: draft.url,
   };
 }
 
-function createMusicAliasEditFromUpdate(result: MusicAliasUpdateResult): MusicAliasEdit {
+function createMusicEditFromUpdate(result: MusicUpdateResult): MusicEdit {
   return {
-    url: result.input.url,
-    start: result.input.start,
-    end: result.input.end,
     alias: result.music.alias,
+    end: result.music.end,
+    start: result.music.start,
+    targetEnd: result.input.targetEnd,
+    targetStart: result.input.targetStart,
+    url: result.input.url,
   };
 }
 
-function createSpectrumPlayReturnContext(context: Context, musicAliasEdit: MusicAliasEdit | null) {
+function createSpectrumPlayReturnContext(context: Context, musicEdit: MusicEdit | null) {
   return resetContextWith({
     hasPlayList: context.hasPlayList,
-    playlists: musicAliasEdit
-      ? updateMusicAliasInPlaylists(context.playlists, musicAliasEdit)
-      : context.playlists,
-    pendingPlaylistPreview: musicAliasEdit
-      ? updateMusicAliasInPlaylistPreview(context.pendingPlaylistPreview, musicAliasEdit)
+    playlists: musicEdit ? updateMusicInPlaylists(context.playlists, musicEdit) : context.playlists,
+    pendingPlaylistPreview: musicEdit
+      ? updateMusicInPlaylistPreview(context.pendingPlaylistPreview, musicEdit)
       : context.pendingPlaylistPreview,
-    collections: musicAliasEdit
-      ? updateMusicAliasInCollections(context.collections, musicAliasEdit)
+    collections: musicEdit
+      ? updateMusicInCollections(context.collections, musicEdit)
       : context.collections,
     savePath: context.savePath,
     playingPlaylistName: context.playingPlaylistName,
-    nowPlayingTrackName: musicAliasEdit?.alias ?? context.nowPlayingTrackName,
+    nowPlayingTrackName: musicEdit?.alias ?? context.nowPlayingTrackName,
     nowPlayingTrackUrl: context.nowPlayingTrackUrl,
     nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-    nowPlayingTrackStart: context.nowPlayingTrackStart,
-    nowPlayingTrackEnd: context.nowPlayingTrackEnd,
+    nowPlayingTrackStart: musicEdit?.start ?? context.nowPlayingTrackStart,
+    nowPlayingTrackEnd: musicEdit?.end ?? context.nowPlayingTrackEnd,
     shouldStartPlayback: false,
     titleToneHandoff: context.activeLayoutId
       ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
@@ -111,6 +122,8 @@ const playlistDeleted = payloads["playlist.deleted"];
 const playlistPreviewChanged = payloads["playlist.preview.changed"];
 const draftNameChanged = payloads["draft.name.changed"];
 const spectrumMusicTitleChanged = payloads["spectrum.music_title.changed"];
+const spectrumMusicRangeChanged = payloads["spectrum.music_range.changed"];
+const spectrumMusicDraftReset = payloads["spectrum.music_draft.reset"];
 const savePathChanged = payloads["save_path.changed"];
 const collectionUpserted = payloads["collection.upserted"];
 const draftCollectionUpserted = payloads["draft.collection.upserted"];
@@ -452,18 +465,29 @@ export const machine = src.createMachine({
         run: ss.mainx.State.loading,
         [spectrumMusicTitleChanged.evt]: {
           actions: assign(({ context, event }) => ({
-            spectrumMusicTitleDraft: context.spectrumMusicTitleDraft
-              ? {
-                  ...context.spectrumMusicTitleDraft,
-                  name: event.output,
-                }
-              : null,
+            spectrumMusicTitleDraft: changeSpectrumMusicTitleDraftName(
+              context.spectrumMusicTitleDraft,
+              event.output,
+            ),
+          })),
+        },
+        [spectrumMusicRangeChanged.evt]: {
+          actions: assign(({ context, event }) => ({
+            spectrumMusicTitleDraft: changeSpectrumMusicTitleDraftRange(
+              context.spectrumMusicTitleDraft,
+              event.output,
+            ),
+          })),
+        },
+        [spectrumMusicDraftReset.evt]: {
+          actions: assign(({ context }) => ({
+            spectrumMusicTitleDraft: resetSpectrumMusicTitleDraft(context.spectrumMusicTitleDraft),
           })),
         },
         back: [
           {
-            guard: ({ context }) => hasSpectrumMusicAliasUpdate(context),
-            target: ss.mainx.State.spectrumUpdatingMusicAlias,
+            guard: ({ context }) => hasSpectrumMusicUpdate(context),
+            target: ss.mainx.State.spectrumUpdatingMusic,
           },
           {
             target: ss.mainx.State.play,
@@ -472,15 +496,15 @@ export const machine = src.createMachine({
         ],
       },
     },
-    [ss.mainx.State.spectrumUpdatingMusicAlias]: {
+    [ss.mainx.State.spectrumUpdatingMusic]: {
       invoke: {
-        id: invoker.updateMusicAlias.id,
-        src: invoker.updateMusicAlias.src,
-        input: ({ context }) => resolveSpectrumMusicAliasUpdateInput(context),
+        id: invoker.updateMusic.id,
+        src: invoker.updateMusic.src,
+        input: ({ context }) => resolveSpectrumMusicUpdateInput(context),
         onDone: {
           target: ss.mainx.State.play,
           actions: assign(({ context, event }) =>
-            createSpectrumPlayReturnContext(context, createMusicAliasEditFromUpdate(event.output)),
+            createSpectrumPlayReturnContext(context, createMusicEditFromUpdate(event.output)),
           ),
         },
         onError: {

@@ -18,7 +18,7 @@ const originalListPlaylists = crab.listPlaylists;
 const originalGetPlaylist = crab.getPlaylist;
 const originalGetMetaInfo = crab.getMetaInfo;
 const originalSetCollectionUpdates = crab.setCollectionUpdates;
-const originalUpdateMusicAlias = crab.updateMusicAlias;
+const originalUpdateMusic = crab.updateMusic;
 const originalPlayPlaylist = crab.playPlaylist;
 const openPlaylist = payloads["playlist.open"];
 const draftNameChanged = payloads["draft.name.changed"];
@@ -177,8 +177,8 @@ function setSetCollectionUpdatesMock(mock: typeof crab.setCollectionUpdates) {
   (crab as { setCollectionUpdates: typeof crab.setCollectionUpdates }).setCollectionUpdates = mock;
 }
 
-function setUpdateMusicAliasMock(mock: typeof crab.updateMusicAlias) {
-  (crab as { updateMusicAlias: typeof crab.updateMusicAlias }).updateMusicAlias = mock;
+function setUpdateMusicMock(mock: typeof crab.updateMusic) {
+  (crab as { updateMusic: typeof crab.updateMusic }).updateMusic = mock;
 }
 
 function setPlayPlaylistMock(mock: typeof crab.playPlaylist) {
@@ -249,7 +249,7 @@ afterEach(() => {
   setGetPlaylistMock(originalGetPlaylist);
   setGetMetaInfoMock(originalGetMetaInfo);
   setSetCollectionUpdatesMock(originalSetCollectionUpdates);
-  setUpdateMusicAliasMock(originalUpdateMusicAlias);
+  setUpdateMusicMock(originalUpdateMusic);
   setPlayPlaylistMock(originalPlayPlaylist);
 });
 
@@ -739,6 +739,8 @@ describe("appLogic machine", () => {
         nowPlayingTrackEnd: 120,
         spectrumMusicTitleDraft: {
           baselineName: "Disc 1 Opening",
+          baselineStart: 0,
+          baselineEnd: 120,
           name: "Disc 1 Opening",
           url: "https://example.com/quiet-morning#disc-1-opening",
           start: 0,
@@ -762,7 +764,7 @@ describe("appLogic machine", () => {
   });
 
   test("commits edited spectrum music title back to the current playback data", async () => {
-    let aliasUpdateCalls = 0;
+    let musicUpdateCalls = 0;
 
     setCheckListMock(async () => Ok(true));
     setListPlaylistsMock(async () => Ok([samplePlaylist]));
@@ -773,12 +775,14 @@ describe("appLogic machine", () => {
         track_count: 2,
       }),
     );
-    setUpdateMusicAliasMock(async (url, start, end, alias) => {
-      aliasUpdateCalls += 1;
+    setUpdateMusicMock(async (url, start, end, alias, nextStart, nextEnd) => {
+      musicUpdateCalls += 1;
       expect(url).toBe("https://example.com/quiet-morning#disc-1-opening");
       expect(start).toBe(0);
       expect(end).toBe(120);
       expect(alias).toBe("Disc 1 Prelude");
+      expect(nextStart).toBe(0);
+      expect(nextEnd).toBe(120);
       return Ok({
         ...sampleCollection.musics[1]!,
         alias,
@@ -809,7 +813,7 @@ describe("appLogic machine", () => {
 
     await waitForState(actor, ss.mainx.State.play);
 
-    expect(aliasUpdateCalls).toBe(1);
+    expect(musicUpdateCalls).toBe(1);
     expect(actor.getSnapshot().context.nowPlayingTrackName).toBe("Disc 1 Prelude");
     expect(actor.getSnapshot().context.spectrumMusicTitleDraft).toBeNull();
     expect(actor.getSnapshot().context.collections[0]?.musics[1]?.name).toBe("Disc 1 Opening");
@@ -824,6 +828,66 @@ describe("appLogic machine", () => {
       layoutId: playlistTitleLayoutId(samplePlaylist.name),
       tone: "solid",
     });
+  });
+
+  test("commits edited spectrum music range from the original music identity", async () => {
+    let musicUpdateCalls = 0;
+
+    setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
+    setListCollectionsMock(async () => Ok([sampleCollection]));
+    setPlayPlaylistMock(async () =>
+      Ok({
+        playlist_name: samplePlaylist.name,
+        track_count: 2,
+      }),
+    );
+    setUpdateMusicMock(async (url, start, end, alias, nextStart, nextEnd) => {
+      musicUpdateCalls += 1;
+      expect(url).toBe("https://example.com/quiet-morning#disc-1-opening");
+      expect(start).toBe(0);
+      expect(end).toBe(120);
+      expect(alias).toBe("Disc 1 Opening");
+      expect(nextStart).toBe(8);
+      expect(nextEnd).toBe(112);
+      return Ok({
+        ...sampleCollection.musics[1]!,
+        start: nextStart,
+        end: nextEnd,
+      });
+    });
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(sig.mainx.run);
+
+    await waitForState(actor, ss.mainx.State.ready);
+    actor.send(payloads["playlist.play"].load(samplePlaylist.name));
+    await waitForState(actor, ss.mainx.State.play);
+    actor.send(
+      payloads["player.now_playing_track.changed"].load({
+        playlist_name: samplePlaylist.name,
+        music_name: "Disc 1 Opening",
+        music_url: "https://example.com/quiet-morning#disc-1-opening",
+        file_path:
+          "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+        start: 0,
+        end: 120,
+      }),
+    );
+    actor.send(sig.mainx.openspectrum);
+    actor.send(payloads["spectrum.music_range.changed"].load({ start: 8, end: 112 }));
+    actor.send(sig.mainx.back);
+
+    await waitForState(actor, ss.mainx.State.play);
+
+    expect(musicUpdateCalls).toBe(1);
+    expect(actor.getSnapshot().context.nowPlayingTrackStart).toBe(8);
+    expect(actor.getSnapshot().context.nowPlayingTrackEnd).toBe(112);
+    expect(actor.getSnapshot().context.collections[0]?.musics[1]?.start).toBe(8);
+    expect(actor.getSnapshot().context.collections[0]?.musics[1]?.end).toBe(112);
+    expect(actor.getSnapshot().context.playlists[0]?.collections[0]?.musics[1]?.start).toBe(8);
+    expect(actor.getSnapshot().context.playlists[0]?.collections[0]?.musics[1]?.end).toBe(112);
   });
 
   test("moves to error when the requested playlist does not exist", async () => {

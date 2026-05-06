@@ -3,11 +3,13 @@ import { describe, test } from "node:test";
 import type { Collection, PlayList } from "@/src/cmd";
 import {
   createSpectrumMusicTitleDraft,
+  changeSpectrumMusicTitleDraftRange,
   hasSpectrumMusicTitleChanges,
   resolveSpectrumMusicTitleCommit,
-  updateMusicAliasInCollections,
-  updateMusicAliasInPlaylistPreview,
-  updateMusicAliasInPlaylists,
+  resetSpectrumMusicTitleDraft,
+  updateMusicInCollections,
+  updateMusicInPlaylistPreview,
+  updateMusicInPlaylists,
 } from "./musicTitle";
 
 const sampleCollection: Collection = {
@@ -51,6 +53,8 @@ describe("musicTitle", () => {
       }),
       {
         baselineName: "Track A",
+        baselineStart: 0,
+        baselineEnd: 120,
         name: "Track A",
         url: "https://example.com/quiet-morning#a",
         start: 0,
@@ -78,7 +82,32 @@ describe("musicTitle", () => {
 
     assert.equal(hasSpectrumMusicTitleChanges(draft), false);
     assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, name: "Track B" }), true);
-    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, name: "Track A" }), false);
+    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, name: " Track A " }), false);
+    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, start: 8 }), true);
+    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, end: 112 }), true);
+  });
+
+  test("resets the spectrum music draft to the current music baseline", () => {
+    const draft = createSpectrumMusicTitleDraft({
+      nowPlayingTrackName: "Track A",
+      nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
+      nowPlayingTrackStart: 0,
+      nowPlayingTrackEnd: 120,
+    });
+
+    assert.deepEqual(
+      resetSpectrumMusicTitleDraft(
+        draft &&
+          changeSpectrumMusicTitleDraftRange(
+            {
+              ...draft,
+              name: "Track B",
+            },
+            { start: 8, end: 112 },
+          ),
+      ),
+      draft,
+    );
   });
 
   test("restores the baseline title when the edit is empty", () => {
@@ -99,35 +128,34 @@ describe("musicTitle", () => {
     });
   });
 
-  test("updates matching music aliases across collections, playlists, and previews", () => {
+  test("updates matching music aliases and ranges from the original identity", () => {
     const edit = {
       alias: "Track B",
       url: "https://example.com/quiet-morning#a",
-      start: 0,
-      end: 120,
+      targetStart: 0,
+      targetEnd: 120,
+      start: 8,
+      end: 112,
     };
+    const updated = updateMusicInCollections([sampleCollection], edit)[0]?.musics[0];
 
+    assert.equal(updated?.name, "Track A");
+    assert.equal(updated?.alias, "Track B");
+    assert.equal(updated?.start, 8);
+    assert.equal(updated?.end, 112);
     assert.equal(
-      updateMusicAliasInCollections([sampleCollection], edit)[0]?.musics[0]?.name,
-      "Track A",
-    );
-    assert.equal(
-      updateMusicAliasInCollections([sampleCollection], edit)[0]?.musics[0]?.alias,
+      updateMusicInPlaylists([samplePlaylist], edit)[0]?.collections[0]?.musics[0]?.alias,
       "Track B",
     );
     assert.equal(
-      updateMusicAliasInPlaylists([samplePlaylist], edit)[0]?.collections[0]?.musics[0]?.alias,
-      "Track B",
-    );
-    assert.equal(
-      updateMusicAliasInPlaylistPreview(
+      updateMusicInPlaylistPreview(
         {
           playlist: samplePlaylist,
           previousName: null,
         },
         edit,
-      )?.playlist.collections[0]?.musics[0]?.alias,
-      "Track B",
+      )?.playlist.collections[0]?.musics[0]?.end,
+      112,
     );
   });
 });

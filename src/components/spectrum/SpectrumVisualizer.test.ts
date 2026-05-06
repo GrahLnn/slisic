@@ -36,6 +36,9 @@ import {
   resolveQueuedWaveformZoomFrame,
   resolveWaveformRenderPixelsPerSecond,
   resolveWaveformRenderScale,
+  resolveWaveformSelectionDrag,
+  resolveWaveformSelectionGeometry,
+  resolveWaveformSelectionStartScrollLeft,
   resolveWaveformTileIndexPeakRangeAtPixels,
   resolveWaveformTilePeakRangeAtPixels,
   resolveWaveformTilePeakAtSeconds,
@@ -991,16 +994,139 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
+  test("maps selection boundaries onto the current viewport without changing data scope", () => {
+    const viewport = {
+      contentWidth: 2_400,
+      durationMs: 120_000,
+      focusSeconds: null,
+      maximumPixelsPerSecond: 800,
+      pixelsPerSecond: 20,
+      scrollLeft: 100,
+      viewportWidth: 1_000,
+    };
+    const summary = createWaveformTestSummary();
+    const baseScopeKey = createWaveformDataScopeKey({
+      filePath: "C:/music/demo.flac",
+      summary,
+    });
+    const geometry = resolveWaveformSelectionGeometry({
+      selection: {
+        end: 80,
+        start: 10,
+      },
+      viewport,
+    });
+    const changedSelectionScopeKey = createWaveformDataScopeKey({
+      filePath: "C:/music/demo.flac",
+      summary,
+    });
+
+    assert.deepEqual(geometry, {
+      endX: 1_500,
+      isComplete: true,
+      startX: 100,
+    });
+    assert.equal(changedSelectionScopeKey, baseScopeKey);
+  });
+
+  test("resolves selection drags inside the full track duration", () => {
+    const viewport = {
+      contentWidth: 2_400,
+      durationMs: 120_000,
+      focusSeconds: null,
+      maximumPixelsPerSecond: 800,
+      pixelsPerSecond: 20,
+      scrollLeft: 100,
+      viewportWidth: 1_000,
+    };
+
+    assert.deepEqual(
+      resolveWaveformSelectionDrag({
+        edge: "start",
+        hostRect: { left: 50 },
+        pointerClientX: 257,
+        selection: {
+          end: 80,
+          start: 10,
+        },
+        viewport,
+      }),
+      {
+        end: 80,
+        start: 15,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformSelectionDrag({
+        edge: "end",
+        hostRect: { left: 50 },
+        pointerClientX: 5_000,
+        selection: {
+          end: 80,
+          start: 10,
+        },
+        viewport,
+      }),
+      {
+        end: 120,
+        start: 10,
+      },
+    );
+  });
+
+  test("does not let selection boundary drags cross each other", () => {
+    const viewport = {
+      contentWidth: 2_400,
+      durationMs: 120_000,
+      focusSeconds: null,
+      maximumPixelsPerSecond: 800,
+      pixelsPerSecond: 20,
+      scrollLeft: 100,
+      viewportWidth: 1_000,
+    };
+
+    assert.deepEqual(
+      resolveWaveformSelectionDrag({
+        edge: "start",
+        hostRect: { left: 50 },
+        pointerClientX: 2_000,
+        selection: {
+          end: 80,
+          start: 10,
+        },
+        viewport,
+      }),
+      {
+        end: 80,
+        start: 80,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformSelectionDrag({
+        edge: "end",
+        hostRect: { left: 50 },
+        pointerClientX: -1_000,
+        selection: {
+          end: 80,
+          start: 10,
+        },
+        viewport,
+      }),
+      {
+        end: 10,
+        start: 10,
+      },
+    );
+  });
+
   test("prioritizes visible and focused data without dropping overscan", () => {
     const summary = createWaveformTestSummary();
     const plan = resolveWaveformDataPlan({
       contentWidth: 12_000,
-      end: null,
       filePath: "C:/music/demo.flac",
       focusSeconds: 6,
       pixelsPerSecond: 200,
       scrollLeft: 1_000,
-      start: null,
       summary,
       tileWidth: 1_000,
       viewportWidth: 1_000,
@@ -1025,12 +1151,10 @@ describe("SpectrumVisualizer", () => {
     const summary = createWaveformTestSummary();
     const plan = resolveWaveformDataPlan({
       contentWidth: 12_000,
-      end: null,
       filePath: "C:/music/demo.flac",
       focusSeconds: 6,
       pixelsPerSecond: 200,
       scrollLeft: 1_000,
-      start: null,
       summary,
       tileWidth: 1_000,
       viewportWidth: 1_000,
@@ -1065,12 +1189,10 @@ describe("SpectrumVisualizer", () => {
     const summary = createWaveformTestSummary();
     const plan = resolveWaveformDataPlan({
       contentWidth: 12_000,
-      end: null,
       filePath: "C:/music/demo.flac",
       focusSeconds: 6,
       pixelsPerSecond: 200,
       scrollLeft: 1_000,
-      start: null,
       summary,
       tileWidth: 1_000,
       viewportWidth: 1_000,
@@ -1102,13 +1224,11 @@ describe("SpectrumVisualizer", () => {
     const summary = createWaveformTestSummary();
     const plan = resolveWaveformDataPlan({
       contentWidth: 12_000,
-      end: null,
       filePath: "C:/music/demo.flac",
       focusSeconds: 6,
       mode: "interactive",
       pixelsPerSecond: 200,
       scrollLeft: 1_000,
-      start: null,
       summary,
       tileWidth: 1_000,
       viewportWidth: 1_000,
@@ -1127,13 +1247,11 @@ describe("SpectrumVisualizer", () => {
   test("keeps interactive presentation independent from throttled data demand", () => {
     const plan = resolveWaveformDataPlan({
       contentWidth: 12_000,
-      end: null,
       filePath: "C:/Music/track.wav",
       focusSeconds: 5,
       mode: "interactive",
       pixelsPerSecond: 100,
       scrollLeft: 500,
-      start: null,
       summary: createWaveformTestSummary(),
       viewportWidth: 1_000,
     });
@@ -1172,25 +1290,21 @@ describe("SpectrumVisualizer", () => {
     const summary = createWaveformTestSummary();
     const firstPlan = resolveWaveformDataPlan({
       contentWidth: 12_000,
-      end: null,
       filePath: "C:/Music/track.wav",
       focusSeconds: 5,
       mode: "interactive",
       pixelsPerSecond: 100,
       scrollLeft: 500,
-      start: null,
       summary,
       viewportWidth: 1_000,
     });
     const secondPlan = resolveWaveformDataPlan({
       contentWidth: 12_000,
-      end: null,
       filePath: "C:/Music/track.wav",
       focusSeconds: 5,
       mode: "interactive",
       pixelsPerSecond: 100,
       scrollLeft: 2_500,
-      start: null,
       summary,
       viewportWidth: 1_000,
     });
@@ -1214,9 +1328,7 @@ describe("SpectrumVisualizer", () => {
   test("changes data request keys on every render density change", () => {
     const summary = createWaveformTestSummary();
     const scopeKey = createWaveformDataScopeKey({
-      end: null,
       filePath: "C:/music/demo.flac",
-      start: null,
       summary,
     });
     const low = createWaveformDataRequestKey({
@@ -1437,6 +1549,7 @@ describe("SpectrumVisualizer", () => {
       resolveWaveformPlayheadX({
         pixelsPerSecond: 100,
         positionMs: 5_000,
+        selection: null,
         scrollLeft: 250,
       }),
       250,
@@ -1445,6 +1558,7 @@ describe("SpectrumVisualizer", () => {
       resolveWaveformPlayheadStyle({
         pixelsPerSecond: 100,
         positionMs: 5_000,
+        selection: null,
         scrollLeft: 250,
         viewportWidth: 800,
       }),
@@ -1452,6 +1566,21 @@ describe("SpectrumVisualizer", () => {
         opacity: "0.86",
         transform: "translate3d(250px, 0, 0)",
       },
+    );
+  });
+
+  test("maps playback position from the selected region into the full waveform", () => {
+    assert.equal(
+      resolveWaveformPlayheadX({
+        pixelsPerSecond: 100,
+        positionMs: 5_000,
+        selection: {
+          end: 40,
+          start: 20,
+        },
+        scrollLeft: 1_904,
+      }),
+      596,
     );
   });
 
@@ -1512,6 +1641,19 @@ describe("SpectrumVisualizer", () => {
         viewportWidth: 1_000,
       }),
       1_750,
+    );
+    assert.equal(
+      resolveWaveformSelectionStartScrollLeft({
+        contentWidth: 12_000,
+        leadingSpacePx: 96,
+        pixelsPerSecond: 100,
+        selection: {
+          end: 80,
+          start: 20,
+        },
+        viewportWidth: 1_000,
+      }),
+      1_904,
     );
   });
 

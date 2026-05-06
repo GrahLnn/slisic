@@ -6,7 +6,9 @@ import {
   resolveSpectrumBackActionVisualState,
   resolveSpectrumCommittedTitle,
   resolveSpectrumPlaybackActionVisualState,
+  resolveSpectrumSelectionRange,
   resolveSpectrumTitle,
+  shouldShowSpectrumDraftResetAction,
 } from "./SpectrumPage.view-model";
 
 describe("SpectrumPage", () => {
@@ -39,6 +41,8 @@ describe("SpectrumPage", () => {
       resolveSpectrumTitle({
         musicTitleDraft: {
           baselineName: "Disc 1 Opening",
+          baselineStart: 0,
+          baselineEnd: 120,
           name: "Disc 1 Prelude",
           url: "https://example.com/quiet-morning#disc-1-opening",
           start: 0,
@@ -54,6 +58,8 @@ describe("SpectrumPage", () => {
   test("switches the back action only when the draft differs from current music data", () => {
     const draft = {
       baselineName: "Disc 1 Opening",
+      baselineStart: 0,
+      baselineEnd: 120,
       name: "Disc 1 Opening",
       url: "https://example.com/quiet-morning#disc-1-opening",
       start: 0,
@@ -80,12 +86,80 @@ describe("SpectrumPage", () => {
       resolveSpectrumBackActionVisualState({
         musicTitleDraft: {
           ...draft,
-          name: "Disc 1 Opening",
+          start: 8,
         },
       }),
       {
-        kind: "back",
-        key: "back",
+        kind: "check",
+        key: "check",
+      },
+    );
+  });
+
+  test("shows the spectrum draft reset action only when the music draft differs", () => {
+    const draft = {
+      baselineName: "Disc 1 Opening",
+      baselineStart: 0,
+      baselineEnd: 120,
+      name: "Disc 1 Opening",
+      url: "https://example.com/quiet-morning#disc-1-opening",
+      start: 0,
+      end: 120,
+    };
+
+    assert.equal(shouldShowSpectrumDraftResetAction({ musicTitleDraft: null }), false);
+    assert.equal(shouldShowSpectrumDraftResetAction({ musicTitleDraft: draft }), false);
+    assert.equal(
+      shouldShowSpectrumDraftResetAction({
+        musicTitleDraft: {
+          ...draft,
+          end: 112,
+        },
+      }),
+      true,
+    );
+  });
+
+  test("resolves the spectrum selection from the editable draft first", () => {
+    assert.deepEqual(
+      resolveSpectrumSelectionRange({
+        musicTitleDraft: {
+          baselineName: "Disc 1 Opening",
+          baselineStart: 0,
+          baselineEnd: 120,
+          name: "Disc 1 Opening",
+          url: "https://example.com/quiet-morning#disc-1-opening",
+          start: 10,
+          end: 90,
+        },
+        nowPlayingTrackEnd: 120,
+        nowPlayingTrackStart: 0,
+      }),
+      {
+        end: 90,
+        start: 10,
+      },
+    );
+  });
+
+  test("does not mix a draft selection with the current playback range", () => {
+    assert.deepEqual(
+      resolveSpectrumSelectionRange({
+        musicTitleDraft: {
+          baselineName: "Disc 1 Opening",
+          baselineStart: 0,
+          baselineEnd: 120,
+          name: "Disc 1 Opening",
+          url: "https://example.com/quiet-morning#disc-1-opening",
+          start: null,
+          end: 90,
+        },
+        nowPlayingTrackEnd: 120,
+        nowPlayingTrackStart: 0,
+      }),
+      {
+        end: 90,
+        start: null,
       },
     );
   });
@@ -95,6 +169,8 @@ describe("SpectrumPage", () => {
       resolveSpectrumCommittedTitle({
         musicTitleDraft: {
           baselineName: "Disc 1 Opening",
+          baselineStart: 0,
+          baselineEnd: 120,
           name: "",
           url: "https://example.com/quiet-morning#disc-1-opening",
           start: 0,

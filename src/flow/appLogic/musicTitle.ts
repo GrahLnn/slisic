@@ -1,11 +1,13 @@
 import type { Collection, PlayList } from "@/src/cmd";
 import type { PlaylistUpsertResult, SpectrumMusicTitleDraft } from "./core";
 
-export interface MusicAliasEdit {
+export interface MusicEdit {
   alias: string;
-  url: string;
-  start: number;
   end: number;
+  start: number;
+  targetEnd: number;
+  targetStart: number;
+  url: string;
 }
 
 export type SpectrumMusicTitleCommitKind = "keep" | "restore";
@@ -17,6 +19,12 @@ export interface SpectrumMusicTitleCommitResolution {
 
 export function normalizeSpectrumMusicTitleName(name: string) {
   return name.trim();
+}
+
+export function normalizeSpectrumMusicRangeBoundary(value: number | null) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.trunc(value))
+    : null;
 }
 
 export function createSpectrumMusicTitleDraft(args: {
@@ -31,15 +39,65 @@ export function createSpectrumMusicTitleDraft(args: {
 
   return {
     baselineName: args.nowPlayingTrackName,
+    baselineStart: normalizeSpectrumMusicRangeBoundary(args.nowPlayingTrackStart),
+    baselineEnd: normalizeSpectrumMusicRangeBoundary(args.nowPlayingTrackEnd),
     name: args.nowPlayingTrackName,
     url: args.nowPlayingTrackUrl,
-    start: args.nowPlayingTrackStart,
-    end: args.nowPlayingTrackEnd,
+    start: normalizeSpectrumMusicRangeBoundary(args.nowPlayingTrackStart),
+    end: normalizeSpectrumMusicRangeBoundary(args.nowPlayingTrackEnd),
   };
 }
 
 export function hasSpectrumMusicTitleChanges(draft: SpectrumMusicTitleDraft | null) {
-  return draft !== null && draft.name !== draft.baselineName;
+  return (
+    draft !== null &&
+    (normalizeSpectrumMusicTitleName(draft.name) !==
+      normalizeSpectrumMusicTitleName(draft.baselineName) ||
+      normalizeSpectrumMusicRangeBoundary(draft.start) !==
+        normalizeSpectrumMusicRangeBoundary(draft.baselineStart) ||
+      normalizeSpectrumMusicRangeBoundary(draft.end) !==
+        normalizeSpectrumMusicRangeBoundary(draft.baselineEnd))
+  );
+}
+
+export function resetSpectrumMusicTitleDraft(
+  draft: SpectrumMusicTitleDraft | null,
+): SpectrumMusicTitleDraft | null {
+  if (!draft) {
+    return null;
+  }
+
+  return {
+    ...draft,
+    name: draft.baselineName,
+    start: draft.baselineStart,
+    end: draft.baselineEnd,
+  };
+}
+
+export function changeSpectrumMusicTitleDraftName(
+  draft: SpectrumMusicTitleDraft | null,
+  name: string,
+): SpectrumMusicTitleDraft | null {
+  return draft ? { ...draft, name } : null;
+}
+
+export function changeSpectrumMusicTitleDraftRange(
+  draft: SpectrumMusicTitleDraft | null,
+  range: { end: number; start: number },
+): SpectrumMusicTitleDraft | null {
+  if (!draft) {
+    return null;
+  }
+
+  const start = normalizeSpectrumMusicRangeBoundary(range.start);
+  const end = normalizeSpectrumMusicRangeBoundary(range.end);
+
+  return {
+    ...draft,
+    start,
+    end,
+  };
 }
 
 export function resolveSpectrumMusicTitleCommit(
@@ -63,25 +121,27 @@ export function resolveSpectrumMusicTitleCommit(
   };
 }
 
-function isMusicAliasEditTarget(music: Collection["musics"][number], edit: MusicAliasEdit) {
-  return music.url === edit.url && music.start === edit.start && music.end === edit.end;
+function isMusicEditTarget(music: Collection["musics"][number], edit: MusicEdit) {
+  return music.url === edit.url && music.start === edit.targetStart && music.end === edit.targetEnd;
 }
 
-function updateMusicAliasInCollection(collection: Collection, edit: MusicAliasEdit): Collection {
-  let didRename = false;
+function updateMusicInCollection(collection: Collection, edit: MusicEdit): Collection {
+  let didUpdate = false;
   const musics = collection.musics.map((music) => {
-    if (!isMusicAliasEditTarget(music, edit)) {
+    if (!isMusicEditTarget(music, edit)) {
       return music;
     }
 
-    didRename = true;
+    didUpdate = true;
     return {
       ...music,
       alias: edit.alias,
+      start: edit.start,
+      end: edit.end,
     };
   });
 
-  return didRename
+  return didUpdate
     ? {
         ...collection,
         musics,
@@ -89,26 +149,26 @@ function updateMusicAliasInCollection(collection: Collection, edit: MusicAliasEd
     : collection;
 }
 
-export function updateMusicAliasInCollections(
+export function updateMusicInCollections(
   collections: readonly Collection[],
-  edit: MusicAliasEdit,
+  edit: MusicEdit,
 ): Collection[] {
-  return collections.map((collection) => updateMusicAliasInCollection(collection, edit));
+  return collections.map((collection) => updateMusicInCollection(collection, edit));
 }
 
-export function updateMusicAliasInPlaylists(
+export function updateMusicInPlaylists(
   playlists: readonly PlayList[],
-  edit: MusicAliasEdit,
+  edit: MusicEdit,
 ): PlayList[] {
   return playlists.map((playlist) => ({
     ...playlist,
-    collections: updateMusicAliasInCollections(playlist.collections, edit),
+    collections: updateMusicInCollections(playlist.collections, edit),
   }));
 }
 
-export function updateMusicAliasInPlaylistPreview(
+export function updateMusicInPlaylistPreview(
   preview: PlaylistUpsertResult | null,
-  edit: MusicAliasEdit,
+  edit: MusicEdit,
 ): PlaylistUpsertResult | null {
   if (!preview) {
     return null;
@@ -118,7 +178,7 @@ export function updateMusicAliasInPlaylistPreview(
     ...preview,
     playlist: {
       ...preview.playlist,
-      collections: updateMusicAliasInCollections(preview.playlist.collections, edit),
+      collections: updateMusicInCollections(preview.playlist.collections, edit),
     },
   };
 }

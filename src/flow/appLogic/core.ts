@@ -51,6 +51,8 @@ export interface PlaylistUpsertResult {
 
 export interface SpectrumMusicTitleDraft {
   baselineName: string;
+  baselineStart: number | null;
+  baselineEnd: number | null;
   name: string;
   url: string | null;
   start: number | null;

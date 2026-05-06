@@ -20,6 +20,12 @@ export interface SpectrumPlaybackActionVisualState {
   kind: SpectrumPlaybackActionKind;
 }
 
+export function shouldShowSpectrumDraftResetAction(args: {
+  musicTitleDraft: SpectrumMusicTitleDraft | null;
+}) {
+  return hasSpectrumMusicTitleChanges(args.musicTitleDraft);
+}
+
 export function resolveSpectrumTitle(args: {
   musicTitleDraft: SpectrumMusicTitleDraft | null;
   nowPlayingTrackName: string | null;
@@ -35,6 +41,24 @@ export function resolveSpectrumTitle(args: {
   }
 
   return args.playingPlaylistName ?? "Spectrum";
+}
+
+export function resolveSpectrumSelectionRange(args: {
+  musicTitleDraft: SpectrumMusicTitleDraft | null;
+  nowPlayingTrackEnd: number | null;
+  nowPlayingTrackStart: number | null;
+}) {
+  if (args.musicTitleDraft) {
+    return {
+      end: args.musicTitleDraft.end,
+      start: args.musicTitleDraft.start,
+    };
+  }
+
+  return {
+    end: args.nowPlayingTrackEnd,
+    start: args.nowPlayingTrackStart,
+  };
 }
 
 export function resolveSpectrumBackActionVisualState(args: {

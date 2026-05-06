@@ -72,13 +72,15 @@ pub async fn set_collection_updates(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn update_music_alias(
+pub async fn update_music(
     url: String,
     start: u32,
     end: u32,
     alias: String,
+    next_start: u32,
+    next_end: u32,
 ) -> Result<Option<Music>, String> {
-    super::repo::update_music_alias(&url, start, end, &alias)
+    super::repo::update_music(&url, start, end, &alias, next_start, next_end)
         .await
         .map_err(|error| error.to_string())
 }
