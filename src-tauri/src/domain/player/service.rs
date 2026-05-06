@@ -1,5 +1,5 @@
 #[cfg(not(test))]
-use super::event::NowPlayingTrackChangedEvent;
+use super::event::{NowPlayingTrackChangedEvent, PlaybackTraceEvent};
 use super::model::PlaybackTrack;
 #[cfg(not(test))]
 use super::model::{PlaybackContinuationMode, PlaybackStatusPayload};
@@ -34,6 +34,7 @@ pub struct PlayerRuntime {
     app: AppHandle,
     playback: Mutex<Option<Playback>>,
     session: Mutex<Option<ActivePlaybackSession>>,
+    active_request_track: RwLock<Option<PlaybackTrack>>,
     continuation_mode: RwLock<PlaybackContinuationMode>,
     generation: AtomicU64,
     active_binary_tasks: AtomicUsize,
@@ -43,10 +44,14 @@ pub struct PlayerRuntime {
 type SharedPlaybackTracks = Arc<RwLock<Vec<PlaybackTrack>>>;
 
 #[cfg(not(test))]
+type SharedPlaybackStrategy = Arc<Mutex<PlaybackStrategySet>>;
+
+#[cfg(not(test))]
 struct ActivePlaybackSession {
     playlist_name: String,
     generation: u64,
     tracks: SharedPlaybackTracks,
+    strategy: SharedPlaybackStrategy,
 }
 
 #[cfg(not(test))]
@@ -85,6 +90,7 @@ pub fn initialize_runtime(app: AppHandle) {
             app,
             playback: Mutex::new(None),
             session: Mutex::new(None),
+            active_request_track: RwLock::new(None),
             continuation_mode: RwLock::new(PlaybackContinuationMode::Random),
             generation: AtomicU64::new(0),
             active_binary_tasks: AtomicUsize::new(0),
@@ -120,15 +126,17 @@ pub async fn play_tracks(
     }
 
     let shared_tracks = Arc::new(RwLock::new(tracks));
+    let shared_strategy = Arc::new(Mutex::new(PlaybackStrategySet::new()));
     runtime.replace_active_session(
         playlist_name.clone(),
         generation,
         Arc::clone(&shared_tracks),
+        Arc::clone(&shared_strategy),
     )?;
 
     let session = PlaybackSession {
         tracks: shared_tracks,
-        strategy: PlaybackStrategySet::new(),
+        strategy: shared_strategy,
     };
     let runtime_for_task = Arc::clone(runtime);
     let playback_for_task = playback.clone();
@@ -164,6 +172,23 @@ pub(crate) fn update_session_tracks(
     }
 
     runtime()?.replace_session_tracks(handle, tracks)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PlaybackTrackIdentityUpdate {
+    pub(crate) music_name: String,
+    pub(crate) music_url: String,
+    pub(crate) start_ms: u32,
+    pub(crate) end_ms: u32,
+    pub(crate) next_start_ms: u32,
+    pub(crate) next_end_ms: u32,
+}
+
+#[cfg(not(test))]
+pub(crate) fn update_current_session_track_identity(
+    update: &PlaybackTrackIdentityUpdate,
+) -> Result<bool> {
+    runtime()?.update_current_session_track_identity(update)
 }
 
 #[cfg(not(test))]
@@ -218,7 +243,8 @@ pub async fn resume_playback() -> Result<bool> {
 
 #[cfg(not(test))]
 pub async fn get_playback_status() -> Result<Option<PlaybackStatusPayload>> {
-    let Some(playback) = runtime()?.current_playback()? else {
+    let runtime = runtime()?;
+    let Some(playback) = runtime.current_playback()? else {
         return Ok(None);
     };
 
@@ -226,6 +252,8 @@ pub async fn get_playback_status() -> Result<Option<PlaybackStatusPayload>> {
         .status()
         .await
         .map_err(|error| anyhow!("failed to read playback status: {error}"))?;
+    let active_request_track =
+        runtime.active_request_track_for_status_path(status.path.as_deref())?;
 
     Ok(Some(PlaybackStatusPayload {
         path: status.path,
@@ -233,6 +261,14 @@ pub async fn get_playback_status() -> Result<Option<PlaybackStatusPayload>> {
         paused: status.paused,
         position_ms: status.position_ms,
         duration_ms: status.duration_ms,
+        playlist_name: active_request_track
+            .as_ref()
+            .map(|track| track.playlist_name.clone()),
+        music_url: active_request_track
+            .as_ref()
+            .map(|track| track.music_url.clone()),
+        playback_start_ms: active_request_track.as_ref().map(|track| track.start_ms),
+        playback_end_ms: active_request_track.as_ref().map(|track| track.end_ms),
     }))
 }
 
@@ -367,6 +403,7 @@ impl PlayerRuntime {
         playlist_name: String,
         generation: u64,
         tracks: SharedPlaybackTracks,
+        strategy: SharedPlaybackStrategy,
     ) -> Result<()> {
         let mut session = self
             .session
@@ -377,8 +414,52 @@ impl PlayerRuntime {
             playlist_name,
             generation,
             tracks,
+            strategy,
         });
         Ok(())
+    }
+
+    fn set_active_request_track(&self, track: PlaybackTrack) -> Result<()> {
+        let mut active_request_track = self
+            .active_request_track
+            .write()
+            .map_err(|_| anyhow!("player runtime active request track lock is poisoned"))?;
+        *active_request_track = Some(track);
+        Ok(())
+    }
+
+    fn clear_active_request_track(&self) -> Result<()> {
+        let mut active_request_track = self
+            .active_request_track
+            .write()
+            .map_err(|_| anyhow!("player runtime active request track lock is poisoned"))?;
+        *active_request_track = None;
+        Ok(())
+    }
+
+    fn active_request_track_for_status_path(
+        &self,
+        status_path: Option<&str>,
+    ) -> Result<Option<PlaybackTrack>> {
+        let active_request_track = self
+            .active_request_track
+            .read()
+            .map_err(|_| anyhow!("player runtime active request track lock is poisoned"))?;
+        let Some(track) = active_request_track.as_ref() else {
+            return Ok(None);
+        };
+        let Some(status_path) = status_path else {
+            return Ok(None);
+        };
+
+        Ok(resolve_playback_status_track_identity(
+            Some(status_path),
+            Some(track),
+        ))
+    }
+
+    fn emit_playback_trace(&self, event: PlaybackTraceEvent) {
+        let _ = event.emit(&self.app);
     }
 
     fn replace_session_tracks(
@@ -409,7 +490,67 @@ impl PlayerRuntime {
             return Ok(true);
         }
 
+        let previous_tracks = current_tracks.clone();
+        {
+            let mut strategy = active
+                .strategy
+                .lock()
+                .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?;
+            let _ = strategy.reconcile_current_track_identity(&previous_tracks, &tracks, None);
+        }
         *current_tracks = tracks;
+        Ok(true)
+    }
+
+    fn update_current_session_track_identity(
+        &self,
+        update: &PlaybackTrackIdentityUpdate,
+    ) -> Result<bool> {
+        let reconciled = {
+            let session = self
+                .session
+                .lock()
+                .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
+            let Some(active) = session.as_ref() else {
+                return Ok(false);
+            };
+
+            let mut current_tracks = active
+                .tracks
+                .write()
+                .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))?;
+            let Some(next_tracks) = resolve_session_track_identity_update(&current_tracks, update)
+            else {
+                return Ok(false);
+            };
+
+            let previous_tracks = current_tracks.clone();
+            let next_current_track = resolve_active_request_track_identity_update(
+                self.active_request_track_snapshot()?.as_ref(),
+                update,
+            );
+            let reconciled = {
+                let mut strategy = active
+                    .strategy
+                    .lock()
+                    .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?;
+                strategy.reconcile_current_track_identity(
+                    &previous_tracks,
+                    &next_tracks,
+                    next_current_track.as_ref(),
+                )
+            };
+            *current_tracks = next_tracks;
+            if let Some(track) = reconciled.as_ref() {
+                self.set_active_request_track(track.clone())?;
+            }
+            reconciled
+        };
+
+        if let Some(track) = reconciled {
+            NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&self.app)?;
+        }
+
         Ok(true)
     }
 
@@ -433,6 +574,7 @@ impl PlayerRuntime {
             .lock()
             .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
         *session = None;
+        self.clear_active_request_track()?;
         Ok(())
     }
 
@@ -442,6 +584,10 @@ impl PlayerRuntime {
             .write()
             .map_err(|_| anyhow!("player runtime continuation mode lock is poisoned"))?;
         *current = mode;
+        self.emit_playback_trace(PlaybackTraceEvent {
+            mode: Some(mode),
+            ..PlaybackTraceEvent::new("player-continuation-mode-set")
+        });
         Ok(())
     }
 
@@ -451,12 +597,19 @@ impl PlayerRuntime {
             .map(|mode| *mode)
             .map_err(|_| anyhow!("player runtime continuation mode lock is poisoned"))
     }
+
+    fn active_request_track_snapshot(&self) -> Result<Option<PlaybackTrack>> {
+        self.active_request_track
+            .read()
+            .map(|track| track.clone())
+            .map_err(|_| anyhow!("player runtime active request track lock is poisoned"))
+    }
 }
 
 #[cfg(not(test))]
 struct PlaybackSession {
     tracks: SharedPlaybackTracks,
-    strategy: PlaybackStrategySet,
+    strategy: SharedPlaybackStrategy,
 }
 
 #[cfg(not(test))]
@@ -474,7 +627,7 @@ async fn run_playback_session(
     runtime: Arc<PlayerRuntime>,
     playback: Playback,
     generation: u64,
-    mut session: PlaybackSession,
+    session: PlaybackSession,
 ) -> Result<()> {
     loop {
         if runtime.generation.load(Ordering::SeqCst) != generation {
@@ -483,16 +636,32 @@ async fn run_playback_session(
 
         let mode = runtime.continuation_mode()?;
         let tracks = session.tracks_snapshot()?;
-        let Some(track) = session.strategy.next_track(mode, &tracks) else {
+        let Some(track) = session
+            .strategy
+            .lock()
+            .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?
+            .next_track(mode, &tracks)
+        else {
             return Ok(());
         };
 
+        runtime.emit_playback_trace(PlaybackTraceEvent {
+            generation: Some(generation),
+            mode: Some(mode),
+            path: Some(track.file_path.to_string_lossy().to_string()),
+            playlist_name: Some(track.playlist_name.clone()),
+            music_url: Some(track.music_url.clone()),
+            start_ms: Some(track.start_ms),
+            end_ms: Some(track.end_ms),
+            ..PlaybackTraceEvent::new("player-session-track-selected")
+        });
         NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&runtime.app)?;
         let request = playback_request_for_track(&track)?;
         playback
             .play_request(request)
             .await
             .map_err(|error| anyhow!("failed to play `{}`: {error}", track.music_name))?;
+        runtime.set_active_request_track(track.clone())?;
         wait_until_track_finishes(&runtime, &playback, generation, &track.file_path).await?;
     }
 }
@@ -504,23 +673,85 @@ pub(crate) fn playback_tracks_match(left: &[PlaybackTrack], right: &[PlaybackTra
                 && left.music_name == right.music_name
                 && left.music_url == right.music_url
                 && left.file_path == right.file_path
-                && left.start == right.start
-                && left.end == right.end
+                && left.start_ms == right.start_ms
+                && left.end_ms == right.end_ms
         })
+}
+
+pub(crate) fn resolve_session_track_identity_update(
+    tracks: &[PlaybackTrack],
+    update: &PlaybackTrackIdentityUpdate,
+) -> Option<Vec<PlaybackTrack>> {
+    let mut changed = false;
+    let next_tracks = tracks
+        .iter()
+        .map(|track| {
+            if track.music_url != update.music_url
+                || track.start_ms != update.start_ms
+                || track.end_ms != update.end_ms
+            {
+                return track.clone();
+            }
+
+            let mut next = track.clone();
+            next.music_name = update.music_name.clone();
+            next.start_ms = update.next_start_ms;
+            next.end_ms = update.next_end_ms;
+            changed = changed
+                || !playback_tracks_match(std::slice::from_ref(track), std::slice::from_ref(&next));
+            next
+        })
+        .collect::<Vec<_>>();
+
+    changed.then_some(next_tracks)
+}
+
+pub(crate) fn resolve_playback_status_track_identity(
+    status_path: Option<&str>,
+    active_request_track: Option<&PlaybackTrack>,
+) -> Option<PlaybackTrack> {
+    let track = active_request_track?;
+    let status_path = status_path?;
+
+    (std::path::Path::new(status_path) == track.file_path).then(|| track.clone())
+}
+
+pub(crate) fn resolve_active_request_track_identity_update(
+    active_request_track: Option<&PlaybackTrack>,
+    update: &PlaybackTrackIdentityUpdate,
+) -> Option<PlaybackTrack> {
+    let track = active_request_track?;
+
+    if track.music_url != update.music_url
+        || track.start_ms != update.start_ms
+        || track.end_ms != update.end_ms
+    {
+        return None;
+    }
+
+    let mut next = track.clone();
+    next.music_name = update.music_name.clone();
+    next.start_ms = update.next_start_ms;
+    next.end_ms = update.next_end_ms;
+    Some(next)
 }
 
 #[cfg(not(test))]
 fn playback_request_for_track(track: &PlaybackTrack) -> Result<PlaybackRequest> {
     let request = PlaybackRequest::new(track.file_path.clone());
 
-    if track.end > track.start {
-        let range = PlaybackTimeRange::bounded_seconds(track.start, track.end)
-            .map_err(|error| anyhow!(error))?;
-        return Ok(request.with_time_range(range));
+    if track.end_ms > track.start_ms {
+        return Ok(request.with_time_range(PlaybackTimeRange {
+            start_ms: track.start_ms,
+            duration_ms: track.end_ms.checked_sub(track.start_ms),
+        }));
     }
 
-    if track.start > 0 {
-        return Ok(request.with_time_range(PlaybackTimeRange::from_start_seconds(track.start)));
+    if track.start_ms > 0 {
+        return Ok(request.with_time_range(PlaybackTimeRange {
+            start_ms: track.start_ms,
+            duration_ms: None,
+        }));
     }
 
     Ok(request)
@@ -535,6 +766,12 @@ async fn wait_until_track_finishes(
 ) -> Result<()> {
     loop {
         if runtime.generation.load(Ordering::SeqCst) != generation {
+            runtime.emit_playback_trace(PlaybackTraceEvent {
+                generation: Some(generation),
+                path: Some(current_path.to_string_lossy().to_string()),
+                reason: Some("generation-changed".to_string()),
+                ..PlaybackTraceEvent::new("player-track-finish-wait-ended")
+            });
             return Ok(());
         }
 
@@ -543,10 +780,28 @@ async fn wait_until_track_finishes(
             .await
             .map_err(|error| anyhow!("failed to read playback status: {error}"))?;
         let Some(active_path) = status.path else {
+            runtime.emit_playback_trace(PlaybackTraceEvent {
+                generation: Some(generation),
+                path: Some(current_path.to_string_lossy().to_string()),
+                status_path: None,
+                position_ms: Some(status.position_ms),
+                duration_ms: status.duration_ms,
+                reason: Some("status-path-empty".to_string()),
+                ..PlaybackTraceEvent::new("player-track-finish-wait-ended")
+            });
             return Ok(());
         };
 
         if Path::new(&active_path) != current_path {
+            runtime.emit_playback_trace(PlaybackTraceEvent {
+                generation: Some(generation),
+                path: Some(current_path.to_string_lossy().to_string()),
+                status_path: Some(active_path),
+                position_ms: Some(status.position_ms),
+                duration_ms: status.duration_ms,
+                reason: Some("status-path-changed".to_string()),
+                ..PlaybackTraceEvent::new("player-track-finish-wait-ended")
+            });
             return Ok(());
         }
 

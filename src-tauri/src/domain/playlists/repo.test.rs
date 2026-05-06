@@ -124,8 +124,8 @@ fn grouped_collection(url: &str) -> Collection {
                     .to_string_lossy()
                     .to_string(),
             ),
-            start: 0,
-            end: 180,
+            start_ms: 0,
+            end_ms: 180_000,
         }],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
         enable_updates: Some(false),
@@ -155,8 +155,8 @@ fn shared_music(collection_url: &str, collection_folder: &str) -> Music {
         group: collection_group("Demo", collection_url, collection_folder),
         url: "https://example.com/watch/shared".to_string(),
         path: Some("Shared Track.m4a".to_string()),
-        start: 0,
-        end: 180,
+        start_ms: 0,
+        end_ms: 180_000,
     }
 }
 
@@ -191,8 +191,8 @@ fn sample_excluded_music() -> Music {
         },
         url: "https://example.com/watch?v=blocked".to_string(),
         path: Some("Blocked Track.m4a".to_string()),
-        start: 0,
-        end: 180,
+        start_ms: 0,
+        end_ms: 180_000,
     }
 }
 
@@ -620,8 +620,8 @@ fn upsert_collection_bootstraps_collection_graph_schema_on_clean_db() {
                 group: collection_group("Minus Sixty One", url, "youtube/self-bootstrapped-single"),
                 url: url.to_string(),
                 path: Some("Minus Sixty One.m4a".to_string()),
-                start: 0,
-                end: 316,
+                start_ms: 0,
+                end_ms: 316_000,
             }],
         );
 
@@ -697,10 +697,10 @@ fn update_music_changes_display_alias_and_range_from_original_identity() {
         let updated = update_music(
             &format!("{}#track", collection.url),
             0,
-            180,
+            180_000,
             "Track Edit",
-            12,
-            132,
+            12_250,
+            132_750,
         )
         .await
         .expect("music update should succeed")
@@ -712,12 +712,12 @@ fn update_music_changes_display_alias_and_range_from_original_identity() {
 
         assert_eq!(updated.name, "Track");
         assert_eq!(updated.alias, "Track Edit");
-        assert_eq!(updated.start, 12);
-        assert_eq!(updated.end, 132);
+        assert_eq!(updated.start_ms, 12_250);
+        assert_eq!(updated.end_ms, 132_750);
         assert_eq!(reloaded.musics[0].name, "Track");
         assert_eq!(reloaded.musics[0].alias, "Track Edit");
-        assert_eq!(reloaded.musics[0].start, 12);
-        assert_eq!(reloaded.musics[0].end, 132);
+        assert_eq!(reloaded.musics[0].start_ms, 12_250);
+        assert_eq!(reloaded.musics[0].end_ms, 132_750);
 
         reset_db();
     });
@@ -812,8 +812,8 @@ fn upsert_collection_reuses_existing_legacy_record_id_and_removes_old_music() {
             group: collection_group("Demo", url, "youtube/demo"),
             url: format!("{url}#stale"),
             path: Some("Stale Track.m4a".to_string()),
-            start: 0,
-            end: 90,
+            start_ms: 0,
+            end_ms: 90_000,
         };
         let stale_music_record = insert_music_row("legacy-stale-music", &stale_music).await;
         insert_music_edges(&legacy_record, std::slice::from_ref(&stale_music_record)).await;

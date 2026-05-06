@@ -330,8 +330,8 @@ fn sample_collection(
                 group: group.clone(),
                 url: format!("{url}#intro"),
                 path: Some(format!("{name}.m4a")),
-                start: 0,
-                end: 42,
+                start_ms: 0,
+                end_ms: 42_000,
             },
             Music {
                 name: format!("{name} outro"),
@@ -339,8 +339,8 @@ fn sample_collection(
                 group,
                 url: format!("{url}#outro"),
                 path: Some(format!("{name}.m4a")),
-                start: 42,
-                end: 84,
+                start_ms: 42_000,
+                end_ms: 84_000,
             },
         ],
         last_updated: "2026-04-12T12:00:00+00:00".to_string(),
@@ -395,8 +395,8 @@ fn assert_music_eq(actual: &Music, expected: &Music) {
     assert_eq!(actual.group.folder, expected.group.folder);
     assert_eq!(actual.url, expected.url);
     assert_eq!(actual.path, expected.path);
-    assert_eq!(actual.start, expected.start);
-    assert_eq!(actual.end, expected.end);
+    assert_eq!(actual.start_ms, expected.start_ms);
+    assert_eq!(actual.end_ms, expected.end_ms);
 }
 
 fn assert_collection_eq(actual: &Collection, expected: &Collection) {
@@ -493,8 +493,8 @@ fn deserializes_playlist_with_collection_update_flags() {
                         },
                         "url": "https://example.com/track-a",
                         "path": "track-a.m4a",
-                        "start": 0,
-                        "end": 120
+                        "start_ms": 0,
+                        "end_ms": 120000
                     }
                 ]
             },
@@ -515,8 +515,8 @@ fn deserializes_playlist_with_collection_update_flags() {
                         },
                         "url": "https://example.com/track-b",
                         "path": null,
-                        "start": 0,
-                        "end": 90
+                        "start_ms": 0,
+                        "end_ms": 90000
                     }
                 ]
             }

@@ -37,6 +37,8 @@ pub async fn list_collections() -> Result<Vec<Collection>> {
 }
 
 pub async fn list_playlists() -> Result<Vec<PlayList>> {
+    ensure_collection_graph_schema().await?;
+
     match PlayList::list().order_by("created_at", Order::Asc).await {
         Ok(playlists) => Ok(playlists),
         Err(error) => match classify_db_error(&error) {
@@ -126,6 +128,8 @@ pub async fn find_collection_by_url(url: &str) -> Result<Option<Collection>> {
 }
 
 pub async fn get_playlist_by_name(name: &str) -> Result<Option<PlayList>> {
+    ensure_collection_graph_schema().await?;
+
     let Some(record) = find_unique_record_id_by_string_field::<PlayList>("name", name).await?
     else {
         return Ok(None);
@@ -175,22 +179,22 @@ pub async fn set_collection_updates(url: &str, enabled: bool) -> Result<Option<C
 
 pub async fn update_music(
     url: &str,
-    start: u32,
-    end: u32,
+    start_ms: u32,
+    end_ms: u32,
     alias: &str,
-    next_start: u32,
-    next_end: u32,
+    next_start_ms: u32,
+    next_end_ms: u32,
 ) -> Result<Option<Music>> {
     ensure_collection_graph_schema().await?;
 
-    let records = find_music_record_ids_by_identity(url, start, end).await?;
+    let records = find_music_record_ids_by_identity(url, start_ms, end_ms).await?;
     let mut first_updated = None;
 
     for record in records {
         let mut music = Music::get_record(record.clone()).await?;
         music.alias = alias.to_string();
-        music.start = next_start;
-        music.end = next_end;
+        music.start_ms = next_start_ms;
+        music.end_ms = next_end_ms;
         let updated = Repo::<Music>::update_at(record, music).await?;
 
         if first_updated.is_none() {
@@ -276,16 +280,19 @@ async fn load_collection_music_ids(record: &RecordId) -> Result<Vec<RecordId>> {
 
 async fn find_music_record_ids_by_identity(
     url: &str,
-    start: u32,
-    end: u32,
+    start_ms: u32,
+    end_ms: u32,
 ) -> Result<Vec<RecordId>> {
     let db = get_db()?;
     let mut result = match db
-        .query("SELECT VALUE id FROM $table WHERE url = $url AND start = $start AND end = $end;")
+        .query(
+            "SELECT VALUE id FROM $table
+             WHERE url = $url AND start_ms = $start_ms AND end_ms = $end_ms;",
+        )
         .bind(("table", Table::from(Music::table_name())))
         .bind(("url", url.to_string()))
-        .bind(("start", start))
-        .bind(("end", end))
+        .bind(("start_ms", start_ms))
+        .bind(("end_ms", end_ms))
         .await
     {
         Ok(result) => match result.check() {

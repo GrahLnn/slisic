@@ -128,7 +128,7 @@ fn parses_leaf_probe_with_chapters() {
     assert_eq!(parsed.duration_seconds, Some(302));
     assert_eq!(parsed.chapters.len(), 2);
     assert_eq!(parsed.chapters[0].title, "Intro");
-    assert_eq!(parsed.chapters[0].end_seconds, 13);
+    assert_eq!(parsed.chapters[0].end_ms, 12_400);
 }
 
 #[test]

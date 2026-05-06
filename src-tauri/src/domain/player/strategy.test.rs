@@ -9,8 +9,8 @@ fn track(name: &str) -> PlaybackTrack {
         music_name: name.to_string(),
         music_url: format!("https://example.com/{name}"),
         file_path: PathBuf::from(format!("{name}.m4a")),
-        start: 0,
-        end: 60,
+        start_ms: 0,
+        end_ms: 60_000,
     }
 }
 
@@ -107,7 +107,7 @@ fn playback_strategy_set_repeats_current_track_in_repeat_current_mode() {
 }
 
 #[test]
-fn playback_strategy_set_falls_back_to_random_when_current_track_disappears() {
+fn playback_strategy_set_does_not_randomize_when_current_track_disappears_in_repeat_current_mode() {
     let mut strategy = PlaybackStrategySet::new();
     let original_tracks = vec![track("a")];
     let resized_tracks = vec![track("b"), track("c")];
@@ -115,13 +115,107 @@ fn playback_strategy_set_falls_back_to_random_when_current_track_disappears() {
     let _ = strategy
         .next_track(PlaybackContinuationMode::Random, &original_tracks)
         .expect("first track should exist");
-    let next = strategy
-        .next_track(PlaybackContinuationMode::RepeatCurrent, &resized_tracks)
-        .expect("repeat mode should recover when the current track is removed");
 
     assert!(
-        resized_tracks
-            .iter()
-            .any(|track| track.music_url == next.music_url)
+        strategy
+            .next_track(PlaybackContinuationMode::RepeatCurrent, &resized_tracks)
+            .is_none()
+    );
+}
+
+#[test]
+fn playback_strategy_set_reconciles_current_track_identity_after_range_update() {
+    let mut strategy = PlaybackStrategySet::new();
+    let mut original = track("a");
+    original.start_ms = 8_000;
+    original.end_ms = 112_000;
+    let mut updated = original.clone();
+    updated.music_name = "A edited".to_string();
+    updated.start_ms = 9_250;
+    updated.end_ms = 110_750;
+
+    let first = strategy
+        .next_track(
+            PlaybackContinuationMode::Random,
+            std::slice::from_ref(&original),
+        )
+        .expect("first track should exist");
+    assert_eq!(first.start_ms, 8_000);
+
+    let reconciled = strategy
+        .reconcile_current_track_identity(
+            std::slice::from_ref(&original),
+            &[updated.clone()],
+            Some(&updated),
+        )
+        .expect("current identity should migrate to the matching edited track");
+    assert_eq!(reconciled.start_ms, 9_250);
+
+    let repeated = strategy
+        .next_track(PlaybackContinuationMode::RepeatCurrent, &[updated])
+        .expect("repeat mode should keep the edited current track");
+    assert_eq!(repeated.music_name, "A edited");
+    assert_eq!(repeated.start_ms, 9_250);
+    assert_eq!(repeated.end_ms, 110_750);
+}
+
+#[test]
+fn playback_strategy_set_uses_explicit_identity_update_when_same_media_has_many_ranges() {
+    let mut strategy = PlaybackStrategySet::new();
+    let mut original = track("a");
+    original.start_ms = 1_255_050;
+    original.end_ms = 1_355_000;
+
+    let mut edited = original.clone();
+    edited.start_ms = 1_254_046;
+    edited.end_ms = 1_355_000;
+
+    let mut sibling = original.clone();
+    sibling.music_name = "A sibling".to_string();
+    sibling.start_ms = 387_872;
+    sibling.end_ms = 458_000;
+
+    let _ = strategy
+        .next_track(
+            PlaybackContinuationMode::Random,
+            std::slice::from_ref(&original),
+        )
+        .expect("first track should exist");
+    let reconciled = strategy
+        .reconcile_current_track_identity(
+            std::slice::from_ref(&original),
+            &[sibling, edited.clone()],
+            Some(&edited),
+        )
+        .expect("explicit identity update should select the edited current track");
+
+    assert_eq!(reconciled.start_ms, 1_254_046);
+    assert_eq!(reconciled.end_ms, 1_355_000);
+}
+
+#[test]
+fn playback_strategy_set_rejects_ambiguous_media_only_identity_migration() {
+    let mut strategy = PlaybackStrategySet::new();
+    let mut original = track("a");
+    original.start_ms = 1_255_050;
+    original.end_ms = 1_355_000;
+
+    let mut left = original.clone();
+    left.start_ms = 1_254_046;
+    let mut right = original.clone();
+    right.start_ms = 387_872;
+    right.end_ms = 458_000;
+
+    let _ = strategy
+        .next_track(
+            PlaybackContinuationMode::Random,
+            std::slice::from_ref(&original),
+        )
+        .expect("first track should exist");
+
+    assert!(
+        strategy
+            .reconcile_current_track_identity(std::slice::from_ref(&original), &[left, right], None)
+            .is_none()
     );
 }

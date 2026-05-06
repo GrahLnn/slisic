@@ -104,7 +104,9 @@ function useSpectrumPlaybackStatusPolling(args: {
 
 function isSpectrumPlaybackStatusForTrack(status: PlaybackStatusPayload, filePath: string) {
   return (
-    status.path !== null && normalizeMediaPathKey(status.path) === normalizeMediaPathKey(filePath)
+    status.path !== null &&
+    normalizeMediaPathKey(status.path) === normalizeMediaPathKey(filePath) &&
+    status.playback_start_ms !== null
   );
 }
 

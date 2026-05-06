@@ -45,20 +45,50 @@ export function resolveSpectrumTitle(args: {
 
 export function resolveSpectrumSelectionRange(args: {
   musicTitleDraft: SpectrumMusicTitleDraft | null;
-  nowPlayingTrackEnd: number | null;
-  nowPlayingTrackStart: number | null;
+  nowPlayingTrackEndMs: number | null;
+  nowPlayingTrackStartMs: number | null;
 }) {
   if (args.musicTitleDraft) {
     return {
-      end: args.musicTitleDraft.end,
-      start: args.musicTitleDraft.start,
+      end: millisecondsToSeconds(args.musicTitleDraft.endMs),
+      start: millisecondsToSeconds(args.musicTitleDraft.startMs),
     };
   }
 
   return {
-    end: args.nowPlayingTrackEnd,
-    start: args.nowPlayingTrackStart,
+    end: millisecondsToSeconds(args.nowPlayingTrackEndMs),
+    start: millisecondsToSeconds(args.nowPlayingTrackStartMs),
   };
+}
+
+export function resolveSpectrumPlaybackSelectionRange(args: {
+  nowPlayingTrackEndMs: number | null;
+  nowPlayingTrackStartMs: number | null;
+}) {
+  return {
+    end: millisecondsToSeconds(args.nowPlayingTrackEndMs),
+    start: millisecondsToSeconds(args.nowPlayingTrackStartMs),
+  };
+}
+
+export function resolveSpectrumMusicRangeChange(args: {
+  end: number | null;
+  start: number | null;
+}) {
+  return {
+    endMs: secondsToMilliseconds(args.end),
+    startMs: secondsToMilliseconds(args.start),
+  };
+}
+
+function millisecondsToSeconds(value: number | null) {
+  return typeof value === "number" && Number.isFinite(value) ? value / 1_000 : null;
+}
+
+function secondsToMilliseconds(value: number | null) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.round(value * 1_000))
+    : null;
 }
 
 export function resolveSpectrumBackActionVisualState(args: {

@@ -19,6 +19,7 @@ import {
   type TrackWaveformTile,
   type WaveformPeak,
 } from "@/src/cmd";
+import { recordPlaybackTrace } from "@/src/debug/playbackTrace";
 
 const WAVEFORM_CANVAS_HEIGHT = 208;
 const WAVEFORM_VERTICAL_PADDING = 18;
@@ -719,7 +720,7 @@ export function resolveWaveformSelectionStartScrollLeft(args: {
   selection: WaveformSelectionRange | null;
   viewportWidth: number;
 }) {
-  const startSeconds = normalizeWaveformBoundary(args.selection?.start ?? null);
+  const startSeconds = normalizeWaveformSelectionBoundary(args.selection?.start ?? null);
 
   if (startSeconds === null) {
     return 0;
@@ -1576,8 +1577,8 @@ export function resolveWaveformSelectionGeometry(args: {
   viewport: WaveformViewportModel;
 }): WaveformSelectionGeometry {
   const durationSeconds = Math.max(0, args.viewport.durationMs) / 1000;
-  const startSeconds = normalizeWaveformBoundary(args.selection?.start ?? null);
-  const endSeconds = normalizeWaveformBoundary(args.selection?.end ?? null);
+  const startSeconds = normalizeWaveformSelectionBoundary(args.selection?.start ?? null);
+  const endSeconds = normalizeWaveformSelectionBoundary(args.selection?.end ?? null);
 
   if (
     startSeconds === null ||
@@ -1613,15 +1614,16 @@ export function resolveWaveformSelectionDrag(args: {
   hostRect: Pick<DOMRect, "left">;
 }): WaveformSelectionDragResolution {
   const durationSeconds = Math.max(0, args.viewport.durationMs) / 1000;
-  const currentStart = normalizeWaveformBoundary(args.selection?.start ?? null) ?? 0;
-  const currentEnd = normalizeWaveformBoundary(args.selection?.end ?? null) ?? durationSeconds;
+  const currentStart = normalizeWaveformSelectionBoundary(args.selection?.start ?? null) ?? 0;
+  const currentEnd =
+    normalizeWaveformSelectionBoundary(args.selection?.end ?? null) ?? durationSeconds;
   const pointerSeconds = clampNumber(
     (args.viewport.scrollLeft + args.pointerClientX - args.hostRect.left) /
       Math.max(1, args.viewport.pixelsPerSecond),
     0,
     durationSeconds,
   );
-  const boundary = normalizeWaveformBoundary(pointerSeconds) ?? 0;
+  const boundary = normalizeWaveformSelectionBoundary(pointerSeconds) ?? 0;
   const rangeStart = Math.min(currentStart, currentEnd);
   const rangeEnd = Math.max(currentStart, currentEnd);
 
@@ -1987,33 +1989,61 @@ export function resolvePlaybackPositionMs(args: {
   return clampNumber(snapshot.position_ms + elapsedMs, 0, Math.max(0, args.durationMs));
 }
 
+export function resolvePlaybackSnapshotDurationMs(args: {
+  fallbackDurationMs: number;
+  snapshot: PlaybackSnapshot | null;
+}) {
+  const snapshotDurationMs = args.snapshot?.duration_ms;
+  if (typeof snapshotDurationMs === "number" && Number.isFinite(snapshotDurationMs)) {
+    return snapshotDurationMs;
+  }
+
+  const playbackStartMs = args.snapshot?.playback_start_ms;
+  const playbackEndMs = args.snapshot?.playback_end_ms;
+  if (
+    typeof playbackStartMs === "number" &&
+    Number.isFinite(playbackStartMs) &&
+    typeof playbackEndMs === "number" &&
+    Number.isFinite(playbackEndMs) &&
+    playbackEndMs > playbackStartMs
+  ) {
+    return playbackEndMs - playbackStartMs;
+  }
+
+  return args.fallbackDurationMs;
+}
+
 export function resolveWaveformPlayheadX(args: {
+  playbackStartMs: number | null;
   pixelsPerSecond: number;
   positionMs: number | null;
-  selection: WaveformSelectionRange | null;
   scrollLeft: number;
 }) {
-  if (args.positionMs === null) {
+  if (args.positionMs === null || args.playbackStartMs === null) {
     return null;
   }
 
-  const startSeconds = normalizeWaveformBoundary(args.selection?.start ?? null) ?? 0;
-  const filePositionSeconds = startSeconds + args.positionMs / 1000;
+  const playbackStartSeconds = normalizeWaveformSelectionBoundary(args.playbackStartMs / 1000);
+  if (playbackStartSeconds === null) {
+    return null;
+  }
+
+  const filePositionSeconds = playbackStartSeconds + args.positionMs / 1000;
 
   return filePositionSeconds * args.pixelsPerSecond - args.scrollLeft;
 }
 
 export function resolveWaveformPlayheadStyle(args: {
+  playbackStartMs: number | null;
   pixelsPerSecond: number;
   positionMs: number | null;
-  selection: WaveformSelectionRange | null;
   scrollLeft: number;
   viewportWidth: number;
 }) {
   const playheadX = resolveWaveformPlayheadX({
+    playbackStartMs: args.playbackStartMs,
     pixelsPerSecond: args.pixelsPerSecond,
     positionMs: args.positionMs,
-    selection: args.selection,
     scrollLeft: args.scrollLeft,
   });
   const isVisible =
@@ -2058,6 +2088,7 @@ export function TrackSpectrum(props: {
   className?: string;
   filePath: string | null;
   onSelectionChange?: (range: WaveformSelectionDragResolution) => void;
+  playbackSelection?: WaveformSelectionRange | null;
   ports?: TrackSpectrumPorts;
   selection?: WaveformSelectionRange | null;
 }) {
@@ -2070,6 +2101,7 @@ function TrackSpectrumSession(props: {
   className?: string;
   filePath: string | null;
   onSelectionChange?: (range: WaveformSelectionDragResolution) => void;
+  playbackSelection?: WaveformSelectionRange | null;
   ports?: TrackSpectrumPorts;
   selection?: WaveformSelectionRange | null;
 }) {
@@ -2080,6 +2112,9 @@ function TrackSpectrumSession(props: {
   const loadingCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewportRef = useRef<WaveformViewportModel | null>(null);
   const selectionRef = useRef<WaveformSelectionRange | null>(props.selection ?? null);
+  const playbackSelectionRef = useRef<WaveformSelectionRange | null>(
+    props.playbackSelection ?? null,
+  );
   const initialSelectionViewportAnchorRef = useRef<string | null>(null);
   const commitViewportRef = useRef<WaveformViewportCommit | null>(null);
   const tileCacheRef = useRef(new Map<string, WaveformCachedTile>());
@@ -2147,12 +2182,13 @@ function TrackSpectrumSession(props: {
     filePath: props.filePath?.trim() || null,
     hostRef,
     playbackPort: ports.playback,
-    selectionRef,
+    playbackSelectionRef,
     summary: waveformState.summary,
     viewportRef,
   });
   const shouldShowLoadingGrid = waveformState.status === "loading";
   selectionRef.current = props.selection ?? null;
+  playbackSelectionRef.current = props.playbackSelection ?? null;
 
   const selectionPresentationRef = useRef({
     visible: !shouldShowLoadingGrid,
@@ -2427,7 +2463,7 @@ function TrackSpectrumSession(props: {
   useLayoutEffect(() => {
     const current = viewportRef.current;
     const filePath = props.filePath?.trim() || null;
-    const startSeconds = normalizeWaveformBoundary(selectionRef.current?.start ?? null);
+    const startSeconds = normalizeWaveformSelectionBoundary(selectionRef.current?.start ?? null);
     if (waveformState.status !== "ready" || !current || !filePath || startSeconds === null) {
       return;
     }
@@ -3021,7 +3057,7 @@ function useWaveformPlayheadController(args: {
   filePath: string | null;
   hostRef: RefObject<HTMLDivElement | null>;
   playbackPort: TrackSpectrumPlaybackPort;
-  selectionRef: RefObject<WaveformSelectionRange | null>;
+  playbackSelectionRef: RefObject<WaveformSelectionRange | null>;
   summary: TrackWaveformSummary;
   viewportRef: RefObject<WaveformViewportModel | null>;
 }) {
@@ -3030,6 +3066,10 @@ function useWaveformPlayheadController(args: {
   const playbackSnapshotRef = useRef<PlaybackSnapshot | null>(null);
   const frameIdRef = useRef<number | null>(null);
   const frameOwnerWindowRef = useRef<Window | null>(null);
+  const lastPlayheadTraceRef = useRef<{
+    at: number;
+    x: string;
+  } | null>(null);
 
   const syncPlayhead = useCallback((nowMs?: number) => {
     const latest = latestArgsRef.current;
@@ -3040,21 +3080,44 @@ function useWaveformPlayheadController(args: {
     }
 
     const ownerWindow = host.ownerDocument.defaultView;
+    const snapshot = playbackSnapshotRef.current;
     const positionMs = resolvePlaybackPositionMs({
-      durationMs: latest.summary.duration_ms,
+      durationMs: resolvePlaybackSnapshotDurationMs({
+        fallbackDurationMs: latest.summary.duration_ms,
+        snapshot,
+      }),
       nowMs: nowMs ?? readWaveformPerformanceNow(ownerWindow),
-      snapshot: playbackSnapshotRef.current,
+      snapshot,
     });
     const cssVars = resolveWaveformPlayheadCssVariables({
+      playbackStartMs: snapshot?.playback_start_ms ?? null,
       pixelsPerSecond: viewport.pixelsPerSecond,
       positionMs,
-      selection: latest.selectionRef.current,
       scrollLeft: viewport.scrollLeft,
       viewportWidth: viewport.viewportWidth,
     });
 
     host.style.setProperty("--waveform-playhead-opacity", cssVars.opacity);
     host.style.setProperty("--waveform-playhead-x", cssVars.x);
+    const now = nowMs ?? readWaveformPerformanceNow(ownerWindow);
+    const lastTrace = lastPlayheadTraceRef.current;
+    const shouldTrace =
+      lastTrace === null || lastTrace.x !== cssVars.x || now - lastTrace.at >= 250;
+    if (shouldTrace) {
+      lastPlayheadTraceRef.current = {
+        at: now,
+        x: cssVars.x,
+      };
+      recordPlaybackTrace("spectrum-playhead-css", {
+        pageSelectionEnd: latest.playbackSelectionRef.current?.end ?? null,
+        pageSelectionStart: latest.playbackSelectionRef.current?.start ?? null,
+        playbackEndMs: snapshot?.playback_end_ms ?? null,
+        playbackStartMs: snapshot?.playback_start_ms ?? null,
+        positionMs,
+        statusPath: snapshot?.path ?? null,
+        x: cssVars.x,
+      });
+    }
   }, []);
 
   const stopPlayheadAnimation = useCallback(() => {
@@ -3136,7 +3199,19 @@ function useWaveformPlayheadController(args: {
           return;
         }
 
-        if (!status || !isPlaybackStatusForTrack(status, filePath)) {
+        const statusMatchesTrack = status ? isPlaybackStatusForTrack(status, filePath) : false;
+        recordPlaybackTrace("spectrum-playhead-status", {
+          filePath,
+          pageSelectionEnd: latestArgsRef.current.playbackSelectionRef.current?.end ?? null,
+          pageSelectionStart: latestArgsRef.current.playbackSelectionRef.current?.start ?? null,
+          playbackEndMs: status?.playback_end_ms ?? null,
+          playbackStartMs: status?.playback_start_ms ?? null,
+          positionMs: status?.position_ms ?? null,
+          statusMatchesTrack,
+          statusPath: status?.path ?? null,
+        });
+
+        if (!status || !statusMatchesTrack) {
           commitPlaybackSnapshot(null);
           return;
         }
@@ -4665,16 +4740,16 @@ function parseWaveformLoadingRgbChannel(value: string) {
 }
 
 function resolveWaveformPlayheadCssVariables(args: {
+  playbackStartMs: number | null;
   pixelsPerSecond: number;
   positionMs: number | null;
-  selection: WaveformSelectionRange | null;
   scrollLeft: number;
   viewportWidth: number;
 }) {
   const playheadX = resolveWaveformPlayheadX({
+    playbackStartMs: args.playbackStartMs,
     pixelsPerSecond: args.pixelsPerSecond,
     positionMs: args.positionMs,
-    selection: args.selection,
     scrollLeft: args.scrollLeft,
   });
   const isVisible =
@@ -4987,7 +5062,10 @@ function readWaveformWheelNumber(event: WheelEvent, key: string, fallback: numbe
 }
 
 function isPlaybackStatusForTrack(status: PlaybackStatusPayload, filePath: string) {
-  return normalizeWaveformPathKey(status.path) === normalizeWaveformPathKey(filePath);
+  return (
+    normalizeWaveformPathKey(status.path) === normalizeWaveformPathKey(filePath) &&
+    status.playback_start_ms !== null
+  );
 }
 
 function readWaveformPerformanceNow(ownerWindow: Window | null) {
@@ -5066,10 +5144,8 @@ function cancelWaveformInitialPrepare(
   handle?.cancel();
 }
 
-function normalizeWaveformBoundary(value: number | null) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? Math.max(0, Math.trunc(value))
-    : null;
+function normalizeWaveformSelectionBoundary(value: number | null) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : null;
 }
 
 function normalizeWheelDeltaX(args: { deltaMode: number; deltaX: number; viewportWidth: number }) {

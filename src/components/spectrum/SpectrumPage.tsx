@@ -9,6 +9,8 @@ import { EditableTitle, type EditableTitleHandle } from "../EditableTitle";
 import {
   resolveSpectrumBackActionVisualState,
   resolveSpectrumCommittedTitle,
+  resolveSpectrumMusicRangeChange,
+  resolveSpectrumPlaybackSelectionRange,
   resolveSpectrumSelectionRange,
   resolveSpectrumTitle,
   shouldShowSpectrumDraftResetAction,
@@ -44,6 +46,8 @@ type SpectrumRenderData = {
   backActionVisualState: SpectrumBackActionVisualState;
   handoffTone: "solid" | "muted" | null;
   interactionDisabled: boolean;
+  playbackSelectionEnd: number | null;
+  playbackSelectionStart: number | null;
   selectionEnd: number | null;
   selectionStart: number | null;
   shouldShowDraftResetAction: boolean;
@@ -171,18 +175,22 @@ export function SpectrumPage() {
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
   const {
     activeLayoutId,
-    nowPlayingTrackEnd,
+    nowPlayingTrackEndMs,
     nowPlayingTrackFilePath,
     nowPlayingTrackName,
-    nowPlayingTrackStart,
+    nowPlayingTrackStartMs,
     playingPlaylistName,
     spectrumMusicTitleDraft,
     titleToneHandoff,
   } = appLogicHook.useContext();
   const liveSelectionRange = resolveSpectrumSelectionRange({
     musicTitleDraft: spectrumMusicTitleDraft,
-    nowPlayingTrackEnd,
-    nowPlayingTrackStart,
+    nowPlayingTrackEndMs,
+    nowPlayingTrackStartMs,
+  });
+  const livePlaybackSelectionRange = resolveSpectrumPlaybackSelectionRange({
+    nowPlayingTrackEndMs,
+    nowPlayingTrackStartMs,
   });
   const liveRenderData = {
     backActionVisualState: resolveSpectrumBackActionVisualState({
@@ -193,6 +201,8 @@ export function SpectrumPage() {
         ? titleToneHandoff.tone
         : null,
     interactionDisabled: !isPresent || spectrumMusicTitleDraft === null,
+    playbackSelectionEnd: livePlaybackSelectionRange.end,
+    playbackSelectionStart: livePlaybackSelectionRange.start,
     selectionEnd: liveSelectionRange.end,
     selectionStart: liveSelectionRange.start,
     shouldShowDraftResetAction: shouldShowSpectrumDraftResetAction({
@@ -315,11 +325,17 @@ export function SpectrumPage() {
         >
           <TrackSpectrum
             filePath={renderData.trackFilePath}
+            playbackSelection={{
+              end: renderData.playbackSelectionEnd,
+              start: renderData.playbackSelectionStart,
+            }}
             selection={{
               end: renderData.selectionEnd,
               start: renderData.selectionStart,
             }}
-            onSelectionChange={appLogicAction.changeSpectrumMusicRange}
+            onSelectionChange={(range) => {
+              appLogicAction.changeSpectrumMusicRange(resolveSpectrumMusicRangeChange(range));
+            }}
           />
           <AnimatePresence initial={false}>
             {renderData.shouldShowDraftResetAction && (

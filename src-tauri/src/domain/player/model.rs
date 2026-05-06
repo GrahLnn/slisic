@@ -15,8 +15,8 @@ pub struct PlaybackTrackPayload {
     pub music_name: String,
     pub music_url: String,
     pub file_path: String,
-    pub start: u32,
-    pub end: u32,
+    pub start_ms: u32,
+    pub end_ms: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -26,6 +26,10 @@ pub struct PlaybackStatusPayload {
     pub paused: bool,
     pub position_ms: u32,
     pub duration_ms: Option<u32>,
+    pub playlist_name: Option<String>,
+    pub music_url: Option<String>,
+    pub playback_start_ms: Option<u32>,
+    pub playback_end_ms: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,8 +38,8 @@ pub struct PlaybackTrack {
     pub music_name: String,
     pub music_url: String,
     pub file_path: PathBuf,
-    pub start: u32,
-    pub end: u32,
+    pub start_ms: u32,
+    pub end_ms: u32,
 }
 
 impl PlaybackTrack {
@@ -45,8 +49,8 @@ impl PlaybackTrack {
             music_name: self.music_name.clone(),
             music_url: self.music_url.clone(),
             file_path: self.file_path.to_string_lossy().to_string(),
-            start: self.start,
-            end: self.end,
+            start_ms: self.start_ms,
+            end_ms: self.end_ms,
         }
     }
 }

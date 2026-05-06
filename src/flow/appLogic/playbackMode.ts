@@ -1,17 +1,29 @@
 import { normalizeMediaPathKey } from "@/src/mediaPath";
+import type { PlaybackContinuationMode } from "@/src/cmd";
 
 export type PlaybackModeEffect =
   | {
-      kind: "setRandomContinuationMode";
+      kind: "setPlaybackContinuationMode";
+      mode: PlaybackContinuationMode;
     }
   | {
       kind: "resumePlayback";
     };
 
+export function resolveSpectrumEnterPlaybackModeEffects(): PlaybackModeEffect[] {
+  return [
+    {
+      kind: "setPlaybackContinuationMode",
+      mode: "repeatCurrent",
+    },
+  ];
+}
+
 export function resolveSpectrumExitPlaybackModeEffects(): PlaybackModeEffect[] {
   return [
     {
-      kind: "setRandomContinuationMode",
+      kind: "setPlaybackContinuationMode",
+      mode: "random",
     },
   ];
 }

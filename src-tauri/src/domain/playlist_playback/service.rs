@@ -228,8 +228,8 @@ fn emit_playlist_preparing(app: &AppHandle, playlist_name: &str) -> Result<()> {
         music_name: PLAYLIST_PREPARING_MESSAGE.to_string(),
         music_url: String::new(),
         file_path: String::new(),
-        start: 0,
-        end: 0,
+        start_ms: 0,
+        end_ms: 0,
     }
     .emit(app)?;
 
@@ -490,7 +490,7 @@ fn append_collection_tracks(
             continue;
         }
 
-        let key = format!("{}:{}:{}", music.url, music.start, music.end);
+        let key = format!("{}:{}:{}", music.url, music.start_ms, music.end_ms);
         if !seen.insert(key) {
             continue;
         }
@@ -500,8 +500,8 @@ fn append_collection_tracks(
             music_name: music.alias.clone(),
             music_url: music.url.clone(),
             file_path,
-            start: music.start,
-            end: music.end,
+            start_ms: music.start_ms,
+            end_ms: music.end_ms,
         });
     }
 }

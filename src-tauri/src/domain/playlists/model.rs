@@ -44,8 +44,8 @@ pub struct Music {
     pub group: Group,
     pub url: String,
     pub path: Option<String>,
-    pub start: u32,
-    pub end: u32,
+    pub start_ms: u32,
+    pub end_ms: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, Store, Type)]

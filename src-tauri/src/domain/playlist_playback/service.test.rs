@@ -31,8 +31,8 @@ fn music(name: &str, url: &str, path: &str, group: Group) -> Music {
         group,
         url: url.to_string(),
         path: Some(path.to_string()),
-        start: 0,
-        end: 180,
+        start_ms: 0,
+        end_ms: 180_000,
     }
 }
 
@@ -43,8 +43,8 @@ fn music_with_alias(name: &str, alias: &str, url: &str, path: &str, group: Group
         group,
         url: url.to_string(),
         path: Some(path.to_string()),
-        start: 0,
-        end: 180,
+        start_ms: 0,
+        end_ms: 180_000,
     }
 }
 

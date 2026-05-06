@@ -34,8 +34,11 @@ import {
   spectrumMusicTitleChanged,
 } from "./runtime";
 import { action as pasteDownloadAction } from "../pasteDownload";
+import { createPlaybackContinuationModeEffectOwner } from "./playbackContinuationModeEffectOwner";
+import { installPlaybackTrace, recordPlaybackTrace } from "@/src/debug/playbackTrace";
 import {
   resolveSpectrumBackResumeEffects,
+  resolveSpectrumEnterPlaybackModeEffects,
   resolveSpectrumExitPlaybackModeEffects,
   type PlaybackModeEffect,
 } from "./playbackMode";
@@ -52,6 +55,9 @@ const selectContext = me.select((shot: { context: ActorSnapshot["context"] }) =>
 let started = false;
 let unsubscribeDebug: (() => void) | null = null;
 let unsubscribeNowPlayingTrackChanged: (() => void) | null = null;
+const playbackContinuationModeEffectOwner = createPlaybackContinuationModeEffectOwner({
+  setPlaybackContinuationMode,
+});
 
 function formatStateValue(value: unknown) {
   return typeof value === "string" ? value : JSON.stringify(value);
@@ -65,8 +71,8 @@ function summarizeContext(context: ActorSnapshot["context"]) {
     nowPlayingTrackName: context.nowPlayingTrackName,
     nowPlayingTrackUrl: context.nowPlayingTrackUrl,
     nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-    nowPlayingTrackStart: context.nowPlayingTrackStart,
-    nowPlayingTrackEnd: context.nowPlayingTrackEnd,
+    nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+    nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
     spectrumMusicTitleDraft: context.spectrumMusicTitleDraft,
     error: context.error,
     titleToneHandoffLayoutId: context.titleToneHandoff?.layoutId ?? null,
@@ -136,20 +142,9 @@ function requestPlaybackStop() {
     });
 }
 
-function requestPlaybackContinuationMode(mode: Parameters<typeof setPlaybackContinuationMode>[0]) {
-  void setPlaybackContinuationMode(mode)
-    .then(() => undefined)
-    .catch((error) => {
-      console.error("Failed to set playback continuation mode", {
-        mode,
-        error,
-      });
-    });
-}
-
 async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
-  if (effect.kind === "setRandomContinuationMode") {
-    await setPlaybackContinuationMode("random");
+  if (effect.kind === "setPlaybackContinuationMode") {
+    await playbackContinuationModeEffectOwner.request(effect.mode);
     return;
   }
 
@@ -162,11 +157,63 @@ async function applyPlaybackModeEffects(effects: PlaybackModeEffect[]) {
   }
 }
 
-async function restoreRandomPlaybackBeforeLeavingSpectrum() {
-  await applyPlaybackModeEffects(resolveSpectrumExitPlaybackModeEffects());
+function requestPlaybackModeEffects(effects: PlaybackModeEffect[], errorMessage: string) {
+  if (effects.length === 0) {
+    return;
+  }
+
+  recordPlaybackTrace("playback-mode-effects-request", {
+    effects,
+  });
+  void applyPlaybackModeEffects(effects).catch((error) => {
+    console.error(errorMessage, error);
+  });
+}
+
+function isSpectrumOpenSourceStillCurrent(source: ActorSnapshot, current: ActorSnapshot): boolean {
+  return (
+    source.value === "play" &&
+    current.value === "play" &&
+    source.context.playingPlaylistName === current.context.playingPlaylistName &&
+    source.context.nowPlayingTrackUrl === current.context.nowPlayingTrackUrl &&
+    source.context.nowPlayingTrackFilePath === current.context.nowPlayingTrackFilePath &&
+    source.context.nowPlayingTrackStartMs === current.context.nowPlayingTrackStartMs &&
+    source.context.nowPlayingTrackEndMs === current.context.nowPlayingTrackEndMs
+  );
+}
+
+async function openSpectrumAfterPlaybackMode(sourceSnapshot: ActorSnapshot) {
+  recordPlaybackTrace("spectrum-open-repeat-current-start", {
+    context: summarizeContext(sourceSnapshot.context),
+    state: formatStateValue(sourceSnapshot.value),
+  });
+  await applyPlaybackModeEffects(resolveSpectrumEnterPlaybackModeEffects());
+
+  const currentSnapshot = actor.getSnapshot();
+  const shouldCommit = isSpectrumOpenSourceStillCurrent(sourceSnapshot, currentSnapshot);
+  recordPlaybackTrace("spectrum-open-repeat-current-done", {
+    currentContext: summarizeContext(currentSnapshot.context),
+    currentState: formatStateValue(currentSnapshot.value),
+    shouldCommit,
+  });
+
+  if (!shouldCommit) {
+    return;
+  }
+
+  actor.send(sig.mainx.openspectrum);
+  const nextSnapshot = actor.getSnapshot();
+  recordPlaybackTrace("spectrum-open-committed", {
+    afterContext: summarizeContext(nextSnapshot.context),
+    afterState: formatStateValue(nextSnapshot.value),
+  });
 }
 
 async function restorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnapshot) {
+  recordPlaybackTrace("spectrum-back-restore-start", {
+    context: summarizeContext(snapshot.context),
+    state: formatStateValue(snapshot.value),
+  });
   await applyPlaybackModeEffects(resolveSpectrumExitPlaybackModeEffects());
 
   const spectrumTrackPath = snapshot.context.nowPlayingTrackFilePath?.trim();
@@ -175,6 +222,13 @@ async function restorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnap
   }
 
   const status = await getPlaybackStatus();
+  recordPlaybackTrace("spectrum-back-status", {
+    currentPlaybackPath: status?.path ?? null,
+    paused: status?.paused ?? null,
+    spectrumTrackPath,
+    statusPlaybackStartMs: status?.playback_start_ms ?? null,
+    statusPlaybackEndMs: status?.playback_end_ms ?? null,
+  });
   await applyPlaybackModeEffects(
     resolveSpectrumBackResumeEffects({
       currentPlaybackPath: status?.path ?? null,
@@ -185,9 +239,10 @@ async function restorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnap
 }
 
 function requestRestoreRandomPlaybackBeforeLeavingSpectrum() {
-  void restoreRandomPlaybackBeforeLeavingSpectrum().catch((error) => {
-    console.error("Failed to restore playback before leaving spectrum", error);
-  });
+  requestPlaybackModeEffects(
+    resolveSpectrumExitPlaybackModeEffects(),
+    "Failed to restore playback before leaving spectrum",
+  );
 }
 
 function requestRestorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnapshot) {
@@ -210,6 +265,13 @@ function attachNowPlayingTrackListener() {
   }
 
   void listenNowPlayingTrackChanged((payload) => {
+    recordPlaybackTrace("now-playing-track-changed", {
+      endMs: payload.end_ms,
+      filePath: payload.file_path,
+      musicUrl: payload.music_url,
+      playlistName: payload.playlist_name,
+      startMs: payload.start_ms,
+    });
     send(nowPlayingTrackChanged.load(payload));
   })
     .then((unlisten) => {
@@ -278,14 +340,28 @@ export const action = {
   },
   openSpectrum: () => {
     ensureStarted();
-    if (actor.getSnapshot().value === "play") {
-      requestPlaybackContinuationMode("repeatCurrent");
+    const snapshot = actor.getSnapshot();
+    recordPlaybackTrace("spectrum-open-request", {
+      beforeContext: summarizeContext(snapshot.context),
+      beforeState: formatStateValue(snapshot.value),
+    });
+
+    if (snapshot.value !== "play") {
+      actor.send(sig.mainx.openspectrum);
+      return;
     }
-    actor.send(sig.mainx.openspectrum);
+
+    return openSpectrumAfterPlaybackMode(snapshot).catch((error) => {
+      console.error("Failed to enter spectrum playback mode", error);
+    });
   },
   back: () => {
     ensureStarted();
     const snapshot = actor.getSnapshot();
+    recordPlaybackTrace("app-back-request", {
+      context: summarizeContext(snapshot.context),
+      state: formatStateValue(snapshot.value),
+    });
     if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
       requestRestorePlaybackPageModeBeforeBackFromSpectrum(snapshot);
     }
@@ -302,7 +378,7 @@ export const action = {
     ensureStarted();
     send(spectrumMusicTitleChanged.load(name));
   },
-  changeSpectrumMusicRange: (range: { end: number; start: number }) => {
+  changeSpectrumMusicRange: (range: { endMs: number | null; startMs: number | null }) => {
     ensureStarted();
     send(spectrumMusicRangeChanged.load(range));
   },
@@ -389,6 +465,7 @@ export function ensureStarted() {
     return;
   }
 
+  installPlaybackTrace();
   actor.start();
   attachNowPlayingTrackListener();
   started = true;

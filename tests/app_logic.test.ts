@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Err, Ok } from "@grahlnn/fn";
-import type { Collection, PlayList } from "../src/cmd";
+import type { Collection, PlaybackContinuationMode, PlayList } from "../src/cmd";
 import { createActor, type AnyActorRef } from "xstate";
 import { crab } from "../src/cmd";
 import {
@@ -20,6 +20,7 @@ const originalGetMetaInfo = crab.getMetaInfo;
 const originalSetCollectionUpdates = crab.setCollectionUpdates;
 const originalUpdateMusic = crab.updateMusic;
 const originalPlayPlaylist = crab.playPlaylist;
+const originalSetPlaybackContinuationMode = crab.setPlaybackContinuationMode;
 const openPlaylist = payloads["playlist.open"];
 const draftNameChanged = payloads["draft.name.changed"];
 const spectrumMusicTitleChanged = payloads["spectrum.music_title.changed"];
@@ -47,8 +48,8 @@ const sampleCollection: Collection = {
       },
       url: "https://example.com/quiet-morning#title",
       path: "quiet-morning.m4a",
-      start: 0,
-      end: 120,
+      start_ms: 0,
+      end_ms: 120_000,
     },
     {
       name: "Disc 1 Opening",
@@ -60,8 +61,8 @@ const sampleCollection: Collection = {
       },
       url: "https://example.com/quiet-morning#disc-1-opening",
       path: "Disc 1/opening.m4a",
-      start: 0,
-      end: 120,
+      start_ms: 0,
+      end_ms: 120_000,
     },
     {
       name: "Quiet Morning Live",
@@ -73,8 +74,8 @@ const sampleCollection: Collection = {
       },
       url: "https://example.com/quiet-morning#live",
       path: "Live/quiet-morning-live.m4a",
-      start: 0,
-      end: 120,
+      start_ms: 0,
+      end_ms: 120_000,
     },
   ],
   last_updated: "2026-04-13T00:00:00Z",
@@ -134,8 +135,8 @@ function createExpectedAppLogicContext(overrides: Record<string, unknown> = {}) 
     nowPlayingTrackName: null,
     nowPlayingTrackUrl: null,
     nowPlayingTrackFilePath: null,
-    nowPlayingTrackStart: null,
-    nowPlayingTrackEnd: null,
+    nowPlayingTrackStartMs: null,
+    nowPlayingTrackEndMs: null,
     spectrumMusicTitleDraft: null,
     shouldStartPlayback: false,
     activeLayoutId: null,
@@ -183,6 +184,24 @@ function setUpdateMusicMock(mock: typeof crab.updateMusic) {
 
 function setPlayPlaylistMock(mock: typeof crab.playPlaylist) {
   (crab as { playPlaylist: typeof crab.playPlaylist }).playPlaylist = mock;
+}
+
+function setPlaybackContinuationModeMock(mock: typeof crab.setPlaybackContinuationMode) {
+  (
+    crab as { setPlaybackContinuationMode: typeof crab.setPlaybackContinuationMode }
+  ).setPlaybackContinuationMode = mock;
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+
+  return {
+    promise,
+    resolve,
+  };
 }
 
 function waitForState(actor: AnyActorRef, expected: string, timeoutMs = 1000) {
@@ -237,6 +256,17 @@ function waitForContext<T>(
   });
 }
 
+async function waitForPredicate(predicate: () => boolean, message: string, timeoutMs = 1000) {
+  const startedAt = performance.now();
+  while (!predicate()) {
+    if (performance.now() - startedAt > timeoutMs) {
+      throw new Error(message);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
 beforeEach(() => {
   setGetMetaInfoMock(async () => Ok({ save_path: sampleSavePath }));
   setListPlaylistsMock(async () => Ok([]));
@@ -251,6 +281,7 @@ afterEach(() => {
   setSetCollectionUpdatesMock(originalSetCollectionUpdates);
   setUpdateMusicMock(originalUpdateMusic);
   setPlayPlaylistMock(originalPlayPlaylist);
+  setPlaybackContinuationModeMock(originalSetPlaybackContinuationMode);
 });
 
 describe("createConfigSidebarItems", () => {
@@ -716,8 +747,8 @@ describe("appLogic machine", () => {
         music_url: "https://example.com/quiet-morning#disc-1-opening",
         file_path:
           "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
-        start: 0,
-        end: 120,
+        start_ms: 0,
+        end_ms: 120_000,
       }),
     );
     actor.send(sig.mainx.openspectrum);
@@ -735,16 +766,16 @@ describe("appLogic machine", () => {
         nowPlayingTrackUrl: "https://example.com/quiet-morning#disc-1-opening",
         nowPlayingTrackFilePath:
           "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
-        nowPlayingTrackStart: 0,
-        nowPlayingTrackEnd: 120,
+        nowPlayingTrackStartMs: 0,
+        nowPlayingTrackEndMs: 120_000,
         spectrumMusicTitleDraft: {
           baselineName: "Disc 1 Opening",
-          baselineStart: 0,
-          baselineEnd: 120,
+          baselineStartMs: 0,
+          baselineEndMs: 120_000,
           name: "Disc 1 Opening",
           url: "https://example.com/quiet-morning#disc-1-opening",
-          start: 0,
-          end: 120,
+          startMs: 0,
+          endMs: 120_000,
         },
         shouldStartPlayback: false,
         activeLayoutId: playlistTitleLayoutId(samplePlaylist.name),
@@ -779,10 +810,10 @@ describe("appLogic machine", () => {
       musicUpdateCalls += 1;
       expect(url).toBe("https://example.com/quiet-morning#disc-1-opening");
       expect(start).toBe(0);
-      expect(end).toBe(120);
+      expect(end).toBe(120_000);
       expect(alias).toBe("Disc 1 Prelude");
       expect(nextStart).toBe(0);
-      expect(nextEnd).toBe(120);
+      expect(nextEnd).toBe(120_000);
       return Ok({
         ...sampleCollection.musics[1]!,
         alias,
@@ -803,8 +834,8 @@ describe("appLogic machine", () => {
         music_url: "https://example.com/quiet-morning#disc-1-opening",
         file_path:
           "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
-        start: 0,
-        end: 120,
+        start_ms: 0,
+        end_ms: 120_000,
       }),
     );
     actor.send(sig.mainx.openspectrum);
@@ -846,14 +877,14 @@ describe("appLogic machine", () => {
       musicUpdateCalls += 1;
       expect(url).toBe("https://example.com/quiet-morning#disc-1-opening");
       expect(start).toBe(0);
-      expect(end).toBe(120);
+      expect(end).toBe(120_000);
       expect(alias).toBe("Disc 1 Opening");
-      expect(nextStart).toBe(8);
-      expect(nextEnd).toBe(112);
+      expect(nextStart).toBe(8_250);
+      expect(nextEnd).toBe(112_750);
       return Ok({
         ...sampleCollection.musics[1]!,
-        start: nextStart,
-        end: nextEnd,
+        start_ms: nextStart,
+        end_ms: nextEnd,
       });
     });
 
@@ -871,23 +902,27 @@ describe("appLogic machine", () => {
         music_url: "https://example.com/quiet-morning#disc-1-opening",
         file_path:
           "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
-        start: 0,
-        end: 120,
+        start_ms: 0,
+        end_ms: 120_000,
       }),
     );
     actor.send(sig.mainx.openspectrum);
-    actor.send(payloads["spectrum.music_range.changed"].load({ start: 8, end: 112 }));
+    actor.send(payloads["spectrum.music_range.changed"].load({ startMs: 8_250, endMs: 112_750 }));
     actor.send(sig.mainx.back);
 
     await waitForState(actor, ss.mainx.State.play);
 
     expect(musicUpdateCalls).toBe(1);
-    expect(actor.getSnapshot().context.nowPlayingTrackStart).toBe(8);
-    expect(actor.getSnapshot().context.nowPlayingTrackEnd).toBe(112);
-    expect(actor.getSnapshot().context.collections[0]?.musics[1]?.start).toBe(8);
-    expect(actor.getSnapshot().context.collections[0]?.musics[1]?.end).toBe(112);
-    expect(actor.getSnapshot().context.playlists[0]?.collections[0]?.musics[1]?.start).toBe(8);
-    expect(actor.getSnapshot().context.playlists[0]?.collections[0]?.musics[1]?.end).toBe(112);
+    expect(actor.getSnapshot().context.nowPlayingTrackStartMs).toBe(8_250);
+    expect(actor.getSnapshot().context.nowPlayingTrackEndMs).toBe(112_750);
+    expect(actor.getSnapshot().context.collections[0]?.musics[1]?.start_ms).toBe(8_250);
+    expect(actor.getSnapshot().context.collections[0]?.musics[1]?.end_ms).toBe(112_750);
+    expect(actor.getSnapshot().context.playlists[0]?.collections[0]?.musics[1]?.start_ms).toBe(
+      8_250,
+    );
+    expect(actor.getSnapshot().context.playlists[0]?.collections[0]?.musics[1]?.end_ms).toBe(
+      112_750,
+    );
   });
 
   test("moves to error when the requested playlist does not exist", async () => {
@@ -955,6 +990,69 @@ describe("ensureAppLogicStarted", () => {
         }),
       );
     } finally {
+      mod.stop();
+    }
+  });
+});
+
+describe("appLogic action playback mode effects", () => {
+  test("keeps spectrum entry repeat current after a delayed spectrum exit restore", async () => {
+    setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([samplePlaylist]));
+    setListCollectionsMock(async () => Ok([sampleCollection]));
+    setPlayPlaylistMock(async () =>
+      Ok({
+        playlist_name: samplePlaylist.name,
+        track_count: 1,
+      }),
+    );
+
+    const randomRestore = deferred();
+    const writes: PlaybackContinuationMode[] = [];
+    setPlaybackContinuationModeMock(async (mode) => {
+      writes.push(mode);
+      if (mode === "random") {
+        await randomRestore.promise;
+      }
+
+      return Ok(null);
+    });
+
+    const mod = await import(`../src/flow/appLogic/index.ts?case=delayed-random-${Date.now()}`);
+
+    try {
+      mod.ensureAppLogicStarted();
+      await waitForState(mod.actor, ss.mainx.State.ready);
+
+      mod.action.playPlaylist(samplePlaylist.name);
+      await waitForState(mod.actor, ss.mainx.State.play);
+
+      mod.action.openSpectrum();
+      await waitForPredicate(
+        () => writes.length === 1 && writes[0] === "repeatCurrent",
+        "expected spectrum entry to request repeat current",
+      );
+      await waitForState(mod.actor, ss.mainx.State.spectrum);
+
+      mod.action.back();
+      await waitForState(mod.actor, ss.mainx.State.play);
+      await waitForPredicate(
+        () => writes.length === 2 && writes[1] === "random",
+        "expected spectrum exit to request random restore",
+      );
+
+      mod.action.openSpectrum();
+      expect(writes).toEqual(["repeatCurrent", "random"]);
+      expect(mod.actor.getSnapshot().value).toBe(ss.mainx.State.play);
+
+      randomRestore.resolve();
+      await waitForPredicate(
+        () => writes.length === 3 && writes[2] === "repeatCurrent",
+        "expected later spectrum entry to win over delayed random restore",
+      );
+      await waitForState(mod.actor, ss.mainx.State.spectrum);
+    } finally {
+      randomRestore.resolve();
       mod.stop();
     }
   });

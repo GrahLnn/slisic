@@ -290,8 +290,8 @@ pub(crate) fn materialize_music_entries(
             group,
             url: probe.webpage_url.clone(),
             path: Some(relative_path.to_string()),
-            start: 0,
-            end: probe.duration_seconds.unwrap_or(0),
+            start_ms: 0,
+            end_ms: seconds_to_millis(probe.duration_seconds.unwrap_or(0)),
         }];
     }
 
@@ -304,8 +304,8 @@ pub(crate) fn materialize_music_entries(
             group: group.clone(),
             url: probe.webpage_url.clone(),
             path: Some(relative_path.to_string()),
-            start: chapter.start_seconds,
-            end: chapter.end_seconds,
+            start_ms: chapter.start_ms,
+            end_ms: chapter.end_ms,
         })
         .collect()
 }
@@ -342,14 +342,14 @@ fn inherit_existing_music_aliases(musics: &mut [Music], existing_musics: &[Music
         .iter()
         .map(|music| {
             (
-                (music.url.as_str(), music.start, music.end),
+                (music.url.as_str(), music.start_ms, music.end_ms),
                 music.alias.as_str(),
             )
         })
         .collect::<HashMap<_, _>>();
 
     for music in musics {
-        if let Some(alias) = aliases.get(&(music.url.as_str(), music.start, music.end)) {
+        if let Some(alias) = aliases.get(&(music.url.as_str(), music.start_ms, music.end_ms)) {
             music.alias = (*alias).to_string();
         }
     }
@@ -490,10 +490,14 @@ pub(crate) fn restore_single_source_musics_from_task(
             group: default_group.clone(),
             url: leaf.url.clone(),
             path: Some(relative_path.to_string()),
-            start: 0,
-            end: leaf.duration_seconds.unwrap_or(0),
+            start_ms: 0,
+            end_ms: seconds_to_millis(leaf.duration_seconds.unwrap_or(0)),
         });
     }
 
     restored
+}
+
+fn seconds_to_millis(seconds: u32) -> u32 {
+    seconds.saturating_mul(1_000)
 }

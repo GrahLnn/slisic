@@ -108,13 +108,13 @@ fn materialize_music_entries_expands_chapters_without_splitting_files() {
         chapters: vec![
             LeafChapter {
                 title: "Intro".to_string(),
-                start_seconds: 0,
-                end_seconds: 60,
+                start_ms: 0,
+                end_ms: 60_000,
             },
             LeafChapter {
                 title: "Main".to_string(),
-                start_seconds: 60,
-                end_seconds: 180,
+                start_ms: 60_000,
+                end_ms: 180_000,
             },
         ],
     };
@@ -139,8 +139,8 @@ fn materialize_music_entries_expands_chapters_without_splitting_files() {
     assert_eq!(musics[1].group.folder, group.folder);
     assert_eq!(musics[0].path.as_deref(), Some("album.m4a"));
     assert_eq!(musics[1].path.as_deref(), Some("album.m4a"));
-    assert_eq!(musics[0].start, 0);
-    assert_eq!(musics[1].end, 180);
+    assert_eq!(musics[0].start_ms, 0);
+    assert_eq!(musics[1].end_ms, 180_000);
 }
 
 #[test]
@@ -165,8 +165,8 @@ fn materialize_music_entries_falls_back_to_single_full_track_when_no_chapters_ex
     assert_eq!(musics[0].group.folder, group.folder);
     assert_eq!(musics[0].url, "https://example.com/video");
     assert_eq!(musics[0].path.as_deref(), Some("single-track.m4a"));
-    assert_eq!(musics[0].start, 0);
-    assert_eq!(musics[0].end, 245);
+    assert_eq!(musics[0].start_ms, 0);
+    assert_eq!(musics[0].end_ms, 245_000);
 }
 
 #[test]
@@ -391,8 +391,8 @@ fn existing_leaf_urls_only_counts_entries_with_present_files() {
                 group: collection_group("Demo", "https://example.com/playlist", folder),
                 url: "https://example.com/watch?v=present".to_string(),
                 path: Some("present.m4a".to_string()),
-                start: 0,
-                end: 60,
+                start_ms: 0,
+                end_ms: 60_000,
             },
             Music {
                 name: "Missing".to_string(),
@@ -400,8 +400,8 @@ fn existing_leaf_urls_only_counts_entries_with_present_files() {
                 group: collection_group("Demo", "https://example.com/playlist", folder),
                 url: "https://example.com/watch?v=missing".to_string(),
                 path: Some("missing.m4a".to_string()),
-                start: 0,
-                end: 60,
+                start_ms: 0,
+                end_ms: 60_000,
             },
         ],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
@@ -425,8 +425,8 @@ fn materialize_music_entries_preserves_group_and_nested_relative_path() {
         duration_seconds: Some(180),
         chapters: vec![LeafChapter {
             title: "Intro".to_string(),
-            start_seconds: 0,
-            end_seconds: 180,
+            start_ms: 0,
+            end_ms: 180_000,
         }],
     };
     let group = Group {
@@ -707,8 +707,8 @@ fn create_collection_shell_reuses_existing_music_and_updates_collection_metadata
             group: collection_group("Disc 1", "https://example.com/list#disc-1", "Disc 1"),
             url: "https://example.com/watch?v=track-1".to_string(),
             path: Some("Disc 1/track-1.m4a".to_string()),
-            start: 0,
-            end: 120,
+            start_ms: 0,
+            end_ms: 120_000,
         }],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
         enable_updates: Some(false),

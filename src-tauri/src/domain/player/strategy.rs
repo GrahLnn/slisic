@@ -13,10 +13,11 @@ pub struct RandomPlaybackStrategy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PlaybackTrackIdentity {
+    playlist_name: String,
     music_url: String,
     file_path: PathBuf,
-    start: u32,
-    end: u32,
+    start_ms: u32,
+    end_ms: u32,
 }
 
 pub struct PlaybackStrategySet {
@@ -27,18 +28,32 @@ pub struct PlaybackStrategySet {
 impl PlaybackTrackIdentity {
     fn from_track(track: &PlaybackTrack) -> Self {
         Self {
+            playlist_name: track.playlist_name.clone(),
             music_url: track.music_url.clone(),
             file_path: track.file_path.clone(),
-            start: track.start,
-            end: track.end,
+            start_ms: track.start_ms,
+            end_ms: track.end_ms,
         }
     }
 
     fn matches(&self, track: &PlaybackTrack) -> bool {
-        self.music_url == track.music_url
+        self.playlist_name == track.playlist_name
+            && self.music_url == track.music_url
             && self.file_path == track.file_path
-            && self.start == track.start
-            && self.end == track.end
+            && self.start_ms == track.start_ms
+            && self.end_ms == track.end_ms
+    }
+
+    fn matches_stable_media(&self, track: &PlaybackTrack) -> bool {
+        self.playlist_name == track.playlist_name
+            && self.music_url == track.music_url
+            && self.file_path == track.file_path
+    }
+
+    fn matches_next_track(&self, track: &PlaybackTrack, next: &PlaybackTrack) -> bool {
+        self.matches_stable_media(track)
+            && track.start_ms == next.start_ms
+            && track.end_ms == next.end_ms
     }
 }
 
@@ -74,13 +89,60 @@ impl PlaybackStrategySet {
                 .current_track
                 .as_ref()
                 .and_then(|current| tracks.iter().find(|track| current.matches(track)))
-                .cloned()
-                .or_else(|| self.random.next_track(tracks).cloned()),
+                .cloned(),
             PlaybackContinuationMode::Random => self.random.next_track(tracks).cloned(),
         }?;
 
         self.current_track = Some(PlaybackTrackIdentity::from_track(&track));
         Some(track)
+    }
+
+    pub fn reconcile_current_track_identity(
+        &mut self,
+        previous_tracks: &[PlaybackTrack],
+        next_tracks: &[PlaybackTrack],
+        next_current_track: Option<&PlaybackTrack>,
+    ) -> Option<PlaybackTrack> {
+        let Some(current) = self.current_track.as_ref() else {
+            return None;
+        };
+
+        if next_tracks.iter().any(|track| current.matches(track)) {
+            return None;
+        }
+
+        if !previous_tracks.iter().any(|track| current.matches(track)) {
+            return None;
+        }
+
+        if let Some(next_current_track) = next_current_track {
+            let Some(track) = next_tracks
+                .iter()
+                .find(|track| current.matches_next_track(track, next_current_track))
+            else {
+                return None;
+            };
+
+            self.current_track = Some(PlaybackTrackIdentity::from_track(track));
+            return Some(track.clone());
+        }
+
+        if next_tracks
+            .iter()
+            .filter(|track| current.matches_stable_media(track))
+            .count()
+            == 1
+        {
+            return next_tracks
+                .iter()
+                .find(|track| current.matches_stable_media(track))
+                .map(|track| {
+                    self.current_track = Some(PlaybackTrackIdentity::from_track(track));
+                    track.clone()
+                });
+        };
+
+        None
     }
 }
 

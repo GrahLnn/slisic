@@ -2,15 +2,26 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   resolveSpectrumBackResumeEffects,
+  resolveSpectrumEnterPlaybackModeEffects,
   resolveSpectrumExitPlaybackModeEffects,
   shouldResumePlaybackPageTrackAfterSpectrumBack,
 } from "./playbackMode";
 
 describe("appLogic playback mode", () => {
+  test("sets repeat current mode when entering spectrum", () => {
+    assert.deepEqual(resolveSpectrumEnterPlaybackModeEffects(), [
+      {
+        kind: "setPlaybackContinuationMode",
+        mode: "repeatCurrent",
+      },
+    ]);
+  });
+
   test("restores random mode for every spectrum exit", () => {
     assert.deepEqual(resolveSpectrumExitPlaybackModeEffects(), [
       {
-        kind: "setRandomContinuationMode",
+        kind: "setPlaybackContinuationMode",
+        mode: "random",
       },
     ]);
   });
@@ -27,7 +38,8 @@ describe("appLogic playback mode", () => {
       ],
       [
         {
-          kind: "setRandomContinuationMode",
+          kind: "setPlaybackContinuationMode",
+          mode: "random",
         },
         {
           kind: "resumePlayback",

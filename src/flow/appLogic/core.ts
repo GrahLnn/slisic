@@ -51,12 +51,12 @@ export interface PlaylistUpsertResult {
 
 export interface SpectrumMusicTitleDraft {
   baselineName: string;
-  baselineStart: number | null;
-  baselineEnd: number | null;
+  baselineStartMs: number | null;
+  baselineEndMs: number | null;
   name: string;
   url: string | null;
-  start: number | null;
-  end: number | null;
+  startMs: number | null;
+  endMs: number | null;
 }
 
 export interface Context {
@@ -69,8 +69,8 @@ export interface Context {
   nowPlayingTrackName: string | null;
   nowPlayingTrackUrl: string | null;
   nowPlayingTrackFilePath: string | null;
-  nowPlayingTrackStart: number | null;
-  nowPlayingTrackEnd: number | null;
+  nowPlayingTrackStartMs: number | null;
+  nowPlayingTrackEndMs: number | null;
   spectrumMusicTitleDraft: SpectrumMusicTitleDraft | null;
   shouldStartPlayback: boolean;
   activeLayoutId: string | null;
@@ -425,8 +425,8 @@ export function createInitialContext(): Context {
     nowPlayingTrackName: null,
     nowPlayingTrackUrl: null,
     nowPlayingTrackFilePath: null,
-    nowPlayingTrackStart: null,
-    nowPlayingTrackEnd: null,
+    nowPlayingTrackStartMs: null,
+    nowPlayingTrackEndMs: null,
     spectrumMusicTitleDraft: null,
     shouldStartPlayback: false,
     activeLayoutId: null,

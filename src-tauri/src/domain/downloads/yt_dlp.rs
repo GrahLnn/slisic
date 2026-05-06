@@ -42,8 +42,8 @@ pub struct LeafProbe {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeafChapter {
     pub title: String,
-    pub start_seconds: u32,
-    pub end_seconds: u32,
+    pub start_ms: u32,
+    pub end_ms: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -408,16 +408,22 @@ pub fn parse_progress_line(line: &str) -> Option<DownloadProgress> {
 
 fn parse_chapter(value: &Value) -> Option<LeafChapter> {
     let title = read_optional_string(value, "title")?;
-    let start_seconds = value.get("start_time").and_then(parse_number_like)?.floor() as u32;
-    let end_seconds = value.get("end_time").and_then(parse_number_like)?.ceil() as u32;
-    if end_seconds <= start_seconds {
+    let start_ms = value
+        .get("start_time")
+        .and_then(parse_number_like)
+        .map(seconds_to_millis)?;
+    let end_ms = value
+        .get("end_time")
+        .and_then(parse_number_like)
+        .map(seconds_to_millis)?;
+    if end_ms <= start_ms {
         return None;
     }
 
     Some(LeafChapter {
         title,
-        start_seconds,
-        end_seconds,
+        start_ms,
+        end_ms,
     })
 }
 
@@ -432,7 +438,7 @@ fn normalize_chapters(
 
     let chapter = chapters.pop().expect("single chapter should exist");
     let covers_full_duration = duration_seconds.is_some_and(|duration| {
-        chapter.start_seconds == 0 && chapter.end_seconds >= duration.saturating_sub(1)
+        chapter.start_ms == 0 && chapter.end_ms >= duration.saturating_sub(1).saturating_mul(1_000)
     });
     let repeats_video_title = chapter
         .title
@@ -440,7 +446,7 @@ fn normalize_chapters(
         .eq_ignore_ascii_case(video_title.trim());
 
     if covers_full_duration
-        || duration_seconds.is_none() && repeats_video_title && chapter.start_seconds == 0
+        || duration_seconds.is_none() && repeats_video_title && chapter.start_ms == 0
     {
         return vec![];
     }
@@ -502,6 +508,14 @@ fn parse_number_like(value: &Value) -> Option<f64> {
         Value::String(text) => text.parse::<f64>().ok(),
         _ => None,
     }
+}
+
+fn seconds_to_millis(seconds: f64) -> u32 {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return 0;
+    }
+
+    (seconds * 1_000.0).round().min(u32::MAX as f64) as u32
 }
 
 fn parse_optional_u64(value: &str) -> Option<u64> {

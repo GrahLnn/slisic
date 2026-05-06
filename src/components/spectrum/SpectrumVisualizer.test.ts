@@ -8,6 +8,7 @@ import {
   drawWaveformCanvasJobChunk,
   handleWaveformViewportWheel,
   normalizeWaveformPathKey,
+  resolvePlaybackSnapshotDurationMs,
   resolveAnchoredWaveformScrollLeft,
   resolveCenteredWaveformScrollLeft,
   resolvePlaybackPositionMs,
@@ -1053,7 +1054,7 @@ describe("SpectrumVisualizer", () => {
       }),
       {
         end: 80,
-        start: 15,
+        start: 15.35,
       },
     );
     assert.deepEqual(
@@ -1070,6 +1071,35 @@ describe("SpectrumVisualizer", () => {
       {
         end: 120,
         start: 10,
+      },
+    );
+  });
+
+  test("keeps selection boundary drags continuous at subsecond precision", () => {
+    const viewport = {
+      contentWidth: 2_400,
+      durationMs: 120_000,
+      focusSeconds: null,
+      maximumPixelsPerSecond: 800,
+      pixelsPerSecond: 80,
+      scrollLeft: 100,
+      viewportWidth: 1_000,
+    };
+
+    assert.deepEqual(
+      resolveWaveformSelectionDrag({
+        edge: "start",
+        hostRect: { left: 50 },
+        pointerClientX: 77,
+        selection: {
+          end: 80,
+          start: 10,
+        },
+        viewport,
+      }),
+      {
+        end: 80,
+        start: 1.5875,
       },
     );
   });
@@ -1547,18 +1577,18 @@ describe("SpectrumVisualizer", () => {
   test("maps playback position into the scrolled waveform viewport", () => {
     assert.equal(
       resolveWaveformPlayheadX({
+        playbackStartMs: 0,
         pixelsPerSecond: 100,
         positionMs: 5_000,
-        selection: null,
         scrollLeft: 250,
       }),
       250,
     );
     assert.deepEqual(
       resolveWaveformPlayheadStyle({
+        playbackStartMs: 0,
         pixelsPerSecond: 100,
         positionMs: 5_000,
-        selection: null,
         scrollLeft: 250,
         viewportWidth: 800,
       }),
@@ -1569,27 +1599,49 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
-  test("maps playback position from the selected region into the full waveform", () => {
+  test("maps playback position from playback request start into the full waveform", () => {
     assert.equal(
       resolveWaveformPlayheadX({
+        playbackStartMs: 20_000,
         pixelsPerSecond: 100,
         positionMs: 5_000,
-        selection: {
-          end: 40,
-          start: 20,
-        },
         scrollLeft: 1_904,
       }),
       596,
     );
   });
 
+  test("maps playback position from the actual playback request identity", () => {
+    assert.equal(
+      resolveWaveformPlayheadX({
+        playbackStartMs: 20_000,
+        pixelsPerSecond: 100,
+        positionMs: 5_000,
+        scrollLeft: 1_904,
+      }),
+      596,
+    );
+    assert.equal(
+      resolveWaveformPlayheadX({
+        playbackStartMs: 25_000,
+        pixelsPerSecond: 100,
+        positionMs: 5_000,
+        scrollLeft: 1_904,
+      }),
+      1_096,
+    );
+  });
+
   test("advances playback snapshots only while playing", () => {
     const snapshot = {
       duration_ms: 20_000,
+      music_url: "https://example.com/demo",
       path: "C:/music/demo.flac",
       paused: false,
+      playback_end_ms: 40_000,
+      playback_start_ms: 20_000,
       playing: true,
+      playlist_name: "Focus",
       position_ms: 1_000,
       received_at_ms: 100,
     };
@@ -1612,6 +1664,27 @@ describe("SpectrumVisualizer", () => {
         },
       }),
       1_000,
+    );
+  });
+
+  test("derives playback snapshot duration from the actual playback request", () => {
+    assert.equal(
+      resolvePlaybackSnapshotDurationMs({
+        fallbackDurationMs: 120_000,
+        snapshot: {
+          duration_ms: null,
+          music_url: "https://example.com/demo",
+          path: "C:/music/demo.flac",
+          paused: false,
+          playback_end_ms: 40_000,
+          playback_start_ms: 20_000,
+          playing: true,
+          playlist_name: "Focus",
+          position_ms: 1_000,
+          received_at_ms: 100,
+        },
+      }),
+      20_000,
     );
   });
 

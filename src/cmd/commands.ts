@@ -78,15 +78,15 @@ export const commands = {
 	last_updated: string,
 	enable_updates: boolean | null,
 } | null, string>(__TAURI_INVOKE("set_collection_updates", { url, enabled })),
-	updateMusic: (url: string, start: number, end: number, alias: string, nextStart: number, nextEnd: number) => typedError<{
+	updateMusic: (url: string, startMs: number, endMs: number, alias: string, nextStartMs: number, nextEndMs: number) => typedError<{
 	name: string,
 	alias: string,
 	group: Group,
 	url: string,
 	path: string | null,
-	start: number,
-	end: number,
-} | null, string>(__TAURI_INVOKE("update_music", { url, start, end, alias, nextStart, nextEnd })),
+	start_ms: number,
+	end_ms: number,
+} | null, string>(__TAURI_INVOKE("update_music", { url, startMs, endMs, alias, nextStartMs, nextEndMs })),
 	addExclude: (music: Music) => typedError<Exclude, string>(__TAURI_INVOKE("add_exclude", { music })),
 	removeExclude: (music: Music) => typedError<boolean, string>(__TAURI_INVOKE("remove_exclude", { music })),
 	playPlaylist: (name: string) => typedError<PlayPlaylistSession, string>(__TAURI_INVOKE("play_playlist", { name })),
@@ -100,6 +100,10 @@ export const commands = {
 	paused: boolean,
 	position_ms: number,
 	duration_ms: number | null,
+	playlist_name: string | null,
+	music_url: string | null,
+	playback_start_ms: number | null,
+	playback_end_ms: number | null,
 } | null, string>(__TAURI_INVOKE("get_playback_status")),
 	analyzeTrackWaveform: (filePath: string, start: number | null, end: number | null) => typedError<TrackWaveform, string>(__TAURI_INVOKE("analyze_track_waveform", { filePath, start, end })),
 	prepareTrackWaveform: (filePath: string, start: number | null, end: number | null) => typedError<TrackWaveformSummary, string>(__TAURI_INVOKE("prepare_track_waveform", { filePath, start, end })),
@@ -117,6 +121,7 @@ export const events = {
 	fullScreenEvent: makeEvent<FullScreenEvent>("full-screen-event"),
 	hardwareHorizontalWheelEvent: makeEvent<HardwareHorizontalWheelEvent>("hardware-horizontal-wheel-event"),
 	nowPlayingTrackChangedEvent: makeEvent<NowPlayingTrackChangedEvent>("now-playing-track-changed-event"),
+	playbackTraceEvent: makeEvent<PlaybackTraceEvent>("playback-trace-event"),
 };
 
 /* Types */
@@ -260,8 +265,8 @@ export type Music = {
 	group: Group,
 	url: string,
 	path: string | null,
-	start: number,
-	end: number,
+	start_ms: number,
+	end_ms: number,
 };
 
 export type NowPlayingTrackChangedEvent = {
@@ -269,8 +274,8 @@ export type NowPlayingTrackChangedEvent = {
 	music_name: string,
 	music_url: string,
 	file_path: string,
-	start: number,
-	end: number,
+	start_ms: number,
+	end_ms: number,
 };
 
 export type PastedDownloadUrlResolution = {
@@ -302,6 +307,25 @@ export type PlaybackStatusPayload = {
 	paused: boolean,
 	position_ms: number,
 	duration_ms: number | null,
+	playlist_name: string | null,
+	music_url: string | null,
+	playback_start_ms: number | null,
+	playback_end_ms: number | null,
+};
+
+export type PlaybackTraceEvent = {
+	event: string,
+	generation: number | null,
+	mode: PlaybackContinuationMode | null,
+	path: string | null,
+	status_path: string | null,
+	playlist_name: string | null,
+	music_url: string | null,
+	start_ms: number | null,
+	end_ms: number | null,
+	position_ms: number | null,
+	duration_ms: number | null,
+	reason: string | null,
 };
 
 export type TrackWaveform = {

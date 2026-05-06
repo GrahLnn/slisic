@@ -22,6 +22,7 @@ import {
   changeSpectrumMusicTitleDraftRange,
   createSpectrumMusicTitleDraft,
   hasSpectrumMusicTitleChanges,
+  normalizeSpectrumMusicRangeBoundary,
   resolveSpectrumMusicTitleCommit,
   resetSpectrumMusicTitleDraft,
   updateMusicInCollections,
@@ -62,20 +63,27 @@ function resolveSpectrumMusicUpdateInput(context: Context): MusicUpdateInput {
 
   if (
     draft.url === null ||
-    draft.baselineStart === null ||
-    draft.baselineEnd === null ||
-    draft.start === null ||
-    draft.end === null
+    draft.baselineStartMs === null ||
+    draft.baselineEndMs === null ||
+    draft.startMs === null ||
+    draft.endMs === null
   ) {
     throw new Error("missing spectrum music identity for update");
   }
 
+  const startMs = normalizeSpectrumMusicRangeBoundary(draft.startMs);
+  const endMs = normalizeSpectrumMusicRangeBoundary(draft.endMs);
+
+  if (startMs === null || endMs === null) {
+    throw new Error("invalid spectrum music range for update");
+  }
+
   return {
     alias: titleCommit.alias,
-    end: draft.end,
-    start: draft.start,
-    targetEnd: draft.baselineEnd,
-    targetStart: draft.baselineStart,
+    endMs,
+    startMs,
+    targetEndMs: draft.baselineEndMs,
+    targetStartMs: draft.baselineStartMs,
     url: draft.url,
   };
 }
@@ -83,10 +91,10 @@ function resolveSpectrumMusicUpdateInput(context: Context): MusicUpdateInput {
 function createMusicEditFromUpdate(result: MusicUpdateResult): MusicEdit {
   return {
     alias: result.music.alias,
-    end: result.music.end,
-    start: result.music.start,
-    targetEnd: result.input.targetEnd,
-    targetStart: result.input.targetStart,
+    endMs: result.music.end_ms,
+    startMs: result.music.start_ms,
+    targetEndMs: result.input.targetEndMs,
+    targetStartMs: result.input.targetStartMs,
     url: result.input.url,
   };
 }
@@ -106,8 +114,8 @@ function createSpectrumPlayReturnContext(context: Context, musicEdit: MusicEdit 
     nowPlayingTrackName: musicEdit?.alias ?? context.nowPlayingTrackName,
     nowPlayingTrackUrl: context.nowPlayingTrackUrl,
     nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-    nowPlayingTrackStart: musicEdit?.start ?? context.nowPlayingTrackStart,
-    nowPlayingTrackEnd: musicEdit?.end ?? context.nowPlayingTrackEnd,
+    nowPlayingTrackStartMs: musicEdit?.startMs ?? context.nowPlayingTrackStartMs,
+    nowPlayingTrackEndMs: musicEdit?.endMs ?? context.nowPlayingTrackEndMs,
     shouldStartPlayback: false,
     titleToneHandoff: context.activeLayoutId
       ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
@@ -216,8 +224,8 @@ export const machine = src.createMachine({
             ? createSpectrumMusicTitleDraft({
                 nowPlayingTrackName: event.output.music_name,
                 nowPlayingTrackUrl: event.output.music_url,
-                nowPlayingTrackStart: event.output.start,
-                nowPlayingTrackEnd: event.output.end,
+                nowPlayingTrackStartMs: event.output.start_ms,
+                nowPlayingTrackEndMs: event.output.end_ms,
               })
             : context.spectrumMusicTitleDraft;
 
@@ -225,8 +233,8 @@ export const machine = src.createMachine({
           nowPlayingTrackName: event.output.music_name,
           nowPlayingTrackUrl: event.output.music_url,
           nowPlayingTrackFilePath: event.output.file_path,
-          nowPlayingTrackStart: event.output.start,
-          nowPlayingTrackEnd: event.output.end,
+          nowPlayingTrackStartMs: event.output.start_ms,
+          nowPlayingTrackEndMs: event.output.end_ms,
           spectrumMusicTitleDraft: nextSpectrumMusicTitleDraft,
         };
       }),
@@ -353,8 +361,8 @@ export const machine = src.createMachine({
               nowPlayingTrackName: context.nowPlayingTrackName,
               nowPlayingTrackUrl: context.nowPlayingTrackUrl,
               nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-              nowPlayingTrackStart: context.nowPlayingTrackStart,
-              nowPlayingTrackEnd: context.nowPlayingTrackEnd,
+              nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+              nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
               error: toErrorMessage(event.error),
             }),
           ),
@@ -443,13 +451,13 @@ export const machine = src.createMachine({
               nowPlayingTrackName: context.nowPlayingTrackName,
               nowPlayingTrackUrl: context.nowPlayingTrackUrl,
               nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-              nowPlayingTrackStart: context.nowPlayingTrackStart,
-              nowPlayingTrackEnd: context.nowPlayingTrackEnd,
+              nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+              nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
               spectrumMusicTitleDraft: createSpectrumMusicTitleDraft({
                 nowPlayingTrackName: context.nowPlayingTrackName,
                 nowPlayingTrackUrl: context.nowPlayingTrackUrl,
-                nowPlayingTrackStart: context.nowPlayingTrackStart,
-                nowPlayingTrackEnd: context.nowPlayingTrackEnd,
+                nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+                nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
               }),
               shouldStartPlayback: false,
               activeLayoutId: context.playingPlaylistName
@@ -519,8 +527,8 @@ export const machine = src.createMachine({
               nowPlayingTrackName: context.nowPlayingTrackName,
               nowPlayingTrackUrl: context.nowPlayingTrackUrl,
               nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-              nowPlayingTrackStart: context.nowPlayingTrackStart,
-              nowPlayingTrackEnd: context.nowPlayingTrackEnd,
+              nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+              nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
               error: toErrorMessage(event.error),
             }),
           ),

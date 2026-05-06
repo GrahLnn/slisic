@@ -47,10 +47,10 @@ export interface PlayPlaylistInput {
 
 export interface MusicUpdateInput {
   alias: string;
-  end: number;
-  start: number;
-  targetEnd: number;
-  targetStart: number;
+  endMs: number;
+  startMs: number;
+  targetEndMs: number;
+  targetStartMs: number;
   url: string;
 }
 
@@ -269,11 +269,11 @@ export const invoker = createActors({
   updateMusic: async (input: MusicUpdateInput): Promise<MusicUpdateResult> => {
     const result = await crab.updateMusic(
       input.url,
-      input.targetStart,
-      input.targetEnd,
+      input.targetStartMs,
+      input.targetEndMs,
       input.alias,
-      input.start,
-      input.end,
+      input.startMs,
+      input.endMs,
     );
 
     return result.match({
@@ -315,7 +315,7 @@ export const payloads = collect(
   ...event<PlaylistUpsertResult | null>()("playlist.preview.changed"),
   ...event<string>()("draft.name.changed"),
   ...event<string>()("spectrum.music_title.changed"),
-  ...event<{ end: number; start: number }>()("spectrum.music_range.changed"),
+  ...event<{ endMs: number | null; startMs: number | null }>()("spectrum.music_range.changed"),
   ...event<null>()("spectrum.music_draft.reset"),
   ...event<string>()("save_path.changed"),
   ...event<Collection>()("collection.upserted"),

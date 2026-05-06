@@ -1,5 +1,6 @@
 import { downloadDir, join } from "@tauri-apps/api/path";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { crab, type PlaybackTraceEvent } from "@/src/cmd";
 
 type PlaybackTraceEntry = {
   seq: number;
@@ -20,6 +21,7 @@ declare global {
     __playbackTraceInstalled?: boolean;
     __playbackTraceApi?: PlaybackTraceApi;
     __PLAYBACK_TRACE_CONSOLE__?: boolean;
+    __playbackTraceEventUnlisten?: () => void;
     savePlaybackTrace?: () => Promise<string | null>;
   }
 }
@@ -42,6 +44,10 @@ export function recordPlaybackTrace(event: string, payload: Record<string, unkno
     return;
   }
 
+  if (!window.__playbackTraceInstalled) {
+    installPlaybackTrace();
+  }
+
   const entry = {
     seq: sequence++,
     isoTime: new Date().toISOString(),
@@ -53,7 +59,7 @@ export function recordPlaybackTrace(event: string, payload: Record<string, unkno
   entries.push(entry);
   trimEntries();
 
-  if (window.__PLAYBACK_TRACE_CONSOLE__ !== false) {
+  if (window.__PLAYBACK_TRACE_CONSOLE__ === true) {
     console.log(`[playbackTrace] ${event}`, entry);
   }
 }
@@ -93,4 +99,27 @@ export function installPlaybackTrace() {
   window.__playbackTraceInstalled = true;
   window.__playbackTraceApi = api;
   window.savePlaybackTrace = api.save;
+
+  void crab
+    .evt("playbackTraceEvent")((payload: PlaybackTraceEvent) => {
+      recordPlaybackTrace(`backend:${payload.event}`, {
+        durationMs: payload.duration_ms,
+        endMs: payload.end_ms,
+        generation: payload.generation,
+        mode: payload.mode,
+        musicUrl: payload.music_url,
+        path: payload.path,
+        playlistName: payload.playlist_name,
+        positionMs: payload.position_ms,
+        reason: payload.reason,
+        startMs: payload.start_ms,
+        statusPath: payload.status_path,
+      });
+    })
+    .then((unlisten) => {
+      window.__playbackTraceEventUnlisten = unlisten;
+    })
+    .catch((error) => {
+      console.error("Failed to subscribe to playback trace events", error);
+    });
 }

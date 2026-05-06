@@ -27,8 +27,8 @@ const sampleCollection: Collection = {
       },
       url: "https://example.com/quiet-morning#a",
       path: "a.m4a",
-      start: 0,
-      end: 120,
+      start_ms: 0,
+      end_ms: 120_000,
     },
   ],
   last_updated: "2026-04-13T00:00:00Z",
@@ -48,25 +48,25 @@ describe("musicTitle", () => {
       createSpectrumMusicTitleDraft({
         nowPlayingTrackName: "Track A",
         nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
-        nowPlayingTrackStart: 0,
-        nowPlayingTrackEnd: 120,
+        nowPlayingTrackStartMs: 0,
+        nowPlayingTrackEndMs: 120_000,
       }),
       {
         baselineName: "Track A",
-        baselineStart: 0,
-        baselineEnd: 120,
+        baselineStartMs: 0,
+        baselineEndMs: 120_000,
         name: "Track A",
         url: "https://example.com/quiet-morning#a",
-        start: 0,
-        end: 120,
+        startMs: 0,
+        endMs: 120_000,
       },
     );
     assert.equal(
       createSpectrumMusicTitleDraft({
         nowPlayingTrackName: null,
         nowPlayingTrackUrl: null,
-        nowPlayingTrackStart: null,
-        nowPlayingTrackEnd: null,
+        nowPlayingTrackStartMs: null,
+        nowPlayingTrackEndMs: null,
       }),
       null,
     );
@@ -76,23 +76,43 @@ describe("musicTitle", () => {
     const draft = createSpectrumMusicTitleDraft({
       nowPlayingTrackName: "Track A",
       nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
-      nowPlayingTrackStart: 0,
-      nowPlayingTrackEnd: 120,
+      nowPlayingTrackStartMs: 0,
+      nowPlayingTrackEndMs: 120_000,
     });
 
     assert.equal(hasSpectrumMusicTitleChanges(draft), false);
     assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, name: "Track B" }), true);
     assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, name: " Track A " }), false);
-    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, start: 8 }), true);
-    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, end: 112 }), true);
+    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, startMs: 8_000 }), true);
+    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, endMs: 112_000 }), true);
+  });
+
+  test("keeps spectrum draft range edits at millisecond precision", () => {
+    const draft = createSpectrumMusicTitleDraft({
+      nowPlayingTrackName: "Track A",
+      nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
+      nowPlayingTrackStartMs: 0,
+      nowPlayingTrackEndMs: 120_000,
+    });
+
+    const edited = changeSpectrumMusicTitleDraftRange(draft, {
+      endMs: 112_750,
+      startMs: 8_250,
+    });
+
+    assert.equal(edited?.startMs, 8_250);
+    assert.equal(edited?.endMs, 112_750);
+    assert.equal(hasSpectrumMusicTitleChanges(edited), true);
+    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, startMs: 0 }), false);
+    assert.equal(hasSpectrumMusicTitleChanges(draft && { ...draft, startMs: 1 }), true);
   });
 
   test("resets the spectrum music draft to the current music baseline", () => {
     const draft = createSpectrumMusicTitleDraft({
       nowPlayingTrackName: "Track A",
       nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
-      nowPlayingTrackStart: 0,
-      nowPlayingTrackEnd: 120,
+      nowPlayingTrackStartMs: 0,
+      nowPlayingTrackEndMs: 120_000,
     });
 
     assert.deepEqual(
@@ -103,7 +123,7 @@ describe("musicTitle", () => {
               ...draft,
               name: "Track B",
             },
-            { start: 8, end: 112 },
+            { startMs: 8_000, endMs: 112_000 },
           ),
       ),
       draft,
@@ -114,8 +134,8 @@ describe("musicTitle", () => {
     const draft = createSpectrumMusicTitleDraft({
       nowPlayingTrackName: "Track A",
       nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
-      nowPlayingTrackStart: 0,
-      nowPlayingTrackEnd: 120,
+      nowPlayingTrackStartMs: 0,
+      nowPlayingTrackEndMs: 120_000,
     });
 
     assert.deepEqual(resolveSpectrumMusicTitleCommit(draft && { ...draft, name: "" }), {
@@ -132,17 +152,17 @@ describe("musicTitle", () => {
     const edit = {
       alias: "Track B",
       url: "https://example.com/quiet-morning#a",
-      targetStart: 0,
-      targetEnd: 120,
-      start: 8,
-      end: 112,
+      targetStartMs: 0,
+      targetEndMs: 120_000,
+      startMs: 8_000,
+      endMs: 112_000,
     };
     const updated = updateMusicInCollections([sampleCollection], edit)[0]?.musics[0];
 
     assert.equal(updated?.name, "Track A");
     assert.equal(updated?.alias, "Track B");
-    assert.equal(updated?.start, 8);
-    assert.equal(updated?.end, 112);
+    assert.equal(updated?.start_ms, 8_000);
+    assert.equal(updated?.end_ms, 112_000);
     assert.equal(
       updateMusicInPlaylists([samplePlaylist], edit)[0]?.collections[0]?.musics[0]?.alias,
       "Track B",
@@ -154,8 +174,8 @@ describe("musicTitle", () => {
           previousName: null,
         },
         edit,
-      )?.playlist.collections[0]?.musics[0]?.end,
-      112,
+      )?.playlist.collections[0]?.musics[0]?.end_ms,
+      112_000,
     );
   });
 });

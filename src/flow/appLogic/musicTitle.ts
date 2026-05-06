@@ -3,10 +3,10 @@ import type { PlaylistUpsertResult, SpectrumMusicTitleDraft } from "./core";
 
 export interface MusicEdit {
   alias: string;
-  end: number;
-  start: number;
-  targetEnd: number;
-  targetStart: number;
+  endMs: number;
+  startMs: number;
+  targetEndMs: number;
+  targetStartMs: number;
   url: string;
 }
 
@@ -23,15 +23,30 @@ export function normalizeSpectrumMusicTitleName(name: string) {
 
 export function normalizeSpectrumMusicRangeBoundary(value: number | null) {
   return typeof value === "number" && Number.isFinite(value)
-    ? Math.max(0, Math.trunc(value))
+    ? Math.max(0, Math.round(value))
     : null;
+}
+
+export function normalizeSpectrumMusicDraftRangeBoundary(value: number | null) {
+  return normalizeSpectrumMusicRangeBoundary(value);
+}
+
+function areSpectrumMusicDraftRangeBoundariesEqual(left: number | null, right: number | null) {
+  const normalizedLeft = normalizeSpectrumMusicDraftRangeBoundary(left);
+  const normalizedRight = normalizeSpectrumMusicDraftRangeBoundary(right);
+
+  if (normalizedLeft === null || normalizedRight === null) {
+    return normalizedLeft === normalizedRight;
+  }
+
+  return normalizedLeft === normalizedRight;
 }
 
 export function createSpectrumMusicTitleDraft(args: {
   nowPlayingTrackName: string | null;
   nowPlayingTrackUrl: string | null;
-  nowPlayingTrackStart: number | null;
-  nowPlayingTrackEnd: number | null;
+  nowPlayingTrackStartMs: number | null;
+  nowPlayingTrackEndMs: number | null;
 }): SpectrumMusicTitleDraft | null {
   if (args.nowPlayingTrackName === null) {
     return null;
@@ -39,12 +54,12 @@ export function createSpectrumMusicTitleDraft(args: {
 
   return {
     baselineName: args.nowPlayingTrackName,
-    baselineStart: normalizeSpectrumMusicRangeBoundary(args.nowPlayingTrackStart),
-    baselineEnd: normalizeSpectrumMusicRangeBoundary(args.nowPlayingTrackEnd),
+    baselineStartMs: normalizeSpectrumMusicRangeBoundary(args.nowPlayingTrackStartMs),
+    baselineEndMs: normalizeSpectrumMusicRangeBoundary(args.nowPlayingTrackEndMs),
     name: args.nowPlayingTrackName,
     url: args.nowPlayingTrackUrl,
-    start: normalizeSpectrumMusicRangeBoundary(args.nowPlayingTrackStart),
-    end: normalizeSpectrumMusicRangeBoundary(args.nowPlayingTrackEnd),
+    startMs: normalizeSpectrumMusicRangeBoundary(args.nowPlayingTrackStartMs),
+    endMs: normalizeSpectrumMusicRangeBoundary(args.nowPlayingTrackEndMs),
   };
 }
 
@@ -53,10 +68,8 @@ export function hasSpectrumMusicTitleChanges(draft: SpectrumMusicTitleDraft | nu
     draft !== null &&
     (normalizeSpectrumMusicTitleName(draft.name) !==
       normalizeSpectrumMusicTitleName(draft.baselineName) ||
-      normalizeSpectrumMusicRangeBoundary(draft.start) !==
-        normalizeSpectrumMusicRangeBoundary(draft.baselineStart) ||
-      normalizeSpectrumMusicRangeBoundary(draft.end) !==
-        normalizeSpectrumMusicRangeBoundary(draft.baselineEnd))
+      !areSpectrumMusicDraftRangeBoundariesEqual(draft.startMs, draft.baselineStartMs) ||
+      !areSpectrumMusicDraftRangeBoundariesEqual(draft.endMs, draft.baselineEndMs))
   );
 }
 
@@ -70,8 +83,8 @@ export function resetSpectrumMusicTitleDraft(
   return {
     ...draft,
     name: draft.baselineName,
-    start: draft.baselineStart,
-    end: draft.baselineEnd,
+    startMs: draft.baselineStartMs,
+    endMs: draft.baselineEndMs,
   };
 }
 
@@ -84,19 +97,19 @@ export function changeSpectrumMusicTitleDraftName(
 
 export function changeSpectrumMusicTitleDraftRange(
   draft: SpectrumMusicTitleDraft | null,
-  range: { end: number; start: number },
+  range: { endMs: number | null; startMs: number | null },
 ): SpectrumMusicTitleDraft | null {
   if (!draft) {
     return null;
   }
 
-  const start = normalizeSpectrumMusicRangeBoundary(range.start);
-  const end = normalizeSpectrumMusicRangeBoundary(range.end);
+  const startMs = normalizeSpectrumMusicDraftRangeBoundary(range.startMs);
+  const endMs = normalizeSpectrumMusicDraftRangeBoundary(range.endMs);
 
   return {
     ...draft,
-    start,
-    end,
+    startMs,
+    endMs,
   };
 }
 
@@ -122,7 +135,11 @@ export function resolveSpectrumMusicTitleCommit(
 }
 
 function isMusicEditTarget(music: Collection["musics"][number], edit: MusicEdit) {
-  return music.url === edit.url && music.start === edit.targetStart && music.end === edit.targetEnd;
+  return (
+    music.url === edit.url &&
+    music.start_ms === edit.targetStartMs &&
+    music.end_ms === edit.targetEndMs
+  );
 }
 
 function updateMusicInCollection(collection: Collection, edit: MusicEdit): Collection {
@@ -136,8 +153,8 @@ function updateMusicInCollection(collection: Collection, edit: MusicEdit): Colle
     return {
       ...music,
       alias: edit.alias,
-      start: edit.start,
-      end: edit.end,
+      start_ms: edit.startMs,
+      end_ms: edit.endMs,
     };
   });
 
