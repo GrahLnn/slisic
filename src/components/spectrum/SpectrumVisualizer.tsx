@@ -26,7 +26,7 @@ const WAVEFORM_PLACEHOLDER_POINTS_PER_SECOND = 80;
 const WAVEFORM_PLACEHOLDER_DURATION_MS = 8_000;
 const WAVEFORM_MIN_PIXELS_PER_SECOND = 12;
 const WAVEFORM_FALLBACK_MAX_PIXELS_PER_SECOND = 320;
-const WAVEFORM_INITIAL_PIXELS_PER_SECOND = 24;
+const WAVEFORM_FALLBACK_PIXELS_PER_SECOND = 24;
 const WAVEFORM_WHEEL_DELTA_FOR_DOUBLE_ZOOM = 360;
 const WAVEFORM_MAX_WHEEL_ZOOM_DELTA = WAVEFORM_WHEEL_DELTA_FOR_DOUBLE_ZOOM / 2;
 const WAVEFORM_PIXELS_PER_SECOND_PRECISION = 100;
@@ -201,6 +201,7 @@ type WaveformZoomCommand = {
 type WaveformZoomQueue = (command: WaveformZoomCommand) => void;
 
 type WaveformInteractionMode = "interactive" | "settled";
+type WaveformZoomOwnership = "explicit" | "initial-minimum";
 
 type WaveformDataWindow = {
   endPx: number;
@@ -721,6 +722,24 @@ export function resolveWaveformMinimumPixelsPerSecond(
     WAVEFORM_MIN_PIXELS_PER_SECOND,
     resolveWaveformMaximumPixelsPerSecond(constraints),
   );
+}
+
+export function resolveWaveformZoomOwnedPixelsPerSecond(args: {
+  durationMs: number;
+  maximumPixelsPerSecond: number;
+  ownership: WaveformZoomOwnership;
+  pixelsPerSecond: number;
+  viewportWidth: number;
+}) {
+  const constraints = {
+    durationMs: args.durationMs,
+    maximumPixelsPerSecond: args.maximumPixelsPerSecond,
+    viewportWidth: args.viewportWidth,
+  };
+
+  return args.ownership === "initial-minimum"
+    ? resolveWaveformMinimumPixelsPerSecond(constraints)
+    : resolveWaveformPixelsPerSecond(args.pixelsPerSecond, constraints);
 }
 
 export function resolveWaveformMaximumPixelsPerSecond(
@@ -2258,6 +2277,7 @@ function TrackSpectrumSession(props: {
   const commitViewportRef = useRef<WaveformViewportCommit | null>(null);
   const completeDataPlanTimerRef = useRef<number | null>(null);
   const lastInteractiveDataDemandRef = useRef<WaveformInteractiveDataDemand | null>(null);
+  const zoomOwnershipRef = useRef<WaveformZoomOwnership>("initial-minimum");
   const sharedDataStore = useMemo(
     () => resolveWaveformSharedDataStore(ports.waveform),
     [ports.waveform],
@@ -2289,9 +2309,11 @@ function TrackSpectrumSession(props: {
   });
   if (viewportRef.current === null) {
     const viewportWidth = 1;
-    const pixelsPerSecond = resolveWaveformPixelsPerSecond(WAVEFORM_INITIAL_PIXELS_PER_SECOND, {
+    const pixelsPerSecond = resolveWaveformZoomOwnedPixelsPerSecond({
       durationMs: waveformState.summary.duration_ms,
       maximumPixelsPerSecond,
+      ownership: zoomOwnershipRef.current,
+      pixelsPerSecond: WAVEFORM_FALLBACK_PIXELS_PER_SECOND,
       viewportWidth,
     });
     const contentWidth = resolveWaveformContentWidth({
@@ -2546,9 +2568,14 @@ function TrackSpectrumSession(props: {
   );
   commitViewportRef.current = commitViewport;
 
+  const markZoomExplicit = useCallback(() => {
+    zoomOwnershipRef.current = "explicit";
+  }, []);
+
   const queueZoomViewport = useWaveformZoomViewportScheduler({
     commitViewportModel,
     hostRef,
+    markZoomExplicit,
     runViewportEffects,
   });
 
@@ -2601,9 +2628,16 @@ function TrackSpectrumSession(props: {
       return;
     }
 
+    const pixelsPerSecond = resolveWaveformZoomOwnedPixelsPerSecond({
+      durationMs: waveformState.summary.duration_ms,
+      maximumPixelsPerSecond,
+      ownership: zoomOwnershipRef.current,
+      pixelsPerSecond: current.pixelsPerSecond,
+      viewportWidth: current.viewportWidth,
+    });
     const changed = commitViewportModel({
       focusSeconds: current.focusSeconds,
-      pixelsPerSecond: current.pixelsPerSecond,
+      pixelsPerSecond,
       scrollLeft: current.scrollLeft,
       viewportWidth: current.viewportWidth,
     });
@@ -2681,10 +2715,17 @@ function TrackSpectrumSession(props: {
         return;
       }
 
+      const pixelsPerSecond = resolveWaveformZoomOwnedPixelsPerSecond({
+        durationMs: current.durationMs,
+        maximumPixelsPerSecond: current.maximumPixelsPerSecond,
+        ownership: zoomOwnershipRef.current,
+        pixelsPerSecond: current.pixelsPerSecond,
+        viewportWidth: nextViewportWidth,
+      });
       commitViewport({
         state: {
           focusSeconds: current.focusSeconds,
-          pixelsPerSecond: current.pixelsPerSecond,
+          pixelsPerSecond,
           scrollLeft: current.scrollLeft,
           viewportWidth: nextViewportWidth,
         },
@@ -3078,6 +3119,7 @@ function useWaveformCompleteDataPlanTimerCleanup(args: {
 function useWaveformZoomViewportScheduler(args: {
   commitViewportModel: (next: WaveformViewportState) => boolean;
   hostRef: RefObject<HTMLDivElement | null>;
+  markZoomExplicit: () => void;
   runViewportEffects: (mode: WaveformDataPlanMode) => void;
 }): WaveformZoomQueue {
   const latestArgsRef = useRef(args);
@@ -3134,6 +3176,7 @@ function useWaveformZoomViewportScheduler(args: {
     });
 
     if (changed) {
+      latestArgsRef.current.markZoomExplicit();
       latestArgsRef.current.runViewportEffects("interactive");
       scheduleSettledEffects();
     }
@@ -5613,7 +5656,7 @@ function normalizeWheelDeltaY(args: { deltaMode: number; deltaY: number; viewpor
 function roundWaveformDataPixelsPerSecondForKey(value: number) {
   const finiteValue = Number.isFinite(value)
     ? Math.max(1, value)
-    : WAVEFORM_INITIAL_PIXELS_PER_SECOND;
+    : WAVEFORM_FALLBACK_PIXELS_PER_SECOND;
 
   return (
     Math.round(finiteValue * WAVEFORM_PIXELS_PER_SECOND_PRECISION) /
@@ -5626,7 +5669,7 @@ function roundWaveformPixelsPerSecond(value: number, constraints?: WaveformZoomC
   const minimumPixelsPerSecond = constraints
     ? resolveWaveformMinimumPixelsPerSecond(constraints)
     : WAVEFORM_MIN_PIXELS_PER_SECOND;
-  const finiteValue = Number.isFinite(value) ? value : WAVEFORM_INITIAL_PIXELS_PER_SECOND;
+  const finiteValue = Number.isFinite(value) ? value : WAVEFORM_FALLBACK_PIXELS_PER_SECOND;
   const rounded =
     Math.round(finiteValue * WAVEFORM_PIXELS_PER_SECOND_PRECISION) /
     WAVEFORM_PIXELS_PER_SECOND_PRECISION;

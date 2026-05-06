@@ -54,6 +54,7 @@ import {
   resolveWaveformWheelPixelDeltas,
   resolveWaveformWheelPixelsPerSecond,
   resolveWaveformZoomFrame,
+  resolveWaveformZoomOwnedPixelsPerSecond,
   resolveWaveformZoomScaleFrame,
   shouldAcceptWaveformHardwareHorizontalWheel,
   shouldStrokeWaveformCanvasChunkPath,
@@ -256,6 +257,39 @@ describe("SpectrumVisualizer", () => {
         viewportWidth: 1_000,
       }),
       400,
+    );
+  });
+
+  test("keeps initial zoom at the minimum until the user changes zoom", () => {
+    assert.equal(
+      resolveWaveformZoomOwnedPixelsPerSecond({
+        durationMs: 8_000,
+        maximumPixelsPerSecond: 800,
+        ownership: "initial-minimum",
+        pixelsPerSecond: 24,
+        viewportWidth: 1_000,
+      }),
+      125,
+    );
+    assert.equal(
+      resolveWaveformZoomOwnedPixelsPerSecond({
+        durationMs: 120_000,
+        maximumPixelsPerSecond: 800,
+        ownership: "initial-minimum",
+        pixelsPerSecond: 125,
+        viewportWidth: 1_000,
+      }),
+      12,
+    );
+    assert.equal(
+      resolveWaveformZoomOwnedPixelsPerSecond({
+        durationMs: 120_000,
+        maximumPixelsPerSecond: 800,
+        ownership: "explicit",
+        pixelsPerSecond: 125,
+        viewportWidth: 1_000,
+      }),
+      125,
     );
   });
 
