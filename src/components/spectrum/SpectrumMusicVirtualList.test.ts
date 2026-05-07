@@ -4,6 +4,7 @@ import {
   resolveSpectrumMusicVirtualListHeight,
   resolveSpectrumMusicVirtualRangeIndexes,
   resolveSpectrumMusicVirtualRowTransform,
+  resolveSpectrumMusicWaveformPresentation,
 } from "./SpectrumMusicVirtualList";
 
 describe("SpectrumMusicVirtualList", () => {
@@ -45,6 +46,36 @@ describe("SpectrumMusicVirtualList", () => {
         pinnedIndex: null,
       }),
       [],
+    );
+  });
+
+  test("keeps the current music waveform interactive before sibling rows are admitted", () => {
+    assert.equal(
+      resolveSpectrumMusicWaveformPresentation({
+        admittedIndexes: new Set([0]),
+        isCurrent: true,
+        rowIndex: 0,
+      }),
+      "interactive",
+    );
+  });
+
+  test("keeps sibling waveforms as placeholders until the list admits them", () => {
+    assert.equal(
+      resolveSpectrumMusicWaveformPresentation({
+        admittedIndexes: new Set([0]),
+        isCurrent: false,
+        rowIndex: 1,
+      }),
+      "placeholder",
+    );
+    assert.equal(
+      resolveSpectrumMusicWaveformPresentation({
+        admittedIndexes: new Set([0, 1]),
+        isCurrent: false,
+        rowIndex: 1,
+      }),
+      "interactive",
     );
   });
 });

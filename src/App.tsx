@@ -4,7 +4,7 @@ import "@fontsource-variable/noto-sans";
 import "@fontsource-variable/noto-serif";
 import "./App.css";
 import "sileo/styles.css";
-import { useLayoutEffect, useRef, type PropsWithChildren } from "react";
+import { useEffect, useLayoutEffect, useRef, type PropsWithChildren } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useTheme } from "next-themes";
 import { Toaster } from "sileo";
@@ -21,6 +21,7 @@ import {
   type ScrollPositionRef,
 } from "./components/scrollPosition";
 import { PageViewportScrollElementProvider } from "./components/pageViewportScroll";
+import { installSpectrumShareTrace } from "./debug/spectrumShareTrace";
 
 type PageScrollKey = "list" | "config" | "spectrum";
 
@@ -94,9 +95,18 @@ function WindowToaster() {
   return <Toaster position="bottom-right" theme={resolvedTheme === "dark" ? "dark" : "light"} />;
 }
 
+function SpectrumShareTraceInstallOwner() {
+  useEffect(() => {
+    installSpectrumShareTrace();
+  }, []);
+
+  return null;
+}
+
 function Base({ children }: PropsWithChildren) {
   return (
     <div className="min-h-screen overflow-hidden hide-scrollbar">
+      <SpectrumShareTraceInstallOwner />
       <TopBar />
       <WindowMainArea>{children}</WindowMainArea>
       <WindowToaster />

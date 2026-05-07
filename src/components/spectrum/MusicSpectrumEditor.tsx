@@ -34,6 +34,8 @@ export interface MusicSpectrumSelection {
   start: number | null;
 }
 
+export type MusicSpectrumWaveformPresentation = "interactive" | "placeholder";
+
 export interface MusicSpectrumEditorProps {
   cascade?: boolean;
   handoffTone: CollectionTitleTone | null;
@@ -45,6 +47,7 @@ export interface MusicSpectrumEditorProps {
   titleLayoutId?: string;
   titleValue: string;
   trackFilePath: string | null;
+  waveformPresentation?: MusicSpectrumWaveformPresentation;
   waveformClassName?: string;
   onReset: () => void;
   onSelectionChange: (selection: MusicSpectrumSelection) => void;
@@ -61,6 +64,20 @@ export function resolveMusicSpectrumContentFadeProps(args: { cascade: boolean })
   return args.cascade ? musicSpectrumCascadeContentFadeProps : musicSpectrumContentFadeProps;
 }
 
+export function resolveMusicSpectrumWaveformFadeProps(args: {
+  presentation: MusicSpectrumWaveformPresentation;
+}) {
+  return {
+    animate: {
+      opacity: args.presentation === "interactive" ? 1 : 0,
+    },
+    initial: {
+      opacity: 0,
+    },
+    transition: collectionTitleLayoutTransition,
+  } as const;
+}
+
 export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrumEditorProps>(
   function MusicSpectrumEditor(
     {
@@ -74,6 +91,7 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
       titleLayoutId,
       titleValue,
       trackFilePath,
+      waveformPresentation = "interactive",
       waveformClassName,
       onReset,
       onSelectionChange,
@@ -107,12 +125,27 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
           {playbackAction ? <motion.div {...contentFade}>{playbackAction}</motion.div> : null}
         </div>
         <motion.div {...contentFade} className={cn("relative mt-8", waveformClassName)}>
-          <TrackSpectrum
-            filePath={trackFilePath}
-            playheadEnabled={playheadEnabled}
-            selection={selection}
-            onSelectionChange={onSelectionChange}
-          />
+          <div className="grid">
+            <div aria-hidden className="col-start-1 row-start-1 h-[13rem] w-full" />
+            <AnimatePresence initial={false}>
+              {waveformPresentation === "interactive" ? (
+                <motion.div
+                  key="waveform"
+                  {...resolveMusicSpectrumWaveformFadeProps({
+                    presentation: waveformPresentation,
+                  })}
+                  className="col-start-1 row-start-1"
+                >
+                  <TrackSpectrum
+                    filePath={trackFilePath}
+                    playheadEnabled={playheadEnabled}
+                    selection={selection}
+                    onSelectionChange={onSelectionChange}
+                  />
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+          </div>
           <AnimatePresence initial={false}>
             {shouldShowResetAction && (
               <motion.button

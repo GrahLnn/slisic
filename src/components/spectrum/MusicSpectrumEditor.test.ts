@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import {
   resolveMusicSpectrumContentFadeProps,
   resolveMusicSpectrumTitleFadeProps,
+  resolveMusicSpectrumWaveformFadeProps,
 } from "./MusicSpectrumEditor";
 
 describe("MusicSpectrumEditor", () => {
@@ -39,6 +40,17 @@ describe("MusicSpectrumEditor", () => {
         duration: 0.36,
         ease: [0.22, 1, 0.36, 1],
         delay: 0.04,
+      },
+    });
+  });
+
+  test("fades admitted waveforms in without changing layout size", () => {
+    assert.deepEqual(resolveMusicSpectrumWaveformFadeProps({ presentation: "interactive" }), {
+      initial: { opacity: 0 },
+      animate: { opacity: 1 },
+      transition: {
+        duration: 0.36,
+        ease: [0.22, 1, 0.36, 1],
       },
     });
   });

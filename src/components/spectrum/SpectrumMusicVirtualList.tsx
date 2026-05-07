@@ -3,20 +3,28 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type Dispatch,
   type ReactNode,
   type RefCallback,
   type RefObject,
+  type SetStateAction,
 } from "react";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { usePageViewportScrollElementRef } from "../pageViewportScroll";
 import type { EditableTitleHandle } from "../EditableTitle";
-import { MusicSpectrumEditor, type MusicSpectrumSelection } from "./MusicSpectrumEditor";
+import {
+  MusicSpectrumEditor,
+  type MusicSpectrumSelection,
+  type MusicSpectrumWaveformPresentation,
+} from "./MusicSpectrumEditor";
 import type { SpectrumMusicEditorViewModel } from "./SpectrumPage.view-model";
 
 const SPECTRUM_MUSIC_VIRTUAL_ROW_ESTIMATE_PX = 336;
 const SPECTRUM_MUSIC_VIRTUAL_ROW_GAP_PX = 48;
 const SPECTRUM_MUSIC_VIRTUAL_OVERSCAN = 3;
 const SPECTRUM_MUSIC_VIRTUAL_PADDING_END_PX = 64;
+const SPECTRUM_MUSIC_VIRTUAL_CASCADE_START_DELAY_MS = 390;
+const SPECTRUM_MUSIC_VIRTUAL_CASCADE_STEP_MS = 70;
 
 export interface SpectrumMusicVirtualListProps {
   editorViewModels: readonly SpectrumMusicEditorViewModel[];
@@ -37,6 +45,14 @@ export function resolveSpectrumMusicVirtualRowTransform(args: {
   start: number;
 }) {
   return `translateY(${args.start - args.scrollMargin}px)`;
+}
+
+export function resolveSpectrumMusicWaveformPresentation(args: {
+  admittedIndexes: ReadonlySet<number>;
+  isCurrent: boolean;
+  rowIndex: number;
+}): MusicSpectrumWaveformPresentation {
+  return args.isCurrent || args.admittedIndexes.has(args.rowIndex) ? "interactive" : "placeholder";
 }
 
 export function resolveSpectrumMusicVirtualRangeIndexes(args: {
@@ -65,6 +81,7 @@ function SpectrumMusicVirtualListRow({
   scrollMargin,
   start,
   trackFilePath,
+  waveformPresentation,
   measureElement,
   onReset,
   onSelectionChange,
@@ -77,6 +94,7 @@ function SpectrumMusicVirtualListRow({
   scrollMargin: number;
   start: number;
   trackFilePath: string | null;
+  waveformPresentation: MusicSpectrumWaveformPresentation;
   measureElement: (node: HTMLDivElement | null) => void;
   onReset: (id: string) => void;
   onSelectionChange: (id: string, range: MusicSpectrumSelection) => void;
@@ -128,6 +146,7 @@ function SpectrumMusicVirtualListRow({
         titleLayoutId={editor.titleLayoutId}
         titleValue={editor.titleValue}
         trackFilePath={trackFilePath}
+        waveformPresentation={waveformPresentation}
         waveformClassName="left-1/2 w-screen -translate-x-1/2"
         onReset={() => onReset(editor.id)}
         onSelectionChange={(range) => onSelectionChange(editor.id, range)}
@@ -135,6 +154,27 @@ function SpectrumMusicVirtualListRow({
       />
     </div>
   );
+}
+
+function areIndexSetsEqual(left: ReadonlySet<number>, right: ReadonlySet<number>) {
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function commitAdmittedIndexes(
+  setAdmittedIndexes: Dispatch<SetStateAction<ReadonlySet<number>>>,
+  nextIndexes: ReadonlySet<number>,
+) {
+  setAdmittedIndexes((current) => (areIndexSetsEqual(current, nextIndexes) ? current : nextIndexes));
 }
 
 export function SpectrumMusicVirtualList({
@@ -149,6 +189,7 @@ export function SpectrumMusicVirtualList({
   const scrollElementRef = usePageViewportScrollElementRef();
   const listRef = useRef<HTMLDivElement | null>(null);
   const [scrollMargin, setScrollMargin] = useState(0);
+  const [admittedIndexes, setAdmittedIndexes] = useState<ReadonlySet<number>>(() => new Set([0]));
   const estimateSize = useCallback(() => SPECTRUM_MUSIC_VIRTUAL_ROW_ESTIMATE_PX, []);
   const getItemKey = useCallback(
     (index: number) => editorViewModels[index]?.id ?? index,
@@ -172,6 +213,9 @@ export function SpectrumMusicVirtualList({
     totalSize: rowVirtualizer.getTotalSize(),
   });
   const measureElement = rowVirtualizer.measureElement;
+  const admissionKey = editorViewModels
+    .map((editor, index) => `${index}:${editor.id}:${editor.isCurrent ? "current" : "sibling"}`)
+    .join("\n");
 
   useLayoutEffect(() => {
     const list = listRef.current;
@@ -208,6 +252,45 @@ export function SpectrumMusicVirtualList({
     };
   }, [scrollElementRef]);
 
+  useLayoutEffect(() => {
+    const baseIndexes = new Set<number>();
+    if (editorViewModels.length > 0) {
+      baseIndexes.add(0);
+    }
+    commitAdmittedIndexes(setAdmittedIndexes, baseIndexes);
+
+    const ownerWindow = listRef.current?.ownerDocument.defaultView ?? window;
+    const timers: number[] = [];
+    editorViewModels.forEach((editor, index) => {
+      if (editor.isCurrent || index === 0) {
+        return;
+      }
+
+      const timer = ownerWindow.setTimeout(
+        () => {
+          setAdmittedIndexes((current) => {
+            if (current.has(index)) {
+              return current;
+            }
+
+            const next = new Set(current);
+            next.add(index);
+            return next;
+          });
+        },
+        SPECTRUM_MUSIC_VIRTUAL_CASCADE_START_DELAY_MS +
+          (index - 1) * SPECTRUM_MUSIC_VIRTUAL_CASCADE_STEP_MS,
+      );
+      timers.push(timer);
+    });
+
+    return () => {
+      for (const timer of timers) {
+        ownerWindow.clearTimeout(timer);
+      }
+    };
+  }, [admissionKey]);
+
   return (
     <div ref={listRef} className="relative" style={{ height: `${listHeight}px` }}>
       {virtualRows.map((virtualRow) => {
@@ -227,6 +310,11 @@ export function SpectrumMusicVirtualList({
             scrollMargin={scrollMargin}
             start={virtualRow.start}
             trackFilePath={trackFilePath}
+            waveformPresentation={resolveSpectrumMusicWaveformPresentation({
+              admittedIndexes,
+              isCurrent: editor.isCurrent,
+              rowIndex: virtualRow.index,
+            })}
             onReset={onReset}
             onSelectionChange={onSelectionChange}
             onTitleChange={onTitleChange}
