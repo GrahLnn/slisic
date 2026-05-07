@@ -20,6 +20,7 @@ import {
   restoreStoredScrollTop,
   type ScrollPositionRef,
 } from "./components/scrollPosition";
+import { PageViewportScrollElementProvider } from "./components/pageViewportScroll";
 
 type PageScrollKey = "list" | "config" | "spectrum";
 
@@ -80,7 +81,9 @@ function PageViewport({
         recordStoredScrollTop(event.currentTarget, scrollPositionRef);
       }}
     >
-      {children}
+      <PageViewportScrollElementProvider scrollElementRef={viewportRef}>
+        {children}
+      </PageViewportScrollElementProvider>
     </motion.section>
   );
 }

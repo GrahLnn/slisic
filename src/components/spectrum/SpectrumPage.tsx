@@ -5,7 +5,8 @@ import { cn } from "@/lib/utils";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { collectionTitleLayoutTransition } from "../collectionTitle";
 import type { EditableTitleHandle } from "../EditableTitle";
-import { MusicSpectrumEditor } from "./MusicSpectrumEditor";
+import type { MusicSpectrumSelection } from "./MusicSpectrumEditor";
+import { SpectrumMusicVirtualList } from "./SpectrumMusicVirtualList";
 import {
   findSpectrumMusicDraftById,
   resolveSpectrumBackActionVisualState,
@@ -188,6 +189,13 @@ export function SpectrumPage() {
   const renderData = pageRenderFreeze.renderValue;
   const isBackActionLocked = isBackNavigationPending;
 
+  function handleSpectrumSelectionChange(id: string, range: MusicSpectrumSelection) {
+    appLogicAction.changeSpectrumMusicRange({
+      id,
+      ...resolveSpectrumMusicRangeChange(range),
+    });
+  }
+
   async function handleBackAction() {
     if (isBackActionLocked) {
       return;
@@ -285,52 +293,22 @@ export function SpectrumPage() {
             <SpectrumBackIcon visualState={renderData.backActionVisualState} />
           </button>
         </motion.div>
-        <div className="flex flex-col gap-12 pb-16">
-          {renderData.editorViewModels.map((editor) => (
-            <MusicSpectrumEditor
-              key={editor.id}
-              cascade={!editor.isCurrent}
-              ref={(handle) => {
-                if (handle) {
-                  editableTitleRefs.current.set(editor.id, handle);
-                  return;
-                }
-
-                editableTitleRefs.current.delete(editor.id);
-              }}
-              handoffTone={editor.handoffTone}
-              interactionDisabled={editor.interactionDisabled}
-              playbackAction={
-                editor.isCurrent ? (
-                  <SpectrumPlaybackAction filePath={renderData.trackFilePath} />
-                ) : null
-              }
-              playheadEnabled={editor.isCurrent}
-              selection={{
-                end: editor.selectionEnd,
-                start: editor.selectionStart,
-              }}
-              shouldShowResetAction={editor.shouldShowResetAction}
-              titleLayoutId={editor.titleLayoutId}
-              titleValue={editor.titleValue}
-              trackFilePath={renderData.trackFilePath}
-              waveformClassName="left-1/2 w-screen -translate-x-1/2"
-              onReset={() => appLogicAction.resetSpectrumMusicDraft(editor.id)}
-              onSelectionChange={(range) => {
-                appLogicAction.changeSpectrumMusicRange({
-                  id: editor.id,
-                  ...resolveSpectrumMusicRangeChange(range),
-                });
-              }}
-              onTitleChange={(name) =>
-                appLogicAction.changeSpectrumMusicName({
-                  id: editor.id,
-                  name,
-                })
-              }
-            />
-          ))}
-        </div>
+        <SpectrumMusicVirtualList
+          editableTitleRefs={editableTitleRefs}
+          editorViewModels={renderData.editorViewModels}
+          renderPlaybackAction={(editor) =>
+            editor.isCurrent ? <SpectrumPlaybackAction filePath={renderData.trackFilePath} /> : null
+          }
+          trackFilePath={renderData.trackFilePath}
+          onReset={(id) => appLogicAction.resetSpectrumMusicDraft(id)}
+          onSelectionChange={handleSpectrumSelectionChange}
+          onTitleChange={(id, name) =>
+            appLogicAction.changeSpectrumMusicName({
+              id,
+              name,
+            })
+          }
+        />
       </div>
     </div>
   );
