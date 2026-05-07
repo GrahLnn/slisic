@@ -1,10 +1,12 @@
-use super::model::PlaybackTrack;
+use super::model::{
+    PlaybackContinuationMode, PlaybackTrack, PlaybackTrackPayload, PlaybackTrackProjectionError,
+};
 use super::service::{
     ActivePlaybackRange, PlaybackTrackIdentityUpdate, playback_tracks_match,
     resolve_active_playback_range_identity_update, resolve_active_request_track_identity_update,
     resolve_playback_seek_pause_after_request, resolve_playback_seek_range,
-    resolve_playback_status_track_identity, resolve_session_track_identity_update,
-    resolve_spectrum_music_playback_range,
+    resolve_playback_status_track_identity, resolve_session_continuation_mode,
+    resolve_session_track_identity_update, resolve_spectrum_music_playback_range,
     should_resume_playback_seek_cancel,
 };
 use std::path::PathBuf;
@@ -15,6 +17,17 @@ fn track(name: &str) -> PlaybackTrack {
         music_name: name.to_string(),
         music_url: format!("https://example.com/{name}"),
         file_path: PathBuf::from(format!("{name}.m4a")),
+        start_ms: 0,
+        end_ms: 60_000,
+    }
+}
+
+fn track_payload(name: &str) -> PlaybackTrackPayload {
+    PlaybackTrackPayload {
+        playlist_name: "Focus".to_string(),
+        music_name: name.to_string(),
+        music_url: format!("https://example.com/{name}"),
+        file_path: format!("{name}.m4a"),
         start_ms: 0,
         end_ms: 60_000,
     }
@@ -34,6 +47,48 @@ fn playback_tracks_match_accepts_identical_track_snapshots() {
     let refreshed = vec![track("a"), track("b")];
 
     assert!(playback_tracks_match(&current, &refreshed));
+}
+
+#[test]
+fn session_continuation_uses_global_mode_only_when_no_local_policy_exists() {
+    assert_eq!(
+        resolve_session_continuation_mode(None, PlaybackContinuationMode::Random),
+        PlaybackContinuationMode::Random,
+    );
+    assert_eq!(
+        resolve_session_continuation_mode(
+            Some(PlaybackContinuationMode::RepeatCurrent),
+            PlaybackContinuationMode::Random,
+        ),
+        PlaybackContinuationMode::RepeatCurrent,
+    );
+}
+
+#[test]
+fn playback_track_payload_projection_accepts_valid_millisecond_bounds() {
+    let projected =
+        PlaybackTrack::try_from_payload(track_payload("a")).expect("valid payload should project");
+
+    assert_eq!(projected.start_ms, 0);
+    assert_eq!(projected.end_ms, 60_000);
+}
+
+#[test]
+fn playback_track_payload_projection_rejects_empty_and_inverted_raw_identity() {
+    let mut empty_path = track_payload("a");
+    empty_path.file_path = String::new();
+    assert_eq!(
+        PlaybackTrack::try_from_payload(empty_path).unwrap_err(),
+        PlaybackTrackProjectionError::EmptyFilePath,
+    );
+
+    let mut invalid_range = track_payload("a");
+    invalid_range.start_ms = 60_000;
+    invalid_range.end_ms = 60_000;
+    assert_eq!(
+        PlaybackTrack::try_from_payload(invalid_range).unwrap_err(),
+        PlaybackTrackProjectionError::InvalidRange,
+    );
 }
 
 #[test]
@@ -247,10 +302,10 @@ fn spectrum_music_playback_range_starts_from_requested_position_inside_track_bou
 
     assert_eq!(
         resolve_spectrum_music_playback_range(&current, Some(45_000)),
-        ActivePlaybackRange {
+        Some(ActivePlaybackRange {
             start_ms: 45_000,
             end_ms: 80_000,
-        },
+        }),
     );
 }
 
@@ -262,16 +317,25 @@ fn spectrum_music_playback_range_clamps_to_track_bounds() {
 
     assert_eq!(
         resolve_spectrum_music_playback_range(&current, Some(90_000)),
-        ActivePlaybackRange {
+        Some(ActivePlaybackRange {
             start_ms: 79_999,
             end_ms: 80_000,
-        },
+        }),
     );
     assert_eq!(
         resolve_spectrum_music_playback_range(&current, None),
-        ActivePlaybackRange {
+        Some(ActivePlaybackRange {
             start_ms: 20_000,
             end_ms: 80_000,
-        },
+        }),
     );
+}
+
+#[test]
+fn spectrum_music_playback_range_rejects_invalid_track_bounds() {
+    let mut current = track("a");
+    current.start_ms = 80_000;
+    current.end_ms = 80_000;
+
+    assert_eq!(resolve_spectrum_music_playback_range(&current, None), None);
 }

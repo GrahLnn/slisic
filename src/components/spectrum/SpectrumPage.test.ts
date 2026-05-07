@@ -10,6 +10,8 @@ import {
   resolveSpectrumMusicRangeChange,
   resolveSpectrumPlaybackActionVisualState,
   resolveSpectrumSelectionRange,
+  projectSpectrumPlaybackIdentity,
+  isSpectrumPlaybackStatusIdentityForAction,
   shouldShowSpectrumDraftResetAction,
 } from "./SpectrumPage.view-model";
 
@@ -216,6 +218,15 @@ describe("SpectrumPage", () => {
     assert.equal(viewModels[0]?.handoffTone, "solid");
     assert.equal(viewModels[0]?.selectionStart, 125);
     assert.equal(viewModels[0]?.selectionEnd, 235);
+    assert.deepEqual(viewModels[0]?.playbackIdentity, {
+      endMs: 240_000,
+      filePath: "C:/Music/quiet-morning.m4a",
+      key: "c:/music/quiet-morning.m4a|Focus Session|https://example.com/quiet-morning#b|120000|240000",
+      normalizedFilePath: "c:/music/quiet-morning.m4a",
+      playlistName: "Focus Session",
+      startMs: 120_000,
+      url: "https://example.com/quiet-morning#b",
+    });
     assert.equal(viewModels[1]?.isCurrent, false);
     assert.equal(viewModels[1]?.titleLayoutId, undefined);
     assert.equal(viewModels[1]?.handoffTone, null);
@@ -327,6 +338,36 @@ describe("SpectrumPage", () => {
         key: "pause",
         kind: "pause",
       },
+    );
+  });
+
+  test("projects playback identity once before comparison", () => {
+    const identity = projectSpectrumPlaybackIdentity({
+      endMs: 120_000,
+      filePath: "C:/Music/quiet-morning.m4a",
+      playlistName: "Focus Session",
+      startMs: 0,
+      url: "https://example.com/quiet-morning#a",
+    });
+    const equivalentStatus = projectSpectrumPlaybackIdentity({
+      endMs: 120_000,
+      filePath: "c:/music/quiet-morning.m4a",
+      playlistName: "Focus Session",
+      startMs: 0,
+      url: "https://example.com/quiet-morning#a",
+    });
+
+    assert.ok(identity);
+    assert.equal(isSpectrumPlaybackStatusIdentityForAction(equivalentStatus, identity), true);
+    assert.equal(
+      projectSpectrumPlaybackIdentity({
+        endMs: 0,
+        filePath: "C:/Music/quiet-morning.m4a",
+        playlistName: "Focus Session",
+        startMs: 0,
+        url: "https://example.com/quiet-morning#a",
+      }),
+      null,
     );
   });
 

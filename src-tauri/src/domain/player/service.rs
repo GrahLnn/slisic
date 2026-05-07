@@ -1,8 +1,8 @@
 #[cfg(not(test))]
 use super::event::NowPlayingTrackChangedEvent;
-use super::model::PlaybackTrack;
 #[cfg(not(test))]
-use super::model::{PlaybackContinuationMode, PlaybackStatusPayload};
+use super::model::PlaybackStatusPayload;
+use super::model::{PlaybackContinuationMode, PlaybackTrack};
 #[cfg(not(test))]
 use super::strategy::PlaybackStrategySet;
 #[cfg(not(test))]
@@ -54,6 +54,42 @@ struct ActivePlaybackSession {
     generation: u64,
     tracks: SharedPlaybackTracks,
     strategy: SharedPlaybackStrategy,
+}
+
+#[cfg(not(test))]
+#[derive(Clone, Copy)]
+enum PlaybackSessionContinuation {
+    FollowGlobal,
+    Fixed(PlaybackContinuationMode),
+}
+
+#[cfg(not(test))]
+impl PlaybackSessionContinuation {
+    fn resolve(self, global: PlaybackContinuationMode) -> PlaybackContinuationMode {
+        resolve_session_continuation_mode(
+            match self {
+                Self::FollowGlobal => None,
+                Self::Fixed(mode) => Some(mode),
+            },
+            global,
+        )
+    }
+}
+
+pub(crate) fn resolve_session_continuation_mode(
+    local: Option<PlaybackContinuationMode>,
+    global: PlaybackContinuationMode,
+) -> PlaybackContinuationMode {
+    match local {
+        Some(mode) => mode,
+        None => global,
+    }
+}
+
+#[cfg(not(test))]
+struct SpectrumPlaybackStartPlan {
+    session: PlaybackSession,
+    track: PlaybackTrack,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +186,7 @@ pub async fn play_tracks(
         tracks: shared_tracks,
         strategy: shared_strategy,
         initial_request: None,
+        continuation: PlaybackSessionContinuation::FollowGlobal,
     };
     let runtime_for_task = Arc::clone(runtime);
     let playback_for_task = playback.clone();
@@ -180,7 +217,15 @@ pub async fn play_spectrum_music(
     track: PlaybackTrack,
     position_ms: Option<u32>,
 ) -> Result<PlaybackSessionHandle> {
-    play_track_in_current_session(track, position_ms).await
+    play_track_in_current_session(track, position_ms, false).await
+}
+
+#[cfg(not(test))]
+pub async fn restore_spectrum_music(
+    track: PlaybackTrack,
+    position_ms: Option<u32>,
+) -> Result<PlaybackSessionHandle> {
+    play_track_in_current_session(track, position_ms, true).await
 }
 
 #[cfg(not(test))]
@@ -216,27 +261,25 @@ pub(crate) fn update_current_session_track_identity(
 pub async fn play_track_in_current_session(
     track: PlaybackTrack,
     position_ms: Option<u32>,
+    pause_after_start: bool,
 ) -> Result<PlaybackSessionHandle> {
     let runtime = runtime()?;
+    let plan =
+        runtime.resolve_spectrum_playback_start_plan(track, position_ms, pause_after_start)?;
     let active_binary_task = ActiveBinaryTaskGuard::new(Arc::clone(runtime));
     let playback = runtime.playback()?;
-    let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
     if let Err(error) = playback.stop().await {
         eprintln!("[player] failed to stop previous playback before selecting track: {error}");
     }
+    let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
     runtime.set_temporary_playback_pause(false)?;
-    runtime.select_current_session_track(generation, track.clone())?;
-    set_playback_continuation_mode(PlaybackContinuationMode::RepeatCurrent)?;
 
-    let initial_range = resolve_spectrum_music_playback_range(&track, position_ms);
-    let session = runtime.session_snapshot(Some(InitialPlaybackRequest {
-        range: initial_range,
-        track: track.clone(),
-    }))?;
     let runtime_for_task = Arc::clone(runtime);
     let playback_for_task = playback.clone();
-    let task_playlist_name = session.playlist_name.clone();
+    let task_playlist_name = plan.session.playlist_name.clone();
+    let session = plan.session;
+    let handle_playlist_name = plan.track.playlist_name;
 
     tauri::async_runtime::spawn(async move {
         let _active_binary_task = active_binary_task;
@@ -253,7 +296,7 @@ pub async fn play_track_in_current_session(
     });
 
     Ok(PlaybackSessionHandle {
-        playlist_name: track.playlist_name,
+        playlist_name: handle_playlist_name,
         generation,
     })
 }
@@ -309,6 +352,50 @@ pub async fn resume_playback() -> Result<bool> {
         .resume()
         .await
         .map_err(|error| anyhow!("failed to resume playback: {error}"))?;
+
+    Ok(true)
+}
+
+#[cfg(not(test))]
+pub async fn pause_spectrum_music(track: PlaybackTrack) -> Result<bool> {
+    let runtime = runtime()?;
+    let Some(playback) = runtime.current_playback()? else {
+        return Ok(false);
+    };
+    if !runtime
+        .is_playback_active_for_spectrum_track(&playback, &track)
+        .await?
+    {
+        return Ok(false);
+    }
+
+    runtime.set_temporary_playback_pause(false)?;
+    playback
+        .pause()
+        .await
+        .map_err(|error| anyhow!("failed to pause spectrum playback: {error}"))?;
+
+    Ok(true)
+}
+
+#[cfg(not(test))]
+pub async fn resume_spectrum_music(track: PlaybackTrack) -> Result<bool> {
+    let runtime = runtime()?;
+    let Some(playback) = runtime.current_playback()? else {
+        return Ok(false);
+    };
+    if !runtime
+        .is_playback_active_for_spectrum_track(&playback, &track)
+        .await?
+    {
+        return Ok(false);
+    }
+
+    runtime.set_temporary_playback_pause(false)?;
+    playback
+        .resume()
+        .await
+        .map_err(|error| anyhow!("failed to resume spectrum playback: {error}"))?;
 
     Ok(true)
 }
@@ -732,7 +819,14 @@ impl PlayerRuntime {
         Ok(true)
     }
 
-    fn select_current_session_track(&self, generation: u64, track: PlaybackTrack) -> Result<()> {
+    fn resolve_spectrum_playback_start_plan(
+        &self,
+        track: PlaybackTrack,
+        position_ms: Option<u32>,
+        pause_after_start: bool,
+    ) -> Result<SpectrumPlaybackStartPlan> {
+        let initial_range = resolve_spectrum_music_playback_range(&track, position_ms)
+            .ok_or_else(|| anyhow!("invalid spectrum playback range"))?;
         let session = self
             .session
             .lock()
@@ -748,40 +842,60 @@ impl PlayerRuntime {
             );
         }
 
-        {
-            let tracks = active
-                .tracks
-                .read()
-                .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))?;
-            let mut strategy = active
-                .strategy
-                .lock()
-                .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?;
-            strategy
-                .select_track(&track, &tracks)
-                .ok_or_else(|| anyhow!("selected spectrum music is not in the active session"))?;
-        }
+        let tracks = active
+            .tracks
+            .read()
+            .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))?;
+        let strategy = active
+            .strategy
+            .lock()
+            .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?;
+        let selected = strategy
+            .select_track(&track, &tracks)
+            .ok_or_else(|| anyhow!("selected spectrum music is not in the active session"))?;
 
-        drop(session);
-        self.generation.store(generation, Ordering::SeqCst);
-        Ok(())
+        Ok(SpectrumPlaybackStartPlan {
+            session: PlaybackSession {
+                playlist_name: active.playlist_name.clone(),
+                tracks: Arc::clone(&active.tracks),
+                strategy: Arc::clone(&active.strategy),
+                initial_request: Some(InitialPlaybackRequest {
+                    pause_after_start,
+                    range: initial_range,
+                    track: selected.clone(),
+                }),
+                continuation: PlaybackSessionContinuation::Fixed(
+                    PlaybackContinuationMode::RepeatCurrent,
+                ),
+            },
+            track: selected,
+        })
     }
 
-    fn session_snapshot(&self, initial_request: Option<InitialPlaybackRequest>) -> Result<PlaybackSession> {
-        let session = self
-            .session
-            .lock()
-            .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
-        let Some(active) = session.as_ref() else {
-            bail!("no active playback session");
+    async fn is_playback_active_for_spectrum_track(
+        &self,
+        playback: &Playback,
+        track: &PlaybackTrack,
+    ) -> Result<bool> {
+        let status = playback.status().await.map_err(|error| {
+            anyhow!("failed to read playback status for spectrum action: {error}")
+        })?;
+        let Some(status_path) = status.path.as_deref() else {
+            return Ok(false);
+        };
+        if Path::new(status_path) != track.file_path {
+            return Ok(false);
+        }
+
+        let Some(active_track) = self.active_request_track_snapshot()? else {
+            return Ok(false);
         };
 
-        Ok(PlaybackSession {
-            playlist_name: active.playlist_name.clone(),
-            tracks: Arc::clone(&active.tracks),
-            strategy: Arc::clone(&active.strategy),
-            initial_request,
-        })
+        Ok(active_track.playlist_name == track.playlist_name
+            && active_track.music_url == track.music_url
+            && active_track.file_path == track.file_path
+            && active_track.start_ms == track.start_ms
+            && active_track.end_ms == track.end_ms)
     }
 
     fn update_current_session_track_identity(
@@ -904,11 +1018,13 @@ struct PlaybackSession {
     tracks: SharedPlaybackTracks,
     strategy: SharedPlaybackStrategy,
     initial_request: Option<InitialPlaybackRequest>,
+    continuation: PlaybackSessionContinuation,
 }
 
 #[cfg(not(test))]
 #[derive(Clone)]
 struct InitialPlaybackRequest {
+    pause_after_start: bool,
     range: ActivePlaybackRange,
     track: PlaybackTrack,
 }
@@ -935,7 +1051,7 @@ async fn run_playback_session(
             return Ok(());
         }
 
-        let mode = runtime.continuation_mode()?;
+        let mode = session.continuation.resolve(runtime.continuation_mode()?);
         let tracks = session.tracks_snapshot()?;
         let initial_request = session.initial_request.take();
         let track = match initial_request.as_ref() {
@@ -949,7 +1065,6 @@ async fn run_playback_session(
         let Some(track) = track else {
             return Ok(());
         };
-
         NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&runtime.app)?;
         let active_range = initial_request
             .as_ref()
@@ -963,8 +1078,26 @@ async fn run_playback_session(
             .play_request(request)
             .await
             .map_err(|error| anyhow!("failed to play `{}`: {error}", track.music_name))?;
+        if initial_request.is_some() {
+            session
+                .strategy
+                .lock()
+                .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?
+                .commit_current_track(&track);
+        }
         runtime.set_active_request_track(track.clone())?;
         runtime.set_active_playback_range(Some(active_range))?;
+        if initial_request
+            .as_ref()
+            .is_some_and(|request| request.pause_after_start)
+        {
+            playback.pause().await.map_err(|error| {
+                anyhow!(
+                    "failed to pause `{}` after start: {error}",
+                    track.music_name
+                )
+            })?;
+        }
         wait_until_track_finishes(&runtime, &playback, generation, &track.file_path).await?;
     }
 }
@@ -1102,14 +1235,18 @@ pub(crate) fn resolve_playback_seek_range(
 pub(crate) fn resolve_spectrum_music_playback_range(
     track: &PlaybackTrack,
     position_ms: Option<u32>,
-) -> ActivePlaybackRange {
+) -> Option<ActivePlaybackRange> {
+    if track.start_ms >= track.end_ms {
+        return None;
+    }
+
     let position_ms = position_ms.unwrap_or(track.start_ms);
     let start_ms = position_ms.clamp(track.start_ms, track.end_ms.saturating_sub(1));
 
-    ActivePlaybackRange {
+    Some(ActivePlaybackRange {
         start_ms,
         end_ms: track.end_ms,
-    }
+    })
 }
 
 pub(crate) fn resolve_playback_seek_pause_after_request(

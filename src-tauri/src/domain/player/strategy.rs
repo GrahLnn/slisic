@@ -98,20 +98,24 @@ impl PlaybackStrategySet {
     }
 
     pub fn select_track(
-        &mut self,
+        &self,
         requested: &PlaybackTrack,
         tracks: &[PlaybackTrack],
     ) -> Option<PlaybackTrack> {
-        let track = tracks.iter().find(|track| {
-            track.playlist_name == requested.playlist_name
-                && track.music_url == requested.music_url
-                && track.file_path == requested.file_path
-                && track.start_ms == requested.start_ms
-                && track.end_ms == requested.end_ms
-        })?;
+        tracks
+            .iter()
+            .find(|track| {
+                track.playlist_name == requested.playlist_name
+                    && track.music_url == requested.music_url
+                    && track.file_path == requested.file_path
+                    && track.start_ms == requested.start_ms
+                    && track.end_ms == requested.end_ms
+            })
+            .cloned()
+    }
 
+    pub fn commit_current_track(&mut self, track: &PlaybackTrack) {
         self.current_track = Some(PlaybackTrackIdentity::from_track(track));
-        Some(track.clone())
     }
 
     pub fn reconcile_current_track_identity(

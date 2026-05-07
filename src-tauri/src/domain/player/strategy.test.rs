@@ -115,6 +115,7 @@ fn playback_strategy_set_can_select_a_requested_track_before_repeat_current() {
     let selected = strategy
         .select_track(&requested, &tracks)
         .expect("requested track should exist");
+    strategy.commit_current_track(&selected);
     let repeated = strategy
         .next_track(PlaybackContinuationMode::RepeatCurrent, &tracks)
         .expect("repeat mode should keep the selected track");

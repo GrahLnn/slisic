@@ -3,9 +3,8 @@ import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import type { PlaybackStatusPayload } from "@/src/cmd";
 import {
-  isSpectrumPlaybackActionIdentityComplete,
   resolveSpectrumPlaybackActionVisualState,
-  type SpectrumPlaybackActionIdentity,
+  type SpectrumPlaybackIdentity,
   type SpectrumPlaybackActionVisualState,
 } from "./SpectrumPage.view-model";
 
@@ -130,17 +129,14 @@ export function SpectrumPlaybackAction({
   snapshot,
   onAction,
 }: {
-  identity: SpectrumPlaybackActionIdentity;
+  identity: SpectrumPlaybackIdentity | null;
   snapshot: SpectrumPlaybackSnapshot | null;
-  onAction: (
-    identity: SpectrumPlaybackActionIdentity,
-    snapshot: SpectrumPlaybackSnapshot | null,
-  ) => Promise<void>;
+  onAction: (identity: SpectrumPlaybackIdentity) => Promise<void>;
 }) {
   const isPresent = useIsPresent();
   const [isPlaybackActionPending, setIsPlaybackActionPending] = useState(false);
   const visualState = resolveSpectrumPlaybackActionVisualState({
-    canStartTrack: isSpectrumPlaybackActionIdentityComplete(identity),
+    canStartTrack: identity !== null,
     hasCurrentTrack: snapshot !== null,
     isPending: isPlaybackActionPending,
     isPresent,
@@ -148,14 +144,14 @@ export function SpectrumPlaybackAction({
   });
 
   async function handlePlaybackAction() {
-    if (visualState.disabled) {
+    if (visualState.disabled || identity === null) {
       return;
     }
 
     setIsPlaybackActionPending(true);
 
     try {
-      await onAction(identity, snapshot);
+      await onAction(identity);
     } catch (error) {
       console.error("Failed to toggle spectrum playback", error);
     } finally {

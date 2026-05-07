@@ -5,6 +5,7 @@ import {
   resolveSpectrumMusicCommit,
 } from "@/src/flow/appLogic/musicTitle";
 import type { SpectrumMusicDraft } from "@/src/flow/appLogic/core";
+import { normalizeMediaPathKey } from "@/src/mediaPath";
 
 export type SpectrumBackActionVisualKind = "back" | "check";
 export type SpectrumPlaybackActionKind = "pause" | "play";
@@ -22,7 +23,7 @@ export interface SpectrumPlaybackActionVisualState {
   kind: SpectrumPlaybackActionKind;
 }
 
-export interface SpectrumPlaybackStatusIdentity {
+export interface RawSpectrumPlaybackIdentity {
   filePath: string | null;
   playlistName: string | null;
   startMs: number | null;
@@ -30,16 +31,10 @@ export interface SpectrumPlaybackStatusIdentity {
   url: string | null;
 }
 
-export interface SpectrumPlaybackActionIdentity {
-  filePath: string | null;
-  playlistName: string | null;
-  startMs: number | null;
-  endMs: number | null;
-  url: string | null;
-}
-
-export interface CompleteSpectrumPlaybackActionIdentity {
+export interface SpectrumPlaybackIdentity {
   filePath: string;
+  key: string;
+  normalizedFilePath: string;
   playlistName: string;
   startMs: number;
   endMs: number;
@@ -51,11 +46,7 @@ export interface SpectrumMusicEditorViewModel {
   id: string;
   interactionDisabled: boolean;
   isCurrent: boolean;
-  playbackEndMs: number | null;
-  playbackFilePath: string | null;
-  playbackPlaylistName: string | null;
-  playbackStartMs: number | null;
-  playbackUrl: string | null;
+  playbackIdentity: SpectrumPlaybackIdentity | null;
   selectionEnd: number | null;
   selectionStart: number | null;
   shouldShowResetAction: boolean;
@@ -182,17 +173,20 @@ export function resolveSpectrumMusicEditorViewModels(args: {
       draft.url === args.nowPlayingTrackUrl &&
       draft.baselineStartMs === args.nowPlayingTrackStartMs &&
       draft.baselineEndMs === args.nowPlayingTrackEndMs;
+    const playbackIdentity = projectSpectrumPlaybackIdentity({
+      endMs: draft.baselineEndMs,
+      filePath: args.nowPlayingTrackFilePath,
+      playlistName: args.playingPlaylistName,
+      startMs: draft.baselineStartMs,
+      url: draft.url,
+    });
 
     return {
       handoffTone: index === 0 ? args.handoffTone : null,
       id,
       interactionDisabled: args.interactionDisabled,
       isCurrent,
-      playbackEndMs: draft.baselineEndMs,
-      playbackFilePath: args.nowPlayingTrackFilePath,
-      playbackPlaylistName: args.playingPlaylistName,
-      playbackStartMs: draft.baselineStartMs,
-      playbackUrl: draft.url,
+      playbackIdentity,
       selectionEnd: selection.end,
       selectionStart: selection.start,
       shouldShowResetAction: shouldShowSpectrumDraftResetAction({
@@ -219,7 +213,11 @@ export function resolveSpectrumPlaybackActionVisualState(args: {
 
   return {
     ariaLabel:
-      kind === "play" ? (args.hasCurrentTrack ? "Resume playback" : "Start playback") : "Pause playback",
+      kind === "play"
+        ? args.hasCurrentTrack
+          ? "Resume playback"
+          : "Start playback"
+        : "Pause playback",
     disabled: !args.isPresent || (!args.hasCurrentTrack && !args.canStartTrack) || args.isPending,
     dimmed: (!args.hasCurrentTrack && !args.canStartTrack) || args.isPending,
     key: kind,
@@ -227,12 +225,42 @@ export function resolveSpectrumPlaybackActionVisualState(args: {
   };
 }
 
-export function areSpectrumPlaybackActionIdentitiesEqual(
-  left: SpectrumPlaybackActionIdentity,
-  right: SpectrumPlaybackActionIdentity,
+export function projectSpectrumPlaybackIdentity(
+  raw: RawSpectrumPlaybackIdentity,
+): SpectrumPlaybackIdentity | null {
+  if (
+    !raw.filePath ||
+    !raw.playlistName ||
+    !raw.url ||
+    raw.startMs === null ||
+    raw.endMs === null ||
+    !Number.isFinite(raw.startMs) ||
+    !Number.isFinite(raw.endMs) ||
+    raw.startMs >= raw.endMs
+  ) {
+    return null;
+  }
+
+  const normalizedFilePath = normalizeMediaPathKey(raw.filePath);
+  const key = [normalizedFilePath, raw.playlistName, raw.url, raw.startMs, raw.endMs].join("|");
+
+  return {
+    endMs: raw.endMs,
+    filePath: raw.filePath,
+    key,
+    normalizedFilePath,
+    playlistName: raw.playlistName,
+    startMs: raw.startMs,
+    url: raw.url,
+  };
+}
+
+export function areSpectrumPlaybackIdentitiesEqual(
+  left: SpectrumPlaybackIdentity,
+  right: SpectrumPlaybackIdentity,
 ) {
   return (
-    left.filePath === right.filePath &&
+    left.normalizedFilePath === right.normalizedFilePath &&
     left.playlistName === right.playlistName &&
     left.startMs === right.startMs &&
     left.endMs === right.endMs &&
@@ -241,20 +269,8 @@ export function areSpectrumPlaybackActionIdentitiesEqual(
 }
 
 export function isSpectrumPlaybackStatusIdentityForAction(
-  status: SpectrumPlaybackStatusIdentity | null,
-  identity: SpectrumPlaybackActionIdentity,
+  status: SpectrumPlaybackIdentity | null,
+  identity: SpectrumPlaybackIdentity,
 ) {
-  return status !== null && areSpectrumPlaybackActionIdentitiesEqual(status, identity);
-}
-
-export function isSpectrumPlaybackActionIdentityComplete(
-  identity: SpectrumPlaybackActionIdentity,
-): identity is CompleteSpectrumPlaybackActionIdentity {
-  return (
-    !!identity.filePath &&
-    !!identity.playlistName &&
-    !!identity.url &&
-    identity.startMs !== null &&
-    identity.endMs !== null
-  );
+  return status !== null && areSpectrumPlaybackIdentitiesEqual(status, identity);
 }
