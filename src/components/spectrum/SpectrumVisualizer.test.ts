@@ -38,6 +38,7 @@ import {
   resolveQueuedWaveformZoomFrame,
   resolveWaveformRenderPixelsPerSecond,
   resolveWaveformRenderScale,
+  resolveWaveformResizeViewportState,
   resolveWaveformSelectionDrag,
   resolveWaveformSelectionGeometry,
   resolveWaveformSelectionStartScrollLeft,
@@ -290,6 +291,49 @@ describe("SpectrumVisualizer", () => {
         viewportWidth: 1_000,
       }),
       125,
+    );
+  });
+
+  test("resolves container resize without changing explicit zoom ownership", () => {
+    assert.deepEqual(
+      resolveWaveformResizeViewportState({
+        current: {
+          contentWidth: 12_000,
+          durationMs: 120_000,
+          focusSeconds: null,
+          maximumPixelsPerSecond: 800,
+          pixelsPerSecond: 125,
+          scrollLeft: 400,
+          viewportWidth: 1_000,
+        },
+        viewportWidth: 600,
+      }),
+      {
+        focusSeconds: null,
+        pixelsPerSecond: 125,
+        scrollLeft: 400,
+        viewportWidth: 600,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformResizeViewportState({
+        current: {
+          contentWidth: 12_000,
+          durationMs: 120_000,
+          focusSeconds: 8,
+          maximumPixelsPerSecond: 800,
+          pixelsPerSecond: 125,
+          scrollLeft: 400,
+          viewportWidth: 1_000,
+        },
+        viewportWidth: 600,
+      }),
+      {
+        focusSeconds: 8,
+        pixelsPerSecond: 125,
+        scrollLeft: 400,
+        viewportWidth: 600,
+      },
     );
   });
 
@@ -685,6 +729,58 @@ describe("SpectrumVisualizer", () => {
         kind: "horizontal-pan",
         scrollDeltaPx: -120,
         shiftX: 120,
+      },
+    );
+  });
+
+  test("reuses the presented waveform frame when the viewport width exposes new columns", () => {
+    const previous = createWaveformTestFrameDescriptor({
+      scrollLeft: 1_000,
+      viewportWidth: 1_000,
+    });
+
+    assert.deepEqual(
+      resolveWaveformCanvasFrameReusePlan({
+        current: createWaveformTestFrameDescriptor({
+          scrollLeft: 1_000,
+          viewportWidth: 1_240,
+        }),
+        previous,
+      }),
+      {
+        copySourceStartX: 0,
+        copyTargetStartX: 0,
+        copyWidthPx: 1_000,
+        exposedRanges: [
+          {
+            endX: 1_240,
+            startX: 1_000,
+          },
+        ],
+        kind: "viewport-resize",
+        scrollDeltaPx: 0,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformCanvasFrameReusePlan({
+        current: createWaveformTestFrameDescriptor({
+          scrollLeft: 1_120,
+          viewportWidth: 1_240,
+        }),
+        previous,
+      }),
+      {
+        copySourceStartX: 120,
+        copyTargetStartX: 0,
+        copyWidthPx: 880,
+        exposedRanges: [
+          {
+            endX: 1_240,
+            startX: 880,
+          },
+        ],
+        kind: "viewport-resize",
+        scrollDeltaPx: 120,
       },
     );
   });

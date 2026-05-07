@@ -1,8 +1,9 @@
 use super::binaries::{
     BinaryInstallState, BinaryMaintenanceActivity, GitHubLatestReleaseAsset,
     GitHubReleaseAssetMatcher, ManagedBinary, RemoteIdentity, StagedBinary, activate_staged_binary,
-    build_github_api_url, build_github_relay_url, needs_install_or_update, parse_sha256,
-    release_asset_matcher_matches, select_release_asset_name, with_binary_kind_lock,
+    binary_http_retry_delay, build_github_api_url, build_github_relay_url, needs_install_or_update,
+    parse_sha256, release_asset_matcher_matches, select_release_asset_name,
+    should_retry_binary_http_status, with_binary_kind_lock,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -54,6 +55,37 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  yt-dlp.exe\n";
         hash.as_deref(),
         Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
     );
+}
+
+#[test]
+fn binary_http_retry_policy_retries_only_transient_statuses() {
+    assert!(should_retry_binary_http_status(
+        reqwest::StatusCode::REQUEST_TIMEOUT
+    ));
+    assert!(should_retry_binary_http_status(
+        reqwest::StatusCode::TOO_MANY_REQUESTS
+    ));
+    assert!(should_retry_binary_http_status(
+        reqwest::StatusCode::BAD_GATEWAY
+    ));
+    assert!(should_retry_binary_http_status(
+        reqwest::StatusCode::SERVICE_UNAVAILABLE
+    ));
+
+    assert!(!should_retry_binary_http_status(reqwest::StatusCode::OK));
+    assert!(!should_retry_binary_http_status(
+        reqwest::StatusCode::UNAUTHORIZED
+    ));
+    assert!(!should_retry_binary_http_status(
+        reqwest::StatusCode::NOT_FOUND
+    ));
+}
+
+#[test]
+fn binary_http_retry_delay_is_bounded_and_increasing() {
+    assert_eq!(binary_http_retry_delay(0), Duration::from_millis(350));
+    assert_eq!(binary_http_retry_delay(1), Duration::from_millis(700));
+    assert_eq!(binary_http_retry_delay(2), Duration::from_millis(1050));
 }
 
 #[test]

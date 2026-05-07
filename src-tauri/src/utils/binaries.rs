@@ -21,6 +21,8 @@ const GITHUB_API_BASE: &str = "https://api.github.com/repos";
 const GITHUB_RELAY_BASE: &str = "https://xget.r2g2.org/gh";
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60 * 5);
 const ACTIVATION_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+const BINARY_HTTP_RETRY_ATTEMPTS: usize = 3;
+const BINARY_HTTP_RETRY_BASE_DELAY_MS: u64 = 350;
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 static BINARY_OPERATION_LOCKS: LazyLock<[Mutex<()>; 2]> =
     LazyLock::new(|| [Mutex::new(()), Mutex::new(())]);
@@ -453,21 +455,11 @@ fn checksum_for_plan(client: &Client, plan: &DownloadPlan) -> Result<Option<Stri
         return Ok(None);
     };
 
-    let response = match client.get(checksum_url).send() {
+    let response = match send_binary_http_with_retry(|| client.get(checksum_url.as_str())) {
         Ok(response) => response,
         Err(error) => {
             eprintln!(
                 "[binary-maintenance] checksum fetch failed for {}: {}",
-                checksum_url, error
-            );
-            return Ok(None);
-        }
-    };
-    let response = match response.error_for_status() {
-        Ok(response) => response,
-        Err(error) => {
-            eprintln!(
-                "[binary-maintenance] checksum response rejected for {}: {}",
                 checksum_url, error
             );
             return Ok(None);
@@ -488,12 +480,7 @@ fn checksum_for_plan(client: &Client, plan: &DownloadPlan) -> Result<Option<Stri
 }
 
 fn head_remote_identity(client: &Client, url: &str) -> Result<RemoteIdentity, String> {
-    let response = client
-        .head(url)
-        .send()
-        .map_err(|error| error.to_string())?
-        .error_for_status()
-        .map_err(|error| error.to_string())?;
+    let response = send_binary_http_with_retry(|| client.head(url))?;
     Ok(RemoteIdentity::from_headers(response.headers()))
 }
 
@@ -503,12 +490,7 @@ fn download_to_path(
     dest: &Path,
     expected_sha256: Option<&str>,
 ) -> Result<RemoteIdentity, String> {
-    let mut response = client
-        .get(url)
-        .send()
-        .map_err(|error| error.to_string())?
-        .error_for_status()
-        .map_err(|error| error.to_string())?;
+    let mut response = send_binary_http_with_retry(|| client.get(url))?;
     let remote = RemoteIdentity::from_headers(response.headers());
 
     if let Some(parent) = dest.parent() {
@@ -531,6 +513,66 @@ fn download_to_path(
     }
 
     Ok(remote)
+}
+
+fn send_binary_http_with_retry(
+    build_request: impl Fn() -> reqwest::blocking::RequestBuilder,
+) -> Result<Response, String> {
+    for attempt in 0..BINARY_HTTP_RETRY_ATTEMPTS {
+        match build_request().send() {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    return Ok(response);
+                }
+
+                let error = binary_http_status_error(&response);
+                if !should_retry_binary_http_status(status)
+                    || attempt + 1 == BINARY_HTTP_RETRY_ATTEMPTS
+                {
+                    return Err(error);
+                }
+            }
+            Err(error) => {
+                let should_retry = should_retry_binary_http_error(&error);
+                let error = error.to_string();
+                if !should_retry || attempt + 1 == BINARY_HTTP_RETRY_ATTEMPTS {
+                    return Err(error);
+                }
+            }
+        }
+
+        thread::sleep(binary_http_retry_delay(attempt));
+    }
+
+    Err("binary HTTP retry attempts exhausted".to_string())
+}
+
+fn binary_http_status_error(response: &Response) -> String {
+    let status = response.status();
+    let kind = if status.is_client_error() {
+        "client error"
+    } else if status.is_server_error() {
+        "server error"
+    } else {
+        "unexpected status"
+    };
+
+    format!("HTTP status {kind} ({status}) for url ({})", response.url())
+}
+
+pub(crate) fn should_retry_binary_http_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
+fn should_retry_binary_http_error(error: &reqwest::Error) -> bool {
+    error.is_timeout() || error.is_connect()
+}
+
+pub(crate) fn binary_http_retry_delay(attempt: usize) -> Duration {
+    Duration::from_millis(BINARY_HTTP_RETRY_BASE_DELAY_MS.saturating_mul(attempt as u64 + 1))
 }
 
 fn copy_response_to_file(
@@ -952,15 +994,14 @@ fn fetch_github_latest_release(
     owner: &str,
     repo: &str,
 ) -> Result<GitHubLatestRelease, String> {
-    client
-        .get(build_github_api_url(owner, repo, "releases/latest"))
-        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
-        .send()
-        .map_err(|error| error.to_string())?
-        .error_for_status()
-        .map_err(|error| error.to_string())?
-        .json::<GitHubLatestRelease>()
-        .map_err(|error| error.to_string())
+    let url = build_github_api_url(owner, repo, "releases/latest");
+    send_binary_http_with_retry(|| {
+        client
+            .get(url.as_str())
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+    })?
+    .json::<GitHubLatestRelease>()
+    .map_err(|error| error.to_string())
 }
 
 pub(crate) fn select_release_asset_name<'a>(

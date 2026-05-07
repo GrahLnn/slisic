@@ -785,8 +785,8 @@ fn list_musics_by_file_path_reads_matching_database_music_records() {
 
         let lookup_path = save_root.join(&collection.folder).join(shared_path);
         let musics = list_musics_by_file_path(&lookup_path, &save_root)
-        .await
-        .expect("music lookup by file path should succeed");
+            .await
+            .expect("music lookup by file path should succeed");
 
         assert_eq!(musics.len(), 2);
         assert_eq!(musics[0].alias, "Track A");

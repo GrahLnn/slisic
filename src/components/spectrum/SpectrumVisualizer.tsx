@@ -203,6 +203,12 @@ type WaveformZoomQueue = (command: WaveformZoomCommand) => void;
 type WaveformInteractionMode = "interactive" | "settled";
 type WaveformZoomOwnership = "explicit" | "initial-minimum";
 
+type WaveformResizeCommand = {
+  viewportWidth: number;
+};
+
+type WaveformResizeQueue = (command: WaveformResizeCommand) => void;
+
 type WaveformDataWindow = {
   endPx: number;
   startPx: number;
@@ -509,6 +515,16 @@ type WaveformCanvasFastPresentationResult =
       reuseFrame: HTMLCanvasElement;
     }
   | {
+      draws: WaveformCanvasColumnRangeResult[];
+      exposedRanges: WaveformCanvasColumnRange[];
+      descriptor: WaveformCanvasFrameDescriptor;
+      exposedWidthPx: number;
+      kind: "presented";
+      mode: "viewport-resize";
+      plan: Extract<WaveformCanvasFrameReusePlan, { kind: "viewport-resize" }>;
+      reuseFrame: HTMLCanvasElement;
+    }
+  | {
       draw: WaveformCanvasColumnRangeResult;
       descriptor: WaveformCanvasFrameDescriptor;
       kind: "presented";
@@ -530,6 +546,7 @@ type WaveformCanvasFastPresentationResult =
 
 type WaveformCanvasFastPresentationPlan =
   | Extract<WaveformCanvasFrameReusePlan, { kind: "horizontal-pan" }>
+  | Extract<WaveformCanvasFrameReusePlan, { kind: "viewport-resize" }>
   | {
       kind: "exact-cache-redraw";
     }
@@ -561,6 +578,14 @@ type WaveformCanvasFrameReusePlan =
       shiftX: number;
     }
   | {
+      copySourceStartX: number;
+      copyTargetStartX: number;
+      copyWidthPx: number;
+      exposedRanges: WaveformCanvasColumnRange[];
+      kind: "viewport-resize";
+      scrollDeltaPx: number;
+    }
+  | {
       kind: "none";
       reason:
         | "content-changed"
@@ -570,8 +595,7 @@ type WaveformCanvasFrameReusePlan =
         | "scale-changed"
         | "scroll-delta-fractional"
         | "scroll-delta-too-small"
-        | "scroll-delta-too-wide"
-        | "viewport-size-changed";
+        | "scroll-delta-too-wide";
     };
 
 type WaveformLoadingGridSize = {
@@ -742,6 +766,18 @@ export function resolveWaveformZoomOwnedPixelsPerSecond(args: {
     : resolveWaveformPixelsPerSecond(args.pixelsPerSecond, constraints);
 }
 
+export function resolveWaveformResizeViewportState(args: {
+  current: WaveformViewportModel;
+  viewportWidth: number;
+}): WaveformViewportState {
+  return {
+    focusSeconds: args.current.focusSeconds,
+    pixelsPerSecond: args.current.pixelsPerSecond,
+    scrollLeft: args.current.scrollLeft,
+    viewportWidth: Math.max(1, Math.ceil(args.viewportWidth)),
+  };
+}
+
 export function resolveWaveformMaximumPixelsPerSecond(
   constraints?: Pick<WaveformZoomConstraints, "maximumPixelsPerSecond"> | null,
 ) {
@@ -892,17 +928,13 @@ export function resolveWaveformCanvasFrameReusePlan(args: {
     };
   }
 
-  if (!isWaveformCanvasFrameGeometryEqual(args.previous.geometry, args.current.geometry)) {
+  if (
+    args.previous.geometry.backingHeight !== args.current.geometry.backingHeight ||
+    args.previous.geometry.devicePixelRatio !== args.current.geometry.devicePixelRatio
+  ) {
     return {
       kind: "none",
       reason: "geometry-changed",
-    };
-  }
-
-  if (args.previous.viewport.viewportWidth !== args.current.viewport.viewportWidth) {
-    return {
-      kind: "none",
-      reason: "viewport-size-changed",
     };
   }
 
@@ -927,7 +959,10 @@ export function resolveWaveformCanvasFrameReusePlan(args: {
     };
   }
 
-  if (args.previous.viewport.contentWidth !== args.current.viewport.contentWidth) {
+  if (
+    args.previous.viewport.contentWidth !== args.current.viewport.contentWidth &&
+    args.previous.viewport.viewportWidth === args.current.viewport.viewportWidth
+  ) {
     return {
       kind: "none",
       reason: "content-changed",
@@ -947,6 +982,48 @@ export function resolveWaveformCanvasFrameReusePlan(args: {
     return {
       kind: "none",
       reason: "scroll-delta-fractional",
+    };
+  }
+
+  if (args.previous.viewport.viewportWidth !== args.current.viewport.viewportWidth) {
+    const overlapStartX = Math.max(
+      args.previous.viewport.scrollLeft,
+      args.current.viewport.scrollLeft,
+    );
+    const overlapEndX = Math.min(
+      args.previous.viewport.scrollLeft + args.previous.geometry.viewportWidth,
+      args.current.viewport.scrollLeft + args.current.geometry.viewportWidth,
+    );
+    const copyWidthPx = Math.round(overlapEndX - overlapStartX);
+
+    if (copyWidthPx <= 0) {
+      return {
+        kind: "none",
+        reason: "scroll-delta-too-wide",
+      };
+    }
+
+    const copySourceStartX = Math.round(overlapStartX - args.previous.viewport.scrollLeft);
+    const copyTargetStartX = Math.round(overlapStartX - args.current.viewport.scrollLeft);
+    const copyTargetEndX = copyTargetStartX + copyWidthPx;
+    const exposedRanges = [
+      {
+        endX: copyTargetStartX,
+        startX: 0,
+      },
+      {
+        endX: args.current.geometry.viewportWidth,
+        startX: copyTargetEndX,
+      },
+    ].filter((range) => range.endX > range.startX);
+
+    return {
+      copySourceStartX,
+      copyTargetStartX,
+      copyWidthPx,
+      exposedRanges,
+      kind: "viewport-resize",
+      scrollDeltaPx,
     };
   }
 
@@ -983,7 +1060,7 @@ function resolveWaveformCanvasFastPresentationPlan(args: {
     current: args.current,
     previous: args.previous,
   });
-  if (reusePlan.kind === "horizontal-pan") {
+  if (reusePlan.kind === "horizontal-pan" || reusePlan.kind === "viewport-resize") {
     return reusePlan;
   }
 
@@ -2276,6 +2353,7 @@ function TrackSpectrumSession(props: {
   const initialSelectionViewportAnchorRef = useRef<string | null>(null);
   const commitViewportRef = useRef<WaveformViewportCommit | null>(null);
   const completeDataPlanTimerRef = useRef<number | null>(null);
+  const viewportSettledEffectsTimerRef = useRef<number | null>(null);
   const lastInteractiveDataDemandRef = useRef<WaveformInteractiveDataDemand | null>(null);
   const zoomOwnershipRef = useRef<WaveformZoomOwnership>("initial-minimum");
   const sharedDataStore = useMemo(
@@ -2522,6 +2600,30 @@ function TrackSpectrumSession(props: {
     },
     [applyWaveformTransaction, buildWaveformTransaction],
   );
+  const clearViewportSettledEffectsTimer = useCallback(() => {
+    const ownerWindow =
+      hostRef.current?.ownerDocument.defaultView ?? (typeof window === "undefined" ? null : window);
+
+    if (viewportSettledEffectsTimerRef.current !== null && ownerWindow) {
+      ownerWindow.clearTimeout(viewportSettledEffectsTimerRef.current);
+    }
+    viewportSettledEffectsTimerRef.current = null;
+  }, []);
+  const scheduleViewportSettledEffects = useCallback(() => {
+    clearViewportSettledEffectsTimer();
+    const ownerWindow =
+      hostRef.current?.ownerDocument.defaultView ?? (typeof window === "undefined" ? null : window);
+
+    if (!ownerWindow) {
+      runViewportEffects("settled");
+      return;
+    }
+
+    viewportSettledEffectsTimerRef.current = ownerWindow.setTimeout(() => {
+      viewportSettledEffectsTimerRef.current = null;
+      runViewportEffects("settled");
+    }, WAVEFORM_DATA_IDLE_OVERSCAN_DELAY_MS);
+  }, [clearViewportSettledEffectsTimer, runViewportEffects]);
 
   const commitViewportModel = useCallback(
     (next: WaveformViewportState) => {
@@ -2573,10 +2675,30 @@ function TrackSpectrumSession(props: {
   }, []);
 
   const queueZoomViewport = useWaveformZoomViewportScheduler({
+    cancelViewportSettledEffects: clearViewportSettledEffectsTimer,
     commitViewportModel,
     hostRef,
     markZoomExplicit,
     runViewportEffects,
+    scheduleViewportSettledEffects,
+  });
+  const queueResizeViewport = useWaveformResizeViewportScheduler({
+    cancelViewportSettledEffects: clearViewportSettledEffectsTimer,
+    commitViewportModel,
+    hostRef,
+    resolveState: (command) => {
+      const current = viewportRef.current;
+      if (!current) {
+        return null;
+      }
+
+      return resolveWaveformResizeViewportState({
+        current,
+        viewportWidth: command.viewportWidth,
+      });
+    },
+    runViewportEffects,
+    scheduleViewportSettledEffects,
   });
 
   const handleWheel = useCallback(
@@ -2704,31 +2826,22 @@ function TrackSpectrumSession(props: {
         width: nextViewportWidth,
       });
 
-      setLoadingGridSize((current) =>
-        current.columns === nextLoadingGridSize.columns && current.rows === nextLoadingGridSize.rows
-          ? current
-          : nextLoadingGridSize,
-      );
+      if (shouldShowLoadingGrid) {
+        setLoadingGridSize((current) =>
+          current.columns === nextLoadingGridSize.columns &&
+          current.rows === nextLoadingGridSize.rows
+            ? current
+            : nextLoadingGridSize,
+        );
+      }
 
       const current = viewportRef.current;
       if (!current || current.viewportWidth === nextViewportWidth) {
         return;
       }
 
-      const pixelsPerSecond = resolveWaveformZoomOwnedPixelsPerSecond({
-        durationMs: current.durationMs,
-        maximumPixelsPerSecond: current.maximumPixelsPerSecond,
-        ownership: zoomOwnershipRef.current,
-        pixelsPerSecond: current.pixelsPerSecond,
+      queueResizeViewport({
         viewportWidth: nextViewportWidth,
-      });
-      commitViewport({
-        state: {
-          focusSeconds: current.focusSeconds,
-          pixelsPerSecond,
-          scrollLeft: current.scrollLeft,
-          viewportWidth: nextViewportWidth,
-        },
       });
     };
 
@@ -2751,7 +2864,7 @@ function TrackSpectrumSession(props: {
     return () => {
       observer.disconnect();
     };
-  }, [commitViewport]);
+  }, [queueResizeViewport, shouldShowLoadingGrid]);
 
   useLayoutEffect(() => {
     const host = hostRef.current;
@@ -2773,6 +2886,10 @@ function TrackSpectrumSession(props: {
   useWaveformCompleteDataPlanTimerCleanup({
     completeDataPlanTimerRef,
     hostRef,
+  });
+  useWaveformViewportSettledEffectsTimerCleanup({
+    hostRef,
+    viewportSettledEffectsTimerRef,
   });
   useLayoutEffect(() => {
     syncSelectionOverlay();
@@ -3116,46 +3233,38 @@ function useWaveformCompleteDataPlanTimerCleanup(args: {
   );
 }
 
+function useWaveformViewportSettledEffectsTimerCleanup(args: {
+  hostRef: RefObject<HTMLDivElement | null>;
+  viewportSettledEffectsTimerRef: RefObject<number | null>;
+}) {
+  useEffect(
+    () => () => {
+      const ownerWindow =
+        args.hostRef.current?.ownerDocument.defaultView ??
+        (typeof window === "undefined" ? null : window);
+
+      if (args.viewportSettledEffectsTimerRef.current !== null && ownerWindow) {
+        ownerWindow.clearTimeout(args.viewportSettledEffectsTimerRef.current);
+      }
+      args.viewportSettledEffectsTimerRef.current = null;
+    },
+    [args.hostRef, args.viewportSettledEffectsTimerRef],
+  );
+}
+
 function useWaveformZoomViewportScheduler(args: {
+  cancelViewportSettledEffects: () => void;
   commitViewportModel: (next: WaveformViewportState) => boolean;
   hostRef: RefObject<HTMLDivElement | null>;
   markZoomExplicit: () => void;
   runViewportEffects: (mode: WaveformDataPlanMode) => void;
+  scheduleViewportSettledEffects: () => void;
 }): WaveformZoomQueue {
   const latestArgsRef = useRef(args);
   latestArgsRef.current = args;
   const frameIdRef = useRef<number | null>(null);
-  const settledTimerRef = useRef<number | null>(null);
   const pendingCommandRef = useRef<WaveformZoomCommand | null>(null);
   const pendingFrameRef = useRef<WaveformZoomFrame | null>(null);
-
-  const clearSettledTimer = useCallback(() => {
-    const ownerWindow =
-      latestArgsRef.current.hostRef.current?.ownerDocument.defaultView ??
-      (typeof window === "undefined" ? null : window);
-
-    if (settledTimerRef.current !== null && ownerWindow) {
-      ownerWindow.clearTimeout(settledTimerRef.current);
-    }
-    settledTimerRef.current = null;
-  }, []);
-
-  const scheduleSettledEffects = useCallback(() => {
-    clearSettledTimer();
-    const ownerWindow =
-      latestArgsRef.current.hostRef.current?.ownerDocument.defaultView ??
-      (typeof window === "undefined" ? null : window);
-
-    if (!ownerWindow) {
-      latestArgsRef.current.runViewportEffects("settled");
-      return;
-    }
-
-    settledTimerRef.current = ownerWindow.setTimeout(() => {
-      settledTimerRef.current = null;
-      latestArgsRef.current.runViewportEffects("settled");
-    }, WAVEFORM_DATA_IDLE_OVERSCAN_DELAY_MS);
-  }, [clearSettledTimer]);
 
   const flush = useCallback(() => {
     frameIdRef.current = null;
@@ -3178,13 +3287,13 @@ function useWaveformZoomViewportScheduler(args: {
     if (changed) {
       latestArgsRef.current.markZoomExplicit();
       latestArgsRef.current.runViewportEffects("interactive");
-      scheduleSettledEffects();
+      latestArgsRef.current.scheduleViewportSettledEffects();
     }
-  }, [scheduleSettledEffects]);
+  }, []);
 
   const queue = useCallback<WaveformZoomQueue>(
     (command) => {
-      clearSettledTimer();
+      latestArgsRef.current.cancelViewportSettledEffects();
       const frame = resolveQueuedWaveformZoomFrame({
         anchorViewportX: command.anchorViewportX,
         currentPixelsPerSecond: command.viewport.pixelsPerSecond,
@@ -3222,7 +3331,7 @@ function useWaveformZoomViewportScheduler(args: {
 
       frameIdRef.current = ownerWindow.requestAnimationFrame(flush);
     },
-    [clearSettledTimer, flush],
+    [flush],
   );
 
   useEffect(
@@ -3234,13 +3343,82 @@ function useWaveformZoomViewportScheduler(args: {
       if (frameIdRef.current !== null && ownerWindow) {
         ownerWindow.cancelAnimationFrame(frameIdRef.current);
       }
-      if (settledTimerRef.current !== null && ownerWindow) {
-        ownerWindow.clearTimeout(settledTimerRef.current);
-      }
       frameIdRef.current = null;
-      settledTimerRef.current = null;
       pendingCommandRef.current = null;
       pendingFrameRef.current = null;
+    },
+    [],
+  );
+
+  return queue;
+}
+
+function useWaveformResizeViewportScheduler(args: {
+  cancelViewportSettledEffects: () => void;
+  commitViewportModel: (next: WaveformViewportState) => boolean;
+  hostRef: RefObject<HTMLDivElement | null>;
+  resolveState: (command: WaveformResizeCommand) => WaveformViewportState | null;
+  runViewportEffects: (mode: WaveformDataPlanMode) => void;
+  scheduleViewportSettledEffects: () => void;
+}): WaveformResizeQueue {
+  const latestArgsRef = useRef(args);
+  latestArgsRef.current = args;
+  const frameIdRef = useRef<number | null>(null);
+  const pendingCommandRef = useRef<WaveformResizeCommand | null>(null);
+
+  const flush = useCallback(() => {
+    frameIdRef.current = null;
+    const command = pendingCommandRef.current;
+    pendingCommandRef.current = null;
+
+    if (!command) {
+      return;
+    }
+
+    const state = latestArgsRef.current.resolveState(command);
+    if (!state) {
+      return;
+    }
+
+    if (latestArgsRef.current.commitViewportModel(state)) {
+      latestArgsRef.current.runViewportEffects("interactive");
+      latestArgsRef.current.scheduleViewportSettledEffects();
+    }
+  }, []);
+
+  const queue = useCallback<WaveformResizeQueue>(
+    (command) => {
+      latestArgsRef.current.cancelViewportSettledEffects();
+      pendingCommandRef.current = command;
+      const ownerWindow =
+        latestArgsRef.current.hostRef.current?.ownerDocument.defaultView ??
+        (typeof window === "undefined" ? null : window);
+
+      if (!ownerWindow) {
+        flush();
+        return;
+      }
+
+      if (frameIdRef.current !== null) {
+        return;
+      }
+
+      frameIdRef.current = ownerWindow.requestAnimationFrame(flush);
+    },
+    [flush],
+  );
+
+  useEffect(
+    () => () => {
+      const ownerWindow =
+        latestArgsRef.current.hostRef.current?.ownerDocument.defaultView ??
+        (typeof window === "undefined" ? null : window);
+
+      if (frameIdRef.current !== null && ownerWindow) {
+        ownerWindow.cancelAnimationFrame(frameIdRef.current);
+      }
+      frameIdRef.current = null;
+      pendingCommandRef.current = null;
     },
     [],
   );
@@ -4528,8 +4706,9 @@ function presentWaveformCanvasFrameFast(args: {
   }
 
   const reuseFrame = args.reuseFrame ?? args.canvas.ownerDocument.createElement("canvas");
-  reuseFrame.width = args.descriptor.geometry.backingWidth;
-  reuseFrame.height = args.descriptor.geometry.backingHeight;
+  const previousGeometry = args.previous?.geometry ?? args.descriptor.geometry;
+  reuseFrame.width = previousGeometry.backingWidth;
+  reuseFrame.height = previousGeometry.backingHeight;
 
   const reuseContext = reuseFrame.getContext("2d");
   if (!reuseContext) {
@@ -4542,14 +4721,13 @@ function presentWaveformCanvasFrameFast(args: {
   }
 
   reuseContext.resetTransform();
-  reuseContext.clearRect(
-    0,
-    0,
-    args.descriptor.geometry.backingWidth,
-    args.descriptor.geometry.backingHeight,
-  );
+  reuseContext.clearRect(0, 0, previousGeometry.backingWidth, previousGeometry.backingHeight);
   reuseContext.drawImage(args.canvas, 0, 0);
 
+  applyWaveformVisibleCanvasGeometry({
+    canvas: args.canvas,
+    geometry: args.descriptor.geometry,
+  });
   context.resetTransform();
   context.clearRect(
     0,
@@ -4559,11 +4737,26 @@ function presentWaveformCanvasFrameFast(args: {
   );
   context.globalAlpha = 1;
   context.globalCompositeOperation = "source-over";
-  context.drawImage(
-    reuseFrame,
-    presentationPlan.shiftX * args.descriptor.geometry.devicePixelRatio,
-    0,
-  );
+  if (presentationPlan.kind === "horizontal-pan") {
+    context.drawImage(
+      reuseFrame,
+      presentationPlan.shiftX * args.descriptor.geometry.devicePixelRatio,
+      0,
+    );
+  } else {
+    const scale = args.descriptor.geometry.devicePixelRatio;
+    context.drawImage(
+      reuseFrame,
+      presentationPlan.copySourceStartX * scale,
+      0,
+      presentationPlan.copyWidthPx * scale,
+      previousGeometry.backingHeight,
+      presentationPlan.copyTargetStartX * scale,
+      0,
+      presentationPlan.copyWidthPx * scale,
+      args.descriptor.geometry.backingHeight,
+    );
+  }
   context.scale(
     args.descriptor.geometry.devicePixelRatio,
     args.descriptor.geometry.devicePixelRatio,
@@ -4574,12 +4767,14 @@ function presentWaveformCanvasFrameFast(args: {
   context.strokeStyle = readCanvasWaveformColor(args.canvas);
   context.globalAlpha = WAVEFORM_CANVAS_STROKE_ALPHA;
   const exposedRanges = args.plan
-    ? [
-        {
-          endX: presentationPlan.exposedEndX,
-          startX: presentationPlan.exposedStartX,
-        },
-      ]
+    ? presentationPlan.kind === "horizontal-pan"
+      ? [
+          {
+            endX: presentationPlan.exposedEndX,
+            startX: presentationPlan.exposedStartX,
+          },
+        ]
+      : presentationPlan.exposedRanges
     : [];
   const plan = args.plan;
   const draws = plan
@@ -4593,13 +4788,26 @@ function presentWaveformCanvasFrameFast(args: {
       )
     : [];
 
+  if (presentationPlan.kind === "horizontal-pan") {
+    return {
+      descriptor: args.descriptor,
+      draws,
+      exposedRanges,
+      exposedWidthPx: exposedRanges.reduce((sum, range) => sum + range.endX - range.startX, 0),
+      kind: "presented",
+      mode: "horizontal-pan",
+      plan: presentationPlan,
+      reuseFrame,
+    };
+  }
+
   return {
     descriptor: args.descriptor,
     draws,
     exposedRanges,
     exposedWidthPx: exposedRanges.reduce((sum, range) => sum + range.endX - range.startX, 0),
     kind: "presented",
-    mode: "horizontal-pan",
+    mode: "viewport-resize",
     plan: presentationPlan,
     reuseFrame,
   };
