@@ -8,13 +8,14 @@ import type { EditableTitleHandle } from "../EditableTitle";
 import type { MusicSpectrumSelection } from "./MusicSpectrumEditor";
 import { SpectrumMusicVirtualList } from "./SpectrumMusicVirtualList";
 import {
-  findSpectrumMusicDraftById,
   isSpectrumPlaybackStatusIdentityForAction,
   projectSpectrumPlaybackIdentity,
   resolveSpectrumBackActionVisualState,
-  resolveSpectrumCommittedMusicName,
+  resolveSpectrumBackTitleCommitTargets,
   resolveSpectrumMusicRangeChange,
   resolveSpectrumMusicEditorViewModels,
+  resolveSpectrumPlaybackRangeSyncEffect,
+  resolveSpectrumPlaybackRestoreEffect,
   type SpectrumBackActionVisualState,
   type SpectrumMusicEditorViewModel,
   type SpectrumPlaybackIdentity,
@@ -29,6 +30,13 @@ import { crab, type PlaybackStatusPayload } from "@/src/cmd";
 
 const contentFadeProps = {
   initial: { opacity: 0 },
+  animate: { opacity: 1 },
+  exit: { opacity: 0 },
+  transition: collectionTitleLayoutTransition,
+} as const;
+
+const spectrumListExitFadeProps = {
+  initial: false,
   animate: { opacity: 1 },
   exit: { opacity: 0 },
   transition: collectionTitleLayoutTransition,
@@ -56,6 +64,26 @@ function createSpectrumPlaybackTrackPayload(identity: SpectrumPlaybackIdentity, 
     music_url: identity.url,
     playlist_name: identity.playlistName,
     start_ms: identity.startMs,
+  };
+}
+
+function createSpectrumPlaybackRangeSyncPayload(args: {
+  endMs: number;
+  identity: SpectrumPlaybackIdentity;
+  musicName: string;
+  startMs: number;
+}) {
+  return {
+    next_end_ms: args.endMs,
+    next_start_ms: args.startMs,
+    track: {
+      end_ms: args.identity.endMs,
+      file_path: args.identity.filePath,
+      music_name: args.musicName,
+      music_url: args.identity.url,
+      playlist_name: args.identity.playlistName,
+      start_ms: args.identity.startMs,
+    },
   };
 }
 
@@ -113,18 +141,6 @@ function resolveSpectrumEditorByPlaybackIdentity(
   identity: SpectrumPlaybackIdentity,
 ) {
   return editors.find((editor) => editor.playbackIdentity?.key === identity.key) ?? null;
-}
-
-function resolveSpectrumPlaybackResumePosition(args: {
-  identity: SpectrumPlaybackIdentity;
-  status: PlaybackStatusPayload | null;
-  storedPositionMs: number | null;
-}) {
-  const status = isPlaybackStatusForSpectrumIdentity(args.status, args.identity)
-    ? args.status
-    : null;
-
-  return status !== null ? resolvePlaybackAbsolutePositionMs(status) : args.storedPositionMs;
 }
 
 async function readPlaybackStatus() {
@@ -311,10 +327,63 @@ export function SpectrumPage() {
     };
   }, [primaryPlaybackIdentity]);
 
+  async function syncSpectrumPlaybackRangeForSelection(
+    editor: SpectrumMusicEditorViewModel,
+    range: { endMs: number | null; startMs: number | null },
+  ) {
+    if (!editor.playbackIdentity) {
+      return;
+    }
+
+    const status = await refreshSpectrumPlaybackStatus();
+    const effect = resolveSpectrumPlaybackRangeSyncEffect({
+      identity: editor.playbackIdentity,
+      range,
+      statusIdentity: resolveSpectrumPlaybackStatusIdentity(status),
+    });
+
+    if (effect.kind === "none") {
+      return;
+    }
+
+    const result = await crab.syncSpectrumPlaybackRange(
+      createSpectrumPlaybackRangeSyncPayload({
+        endMs: effect.endMs,
+        identity: editor.playbackIdentity,
+        musicName: editor.titleValue,
+        startMs: effect.startMs,
+      }),
+    );
+
+    result.match({
+      Ok: (status) => {
+        setPlaybackStatus(status);
+      },
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+  }
+
   function handleSpectrumSelectionChange(id: string, range: MusicSpectrumSelection) {
+    const nextRange = resolveSpectrumMusicRangeChange(range);
     appLogicAction.changeSpectrumMusicRange({
       id,
-      ...resolveSpectrumMusicRangeChange(range),
+      ...nextRange,
+    });
+  }
+
+  function handleSpectrumSelectionCommit(id: string, range: MusicSpectrumSelection) {
+    const editor = renderData.editorViewModels.find((candidate) => candidate.id === id) ?? null;
+    if (!editor) {
+      return;
+    }
+
+    void syncSpectrumPlaybackRangeForSelection(
+      editor,
+      resolveSpectrumMusicRangeChange(range),
+    ).catch((error) => {
+      console.error("Failed to sync spectrum playback range", error);
     });
   }
 
@@ -333,15 +402,9 @@ export function SpectrumPage() {
         return;
       }
 
-      const committedTitles = renderData.editorViewModels.map((editor) => {
-        const draft = findSpectrumMusicDraftById(spectrumMusicDrafts, editor.id);
-        return {
-          editor,
-          title: resolveSpectrumCommittedMusicName({
-            musicDraft: draft,
-            renderedName: editor.titleValue,
-          }),
-        };
+      const committedTitles = resolveSpectrumBackTitleCommitTargets({
+        editorViewModels: renderData.editorViewModels,
+        musicDrafts: spectrumMusicDrafts,
       });
 
       for (const { editor, title } of committedTitles) {
@@ -414,15 +477,23 @@ export function SpectrumPage() {
 
     const identity = primaryEditor.playbackIdentity;
     const status = await refreshSpectrumPlaybackStatus();
-    const positionMs = resolveSpectrumPlaybackResumePosition({
+    const restoreEffect = resolveSpectrumPlaybackRestoreEffect({
       identity,
-      status,
+      statusIdentity: resolveSpectrumPlaybackStatusIdentity(status),
+      statusPaused: status?.paused === true,
+      statusPositionMs:
+        status !== null && isPlaybackStatusForSpectrumIdentity(status, identity)
+          ? resolvePlaybackAbsolutePositionMs(status)
+          : null,
       storedPositionMs: primaryResume.positionMs,
     });
+    if (restoreEffect.kind === "none") {
+      return;
+    }
 
     const result = await crab.restoreSpectrumMusic(
       createSpectrumPlaybackTrackPayload(identity, primaryEditor.titleValue),
-      positionMs,
+      restoreEffect.positionMs,
     );
 
     result.match({
@@ -557,30 +628,34 @@ export function SpectrumPage() {
             <SpectrumBackIcon visualState={renderData.backActionVisualState} />
           </button>
         </motion.div>
-        <SpectrumMusicVirtualList
-          editableTitleRefs={editableTitleRefs}
-          editorViewModels={renderData.editorViewModels}
-          renderPlaybackAction={(editor) => {
-            const identity = editor.playbackIdentity;
+        <motion.div {...spectrumListExitFadeProps}>
+          <SpectrumMusicVirtualList
+            editableTitleRefs={editableTitleRefs}
+            editorViewModels={renderData.editorViewModels}
+            exitPresentation={isPresent ? "local" : "page"}
+            renderPlaybackAction={(editor) => {
+              const identity = editor.playbackIdentity;
 
-            return (
-              <SpectrumPlaybackAction
-                identity={identity}
-                snapshot={resolveSpectrumPlaybackSnapshot(playbackStatus, identity)}
-                onAction={handleSpectrumPlaybackAction}
-              />
-            );
-          }}
-          trackFilePath={renderData.trackFilePath}
-          onReset={(id) => appLogicAction.resetSpectrumMusicDraft(id)}
-          onSelectionChange={handleSpectrumSelectionChange}
-          onTitleChange={(id, name) =>
-            appLogicAction.changeSpectrumMusicName({
-              id,
-              name,
-            })
-          }
-        />
+              return (
+                <SpectrumPlaybackAction
+                  identity={identity}
+                  snapshot={resolveSpectrumPlaybackSnapshot(playbackStatus, identity)}
+                  onAction={handleSpectrumPlaybackAction}
+                />
+              );
+            }}
+            trackFilePath={renderData.trackFilePath}
+            onReset={(id) => appLogicAction.resetSpectrumMusicDraft(id)}
+            onSelectionCommit={handleSpectrumSelectionCommit}
+            onSelectionChange={handleSpectrumSelectionChange}
+            onTitleChange={(id, name) =>
+              appLogicAction.changeSpectrumMusicName({
+                id,
+                name,
+              })
+            }
+          />
+        </motion.div>
       </div>
     </div>
   );

@@ -2,6 +2,8 @@
 use super::event::NowPlayingTrackChangedEvent;
 #[cfg(not(test))]
 use super::model::PlaybackStatusPayload;
+#[cfg(not(test))]
+use super::model::SpectrumPlaybackRangeSync;
 use super::model::{PlaybackContinuationMode, PlaybackTrack};
 #[cfg(not(test))]
 use super::strategy::PlaybackStrategySet;
@@ -36,6 +38,7 @@ pub struct PlayerRuntime {
     session: Mutex<Option<ActivePlaybackSession>>,
     active_request_track: RwLock<Option<PlaybackTrack>>,
     active_playback_range: RwLock<Option<ActivePlaybackRange>>,
+    repeat_playback_range_override: RwLock<Option<SpectrumRepeatRangeOverrideResolution>>,
     temporary_playback_pause: RwLock<bool>,
     continuation_mode: RwLock<PlaybackContinuationMode>,
     generation: AtomicU64,
@@ -136,6 +139,7 @@ pub fn initialize_runtime(app: AppHandle) {
             session: Mutex::new(None),
             active_request_track: RwLock::new(None),
             active_playback_range: RwLock::new(None),
+            repeat_playback_range_override: RwLock::new(None),
             temporary_playback_pause: RwLock::new(false),
             continuation_mode: RwLock::new(PlaybackContinuationMode::Random),
             generation: AtomicU64::new(0),
@@ -188,6 +192,7 @@ pub async fn play_tracks(
         initial_request: None,
         continuation: PlaybackSessionContinuation::FollowGlobal,
     };
+    runtime.clear_repeat_playback_range_override()?;
     let runtime_for_task = Arc::clone(runtime);
     let playback_for_task = playback.clone();
     let task_playlist_name = playlist_name.clone();
@@ -274,6 +279,7 @@ pub async fn play_track_in_current_session(
     }
     let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
     runtime.set_temporary_playback_pause(false)?;
+    runtime.clear_repeat_playback_range_override()?;
 
     let runtime_for_task = Arc::clone(runtime);
     let playback_for_task = playback.clone();
@@ -312,6 +318,7 @@ pub async fn stop_playback() -> Result<bool> {
     runtime.generation.fetch_add(1, Ordering::SeqCst);
     runtime.clear_active_session()?;
     runtime.set_temporary_playback_pause(false)?;
+    runtime.clear_repeat_playback_range_override()?;
     let Some(playback) = runtime.current_playback()? else {
         return Ok(false);
     };
@@ -504,6 +511,66 @@ pub async fn seek_playback(position_ms: u32, end_ms: u32) -> Result<Option<Playb
             .pause()
             .await
             .map_err(|error| anyhow!("failed to pause playback after seek: {error}"))?;
+    }
+    runtime.set_temporary_playback_pause(false)?;
+
+    get_playback_status().await
+}
+
+#[cfg(not(test))]
+pub async fn sync_spectrum_playback_range(
+    payload: SpectrumPlaybackRangeSync,
+) -> Result<Option<PlaybackStatusPayload>> {
+    let runtime = runtime()?;
+    let Some(playback) = runtime.current_playback()? else {
+        return Ok(None);
+    };
+    let Some(active_track) = runtime.active_request_track_snapshot()? else {
+        return Ok(None);
+    };
+
+    let status = playback
+        .status()
+        .await
+        .map_err(|error| anyhow!("failed to read playback status before range sync: {error}"))?;
+    if resolve_playback_status_track_identity(status.path.as_deref(), Some(&active_track)).is_none()
+        || !are_playback_tracks_equal(&active_track, &payload.track)
+    {
+        return Ok(None);
+    }
+
+    let Some(range) = resolve_spectrum_playback_range_sync(
+        resolve_playback_absolute_position_ms(&status, runtime.active_playback_range_snapshot()?),
+        payload.next_start_ms,
+        payload.next_end_ms,
+    ) else {
+        return Ok(None);
+    };
+    let Some(repeat_range_override) = resolve_spectrum_repeat_range_override(
+        &payload.track,
+        payload.next_start_ms,
+        payload.next_end_ms,
+    ) else {
+        return Ok(None);
+    };
+    let pause_after_sync = resolve_playback_seek_pause_after_request(
+        status.playing,
+        status.paused,
+        runtime.temporary_playback_pause()?,
+    );
+    let request = playback_request_for_path_range(&active_track.file_path, range)?;
+    playback
+        .play_request(request)
+        .await
+        .map_err(|error| anyhow!("failed to sync spectrum playback range: {error}"))?;
+    runtime.set_active_playback_range(Some(range))?;
+    runtime.set_repeat_playback_range_override(Some(repeat_range_override))?;
+
+    if pause_after_sync {
+        playback
+            .pause()
+            .await
+            .map_err(|error| anyhow!("failed to pause playback after range sync: {error}"))?;
     }
     runtime.set_temporary_playback_pause(false)?;
 
@@ -729,6 +796,17 @@ impl PlayerRuntime {
         Ok(())
     }
 
+    fn set_repeat_playback_range_override(
+        &self,
+        range_override: Option<SpectrumRepeatRangeOverrideResolution>,
+    ) -> Result<()> {
+        let mut current = self.repeat_playback_range_override.write().map_err(|_| {
+            anyhow!("player runtime repeat playback range override lock is poisoned")
+        })?;
+        *current = range_override;
+        Ok(())
+    }
+
     fn set_temporary_playback_pause(&self, value: bool) -> Result<()> {
         let mut temporary_playback_pause = self
             .temporary_playback_pause
@@ -756,6 +834,10 @@ impl PlayerRuntime {
 
     fn clear_active_playback_range(&self) -> Result<()> {
         self.set_active_playback_range(None)
+    }
+
+    fn clear_repeat_playback_range_override(&self) -> Result<()> {
+        self.set_repeat_playback_range_override(None)
     }
 
     fn active_request_track_for_status_path(
@@ -946,6 +1028,9 @@ impl PlayerRuntime {
             if active_playback_range.is_some() {
                 self.set_active_playback_range(next_active_playback_range)?;
             }
+            if next_current_track.is_some() {
+                self.clear_repeat_playback_range_override()?;
+            }
             reconciled
         };
 
@@ -978,6 +1063,7 @@ impl PlayerRuntime {
         *session = None;
         self.clear_active_request_track()?;
         self.clear_active_playback_range()?;
+        self.clear_repeat_playback_range_override()?;
         Ok(())
     }
 
@@ -1009,6 +1095,15 @@ impl PlayerRuntime {
             .read()
             .map(|range| *range)
             .map_err(|_| anyhow!("player runtime active playback range lock is poisoned"))
+    }
+
+    fn repeat_playback_range_override_snapshot(
+        &self,
+    ) -> Result<Option<SpectrumRepeatRangeOverrideResolution>> {
+        self.repeat_playback_range_override
+            .read()
+            .map(|range_override| range_override.clone())
+            .map_err(|_| anyhow!("player runtime repeat playback range override lock is poisoned"))
     }
 }
 
@@ -1066,9 +1161,18 @@ async fn run_playback_session(
             return Ok(());
         };
         NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&runtime.app)?;
+        let repeated_range_override = match mode {
+            PlaybackContinuationMode::RepeatCurrent => runtime
+                .repeat_playback_range_override_snapshot()?
+                .and_then(|range_override| {
+                    resolve_repeated_playback_range_override(&track, range_override)
+                }),
+            PlaybackContinuationMode::Random => None,
+        };
         let active_range = initial_request
             .as_ref()
             .map(|request| request.range)
+            .or(repeated_range_override)
             .unwrap_or(ActivePlaybackRange {
                 start_ms: track.start_ms,
                 end_ms: track.end_ms,
@@ -1112,6 +1216,14 @@ pub(crate) fn playback_tracks_match(left: &[PlaybackTrack], right: &[PlaybackTra
                 && left.start_ms == right.start_ms
                 && left.end_ms == right.end_ms
         })
+}
+
+pub(crate) fn are_playback_tracks_equal(left: &PlaybackTrack, right: &PlaybackTrack) -> bool {
+    left.playlist_name == right.playlist_name
+        && left.music_url == right.music_url
+        && left.file_path == right.file_path
+        && left.start_ms == right.start_ms
+        && left.end_ms == right.end_ms
 }
 
 pub(crate) fn resolve_session_track_identity_update(
@@ -1230,6 +1342,83 @@ pub(crate) fn resolve_playback_seek_range(
     let start_ms = position_ms.min(end_ms.saturating_sub(1));
 
     Some(ActivePlaybackRange { start_ms, end_ms })
+}
+
+pub(crate) fn resolve_playback_absolute_position_ms(
+    status: &ffplayr::AudioStatus,
+    active_range: Option<ActivePlaybackRange>,
+) -> u32 {
+    active_range
+        .map(|range| range.start_ms)
+        .unwrap_or(0)
+        .saturating_add(status.position_ms)
+}
+
+pub(crate) fn resolve_spectrum_playback_range_sync(
+    current_position_ms: u32,
+    next_start_ms: u32,
+    next_end_ms: u32,
+) -> Option<ActivePlaybackRange> {
+    if next_start_ms >= next_end_ms {
+        return None;
+    }
+
+    Some(ActivePlaybackRange {
+        start_ms: current_position_ms.clamp(next_start_ms, next_end_ms.saturating_sub(1)),
+        end_ms: next_end_ms,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SpectrumRepeatRangeOverrideResolution {
+    pub(crate) file_path: std::path::PathBuf,
+    pub(crate) music_url: String,
+    pub(crate) playlist_name: String,
+    pub(crate) track_start_ms: u32,
+    pub(crate) track_end_ms: u32,
+    pub(crate) range: ActivePlaybackRange,
+}
+
+pub(crate) fn resolve_spectrum_repeat_range_override(
+    track: &PlaybackTrack,
+    next_start_ms: u32,
+    next_end_ms: u32,
+) -> Option<SpectrumRepeatRangeOverrideResolution> {
+    if next_start_ms >= next_end_ms {
+        return None;
+    }
+
+    Some(SpectrumRepeatRangeOverrideResolution {
+        file_path: track.file_path.clone(),
+        music_url: track.music_url.clone(),
+        playlist_name: track.playlist_name.clone(),
+        track_start_ms: track.start_ms,
+        track_end_ms: track.end_ms,
+        range: ActivePlaybackRange {
+            start_ms: next_start_ms,
+            end_ms: next_end_ms,
+        },
+    })
+}
+
+pub(crate) fn resolve_repeated_playback_range_override(
+    track: &PlaybackTrack,
+    range_override: SpectrumRepeatRangeOverrideResolution,
+) -> Option<ActivePlaybackRange> {
+    if track.playlist_name != range_override.playlist_name
+        || track.music_url != range_override.music_url
+        || track.file_path != range_override.file_path
+        || track.start_ms != range_override.track_start_ms
+        || track.end_ms != range_override.track_end_ms
+    {
+        return None;
+    }
+
+    if range_override.range.start_ms >= range_override.range.end_ms {
+        return None;
+    }
+
+    Some(range_override.range)
 }
 
 pub(crate) fn resolve_spectrum_music_playback_range(

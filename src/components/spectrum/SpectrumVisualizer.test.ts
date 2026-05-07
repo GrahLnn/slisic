@@ -898,18 +898,16 @@ describe("SpectrumVisualizer", () => {
     assert.equal(context.lineToCount, 120);
   });
 
-  test("strokes visible first paint chunks independently", () => {
+  test("keeps chunk boundaries private until the full buffered frame is ready", () => {
     assert.equal(
       shouldBeginWaveformCanvasChunkPath({
         startX: 120,
-        targetKind: "buffered",
       }),
       false,
     );
     assert.equal(
       shouldBeginWaveformCanvasChunkPath({
-        startX: 120,
-        targetKind: "visible",
+        startX: 0,
       }),
       true,
     );
@@ -918,16 +916,14 @@ describe("SpectrumVisualizer", () => {
         completed: false,
         cursorHasDrawnColumn: true,
         hasChunkColumn: true,
-        targetKind: "buffered",
       }),
       false,
     );
     assert.equal(
       shouldStrokeWaveformCanvasChunkPath({
-        completed: false,
+        completed: true,
         cursorHasDrawnColumn: true,
         hasChunkColumn: true,
-        targetKind: "visible",
       }),
       true,
     );

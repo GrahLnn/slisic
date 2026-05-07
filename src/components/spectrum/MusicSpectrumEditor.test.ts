@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   resolveMusicSpectrumContentFadeProps,
+  resolveMusicSpectrumResetActionFadeProps,
   resolveMusicSpectrumTitleFadeProps,
   resolveMusicSpectrumWaveformFadeProps,
 } from "./MusicSpectrumEditor";
@@ -53,5 +54,35 @@ describe("MusicSpectrumEditor", () => {
         ease: [0.22, 1, 0.36, 1],
       },
     });
+  });
+
+  test("keeps editor children visible when the page owns the exit fade", () => {
+    const pageExitFade = {
+      initial: false,
+      animate: { opacity: 1 },
+      exit: { opacity: 1 },
+      transition: { duration: 0 },
+    };
+
+    assert.deepEqual(
+      resolveMusicSpectrumTitleFadeProps({
+        exitPresentation: "page",
+        hasSharedTitleLayout: false,
+      }),
+      pageExitFade,
+    );
+    assert.deepEqual(
+      resolveMusicSpectrumContentFadeProps({
+        cascade: true,
+        exitPresentation: "page",
+      }),
+      pageExitFade,
+    );
+    assert.deepEqual(
+      resolveMusicSpectrumResetActionFadeProps({
+        exitPresentation: "page",
+      }),
+      pageExitFade,
+    );
   });
 });

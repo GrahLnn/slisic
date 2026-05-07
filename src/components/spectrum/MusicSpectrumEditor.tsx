@@ -29,12 +29,20 @@ const musicSpectrumSharedTitleFadeProps = {
   transition: collectionTitleLayoutTransition,
 } as const;
 
+const musicSpectrumPageExitChildFadeProps = {
+  initial: false,
+  animate: { opacity: 1 },
+  exit: { opacity: 1 },
+  transition: { duration: 0 },
+} as const;
+
 export interface MusicSpectrumSelection {
   end: number | null;
   start: number | null;
 }
 
 export type MusicSpectrumWaveformPresentation = "interactive" | "placeholder";
+export type MusicSpectrumExitPresentation = "local" | "page";
 
 export interface MusicSpectrumEditorProps {
   cascade?: boolean;
@@ -43,6 +51,7 @@ export interface MusicSpectrumEditorProps {
   playbackAction: ReactNode;
   playheadEnabled?: boolean;
   selection: MusicSpectrumSelection;
+  exitPresentation?: MusicSpectrumExitPresentation;
   shouldShowResetAction: boolean;
   titleLayoutId?: string;
   titleValue: string;
@@ -51,16 +60,31 @@ export interface MusicSpectrumEditorProps {
   waveformClassName?: string;
   onReset: () => void;
   onSelectionChange: (selection: MusicSpectrumSelection) => void;
+  onSelectionCommit?: (selection: MusicSpectrumSelection) => void;
   onTitleChange: (value: string) => void;
 }
 
-export function resolveMusicSpectrumTitleFadeProps(args: { hasSharedTitleLayout: boolean }) {
+export function resolveMusicSpectrumTitleFadeProps(args: {
+  exitPresentation?: MusicSpectrumExitPresentation;
+  hasSharedTitleLayout: boolean;
+}) {
+  if (args.exitPresentation === "page") {
+    return musicSpectrumPageExitChildFadeProps;
+  }
+
   return args.hasSharedTitleLayout
     ? musicSpectrumSharedTitleFadeProps
     : musicSpectrumContentFadeProps;
 }
 
-export function resolveMusicSpectrumContentFadeProps(args: { cascade: boolean }) {
+export function resolveMusicSpectrumContentFadeProps(args: {
+  cascade: boolean;
+  exitPresentation?: MusicSpectrumExitPresentation;
+}) {
+  if (args.exitPresentation === "page") {
+    return musicSpectrumPageExitChildFadeProps;
+  }
+
   return args.cascade ? musicSpectrumCascadeContentFadeProps : musicSpectrumContentFadeProps;
 }
 
@@ -78,12 +102,26 @@ export function resolveMusicSpectrumWaveformFadeProps(args: {
   } as const;
 }
 
+export function resolveMusicSpectrumResetActionFadeProps(args: {
+  exitPresentation?: MusicSpectrumExitPresentation;
+}) {
+  return args.exitPresentation === "page"
+    ? musicSpectrumPageExitChildFadeProps
+    : {
+        initial: { opacity: 0 },
+        animate: { opacity: 1 },
+        exit: { opacity: 0 },
+        transition: collectionTitleLayoutTransition,
+      };
+}
+
 export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrumEditorProps>(
   function MusicSpectrumEditor(
     {
       cascade = false,
       handoffTone,
       interactionDisabled,
+      exitPresentation = "local",
       playbackAction,
       playheadEnabled = false,
       selection,
@@ -95,17 +133,19 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
       waveformClassName,
       onReset,
       onSelectionChange,
+      onSelectionCommit,
       onTitleChange,
     },
     ref,
   ) {
-    const contentFade = resolveMusicSpectrumContentFadeProps({ cascade });
+    const contentFade = resolveMusicSpectrumContentFadeProps({ cascade, exitPresentation });
 
     return (
       <>
         <div className="flex items-center justify-between gap-4">
           <motion.div
             {...resolveMusicSpectrumTitleFadeProps({
+              exitPresentation,
               hasSharedTitleLayout: titleLayoutId !== undefined,
             })}
             className="min-w-0"
@@ -145,6 +185,7 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
                     playheadEnabled={playheadEnabled}
                     selection={selection}
                     onSelectionChange={onSelectionChange}
+                    onSelectionCommit={onSelectionCommit}
                   />
                 </motion.div>
               ) : null}
@@ -164,10 +205,7 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
                   "dark:text-[#8a8a8a] dark:hover:text-[#d4d4d4] dark:hover:before:bg-[#262626]",
                   "cursor-pointer",
                 )}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={collectionTitleLayoutTransition}
+                {...resolveMusicSpectrumResetActionFadeProps({ exitPresentation })}
                 onClick={onReset}
               >
                 <icons.arrowRotateAnticlockwise size={18} />

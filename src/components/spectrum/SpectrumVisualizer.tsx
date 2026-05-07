@@ -430,13 +430,7 @@ type WaveformCanvasBufferedRasterTarget = WaveformCanvasRasterTargetBase & {
   kind: "buffered";
 };
 
-type WaveformCanvasVisibleRasterTarget = WaveformCanvasRasterTargetBase & {
-  kind: "visible";
-};
-
-type WaveformCanvasRasterTarget =
-  | WaveformCanvasBufferedRasterTarget
-  | WaveformCanvasVisibleRasterTarget;
+type WaveformCanvasRasterTarget = WaveformCanvasBufferedRasterTarget;
 
 type WaveformCanvasFrameCommitResult =
   | {
@@ -447,22 +441,12 @@ type WaveformCanvasFrameCommitResult =
       reason: "missing-context";
     };
 
-type WaveformCanvasRenderJobCompletion =
-  | WaveformCanvasFrameCommitResult
-  | {
-      kind: "already-presented";
-    };
-
-type WaveformCanvasPaintTargetPlan = {
-  kind: WaveformCanvasRasterTargetKind;
-};
+type WaveformCanvasRenderJobCompletion = WaveformCanvasFrameCommitResult;
 
 type WaveformCanvasRasterTargetEmpty = {
   geometry: WaveformCanvasFrameGeometry;
   kind: "missing-context";
 };
-
-type WaveformCanvasRasterTargetKind = "buffered" | "visible";
 
 type WaveformCanvasRenderCursor = {
   firstMissingX: number | null;
@@ -1073,22 +1057,16 @@ function resolveWaveformCanvasFastPresentationPlan(args: {
   return reusePlan;
 }
 
-export function shouldBeginWaveformCanvasChunkPath(args: {
-  startX: number;
-  targetKind: WaveformCanvasRasterTargetKind;
-}) {
-  return args.targetKind === "visible" || args.startX === 0;
+export function shouldBeginWaveformCanvasChunkPath(args: { startX: number }) {
+  return args.startX === 0;
 }
 
 export function shouldStrokeWaveformCanvasChunkPath(args: {
   completed: boolean;
   cursorHasDrawnColumn: boolean;
   hasChunkColumn: boolean;
-  targetKind: WaveformCanvasRasterTargetKind;
 }) {
-  return args.targetKind === "visible"
-    ? args.hasChunkColumn
-    : args.completed && args.cursorHasDrawnColumn;
+  return args.completed && args.cursorHasDrawnColumn;
 }
 
 export function resolveWaveformWheelPanDelta(args: { deltaX: number }) {
@@ -2326,6 +2304,7 @@ export function TrackSpectrum(props: {
   className?: string;
   filePath: string | null;
   onSelectionChange?: (range: WaveformSelectionDragResolution) => void;
+  onSelectionCommit?: (range: WaveformSelectionDragResolution) => void;
   playheadEnabled?: boolean;
   ports?: TrackSpectrumPorts;
   selection?: WaveformSelectionRange | null;
@@ -2339,6 +2318,7 @@ function TrackSpectrumSession(props: {
   className?: string;
   filePath: string | null;
   onSelectionChange?: (range: WaveformSelectionDragResolution) => void;
+  onSelectionCommit?: (range: WaveformSelectionDragResolution) => void;
   playheadEnabled?: boolean;
   ports?: TrackSpectrumPorts;
   selection?: WaveformSelectionRange | null;
@@ -2926,6 +2906,7 @@ function TrackSpectrumSession(props: {
       )}
       <WaveformSelectionOverlay
         onSelectionChange={props.onSelectionChange}
+        onSelectionCommit={props.onSelectionCommit}
         selectionRef={selectionRef}
         viewportRef={viewportRef}
         visible={!shouldShowLoadingGrid}
@@ -2942,11 +2923,13 @@ function TrackSpectrumSession(props: {
 
 function WaveformSelectionOverlay(args: {
   onSelectionChange?: (range: WaveformSelectionDragResolution) => void;
+  onSelectionCommit?: (range: WaveformSelectionDragResolution) => void;
   selectionRef: RefObject<WaveformSelectionRange | null>;
   viewportRef: RefObject<WaveformViewportModel | null>;
   visible: boolean;
 }) {
-  const { onSelectionChange, selectionRef, viewportRef, visible } = args;
+  const { onSelectionChange, onSelectionCommit, selectionRef, viewportRef, visible } = args;
+  const dragRef = useRef<WaveformSelectionDragResolution | null>(null);
   const beginDrag = useCallback(
     (edge: WaveformSelectionEdge, event: ReactPointerEvent<HTMLButtonElement>) => {
       const host = event.currentTarget.parentElement;
@@ -2959,15 +2942,15 @@ function WaveformSelectionOverlay(args: {
       event.currentTarget.setPointerCapture(event.pointerId);
 
       const hostRect = host.getBoundingClientRect();
-      onSelectionChange(
-        resolveWaveformSelectionDrag({
-          edge,
-          hostRect,
-          pointerClientX: event.clientX,
-          selection: selectionRef.current,
-          viewport,
-        }),
-      );
+      const resolution = resolveWaveformSelectionDrag({
+        edge,
+        hostRect,
+        pointerClientX: event.clientX,
+        selection: selectionRef.current,
+        viewport,
+      });
+      dragRef.current = resolution;
+      onSelectionChange(resolution);
     },
     [onSelectionChange, selectionRef, viewportRef],
   );
@@ -2986,18 +2969,30 @@ function WaveformSelectionOverlay(args: {
       }
 
       const hostRect = host.getBoundingClientRect();
-      onSelectionChange(
-        resolveWaveformSelectionDrag({
-          edge,
-          hostRect,
-          pointerClientX: event.clientX,
-          selection: selectionRef.current,
-          viewport,
-        }),
-      );
+      const resolution = resolveWaveformSelectionDrag({
+        edge,
+        hostRect,
+        pointerClientX: event.clientX,
+        selection: selectionRef.current,
+        viewport,
+      });
+      dragRef.current = resolution;
+      onSelectionChange(resolution);
     },
     [onSelectionChange, selectionRef, viewportRef],
   );
+  const commitDrag = useCallback(() => {
+    const resolution = dragRef.current;
+    dragRef.current = null;
+    if (!resolution) {
+      return;
+    }
+
+    onSelectionCommit?.(resolution);
+  }, [onSelectionCommit]);
+  const cancelDrag = useCallback(() => {
+    dragRef.current = null;
+  }, []);
 
   return (
     <div
@@ -3027,12 +3022,16 @@ function WaveformSelectionOverlay(args: {
         cssX="var(--waveform-selection-start-x, -9999px)"
         onPointerDown={beginDrag}
         onPointerMove={continueDrag}
+        onPointerCancel={cancelDrag}
+        onPointerUp={commitDrag}
       />
       <WaveformSelectionHandle
         edge="end"
         cssX="var(--waveform-selection-end-x, -9999px)"
         onPointerDown={beginDrag}
         onPointerMove={continueDrag}
+        onPointerCancel={cancelDrag}
+        onPointerUp={commitDrag}
       />
     </div>
   );
@@ -3168,8 +3167,10 @@ function WaveformPlayheadDragOverlay(args: {
 function WaveformSelectionHandle(args: {
   cssX: string;
   edge: WaveformSelectionEdge;
+  onPointerCancel: () => void;
   onPointerDown: (edge: WaveformSelectionEdge, event: ReactPointerEvent<HTMLButtonElement>) => void;
   onPointerMove: (edge: WaveformSelectionEdge, event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onPointerUp: () => void;
 }) {
   return (
     <button
@@ -3179,8 +3180,10 @@ function WaveformSelectionHandle(args: {
       style={{
         left: args.cssX,
       }}
+      onPointerCancel={args.onPointerCancel}
       onPointerDown={(event) => args.onPointerDown(args.edge, event)}
       onPointerMove={(event) => args.onPointerMove(args.edge, event)}
+      onPointerUp={args.onPointerUp}
     >
       <span className="absolute inset-y-0 left-1/2 block w-px -translate-x-1/2 bg-[#d4d4d4] shadow-[0_0_0_1px_rgba(245,245,245,0.65)] dark:bg-[#373737] dark:shadow-[0_0_0_1px_rgba(5,5,5,0.65)]" />
     </button>
@@ -4135,26 +4138,15 @@ function useWaveformCanvasRenderer(args: {
         return;
       }
 
-      const targetPlan = resolveWaveformCanvasPaintTargetPlan({
-        hasPresentedFrame: controller.presentedFrame !== null,
-      });
       const target = createWaveformCanvasRasterTarget({
         canvas,
         color: readCanvasWaveformColor(canvas),
         geometry,
-        kind: targetPlan.kind,
       });
 
       if (target.kind === "empty") {
         controller.job = null;
         return;
-      }
-
-      if (target.target.kind === "visible") {
-        applyWaveformVisibleCanvasGeometry({
-          canvas,
-          geometry,
-        });
       }
 
       job = createWaveformCanvasRenderJob({
@@ -4187,7 +4179,7 @@ function useWaveformCanvasRenderer(args: {
           canvas,
           job,
         });
-        if (completion.kind === "committed" || completion.kind === "already-presented") {
+        if (completion.kind === "committed") {
           controller.presentedFrame = createWaveformCanvasFrameDescriptor(job.plan);
         }
       }
@@ -4427,14 +4419,6 @@ function resolveWaveformCanvasRenderPlan(args: {
   };
 }
 
-function resolveWaveformCanvasPaintTargetPlan(args: {
-  hasPresentedFrame: boolean;
-}): WaveformCanvasPaintTargetPlan {
-  return {
-    kind: args.hasPresentedFrame ? "buffered" : "visible",
-  };
-}
-
 function resolveWaveformLevelTileIndexes(args: {
   endSeconds: number;
   scopeKey: string;
@@ -4476,7 +4460,6 @@ function createWaveformCanvasRasterTarget(args: {
   canvas: HTMLCanvasElement;
   color: string;
   geometry: WaveformCanvasFrameGeometry;
-  kind: WaveformCanvasRasterTargetKind;
 }):
   | {
       empty: WaveformCanvasRasterTargetEmpty;
@@ -4486,8 +4469,7 @@ function createWaveformCanvasRasterTarget(args: {
       kind: "ready";
       target: WaveformCanvasRasterTarget;
     } {
-  const frame =
-    args.kind === "visible" ? args.canvas : args.canvas.ownerDocument.createElement("canvas");
+  const frame = args.canvas.ownerDocument.createElement("canvas");
   if (frame.width !== args.geometry.backingWidth) {
     frame.width = args.geometry.backingWidth;
   }
@@ -4522,7 +4504,7 @@ function createWaveformCanvasRasterTarget(args: {
       context,
       frame,
       geometry: args.geometry,
-      kind: args.kind,
+      kind: "buffered",
     },
   };
 }
@@ -4584,17 +4566,10 @@ function completeWaveformCanvasRenderJob(args: {
   canvas: HTMLCanvasElement;
   job: WaveformCanvasRenderJob;
 }): WaveformCanvasRenderJobCompletion {
-  const job = args.job;
-  if (job.target.kind === "visible") {
-    return {
-      kind: "already-presented",
-    };
-  }
-
   return commitWaveformCanvasFrame({
     canvas: args.canvas,
-    plan: job.plan,
-    target: job.target,
+    plan: args.job.plan,
+    target: args.job.target,
   });
 }
 
@@ -4994,7 +4969,6 @@ export function drawWaveformCanvasJobChunk(args: {
   if (
     shouldBeginWaveformCanvasChunkPath({
       startX,
-      targetKind: args.target.kind,
     })
   ) {
     context.beginPath();
@@ -5048,7 +5022,6 @@ export function drawWaveformCanvasJobChunk(args: {
       completed,
       cursorHasDrawnColumn: cursor.hasDrawnColumn,
       hasChunkColumn,
-      targetKind: args.target.kind,
     })
   ) {
     context.stroke();

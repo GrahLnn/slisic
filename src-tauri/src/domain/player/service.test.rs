@@ -1,13 +1,16 @@
 use super::model::{
     PlaybackContinuationMode, PlaybackTrack, PlaybackTrackPayload, PlaybackTrackProjectionError,
+    SpectrumPlaybackRangeSync,
 };
 use super::service::{
-    ActivePlaybackRange, PlaybackTrackIdentityUpdate, playback_tracks_match,
-    resolve_active_playback_range_identity_update, resolve_active_request_track_identity_update,
+    ActivePlaybackRange, PlaybackTrackIdentityUpdate, are_playback_tracks_equal,
+    playback_tracks_match, resolve_active_playback_range_identity_update,
+    resolve_active_request_track_identity_update, resolve_playback_absolute_position_ms,
     resolve_playback_seek_pause_after_request, resolve_playback_seek_range,
-    resolve_playback_status_track_identity, resolve_session_continuation_mode,
-    resolve_session_track_identity_update, resolve_spectrum_music_playback_range,
-    should_resume_playback_seek_cancel,
+    resolve_playback_status_track_identity, resolve_repeated_playback_range_override,
+    resolve_session_continuation_mode, resolve_session_track_identity_update,
+    resolve_spectrum_music_playback_range, resolve_spectrum_playback_range_sync,
+    resolve_spectrum_repeat_range_override, should_resume_playback_seek_cancel,
 };
 use std::path::PathBuf;
 
@@ -214,6 +217,178 @@ fn resolve_playback_seek_range_never_starts_at_or_after_the_region_end() {
         }),
     );
     assert_eq!(resolve_playback_seek_range(0, 0), None);
+}
+
+#[test]
+fn spectrum_playback_range_sync_clamps_current_position_to_new_region() {
+    assert_eq!(
+        resolve_spectrum_playback_range_sync(50_000, 20_000, 45_000),
+        Some(ActivePlaybackRange {
+            start_ms: 44_999,
+            end_ms: 45_000,
+        }),
+    );
+    assert_eq!(
+        resolve_spectrum_playback_range_sync(15_000, 20_000, 45_000),
+        Some(ActivePlaybackRange {
+            start_ms: 20_000,
+            end_ms: 45_000,
+        }),
+    );
+}
+
+#[test]
+fn spectrum_repeat_range_override_restarts_from_the_draft_region_start() {
+    let mut current = track("a");
+    current.start_ms = 20_000;
+    current.end_ms = 80_000;
+
+    assert_eq!(
+        resolve_spectrum_repeat_range_override(&current, 25_000, 45_000),
+        Some(super::service::SpectrumRepeatRangeOverrideResolution {
+            file_path: PathBuf::from("a.m4a"),
+            music_url: "https://example.com/a".to_string(),
+            playlist_name: "Focus".to_string(),
+            track_start_ms: 20_000,
+            track_end_ms: 80_000,
+            range: ActivePlaybackRange {
+                start_ms: 25_000,
+                end_ms: 45_000,
+            },
+        }),
+    );
+}
+
+#[test]
+fn spectrum_repeat_range_override_can_extend_beyond_the_original_region() {
+    let mut current = track("a");
+    current.start_ms = 20_000;
+    current.end_ms = 80_000;
+    let range_override = resolve_spectrum_repeat_range_override(&current, 10_000, 90_000)
+        .expect("valid full-file draft range should project");
+
+    assert_eq!(
+        resolve_repeated_playback_range_override(&current, range_override),
+        Some(ActivePlaybackRange {
+            start_ms: 10_000,
+            end_ms: 90_000,
+        }),
+    );
+}
+
+#[test]
+fn spectrum_repeat_range_override_applies_only_to_the_same_original_music() {
+    let mut current = track("a");
+    current.start_ms = 20_000;
+    current.end_ms = 80_000;
+    let range_override = resolve_spectrum_repeat_range_override(&current, 25_000, 45_000)
+        .expect("valid draft range should project");
+
+    assert_eq!(
+        resolve_repeated_playback_range_override(&current, range_override.clone()),
+        Some(ActivePlaybackRange {
+            start_ms: 25_000,
+            end_ms: 45_000,
+        }),
+    );
+
+    let mut other_region = current.clone();
+    other_region.start_ms = 30_000;
+    other_region.end_ms = 90_000;
+    assert_eq!(
+        resolve_repeated_playback_range_override(&other_region, range_override.clone()),
+        None,
+    );
+
+    let mut other_music = current.clone();
+    other_music.music_url = "https://example.com/b".to_string();
+    assert_eq!(
+        resolve_repeated_playback_range_override(&other_music, range_override),
+        None,
+    );
+}
+
+#[test]
+fn spectrum_playback_range_sync_rejects_invalid_region() {
+    assert_eq!(
+        resolve_spectrum_playback_range_sync(50_000, 45_000, 45_000),
+        None
+    );
+}
+
+#[test]
+fn playback_absolute_position_uses_active_range_origin() {
+    let status = ffplayr::AudioStatus {
+        duration_ms: Some(60_000),
+        path: Some("a.m4a".to_string()),
+        paused: false,
+        playing: true,
+        position_ms: 1_250,
+    };
+
+    assert_eq!(
+        resolve_playback_absolute_position_ms(
+            &status,
+            Some(ActivePlaybackRange {
+                start_ms: 20_000,
+                end_ms: 45_000,
+            }),
+        ),
+        21_250,
+    );
+    assert_eq!(resolve_playback_absolute_position_ms(&status, None), 1_250);
+}
+
+#[test]
+fn playback_track_identity_requires_boundaries_for_range_sync() {
+    let mut old = track("a");
+    old.start_ms = 20_000;
+    old.end_ms = 80_000;
+    let mut draft = old.clone();
+    draft.start_ms = 25_000;
+    draft.end_ms = 45_000;
+
+    assert!(!are_playback_tracks_equal(&old, &draft));
+}
+
+#[test]
+fn spectrum_playback_range_sync_payload_keeps_source_identity_separate_from_next_region() {
+    let mut payload = track_payload("a");
+    payload.start_ms = 20_000;
+    payload.end_ms = 80_000;
+
+    let sync = SpectrumPlaybackRangeSync::try_from_payload(
+        super::model::SpectrumPlaybackRangeSyncPayload {
+            track: payload,
+            next_start_ms: 25_000,
+            next_end_ms: 45_000,
+        },
+    )
+    .expect("valid source identity and next region should project");
+
+    assert_eq!(sync.track.start_ms, 20_000);
+    assert_eq!(sync.track.end_ms, 80_000);
+    assert_eq!(sync.next_start_ms, 25_000);
+    assert_eq!(sync.next_end_ms, 45_000);
+}
+
+#[test]
+fn spectrum_playback_range_sync_payload_rejects_invalid_next_region() {
+    let mut payload = track_payload("a");
+    payload.start_ms = 20_000;
+    payload.end_ms = 80_000;
+
+    assert_eq!(
+        SpectrumPlaybackRangeSync::try_from_payload(
+            super::model::SpectrumPlaybackRangeSyncPayload {
+                track: payload,
+                next_start_ms: 45_000,
+                next_end_ms: 45_000,
+            },
+        )
+        .unwrap_err(),
+        PlaybackTrackProjectionError::InvalidRange,
+    );
 }
 
 #[test]

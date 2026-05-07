@@ -14,6 +14,7 @@ import { usePageViewportScrollElementRef } from "../pageViewportScroll";
 import type { EditableTitleHandle } from "../EditableTitle";
 import {
   MusicSpectrumEditor,
+  type MusicSpectrumExitPresentation,
   type MusicSpectrumSelection,
   type MusicSpectrumWaveformPresentation,
 } from "./MusicSpectrumEditor";
@@ -30,8 +31,10 @@ export interface SpectrumMusicVirtualListProps {
   editorViewModels: readonly SpectrumMusicEditorViewModel[];
   trackFilePath: string | null;
   editableTitleRefs: RefObject<Map<string, EditableTitleHandle>>;
+  exitPresentation?: MusicSpectrumExitPresentation;
   renderPlaybackAction: (editor: SpectrumMusicEditorViewModel) => ReactNode;
   onReset: (id: string) => void;
+  onSelectionCommit: (id: string, range: MusicSpectrumSelection) => void;
   onSelectionChange: (id: string, range: MusicSpectrumSelection) => void;
   onTitleChange: (id: string, name: string) => void;
 }
@@ -76,6 +79,7 @@ function extractSpectrumMusicVirtualRange(range: Range) {
 function SpectrumMusicVirtualListRow({
   editableTitleRefs,
   editor,
+  exitPresentation,
   index,
   renderPlaybackAction,
   scrollMargin,
@@ -84,11 +88,13 @@ function SpectrumMusicVirtualListRow({
   waveformPresentation,
   measureElement,
   onReset,
+  onSelectionCommit,
   onSelectionChange,
   onTitleChange,
 }: {
   editableTitleRefs: RefObject<Map<string, EditableTitleHandle>>;
   editor: SpectrumMusicEditorViewModel;
+  exitPresentation: MusicSpectrumExitPresentation;
   index: number;
   renderPlaybackAction: (editor: SpectrumMusicEditorViewModel) => ReactNode;
   scrollMargin: number;
@@ -97,6 +103,7 @@ function SpectrumMusicVirtualListRow({
   waveformPresentation: MusicSpectrumWaveformPresentation;
   measureElement: (node: HTMLDivElement | null) => void;
   onReset: (id: string) => void;
+  onSelectionCommit: (id: string, range: MusicSpectrumSelection) => void;
   onSelectionChange: (id: string, range: MusicSpectrumSelection) => void;
   onTitleChange: (id: string, name: string) => void;
 }) {
@@ -134,6 +141,7 @@ function SpectrumMusicVirtualListRow({
       <MusicSpectrumEditor
         cascade={!editor.isCurrent}
         ref={titleRef}
+        exitPresentation={exitPresentation}
         handoffTone={editor.handoffTone}
         interactionDisabled={editor.interactionDisabled}
         playbackAction={renderPlaybackAction(editor)}
@@ -150,6 +158,7 @@ function SpectrumMusicVirtualListRow({
         waveformClassName="left-1/2 w-screen -translate-x-1/2"
         onReset={() => onReset(editor.id)}
         onSelectionChange={(range) => onSelectionChange(editor.id, range)}
+        onSelectionCommit={(range) => onSelectionCommit(editor.id, range)}
         onTitleChange={(name) => onTitleChange(editor.id, name)}
       />
     </div>
@@ -180,9 +189,11 @@ function commitAdmittedIndexes(
 export function SpectrumMusicVirtualList({
   editableTitleRefs,
   editorViewModels,
+  exitPresentation = "local",
   renderPlaybackAction,
   trackFilePath,
   onReset,
+  onSelectionCommit,
   onSelectionChange,
   onTitleChange,
 }: SpectrumMusicVirtualListProps) {
@@ -304,6 +315,7 @@ export function SpectrumMusicVirtualList({
             key={virtualRow.key}
             editableTitleRefs={editableTitleRefs}
             editor={editor}
+            exitPresentation={exitPresentation}
             index={virtualRow.index}
             measureElement={measureElement}
             renderPlaybackAction={renderPlaybackAction}
@@ -316,6 +328,7 @@ export function SpectrumMusicVirtualList({
               rowIndex: virtualRow.index,
             })}
             onReset={onReset}
+            onSelectionCommit={onSelectionCommit}
             onSelectionChange={onSelectionChange}
             onTitleChange={onTitleChange}
           />
