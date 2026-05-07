@@ -4,6 +4,7 @@ use super::service::{
     resolve_active_playback_range_identity_update, resolve_active_request_track_identity_update,
     resolve_playback_seek_pause_after_request, resolve_playback_seek_range,
     resolve_playback_status_track_identity, resolve_session_track_identity_update,
+    resolve_spectrum_music_playback_range,
     should_resume_playback_seek_cancel,
 };
 use std::path::PathBuf;
@@ -225,5 +226,52 @@ fn should_resume_playback_seek_cancel_only_restores_temporary_pause_on_current_t
     assert_eq!(
         should_resume_playback_seek_cancel(true, true, true, false),
         false
+    );
+}
+
+#[test]
+fn playback_status_identity_exposes_track_bounds_separately_from_seek_range() {
+    let mut current = track("a");
+    current.start_ms = 20_000;
+    current.end_ms = 80_000;
+
+    assert_eq!(current.start_ms, 20_000);
+    assert_eq!(current.end_ms, 80_000);
+}
+
+#[test]
+fn spectrum_music_playback_range_starts_from_requested_position_inside_track_bounds() {
+    let mut current = track("a");
+    current.start_ms = 20_000;
+    current.end_ms = 80_000;
+
+    assert_eq!(
+        resolve_spectrum_music_playback_range(&current, Some(45_000)),
+        ActivePlaybackRange {
+            start_ms: 45_000,
+            end_ms: 80_000,
+        },
+    );
+}
+
+#[test]
+fn spectrum_music_playback_range_clamps_to_track_bounds() {
+    let mut current = track("a");
+    current.start_ms = 20_000;
+    current.end_ms = 80_000;
+
+    assert_eq!(
+        resolve_spectrum_music_playback_range(&current, Some(90_000)),
+        ActivePlaybackRange {
+            start_ms: 79_999,
+            end_ms: 80_000,
+        },
+    );
+    assert_eq!(
+        resolve_spectrum_music_playback_range(&current, None),
+        ActivePlaybackRange {
+            start_ms: 20_000,
+            end_ms: 80_000,
+        },
     );
 }

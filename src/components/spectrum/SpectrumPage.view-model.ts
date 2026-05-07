@@ -22,11 +22,40 @@ export interface SpectrumPlaybackActionVisualState {
   kind: SpectrumPlaybackActionKind;
 }
 
+export interface SpectrumPlaybackStatusIdentity {
+  filePath: string | null;
+  playlistName: string | null;
+  startMs: number | null;
+  endMs: number | null;
+  url: string | null;
+}
+
+export interface SpectrumPlaybackActionIdentity {
+  filePath: string | null;
+  playlistName: string | null;
+  startMs: number | null;
+  endMs: number | null;
+  url: string | null;
+}
+
+export interface CompleteSpectrumPlaybackActionIdentity {
+  filePath: string;
+  playlistName: string;
+  startMs: number;
+  endMs: number;
+  url: string;
+}
+
 export interface SpectrumMusicEditorViewModel {
   handoffTone: "solid" | "muted" | null;
   id: string;
   interactionDisabled: boolean;
   isCurrent: boolean;
+  playbackEndMs: number | null;
+  playbackFilePath: string | null;
+  playbackPlaylistName: string | null;
+  playbackStartMs: number | null;
+  playbackUrl: string | null;
   selectionEnd: number | null;
   selectionStart: number | null;
   shouldShowResetAction: boolean;
@@ -131,6 +160,7 @@ export function resolveSpectrumMusicEditorViewModels(args: {
   activeLayoutId: string | null;
   handoffTone: "solid" | "muted" | null;
   interactionDisabled: boolean;
+  nowPlayingTrackFilePath: string | null;
   nowPlayingTrackEndMs: number | null;
   nowPlayingTrackStartMs: number | null;
   nowPlayingTrackUrl: string | null;
@@ -158,6 +188,11 @@ export function resolveSpectrumMusicEditorViewModels(args: {
       id,
       interactionDisabled: args.interactionDisabled,
       isCurrent,
+      playbackEndMs: draft.baselineEndMs,
+      playbackFilePath: args.nowPlayingTrackFilePath,
+      playbackPlaylistName: args.playingPlaylistName,
+      playbackStartMs: draft.baselineStartMs,
+      playbackUrl: draft.url,
       selectionEnd: selection.end,
       selectionStart: selection.start,
       shouldShowResetAction: shouldShowSpectrumDraftResetAction({
@@ -174,18 +209,52 @@ export function resolveSpectrumMusicEditorViewModels(args: {
 }
 
 export function resolveSpectrumPlaybackActionVisualState(args: {
+  canStartTrack: boolean;
   hasCurrentTrack: boolean;
   isPending: boolean;
   isPresent: boolean;
   paused: boolean;
 }): SpectrumPlaybackActionVisualState {
-  const kind = args.paused ? "play" : "pause";
+  const kind = args.hasCurrentTrack && !args.paused ? "pause" : "play";
 
   return {
-    ariaLabel: kind === "play" ? "Resume playback" : "Pause playback",
-    disabled: !args.isPresent || !args.hasCurrentTrack || args.isPending,
-    dimmed: !args.hasCurrentTrack || args.isPending,
+    ariaLabel:
+      kind === "play" ? (args.hasCurrentTrack ? "Resume playback" : "Start playback") : "Pause playback",
+    disabled: !args.isPresent || (!args.hasCurrentTrack && !args.canStartTrack) || args.isPending,
+    dimmed: (!args.hasCurrentTrack && !args.canStartTrack) || args.isPending,
     key: kind,
     kind,
   };
+}
+
+export function areSpectrumPlaybackActionIdentitiesEqual(
+  left: SpectrumPlaybackActionIdentity,
+  right: SpectrumPlaybackActionIdentity,
+) {
+  return (
+    left.filePath === right.filePath &&
+    left.playlistName === right.playlistName &&
+    left.startMs === right.startMs &&
+    left.endMs === right.endMs &&
+    left.url === right.url
+  );
+}
+
+export function isSpectrumPlaybackStatusIdentityForAction(
+  status: SpectrumPlaybackStatusIdentity | null,
+  identity: SpectrumPlaybackActionIdentity,
+) {
+  return status !== null && areSpectrumPlaybackActionIdentitiesEqual(status, identity);
+}
+
+export function isSpectrumPlaybackActionIdentityComplete(
+  identity: SpectrumPlaybackActionIdentity,
+): identity is CompleteSpectrumPlaybackActionIdentity {
+  return (
+    !!identity.filePath &&
+    !!identity.playlistName &&
+    !!identity.url &&
+    identity.startMs !== null &&
+    identity.endMs !== null
+  );
 }

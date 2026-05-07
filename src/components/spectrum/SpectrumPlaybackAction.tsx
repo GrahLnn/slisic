@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
-import { crab, type PlaybackStatusPayload } from "@/src/cmd";
-import { normalizeMediaPathKey } from "@/src/mediaPath";
+import type { PlaybackStatusPayload } from "@/src/cmd";
 import {
+  isSpectrumPlaybackActionIdentityComplete,
   resolveSpectrumPlaybackActionVisualState,
+  type SpectrumPlaybackActionIdentity,
   type SpectrumPlaybackActionVisualState,
 } from "./SpectrumPage.view-model";
 
@@ -15,99 +16,15 @@ const spectrumPlaybackIconTransition = {
   ease: [0.22, 1, 0.36, 1],
 } as const;
 
-type SpectrumPlaybackSnapshot = Pick<PlaybackStatusPayload, "paused">;
+export { SPECTRUM_PLAYBACK_STATUS_POLL_MS };
 
-type SpectrumPlaybackSnapshotCommit = (snapshot: SpectrumPlaybackSnapshot | null) => void;
+export type SpectrumPlaybackSnapshot = Pick<PlaybackStatusPayload, "paused">;
 
 export function areSpectrumPlaybackSnapshotsEqual(
   left: SpectrumPlaybackSnapshot | null,
   right: SpectrumPlaybackSnapshot | null,
 ) {
   return left?.paused === right?.paused;
-}
-
-function useSpectrumPlaybackStatus(filePath: string | null) {
-  const [snapshot, setSnapshot] = useState<SpectrumPlaybackSnapshot | null>(null);
-  const commitSnapshot = useCallback<SpectrumPlaybackSnapshotCommit>((nextSnapshot) => {
-    setSnapshot((current) =>
-      areSpectrumPlaybackSnapshotsEqual(current, nextSnapshot) ? current : nextSnapshot,
-    );
-  }, []);
-
-  const read = useCallback(async () => {
-    if (!filePath) {
-      return null;
-    }
-
-    const result = await crab.getPlaybackStatus();
-    const status = result.match({
-      Ok: (value) => value,
-      Err: (error) => {
-        throw new Error(error);
-      },
-    });
-
-    return status && isSpectrumPlaybackStatusForTrack(status, filePath)
-      ? {
-          paused: status.paused,
-        }
-      : null;
-  }, [filePath]);
-
-  const refresh = useCallback(async () => {
-    const nextSnapshot = await read();
-    commitSnapshot(nextSnapshot);
-    return nextSnapshot;
-  }, [commitSnapshot, read]);
-
-  useSpectrumPlaybackStatusPolling({
-    commitSnapshot,
-    read,
-  });
-
-  return { refresh, snapshot };
-}
-
-function useSpectrumPlaybackStatusPolling(args: {
-  commitSnapshot: SpectrumPlaybackSnapshotCommit;
-  read: () => Promise<SpectrumPlaybackSnapshot | null>;
-}) {
-  const { commitSnapshot, read } = args;
-
-  useEffect(() => {
-    let disposed = false;
-
-    async function refreshCurrentPlayback() {
-      try {
-        const result = await read();
-        if (disposed) {
-          return;
-        }
-        commitSnapshot(result);
-      } catch (error) {
-        if (!disposed) {
-          console.error("Failed to refresh spectrum playback status", error);
-          commitSnapshot(null);
-        }
-      }
-    }
-
-    void refreshCurrentPlayback();
-    const intervalId = window.setInterval(refreshCurrentPlayback, SPECTRUM_PLAYBACK_STATUS_POLL_MS);
-
-    return () => {
-      disposed = true;
-      window.clearInterval(intervalId);
-    };
-  }, [commitSnapshot, read]);
-}
-
-function isSpectrumPlaybackStatusForTrack(status: PlaybackStatusPayload, filePath: string) {
-  return (
-    status.path !== null &&
-    normalizeMediaPathKey(status.path) === normalizeMediaPathKey(filePath) &&
-    status.playback_start_ms !== null
-  );
 }
 
 function SpectrumPlaybackPauseIcon({ replayKey }: { replayKey: string }) {
@@ -208,15 +125,26 @@ function SpectrumPlaybackIcon({ visualState }: { visualState: SpectrumPlaybackAc
   );
 }
 
-export function SpectrumPlaybackAction({ filePath }: { filePath: string | null }) {
+export function SpectrumPlaybackAction({
+  identity,
+  snapshot,
+  onAction,
+}: {
+  identity: SpectrumPlaybackActionIdentity;
+  snapshot: SpectrumPlaybackSnapshot | null;
+  onAction: (
+    identity: SpectrumPlaybackActionIdentity,
+    snapshot: SpectrumPlaybackSnapshot | null,
+  ) => Promise<void>;
+}) {
   const isPresent = useIsPresent();
   const [isPlaybackActionPending, setIsPlaybackActionPending] = useState(false);
-  const playbackStatus = useSpectrumPlaybackStatus(filePath);
   const visualState = resolveSpectrumPlaybackActionVisualState({
-    hasCurrentTrack: playbackStatus.snapshot !== null,
+    canStartTrack: isSpectrumPlaybackActionIdentityComplete(identity),
+    hasCurrentTrack: snapshot !== null,
     isPending: isPlaybackActionPending,
     isPresent,
-    paused: playbackStatus.snapshot?.paused === true,
+    paused: snapshot?.paused === true,
   });
 
   async function handlePlaybackAction() {
@@ -227,17 +155,7 @@ export function SpectrumPlaybackAction({ filePath }: { filePath: string | null }
     setIsPlaybackActionPending(true);
 
     try {
-      const result =
-        visualState.kind === "play" ? await crab.resumePlayback() : await crab.pausePlayback();
-
-      result.match({
-        Ok: () => undefined,
-        Err: (error) => {
-          throw new Error(error);
-        },
-      });
-
-      await playbackStatus.refresh();
+      await onAction(identity, snapshot);
     } catch (error) {
       console.error("Failed to toggle spectrum playback", error);
     } finally {

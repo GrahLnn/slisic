@@ -202,6 +202,7 @@ describe("SpectrumPage", () => {
       activeLayoutId: "playlist-title:Focus Session",
       handoffTone: "solid",
       interactionDisabled: false,
+      nowPlayingTrackFilePath: "C:/Music/quiet-morning.m4a",
       nowPlayingTrackEndMs: 240_000,
       nowPlayingTrackStartMs: 120_000,
       nowPlayingTrackUrl: "https://example.com/quiet-morning#b",
@@ -241,6 +242,7 @@ describe("SpectrumPage", () => {
     assert.deepEqual(
       resolveSpectrumPlaybackActionVisualState({
         hasCurrentTrack: true,
+        canStartTrack: true,
         isPending: false,
         isPresent: true,
         paused: false,
@@ -259,6 +261,7 @@ describe("SpectrumPage", () => {
     assert.deepEqual(
       resolveSpectrumPlaybackActionVisualState({
         hasCurrentTrack: true,
+        canStartTrack: true,
         isPending: false,
         isPresent: true,
         paused: true,
@@ -273,25 +276,46 @@ describe("SpectrumPage", () => {
     );
   });
 
-  test("disables the spectrum playback action outside active playback", () => {
+  test("shows start for a complete inactive spectrum track", () => {
     assert.deepEqual(
       resolveSpectrumPlaybackActionVisualState({
+        canStartTrack: true,
         hasCurrentTrack: false,
         isPending: false,
         isPresent: true,
         paused: false,
       }),
       {
-        ariaLabel: "Pause playback",
+        ariaLabel: "Start playback",
+        disabled: false,
+        dimmed: false,
+        key: "play",
+        kind: "play",
+      },
+    );
+  });
+
+  test("disables the spectrum playback action outside active playback", () => {
+    assert.deepEqual(
+      resolveSpectrumPlaybackActionVisualState({
+        hasCurrentTrack: false,
+        canStartTrack: false,
+        isPending: false,
+        isPresent: true,
+        paused: false,
+      }),
+      {
+        ariaLabel: "Start playback",
         disabled: true,
         dimmed: true,
-        key: "pause",
-        kind: "pause",
+        key: "play",
+        kind: "play",
       },
     );
     assert.deepEqual(
       resolveSpectrumPlaybackActionVisualState({
         hasCurrentTrack: true,
+        canStartTrack: true,
         isPending: true,
         isPresent: true,
         paused: false,
@@ -310,6 +334,7 @@ describe("SpectrumPage", () => {
     assert.deepEqual(
       resolveSpectrumPlaybackActionVisualState({
         hasCurrentTrack: true,
+        canStartTrack: true,
         isPending: false,
         isPresent: false,
         paused: false,

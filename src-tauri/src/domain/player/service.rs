@@ -146,8 +146,10 @@ pub async fn play_tracks(
     )?;
 
     let session = PlaybackSession {
+        playlist_name: playlist_name.clone(),
         tracks: shared_tracks,
         strategy: shared_strategy,
+        initial_request: None,
     };
     let runtime_for_task = Arc::clone(runtime);
     let playback_for_task = playback.clone();
@@ -171,6 +173,14 @@ pub async fn play_tracks(
         playlist_name,
         generation,
     })
+}
+
+#[cfg(not(test))]
+pub async fn play_spectrum_music(
+    track: PlaybackTrack,
+    position_ms: Option<u32>,
+) -> Result<PlaybackSessionHandle> {
+    play_track_in_current_session(track, position_ms).await
 }
 
 #[cfg(not(test))]
@@ -200,6 +210,52 @@ pub(crate) fn update_current_session_track_identity(
     update: &PlaybackTrackIdentityUpdate,
 ) -> Result<bool> {
     runtime()?.update_current_session_track_identity(update)
+}
+
+#[cfg(not(test))]
+pub async fn play_track_in_current_session(
+    track: PlaybackTrack,
+    position_ms: Option<u32>,
+) -> Result<PlaybackSessionHandle> {
+    let runtime = runtime()?;
+    let active_binary_task = ActiveBinaryTaskGuard::new(Arc::clone(runtime));
+    let playback = runtime.playback()?;
+    let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
+
+    if let Err(error) = playback.stop().await {
+        eprintln!("[player] failed to stop previous playback before selecting track: {error}");
+    }
+    runtime.set_temporary_playback_pause(false)?;
+    runtime.select_current_session_track(generation, track.clone())?;
+    set_playback_continuation_mode(PlaybackContinuationMode::RepeatCurrent)?;
+
+    let initial_range = resolve_spectrum_music_playback_range(&track, position_ms);
+    let session = runtime.session_snapshot(Some(InitialPlaybackRequest {
+        range: initial_range,
+        track: track.clone(),
+    }))?;
+    let runtime_for_task = Arc::clone(runtime);
+    let playback_for_task = playback.clone();
+    let task_playlist_name = session.playlist_name.clone();
+
+    tauri::async_runtime::spawn(async move {
+        let _active_binary_task = active_binary_task;
+        if let Err(error) = run_playback_session(
+            Arc::clone(&runtime_for_task),
+            playback_for_task,
+            generation,
+            session,
+        )
+        .await
+        {
+            eprintln!("[player] playback session failed for `{task_playlist_name}`: {error}");
+        }
+    });
+
+    Ok(PlaybackSessionHandle {
+        playlist_name: track.playlist_name,
+        generation,
+    })
 }
 
 #[cfg(not(test))]
@@ -408,6 +464,8 @@ pub async fn get_playback_status() -> Result<Option<PlaybackStatusPayload>> {
         music_url: active_request_track
             .as_ref()
             .map(|track| track.music_url.clone()),
+        track_start_ms: active_request_track.as_ref().map(|track| track.start_ms),
+        track_end_ms: active_request_track.as_ref().map(|track| track.end_ms),
         playback_start_ms: active_playback_range
             .as_ref()
             .map(|range| range.start_ms)
@@ -674,6 +732,58 @@ impl PlayerRuntime {
         Ok(true)
     }
 
+    fn select_current_session_track(&self, generation: u64, track: PlaybackTrack) -> Result<()> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
+        let Some(active) = session.as_ref() else {
+            bail!("no active playback session to select spectrum music from");
+        };
+        if active.playlist_name != track.playlist_name {
+            bail!(
+                "cannot select spectrum music from playlist `{}` while `{}` is active",
+                track.playlist_name,
+                active.playlist_name
+            );
+        }
+
+        {
+            let tracks = active
+                .tracks
+                .read()
+                .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))?;
+            let mut strategy = active
+                .strategy
+                .lock()
+                .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?;
+            strategy
+                .select_track(&track, &tracks)
+                .ok_or_else(|| anyhow!("selected spectrum music is not in the active session"))?;
+        }
+
+        drop(session);
+        self.generation.store(generation, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn session_snapshot(&self, initial_request: Option<InitialPlaybackRequest>) -> Result<PlaybackSession> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
+        let Some(active) = session.as_ref() else {
+            bail!("no active playback session");
+        };
+
+        Ok(PlaybackSession {
+            playlist_name: active.playlist_name.clone(),
+            tracks: Arc::clone(&active.tracks),
+            strategy: Arc::clone(&active.strategy),
+            initial_request,
+        })
+    }
+
     fn update_current_session_track_identity(
         &self,
         update: &PlaybackTrackIdentityUpdate,
@@ -790,8 +900,17 @@ impl PlayerRuntime {
 
 #[cfg(not(test))]
 struct PlaybackSession {
+    playlist_name: String,
     tracks: SharedPlaybackTracks,
     strategy: SharedPlaybackStrategy,
+    initial_request: Option<InitialPlaybackRequest>,
+}
+
+#[cfg(not(test))]
+#[derive(Clone)]
+struct InitialPlaybackRequest {
+    range: ActivePlaybackRange,
+    track: PlaybackTrack,
 }
 
 #[cfg(not(test))]
@@ -809,7 +928,7 @@ async fn run_playback_session(
     runtime: Arc<PlayerRuntime>,
     playback: Playback,
     generation: u64,
-    session: PlaybackSession,
+    mut session: PlaybackSession,
 ) -> Result<()> {
     loop {
         if runtime.generation.load(Ordering::SeqCst) != generation {
@@ -818,26 +937,34 @@ async fn run_playback_session(
 
         let mode = runtime.continuation_mode()?;
         let tracks = session.tracks_snapshot()?;
-        let Some(track) = session
-            .strategy
-            .lock()
-            .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?
-            .next_track(mode, &tracks)
-        else {
+        let initial_request = session.initial_request.take();
+        let track = match initial_request.as_ref() {
+            Some(request) => Some(request.track.clone()),
+            None => session
+                .strategy
+                .lock()
+                .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?
+                .next_track(mode, &tracks),
+        };
+        let Some(track) = track else {
             return Ok(());
         };
 
         NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&runtime.app)?;
-        let request = playback_request_for_track(&track)?;
+        let active_range = initial_request
+            .as_ref()
+            .map(|request| request.range)
+            .unwrap_or(ActivePlaybackRange {
+                start_ms: track.start_ms,
+                end_ms: track.end_ms,
+            });
+        let request = playback_request_for_path_range(&track.file_path, active_range)?;
         playback
             .play_request(request)
             .await
             .map_err(|error| anyhow!("failed to play `{}`: {error}", track.music_name))?;
         runtime.set_active_request_track(track.clone())?;
-        runtime.set_active_playback_range(Some(ActivePlaybackRange {
-            start_ms: track.start_ms,
-            end_ms: track.end_ms,
-        }))?;
+        runtime.set_active_playback_range(Some(active_range))?;
         wait_until_track_finishes(&runtime, &playback, generation, &track.file_path).await?;
     }
 }
@@ -936,17 +1063,6 @@ pub(crate) fn resolve_active_playback_range_identity_update(
 }
 
 #[cfg(not(test))]
-fn playback_request_for_track(track: &PlaybackTrack) -> Result<PlaybackRequest> {
-    playback_request_for_path_range(
-        &track.file_path,
-        ActivePlaybackRange {
-            start_ms: track.start_ms,
-            end_ms: track.end_ms,
-        },
-    )
-}
-
-#[cfg(not(test))]
 fn playback_request_for_path_range(
     path: &Path,
     range: ActivePlaybackRange,
@@ -981,6 +1097,19 @@ pub(crate) fn resolve_playback_seek_range(
     let start_ms = position_ms.min(end_ms.saturating_sub(1));
 
     Some(ActivePlaybackRange { start_ms, end_ms })
+}
+
+pub(crate) fn resolve_spectrum_music_playback_range(
+    track: &PlaybackTrack,
+    position_ms: Option<u32>,
+) -> ActivePlaybackRange {
+    let position_ms = position_ms.unwrap_or(track.start_ms);
+    let start_ms = position_ms.clamp(track.start_ms, track.end_ms.saturating_sub(1));
+
+    ActivePlaybackRange {
+        start_ms,
+        end_ms: track.end_ms,
+    }
 }
 
 pub(crate) fn resolve_playback_seek_pause_after_request(

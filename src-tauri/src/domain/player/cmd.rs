@@ -1,6 +1,7 @@
-use super::model::{PlaybackContinuationMode, PlaybackStatusPayload};
+use super::model::{PlaybackContinuationMode, PlaybackStatusPayload, PlaybackTrackPayload};
 use super::waveform::{TrackWaveform, TrackWaveformSummary, TrackWaveformTile};
 use tauri::AppHandle;
+use std::path::PathBuf;
 
 #[tauri::command]
 #[specta::specta]
@@ -30,6 +31,25 @@ pub async fn resume_playback() -> Result<bool, String> {
     super::service::resume_playback()
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn play_spectrum_music(
+    track: PlaybackTrackPayload,
+    position_ms: Option<u32>,
+) -> Result<bool, String> {
+    super::service::play_spectrum_music(super::model::PlaybackTrack {
+        playlist_name: track.playlist_name,
+        music_name: track.music_name,
+        music_url: track.music_url,
+        file_path: PathBuf::from(track.file_path),
+        start_ms: track.start_ms,
+        end_ms: track.end_ms,
+    }, position_ms)
+    .await
+    .map(|_| true)
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

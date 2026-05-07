@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
@@ -9,6 +9,10 @@ import type { MusicSpectrumSelection } from "./MusicSpectrumEditor";
 import { SpectrumMusicVirtualList } from "./SpectrumMusicVirtualList";
 import {
   findSpectrumMusicDraftById,
+  isSpectrumPlaybackStatusIdentityForAction,
+  isSpectrumPlaybackActionIdentityComplete,
+  type CompleteSpectrumPlaybackActionIdentity,
+  type SpectrumPlaybackActionIdentity,
   resolveSpectrumBackActionVisualState,
   resolveSpectrumCommittedMusicName,
   resolveSpectrumMusicRangeChange,
@@ -16,8 +20,14 @@ import {
   type SpectrumBackActionVisualState,
   type SpectrumMusicEditorViewModel,
 } from "./SpectrumPage.view-model";
-import { SpectrumPlaybackAction } from "./SpectrumPlaybackAction";
+import {
+  SPECTRUM_PLAYBACK_STATUS_POLL_MS,
+  SpectrumPlaybackAction,
+  type SpectrumPlaybackSnapshot,
+} from "./SpectrumPlaybackAction";
 import { usePageRenderFreeze } from "../usePageRenderFreeze";
+import { crab, type PlaybackStatusPayload } from "@/src/cmd";
+import { normalizeMediaPathKey } from "@/src/mediaPath";
 
 const contentFadeProps = {
   initial: { opacity: 0 },
@@ -39,6 +49,80 @@ type SpectrumRenderData = {
   editorViewModels: SpectrumMusicEditorViewModel[];
   trackFilePath: string | null;
 };
+
+function resolveSpectrumPlaybackActionIdentity(
+  editor: SpectrumMusicEditorViewModel,
+): SpectrumPlaybackActionIdentity {
+  return {
+    endMs: editor.playbackEndMs,
+    filePath: editor.playbackFilePath,
+    playlistName: editor.playbackPlaylistName,
+    startMs: editor.playbackStartMs,
+    url: editor.playbackUrl,
+  };
+}
+
+function resolveSpectrumPlaybackActionIdentityKey(identity: SpectrumPlaybackActionIdentity) {
+  return [
+    identity.filePath ?? "",
+    identity.playlistName ?? "",
+    identity.url ?? "",
+    identity.startMs ?? "",
+    identity.endMs ?? "",
+  ].join("|");
+}
+
+function createSpectrumPlaybackTrackPayload(
+  identity: CompleteSpectrumPlaybackActionIdentity,
+  musicName: string,
+) {
+  return {
+    end_ms: identity.endMs,
+    file_path: identity.filePath,
+    music_name: musicName,
+    music_url: identity.url,
+    playlist_name: identity.playlistName,
+    start_ms: identity.startMs,
+  };
+}
+
+function isPlaybackStatusForSpectrumIdentity(
+  status: PlaybackStatusPayload | null,
+  identity: SpectrumPlaybackActionIdentity,
+) {
+  if (!status?.path || !isSpectrumPlaybackActionIdentityComplete(identity)) {
+    return false;
+  }
+
+  return isSpectrumPlaybackStatusIdentityForAction(
+    {
+      endMs: status.track_end_ms,
+      filePath: normalizeMediaPathKey(status.path),
+      playlistName: status.playlist_name,
+      startMs: status.track_start_ms,
+      url: status.music_url,
+    },
+    {
+      ...identity,
+      filePath: identity.filePath ? normalizeMediaPathKey(identity.filePath) : null,
+    },
+  );
+}
+
+function resolvePlaybackAbsolutePositionMs(status: PlaybackStatusPayload) {
+  return Math.max(0, (status.playback_start_ms ?? 0) + status.position_ms);
+}
+
+function resolveSpectrumPlaybackSnapshot(
+  status: PlaybackStatusPayload | null,
+  identity: SpectrumPlaybackActionIdentity,
+): SpectrumPlaybackSnapshot | null {
+  return isPlaybackStatusForSpectrumIdentity(status, identity)
+    ? {
+        paused: status?.paused === true,
+      }
+    : null;
+}
 
 function waitForNextFrame() {
   return new Promise<void>((resolve) => {
@@ -152,7 +236,12 @@ function SpectrumBackIcon({ visualState }: { visualState: SpectrumBackActionVisu
 export function SpectrumPage() {
   const isPresent = useIsPresent();
   const editableTitleRefs = useRef(new Map<string, EditableTitleHandle>());
+  const primaryPlaybackResumeRef = useRef<{
+    identity: SpectrumPlaybackActionIdentity;
+    positionMs: number | null;
+  } | null>(null);
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
+  const [playbackStatus, setPlaybackStatus] = useState<PlaybackStatusPayload | null>(null);
   const {
     activeLayoutId,
     nowPlayingTrackEndMs,
@@ -169,6 +258,7 @@ export function SpectrumPage() {
     activeLayoutId,
     handoffTone,
     interactionDisabled: !isPresent || spectrumMusicDrafts.length === 0,
+    nowPlayingTrackFilePath,
     nowPlayingTrackEndMs,
     nowPlayingTrackStartMs,
     nowPlayingTrackUrl,
@@ -188,6 +278,25 @@ export function SpectrumPage() {
   });
   const renderData = pageRenderFreeze.renderValue;
   const isBackActionLocked = isBackNavigationPending;
+  const primaryEditor = renderData.editorViewModels[0] ?? null;
+  const primaryPlaybackIdentity = primaryEditor
+    ? resolveSpectrumPlaybackActionIdentity(primaryEditor)
+    : null;
+  const primaryPlaybackIdentityKey = primaryPlaybackIdentity
+    ? resolveSpectrumPlaybackActionIdentityKey(primaryPlaybackIdentity)
+    : null;
+
+  if (
+    primaryPlaybackIdentity &&
+    (primaryPlaybackResumeRef.current === null ||
+      resolveSpectrumPlaybackActionIdentityKey(primaryPlaybackResumeRef.current.identity) !==
+        primaryPlaybackIdentityKey)
+  ) {
+    primaryPlaybackResumeRef.current = {
+      identity: primaryPlaybackIdentity,
+      positionMs: null,
+    };
+  }
 
   function handleSpectrumSelectionChange(id: string, range: MusicSpectrumSelection) {
     appLogicAction.changeSpectrumMusicRange({
@@ -206,6 +315,7 @@ export function SpectrumPage() {
     try {
       if (renderData.backActionVisualState.kind === "back") {
         pageRenderFreeze.freeze();
+        await handleRestorePrimarySpectrumMusicPlayback();
         appLogicAction.back();
         return;
       }
@@ -252,12 +362,170 @@ export function SpectrumPage() {
         });
       });
       await waitForTitleShareSourceReady();
+      await handleRestorePrimarySpectrumMusicPlayback();
       appLogicAction.back();
     } catch (error) {
       console.error("Failed to complete the spectrum back transition", error);
       setIsBackNavigationPending(false);
     }
   }
+
+  async function handlePlaySpectrumMusic(identity: SpectrumPlaybackActionIdentity) {
+    if (!isSpectrumPlaybackActionIdentityComplete(identity)) {
+      return;
+    }
+
+    await capturePrimarySpectrumPlaybackPosition();
+
+    const editor = renderData.editorViewModels.find(
+      (editor) =>
+        editor.playbackUrl === identity.url &&
+        editor.playbackStartMs === identity.startMs &&
+        editor.playbackEndMs === identity.endMs,
+    );
+    const result = await crab.playSpectrumMusic(
+      createSpectrumPlaybackTrackPayload(identity, editor?.titleValue ?? ""),
+      null,
+    );
+
+    result.match({
+      Ok: () => undefined,
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+    await refreshSpectrumPlaybackStatus();
+  }
+
+  async function handleRestorePrimarySpectrumMusicPlayback() {
+    const primaryResume = primaryPlaybackResumeRef.current;
+    const primaryEditor = renderData.editorViewModels[0];
+    if (!primaryResume || !primaryEditor) {
+      return;
+    }
+
+    const identity = primaryResume.identity;
+    if (!isSpectrumPlaybackActionIdentityComplete(identity)) {
+      return;
+    }
+
+    const statusResult = await crab.getPlaybackStatus();
+    const status = statusResult.match({
+      Ok: (value) => value,
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+    const currentPrimaryStatus = isPlaybackStatusForSpectrumIdentity(status, identity)
+      ? status
+      : null;
+    const positionMs = currentPrimaryStatus
+      ? resolvePlaybackAbsolutePositionMs(currentPrimaryStatus)
+      : primaryResume.positionMs;
+
+    const result = await crab.playSpectrumMusic(
+      createSpectrumPlaybackTrackPayload(identity, primaryEditor.titleValue),
+      positionMs,
+    );
+
+    result.match({
+      Ok: () => undefined,
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+    await crab.pausePlayback();
+    await refreshSpectrumPlaybackStatus();
+  }
+
+  async function handleSpectrumPlaybackAction(
+    identity: SpectrumPlaybackActionIdentity,
+    snapshot: SpectrumPlaybackSnapshot | null,
+  ) {
+    if (snapshot === null) {
+      await handlePlaySpectrumMusic(identity);
+      return;
+    }
+
+    const result = snapshot.paused ? await crab.resumePlayback() : await crab.pausePlayback();
+    result.match({
+      Ok: () => undefined,
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+    await refreshSpectrumPlaybackStatus();
+  }
+
+  async function capturePrimarySpectrumPlaybackPosition() {
+    const primaryResume = primaryPlaybackResumeRef.current;
+    if (!primaryResume || !isSpectrumPlaybackActionIdentityComplete(primaryResume.identity)) {
+      return;
+    }
+
+    const statusResult = await crab.getPlaybackStatus();
+    const status = statusResult.match({
+      Ok: (value) => value,
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+    const currentPrimaryStatus = isPlaybackStatusForSpectrumIdentity(status, primaryResume.identity)
+      ? status
+      : null;
+    if (!currentPrimaryStatus) {
+      return;
+    }
+
+    primaryPlaybackResumeRef.current = {
+      identity: primaryResume.identity,
+      positionMs: resolvePlaybackAbsolutePositionMs(currentPrimaryStatus),
+    };
+  }
+
+  async function refreshSpectrumPlaybackStatus() {
+    const result = await crab.getPlaybackStatus();
+    const status = result.match({
+      Ok: (value) => value,
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+    setPlaybackStatus(status);
+    return status;
+  }
+
+  useLayoutEffect(() => {
+    let disposed = false;
+
+    async function refresh() {
+      try {
+        const result = await crab.getPlaybackStatus();
+        const status = result.match({
+          Ok: (value) => value,
+          Err: (error) => {
+            throw new Error(error);
+          },
+        });
+        if (!disposed) {
+          setPlaybackStatus(status);
+        }
+      } catch (error) {
+        if (!disposed) {
+          console.error("Failed to refresh spectrum playback status", error);
+          setPlaybackStatus(null);
+        }
+      }
+    }
+
+    void refresh();
+    const intervalId = window.setInterval(refresh, SPECTRUM_PLAYBACK_STATUS_POLL_MS);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   return (
     <div
@@ -296,9 +564,17 @@ export function SpectrumPage() {
         <SpectrumMusicVirtualList
           editableTitleRefs={editableTitleRefs}
           editorViewModels={renderData.editorViewModels}
-          renderPlaybackAction={(editor) =>
-            editor.isCurrent ? <SpectrumPlaybackAction filePath={renderData.trackFilePath} /> : null
-          }
+          renderPlaybackAction={(editor) => {
+            const identity = resolveSpectrumPlaybackActionIdentity(editor);
+
+            return (
+              <SpectrumPlaybackAction
+                identity={identity}
+                snapshot={resolveSpectrumPlaybackSnapshot(playbackStatus, identity)}
+                onAction={handleSpectrumPlaybackAction}
+              />
+            );
+          }}
           trackFilePath={renderData.trackFilePath}
           onReset={(id) => appLogicAction.resetSpectrumMusicDraft(id)}
           onSelectionChange={handleSpectrumSelectionChange}

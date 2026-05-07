@@ -126,7 +126,7 @@ function SpectrumMusicVirtualListRow({
     <div
       ref={rowRef}
       data-index={index}
-      className="absolute top-0 left-0 w-full"
+      className="group/spectrum-music-row absolute top-0 left-0 w-full"
       style={{
         transform: resolveSpectrumMusicVirtualRowTransform({ scrollMargin, start }),
       }}

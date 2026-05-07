@@ -107,6 +107,23 @@ fn playback_strategy_set_repeats_current_track_in_repeat_current_mode() {
 }
 
 #[test]
+fn playback_strategy_set_can_select_a_requested_track_before_repeat_current() {
+    let mut strategy = PlaybackStrategySet::new();
+    let tracks = vec![track("a"), track("b"), track("c")];
+    let requested = tracks[1].clone();
+
+    let selected = strategy
+        .select_track(&requested, &tracks)
+        .expect("requested track should exist");
+    let repeated = strategy
+        .next_track(PlaybackContinuationMode::RepeatCurrent, &tracks)
+        .expect("repeat mode should keep the selected track");
+
+    assert_eq!(selected.music_url, requested.music_url);
+    assert_eq!(repeated.music_url, requested.music_url);
+}
+
+#[test]
 fn playback_strategy_set_does_not_randomize_when_current_track_disappears_in_repeat_current_mode() {
     let mut strategy = PlaybackStrategySet::new();
     let original_tracks = vec![track("a")];

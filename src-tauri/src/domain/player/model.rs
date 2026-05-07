@@ -28,6 +28,8 @@ pub struct PlaybackStatusPayload {
     pub duration_ms: Option<u32>,
     pub playlist_name: Option<String>,
     pub music_url: Option<String>,
+    pub track_start_ms: Option<u32>,
+    pub track_end_ms: Option<u32>,
     pub playback_start_ms: Option<u32>,
     pub playback_end_ms: Option<u32>,
 }

@@ -1845,6 +1845,8 @@ describe("SpectrumVisualizer", () => {
       playlist_name: "Focus",
       position_ms: 1_000,
       received_at_ms: 100,
+      track_end_ms: 40_000,
+      track_start_ms: 20_000,
     };
 
     assert.equal(
@@ -1883,6 +1885,8 @@ describe("SpectrumVisualizer", () => {
           playlist_name: "Focus",
           position_ms: 1_000,
           received_at_ms: 100,
+          track_end_ms: 40_000,
+          track_start_ms: 20_000,
         },
       }),
       20_000,
@@ -1904,6 +1908,8 @@ describe("SpectrumVisualizer", () => {
           playlist_name: "Focus",
           position_ms: 2_000,
           received_at_ms: 100,
+          track_end_ms: 40_000,
+          track_start_ms: 20_000,
         },
       }),
       15_000,

@@ -122,7 +122,11 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
               onChange={onTitleChange}
             />
           </motion.div>
-          {playbackAction ? <motion.div {...contentFade}>{playbackAction}</motion.div> : null}
+          {playbackAction ? (
+            <div className="opacity-0 transition-opacity duration-300 group-hover/spectrum-music-row:opacity-100">
+              <motion.div {...contentFade}>{playbackAction}</motion.div>
+            </div>
+          ) : null}
         </div>
         <motion.div {...contentFade} className={cn("relative mt-8", waveformClassName)}>
           <div className="grid">

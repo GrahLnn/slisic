@@ -43,6 +43,7 @@ pub fn run() {
             domain::player::stop_playback,
             domain::player::pause_playback,
             domain::player::resume_playback,
+            domain::player::play_spectrum_music,
             domain::player::begin_playback_seek,
             domain::player::cancel_playback_seek,
             domain::player::seek_playback,
