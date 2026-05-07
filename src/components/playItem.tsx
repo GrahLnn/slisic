@@ -257,8 +257,6 @@ function PlayItemFrame({
   return (
     <motion.div
       className={cn(className)}
-      data-spectrum-share-trace-layout-id={layoutId}
-      data-spectrum-share-trace-title={layoutId ? "source" : undefined}
       layout={frameProjection.layout}
       layoutId={frameProjection.layoutId}
       onContextMenu={createContextMenuHandler(onContextMenu)}

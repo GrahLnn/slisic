@@ -1,15 +1,10 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { collectionTitleLayoutTransition } from "../collectionTitle";
 import type { EditableTitleHandle } from "../EditableTitle";
-import {
-  captureSpectrumShareFrames,
-  installSpectrumShareTrace,
-  recordSpectrumShareTrace,
-} from "@/src/debug/spectrumShareTrace";
 import type { MusicSpectrumSelection } from "./MusicSpectrumEditor";
 import { SpectrumMusicVirtualList } from "./SpectrumMusicVirtualList";
 import {
@@ -154,39 +149,6 @@ function SpectrumBackIcon({ visualState }: { visualState: SpectrumBackActionVisu
   );
 }
 
-function SpectrumPageShareTraceOwner(args: {
-  editorViewModels: readonly SpectrumMusicEditorViewModel[];
-  isPresent: boolean;
-  trackFilePath: string | null;
-}) {
-  useLayoutEffect(() => {
-    installSpectrumShareTrace();
-    recordSpectrumShareTrace("spectrum-page-commit", {
-      isPresent: args.isPresent,
-      musicCount: args.editorViewModels.length,
-      currentIndex: args.editorViewModels.findIndex((editor) => editor.isCurrent),
-      currentId: args.editorViewModels.find((editor) => editor.isCurrent)?.id ?? null,
-      hasTrackFilePath: args.trackFilePath !== null,
-    });
-  }, [args.editorViewModels, args.isPresent, args.trackFilePath]);
-
-  useLayoutEffect(() => {
-    if (!args.isPresent) {
-      return;
-    }
-
-    captureSpectrumShareFrames("spectrum-page-present", {
-      frames: 72,
-      payload: {
-        musicCount: args.editorViewModels.length,
-      },
-      reset: true,
-    });
-  }, [args.editorViewModels.length, args.isPresent]);
-
-  return null;
-}
-
 export function SpectrumPage() {
   const isPresent = useIsPresent();
   const editableTitleRefs = useRef(new Map<string, EditableTitleHandle>());
@@ -305,11 +267,6 @@ export function SpectrumPage() {
         !isPresent && "pointer-events-none",
       )}
     >
-      <SpectrumPageShareTraceOwner
-        editorViewModels={renderData.editorViewModels}
-        isPresent={isPresent}
-        trackFilePath={renderData.trackFilePath}
-      />
       <div className="relative z-20 flex flex-col">
         <motion.div {...contentFadeProps}>
           <button

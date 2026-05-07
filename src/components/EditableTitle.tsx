@@ -187,8 +187,6 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
         <motion.div
           key={layoutHostKey}
           ref={titleRootRef}
-          data-spectrum-share-trace-layout-id={resolvedLayoutId}
-          data-spectrum-share-trace-title={resolvedLayoutId ? "target" : undefined}
           layoutId={resolvedLayoutId}
           className={cn("relative w-fit max-w-full", className)}
           style={style}
