@@ -72,6 +72,7 @@ export interface Context {
   nowPlayingTrackFilePath: string | null;
   nowPlayingTrackStartMs: number | null;
   nowPlayingTrackEndMs: number | null;
+  spectrumPlaybackScopeId: number | null;
   spectrumMusicDrafts: SpectrumMusicDraft[];
   shouldStartPlayback: boolean;
   activeLayoutId: string | null;
@@ -428,6 +429,7 @@ export function createInitialContext(): Context {
     nowPlayingTrackFilePath: null,
     nowPlayingTrackStartMs: null,
     nowPlayingTrackEndMs: null,
+    spectrumPlaybackScopeId: null,
     spectrumMusicDrafts: [],
     shouldStartPlayback: false,
     activeLayoutId: null,

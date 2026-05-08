@@ -41,6 +41,8 @@ pub fn run() {
             domain::playlists::remove_exclude,
             domain::playlist_playback::play_playlist,
             domain::player::set_playback_continuation_mode,
+            domain::player::enter_spectrum_playback_scope,
+            domain::player::exit_spectrum_playback_scope,
             domain::player::stop_playback,
             domain::player::pause_playback,
             domain::player::resume_playback,

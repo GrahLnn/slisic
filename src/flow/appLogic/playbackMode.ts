@@ -3,6 +3,13 @@ import type { PlaybackContinuationMode } from "@/src/cmd";
 
 export type PlaybackModeEffect =
   | {
+      kind: "enterSpectrumPlaybackScope";
+    }
+  | {
+      kind: "exitSpectrumPlaybackScope";
+      scopeId: number | null;
+    }
+  | {
       kind: "setPlaybackContinuationMode";
       mode: PlaybackContinuationMode;
     }
@@ -13,17 +20,18 @@ export type PlaybackModeEffect =
 export function resolveSpectrumEnterPlaybackModeEffects(): PlaybackModeEffect[] {
   return [
     {
-      kind: "setPlaybackContinuationMode",
-      mode: "repeatCurrent",
+      kind: "enterSpectrumPlaybackScope",
     },
   ];
 }
 
-export function resolveSpectrumExitPlaybackModeEffects(): PlaybackModeEffect[] {
+export function resolveSpectrumExitPlaybackModeEffects(
+  scopeId: number | null,
+): PlaybackModeEffect[] {
   return [
     {
-      kind: "setPlaybackContinuationMode",
-      mode: "random",
+      kind: "exitSpectrumPlaybackScope",
+      scopeId,
     },
   ];
 }
@@ -55,4 +63,11 @@ export function resolveSpectrumBackResumeEffects(args: {
         },
       ]
     : [];
+}
+
+export function shouldCommitSpectrumPlaybackScopeExit(args: {
+  currentScopeId: number | null;
+  requestedScopeId: number | null;
+}) {
+  return args.currentScopeId === args.requestedScopeId;
 }

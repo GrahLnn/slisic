@@ -5,6 +5,8 @@ import {
   chooseSavePath,
   deletePlaylistRecord,
   getPlaybackStatus,
+  enterSpectrumPlaybackScope,
+  exitSpectrumPlaybackScope,
   listenNowPlayingTrackChanged,
   MainStateT,
   persistSavePath,
@@ -30,6 +32,7 @@ import {
   savePathChanged,
   spectrumMusicDraftReset,
   spectrumMusicDeleted,
+  spectrumPlaybackScopeChanged,
   spectrumMusicRangeChanged,
   send,
   spectrumMusicNameChanged,
@@ -40,6 +43,7 @@ import {
   resolveSpectrumBackResumeEffects,
   resolveSpectrumEnterPlaybackModeEffects,
   resolveSpectrumExitPlaybackModeEffects,
+  shouldCommitSpectrumPlaybackScopeExit,
   type PlaybackModeEffect,
 } from "./playbackMode";
 
@@ -73,6 +77,7 @@ function summarizeContext(context: ActorSnapshot["context"]) {
     nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
     nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
     nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+    spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
     spectrumMusicDraftCount: context.spectrumMusicDrafts.length,
     error: context.error,
     titleToneHandoffLayoutId: context.titleToneHandoff?.layoutId ?? null,
@@ -143,6 +148,26 @@ function requestPlaybackStop() {
 }
 
 async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
+  if (effect.kind === "enterSpectrumPlaybackScope") {
+    send(spectrumPlaybackScopeChanged.load(await enterSpectrumPlaybackScope()));
+    return;
+  }
+
+  if (effect.kind === "exitSpectrumPlaybackScope") {
+    if (effect.scopeId !== null) {
+      await exitSpectrumPlaybackScope(effect.scopeId);
+    }
+    if (
+      shouldCommitSpectrumPlaybackScopeExit({
+        currentScopeId: actor.getSnapshot().context.spectrumPlaybackScopeId,
+        requestedScopeId: effect.scopeId,
+      })
+    ) {
+      send(spectrumPlaybackScopeChanged.load(null));
+    }
+    return;
+  }
+
   if (effect.kind === "setPlaybackContinuationMode") {
     await playbackContinuationModeEffectOwner.request(effect.mode);
     return;
@@ -180,12 +205,24 @@ function isSpectrumOpenSourceStillCurrent(source: ActorSnapshot, current: ActorS
 }
 
 async function openSpectrumAfterPlaybackMode(sourceSnapshot: ActorSnapshot) {
-  await applyPlaybackModeEffects(resolveSpectrumEnterPlaybackModeEffects());
+  let openedScopeId: number | null = null;
+  for (const effect of resolveSpectrumEnterPlaybackModeEffects()) {
+    if (effect.kind === "enterSpectrumPlaybackScope") {
+      openedScopeId = await enterSpectrumPlaybackScope();
+      send(spectrumPlaybackScopeChanged.load(openedScopeId));
+      continue;
+    }
+
+    await applyPlaybackModeEffect(effect);
+  }
 
   const currentSnapshot = actor.getSnapshot();
   const shouldCommit = isSpectrumOpenSourceStillCurrent(sourceSnapshot, currentSnapshot);
 
   if (!shouldCommit) {
+    if (openedScopeId !== null) {
+      await applyPlaybackModeEffects(resolveSpectrumExitPlaybackModeEffects(openedScopeId));
+    }
     return;
   }
 
@@ -193,7 +230,9 @@ async function openSpectrumAfterPlaybackMode(sourceSnapshot: ActorSnapshot) {
 }
 
 async function restorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnapshot) {
-  await applyPlaybackModeEffects(resolveSpectrumExitPlaybackModeEffects());
+  await applyPlaybackModeEffects(
+    resolveSpectrumExitPlaybackModeEffects(snapshot.context.spectrumPlaybackScopeId),
+  );
 
   if (isNowPlayingSpectrumMusicDeleteRequested(snapshot)) {
     return;
@@ -224,10 +263,10 @@ function isNowPlayingSpectrumMusicDeleteRequested(snapshot: ActorSnapshot) {
   );
 }
 
-function requestRestoreRandomPlaybackBeforeLeavingSpectrum() {
+function requestExitSpectrumPlaybackScope(scopeId: number | null) {
   requestPlaybackModeEffects(
-    resolveSpectrumExitPlaybackModeEffects(),
-    "Failed to restore playback before leaving spectrum",
+    resolveSpectrumExitPlaybackModeEffects(scopeId),
+    "Failed to exit spectrum playback scope",
   );
 }
 
@@ -241,13 +280,8 @@ function shouldStopPlaybackForSnapshot(snapshot: ActorSnapshot) {
   return snapshot.value === "play" && snapshot.context.playingPlaylistName !== null;
 }
 
-function shouldRestoreRandomPlaybackForSnapshot(snapshot: ActorSnapshot) {
-  return (
-    snapshot.value === "spectrumLoadingMusics" ||
-    snapshot.value === "spectrum" ||
-    snapshot.value === "spectrumUpdatingMusic" ||
-    snapshot.value === "spectrumDeletingMusic"
-  );
+function shouldExitSpectrumPlaybackScopeForSnapshot(snapshot: ActorSnapshot) {
+  return snapshot.context.spectrumPlaybackScopeId !== null;
 }
 
 function attachNowPlayingTrackListener() {
@@ -270,8 +304,8 @@ export const action = {
   run: () => {
     ensureStarted();
     const snapshot = actor.getSnapshot();
-    if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
-      requestRestoreRandomPlaybackBeforeLeavingSpectrum();
+    if (shouldExitSpectrumPlaybackScopeForSnapshot(snapshot)) {
+      requestExitSpectrumPlaybackScope(snapshot.context.spectrumPlaybackScopeId);
     }
     if (shouldStopPlaybackForSnapshot(snapshot)) {
       requestPlaybackStop();
@@ -282,8 +316,8 @@ export const action = {
     ensureStarted();
     pasteDownloadAction.reset();
     const snapshot = actor.getSnapshot();
-    if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
-      requestRestoreRandomPlaybackBeforeLeavingSpectrum();
+    if (shouldExitSpectrumPlaybackScopeForSnapshot(snapshot)) {
+      requestExitSpectrumPlaybackScope(snapshot.context.spectrumPlaybackScopeId);
     }
     if (shouldStopPlaybackForSnapshot(snapshot)) {
       requestPlaybackStop();
@@ -299,8 +333,8 @@ export const action = {
     ensureStarted();
     pasteDownloadAction.reset();
     const snapshot = actor.getSnapshot();
-    if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
-      requestRestoreRandomPlaybackBeforeLeavingSpectrum();
+    if (shouldExitSpectrumPlaybackScopeForSnapshot(snapshot)) {
+      requestExitSpectrumPlaybackScope(snapshot.context.spectrumPlaybackScopeId);
     }
     if (shouldStopPlaybackForSnapshot(snapshot)) {
       requestPlaybackStop();
@@ -311,8 +345,8 @@ export const action = {
     ensureStarted();
     pasteDownloadAction.reset();
     const snapshot = actor.getSnapshot();
-    if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
-      requestRestoreRandomPlaybackBeforeLeavingSpectrum();
+    if (shouldExitSpectrumPlaybackScopeForSnapshot(snapshot)) {
+      requestExitSpectrumPlaybackScope(snapshot.context.spectrumPlaybackScopeId);
     }
     if (snapshot.value === "play" && snapshot.context.playingPlaylistName === playlistName) {
       requestPlaybackStop();
@@ -338,7 +372,7 @@ export const action = {
   back: () => {
     ensureStarted();
     const snapshot = actor.getSnapshot();
-    if (shouldRestoreRandomPlaybackForSnapshot(snapshot)) {
+    if (shouldExitSpectrumPlaybackScopeForSnapshot(snapshot)) {
       requestRestorePlaybackPageModeBeforeBackFromSpectrum(snapshot);
     }
     if (shouldStopPlaybackForSnapshot(snapshot)) {

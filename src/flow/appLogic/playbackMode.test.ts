@@ -4,32 +4,32 @@ import {
   resolveSpectrumBackResumeEffects,
   resolveSpectrumEnterPlaybackModeEffects,
   resolveSpectrumExitPlaybackModeEffects,
+  shouldCommitSpectrumPlaybackScopeExit,
   shouldResumePlaybackPageTrackAfterSpectrumBack,
 } from "./playbackMode";
 
 describe("appLogic playback mode", () => {
-  test("sets repeat current mode when entering spectrum", () => {
+  test("opens a dedicated backend spectrum scope when entering spectrum", () => {
     assert.deepEqual(resolveSpectrumEnterPlaybackModeEffects(), [
       {
-        kind: "setPlaybackContinuationMode",
-        mode: "repeatCurrent",
+        kind: "enterSpectrumPlaybackScope",
       },
     ]);
   });
 
-  test("restores random mode for every spectrum exit", () => {
-    assert.deepEqual(resolveSpectrumExitPlaybackModeEffects(), [
+  test("closes the dedicated backend spectrum scope on every spectrum exit", () => {
+    assert.deepEqual(resolveSpectrumExitPlaybackModeEffects(42), [
       {
-        kind: "setPlaybackContinuationMode",
-        mode: "random",
+        kind: "exitSpectrumPlaybackScope",
+        scopeId: 42,
       },
     ]);
   });
 
-  test("keeps random restoration separate from back-only playback resume", () => {
+  test("keeps scope exit separate from back-only playback resume", () => {
     assert.deepEqual(
       [
-        ...resolveSpectrumExitPlaybackModeEffects(),
+        ...resolveSpectrumExitPlaybackModeEffects(42),
         ...resolveSpectrumBackResumeEffects({
           currentPlaybackPath: "C:/Music/Track.flac",
           spectrumTrackPath: "c:/music/track.flac",
@@ -38,13 +38,37 @@ describe("appLogic playback mode", () => {
       ],
       [
         {
-          kind: "setPlaybackContinuationMode",
-          mode: "random",
+          kind: "exitSpectrumPlaybackScope",
+          scopeId: 42,
         },
         {
           kind: "resumePlayback",
         },
       ],
+    );
+  });
+
+  test("commits spectrum scope exit only for the same active scope", () => {
+    assert.equal(
+      shouldCommitSpectrumPlaybackScopeExit({
+        currentScopeId: 42,
+        requestedScopeId: 42,
+      }),
+      true,
+    );
+    assert.equal(
+      shouldCommitSpectrumPlaybackScopeExit({
+        currentScopeId: 43,
+        requestedScopeId: 42,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldCommitSpectrumPlaybackScopeExit({
+        currentScopeId: null,
+        requestedScopeId: 42,
+      }),
+      false,
     );
   });
 

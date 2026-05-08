@@ -17,6 +17,8 @@ import {
 import type { MusicDraftDelete } from "./musicTitle";
 
 const spectrumMusicDeleted = payloads["spectrum.music_deleted"];
+const spectrumMusicRangeChanged = payloads["spectrum.music_range.changed"];
+const spectrumPlaybackScopeChanged = payloads["spectrum.playback_scope.changed"];
 
 function createMusic(overrides: Partial<Music> = {}): Music {
   return {
@@ -262,5 +264,124 @@ describe("appLogic machine", () => {
     assert.equal(context.nowPlayingTrackFilePath, null);
     assert.equal(context.nowPlayingTrackStartMs, null);
     assert.equal(context.nowPlayingTrackEndMs, null);
+    assert.equal(context.spectrumPlaybackScopeId, null);
+  });
+
+  test("keeps the spectrum playback scope reachable until backend exit is acknowledged", async () => {
+    const music = createMusic();
+    const collection = createCollection([music]);
+
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () => ({
+            hasPlayList: true,
+            playlists: [createPlaylist(collection)],
+            collections: [collection],
+            savePath: "C:/Music",
+          })),
+          playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
+            async () => null,
+          ),
+          loadSpectrumMusicDrafts: fromPromise<
+            SpectrumMusicDraft[],
+            SpectrumMusicDraftBootstrapInput
+          >(async () => [
+            {
+              baselineName: music.alias,
+              baselineStartMs: music.start_ms,
+              baselineEndMs: music.end_ms,
+              name: music.alias,
+              url: music.url,
+              startMs: music.start_ms,
+              endMs: music.end_ms,
+            },
+          ]),
+          updateMusics: fromPromise<MusicUpdatesResult, MusicUpdateInput[]>(
+            async ({ input }) => ({
+              results: input.map((request) => ({
+                input: request,
+                music: {
+                  ...music,
+                  alias: request.alias,
+                  start_ms: request.startMs,
+                  end_ms: request.endMs,
+                },
+              })),
+            }),
+          ),
+          deleteMusics: fromPromise<MusicDeletesResult, MusicDraftDelete[]>(async () => ({
+            results: [],
+          })),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "ready") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+    actor.send(payloads["playlist.play"].load("Focus Session"));
+    actor.send(
+      payloads["player.now_playing_track.changed"].load({
+        playlist_name: "Focus Session",
+        music_name: music.alias,
+        music_url: music.url,
+        file_path: "C:/Music/quiet-morning.m4a",
+        start_ms: music.start_ms,
+        end_ms: music.end_ms,
+      }),
+    );
+    actor.send(spectrumPlaybackScopeChanged.load(42));
+    actor.send(sig.mainx.openspectrum);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "spectrum") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+
+    assert.equal(actor.getSnapshot().context.spectrumPlaybackScopeId, 42);
+
+    actor.send(
+      spectrumMusicRangeChanged.load({
+        id: "https://example.com/quiet-morning#a|0|120000",
+        startMs: music.start_ms,
+        endMs: 90_000,
+      }),
+    );
+    actor.send(sig.mainx.back);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "play") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+    assert.equal(actor.getSnapshot().context.spectrumPlaybackScopeId, 42);
+
+    actor.send(spectrumPlaybackScopeChanged.load(null));
+    assert.equal(actor.getSnapshot().context.spectrumPlaybackScopeId, null);
   });
 });

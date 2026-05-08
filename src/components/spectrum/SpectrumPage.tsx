@@ -279,6 +279,7 @@ export function SpectrumPage() {
     nowPlayingTrackUrl,
     nowPlayingTrackStartMs,
     playingPlaylistName,
+    spectrumPlaybackScopeId,
     spectrumMusicDrafts,
     titleToneHandoff,
   } = appLogicHook.useContext();
@@ -346,9 +347,13 @@ export function SpectrumPage() {
     if (!editor.playbackIdentity) {
       return;
     }
+    if (spectrumPlaybackScopeId === null) {
+      return;
+    }
 
     void crab
       .updateSpectrumPlaybackLoopSignal(
+        spectrumPlaybackScopeId,
         createSpectrumPlaybackLoopSignalPayload({
           endMs: nextRange.endMs,
           identity: editor.playbackIdentity,
@@ -448,8 +453,12 @@ export function SpectrumPage() {
     if (editor === null) {
       return;
     }
+    if (spectrumPlaybackScopeId === null) {
+      return;
+    }
 
     const result = await crab.playSpectrumMusic(
+      spectrumPlaybackScopeId,
       createSpectrumPlaybackTrackPayload(identity, editor.titleValue),
       null,
     );
@@ -473,6 +482,9 @@ export function SpectrumPage() {
     if (!primaryResume || !primaryEditor || primaryEditor.playbackIdentity === null) {
       return;
     }
+    if (spectrumPlaybackScopeId === null) {
+      return;
+    }
 
     const identity = primaryEditor.playbackIdentity;
     const status = await refreshSpectrumPlaybackStatus();
@@ -491,6 +503,7 @@ export function SpectrumPage() {
     }
 
     const result = await crab.restoreSpectrumMusic(
+      spectrumPlaybackScopeId,
       createSpectrumPlaybackTrackPayload(identity, primaryEditor.titleValue),
       restoreEffect.positionMs,
     );
@@ -509,6 +522,9 @@ export function SpectrumPage() {
     if (editor === null) {
       return;
     }
+    if (spectrumPlaybackScopeId === null) {
+      return;
+    }
 
     const status = await refreshSpectrumPlaybackStatus();
 
@@ -524,8 +540,8 @@ export function SpectrumPage() {
 
     const track = createSpectrumPlaybackTrackPayload(identity, editor.titleValue);
     const result = status?.paused
-      ? await crab.resumeSpectrumMusic(track)
-      : await crab.pauseSpectrumMusic(track);
+      ? await crab.resumeSpectrumMusic(spectrumPlaybackScopeId, track)
+      : await crab.pauseSpectrumMusic(spectrumPlaybackScopeId, track);
     result.match({
       Ok: () => undefined,
       Err: (error) => {

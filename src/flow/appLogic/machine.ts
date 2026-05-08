@@ -206,6 +206,7 @@ function createSpectrumPlayReturnContext(
         ? null
         : (currentMusicEdit?.endMs ?? context.nowPlayingTrackEndMs),
     shouldStartPlayback: false,
+    spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
     titleToneHandoff: context.activeLayoutId
       ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
       : null,
@@ -233,6 +234,7 @@ const spectrumMusicNameChanged = payloads["spectrum.music_name.changed"];
 const spectrumMusicRangeChanged = payloads["spectrum.music_range.changed"];
 const spectrumMusicDeleted = payloads["spectrum.music_deleted"];
 const spectrumMusicDraftReset = payloads["spectrum.music_draft.reset"];
+const spectrumPlaybackScopeChanged = payloads["spectrum.playback_scope.changed"];
 const savePathChanged = payloads["save_path.changed"];
 const collectionUpserted = payloads["collection.upserted"];
 const draftCollectionUpserted = payloads["draft.collection.upserted"];
@@ -330,6 +332,11 @@ export const machine = src.createMachine({
               ? context.spectrumMusicDrafts
               : [],
         };
+      }),
+    },
+    [spectrumPlaybackScopeChanged.evt]: {
+      actions: assign({
+        spectrumPlaybackScopeId: ({ event }) => event.output,
       }),
     },
   },
@@ -456,6 +463,7 @@ export const machine = src.createMachine({
               nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
               nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+              spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
               spectrumMusicDrafts: context.spectrumMusicDrafts,
               error: toErrorMessage(event.error),
             }),
@@ -547,6 +555,7 @@ export const machine = src.createMachine({
               nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
               nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+              spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
               spectrumMusicDrafts: createCurrentSpectrumMusicDrafts(context),
               shouldStartPlayback: false,
               activeLayoutId: context.playingPlaylistName
@@ -588,6 +597,7 @@ export const machine = src.createMachine({
               nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
               nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+              spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
               spectrumMusicDrafts: mergeSpectrumMusicDrafts({
                 baseDrafts: context.spectrumMusicDrafts,
                 incomingDrafts: event.output,
@@ -612,6 +622,7 @@ export const machine = src.createMachine({
               nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
               nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+              spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
               spectrumMusicDrafts: context.spectrumMusicDrafts,
               error: toErrorMessage(event.error),
             }),
@@ -712,6 +723,7 @@ export const machine = src.createMachine({
               nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
               nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+              spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
               error: toErrorMessage(event.error),
             }),
           ),
@@ -745,6 +757,7 @@ export const machine = src.createMachine({
               nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
               nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+              spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
               error: toErrorMessage(event.error),
             }),
           ),

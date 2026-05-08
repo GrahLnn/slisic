@@ -1,8 +1,10 @@
 #[cfg(not(test))]
 use super::event::NowPlayingTrackChangedEvent;
 #[cfg(not(test))]
+use super::model::PlaybackContinuationMode;
+#[cfg(not(test))]
 use super::model::PlaybackStatusPayload;
-use super::model::{PlaybackContinuationMode, PlaybackTrack};
+use super::model::PlaybackTrack;
 #[cfg(not(test))]
 use super::strategy::PlaybackStrategySet;
 #[cfg(not(test))]
@@ -40,10 +42,12 @@ pub struct PlayerRuntime {
     session: Mutex<Option<ActivePlaybackSession>>,
     active_request_track: RwLock<Option<PlaybackTrack>>,
     active_playback_range: RwLock<Option<ActivePlaybackRange>>,
+    spectrum_playback_scope: RwLock<Option<SpectrumPlaybackScope>>,
     spectrum_playback_loop_signal: RwLock<Option<SpectrumPlaybackLoopSignal>>,
     temporary_playback_pause: RwLock<bool>,
     continuation_mode: RwLock<PlaybackContinuationMode>,
     generation: AtomicU64,
+    spectrum_playback_scope_generation: AtomicU64,
     active_binary_tasks: AtomicUsize,
 }
 
@@ -62,36 +66,6 @@ struct ActivePlaybackSession {
 }
 
 #[cfg(not(test))]
-#[derive(Clone, Copy)]
-enum PlaybackSessionContinuation {
-    FollowGlobal,
-    Fixed(PlaybackContinuationMode),
-}
-
-#[cfg(not(test))]
-impl PlaybackSessionContinuation {
-    fn resolve(self, global: PlaybackContinuationMode) -> PlaybackContinuationMode {
-        resolve_session_continuation_mode(
-            match self {
-                Self::FollowGlobal => None,
-                Self::Fixed(mode) => Some(mode),
-            },
-            global,
-        )
-    }
-}
-
-pub(crate) fn resolve_session_continuation_mode(
-    local: Option<PlaybackContinuationMode>,
-    global: PlaybackContinuationMode,
-) -> PlaybackContinuationMode {
-    match local {
-        Some(mode) => mode,
-        None => global,
-    }
-}
-
-#[cfg(not(test))]
 struct SpectrumPlaybackStartPlan {
     session: PlaybackSession,
     track: PlaybackTrack,
@@ -101,6 +75,11 @@ struct SpectrumPlaybackStartPlan {
 pub(crate) struct ActivePlaybackRange {
     pub(crate) start_ms: u32,
     pub(crate) end_ms: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SpectrumPlaybackScope {
+    pub(crate) id: u64,
 }
 
 #[cfg(not(test))]
@@ -141,10 +120,12 @@ pub fn initialize_runtime(app: AppHandle) {
             session: Mutex::new(None),
             active_request_track: RwLock::new(None),
             active_playback_range: RwLock::new(None),
+            spectrum_playback_scope: RwLock::new(None),
             spectrum_playback_loop_signal: RwLock::new(None),
             temporary_playback_pause: RwLock::new(false),
             continuation_mode: RwLock::new(PlaybackContinuationMode::Random),
             generation: AtomicU64::new(0),
+            spectrum_playback_scope_generation: AtomicU64::new(0),
             active_binary_tasks: AtomicUsize::new(0),
         })
     });
@@ -192,8 +173,8 @@ pub async fn play_tracks(
         tracks: shared_tracks,
         strategy: shared_strategy,
         initial_request: None,
-        continuation: PlaybackSessionContinuation::FollowGlobal,
     };
+    runtime.clear_spectrum_playback_scope()?;
     runtime.clear_spectrum_playback_loop_signal()?;
     let runtime_for_task = Arc::clone(runtime);
     let playback_for_task = playback.clone();
@@ -221,18 +202,20 @@ pub async fn play_tracks(
 
 #[cfg(not(test))]
 pub async fn play_spectrum_music(
+    scope_id: u64,
     track: PlaybackTrack,
     position_ms: Option<u32>,
 ) -> Result<PlaybackSessionHandle> {
-    play_track_in_current_session(track, position_ms, false).await
+    play_track_in_current_session(scope_id, track, position_ms, false).await
 }
 
 #[cfg(not(test))]
 pub async fn restore_spectrum_music(
+    scope_id: u64,
     track: PlaybackTrack,
     position_ms: Option<u32>,
 ) -> Result<PlaybackSessionHandle> {
-    play_track_in_current_session(track, position_ms, true).await
+    play_track_in_current_session(scope_id, track, position_ms, true).await
 }
 
 #[cfg(not(test))]
@@ -266,25 +249,44 @@ pub(crate) fn update_current_session_track_identity(
 
 #[cfg(not(test))]
 pub async fn play_track_in_current_session(
+    scope_id: u64,
     track: PlaybackTrack,
     position_ms: Option<u32>,
     pause_after_start: bool,
 ) -> Result<PlaybackSessionHandle> {
     let runtime = runtime()?;
-    let plan =
-        runtime.resolve_spectrum_playback_start_plan(track, position_ms, pause_after_start)?;
+    let scope = SpectrumPlaybackScope { id: scope_id };
+    if !runtime.is_spectrum_playback_scope_active(scope)? {
+        bail!("spectrum playback signal is not active");
+    }
+    let plan = runtime.resolve_spectrum_playback_start_plan(
+        scope,
+        track,
+        position_ms,
+        pause_after_start,
+    )?;
     let active_binary_task = ActiveBinaryTaskGuard::new(Arc::clone(runtime));
     let playback = runtime.playback()?;
+    if !runtime.is_spectrum_playback_scope_active(scope)? {
+        bail!("spectrum playback signal is not active");
+    }
 
     if let Err(error) = playback.stop().await {
         eprintln!("[player] failed to stop previous playback before selecting track: {error}");
     }
+    if !runtime.is_spectrum_playback_scope_active(scope)? {
+        bail!("spectrum playback signal is not active");
+    }
     let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
     runtime.set_temporary_playback_pause(false)?;
     runtime.clear_spectrum_playback_loop_signal()?;
-    let default_loop_signal =
-        resolve_spectrum_playback_loop_signal(&plan.track, plan.track.start_ms, plan.track.end_ms)
-            .ok_or_else(|| anyhow!("invalid spectrum playback loop signal"))?;
+    let default_loop_signal = resolve_spectrum_playback_loop_signal(
+        scope,
+        &plan.track,
+        plan.track.start_ms,
+        plan.track.end_ms,
+    )
+    .ok_or_else(|| anyhow!("invalid spectrum playback loop signal"))?;
     runtime.set_spectrum_playback_loop_signal(Some(default_loop_signal))?;
 
     let runtime_for_task = Arc::clone(runtime);
@@ -370,8 +372,11 @@ pub async fn resume_playback() -> Result<bool> {
 }
 
 #[cfg(not(test))]
-pub async fn pause_spectrum_music(track: PlaybackTrack) -> Result<bool> {
+pub async fn pause_spectrum_music(scope_id: u64, track: PlaybackTrack) -> Result<bool> {
     let runtime = runtime()?;
+    if !runtime.is_spectrum_playback_scope_active(SpectrumPlaybackScope { id: scope_id })? {
+        return Ok(false);
+    }
     let Some(playback) = runtime.current_playback()? else {
         return Ok(false);
     };
@@ -392,8 +397,11 @@ pub async fn pause_spectrum_music(track: PlaybackTrack) -> Result<bool> {
 }
 
 #[cfg(not(test))]
-pub async fn resume_spectrum_music(track: PlaybackTrack) -> Result<bool> {
+pub async fn resume_spectrum_music(scope_id: u64, track: PlaybackTrack) -> Result<bool> {
     let runtime = runtime()?;
+    if !runtime.is_spectrum_playback_scope_active(SpectrumPlaybackScope { id: scope_id })? {
+        return Ok(false);
+    }
     let Some(playback) = runtime.current_playback()? else {
         return Ok(false);
     };
@@ -415,11 +423,16 @@ pub async fn resume_spectrum_music(track: PlaybackTrack) -> Result<bool> {
 
 #[cfg(not(test))]
 pub async fn update_spectrum_playback_loop_signal(
+    scope_id: u64,
     track: PlaybackTrack,
     start_ms: u32,
     end_ms: u32,
 ) -> Result<Option<PlaybackStatusPayload>> {
     let runtime = runtime()?;
+    let scope = SpectrumPlaybackScope { id: scope_id };
+    if !runtime.is_spectrum_playback_scope_active(scope)? {
+        return Ok(None);
+    }
     let Some(playback) = runtime.current_playback()? else {
         return Ok(None);
     };
@@ -429,8 +442,12 @@ pub async fn update_spectrum_playback_loop_signal(
     if !are_playback_tracks_equal(&active_track, &track) {
         return Ok(None);
     }
+    if !runtime.is_spectrum_playback_scope_active(scope)? {
+        return Ok(None);
+    }
 
-    let Some(signal) = resolve_spectrum_playback_loop_signal(&track, start_ms, end_ms) else {
+    let Some(signal) = resolve_spectrum_playback_loop_signal(scope, &track, start_ms, end_ms)
+    else {
         return Ok(None);
     };
     runtime.set_spectrum_playback_loop_signal(Some(signal.clone()))?;
@@ -725,6 +742,20 @@ pub fn set_playback_continuation_mode(mode: PlaybackContinuationMode) -> Result<
 }
 
 #[cfg(not(test))]
+pub fn enter_spectrum_playback_scope() -> Result<u64> {
+    runtime()?.enter_spectrum_playback_scope()
+}
+
+#[cfg(not(test))]
+pub fn exit_spectrum_playback_scope(scope_id: u64) -> Result<()> {
+    let runtime = runtime()?;
+    if runtime.exit_spectrum_playback_scope(SpectrumPlaybackScope { id: scope_id })? {
+        runtime.set_continuation_mode(PlaybackContinuationMode::Random)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
 fn runtime() -> Result<&'static Arc<PlayerRuntime>> {
     PLAYER_RUNTIME
         .get()
@@ -819,6 +850,40 @@ impl PlayerRuntime {
         Ok(())
     }
 
+    fn set_spectrum_playback_scope(&self, scope: Option<SpectrumPlaybackScope>) -> Result<()> {
+        let mut current = self
+            .spectrum_playback_scope
+            .write()
+            .map_err(|_| anyhow!("player runtime spectrum playback scope lock is poisoned"))?;
+        *current = scope;
+        Ok(())
+    }
+
+    fn enter_spectrum_playback_scope(&self) -> Result<u64> {
+        let scope = SpectrumPlaybackScope {
+            id: self
+                .spectrum_playback_scope_generation
+                .fetch_add(1, Ordering::SeqCst)
+                + 1,
+        };
+        self.set_spectrum_playback_scope(Some(scope))?;
+        self.clear_spectrum_playback_loop_signal()?;
+        self.set_continuation_mode(PlaybackContinuationMode::RepeatCurrent)?;
+        Ok(scope.id)
+    }
+
+    fn exit_spectrum_playback_scope(&self, scope: SpectrumPlaybackScope) -> Result<bool> {
+        if should_commit_spectrum_playback_scope_exit(
+            self.spectrum_playback_scope_snapshot()?,
+            scope,
+        ) {
+            self.clear_spectrum_playback_scope()?;
+            self.clear_spectrum_playback_loop_signal()?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     fn set_temporary_playback_pause(&self, value: bool) -> Result<()> {
         let mut temporary_playback_pause = self
             .temporary_playback_pause
@@ -850,6 +915,21 @@ impl PlayerRuntime {
 
     fn clear_spectrum_playback_loop_signal(&self) -> Result<()> {
         self.set_spectrum_playback_loop_signal(None)
+    }
+
+    fn clear_spectrum_playback_scope(&self) -> Result<()> {
+        self.set_spectrum_playback_scope(None)
+    }
+
+    fn spectrum_playback_scope_snapshot(&self) -> Result<Option<SpectrumPlaybackScope>> {
+        self.spectrum_playback_scope
+            .read()
+            .map(|scope| *scope)
+            .map_err(|_| anyhow!("player runtime spectrum playback scope lock is poisoned"))
+    }
+
+    fn is_spectrum_playback_scope_active(&self, scope: SpectrumPlaybackScope) -> Result<bool> {
+        Ok(self.spectrum_playback_scope_snapshot()? == Some(scope))
     }
 
     fn active_request_track_for_status_path(
@@ -915,6 +995,7 @@ impl PlayerRuntime {
 
     fn resolve_spectrum_playback_start_plan(
         &self,
+        scope: SpectrumPlaybackScope,
         track: PlaybackTrack,
         position_ms: Option<u32>,
         pause_after_start: bool,
@@ -956,11 +1037,9 @@ impl PlayerRuntime {
                 initial_request: Some(InitialPlaybackRequest {
                     pause_after_start,
                     range: initial_range,
+                    scope: Some(scope),
                     track: selected.clone(),
                 }),
-                continuation: PlaybackSessionContinuation::Fixed(
-                    PlaybackContinuationMode::RepeatCurrent,
-                ),
             },
             track: selected,
         })
@@ -1075,6 +1154,7 @@ impl PlayerRuntime {
         *session = None;
         self.clear_active_request_track()?;
         self.clear_active_playback_range()?;
+        self.clear_spectrum_playback_scope()?;
         self.clear_spectrum_playback_loop_signal()?;
         Ok(())
     }
@@ -1123,7 +1203,6 @@ struct PlaybackSession {
     tracks: SharedPlaybackTracks,
     strategy: SharedPlaybackStrategy,
     initial_request: Option<InitialPlaybackRequest>,
-    continuation: PlaybackSessionContinuation,
 }
 
 #[cfg(not(test))]
@@ -1131,6 +1210,7 @@ struct PlaybackSession {
 struct InitialPlaybackRequest {
     pause_after_start: bool,
     range: ActivePlaybackRange,
+    scope: Option<SpectrumPlaybackScope>,
     track: PlaybackTrack,
 }
 
@@ -1156,9 +1236,15 @@ async fn run_playback_session(
             return Ok(());
         }
 
-        let mode = session.continuation.resolve(runtime.continuation_mode()?);
+        let mode = runtime.continuation_mode()?;
         let tracks = session.tracks_snapshot()?;
         let initial_request = session.initial_request.take();
+        if !should_start_spectrum_playback_session(
+            runtime.spectrum_playback_scope_snapshot()?,
+            initial_request.as_ref().and_then(|request| request.scope),
+        ) {
+            return Ok(());
+        }
         let track = match initial_request.as_ref() {
             Some(request) => Some(request.track.clone()),
             None => session
@@ -1171,12 +1257,11 @@ async fn run_playback_session(
             return Ok(());
         };
         NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&runtime.app)?;
-        let repeated_loop_signal = match mode {
-            PlaybackContinuationMode::RepeatCurrent => runtime
-                .spectrum_playback_loop_signal_snapshot()?
-                .and_then(|signal| resolve_repeated_playback_range_override(&track, signal)),
-            PlaybackContinuationMode::Random => None,
-        };
+        let repeated_loop_signal = resolve_spectrum_loop_playback_range(
+            runtime.spectrum_playback_scope_snapshot()?,
+            &track,
+            runtime.spectrum_playback_loop_signal_snapshot()?,
+        );
         let active_range = initial_request
             .as_ref()
             .map(|request| request.range)
@@ -1185,7 +1270,7 @@ async fn run_playback_session(
                 start_ms: track.start_ms,
                 end_ms: track.end_ms,
             });
-        let request = match resolve_playback_session_request_mode(mode, repeated_loop_signal) {
+        let request = match resolve_playback_session_request_mode(repeated_loop_signal) {
             PlaybackSessionRequestMode::OpenEndedPosition => {
                 playback_request_for_path_position(&track.file_path, active_range.start_ms)
             }
@@ -1389,20 +1474,80 @@ pub(crate) enum PlaybackSessionRequestMode {
     OpenEndedPosition,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaybackRangeCompletion {
+    Continue,
+    Finish,
+    Repeat(ActivePlaybackRange),
+}
+
 pub(crate) fn resolve_playback_session_request_mode(
-    continuation_mode: PlaybackContinuationMode,
     spectrum_loop_range: Option<ActivePlaybackRange>,
 ) -> PlaybackSessionRequestMode {
-    match (continuation_mode, spectrum_loop_range) {
-        (PlaybackContinuationMode::RepeatCurrent, Some(_)) => {
-            PlaybackSessionRequestMode::OpenEndedPosition
-        }
-        _ => PlaybackSessionRequestMode::BoundedRange,
+    match spectrum_loop_range {
+        Some(_) => PlaybackSessionRequestMode::OpenEndedPosition,
+        None => PlaybackSessionRequestMode::BoundedRange,
     }
+}
+
+pub(crate) fn resolve_playback_range_completion(
+    current_position_ms: u32,
+    active_range: ActivePlaybackRange,
+    spectrum_loop_range: Option<ActivePlaybackRange>,
+) -> PlaybackRangeCompletion {
+    if let Some(loop_range) = spectrum_loop_range {
+        if current_position_ms >= loop_range.end_ms {
+            return PlaybackRangeCompletion::Repeat(loop_range);
+        }
+    }
+
+    if current_position_ms >= active_range.end_ms {
+        return PlaybackRangeCompletion::Finish;
+    }
+
+    PlaybackRangeCompletion::Continue
+}
+
+pub(crate) fn resolve_spectrum_loop_playback_range(
+    active_scope: Option<SpectrumPlaybackScope>,
+    track: &PlaybackTrack,
+    signal: Option<SpectrumPlaybackLoopSignal>,
+) -> Option<ActivePlaybackRange> {
+    let signal = signal?;
+    if should_accept_spectrum_playback_signal(active_scope, signal.scope) {
+        return resolve_repeated_playback_range_override(track, signal);
+    }
+
+    None
+}
+
+pub(crate) fn should_accept_spectrum_playback_signal(
+    active_scope: Option<SpectrumPlaybackScope>,
+    signal_scope: SpectrumPlaybackScope,
+) -> bool {
+    active_scope == Some(signal_scope)
+}
+
+pub(crate) fn should_start_spectrum_playback_session(
+    active_scope: Option<SpectrumPlaybackScope>,
+    request_scope: Option<SpectrumPlaybackScope>,
+) -> bool {
+    match request_scope {
+        Some(scope) => active_scope == Some(scope),
+        None => true,
+    }
+}
+
+pub(crate) fn should_commit_spectrum_playback_scope_exit(
+    active_scope: Option<SpectrumPlaybackScope>,
+    requested_scope: SpectrumPlaybackScope,
+) -> bool {
+    active_scope == Some(requested_scope)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SpectrumPlaybackLoopSignal {
+    pub(crate) scope: SpectrumPlaybackScope,
     pub(crate) file_path: std::path::PathBuf,
     pub(crate) music_url: String,
     pub(crate) playlist_name: String,
@@ -1432,6 +1577,7 @@ pub(crate) fn resolve_repeated_playback_range_override(
 }
 
 pub(crate) fn resolve_spectrum_playback_loop_signal(
+    scope: SpectrumPlaybackScope,
     track: &PlaybackTrack,
     start_ms: u32,
     end_ms: u32,
@@ -1441,6 +1587,7 @@ pub(crate) fn resolve_spectrum_playback_loop_signal(
     }
 
     Some(SpectrumPlaybackLoopSignal {
+        scope,
         file_path: track.file_path.clone(),
         music_url: track.music_url.clone(),
         playlist_name: track.playlist_name.clone(),
@@ -1541,17 +1688,27 @@ async fn wait_until_track_finishes(
         }
 
         let active_track = runtime.active_request_track_snapshot()?;
-        if let (Some(track), Some(loop_signal), Some(active_range)) = (
-            active_track.as_ref(),
-            runtime.spectrum_playback_loop_signal_snapshot()?,
-            runtime.active_playback_range_snapshot()?,
-        ) {
-            if let Some(loop_range) = resolve_repeated_playback_range_override(track, loop_signal) {
-                let current_position_ms =
-                    resolve_playback_absolute_position_ms(&status, Some(active_range));
-                if current_position_ms >= loop_range.end_ms {
+        let active_range = runtime.active_playback_range_snapshot()?;
+        let active_scope = runtime.spectrum_playback_scope_snapshot()?;
+        let loop_signal = runtime.spectrum_playback_loop_signal_snapshot()?;
+        let spectrum_loop_range = active_track.as_ref().and_then(|track| {
+            resolve_spectrum_loop_playback_range(active_scope, track, loop_signal)
+        });
+
+        if let Some(active_range) = active_range {
+            let current_position_ms =
+                resolve_playback_absolute_position_ms(&status, Some(active_range));
+
+            match resolve_playback_range_completion(
+                current_position_ms,
+                active_range,
+                spectrum_loop_range,
+            ) {
+                PlaybackRangeCompletion::Continue => {}
+                PlaybackRangeCompletion::Finish => return Ok(()),
+                PlaybackRangeCompletion::Repeat(loop_range) => {
                     let request =
-                        playback_request_for_path_position(&track.file_path, loop_range.start_ms);
+                        playback_request_for_path_position(current_path, loop_range.start_ms);
                     playback
                         .play_request(request)
                         .await
@@ -1562,7 +1719,7 @@ async fn wait_until_track_finishes(
             }
         }
 
-        let poll_ms = if runtime.spectrum_playback_loop_signal_snapshot()?.is_some() {
+        let poll_ms = if spectrum_loop_range.is_some() {
             SPECTRUM_LOOP_SIGNAL_STATUS_POLL_MS
         } else {
             PLAYBACK_SESSION_STATUS_POLL_MS

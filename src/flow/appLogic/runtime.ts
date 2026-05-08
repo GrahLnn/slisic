@@ -16,6 +16,7 @@ export const spectrumMusicNameChanged = payloads["spectrum.music_name.changed"];
 export const spectrumMusicRangeChanged = payloads["spectrum.music_range.changed"];
 export const spectrumMusicDeleted = payloads["spectrum.music_deleted"];
 export const spectrumMusicDraftReset = payloads["spectrum.music_draft.reset"];
+export const spectrumPlaybackScopeChanged = payloads["spectrum.playback_scope.changed"];
 export const savePathChanged = payloads["save_path.changed"];
 export const collectionUpserted = payloads["collection.upserted"];
 export const draftCollectionUpserted = payloads["draft.collection.upserted"];

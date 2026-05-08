@@ -13,6 +13,18 @@ pub fn set_playback_continuation_mode(mode: PlaybackContinuationMode) -> Result<
 
 #[tauri::command]
 #[specta::specta]
+pub fn enter_spectrum_playback_scope() -> Result<u64, String> {
+    super::service::enter_spectrum_playback_scope().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn exit_spectrum_playback_scope(scope_id: u64) -> Result<(), String> {
+    super::service::exit_spectrum_playback_scope(scope_id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn stop_playback() -> Result<bool, String> {
     super::service::stop_playback()
         .await
@@ -38,10 +50,12 @@ pub async fn resume_playback() -> Result<bool, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn play_spectrum_music(
+    scope_id: u64,
     track: PlaybackTrackPayload,
     position_ms: Option<u32>,
 ) -> Result<bool, String> {
     super::service::play_spectrum_music(
+        scope_id,
         super::model::PlaybackTrack::try_from_payload(track)
             .map_err(|error| format!("invalid playback track payload: {error}"))?,
         position_ms,
@@ -54,10 +68,12 @@ pub async fn play_spectrum_music(
 #[tauri::command]
 #[specta::specta]
 pub async fn restore_spectrum_music(
+    scope_id: u64,
     track: PlaybackTrackPayload,
     position_ms: Option<u32>,
 ) -> Result<bool, String> {
     super::service::restore_spectrum_music(
+        scope_id,
         super::model::PlaybackTrack::try_from_payload(track)
             .map_err(|error| format!("invalid playback track payload: {error}"))?,
         position_ms,
@@ -69,8 +85,12 @@ pub async fn restore_spectrum_music(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn pause_spectrum_music(track: PlaybackTrackPayload) -> Result<bool, String> {
+pub async fn pause_spectrum_music(
+    scope_id: u64,
+    track: PlaybackTrackPayload,
+) -> Result<bool, String> {
     super::service::pause_spectrum_music(
+        scope_id,
         super::model::PlaybackTrack::try_from_payload(track)
             .map_err(|error| format!("invalid playback track payload: {error}"))?,
     )
@@ -80,8 +100,12 @@ pub async fn pause_spectrum_music(track: PlaybackTrackPayload) -> Result<bool, S
 
 #[tauri::command]
 #[specta::specta]
-pub async fn resume_spectrum_music(track: PlaybackTrackPayload) -> Result<bool, String> {
+pub async fn resume_spectrum_music(
+    scope_id: u64,
+    track: PlaybackTrackPayload,
+) -> Result<bool, String> {
     super::service::resume_spectrum_music(
+        scope_id,
         super::model::PlaybackTrack::try_from_payload(track)
             .map_err(|error| format!("invalid playback track payload: {error}"))?,
     )
@@ -92,9 +116,11 @@ pub async fn resume_spectrum_music(track: PlaybackTrackPayload) -> Result<bool, 
 #[tauri::command]
 #[specta::specta]
 pub async fn update_spectrum_playback_loop_signal(
+    scope_id: u64,
     payload: SpectrumPlaybackLoopSignalPayload,
 ) -> Result<Option<PlaybackStatusPayload>, String> {
     super::service::update_spectrum_playback_loop_signal(
+        scope_id,
         super::model::PlaybackTrack::try_from_payload(payload.track)
             .map_err(|error| format!("invalid spectrum loop signal track: {error}"))?,
         payload.start_ms,

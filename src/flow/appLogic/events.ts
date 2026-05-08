@@ -180,6 +180,28 @@ export async function setPlaybackContinuationMode(
   });
 }
 
+export async function enterSpectrumPlaybackScope(): Promise<number> {
+  const result = await crab.enterSpectrumPlaybackScope();
+
+  return result.match({
+    Ok: (scopeId) => scopeId,
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+}
+
+export async function exitSpectrumPlaybackScope(scopeId: number): Promise<boolean> {
+  const result = await crab.exitSpectrumPlaybackScope(scopeId);
+
+  return result.match({
+    Ok: () => true,
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+}
+
 export async function listenNowPlayingTrackChanged(
   handler: (payload: NowPlayingTrackChangedEvent) => void,
 ): Promise<() => void> {
@@ -383,6 +405,7 @@ export const payloads = collect(
   ),
   ...event<{ id: string }>()("spectrum.music_deleted"),
   ...event<{ id: string }>()("spectrum.music_draft.reset"),
+  ...event<number | null>()("spectrum.playback_scope.changed"),
   ...event<string>()("save_path.changed"),
   ...event<Collection>()("collection.upserted"),
   ...event<Collection>()("draft.collection.upserted"),

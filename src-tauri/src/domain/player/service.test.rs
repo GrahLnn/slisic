@@ -1,17 +1,17 @@
-use super::model::{
-    PlaybackContinuationMode, PlaybackTrack, PlaybackTrackPayload, PlaybackTrackProjectionError,
-};
+use super::model::{PlaybackTrack, PlaybackTrackPayload, PlaybackTrackProjectionError};
 use super::service::{
-    ActivePlaybackRange, PlaybackSessionRequestMode, PlaybackTrackIdentityUpdate,
-    are_playback_tracks_equal, playback_tracks_match,
-    resolve_active_playback_range_identity_update, resolve_active_request_track_identity_update,
-    resolve_playback_absolute_position_ms, resolve_playback_seek_pause_after_request,
+    ActivePlaybackRange, PlaybackRangeCompletion, PlaybackSessionRequestMode,
+    PlaybackTrackIdentityUpdate, SpectrumPlaybackScope, are_playback_tracks_equal,
+    playback_tracks_match, resolve_active_playback_range_identity_update,
+    resolve_active_request_track_identity_update, resolve_playback_absolute_position_ms,
+    resolve_playback_range_completion, resolve_playback_seek_pause_after_request,
     resolve_playback_seek_range, resolve_playback_session_request_mode,
     resolve_playback_status_track_identity, resolve_repeated_playback_range_override,
-    resolve_session_continuation_mode, resolve_session_track_identity_update,
+    resolve_session_track_identity_update, resolve_spectrum_loop_playback_range,
     resolve_spectrum_loop_signal_active_range, resolve_spectrum_loop_signal_seek_position,
     resolve_spectrum_music_playback_range, resolve_spectrum_playback_loop_signal,
-    should_resume_playback_seek_cancel,
+    should_accept_spectrum_playback_signal, should_commit_spectrum_playback_scope_exit,
+    should_resume_playback_seek_cancel, should_start_spectrum_playback_session,
 };
 use std::path::PathBuf;
 
@@ -37,6 +37,10 @@ fn track_payload(name: &str) -> PlaybackTrackPayload {
     }
 }
 
+fn scope(id: u64) -> SpectrumPlaybackScope {
+    SpectrumPlaybackScope { id }
+}
+
 #[test]
 fn playback_tracks_match_detects_playlist_growth() {
     let current = vec![track("a")];
@@ -51,21 +55,6 @@ fn playback_tracks_match_accepts_identical_track_snapshots() {
     let refreshed = vec![track("a"), track("b")];
 
     assert!(playback_tracks_match(&current, &refreshed));
-}
-
-#[test]
-fn session_continuation_uses_global_mode_only_when_no_local_policy_exists() {
-    assert_eq!(
-        resolve_session_continuation_mode(None, PlaybackContinuationMode::Random),
-        PlaybackContinuationMode::Random,
-    );
-    assert_eq!(
-        resolve_session_continuation_mode(
-            Some(PlaybackContinuationMode::RepeatCurrent),
-            PlaybackContinuationMode::Random,
-        ),
-        PlaybackContinuationMode::RepeatCurrent,
-    );
 }
 
 #[test]
@@ -226,6 +215,7 @@ fn spectrum_repeat_range_override_applies_only_to_the_same_original_music() {
     current.start_ms = 20_000;
     current.end_ms = 80_000;
     let range_override = super::service::SpectrumPlaybackLoopSignal {
+        scope: scope(1),
         file_path: PathBuf::from("a.m4a"),
         music_url: "https://example.com/a".to_string(),
         playlist_name: "Focus".to_string(),
@@ -267,7 +257,7 @@ fn spectrum_playback_loop_signal_keeps_source_identity_separate_from_loop_points
     current.start_ms = 20_000;
     current.end_ms = 80_000;
 
-    let signal = resolve_spectrum_playback_loop_signal(&current, 25_000, 45_000)
+    let signal = resolve_spectrum_playback_loop_signal(scope(1), &current, 25_000, 45_000)
         .expect("valid loop points should project");
 
     assert_eq!(signal.track_start_ms, 20_000);
@@ -285,6 +275,123 @@ fn spectrum_playback_loop_signal_keeps_source_identity_separate_from_loop_points
             start_ms: 25_000,
             end_ms: 45_000,
         }),
+    );
+}
+
+#[test]
+fn spectrum_loop_signal_only_drives_looping_inside_its_active_scope() {
+    let mut current = track("a");
+    current.start_ms = 20_000;
+    current.end_ms = 80_000;
+    let signal = resolve_spectrum_playback_loop_signal(scope(1), &current, 25_000, 45_000)
+        .expect("valid loop points should project");
+
+    assert_eq!(
+        resolve_spectrum_loop_playback_range(None, &current, Some(signal.clone())),
+        None,
+    );
+    assert_eq!(
+        resolve_spectrum_loop_playback_range(Some(scope(2)), &current, Some(signal)),
+        None,
+    );
+
+    let signal = resolve_spectrum_playback_loop_signal(scope(1), &current, 25_000, 45_000)
+        .expect("valid loop points should project");
+    assert_eq!(
+        resolve_spectrum_loop_playback_range(Some(scope(1)), &current, Some(signal),),
+        Some(ActivePlaybackRange {
+            start_ms: 25_000,
+            end_ms: 45_000,
+        }),
+    );
+}
+
+#[test]
+fn spectrum_loop_signal_updates_are_accepted_only_while_spectrum_mode_is_active() {
+    assert!(!should_accept_spectrum_playback_signal(None, scope(1),));
+    assert!(should_accept_spectrum_playback_signal(
+        Some(scope(1)),
+        scope(1),
+    ));
+    assert!(!should_accept_spectrum_playback_signal(
+        Some(scope(2)),
+        scope(1),
+    ));
+}
+
+#[test]
+fn spectrum_loop_signal_scope_is_independent_from_playback_continuation_policy() {
+    let mut current = track("a");
+    current.start_ms = 20_000;
+    current.end_ms = 80_000;
+    let signal = resolve_spectrum_playback_loop_signal(scope(1), &current, 25_000, 45_000)
+        .expect("valid loop points should project");
+
+    assert_eq!(
+        resolve_spectrum_loop_playback_range(Some(scope(1)), &current, Some(signal)),
+        Some(ActivePlaybackRange {
+            start_ms: 25_000,
+            end_ms: 45_000,
+        }),
+    );
+}
+
+#[test]
+fn spectrum_playback_session_start_requires_the_same_scope_when_one_is_captured() {
+    assert!(should_start_spectrum_playback_session(None, None));
+    assert!(should_start_spectrum_playback_session(
+        Some(scope(1)),
+        Some(scope(1)),
+    ));
+    assert!(!should_start_spectrum_playback_session(
+        None,
+        Some(scope(1)),
+    ));
+    assert!(!should_start_spectrum_playback_session(
+        Some(scope(2)),
+        Some(scope(1)),
+    ));
+}
+
+#[test]
+fn spectrum_scope_exit_only_commits_for_the_current_scope() {
+    assert!(should_commit_spectrum_playback_scope_exit(
+        Some(scope(1)),
+        scope(1),
+    ));
+    assert!(!should_commit_spectrum_playback_scope_exit(
+        Some(scope(2)),
+        scope(1),
+    ));
+    assert!(!should_commit_spectrum_playback_scope_exit(None, scope(1)));
+}
+
+#[test]
+fn playback_range_completion_finishes_random_playback_after_open_ended_spectrum_request() {
+    let active_range = ActivePlaybackRange {
+        start_ms: 20_000,
+        end_ms: 80_000,
+    };
+    let loop_range = ActivePlaybackRange {
+        start_ms: 25_000,
+        end_ms: 45_000,
+    };
+
+    assert_eq!(
+        resolve_playback_range_completion(44_999, active_range, Some(loop_range)),
+        PlaybackRangeCompletion::Continue,
+    );
+    assert_eq!(
+        resolve_playback_range_completion(45_000, active_range, Some(loop_range)),
+        PlaybackRangeCompletion::Repeat(loop_range),
+    );
+    assert_eq!(
+        resolve_playback_range_completion(79_999, active_range, None),
+        PlaybackRangeCompletion::Continue,
+    );
+    assert_eq!(
+        resolve_playback_range_completion(80_000, active_range, None),
+        PlaybackRangeCompletion::Finish,
     );
 }
 
@@ -342,7 +449,7 @@ fn spectrum_loop_signal_rejects_invalid_range() {
     let current = track("a");
 
     assert_eq!(
-        resolve_spectrum_playback_loop_signal(&current, 45_000, 45_000),
+        resolve_spectrum_playback_loop_signal(scope(1), &current, 45_000, 45_000),
         None,
     );
 }
@@ -350,21 +457,14 @@ fn spectrum_loop_signal_rejects_invalid_range() {
 #[test]
 fn playback_session_uses_open_ended_requests_only_for_spectrum_loop_signal() {
     assert_eq!(
-        resolve_playback_session_request_mode(PlaybackContinuationMode::Random, None),
+        resolve_playback_session_request_mode(None),
         PlaybackSessionRequestMode::BoundedRange,
     );
     assert_eq!(
-        resolve_playback_session_request_mode(PlaybackContinuationMode::RepeatCurrent, None),
-        PlaybackSessionRequestMode::BoundedRange,
-    );
-    assert_eq!(
-        resolve_playback_session_request_mode(
-            PlaybackContinuationMode::RepeatCurrent,
-            Some(ActivePlaybackRange {
-                start_ms: 25_000,
-                end_ms: 45_000,
-            }),
-        ),
+        resolve_playback_session_request_mode(Some(ActivePlaybackRange {
+            start_ms: 25_000,
+            end_ms: 45_000,
+        })),
         PlaybackSessionRequestMode::OpenEndedPosition,
     );
 }
