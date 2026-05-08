@@ -11,6 +11,25 @@ import {
 import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { normalizeMediaPathKey } from "@/src/mediaPath";
+import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
+import {
+  accumulateSpectrumCanvasFastPresentationMetrics,
+  accumulateSpectrumCanvasRenderEmptyMetrics,
+  accumulateSpectrumCanvasRenderJobMetrics,
+  createSpectrumCanvasFastPresentationMetrics,
+  createSpectrumCanvasRenderEmptyMetrics,
+  createSpectrumCanvasRenderJobMetrics,
+  createSpectrumCanvasRenderJobTracePayload,
+  flushDueSpectrumCanvasFastPresentationMetrics,
+  flushDueSpectrumCanvasRenderEmptyMetrics,
+  flushSpectrumCanvasFastPresentationMetrics,
+  flushSpectrumCanvasRenderEmptyMetrics,
+  summarizeSpectrumCanvasColumnTraceResults,
+  type SpectrumCanvasFastPresentationMetrics,
+  type SpectrumCanvasRenderEmptyMetrics,
+  type SpectrumCanvasRenderJobMetrics,
+  type SpectrumCanvasRenderJobTraceReason,
+} from "./SpectrumCanvasTrace.model";
 import {
   crab,
   type HardwareHorizontalWheelEvent,
@@ -45,6 +64,7 @@ const WAVEFORM_CANVAS_MIN_CHUNK_WIDTH_PX = 96;
 const WAVEFORM_CANVAS_MAX_CHUNK_WIDTH_PX = 320;
 const WAVEFORM_CANVAS_REUSE_MIN_SHIFT_PX = 1;
 const WAVEFORM_CANVAS_STROKE_ALPHA = 0.88;
+const WAVEFORM_CANVAS_FAST_PRESENTATION_TRACE_FLUSH_MS = 1_000;
 const WAVEFORM_SELECTION_START_LEADING_SPACE_PX = 96;
 const WAVEFORM_VISUAL_EDGE_PADDING_SECONDS = 2;
 const WAVEFORM_INITIAL_PREPARE_FRAME_COUNT = 2;
@@ -551,6 +571,7 @@ type WaveformCanvasFastPresentationPlan =
 type WaveformCanvasRenderJob = {
   cursor: WaveformCanvasRenderCursor;
   id: number;
+  metrics: SpectrumCanvasRenderJobMetrics;
   plan: WaveformCanvasRenderPlan;
   revision: number;
   target: WaveformCanvasRasterTarget;
@@ -559,9 +580,11 @@ type WaveformCanvasRenderJob = {
 type WaveformCanvasRenderController = {
   dataPlan: WaveformDataPlan | null;
   frameId: number | null;
+  fastPresentationMetrics: SpectrumCanvasFastPresentationMetrics;
   job: WaveformCanvasRenderJob | null;
   presentedFrame: WaveformCanvasFrameDescriptor | null;
   requestedRevision: number;
+  renderEmptyMetrics: SpectrumCanvasRenderEmptyMetrics;
   reuseFrame: HTMLCanvasElement | null;
 };
 
@@ -4293,12 +4316,15 @@ function useWaveformCanvasRenderer(args: {
 }) {
   const latestArgsRef = useRef(args);
   latestArgsRef.current = args;
+  const previousTraceFileKeyRef = useRef<string | null>(null);
   const controllerRef = useRef<WaveformCanvasRenderController>({
     dataPlan: null,
     frameId: null,
+    fastPresentationMetrics: createSpectrumCanvasFastPresentationMetrics(),
     job: null,
     presentedFrame: null,
     requestedRevision: 0,
+    renderEmptyMetrics: createSpectrumCanvasRenderEmptyMetrics(),
     reuseFrame: null,
   });
 
@@ -4310,6 +4336,16 @@ function useWaveformCanvasRenderer(args: {
     const canvas = latest.canvasRef.current;
     const viewport = latest.viewportRef.current;
     if (!canvas || !viewport) {
+      if (controller.job) {
+        recordWaveformCanvasRenderJobTrace({
+          accepted: false,
+          completion: null,
+          endedAt: readWaveformPerformanceNow(null),
+          job: controller.job,
+          reason: "cancelled",
+          requestedRevision: controller.requestedRevision,
+        });
+      }
       controller.job = null;
       return;
     }
@@ -4334,6 +4370,19 @@ function useWaveformCanvasRenderer(args: {
       });
 
       if (plan.kind === "empty") {
+        accumulateSpectrumCanvasRenderEmptyMetrics(controller.renderEmptyMetrics, {
+          flushAfterMs: WAVEFORM_CANVAS_FAST_PRESENTATION_TRACE_FLUSH_MS,
+          now: readWaveformPerformanceNow(ownerWindow),
+          requestedRevision: controller.requestedRevision,
+          ...createWaveformCanvasRenderPlanEmptyMetricsPayload(plan.empty),
+        });
+        recordNullableRenderPerformanceTrace(
+          "waveform-canvas-render-empty",
+          flushDueSpectrumCanvasRenderEmptyMetrics(
+            controller.renderEmptyMetrics,
+            readWaveformPerformanceNow(ownerWindow),
+          ),
+        );
         controller.job = null;
         return;
       }
@@ -4345,14 +4394,30 @@ function useWaveformCanvasRenderer(args: {
       });
 
       if (target.kind === "empty") {
+        accumulateSpectrumCanvasRenderEmptyMetrics(controller.renderEmptyMetrics, {
+          flushAfterMs: WAVEFORM_CANVAS_FAST_PRESENTATION_TRACE_FLUSH_MS,
+          kind: target.empty.kind,
+          now: readWaveformPerformanceNow(ownerWindow),
+          requestedRevision: controller.requestedRevision,
+          viewportWidth: target.empty.geometry.viewportWidth,
+        });
+        recordNullableRenderPerformanceTrace(
+          "waveform-canvas-render-empty",
+          flushDueSpectrumCanvasRenderEmptyMetrics(
+            controller.renderEmptyMetrics,
+            readWaveformPerformanceNow(ownerWindow),
+          ),
+        );
         controller.job = null;
         return;
       }
 
+      const startedAt = readWaveformPerformanceNow(ownerWindow);
       job = createWaveformCanvasRenderJob({
         id: waveformCanvasRenderJobSequence++,
         plan: plan.plan,
         revision: controller.requestedRevision,
+        startedAt,
         target: target.target,
       });
       controller.job = job;
@@ -4362,6 +4427,7 @@ function useWaveformCanvasRenderer(args: {
       return;
     }
 
+    const chunkStartedAt = readWaveformPerformanceNow(ownerWindow);
     const chunk = drawWaveformCanvasJobChunk({
       deadlineMs: readWaveformPerformanceNow(ownerWindow) + WAVEFORM_CANVAS_FRAME_BUDGET_MS,
       cursor: job.cursor,
@@ -4369,13 +4435,23 @@ function useWaveformCanvasRenderer(args: {
       plan: job.plan,
       target: job.target,
     });
+    const chunkEndedAt = readWaveformPerformanceNow(ownerWindow);
+    accumulateSpectrumCanvasRenderJobMetrics({
+      chunk: {
+        ...chunk,
+        hasColumn: chunk.hasChunkColumn,
+      },
+      durationMs: Math.max(0, chunkEndedAt - chunkStartedAt),
+      metrics: job.metrics,
+    });
     job.cursor = chunk.cursor;
 
     if (chunk.completed) {
       const accepted = job.revision === controller.requestedRevision;
+      let completion: WaveformCanvasRenderJobCompletion | null = null;
 
       if (accepted) {
-        const completion = completeWaveformCanvasRenderJob({
+        completion = completeWaveformCanvasRenderJob({
           canvas,
           job,
         });
@@ -4383,6 +4459,14 @@ function useWaveformCanvasRenderer(args: {
           controller.presentedFrame = createWaveformCanvasFrameDescriptor(job.plan);
         }
       }
+      recordWaveformCanvasRenderJobTrace({
+        accepted,
+        completion,
+        endedAt: readWaveformPerformanceNow(ownerWindow),
+        job,
+        reason: accepted ? "completed" : "stale",
+        requestedRevision: controller.requestedRevision,
+      });
       controller.job = null;
       return;
     }
@@ -4399,8 +4483,29 @@ function useWaveformCanvasRenderer(args: {
       const latest = latestArgsRef.current;
       const controller = controllerRef.current;
       const nextRevision = controller.requestedRevision + 1;
+      const ownerWindow =
+        latest.canvasRef.current?.ownerDocument.defaultView ??
+        (typeof window === "undefined" ? null : window);
+      if (controller.job) {
+        recordWaveformCanvasRenderJobTrace({
+          accepted: false,
+          completion: null,
+          endedAt: readWaveformPerformanceNow(ownerWindow),
+          job: controller.job,
+          reason: "replaced",
+          requestedRevision: nextRevision,
+        });
+      }
       controller.requestedRevision = nextRevision;
       controller.dataPlan = dataPlan;
+      const fileKey = normalizeWaveformPathKey(latest.filePath);
+      if (previousTraceFileKeyRef.current !== fileKey) {
+        previousTraceFileKeyRef.current = fileKey;
+        recordRenderPerformanceTrace("waveform-canvas-file-scope", {
+          fileKey,
+          scopeKey: dataPlan.scopeKey,
+        });
+      }
       const viewport = latest.viewportRef.current;
       const canvas = latest.canvasRef.current;
       const geometry =
@@ -4424,12 +4529,23 @@ function useWaveformCanvasRenderer(args: {
           : null;
       const descriptor =
         renderPlan?.kind === "ready" ? createWaveformCanvasFrameDescriptor(renderPlan.plan) : null;
+      const fastStartedAt = readWaveformPerformanceNow(ownerWindow);
       const presented = presentWaveformCanvasFrameFast({
         canvas,
         descriptor,
         plan: renderPlan?.kind === "ready" ? renderPlan.plan : null,
         previous: controller.presentedFrame,
         reuseFrame: controller.reuseFrame,
+      });
+      accumulateSpectrumCanvasFastPresentationMetrics({
+        flushAfterMs: WAVEFORM_CANVAS_FAST_PRESENTATION_TRACE_FLUSH_MS,
+        metrics: controller.fastPresentationMetrics,
+        now: readWaveformPerformanceNow(ownerWindow),
+        sample: createWaveformCanvasFastPresentationSample({
+          elapsedMs: Math.max(0, readWaveformPerformanceNow(ownerWindow) - fastStartedAt),
+          result: presented,
+          revision: nextRevision,
+        }),
       });
       if (presented.kind === "presented") {
         controller.presentedFrame = presented.descriptor;
@@ -4445,22 +4561,48 @@ function useWaveformCanvasRenderer(args: {
         presented.draw.missingPeakColumns === 0 &&
         presented.draw.scannedColumns === presented.descriptor.geometry.viewportWidth
       ) {
+        recordNullableRenderPerformanceTrace(
+          "waveform-canvas-fast-presentation",
+          flushDueSpectrumCanvasFastPresentationMetrics(
+            controller.fastPresentationMetrics,
+            readWaveformPerformanceNow(ownerWindow),
+          ),
+        );
         return;
       }
 
       if (controller.frameId !== null) {
+        recordNullableRenderPerformanceTrace(
+          "waveform-canvas-fast-presentation",
+          flushDueSpectrumCanvasFastPresentationMetrics(
+            controller.fastPresentationMetrics,
+            readWaveformPerformanceNow(ownerWindow),
+          ),
+        );
         return;
       }
 
-      const ownerWindow =
-        latest.canvasRef.current?.ownerDocument.defaultView ??
-        (typeof window === "undefined" ? null : window);
-
       if (!ownerWindow) {
+        recordNullableRenderPerformanceTrace(
+          "waveform-canvas-fast-presentation",
+          flushSpectrumCanvasFastPresentationMetrics(
+            controller.fastPresentationMetrics,
+            readWaveformPerformanceNow(ownerWindow),
+            "sync-run-frame",
+          ),
+        );
         runFrame();
         return;
       }
 
+      recordNullableRenderPerformanceTrace(
+        "waveform-canvas-fast-presentation",
+        flushSpectrumCanvasFastPresentationMetrics(
+          controller.fastPresentationMetrics,
+          readWaveformPerformanceNow(ownerWindow),
+          "render-job-scheduled",
+        ),
+      );
       controller.frameId = ownerWindow.requestAnimationFrame(runFrame);
     },
     [runFrame],
@@ -4487,14 +4629,42 @@ function useWaveformCanvasRendererCleanup(args: {
       const latest = args.latestArgsRef.current;
       const ownerWindow = latest.canvasRef.current?.ownerDocument.defaultView;
       const controller = args.controllerRef.current;
+      if (controller.job) {
+        recordWaveformCanvasRenderJobTrace({
+          accepted: false,
+          completion: null,
+          endedAt: readWaveformPerformanceNow(ownerWindow ?? null),
+          job: controller.job,
+          reason: "cancelled",
+          requestedRevision: controller.requestedRevision,
+        });
+      }
       if (controller.frameId !== null && ownerWindow) {
         ownerWindow.cancelAnimationFrame(controller.frameId);
       }
+      recordNullableRenderPerformanceTrace(
+        "waveform-canvas-fast-presentation",
+        flushSpectrumCanvasFastPresentationMetrics(
+          controller.fastPresentationMetrics,
+          readWaveformPerformanceNow(ownerWindow ?? null),
+          "cleanup",
+        ),
+      );
+      recordNullableRenderPerformanceTrace(
+        "waveform-canvas-render-empty",
+        flushSpectrumCanvasRenderEmptyMetrics(
+          controller.renderEmptyMetrics,
+          readWaveformPerformanceNow(ownerWindow ?? null),
+          "cleanup",
+        ),
+      );
       controller.frameId = null;
       controller.job = null;
       controller.dataPlan = null;
       controller.presentedFrame = null;
       controller.reuseFrame = null;
+      controller.fastPresentationMetrics = createSpectrumCanvasFastPresentationMetrics();
+      controller.renderEmptyMetrics = createSpectrumCanvasRenderEmptyMetrics();
     },
     [args.canvasRef, args.controllerRef, args.latestArgsRef],
   );
@@ -4714,14 +4884,104 @@ function createWaveformCanvasRenderJob(args: {
   plan: WaveformCanvasRenderPlan;
   revision: number;
   target: WaveformCanvasRasterTarget;
+  startedAt: number;
 }): WaveformCanvasRenderJob {
   return {
     cursor: createWaveformCanvasRenderCursor(),
     id: args.id,
+    metrics: createSpectrumCanvasRenderJobMetrics(args.startedAt),
     plan: args.plan,
     revision: args.revision,
     target: args.target,
   };
+}
+
+function createWaveformCanvasRenderPlanTracePayload(plan: WaveformCanvasRenderPlan) {
+  return {
+    availableLevels: plan.availableLevels,
+    dataPixelsPerSecond: plan.dataPixelsPerSecond,
+    devicePixelRatio: plan.geometry.devicePixelRatio,
+    durationMs: plan.viewport.durationMs,
+    missingCandidateLevelCount: plan.candidateLevels.length,
+    pixelsPerSecond: plan.viewport.pixelsPerSecond,
+    scopeKey: plan.scopeKey,
+    scrollLeft: plan.viewport.scrollLeft,
+    viewportWidth: plan.geometry.viewportWidth,
+    visibleEndSeconds: plan.visibleSecondsWindow.endSeconds,
+    visibleStartSeconds: plan.visibleSecondsWindow.startSeconds,
+  };
+}
+
+function createWaveformCanvasRenderPlanEmptyMetricsPayload(empty: WaveformCanvasRenderPlanEmpty) {
+  return {
+    kind: empty.kind,
+    status: "status" in empty ? empty.status : null,
+    tileCacheSize: "tileCacheSize" in empty ? empty.tileCacheSize : null,
+    viewportWidth: empty.geometry.viewportWidth,
+  };
+}
+
+function createWaveformCanvasFastPresentationSample(args: {
+  elapsedMs: number;
+  result: WaveformCanvasFastPresentationResult;
+  revision: number;
+}) {
+  if (args.result.kind === "empty") {
+    return {
+      elapsedMs: args.elapsedMs,
+      kind: "empty" as const,
+      planKind: args.result.plan?.kind ?? null,
+      reason: args.result.reason,
+      revision: args.revision,
+    };
+  }
+
+  return {
+    drawSummary:
+      args.result.mode === "exact-cache-redraw"
+        ? args.result.draw
+        : summarizeSpectrumCanvasColumnTraceResults(args.result.draws),
+    elapsedMs: args.elapsedMs,
+    kind: "presented" as const,
+    mode: args.result.mode,
+    planKind: args.result.plan.kind,
+    revision: args.revision,
+  };
+}
+
+function recordNullableRenderPerformanceTrace(
+  event: string,
+  payload: Record<string, unknown> | null,
+) {
+  if (payload === null) {
+    return;
+  }
+
+  recordRenderPerformanceTrace(event, payload);
+}
+
+function recordWaveformCanvasRenderJobTrace(args: {
+  accepted: boolean;
+  completion: WaveformCanvasRenderJobCompletion | null;
+  endedAt: number;
+  job: WaveformCanvasRenderJob;
+  reason: SpectrumCanvasRenderJobTraceReason;
+  requestedRevision: number;
+}) {
+  recordRenderPerformanceTrace(
+    "waveform-canvas-job",
+    createSpectrumCanvasRenderJobTracePayload({
+      accepted: args.accepted,
+      completionKind: args.completion?.kind ?? null,
+      endedAt: args.endedAt,
+      jobId: args.job.id,
+      metrics: args.job.metrics,
+      plan: createWaveformCanvasRenderPlanTracePayload(args.job.plan),
+      reason: args.reason,
+      requestedRevision: args.requestedRevision,
+      revision: args.job.revision,
+    }),
+  );
 }
 
 function createWaveformCanvasRenderCursor(): WaveformCanvasRenderCursor {
