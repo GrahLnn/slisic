@@ -1454,16 +1454,20 @@ pub(crate) fn resolve_spectrum_loop_signal_seek_position(
     current_position_ms: u32,
     signal_range: ActivePlaybackRange,
 ) -> Option<u32> {
-    if current_position_ms < signal_range.end_ms {
-        return None;
+    if current_position_ms < signal_range.start_ms {
+        return Some(signal_range.start_ms);
     }
 
-    Some(
-        signal_range
-            .end_ms
-            .saturating_sub(1)
-            .max(signal_range.start_ms),
-    )
+    if current_position_ms >= signal_range.end_ms {
+        return Some(
+            signal_range
+                .end_ms
+                .saturating_sub(1)
+                .max(signal_range.start_ms),
+        );
+    }
+
+    None
 }
 
 pub(crate) fn resolve_spectrum_loop_signal_active_range(

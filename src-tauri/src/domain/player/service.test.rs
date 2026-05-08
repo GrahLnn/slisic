@@ -289,12 +289,20 @@ fn spectrum_playback_loop_signal_keeps_source_identity_separate_from_loop_points
 }
 
 #[test]
-fn spectrum_loop_signal_seek_position_only_repairs_positions_beyond_end() {
+fn spectrum_loop_signal_seek_position_repairs_positions_outside_range() {
     let range = ActivePlaybackRange {
         start_ms: 25_000,
         end_ms: 45_000,
     };
 
+    assert_eq!(
+        resolve_spectrum_loop_signal_seek_position(24_999, range),
+        Some(25_000),
+    );
+    assert_eq!(
+        resolve_spectrum_loop_signal_seek_position(25_000, range),
+        None
+    );
     assert_eq!(
         resolve_spectrum_loop_signal_seek_position(44_999, range),
         None
