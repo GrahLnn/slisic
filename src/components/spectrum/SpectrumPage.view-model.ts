@@ -42,6 +42,11 @@ export interface SpectrumPlaybackIdentity {
   url: string;
 }
 
+export interface SpectrumPlaybackActionSnapshot {
+  identity: SpectrumPlaybackIdentity;
+  paused: boolean;
+}
+
 export type SpectrumPlaybackRestoreEffect =
   | {
       kind: "none";
@@ -323,6 +328,35 @@ export function isSpectrumPlaybackStatusIdentityForAction(
   identity: SpectrumPlaybackIdentity,
 ) {
   return status !== null && areSpectrumPlaybackIdentitiesEqual(status, identity);
+}
+
+export function resolveSpectrumPlaybackActionSnapshot(
+  raw: RawSpectrumPlaybackIdentity & {
+    paused?: boolean | null;
+  },
+): SpectrumPlaybackActionSnapshot | null {
+  const identity = projectSpectrumPlaybackIdentity(raw);
+
+  return identity === null
+    ? null
+    : {
+        identity,
+        paused: raw.paused === true,
+      };
+}
+
+export function areSpectrumPlaybackActionSnapshotsEqual(
+  left: SpectrumPlaybackActionSnapshot | null,
+  right: SpectrumPlaybackActionSnapshot | null,
+) {
+  if (left === null || right === null) {
+    return left === right;
+  }
+
+  return (
+    left.paused === right.paused &&
+    areSpectrumPlaybackIdentitiesEqual(left.identity, right.identity)
+  );
 }
 
 export function resolveSpectrumPlaybackRestoreEffect(args: {

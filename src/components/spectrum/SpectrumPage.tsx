@@ -8,8 +8,10 @@ import type { EditableTitleHandle } from "../EditableTitle";
 import type { MusicSpectrumSelection } from "./MusicSpectrumEditor";
 import { SpectrumMusicVirtualList } from "./SpectrumMusicVirtualList";
 import {
+  areSpectrumPlaybackActionSnapshotsEqual,
   isSpectrumPlaybackStatusIdentityForAction,
   projectSpectrumPlaybackIdentity,
+  resolveSpectrumPlaybackActionSnapshot,
   resolveSpectrumBackActionVisualState,
   resolveSpectrumBackTitleCommitTargets,
   resolveSpectrumMusicRangeChange,
@@ -18,13 +20,10 @@ import {
   resolveSpectrumPlaybackRestoreEffect,
   type SpectrumBackActionVisualState,
   type SpectrumMusicEditorViewModel,
+  type SpectrumPlaybackActionSnapshot,
   type SpectrumPlaybackIdentity,
 } from "./SpectrumPage.view-model";
-import {
-  SPECTRUM_PLAYBACK_STATUS_POLL_MS,
-  SpectrumPlaybackAction,
-  type SpectrumPlaybackSnapshot,
-} from "./SpectrumPlaybackAction";
+import { SPECTRUM_PLAYBACK_STATUS_POLL_MS, SpectrumPlaybackAction } from "./SpectrumPlaybackAction";
 import { usePageRenderFreeze } from "../usePageRenderFreeze";
 import { crab, type PlaybackStatusPayload } from "@/src/cmd";
 
@@ -125,15 +124,21 @@ function resolvePlaybackAbsolutePositionMs(status: PlaybackStatusPayload) {
   return Math.max(0, (status.playback_start_ms ?? 0) + status.position_ms);
 }
 
-function resolveSpectrumPlaybackSnapshot(
+function resolveSpectrumPlaybackActionSnapshotFromStatus(
   status: PlaybackStatusPayload | null,
-  identity: SpectrumPlaybackIdentity | null,
-): SpectrumPlaybackSnapshot | null {
-  return identity !== null && isPlaybackStatusForSpectrumIdentity(status, identity)
-    ? {
-        paused: status?.paused === true,
-      }
-    : null;
+): SpectrumPlaybackActionSnapshot | null {
+  if (!status?.path) {
+    return null;
+  }
+
+  return resolveSpectrumPlaybackActionSnapshot({
+    endMs: status.track_end_ms,
+    filePath: status.path,
+    paused: status.paused,
+    playlistName: status.playlist_name,
+    startMs: status.track_start_ms,
+    url: status.music_url,
+  });
 }
 
 function resolveSpectrumEditorByPlaybackIdentity(
@@ -271,7 +276,9 @@ export function SpectrumPage() {
     positionMs: number | null;
   } | null>(null);
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
-  const [playbackStatus, setPlaybackStatus] = useState<PlaybackStatusPayload | null>(null);
+  const playbackActionSnapshotRef = useRef<SpectrumPlaybackActionSnapshot | null>(null);
+  const [playbackActionSnapshot, setPlaybackActionSnapshot] =
+    useState<SpectrumPlaybackActionSnapshot | null>(null);
   const {
     activeLayoutId,
     nowPlayingTrackEndMs,
@@ -357,7 +364,7 @@ export function SpectrumPage() {
 
     result.match({
       Ok: (status) => {
-        setPlaybackStatus(status);
+        commitPlaybackActionSnapshot(status);
       },
       Err: (error) => {
         throw new Error(error);
@@ -558,8 +565,18 @@ export function SpectrumPage() {
 
   async function refreshSpectrumPlaybackStatus() {
     const status = await readPlaybackStatus();
-    setPlaybackStatus(status);
+    commitPlaybackActionSnapshot(status);
     return status;
+  }
+
+  function commitPlaybackActionSnapshot(status: PlaybackStatusPayload | null) {
+    const snapshot = resolveSpectrumPlaybackActionSnapshotFromStatus(status);
+    if (areSpectrumPlaybackActionSnapshotsEqual(playbackActionSnapshotRef.current, snapshot)) {
+      return;
+    }
+
+    playbackActionSnapshotRef.current = snapshot;
+    setPlaybackActionSnapshot(snapshot);
   }
 
   useLayoutEffect(() => {
@@ -575,12 +592,12 @@ export function SpectrumPage() {
           },
         });
         if (!disposed) {
-          setPlaybackStatus(status);
+          commitPlaybackActionSnapshot(status);
         }
       } catch (error) {
         if (!disposed) {
           console.error("Failed to refresh spectrum playback status", error);
-          setPlaybackStatus(null);
+          commitPlaybackActionSnapshot(null);
         }
       }
     }
@@ -639,7 +656,16 @@ export function SpectrumPage() {
               return (
                 <SpectrumPlaybackAction
                   identity={identity}
-                  snapshot={resolveSpectrumPlaybackSnapshot(playbackStatus, identity)}
+                  playbackSnapshot={
+                    identity !== null &&
+                    playbackActionSnapshot !== null &&
+                    isSpectrumPlaybackStatusIdentityForAction(
+                      playbackActionSnapshot.identity,
+                      identity,
+                    )
+                      ? playbackActionSnapshot
+                      : null
+                  }
                   onAction={handleSpectrumPlaybackAction}
                 />
               );

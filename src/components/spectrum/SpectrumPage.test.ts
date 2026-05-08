@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { areSpectrumPlaybackSnapshotsEqual } from "./SpectrumPlaybackAction";
 import {
+  areSpectrumPlaybackActionSnapshotsEqual,
   findSpectrumMusicDraftById,
   resolveSpectrumBackActionVisualState,
   resolveSpectrumBackTitleCommitTargets,
   resolveSpectrumCommittedMusicName,
   resolveSpectrumMusicDisplayName,
   resolveSpectrumMusicEditorViewModels,
+  resolveSpectrumPlaybackActionSnapshot,
   resolveSpectrumMusicRangeChange,
   resolveSpectrumPlaybackActionVisualState,
   resolveSpectrumPlaybackRangeSyncEffect,
@@ -641,5 +643,39 @@ describe("SpectrumPage", () => {
     assert.equal(areSpectrumPlaybackSnapshotsEqual({ paused: true }, { paused: true }), true);
     assert.equal(areSpectrumPlaybackSnapshotsEqual(null, { paused: false }), false);
     assert.equal(areSpectrumPlaybackSnapshotsEqual({ paused: false }, { paused: true }), false);
+  });
+
+  test("keeps playback action snapshots stable across playback position polling", () => {
+    const base = {
+      endMs: 120_000,
+      filePath: "C:/Music/quiet-morning.m4a",
+      playlistName: "Focus Session",
+      startMs: 0,
+      url: "https://example.com/quiet-morning#a",
+    };
+    const first = resolveSpectrumPlaybackActionSnapshot({
+      ...base,
+      paused: false,
+    });
+    const later = resolveSpectrumPlaybackActionSnapshot({
+      ...base,
+      paused: false,
+    });
+    const paused = resolveSpectrumPlaybackActionSnapshot({
+      ...base,
+      paused: true,
+    });
+    const otherTrack = resolveSpectrumPlaybackActionSnapshot({
+      ...base,
+      startMs: 8_250,
+    });
+
+    assert.ok(first);
+    assert.ok(later);
+    assert.ok(paused);
+    assert.ok(otherTrack);
+    assert.equal(areSpectrumPlaybackActionSnapshotsEqual(first, later), true);
+    assert.equal(areSpectrumPlaybackActionSnapshotsEqual(first, paused), false);
+    assert.equal(areSpectrumPlaybackActionSnapshotsEqual(first, otherTrack), false);
   });
 });

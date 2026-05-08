@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
-import type { PlaybackStatusPayload } from "@/src/cmd";
 import {
   resolveSpectrumPlaybackActionVisualState,
   type SpectrumPlaybackIdentity,
   type SpectrumPlaybackActionVisualState,
+  type SpectrumPlaybackActionSnapshot,
 } from "./SpectrumPage.view-model";
 
 const SPECTRUM_PLAYBACK_STATUS_POLL_MS = 250;
@@ -17,11 +17,9 @@ const spectrumPlaybackIconTransition = {
 
 export { SPECTRUM_PLAYBACK_STATUS_POLL_MS };
 
-export type SpectrumPlaybackSnapshot = Pick<PlaybackStatusPayload, "paused">;
-
 export function areSpectrumPlaybackSnapshotsEqual(
-  left: SpectrumPlaybackSnapshot | null,
-  right: SpectrumPlaybackSnapshot | null,
+  left: Pick<SpectrumPlaybackActionSnapshot, "paused"> | null,
+  right: Pick<SpectrumPlaybackActionSnapshot, "paused"> | null,
 ) {
   return left?.paused === right?.paused;
 }
@@ -126,21 +124,21 @@ function SpectrumPlaybackIcon({ visualState }: { visualState: SpectrumPlaybackAc
 
 export function SpectrumPlaybackAction({
   identity,
-  snapshot,
+  playbackSnapshot,
   onAction,
 }: {
   identity: SpectrumPlaybackIdentity | null;
-  snapshot: SpectrumPlaybackSnapshot | null;
+  playbackSnapshot: SpectrumPlaybackActionSnapshot | null;
   onAction: (identity: SpectrumPlaybackIdentity) => Promise<void>;
 }) {
   const isPresent = useIsPresent();
   const [isPlaybackActionPending, setIsPlaybackActionPending] = useState(false);
   const visualState = resolveSpectrumPlaybackActionVisualState({
     canStartTrack: identity !== null,
-    hasCurrentTrack: snapshot !== null,
+    hasCurrentTrack: playbackSnapshot !== null,
     isPending: isPlaybackActionPending,
     isPresent,
-    paused: snapshot?.paused === true,
+    paused: playbackSnapshot?.paused === true,
   });
 
   async function handlePlaybackAction() {
