@@ -1,7 +1,4 @@
-use super::model::{
-    PlaybackContinuationMode, PlaybackStatusPayload, PlaybackTrackPayload,
-    SpectrumPlaybackRangeSyncPayload,
-};
+use super::model::{PlaybackContinuationMode, PlaybackStatusPayload, PlaybackTrackPayload};
 use super::waveform::{TrackWaveform, TrackWaveformSummary, TrackWaveformTile};
 use tauri::AppHandle;
 
@@ -84,19 +81,6 @@ pub async fn resume_spectrum_music(track: PlaybackTrackPayload) -> Result<bool, 
     super::service::resume_spectrum_music(
         super::model::PlaybackTrack::try_from_payload(track)
             .map_err(|error| format!("invalid playback track payload: {error}"))?,
-    )
-    .await
-    .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn sync_spectrum_playback_range(
-    payload: SpectrumPlaybackRangeSyncPayload,
-) -> Result<Option<PlaybackStatusPayload>, String> {
-    super::service::sync_spectrum_playback_range(
-        super::model::SpectrumPlaybackRangeSync::try_from_payload(payload)
-            .map_err(|error| format!("invalid spectrum playback range sync payload: {error}"))?,
     )
     .await
     .map_err(|error| error.to_string())

@@ -16,7 +16,6 @@ import {
   resolveSpectrumBackTitleCommitTargets,
   resolveSpectrumMusicRangeChange,
   resolveSpectrumMusicEditorViewModels,
-  resolveSpectrumPlaybackRangeSyncEffect,
   resolveSpectrumPlaybackRestoreEffect,
   type SpectrumBackActionVisualState,
   type SpectrumMusicEditorViewModel,
@@ -63,26 +62,6 @@ function createSpectrumPlaybackTrackPayload(identity: SpectrumPlaybackIdentity, 
     music_url: identity.url,
     playlist_name: identity.playlistName,
     start_ms: identity.startMs,
-  };
-}
-
-function createSpectrumPlaybackRangeSyncPayload(args: {
-  endMs: number;
-  identity: SpectrumPlaybackIdentity;
-  musicName: string;
-  startMs: number;
-}) {
-  return {
-    next_end_ms: args.endMs,
-    next_start_ms: args.startMs,
-    track: {
-      end_ms: args.identity.endMs,
-      file_path: args.identity.filePath,
-      music_name: args.musicName,
-      music_url: args.identity.url,
-      playlist_name: args.identity.playlistName,
-      start_ms: args.identity.startMs,
-    },
   };
 }
 
@@ -334,47 +313,8 @@ export function SpectrumPage() {
     };
   }, [primaryPlaybackIdentity]);
 
-  async function syncSpectrumPlaybackRangeForSelection(
-    editor: SpectrumMusicEditorViewModel,
-    range: { endMs: number | null; startMs: number | null },
-  ) {
-    if (!editor.playbackIdentity) {
-      return;
-    }
-
-    const status = await refreshSpectrumPlaybackStatus();
-    const effect = resolveSpectrumPlaybackRangeSyncEffect({
-      identity: editor.playbackIdentity,
-      range,
-      statusIdentity: resolveSpectrumPlaybackStatusIdentity(status),
-    });
-
-    if (effect.kind === "none") {
-      return;
-    }
-
-    const result = await crab.syncSpectrumPlaybackRange(
-      createSpectrumPlaybackRangeSyncPayload({
-        endMs: effect.endMs,
-        identity: editor.playbackIdentity,
-        musicName: editor.titleValue,
-        startMs: effect.startMs,
-      }),
-    );
-
-    result.match({
-      Ok: (status) => {
-        commitPlaybackActionSnapshot(status);
-      },
-      Err: (error) => {
-        throw new Error(error);
-      },
-    });
-  }
-
   function handleSpectrumSelectionCommit(id: string, range: MusicSpectrumSelection) {
-    const editor = renderData.editorViewModels.find((candidate) => candidate.id === id) ?? null;
-    if (!editor) {
+    if (!renderData.editorViewModels.some((candidate) => candidate.id === id)) {
       return;
     }
 
@@ -382,10 +322,6 @@ export function SpectrumPage() {
     appLogicAction.changeSpectrumMusicRange({
       id,
       ...nextRange,
-    });
-
-    void syncSpectrumPlaybackRangeForSelection(editor, nextRange).catch((error) => {
-      console.error("Failed to sync spectrum playback range", error);
     });
   }
 

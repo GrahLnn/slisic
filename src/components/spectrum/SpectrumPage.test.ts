@@ -12,7 +12,6 @@ import {
   resolveSpectrumPlaybackActionSnapshot,
   resolveSpectrumMusicRangeChange,
   resolveSpectrumPlaybackActionVisualState,
-  resolveSpectrumPlaybackRangeSyncEffect,
   resolveSpectrumPlaybackRestoreEffect,
   resolveSpectrumSelectionRange,
   projectSpectrumPlaybackIdentity,
@@ -586,108 +585,6 @@ describe("SpectrumPage", () => {
       {
         kind: "restore-paused",
         positionMs: 8_000,
-      },
-    );
-  });
-
-  test("syncs spectrum playback range only for the active track and a valid committed range", () => {
-    const identity = projectSpectrumPlaybackIdentity({
-      endMs: 120_000,
-      filePath: "C:/Music/quiet-morning.m4a",
-      playlistName: "Focus Session",
-      startMs: 0,
-      url: "https://example.com/quiet-morning#a",
-    });
-    const statusIdentity = projectSpectrumPlaybackIdentity({
-      endMs: 120_000,
-      filePath: "c:/music/quiet-morning.m4a",
-      playlistName: "Focus Session",
-      startMs: 0,
-      url: "https://example.com/quiet-morning#a",
-    });
-    const inactiveStatusIdentity = projectSpectrumPlaybackIdentity({
-      endMs: 120_000,
-      filePath: "C:/Music/other.m4a",
-      playlistName: "Focus Session",
-      startMs: 0,
-      url: "https://example.com/quiet-morning#a",
-    });
-
-    assert.ok(identity);
-    assert.deepEqual(
-      resolveSpectrumPlaybackRangeSyncEffect({
-        identity,
-        range: {
-          endMs: 90_000,
-          startMs: 8_250,
-        },
-        statusIdentity,
-      }),
-      {
-        kind: "sync",
-        endMs: 90_000,
-        startMs: 8_250,
-      },
-    );
-    assert.deepEqual(
-      resolveSpectrumPlaybackRangeSyncEffect({
-        identity,
-        range: {
-          endMs: 90_000,
-          startMs: 8_250,
-        },
-        statusIdentity: inactiveStatusIdentity,
-      }),
-      {
-        kind: "none",
-        reason: "inactive-track",
-      },
-    );
-    assert.deepEqual(
-      resolveSpectrumPlaybackRangeSyncEffect({
-        identity,
-        range: {
-          endMs: 8_250,
-          startMs: 8_250,
-        },
-        statusIdentity,
-      }),
-      {
-        kind: "none",
-        reason: "invalid-range",
-      },
-    );
-  });
-
-  test("does not treat a draft playback request range as the source music identity", () => {
-    const identity = projectSpectrumPlaybackIdentity({
-      endMs: 120_000,
-      filePath: "C:/Music/quiet-morning.m4a",
-      playlistName: "Focus Session",
-      startMs: 0,
-      url: "https://example.com/quiet-morning#a",
-    });
-    const statusIdentity = projectSpectrumPlaybackIdentity({
-      endMs: 90_000,
-      filePath: "c:/music/quiet-morning.m4a",
-      playlistName: "Focus Session",
-      startMs: 8_250,
-      url: "https://example.com/quiet-morning#a",
-    });
-
-    assert.ok(identity);
-    assert.deepEqual(
-      resolveSpectrumPlaybackRangeSyncEffect({
-        identity,
-        range: {
-          endMs: 80_000,
-          startMs: 12_000,
-        },
-        statusIdentity,
-      }),
-      {
-        kind: "none",
-        reason: "inactive-track",
       },
     );
   });

@@ -57,17 +57,6 @@ export type SpectrumPlaybackRestoreEffect =
       positionMs: number | null;
     };
 
-export type SpectrumPlaybackRangeSyncEffect =
-  | {
-      kind: "none";
-      reason: "inactive-track" | "invalid-range";
-    }
-  | {
-      kind: "sync";
-      endMs: number;
-      startMs: number;
-    };
-
 export interface SpectrumMusicEditorViewModel {
   handoffTone: "solid" | "muted" | null;
   id: string;
@@ -383,37 +372,5 @@ export function resolveSpectrumPlaybackRestoreEffect(args: {
   return {
     kind: "restore-paused",
     positionMs: args.storedPositionMs,
-  };
-}
-
-export function resolveSpectrumPlaybackRangeSyncEffect(args: {
-  identity: SpectrumPlaybackIdentity;
-  range: { endMs: number | null; startMs: number | null };
-  statusIdentity: SpectrumPlaybackIdentity | null;
-}): SpectrumPlaybackRangeSyncEffect {
-  if (!isSpectrumPlaybackStatusIdentityForAction(args.statusIdentity, args.identity)) {
-    return {
-      kind: "none",
-      reason: "inactive-track",
-    };
-  }
-
-  if (
-    args.range.startMs === null ||
-    args.range.endMs === null ||
-    !Number.isFinite(args.range.startMs) ||
-    !Number.isFinite(args.range.endMs) ||
-    args.range.startMs >= args.range.endMs
-  ) {
-    return {
-      kind: "none",
-      reason: "invalid-range",
-    };
-  }
-
-  return {
-    kind: "sync",
-    endMs: args.range.endMs,
-    startMs: args.range.startMs,
   };
 }

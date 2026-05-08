@@ -19,13 +19,6 @@ pub struct PlaybackTrackPayload {
     pub end_ms: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct SpectrumPlaybackRangeSyncPayload {
-    pub track: PlaybackTrackPayload,
-    pub next_start_ms: u32,
-    pub next_end_ms: u32,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackTrackProjectionError {
     EmptyFilePath,
@@ -72,13 +65,6 @@ pub struct PlaybackTrack {
     pub end_ms: u32,
 }
 
-#[derive(Debug, Clone)]
-pub struct SpectrumPlaybackRangeSync {
-    pub track: PlaybackTrack,
-    pub next_start_ms: u32,
-    pub next_end_ms: u32,
-}
-
 impl PlaybackTrack {
     pub fn try_from_payload(
         payload: PlaybackTrackPayload,
@@ -118,21 +104,5 @@ impl PlaybackTrack {
             start_ms: self.start_ms,
             end_ms: self.end_ms,
         }
-    }
-}
-
-impl SpectrumPlaybackRangeSync {
-    pub fn try_from_payload(
-        payload: SpectrumPlaybackRangeSyncPayload,
-    ) -> Result<Self, PlaybackTrackProjectionError> {
-        if payload.next_start_ms >= payload.next_end_ms {
-            return Err(PlaybackTrackProjectionError::InvalidRange);
-        }
-
-        Ok(Self {
-            track: PlaybackTrack::try_from_payload(payload.track)?,
-            next_start_ms: payload.next_start_ms,
-            next_end_ms: payload.next_end_ms,
-        })
     }
 }
