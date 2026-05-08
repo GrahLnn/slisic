@@ -23,7 +23,7 @@ import {
   type SpectrumPlaybackActionSnapshot,
   type SpectrumPlaybackIdentity,
 } from "./SpectrumPage.view-model";
-import { SPECTRUM_PLAYBACK_STATUS_POLL_MS, SpectrumPlaybackAction } from "./SpectrumPlaybackAction";
+import { SPECTRUM_PLAYBACK_STATUS_POLL_MS } from "./SpectrumPlaybackAction";
 import { usePageRenderFreeze } from "../usePageRenderFreeze";
 import { crab, type PlaybackStatusPayload } from "@/src/cmd";
 
@@ -372,24 +372,19 @@ export function SpectrumPage() {
     });
   }
 
-  function handleSpectrumSelectionChange(id: string, range: MusicSpectrumSelection) {
-    const nextRange = resolveSpectrumMusicRangeChange(range);
-    appLogicAction.changeSpectrumMusicRange({
-      id,
-      ...nextRange,
-    });
-  }
-
   function handleSpectrumSelectionCommit(id: string, range: MusicSpectrumSelection) {
     const editor = renderData.editorViewModels.find((candidate) => candidate.id === id) ?? null;
     if (!editor) {
       return;
     }
 
-    void syncSpectrumPlaybackRangeForSelection(
-      editor,
-      resolveSpectrumMusicRangeChange(range),
-    ).catch((error) => {
+    const nextRange = resolveSpectrumMusicRangeChange(range);
+    appLogicAction.changeSpectrumMusicRange({
+      id,
+      ...nextRange,
+    });
+
+    void syncSpectrumPlaybackRangeForSelection(editor, nextRange).catch((error) => {
       console.error("Failed to sync spectrum playback range", error);
     });
   }
@@ -650,30 +645,11 @@ export function SpectrumPage() {
             editableTitleRefs={editableTitleRefs}
             editorViewModels={renderData.editorViewModels}
             exitPresentation={isPresent ? "local" : "page"}
-            renderPlaybackAction={(editor) => {
-              const identity = editor.playbackIdentity;
-
-              return (
-                <SpectrumPlaybackAction
-                  identity={identity}
-                  playbackSnapshot={
-                    identity !== null &&
-                    playbackActionSnapshot !== null &&
-                    isSpectrumPlaybackStatusIdentityForAction(
-                      playbackActionSnapshot.identity,
-                      identity,
-                    )
-                      ? playbackActionSnapshot
-                      : null
-                  }
-                  onAction={handleSpectrumPlaybackAction}
-                />
-              );
-            }}
+            playbackActionSnapshot={playbackActionSnapshot}
             trackFilePath={renderData.trackFilePath}
+            onPlaybackAction={handleSpectrumPlaybackAction}
             onReset={(id) => appLogicAction.resetSpectrumMusicDraft(id)}
             onSelectionCommit={handleSpectrumSelectionCommit}
-            onSelectionChange={handleSpectrumSelectionChange}
             onTitleChange={(id, name) =>
               appLogicAction.changeSpectrumMusicName({
                 id,

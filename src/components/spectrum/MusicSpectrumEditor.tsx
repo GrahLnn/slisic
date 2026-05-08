@@ -59,7 +59,6 @@ export interface MusicSpectrumEditorProps {
   waveformPresentation?: MusicSpectrumWaveformPresentation;
   waveformClassName?: string;
   onReset: () => void;
-  onSelectionChange: (selection: MusicSpectrumSelection) => void;
   onSelectionCommit?: (selection: MusicSpectrumSelection) => void;
   onTitleChange: (value: string) => void;
 }
@@ -132,7 +131,6 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
       waveformPresentation = "interactive",
       waveformClassName,
       onReset,
-      onSelectionChange,
       onSelectionCommit,
       onTitleChange,
     },
@@ -184,7 +182,6 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
                     filePath={trackFilePath}
                     playheadEnabled={playheadEnabled}
                     selection={selection}
-                    onSelectionChange={onSelectionChange}
                     onSelectionCommit={onSelectionCommit}
                   />
                 </motion.div>

@@ -1,11 +1,77 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  areSpectrumMusicVirtualListRowRenderModelsEqual,
+  areSpectrumMusicEditorViewModelsEqual,
+  resolveSpectrumMusicVirtualRowPlaybackSnapshot,
   resolveSpectrumMusicVirtualListHeight,
   resolveSpectrumMusicVirtualRangeIndexes,
   resolveSpectrumMusicVirtualRowTransform,
   resolveSpectrumMusicWaveformPresentation,
 } from "./SpectrumMusicVirtualList";
+import type {
+  SpectrumMusicEditorViewModel,
+  SpectrumPlaybackActionSnapshot,
+  SpectrumPlaybackIdentity,
+} from "./SpectrumPage.view-model";
+
+function createPlaybackIdentity(id: string): SpectrumPlaybackIdentity {
+  return {
+    endMs: 30_000,
+    filePath: `C:/music/${id}.mp3`,
+    key: `c:/music/${id}.mp3|playlist|${id}|0|30000`,
+    normalizedFilePath: `c:/music/${id}.mp3`,
+    playlistName: "playlist",
+    startMs: 0,
+    url: id,
+  };
+}
+
+function createEditor(
+  id: string,
+  overrides: Partial<SpectrumMusicEditorViewModel> = {},
+): SpectrumMusicEditorViewModel {
+  return {
+    handoffTone: null,
+    id,
+    interactionDisabled: false,
+    isCurrent: id === "alpha",
+    playbackIdentity: createPlaybackIdentity(id),
+    selectionEnd: 30,
+    selectionStart: 0,
+    shouldShowResetAction: false,
+    titleLayoutId: undefined,
+    titleValue: id,
+    ...overrides,
+  };
+}
+
+function createPlaybackSnapshot(
+  identity: SpectrumPlaybackIdentity,
+  paused: boolean,
+): SpectrumPlaybackActionSnapshot {
+  return {
+    identity,
+    paused,
+  };
+}
+
+function createRowRenderModel(
+  editor: SpectrumMusicEditorViewModel,
+  overrides: Partial<Parameters<typeof areSpectrumMusicVirtualListRowRenderModelsEqual>[0]> = {},
+): Parameters<typeof areSpectrumMusicVirtualListRowRenderModelsEqual>[0] {
+  return {
+    editor,
+    exitPresentation: "local",
+    index: 0,
+    playbackActionSnapshot: null,
+    scrollMargin: 0,
+    start: 0,
+    trackFilePath: "C:/music/current.mp3",
+    waveformPresentation: "interactive",
+    ...overrides,
+  };
+}
 
 describe("SpectrumMusicVirtualList", () => {
   test("keeps virtual list height owned by the virtualizer total size", () => {
@@ -76,6 +142,94 @@ describe("SpectrumMusicVirtualList", () => {
         rowIndex: 1,
       }),
       "interactive",
+    );
+  });
+
+  test("compares editor view models by row-owned semantic fields", () => {
+    const editor = createEditor("alpha");
+    assert.equal(areSpectrumMusicEditorViewModelsEqual(editor, { ...editor }), true);
+    assert.equal(
+      areSpectrumMusicEditorViewModelsEqual(editor, {
+        ...editor,
+        selectionStart: 4,
+      }),
+      false,
+    );
+    assert.equal(
+      areSpectrumMusicEditorViewModelsEqual(editor, {
+        ...editor,
+        playbackIdentity: createPlaybackIdentity("beta"),
+      }),
+      false,
+    );
+  });
+
+  test("keeps non-target rows stable when one draft range is committed", () => {
+    const firstEditor = createEditor("alpha");
+    const secondEditor = createEditor("beta", {
+      isCurrent: false,
+    });
+
+    assert.equal(
+      areSpectrumMusicVirtualListRowRenderModelsEqual(
+        createRowRenderModel(firstEditor),
+        createRowRenderModel({ ...firstEditor }),
+      ),
+      true,
+    );
+    assert.equal(
+      areSpectrumMusicVirtualListRowRenderModelsEqual(
+        createRowRenderModel(secondEditor, { index: 1, start: 384 }),
+        createRowRenderModel(
+          {
+            ...secondEditor,
+            selectionEnd: 24,
+          },
+          { index: 1, start: 384 },
+        ),
+      ),
+      false,
+    );
+  });
+
+  test("projects playback state only onto the row with the matching playback identity", () => {
+    const firstEditor = createEditor("alpha");
+    const secondEditor = createEditor("beta", {
+      isCurrent: false,
+    });
+    const firstSnapshot = createPlaybackSnapshot(firstEditor.playbackIdentity!, false);
+    const secondSnapshot = createPlaybackSnapshot(secondEditor.playbackIdentity!, true);
+
+    assert.deepEqual(
+      resolveSpectrumMusicVirtualRowPlaybackSnapshot({
+        editor: firstEditor,
+        playbackActionSnapshot: firstSnapshot,
+      }),
+      firstSnapshot,
+    );
+    assert.equal(
+      resolveSpectrumMusicVirtualRowPlaybackSnapshot({
+        editor: secondEditor,
+        playbackActionSnapshot: firstSnapshot,
+      }),
+      null,
+    );
+    assert.equal(
+      areSpectrumMusicVirtualListRowRenderModelsEqual(
+        createRowRenderModel(firstEditor, { playbackActionSnapshot: firstSnapshot }),
+        createRowRenderModel({ ...firstEditor }, { playbackActionSnapshot: secondSnapshot }),
+      ),
+      false,
+    );
+    assert.equal(
+      areSpectrumMusicVirtualListRowRenderModelsEqual(
+        createRowRenderModel(secondEditor, { index: 1, playbackActionSnapshot: null, start: 384 }),
+        createRowRenderModel(
+          { ...secondEditor },
+          { index: 1, playbackActionSnapshot: firstSnapshot, start: 384 },
+        ),
+      ),
+      true,
     );
   });
 });

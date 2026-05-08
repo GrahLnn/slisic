@@ -1771,6 +1771,13 @@ export function resolveWaveformSelectionGeometry(args: {
   };
 }
 
+export function areWaveformSelectionsEqual(
+  left: WaveformSelectionRange | null,
+  right: WaveformSelectionRange | null,
+) {
+  return left?.start === right?.start && left?.end === right?.end;
+}
+
 export function resolveWaveformSelectionDrag(args: {
   edge: WaveformSelectionEdge;
   selection: WaveformSelectionRange | null;
@@ -2303,7 +2310,6 @@ export function resolveWaveformLoadingGridSize(args: {
 export function TrackSpectrum(props: {
   className?: string;
   filePath: string | null;
-  onSelectionChange?: (range: WaveformSelectionDragResolution) => void;
   onSelectionCommit?: (range: WaveformSelectionDragResolution) => void;
   playheadEnabled?: boolean;
   ports?: TrackSpectrumPorts;
@@ -2317,7 +2323,6 @@ export function TrackSpectrum(props: {
 function TrackSpectrumSession(props: {
   className?: string;
   filePath: string | null;
-  onSelectionChange?: (range: WaveformSelectionDragResolution) => void;
   onSelectionCommit?: (range: WaveformSelectionDragResolution) => void;
   playheadEnabled?: boolean;
   ports?: TrackSpectrumPorts;
@@ -2422,7 +2427,16 @@ function TrackSpectrumSession(props: {
     viewportRef,
   });
   const shouldShowLoadingGrid = waveformState.status === "loading";
-  selectionRef.current = props.selection ?? null;
+  const externalSelection = props.selection ?? null;
+  const previousExternalSelectionRef = useRef<WaveformSelectionRange | null>(externalSelection);
+  const isSelectionDragActiveRef = useRef(false);
+  if (
+    !isSelectionDragActiveRef.current &&
+    !areWaveformSelectionsEqual(previousExternalSelectionRef.current, externalSelection)
+  ) {
+    selectionRef.current = externalSelection;
+    previousExternalSelectionRef.current = externalSelection;
+  }
 
   const selectionPresentationRef = useRef({
     visible: !shouldShowLoadingGrid,
@@ -2455,6 +2469,10 @@ function TrackSpectrumSession(props: {
       `${clampNumber(geometry.endX, 0, viewport.viewportWidth)}px`,
     );
   }, []);
+  const resetSelectionPreview = useCallback(() => {
+    selectionRef.current = previousExternalSelectionRef.current;
+    syncSelectionOverlay();
+  }, [syncSelectionOverlay]);
 
   useWaveformLoadingRenderer({
     canvasRef: loadingCanvasRef,
@@ -2905,8 +2923,10 @@ function TrackSpectrumSession(props: {
         />
       )}
       <WaveformSelectionOverlay
-        onSelectionChange={props.onSelectionChange}
         onSelectionCommit={props.onSelectionCommit}
+        isDraggingRef={isSelectionDragActiveRef}
+        onSelectionCancelPreview={resetSelectionPreview}
+        onSelectionPreview={syncSelectionOverlay}
         selectionRef={selectionRef}
         viewportRef={viewportRef}
         visible={!shouldShowLoadingGrid}
@@ -2922,19 +2942,29 @@ function TrackSpectrumSession(props: {
 }
 
 function WaveformSelectionOverlay(args: {
-  onSelectionChange?: (range: WaveformSelectionDragResolution) => void;
+  isDraggingRef: RefObject<boolean>;
+  onSelectionCancelPreview: () => void;
   onSelectionCommit?: (range: WaveformSelectionDragResolution) => void;
+  onSelectionPreview: () => void;
   selectionRef: RefObject<WaveformSelectionRange | null>;
   viewportRef: RefObject<WaveformViewportModel | null>;
   visible: boolean;
 }) {
-  const { onSelectionChange, onSelectionCommit, selectionRef, viewportRef, visible } = args;
+  const {
+    isDraggingRef,
+    onSelectionCancelPreview,
+    onSelectionCommit,
+    onSelectionPreview,
+    selectionRef,
+    viewportRef,
+    visible,
+  } = args;
   const dragRef = useRef<WaveformSelectionDragResolution | null>(null);
   const beginDrag = useCallback(
     (edge: WaveformSelectionEdge, event: ReactPointerEvent<HTMLButtonElement>) => {
       const host = event.currentTarget.parentElement;
       const viewport = viewportRef.current;
-      if (!host || !viewport || !onSelectionChange) {
+      if (!host || !viewport || !onSelectionCommit) {
         return;
       }
 
@@ -2950,21 +2980,18 @@ function WaveformSelectionOverlay(args: {
         viewport,
       });
       dragRef.current = resolution;
-      onSelectionChange(resolution);
+      isDraggingRef.current = true;
+      selectionRef.current = resolution;
+      onSelectionPreview();
     },
-    [onSelectionChange, selectionRef, viewportRef],
+    [isDraggingRef, onSelectionCommit, onSelectionPreview, selectionRef, viewportRef],
   );
 
   const continueDrag = useCallback(
     (edge: WaveformSelectionEdge, event: ReactPointerEvent<HTMLButtonElement>) => {
       const host = event.currentTarget.parentElement;
       const viewport = viewportRef.current;
-      if (
-        !host ||
-        !viewport ||
-        !onSelectionChange ||
-        !event.currentTarget.hasPointerCapture(event.pointerId)
-      ) {
+      if (!host || !viewport || !event.currentTarget.hasPointerCapture(event.pointerId)) {
         return;
       }
 
@@ -2977,22 +3004,28 @@ function WaveformSelectionOverlay(args: {
         viewport,
       });
       dragRef.current = resolution;
-      onSelectionChange(resolution);
+      selectionRef.current = resolution;
+      onSelectionPreview();
     },
-    [onSelectionChange, selectionRef, viewportRef],
+    [onSelectionPreview, selectionRef, viewportRef],
   );
   const commitDrag = useCallback(() => {
     const resolution = dragRef.current;
     dragRef.current = null;
+    isDraggingRef.current = false;
     if (!resolution) {
       return;
     }
 
+    selectionRef.current = resolution;
+    onSelectionPreview();
     onSelectionCommit?.(resolution);
-  }, [onSelectionCommit]);
+  }, [isDraggingRef, onSelectionCommit, onSelectionPreview, selectionRef]);
   const cancelDrag = useCallback(() => {
     dragRef.current = null;
-  }, []);
+    isDraggingRef.current = false;
+    onSelectionCancelPreview();
+  }, [isDraggingRef, onSelectionCancelPreview]);
 
   return (
     <div

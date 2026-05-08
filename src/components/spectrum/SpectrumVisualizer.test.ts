@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { TrackWaveformSummary } from "@/src/cmd";
 import {
+  areWaveformSelectionsEqual,
   clampWaveformZoomDeltaY,
   createWaveformDataRequestKey,
   createWaveformDataScopeKey,
@@ -1171,6 +1172,43 @@ describe("SpectrumVisualizer", () => {
       startX: 100,
     });
     assert.equal(changedSelectionScopeKey, baseScopeKey);
+  });
+
+  test("keeps equivalent waveform selections stable during local drag previews", () => {
+    assert.equal(areWaveformSelectionsEqual(null, null), true);
+    assert.equal(
+      areWaveformSelectionsEqual(
+        {
+          end: 80,
+          start: 10,
+        },
+        {
+          end: 80,
+          start: 10,
+        },
+      ),
+      true,
+    );
+    assert.equal(
+      areWaveformSelectionsEqual(
+        {
+          end: 80,
+          start: 10,
+        },
+        {
+          end: 80,
+          start: 10.25,
+        },
+      ),
+      false,
+    );
+    assert.equal(
+      areWaveformSelectionsEqual(null, {
+        end: 80,
+        start: 10,
+      }),
+      false,
+    );
   });
 
   test("resolves selection drags inside the full track duration", () => {
