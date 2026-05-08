@@ -113,14 +113,16 @@ function createWaveformTestFrameDescriptor(
 function createWaveformCanvasTestContext() {
   return {
     beginPathCount: 0,
+    lineYValues: [] as number[],
     lineToCount: 0,
     moveToCount: 0,
     strokeCount: 0,
     beginPath() {
       this.beginPathCount += 1;
     },
-    lineTo() {
+    lineTo(_x: number, y: number) {
       this.lineToCount += 1;
+      this.lineYValues.push(y);
     },
     moveTo() {
       this.moveToCount += 1;
@@ -170,6 +172,7 @@ function createWaveformCanvasTestPlan(overrides: { viewportWidth?: number } = {}
     },
     visibleSecondsWindow: {
       endSeconds: viewportWidth / 100,
+      hasAudio: true,
       startSeconds: 0,
     },
     visibleWindow: {
@@ -257,7 +260,7 @@ describe("SpectrumVisualizer", () => {
         pixelsPerSecond: 120,
         viewportWidth: 800,
       }),
-      1_200,
+      1_680,
     );
   });
 
@@ -269,7 +272,7 @@ describe("SpectrumVisualizer", () => {
         durationMs: 10_000,
         viewportWidth: 1_000,
       }),
-      100,
+      1_000 / 14,
     );
     assert.equal(resolveWaveformMaximumPixelsPerSecond({ maximumPixelsPerSecond: 640 }), 640);
     assert.equal(
@@ -291,7 +294,7 @@ describe("SpectrumVisualizer", () => {
         pixelsPerSecond: 24,
         viewportWidth: 1_000,
       }),
-      125,
+      1_000 / 12,
     );
     assert.equal(
       resolveWaveformZoomOwnedPixelsPerSecond({
@@ -950,6 +953,55 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
+  test("draws visual padding as a zero waveform without requiring tile data", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 20 });
+    const target = {
+      context: context as unknown as CanvasRenderingContext2D,
+      frame: {} as HTMLCanvasElement,
+      geometry: plan.geometry,
+      kind: "buffered" as const,
+    };
+    const chunk = drawWaveformCanvasJobChunk({
+      cursor: {
+        firstMissingX: null,
+        hasDrawnColumn: false,
+        lastMissingX: null,
+        missingPeakColumnCount: 0,
+        nextX: 0,
+        resolvedPeakColumnCount: 0,
+      },
+      deadlineMs: Number.POSITIVE_INFINITY,
+      now: () => 0,
+      plan: {
+        ...plan,
+        candidateLevels: [],
+        viewport: {
+          ...plan.viewport,
+          durationMs: 120_000,
+          scrollLeft: 0,
+        },
+        visibleSecondsWindow: {
+          endSeconds: 0,
+          hasAudio: false,
+          startSeconds: 0,
+        },
+        visibleWindow: {
+          endPx: 0,
+          startPx: 0,
+        },
+      },
+      target,
+    });
+
+    assert.equal(chunk.completed, true);
+    assert.equal(chunk.missingPeakColumns, 0);
+    assert.equal(chunk.resolvedPeakCount, 20);
+    assert.equal(context.moveToCount, 20);
+    assert.equal(context.strokeCount, 1);
+    assert.ok(context.lineYValues.every((y) => y === 105));
+  });
+
   test("accepts backend hardware horizontal wheel only while the waveform host is hovered", () => {
     const host = {
       getBoundingClientRect: () => ({
@@ -1095,7 +1147,8 @@ describe("SpectrumVisualizer", () => {
     });
     const anchoredAfterZoom = (frame.scrollLeft + frame.anchorViewportX) / frame.pixelsPerSecond;
 
-    assert.equal(frame.anchorSeconds, 10);
+    assert.equal(frame.anchorVisualSeconds, 10);
+    assert.equal(frame.focusSeconds, 8);
     assert.ok(Math.abs(anchoredAfterZoom - 10) < 0.01);
   });
 
@@ -1187,9 +1240,9 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.deepEqual(geometry, {
-      endX: 1_500,
+      endX: 1_540,
       isComplete: true,
-      startX: 100,
+      startX: 140,
     });
     assert.equal(changedSelectionScopeKey, baseScopeKey);
   });
@@ -1255,7 +1308,7 @@ describe("SpectrumVisualizer", () => {
       }),
       {
         end: 80,
-        start: 15.35,
+        start: 13.35,
       },
     );
     assert.deepEqual(
@@ -1263,6 +1316,51 @@ describe("SpectrumVisualizer", () => {
         edge: "end",
         hostRect: { left: 50 },
         pointerClientX: 5_000,
+        selection: {
+          end: 80,
+          start: 10,
+        },
+        viewport,
+      }),
+      {
+        end: 120,
+        start: 10,
+      },
+    );
+  });
+
+  test("keeps selection boundary drags inside real audio when the pointer enters visual padding", () => {
+    const viewport = {
+      contentWidth: 12_400,
+      durationMs: 120_000,
+      focusSeconds: null,
+      maximumPixelsPerSecond: 800,
+      pixelsPerSecond: 100,
+      scrollLeft: 0,
+      viewportWidth: 1_000,
+    };
+
+    assert.deepEqual(
+      resolveWaveformSelectionDrag({
+        edge: "start",
+        hostRect: { left: 0 },
+        pointerClientX: 50,
+        selection: {
+          end: 80,
+          start: 10,
+        },
+        viewport,
+      }),
+      {
+        end: 80,
+        start: 0,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformSelectionDrag({
+        edge: "end",
+        hostRect: { left: 0 },
+        pointerClientX: 12_350,
         selection: {
           end: 80,
           start: 10,
@@ -1300,7 +1398,7 @@ describe("SpectrumVisualizer", () => {
       }),
       {
         end: 80,
-        start: 1.5875,
+        start: 0,
       },
     );
   });
@@ -1363,7 +1461,7 @@ describe("SpectrumVisualizer", () => {
       viewportWidth: 1_000,
     });
 
-    assert.deepEqual(plan.visibleIndexes, [1]);
+    assert.deepEqual(plan.visibleIndexes, [0, 1]);
     assert.equal(plan.requests[0]?.priority, "visible");
     assert.ok(
       plan.requests.findIndex((request) => request.priority === "prefetch-focus") <
@@ -1410,7 +1508,7 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.deepEqual(focusPrefetchLevels, [400, 800]);
-    assert.deepEqual(visiblePrefetchLevels, [400]);
+    assert.deepEqual(visiblePrefetchLevels, [400, 400]);
     assert.deepEqual(reversePrefetchLevels, [100, 50]);
     assert.ok(currentVisibleKeys.every((key) => plan.protectedCacheKeys.includes(key)));
     assert.ok(plan.protectedCacheKeys.includes(lowerVisibleKey));
@@ -1466,13 +1564,108 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.equal(plan.mode, "interactive");
-    assert.deepEqual(plan.visibleIndexes, [1]);
+    assert.deepEqual(plan.visibleIndexes, [0, 1]);
     assert.deepEqual(
       plan.requests.map((request) => request.priority),
-      ["visible", "visible-guard", "visible-guard"],
+      ["visible", "visible", "visible-guard"],
     );
     assert.deepEqual(plan.overscanSecondsWindow, plan.visibleSecondsWindow);
     assert.deepEqual(plan.overscanWindow, plan.visibleWindow);
+  });
+
+  test("keeps visible data empty when the viewport is fully inside visual padding", () => {
+    const leftPlan = resolveWaveformDataPlan({
+      contentWidth: 12_400,
+      filePath: "C:/music/demo.flac",
+      focusSeconds: 0,
+      pixelsPerSecond: 100,
+      scrollLeft: 0,
+      summary: createWaveformTestSummary(),
+      tileWidth: 1_000,
+      viewportWidth: 100,
+    });
+    const rightPlan = resolveWaveformDataPlan({
+      contentWidth: 12_400,
+      filePath: "C:/music/demo.flac",
+      focusSeconds: 120,
+      pixelsPerSecond: 100,
+      scrollLeft: 12_300,
+      summary: createWaveformTestSummary(),
+      tileWidth: 1_000,
+      viewportWidth: 100,
+    });
+
+    assert.deepEqual(leftPlan.visibleSecondsWindow, {
+      endSeconds: 0,
+      hasAudio: false,
+      startSeconds: 0,
+    });
+    assert.deepEqual(leftPlan.visibleWindow, {
+      endPx: 0,
+      startPx: 0,
+    });
+    assert.deepEqual(leftPlan.visibleIndexes, []);
+    assert.deepEqual(resolveWaveformDataPlanScopedRequests(leftPlan, "visible"), []);
+    assert.deepEqual(rightPlan.visibleSecondsWindow, {
+      endSeconds: 120,
+      hasAudio: false,
+      startSeconds: 120,
+    });
+    assert.deepEqual(rightPlan.visibleWindow, {
+      endPx: 0,
+      startPx: 0,
+    });
+    assert.deepEqual(rightPlan.visibleIndexes, []);
+    assert.deepEqual(resolveWaveformDataPlanScopedRequests(rightPlan, "visible"), []);
+  });
+
+  test("requests only the real audio intersection when the viewport crosses visual padding", () => {
+    const summary = createWaveformTestSummary();
+    const leftPlan = resolveWaveformDataPlan({
+      contentWidth: 12_400,
+      filePath: "C:/music/demo.flac",
+      focusSeconds: 0,
+      mode: "interactive",
+      pixelsPerSecond: 100,
+      scrollLeft: 150,
+      summary,
+      tileWidth: 1_000,
+      viewportWidth: 100,
+    });
+    const rightPlan = resolveWaveformDataPlan({
+      contentWidth: 12_400,
+      filePath: "C:/music/demo.flac",
+      focusSeconds: 120,
+      mode: "interactive",
+      pixelsPerSecond: 100,
+      scrollLeft: 12_150,
+      summary,
+      tileWidth: 1_000,
+      viewportWidth: 100,
+    });
+
+    assert.deepEqual(leftPlan.visibleSecondsWindow, {
+      endSeconds: 0.5,
+      hasAudio: true,
+      startSeconds: 0,
+    });
+    assert.deepEqual(leftPlan.visibleWindow, {
+      endPx: 50,
+      startPx: 0,
+    });
+    assert.deepEqual(leftPlan.visibleIndexes, [0]);
+    assert.ok(leftPlan.requests.every((request) => request.startPx >= 0));
+    assert.deepEqual(rightPlan.visibleSecondsWindow, {
+      endSeconds: 120,
+      hasAudio: true,
+      startSeconds: 119.5,
+    });
+    assert.deepEqual(rightPlan.visibleWindow, {
+      endPx: 12_000,
+      startPx: 11_950,
+    });
+    assert.deepEqual(rightPlan.visibleIndexes, [11]);
+    assert.ok(rightPlan.requests.every((request) => request.endPx <= 12_000));
   });
 
   test("keeps interactive presentation independent from throttled data demand", () => {
@@ -1601,8 +1794,10 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.ok(second.pixelsPerSecond > first.pixelsPerSecond);
-    assert.equal(first.anchorSeconds, 10);
-    assert.equal(second.anchorSeconds, 10);
+    assert.equal(first.anchorVisualSeconds, 10);
+    assert.equal(first.focusSeconds, 8);
+    assert.equal(second.anchorVisualSeconds, 10);
+    assert.equal(second.focusSeconds, 8);
     assert.equal((second.scrollLeft + second.anchorViewportX) / second.pixelsPerSecond, 10);
   });
 
@@ -1630,7 +1825,8 @@ describe("SpectrumVisualizer", () => {
 
     assert.ok(Math.abs(cancelled.pixelsPerSecond - 100) < 0.01);
     assert.ok(Math.abs(cancelled.scrollLeft - 750) < 0.5);
-    assert.equal(cancelled.anchorSeconds, 10);
+    assert.equal(cancelled.anchorVisualSeconds, 10);
+    assert.equal(cancelled.focusSeconds, 8);
   });
 
   test("reads one quantized value per display column without widening bars", () => {
@@ -1783,7 +1979,7 @@ describe("SpectrumVisualizer", () => {
         positionMs: 5_000,
         scrollLeft: 250,
       }),
-      250,
+      450,
     );
     assert.deepEqual(
       resolveWaveformPlayheadStyle({
@@ -1795,7 +1991,7 @@ describe("SpectrumVisualizer", () => {
       }),
       {
         opacity: "0.86",
-        transform: "translate3d(250px, 0, 0)",
+        transform: "translate3d(450px, 0, 0)",
       },
     );
   });
@@ -1808,7 +2004,7 @@ describe("SpectrumVisualizer", () => {
         positionMs: 5_000,
         scrollLeft: 1_904,
       }),
-      596,
+      796,
     );
   });
 
@@ -1820,7 +2016,7 @@ describe("SpectrumVisualizer", () => {
         positionMs: 5_000,
         scrollLeft: 1_904,
       }),
-      596,
+      796,
     );
     assert.equal(
       resolveWaveformPlayheadX({
@@ -1829,7 +2025,7 @@ describe("SpectrumVisualizer", () => {
         positionMs: 5_000,
         scrollLeft: 1_904,
       }),
-      1_096,
+      1_296,
     );
   });
 
@@ -1985,7 +2181,7 @@ describe("SpectrumVisualizer", () => {
         pixelsPerSecond: 100,
         viewportWidth: 1_000,
       }),
-      1_500,
+      1_700,
     );
     assert.equal(
       resolveAnchoredWaveformScrollLeft({
@@ -1995,7 +2191,7 @@ describe("SpectrumVisualizer", () => {
         pixelsPerSecond: 100,
         viewportWidth: 1_000,
       }),
-      1_750,
+      1_950,
     );
     assert.equal(
       resolveWaveformSelectionStartScrollLeft({
@@ -2008,7 +2204,7 @@ describe("SpectrumVisualizer", () => {
         },
         viewportWidth: 1_000,
       }),
-      1_904,
+      2_104,
     );
   });
 

@@ -46,6 +46,7 @@ const WAVEFORM_CANVAS_MAX_CHUNK_WIDTH_PX = 320;
 const WAVEFORM_CANVAS_REUSE_MIN_SHIFT_PX = 1;
 const WAVEFORM_CANVAS_STROKE_ALPHA = 0.88;
 const WAVEFORM_SELECTION_START_LEADING_SPACE_PX = 96;
+const WAVEFORM_VISUAL_EDGE_PADDING_SECONDS = 2;
 const WAVEFORM_INITIAL_PREPARE_FRAME_COUNT = 2;
 const WAVEFORM_LOADING_DOT_PITCH_PX = 12;
 const WAVEFORM_LOADING_MIN_FIELD_WIDTH_PX = 96;
@@ -161,9 +162,10 @@ type WaveformViewportModel = WaveformViewportState & {
 };
 
 type WaveformZoomFrame = {
-  anchorSeconds: number;
+  anchorVisualSeconds: number;
   anchorViewportX: number;
   contentWidth: number;
+  focusSeconds: number;
   pixelsPerSecond: number;
   scrollLeft: number;
 };
@@ -244,6 +246,10 @@ type WaveformSecondsWindow = {
   startSeconds: number;
 };
 
+type WaveformAudioViewportWindow = WaveformSecondsWindow & {
+  hasAudio: boolean;
+};
+
 type WaveformDataRequestPriority =
   | "visible"
   | "visible-guard"
@@ -271,13 +277,13 @@ type WaveformDataPlan = {
   dataContentWidth: number;
   dataPixelsPerSecond: number;
   mode: WaveformDataPlanMode;
-  overscanSecondsWindow: WaveformSecondsWindow;
+  overscanSecondsWindow: WaveformAudioViewportWindow;
   overscanWindow: WaveformDataWindow;
   protectedCacheKeys: string[];
   requests: WaveformDataRequest[];
   scopeKey: string;
   visibleIndexes: number[];
-  visibleSecondsWindow: WaveformSecondsWindow;
+  visibleSecondsWindow: WaveformAudioViewportWindow;
   visibleWindow: WaveformDataWindow;
 };
 
@@ -388,7 +394,7 @@ type WaveformCanvasRenderPlan = {
   geometry: WaveformCanvasFrameGeometry;
   scopeKey: string;
   viewport: WaveformViewportModel;
-  visibleSecondsWindow: WaveformSecondsWindow;
+  visibleSecondsWindow: WaveformAudioViewportWindow;
   visibleWindow: WaveformDataWindow;
 };
 
@@ -720,7 +726,7 @@ export function resolveWaveformPixelsPerSecond(
 export function resolveWaveformMinimumPixelsPerSecond(
   constraints?: Partial<WaveformZoomConstraints>,
 ) {
-  const durationSeconds = Math.max(0, constraints?.durationMs ?? 0) / 1000;
+  const durationSeconds = resolveWaveformVisualDurationSeconds(constraints?.durationMs ?? 0);
   const viewportWidth = Math.max(0, constraints?.viewportWidth ?? 0);
 
   if (durationSeconds <= 0 || viewportWidth <= 0) {
@@ -774,13 +780,70 @@ export function resolveWaveformMaximumPixelsPerSecond(
     : WAVEFORM_FALLBACK_MAX_PIXELS_PER_SECOND;
 }
 
+function resolveWaveformDurationSeconds(durationMs: number) {
+  return Math.max(0, durationMs) / 1000;
+}
+
+function resolveWaveformVisualDurationSeconds(durationMs: number) {
+  const durationSeconds = resolveWaveformDurationSeconds(durationMs);
+
+  return durationSeconds <= 0 ? 0 : durationSeconds + WAVEFORM_VISUAL_EDGE_PADDING_SECONDS * 2;
+}
+
+function audioSecondsToWaveformVisualSeconds(seconds: number) {
+  return seconds + WAVEFORM_VISUAL_EDGE_PADDING_SECONDS;
+}
+
+function waveformVisualSecondsToAudioSeconds(seconds: number) {
+  return seconds - WAVEFORM_VISUAL_EDGE_PADDING_SECONDS;
+}
+
+function resolveWaveformVisualScrollLeft(args: {
+  audioSeconds: number;
+  contentWidth: number;
+  offsetPx: number;
+  pixelsPerSecond: number;
+  viewportWidth: number;
+}) {
+  return clampNumber(
+    audioSecondsToWaveformVisualSeconds(args.audioSeconds) * args.pixelsPerSecond -
+      Math.max(0, args.offsetPx),
+    0,
+    Math.max(0, args.contentWidth - args.viewportWidth),
+  );
+}
+
+function resolveWaveformAnchoredVisualScrollLeft(args: {
+  contentWidth: number;
+  offsetPx: number;
+  pixelsPerSecond: number;
+  viewportWidth: number;
+  visualSeconds: number;
+}) {
+  return clampNumber(
+    args.visualSeconds * args.pixelsPerSecond - Math.max(0, args.offsetPx),
+    0,
+    Math.max(0, args.contentWidth - args.viewportWidth),
+  );
+}
+
+function resolveWaveformViewportAudioSeconds(args: {
+  pixelsPerSecond: number;
+  scrollLeft: number;
+  viewportX: number;
+}) {
+  const visualSeconds = (args.scrollLeft + args.viewportX) / Math.max(1, args.pixelsPerSecond);
+
+  return waveformVisualSecondsToAudioSeconds(visualSeconds);
+}
+
 export function resolveWaveformContentWidth(args: {
   durationMs: number;
   pixelsPerSecond: number;
   viewportWidth: number;
 }) {
   const viewportWidth = Math.max(1, Math.ceil(args.viewportWidth));
-  const durationSeconds = Math.max(0, args.durationMs) / 1000;
+  const durationSeconds = resolveWaveformVisualDurationSeconds(args.durationMs);
   const naturalWidth = Math.ceil(durationSeconds * Math.max(1, args.pixelsPerSecond));
 
   return Math.max(viewportWidth, naturalWidth);
@@ -824,11 +887,13 @@ export function resolveCenteredWaveformScrollLeft(args: {
   pixelsPerSecond: number;
   viewportWidth: number;
 }) {
-  return clampNumber(
-    args.centerSeconds * args.pixelsPerSecond - args.viewportWidth / 2,
-    0,
-    Math.max(0, args.contentWidth - args.viewportWidth),
-  );
+  return resolveWaveformVisualScrollLeft({
+    audioSeconds: args.centerSeconds,
+    contentWidth: args.contentWidth,
+    offsetPx: args.viewportWidth / 2,
+    pixelsPerSecond: args.pixelsPerSecond,
+    viewportWidth: args.viewportWidth,
+  });
 }
 
 export function resolveAnchoredWaveformScrollLeft(args: {
@@ -838,11 +903,13 @@ export function resolveAnchoredWaveformScrollLeft(args: {
   pixelsPerSecond: number;
   viewportWidth: number;
 }) {
-  return clampNumber(
-    args.anchorSeconds * args.pixelsPerSecond - args.anchorViewportX,
-    0,
-    Math.max(0, args.contentWidth - args.viewportWidth),
-  );
+  return resolveWaveformVisualScrollLeft({
+    audioSeconds: args.anchorSeconds,
+    contentWidth: args.contentWidth,
+    offsetPx: args.anchorViewportX,
+    pixelsPerSecond: args.pixelsPerSecond,
+    viewportWidth: args.viewportWidth,
+  });
 }
 
 export function resolveWaveformSelectionStartScrollLeft(args: {
@@ -858,11 +925,13 @@ export function resolveWaveformSelectionStartScrollLeft(args: {
     return 0;
   }
 
-  return clampNumber(
-    startSeconds * args.pixelsPerSecond - Math.max(0, args.leadingSpacePx),
-    0,
-    Math.max(0, args.contentWidth - args.viewportWidth),
-  );
+  return resolveWaveformVisualScrollLeft({
+    audioSeconds: startSeconds,
+    contentWidth: args.contentWidth,
+    offsetPx: args.leadingSpacePx,
+    pixelsPerSecond: args.pixelsPerSecond,
+    viewportWidth: args.viewportWidth,
+  });
 }
 
 export function resolveWaveformPointerAnchorViewportX(args: {
@@ -1262,9 +1331,14 @@ export function resolveWaveformZoomFrame(args: {
     maximumPixelsPerSecond: args.maximumPixelsPerSecond,
     viewportWidth: args.viewportWidth,
   });
-  const durationSeconds = Math.max(0, args.durationMs) / 1000;
-  const anchorSeconds = clampNumber(
+  const durationSeconds = resolveWaveformDurationSeconds(args.durationMs);
+  const anchorVisualSeconds = clampNumber(
     (args.scrollLeft + args.anchorViewportX) / Math.max(1, currentPixelsPerSecond),
+    0,
+    resolveWaveformVisualDurationSeconds(args.durationMs),
+  );
+  const focusSeconds = clampNumber(
+    waveformVisualSecondsToAudioSeconds(anchorVisualSeconds),
     0,
     durationSeconds,
   );
@@ -1273,18 +1347,19 @@ export function resolveWaveformZoomFrame(args: {
     pixelsPerSecond,
     viewportWidth: args.viewportWidth,
   });
-  const scrollLeft = resolveAnchoredWaveformScrollLeft({
-    anchorSeconds,
-    anchorViewportX: args.anchorViewportX,
+  const scrollLeft = resolveWaveformAnchoredVisualScrollLeft({
     contentWidth,
+    offsetPx: args.anchorViewportX,
     pixelsPerSecond,
     viewportWidth: args.viewportWidth,
+    visualSeconds: anchorVisualSeconds,
   });
 
   return {
-    anchorSeconds,
+    anchorVisualSeconds,
     anchorViewportX: args.anchorViewportX,
     contentWidth,
+    focusSeconds,
     pixelsPerSecond,
     scrollLeft,
   };
@@ -1384,6 +1459,10 @@ export function resolveWaveformDataTileIndexes(args: {
   window: WaveformDataWindow;
 }) {
   const tileWidth = Math.max(1, Math.ceil(args.tileWidth));
+  if (args.window.endPx <= args.window.startPx) {
+    return [];
+  }
+
   const startIndex = Math.floor(args.window.startPx / tileWidth);
   const endIndex = Math.max(startIndex, Math.ceil(args.window.endPx / tileWidth) - 1);
   const indexes: number[] = [];
@@ -1792,8 +1871,11 @@ export function resolveWaveformSelectionDrag(args: {
   const currentEnd =
     normalizeWaveformSelectionBoundary(args.selection?.end ?? null) ?? durationSeconds;
   const pointerSeconds = clampNumber(
-    (args.viewport.scrollLeft + args.pointerClientX - args.hostRect.left) /
-      Math.max(1, args.viewport.pixelsPerSecond),
+    resolveWaveformViewportAudioSeconds({
+      pixelsPerSecond: args.viewport.pixelsPerSecond,
+      scrollLeft: args.viewport.scrollLeft,
+      viewportX: args.pointerClientX - args.hostRect.left,
+    }),
     0,
     durationSeconds,
   );
@@ -1828,7 +1910,11 @@ export function resolveWaveformPlayheadDrag(args: {
 
   const viewportX = clampNumber(args.pointerClientX - args.hostRect.left, 0, args.hostRect.width);
   const targetSeconds = clampNumber(
-    (args.viewport.scrollLeft + viewportX) / Math.max(1, args.viewport.pixelsPerSecond),
+    resolveWaveformViewportAudioSeconds({
+      pixelsPerSecond: args.viewport.pixelsPerSecond,
+      scrollLeft: args.viewport.scrollLeft,
+      viewportX,
+    }),
     startSeconds,
     endSeconds,
   );
@@ -1840,7 +1926,10 @@ export function resolveWaveformPlayheadDrag(args: {
 }
 
 function secondsToWaveformViewportX(args: { seconds: number; viewport: WaveformViewportModel }) {
-  return args.seconds * args.viewport.pixelsPerSecond - args.viewport.scrollLeft;
+  return (
+    audioSecondsToWaveformVisualSeconds(args.seconds) * args.viewport.pixelsPerSecond -
+    args.viewport.scrollLeft
+  );
 }
 
 export function resolveWaveformDataPlanScopedRequests(
@@ -1907,6 +1996,9 @@ function createWaveformDataRequestsForLevel(args: {
   const dataPixelsPerSecond = Math.max(1, args.dataPixelsPerSecond);
   const dataContentWidth = Math.max(1, Math.ceil(args.durationSeconds * dataPixelsPerSecond));
   const focusPx = args.focusSeconds * dataPixelsPerSecond;
+  if (args.window.endPx <= args.window.startPx) {
+    return [];
+  }
 
   return resolveWaveformDataTileIndexes({
     tileWidth: args.tileWidth,
@@ -2229,7 +2321,10 @@ export function resolveWaveformPlayheadX(args: {
 
   const filePositionSeconds = playbackStartSeconds + args.positionMs / 1000;
 
-  return filePositionSeconds * args.pixelsPerSecond - args.scrollLeft;
+  return (
+    audioSecondsToWaveformVisualSeconds(filePositionSeconds) * args.pixelsPerSecond -
+    args.scrollLeft
+  );
 }
 
 export function resolveWaveformPlayheadStyle(args: {
@@ -3315,7 +3410,7 @@ function useWaveformZoomViewportScheduler(args: {
     }
 
     const changed = latestArgsRef.current.commitViewportModel({
-      focusSeconds: frame.anchorSeconds,
+      focusSeconds: frame.focusSeconds,
       pixelsPerSecond: frame.pixelsPerSecond,
       scrollLeft: frame.scrollLeft,
       viewportWidth: command.viewport.viewportWidth,
@@ -4419,7 +4514,7 @@ function resolveWaveformCanvasRenderPlan(args: {
     pixelsPerSecond: args.viewport.pixelsPerSecond,
   });
 
-  if (candidateLevels.length === 0) {
+  if (candidateLevels.length === 0 && plan.visibleSecondsWindow.hasAudio) {
     return {
       empty: {
         geometry: args.geometry,
@@ -4838,13 +4933,32 @@ function resolveWaveformCanvasColumnPeak(args: {
   viewport: WaveformViewportModel;
   x: number;
 }): WaveformCanvasColumnSample | null {
-  const startSeconds = (args.viewport.scrollLeft + args.x) / args.viewport.pixelsPerSecond;
-  const endSeconds = (args.viewport.scrollLeft + args.x + 1) / args.viewport.pixelsPerSecond;
+  const durationSeconds = resolveWaveformDurationSeconds(args.viewport.durationMs);
+  const startSeconds = resolveWaveformViewportAudioSeconds({
+    pixelsPerSecond: args.viewport.pixelsPerSecond,
+    scrollLeft: args.viewport.scrollLeft,
+    viewportX: args.x,
+  });
+  const endSeconds = resolveWaveformViewportAudioSeconds({
+    pixelsPerSecond: args.viewport.pixelsPerSecond,
+    scrollLeft: args.viewport.scrollLeft,
+    viewportX: args.x + 1,
+  });
+
+  if (endSeconds <= 0 || startSeconds >= durationSeconds) {
+    return {
+      levelPixelsPerSecond: args.viewport.pixelsPerSecond,
+      peak: {
+        max: 0,
+        min: 0,
+      },
+    };
+  }
 
   return resolveWaveformPeakFromCandidateLevels({
     candidateLevels: args.candidateLevels,
-    endSeconds,
-    startSeconds,
+    endSeconds: clampNumber(endSeconds, 0, durationSeconds),
+    startSeconds: clampNumber(startSeconds, 0, durationSeconds),
     tileWidth: args.tileWidth,
   });
 }
@@ -5124,6 +5238,10 @@ function resolveWaveformPeakFromLevelIndex(args: {
   startSeconds: number;
   tileWidth: number;
 }): WaveformPeakSample | null {
+  if (args.endSeconds <= 0 || args.startSeconds < 0 || args.endSeconds <= args.startSeconds) {
+    return null;
+  }
+
   const pixelsPerSecond = Math.max(1, args.level.pixelsPerSecond);
   const startPx = Math.max(0, Math.floor(args.startSeconds * pixelsPerSecond));
   const endPx = Math.max(startPx + 1, Math.ceil(args.endSeconds * pixelsPerSecond));
@@ -5686,23 +5804,23 @@ function resolveWaveformVisibleSecondsWindow(args: {
   pixelsPerSecond: number;
   scrollLeft: number;
   viewportWidth: number;
-}): WaveformSecondsWindow {
+}): WaveformAudioViewportWindow {
   const pixelsPerSecond = Math.max(1, args.pixelsPerSecond);
   const viewportSeconds = Math.max(0, args.viewportWidth) / pixelsPerSecond;
   const overscanSeconds = viewportSeconds * Math.max(0, args.overscanViewports);
-  const startSeconds = clampNumber(
+  const audioStartSeconds = waveformVisualSecondsToAudioSeconds(
     args.scrollLeft / pixelsPerSecond - overscanSeconds,
-    0,
-    args.durationSeconds,
   );
-  const endSeconds = clampNumber(
+  const audioEndSeconds = waveformVisualSecondsToAudioSeconds(
     (args.scrollLeft + args.viewportWidth) / pixelsPerSecond + overscanSeconds,
-    startSeconds,
-    args.durationSeconds,
   );
+  const startSeconds = clampNumber(audioStartSeconds, 0, args.durationSeconds);
+  const endSeconds = clampNumber(audioEndSeconds, startSeconds, args.durationSeconds);
 
   return {
     endSeconds: Math.max(startSeconds, endSeconds),
+    hasAudio:
+      args.durationSeconds > 0 && audioEndSeconds > 0 && audioStartSeconds < args.durationSeconds,
     startSeconds,
   };
 }
@@ -5714,6 +5832,12 @@ function resolveWaveformDataPixelWindow(args: {
 }): WaveformDataWindow {
   const dataContentWidth = Math.max(1, Math.ceil(args.dataContentWidth));
   const pixelsPerSecond = Math.max(1, args.dataPixelsPerSecond);
+  const hasAudio = !("hasAudio" in args.window) || args.window.hasAudio;
+
+  if (!hasAudio || args.window.endSeconds <= args.window.startSeconds) {
+    return { endPx: 0, startPx: 0 };
+  }
+
   const startPx = clampInteger(
     Math.floor(args.window.startSeconds * pixelsPerSecond),
     0,
