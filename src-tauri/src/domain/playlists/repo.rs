@@ -206,6 +206,29 @@ pub async fn update_music(
     Ok(first_updated)
 }
 
+pub async fn delete_music(url: &str, start_ms: u32, end_ms: u32) -> Result<bool> {
+    ensure_collection_graph_schema().await?;
+
+    let records = find_music_record_ids_by_identity(url, start_ms, end_ms).await?;
+    if records.is_empty() {
+        return Ok(false);
+    }
+
+    for record in records {
+        delete_music_parent_edges(&record).await?;
+
+        match Music::delete_record(record).await {
+            Ok(()) => {}
+            Err(error) => match classify_db_error(&error) {
+                DBError::MissingTable(_) | DBError::NotFound => {}
+                other => return Err(other.into()),
+            },
+        }
+    }
+
+    Ok(true)
+}
+
 pub async fn list_musics_by_file_path(file_path: &Path, save_root: &Path) -> Result<Vec<Music>> {
     ensure_collection_graph_schema().await?;
 
@@ -340,6 +363,29 @@ async fn find_music_record_ids_by_identity(
     };
 
     Ok(result.take(0)?)
+}
+
+async fn delete_music_parent_edges(record: &RecordId) -> Result<()> {
+    let db = get_db()?;
+
+    match db
+        .query("DELETE $rel WHERE out = $record RETURN NONE;")
+        .bind(("rel", Table::from("includes")))
+        .bind(("record", record.clone()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(_) => Ok(()),
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => Ok(()),
+                other => Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => Ok(()),
+            other => Err(other.into()),
+        },
+    }
 }
 
 async fn find_unique_record_id_by_string_field<T>(

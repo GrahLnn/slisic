@@ -48,14 +48,15 @@ export interface MusicSpectrumEditorProps {
   cascade?: boolean;
   handoffTone: CollectionTitleTone | null;
   interactionDisabled: boolean;
-  playbackAction: ReactNode;
   playheadEnabled?: boolean;
   selection: MusicSpectrumSelection;
   exitPresentation?: MusicSpectrumExitPresentation;
   shouldShowResetAction: boolean;
+  titleAction?: ReactNode;
   titleLayoutId?: string;
   titleValue: string;
   trackFilePath: string | null;
+  waveformStartAction?: ReactNode;
   waveformRenderDataStore?: WaveformRenderDataStore;
   waveformPresentation?: MusicSpectrumWaveformPresentation;
   waveformClassName?: string;
@@ -115,6 +116,14 @@ export function resolveMusicSpectrumResetActionFadeProps(args: {
       };
 }
 
+export type MusicSpectrumFloatingActionPlacement = "end" | "start";
+
+export function resolveMusicSpectrumFloatingActionPlacementClassName(
+  placement: MusicSpectrumFloatingActionPlacement,
+) {
+  return placement === "start" ? "left-12" : "right-12";
+}
+
 export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrumEditorProps>(
   function MusicSpectrumEditor(
     {
@@ -122,13 +131,14 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
       handoffTone,
       interactionDisabled,
       exitPresentation = "local",
-      playbackAction,
       playheadEnabled = false,
       selection,
       shouldShowResetAction,
+      titleAction,
       titleLayoutId,
       titleValue,
       trackFilePath,
+      waveformStartAction,
       waveformRenderDataStore,
       waveformPresentation = "interactive",
       waveformClassName,
@@ -162,9 +172,9 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
               onChange={onTitleChange}
             />
           </motion.div>
-          {playbackAction ? (
+          {titleAction ? (
             <div className="opacity-0 transition-opacity duration-300 group-hover/spectrum-music-row:opacity-100">
-              <motion.div {...contentFade}>{playbackAction}</motion.div>
+              <motion.div {...contentFade}>{titleAction}</motion.div>
             </div>
           ) : null}
         </div>
@@ -192,12 +202,26 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
             </AnimatePresence>
           </div>
           <AnimatePresence initial={false}>
+            {waveformStartAction ? (
+              <motion.div
+                className={cn(
+                  "absolute top-0 z-10",
+                  resolveMusicSpectrumFloatingActionPlacementClassName("start"),
+                )}
+                {...resolveMusicSpectrumResetActionFadeProps({ exitPresentation })}
+              >
+                {waveformStartAction}
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
+          <AnimatePresence initial={false}>
             {shouldShowResetAction && (
               <motion.button
                 type="button"
                 aria-label="Reset spectrum edits"
                 className={cn(
-                  "group absolute top-0 right-12 z-10 isolate inline-flex size-8 items-center justify-center rounded-[25px] p-2",
+                  "group absolute top-0 z-10 isolate inline-flex size-8 items-center justify-center rounded-[25px] p-2",
+                  resolveMusicSpectrumFloatingActionPlacementClassName("end"),
                   "text-[#737373] transition duration-300 [corner-shape:squircle_squircle_squircle_squircle]",
                   "before:absolute before:inset-0 before:-z-10 before:rounded-[25px] before:bg-transparent",
                   "before:transition before:duration-300 before:[corner-shape:squircle_squircle_squircle_squircle]",

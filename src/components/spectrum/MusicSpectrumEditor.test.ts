@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   resolveMusicSpectrumContentFadeProps,
+  resolveMusicSpectrumFloatingActionPlacementClassName,
   resolveMusicSpectrumResetActionFadeProps,
   resolveMusicSpectrumTitleFadeProps,
   resolveMusicSpectrumWaveformFadeProps,
@@ -84,5 +85,10 @@ describe("MusicSpectrumEditor", () => {
       }),
       pageExitFade,
     );
+  });
+
+  test("places waveform floating actions on explicit canvas sides", () => {
+    assert.equal(resolveMusicSpectrumFloatingActionPlacementClassName("start"), "left-12");
+    assert.equal(resolveMusicSpectrumFloatingActionPlacementClassName("end"), "right-12");
   });
 });

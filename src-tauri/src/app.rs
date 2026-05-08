@@ -35,6 +35,7 @@ pub fn run() {
             domain::playlists::upsert_playlist,
             domain::playlists::set_collection_updates,
             domain::playlists::update_music,
+            domain::playlists::delete_music,
             domain::playlists::list_musics_by_file_path,
             domain::playlists::add_exclude,
             domain::playlists::remove_exclude,

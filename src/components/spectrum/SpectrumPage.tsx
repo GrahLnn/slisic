@@ -389,6 +389,16 @@ export function SpectrumPage() {
     });
   }
 
+  function isNowPlayingSpectrumMusicDeleteRequested() {
+    return spectrumMusicDrafts.some(
+      (draft) =>
+        draft.deleteRequested === true &&
+        draft.url === nowPlayingTrackUrl &&
+        draft.baselineStartMs === nowPlayingTrackStartMs &&
+        draft.baselineEndMs === nowPlayingTrackEndMs,
+    );
+  }
+
   async function handleBackAction() {
     if (isBackActionLocked) {
       return;
@@ -471,6 +481,10 @@ export function SpectrumPage() {
   }
 
   async function handleRestorePrimarySpectrumMusicPlayback() {
+    if (isNowPlayingSpectrumMusicDeleteRequested()) {
+      return;
+    }
+
     const primaryResume = primaryPlaybackResumeRef.current;
     const primaryEditor = renderData.editorViewModels[0];
     if (!primaryResume || !primaryEditor || primaryEditor.playbackIdentity === null) {
@@ -647,6 +661,7 @@ export function SpectrumPage() {
             exitPresentation={isPresent ? "local" : "page"}
             playbackActionSnapshot={playbackActionSnapshot}
             trackFilePath={renderData.trackFilePath}
+            onDelete={(id) => appLogicAction.deleteSpectrumMusic(id)}
             onPlaybackAction={handleSpectrumPlaybackAction}
             onReset={(id) => appLogicAction.resetSpectrumMusicDraft(id)}
             onSelectionCommit={handleSpectrumSelectionCommit}

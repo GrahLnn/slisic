@@ -11,6 +11,8 @@ import {
   type SetStateAction,
 } from "react";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
+import { cn } from "@/lib/utils";
+import { icons } from "@/src/assets/icons";
 import { usePageViewportScrollElementRef } from "../pageViewportScroll";
 import type { EditableTitleHandle } from "../EditableTitle";
 import {
@@ -43,6 +45,7 @@ export interface SpectrumMusicVirtualListProps {
   editableTitleRefs: RefObject<Map<string, EditableTitleHandle>>;
   exitPresentation?: MusicSpectrumExitPresentation;
   playbackActionSnapshot: SpectrumPlaybackActionSnapshot | null;
+  onDelete: (id: string) => void;
   onReset: (id: string) => void;
   onPlaybackAction: (identity: SpectrumPlaybackIdentity) => Promise<void>;
   onSelectionCommit: (id: string, range: MusicSpectrumSelection) => void;
@@ -170,19 +173,21 @@ export function areSpectrumMusicVirtualListRowRenderModelsEqual(
 type SpectrumMusicVirtualListRowProps = SpectrumMusicVirtualListRowRenderModel & {
   editableTitleRefs: RefObject<Map<string, EditableTitleHandle>>;
   measureElement: (node: HTMLDivElement | null) => void;
+  onDelete: (id: string) => void;
   onPlaybackAction: (identity: SpectrumPlaybackIdentity) => Promise<void>;
   onReset: (id: string) => void;
   onSelectionCommit: (id: string, range: MusicSpectrumSelection) => void;
   onTitleChange: (id: string, name: string) => void;
 };
 
-function areSpectrumMusicVirtualListRowPropsEqual(
+export function areSpectrumMusicVirtualListRowPropsEqual(
   left: SpectrumMusicVirtualListRowProps,
   right: SpectrumMusicVirtualListRowProps,
 ) {
   return (
     left.editableTitleRefs === right.editableTitleRefs &&
     left.measureElement === right.measureElement &&
+    left.onDelete === right.onDelete &&
     left.onPlaybackAction === right.onPlaybackAction &&
     left.onReset === right.onReset &&
     left.onSelectionCommit === right.onSelectionCommit &&
@@ -203,6 +208,7 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
   waveformRenderDataStore,
   waveformPresentation,
   measureElement,
+  onDelete,
   onPlaybackAction,
   onReset,
   onSelectionCommit,
@@ -249,7 +255,24 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
         exitPresentation={exitPresentation}
         handoffTone={editor.handoffTone}
         interactionDisabled={editor.interactionDisabled}
-        playbackAction={
+        titleAction={
+          <button
+            type="button"
+            aria-label="Delete music"
+            onClick={() => onDelete(editor.id)}
+            className={cn(
+              "group relative isolate inline-flex size-8 items-center justify-center rounded-[25px] p-2",
+              "text-[#737373] transition duration-300 [corner-shape:squircle_squircle_squircle_squircle]",
+              "before:absolute before:inset-0 before:-z-10 before:rounded-[25px] before:bg-transparent",
+              "before:transition before:duration-300 before:[corner-shape:squircle_squircle_squircle_squircle]",
+              "hover:text-red-600 hover:before:bg-[#e5e5e5]",
+              "dark:text-[#8a8a8a] dark:hover:text-red-400 dark:hover:before:bg-[#262626]",
+            )}
+          >
+            <icons.trashXmark size={18} />
+          </button>
+        }
+        waveformStartAction={
           <SpectrumPlaybackAction
             identity={editor.playbackIdentity}
             playbackSnapshot={rowPlaybackSnapshot}
@@ -305,6 +328,7 @@ export function SpectrumMusicVirtualList({
   exitPresentation = "local",
   playbackActionSnapshot,
   trackFilePath,
+  onDelete,
   onReset,
   onPlaybackAction,
   onSelectionCommit,
@@ -314,6 +338,7 @@ export function SpectrumMusicVirtualList({
   const listRef = useRef<HTMLDivElement | null>(null);
   const waveformRenderDataStore = useMemo(() => createWaveformRenderDataStore(), []);
   const handlersRef = useRef({
+    onDelete,
     onPlaybackAction,
     onReset,
     onSelectionCommit,
@@ -324,6 +349,9 @@ export function SpectrumMusicVirtualList({
   const estimateSize = useCallback(() => SPECTRUM_MUSIC_VIRTUAL_ROW_ESTIMATE_PX, []);
   const handlePlaybackAction = useCallback((identity: SpectrumPlaybackIdentity) => {
     return handlersRef.current.onPlaybackAction(identity);
+  }, []);
+  const handleDelete = useCallback((id: string) => {
+    handlersRef.current.onDelete(id);
   }, []);
   const handleReset = useCallback((id: string) => {
     handlersRef.current.onReset(id);
@@ -366,12 +394,13 @@ export function SpectrumMusicVirtualList({
 
   useLayoutEffect(() => {
     handlersRef.current = {
+      onDelete,
       onPlaybackAction,
       onReset,
       onSelectionCommit,
       onTitleChange,
     };
-  }, [onPlaybackAction, onReset, onSelectionCommit, onTitleChange]);
+  }, [onDelete, onPlaybackAction, onReset, onSelectionCommit, onTitleChange]);
 
   useLayoutEffect(() => {
     const list = listRef.current;
@@ -473,6 +502,7 @@ export function SpectrumMusicVirtualList({
               isCurrent: editor.isCurrent,
               rowIndex: virtualRow.index,
             })}
+            onDelete={handleDelete}
             onPlaybackAction={handlePlaybackAction}
             onReset={handleReset}
             onSelectionCommit={handleSelectionCommit}

@@ -107,6 +107,15 @@ describe("SpectrumPage", () => {
       }),
       true,
     );
+    assert.equal(
+      shouldShowSpectrumDraftResetAction({
+        musicDraft: {
+          ...draft,
+          deleteRequested: true,
+        },
+      }),
+      false,
+    );
   });
 
   test("resolves the spectrum selection from the editable draft first", () => {
@@ -264,6 +273,52 @@ describe("SpectrumPage", () => {
           },
         },
       ],
+    );
+  });
+
+  test("keeps deleted spectrum music out of visible editors and title commits", () => {
+    const deletedDraft = {
+      baselineName: "Track A",
+      baselineStartMs: 0,
+      baselineEndMs: 120_000,
+      deleteRequested: true,
+      name: "Track A",
+      url: "https://example.com/quiet-morning#a",
+      startMs: 0,
+      endMs: 120_000,
+    };
+    const visibleDraft = {
+      baselineName: "Track B",
+      baselineStartMs: 120_000,
+      baselineEndMs: 240_000,
+      name: "",
+      url: "https://example.com/quiet-morning#b",
+      startMs: 120_000,
+      endMs: 240_000,
+    };
+
+    const viewModels = resolveSpectrumMusicEditorViewModels({
+      activeLayoutId: "playlist-title:Focus Session",
+      handoffTone: "solid",
+      interactionDisabled: false,
+      nowPlayingTrackFilePath: "C:/Music/quiet-morning.m4a",
+      nowPlayingTrackEndMs: 120_000,
+      nowPlayingTrackStartMs: 0,
+      nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
+      playingPlaylistName: "Focus Session",
+      spectrumMusicDrafts: [deletedDraft, visibleDraft],
+    });
+
+    assert.equal(viewModels.length, 1);
+    assert.equal(viewModels[0]?.id, "https://example.com/quiet-morning#b|120000|240000");
+    assert.equal(viewModels[0]?.titleLayoutId, "playlist-title:Focus Session");
+    assert.equal(viewModels[0]?.handoffTone, "solid");
+    assert.deepEqual(
+      resolveSpectrumBackTitleCommitTargets({
+        editorViewModels: viewModels,
+        musicDrafts: [deletedDraft, visibleDraft],
+      }).map((target) => target.editor.id),
+      ["https://example.com/quiet-morning#b|120000|240000"],
     );
   });
 

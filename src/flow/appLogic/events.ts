@@ -33,7 +33,7 @@ import {
   type PlaylistUpsertResult,
   type SpectrumMusicDraft,
 } from "./core";
-import { createSpectrumMusicDrafts } from "./musicTitle";
+import { createSpectrumMusicDrafts, type MusicDraftDelete } from "./musicTitle";
 
 export interface BootstrapResult {
   hasPlayList: boolean;
@@ -63,6 +63,10 @@ export interface MusicUpdateResult {
 
 export interface MusicUpdatesResult {
   results: MusicUpdateResult[];
+}
+
+export interface MusicDeletesResult {
+  results: MusicDraftDelete[];
 }
 
 export interface SpectrumMusicDraftBootstrapInput {
@@ -194,6 +198,7 @@ export const ss = defineSS(
         "spectrumLoadingMusics",
         "spectrum",
         "spectrumUpdatingMusic",
+        "spectrumDeletingMusic",
         "configLoading",
         "config",
         "configUpdatingCollectionUpdates",
@@ -327,6 +332,23 @@ export const invoker = createActors({
 
     return { results };
   },
+  deleteMusics: async (inputs: MusicDraftDelete[]): Promise<MusicDeletesResult> => {
+    const results: MusicDraftDelete[] = [];
+
+    for (const input of inputs) {
+      const result = await crab.deleteMusic(input.url, input.startMs, input.endMs);
+
+      result.match({
+        Ok: () => undefined,
+        Err: (error) => {
+          throw new Error(error);
+        },
+      });
+      results.push(input);
+    }
+
+    return { results };
+  },
   loadSpectrumMusicDrafts: async (
     input: SpectrumMusicDraftBootstrapInput,
   ): Promise<SpectrumMusicDraft[]> => {
@@ -359,6 +381,7 @@ export const payloads = collect(
   ...event<{ endMs: number | null; id: string; startMs: number | null }>()(
     "spectrum.music_range.changed",
   ),
+  ...event<{ id: string }>()("spectrum.music_deleted"),
   ...event<{ id: string }>()("spectrum.music_draft.reset"),
   ...event<string>()("save_path.changed"),
   ...event<Collection>()("collection.upserted"),

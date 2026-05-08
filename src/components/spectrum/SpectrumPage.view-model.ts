@@ -96,7 +96,7 @@ export function findSpectrumMusicDraftById(
 export function shouldShowSpectrumDraftResetAction(args: {
   musicDraft: SpectrumMusicDraft | null;
 }) {
-  return hasSpectrumMusicDraftChanges(args.musicDraft);
+  return args.musicDraft?.deleteRequested !== true && hasSpectrumMusicDraftChanges(args.musicDraft);
 }
 
 export function resolveSpectrumMusicDisplayName(args: {
@@ -185,7 +185,7 @@ export function resolveSpectrumBackTitleCommitTargets(args: {
 }): SpectrumBackTitleCommitTarget[] {
   return args.editorViewModels.flatMap((editor) => {
     const draft = findSpectrumMusicDraftById(args.musicDrafts, editor.id);
-    if (!draft) {
+    if (!draft || draft.deleteRequested === true) {
       return [];
     }
 
@@ -213,48 +213,50 @@ export function resolveSpectrumMusicEditorViewModels(args: {
   playingPlaylistName: string | null;
   spectrumMusicDrafts: readonly SpectrumMusicDraft[];
 }) {
-  return args.spectrumMusicDrafts.map((draft, index) => {
-    const selection = resolveSpectrumSelectionRange({
-      musicDraft: draft,
-      nowPlayingTrackEndMs: args.nowPlayingTrackEndMs,
-      nowPlayingTrackStartMs: args.nowPlayingTrackStartMs,
-    });
-    const id = createSpectrumMusicDraftIdentity({
-      baselineEndMs: draft.baselineEndMs,
-      baselineStartMs: draft.baselineStartMs,
-      url: draft.url,
-    });
-    const isCurrent =
-      draft.url === args.nowPlayingTrackUrl &&
-      draft.baselineStartMs === args.nowPlayingTrackStartMs &&
-      draft.baselineEndMs === args.nowPlayingTrackEndMs;
-    const playbackIdentity = projectSpectrumPlaybackIdentity({
-      endMs: draft.baselineEndMs,
-      filePath: args.nowPlayingTrackFilePath,
-      playlistName: args.playingPlaylistName,
-      startMs: draft.baselineStartMs,
-      url: draft.url,
-    });
+  return args.spectrumMusicDrafts
+    .filter((draft) => draft.deleteRequested !== true)
+    .map((draft, index) => {
+      const selection = resolveSpectrumSelectionRange({
+        musicDraft: draft,
+        nowPlayingTrackEndMs: args.nowPlayingTrackEndMs,
+        nowPlayingTrackStartMs: args.nowPlayingTrackStartMs,
+      });
+      const id = createSpectrumMusicDraftIdentity({
+        baselineEndMs: draft.baselineEndMs,
+        baselineStartMs: draft.baselineStartMs,
+        url: draft.url,
+      });
+      const isCurrent =
+        draft.url === args.nowPlayingTrackUrl &&
+        draft.baselineStartMs === args.nowPlayingTrackStartMs &&
+        draft.baselineEndMs === args.nowPlayingTrackEndMs;
+      const playbackIdentity = projectSpectrumPlaybackIdentity({
+        endMs: draft.baselineEndMs,
+        filePath: args.nowPlayingTrackFilePath,
+        playlistName: args.playingPlaylistName,
+        startMs: draft.baselineStartMs,
+        url: draft.url,
+      });
 
-    return {
-      handoffTone: index === 0 ? args.handoffTone : null,
-      id,
-      interactionDisabled: args.interactionDisabled,
-      isCurrent,
-      playbackIdentity,
-      selectionEnd: selection.end,
-      selectionStart: selection.start,
-      shouldShowResetAction: shouldShowSpectrumDraftResetAction({
-        musicDraft: draft,
-      }),
-      titleLayoutId: index === 0 ? (args.activeLayoutId ?? undefined) : undefined,
-      titleValue: resolveSpectrumMusicDisplayName({
-        musicDraft: draft,
-        nowPlayingTrackName: null,
-        playingPlaylistName: args.playingPlaylistName,
-      }),
-    } satisfies SpectrumMusicEditorViewModel;
-  });
+      return {
+        handoffTone: index === 0 ? args.handoffTone : null,
+        id,
+        interactionDisabled: args.interactionDisabled,
+        isCurrent,
+        playbackIdentity,
+        selectionEnd: selection.end,
+        selectionStart: selection.start,
+        shouldShowResetAction: shouldShowSpectrumDraftResetAction({
+          musicDraft: draft,
+        }),
+        titleLayoutId: index === 0 ? (args.activeLayoutId ?? undefined) : undefined,
+        titleValue: resolveSpectrumMusicDisplayName({
+          musicDraft: draft,
+          nowPlayingTrackName: null,
+          playingPlaylistName: args.playingPlaylistName,
+        }),
+      } satisfies SpectrumMusicEditorViewModel;
+    });
 }
 
 export function resolveSpectrumPlaybackActionVisualState(args: {

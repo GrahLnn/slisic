@@ -29,6 +29,7 @@ import {
   resetRuntimeActor,
   savePathChanged,
   spectrumMusicDraftReset,
+  spectrumMusicDeleted,
   spectrumMusicRangeChanged,
   send,
   spectrumMusicNameChanged,
@@ -194,6 +195,10 @@ async function openSpectrumAfterPlaybackMode(sourceSnapshot: ActorSnapshot) {
 async function restorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnapshot) {
   await applyPlaybackModeEffects(resolveSpectrumExitPlaybackModeEffects());
 
+  if (isNowPlayingSpectrumMusicDeleteRequested(snapshot)) {
+    return;
+  }
+
   const spectrumTrackPath = snapshot.context.nowPlayingTrackFilePath?.trim();
   if (!spectrumTrackPath) {
     return;
@@ -206,6 +211,16 @@ async function restorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnap
       paused: status?.paused === true,
       spectrumTrackPath,
     }),
+  );
+}
+
+function isNowPlayingSpectrumMusicDeleteRequested(snapshot: ActorSnapshot) {
+  return snapshot.context.spectrumMusicDrafts.some(
+    (draft) =>
+      draft.deleteRequested === true &&
+      draft.url === snapshot.context.nowPlayingTrackUrl &&
+      draft.baselineStartMs === snapshot.context.nowPlayingTrackStartMs &&
+      draft.baselineEndMs === snapshot.context.nowPlayingTrackEndMs,
   );
 }
 
@@ -230,7 +245,8 @@ function shouldRestoreRandomPlaybackForSnapshot(snapshot: ActorSnapshot) {
   return (
     snapshot.value === "spectrumLoadingMusics" ||
     snapshot.value === "spectrum" ||
-    snapshot.value === "spectrumUpdatingMusic"
+    snapshot.value === "spectrumUpdatingMusic" ||
+    snapshot.value === "spectrumDeletingMusic"
   );
 }
 
@@ -349,6 +365,10 @@ export const action = {
   resetSpectrumMusicDraft: (id: string) => {
     ensureStarted();
     send(spectrumMusicDraftReset.load({ id }));
+  },
+  deleteSpectrumMusic: (id: string) => {
+    ensureStarted();
+    send(spectrumMusicDeleted.load({ id }));
   },
   changeSavePath: async (savePath: string) => {
     ensureStarted();

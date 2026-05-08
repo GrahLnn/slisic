@@ -3,7 +3,12 @@ import { describe, test } from "node:test";
 import type { Collection, PlayList } from "@/src/cmd";
 import {
   changeSpectrumMusicDraftValueRange,
+  createMusicDraftDeletes,
   createSpectrumCurrentMusicDraft,
+  deleteMusicFromCollections,
+  deleteMusicFromPlaylistPreview,
+  deleteMusicFromPlaylists,
+  deleteSpectrumMusicDraft,
   hasSpectrumMusicDraftChanges,
   mergeSpectrumMusicDrafts,
   resolveSpectrumMusicCommit,
@@ -182,6 +187,14 @@ describe("musicDraft", () => {
     );
   });
 
+  test("resets a pending spectrum music deletion back to the current baseline", () => {
+    const draft = createSampleSpectrumMusicDraft();
+
+    assert.deepEqual(resetSpectrumMusicDraftValue(draft && { ...draft, deleteRequested: true }), {
+      ...draft,
+    });
+  });
+
   test("restores the baseline title when the edit is empty", () => {
     const draft = createSampleSpectrumMusicDraft();
 
@@ -345,6 +358,90 @@ describe("musicDraft", () => {
         endMs: 240_000,
       },
     ]);
+  });
+
+  test("marks only the matching spectrum music draft for deletion", () => {
+    const drafts = createSpectrumMusicDrafts({
+      currentMusicIdentity: {
+        endMs: null,
+        startMs: null,
+        url: null,
+      },
+      fileMusics: [
+        {
+          alias: "Track A",
+          url: "https://example.com/quiet-morning#a",
+          start_ms: 0,
+          end_ms: 120_000,
+        },
+        {
+          alias: "Track B",
+          url: "https://example.com/quiet-morning#b",
+          start_ms: 120_000,
+          end_ms: 240_000,
+        },
+      ],
+    });
+
+    const deleted = deleteSpectrumMusicDraft(
+      drafts,
+      "https://example.com/quiet-morning#b|120000|240000",
+    );
+
+    assert.equal(deleted[0]?.deleteRequested, undefined);
+    assert.equal(deleted[1]?.deleteRequested, true);
+    assert.equal(hasSpectrumMusicDraftChanges(deleted[1] ?? null), true);
+    assert.deepEqual(createMusicDraftEdits(deleted), []);
+    assert.deepEqual(createMusicDraftDeletes(deleted), [
+      {
+        id: "https://example.com/quiet-morning#b|120000|240000",
+        url: "https://example.com/quiet-morning#b",
+        startMs: 120_000,
+        endMs: 240_000,
+      },
+    ]);
+  });
+
+  test("deletes matching music from in-memory collection surfaces", () => {
+    const siblingMusic = {
+      ...sampleCollection.musics[0],
+      alias: "Track B",
+      name: "Track B",
+      url: "https://example.com/quiet-morning#b",
+      start_ms: 120_000,
+      end_ms: 240_000,
+    };
+    const collection = {
+      ...sampleCollection,
+      musics: [...sampleCollection.musics, siblingMusic],
+    };
+    const deletion = {
+      url: "https://example.com/quiet-morning#a",
+      startMs: 0,
+      endMs: 120_000,
+    };
+
+    assert.deepEqual(
+      deleteMusicFromCollections([collection], deletion)[0]?.musics.map((music) => music.alias),
+      ["Track B"],
+    );
+    assert.deepEqual(
+      deleteMusicFromPlaylists(
+        [{ ...samplePlaylist, collections: [collection] }],
+        deletion,
+      )[0]?.collections[0]?.musics.map((music) => music.alias),
+      ["Track B"],
+    );
+    assert.deepEqual(
+      deleteMusicFromPlaylistPreview(
+        {
+          playlist: { ...samplePlaylist, collections: [collection] },
+          previousName: null,
+        },
+        deletion,
+      )?.playlist.collections[0]?.musics.map((music) => music.alias),
+      ["Track B"],
+    );
   });
 
   test("creates one update for each changed spectrum music draft", () => {

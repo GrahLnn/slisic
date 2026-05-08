@@ -57,6 +57,7 @@ export interface SpectrumMusicDraft {
   url: string | null;
   startMs: number | null;
   endMs: number | null;
+  deleteRequested?: boolean;
 }
 
 export interface Context {

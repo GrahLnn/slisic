@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   areSpectrumMusicVirtualListRowRenderModelsEqual,
+  areSpectrumMusicVirtualListRowPropsEqual,
   areSpectrumMusicEditorViewModelsEqual,
   resolveSpectrumMusicVirtualRowPlaybackSnapshot,
   resolveSpectrumMusicVirtualListHeight,
@@ -73,6 +74,23 @@ function createRowRenderModel(
     trackFilePath: "C:/music/current.mp3",
     waveformRenderDataStore: testWaveformRenderDataStore,
     waveformPresentation: "interactive",
+    ...overrides,
+  };
+}
+
+function createRowProps(
+  editor: SpectrumMusicEditorViewModel,
+  overrides: Partial<Parameters<typeof areSpectrumMusicVirtualListRowPropsEqual>[0]> = {},
+): Parameters<typeof areSpectrumMusicVirtualListRowPropsEqual>[0] {
+  return {
+    ...createRowRenderModel(editor),
+    editableTitleRefs: { current: new Map() },
+    measureElement: () => undefined,
+    onDelete: () => undefined,
+    onPlaybackAction: async () => undefined,
+    onReset: () => undefined,
+    onSelectionCommit: () => undefined,
+    onTitleChange: () => undefined,
     ...overrides,
   };
 }
@@ -234,6 +252,19 @@ describe("SpectrumMusicVirtualList", () => {
         ),
       ),
       true,
+    );
+  });
+
+  test("keeps row memoization sensitive to the delete handler", () => {
+    const editor = createEditor("alpha");
+    const props = createRowProps(editor);
+
+    assert.equal(
+      areSpectrumMusicVirtualListRowPropsEqual(props, {
+        ...props,
+        onDelete: () => undefined,
+      }),
+      false,
     );
   });
 });

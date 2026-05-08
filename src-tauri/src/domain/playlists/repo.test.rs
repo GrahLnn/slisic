@@ -2,7 +2,7 @@ use super::model::{Collection, Exclude, Group, Music, PlayList};
 use super::repo::{
     add_exclude, delete_playlist_by_name, get_collection_by_url, get_playlist_by_name,
     has_collections, list_collections, list_musics_by_file_path, list_playlists, remove_exclude,
-    set_collection_updates, update_music, upsert_collection, upsert_playlist,
+    set_collection_updates, update_music, upsert_collection, upsert_playlist, delete_music,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -718,6 +718,80 @@ fn update_music_changes_display_alias_and_range_from_original_identity() {
         assert_eq!(reloaded.musics[0].alias, "Track Edit");
         assert_eq!(reloaded.musics[0].start_ms, 12_250);
         assert_eq!(reloaded.musics[0].end_ms, 132_750);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn delete_music_removes_only_the_matching_music_identity() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let save_root = PathBuf::from("C:/Media");
+        let shared_path = PathBuf::from("Disc 1").join("Shared.m4a");
+        let collection = collection_with_musics(
+            "https://example.com/music-delete",
+            "youtube/music-delete",
+            Some(false),
+            vec![
+                Music {
+                    name: "Track A".to_string(),
+                    alias: "Track A".to_string(),
+                    group: collection_group(
+                        "Disc 1",
+                        "https://example.com/music-delete#disc-1",
+                        "Disc 1",
+                    ),
+                    url: "https://example.com/music-delete#a".to_string(),
+                    path: Some(shared_path.to_string_lossy().to_string()),
+                    start_ms: 0,
+                    end_ms: 120_000,
+                },
+                Music {
+                    name: "Track B".to_string(),
+                    alias: "Track B".to_string(),
+                    group: collection_group(
+                        "Disc 1",
+                        "https://example.com/music-delete#disc-1",
+                        "Disc 1",
+                    ),
+                    url: "https://example.com/music-delete#b".to_string(),
+                    path: Some(shared_path.to_string_lossy().to_string()),
+                    start_ms: 120_000,
+                    end_ms: 240_000,
+                },
+            ],
+        );
+        let saved = upsert_collection(&collection)
+            .await
+            .expect("collection should save before music deletion");
+        let collection_record = load_collection_ids_by_url(&saved.url)
+            .await
+            .remove(0);
+
+        assert!(
+            delete_music("https://example.com/music-delete#a", 0, 120_000)
+                .await
+                .expect("music deletion should succeed")
+        );
+        assert!(
+            !delete_music("https://example.com/music-delete#a", 0, 120_000)
+                .await
+                .expect("repeated music deletion should be idempotent")
+        );
+
+        let lookup_path = save_root.join(&collection.folder).join(shared_path);
+        let musics = list_musics_by_file_path(&lookup_path, &save_root)
+            .await
+            .expect("music lookup by file path should succeed after deletion");
+
+        assert_eq!(musics.len(), 1);
+        assert_eq!(musics[0].alias, "Track B");
+        assert_eq!(load_collection_music_ids(&collection_record).await.len(), 1);
 
         reset_db();
     });

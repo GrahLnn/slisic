@@ -106,6 +106,14 @@ pub async fn update_music(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn delete_music(url: String, start_ms: u32, end_ms: u32) -> Result<bool, String> {
+    super::repo::delete_music(&url, start_ms, end_ms)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn list_musics_by_file_path(
     app: AppHandle,
     file_path: String,

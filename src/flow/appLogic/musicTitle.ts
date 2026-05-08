@@ -14,6 +14,15 @@ export interface MusicDraftEdit extends MusicEdit {
   id: string;
 }
 
+export interface MusicDraftDelete {
+  endMs: number;
+  id: string;
+  startMs: number;
+  url: string;
+}
+
+export type MusicDelete = Omit<MusicDraftDelete, "id">;
+
 export type SpectrumMusicCommitKind = "keep" | "restore";
 
 export interface SpectrumMusicCommitResolution {
@@ -197,7 +206,8 @@ export function createSpectrumMusicDraftIdentity(args: {
 export function hasSpectrumMusicDraftChanges(draft: SpectrumMusicDraft | null) {
   return (
     draft !== null &&
-    (normalizeSpectrumMusicName(draft.name) !== normalizeSpectrumMusicName(draft.baselineName) ||
+    (draft.deleteRequested === true ||
+      normalizeSpectrumMusicName(draft.name) !== normalizeSpectrumMusicName(draft.baselineName) ||
       !areSpectrumMusicDraftRangeBoundariesEqual(draft.startMs, draft.baselineStartMs) ||
       !areSpectrumMusicDraftRangeBoundariesEqual(draft.endMs, draft.baselineEndMs))
   );
@@ -210,8 +220,10 @@ export function resetSpectrumMusicDraftValue(
     return null;
   }
 
+  const { deleteRequested: _deleteRequested, ...draftValue } = draft;
+
   return {
-    ...draft,
+    ...draftValue,
     name: draft.baselineName,
     startMs: draft.baselineStartMs,
     endMs: draft.baselineEndMs,
@@ -272,6 +284,14 @@ function isMusicEditTarget(music: Collection["musics"][number], edit: MusicEdit)
   );
 }
 
+function isMusicDeleteTarget(music: Collection["musics"][number], deletion: MusicDelete) {
+  return (
+    music.url === deletion.url &&
+    music.start_ms === deletion.startMs &&
+    music.end_ms === deletion.endMs
+  );
+}
+
 function updateMusicInCollection(collection: Collection, edit: MusicEdit): Collection {
   let didUpdate = false;
   const musics = collection.musics.map((music) => {
@@ -326,6 +346,51 @@ export function updateMusicInPlaylistPreview(
     playlist: {
       ...preview.playlist,
       collections: updateMusicInCollections(preview.playlist.collections, edit),
+    },
+  };
+}
+
+function deleteMusicFromCollection(collection: Collection, deletion: MusicDelete): Collection {
+  const musics = collection.musics.filter((music) => !isMusicDeleteTarget(music, deletion));
+
+  return musics.length === collection.musics.length
+    ? collection
+    : {
+        ...collection,
+        musics,
+      };
+}
+
+export function deleteMusicFromCollections(
+  collections: readonly Collection[],
+  deletion: MusicDelete,
+): Collection[] {
+  return collections.map((collection) => deleteMusicFromCollection(collection, deletion));
+}
+
+export function deleteMusicFromPlaylists(
+  playlists: readonly PlayList[],
+  deletion: MusicDelete,
+): PlayList[] {
+  return playlists.map((playlist) => ({
+    ...playlist,
+    collections: deleteMusicFromCollections(playlist.collections, deletion),
+  }));
+}
+
+export function deleteMusicFromPlaylistPreview(
+  preview: PlaylistUpsertResult | null,
+  deletion: MusicDelete,
+): PlaylistUpsertResult | null {
+  if (!preview) {
+    return null;
+  }
+
+  return {
+    ...preview,
+    playlist: {
+      ...preview.playlist,
+      collections: deleteMusicFromCollections(preview.playlist.collections, deletion),
     },
   };
 }
@@ -397,7 +462,29 @@ export function resetSpectrumMusicDraft(
   );
 }
 
+export function deleteSpectrumMusicDraft(
+  drafts: readonly SpectrumMusicDraft[],
+  id: string,
+): SpectrumMusicDraft[] {
+  return drafts.map((draft) =>
+    createSpectrumMusicDraftIdentity({
+      baselineEndMs: draft.baselineEndMs,
+      baselineStartMs: draft.baselineStartMs,
+      url: draft.url,
+    }) === id
+      ? {
+          ...draft,
+          deleteRequested: true,
+        }
+      : draft,
+  );
+}
+
 export function createMusicDraftEditFromDraft(draft: SpectrumMusicDraft): MusicDraftEdit | null {
+  if (draft.deleteRequested === true) {
+    return null;
+  }
+
   const musicCommit = resolveSpectrumMusicCommit(draft);
 
   if (!musicCommit || !hasSpectrumMusicDraftChanges(draft)) {
@@ -440,5 +527,36 @@ export function createMusicDraftEdits(drafts: readonly SpectrumMusicDraft[]): Mu
   return drafts.flatMap((draft) => {
     const edit = createMusicDraftEditFromDraft(draft);
     return edit ? [edit] : [];
+  });
+}
+
+export function createMusicDraftDeleteFromDraft(
+  draft: SpectrumMusicDraft,
+): MusicDraftDelete | null {
+  if (
+    draft.deleteRequested !== true ||
+    draft.url === null ||
+    draft.baselineStartMs === null ||
+    draft.baselineEndMs === null
+  ) {
+    return null;
+  }
+
+  return {
+    id: createSpectrumMusicDraftIdentity({
+      baselineEndMs: draft.baselineEndMs,
+      baselineStartMs: draft.baselineStartMs,
+      url: draft.url,
+    }),
+    endMs: draft.baselineEndMs,
+    startMs: draft.baselineStartMs,
+    url: draft.url,
+  };
+}
+
+export function createMusicDraftDeletes(drafts: readonly SpectrumMusicDraft[]): MusicDraftDelete[] {
+  return drafts.flatMap((draft) => {
+    const deletion = createMusicDraftDeleteFromDraft(draft);
+    return deletion ? [deletion] : [];
   });
 }
