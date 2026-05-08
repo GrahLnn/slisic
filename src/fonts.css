@@ -1,7 +1,6 @@
 @font-face {
   font-family: "Geist Sans";
-  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2")
-    format("woff2");
+  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2") format("woff2");
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
@@ -9,8 +8,7 @@
 
 @font-face {
   font-family: "Geist Sans";
-  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Italic[wght].woff2")
-    format("woff2");
+  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Italic[wght].woff2") format("woff2");
   font-style: italic;
   font-weight: 100 900;
   font-display: swap;
@@ -18,8 +16,7 @@
 
 @font-face {
   font-family: "Geist Mono";
-  src: url("../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2")
-    format("woff2");
+  src: url("../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2") format("woff2");
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
@@ -36,8 +33,7 @@
 
 @font-face {
   font-family: "Geist Pixel Square";
-  src: url("../node_modules/geist/dist/fonts/geist-pixel/GeistPixel-Square.woff2")
-    format("woff2");
+  src: url("../node_modules/geist/dist/fonts/geist-pixel/GeistPixel-Square.woff2") format("woff2");
   font-style: normal;
   font-weight: 400;
   font-display: swap;
@@ -45,8 +41,7 @@
 
 @font-face {
   font-family: "Geist Pixel Grid";
-  src: url("../node_modules/geist/dist/fonts/geist-pixel/GeistPixel-Grid.woff2")
-    format("woff2");
+  src: url("../node_modules/geist/dist/fonts/geist-pixel/GeistPixel-Grid.woff2") format("woff2");
   font-style: normal;
   font-weight: 400;
   font-display: swap;
@@ -54,8 +49,7 @@
 
 @font-face {
   font-family: "Geist Pixel Circle";
-  src: url("../node_modules/geist/dist/fonts/geist-pixel/GeistPixel-Circle.woff2")
-    format("woff2");
+  src: url("../node_modules/geist/dist/fonts/geist-pixel/GeistPixel-Circle.woff2") format("woff2");
   font-style: normal;
   font-weight: 400;
   font-display: swap;
@@ -63,8 +57,7 @@
 
 @font-face {
   font-family: "Geist Pixel Triangle";
-  src: url("../node_modules/geist/dist/fonts/geist-pixel/GeistPixel-Triangle.woff2")
-    format("woff2");
+  src: url("../node_modules/geist/dist/fonts/geist-pixel/GeistPixel-Triangle.woff2") format("woff2");
   font-style: normal;
   font-weight: 400;
   font-display: swap;
@@ -72,8 +65,7 @@
 
 @font-face {
   font-family: "Geist Pixel Line";
-  src: url("../node_modules/geist/dist/fonts/geist-pixel/GeistPixel-Line.woff2")
-    format("woff2");
+  src: url("../node_modules/geist/dist/fonts/geist-pixel/GeistPixel-Line.woff2") format("woff2");
   font-style: normal;
   font-weight: 400;
   font-display: swap;
@@ -82,8 +74,7 @@
 :root {
   --font-geist-sans: "Geist Sans", "Avenir", "Helvetica", "Arial", sans-serif;
   --font-geist-mono:
-    "Geist Mono", ui-monospace, "SFMono-Regular", "Cascadia Mono",
-    "Segoe UI Mono", monospace;
+    "Geist Mono", ui-monospace, "SFMono-Regular", "Cascadia Mono", "Segoe UI Mono", monospace;
   --font-geist-pixel-square: "Geist Pixel Square", monospace;
   --font-geist-pixel-grid: "Geist Pixel Grid", monospace;
   --font-geist-pixel-circle: "Geist Pixel Circle", monospace;

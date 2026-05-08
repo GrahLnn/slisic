@@ -8,10 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { crab } from "../../cmd";
-import {
-  action as updaterAction,
-  ensureStarted as ensureUpdaterStarted,
-} from "../updater";
+import { action as updaterAction, ensureStarted as ensureUpdaterStarted } from "../updater";
 import {
   createInitialAppWindowMeta,
   normalizeWindowName,
@@ -184,10 +181,7 @@ class AppBootstrapStore {
   }
 
   private syncWarmTargets() {
-    const targets = new Set<CmdWindowName>([
-      ...this.warmOwners.keys(),
-      ...this.activeWarmTargets,
-    ]);
+    const targets = new Set<CmdWindowName>([...this.warmOwners.keys(), ...this.activeWarmTargets]);
 
     for (const name of targets) {
       this.syncWarmTarget(name);
@@ -234,11 +228,7 @@ function useAppBootstrapSnapshot(): AppBootstrapSnapshot {
 export function AppBootstrapProvider({ children }: { children: ReactNode }) {
   const snapshot = useAppBootstrapSnapshot();
 
-  return createElement(
-    AppBootstrapContext.Provider,
-    { value: snapshot },
-    children,
-  );
+  return createElement(AppBootstrapContext.Provider, { value: snapshot }, children);
 }
 
 export function useAppBootstrap(): AppBootstrap {

@@ -221,6 +221,16 @@ function MainWindowApp() {
               <SpectrumPage />
             </PageViewport>
           ),
+          spectrumDeletingMusic: () => (
+            <PageViewport
+              key="spectrum"
+              pageKey="spectrum"
+              pageState="spectrum-deleting"
+              scrollPositionRef={pageScrollPositionRefs.current.spectrum}
+            >
+              <SpectrumPage />
+            </PageViewport>
+          ),
           error: () => (
             <PageViewport
               key="list"

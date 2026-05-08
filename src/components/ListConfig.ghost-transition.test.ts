@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import {
-  registerGhostNodeOwner,
-  resolveRegisteredGhostNode,
-} from "./ListConfig.ghost-transition";
+import { registerGhostNodeOwner, resolveRegisteredGhostNode } from "./ListConfig.ghost-transition";
 
 describe("ListConfig ghost transition registry", () => {
   test("resolves the requested owner while both sides are live", () => {

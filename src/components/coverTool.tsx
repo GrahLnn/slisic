@@ -2,10 +2,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { ComponentProps } from "react";
 
-export function CoverTool({
-  text,
-  onClick,
-}: ComponentProps<"div"> & { text: string }) {
+export function CoverTool({ text, onClick }: ComponentProps<"div"> & { text: string }) {
   return (
     <motion.div
       className={cn(

@@ -173,9 +173,7 @@ export function updateActiveCandidateItem(
 
   return {
     ...context,
-    items: context.items.map((item) =>
-      item.id === context.activeItemId ? updater(item) : item,
-    ),
+    items: context.items.map((item) => (item.id === context.activeItemId ? updater(item) : item)),
   };
 }
 
@@ -225,9 +223,7 @@ export function applyActiveCandidateUrlResolution(
   });
 }
 
-export function createDraftCollectionFromProbe(
-  probe: DownloadResourceProbe,
-): Collection {
+export function createDraftCollectionFromProbe(probe: DownloadResourceProbe): Collection {
   return {
     name: probe.title,
     url: probe.url,
@@ -269,9 +265,7 @@ export function clearActiveCandidate(context: Context): Context {
 }
 
 export function removeActiveCandidate(context: Context): Context {
-  return context.activeItemId
-    ? deleteCandidateItem(context, context.activeItemId)
-    : context;
+  return context.activeItemId ? deleteCandidateItem(context, context.activeItemId) : context;
 }
 
 export function deleteCandidateItem(context: Context, id: string): Context {
@@ -285,11 +279,7 @@ export function deleteCandidateItem(context: Context, id: string): Context {
 }
 
 export function candidateItemAllowsDelete(status: ConfigCandidateItemStatus) {
-  return (
-    status === "invalid_url" ||
-    status === "probe_failed" ||
-    status === "enqueue_failed"
-  );
+  return status === "invalid_url" || status === "probe_failed" || status === "enqueue_failed";
 }
 
 export function candidateItemIsErrored(status: ConfigCandidateItemStatus) {

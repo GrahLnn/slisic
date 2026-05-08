@@ -70,18 +70,12 @@ function readColorSchemeSnapshot() {
 }
 
 function usePrefersDarkColorScheme() {
-  return useSyncExternalStore(
-    subscribeToColorScheme,
-    readColorSchemeSnapshot,
-    () => false,
-  );
+  return useSyncExternalStore(subscribeToColorScheme, readColorSchemeSnapshot, () => false);
 }
 
 export function useCollectionTitleColor(tone: CollectionTitleTone = "solid") {
   const prefersDark = usePrefersDarkColorScheme();
-  const palette = prefersDark
-    ? collectionTitlePalette.dark
-    : collectionTitlePalette.light;
+  const palette = prefersDark ? collectionTitlePalette.dark : collectionTitlePalette.light;
 
   return palette[tone];
 }

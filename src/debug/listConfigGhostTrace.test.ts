@@ -14,12 +14,8 @@ function createRect(partial: Partial<GhostTraceRect> = {}): GhostTraceRect {
     width: partial.width ?? 10,
     height: partial.height ?? 10,
     top: partial.top ?? partial.y ?? 0,
-    right:
-      partial.right ??
-      ((partial.left ?? partial.x ?? 0) + (partial.width ?? 10)),
-    bottom:
-      partial.bottom ??
-      ((partial.top ?? partial.y ?? 0) + (partial.height ?? 10)),
+    right: partial.right ?? (partial.left ?? partial.x ?? 0) + (partial.width ?? 10),
+    bottom: partial.bottom ?? (partial.top ?? partial.y ?? 0) + (partial.height ?? 10),
     left: partial.left ?? partial.x ?? 0,
   };
 }

@@ -273,10 +273,7 @@ function snapshotAncestorChain(
       });
     }
 
-    if (
-      current.matches(TRACE_SCROLL_ROOT_SELECTOR) ||
-      current.matches(TRACE_ROOT_SELECTOR)
-    ) {
+    if (current.matches(TRACE_SCROLL_ROOT_SELECTOR) || current.matches(TRACE_ROOT_SELECTOR)) {
       break;
     }
 
@@ -292,22 +289,18 @@ function snapshotOverlayGlyphs(node: Element | null): TraceGlyphSnapshot[] {
     return [];
   }
 
-  return Array.from(node.querySelectorAll<HTMLElement>(TORPH_GLYPH_SELECTOR)).map(
-    (glyphNode) => {
-      const contextSlice = glyphNode.querySelector<HTMLElement>(
-        "[data-morph-slice='context']",
-      );
+  return Array.from(node.querySelectorAll<HTMLElement>(TORPH_GLYPH_SELECTOR)).map((glyphNode) => {
+    const contextSlice = glyphNode.querySelector<HTMLElement>("[data-morph-slice='context']");
 
-      return {
-        role: glyphNode.dataset.morphRole ?? null,
-        key: glyphNode.dataset.morphKey ?? null,
-        glyph: glyphNode.dataset.morphGlyph ?? null,
-        kind: glyphNode.dataset.morphKind ?? null,
-        element: snapshotTraceElement(glyphNode),
-        contextSlice: snapshotTraceElement(contextSlice),
-      };
-    },
-  );
+    return {
+      role: glyphNode.dataset.morphRole ?? null,
+      key: glyphNode.dataset.morphKey ?? null,
+      glyph: glyphNode.dataset.morphGlyph ?? null,
+      kind: glyphNode.dataset.morphKind ?? null,
+      element: snapshotTraceElement(glyphNode),
+      contextSlice: snapshotTraceElement(contextSlice),
+    };
+  });
 }
 
 function snapshotTraceItems(): TraceItemSnapshot[] {
@@ -321,18 +314,14 @@ function snapshotTraceItems(): TraceItemSnapshot[] {
       const style = window.getComputedStyle(node);
       const scrollRoot = node.closest(TRACE_SCROLL_ROOT_SELECTOR);
       const scrollRootRect =
-        scrollRoot instanceof HTMLElement
-          ? scrollRoot.getBoundingClientRect()
-          : null;
+        scrollRoot instanceof HTMLElement ? scrollRoot.getBoundingClientRect() : null;
       const textHost = node.querySelector(TRACE_TEXT_HOST_SELECTOR);
       const torphScope = textHost ?? node;
       const torphRoot = torphScope.querySelector(TORPH_DEBUG_ROOT_SELECTOR);
       const torphFlowShell = torphScope.querySelector(TORPH_DEBUG_FLOW_SHELL_SELECTOR);
       const torphFlow = torphScope.querySelector(TORPH_DEBUG_FLOW_SELECTOR);
       const torphOverlay = torphScope.querySelector(TORPH_DEBUG_OVERLAY_SELECTOR);
-      const torphMeasurement = torphScope.querySelector(
-        TORPH_DEBUG_MEASUREMENT_SELECTOR,
-      );
+      const torphMeasurement = torphScope.querySelector(TORPH_DEBUG_MEASUREMENT_SELECTOR);
 
       return {
         key: node.dataset.torphTraceItemKey ?? "",
@@ -479,10 +468,7 @@ function resolveTorphDebugConfig(config: TorphDebugConfig | undefined) {
   } satisfies Exclude<TorphDebugConfig, boolean>;
 }
 
-export function recordTorphHostTrace(
-  event: string,
-  payload: Record<string, unknown> = {},
-) {
+export function recordTorphHostTrace(event: string, payload: Record<string, unknown> = {}) {
   if (typeof window === "undefined") {
     return;
   }
@@ -526,8 +512,7 @@ export function captureTorphHostFrames(
       label,
       frameIndex,
       frameTime,
-      frameDelta:
-        previousFrameTime === null ? null : frameTime - previousFrameTime,
+      frameDelta: previousFrameTime === null ? null : frameTime - previousFrameTime,
       ...args?.payload,
     });
 
@@ -582,15 +567,13 @@ export function installTorphTrace() {
   window.addEventListener(
     "scroll",
     (event) => {
-      const target =
-        event.target instanceof Document ? document.documentElement : event.target;
+      const target = event.target instanceof Document ? document.documentElement : event.target;
       if (!(target instanceof Element)) {
         return;
       }
 
       const isRelevant =
-        target.matches(TRACE_SCROLL_ROOT_SELECTOR) ||
-        target.closest(TRACE_ROOT_SELECTOR) !== null;
+        target.matches(TRACE_SCROLL_ROOT_SELECTOR) || target.closest(TRACE_ROOT_SELECTOR) !== null;
       if (!isRelevant) {
         return;
       }

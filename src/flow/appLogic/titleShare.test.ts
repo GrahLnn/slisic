@@ -24,14 +24,8 @@ describe("titleShare", () => {
       returnTargetLayoutId: null,
       committedLayoutId: "playlist-title:PlayList 1",
     });
-    assert.equal(
-      shouldSuppressTitleShareFade("playlist-title:PlayList 1", transition),
-      true,
-    );
-    assert.equal(
-      shouldSuppressTitleShareFade("collection-title:create", transition),
-      false,
-    );
+    assert.equal(shouldSuppressTitleShareFade("playlist-title:PlayList 1", transition), true);
+    assert.equal(shouldSuppressTitleShareFade("collection-title:create", transition), false);
   });
 
   test("treats ready state handoff as a returning target only", () => {
@@ -49,14 +43,8 @@ describe("titleShare", () => {
       returnTargetLayoutId: "playlist-title:PlayList 1",
       committedLayoutId: null,
     });
-    assert.equal(
-      shouldSuppressTitleShareFade("playlist-title:PlayList 1", transition),
-      true,
-    );
-    assert.equal(
-      shouldSuppressTitleShareFade("collection-title:create", transition),
-      false,
-    );
+    assert.equal(shouldSuppressTitleShareFade("playlist-title:PlayList 1", transition), true);
+    assert.equal(shouldSuppressTitleShareFade("collection-title:create", transition), false);
   });
 
   test("lets a fresh pressed source win before the state machine enters config", () => {
@@ -71,14 +59,8 @@ describe("titleShare", () => {
 
     assert.equal(transition.committedLayoutId, "collection-title:create");
     assert.equal(transition.returnTargetLayoutId, null);
-    assert.equal(
-      shouldSuppressTitleShareFade("playlist-title:PlayList 1", transition),
-      false,
-    );
-    assert.equal(
-      shouldSuppressTitleShareFade("playlist-title:PlayList 2", transition),
-      false,
-    );
+    assert.equal(shouldSuppressTitleShareFade("playlist-title:PlayList 1", transition), false);
+    assert.equal(shouldSuppressTitleShareFade("playlist-title:PlayList 2", transition), false);
   });
 
   test("marks config drafts as changed only when their canonical content differs", () => {

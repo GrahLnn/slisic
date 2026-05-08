@@ -142,7 +142,7 @@ function retainToolLabelPointerTracker(ownerDocument: Document) {
 }
 
 function readToolLabelPointerPosition(ownerDocument: Document | null) {
-  return ownerDocument ? toolLabelPointerTrackers.get(ownerDocument)?.position ?? null : null;
+  return ownerDocument ? (toolLabelPointerTrackers.get(ownerDocument)?.position ?? null) : null;
 }
 
 function ToolLabelTextSurface({
@@ -208,11 +208,7 @@ export function resolveToolLabelHoverFromPointerProbe(args: {
     return true;
   }
 
-  if (
-    hitElements.some(
-      (element) => element === hoverTarget || hoverTarget.contains(element),
-    )
-  ) {
+  if (hitElements.some((element) => element === hoverTarget || hoverTarget.contains(element))) {
     return true;
   }
 

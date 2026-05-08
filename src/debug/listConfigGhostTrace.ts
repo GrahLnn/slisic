@@ -305,9 +305,7 @@ function resolveGhostTraceTextVisibleRect(node: Element) {
   };
 }
 
-function snapshotGhostTraceElementCore(
-  node: Element | null,
-): GhostTraceElementCoreSnapshot | null {
+function snapshotGhostTraceElementCore(node: Element | null): GhostTraceElementCoreSnapshot | null {
   if (!(node instanceof HTMLElement || node instanceof SVGElement)) {
     return null;
   }
@@ -542,7 +540,9 @@ function snapshotGhostTraceOverlayLiveGlyphRect(overlayNode: Element | null) {
     };
   }
 
-  const visibleGlyphRects = Array.from(overlayNode.querySelectorAll<HTMLElement>(TORPH_LIVE_GLYPH_SELECTOR))
+  const visibleGlyphRects = Array.from(
+    overlayNode.querySelectorAll<HTMLElement>(TORPH_LIVE_GLYPH_SELECTOR),
+  )
     .map((glyphNode) => snapshotGhostTraceElementCore(glyphNode))
     .filter((snapshot): snapshot is GhostTraceElementCoreSnapshot =>
       isGhostTraceSnapshotVisible(snapshot),

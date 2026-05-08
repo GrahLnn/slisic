@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import {
-  resolveEditableTitleDisplayValue,
-  resolveEditableTitleLayoutId,
-} from "./EditableTitle";
+import { resolveEditableTitleDisplayValue, resolveEditableTitleLayoutId } from "./EditableTitle";
 
 describe("resolveEditableTitleDisplayValue", () => {
   test("uses the current value when one exists", () => {
@@ -14,10 +11,7 @@ describe("resolveEditableTitleDisplayValue", () => {
   });
 
   test("keeps an explicit placeholder when the title is empty", () => {
-    assert.equal(
-      resolveEditableTitleDisplayValue("", "Create a List"),
-      "Create a List",
-    );
+    assert.equal(resolveEditableTitleDisplayValue("", "Create a List"), "Create a List");
   });
 
   test("stays empty when the caller does not provide a placeholder", () => {

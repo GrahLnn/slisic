@@ -37,9 +37,7 @@ export function hasConfigDraftChanges(
   return createConfigDraftComparableKey(draft) !== createConfigDraftComparableKey(draftBaseline);
 }
 
-export function resolveTitleShareToneFromDraft(
-  draft: ConfigDraft | null,
-): CollectionTitleTone {
+export function resolveTitleShareToneFromDraft(draft: ConfigDraft | null): CollectionTitleTone {
   if (!draft) {
     return "solid";
   }
@@ -52,10 +50,7 @@ export function resolveConfigBackTitleSharePlan(args: {
   draft: ConfigDraft | null;
   draftBaseline: ConfigDraft | null;
 }) {
-  const hasDraftChanges = hasConfigDraftChanges(
-    args.draft,
-    args.draftBaseline,
-  );
+  const hasDraftChanges = hasConfigDraftChanges(args.draft, args.draftBaseline);
   let returnLayoutId = args.activeLayoutId;
 
   if (args.activeLayoutId && args.draft && args.draftBaseline && hasDraftChanges) {
@@ -70,10 +65,7 @@ export function resolveConfigBackTitleSharePlan(args: {
     hasDraftChanges,
     returnLayoutId,
     titleToneHandoff: returnLayoutId
-      ? createCollectionTitleHandoff(
-          returnLayoutId,
-          resolveTitleShareToneFromDraft(args.draft),
-        )
+      ? createCollectionTitleHandoff(returnLayoutId, resolveTitleShareToneFromDraft(args.draft))
       : null,
   };
 }
@@ -84,9 +76,8 @@ export function resolveTitleSharePageTransition(args: {
   pressedLayoutId: string | null;
 }): TitleSharePageTransition {
   const outgoingSourceLayoutId = args.activeLayoutId;
-  const returnTargetLayoutId = args.activeLayoutId || args.pressedLayoutId
-    ? null
-    : args.titleToneHandoff?.layoutId ?? null;
+  const returnTargetLayoutId =
+    args.activeLayoutId || args.pressedLayoutId ? null : (args.titleToneHandoff?.layoutId ?? null);
 
   return {
     outgoingSourceLayoutId,
@@ -97,13 +88,9 @@ export function resolveTitleSharePageTransition(args: {
 
 export function shouldSuppressTitleShareFade(
   layoutId: string,
-  transition: Pick<
-    TitleSharePageTransition,
-    "outgoingSourceLayoutId" | "returnTargetLayoutId"
-  >,
+  transition: Pick<TitleSharePageTransition, "outgoingSourceLayoutId" | "returnTargetLayoutId">,
 ) {
   return (
-    layoutId === transition.outgoingSourceLayoutId ||
-    layoutId === transition.returnTargetLayoutId
+    layoutId === transition.outgoingSourceLayoutId || layoutId === transition.returnTargetLayoutId
   );
 }

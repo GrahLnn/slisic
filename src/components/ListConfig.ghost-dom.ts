@@ -118,11 +118,9 @@ function resolveGhostToolLabelTextContainer(node: ParentNode) {
     return node as HTMLDivElement;
   }
 
-  return (
-    node.querySelectorAll<HTMLElement>(
-      `[data-tool-label-debug-role='${TOOL_LABEL_TEXT_CONTAINER_DEBUG_ROLE}']`,
-    )[0] ?? null
-  ) as HTMLDivElement | null;
+  return (node.querySelectorAll<HTMLElement>(
+    `[data-tool-label-debug-role='${TOOL_LABEL_TEXT_CONTAINER_DEBUG_ROLE}']`,
+  )[0] ?? null) as HTMLDivElement | null;
 }
 
 function resolveGhostSurfaceHost(node: ParentNode) {
@@ -133,9 +131,8 @@ function resolveGhostSurfaceHost(node: ParentNode) {
     return node as HTMLDivElement;
   }
 
-  return (
-    node.querySelectorAll<HTMLElement>(`[data-list-config-ghost-surface-host='true']`)[0] ?? null
-  ) as HTMLDivElement | null;
+  return (node.querySelectorAll<HTMLElement>(`[data-list-config-ghost-surface-host='true']`)[0] ??
+    null) as HTMLDivElement | null;
 }
 
 type GhostSurfaceLayerRole = "source" | "target";
@@ -145,10 +142,9 @@ function resolveGhostSurfaceLayer(node: ParentNode, role: GhostSurfaceLayerRole)
     return node as HTMLDivElement;
   }
 
-  return (
-    node.querySelectorAll<HTMLElement>(`[data-list-config-ghost-surface-role='${role}']`)[0] ??
-    null
-  ) as HTMLDivElement | null;
+  return (node.querySelectorAll<HTMLElement>(
+    `[data-list-config-ghost-surface-role='${role}']`,
+  )[0] ?? null) as HTMLDivElement | null;
 }
 
 export function resolveGhostTorphTextMetricStylePatch(
@@ -393,19 +389,13 @@ export function resolveGhostClipInsets(args: {
       lineHeightBleed,
       GHOST_MIN_CLIP_PADDING,
     ),
-    right: Math.max(
-      clampGhostInset(visualRight - frameRight),
-      GHOST_MIN_CLIP_PADDING,
-    ),
+    right: Math.max(clampGhostInset(visualRight - frameRight), GHOST_MIN_CLIP_PADDING),
     bottom: Math.max(
       clampGhostInset(visualBottom - frameBottom),
       lineHeightBleed,
       GHOST_MIN_CLIP_PADDING,
     ),
-    left: Math.max(
-      clampGhostInset(args.frame.left - args.visualRect.left),
-      GHOST_MIN_CLIP_PADDING,
-    ),
+    left: Math.max(clampGhostInset(args.frame.left - args.visualRect.left), GHOST_MIN_CLIP_PADDING),
   } satisfies GhostClipInsets;
 }
 
@@ -466,7 +456,8 @@ export function showGhostTarget(node: HTMLDivElement | null) {
 export function resolveGhostNodePose(node: HTMLDivElement): GhostNodePose {
   const sourceRect = node.getBoundingClientRect();
   const sourceStyle = resolveGhostComputedStyle(node);
-  const resolvedWidth = Number.parseFloat(sourceStyle.width) || node.offsetWidth || sourceRect.width;
+  const resolvedWidth =
+    Number.parseFloat(sourceStyle.width) || node.offsetWidth || sourceRect.width;
   const resolvedHeight =
     Number.parseFloat(sourceStyle.height) || node.offsetHeight || sourceRect.height;
   const transformOrigin = resolveGhostOriginFromTransformOrigin(sourceStyle.transformOrigin);
@@ -646,10 +637,7 @@ function applyGhostCloneTextSurfaceLayerStyle(
   node.style.willChange = shellStyle.willChange;
 }
 
-function stabilizeGhostCloneSourceSurface(args: {
-  cloneNode: ParentNode;
-  frame: GhostFrame;
-}) {
+function stabilizeGhostCloneSourceSurface(args: { cloneNode: ParentNode; frame: GhostFrame }) {
   const cloneTextContainer = resolveGhostToolLabelTextContainer(args.cloneNode);
 
   if (!cloneTextContainer) {
@@ -723,9 +711,7 @@ function resolveGhostSurfaceTransitionPhaseProgress(args: {
     return args.progress >= args.end ? 1 : 0;
   }
 
-  return smoothstepGhostSurfaceTransition(
-    (args.progress - args.start) / (args.end - args.start),
-  );
+  return smoothstepGhostSurfaceTransition((args.progress - args.start) / (args.end - args.start));
 }
 
 export function resolveGhostSurfaceTransitionOpacities(args: {
@@ -814,9 +800,13 @@ export function createGhostSurfaceTransition(args: {
 
   let currentProgress = 0;
   const targetInlineOpacity = args.targetNode.style.opacity;
-  const targetComputedOpacity = Number.parseFloat(resolveGhostComputedStyle(args.targetNode).opacity);
+  const targetComputedOpacity = Number.parseFloat(
+    resolveGhostComputedStyle(args.targetNode).opacity,
+  );
   const targetOpacityScale =
-    Number.isFinite(targetComputedOpacity) && targetComputedOpacity >= 0 ? targetComputedOpacity : 1;
+    Number.isFinite(targetComputedOpacity) && targetComputedOpacity >= 0
+      ? targetComputedOpacity
+      : 1;
 
   applyGhostSurfaceTransitionProgress({
     hostNode: surfaceHost,

@@ -37,14 +37,10 @@ function readCurrentRendererWindowLabel(): string | null {
     };
   };
 
-  return (
-    tauriWindow.__TAURI_INTERNALS__?.metadata?.currentWindow?.label ?? null
-  );
+  return tauriWindow.__TAURI_INTERNALS__?.metadata?.currentWindow?.label ?? null;
 }
 
-export function inferWindowNameFromLabel(
-  label: string | null | undefined,
-): WindowName | null {
+export function inferWindowNameFromLabel(label: string | null | undefined): WindowName | null {
   if (!label) {
     return null;
   }
@@ -83,9 +79,7 @@ export function createInitialAppWindowMeta(): AppWindowMeta {
   };
 }
 
-export function normalizeWindowName(
-  window: CmdWindowName | null | undefined,
-): WindowName | null {
+export function normalizeWindowName(window: CmdWindowName | null | undefined): WindowName | null {
   if (!window) {
     return null;
   }
@@ -104,9 +98,7 @@ export function toCommandWindowName(window: WindowName): CmdWindowName {
 }
 
 function resolveWindowForMatch(meta: AppWindowMeta): WindowName {
-  return (
-    meta.window ?? inferWindowNameFromLabel(meta.label) ?? fallbackWindowName
-  );
+  return meta.window ?? inferWindowNameFromLabel(meta.label) ?? fallbackWindowName;
 }
 
 export function shouldShowWindowControls(meta: AppWindowMeta): boolean {
@@ -119,10 +111,7 @@ export function shouldRunUpdater(meta: AppWindowMeta): boolean {
   }
 
   return (
-    meta.status === "ready" &&
-    meta.window === "main" &&
-    meta.isUserWindow &&
-    meta.isPrimaryWindow
+    meta.status === "ready" && meta.window === "main" && meta.isUserWindow && meta.isPrimaryWindow
   );
 }
 

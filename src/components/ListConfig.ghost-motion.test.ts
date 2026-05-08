@@ -83,10 +83,7 @@ function dotVector(
   return left.x * right.x + left.y * right.y;
 }
 
-function normalizeVector(vector: {
-  x: number;
-  y: number;
-}) {
+function normalizeVector(vector: { x: number; y: number }) {
   const magnitude = Math.hypot(vector.x, vector.y);
 
   return magnitude <= 1e-6
@@ -120,18 +117,8 @@ describe("ListConfig ghost motion", () => {
       targetTransformOrigin: createTargetTransformOrigin(),
     });
     const linearMidpoint = {
-      x:
-        (sourceFrame.left +
-          sourceFrame.width / 2 +
-          targetFrame.left +
-          targetFrame.width / 2) /
-        2,
-      y:
-        (sourceFrame.top +
-          sourceFrame.height / 2 +
-          targetFrame.top +
-          targetFrame.height / 2) /
-        2,
+      x: (sourceFrame.left + sourceFrame.width / 2 + targetFrame.left + targetFrame.width / 2) / 2,
+      y: (sourceFrame.top + sourceFrame.height / 2 + targetFrame.top + targetFrame.height / 2) / 2,
     };
 
     assert.ok(
@@ -182,9 +169,7 @@ describe("ListConfig ghost motion", () => {
       y: state.center.y - path.start.y,
     };
     const axialDistance = Math.abs(dotVector(delta, sourceHeading));
-    const lateralDistance = Math.abs(
-      delta.x * -sourceHeading.y + delta.y * sourceHeading.x,
-    );
+    const lateralDistance = Math.abs(delta.x * -sourceHeading.y + delta.y * sourceHeading.x);
 
     assert.ok(axialDistance > 0);
     assert.ok(lateralDistance < axialDistance * 0.01);
@@ -399,7 +384,9 @@ describe("ListConfig ghost motion", () => {
 
     assert.ok(Math.abs(state.left - targetFrame.left) < Math.abs(followLeft - targetFrame.left));
     assert.ok(Math.abs(state.top - targetFrame.top) < Math.abs(followTop - targetFrame.top));
-    assert.ok(Math.abs(state.width - targetFrame.width) < Math.abs(followWidth - targetFrame.width));
+    assert.ok(
+      Math.abs(state.width - targetFrame.width) < Math.abs(followWidth - targetFrame.width),
+    );
   });
 
   test("lands on the target frame and settles back to the horizontal label pose", () => {

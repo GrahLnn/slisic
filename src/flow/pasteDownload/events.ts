@@ -26,9 +26,7 @@ export const state = allState(ss);
 export const sig = allSignal(ss);
 
 export const deps = {
-  resolvePastedDownloadUrl: async (
-    url: string,
-  ): Promise<PastedDownloadUrlResolution> => {
+  resolvePastedDownloadUrl: async (url: string): Promise<PastedDownloadUrlResolution> => {
     const result = await crab.resolvePastedDownloadUrl(url);
 
     return result.match({

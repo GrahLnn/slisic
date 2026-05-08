@@ -94,18 +94,14 @@ export const machine = src.createMachine({
           {
             target: ss.mainx.State.idle,
             actions: assign(({ context, event }) =>
-              clearActiveCandidate(
-                applyActiveCandidateUrlResolution(context, event.output),
-              ),
+              clearActiveCandidate(applyActiveCandidateUrlResolution(context, event.output)),
             ),
           },
         ],
         onError: {
           target: ss.mainx.State.idle,
           actions: assign(({ context, event }) =>
-            clearActiveCandidate(
-              failActiveCandidateProbe(context, toErrorMessage(event.error)),
-            ),
+            clearActiveCandidate(failActiveCandidateProbe(context, toErrorMessage(event.error))),
           ),
         },
       },
@@ -126,14 +122,10 @@ export const machine = src.createMachine({
         onDone: {
           target: ss.mainx.State.enqueueing,
           actions: [
-            assign(({ context, event }) =>
-              completeActiveCandidateProbe(context, event.output),
-            ),
+            assign(({ context, event }) => completeActiveCandidateProbe(context, event.output)),
             ({ event }) => {
               sendAppLogic(
-                draftCollectionUpserted.load(
-                  createDraftCollectionFromProbe(event.output),
-                ),
+                draftCollectionUpserted.load(createDraftCollectionFromProbe(event.output)),
               );
             },
           ],
@@ -141,9 +133,7 @@ export const machine = src.createMachine({
         onError: {
           target: ss.mainx.State.idle,
           actions: assign(({ context, event }) =>
-            clearActiveCandidate(
-              failActiveCandidateProbe(context, toErrorMessage(event.error)),
-            ),
+            clearActiveCandidate(failActiveCandidateProbe(context, toErrorMessage(event.error))),
           ),
         },
       },

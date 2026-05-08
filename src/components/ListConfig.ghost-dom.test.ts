@@ -65,7 +65,8 @@ function createMockStyle(initial: Record<string, string> = {}) {
 function serializeMockStyle(style: CSSStyleDeclaration) {
   return Object.fromEntries(
     Object.entries(style as unknown as Record<string, string>).filter(
-      ([key, value]) => typeof value === "string" && key !== "setProperty" && key !== "getPropertyValue",
+      ([key, value]) =>
+        typeof value === "string" && key !== "setProperty" && key !== "getPropertyValue",
     ),
   );
 }
@@ -434,10 +435,22 @@ describe("ListConfig ghost DOM", () => {
       },
     });
 
-    assert.equal((cloneNode as unknown as { style: Record<string, string> }).style.left, "378.75px");
-    assert.equal((cloneNode as unknown as { style: Record<string, string> }).style.top, "368.3333435058594px");
-    assert.equal((cloneNode as unknown as { style: Record<string, string> }).style.width, "92.3438px");
-    assert.equal((cloneNode as unknown as { style: Record<string, string> }).style.height, "37.2px");
+    assert.equal(
+      (cloneNode as unknown as { style: Record<string, string> }).style.left,
+      "378.75px",
+    );
+    assert.equal(
+      (cloneNode as unknown as { style: Record<string, string> }).style.top,
+      "368.3333435058594px",
+    );
+    assert.equal(
+      (cloneNode as unknown as { style: Record<string, string> }).style.width,
+      "92.3438px",
+    );
+    assert.equal(
+      (cloneNode as unknown as { style: Record<string, string> }).style.height,
+      "37.2px",
+    );
     assert.equal(
       (cloneNode as unknown as { style: Record<string, string> }).style.transformOrigin,
       "1.25px 3px",

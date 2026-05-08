@@ -19,18 +19,12 @@ export function usePageRenderFreeze<T>(
 
   const [frozenValue, setFrozenValue] = useState<T | null>(null);
 
-  const freeze = useCallback(
-    (snapshot?: T) => {
-      setFrozenValue(snapshot ?? lastLiveValueRef.current);
-    },
-    [],
-  );
+  const freeze = useCallback((snapshot?: T) => {
+    setFrozenValue(snapshot ?? lastLiveValueRef.current);
+  }, []);
 
-  const shouldUseExitSnapshot =
-    options?.freezeOnExit === true && options?.isPresent === false;
-  const renderValue =
-    frozenValue ??
-    (shouldUseExitSnapshot ? lastLiveValueRef.current : liveValue);
+  const shouldUseExitSnapshot = options?.freezeOnExit === true && options?.isPresent === false;
+  const renderValue = frozenValue ?? (shouldUseExitSnapshot ? lastLiveValueRef.current : liveValue);
 
   return {
     renderValue,

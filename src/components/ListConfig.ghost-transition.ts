@@ -405,11 +405,7 @@ export function useListConfigGhostTransition() {
   );
 
   const startGhostTransition = useCallback(
-    (args: {
-      layoutId: string;
-      sourceNode: HTMLDivElement | null;
-      targetOwnerId: string;
-    }) => {
+    (args: { layoutId: string; sourceNode: HTMLDivElement | null; targetOwnerId: string }) => {
       ghostPlaybackCleanupRef.current?.();
       ghostPlaybackCleanupRef.current = null;
       ghostTransitionRef.current?.cloneNode.remove();
@@ -426,8 +422,7 @@ export function useListConfigGhostTransition() {
         sourceClipInsets,
         sourceFrame,
         sourceTransformOrigin,
-      } =
-        createGhostClone(args.sourceNode);
+      } = createGhostClone(args.sourceNode);
       ghostTransitionRef.current = {
         layoutId: args.layoutId,
         cloneContentNode,

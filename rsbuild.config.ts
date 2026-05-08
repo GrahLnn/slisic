@@ -41,23 +41,24 @@ export default defineConfig({
     },
   },
   html: {
-    tags: isDev && !disableReactScan
-      ? [
-          {
-            tag: "script",
-            attrs: {
-              src: "https://unpkg.com/react-scan/dist/auto.global.js",
+    tags:
+      isDev && !disableReactScan
+        ? [
+            {
+              tag: "script",
+              attrs: {
+                src: "https://unpkg.com/react-scan/dist/auto.global.js",
+              },
+              head: true,
             },
-            head: true,
-          },
-          {
-            tag: "script",
-            attrs: {
-              src: "http://localhost:8097",
+            {
+              tag: "script",
+              attrs: {
+                src: "http://localhost:8097",
+              },
+              head: true,
             },
-            head: true,
-          },
-        ]
-      : [],
+          ]
+        : [],
   },
 });

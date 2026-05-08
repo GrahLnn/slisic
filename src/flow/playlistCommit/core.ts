@@ -33,9 +33,7 @@ export function hasPendingCommit(context: PlaylistCommitContext) {
   return context.queue.length > 0;
 }
 
-export function activateNextCommit(
-  context: PlaylistCommitContext,
-): PlaylistCommitContext {
+export function activateNextCommit(context: PlaylistCommitContext): PlaylistCommitContext {
   const [activeRequest, ...queue] = context.queue;
 
   return {

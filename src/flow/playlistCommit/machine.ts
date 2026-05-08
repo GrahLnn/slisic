@@ -19,9 +19,7 @@ import { src } from "./src";
 
 const commitRequested = payloads["playlist.commit.requested"];
 
-function resolveQueuedPreview(context: {
-  queue: PlaylistCommitRequest[];
-}) {
+function resolveQueuedPreview(context: { queue: PlaylistCommitRequest[] }) {
   const nextRequest = context.queue[0];
 
   return nextRequest
@@ -57,9 +55,7 @@ export const machine = src.createMachine({
           target: ss.mainx.State.submitting,
           actions: [
             ({ context }) => {
-              sendAppLogic(
-                playlistPreviewChanged.load(resolveQueuedPreview(context)),
-              );
+              sendAppLogic(playlistPreviewChanged.load(resolveQueuedPreview(context)));
             },
             assign(({ context }) => activateNextCommit(context)),
           ],
@@ -82,9 +78,7 @@ export const machine = src.createMachine({
           actions: [
             ({ context, event }) => {
               sendAppLogic(playlistUpserted.load(event.output));
-              sendAppLogic(
-                playlistPreviewChanged.load(resolveQueuedPreview(context)),
-              );
+              sendAppLogic(playlistPreviewChanged.load(resolveQueuedPreview(context)));
             },
             assign(({ context }) => clearActiveCommit(context)),
           ],
@@ -104,13 +98,9 @@ export const machine = src.createMachine({
                 title: "Failed to save playlist",
                 description: `${title}: ${description}`,
               });
-              sendAppLogic(
-                playlistPreviewChanged.load(resolveQueuedPreview(context)),
-              );
+              sendAppLogic(playlistPreviewChanged.load(resolveQueuedPreview(context)));
             },
-            assign(({ context, event }) =>
-              clearActiveCommit(context, toErrorMessage(event.error)),
-            ),
+            assign(({ context, event }) => clearActiveCommit(context, toErrorMessage(event.error))),
           ],
         },
       },

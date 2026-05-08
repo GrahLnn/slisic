@@ -1,9 +1,4 @@
-import {
-  useEffect,
-  useRef,
-  type ButtonHTMLAttributes,
-  type ReactNode,
-} from "react";
+import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import fragShader from "../shaders/holo-button/fragment.glsl";
 import vertShader from "../shaders/holo-button/vertex.glsl";
@@ -170,10 +165,7 @@ class HoloFluidController {
     }
 
     const vertexShader = this.compileShader(this.gl.VERTEX_SHADER, vertShader);
-    const fragmentShader = this.compileShader(
-      this.gl.FRAGMENT_SHADER,
-      fragShader,
-    );
+    const fragmentShader = this.compileShader(this.gl.FRAGMENT_SHADER, fragShader);
 
     if (!vertexShader || !fragmentShader) {
       return false;
@@ -195,8 +187,7 @@ class HoloFluidController {
     this.gl.linkProgram(program);
 
     if (!this.gl.getProgramParameter(program, this.gl.LINK_STATUS)) {
-      const error =
-        this.gl.getProgramInfoLog(program) ?? "Unknown linking error.";
+      const error = this.gl.getProgramInfoLog(program) ?? "Unknown linking error.";
       this.disableFluid(`Program linking failed: ${error}`);
       return false;
     }
@@ -226,14 +217,7 @@ class HoloFluidController {
     }
 
     this.gl.enableVertexAttribArray(positionLocation);
-    this.gl.vertexAttribPointer(
-      positionLocation,
-      2,
-      this.gl.FLOAT,
-      false,
-      0,
-      0,
-    );
+    this.gl.vertexAttribPointer(positionLocation, 2, this.gl.FLOAT, false, 0, 0);
 
     this.uniforms = {
       resolution: this.getUniformLocation("u_resolution"),
@@ -327,9 +311,7 @@ class HoloFluidController {
     };
 
     window.addEventListener("resize", resizeHandler);
-    this.teardown.push(() =>
-      window.removeEventListener("resize", resizeHandler),
-    );
+    this.teardown.push(() => window.removeEventListener("resize", resizeHandler));
   }
 
   private handleResize() {
@@ -428,10 +410,7 @@ export function HoloButton({
     >
       <canvas
         ref={canvasRef}
-        className={cn(
-          "pointer-events-none absolute inset-0 z-0 h-full w-full",
-          canvasClassName,
-        )}
+        className={cn("pointer-events-none absolute inset-0 z-0 h-full w-full", canvasClassName)}
         aria-hidden="true"
       />
       <span

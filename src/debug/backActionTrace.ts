@@ -36,10 +36,7 @@ function pushBackActionTraceEntry(entry: BackActionTraceEntry) {
   }
 }
 
-export function recordBackActionTrace(
-  event: string,
-  payload: Record<string, unknown> = {},
-) {
+export function recordBackActionTrace(event: string, payload: Record<string, unknown> = {}) {
   if (typeof window === "undefined" || !window.__backActionTraceInstalled) {
     return;
   }

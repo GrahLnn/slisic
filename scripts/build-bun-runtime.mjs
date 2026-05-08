@@ -1,12 +1,5 @@
 import { execFileSync } from "node:child_process";
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -73,9 +66,7 @@ async function downloadFile(url, destination) {
   console.log(`Downloading ${path.basename(destination)}...`);
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(
-      `Failed to download ${url}: ${response.status} ${response.statusText}`,
-    );
+    throw new Error(`Failed to download ${url}: ${response.status} ${response.statusText}`);
   }
 
   const arrayBuffer = await response.arrayBuffer();
@@ -118,9 +109,7 @@ async function buildRuntimeBinary(target) {
     chmodSync(outputPath, 0o755);
   }
 
-  console.log(
-    `Prepared Bun runtime for ${target.label} -> ${path.basename(outputPath)}`,
-  );
+  console.log(`Prepared Bun runtime for ${target.label} -> ${path.basename(outputPath)}`);
 }
 
 for (const target of targets) {

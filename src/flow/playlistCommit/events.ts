@@ -19,19 +19,12 @@ export interface PlaylistCommitSuccess {
   previousName: string | null;
 }
 
-export const ss = defineSS(
-  ns("mainx", sst(["idle", "submitting"], ["reset"])),
-);
+export const ss = defineSS(ns("mainx", sst(["idle", "submitting"], ["reset"])));
 export const state = allState(ss);
 export const sig = allSignal(ss);
 export const invoker = createActors({
-  submitPlaylist: async (
-    request: PlaylistCommitRequest,
-  ): Promise<PlaylistCommitSuccess> => {
-    const result = await crab.upsertPlaylist(
-      request.previousName,
-      request.playlist,
-    );
+  submitPlaylist: async (request: PlaylistCommitRequest): Promise<PlaylistCommitSuccess> => {
+    const result = await crab.upsertPlaylist(request.previousName, request.playlist);
 
     return result.match({
       Ok: (playlist) => ({

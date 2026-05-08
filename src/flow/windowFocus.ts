@@ -41,15 +41,19 @@ export const mac = createMachine({
 const windowActors = new Map<string, ReturnType<typeof createActor<typeof mac>>>();
 
 function getCurrentWindowLabel() {
-  return (window as unknown as {
-    __TAURI_INTERNALS__?: {
-      metadata?: {
-        currentWindow?: {
-          label?: string;
+  return (
+    (
+      window as unknown as {
+        __TAURI_INTERNALS__?: {
+          metadata?: {
+            currentWindow?: {
+              label?: string;
+            };
+          };
         };
-      };
-    };
-  }).__TAURI_INTERNALS__?.metadata?.currentWindow?.label ?? "main";
+      }
+    ).__TAURI_INTERNALS__?.metadata?.currentWindow?.label ?? "main"
+  );
 }
 
 function createWindowFocusActor() {

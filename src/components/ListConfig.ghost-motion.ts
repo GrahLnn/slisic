@@ -163,16 +163,8 @@ function resolveGhostBezierSegmentPoint(segment: GhostPathSegment, progress: num
   const d = progress * progress * progress;
 
   return {
-    x:
-      a * segment.start.x +
-      b * segment.control1.x +
-      c * segment.control2.x +
-      d * segment.end.x,
-    y:
-      a * segment.start.y +
-      b * segment.control1.y +
-      c * segment.control2.y +
-      d * segment.end.y,
+    x: a * segment.start.x + b * segment.control1.x + c * segment.control2.x + d * segment.end.x,
+    y: a * segment.start.y + b * segment.control1.y + c * segment.control2.y + d * segment.end.y,
   };
 }
 
@@ -292,17 +284,11 @@ function resolveGhostHomingSegment(args: {
   } satisfies GhostPathSegment;
 }
 
-function resolveGhostLaunchProgress(args: {
-  distance: number;
-  launchDistance: number;
-}) {
+function resolveGhostLaunchProgress(args: { distance: number; launchDistance: number }) {
   return clampGhostValue(args.launchDistance / Math.max(args.distance * 0.9, 1), 0.12, 0.22);
 }
 
-export function resolveGhostPathTangentAngle(args: {
-  path: GhostPath;
-  progress: number;
-}) {
+export function resolveGhostPathTangentAngle(args: { path: GhostPath; progress: number }) {
   return resolveGhostAngleFromPoint(
     resolveGhostBezierDerivative(args.path, clampGhostValue(args.progress, 0, 1)),
   );
@@ -313,10 +299,7 @@ export function resolveGhostPathTangentAngle(args: {
  * Anchoring the half-turn choice to the source heading prevents low-to-high pushes
  * from drifting into the upside-down tangent branch while keeping the same curve.
  */
-function resolveGhostRailOrientationAngle(args: {
-  sourceAngle: number;
-  tangentAngle: number;
-}) {
+function resolveGhostRailOrientationAngle(args: { sourceAngle: number; tangentAngle: number }) {
   return resolveGhostOrientedAngle(args.tangentAngle, args.sourceAngle);
 }
 
