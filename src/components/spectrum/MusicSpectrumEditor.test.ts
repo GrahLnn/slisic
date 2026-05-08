@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import {
   resolveMusicSpectrumContentFadeProps,
   resolveMusicSpectrumFloatingActionPlacementClassName,
+  resolveMusicSpectrumRowHoverActionClassName,
   resolveMusicSpectrumResetActionFadeProps,
   resolveMusicSpectrumTitleFadeProps,
   resolveMusicSpectrumWaveformFadeProps,
@@ -90,5 +91,12 @@ describe("MusicSpectrumEditor", () => {
   test("places waveform floating actions on explicit canvas sides", () => {
     assert.equal(resolveMusicSpectrumFloatingActionPlacementClassName("start"), "left-12");
     assert.equal(resolveMusicSpectrumFloatingActionPlacementClassName("end"), "right-12");
+  });
+
+  test("uses the row hover gate for title and canvas actions", () => {
+    assert.equal(
+      resolveMusicSpectrumRowHoverActionClassName(),
+      "opacity-0 transition-opacity duration-300 group-hover/spectrum-music-row:opacity-100",
+    );
   });
 });

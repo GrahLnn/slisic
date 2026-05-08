@@ -124,6 +124,10 @@ export function resolveMusicSpectrumFloatingActionPlacementClassName(
   return placement === "start" ? "left-12" : "right-12";
 }
 
+export function resolveMusicSpectrumRowHoverActionClassName() {
+  return "opacity-0 transition-opacity duration-300 group-hover/spectrum-music-row:opacity-100";
+}
+
 export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrumEditorProps>(
   function MusicSpectrumEditor(
     {
@@ -173,7 +177,7 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
             />
           </motion.div>
           {titleAction ? (
-            <div className="opacity-0 transition-opacity duration-300 group-hover/spectrum-music-row:opacity-100">
+            <div className={resolveMusicSpectrumRowHoverActionClassName()}>
               <motion.div {...contentFade}>{titleAction}</motion.div>
             </div>
           ) : null}
@@ -210,7 +214,9 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
                 )}
                 {...resolveMusicSpectrumResetActionFadeProps({ exitPresentation })}
               >
-                {waveformStartAction}
+                <div className={resolveMusicSpectrumRowHoverActionClassName()}>
+                  {waveformStartAction}
+                </div>
               </motion.div>
             ) : null}
           </AnimatePresence>
