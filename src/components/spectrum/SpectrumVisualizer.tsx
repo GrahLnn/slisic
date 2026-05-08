@@ -133,11 +133,13 @@ type WaveformSharedSummaryEntry = {
   state: TrackWaveformSummaryState | null;
 };
 
-export type WaveformSharedDataStore = {
+export type WaveformRenderDataStore = {
   summaries: Map<string, WaveformSharedSummaryEntry>;
   tileCaches: Map<string, Map<string, WaveformCachedTile>>;
   tilePromises: Map<string, Promise<TrackWaveformTile>>;
 };
+
+type WaveformSharedDataStore = WaveformRenderDataStore;
 
 type WaveformZoomConstraints = {
   durationMs: number;
@@ -681,7 +683,7 @@ const crabTrackSpectrumPorts: TrackSpectrumPorts = {
 
 let waveformCanvasRenderJobSequence = 0;
 
-function createWaveformSharedDataStore(): WaveformSharedDataStore {
+export function createWaveformRenderDataStore(): WaveformRenderDataStore {
   return {
     summaries: new Map(),
     tileCaches: new Map(),
@@ -689,12 +691,12 @@ function createWaveformSharedDataStore(): WaveformSharedDataStore {
   };
 }
 
-const defaultWaveformSharedDataStore = createWaveformSharedDataStore();
+const defaultWaveformRenderDataStore = createWaveformRenderDataStore();
 const waveformSharedDataStores = new WeakMap<TrackSpectrumWaveformPort, WaveformSharedDataStore>();
 
 function resolveWaveformSharedDataStore(port: TrackSpectrumWaveformPort) {
   if (port === crabTrackSpectrumPorts.waveform) {
-    return defaultWaveformSharedDataStore;
+    return defaultWaveformRenderDataStore;
   }
 
   const existing = waveformSharedDataStores.get(port);
@@ -702,7 +704,7 @@ function resolveWaveformSharedDataStore(port: TrackSpectrumWaveformPort) {
     return existing;
   }
 
-  const store = createWaveformSharedDataStore();
+  const store = createWaveformRenderDataStore();
   waveformSharedDataStores.set(port, store);
 
   return store;
@@ -2264,15 +2266,15 @@ export function resolveTrackWaveformInitialStatus(filePath: string | null | unde
 
 export function createWaveformSharedTileCacheForFile(args: {
   filePath: string | null | undefined;
-  store?: WaveformSharedDataStore;
+  store?: WaveformRenderDataStore;
 }) {
   return resolveWaveformSharedTileCache({
     fileKey: normalizeWaveformPathKey(args.filePath),
-    store: args.store ?? defaultWaveformSharedDataStore,
+    store: args.store ?? defaultWaveformRenderDataStore,
   });
 }
 
-function resolveWaveformSharedTileCache(args: { fileKey: string; store: WaveformSharedDataStore }) {
+function resolveWaveformSharedTileCache(args: { fileKey: string; store: WaveformRenderDataStore }) {
   if (!args.fileKey) {
     return new Map<string, WaveformCachedTile>();
   }
@@ -2313,6 +2315,7 @@ export function TrackSpectrum(props: {
   onSelectionCommit?: (range: WaveformSelectionDragResolution) => void;
   playheadEnabled?: boolean;
   ports?: TrackSpectrumPorts;
+  renderDataStore?: WaveformRenderDataStore;
   selection?: WaveformSelectionRange | null;
 }) {
   const identity = normalizeWaveformPathKey(props.filePath);
@@ -2326,6 +2329,7 @@ function TrackSpectrumSession(props: {
   onSelectionCommit?: (range: WaveformSelectionDragResolution) => void;
   playheadEnabled?: boolean;
   ports?: TrackSpectrumPorts;
+  renderDataStore?: WaveformRenderDataStore;
   selection?: WaveformSelectionRange | null;
 }) {
   const placeholderSummary = useMemo(() => createPlaceholderWaveformSummary(), []);
@@ -2341,19 +2345,16 @@ function TrackSpectrumSession(props: {
   const viewportSettledEffectsTimerRef = useRef<number | null>(null);
   const lastInteractiveDataDemandRef = useRef<WaveformInteractiveDataDemand | null>(null);
   const zoomOwnershipRef = useRef<WaveformZoomOwnership>("initial-minimum");
-  const sharedDataStore = useMemo(
-    () => resolveWaveformSharedDataStore(ports.waveform),
-    [ports.waveform],
-  );
+  const renderDataStore = props.renderDataStore ?? resolveWaveformSharedDataStore(ports.waveform);
   const sharedFileKey = normalizeWaveformPathKey(props.filePath);
   const tileCacheRef = useMemo<RefObject<Map<string, WaveformCachedTile>>>(
     () => ({
       current: resolveWaveformSharedTileCache({
         fileKey: sharedFileKey,
-        store: sharedDataStore,
+        store: renderDataStore,
       }),
     }),
-    [sharedDataStore, sharedFileKey],
+    [renderDataStore, sharedFileKey],
   );
   const [loadingGridSize, setLoadingGridSize] = useState<WaveformLoadingGridSize>(() =>
     resolveWaveformLoadingGridSize({
@@ -2364,7 +2365,7 @@ function TrackSpectrumSession(props: {
   const waveformState = useTrackWaveformSummary({
     filePath: props.filePath,
     placeholderSummary,
-    sharedStore: sharedDataStore,
+    renderDataStore,
     waveformPort: ports.waveform,
   });
   const maximumPixelsPerSecond = resolveWaveformRenderPixelsPerSecond({
@@ -2414,7 +2415,7 @@ function TrackSpectrumSession(props: {
     onTileAvailable: drawCanvas,
     status: waveformState.status,
     tileCacheRef,
-    tilePromiseStore: sharedDataStore.tilePromises,
+    tilePromiseStore: renderDataStore.tilePromises,
     waveformPort: ports.waveform,
   });
   const playheadController = useWaveformPlayheadController({
@@ -3465,7 +3466,7 @@ function useWaveformResizeViewportScheduler(args: {
 function useTrackWaveformSummary(args: {
   filePath: string | null;
   placeholderSummary: TrackWaveformSummary;
-  sharedStore: WaveformSharedDataStore;
+  renderDataStore: WaveformRenderDataStore;
   waveformPort: TrackSpectrumWaveformPort;
 }) {
   const [state, setState] = useState<TrackWaveformSummaryState>(() => ({
@@ -3486,7 +3487,7 @@ function useTrackWaveformSummary(args: {
 
     let cancelled = false;
     const ownerWindow = typeof window === "undefined" ? null : window;
-    const cached = args.sharedStore.summaries.get(fileKey)?.state;
+    const cached = args.renderDataStore.summaries.get(fileKey)?.state;
     if (cached) {
       setState(cached);
     } else {
@@ -3497,13 +3498,13 @@ function useTrackWaveformSummary(args: {
     }
 
     const handle = scheduleWaveformInitialPrepare(ownerWindow, () => {
-      const existing = args.sharedStore.summaries.get(fileKey);
+      const existing = args.renderDataStore.summaries.get(fileKey);
       const promise =
         existing?.promise ??
         (existing?.state
           ? Promise.resolve(existing.state.summary)
           : args.waveformPort.prepareTrackWaveform(filePath, null, null).then((summary) => {
-              args.sharedStore.summaries.set(fileKey, {
+              args.renderDataStore.summaries.set(fileKey, {
                 promise: null,
                 state: {
                   status: "ready",
@@ -3515,7 +3516,7 @@ function useTrackWaveformSummary(args: {
             }));
 
       if (!existing?.promise && !existing?.state) {
-        args.sharedStore.summaries.set(fileKey, {
+        args.renderDataStore.summaries.set(fileKey, {
           promise,
           state: null,
         });
@@ -3538,7 +3539,7 @@ function useTrackWaveformSummary(args: {
           }
 
           console.error("Failed to prepare track waveform", error);
-          args.sharedStore.summaries.delete(fileKey);
+          args.renderDataStore.summaries.delete(fileKey);
           setState({
             status: "error",
             summary: args.placeholderSummary,
@@ -3550,7 +3551,7 @@ function useTrackWaveformSummary(args: {
       cancelled = true;
       cancelWaveformInitialPrepare(ownerWindow, handle);
     };
-  }, [args.filePath, args.placeholderSummary, args.sharedStore, args.waveformPort]);
+  }, [args.filePath, args.placeholderSummary, args.renderDataStore, args.waveformPort]);
 
   return state;
 }

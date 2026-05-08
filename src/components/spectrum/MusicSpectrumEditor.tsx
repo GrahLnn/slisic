@@ -5,7 +5,7 @@ import { icons } from "@/src/assets/icons";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import { collectionTitleClassName, collectionTitleLayoutTransition } from "../collectionTitle";
 import { EditableTitle, type EditableTitleHandle } from "../EditableTitle";
-import { TrackSpectrum } from "./SpectrumVisualizer";
+import { TrackSpectrum, type WaveformRenderDataStore } from "./SpectrumVisualizer";
 
 const musicSpectrumContentFadeProps = {
   initial: { opacity: 0 },
@@ -56,6 +56,7 @@ export interface MusicSpectrumEditorProps {
   titleLayoutId?: string;
   titleValue: string;
   trackFilePath: string | null;
+  waveformRenderDataStore?: WaveformRenderDataStore;
   waveformPresentation?: MusicSpectrumWaveformPresentation;
   waveformClassName?: string;
   onReset: () => void;
@@ -128,6 +129,7 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
       titleLayoutId,
       titleValue,
       trackFilePath,
+      waveformRenderDataStore,
       waveformPresentation = "interactive",
       waveformClassName,
       onReset,
@@ -181,6 +183,7 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
                   <TrackSpectrum
                     filePath={trackFilePath}
                     playheadEnabled={playheadEnabled}
+                    renderDataStore={waveformRenderDataStore}
                     selection={selection}
                     onSelectionCommit={onSelectionCommit}
                   />

@@ -9,6 +9,7 @@ import {
   resolveSpectrumMusicVirtualRowTransform,
   resolveSpectrumMusicWaveformPresentation,
 } from "./SpectrumMusicVirtualList";
+import { createWaveformRenderDataStore } from "./SpectrumVisualizer";
 import type {
   SpectrumMusicEditorViewModel,
   SpectrumPlaybackActionSnapshot,
@@ -56,6 +57,8 @@ function createPlaybackSnapshot(
   };
 }
 
+const testWaveformRenderDataStore = createWaveformRenderDataStore();
+
 function createRowRenderModel(
   editor: SpectrumMusicEditorViewModel,
   overrides: Partial<Parameters<typeof areSpectrumMusicVirtualListRowRenderModelsEqual>[0]> = {},
@@ -68,6 +71,7 @@ function createRowRenderModel(
     scrollMargin: 0,
     start: 0,
     trackFilePath: "C:/music/current.mp3",
+    waveformRenderDataStore: testWaveformRenderDataStore,
     waveformPresentation: "interactive",
     ...overrides,
   };

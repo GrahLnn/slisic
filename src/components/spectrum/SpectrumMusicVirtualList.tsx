@@ -2,6 +2,7 @@ import {
   memo,
   useCallback,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type Dispatch,
@@ -19,6 +20,7 @@ import {
   type MusicSpectrumWaveformPresentation,
 } from "./MusicSpectrumEditor";
 import { SpectrumPlaybackAction } from "./SpectrumPlaybackAction";
+import { createWaveformRenderDataStore, type WaveformRenderDataStore } from "./SpectrumVisualizer";
 import {
   areSpectrumPlaybackActionSnapshotsEqual,
   areSpectrumPlaybackIdentitiesEqual,
@@ -135,6 +137,7 @@ export interface SpectrumMusicVirtualListRowRenderModel {
   scrollMargin: number;
   start: number;
   trackFilePath: string | null;
+  waveformRenderDataStore: WaveformRenderDataStore;
   waveformPresentation: MusicSpectrumWaveformPresentation;
 }
 
@@ -148,6 +151,7 @@ export function areSpectrumMusicVirtualListRowRenderModelsEqual(
     left.scrollMargin === right.scrollMargin &&
     left.start === right.start &&
     left.trackFilePath === right.trackFilePath &&
+    left.waveformRenderDataStore === right.waveformRenderDataStore &&
     left.waveformPresentation === right.waveformPresentation &&
     areSpectrumMusicEditorViewModelsEqual(left.editor, right.editor) &&
     areSpectrumPlaybackActionSnapshotsEqual(
@@ -196,6 +200,7 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
   scrollMargin,
   start,
   trackFilePath,
+  waveformRenderDataStore,
   waveformPresentation,
   measureElement,
   onPlaybackAction,
@@ -260,6 +265,7 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
         titleLayoutId={editor.titleLayoutId}
         titleValue={editor.titleValue}
         trackFilePath={trackFilePath}
+        waveformRenderDataStore={waveformRenderDataStore}
         waveformPresentation={waveformPresentation}
         waveformClassName="left-1/2 w-screen -translate-x-1/2"
         onReset={() => onReset(editor.id)}
@@ -306,6 +312,7 @@ export function SpectrumMusicVirtualList({
 }: SpectrumMusicVirtualListProps) {
   const scrollElementRef = usePageViewportScrollElementRef();
   const listRef = useRef<HTMLDivElement | null>(null);
+  const waveformRenderDataStore = useMemo(() => createWaveformRenderDataStore(), []);
   const handlersRef = useRef({
     onPlaybackAction,
     onReset,
@@ -460,6 +467,7 @@ export function SpectrumMusicVirtualList({
             scrollMargin={scrollMargin}
             start={virtualRow.start}
             trackFilePath={trackFilePath}
+            waveformRenderDataStore={waveformRenderDataStore}
             waveformPresentation={resolveSpectrumMusicWaveformPresentation({
               admittedIndexes,
               isCurrent: editor.isCurrent,

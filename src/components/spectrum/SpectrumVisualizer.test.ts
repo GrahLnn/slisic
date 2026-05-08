@@ -6,6 +6,7 @@ import {
   clampWaveformZoomDeltaY,
   createWaveformDataRequestKey,
   createWaveformDataScopeKey,
+  createWaveformRenderDataStore,
   createWaveformSharedTileCacheForFile,
   drawWaveformCanvasJobChunk,
   handleWaveformViewportWheel,
@@ -198,6 +199,25 @@ describe("SpectrumVisualizer", () => {
 
     assert.equal(first, second);
     assert.notEqual(first, other);
+  });
+
+  test("keeps waveform render data reusable through an external store", () => {
+    const store = createWaveformRenderDataStore();
+    const first = createWaveformSharedTileCacheForFile({
+      filePath: "C:/Music/Demo.flac",
+      store,
+    });
+    const second = createWaveformSharedTileCacheForFile({
+      filePath: "c:\\music\\demo.flac",
+      store,
+    });
+    const isolated = createWaveformSharedTileCacheForFile({
+      filePath: "C:/Music/Demo.flac",
+      store: createWaveformRenderDataStore(),
+    });
+
+    assert.equal(first, second);
+    assert.notEqual(first, isolated);
   });
 
   test("adapts waveform loading grid density to the container", () => {
