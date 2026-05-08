@@ -62,6 +62,11 @@ const WAVEFORM_DATA_PREFETCH_FOCUS_LEVEL_COUNT = 3;
 const WAVEFORM_CANVAS_FRAME_BUDGET_MS = 3.25;
 const WAVEFORM_CANVAS_MIN_CHUNK_WIDTH_PX = 96;
 const WAVEFORM_CANVAS_MAX_CHUNK_WIDTH_PX = 320;
+const WAVEFORM_CANVAS_PROGRESSIVE_PASSES = [
+  { startOffsetX: 0, stepX: 4 },
+  { startOffsetX: 2, stepX: 4 },
+  { startOffsetX: 1, stepX: 2 },
+] as const;
 const WAVEFORM_CANVAS_REUSE_MIN_SHIFT_PX = 1;
 const WAVEFORM_CANVAS_STROKE_ALPHA = 0.88;
 const WAVEFORM_CANVAS_FAST_PRESENTATION_TRACE_FLUSH_MS = 1_000;
@@ -394,6 +399,7 @@ type WaveformIdleWindow = Window & {
 
 type WaveformLevelTileIndex = {
   pixelsPerSecond: number;
+  tileKeysByIndex: Map<number, string>;
   tilesByIndex: Map<number, TrackWaveformTile>;
 };
 
@@ -423,8 +429,11 @@ type WaveformCanvasRenderPlan = {
 };
 
 type WaveformCanvasFrameDescriptor = {
+  color: string;
   dataPixelsPerSecond: number;
+  dataSignature: string;
   geometry: WaveformCanvasFrameGeometry;
+  renderSignature: string;
   scopeKey: string;
   viewport: WaveformViewportModel;
 };
@@ -453,18 +462,19 @@ type WaveformCanvasRenderPlanEmpty =
     };
 
 type WaveformCanvasRasterTargetBase = {
+  canvas: HTMLCanvasElement;
+  color: string;
   context: CanvasRenderingContext2D;
-  frame: HTMLCanvasElement;
   geometry: WaveformCanvasFrameGeometry;
 };
 
 type WaveformCanvasBufferedRasterTarget = WaveformCanvasRasterTargetBase & {
-  kind: "buffered";
+  kind: "visible";
 };
 
 type WaveformCanvasRasterTarget = WaveformCanvasBufferedRasterTarget;
 
-type WaveformCanvasFrameCommitResult =
+type WaveformCanvasRenderJobCompletion =
   | {
       kind: "committed";
     }
@@ -472,8 +482,6 @@ type WaveformCanvasFrameCommitResult =
       kind: "empty";
       reason: "missing-context";
     };
-
-type WaveformCanvasRenderJobCompletion = WaveformCanvasFrameCommitResult;
 
 type WaveformCanvasRasterTargetEmpty = {
   geometry: WaveformCanvasFrameGeometry;
@@ -485,7 +493,11 @@ type WaveformCanvasRenderCursor = {
   hasDrawnColumn: boolean;
   lastMissingX: number | null;
   missingPeakColumnCount: number;
+  passIndex: number;
   nextX: number;
+  progressive: boolean;
+  ranges: WaveformCanvasColumnRange[] | null;
+  rangeIndex: number;
   resolvedPeakColumnCount: number;
 };
 
@@ -521,6 +533,7 @@ type WaveformCanvasColumnSample = {
 
 type WaveformCanvasFastPresentationResult =
   | {
+      dirtyRanges: WaveformCanvasColumnRange[];
       draws: WaveformCanvasColumnRangeResult[];
       exposedRanges: WaveformCanvasColumnRange[];
       descriptor: WaveformCanvasFrameDescriptor;
@@ -531,6 +544,7 @@ type WaveformCanvasFastPresentationResult =
       reuseFrame: HTMLCanvasElement;
     }
   | {
+      dirtyRanges: WaveformCanvasColumnRange[];
       draws: WaveformCanvasColumnRangeResult[];
       exposedRanges: WaveformCanvasColumnRange[];
       descriptor: WaveformCanvasFrameDescriptor;
@@ -539,14 +553,6 @@ type WaveformCanvasFastPresentationResult =
       mode: "viewport-resize";
       plan: Extract<WaveformCanvasFrameReusePlan, { kind: "viewport-resize" }>;
       reuseFrame: HTMLCanvasElement;
-    }
-  | {
-      draw: WaveformCanvasColumnRangeResult;
-      descriptor: WaveformCanvasFrameDescriptor;
-      kind: "presented";
-      mode: "exact-cache-redraw";
-      plan: Extract<WaveformCanvasFastPresentationPlan, { kind: "exact-cache-redraw" }>;
-      reuseFrame: HTMLCanvasElement | null;
     }
   | {
       kind: "empty";
@@ -563,26 +569,45 @@ type WaveformCanvasFastPresentationResult =
 type WaveformCanvasFastPresentationPlan =
   | Extract<WaveformCanvasFrameReusePlan, { kind: "horizontal-pan" }>
   | Extract<WaveformCanvasFrameReusePlan, { kind: "viewport-resize" }>
-  | {
-      kind: "exact-cache-redraw";
-    }
   | Extract<WaveformCanvasFrameReusePlan, { kind: "none" }>;
 
 type WaveformCanvasRenderJob = {
   cursor: WaveformCanvasRenderCursor;
+  descriptor: WaveformCanvasFrameDescriptor;
   id: number;
   metrics: SpectrumCanvasRenderJobMetrics;
   plan: WaveformCanvasRenderPlan;
+  presentation: WaveformCanvasRenderPresentation;
   revision: number;
   target: WaveformCanvasRasterTarget;
 };
+
+type WaveformCanvasRenderPresentation =
+  | {
+      kind: "fresh";
+    }
+  | {
+      descriptor: WaveformCanvasFrameDescriptor;
+      dirtyRanges: WaveformCanvasColumnRange[];
+      kind: "horizontal-pan";
+    }
+  | {
+      descriptor: WaveformCanvasFrameDescriptor;
+      dirtyRanges: WaveformCanvasColumnRange[];
+      kind: "viewport-resize";
+    };
 
 type WaveformCanvasRenderController = {
   dataPlan: WaveformDataPlan | null;
   frameId: number | null;
   fastPresentationMetrics: SpectrumCanvasFastPresentationMetrics;
   job: WaveformCanvasRenderJob | null;
+  reusableFrame: WaveformCanvasFrameDescriptor | null;
   presentedFrame: WaveformCanvasFrameDescriptor | null;
+  presentedDirtyRanges: WaveformCanvasColumnRange[];
+  progressiveRender: boolean;
+  renderPresentation: WaveformCanvasRenderPresentation;
+  requestedFrame: WaveformCanvasFrameDescriptor | null;
   requestedRevision: number;
   renderEmptyMetrics: SpectrumCanvasRenderEmptyMetrics;
   reuseFrame: HTMLCanvasElement | null;
@@ -1045,7 +1070,9 @@ export function resolveWaveformCanvasFrameReusePlan(args: {
 
   if (
     args.previous.viewport.durationMs !== args.current.viewport.durationMs ||
-    args.previous.scopeKey !== args.current.scopeKey
+    args.previous.scopeKey !== args.current.scopeKey ||
+    args.previous.dataSignature !== args.current.dataSignature ||
+    args.previous.color !== args.current.color
   ) {
     return {
       kind: "none",
@@ -1156,9 +1183,46 @@ export function resolveWaveformCanvasFrameReusePlan(args: {
   };
 }
 
+export function resolveWaveformCanvasRenderRequestTransition(args: {
+  currentJob: WaveformCanvasFrameDescriptor | null;
+  currentPresentedDirtyRanges?: readonly WaveformCanvasColumnRange[];
+  currentPresentedFrame: WaveformCanvasFrameDescriptor | null;
+  currentRequestedFrame: WaveformCanvasFrameDescriptor | null;
+  hasScheduledFrame: boolean;
+  nextFrame: WaveformCanvasFrameDescriptor | null;
+}) {
+  if (!args.nextFrame) {
+    return "start-new" as const;
+  }
+
+  if (
+    args.currentRequestedFrame &&
+    args.hasScheduledFrame &&
+    areWaveformCanvasFrameRenderSignaturesEqual(args.currentRequestedFrame, args.nextFrame)
+  ) {
+    return "reuse-scheduled" as const;
+  }
+
+  if (
+    args.currentJob &&
+    areWaveformCanvasFrameRenderSignaturesEqual(args.currentJob, args.nextFrame)
+  ) {
+    return "reuse-job" as const;
+  }
+
+  if (
+    args.currentPresentedFrame &&
+    (!args.currentPresentedDirtyRanges || args.currentPresentedDirtyRanges.length === 0) &&
+    areWaveformCanvasFrameRenderSignaturesEqual(args.currentPresentedFrame, args.nextFrame)
+  ) {
+    return "reuse-presented" as const;
+  }
+
+  return "start-new" as const;
+}
+
 function resolveWaveformCanvasFastPresentationPlan(args: {
   current: WaveformCanvasFrameDescriptor;
-  hasExactPlan: boolean;
   previous: WaveformCanvasFrameDescriptor | null;
 }): WaveformCanvasFastPresentationPlan {
   const reusePlan = resolveWaveformCanvasFrameReusePlan({
@@ -1169,17 +1233,11 @@ function resolveWaveformCanvasFastPresentationPlan(args: {
     return reusePlan;
   }
 
-  if (reusePlan.reason === "scale-changed" && args.hasExactPlan) {
-    return {
-      kind: "exact-cache-redraw",
-    };
-  }
-
   return reusePlan;
 }
 
 export function shouldBeginWaveformCanvasChunkPath(args: { startX: number }) {
-  return args.startX === 0;
+  return args.startX >= 0;
 }
 
 export function shouldStrokeWaveformCanvasChunkPath(args: {
@@ -1187,7 +1245,7 @@ export function shouldStrokeWaveformCanvasChunkPath(args: {
   cursorHasDrawnColumn: boolean;
   hasChunkColumn: boolean;
 }) {
-  return args.completed && args.cursorHasDrawnColumn;
+  return args.hasChunkColumn;
 }
 
 export function resolveWaveformWheelPanDelta(args: { deltaX: number }) {
@@ -4322,7 +4380,14 @@ function useWaveformCanvasRenderer(args: {
     frameId: null,
     fastPresentationMetrics: createSpectrumCanvasFastPresentationMetrics(),
     job: null,
+    reusableFrame: null,
     presentedFrame: null,
+    presentedDirtyRanges: [],
+    progressiveRender: true,
+    renderPresentation: {
+      kind: "fresh",
+    },
+    requestedFrame: null,
     requestedRevision: 0,
     renderEmptyMetrics: createSpectrumCanvasRenderEmptyMetrics(),
     reuseFrame: null,
@@ -4384,6 +4449,7 @@ function useWaveformCanvasRenderer(args: {
           ),
         );
         controller.job = null;
+        controller.requestedFrame = null;
         return;
       }
 
@@ -4391,6 +4457,7 @@ function useWaveformCanvasRenderer(args: {
         canvas,
         color: readCanvasWaveformColor(canvas),
         geometry,
+        presentation: controller.renderPresentation,
       });
 
       if (target.kind === "empty") {
@@ -4409,13 +4476,20 @@ function useWaveformCanvasRenderer(args: {
           ),
         );
         controller.job = null;
+        controller.requestedFrame = null;
         return;
       }
 
       const startedAt = readWaveformPerformanceNow(ownerWindow);
       job = createWaveformCanvasRenderJob({
         id: waveformCanvasRenderJobSequence++,
+        descriptor: createWaveformCanvasFrameDescriptor({
+          color: target.target.color,
+          plan: plan.plan,
+        }),
         plan: plan.plan,
+        presentation: controller.renderPresentation,
+        progressive: controller.progressiveRender,
         revision: controller.requestedRevision,
         startedAt,
         target: target.target,
@@ -4456,7 +4530,13 @@ function useWaveformCanvasRenderer(args: {
           job,
         });
         if (completion.kind === "committed") {
-          controller.presentedFrame = createWaveformCanvasFrameDescriptor(job.plan);
+          controller.presentedFrame = job.descriptor;
+          controller.reusableFrame = job.descriptor;
+          controller.requestedFrame = job.descriptor;
+          controller.presentedDirtyRanges = [];
+          controller.renderPresentation = {
+            kind: "fresh",
+          };
         }
       }
       recordWaveformCanvasRenderJobTrace({
@@ -4482,22 +4562,9 @@ function useWaveformCanvasRenderer(args: {
     (dataPlan: WaveformDataPlan) => {
       const latest = latestArgsRef.current;
       const controller = controllerRef.current;
-      const nextRevision = controller.requestedRevision + 1;
       const ownerWindow =
         latest.canvasRef.current?.ownerDocument.defaultView ??
         (typeof window === "undefined" ? null : window);
-      if (controller.job) {
-        recordWaveformCanvasRenderJobTrace({
-          accepted: false,
-          completion: null,
-          endedAt: readWaveformPerformanceNow(ownerWindow),
-          job: controller.job,
-          reason: "replaced",
-          requestedRevision: nextRevision,
-        });
-      }
-      controller.requestedRevision = nextRevision;
-      controller.dataPlan = dataPlan;
       const fileKey = normalizeWaveformPathKey(latest.filePath);
       if (previousTraceFileKeyRef.current !== fileKey) {
         previousTraceFileKeyRef.current = fileKey;
@@ -4515,6 +4582,7 @@ function useWaveformCanvasRenderer(args: {
               viewportWidth: viewport.viewportWidth,
             })
           : null;
+      const color = canvas ? readCanvasWaveformColor(canvas) : null;
       const renderPlan =
         geometry && viewport
           ? resolveWaveformCanvasRenderPlan({
@@ -4528,13 +4596,50 @@ function useWaveformCanvasRenderer(args: {
             })
           : null;
       const descriptor =
-        renderPlan?.kind === "ready" ? createWaveformCanvasFrameDescriptor(renderPlan.plan) : null;
+        renderPlan?.kind === "ready" && color
+          ? createWaveformCanvasFrameDescriptor({
+              color,
+              plan: renderPlan.plan,
+            })
+          : null;
+      const requestTransition = resolveWaveformCanvasRenderRequestTransition({
+        currentJob: controller.job?.descriptor ?? null,
+        currentPresentedDirtyRanges: controller.presentedDirtyRanges,
+        currentPresentedFrame: controller.presentedFrame,
+        currentRequestedFrame: controller.requestedFrame,
+        hasScheduledFrame: controller.frameId !== null,
+        nextFrame: descriptor,
+      });
+
+      if (requestTransition !== "start-new") {
+        controller.dataPlan = dataPlan;
+        controller.requestedFrame = descriptor;
+        if (requestTransition === "reuse-presented") {
+          controller.presentedDirtyRanges = [];
+        }
+        return;
+      }
+
+      const nextRevision = controller.requestedRevision + 1;
+      if (controller.job) {
+        recordWaveformCanvasRenderJobTrace({
+          accepted: false,
+          completion: null,
+          endedAt: readWaveformPerformanceNow(ownerWindow),
+          job: controller.job,
+          reason: "replaced",
+          requestedRevision: nextRevision,
+        });
+      }
+      controller.requestedRevision = nextRevision;
+      controller.dataPlan = dataPlan;
+      controller.requestedFrame = descriptor;
       const fastStartedAt = readWaveformPerformanceNow(ownerWindow);
       const presented = presentWaveformCanvasFrameFast({
         canvas,
         descriptor,
-        plan: renderPlan?.kind === "ready" ? renderPlan.plan : null,
-        previous: controller.presentedFrame,
+        previousDirtyRanges: controller.presentedDirtyRanges,
+        previous: controller.reusableFrame,
         reuseFrame: controller.reuseFrame,
       });
       accumulateSpectrumCanvasFastPresentationMetrics({
@@ -4549,27 +4654,25 @@ function useWaveformCanvasRenderer(args: {
       });
       if (presented.kind === "presented") {
         controller.presentedFrame = presented.descriptor;
+        controller.reusableFrame = presented.descriptor;
+        controller.presentedDirtyRanges = presented.dirtyRanges;
         controller.reuseFrame = presented.reuseFrame;
       }
 
       controller.job = null;
-
-      if (
-        presented.kind === "presented" &&
-        presented.mode === "exact-cache-redraw" &&
-        presented.draw.hasColumn &&
-        presented.draw.missingPeakColumns === 0 &&
-        presented.draw.scannedColumns === presented.descriptor.geometry.viewportWidth
-      ) {
-        recordNullableRenderPerformanceTrace(
-          "waveform-canvas-fast-presentation",
-          flushDueSpectrumCanvasFastPresentationMetrics(
-            controller.fastPresentationMetrics,
-            readWaveformPerformanceNow(ownerWindow),
-          ),
-        );
-        return;
-      }
+      controller.progressiveRender = !(
+        presented.kind === "presented" && presented.mode === "horizontal-pan"
+      );
+      controller.renderPresentation =
+        presented.kind === "presented"
+          ? {
+              dirtyRanges: presented.dirtyRanges,
+              descriptor: presented.descriptor,
+              kind: presented.mode,
+            }
+          : {
+              kind: "fresh",
+            };
 
       if (controller.frameId !== null) {
         recordNullableRenderPerformanceTrace(
@@ -4661,7 +4764,14 @@ function useWaveformCanvasRendererCleanup(args: {
       controller.frameId = null;
       controller.job = null;
       controller.dataPlan = null;
+      controller.reusableFrame = null;
       controller.presentedFrame = null;
+      controller.presentedDirtyRanges = [];
+      controller.progressiveRender = true;
+      controller.renderPresentation = {
+        kind: "fresh",
+      };
+      controller.requestedFrame = null;
       controller.reuseFrame = null;
       controller.fastPresentationMetrics = createSpectrumCanvasFastPresentationMetrics();
       controller.renderEmptyMetrics = createSpectrumCanvasRenderEmptyMetrics();
@@ -4685,18 +4795,6 @@ function resolveWaveformCanvasFrameGeometry(args: {
     devicePixelRatio,
     viewportWidth,
   };
-}
-
-function isWaveformCanvasFrameGeometryEqual(
-  left: WaveformCanvasFrameGeometry,
-  right: WaveformCanvasFrameGeometry,
-) {
-  return (
-    left.backingHeight === right.backingHeight &&
-    left.backingWidth === right.backingWidth &&
-    left.devicePixelRatio === right.devicePixelRatio &&
-    left.viewportWidth === right.viewportWidth
-  );
 }
 
 function resolveWaveformCanvasRenderPlan(args: {
@@ -4816,9 +4914,11 @@ function resolveWaveformLevelTileIndexes(args: {
     const pixelsPerSecond = Math.max(1, entry.pixelsPerSecond);
     const level = byLevel.get(pixelsPerSecond) ?? {
       pixelsPerSecond,
+      tileKeysByIndex: new Map<number, string>(),
       tilesByIndex: new Map<number, TrackWaveformTile>(),
     };
     const tileIndex = Math.floor(entry.data.start_px / Math.max(1, args.tileWidth));
+    level.tileKeysByIndex.set(tileIndex, entry.key);
     level.tilesByIndex.set(tileIndex, entry.data);
     byLevel.set(pixelsPerSecond, level);
   }
@@ -4830,6 +4930,7 @@ function createWaveformCanvasRasterTarget(args: {
   canvas: HTMLCanvasElement;
   color: string;
   geometry: WaveformCanvasFrameGeometry;
+  presentation: WaveformCanvasRenderPresentation;
 }):
   | {
       empty: WaveformCanvasRasterTargetEmpty;
@@ -4839,16 +4940,12 @@ function createWaveformCanvasRasterTarget(args: {
       kind: "ready";
       target: WaveformCanvasRasterTarget;
     } {
-  const frame = args.canvas.ownerDocument.createElement("canvas");
-  if (frame.width !== args.geometry.backingWidth) {
-    frame.width = args.geometry.backingWidth;
-  }
+  applyWaveformVisibleCanvasGeometry({
+    canvas: args.canvas,
+    geometry: args.geometry,
+  });
 
-  if (frame.height !== args.geometry.backingHeight) {
-    frame.height = args.geometry.backingHeight;
-  }
-
-  const context = frame.getContext("2d");
+  const context = args.canvas.getContext("2d");
   if (!context) {
     return {
       empty: {
@@ -4860,7 +4957,9 @@ function createWaveformCanvasRasterTarget(args: {
   }
 
   context.resetTransform();
-  context.clearRect(0, 0, args.geometry.backingWidth, args.geometry.backingHeight);
+  if (args.presentation.kind === "fresh") {
+    context.clearRect(0, 0, args.geometry.backingWidth, args.geometry.backingHeight);
+  }
   context.scale(args.geometry.devicePixelRatio, args.geometry.devicePixelRatio);
   context.imageSmoothingEnabled = false;
   context.lineWidth = resolveWaveformBarWidthPx();
@@ -4871,26 +4970,35 @@ function createWaveformCanvasRasterTarget(args: {
   return {
     kind: "ready",
     target: {
+      canvas: args.canvas,
+      color: args.color,
       context,
-      frame,
       geometry: args.geometry,
-      kind: "buffered",
+      kind: "visible",
     },
   };
 }
 
 function createWaveformCanvasRenderJob(args: {
+  descriptor: WaveformCanvasFrameDescriptor;
   id: number;
   plan: WaveformCanvasRenderPlan;
+  presentation: WaveformCanvasRenderPresentation;
+  progressive: boolean;
   revision: number;
   target: WaveformCanvasRasterTarget;
   startedAt: number;
 }): WaveformCanvasRenderJob {
   return {
-    cursor: createWaveformCanvasRenderCursor(),
+    cursor: createWaveformCanvasRenderCursor({
+      presentation: args.presentation,
+      progressive: args.progressive,
+    }),
+    descriptor: args.descriptor,
     id: args.id,
     metrics: createSpectrumCanvasRenderJobMetrics(args.startedAt),
     plan: args.plan,
+    presentation: args.presentation,
     revision: args.revision,
     target: args.target,
   };
@@ -4899,9 +5007,11 @@ function createWaveformCanvasRenderJob(args: {
 function createWaveformCanvasRenderPlanTracePayload(plan: WaveformCanvasRenderPlan) {
   return {
     availableLevels: plan.availableLevels,
+    dataSignature: createWaveformCanvasRenderPlanDataSignature(plan),
     dataPixelsPerSecond: plan.dataPixelsPerSecond,
     devicePixelRatio: plan.geometry.devicePixelRatio,
     durationMs: plan.viewport.durationMs,
+    candidateLevelCount: plan.candidateLevels.length,
     missingCandidateLevelCount: plan.candidateLevels.length,
     pixelsPerSecond: plan.viewport.pixelsPerSecond,
     scopeKey: plan.scopeKey,
@@ -4910,6 +5020,19 @@ function createWaveformCanvasRenderPlanTracePayload(plan: WaveformCanvasRenderPl
     visibleEndSeconds: plan.visibleSecondsWindow.endSeconds,
     visibleStartSeconds: plan.visibleSecondsWindow.startSeconds,
   };
+}
+
+function createWaveformCanvasRenderPlanDataSignature(plan: WaveformCanvasRenderPlan) {
+  const levelSignatures = plan.candidateLevels.map((level) => {
+    const tileSignatures = Array.from(level.tileKeysByIndex.entries())
+      .sort((left, right) => left[0] - right[0])
+      .map(([index, key]) => `${index}:${key}`)
+      .join(",");
+
+    return `${level.pixelsPerSecond}(${tileSignatures})`;
+  });
+
+  return levelSignatures.join(";");
 }
 
 function createWaveformCanvasRenderPlanEmptyMetricsPayload(empty: WaveformCanvasRenderPlanEmpty) {
@@ -4937,10 +5060,7 @@ function createWaveformCanvasFastPresentationSample(args: {
   }
 
   return {
-    drawSummary:
-      args.result.mode === "exact-cache-redraw"
-        ? args.result.draw
-        : summarizeSpectrumCanvasColumnTraceResults(args.result.draws),
+    drawSummary: summarizeSpectrumCanvasColumnTraceResults(args.result.draws),
     elapsedMs: args.elapsedMs,
     kind: "presented" as const,
     mode: args.result.mode,
@@ -4984,26 +5104,91 @@ function recordWaveformCanvasRenderJobTrace(args: {
   );
 }
 
-function createWaveformCanvasRenderCursor(): WaveformCanvasRenderCursor {
+function createWaveformCanvasRenderCursor(args: {
+  presentation: WaveformCanvasRenderPresentation;
+  progressive: boolean;
+}): WaveformCanvasRenderCursor {
+  const ranges =
+    args.presentation.kind === "fresh"
+      ? null
+      : args.presentation.dirtyRanges.map((range) => ({
+          endX: range.endX,
+          startX: range.startX,
+        }));
+  const firstRange = ranges?.[0] ?? null;
+
   return {
     firstMissingX: null,
     hasDrawnColumn: false,
     lastMissingX: null,
     missingPeakColumnCount: 0,
-    nextX: 0,
+    nextX: firstRange?.startX ?? 0,
+    passIndex: 0,
+    progressive: args.progressive,
+    ranges,
+    rangeIndex: 0,
     resolvedPeakColumnCount: 0,
   };
 }
 
-function createWaveformCanvasFrameDescriptor(
-  plan: WaveformCanvasRenderPlan,
-): WaveformCanvasFrameDescriptor {
+function createWaveformCanvasFrameDescriptor(args: {
+  color: string;
+  plan: WaveformCanvasRenderPlan;
+}): WaveformCanvasFrameDescriptor {
+  const dataSignature = createWaveformCanvasRenderPlanDataSignature(args.plan);
+
   return {
-    dataPixelsPerSecond: plan.dataPixelsPerSecond,
-    geometry: plan.geometry,
-    scopeKey: plan.scopeKey,
-    viewport: plan.viewport,
+    color: args.color,
+    dataPixelsPerSecond: args.plan.dataPixelsPerSecond,
+    dataSignature,
+    geometry: args.plan.geometry,
+    renderSignature: createWaveformCanvasFrameRenderSignature({
+      color: args.color,
+      dataSignature,
+      plan: args.plan,
+    }),
+    scopeKey: args.plan.scopeKey,
+    viewport: args.plan.viewport,
   };
+}
+
+function createWaveformCanvasFrameRenderSignature(args: {
+  color: string;
+  dataSignature: string;
+  plan: WaveformCanvasRenderPlan;
+}) {
+  const viewport = args.plan.viewport;
+  const geometry = args.plan.geometry;
+
+  return [
+    args.plan.scopeKey,
+    args.color,
+    args.dataSignature,
+    args.plan.dataPixelsPerSecond,
+    geometry.backingHeight,
+    geometry.backingWidth,
+    geometry.devicePixelRatio,
+    geometry.viewportWidth,
+    viewport.contentWidth,
+    viewport.durationMs,
+    viewport.focusSeconds ?? "",
+    viewport.maximumPixelsPerSecond,
+    viewport.pixelsPerSecond,
+    viewport.scrollLeft.toFixed(3),
+    viewport.viewportWidth,
+    args.plan.visibleSecondsWindow.startSeconds.toFixed(6),
+    args.plan.visibleSecondsWindow.endSeconds.toFixed(6),
+    args.plan.visibleSecondsWindow.hasAudio ? "1" : "0",
+    args.plan.visibleWindow.startPx,
+    args.plan.visibleWindow.endPx,
+  ].join("|");
+}
+
+function areWaveformCanvasFrameRenderSignaturesEqual(
+  left: WaveformCanvasFrameDescriptor,
+  right: WaveformCanvasFrameDescriptor,
+) {
+  return left.renderSignature === right.renderSignature;
 }
 
 function applyWaveformVisibleCanvasGeometry(args: {
@@ -5022,39 +5207,166 @@ function applyWaveformVisibleCanvasGeometry(args: {
   args.canvas.style.height = `${WAVEFORM_CANVAS_HEIGHT}px`;
 }
 
+function normalizeWaveformCanvasColumnRange(args: {
+  range: WaveformCanvasColumnRange;
+  viewportWidth: number;
+}): WaveformCanvasColumnRange | null {
+  const startX = clampInteger(args.range.startX, 0, args.viewportWidth);
+  const endX = clampInteger(args.range.endX, startX, args.viewportWidth);
+
+  return endX > startX
+    ? {
+        endX,
+        startX,
+      }
+    : null;
+}
+
+function normalizeWaveformCanvasColumnRanges(args: {
+  ranges: readonly WaveformCanvasColumnRange[];
+  viewportWidth: number;
+}) {
+  const normalized = args.ranges
+    .map((range) =>
+      normalizeWaveformCanvasColumnRange({
+        range,
+        viewportWidth: args.viewportWidth,
+      }),
+    )
+    .filter((range): range is WaveformCanvasColumnRange => range !== null)
+    .sort((left, right) => left.startX - right.startX || left.endX - right.endX);
+  const merged: WaveformCanvasColumnRange[] = [];
+
+  for (const range of normalized) {
+    const previous = merged.at(-1);
+    if (previous && range.startX <= previous.endX) {
+      previous.endX = Math.max(previous.endX, range.endX);
+    } else {
+      merged.push({
+        endX: range.endX,
+        startX: range.startX,
+      });
+    }
+  }
+
+  return merged;
+}
+
+function shiftWaveformCanvasColumnRange(args: {
+  range: WaveformCanvasColumnRange;
+  shiftX: number;
+  viewportWidth: number;
+}) {
+  return normalizeWaveformCanvasColumnRange({
+    range: {
+      endX: args.range.endX + args.shiftX,
+      startX: args.range.startX + args.shiftX,
+    },
+    viewportWidth: args.viewportWidth,
+  });
+}
+
+function transportWaveformCanvasColumnRangeThroughResize(args: {
+  plan: Extract<WaveformCanvasFrameReusePlan, { kind: "viewport-resize" }>;
+  range: WaveformCanvasColumnRange;
+  viewportWidth: number;
+}) {
+  const copySourceEndX = args.plan.copySourceStartX + args.plan.copyWidthPx;
+  const overlapStartX = Math.max(args.range.startX, args.plan.copySourceStartX);
+  const overlapEndX = Math.min(args.range.endX, copySourceEndX);
+
+  if (overlapEndX <= overlapStartX) {
+    return null;
+  }
+
+  const shiftX = args.plan.copyTargetStartX - args.plan.copySourceStartX;
+  return normalizeWaveformCanvasColumnRange({
+    range: {
+      endX: overlapEndX + shiftX,
+      startX: overlapStartX + shiftX,
+    },
+    viewportWidth: args.viewportWidth,
+  });
+}
+
+function resolveWaveformCanvasViewportResizeDirtyRanges(args: {
+  exposedRanges: readonly WaveformCanvasColumnRange[];
+  plan: Extract<WaveformCanvasFrameReusePlan, { kind: "viewport-resize" }>;
+  previousDirtyRanges: readonly WaveformCanvasColumnRange[];
+  viewportWidth: number;
+}) {
+  const transportedDirtyRanges = args.previousDirtyRanges
+    .map((range) =>
+      transportWaveformCanvasColumnRangeThroughResize({
+        plan: args.plan,
+        range,
+        viewportWidth: args.viewportWidth,
+      }),
+    )
+    .filter((range): range is WaveformCanvasColumnRange => range !== null);
+
+  return normalizeWaveformCanvasColumnRanges({
+    ranges: [...transportedDirtyRanges, ...args.exposedRanges],
+    viewportWidth: args.viewportWidth,
+  });
+}
+
+function resolveWaveformCanvasHorizontalPanDirtyRanges(args: {
+  exposedRanges: readonly WaveformCanvasColumnRange[];
+  plan: Extract<WaveformCanvasFrameReusePlan, { kind: "horizontal-pan" }>;
+  previousDirtyRanges: readonly WaveformCanvasColumnRange[];
+  viewportWidth: number;
+}) {
+  const shiftX = args.plan.shiftX;
+  const transportedDirtyRanges = args.previousDirtyRanges
+    .map((range) =>
+      shiftWaveformCanvasColumnRange({
+        range,
+        shiftX,
+        viewportWidth: args.viewportWidth,
+      }),
+    )
+    .filter((range): range is WaveformCanvasColumnRange => range !== null);
+
+  return normalizeWaveformCanvasColumnRanges({
+    ranges: [...transportedDirtyRanges, ...args.exposedRanges],
+    viewportWidth: args.viewportWidth,
+  });
+}
+
+export function resolveWaveformCanvasDirtyRangesAfterPresentation(args: {
+  exposedRanges: readonly WaveformCanvasColumnRange[];
+  plan: Extract<WaveformCanvasFrameReusePlan, { kind: "horizontal-pan" | "viewport-resize" }>;
+  previousDirtyRanges: readonly WaveformCanvasColumnRange[];
+  viewportWidth: number;
+}) {
+  if (args.plan.kind === "viewport-resize") {
+    return resolveWaveformCanvasViewportResizeDirtyRanges({
+      exposedRanges: args.exposedRanges,
+      plan: args.plan,
+      previousDirtyRanges: args.previousDirtyRanges,
+      viewportWidth: args.viewportWidth,
+    });
+  }
+
+  return resolveWaveformCanvasHorizontalPanDirtyRanges({
+    exposedRanges: args.exposedRanges,
+    plan: args.plan,
+    previousDirtyRanges: args.previousDirtyRanges,
+    viewportWidth: args.viewportWidth,
+  });
+}
+
 function completeWaveformCanvasRenderJob(args: {
   canvas: HTMLCanvasElement;
   job: WaveformCanvasRenderJob;
 }): WaveformCanvasRenderJobCompletion {
-  return commitWaveformCanvasFrame({
-    canvas: args.canvas,
-    plan: args.job.plan,
-    target: args.job.target,
-  });
-}
-
-function commitWaveformCanvasFrame(args: {
-  canvas: HTMLCanvasElement;
-  plan: WaveformCanvasRenderPlan;
-  target: WaveformCanvasBufferedRasterTarget;
-}): WaveformCanvasFrameCommitResult {
-  const context = args.canvas.getContext("2d");
-  if (!context) {
+  if (args.job.target.canvas !== args.canvas) {
     return {
       kind: "empty",
       reason: "missing-context",
     };
   }
-
-  applyWaveformVisibleCanvasGeometry({
-    canvas: args.canvas,
-    geometry: args.plan.geometry,
-  });
-  context.resetTransform();
-  context.clearRect(0, 0, args.plan.geometry.backingWidth, args.plan.geometry.backingHeight);
-  context.globalAlpha = 1;
-  context.globalCompositeOperation = "source-over";
-  context.drawImage(args.target.frame, 0, 0);
 
   return {
     kind: "committed",
@@ -5064,7 +5376,7 @@ function commitWaveformCanvasFrame(args: {
 function presentWaveformCanvasFrameFast(args: {
   canvas: HTMLCanvasElement | null;
   descriptor: WaveformCanvasFrameDescriptor | null;
-  plan: WaveformCanvasRenderPlan | null;
+  previousDirtyRanges: readonly WaveformCanvasColumnRange[];
   previous: WaveformCanvasFrameDescriptor | null;
   reuseFrame: HTMLCanvasElement | null;
 }): WaveformCanvasFastPresentationResult {
@@ -5098,7 +5410,6 @@ function presentWaveformCanvasFrameFast(args: {
 
   const presentationPlan = resolveWaveformCanvasFastPresentationPlan({
     current: args.descriptor,
-    hasExactPlan: Boolean(args.plan),
     previous: args.previous,
   });
 
@@ -5107,35 +5418,6 @@ function presentWaveformCanvasFrameFast(args: {
       kind: "empty",
       plan: presentationPlan,
       reason: "not-reusable",
-      reuseFrame: args.reuseFrame,
-    };
-  }
-
-  if (presentationPlan.kind === "exact-cache-redraw") {
-    const plan = args.plan;
-    if (!plan) {
-      return {
-        kind: "empty",
-        plan: {
-          kind: "none",
-          reason: "scale-changed",
-        },
-        reason: "not-reusable",
-        reuseFrame: args.reuseFrame,
-      };
-    }
-
-    const draw = drawWaveformCanvasExactDataFrame({
-      canvas: args.canvas,
-      plan,
-    });
-
-    return {
-      descriptor: args.descriptor,
-      draw,
-      kind: "presented",
-      mode: "exact-cache-redraw",
-      plan: presentationPlan,
       reuseFrame: args.reuseFrame,
     };
   }
@@ -5192,40 +5474,27 @@ function presentWaveformCanvasFrameFast(args: {
       args.descriptor.geometry.backingHeight,
     );
   }
-  context.scale(
-    args.descriptor.geometry.devicePixelRatio,
-    args.descriptor.geometry.devicePixelRatio,
-  );
-  context.imageSmoothingEnabled = false;
-  context.lineWidth = resolveWaveformBarWidthPx();
-  context.lineCap = "butt";
-  context.strokeStyle = readCanvasWaveformColor(args.canvas);
-  context.globalAlpha = WAVEFORM_CANVAS_STROKE_ALPHA;
-  const exposedRanges = args.plan
-    ? presentationPlan.kind === "horizontal-pan"
+  const exposedRanges =
+    presentationPlan.kind === "horizontal-pan"
       ? [
           {
             endX: presentationPlan.exposedEndX,
             startX: presentationPlan.exposedStartX,
           },
         ]
-      : presentationPlan.exposedRanges
-    : [];
-  const plan = args.plan;
-  const draws = plan
-    ? exposedRanges.map((range) =>
-        drawWaveformCanvasColumnRange({
-          context,
-          endX: range.endX,
-          plan,
-          startX: range.startX,
-        }),
-      )
-    : [];
+      : presentationPlan.exposedRanges;
+  const dirtyRanges = resolveWaveformCanvasDirtyRangesAfterPresentation({
+    exposedRanges,
+    plan: presentationPlan,
+    previousDirtyRanges: args.previousDirtyRanges,
+    viewportWidth: args.descriptor.geometry.viewportWidth,
+  });
+  const draws: WaveformCanvasColumnRangeResult[] = [];
 
   if (presentationPlan.kind === "horizontal-pan") {
     return {
       descriptor: args.descriptor,
+      dirtyRanges,
       draws,
       exposedRanges,
       exposedWidthPx: exposedRanges.reduce((sum, range) => sum + range.endX - range.startX, 0),
@@ -5238,6 +5507,7 @@ function presentWaveformCanvasFrameFast(args: {
 
   return {
     descriptor: args.descriptor,
+    dirtyRanges,
     draws,
     exposedRanges,
     exposedWidthPx: exposedRanges.reduce((sum, range) => sum + range.endX - range.startX, 0),
@@ -5248,13 +5518,115 @@ function presentWaveformCanvasFrameFast(args: {
   };
 }
 
-function resolveWaveformCanvasChunkWindow(args: { startX: number; viewportWidth: number }): {
+function resolveWaveformCanvasChunkWindow(args: {
+  startX: number;
+  stepX: number;
+  viewportWidth: number;
+}): {
   maxChunkEndX: number;
   minChunkEndX: number;
 } {
   return {
-    maxChunkEndX: Math.min(args.viewportWidth, args.startX + WAVEFORM_CANVAS_MAX_CHUNK_WIDTH_PX),
-    minChunkEndX: Math.min(args.viewportWidth, args.startX + WAVEFORM_CANVAS_MIN_CHUNK_WIDTH_PX),
+    maxChunkEndX: Math.min(
+      args.viewportWidth,
+      args.startX + WAVEFORM_CANVAS_MAX_CHUNK_WIDTH_PX * args.stepX,
+    ),
+    minChunkEndX: Math.min(
+      args.viewportWidth,
+      args.startX + WAVEFORM_CANVAS_MIN_CHUNK_WIDTH_PX * args.stepX,
+    ),
+  };
+}
+
+function resolveWaveformCanvasProgressivePass(passIndex: number) {
+  return (
+    WAVEFORM_CANVAS_PROGRESSIVE_PASSES[passIndex] ?? {
+      startOffsetX: 0,
+      stepX: 1,
+    }
+  );
+}
+
+function resolveWaveformCanvasProgressivePassCount() {
+  return WAVEFORM_CANVAS_PROGRESSIVE_PASSES.length;
+}
+
+function resolveWaveformCanvasCursorPass(args: { cursor: WaveformCanvasRenderCursor }) {
+  return args.cursor.progressive
+    ? resolveWaveformCanvasProgressivePass(args.cursor.passIndex)
+    : {
+        startOffsetX: 0,
+        stepX: 1,
+      };
+}
+
+function resolveWaveformCanvasCursorCompletionPassCount(args: {
+  cursor: WaveformCanvasRenderCursor;
+}) {
+  return args.cursor.progressive && !args.cursor.ranges
+    ? resolveWaveformCanvasProgressivePassCount()
+    : 1;
+}
+
+function resolveWaveformCanvasProgressivePassStartX(args: {
+  startOffsetX: number;
+  viewportWidth: number;
+}) {
+  return args.startOffsetX < args.viewportWidth ? args.startOffsetX : args.viewportWidth;
+}
+
+function advanceWaveformCanvasProgressiveCursor(args: {
+  cursor: WaveformCanvasRenderCursor;
+  nextX: number;
+  rangeEndX: number;
+  viewportWidth: number;
+}): Pick<WaveformCanvasRenderCursor, "nextX" | "passIndex" | "rangeIndex"> {
+  if (args.nextX < args.rangeEndX) {
+    return {
+      nextX: args.nextX,
+      passIndex: args.cursor.passIndex,
+      rangeIndex: args.cursor.rangeIndex,
+    };
+  }
+
+  const nextRangeIndex = args.cursor.rangeIndex + 1;
+  const nextRange = args.cursor.ranges?.[nextRangeIndex] ?? null;
+  if (nextRange) {
+    return {
+      nextX: nextRange.startX,
+      passIndex: args.cursor.passIndex,
+      rangeIndex: nextRangeIndex,
+    };
+  }
+
+  const nextPassIndex = args.cursor.passIndex + 1;
+  if (
+    nextPassIndex >=
+    resolveWaveformCanvasCursorCompletionPassCount({
+      cursor: args.cursor,
+    })
+  ) {
+    return {
+      nextX: args.viewportWidth,
+      passIndex: nextPassIndex,
+      rangeIndex: nextRangeIndex,
+    };
+  }
+
+  const nextPass = resolveWaveformCanvasCursorPass({
+    cursor: {
+      ...args.cursor,
+      passIndex: nextPassIndex,
+    },
+  });
+
+  return {
+    nextX: resolveWaveformCanvasProgressivePassStartX({
+      startOffsetX: nextPass.startOffsetX,
+      viewportWidth: args.viewportWidth,
+    }),
+    passIndex: nextPassIndex,
+    rangeIndex: 0,
   };
 }
 
@@ -5308,100 +5680,6 @@ function drawWaveformCanvasColumn(args: {
   args.context.lineTo(barX, Math.max(yTop + 1, yBottom));
 }
 
-function drawWaveformCanvasColumnRange(args: {
-  context: CanvasRenderingContext2D;
-  endX: number;
-  plan: WaveformCanvasRenderPlan;
-  startX: number;
-}): WaveformCanvasColumnRangeResult {
-  const startX = clampInteger(args.startX, 0, args.plan.geometry.viewportWidth);
-  const endX = clampInteger(args.endX, startX, args.plan.geometry.viewportWidth);
-  let firstMissingX: number | null = null;
-  let lastMissingX: number | null = null;
-  let hasColumn = false;
-  let missingPeakColumns = 0;
-  let resolvedPeakCount = 0;
-  let scannedColumns = 0;
-
-  args.context.beginPath();
-
-  for (let x = startX; x < endX; x += 1) {
-    scannedColumns += 1;
-    const peak = resolveWaveformCanvasColumnPeak({
-      candidateLevels: args.plan.candidateLevels,
-      tileWidth: WAVEFORM_DATA_TILE_WIDTH,
-      viewport: args.plan.viewport,
-      x,
-    });
-
-    if (peak) {
-      drawWaveformCanvasColumn({
-        context: args.context,
-        peak,
-        plan: args.plan,
-        x,
-      });
-      hasColumn = true;
-      resolvedPeakCount += 1;
-    } else {
-      firstMissingX ??= x;
-      lastMissingX = x;
-      missingPeakColumns += 1;
-    }
-  }
-
-  if (hasColumn) {
-    args.context.stroke();
-  }
-
-  return {
-    firstMissingX,
-    hasColumn,
-    lastMissingX,
-    missingPeakColumns,
-    resolvedPeakCount,
-    scannedColumns,
-  };
-}
-
-function drawWaveformCanvasExactDataFrame(args: {
-  canvas: HTMLCanvasElement;
-  plan: WaveformCanvasRenderPlan;
-}): WaveformCanvasColumnRangeResult {
-  const context = args.canvas.getContext("2d");
-  if (!context) {
-    return {
-      firstMissingX: 0,
-      hasColumn: false,
-      lastMissingX: Math.max(0, args.plan.geometry.viewportWidth - 1),
-      missingPeakColumns: args.plan.geometry.viewportWidth,
-      resolvedPeakCount: 0,
-      scannedColumns: args.plan.geometry.viewportWidth,
-    };
-  }
-
-  applyWaveformVisibleCanvasGeometry({
-    canvas: args.canvas,
-    geometry: args.plan.geometry,
-  });
-  context.resetTransform();
-  context.clearRect(0, 0, args.plan.geometry.backingWidth, args.plan.geometry.backingHeight);
-  context.scale(args.plan.geometry.devicePixelRatio, args.plan.geometry.devicePixelRatio);
-  context.imageSmoothingEnabled = false;
-  context.lineWidth = resolveWaveformBarWidthPx();
-  context.lineCap = "butt";
-  context.strokeStyle = readCanvasWaveformColor(args.canvas);
-  context.globalAlpha = WAVEFORM_CANVAS_STROKE_ALPHA;
-  context.globalCompositeOperation = "source-over";
-
-  return drawWaveformCanvasColumnRange({
-    context,
-    endX: args.plan.geometry.viewportWidth,
-    plan: args.plan,
-    startX: 0,
-  });
-}
-
 function mergeWaveformCanvasChunkCursor(args: {
   chunk: {
     firstMissingX: number | null;
@@ -5412,13 +5690,26 @@ function mergeWaveformCanvasChunkCursor(args: {
   };
   cursor: WaveformCanvasRenderCursor;
   endX: number;
+  rangeEndX: number;
+  viewportWidth: number;
 }): WaveformCanvasRenderCursor {
+  const nextPosition = advanceWaveformCanvasProgressiveCursor({
+    cursor: args.cursor,
+    nextX: args.endX,
+    rangeEndX: args.rangeEndX,
+    viewportWidth: args.viewportWidth,
+  });
+
   return {
     firstMissingX: args.cursor.firstMissingX ?? args.chunk.firstMissingX,
     hasDrawnColumn: args.cursor.hasDrawnColumn || args.chunk.hasChunkColumn,
     lastMissingX: args.chunk.lastMissingX ?? args.cursor.lastMissingX,
     missingPeakColumnCount: args.cursor.missingPeakColumnCount + args.chunk.missingPeakColumns,
-    nextX: args.endX,
+    nextX: nextPosition.nextX,
+    passIndex: nextPosition.passIndex,
+    progressive: args.cursor.progressive,
+    ranges: args.cursor.ranges,
+    rangeIndex: nextPosition.rangeIndex,
     resolvedPeakColumnCount: args.cursor.resolvedPeakColumnCount + args.chunk.resolvedPeakCount,
   };
 }
@@ -5432,10 +5723,16 @@ export function drawWaveformCanvasJobChunk(args: {
 }): WaveformCanvasChunkResult {
   const context = args.target.context;
   const plan = args.plan;
+  const pass = resolveWaveformCanvasCursorPass({
+    cursor: args.cursor,
+  });
+  const activeRange = args.cursor.ranges?.[args.cursor.rangeIndex] ?? null;
   const startX = args.cursor.nextX;
+  const rangeEndX = activeRange?.endX ?? plan.geometry.viewportWidth;
   const { maxChunkEndX, minChunkEndX } = resolveWaveformCanvasChunkWindow({
     startX,
-    viewportWidth: plan.geometry.viewportWidth,
+    stepX: pass.stepX,
+    viewportWidth: rangeEndX,
   });
   let x = startX;
   let hasChunkColumn = false;
@@ -5453,7 +5750,7 @@ export function drawWaveformCanvasJobChunk(args: {
     context.beginPath();
   }
 
-  for (; x < plan.geometry.viewportWidth; x += 1) {
+  for (; x < rangeEndX; x += 1) {
     scannedColumns += 1;
     const peak = resolveWaveformCanvasColumnPeak({
       candidateLevels: plan.candidateLevels,
@@ -5478,9 +5775,11 @@ export function drawWaveformCanvasJobChunk(args: {
     }
 
     if (x >= minChunkEndX && (x >= maxChunkEndX || args.now() >= args.deadlineMs)) {
-      x += 1;
+      x += pass.stepX;
       break;
     }
+
+    x += pass.stepX - 1;
   }
 
   const cursor = mergeWaveformCanvasChunkCursor({
@@ -5493,8 +5792,14 @@ export function drawWaveformCanvasJobChunk(args: {
     },
     cursor: args.cursor,
     endX: x,
+    rangeEndX,
+    viewportWidth: plan.geometry.viewportWidth,
   });
-  const completed = cursor.nextX >= plan.geometry.viewportWidth;
+  const completed =
+    cursor.passIndex >=
+    resolveWaveformCanvasCursorCompletionPassCount({
+      cursor,
+    });
 
   if (
     shouldStrokeWaveformCanvasChunkPath({

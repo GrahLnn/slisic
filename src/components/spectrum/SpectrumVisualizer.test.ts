@@ -18,6 +18,7 @@ import {
   resolveQuantizedWaveformDisplayPeak,
   resolveTrackWaveformInitialStatus,
   resolveWaveformBarWidthPx,
+  resolveWaveformCanvasRenderRequestTransition,
   resolveWaveformContentWidth,
   resolveWaveformDataPlan,
   resolveWaveformDataPlanScopedRequests,
@@ -27,6 +28,7 @@ import {
   resolveWaveformHorizontalPanFrame,
   resolveWaveformHorizontalScrollLeft,
   resolveWaveformCanvasFrameReusePlan,
+  resolveWaveformCanvasDirtyRangesAfterPresentation,
   shouldBeginWaveformCanvasChunkPath,
   resolveWaveformLoadingGridSize,
   resolveWaveformMaximumPixelsPerSecond,
@@ -92,13 +94,37 @@ function createWaveformTestFrameDescriptor(
   const viewportWidth = overrides.viewportWidth ?? 1_000;
 
   return {
+    color: "#262626",
     dataPixelsPerSecond: overrides.dataPixelsPerSecond ?? 100,
+    dataSignature: "100(0:track|100.00|0|2048)",
     geometry: {
       backingHeight: 208,
       backingWidth: viewportWidth,
       devicePixelRatio: 1,
       viewportWidth,
     },
+    renderSignature: [
+      overrides.scopeKey ?? "track",
+      "#262626",
+      "100(0:track|100.00|0|2048)",
+      overrides.dataPixelsPerSecond ?? 100,
+      208,
+      viewportWidth,
+      1,
+      viewportWidth,
+      10_000,
+      100_000,
+      "",
+      800,
+      100,
+      (overrides.scrollLeft ?? 0).toFixed(3),
+      viewportWidth,
+      "0.000000",
+      "10.000000",
+      "1",
+      0,
+      1_000,
+    ].join("|"),
     scopeKey: overrides.scopeKey ?? "track",
     viewport: {
       contentWidth: 10_000,
@@ -115,6 +141,7 @@ function createWaveformTestFrameDescriptor(
 function createWaveformCanvasTestContext() {
   return {
     beginPathCount: 0,
+    moveXValues: [] as number[],
     lineYValues: [] as number[],
     lineToCount: 0,
     moveToCount: 0,
@@ -126,8 +153,9 @@ function createWaveformCanvasTestContext() {
       this.lineToCount += 1;
       this.lineYValues.push(y);
     },
-    moveTo() {
+    moveTo(x: number) {
       this.moveToCount += 1;
+      this.moveXValues.push(x);
     },
     stroke() {
       this.strokeCount += 1;
@@ -151,6 +179,7 @@ function createWaveformCanvasTestPlan(overrides: { viewportWidth?: number } = {}
     candidateLevels: [
       {
         pixelsPerSecond: 100,
+        tileKeysByIndex: new Map([[0, "track|100.00|0|120"]]),
         tilesByIndex: new Map([[0, tile]]),
       },
     ],
@@ -182,6 +211,54 @@ function createWaveformCanvasTestPlan(overrides: { viewportWidth?: number } = {}
       startPx: 0,
     },
   };
+}
+
+type WaveformCanvasTestCursor = Parameters<typeof drawWaveformCanvasJobChunk>[0]["cursor"];
+
+type WaveformCanvasTestTarget = Parameters<typeof drawWaveformCanvasJobChunk>[0]["target"];
+
+function createWaveformCanvasTestCursor(
+  args: { progressive?: boolean; ranges?: { endX: number; startX: number }[] } = {},
+): WaveformCanvasTestCursor {
+  const ranges = args.ranges ?? null;
+  const firstRange = ranges?.[0] ?? null;
+
+  return {
+    firstMissingX: null,
+    hasDrawnColumn: false,
+    lastMissingX: null,
+    missingPeakColumnCount: 0,
+    nextX: firstRange?.startX ?? 0,
+    passIndex: 0,
+    progressive: args.progressive ?? true,
+    ranges,
+    rangeIndex: 0,
+    resolvedPeakColumnCount: 0,
+  };
+}
+
+function drawCompleteWaveformCanvasTestJob(args: {
+  plan: ReturnType<typeof createWaveformCanvasTestPlan>;
+  target: WaveformCanvasTestTarget;
+}) {
+  let cursor = createWaveformCanvasTestCursor();
+  let chunk: ReturnType<typeof drawWaveformCanvasJobChunk> | null = null;
+  let guard = 0;
+
+  while (!chunk?.completed) {
+    guard += 1;
+    assert.ok(guard <= 32, "waveform canvas job should complete");
+    chunk = drawWaveformCanvasJobChunk({
+      cursor,
+      deadlineMs: Number.POSITIVE_INFINITY,
+      now: () => 0,
+      plan: args.plan,
+      target: args.target,
+    });
+    cursor = chunk.cursor;
+  }
+
+  return chunk;
 }
 
 describe("SpectrumVisualizer", () => {
@@ -787,28 +864,27 @@ describe("SpectrumVisualizer", () => {
         scrollDeltaPx: 0,
       },
     );
-    assert.deepEqual(
-      resolveWaveformCanvasFrameReusePlan({
-        current: createWaveformTestFrameDescriptor({
-          scrollLeft: 1_120,
-          viewportWidth: 1_240,
-        }),
-        previous,
+    const resizePlan = resolveWaveformCanvasFrameReusePlan({
+      current: createWaveformTestFrameDescriptor({
+        scrollLeft: 1_120,
+        viewportWidth: 1_240,
       }),
-      {
-        copySourceStartX: 120,
-        copyTargetStartX: 0,
-        copyWidthPx: 880,
-        exposedRanges: [
-          {
-            endX: 1_240,
-            startX: 880,
-          },
-        ],
-        kind: "viewport-resize",
-        scrollDeltaPx: 120,
-      },
-    );
+      previous,
+    });
+
+    assert.deepEqual(resizePlan, {
+      copySourceStartX: 120,
+      copyTargetStartX: 0,
+      copyWidthPx: 880,
+      exposedRanges: [
+        {
+          endX: 1_240,
+          startX: 880,
+        },
+      ],
+      kind: "viewport-resize",
+      scrollDeltaPx: 120,
+    });
   });
 
   test("rejects waveform frame reuse when the affine identity changes", () => {
@@ -879,24 +955,90 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
-  test("strokes a complete waveform canvas job only after all chunks are accumulated", () => {
+  test("absorbs repeated canvas render requests for the same stable frame", () => {
+    const current = createWaveformTestFrameDescriptor({
+      scrollLeft: 1_000,
+    });
+    const changedData = {
+      ...current,
+      dataSignature: "100(0:track|100.00|2048|2048)",
+      renderSignature: current.renderSignature.replace(
+        "100(0:track|100.00|0|2048)",
+        "100(0:track|100.00|2048|2048)",
+      ),
+    };
+
+    assert.equal(
+      resolveWaveformCanvasRenderRequestTransition({
+        currentJob: null,
+        currentPresentedDirtyRanges: [],
+        currentPresentedFrame: current,
+        currentRequestedFrame: null,
+        hasScheduledFrame: false,
+        nextFrame: current,
+      }),
+      "reuse-presented",
+    );
+    assert.equal(
+      resolveWaveformCanvasRenderRequestTransition({
+        currentJob: null,
+        currentPresentedDirtyRanges: [
+          {
+            endX: 120,
+            startX: 96,
+          },
+        ],
+        currentPresentedFrame: current,
+        currentRequestedFrame: null,
+        hasScheduledFrame: false,
+        nextFrame: current,
+      }),
+      "start-new",
+    );
+    assert.equal(
+      resolveWaveformCanvasRenderRequestTransition({
+        currentJob: current,
+        currentPresentedFrame: null,
+        currentRequestedFrame: null,
+        hasScheduledFrame: false,
+        nextFrame: current,
+      }),
+      "reuse-job",
+    );
+    assert.equal(
+      resolveWaveformCanvasRenderRequestTransition({
+        currentJob: null,
+        currentPresentedFrame: null,
+        currentRequestedFrame: current,
+        hasScheduledFrame: true,
+        nextFrame: current,
+      }),
+      "reuse-scheduled",
+    );
+    assert.equal(
+      resolveWaveformCanvasRenderRequestTransition({
+        currentJob: null,
+        currentPresentedFrame: current,
+        currentRequestedFrame: current,
+        hasScheduledFrame: true,
+        nextFrame: changedData,
+      }),
+      "start-new",
+    );
+  });
+
+  test("renders new waveform canvas frames from sparse presentation passes to dense completion", () => {
     const context = createWaveformCanvasTestContext();
     const plan = createWaveformCanvasTestPlan({ viewportWidth: 120 });
     const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
       context: context as unknown as CanvasRenderingContext2D,
-      frame: {} as HTMLCanvasElement,
       geometry: plan.geometry,
-      kind: "buffered" as const,
+      kind: "visible" as const,
     };
     const firstChunk = drawWaveformCanvasJobChunk({
-      cursor: {
-        firstMissingX: null,
-        hasDrawnColumn: false,
-        lastMissingX: null,
-        missingPeakColumnCount: 0,
-        nextX: 0,
-        resolvedPeakColumnCount: 0,
-      },
+      cursor: createWaveformCanvasTestCursor(),
       deadlineMs: 0,
       now: () => 1,
       plan,
@@ -904,9 +1046,17 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.equal(firstChunk.completed, false);
-    assert.equal(firstChunk.cursor.nextX, 97);
+    assert.equal(firstChunk.cursor.nextX, 2);
+    assert.equal(firstChunk.cursor.passIndex, 1);
     assert.equal(context.beginPathCount, 1);
-    assert.equal(context.strokeCount, 0);
+    assert.equal(context.strokeCount, 1);
+    assert.deepEqual(
+      context.moveXValues,
+      [
+        0.5, 4.5, 8.5, 12.5, 16.5, 20.5, 24.5, 28.5, 32.5, 36.5, 40.5, 44.5, 48.5, 52.5, 56.5, 60.5,
+        64.5, 68.5, 72.5, 76.5, 80.5, 84.5, 88.5, 92.5, 96.5, 100.5, 104.5, 108.5, 112.5, 116.5,
+      ],
+    );
 
     const secondChunk = drawWaveformCanvasJobChunk({
       cursor: firstChunk.cursor,
@@ -916,20 +1066,188 @@ describe("SpectrumVisualizer", () => {
       target,
     });
 
-    assert.equal(secondChunk.completed, true);
-    assert.equal(secondChunk.cursor.nextX, 120);
-    assert.equal(context.beginPathCount, 1);
-    assert.equal(context.strokeCount, 1);
-    assert.equal(context.moveToCount, 120);
-    assert.equal(context.lineToCount, 120);
+    assert.equal(secondChunk.completed, false);
+    assert.equal(secondChunk.cursor.nextX, 1);
+    assert.equal(secondChunk.cursor.passIndex, 2);
+    assert.equal(context.beginPathCount, 2);
+    assert.equal(context.strokeCount, 2);
+    assert.equal(context.moveToCount, 60);
+    assert.equal(context.lineToCount, 60);
+
+    const completed = drawCompleteWaveformCanvasTestJob({
+      plan,
+      target,
+    });
+    const drawnColumnIndexes = context.moveXValues.map((x) => Math.floor(x - 0.5));
+
+    assert.equal(completed.completed, true);
+    assert.equal(completed.cursor.nextX, 120);
+    assert.equal(context.moveToCount, 180);
+    assert.equal(new Set(drawnColumnIndexes).size, 120);
+    assert.deepEqual(
+      [...new Set(drawnColumnIndexes)].sort((left, right) => left - right),
+      Array.from({ length: 120 }, (_, index) => index),
+    );
   });
 
-  test("keeps chunk boundaries private until the full buffered frame is ready", () => {
+  test("renders horizontal pan refreshes at full density", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 120 });
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry: plan.geometry,
+      kind: "visible" as const,
+    };
+    const chunk = drawWaveformCanvasJobChunk({
+      cursor: createWaveformCanvasTestCursor({
+        progressive: false,
+      }),
+      deadlineMs: 0,
+      now: () => 1,
+      plan,
+      target,
+    });
+
+    assert.equal(chunk.completed, false);
+    assert.equal(chunk.cursor.nextX, 97);
+    assert.equal(chunk.cursor.passIndex, 0);
+    assert.equal(context.strokeCount, 1);
+    assert.equal(context.moveToCount, 97);
+    assert.equal(context.lineToCount, 97);
+    assert.deepEqual(
+      context.moveXValues.map((x) => Math.floor(x - 0.5)),
+      Array.from({ length: 97 }, (_, index) => index),
+    );
+  });
+
+  test("prioritizes horizontal pan exposed ranges before any full-frame refresh", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 120 });
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry: plan.geometry,
+      kind: "visible" as const,
+    };
+    const completed = drawWaveformCanvasJobChunk({
+      cursor: createWaveformCanvasTestCursor({
+        progressive: false,
+        ranges: [
+          {
+            endX: 120,
+            startX: 96,
+          },
+        ],
+      }),
+      deadlineMs: Number.POSITIVE_INFINITY,
+      now: () => 1,
+      plan,
+      target,
+    });
+
+    assert.equal(completed.completed, true);
+    assert.equal(completed.cursor.nextX, 120);
+    assert.equal(completed.cursor.passIndex, 1);
+    assert.equal(context.moveToCount, 24);
+    assert.deepEqual(
+      context.moveXValues.map((x) => Math.floor(x - 0.5)),
+      Array.from({ length: 24 }, (_, index) => index + 96),
+    );
+  });
+
+  test("carries unfinished horizontal pan dirty ranges across viewport resize", () => {
+    const previous = createWaveformTestFrameDescriptor({
+      scrollLeft: 1_000,
+      viewportWidth: 1_000,
+    });
+
+    const resizePlan = resolveWaveformCanvasFrameReusePlan({
+      current: createWaveformTestFrameDescriptor({
+        scrollLeft: 1_120,
+        viewportWidth: 1_240,
+      }),
+      previous,
+    });
+
+    assert.deepEqual(resizePlan, {
+      copySourceStartX: 120,
+      copyTargetStartX: 0,
+      copyWidthPx: 880,
+      exposedRanges: [
+        {
+          endX: 1_240,
+          startX: 880,
+        },
+      ],
+      kind: "viewport-resize",
+      scrollDeltaPx: 120,
+    });
+    assert.equal(resizePlan.kind, "viewport-resize");
+    if (resizePlan.kind !== "viewport-resize") {
+      return;
+    }
+    assert.deepEqual(
+      resolveWaveformCanvasDirtyRangesAfterPresentation({
+        exposedRanges: resizePlan.exposedRanges,
+        plan: resizePlan,
+        previousDirtyRanges: [
+          {
+            endX: 1_000,
+            startX: 996,
+          },
+        ],
+        viewportWidth: 1_240,
+      }),
+      [
+        {
+          endX: 1_240,
+          startX: 876,
+        },
+      ],
+    );
+
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 1_240 });
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry: plan.geometry,
+      kind: "visible" as const,
+    };
+    const firstChunk = drawWaveformCanvasJobChunk({
+      cursor: createWaveformCanvasTestCursor({
+        progressive: false,
+        ranges: [
+          {
+            endX: 1_240,
+            startX: 876,
+          },
+        ],
+      }),
+      deadlineMs: 0,
+      now: () => 1,
+      plan,
+      target,
+    });
+
+    assert.equal(firstChunk.completed, false);
+    assert.equal(firstChunk.cursor.nextX, 973);
+    assert.deepEqual(
+      context.moveXValues.slice(0, 4).map((x) => Math.floor(x - 0.5)),
+      [876, 877, 878, 879],
+    );
+  });
+
+  test("keeps every progressive waveform chunk immediately presentable", () => {
     assert.equal(
       shouldBeginWaveformCanvasChunkPath({
         startX: 120,
       }),
-      false,
+      true,
     );
     assert.equal(
       shouldBeginWaveformCanvasChunkPath({
@@ -943,7 +1261,7 @@ describe("SpectrumVisualizer", () => {
         cursorHasDrawnColumn: true,
         hasChunkColumn: true,
       }),
-      false,
+      true,
     );
     assert.equal(
       shouldStrokeWaveformCanvasChunkPath({
@@ -958,49 +1276,41 @@ describe("SpectrumVisualizer", () => {
   test("draws visual padding as a zero waveform without requiring tile data", () => {
     const context = createWaveformCanvasTestContext();
     const plan = createWaveformCanvasTestPlan({ viewportWidth: 20 });
-    const target = {
-      context: context as unknown as CanvasRenderingContext2D,
-      frame: {} as HTMLCanvasElement,
-      geometry: plan.geometry,
-      kind: "buffered" as const,
+    const visualPaddingPlan = {
+      ...plan,
+      candidateLevels: [],
+      viewport: {
+        ...plan.viewport,
+        durationMs: 120_000,
+        scrollLeft: 0,
+      },
+      visibleSecondsWindow: {
+        endSeconds: 0,
+        hasAudio: false,
+        startSeconds: 0,
+      },
+      visibleWindow: {
+        endPx: 0,
+        startPx: 0,
+      },
     };
-    const chunk = drawWaveformCanvasJobChunk({
-      cursor: {
-        firstMissingX: null,
-        hasDrawnColumn: false,
-        lastMissingX: null,
-        missingPeakColumnCount: 0,
-        nextX: 0,
-        resolvedPeakColumnCount: 0,
-      },
-      deadlineMs: Number.POSITIVE_INFINITY,
-      now: () => 0,
-      plan: {
-        ...plan,
-        candidateLevels: [],
-        viewport: {
-          ...plan.viewport,
-          durationMs: 120_000,
-          scrollLeft: 0,
-        },
-        visibleSecondsWindow: {
-          endSeconds: 0,
-          hasAudio: false,
-          startSeconds: 0,
-        },
-        visibleWindow: {
-          endPx: 0,
-          startPx: 0,
-        },
-      },
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry: plan.geometry,
+      kind: "visible" as const,
+    };
+    const chunk = drawCompleteWaveformCanvasTestJob({
+      plan: visualPaddingPlan,
       target,
     });
 
     assert.equal(chunk.completed, true);
     assert.equal(chunk.missingPeakColumns, 0);
-    assert.equal(chunk.resolvedPeakCount, 20);
+    assert.equal(chunk.cursor.resolvedPeakColumnCount, 20);
     assert.equal(context.moveToCount, 20);
-    assert.equal(context.strokeCount, 1);
+    assert.equal(context.strokeCount, 3);
     assert.ok(context.lineYValues.every((y) => y === 105));
   });
 
