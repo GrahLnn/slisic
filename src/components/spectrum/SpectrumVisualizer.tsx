@@ -938,6 +938,29 @@ export function resolveWaveformSelectionStartScrollLeft(args: {
   });
 }
 
+export function resolveWaveformInitialSelectionViewportAnchor(args: {
+  cacheKey: string;
+  filePath: string | null;
+  previousAnchorKey: string | null;
+  selection: WaveformSelectionRange | null;
+  status: WaveformStatus;
+}) {
+  const filePath = args.filePath?.trim() || null;
+  const startSeconds = normalizeWaveformSelectionBoundary(args.selection?.start ?? null);
+  if (args.status !== "ready" || !filePath || startSeconds === null) {
+    return null;
+  }
+
+  const anchorKey = [normalizeWaveformPathKey(filePath), args.cacheKey].join("|");
+
+  return args.previousAnchorKey === anchorKey
+    ? null
+    : {
+        anchorKey,
+        selection: args.selection,
+      };
+}
+
 export function resolveWaveformPointerAnchorViewportX(args: {
   clientX: number;
   viewportLeft: number;
@@ -2542,6 +2565,8 @@ function TrackSpectrumSession(props: {
   }, []);
   const shouldShowLoadingGrid = waveformState.status === "loading";
   const externalSelection = props.selection ?? null;
+  const externalSelectionStart = externalSelection?.start ?? null;
+  const externalSelectionEnd = externalSelection?.end ?? null;
   const previousExternalSelectionRef = useRef<WaveformSelectionRange | null>(externalSelection);
   const isSelectionDragActiveRef = useRef(false);
   if (
@@ -2889,28 +2914,31 @@ function TrackSpectrumSession(props: {
 
   useLayoutEffect(() => {
     const current = viewportRef.current;
-    const filePath = props.filePath?.trim() || null;
-    const startSeconds = normalizeWaveformSelectionBoundary(selectionRef.current?.start ?? null);
-    if (waveformState.status !== "ready" || !current || !filePath || startSeconds === null) {
+    const anchorSelection =
+      externalSelectionStart === null && externalSelectionEnd === null
+        ? null
+        : {
+            end: externalSelectionEnd,
+            start: externalSelectionStart,
+          };
+    const resolution = resolveWaveformInitialSelectionViewportAnchor({
+      cacheKey: waveformState.summary.cache_key,
+      filePath: props.filePath?.trim() || null,
+      previousAnchorKey: initialSelectionViewportAnchorRef.current,
+      selection: anchorSelection,
+      status: waveformState.status,
+    });
+    if (!current || !resolution) {
       return;
     }
 
-    const anchorKey = [
-      normalizeWaveformPathKey(filePath),
-      waveformState.summary.cache_key,
-      startSeconds,
-      current.viewportWidth,
-    ].join("|");
-    if (initialSelectionViewportAnchorRef.current === anchorKey) {
-      return;
-    }
-    initialSelectionViewportAnchorRef.current = anchorKey;
+    initialSelectionViewportAnchorRef.current = resolution.anchorKey;
 
     const scrollLeft = resolveWaveformSelectionStartScrollLeft({
       contentWidth: current.contentWidth,
       leadingSpacePx: WAVEFORM_SELECTION_START_LEADING_SPACE_PX,
       pixelsPerSecond: current.pixelsPerSecond,
-      selection: selectionRef.current,
+      selection: resolution.selection,
       viewportWidth: current.viewportWidth,
     });
 
@@ -2922,7 +2950,14 @@ function TrackSpectrumSession(props: {
         viewportWidth: current.viewportWidth,
       },
     });
-  }, [commitViewport, props.filePath, waveformState.status, waveformState.summary.cache_key]);
+  }, [
+    commitViewport,
+    externalSelectionEnd,
+    externalSelectionStart,
+    props.filePath,
+    waveformState.status,
+    waveformState.summary.cache_key,
+  ]);
 
   useLayoutEffect(() => {
     const host = hostRef.current;

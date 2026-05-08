@@ -44,6 +44,7 @@ import {
   resolveWaveformResizeViewportState,
   resolveWaveformSelectionDrag,
   resolveWaveformSelectionGeometry,
+  resolveWaveformInitialSelectionViewportAnchor,
   resolveWaveformSelectionStartScrollLeft,
   resolveWaveformPlayheadDrag,
   resolveWaveformTileIndexPeakRangeAtPixels,
@@ -2222,6 +2223,38 @@ describe("SpectrumVisualizer", () => {
         viewportWidth: 1_000,
       }),
       2_104,
+    );
+  });
+
+  test("keeps initial selection viewport anchoring owned by the external committed selection", () => {
+    const firstAnchor = resolveWaveformInitialSelectionViewportAnchor({
+      cacheKey: "track",
+      filePath: "C:/music/demo.flac",
+      previousAnchorKey: null,
+      selection: {
+        end: 80,
+        start: 20,
+      },
+      status: "ready",
+    });
+
+    assert.equal(firstAnchor?.anchorKey, "c:/music/demo.flac|track");
+    assert.deepEqual(firstAnchor?.selection, {
+      end: 80,
+      start: 20,
+    });
+    assert.equal(
+      resolveWaveformInitialSelectionViewportAnchor({
+        cacheKey: "track",
+        filePath: "C:/music/demo.flac",
+        previousAnchorKey: firstAnchor?.anchorKey ?? null,
+        selection: {
+          end: 80,
+          start: 30,
+        },
+        status: "ready",
+      }),
+      null,
     );
   });
 
