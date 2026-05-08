@@ -5,7 +5,11 @@ import { icons } from "@/src/assets/icons";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import { collectionTitleClassName, collectionTitleLayoutTransition } from "../collectionTitle";
 import { EditableTitle, type EditableTitleHandle } from "../EditableTitle";
-import { TrackSpectrum, type WaveformRenderDataStore } from "./SpectrumVisualizer";
+import {
+  TrackSpectrum,
+  type TrackSpectrumPlaybackStatusCommit,
+  type WaveformRenderDataStore,
+} from "./SpectrumVisualizer";
 
 const musicSpectrumContentFadeProps = {
   initial: { opacity: 0 },
@@ -61,7 +65,10 @@ export interface MusicSpectrumEditorProps {
   waveformPresentation?: MusicSpectrumWaveformPresentation;
   waveformClassName?: string;
   onReset: () => void;
-  onSelectionCommit?: (selection: MusicSpectrumSelection) => void;
+  onSelectionCommit?: (
+    selection: MusicSpectrumSelection,
+    commitPlaybackStatus?: TrackSpectrumPlaybackStatusCommit,
+  ) => void;
   onTitleChange: (value: string) => void;
 }
 

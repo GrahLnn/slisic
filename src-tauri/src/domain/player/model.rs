@@ -19,6 +19,13 @@ pub struct PlaybackTrackPayload {
     pub end_ms: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct SpectrumPlaybackLoopSignalPayload {
+    pub track: PlaybackTrackPayload,
+    pub start_ms: u32,
+    pub end_ms: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackTrackProjectionError {
     EmptyFilePath,

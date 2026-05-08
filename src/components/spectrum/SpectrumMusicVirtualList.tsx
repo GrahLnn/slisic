@@ -22,7 +22,11 @@ import {
   type MusicSpectrumWaveformPresentation,
 } from "./MusicSpectrumEditor";
 import { SpectrumPlaybackAction } from "./SpectrumPlaybackAction";
-import { createWaveformRenderDataStore, type WaveformRenderDataStore } from "./SpectrumVisualizer";
+import {
+  createWaveformRenderDataStore,
+  type TrackSpectrumPlaybackStatusCommit,
+  type WaveformRenderDataStore,
+} from "./SpectrumVisualizer";
 import {
   areSpectrumPlaybackActionSnapshotsEqual,
   areSpectrumPlaybackIdentitiesEqual,
@@ -48,7 +52,11 @@ export interface SpectrumMusicVirtualListProps {
   onDelete: (id: string) => void;
   onReset: (id: string) => void;
   onPlaybackAction: (identity: SpectrumPlaybackIdentity) => Promise<void>;
-  onSelectionCommit: (id: string, range: MusicSpectrumSelection) => void;
+  onSelectionCommit: (
+    id: string,
+    range: MusicSpectrumSelection,
+    commitPlaybackStatus?: TrackSpectrumPlaybackStatusCommit,
+  ) => void;
   onTitleChange: (id: string, name: string) => void;
 }
 
@@ -176,7 +184,11 @@ type SpectrumMusicVirtualListRowProps = SpectrumMusicVirtualListRowRenderModel &
   onDelete: (id: string) => void;
   onPlaybackAction: (identity: SpectrumPlaybackIdentity) => Promise<void>;
   onReset: (id: string) => void;
-  onSelectionCommit: (id: string, range: MusicSpectrumSelection) => void;
+  onSelectionCommit: (
+    id: string,
+    range: MusicSpectrumSelection,
+    commitPlaybackStatus?: TrackSpectrumPlaybackStatusCommit,
+  ) => void;
   onTitleChange: (id: string, name: string) => void;
 };
 
@@ -292,7 +304,9 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
         waveformPresentation={waveformPresentation}
         waveformClassName="left-1/2 w-screen -translate-x-1/2"
         onReset={() => onReset(editor.id)}
-        onSelectionCommit={(range) => onSelectionCommit(editor.id, range)}
+        onSelectionCommit={(range, commitPlaybackStatus) =>
+          onSelectionCommit(editor.id, range, commitPlaybackStatus)
+        }
         onTitleChange={(name) => onTitleChange(editor.id, name)}
       />
     </div>
@@ -356,9 +370,16 @@ export function SpectrumMusicVirtualList({
   const handleReset = useCallback((id: string) => {
     handlersRef.current.onReset(id);
   }, []);
-  const handleSelectionCommit = useCallback((id: string, range: MusicSpectrumSelection) => {
-    handlersRef.current.onSelectionCommit(id, range);
-  }, []);
+  const handleSelectionCommit = useCallback(
+    (
+      id: string,
+      range: MusicSpectrumSelection,
+      commitPlaybackStatus?: TrackSpectrumPlaybackStatusCommit,
+    ) => {
+      handlersRef.current.onSelectionCommit(id, range, commitPlaybackStatus);
+    },
+    [],
+  );
   const handleTitleChange = useCallback((id: string, name: string) => {
     handlersRef.current.onTitleChange(id, name);
   }, []);

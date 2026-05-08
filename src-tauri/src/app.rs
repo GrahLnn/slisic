@@ -48,6 +48,7 @@ pub fn run() {
             domain::player::restore_spectrum_music,
             domain::player::pause_spectrum_music,
             domain::player::resume_spectrum_music,
+            domain::player::update_spectrum_playback_loop_signal,
             domain::player::begin_playback_seek,
             domain::player::cancel_playback_seek,
             domain::player::seek_playback,

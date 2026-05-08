@@ -7,6 +7,7 @@ import { collectionTitleLayoutTransition } from "../collectionTitle";
 import type { EditableTitleHandle } from "../EditableTitle";
 import type { MusicSpectrumSelection } from "./MusicSpectrumEditor";
 import { SpectrumMusicVirtualList } from "./SpectrumMusicVirtualList";
+import type { TrackSpectrumPlaybackStatusCommit } from "./SpectrumVisualizer";
 import {
   areSpectrumPlaybackActionSnapshotsEqual,
   isSpectrumPlaybackStatusIdentityForAction,
@@ -62,6 +63,19 @@ function createSpectrumPlaybackTrackPayload(identity: SpectrumPlaybackIdentity, 
     music_url: identity.url,
     playlist_name: identity.playlistName,
     start_ms: identity.startMs,
+  };
+}
+
+function createSpectrumPlaybackLoopSignalPayload(args: {
+  endMs: number | null;
+  identity: SpectrumPlaybackIdentity;
+  musicName: string;
+  startMs: number | null;
+}) {
+  return {
+    end_ms: args.endMs ?? args.identity.endMs,
+    start_ms: args.startMs ?? args.identity.startMs,
+    track: createSpectrumPlaybackTrackPayload(args.identity, args.musicName),
   };
 }
 
@@ -313,8 +327,13 @@ export function SpectrumPage() {
     };
   }, [primaryPlaybackIdentity]);
 
-  function handleSpectrumSelectionCommit(id: string, range: MusicSpectrumSelection) {
-    if (!renderData.editorViewModels.some((candidate) => candidate.id === id)) {
+  function handleSpectrumSelectionCommit(
+    id: string,
+    range: MusicSpectrumSelection,
+    commitPlaybackStatus?: TrackSpectrumPlaybackStatusCommit,
+  ) {
+    const editor = renderData.editorViewModels.find((candidate) => candidate.id === id) ?? null;
+    if (!editor) {
       return;
     }
 
@@ -323,6 +342,34 @@ export function SpectrumPage() {
       id,
       ...nextRange,
     });
+
+    if (!editor.playbackIdentity) {
+      return;
+    }
+
+    void crab
+      .updateSpectrumPlaybackLoopSignal(
+        createSpectrumPlaybackLoopSignalPayload({
+          endMs: nextRange.endMs,
+          identity: editor.playbackIdentity,
+          musicName: editor.titleValue,
+          startMs: nextRange.startMs,
+        }),
+      )
+      .then((result) => {
+        result.match({
+          Ok: (status) => {
+            commitPlaybackActionSnapshot(status);
+            commitPlaybackStatus?.(status);
+          },
+          Err: (error) => {
+            throw new Error(error);
+          },
+        });
+      })
+      .catch((error) => {
+        console.error("Failed to update spectrum playback loop signal", error);
+      });
   }
 
   function isNowPlayingSpectrumMusicDeleteRequested() {

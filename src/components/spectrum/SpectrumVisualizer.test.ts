@@ -36,6 +36,7 @@ import {
   resolveWaveformPixelsPerSecond,
   resolveWaveformPlayheadStyle,
   resolveWaveformPlayheadX,
+  resolveWaveformPlayheadCssVariables,
   resolveWaveformPointerAnchorViewportX,
   resolveQueuedWaveformZoomFrame,
   resolveWaveformRenderPixelsPerSecond,
@@ -2026,6 +2027,22 @@ describe("SpectrumVisualizer", () => {
         scrollLeft: 1_904,
       }),
       1_296,
+    );
+  });
+
+  test("hides the playhead when a playback status cannot provide a position origin", () => {
+    assert.deepEqual(
+      resolveWaveformPlayheadCssVariables({
+        playbackStartMs: null,
+        pixelsPerSecond: 100,
+        positionMs: 5_000,
+        scrollLeft: 0,
+        viewportWidth: 800,
+      }),
+      {
+        opacity: "0",
+        x: "-9999px",
+      },
     );
   });
 

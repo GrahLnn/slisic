@@ -119,6 +119,8 @@ export interface TrackSpectrumPlaybackPort {
   seekPlayback: (positionMs: number, endMs: number) => Promise<PlaybackStatusPayload | null>;
 }
 
+export type TrackSpectrumPlaybackStatusCommit = (status: PlaybackStatusPayload | null) => void;
+
 export interface TrackSpectrumPorts {
   playback: TrackSpectrumPlaybackPort;
   waveform: TrackSpectrumWaveformPort;
@@ -343,6 +345,7 @@ type WaveformPlayheadController = {
   beginPlayheadDrag: () => void;
   cancelPlayheadDrag: () => void;
   commitPlayheadDrag: (resolution: WaveformPlayheadDragResolution) => Promise<void>;
+  commitPlaybackStatus: TrackSpectrumPlaybackStatusCommit;
   previewPlayheadDrag: (resolution: WaveformPlayheadDragResolution | null) => void;
   syncPlayhead: () => void;
 };
@@ -351,6 +354,7 @@ const inertWaveformPlayheadController: WaveformPlayheadController = {
   beginPlayheadDrag: () => undefined,
   cancelPlayheadDrag: () => undefined,
   commitPlayheadDrag: async () => undefined,
+  commitPlaybackStatus: () => undefined,
   previewPlayheadDrag: () => undefined,
   syncPlayhead: () => undefined,
 };
@@ -2407,7 +2411,10 @@ export function resolveWaveformLoadingGridSize(args: {
 export function TrackSpectrum(props: {
   className?: string;
   filePath: string | null;
-  onSelectionCommit?: (range: WaveformSelectionDragResolution) => void;
+  onSelectionCommit?: (
+    range: WaveformSelectionDragResolution,
+    commitPlaybackStatus?: TrackSpectrumPlaybackStatusCommit,
+  ) => void;
   playheadEnabled?: boolean;
   ports?: TrackSpectrumPorts;
   renderDataStore?: WaveformRenderDataStore;
@@ -2421,7 +2428,10 @@ export function TrackSpectrum(props: {
 function TrackSpectrumSession(props: {
   className?: string;
   filePath: string | null;
-  onSelectionCommit?: (range: WaveformSelectionDragResolution) => void;
+  onSelectionCommit?: (
+    range: WaveformSelectionDragResolution,
+    commitPlaybackStatus?: TrackSpectrumPlaybackStatusCommit,
+  ) => void;
   playheadEnabled?: boolean;
   ports?: TrackSpectrumPorts;
   renderDataStore?: WaveformRenderDataStore;
@@ -2522,6 +2532,14 @@ function TrackSpectrumSession(props: {
     summary: waveformState.summary,
     viewportRef,
   });
+  const onSelectionCommitRef = useRef(props.onSelectionCommit);
+  onSelectionCommitRef.current = props.onSelectionCommit;
+  const commitPlaybackStatusRef = useRef<TrackSpectrumPlaybackStatusCommit | null>(null);
+  commitPlaybackStatusRef.current =
+    props.playheadEnabled === true ? playheadController.commitPlaybackStatus : null;
+  const commitSelection = useCallback((range: WaveformSelectionDragResolution) => {
+    onSelectionCommitRef.current?.(range, commitPlaybackStatusRef.current ?? undefined);
+  }, []);
   const shouldShowLoadingGrid = waveformState.status === "loading";
   const externalSelection = props.selection ?? null;
   const previousExternalSelectionRef = useRef<WaveformSelectionRange | null>(externalSelection);
@@ -2749,7 +2767,7 @@ function TrackSpectrumSession(props: {
     },
     [
       maximumPixelsPerSecond,
-      playheadController.syncPlayhead,
+      playheadController,
       syncSelectionOverlay,
       waveformState.summary.duration_ms,
     ],
@@ -3019,7 +3037,7 @@ function TrackSpectrumSession(props: {
         />
       )}
       <WaveformSelectionOverlay
-        onSelectionCommit={props.onSelectionCommit}
+        onSelectionCommit={commitSelection}
         isDraggingRef={isSelectionDragActiveRef}
         onSelectionCancelPreview={resetSelectionPreview}
         onSelectionPreview={syncSelectionOverlay}
@@ -3760,8 +3778,10 @@ function useWaveformPlayheadController(args: {
         nowMs: nowMs ?? readWaveformPerformanceNow(ownerWindow),
         snapshot,
       });
+    const playbackStartMs =
+      dragPreview !== null ? 0 : positionMs === null ? null : (snapshot?.playback_start_ms ?? null);
     const cssVars = resolveWaveformPlayheadCssVariables({
-      playbackStartMs: dragPreview !== null ? 0 : (snapshot?.playback_start_ms ?? null),
+      playbackStartMs,
       pixelsPerSecond: viewport.pixelsPerSecond,
       positionMs,
       scrollLeft: viewport.scrollLeft,
@@ -3867,6 +3887,15 @@ function useWaveformPlayheadController(args: {
       syncPlayhead();
     },
     [syncPlayhead],
+  );
+  const commitExternalPlaybackStatus = useCallback(
+    (status: PlaybackStatusPayload | null) => {
+      const ownerWindow =
+        latestArgsRef.current.hostRef.current?.ownerDocument.defaultView ??
+        (typeof window === "undefined" ? null : window);
+      commitPlaybackStatus(status, ownerWindow);
+    },
+    [commitPlaybackStatus],
   );
 
   const beginPlayheadDrag = useCallback(() => {
@@ -4010,7 +4039,13 @@ function useWaveformPlayheadController(args: {
       ownerWindow.clearInterval(intervalId);
       commitPlaybackSnapshot(null);
     };
-  }, [args.enabled, args.filePath, args.playbackPort, commitPlaybackSnapshot]);
+  }, [
+    args.enabled,
+    args.filePath,
+    args.playbackPort,
+    commitPlaybackSnapshot,
+    commitPlaybackStatus,
+  ]);
 
   useEffect(() => stopPlayheadAnimation, [stopPlayheadAnimation]);
 
@@ -4022,6 +4057,7 @@ function useWaveformPlayheadController(args: {
     beginPlayheadDrag,
     cancelPlayheadDrag,
     commitPlayheadDrag,
+    commitPlaybackStatus: commitExternalPlaybackStatus,
     previewPlayheadDrag,
     syncPlayhead,
   };
@@ -5553,7 +5589,7 @@ function parseWaveformLoadingRgbChannel(value: string) {
   return Number.isFinite(channel) ? clampNumber(channel / 255, 0, 1) : null;
 }
 
-function resolveWaveformPlayheadCssVariables(args: {
+export function resolveWaveformPlayheadCssVariables(args: {
   playbackStartMs: number | null;
   pixelsPerSecond: number;
   positionMs: number | null;
