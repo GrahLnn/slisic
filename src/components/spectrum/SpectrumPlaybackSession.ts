@@ -1,0 +1,301 @@
+import { crab, type PlaybackStatusPayload, type PlaybackTrackPayload } from "@/src/cmd";
+import type {
+  SpectrumPlaybackActionSnapshot,
+  SpectrumPlaybackIdentity,
+} from "./SpectrumPage.view-model";
+import {
+  isSpectrumPlaybackStatusIdentityForAction,
+  projectSpectrumPlaybackIdentity,
+  resolveSpectrumPlaybackActionSnapshot,
+  resolveSpectrumPlaybackRestoreEffect,
+} from "./SpectrumPage.view-model";
+
+export type SpectrumPlaybackSessionStatus = PlaybackStatusPayload | null;
+
+export interface SpectrumPlaybackSessionPorts {
+  getPlaybackStatus(): Promise<SpectrumPlaybackSessionStatus>;
+  pauseSpectrumMusic(scopeId: number, track: PlaybackTrackPayload): Promise<boolean>;
+  playSpectrumMusic(
+    scopeId: number,
+    track: PlaybackTrackPayload,
+    positionMs: number | null,
+  ): Promise<boolean>;
+  restoreSpectrumMusic(
+    scopeId: number,
+    track: PlaybackTrackPayload,
+    positionMs: number | null,
+  ): Promise<boolean>;
+  resumeSpectrumMusic(scopeId: number, track: PlaybackTrackPayload): Promise<boolean>;
+  updateSpectrumPlaybackLoopSignal(
+    scopeId: number,
+    payload: SpectrumPlaybackLoopSignalCommandPayload,
+  ): Promise<SpectrumPlaybackSessionStatus>;
+}
+
+export interface SpectrumPlaybackSession {
+  capturePosition(args: {
+    resume: SpectrumPlaybackResumePoint | null;
+  }): Promise<SpectrumPlaybackResumePoint | null>;
+  pauseOrResume(args: {
+    identity: SpectrumPlaybackIdentity;
+    musicName: string;
+  }): Promise<SpectrumPlaybackSessionStatus>;
+  readStatus(): Promise<SpectrumPlaybackSessionStatus>;
+  restoreResumePoint(args: {
+    identity: SpectrumPlaybackIdentity;
+    musicName: string;
+    resume: SpectrumPlaybackResumePoint | null;
+  }): Promise<SpectrumPlaybackSessionStatus>;
+  updateLoopSignal(args: {
+    endMs: number | null;
+    identity: SpectrumPlaybackIdentity;
+    musicName: string;
+    startMs: number | null;
+  }): Promise<SpectrumPlaybackSessionStatus>;
+}
+
+export interface SpectrumPlaybackResumePoint {
+  identity: SpectrumPlaybackIdentity;
+  positionMs: number | null;
+}
+
+export type SpectrumPlaybackLoopSignalCommandPayload = {
+  track: PlaybackTrackPayload;
+  start_ms: number;
+  end_ms: number;
+};
+
+export function createSpectrumPlaybackTrackPayload(
+  identity: SpectrumPlaybackIdentity,
+  musicName: string,
+): PlaybackTrackPayload {
+  return {
+    end_ms: identity.endMs,
+    file_path: identity.filePath,
+    music_name: musicName,
+    music_url: identity.url,
+    playlist_name: identity.playlistName,
+    start_ms: identity.startMs,
+  };
+}
+
+export function createSpectrumPlaybackLoopSignalPayload(args: {
+  endMs: number | null;
+  identity: SpectrumPlaybackIdentity;
+  musicName: string;
+  startMs: number | null;
+}): SpectrumPlaybackLoopSignalCommandPayload {
+  return {
+    end_ms: args.endMs ?? args.identity.endMs,
+    start_ms: args.startMs ?? args.identity.startMs,
+    track: createSpectrumPlaybackTrackPayload(args.identity, args.musicName),
+  };
+}
+
+export function isPlaybackStatusForSpectrumIdentity(
+  status: SpectrumPlaybackSessionStatus,
+  identity: SpectrumPlaybackIdentity,
+) {
+  return isSpectrumPlaybackStatusIdentityForAction(
+    resolveSpectrumPlaybackStatusIdentity(status),
+    identity,
+  );
+}
+
+export function resolvePlaybackAbsolutePositionMs(status: PlaybackStatusPayload) {
+  return Math.max(0, (status.playback_start_ms ?? 0) + status.position_ms);
+}
+
+export function resolveSpectrumPlaybackActionSnapshotFromStatus(
+  status: SpectrumPlaybackSessionStatus,
+): SpectrumPlaybackActionSnapshot | null {
+  if (!status?.path) {
+    return null;
+  }
+
+  return resolveSpectrumPlaybackActionSnapshot({
+    endMs: status.track_end_ms,
+    filePath: status.path,
+    paused: status.paused,
+    playlistName: status.playlist_name,
+    startMs: status.track_start_ms,
+    url: status.music_url,
+  });
+}
+
+export function resolveSpectrumPlaybackStatusIdentity(status: SpectrumPlaybackSessionStatus) {
+  if (!status?.path) {
+    return null;
+  }
+
+  return projectSpectrumPlaybackIdentity({
+    endMs: status.track_end_ms,
+    filePath: status.path,
+    playlistName: status.playlist_name,
+    startMs: status.track_start_ms,
+    url: status.music_url,
+  });
+}
+
+export function createSpectrumPlaybackSession(args: {
+  ports: SpectrumPlaybackSessionPorts;
+  scopeId: number | null;
+}): SpectrumPlaybackSession {
+  const scopeId = args.scopeId;
+
+  async function play(args_: {
+    identity: SpectrumPlaybackIdentity;
+    musicName: string;
+    positionMs?: number | null;
+  }) {
+    if (scopeId === null) {
+      return false;
+    }
+
+    return args.ports.playSpectrumMusic(
+      scopeId,
+      createSpectrumPlaybackTrackPayload(args_.identity, args_.musicName),
+      args_.positionMs ?? null,
+    );
+  }
+
+  async function restore(args_: {
+    identity: SpectrumPlaybackIdentity;
+    musicName: string;
+    positionMs: number | null;
+  }) {
+    if (scopeId === null) {
+      return false;
+    }
+
+    return args.ports.restoreSpectrumMusic(
+      scopeId,
+      createSpectrumPlaybackTrackPayload(args_.identity, args_.musicName),
+      args_.positionMs,
+    );
+  }
+
+  return {
+    async capturePosition({ resume }) {
+      if (scopeId === null || !resume) {
+        return resume;
+      }
+
+      const status = await args.ports.getPlaybackStatus();
+      if (status === null || !isPlaybackStatusForSpectrumIdentity(status, resume.identity)) {
+        return resume;
+      }
+
+      return {
+        identity: resume.identity,
+        positionMs: resolvePlaybackAbsolutePositionMs(status),
+      };
+    },
+    async pauseOrResume({ identity, musicName }) {
+      if (scopeId === null) {
+        return null;
+      }
+
+      const status = await args.ports.getPlaybackStatus();
+
+      if (!isPlaybackStatusForSpectrumIdentity(status, identity)) {
+        await play({ identity, musicName });
+        return args.ports.getPlaybackStatus();
+      }
+
+      const track = createSpectrumPlaybackTrackPayload(identity, musicName);
+      if (status?.paused) {
+        await args.ports.resumeSpectrumMusic(scopeId, track);
+      } else {
+        await args.ports.pauseSpectrumMusic(scopeId, track);
+      }
+
+      return args.ports.getPlaybackStatus();
+    },
+    readStatus() {
+      return args.ports.getPlaybackStatus();
+    },
+    async restoreResumePoint({ identity, musicName, resume }) {
+      if (scopeId === null || !resume) {
+        return null;
+      }
+
+      const status = await args.ports.getPlaybackStatus();
+      const restoreEffect = resolveSpectrumPlaybackRestoreEffect({
+        identity,
+        statusIdentity: resolveSpectrumPlaybackStatusIdentity(status),
+        statusPaused: status?.paused === true,
+        statusPositionMs:
+          status !== null && isPlaybackStatusForSpectrumIdentity(status, identity)
+            ? resolvePlaybackAbsolutePositionMs(status)
+            : null,
+        storedPositionMs: resume.positionMs,
+      });
+      if (restoreEffect.kind === "none") {
+        return status;
+      }
+
+      await restore({
+        identity,
+        musicName,
+        positionMs: restoreEffect.positionMs,
+      });
+      return args.ports.getPlaybackStatus();
+    },
+    updateLoopSignal({ endMs, identity, musicName, startMs }) {
+      if (scopeId === null) {
+        return Promise.resolve(null);
+      }
+
+      return args.ports.updateSpectrumPlaybackLoopSignal(
+        scopeId,
+        createSpectrumPlaybackLoopSignalPayload({
+          endMs,
+          identity,
+          musicName,
+          startMs,
+        }),
+      );
+    },
+  };
+}
+
+type CrabResultLike<T> = {
+  match<U>(handlers: { Ok: (value: T) => U; Err: (error: string) => U }): U;
+};
+
+function unwrapCrabResult<T>(result: T | CrabResultLike<T>): T {
+  if (typeof result === "object" && result !== null && "match" in result) {
+    return (result as CrabResultLike<T>).match({
+      Ok: (value: T) => value,
+      Err: (error: string) => {
+        throw new Error(error);
+      },
+    });
+  }
+
+  return result as T;
+}
+
+export const crabSpectrumPlaybackSessionPorts: SpectrumPlaybackSessionPorts = {
+  async getPlaybackStatus() {
+    return unwrapCrabResult<SpectrumPlaybackSessionStatus>(await crab.getPlaybackStatus());
+  },
+  async pauseSpectrumMusic(scopeId, track) {
+    return unwrapCrabResult<boolean>(await crab.pauseSpectrumMusic(scopeId, track));
+  },
+  async playSpectrumMusic(scopeId, track, positionMs) {
+    return unwrapCrabResult<boolean>(await crab.playSpectrumMusic(scopeId, track, positionMs));
+  },
+  async restoreSpectrumMusic(scopeId, track, positionMs) {
+    return unwrapCrabResult<boolean>(await crab.restoreSpectrumMusic(scopeId, track, positionMs));
+  },
+  async resumeSpectrumMusic(scopeId, track) {
+    return unwrapCrabResult<boolean>(await crab.resumeSpectrumMusic(scopeId, track));
+  },
+  async updateSpectrumPlaybackLoopSignal(scopeId, payload) {
+    return unwrapCrabResult<PlaybackStatusPayload | null>(
+      await crab.updateSpectrumPlaybackLoopSignal(scopeId, payload),
+    );
+  },
+};

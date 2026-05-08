@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
@@ -10,22 +10,24 @@ import { SpectrumMusicVirtualList } from "./SpectrumMusicVirtualList";
 import type { TrackSpectrumPlaybackStatusCommit } from "./SpectrumVisualizer";
 import {
   areSpectrumPlaybackActionSnapshotsEqual,
-  isSpectrumPlaybackStatusIdentityForAction,
-  projectSpectrumPlaybackIdentity,
-  resolveSpectrumPlaybackActionSnapshot,
   resolveSpectrumBackActionVisualState,
   resolveSpectrumBackTitleCommitTargets,
   resolveSpectrumMusicRangeChange,
   resolveSpectrumMusicEditorViewModels,
-  resolveSpectrumPlaybackRestoreEffect,
   type SpectrumBackActionVisualState,
   type SpectrumMusicEditorViewModel,
   type SpectrumPlaybackActionSnapshot,
   type SpectrumPlaybackIdentity,
 } from "./SpectrumPage.view-model";
+import {
+  crabSpectrumPlaybackSessionPorts,
+  createSpectrumPlaybackSession,
+  resolveSpectrumPlaybackActionSnapshotFromStatus,
+  type SpectrumPlaybackResumePoint,
+  type SpectrumPlaybackSessionStatus,
+} from "./SpectrumPlaybackSession";
 import { SPECTRUM_PLAYBACK_STATUS_POLL_MS } from "./SpectrumPlaybackAction";
 import { usePageRenderFreeze } from "../usePageRenderFreeze";
-import { crab, type PlaybackStatusPayload } from "@/src/cmd";
 
 const contentFadeProps = {
   initial: { opacity: 0 },
@@ -55,101 +57,11 @@ type SpectrumRenderData = {
   trackFilePath: string | null;
 };
 
-function createSpectrumPlaybackTrackPayload(identity: SpectrumPlaybackIdentity, musicName: string) {
-  return {
-    end_ms: identity.endMs,
-    file_path: identity.filePath,
-    music_name: musicName,
-    music_url: identity.url,
-    playlist_name: identity.playlistName,
-    start_ms: identity.startMs,
-  };
-}
-
-function createSpectrumPlaybackLoopSignalPayload(args: {
-  endMs: number | null;
-  identity: SpectrumPlaybackIdentity;
-  musicName: string;
-  startMs: number | null;
-}) {
-  return {
-    end_ms: args.endMs ?? args.identity.endMs,
-    start_ms: args.startMs ?? args.identity.startMs,
-    track: createSpectrumPlaybackTrackPayload(args.identity, args.musicName),
-  };
-}
-
-function isPlaybackStatusForSpectrumIdentity(
-  status: PlaybackStatusPayload | null,
-  identity: SpectrumPlaybackIdentity,
-) {
-  if (!status?.path) {
-    return false;
-  }
-
-  return isSpectrumPlaybackStatusIdentityForAction(
-    projectSpectrumPlaybackIdentity({
-      endMs: status.track_end_ms,
-      filePath: status.path,
-      playlistName: status.playlist_name,
-      startMs: status.track_start_ms,
-      url: status.music_url,
-    }),
-    identity,
-  );
-}
-
-function resolveSpectrumPlaybackStatusIdentity(status: PlaybackStatusPayload | null) {
-  if (!status?.path) {
-    return null;
-  }
-
-  return projectSpectrumPlaybackIdentity({
-    endMs: status.track_end_ms,
-    filePath: status.path,
-    playlistName: status.playlist_name,
-    startMs: status.track_start_ms,
-    url: status.music_url,
-  });
-}
-
-function resolvePlaybackAbsolutePositionMs(status: PlaybackStatusPayload) {
-  return Math.max(0, (status.playback_start_ms ?? 0) + status.position_ms);
-}
-
-function resolveSpectrumPlaybackActionSnapshotFromStatus(
-  status: PlaybackStatusPayload | null,
-): SpectrumPlaybackActionSnapshot | null {
-  if (!status?.path) {
-    return null;
-  }
-
-  return resolveSpectrumPlaybackActionSnapshot({
-    endMs: status.track_end_ms,
-    filePath: status.path,
-    paused: status.paused,
-    playlistName: status.playlist_name,
-    startMs: status.track_start_ms,
-    url: status.music_url,
-  });
-}
-
 function resolveSpectrumEditorByPlaybackIdentity(
   editors: readonly SpectrumMusicEditorViewModel[],
   identity: SpectrumPlaybackIdentity,
 ) {
   return editors.find((editor) => editor.playbackIdentity?.key === identity.key) ?? null;
-}
-
-async function readPlaybackStatus() {
-  const result = await crab.getPlaybackStatus();
-
-  return result.match({
-    Ok: (value) => value,
-    Err: (error) => {
-      throw new Error(error);
-    },
-  });
 }
 
 function waitForNextFrame() {
@@ -264,10 +176,7 @@ function SpectrumBackIcon({ visualState }: { visualState: SpectrumBackActionVisu
 export function SpectrumPage() {
   const isPresent = useIsPresent();
   const editableTitleRefs = useRef(new Map<string, EditableTitleHandle>());
-  const primaryPlaybackResumeRef = useRef<{
-    identity: SpectrumPlaybackIdentity;
-    positionMs: number | null;
-  } | null>(null);
+  const primaryPlaybackResumeRef = useRef<SpectrumPlaybackResumePoint | null>(null);
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
   const playbackActionSnapshotRef = useRef<SpectrumPlaybackActionSnapshot | null>(null);
   const [playbackActionSnapshot, setPlaybackActionSnapshot] =
@@ -311,6 +220,14 @@ export function SpectrumPage() {
   const isBackActionLocked = isBackNavigationPending;
   const primaryEditor = renderData.editorViewModels[0] ?? null;
   const primaryPlaybackIdentity = primaryEditor?.playbackIdentity ?? null;
+  const playbackSession = useMemo(
+    () =>
+      createSpectrumPlaybackSession({
+        ports: crabSpectrumPlaybackSessionPorts,
+        scopeId: spectrumPlaybackScopeId,
+      }),
+    [spectrumPlaybackScopeId],
+  );
 
   useLayoutEffect(() => {
     if (primaryPlaybackIdentity === null) {
@@ -347,30 +264,17 @@ export function SpectrumPage() {
     if (!editor.playbackIdentity) {
       return;
     }
-    if (spectrumPlaybackScopeId === null) {
-      return;
-    }
 
-    void crab
-      .updateSpectrumPlaybackLoopSignal(
-        spectrumPlaybackScopeId,
-        createSpectrumPlaybackLoopSignalPayload({
-          endMs: nextRange.endMs,
-          identity: editor.playbackIdentity,
-          musicName: editor.titleValue,
-          startMs: nextRange.startMs,
-        }),
-      )
-      .then((result) => {
-        result.match({
-          Ok: (status) => {
-            commitPlaybackActionSnapshot(status);
-            commitPlaybackStatus?.(status);
-          },
-          Err: (error) => {
-            throw new Error(error);
-          },
-        });
+    void playbackSession
+      .updateLoopSignal({
+        endMs: nextRange.endMs,
+        identity: editor.playbackIdentity,
+        musicName: editor.titleValue,
+        startMs: nextRange.startMs,
+      })
+      .then((status) => {
+        commitPlaybackActionSnapshot(status);
+        commitPlaybackStatus?.(status);
       })
       .catch((error) => {
         console.error("Failed to update spectrum playback loop signal", error);
@@ -446,32 +350,6 @@ export function SpectrumPage() {
     }
   }
 
-  async function handlePlaySpectrumMusic(identity: SpectrumPlaybackIdentity) {
-    await capturePrimarySpectrumPlaybackPosition();
-
-    const editor = resolveSpectrumEditorByPlaybackIdentity(renderData.editorViewModels, identity);
-    if (editor === null) {
-      return;
-    }
-    if (spectrumPlaybackScopeId === null) {
-      return;
-    }
-
-    const result = await crab.playSpectrumMusic(
-      spectrumPlaybackScopeId,
-      createSpectrumPlaybackTrackPayload(identity, editor.titleValue),
-      null,
-    );
-
-    result.match({
-      Ok: () => undefined,
-      Err: (error) => {
-        throw new Error(error);
-      },
-    });
-    await refreshSpectrumPlaybackStatus();
-  }
-
   async function handleRestorePrimarySpectrumMusicPlayback() {
     if (isNowPlayingSpectrumMusicDeleteRequested()) {
       return;
@@ -482,39 +360,14 @@ export function SpectrumPage() {
     if (!primaryResume || !primaryEditor || primaryEditor.playbackIdentity === null) {
       return;
     }
-    if (spectrumPlaybackScopeId === null) {
-      return;
-    }
 
     const identity = primaryEditor.playbackIdentity;
-    const status = await refreshSpectrumPlaybackStatus();
-    const restoreEffect = resolveSpectrumPlaybackRestoreEffect({
+    const status = await playbackSession.restoreResumePoint({
       identity,
-      statusIdentity: resolveSpectrumPlaybackStatusIdentity(status),
-      statusPaused: status?.paused === true,
-      statusPositionMs:
-        status !== null && isPlaybackStatusForSpectrumIdentity(status, identity)
-          ? resolvePlaybackAbsolutePositionMs(status)
-          : null,
-      storedPositionMs: primaryResume.positionMs,
+      musicName: primaryEditor.titleValue,
+      resume: primaryResume,
     });
-    if (restoreEffect.kind === "none") {
-      return;
-    }
-
-    const result = await crab.restoreSpectrumMusic(
-      spectrumPlaybackScopeId,
-      createSpectrumPlaybackTrackPayload(identity, primaryEditor.titleValue),
-      restoreEffect.positionMs,
-    );
-
-    result.match({
-      Ok: () => undefined,
-      Err: (error) => {
-        throw new Error(error);
-      },
-    });
-    await refreshSpectrumPlaybackStatus();
+    commitPlaybackActionSnapshot(status);
   }
 
   async function handleSpectrumPlaybackAction(identity: SpectrumPlaybackIdentity) {
@@ -522,33 +375,14 @@ export function SpectrumPage() {
     if (editor === null) {
       return;
     }
-    if (spectrumPlaybackScopeId === null) {
-      return;
-    }
 
-    const status = await refreshSpectrumPlaybackStatus();
+    await capturePrimarySpectrumPlaybackPosition();
 
-    if (
-      !isSpectrumPlaybackStatusIdentityForAction(
-        resolveSpectrumPlaybackStatusIdentity(status),
-        identity,
-      )
-    ) {
-      await handlePlaySpectrumMusic(identity);
-      return;
-    }
-
-    const track = createSpectrumPlaybackTrackPayload(identity, editor.titleValue);
-    const result = status?.paused
-      ? await crab.resumeSpectrumMusic(spectrumPlaybackScopeId, track)
-      : await crab.pauseSpectrumMusic(spectrumPlaybackScopeId, track);
-    result.match({
-      Ok: () => undefined,
-      Err: (error) => {
-        throw new Error(error);
-      },
+    const status = await playbackSession.pauseOrResume({
+      identity,
+      musicName: editor.titleValue,
     });
-    await refreshSpectrumPlaybackStatus();
+    commitPlaybackActionSnapshot(status);
   }
 
   async function capturePrimarySpectrumPlaybackPosition() {
@@ -557,27 +391,18 @@ export function SpectrumPage() {
       return;
     }
 
-    const status = await refreshSpectrumPlaybackStatus();
-    const currentPrimaryStatus = isPlaybackStatusForSpectrumIdentity(status, primaryResume.identity)
-      ? status
-      : null;
-    if (!currentPrimaryStatus) {
-      return;
-    }
-
-    primaryPlaybackResumeRef.current = {
-      identity: primaryResume.identity,
-      positionMs: resolvePlaybackAbsolutePositionMs(currentPrimaryStatus),
-    };
+    primaryPlaybackResumeRef.current = await playbackSession.capturePosition({
+      resume: primaryResume,
+    });
   }
 
   async function refreshSpectrumPlaybackStatus() {
-    const status = await readPlaybackStatus();
+    const status = await playbackSession.readStatus();
     commitPlaybackActionSnapshot(status);
     return status;
   }
 
-  function commitPlaybackActionSnapshot(status: PlaybackStatusPayload | null) {
+  function commitPlaybackActionSnapshot(status: SpectrumPlaybackSessionStatus) {
     const snapshot = resolveSpectrumPlaybackActionSnapshotFromStatus(status);
     if (areSpectrumPlaybackActionSnapshotsEqual(playbackActionSnapshotRef.current, snapshot)) {
       return;
@@ -592,13 +417,7 @@ export function SpectrumPage() {
 
     async function refresh() {
       try {
-        const result = await crab.getPlaybackStatus();
-        const status = result.match({
-          Ok: (value) => value,
-          Err: (error) => {
-            throw new Error(error);
-          },
-        });
+        const status = await playbackSession.readStatus();
         if (!disposed) {
           commitPlaybackActionSnapshot(status);
         }
@@ -617,7 +436,7 @@ export function SpectrumPage() {
       disposed = true;
       window.clearInterval(intervalId);
     };
-  }, []);
+  }, [playbackSession]);
 
   return (
     <div
