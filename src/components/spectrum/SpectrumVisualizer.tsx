@@ -523,6 +523,7 @@ type WaveformCanvasFrameDescriptor = {
   renderSignature: string;
   scopeKey: string;
   viewport: WaveformViewportModel;
+  visualSignature: string;
 };
 
 type WaveformCanvasRenderPlanEmpty =
@@ -1392,14 +1393,14 @@ export function resolveWaveformCanvasRenderRequestTransition(args: {
   if (
     args.currentRequestedFrame &&
     args.hasScheduledFrame &&
-    areWaveformCanvasFrameRenderSignaturesEqual(args.currentRequestedFrame, args.nextFrame)
+    areWaveformCanvasFrameVisualSignaturesEqual(args.currentRequestedFrame, args.nextFrame)
   ) {
     return "reuse-scheduled" as const;
   }
 
   if (
     args.currentJob &&
-    areWaveformCanvasFrameRenderSignaturesEqual(args.currentJob, args.nextFrame)
+    areWaveformCanvasFrameVisualSignaturesEqual(args.currentJob, args.nextFrame)
   ) {
     return "reuse-job" as const;
   }
@@ -1407,12 +1408,31 @@ export function resolveWaveformCanvasRenderRequestTransition(args: {
   if (
     args.currentPresentedFrame &&
     (!args.currentPresentedDirtyRanges || args.currentPresentedDirtyRanges.length === 0) &&
-    areWaveformCanvasFrameRenderSignaturesEqual(args.currentPresentedFrame, args.nextFrame)
+    areWaveformCanvasFrameVisualSignaturesEqual(args.currentPresentedFrame, args.nextFrame)
   ) {
     return "reuse-presented" as const;
   }
 
   return "start-new" as const;
+}
+
+export function shouldContinueWaveformCanvasRenderJobForPendingCoverage(args: {
+  completedDirtyRanges: readonly WaveformCanvasColumnRange[];
+  completedFrame: WaveformCanvasFrameDescriptor;
+  requestedFrame: WaveformCanvasFrameDescriptor | null;
+}) {
+  return (
+    args.completedDirtyRanges.length > 0 &&
+    args.requestedFrame !== null &&
+    areWaveformCanvasFrameVisualSignaturesEqual(args.completedFrame, args.requestedFrame) &&
+    !areWaveformCanvasFrameRenderSignaturesEqual(args.completedFrame, args.requestedFrame)
+  );
+}
+
+export function shouldRetainWaveformCanvasSnapshotForRenderStart(args: {
+  presentation: WaveformCanvasRenderPresentation;
+}) {
+  return args.presentation.kind !== "fresh";
 }
 
 function resolveWaveformCanvasFastPresentationPlan(args: {
@@ -5028,6 +5048,15 @@ function useWaveformCanvasRenderer(args: {
       }
 
       const startedAt = readWaveformPerformanceNow(ownerWindow);
+      if (
+        !shouldRetainWaveformCanvasSnapshotForRenderStart({
+          presentation: controller.renderPresentation,
+        })
+      ) {
+        controller.presentedFrame = null;
+        controller.reusableFrame = null;
+        controller.presentedDirtyRanges = [];
+      }
       job = createWaveformCanvasRenderJob({
         id: waveformCanvasRenderJobSequence++,
         descriptor: createWaveformCanvasFrameDescriptor({
@@ -5070,6 +5099,8 @@ function useWaveformCanvasRenderer(args: {
     if (chunk.completed) {
       const accepted = job.revision === controller.requestedRevision;
       let completion: WaveformCanvasRenderJobCompletion | null = null;
+      const requestedFrameAtCompletion = controller.requestedFrame;
+      let shouldContinuePendingCoverage = false;
 
       if (accepted) {
         completion = completeWaveformCanvasRenderJob({
@@ -5077,14 +5108,28 @@ function useWaveformCanvasRenderer(args: {
           job,
         });
         if (completion.kind === "committed") {
-          controller.presentedFrame = job.descriptor;
-          controller.reusableFrame = job.descriptor;
-          controller.requestedFrame = job.descriptor;
+          shouldContinuePendingCoverage = shouldContinueWaveformCanvasRenderJobForPendingCoverage({
+            completedDirtyRanges: completion.dirtyRanges,
+            completedFrame: job.descriptor,
+            requestedFrame: requestedFrameAtCompletion,
+          });
+          const completedFrame =
+            completion.dirtyRanges.length === 0 &&
+            requestedFrameAtCompletion !== null &&
+            areWaveformCanvasFrameVisualSignaturesEqual(job.descriptor, requestedFrameAtCompletion)
+              ? requestedFrameAtCompletion
+              : job.descriptor;
+          controller.presentedFrame = completedFrame;
+          controller.reusableFrame = completedFrame;
+          controller.requestedFrame = shouldContinuePendingCoverage
+            ? requestedFrameAtCompletion
+            : completedFrame;
           controller.presentedDirtyRanges = completion.dirtyRanges;
+          controller.progressiveRender = completion.dirtyRanges.length === 0;
           controller.renderPresentation =
             completion.dirtyRanges.length > 0
               ? {
-                  descriptor: job.descriptor,
+                  descriptor: completedFrame,
                   dirtyRanges: completion.dirtyRanges,
                   kind: "dirty",
                 }
@@ -5102,6 +5147,13 @@ function useWaveformCanvasRenderer(args: {
         requestedRevision: controller.requestedRevision,
       });
       controller.job = null;
+      if (shouldContinuePendingCoverage) {
+        if (ownerWindow) {
+          controller.frameId = ownerWindow.requestAnimationFrame(runFrame);
+        } else {
+          runFrame();
+        }
+      }
       return;
     }
 
@@ -5169,6 +5221,8 @@ function useWaveformCanvasRenderer(args: {
         controller.dataPlan = dataPlan;
         controller.requestedFrame = descriptor;
         if (requestTransition === "reuse-presented") {
+          controller.presentedFrame = descriptor;
+          controller.reusableFrame = descriptor;
           controller.presentedDirtyRanges = [];
         }
         return {
@@ -5193,7 +5247,7 @@ function useWaveformCanvasRenderer(args: {
       const keepsActivePanPresentation =
         descriptor !== null &&
         controller.panPresentationTargetFrame !== null &&
-        areWaveformCanvasFrameRenderSignaturesEqual(
+        areWaveformCanvasFrameVisualSignaturesEqual(
           controller.panPresentationTargetFrame,
           descriptor,
         );
@@ -6236,6 +6290,10 @@ function createWaveformCanvasFrameDescriptor(args: {
   plan: WaveformCanvasRenderPlan;
 }): WaveformCanvasFrameDescriptor {
   const dataSignature = createWaveformCanvasRenderPlanDataSignature(args.plan);
+  const visualSignature = createWaveformCanvasFrameVisualSignature({
+    color: args.color,
+    plan: args.plan,
+  });
 
   return {
     color: args.color,
@@ -6249,12 +6307,12 @@ function createWaveformCanvasFrameDescriptor(args: {
     }),
     scopeKey: args.plan.scopeKey,
     viewport: args.plan.viewport,
+    visualSignature,
   };
 }
 
-function createWaveformCanvasFrameRenderSignature(args: {
+function createWaveformCanvasFrameVisualSignature(args: {
   color: string;
-  dataSignature: string;
   plan: WaveformCanvasRenderPlan;
 }) {
   const viewport = args.plan.viewport;
@@ -6263,7 +6321,6 @@ function createWaveformCanvasFrameRenderSignature(args: {
   return [
     args.plan.scopeKey,
     args.color,
-    args.dataSignature,
     args.plan.dataPixelsPerSecond,
     geometry.backingHeight,
     geometry.backingWidth,
@@ -6284,6 +6341,21 @@ function createWaveformCanvasFrameRenderSignature(args: {
     args.plan.visibleWindow.startPx,
     args.plan.visibleWindow.endPx,
   ].join("|");
+}
+
+function createWaveformCanvasFrameRenderSignature(args: {
+  color: string;
+  dataSignature: string;
+  plan: WaveformCanvasRenderPlan;
+}) {
+  return [args.dataSignature, createWaveformCanvasFrameVisualSignature(args)].join("|");
+}
+
+function areWaveformCanvasFrameVisualSignaturesEqual(
+  left: WaveformCanvasFrameDescriptor,
+  right: WaveformCanvasFrameDescriptor,
+) {
+  return left.visualSignature === right.visualSignature;
 }
 
 function areWaveformCanvasFrameRenderSignaturesEqual(

@@ -20,6 +20,8 @@ import {
   resolveTrackWaveformInitialStatus,
   resolveWaveformBarWidthPx,
   resolveWaveformCanvasRenderRequestTransition,
+  shouldContinueWaveformCanvasRenderJobForPendingCoverage,
+  shouldRetainWaveformCanvasSnapshotForRenderStart,
   resolveWaveformContentWidth,
   resolveWaveformDataPlan,
   resolveWaveformDataPlanScopedRequests,
@@ -98,11 +100,35 @@ function createWaveformTestFrameDescriptor(
   } = {},
 ) {
   const viewportWidth = overrides.viewportWidth ?? 1_000;
+  const dataSignature = "100(0:track|100.00|0|2048)";
+  const visualSignature = [
+    overrides.scopeKey ?? "track",
+    "#262626",
+    overrides.dataPixelsPerSecond ?? 100,
+    208,
+    viewportWidth * 3,
+    1,
+    -viewportWidth,
+    viewportWidth * 3,
+    viewportWidth,
+    10_000,
+    100_000,
+    "",
+    800,
+    100,
+    (overrides.scrollLeft ?? 0).toFixed(3),
+    viewportWidth,
+    "0.000000",
+    "10.000000",
+    "1",
+    0,
+    1_000,
+  ].join("|");
 
   return {
     color: "#262626",
     dataPixelsPerSecond: overrides.dataPixelsPerSecond ?? 100,
-    dataSignature: "100(0:track|100.00|0|2048)",
+    dataSignature,
     geometry: {
       backingHeight: 208,
       backingWidth: viewportWidth * 3,
@@ -111,30 +137,7 @@ function createWaveformTestFrameDescriptor(
       rasterWidth: viewportWidth * 3,
       viewportWidth,
     },
-    renderSignature: [
-      overrides.scopeKey ?? "track",
-      "#262626",
-      "100(0:track|100.00|0|2048)",
-      overrides.dataPixelsPerSecond ?? 100,
-      208,
-      viewportWidth * 3,
-      1,
-      -viewportWidth,
-      viewportWidth * 3,
-      viewportWidth,
-      10_000,
-      100_000,
-      "",
-      800,
-      100,
-      (overrides.scrollLeft ?? 0).toFixed(3),
-      viewportWidth,
-      "0.000000",
-      "10.000000",
-      "1",
-      0,
-      1_000,
-    ].join("|"),
+    renderSignature: [dataSignature, visualSignature].join("|"),
     scopeKey: overrides.scopeKey ?? "track",
     viewport: {
       contentWidth: 10_000,
@@ -145,6 +148,7 @@ function createWaveformTestFrameDescriptor(
       scrollLeft: overrides.scrollLeft ?? 0,
       viewportWidth,
     },
+    visualSignature,
   };
 }
 
@@ -1106,10 +1110,7 @@ describe("SpectrumVisualizer", () => {
     const changedData = {
       ...current,
       dataSignature: "100(0:track|100.00|2048|2048)",
-      renderSignature: current.renderSignature.replace(
-        "100(0:track|100.00|0|2048)",
-        "100(0:track|100.00|2048|2048)",
-      ),
+      renderSignature: ["100(0:track|100.00|2048|2048)", current.visualSignature].join("|"),
     };
 
     assert.equal(
@@ -1145,7 +1146,7 @@ describe("SpectrumVisualizer", () => {
         currentPresentedFrame: null,
         currentRequestedFrame: null,
         hasScheduledFrame: false,
-        nextFrame: current,
+        nextFrame: changedData,
       }),
       "reuse-job",
     );
@@ -1155,7 +1156,7 @@ describe("SpectrumVisualizer", () => {
         currentPresentedFrame: null,
         currentRequestedFrame: current,
         hasScheduledFrame: true,
-        nextFrame: current,
+        nextFrame: changedData,
       }),
       "reuse-scheduled",
     );
@@ -1167,7 +1168,147 @@ describe("SpectrumVisualizer", () => {
         hasScheduledFrame: true,
         nextFrame: changedData,
       }),
+      "reuse-scheduled",
+    );
+    assert.equal(
+      resolveWaveformCanvasRenderRequestTransition({
+        currentJob: null,
+        currentPresentedDirtyRanges: [],
+        currentPresentedFrame: current,
+        currentRequestedFrame: null,
+        hasScheduledFrame: false,
+        nextFrame: changedData,
+      }),
+      "reuse-presented",
+    );
+    assert.equal(
+      resolveWaveformCanvasRenderRequestTransition({
+        currentJob: null,
+        currentPresentedFrame: current,
+        currentRequestedFrame: null,
+        hasScheduledFrame: false,
+        nextFrame: createWaveformTestFrameDescriptor({
+          scrollLeft: 1_120,
+        }),
+      }),
       "start-new",
+    );
+  });
+
+  test("keeps progressive canvas work alive while tile coverage advances", () => {
+    const current = createWaveformTestFrameDescriptor({
+      scrollLeft: 1_000,
+    });
+    const coverageUpdates = [
+      "100(22:track|100.00|45056|2048,23:track|100.00|47104|2048)",
+      "100(21:track|100.00|43008|2048,22:track|100.00|45056|2048,23:track|100.00|47104|2048)",
+      "100(20:track|100.00|40960|2048,21:track|100.00|43008|2048,22:track|100.00|45056|2048,23:track|100.00|47104|2048)",
+    ].map((dataSignature) => ({
+      ...current,
+      dataSignature,
+      renderSignature: [dataSignature, current.visualSignature].join("|"),
+    }));
+
+    assert.deepEqual(
+      coverageUpdates.map((nextFrame) =>
+        resolveWaveformCanvasRenderRequestTransition({
+          currentJob: current,
+          currentPresentedFrame: null,
+          currentRequestedFrame: current,
+          hasScheduledFrame: true,
+          nextFrame,
+        }),
+      ),
+      ["reuse-scheduled", "reuse-scheduled", "reuse-scheduled"],
+    );
+    assert.deepEqual(
+      coverageUpdates.map((nextFrame) =>
+        resolveWaveformCanvasRenderRequestTransition({
+          currentJob: current,
+          currentPresentedFrame: null,
+          currentRequestedFrame: null,
+          hasScheduledFrame: false,
+          nextFrame,
+        }),
+      ),
+      ["reuse-job", "reuse-job", "reuse-job"],
+    );
+  });
+
+  test("continues dirty completion when pending tile coverage updates the same visual frame", () => {
+    const current = createWaveformTestFrameDescriptor({
+      scrollLeft: 1_000,
+    });
+    const changedData = {
+      ...current,
+      dataSignature: "100(0:track|100.00|0|2048,1:track|100.00|2048|2048)",
+      renderSignature: [
+        "100(0:track|100.00|0|2048,1:track|100.00|2048|2048)",
+        current.visualSignature,
+      ].join("|"),
+    };
+
+    assert.equal(
+      shouldContinueWaveformCanvasRenderJobForPendingCoverage({
+        completedDirtyRanges: [
+          {
+            endX: 120,
+            startX: 96,
+          },
+        ],
+        completedFrame: current,
+        requestedFrame: changedData,
+      }),
+      true,
+    );
+    assert.equal(
+      shouldContinueWaveformCanvasRenderJobForPendingCoverage({
+        completedDirtyRanges: [],
+        completedFrame: current,
+        requestedFrame: changedData,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldContinueWaveformCanvasRenderJobForPendingCoverage({
+        completedDirtyRanges: [
+          {
+            endX: 120,
+            startX: 96,
+          },
+        ],
+        completedFrame: current,
+        requestedFrame: createWaveformTestFrameDescriptor({
+          scrollLeft: 1_120,
+        }),
+      }),
+      false,
+    );
+  });
+
+  test("drops reusable canvas proof before a fresh progressive render mutates the canvas", () => {
+    assert.equal(
+      shouldRetainWaveformCanvasSnapshotForRenderStart({
+        presentation: {
+          kind: "fresh",
+        },
+      }),
+      false,
+    );
+    assert.equal(
+      shouldRetainWaveformCanvasSnapshotForRenderStart({
+        presentation: {
+          descriptor: createWaveformTestFrameDescriptor(),
+          dirtyRanges: [
+            {
+              endX: 120,
+              startX: 96,
+            },
+          ],
+          kind: "dirty",
+        },
+      }),
+      true,
     );
   });
 
