@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { TrackWaveformSummary } from "@/src/cmd";
 import {
+  __spectrumVisualizerTestHooks,
   areWaveformSelectionsEqual,
   clampWaveformZoomDeltaY,
   createWaveformDataRequestKey,
   createWaveformDataScopeKey,
   createWaveformRenderDataStore,
   createWaveformSharedTileCacheForFile,
+  clearWaveformCanvasColumnRanges,
   drawWaveformCanvasJobChunk,
   drawWaveformCanvasColumnRange,
   handleWaveformViewportWheel,
@@ -34,6 +36,7 @@ import {
   shouldStartWaveformHorizontalPanPresentation,
   resolveWaveformHorizontalScrollLeft,
   resolveWaveformCanvasFrameReusePlan,
+  resolveWaveformCanvasRetargetRanges,
   resolveWaveformCanvasDirtyRangesAfterPresentation,
   shouldBeginWaveformCanvasChunkPath,
   resolveWaveformLoadingGridSize,
@@ -155,6 +158,7 @@ function createWaveformTestFrameDescriptor(
 function createWaveformCanvasTestContext() {
   return {
     beginPathCount: 0,
+    clearRects: [] as { h: number; w: number; x: number; y: number }[],
     moveXValues: [] as number[],
     lineYValues: [] as number[],
     lineToCount: 0,
@@ -162,6 +166,9 @@ function createWaveformCanvasTestContext() {
     strokeCount: 0,
     beginPath() {
       this.beginPathCount += 1;
+    },
+    clearRect(x: number, y: number, w: number, h: number) {
+      this.clearRects.push({ h, w, x, y });
     },
     lineTo(_x: number, y: number) {
       this.lineToCount += 1;
@@ -173,6 +180,74 @@ function createWaveformCanvasTestContext() {
     },
     stroke() {
       this.strokeCount += 1;
+    },
+  };
+}
+
+function createWaveformCanvasPixelProbeTestCanvas(args: {
+  backingHeight: number;
+  backingWidth: number;
+  boundingWidth?: number;
+  opaqueColumns: Array<{ bottomY: number; topY: number; x: number }>;
+  parentWidth?: number;
+}) {
+  const data = new Uint8ClampedArray(args.backingWidth * args.backingHeight * 4);
+
+  for (const column of args.opaqueColumns) {
+    const topY = Math.max(0, Math.floor(column.topY));
+    const bottomY = Math.min(args.backingHeight, Math.ceil(column.bottomY));
+    for (let y = topY; y < bottomY; y += 1) {
+      const alphaIndex = (y * args.backingWidth + column.x) * 4 + 3;
+      data[alphaIndex] = 255;
+    }
+  }
+
+  return {
+    height: args.backingHeight,
+    parentElement:
+      args.parentWidth === undefined
+        ? null
+        : {
+            getBoundingClientRect: () => ({
+              bottom: args.backingHeight,
+              height: args.backingHeight,
+              left: 0,
+              right: args.parentWidth,
+              top: 0,
+              width: args.parentWidth,
+            }),
+          },
+    width: args.backingWidth,
+    getBoundingClientRect: () => ({
+      bottom: args.backingHeight,
+      height: args.backingHeight,
+      left: 0,
+      right: args.boundingWidth ?? args.backingWidth,
+      top: 0,
+      width: args.boundingWidth ?? args.backingWidth,
+    }),
+    getContext(type: string) {
+      assert.equal(type, "2d");
+      return {
+        getImageData(x: number, y: number, width: number, height: number) {
+          assert.equal(y, 0);
+          const imageData = new Uint8ClampedArray(width * height * 4);
+          for (let row = 0; row < height; row += 1) {
+            for (let column = 0; column < width; column += 1) {
+              const sourceIndex = (row * args.backingWidth + x + column) * 4;
+              const targetIndex = (row * width + column) * 4;
+              imageData[targetIndex] = data[sourceIndex] ?? 0;
+              imageData[targetIndex + 1] = data[sourceIndex + 1] ?? 0;
+              imageData[targetIndex + 2] = data[sourceIndex + 2] ?? 0;
+              imageData[targetIndex + 3] = data[sourceIndex + 3] ?? 0;
+            }
+          }
+
+          return {
+            data: imageData,
+          };
+        },
+      };
     },
   };
 }
@@ -246,6 +321,7 @@ function createWaveformCanvasTestCursor(
   const firstRange = ranges?.[0] ?? null;
 
   return {
+    drawnRanges: [],
     firstMissingX: null,
     hasDrawnColumn: false,
     lastMissingX: null,
@@ -256,6 +332,7 @@ function createWaveformCanvasTestCursor(
     progressive: args.progressive ?? true,
     ranges,
     rangeIndex: 0,
+    retargetRanges: [],
     resolvedPeakColumnCount: 0,
   };
 }
@@ -1148,7 +1225,7 @@ describe("SpectrumVisualizer", () => {
         hasScheduledFrame: false,
         nextFrame: changedData,
       }),
-      "reuse-job",
+      "retarget-job",
     );
     assert.equal(
       resolveWaveformCanvasRenderRequestTransition({
@@ -1162,13 +1239,13 @@ describe("SpectrumVisualizer", () => {
     );
     assert.equal(
       resolveWaveformCanvasRenderRequestTransition({
-        currentJob: null,
+        currentJob: current,
         currentPresentedFrame: current,
         currentRequestedFrame: current,
         hasScheduledFrame: true,
         nextFrame: changedData,
       }),
-      "reuse-scheduled",
+      "retarget-job",
     );
     assert.equal(
       resolveWaveformCanvasRenderRequestTransition({
@@ -1179,7 +1256,7 @@ describe("SpectrumVisualizer", () => {
         hasScheduledFrame: false,
         nextFrame: changedData,
       }),
-      "reuse-presented",
+      "start-new",
     );
     assert.equal(
       resolveWaveformCanvasRenderRequestTransition({
@@ -1195,7 +1272,7 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
-  test("keeps progressive canvas work alive while tile coverage advances", () => {
+  test("replaces progressive canvas work when tile coverage advances", () => {
     const current = createWaveformTestFrameDescriptor({
       scrollLeft: 1_000,
     });
@@ -1219,7 +1296,7 @@ describe("SpectrumVisualizer", () => {
           nextFrame,
         }),
       ),
-      ["reuse-scheduled", "reuse-scheduled", "reuse-scheduled"],
+      ["retarget-job", "retarget-job", "retarget-job"],
     );
     assert.deepEqual(
       coverageUpdates.map((nextFrame) =>
@@ -1231,8 +1308,55 @@ describe("SpectrumVisualizer", () => {
           nextFrame,
         }),
       ),
-      ["reuse-job", "reuse-job", "reuse-job"],
+      ["retarget-job", "retarget-job", "retarget-job"],
     );
+  });
+
+  test("keeps retargeted progressive work incomplete until retarget ranges are redrawn", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 120 });
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry: plan.geometry,
+      kind: "visible" as const,
+    };
+    const firstChunk = drawWaveformCanvasJobChunk({
+      cursor: createWaveformCanvasTestCursor({
+        rasterStartX: plan.geometry.rasterStartX,
+      }),
+      deadlineMs: 0,
+      now: () => 1,
+      plan,
+      target,
+    });
+    const retargetRanges = resolveWaveformCanvasRetargetRanges({
+      currentCursor: firstChunk.cursor,
+      geometry: plan.geometry,
+    });
+
+    assert.equal(firstChunk.cursor.nextX, -118);
+    assert.deepEqual(retargetRanges, [
+      {
+        endX: 237,
+        startX: -120,
+      },
+    ]);
+
+    const completed = drawWaveformCanvasJobChunk({
+      cursor: {
+        ...firstChunk.cursor,
+        retargetRanges,
+      },
+      deadlineMs: Number.POSITIVE_INFINITY,
+      now: () => 1,
+      plan,
+      target,
+    });
+
+    assert.equal(completed.completed, false);
+    assert.deepEqual(completed.cursor.missingRanges, retargetRanges);
   });
 
   test("continues dirty completion when pending tile coverage updates the same visual frame", () => {
@@ -1268,6 +1392,20 @@ describe("SpectrumVisualizer", () => {
         requestedFrame: changedData,
       }),
       false,
+    );
+    assert.equal(
+      shouldContinueWaveformCanvasRenderJobForPendingCoverage({
+        completedDirtyRanges: [
+          {
+            endX: 120,
+            startX: 96,
+          },
+        ],
+        completedFrame: changedData,
+        completedJobRetargeted: true,
+        requestedFrame: changedData,
+      }),
+      true,
     );
     assert.equal(
       shouldContinueWaveformCanvasRenderJobForPendingCoverage({
@@ -1597,15 +1735,24 @@ describe("SpectrumVisualizer", () => {
   test("keeps every progressive waveform chunk immediately presentable", () => {
     assert.equal(
       shouldBeginWaveformCanvasChunkPath({
+        hasColumn: true,
         startX: 120,
       }),
       true,
     );
     assert.equal(
       shouldBeginWaveformCanvasChunkPath({
+        hasColumn: true,
         startX: -120,
       }),
       true,
+    );
+    assert.equal(
+      shouldBeginWaveformCanvasChunkPath({
+        hasColumn: false,
+        startX: -120,
+      }),
+      false,
     );
     assert.equal(
       shouldStrokeWaveformCanvasChunkPath({
@@ -1872,6 +2019,293 @@ describe("SpectrumVisualizer", () => {
         startX: 0,
       },
     ]);
+  });
+
+  test("keeps waveform frame identity stable when unused prefetch levels arrive", () => {
+    const current = createWaveformTestFrameDescriptor({
+      scrollLeft: 1_000,
+    });
+    const withPrefetchOnly = {
+      ...current,
+      dataSignature: current.dataSignature,
+      renderSignature: [current.dataSignature, current.visualSignature].join("|"),
+    };
+
+    assert.equal(
+      resolveWaveformCanvasRenderRequestTransition({
+        currentJob: null,
+        currentPresentedDirtyRanges: [],
+        currentPresentedFrame: current,
+        currentRequestedFrame: current,
+        hasScheduledFrame: false,
+        nextFrame: withPrefetchOnly,
+      }),
+      "reuse-presented",
+    );
+  });
+
+  test("clears dirty waveform columns before replacing fallback-density pixels", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 20 });
+
+    clearWaveformCanvasColumnRanges({
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry: plan.geometry,
+      ranges: [
+        {
+          endX: 4,
+          startX: 0,
+        },
+        {
+          endX: 8,
+          startX: 3,
+        },
+        {
+          endX: 200,
+          startX: 100,
+        },
+      ],
+    });
+
+    assert.deepEqual(context.clearRects, [
+      {
+        h: 208,
+        w: 8,
+        x: 0,
+        y: 0,
+      },
+    ]);
+  });
+
+  test("clears only the dirty waveform chunk being replaced", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 120 });
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry: plan.geometry,
+      kind: "visible" as const,
+    };
+    const chunk = drawWaveformCanvasJobChunk({
+      cursor: createWaveformCanvasTestCursor({
+        progressive: false,
+        ranges: [
+          {
+            endX: -10,
+            startX: -120,
+          },
+        ],
+      }),
+      deadlineMs: 0,
+      now: () => 1,
+      plan,
+      replaceExistingColumns: true,
+      target,
+    });
+
+    assert.equal(chunk.completed, false);
+    assert.equal(chunk.cursor.nextX, -23);
+    assert.deepEqual(context.clearRects, [
+      {
+        h: 208,
+        w: 97,
+        x: -120,
+        y: 0,
+      },
+    ]);
+  });
+
+  test("does not clear dirty waveform gaps that cannot be redrawn yet", () => {
+    const context = createWaveformCanvasTestContext();
+    const basePlan = createWaveformCanvasTestPlan({ viewportWidth: 8 });
+    const geometry = {
+      ...basePlan.geometry,
+      backingWidth: 8,
+      rasterStartX: 0,
+      rasterWidth: 8,
+    };
+    const partialTargetTile = {
+      max: [64, 64],
+      min: [-64, -64],
+      points_per_second: 100,
+      start_px: 0,
+      width_px: 2,
+    };
+    const plan = {
+      ...basePlan,
+      candidateLevels: [
+        {
+          pixelsPerSecond: 100,
+          tileKeysByIndex: new Map([[0, "track|100.00|0|2"]]),
+          tilesByIndex: new Map([[0, partialTargetTile]]),
+        },
+      ],
+      geometry,
+      viewport: {
+        ...basePlan.viewport,
+        contentWidth: 8,
+        pixelsPerSecond: 50,
+        scrollLeft: 100,
+        viewportWidth: 8,
+      },
+    };
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry,
+      kind: "visible" as const,
+    };
+    const draw = drawWaveformCanvasColumnRange({
+      plan,
+      range: {
+        endX: 8,
+        startX: 0,
+      },
+      replaceExistingColumns: true,
+      target,
+    });
+
+    assert.equal(draw.hasColumn, true);
+    assert.equal(draw.missingPeakColumns, 8);
+    assert.deepEqual(context.clearRects, [
+      {
+        h: 208,
+        w: 1,
+        x: 0,
+        y: 0,
+      },
+    ]);
+  });
+
+  test("samples visible canvas pixels independently from renderer completion state", () => {
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 4 });
+    const expectedTopY = 104;
+    const expectedBottomY = 105;
+    const canvas = createWaveformCanvasPixelProbeTestCanvas({
+      backingHeight: plan.geometry.backingHeight,
+      backingWidth: plan.geometry.backingWidth,
+      opaqueColumns: [
+        {
+          bottomY: expectedBottomY,
+          topY: expectedTopY,
+          x: 4,
+        },
+        {
+          bottomY: expectedBottomY,
+          topY: expectedTopY,
+          x: 5,
+        },
+        {
+          bottomY: 120,
+          topY: 100,
+          x: 6,
+        },
+      ],
+    });
+    const probe = __spectrumVisualizerTestHooks.createWaveformCanvasPixelColumnProbe({
+      canvas: canvas as unknown as HTMLCanvasElement,
+      plan,
+    });
+
+    assert.deepEqual(probe?.counts, {
+      "blank-without-plan-data": 0,
+      "drawn-fallback-density": 0,
+      "drawn-target-covered": 3,
+      "drawn-target-undercovered": 0,
+      "drawn-without-plan-data": 0,
+      "target-density-blank": 9,
+    });
+    assert.deepEqual(probe?.windows.configuredViewport.counts, {
+      "blank-without-plan-data": 0,
+      "drawn-fallback-density": 0,
+      "drawn-target-covered": 3,
+      "drawn-target-undercovered": 0,
+      "drawn-without-plan-data": 0,
+      "target-density-blank": 1,
+    });
+    assert.equal(probe?.firstNonTargetX, -4);
+    assert.equal(probe?.lastNonTargetX, 7);
+    assert.equal(probe?.windows.configuredViewport.firstNonTargetX, 3);
+    assert.equal(probe?.windows.configuredViewport.lastNonTargetX, 3);
+    assert.equal(probe?.visibleColumns.length, 12);
+  });
+
+  test("separates DOM visible canvas pixels from the configured viewport width", () => {
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 4 });
+    const expectedTopY = 104;
+    const expectedBottomY = 105;
+    const canvas = createWaveformCanvasPixelProbeTestCanvas({
+      backingHeight: plan.geometry.backingHeight,
+      backingWidth: plan.geometry.backingWidth,
+      boundingWidth: plan.geometry.rasterWidth,
+      opaqueColumns: [
+        {
+          bottomY: expectedBottomY,
+          topY: expectedTopY,
+          x: 4,
+        },
+        {
+          bottomY: expectedBottomY,
+          topY: expectedTopY,
+          x: 5,
+        },
+      ],
+      parentWidth: 6,
+    });
+    const probe = __spectrumVisualizerTestHooks.createWaveformCanvasPixelColumnProbe({
+      canvas: canvas as unknown as HTMLCanvasElement,
+      plan,
+    });
+
+    assert.deepEqual(probe?.windows.configuredViewport, {
+      counts: {
+        "blank-without-plan-data": 0,
+        "drawn-fallback-density": 0,
+        "drawn-target-covered": 2,
+        "drawn-target-undercovered": 0,
+        "drawn-without-plan-data": 0,
+        "target-density-blank": 2,
+      },
+      endX: 4,
+      firstNonTargetX: 2,
+      lastNonTargetX: 3,
+      sampleCount: 4,
+      source: "configured-viewport",
+      startX: 0,
+    });
+    assert.deepEqual(probe?.windows.domVisible, {
+      counts: {
+        "blank-without-plan-data": 0,
+        "drawn-fallback-density": 0,
+        "drawn-target-covered": 2,
+        "drawn-target-undercovered": 0,
+        "drawn-without-plan-data": 0,
+        "target-density-blank": 4,
+      },
+      endX: 2,
+      firstNonTargetX: -4,
+      lastNonTargetX: -1,
+      sampleCount: 6,
+      source: "dom-visible",
+      startX: -4,
+    });
+    assert.deepEqual(
+      probe?.visibleColumns.map((column) => ({
+        opaquePixelCount: column.opaquePixelCount,
+        status: column.status,
+        x: column.x,
+      })),
+      [
+        { opaquePixelCount: 0, status: "target-density-blank", x: -4 },
+        { opaquePixelCount: 0, status: "target-density-blank", x: -3 },
+        { opaquePixelCount: 0, status: "target-density-blank", x: -2 },
+        { opaquePixelCount: 1, status: "target-density-blank", x: -1 },
+        { opaquePixelCount: 2, status: "drawn-target-covered", x: 0 },
+        { opaquePixelCount: 2, status: "drawn-target-covered", x: 1 },
+      ],
+    );
   });
 
   test("accepts backend hardware horizontal wheel only while the waveform host is hovered", () => {
