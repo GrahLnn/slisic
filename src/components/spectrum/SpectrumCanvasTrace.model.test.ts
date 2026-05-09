@@ -9,6 +9,7 @@ import {
   createSpectrumCanvasRenderJobMetrics,
   flushDueSpectrumCanvasFastPresentationMetrics,
   flushDueSpectrumCanvasRenderEmptyMetrics,
+  summarizeSpectrumCanvasColumnRanges,
   summarizeSpectrumCanvasColumnTraceResults,
 } from "./SpectrumCanvasTrace.model";
 
@@ -93,6 +94,7 @@ describe("SpectrumCanvasTrace.model", () => {
     assert.deepEqual(flushDueSpectrumCanvasFastPresentationMetrics(metrics, 100), {
       averageElapsedMs: 2,
       count: 2,
+      dirtyRedrawCount: 0,
       emptyCount: 1,
       exactCacheRedrawCount: 1,
       firstRevision: 1,
@@ -171,6 +173,51 @@ describe("SpectrumCanvasTrace.model", () => {
         missingPeakColumns: 2,
         resolvedPeakCount: 28,
         scannedColumns: 30,
+      },
+    );
+  });
+
+  test("summarizes column ranges without expanding every column", () => {
+    assert.deepEqual(
+      summarizeSpectrumCanvasColumnRanges(
+        [
+          {
+            endX: 24,
+            startX: 10,
+          },
+          {
+            endX: 32,
+            startX: 28,
+          },
+          {
+            endX: 90,
+            startX: 40,
+          },
+        ],
+        2,
+      ),
+      {
+        count: 3,
+        firstEndX: 24,
+        firstStartX: 10,
+        largestEndX: 90,
+        largestStartX: 40,
+        largestWidthPx: 50,
+        lastEndX: 90,
+        lastStartX: 40,
+        maxEndX: 90,
+        minStartX: 10,
+        sample: [
+          {
+            endX: 24,
+            startX: 10,
+          },
+          {
+            endX: 32,
+            startX: 28,
+          },
+        ],
+        totalWidthPx: 68,
       },
     );
   });

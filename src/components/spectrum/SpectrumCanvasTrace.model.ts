@@ -7,6 +7,26 @@ export type SpectrumCanvasColumnTraceResult = {
   scannedColumns: number;
 };
 
+export type SpectrumCanvasTraceColumnRange = {
+  endX: number;
+  startX: number;
+};
+
+export type SpectrumCanvasColumnRangeSummary = {
+  count: number;
+  firstEndX: number | null;
+  firstStartX: number | null;
+  largestEndX: number | null;
+  largestStartX: number | null;
+  largestWidthPx: number;
+  lastEndX: number | null;
+  lastStartX: number | null;
+  maxEndX: number | null;
+  minStartX: number | null;
+  sample: SpectrumCanvasTraceColumnRange[];
+  totalWidthPx: number;
+};
+
 export type SpectrumCanvasRenderJobMetrics = {
   chunkCount: number;
   firstMissingX: number | null;
@@ -22,12 +42,14 @@ export type SpectrumCanvasRenderJobMetrics = {
 export type SpectrumCanvasRenderJobTraceReason = "completed" | "stale" | "cancelled" | "replaced";
 
 export type SpectrumCanvasFastPresentationMode =
+  | "dirty-redraw"
   | "exact-cache-redraw"
   | "horizontal-pan"
   | "viewport-resize";
 
 export type SpectrumCanvasFastPresentationMetrics = {
   count: number;
+  dirtyRedrawCount: number;
   emptyCount: number;
   exactCacheRedrawCount: number;
   firstRevision: number | null;
@@ -131,9 +153,56 @@ export function summarizeSpectrumCanvasColumnTraceResults(
   return summary;
 }
 
+export function summarizeSpectrumCanvasColumnRanges(
+  ranges: readonly SpectrumCanvasTraceColumnRange[],
+  sampleLimit = 8,
+): SpectrumCanvasColumnRangeSummary {
+  const normalizedRanges = ranges.filter(
+    (range) =>
+      Number.isFinite(range.startX) && Number.isFinite(range.endX) && range.endX > range.startX,
+  );
+  const first = normalizedRanges[0] ?? null;
+  const last = normalizedRanges.at(-1) ?? null;
+  let largest: SpectrumCanvasTraceColumnRange | null = null;
+  let largestWidthPx = 0;
+  let maxEndX: number | null = null;
+  let minStartX: number | null = null;
+  let totalWidthPx = 0;
+
+  for (const range of normalizedRanges) {
+    const width = range.endX - range.startX;
+    totalWidthPx += width;
+    minStartX = minStartX === null ? range.startX : Math.min(minStartX, range.startX);
+    maxEndX = maxEndX === null ? range.endX : Math.max(maxEndX, range.endX);
+    if (width > largestWidthPx) {
+      largest = range;
+      largestWidthPx = width;
+    }
+  }
+
+  return {
+    count: normalizedRanges.length,
+    firstEndX: first?.endX ?? null,
+    firstStartX: first?.startX ?? null,
+    largestEndX: largest?.endX ?? null,
+    largestStartX: largest?.startX ?? null,
+    largestWidthPx,
+    lastEndX: last?.endX ?? null,
+    lastStartX: last?.startX ?? null,
+    maxEndX,
+    minStartX,
+    sample: normalizedRanges.slice(0, Math.max(0, Math.floor(sampleLimit))).map((range) => ({
+      endX: range.endX,
+      startX: range.startX,
+    })),
+    totalWidthPx,
+  };
+}
+
 export function createSpectrumCanvasFastPresentationMetrics(): SpectrumCanvasFastPresentationMetrics {
   return {
     count: 0,
+    dirtyRedrawCount: 0,
     emptyCount: 0,
     exactCacheRedrawCount: 0,
     firstRevision: null,
@@ -187,6 +256,8 @@ export function accumulateSpectrumCanvasFastPresentationMetrics(args: {
 
   if (args.sample.mode === "exact-cache-redraw") {
     args.metrics.exactCacheRedrawCount += 1;
+  } else if (args.sample.mode === "dirty-redraw") {
+    args.metrics.dirtyRedrawCount += 1;
   } else if (args.sample.mode === "horizontal-pan") {
     args.metrics.horizontalPanCount += 1;
   } else {
@@ -217,6 +288,7 @@ export function flushSpectrumCanvasFastPresentationMetrics(
   const payload = {
     averageElapsedMs: metrics.totalElapsedMs / metrics.count,
     count: metrics.count,
+    dirtyRedrawCount: metrics.dirtyRedrawCount,
     emptyCount: metrics.emptyCount,
     exactCacheRedrawCount: metrics.exactCacheRedrawCount,
     firstRevision: metrics.firstRevision,
@@ -315,9 +387,11 @@ export function flushSpectrumCanvasRenderEmptyMetrics(
 export function createSpectrumCanvasRenderJobTracePayload(args: {
   accepted: boolean;
   completionKind: string | null;
+  dirtyRanges?: readonly SpectrumCanvasTraceColumnRange[];
   endedAt: number;
   jobId: number;
   metrics: SpectrumCanvasRenderJobMetrics;
+  missingRanges?: readonly SpectrumCanvasTraceColumnRange[];
   plan: Record<string, unknown>;
   reason: SpectrumCanvasRenderJobTraceReason;
   requestedRevision: number;
@@ -327,11 +401,13 @@ export function createSpectrumCanvasRenderJobTracePayload(args: {
     accepted: args.accepted,
     chunkCount: args.metrics.chunkCount,
     completionKind: args.completionKind,
+    dirtyRanges: summarizeSpectrumCanvasColumnRanges(args.dirtyRanges ?? []),
     durationMs: Math.max(0, args.endedAt - args.metrics.startedAt),
     firstMissingX: args.metrics.firstMissingX,
     jobId: args.jobId,
     lastMissingX: args.metrics.lastMissingX,
     maxChunkDurationMs: args.metrics.maxChunkDurationMs,
+    missingRanges: summarizeSpectrumCanvasColumnRanges(args.missingRanges ?? []),
     missingPeakColumns: args.metrics.missingPeakColumns,
     plan: args.plan,
     reason: args.reason,

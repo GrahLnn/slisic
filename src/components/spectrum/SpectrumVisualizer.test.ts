@@ -9,6 +9,7 @@ import {
   createWaveformRenderDataStore,
   createWaveformSharedTileCacheForFile,
   drawWaveformCanvasJobChunk,
+  drawWaveformCanvasColumnRange,
   handleWaveformViewportWheel,
   normalizeWaveformPathKey,
   resolvePlaybackSnapshotDurationMs,
@@ -56,6 +57,7 @@ import {
   resolveWaveformTilePeakRangeAtPixels,
   resolveWaveformTilePeakAtSeconds,
   resolveWaveformTileLoadResultPolicy,
+  resolveWaveformTileAvailabilityPresentationPlan,
   resolveWaveformTransaction,
   resolveWaveformWheelAxisDeltas,
   resolveWaveformWheelDeltaX,
@@ -103,8 +105,10 @@ function createWaveformTestFrameDescriptor(
     dataSignature: "100(0:track|100.00|0|2048)",
     geometry: {
       backingHeight: 208,
-      backingWidth: viewportWidth,
+      backingWidth: viewportWidth * 3,
       devicePixelRatio: 1,
+      rasterStartX: -viewportWidth,
+      rasterWidth: viewportWidth * 3,
       viewportWidth,
     },
     renderSignature: [
@@ -113,8 +117,10 @@ function createWaveformTestFrameDescriptor(
       "100(0:track|100.00|0|2048)",
       overrides.dataPixelsPerSecond ?? 100,
       208,
-      viewportWidth,
+      viewportWidth * 3,
       1,
+      -viewportWidth,
+      viewportWidth * 3,
       viewportWidth,
       10_000,
       100_000,
@@ -169,12 +175,14 @@ function createWaveformCanvasTestContext() {
 
 function createWaveformCanvasTestPlan(overrides: { viewportWidth?: number } = {}) {
   const viewportWidth = overrides.viewportWidth ?? 4;
+  const rasterStartX = -viewportWidth;
+  const rasterWidth = viewportWidth * 3;
   const tile = {
-    max: Array.from({ length: viewportWidth }, () => 64),
-    min: Array.from({ length: viewportWidth }, () => -64),
+    max: Array.from({ length: rasterWidth }, () => 64),
+    min: Array.from({ length: rasterWidth }, () => -64),
     points_per_second: 100,
-    start_px: 0,
-    width_px: viewportWidth,
+    start_px: rasterStartX,
+    width_px: rasterWidth,
   };
 
   return {
@@ -191,8 +199,10 @@ function createWaveformCanvasTestPlan(overrides: { viewportWidth?: number } = {}
     dataPixelsPerSecond: 100,
     geometry: {
       backingHeight: 208,
-      backingWidth: viewportWidth,
+      backingWidth: rasterWidth,
       devicePixelRatio: 1,
+      rasterStartX,
+      rasterWidth,
       viewportWidth,
     },
     scopeKey: "track",
@@ -222,7 +232,11 @@ type WaveformCanvasTestCursor = Parameters<typeof drawWaveformCanvasJobChunk>[0]
 type WaveformCanvasTestTarget = Parameters<typeof drawWaveformCanvasJobChunk>[0]["target"];
 
 function createWaveformCanvasTestCursor(
-  args: { progressive?: boolean; ranges?: { endX: number; startX: number }[] } = {},
+  args: {
+    progressive?: boolean;
+    ranges?: { endX: number; startX: number }[];
+    rasterStartX?: number;
+  } = {},
 ): WaveformCanvasTestCursor {
   const ranges = args.ranges ?? null;
   const firstRange = ranges?.[0] ?? null;
@@ -231,8 +245,9 @@ function createWaveformCanvasTestCursor(
     firstMissingX: null,
     hasDrawnColumn: false,
     lastMissingX: null,
+    missingRanges: [],
     missingPeakColumnCount: 0,
-    nextX: firstRange?.startX ?? 0,
+    nextX: firstRange?.startX ?? args.rasterStartX ?? 0,
     passIndex: 0,
     progressive: args.progressive ?? true,
     ranges,
@@ -245,7 +260,9 @@ function drawCompleteWaveformCanvasTestJob(args: {
   plan: ReturnType<typeof createWaveformCanvasTestPlan>;
   target: WaveformCanvasTestTarget;
 }) {
-  let cursor = createWaveformCanvasTestCursor();
+  let cursor = createWaveformCanvasTestCursor({
+    rasterStartX: args.plan.geometry.rasterStartX,
+  });
   let chunk: ReturnType<typeof drawWaveformCanvasJobChunk> | null = null;
   let guard = 0;
 
@@ -820,6 +837,7 @@ describe("SpectrumVisualizer", () => {
   test("starts a shared horizontal pan presentation only for the matching pending pan", () => {
     assert.equal(
       shouldStartWaveformHorizontalPanPresentation({
+        hasDirtyRanges: false,
         pendingScrollDeltaPx: 120,
         shiftX: -120,
       }),
@@ -827,6 +845,15 @@ describe("SpectrumVisualizer", () => {
     );
     assert.equal(
       shouldStartWaveformHorizontalPanPresentation({
+        hasDirtyRanges: true,
+        pendingScrollDeltaPx: 120,
+        shiftX: -120,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldStartWaveformHorizontalPanPresentation({
+        hasDirtyRanges: false,
         pendingScrollDeltaPx: 120,
         shiftX: 120,
       }),
@@ -834,6 +861,7 @@ describe("SpectrumVisualizer", () => {
     );
     assert.equal(
       shouldStartWaveformHorizontalPanPresentation({
+        hasDirtyRanges: false,
         pendingScrollDeltaPx: null,
         shiftX: -120,
       }),
@@ -841,6 +869,7 @@ describe("SpectrumVisualizer", () => {
     );
     assert.equal(
       shouldStartWaveformHorizontalPanPresentation({
+        hasDirtyRanges: false,
         pendingScrollDeltaPx: 120,
         shiftX: Number.NaN,
       }),
@@ -861,8 +890,8 @@ describe("SpectrumVisualizer", () => {
         previous,
       }),
       {
-        exposedEndX: 1_000,
-        exposedStartX: 880,
+        exposedEndX: 2_000,
+        exposedStartX: 1_880,
         kind: "horizontal-pan",
         scrollDeltaPx: 120,
         shiftX: -120,
@@ -876,8 +905,8 @@ describe("SpectrumVisualizer", () => {
         previous,
       }),
       {
-        exposedEndX: 120,
-        exposedStartX: 0,
+        exposedEndX: -880,
+        exposedStartX: -1_000,
         kind: "horizontal-pan",
         scrollDeltaPx: -120,
         shiftX: 120,
@@ -902,11 +931,43 @@ describe("SpectrumVisualizer", () => {
         previous,
       }),
       {
-        exposedEndX: 1_000,
-        exposedStartX: 880,
+        exposedEndX: 2_000,
+        exposedStartX: 1_880,
         kind: "horizontal-pan",
         scrollDeltaPx: 120,
         shiftX: -120,
+      },
+    );
+  });
+
+  test("redraws dirty retained columns when buffered data arrives", () => {
+    const previous = createWaveformTestFrameDescriptor({
+      scrollLeft: 1_000,
+    });
+    const current = {
+      ...previous,
+      dataSignature: "100(0:track|100.00|0|2048,1:track|100.00|2048|2048)",
+    };
+
+    assert.deepEqual(
+      resolveWaveformCanvasFrameReusePlan({
+        current,
+        dirtyRanges: [
+          {
+            endX: 2_000,
+            startX: 1_880,
+          },
+        ],
+        previous,
+      }),
+      {
+        dirtyRanges: [
+          {
+            endX: 2_000,
+            startX: 1_880,
+          },
+        ],
+        kind: "dirty-redraw",
       },
     );
   });
@@ -926,13 +987,17 @@ describe("SpectrumVisualizer", () => {
         previous,
       }),
       {
-        copySourceStartX: 0,
-        copyTargetStartX: 0,
-        copyWidthPx: 1_000,
+        copySourceStartX: -1_000,
+        copyTargetStartX: -1_000,
+        copyWidthPx: 3_000,
         exposedRanges: [
           {
-            endX: 1_240,
-            startX: 1_000,
+            endX: -1_000,
+            startX: -1_240,
+          },
+          {
+            endX: 2_480,
+            startX: 2_000,
           },
         ],
         kind: "viewport-resize",
@@ -948,13 +1013,17 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.deepEqual(resizePlan, {
-      copySourceStartX: 120,
-      copyTargetStartX: 0,
-      copyWidthPx: 880,
+      copySourceStartX: -1_000,
+      copyTargetStartX: -1_120,
+      copyWidthPx: 3_000,
       exposedRanges: [
         {
-          endX: 1_240,
-          startX: 880,
+          endX: -1_120,
+          startX: -1_240,
+        },
+        {
+          endX: 2_480,
+          startX: 1_880,
         },
       ],
       kind: "viewport-resize",
@@ -1118,8 +1187,8 @@ describe("SpectrumVisualizer", () => {
         previous,
       }),
       {
-        exposedEndX: 1_000,
-        exposedStartX: 880,
+        exposedEndX: 2_000,
+        exposedStartX: 1_880,
         kind: "horizontal-pan",
         scrollDeltaPx: 120,
         shiftX: -120,
@@ -1141,8 +1210,8 @@ describe("SpectrumVisualizer", () => {
         currentJob: null,
         currentPresentedDirtyRanges: [
           {
-            endX: 1_000,
-            startX: 880,
+            endX: 2_000,
+            startX: 1_880,
           },
         ],
         currentPresentedFrame: current,
@@ -1165,7 +1234,9 @@ describe("SpectrumVisualizer", () => {
       kind: "visible" as const,
     };
     const firstChunk = drawWaveformCanvasJobChunk({
-      cursor: createWaveformCanvasTestCursor(),
+      cursor: createWaveformCanvasTestCursor({
+        rasterStartX: plan.geometry.rasterStartX,
+      }),
       deadlineMs: 0,
       now: () => 1,
       plan,
@@ -1173,16 +1244,13 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.equal(firstChunk.completed, false);
-    assert.equal(firstChunk.cursor.nextX, 2);
+    assert.equal(firstChunk.cursor.nextX, -118);
     assert.equal(firstChunk.cursor.passIndex, 1);
     assert.equal(context.beginPathCount, 1);
     assert.equal(context.strokeCount, 1);
     assert.deepEqual(
       context.moveXValues,
-      [
-        0.5, 4.5, 8.5, 12.5, 16.5, 20.5, 24.5, 28.5, 32.5, 36.5, 40.5, 44.5, 48.5, 52.5, 56.5, 60.5,
-        64.5, 68.5, 72.5, 76.5, 80.5, 84.5, 88.5, 92.5, 96.5, 100.5, 104.5, 108.5, 112.5, 116.5,
-      ],
+      Array.from({ length: 90 }, (_, index) => -119.5 + index * 4),
     );
 
     const secondChunk = drawWaveformCanvasJobChunk({
@@ -1194,12 +1262,12 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.equal(secondChunk.completed, false);
-    assert.equal(secondChunk.cursor.nextX, 1);
+    assert.equal(secondChunk.cursor.nextX, -119);
     assert.equal(secondChunk.cursor.passIndex, 2);
     assert.equal(context.beginPathCount, 2);
     assert.equal(context.strokeCount, 2);
-    assert.equal(context.moveToCount, 60);
-    assert.equal(context.lineToCount, 60);
+    assert.equal(context.moveToCount, 180);
+    assert.equal(context.lineToCount, 180);
 
     const completed = drawCompleteWaveformCanvasTestJob({
       plan,
@@ -1208,12 +1276,12 @@ describe("SpectrumVisualizer", () => {
     const drawnColumnIndexes = context.moveXValues.map((x) => Math.floor(x - 0.5));
 
     assert.equal(completed.completed, true);
-    assert.equal(completed.cursor.nextX, 120);
-    assert.equal(context.moveToCount, 180);
-    assert.equal(new Set(drawnColumnIndexes).size, 120);
+    assert.equal(completed.cursor.nextX, 240);
+    assert.equal(context.moveToCount, 540);
+    assert.equal(new Set(drawnColumnIndexes).size, 360);
     assert.deepEqual(
       [...new Set(drawnColumnIndexes)].sort((left, right) => left - right),
-      Array.from({ length: 120 }, (_, index) => index),
+      Array.from({ length: 360 }, (_, index) => index - 120),
     );
   });
 
@@ -1230,6 +1298,7 @@ describe("SpectrumVisualizer", () => {
     const chunk = drawWaveformCanvasJobChunk({
       cursor: createWaveformCanvasTestCursor({
         progressive: false,
+        rasterStartX: plan.geometry.rasterStartX,
       }),
       deadlineMs: 0,
       now: () => 1,
@@ -1238,14 +1307,14 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.equal(chunk.completed, false);
-    assert.equal(chunk.cursor.nextX, 97);
+    assert.equal(chunk.cursor.nextX, -23);
     assert.equal(chunk.cursor.passIndex, 0);
     assert.equal(context.strokeCount, 1);
     assert.equal(context.moveToCount, 97);
     assert.equal(context.lineToCount, 97);
     assert.deepEqual(
       context.moveXValues.map((x) => Math.floor(x - 0.5)),
-      Array.from({ length: 97 }, (_, index) => index),
+      Array.from({ length: 97 }, (_, index) => index - 120),
     );
   });
 
@@ -1276,7 +1345,7 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.equal(completed.completed, true);
-    assert.equal(completed.cursor.nextX, 120);
+    assert.equal(completed.cursor.nextX, 240);
     assert.equal(completed.cursor.passIndex, 1);
     assert.equal(context.moveToCount, 24);
     assert.deepEqual(
@@ -1300,13 +1369,17 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.deepEqual(resizePlan, {
-      copySourceStartX: 120,
-      copyTargetStartX: 0,
-      copyWidthPx: 880,
+      copySourceStartX: -1_000,
+      copyTargetStartX: -1_120,
+      copyWidthPx: 3_000,
       exposedRanges: [
         {
-          endX: 1_240,
-          startX: 880,
+          endX: -1_120,
+          startX: -1_240,
+        },
+        {
+          endX: 2_480,
+          startX: 1_880,
         },
       ],
       kind: "viewport-resize",
@@ -1319,6 +1392,10 @@ describe("SpectrumVisualizer", () => {
     assert.deepEqual(
       resolveWaveformCanvasDirtyRangesAfterPresentation({
         exposedRanges: resizePlan.exposedRanges,
+        geometry: createWaveformTestFrameDescriptor({
+          scrollLeft: 1_120,
+          viewportWidth: 1_240,
+        }).geometry,
         plan: resizePlan,
         previousDirtyRanges: [
           {
@@ -1326,12 +1403,19 @@ describe("SpectrumVisualizer", () => {
             startX: 996,
           },
         ],
-        viewportWidth: 1_240,
       }),
       [
         {
-          endX: 1_240,
+          endX: -1_120,
+          startX: -1_240,
+        },
+        {
+          endX: 880,
           startX: 876,
+        },
+        {
+          endX: 2_480,
+          startX: 1_880,
         },
       ],
     );
@@ -1378,7 +1462,7 @@ describe("SpectrumVisualizer", () => {
     );
     assert.equal(
       shouldBeginWaveformCanvasChunkPath({
-        startX: 0,
+        startX: -120,
       }),
       true,
     );
@@ -1435,10 +1519,218 @@ describe("SpectrumVisualizer", () => {
 
     assert.equal(chunk.completed, true);
     assert.equal(chunk.missingPeakColumns, 0);
-    assert.equal(chunk.cursor.resolvedPeakColumnCount, 20);
-    assert.equal(context.moveToCount, 20);
+    assert.equal(chunk.cursor.resolvedPeakColumnCount, 60);
+    assert.equal(context.moveToCount, 60);
     assert.equal(context.strokeCount, 3);
     assert.ok(context.lineYValues.every((y) => y === 105));
+  });
+
+  test("keeps fallback-density waveform columns dirty until target density arrives", () => {
+    const context = createWaveformCanvasTestContext();
+    const basePlan = createWaveformCanvasTestPlan({ viewportWidth: 20 });
+    const geometry = {
+      ...basePlan.geometry,
+      backingWidth: 20,
+      rasterStartX: 0,
+      rasterWidth: 20,
+    };
+    const fallbackTile = {
+      max: Array.from({ length: 20 }, () => 64),
+      min: Array.from({ length: 20 }, () => -64),
+      points_per_second: 50,
+      start_px: 0,
+      width_px: 20,
+    };
+    const plan = {
+      ...basePlan,
+      candidateLevels: [
+        {
+          pixelsPerSecond: 100,
+          tileKeysByIndex: new Map<number, string>(),
+          tilesByIndex: new Map(),
+        },
+        {
+          pixelsPerSecond: 50,
+          tileKeysByIndex: new Map([[0, "track|50.00|0|20"]]),
+          tilesByIndex: new Map([[0, fallbackTile]]),
+        },
+      ],
+      geometry,
+      viewport: {
+        ...basePlan.viewport,
+        contentWidth: 20,
+        pixelsPerSecond: 50,
+        scrollLeft: 100,
+        viewportWidth: 20,
+      },
+      visibleSecondsWindow: {
+        endSeconds: 0.2,
+        hasAudio: true,
+        startSeconds: 0,
+      },
+      visibleWindow: {
+        endPx: 20,
+        startPx: 0,
+      },
+    };
+    const draw = drawWaveformCanvasColumnRange({
+      plan,
+      range: {
+        endX: 10,
+        startX: 0,
+      },
+      target: {
+        canvas: {} as HTMLCanvasElement,
+        color: "#262626",
+        context: context as unknown as CanvasRenderingContext2D,
+        geometry,
+        kind: "visible",
+      },
+    });
+
+    assert.equal(draw.hasColumn, true);
+    assert.equal(context.moveToCount, 10);
+    assert.equal(draw.missingPeakColumns, 10);
+    assert.deepEqual(draw.missingRanges, [
+      {
+        endX: 10,
+        startX: 0,
+      },
+    ]);
+  });
+
+  test("keeps partially covered target-density waveform columns dirty", () => {
+    const context = createWaveformCanvasTestContext();
+    const basePlan = createWaveformCanvasTestPlan({ viewportWidth: 20 });
+    const geometry = {
+      ...basePlan.geometry,
+      backingWidth: 20,
+      rasterStartX: 0,
+      rasterWidth: 20,
+    };
+    const partialTargetTile = {
+      max: [127],
+      min: [-127],
+      points_per_second: 100,
+      start_px: 0,
+      width_px: 1,
+    };
+    const plan = {
+      ...basePlan,
+      candidateLevels: [
+        {
+          pixelsPerSecond: 100,
+          tileKeysByIndex: new Map([[0, "track|100.00|0|1"]]),
+          tilesByIndex: new Map([[0, partialTargetTile]]),
+        },
+      ],
+      geometry,
+      viewport: {
+        ...basePlan.viewport,
+        contentWidth: 20,
+        pixelsPerSecond: 50,
+        scrollLeft: 100,
+        viewportWidth: 20,
+      },
+      visibleSecondsWindow: {
+        endSeconds: 0.2,
+        hasAudio: true,
+        startSeconds: 0,
+      },
+      visibleWindow: {
+        endPx: 20,
+        startPx: 0,
+      },
+    };
+    const draw = drawWaveformCanvasColumnRange({
+      plan,
+      range: {
+        endX: 1,
+        startX: 0,
+      },
+      target: {
+        canvas: {} as HTMLCanvasElement,
+        color: "#262626",
+        context: context as unknown as CanvasRenderingContext2D,
+        geometry,
+        kind: "visible",
+      },
+    });
+
+    assert.equal(draw.hasColumn, true);
+    assert.equal(context.moveToCount, 1);
+    assert.equal(draw.missingPeakColumns, 1);
+    assert.deepEqual(draw.missingRanges, [
+      {
+        endX: 1,
+        startX: 0,
+      },
+    ]);
+  });
+
+  test("keeps progressively drawn fallback columns dirty after completion", () => {
+    const context = createWaveformCanvasTestContext();
+    const basePlan = createWaveformCanvasTestPlan({ viewportWidth: 8 });
+    const geometry = {
+      ...basePlan.geometry,
+      backingWidth: 8,
+      rasterStartX: 0,
+      rasterWidth: 8,
+    };
+    const fallbackTile = {
+      max: Array.from({ length: 8 }, () => 64),
+      min: Array.from({ length: 8 }, () => -64),
+      points_per_second: 50,
+      start_px: 0,
+      width_px: 8,
+    };
+    const plan = {
+      ...basePlan,
+      candidateLevels: [
+        {
+          pixelsPerSecond: 50,
+          tileKeysByIndex: new Map([[0, "track|50.00|0|8"]]),
+          tilesByIndex: new Map([[0, fallbackTile]]),
+        },
+      ],
+      geometry,
+      viewport: {
+        ...basePlan.viewport,
+        contentWidth: 8,
+        scrollLeft: 200,
+        viewportWidth: 8,
+      },
+      visibleSecondsWindow: {
+        endSeconds: 0.08,
+        hasAudio: true,
+        startSeconds: 0,
+      },
+      visibleWindow: {
+        endPx: 8,
+        startPx: 0,
+      },
+    };
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry,
+      kind: "visible" as const,
+    };
+    const completed = drawCompleteWaveformCanvasTestJob({
+      plan,
+      target,
+    });
+
+    assert.equal(completed.completed, true);
+    assert.equal(context.moveToCount, 8);
+    assert.equal(completed.cursor.missingPeakColumnCount, 8);
+    assert.deepEqual(completed.cursor.missingRanges, [
+      {
+        endX: 8,
+        startX: 0,
+      },
+    ]);
   });
 
   test("accepts backend hardware horizontal wheel only while the waveform host is hovered", () => {
@@ -1893,16 +2185,20 @@ describe("SpectrumVisualizer", () => {
     const plan = resolveWaveformDataPlan({
       contentWidth: 12_000,
       filePath: "C:/music/demo.flac",
-      focusSeconds: 6,
+      focusSeconds: 24,
       pixelsPerSecond: 200,
-      scrollLeft: 1_000,
+      scrollLeft: 4_350,
       summary,
       tileWidth: 1_000,
       viewportWidth: 1_000,
     });
 
-    assert.deepEqual(plan.visibleIndexes, [0, 1]);
+    assert.deepEqual(plan.visibleIndexes, [3, 4]);
     assert.equal(plan.requests[0]?.priority, "visible");
+    assert.ok(
+      plan.requests.findIndex((request) => request.priority === "visible-guard") <
+        plan.requests.findIndex((request) => request.priority === "prefetch-focus"),
+    );
     assert.ok(
       plan.requests.findIndex((request) => request.priority === "prefetch-focus") <
         plan.requests.findIndex((request) => request.priority === "prefetch-visible"),
@@ -2086,6 +2382,36 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
+  test("prepares the retained canvas band on settled mount before it enters the viewport", () => {
+    const summary = createWaveformTestSummary();
+    const plan = resolveWaveformDataPlan({
+      contentWidth: 12_000,
+      filePath: "C:/music/demo.flac",
+      focusSeconds: 6,
+      mode: "settled",
+      pixelsPerSecond: 100,
+      scrollLeft: 3_000,
+      summary,
+      tileWidth: 1_000,
+      viewportWidth: 1_000,
+    });
+    const visibleRequests = resolveWaveformDataPlanScopedRequests(plan, "visible");
+    const currentDensityRequests = visibleRequests.filter(
+      (request) => request.dataPixelsPerSecond === plan.dataPixelsPerSecond,
+    );
+
+    assert.deepEqual(plan.visibleIndexes, [2, 3]);
+    assert.deepEqual(
+      currentDensityRequests.map((request) => [request.index, request.priority]),
+      [
+        [2, "visible"],
+        [3, "visible"],
+        [1, "visible-guard"],
+        [4, "visible-guard"],
+      ],
+    );
+  });
+
   test("keeps visible data empty when the viewport is fully inside visual padding", () => {
     const leftPlan = resolveWaveformDataPlan({
       contentWidth: 12_400,
@@ -2221,6 +2547,75 @@ describe("SpectrumVisualizer", () => {
     assert.equal(settled.transaction.dataDemand.skipped, false);
     assert.equal(settled.nextInteractiveDataDemandAt, null);
     assert.equal(settled.transaction.shouldScheduleCompleteData, true);
+  });
+
+  test("resolves tile arrival presentation from the current viewport plan", () => {
+    const summary = createWaveformTestSummary();
+    const stalePlan = resolveWaveformDataPlan({
+      contentWidth: 12_000,
+      filePath: "C:/Music/track.wav",
+      focusSeconds: 5,
+      interaction: "horizontal-pan",
+      mode: "interactive",
+      pixelsPerSecond: 100,
+      scrollLeft: 500,
+      summary,
+      viewportWidth: 1_000,
+    });
+    const currentPlan = resolveWaveformDataPlan({
+      contentWidth: 12_000,
+      filePath: "C:/Music/track.wav",
+      focusSeconds: 5,
+      interaction: "horizontal-pan",
+      mode: "interactive",
+      pixelsPerSecond: 100,
+      scrollLeft: 2_500,
+      summary,
+      viewportWidth: 1_000,
+    });
+    const accepted = resolveWaveformTileAvailabilityPresentationPlan({
+      currentPlan,
+      signal: {
+        scopeKey: stalePlan.scopeKey,
+      },
+    });
+
+    assert.equal(accepted, currentPlan);
+    assert.notEqual(accepted, stalePlan);
+    assert.equal(accepted?.visibleSecondsWindow.startSeconds, 23);
+  });
+
+  test("ignores tile arrival from a stale waveform scope", () => {
+    const summary = createWaveformTestSummary();
+    const currentPlan = resolveWaveformDataPlan({
+      contentWidth: 12_000,
+      filePath: "C:/Music/track.wav",
+      focusSeconds: 5,
+      mode: "interactive",
+      pixelsPerSecond: 100,
+      scrollLeft: 500,
+      summary,
+      viewportWidth: 1_000,
+    });
+
+    assert.equal(
+      resolveWaveformTileAvailabilityPresentationPlan({
+        currentPlan,
+        signal: {
+          scopeKey: "other-track",
+        },
+      }),
+      null,
+    );
+    assert.equal(
+      resolveWaveformTileAvailabilityPresentationPlan({
+        currentPlan: null,
+        signal: {
+          scopeKey: currentPlan.scopeKey,
+        },
+      }),
+      null,
+    );
   });
 
   test("does not throttle interactive data demand when the visible demand changes", () => {
