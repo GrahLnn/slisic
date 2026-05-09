@@ -26,6 +26,9 @@ import {
   resolveWaveformDataWindow,
   resolveWaveformHardwareHorizontalWheelDelta,
   resolveWaveformHorizontalPanFrame,
+  resolveWaveformPanPresentationTransform,
+  resolveWaveformPanPresentationTransition,
+  shouldStartWaveformHorizontalPanPresentation,
   resolveWaveformHorizontalScrollLeft,
   resolveWaveformCanvasFrameReusePlan,
   resolveWaveformCanvasDirtyRangesAfterPresentation,
@@ -52,6 +55,7 @@ import {
   resolveWaveformTileIndexPeakRangeAtPixels,
   resolveWaveformTilePeakRangeAtPixels,
   resolveWaveformTilePeakAtSeconds,
+  resolveWaveformTileLoadResultPolicy,
   resolveWaveformTransaction,
   resolveWaveformWheelAxisDeltas,
   resolveWaveformWheelDeltaX,
@@ -799,6 +803,51 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
+  test("projects horizontal pan as the shared visual inverse transform", () => {
+    assert.equal(resolveWaveformPanPresentationTransform(-120), "translate3d(120px, 0, 0)");
+    assert.equal(resolveWaveformPanPresentationTransform(120), "translate3d(-120px, 0, 0)");
+    assert.equal(resolveWaveformPanPresentationTransform(Number.NaN), "translate3d(0px, 0, 0)");
+    assert.equal(
+      resolveWaveformPanPresentationTransition(["transform", "width", "left"]),
+      [
+        "transform 140ms cubic-bezier(0.22, 1, 0.36, 1)",
+        "width 140ms cubic-bezier(0.22, 1, 0.36, 1)",
+        "left 140ms cubic-bezier(0.22, 1, 0.36, 1)",
+      ].join(", "),
+    );
+  });
+
+  test("starts a shared horizontal pan presentation only for the matching pending pan", () => {
+    assert.equal(
+      shouldStartWaveformHorizontalPanPresentation({
+        pendingScrollDeltaPx: 120,
+        shiftX: -120,
+      }),
+      true,
+    );
+    assert.equal(
+      shouldStartWaveformHorizontalPanPresentation({
+        pendingScrollDeltaPx: 120,
+        shiftX: 120,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldStartWaveformHorizontalPanPresentation({
+        pendingScrollDeltaPx: null,
+        shiftX: -120,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldStartWaveformHorizontalPanPresentation({
+        pendingScrollDeltaPx: 120,
+        shiftX: Number.NaN,
+      }),
+      false,
+    );
+  });
+
   test("reuses the presented waveform frame only for affine horizontal pan", () => {
     const previous = createWaveformTestFrameDescriptor({
       scrollLeft: 1_000,
@@ -832,6 +881,32 @@ describe("SpectrumVisualizer", () => {
         kind: "horizontal-pan",
         scrollDeltaPx: -120,
         shiftX: 120,
+      },
+    );
+  });
+
+  test("keeps horizontal pan reusable when prepared guard data enters the viewport", () => {
+    const previous = createWaveformTestFrameDescriptor({
+      scrollLeft: 1_000,
+    });
+    const current = {
+      ...createWaveformTestFrameDescriptor({
+        scrollLeft: 1_120,
+      }),
+      dataSignature: "100(1:track|100.00|2048|2048)",
+    };
+
+    assert.deepEqual(
+      resolveWaveformCanvasFrameReusePlan({
+        current,
+        previous,
+      }),
+      {
+        exposedEndX: 1_000,
+        exposedStartX: 880,
+        kind: "horizontal-pan",
+        scrollDeltaPx: 120,
+        shiftX: -120,
       },
     );
   });
@@ -1022,6 +1097,58 @@ describe("SpectrumVisualizer", () => {
         currentRequestedFrame: current,
         hasScheduledFrame: true,
         nextFrame: changedData,
+      }),
+      "start-new",
+    );
+  });
+
+  test("treats a clean horizontal pan presentation as the completed stable frame", () => {
+    const previous = createWaveformTestFrameDescriptor({
+      scrollLeft: 1_000,
+      viewportWidth: 1_000,
+    });
+    const current = createWaveformTestFrameDescriptor({
+      scrollLeft: 1_120,
+      viewportWidth: 1_000,
+    });
+
+    assert.deepEqual(
+      resolveWaveformCanvasFrameReusePlan({
+        current,
+        previous,
+      }),
+      {
+        exposedEndX: 1_000,
+        exposedStartX: 880,
+        kind: "horizontal-pan",
+        scrollDeltaPx: 120,
+        shiftX: -120,
+      },
+    );
+    assert.equal(
+      resolveWaveformCanvasRenderRequestTransition({
+        currentJob: null,
+        currentPresentedDirtyRanges: [],
+        currentPresentedFrame: current,
+        currentRequestedFrame: current,
+        hasScheduledFrame: false,
+        nextFrame: current,
+      }),
+      "reuse-presented",
+    );
+    assert.equal(
+      resolveWaveformCanvasRenderRequestTransition({
+        currentJob: null,
+        currentPresentedDirtyRanges: [
+          {
+            endX: 1_000,
+            startX: 880,
+          },
+        ],
+        currentPresentedFrame: current,
+        currentRequestedFrame: current,
+        hasScheduledFrame: false,
+        nextFrame: current,
       }),
       "start-new",
     );
@@ -1437,6 +1564,7 @@ describe("SpectrumVisualizer", () => {
     assert.equal(prevented, true);
     assert.notEqual(request, null);
     assert.deepEqual(request, {
+      interaction: "horizontal-pan",
       mode: "interactive",
       state: {
         focusSeconds: null,
@@ -1861,6 +1989,47 @@ describe("SpectrumVisualizer", () => {
     assert.equal(shouldPresentWaveformTileAvailability("overscan"), false);
   });
 
+  test("keeps same-scope pan prefetch results available without forcing presentation", () => {
+    const presentationKeys = new Set(["track|100.00|2048|2048"]);
+
+    assert.deepEqual(
+      resolveWaveformTileLoadResultPolicy({
+        activeScopeKey: "track",
+        presentationRequestKeys: presentationKeys,
+        requestCacheKey: "track|100.00|4096|2048",
+        requestScopeKey: "track",
+      }),
+      {
+        shouldCache: true,
+        shouldRequestPresentation: false,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformTileLoadResultPolicy({
+        activeScopeKey: "track",
+        presentationRequestKeys: presentationKeys,
+        requestCacheKey: "track|100.00|2048|2048",
+        requestScopeKey: "track",
+      }),
+      {
+        shouldCache: true,
+        shouldRequestPresentation: true,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformTileLoadResultPolicy({
+        activeScopeKey: "other-track",
+        presentationRequestKeys: presentationKeys,
+        requestCacheKey: "track|100.00|2048|2048",
+        requestScopeKey: "track",
+      }),
+      {
+        shouldCache: false,
+        shouldRequestPresentation: false,
+      },
+    );
+  });
+
   test("keeps interactive zoom data demand visible-only", () => {
     const summary = createWaveformTestSummary();
     const plan = resolveWaveformDataPlan({
@@ -1883,6 +2052,38 @@ describe("SpectrumVisualizer", () => {
     );
     assert.deepEqual(plan.overscanSecondsWindow, plan.visibleSecondsWindow);
     assert.deepEqual(plan.overscanWindow, plan.visibleWindow);
+  });
+
+  test("prepares full-density guard data outside the viewport during horizontal pan", () => {
+    const summary = createWaveformTestSummary();
+    const plan = resolveWaveformDataPlan({
+      contentWidth: 12_000,
+      filePath: "C:/music/demo.flac",
+      focusSeconds: 6,
+      interaction: "horizontal-pan",
+      mode: "interactive",
+      pixelsPerSecond: 100,
+      scrollLeft: 3_000,
+      summary,
+      tileWidth: 1_000,
+      viewportWidth: 1_000,
+    });
+    const visibleRequests = resolveWaveformDataPlanScopedRequests(plan, "visible");
+
+    assert.deepEqual(plan.visibleIndexes, [2, 3]);
+    assert.deepEqual(plan.visibleWindow, {
+      endPx: 3_800,
+      startPx: 2_800,
+    });
+    assert.deepEqual(plan.overscanWindow, plan.visibleWindow);
+    assert.deepEqual(
+      plan.requests.map((request) => request.priority),
+      ["visible", "visible", "visible-guard", "visible-guard", "visible-guard"],
+    );
+    assert.deepEqual(
+      visibleRequests.map((request) => request.index),
+      [2, 3, 1, 4, 5],
+    );
   });
 
   test("keeps visible data empty when the viewport is fully inside visual padding", () => {

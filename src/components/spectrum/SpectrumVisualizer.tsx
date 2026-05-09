@@ -56,6 +56,7 @@ const WAVEFORM_DATA_LOAD_CONCURRENCY = 2;
 const WAVEFORM_DATA_IDLE_OVERSCAN_DELAY_MS = 180;
 const WAVEFORM_INTERACTIVE_DATA_DEMAND_INTERVAL_MS = 64;
 const WAVEFORM_INTERACTIVE_GUARD_VIEWPORTS = 0.5;
+const WAVEFORM_HORIZONTAL_PAN_DATA_GUARD_VIEWPORTS = WAVEFORM_DATA_OVERSCAN_VIEWPORTS;
 const WAVEFORM_DATA_PREFETCH_REVERSE_LEVEL_COUNT = 3;
 const WAVEFORM_DATA_PREFETCH_VISIBLE_LEVEL_COUNT = 1;
 const WAVEFORM_DATA_PREFETCH_FOCUS_LEVEL_COUNT = 3;
@@ -70,6 +71,17 @@ const WAVEFORM_CANVAS_PROGRESSIVE_PASSES = [
 const WAVEFORM_CANVAS_REUSE_MIN_SHIFT_PX = 1;
 const WAVEFORM_CANVAS_STROKE_ALPHA = 0.88;
 const WAVEFORM_CANVAS_FAST_PRESENTATION_TRACE_FLUSH_MS = 1_000;
+const WAVEFORM_PAN_PRESENTATION_DURATION_MS = 140;
+const WAVEFORM_PAN_PRESENTATION_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
+const WAVEFORM_CANVAS_PAN_PRESENTATION_TRANSITION = resolveWaveformPanPresentationTransition([
+  "transform",
+]);
+const WAVEFORM_OVERLAY_PAN_PRESENTATION_TRANSITION = resolveWaveformPanPresentationTransition([
+  "transform",
+  "width",
+  "left",
+]);
+const waveformOverlayPanPresentationTimeouts = new WeakMap<HTMLElement, number>();
 const WAVEFORM_SELECTION_START_LEADING_SPACE_PX = 96;
 const WAVEFORM_VISUAL_EDGE_PADDING_SECONDS = 2;
 const WAVEFORM_INITIAL_PREPARE_FRAME_COUNT = 2;
@@ -285,6 +297,7 @@ type WaveformDataRequestPriority =
   | "prefetch-visible"
   | "overscan";
 
+type WaveformDataPlanInteraction = "default" | "horizontal-pan";
 type WaveformDataPlanMode = WaveformInteractionMode;
 
 type WaveformDataRequest = {
@@ -346,9 +359,28 @@ type WaveformInteractiveDataDemand = {
 };
 
 type WaveformViewportCommitRequest = {
+  interaction?: WaveformDataPlanInteraction;
   mode?: WaveformInteractionMode;
   state: WaveformViewportState;
 };
+
+type WaveformPanPresentationStart = {
+  animate: boolean;
+  shiftX: number;
+};
+
+type WaveformCanvasDrawOptions = {
+  canStartHorizontalPanPresentation?: (presentation: WaveformPanPresentationStart) => boolean;
+  onHorizontalPanPresentationStart?: (presentation: WaveformPanPresentationStart) => void;
+};
+
+type WaveformCanvasDrawResult =
+  | {
+      kind: "horizontal-pan-presentation-scheduled";
+    }
+  | {
+      kind: "none";
+    };
 
 type WaveformCachedTile = {
   data: TrackWaveformTile;
@@ -362,6 +394,11 @@ type WaveformTileLoadQueueEntry = WaveformDataRequest & {
   order: number;
 };
 
+type WaveformTileLoadResultPolicy = {
+  shouldCache: boolean;
+  shouldRequestPresentation: boolean;
+};
+
 type WaveformInitialPrepareHandle = {
   cancel: () => void;
 } | null;
@@ -371,8 +408,10 @@ type WaveformPlayheadController = {
   cancelPlayheadDrag: () => void;
   commitPlayheadDrag: (resolution: WaveformPlayheadDragResolution) => Promise<void>;
   commitPlaybackStatus: TrackSpectrumPlaybackStatusCommit;
+  holdPresentationViewport: (viewport: WaveformViewportModel | null) => void;
   previewPlayheadDrag: (resolution: WaveformPlayheadDragResolution | null) => void;
   syncPlayhead: () => void;
+  syncPlayheadForViewport: (viewport: WaveformViewportModel) => void;
 };
 
 const inertWaveformPlayheadController: WaveformPlayheadController = {
@@ -380,8 +419,10 @@ const inertWaveformPlayheadController: WaveformPlayheadController = {
   cancelPlayheadDrag: () => undefined,
   commitPlayheadDrag: async () => undefined,
   commitPlaybackStatus: () => undefined,
+  holdPresentationViewport: () => undefined,
   previewPlayheadDrag: () => undefined,
   syncPlayhead: () => undefined,
+  syncPlayheadForViewport: () => undefined,
 };
 
 type WaveformIdleDeadline = {
@@ -521,6 +562,10 @@ type WaveformCanvasColumnRangeResult = {
   scannedColumns: number;
 };
 
+type WaveformCanvasRangeDrawResult = WaveformCanvasColumnRangeResult & {
+  missingRanges: WaveformCanvasColumnRange[];
+};
+
 type WaveformCanvasColumnRange = {
   endX: number;
   startX: number;
@@ -602,6 +647,9 @@ type WaveformCanvasRenderController = {
   frameId: number | null;
   fastPresentationMetrics: SpectrumCanvasFastPresentationMetrics;
   job: WaveformCanvasRenderJob | null;
+  panPresentationFrameId: number | null;
+  panPresentationTargetFrame: WaveformCanvasFrameDescriptor | null;
+  panPresentationTimeoutId: number | null;
   reusableFrame: WaveformCanvasFrameDescriptor | null;
   presentedFrame: WaveformCanvasFrameDescriptor | null;
   presentedDirtyRanges: WaveformCanvasColumnRange[];
@@ -1047,6 +1095,30 @@ export function resolveWaveformHorizontalPanFrame(args: {
   };
 }
 
+export function resolveWaveformPanPresentationTransform(shiftX: number) {
+  const resolvedShiftX = Number.isFinite(shiftX) ? shiftX : 0;
+
+  return `translate3d(${-resolvedShiftX}px, 0, 0)`;
+}
+
+export function resolveWaveformPanPresentationTransition(properties: readonly string[]) {
+  return properties
+    .map(
+      (property) =>
+        `${property} ${WAVEFORM_PAN_PRESENTATION_DURATION_MS}ms ${WAVEFORM_PAN_PRESENTATION_EASING}`,
+    )
+    .join(", ");
+}
+
+export function shouldStartWaveformHorizontalPanPresentation(args: {
+  pendingScrollDeltaPx: number | null;
+  shiftX: number;
+}) {
+  const shiftX = Number.isFinite(args.shiftX) ? args.shiftX : 0;
+
+  return args.pendingScrollDeltaPx !== null && args.pendingScrollDeltaPx === -shiftX;
+}
+
 export function resolveWaveformCanvasFrameReusePlan(args: {
   current: WaveformCanvasFrameDescriptor;
   previous: WaveformCanvasFrameDescriptor | null;
@@ -1071,7 +1143,6 @@ export function resolveWaveformCanvasFrameReusePlan(args: {
   if (
     args.previous.viewport.durationMs !== args.current.viewport.durationMs ||
     args.previous.scopeKey !== args.current.scopeKey ||
-    args.previous.dataSignature !== args.current.dataSignature ||
     args.previous.color !== args.current.color
   ) {
     return {
@@ -1079,6 +1150,8 @@ export function resolveWaveformCanvasFrameReusePlan(args: {
       reason: "content-changed",
     };
   }
+
+  const dataSignatureChanged = args.previous.dataSignature !== args.current.dataSignature;
 
   if (
     Math.abs(args.previous.viewport.pixelsPerSecond - args.current.viewport.pixelsPerSecond) >=
@@ -1118,6 +1191,13 @@ export function resolveWaveformCanvasFrameReusePlan(args: {
   }
 
   if (args.previous.viewport.viewportWidth !== args.current.viewport.viewportWidth) {
+    if (dataSignatureChanged) {
+      return {
+        kind: "none",
+        reason: "content-changed",
+      };
+    }
+
     const overlapStartX = Math.max(
       args.previous.viewport.scrollLeft,
       args.current.viewport.scrollLeft,
@@ -1607,6 +1687,7 @@ export function resolveWaveformDataPlan(args: {
   contentWidth: number;
   filePath: string | null;
   focusSeconds: number | null;
+  interaction?: WaveformDataPlanInteraction;
   mode?: WaveformDataPlanMode;
   pixelsPerSecond: number;
   scrollLeft: number;
@@ -1626,7 +1707,13 @@ export function resolveWaveformDataPlan(args: {
   const durationSeconds = Math.max(0, args.summary.duration_ms) / 1000;
   const dataContentWidth = Math.max(1, Math.ceil(durationSeconds * dataPixelsPerSecond));
   const overscanViewports = mode === "settled" ? WAVEFORM_DATA_OVERSCAN_VIEWPORTS : 0;
-  const guardViewports = mode === "interactive" ? WAVEFORM_INTERACTIVE_GUARD_VIEWPORTS : 0;
+  const interaction = args.interaction ?? "default";
+  const guardViewports =
+    mode === "interactive"
+      ? interaction === "horizontal-pan"
+        ? WAVEFORM_HORIZONTAL_PAN_DATA_GUARD_VIEWPORTS
+        : WAVEFORM_INTERACTIVE_GUARD_VIEWPORTS
+      : 0;
   const visiblePrefetchLevelCount =
     mode === "settled" ? WAVEFORM_DATA_PREFETCH_VISIBLE_LEVEL_COUNT : 0;
   const focusPrefetchLevelCount = mode === "settled" ? WAVEFORM_DATA_PREFETCH_FOCUS_LEVEL_COUNT : 0;
@@ -2060,6 +2147,21 @@ export function shouldPresentWaveformTileAvailability(priority: WaveformDataRequ
     case "overscan":
       return false;
   }
+}
+
+export function resolveWaveformTileLoadResultPolicy(args: {
+  activeScopeKey: string | null;
+  presentationRequestKeys: ReadonlySet<string>;
+  requestCacheKey: string;
+  requestScopeKey: string;
+}): WaveformTileLoadResultPolicy {
+  const shouldCache = args.activeScopeKey === args.requestScopeKey;
+
+  return {
+    shouldCache,
+    shouldRequestPresentation:
+      shouldCache && args.presentationRequestKeys.has(args.requestCacheKey),
+  };
 }
 
 function resolveWaveformPrefetchRenderLevels(args: {
@@ -2553,6 +2655,11 @@ function TrackSpectrumSession(props: {
   const completeDataPlanTimerRef = useRef<number | null>(null);
   const viewportSettledEffectsTimerRef = useRef<number | null>(null);
   const lastInteractiveDataDemandRef = useRef<WaveformInteractiveDataDemand | null>(null);
+  const pendingHorizontalPanPresentationRef = useRef<{
+    scrollDeltaPx: number;
+    viewport: WaveformViewportModel;
+  } | null>(null);
+  const onWaveformTileAvailableRef = useRef<((plan: WaveformDataPlan) => void) | null>(null);
   const zoomOwnershipRef = useRef<WaveformZoomOwnership>("initial-minimum");
   const renderDataStore = props.renderDataStore ?? resolveWaveformSharedDataStore(ports.waveform);
   const sharedFileKey = normalizeWaveformPathKey(props.filePath);
@@ -2619,9 +2726,12 @@ function TrackSpectrumSession(props: {
     tileCacheRef,
     viewportRef,
   });
+  const handleWaveformTileAvailable = useCallback((plan: WaveformDataPlan) => {
+    onWaveformTileAvailableRef.current?.(plan);
+  }, []);
   const requestDataPlan = useWaveformDataLoader({
     filePath: props.filePath?.trim() || null,
-    onTileAvailable: drawCanvas,
+    onTileAvailable: handleWaveformTileAvailable,
     status: waveformState.status,
     tileCacheRef,
     tilePromiseStore: renderDataStore.tilePromises,
@@ -2665,10 +2775,9 @@ function TrackSpectrumSession(props: {
     visible: !shouldShowLoadingGrid,
   };
 
-  const syncSelectionOverlay = useCallback(() => {
+  const syncSelectionOverlayForViewport = useCallback((viewport: WaveformViewportModel) => {
     const host = hostRef.current;
-    const viewport = viewportRef.current;
-    if (!host || !viewport) {
+    if (!host) {
       return;
     }
 
@@ -2689,6 +2798,14 @@ function TrackSpectrumSession(props: {
       `${clampNumber(geometry.endX, 0, viewport.viewportWidth)}px`,
     );
   }, []);
+  const syncSelectionOverlay = useCallback(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    syncSelectionOverlayForViewport(viewport);
+  }, [syncSelectionOverlayForViewport]);
   const resetSelectionPreview = useCallback(() => {
     selectionRef.current = previousExternalSelectionRef.current;
     syncSelectionOverlay();
@@ -2701,7 +2818,7 @@ function TrackSpectrumSession(props: {
   });
 
   const resolveCurrentDataPlan = useCallback(
-    (mode: WaveformDataPlanMode) => {
+    (mode: WaveformDataPlanMode, interaction: WaveformDataPlanInteraction = "default") => {
       const viewport = viewportRef.current;
       const filePath = props.filePath?.trim() || null;
 
@@ -2713,6 +2830,7 @@ function TrackSpectrumSession(props: {
         contentWidth: viewport.contentWidth,
         filePath,
         focusSeconds: viewport.focusSeconds,
+        interaction,
         mode,
         pixelsPerSecond: viewport.pixelsPerSecond,
         scrollLeft: viewport.scrollLeft,
@@ -2767,8 +2885,8 @@ function TrackSpectrumSession(props: {
   }, [cancelCompleteDataPlan, requestDataPlan, resolveCurrentDataPlan]);
 
   const buildWaveformTransaction = useCallback(
-    (mode: WaveformDataPlanMode) => {
-      const plan = resolveCurrentDataPlan(mode);
+    (mode: WaveformDataPlanMode, interaction: WaveformDataPlanInteraction = "default") => {
+      const plan = resolveCurrentDataPlan(mode, interaction);
       const ownerWindow =
         hostRef.current?.ownerDocument.defaultView ??
         (typeof window === "undefined" ? null : window);
@@ -2785,6 +2903,120 @@ function TrackSpectrumSession(props: {
     [resolveCurrentDataPlan],
   );
 
+  const clearViewportSettledEffectsTimer = useCallback(() => {
+    const ownerWindow =
+      hostRef.current?.ownerDocument.defaultView ?? (typeof window === "undefined" ? null : window);
+
+    if (viewportSettledEffectsTimerRef.current !== null && ownerWindow) {
+      ownerWindow.clearTimeout(viewportSettledEffectsTimerRef.current);
+    }
+    viewportSettledEffectsTimerRef.current = null;
+  }, []);
+
+  const commitViewportModel = useCallback(
+    (next: WaveformViewportState, interaction: WaveformDataPlanInteraction = "default") => {
+      const previous = viewportRef.current;
+      const normalizedModel = resolveWaveformViewportModel({
+        durationMs: waveformState.summary.duration_ms,
+        focusSeconds: next.focusSeconds,
+        maximumPixelsPerSecond,
+        pixelsPerSecond: next.pixelsPerSecond,
+        scrollLeft: next.scrollLeft,
+        viewportWidth: next.viewportWidth,
+      });
+      const changed =
+        !previous ||
+        previous.focusSeconds !== normalizedModel.focusSeconds ||
+        Math.abs(previous.pixelsPerSecond - normalizedModel.pixelsPerSecond) >= 0.01 ||
+        Math.abs(previous.scrollLeft - normalizedModel.scrollLeft) >= 0.5 ||
+        previous.viewportWidth !== normalizedModel.viewportWidth ||
+        previous.contentWidth !== normalizedModel.contentWidth ||
+        previous.durationMs !== normalizedModel.durationMs ||
+        previous.maximumPixelsPerSecond !== normalizedModel.maximumPixelsPerSecond;
+
+      const shouldDeferHorizontalPanPresentation =
+        previous &&
+        changed &&
+        interaction === "horizontal-pan" &&
+        previous.viewportWidth === normalizedModel.viewportWidth &&
+        Math.abs(previous.pixelsPerSecond - normalizedModel.pixelsPerSecond) < 0.01 &&
+        previous.contentWidth === normalizedModel.contentWidth;
+
+      if (shouldDeferHorizontalPanPresentation) {
+        const scrollDeltaPx = Math.round(normalizedModel.scrollLeft - previous.scrollLeft);
+        pendingHorizontalPanPresentationRef.current =
+          scrollDeltaPx === 0
+            ? null
+            : {
+                scrollDeltaPx,
+                viewport: normalizedModel,
+              };
+      } else {
+        pendingHorizontalPanPresentationRef.current = null;
+      }
+
+      playheadController.holdPresentationViewport(
+        pendingHorizontalPanPresentationRef.current ? previous : null,
+      );
+      viewportRef.current = normalizedModel;
+
+      if (!pendingHorizontalPanPresentationRef.current) {
+        playheadController.syncPlayhead();
+        syncSelectionOverlay();
+      }
+
+      return changed;
+    },
+    [
+      maximumPixelsPerSecond,
+      playheadController,
+      syncSelectionOverlay,
+      waveformState.summary.duration_ms,
+    ],
+  );
+  const syncHorizontalPanPresentation = useCallback(
+    (presentation: WaveformPanPresentationStart) => {
+      const pending = pendingHorizontalPanPresentationRef.current;
+      pendingHorizontalPanPresentationRef.current = null;
+      if (!pending || pending.scrollDeltaPx !== -presentation.shiftX) {
+        playheadController.holdPresentationViewport(null);
+        playheadController.syncPlayhead();
+        syncSelectionOverlay();
+        return;
+      }
+
+      if (presentation.animate) {
+        startWaveformOverlayPanPresentation({
+          host: hostRef.current,
+          shiftX: presentation.shiftX,
+        });
+      }
+      playheadController.holdPresentationViewport(null);
+      playheadController.syncPlayheadForViewport(pending.viewport);
+      syncSelectionOverlayForViewport(pending.viewport);
+    },
+    [playheadController, syncSelectionOverlay, syncSelectionOverlayForViewport],
+  );
+  const drawCanvasForHorizontalPanOwner = useCallback(
+    (plan: WaveformDataPlan) => {
+      const canStartHorizontalPanPresentation = (presentation: WaveformPanPresentationStart) => {
+        const pending = pendingHorizontalPanPresentationRef.current;
+
+        return shouldStartWaveformHorizontalPanPresentation({
+          pendingScrollDeltaPx: pending?.scrollDeltaPx ?? null,
+          shiftX: presentation.shiftX,
+        });
+      };
+
+      return drawCanvas(plan, {
+        canStartHorizontalPanPresentation,
+        onHorizontalPanPresentationStart: syncHorizontalPanPresentation,
+      });
+    },
+    [drawCanvas, syncHorizontalPanPresentation],
+  );
+  onWaveformTileAvailableRef.current = drawCanvasForHorizontalPanOwner;
+
   const applyWaveformTransaction = useCallback(
     (resolution: WaveformTransactionResolution) => {
       const transaction = resolution.transaction;
@@ -2795,7 +3027,18 @@ function TrackSpectrumSession(props: {
       lastInteractiveDataDemandRef.current = resolution.nextInteractiveDataDemand;
 
       if (transaction.presentation.plan) {
-        drawCanvas(transaction.presentation.plan);
+        const drawResult = drawCanvasForHorizontalPanOwner(transaction.presentation.plan);
+        if (drawResult.kind !== "horizontal-pan-presentation-scheduled") {
+          pendingHorizontalPanPresentationRef.current = null;
+          playheadController.holdPresentationViewport(null);
+          playheadController.syncPlayhead();
+          syncSelectionOverlay();
+        }
+      } else if (pendingHorizontalPanPresentationRef.current) {
+        pendingHorizontalPanPresentationRef.current = null;
+        playheadController.holdPresentationViewport(null);
+        playheadController.syncPlayhead();
+        syncSelectionOverlay();
       }
 
       if (!transaction.dataDemand.skipped && transaction.dataDemand.plan) {
@@ -2809,24 +3052,23 @@ function TrackSpectrumSession(props: {
         scheduleCompleteDataPlan();
       }
     },
-    [cancelCompleteDataPlan, drawCanvas, requestDataPlan, scheduleCompleteDataPlan],
+    [
+      cancelCompleteDataPlan,
+      drawCanvasForHorizontalPanOwner,
+      playheadController,
+      requestDataPlan,
+      scheduleCompleteDataPlan,
+      syncSelectionOverlay,
+    ],
   );
 
   const runViewportEffects = useCallback(
-    (mode: WaveformDataPlanMode) => {
-      applyWaveformTransaction(buildWaveformTransaction(mode));
+    (mode: WaveformDataPlanMode, interaction: WaveformDataPlanInteraction = "default") => {
+      applyWaveformTransaction(buildWaveformTransaction(mode, interaction));
     },
     [applyWaveformTransaction, buildWaveformTransaction],
   );
-  const clearViewportSettledEffectsTimer = useCallback(() => {
-    const ownerWindow =
-      hostRef.current?.ownerDocument.defaultView ?? (typeof window === "undefined" ? null : window);
 
-    if (viewportSettledEffectsTimerRef.current !== null && ownerWindow) {
-      ownerWindow.clearTimeout(viewportSettledEffectsTimerRef.current);
-    }
-    viewportSettledEffectsTimerRef.current = null;
-  }, []);
   const scheduleViewportSettledEffects = useCallback(() => {
     clearViewportSettledEffectsTimer();
     const ownerWindow =
@@ -2842,46 +3084,10 @@ function TrackSpectrumSession(props: {
       runViewportEffects("settled");
     }, WAVEFORM_DATA_IDLE_OVERSCAN_DELAY_MS);
   }, [clearViewportSettledEffectsTimer, runViewportEffects]);
-
-  const commitViewportModel = useCallback(
-    (next: WaveformViewportState) => {
-      const normalizedModel = resolveWaveformViewportModel({
-        durationMs: waveformState.summary.duration_ms,
-        focusSeconds: next.focusSeconds,
-        maximumPixelsPerSecond,
-        pixelsPerSecond: next.pixelsPerSecond,
-        scrollLeft: next.scrollLeft,
-        viewportWidth: next.viewportWidth,
-      });
-      const previous = viewportRef.current;
-      const changed =
-        !previous ||
-        previous.focusSeconds !== normalizedModel.focusSeconds ||
-        Math.abs(previous.pixelsPerSecond - normalizedModel.pixelsPerSecond) >= 0.01 ||
-        Math.abs(previous.scrollLeft - normalizedModel.scrollLeft) >= 0.5 ||
-        previous.viewportWidth !== normalizedModel.viewportWidth ||
-        previous.contentWidth !== normalizedModel.contentWidth ||
-        previous.durationMs !== normalizedModel.durationMs ||
-        previous.maximumPixelsPerSecond !== normalizedModel.maximumPixelsPerSecond;
-
-      viewportRef.current = normalizedModel;
-
-      playheadController.syncPlayhead();
-      syncSelectionOverlay();
-
-      return changed;
-    },
-    [
-      maximumPixelsPerSecond,
-      playheadController,
-      syncSelectionOverlay,
-      waveformState.summary.duration_ms,
-    ],
-  );
   const commitViewport = useCallback(
     (request: WaveformViewportCommitRequest) => {
-      if (commitViewportModel(request.state)) {
-        runViewportEffects(request.mode ?? "settled");
+      if (commitViewportModel(request.state, request.interaction)) {
+        runViewportEffects(request.mode ?? "settled", request.interaction);
       }
     },
     [commitViewportModel, runViewportEffects],
@@ -3144,6 +3350,11 @@ function TrackSpectrumSession(props: {
         aria-hidden
         data-waveform-canvas-loading={shouldShowLoadingGrid ? "true" : "false"}
         className="pointer-events-none absolute inset-0 z-[1] h-full w-full text-inherit"
+        style={{
+          transform: "var(--waveform-canvas-pan-presentation-transform, translate3d(0, 0, 0))",
+          transition: "var(--waveform-canvas-pan-presentation-transition, none)",
+          willChange: "var(--waveform-canvas-pan-presentation-will-change, auto)",
+        }}
       />
       {shouldShowLoadingGrid && (
         <canvas
@@ -3152,21 +3363,23 @@ function TrackSpectrumSession(props: {
           className="spectrum-waveform-loading-canvas pointer-events-none absolute inset-0 z-[1] h-full w-full text-inherit"
         />
       )}
-      <WaveformSelectionOverlay
-        onSelectionCommit={commitSelection}
-        isDraggingRef={isSelectionDragActiveRef}
-        onSelectionCancelPreview={resetSelectionPreview}
-        onSelectionPreview={syncSelectionOverlay}
-        selectionRef={selectionRef}
-        viewportRef={viewportRef}
-        visible={!shouldShowLoadingGrid}
-      />
-      <WaveformPlayheadDragOverlay
-        controller={playheadController}
-        selectionRef={selectionRef}
-        viewportRef={viewportRef}
-        visible={props.playheadEnabled === true && !shouldShowLoadingGrid}
-      />
+      <div className="absolute inset-0 z-[3]">
+        <WaveformSelectionOverlay
+          onSelectionCommit={commitSelection}
+          isDraggingRef={isSelectionDragActiveRef}
+          onSelectionCancelPreview={resetSelectionPreview}
+          onSelectionPreview={syncSelectionOverlay}
+          selectionRef={selectionRef}
+          viewportRef={viewportRef}
+          visible={!shouldShowLoadingGrid}
+        />
+        <WaveformPlayheadDragOverlay
+          controller={playheadController}
+          selectionRef={selectionRef}
+          viewportRef={viewportRef}
+          visible={props.playheadEnabled === true && !shouldShowLoadingGrid}
+        />
+      </div>
     </motion.div>
   );
 }
@@ -3259,7 +3472,7 @@ function WaveformSelectionOverlay(args: {
 
   return (
     <div
-      className="pointer-events-none absolute inset-0 z-[3]"
+      className="pointer-events-none absolute inset-0"
       style={{
         opacity: visible ? "var(--waveform-selection-opacity, 0)" : 0,
       }}
@@ -3269,6 +3482,7 @@ function WaveformSelectionOverlay(args: {
         className="pointer-events-none absolute inset-y-0 bg-[#f5f5f5]/58 dark:bg-[#050505]/58"
         style={{
           left: 0,
+          transition: "var(--waveform-pan-presentation-transition, none)",
           width: "var(--waveform-selection-start-mask-width, 0px)",
         }}
       />
@@ -3278,6 +3492,7 @@ function WaveformSelectionOverlay(args: {
         style={{
           left: "var(--waveform-selection-end-mask-left, 100%)",
           right: 0,
+          transition: "var(--waveform-pan-presentation-transition, none)",
         }}
       />
       <WaveformSelectionHandle
@@ -3408,6 +3623,7 @@ function WaveformPlayheadDragOverlay(args: {
         style={{
           opacity: visible ? "var(--waveform-playhead-opacity, 0)" : 0,
           transform: "translate3d(calc(var(--waveform-playhead-x, -9999px) - 1px), 0, 0)",
+          transition: "var(--waveform-pan-presentation-transition, none)",
         }}
       />
       <button
@@ -3417,6 +3633,7 @@ function WaveformPlayheadDragOverlay(args: {
         style={{
           opacity: visible ? "var(--waveform-playhead-opacity, 0)" : 0,
           transform: "translate3d(var(--waveform-playhead-x, -9999px), 0, 0)",
+          transition: "var(--waveform-pan-presentation-transition, none)",
         }}
         onPointerCancel={cancelDrag}
         onPointerDown={beginDrag}
@@ -3442,6 +3659,7 @@ function WaveformSelectionHandle(args: {
       className="pointer-events-auto absolute inset-y-0 w-5 -translate-x-1/2 cursor-ew-resize touch-none focus:outline-none"
       style={{
         left: args.cssX,
+        transition: "var(--waveform-pan-presentation-transition, none)",
       }}
       onPointerCancel={args.onPointerCancel}
       onPointerDown={(event) => args.onPointerDown(args.edge, event)}
@@ -3871,13 +4089,13 @@ function useWaveformPlayheadController(args: {
   const frameOwnerWindowRef = useRef<Window | null>(null);
   const playheadDragActiveRef = useRef(false);
   const dragPreviewRef = useRef<WaveformPlayheadDragResolution | null>(null);
+  const heldPresentationViewportRef = useRef<WaveformViewportModel | null>(null);
   const beginSeekPromiseRef = useRef<Promise<boolean> | null>(null);
 
-  const syncPlayhead = useCallback((nowMs?: number) => {
+  const syncPlayheadForViewport = useCallback((viewport: WaveformViewportModel, nowMs?: number) => {
     const latest = latestArgsRef.current;
     const host = latest.hostRef.current;
-    const viewport = latest.viewportRef.current;
-    if (!host || !viewport) {
+    if (!host) {
       return;
     }
 
@@ -3906,6 +4124,23 @@ function useWaveformPlayheadController(args: {
 
     host.style.setProperty("--waveform-playhead-opacity", cssVars.opacity);
     host.style.setProperty("--waveform-playhead-x", cssVars.x);
+  }, []);
+
+  const syncPlayhead = useCallback(
+    (nowMs?: number) => {
+      const viewport =
+        heldPresentationViewportRef.current ?? latestArgsRef.current.viewportRef.current;
+      if (!viewport) {
+        return;
+      }
+
+      syncPlayheadForViewport(viewport, nowMs);
+    },
+    [syncPlayheadForViewport],
+  );
+
+  const holdPresentationViewport = useCallback((viewport: WaveformViewportModel | null) => {
+    heldPresentationViewportRef.current = viewport;
   }, []);
 
   const stopPlayheadAnimation = useCallback(() => {
@@ -4174,8 +4409,10 @@ function useWaveformPlayheadController(args: {
     cancelPlayheadDrag,
     commitPlayheadDrag,
     commitPlaybackStatus: commitExternalPlaybackStatus,
+    holdPresentationViewport,
     previewPlayheadDrag,
     syncPlayhead,
+    syncPlayheadForViewport,
   };
 }
 
@@ -4189,7 +4426,7 @@ function useWaveformDataLoader(args: {
 }) {
   const activeCountRef = useRef(0);
   const inFlightKeysRef = useRef(new Set<string>());
-  const latestCacheAcceptedRequestKeySetRef = useRef(new Set<string>());
+  const latestCacheAcceptedScopeKeyRef = useRef<string | null>(null);
   const latestPresentationRequestKeySetRef = useRef(new Set<string>());
   const nextOrderRef = useRef(0);
   const previousPlanSignatureRef = useRef<string | null>(null);
@@ -4206,7 +4443,7 @@ function useWaveformDataLoader(args: {
 
   const resetLoader = useCallback(() => {
     queueRef.current = [];
-    latestCacheAcceptedRequestKeySetRef.current = new Set();
+    latestCacheAcceptedScopeKeyRef.current = null;
     latestPresentationRequestKeySetRef.current = new Set();
     latestAcceptedPlanRef.current = null;
     previousPlanSignatureRef.current = null;
@@ -4250,14 +4487,14 @@ function useWaveformDataLoader(args: {
 
       void tilePromise
         .then((tileData) => {
-          const acceptedByCurrentDemand = latestCacheAcceptedRequestKeySetRef.current.has(
-            entry.cacheKey,
-          );
-          const shouldRequestPresentation = latestPresentationRequestKeySetRef.current.has(
-            entry.cacheKey,
-          );
+          const resultPolicy = resolveWaveformTileLoadResultPolicy({
+            activeScopeKey: latestCacheAcceptedScopeKeyRef.current,
+            presentationRequestKeys: latestPresentationRequestKeySetRef.current,
+            requestCacheKey: entry.cacheKey,
+            requestScopeKey: entry.scopeKey,
+          });
 
-          if (acceptedByCurrentDemand) {
+          if (resultPolicy.shouldCache) {
             latestArgsRef.current.tileCacheRef.current.set(entry.cacheKey, {
               data: tileData,
               key: entry.cacheKey,
@@ -4266,7 +4503,7 @@ function useWaveformDataLoader(args: {
               scopeKey: entry.scopeKey,
             });
             const acceptedPlan = latestAcceptedPlanRef.current;
-            if (acceptedPlan && shouldRequestPresentation) {
+            if (acceptedPlan && resultPolicy.shouldRequestPresentation) {
               onTileAvailableRef.current(acceptedPlan);
             }
             return;
@@ -4326,7 +4563,7 @@ function useWaveformDataLoader(args: {
       );
       const protectedKeys = new Set([...scheduledKeys, ...plan.protectedCacheKeys]);
       previousPlanSignatureRef.current = planSignature;
-      latestCacheAcceptedRequestKeySetRef.current = scheduledKeys;
+      latestCacheAcceptedScopeKeyRef.current = plan.scopeKey;
       latestPresentationRequestKeySetRef.current = presentationKeys;
       latestAcceptedPlanRef.current = plan;
       queueRef.current = queueRef.current.filter(
@@ -4380,6 +4617,9 @@ function useWaveformCanvasRenderer(args: {
     frameId: null,
     fastPresentationMetrics: createSpectrumCanvasFastPresentationMetrics(),
     job: null,
+    panPresentationFrameId: null,
+    panPresentationTargetFrame: null,
+    panPresentationTimeoutId: null,
     reusableFrame: null,
     presentedFrame: null,
     presentedDirtyRanges: [],
@@ -4559,7 +4799,7 @@ function useWaveformCanvasRenderer(args: {
   }, []);
 
   const requestDraw = useCallback(
-    (dataPlan: WaveformDataPlan) => {
+    (dataPlan: WaveformDataPlan, options?: WaveformCanvasDrawOptions): WaveformCanvasDrawResult => {
       const latest = latestArgsRef.current;
       const controller = controllerRef.current;
       const ownerWindow =
@@ -4617,7 +4857,9 @@ function useWaveformCanvasRenderer(args: {
         if (requestTransition === "reuse-presented") {
           controller.presentedDirtyRanges = [];
         }
-        return;
+        return {
+          kind: "none",
+        };
       }
 
       const nextRevision = controller.requestedRevision + 1;
@@ -4634,10 +4876,27 @@ function useWaveformCanvasRenderer(args: {
       controller.requestedRevision = nextRevision;
       controller.dataPlan = dataPlan;
       controller.requestedFrame = descriptor;
+      const keepsActivePanPresentation =
+        descriptor !== null &&
+        controller.panPresentationTargetFrame !== null &&
+        areWaveformCanvasFrameRenderSignaturesEqual(
+          controller.panPresentationTargetFrame,
+          descriptor,
+        );
+      if (!keepsActivePanPresentation) {
+        resetWaveformPanPresentation({
+          controller,
+          ownerWindow,
+        });
+        if (canvas) {
+          resetWaveformCanvasPanPresentation(canvas);
+        }
+      }
       const fastStartedAt = readWaveformPerformanceNow(ownerWindow);
       const presented = presentWaveformCanvasFrameFast({
         canvas,
         descriptor,
+        descriptorPlan: renderPlan?.kind === "ready" ? renderPlan.plan : null,
         previousDirtyRanges: controller.presentedDirtyRanges,
         previous: controller.reusableFrame,
         reuseFrame: controller.reuseFrame,
@@ -4652,14 +4911,41 @@ function useWaveformCanvasRenderer(args: {
           revision: nextRevision,
         }),
       });
+      let drawResult: WaveformCanvasDrawResult = {
+        kind: "none",
+      };
       if (presented.kind === "presented") {
         controller.presentedFrame = presented.descriptor;
         controller.reusableFrame = presented.descriptor;
         controller.presentedDirtyRanges = presented.dirtyRanges;
         controller.reuseFrame = presented.reuseFrame;
+        if (
+          presented.mode === "horizontal-pan" &&
+          canvas &&
+          options?.canStartHorizontalPanPresentation &&
+          options.onHorizontalPanPresentationStart
+        ) {
+          const scheduled = startWaveformPanPresentation({
+            canStart: options.canStartHorizontalPanPresentation,
+            canvas,
+            controller,
+            descriptor: presented.descriptor,
+            onStart: options.onHorizontalPanPresentationStart,
+            shiftX: presented.plan.shiftX,
+          });
+          if (scheduled) {
+            drawResult = {
+              kind: "horizontal-pan-presentation-scheduled",
+            };
+          }
+        }
       }
 
       controller.job = null;
+      const shouldCompleteWithFastPresentation =
+        presented.kind === "presented" &&
+        presented.mode === "horizontal-pan" &&
+        presented.dirtyRanges.length === 0;
       controller.progressiveRender = !(
         presented.kind === "presented" && presented.mode === "horizontal-pan"
       );
@@ -4674,6 +4960,24 @@ function useWaveformCanvasRenderer(args: {
               kind: "fresh",
             };
 
+      if (shouldCompleteWithFastPresentation) {
+        if (controller.frameId !== null && ownerWindow) {
+          ownerWindow.cancelAnimationFrame(controller.frameId);
+        }
+        controller.frameId = null;
+        controller.requestedFrame = descriptor;
+        controller.presentedDirtyRanges = [];
+        recordNullableRenderPerformanceTrace(
+          "waveform-canvas-fast-presentation",
+          flushSpectrumCanvasFastPresentationMetrics(
+            controller.fastPresentationMetrics,
+            readWaveformPerformanceNow(ownerWindow),
+            "horizontal-pan-presented",
+          ),
+        );
+        return drawResult;
+      }
+
       if (controller.frameId !== null) {
         recordNullableRenderPerformanceTrace(
           "waveform-canvas-fast-presentation",
@@ -4682,7 +4986,7 @@ function useWaveformCanvasRenderer(args: {
             readWaveformPerformanceNow(ownerWindow),
           ),
         );
-        return;
+        return drawResult;
       }
 
       if (!ownerWindow) {
@@ -4695,7 +4999,7 @@ function useWaveformCanvasRenderer(args: {
           ),
         );
         runFrame();
-        return;
+        return drawResult;
       }
 
       recordNullableRenderPerformanceTrace(
@@ -4707,6 +5011,7 @@ function useWaveformCanvasRenderer(args: {
         ),
       );
       controller.frameId = ownerWindow.requestAnimationFrame(runFrame);
+      return drawResult;
     },
     [runFrame],
   );
@@ -4745,6 +5050,13 @@ function useWaveformCanvasRendererCleanup(args: {
       if (controller.frameId !== null && ownerWindow) {
         ownerWindow.cancelAnimationFrame(controller.frameId);
       }
+      resetWaveformPanPresentation({
+        controller,
+        ownerWindow: ownerWindow ?? null,
+      });
+      if (latest.canvasRef.current) {
+        resetWaveformCanvasPanPresentation(latest.canvasRef.current);
+      }
       recordNullableRenderPerformanceTrace(
         "waveform-canvas-fast-presentation",
         flushSpectrumCanvasFastPresentationMetrics(
@@ -4775,6 +5087,9 @@ function useWaveformCanvasRendererCleanup(args: {
       controller.reuseFrame = null;
       controller.fastPresentationMetrics = createSpectrumCanvasFastPresentationMetrics();
       controller.renderEmptyMetrics = createSpectrumCanvasRenderEmptyMetrics();
+      controller.panPresentationFrameId = null;
+      controller.panPresentationTargetFrame = null;
+      controller.panPresentationTimeoutId = null;
     },
     [args.canvasRef, args.controllerRef, args.latestArgsRef],
   );
@@ -5131,6 +5446,95 @@ function createWaveformCanvasRenderCursor(args: {
   };
 }
 
+export function drawWaveformCanvasColumnRange(args: {
+  plan: WaveformCanvasRenderPlan;
+  range: WaveformCanvasColumnRange;
+  target: WaveformCanvasRasterTarget;
+}): WaveformCanvasRangeDrawResult {
+  const context = args.target.context;
+  const range = normalizeWaveformCanvasColumnRange({
+    range: args.range,
+    viewportWidth: args.plan.geometry.viewportWidth,
+  });
+  const missingRanges: WaveformCanvasColumnRange[] = [];
+  let activeMissingStartX: number | null = null;
+  let firstMissingX: number | null = null;
+  let lastMissingX: number | null = null;
+  let missingPeakColumns = 0;
+  let resolvedPeakCount = 0;
+  let scannedColumns = 0;
+  let hasColumn = false;
+
+  if (!range) {
+    return {
+      firstMissingX,
+      hasColumn,
+      lastMissingX,
+      missingPeakColumns,
+      missingRanges,
+      resolvedPeakCount,
+      scannedColumns,
+    };
+  }
+
+  context.beginPath();
+
+  for (let x = range.startX; x < range.endX; x += 1) {
+    scannedColumns += 1;
+    const peak = resolveWaveformCanvasColumnPeak({
+      candidateLevels: args.plan.candidateLevels,
+      tileWidth: WAVEFORM_DATA_TILE_WIDTH,
+      viewport: args.plan.viewport,
+      x,
+    });
+
+    if (peak) {
+      if (activeMissingStartX !== null) {
+        missingRanges.push({
+          endX: x,
+          startX: activeMissingStartX,
+        });
+        activeMissingStartX = null;
+      }
+      drawWaveformCanvasColumn({
+        context,
+        peak,
+        plan: args.plan,
+        x,
+      });
+      hasColumn = true;
+      resolvedPeakCount += 1;
+      continue;
+    }
+
+    firstMissingX ??= x;
+    lastMissingX = x;
+    activeMissingStartX ??= x;
+    missingPeakColumns += 1;
+  }
+
+  if (activeMissingStartX !== null) {
+    missingRanges.push({
+      endX: range.endX,
+      startX: activeMissingStartX,
+    });
+  }
+
+  if (hasColumn) {
+    context.stroke();
+  }
+
+  return {
+    firstMissingX,
+    hasColumn,
+    lastMissingX,
+    missingPeakColumns,
+    missingRanges,
+    resolvedPeakCount,
+    scannedColumns,
+  };
+}
+
 function createWaveformCanvasFrameDescriptor(args: {
   color: string;
   plan: WaveformCanvasRenderPlan;
@@ -5373,9 +5777,126 @@ function completeWaveformCanvasRenderJob(args: {
   };
 }
 
+function resetWaveformPanPresentation(args: {
+  controller: WaveformCanvasRenderController;
+  ownerWindow: Window | null;
+}) {
+  const ownerWindow = args.ownerWindow;
+  if (args.controller.panPresentationFrameId !== null && ownerWindow) {
+    ownerWindow.cancelAnimationFrame(args.controller.panPresentationFrameId);
+  }
+  if (args.controller.panPresentationTimeoutId !== null && ownerWindow) {
+    ownerWindow.clearTimeout(args.controller.panPresentationTimeoutId);
+  }
+  args.controller.panPresentationFrameId = null;
+  args.controller.panPresentationTargetFrame = null;
+  args.controller.panPresentationTimeoutId = null;
+}
+
+function resetWaveformCanvasPanPresentation(canvas: HTMLCanvasElement) {
+  canvas.style.removeProperty("--waveform-canvas-pan-presentation-transform");
+  canvas.style.removeProperty("--waveform-canvas-pan-presentation-transition");
+  canvas.style.removeProperty("--waveform-canvas-pan-presentation-will-change");
+}
+
+function startWaveformOverlayPanPresentation(args: { host: HTMLElement | null; shiftX: number }) {
+  const ownerWindow = args.host?.ownerDocument.defaultView;
+  const shiftX = Number.isFinite(args.shiftX) ? args.shiftX : 0;
+
+  if (shiftX === 0 || !args.host || !ownerWindow) {
+    return;
+  }
+
+  if (ownerWindow.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    return;
+  }
+
+  const existingTimeout = waveformOverlayPanPresentationTimeouts.get(args.host);
+  if (existingTimeout !== undefined) {
+    ownerWindow.clearTimeout(existingTimeout);
+  }
+
+  args.host.style.setProperty(
+    "--waveform-pan-presentation-transition",
+    WAVEFORM_OVERLAY_PAN_PRESENTATION_TRANSITION,
+  );
+  waveformOverlayPanPresentationTimeouts.set(
+    args.host,
+    ownerWindow.setTimeout(() => {
+      args.host?.style.removeProperty("--waveform-pan-presentation-transition");
+      if (args.host) {
+        waveformOverlayPanPresentationTimeouts.delete(args.host);
+      }
+    }, WAVEFORM_PAN_PRESENTATION_DURATION_MS),
+  );
+}
+
+function startWaveformPanPresentation(args: {
+  canStart: (presentation: WaveformPanPresentationStart) => boolean;
+  canvas: HTMLCanvasElement;
+  controller: WaveformCanvasRenderController;
+  descriptor: WaveformCanvasFrameDescriptor;
+  onStart: (presentation: WaveformPanPresentationStart) => void;
+  shiftX: number;
+}) {
+  const ownerWindow = args.canvas.ownerDocument.defaultView;
+  const shiftX = Number.isFinite(args.shiftX) ? args.shiftX : 0;
+  resetWaveformPanPresentation({
+    controller: args.controller,
+    ownerWindow,
+  });
+  resetWaveformCanvasPanPresentation(args.canvas);
+
+  if (shiftX === 0 || !ownerWindow) {
+    return false;
+  }
+
+  const presentation = {
+    animate: !ownerWindow.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    shiftX,
+  };
+  if (!args.canStart(presentation)) {
+    return false;
+  }
+
+  if (!presentation.animate) {
+    args.onStart(presentation);
+    return true;
+  }
+
+  const initialTransform = resolveWaveformPanPresentationTransform(shiftX);
+  const finalTransform = "translate3d(0, 0, 0)";
+  args.controller.panPresentationTargetFrame = args.descriptor;
+  args.canvas.style.setProperty("--waveform-canvas-pan-presentation-transition", "none");
+  args.canvas.style.setProperty("--waveform-canvas-pan-presentation-transform", initialTransform);
+  args.canvas.style.setProperty("--waveform-canvas-pan-presentation-will-change", "transform");
+  args.controller.panPresentationFrameId = ownerWindow.requestAnimationFrame(() => {
+    args.controller.panPresentationFrameId = null;
+    if (!args.canStart(presentation)) {
+      args.controller.panPresentationTargetFrame = null;
+      resetWaveformCanvasPanPresentation(args.canvas);
+      return;
+    }
+    args.onStart(presentation);
+    args.canvas.style.setProperty(
+      "--waveform-canvas-pan-presentation-transition",
+      WAVEFORM_CANVAS_PAN_PRESENTATION_TRANSITION,
+    );
+    args.canvas.style.setProperty("--waveform-canvas-pan-presentation-transform", finalTransform);
+    args.controller.panPresentationTimeoutId = ownerWindow.setTimeout(() => {
+      args.controller.panPresentationTimeoutId = null;
+      args.controller.panPresentationTargetFrame = null;
+      resetWaveformCanvasPanPresentation(args.canvas);
+    }, WAVEFORM_PAN_PRESENTATION_DURATION_MS);
+  });
+
+  return true;
+}
+
 function presentWaveformCanvasFrameFast(args: {
   canvas: HTMLCanvasElement | null;
   descriptor: WaveformCanvasFrameDescriptor | null;
+  descriptorPlan: WaveformCanvasRenderPlan | null;
   previousDirtyRanges: readonly WaveformCanvasColumnRange[];
   previous: WaveformCanvasFrameDescriptor | null;
   reuseFrame: HTMLCanvasElement | null;
@@ -5398,7 +5919,19 @@ function presentWaveformCanvasFrameFast(args: {
     };
   }
 
-  const context = args.canvas.getContext("2d");
+  if (!args.descriptorPlan) {
+    return {
+      kind: "empty",
+      plan: null,
+      reason: "missing-descriptor",
+      reuseFrame: args.reuseFrame,
+    };
+  }
+
+  const canvas = args.canvas;
+  const descriptor = args.descriptor;
+  const descriptorPlan = args.descriptorPlan;
+  const context = canvas.getContext("2d");
   if (!context) {
     return {
       kind: "empty",
@@ -5409,7 +5942,7 @@ function presentWaveformCanvasFrameFast(args: {
   }
 
   const presentationPlan = resolveWaveformCanvasFastPresentationPlan({
-    current: args.descriptor,
+    current: descriptor,
     previous: args.previous,
   });
 
@@ -5422,8 +5955,8 @@ function presentWaveformCanvasFrameFast(args: {
     };
   }
 
-  const reuseFrame = args.reuseFrame ?? args.canvas.ownerDocument.createElement("canvas");
-  const previousGeometry = args.previous?.geometry ?? args.descriptor.geometry;
+  const reuseFrame = args.reuseFrame ?? canvas.ownerDocument.createElement("canvas");
+  const previousGeometry = args.previous?.geometry ?? descriptor.geometry;
   reuseFrame.width = previousGeometry.backingWidth;
   reuseFrame.height = previousGeometry.backingHeight;
 
@@ -5439,29 +5972,24 @@ function presentWaveformCanvasFrameFast(args: {
 
   reuseContext.resetTransform();
   reuseContext.clearRect(0, 0, previousGeometry.backingWidth, previousGeometry.backingHeight);
-  reuseContext.drawImage(args.canvas, 0, 0);
+  reuseContext.drawImage(canvas, 0, 0);
 
   applyWaveformVisibleCanvasGeometry({
-    canvas: args.canvas,
-    geometry: args.descriptor.geometry,
+    canvas,
+    geometry: descriptor.geometry,
   });
   context.resetTransform();
-  context.clearRect(
-    0,
-    0,
-    args.descriptor.geometry.backingWidth,
-    args.descriptor.geometry.backingHeight,
-  );
+  context.clearRect(0, 0, descriptor.geometry.backingWidth, descriptor.geometry.backingHeight);
   context.globalAlpha = 1;
   context.globalCompositeOperation = "source-over";
   if (presentationPlan.kind === "horizontal-pan") {
     context.drawImage(
       reuseFrame,
-      presentationPlan.shiftX * args.descriptor.geometry.devicePixelRatio,
+      presentationPlan.shiftX * descriptor.geometry.devicePixelRatio,
       0,
     );
   } else {
-    const scale = args.descriptor.geometry.devicePixelRatio;
+    const scale = descriptor.geometry.devicePixelRatio;
     context.drawImage(
       reuseFrame,
       presentationPlan.copySourceStartX * scale,
@@ -5471,7 +5999,7 @@ function presentWaveformCanvasFrameFast(args: {
       presentationPlan.copyTargetStartX * scale,
       0,
       presentationPlan.copyWidthPx * scale,
-      args.descriptor.geometry.backingHeight,
+      descriptor.geometry.backingHeight,
     );
   }
   const exposedRanges =
@@ -5483,17 +6011,44 @@ function presentWaveformCanvasFrameFast(args: {
           },
         ]
       : presentationPlan.exposedRanges;
+  const draws: WaveformCanvasColumnRangeResult[] = [];
+  const undrawnExposedRanges =
+    presentationPlan.kind === "horizontal-pan"
+      ? (() => {
+          context.scale(descriptor.geometry.devicePixelRatio, descriptor.geometry.devicePixelRatio);
+          context.imageSmoothingEnabled = false;
+          context.lineWidth = resolveWaveformBarWidthPx();
+          context.lineCap = "butt";
+          context.strokeStyle = descriptor.color;
+          context.globalAlpha = WAVEFORM_CANVAS_STROKE_ALPHA;
+          return exposedRanges.flatMap((range) => {
+            const draw = drawWaveformCanvasColumnRange({
+              plan: descriptorPlan,
+              range,
+              target: {
+                canvas,
+                color: descriptor.color,
+                context,
+                geometry: descriptor.geometry,
+                kind: "visible",
+              },
+            });
+            draws.push(draw);
+
+            return draw.missingRanges;
+          });
+        })()
+      : exposedRanges;
   const dirtyRanges = resolveWaveformCanvasDirtyRangesAfterPresentation({
-    exposedRanges,
+    exposedRanges: undrawnExposedRanges,
     plan: presentationPlan,
     previousDirtyRanges: args.previousDirtyRanges,
-    viewportWidth: args.descriptor.geometry.viewportWidth,
+    viewportWidth: descriptor.geometry.viewportWidth,
   });
-  const draws: WaveformCanvasColumnRangeResult[] = [];
 
   if (presentationPlan.kind === "horizontal-pan") {
     return {
-      descriptor: args.descriptor,
+      descriptor,
       dirtyRanges,
       draws,
       exposedRanges,
@@ -5506,7 +6061,7 @@ function presentWaveformCanvasFrameFast(args: {
   }
 
   return {
-    descriptor: args.descriptor,
+    descriptor,
     dirtyRanges,
     draws,
     exposedRanges,
@@ -6326,6 +6881,7 @@ function handleWaveformHorizontalPanWheel(args: {
   }
 
   args.commitViewport({
+    interaction: "horizontal-pan",
     mode: "interactive",
     state: {
       focusSeconds: null,
