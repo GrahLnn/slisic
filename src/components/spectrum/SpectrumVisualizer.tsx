@@ -3937,7 +3937,25 @@ function WaveformSelectionOverlay(args: {
         onPointerCancel={cancelDrag}
         onPointerUp={commitDrag}
       />
+      <WaveformSelectionEdgeIndicator cssX="var(--waveform-selection-start-x, -9999px)" />
+      <WaveformSelectionEdgeIndicator cssX="var(--waveform-selection-end-x, -9999px)" />
     </div>
+  );
+}
+
+function WaveformSelectionEdgeIndicator(args: { cssX: string }) {
+  return (
+    <span
+      aria-hidden
+      className="pointer-events-none absolute inset-y-0 block w-px bg-[#d4d4d4] shadow-[0_0_0_1px_rgba(245,245,245,0.65)] dark:bg-[#373737] dark:shadow-[0_0_0_1px_rgba(5,5,5,0.65)]"
+      style={{
+        left: args.cssX,
+        transform:
+          "var(--waveform-pan-presentation-transform, translate3d(0, 0, 0)) translateX(-50%)",
+        transition: "var(--waveform-pan-presentation-transition, none)",
+        willChange: "var(--waveform-pan-presentation-will-change, auto)",
+      }}
+    />
   );
 }
 
@@ -4086,7 +4104,7 @@ function WaveformSelectionHandle(args: {
     <button
       type="button"
       aria-label={args.edge === "start" ? "Adjust start" : "Adjust end"}
-      className="pointer-events-auto absolute inset-y-0 w-5 -translate-x-1/2 cursor-ew-resize touch-none focus:outline-none"
+      className="pointer-events-auto absolute inset-y-0 w-5 cursor-ew-resize touch-none focus:outline-none"
       style={{
         left: args.cssX,
         transform:
@@ -4098,9 +4116,7 @@ function WaveformSelectionHandle(args: {
       onPointerDown={(event) => args.onPointerDown(args.edge, event)}
       onPointerMove={(event) => args.onPointerMove(args.edge, event)}
       onPointerUp={args.onPointerUp}
-    >
-      <span className="absolute inset-y-0 left-1/2 block w-px -translate-x-1/2 bg-[#d4d4d4] shadow-[0_0_0_1px_rgba(245,245,245,0.65)] dark:bg-[#373737] dark:shadow-[0_0_0_1px_rgba(5,5,5,0.65)]" />
-    </button>
+    />
   );
 }
 
