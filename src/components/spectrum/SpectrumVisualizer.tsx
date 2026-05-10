@@ -597,12 +597,14 @@ type WaveformCanvasRenderCursor = {
   missingPeakColumnCount: number;
   passIndex: number;
   nextX: number;
-  progressive: boolean;
   ranges: WaveformCanvasColumnRange[] | null;
   rangeIndex: number;
   retargetRanges: WaveformCanvasColumnRange[];
   resolvedPeakColumnCount: number;
+  schedule: WaveformCanvasCursorSchedule;
 };
+
+type WaveformCanvasCursorSchedule = "full-density" | "progressive" | "spatial-progressive";
 
 type WaveformCanvasChunkResult = {
   completed: boolean;
@@ -822,7 +824,7 @@ type WaveformCanvasRenderController = {
   reusableFrame: WaveformCanvasFrameDescriptor | null;
   presentedFrame: WaveformCanvasFrameDescriptor | null;
   presentedDirtyRanges: WaveformCanvasColumnRange[];
-  progressiveRender: boolean;
+  renderSchedule: WaveformCanvasCursorSchedule;
   renderPresentation: WaveformCanvasRenderPresentation;
   requestedFrame: WaveformCanvasFrameDescriptor | null;
   requestedRevision: number;
@@ -5157,7 +5159,7 @@ function useWaveformCanvasRenderer(args: {
     reusableFrame: null,
     presentedFrame: null,
     presentedDirtyRanges: [],
-    progressiveRender: true,
+    renderSchedule: "spatial-progressive",
     renderPresentation: {
       kind: "fresh",
     },
@@ -5273,7 +5275,7 @@ function useWaveformCanvasRenderer(args: {
         }),
         plan: plan.plan,
         presentation: controller.renderPresentation,
-        progressive: controller.progressiveRender,
+        schedule: controller.renderSchedule,
         revision: controller.requestedRevision,
         startedAt,
         target: target.target,
@@ -5386,7 +5388,8 @@ function useWaveformCanvasRenderer(args: {
               ? requestedFrameAtCompletion
               : completedFrame;
             controller.presentedDirtyRanges = completion.dirtyRanges;
-            controller.progressiveRender = completion.dirtyRanges.length === 0;
+            controller.renderSchedule =
+              completion.dirtyRanges.length === 0 ? "progressive" : "full-density";
             controller.renderPresentation =
               completion.dirtyRanges.length > 0
                 ? {
@@ -5647,10 +5650,11 @@ function useWaveformCanvasRenderer(args: {
         presented.kind === "presented" &&
         (presented.mode === "dirty-redraw" || presented.mode === "horizontal-pan") &&
         presented.dirtyRanges.length === 0;
-      controller.progressiveRender = !(
+      controller.renderSchedule =
         presented.kind === "presented" &&
         (presented.mode === "dirty-redraw" || presented.mode === "horizontal-pan")
-      );
+          ? "full-density"
+          : "progressive";
       controller.renderPresentation =
         presented.kind === "presented"
           ? presented.dirtyRanges.length > 0
@@ -5809,7 +5813,7 @@ function useWaveformCanvasRendererCleanup(args: {
       controller.reusableFrame = null;
       controller.presentedFrame = null;
       controller.presentedDirtyRanges = [];
-      controller.progressiveRender = true;
+      controller.renderSchedule = "spatial-progressive";
       controller.renderPresentation = {
         kind: "fresh",
       };
@@ -6100,8 +6104,8 @@ function createWaveformCanvasRenderJob(args: {
   id: number;
   plan: WaveformCanvasRenderPlan;
   presentation: WaveformCanvasRenderPresentation;
-  progressive: boolean;
   revision: number;
+  schedule: WaveformCanvasCursorSchedule;
   target: WaveformCanvasRasterTarget;
   startedAt: number;
 }): WaveformCanvasRenderJob {
@@ -6110,7 +6114,7 @@ function createWaveformCanvasRenderJob(args: {
     cursor: createWaveformCanvasRenderCursor({
       geometry: args.plan.geometry,
       presentation: args.presentation,
-      progressive: args.progressive,
+      schedule: args.schedule,
     }),
     descriptor: args.descriptor,
     id: args.id,
@@ -6620,7 +6624,7 @@ function createWaveformCanvasCursorTracePayload(cursor: WaveformCanvasRenderCurs
     missingRanges: summarizeSpectrumCanvasColumnRanges(cursor.missingRanges),
     nextX: cursor.nextX,
     passIndex: cursor.passIndex,
-    progressive: cursor.progressive,
+    schedule: cursor.schedule,
     rangeIndex: cursor.rangeIndex,
     ranges: cursor.ranges ? summarizeSpectrumCanvasColumnRanges(cursor.ranges) : null,
     retargetRanges: summarizeSpectrumCanvasColumnRanges(cursor.retargetRanges),
@@ -6702,7 +6706,7 @@ function createWaveformCanvasProofTracePayload(args: {
     planCoverage: coverage,
     presentedDirtyRanges: summarizeSpectrumCanvasColumnRanges(controller.presentedDirtyRanges),
     presentedFrame: createWaveformCanvasFrameSignatureTracePayload(controller.presentedFrame),
-    progressiveRender: controller.progressiveRender,
+    renderSchedule: controller.renderSchedule,
     renderPresentation:
       controller.renderPresentation.kind === "dirty"
         ? {
@@ -7396,7 +7400,7 @@ function recordWaveformCanvasRenderJobTrace(args: {
 function createWaveformCanvasRenderCursor(args: {
   geometry: WaveformCanvasFrameGeometry;
   presentation: WaveformCanvasRenderPresentation;
-  progressive: boolean;
+  schedule: WaveformCanvasCursorSchedule;
 }): WaveformCanvasRenderCursor {
   const ranges =
     args.presentation.kind === "fresh"
@@ -7416,11 +7420,11 @@ function createWaveformCanvasRenderCursor(args: {
     missingPeakColumnCount: 0,
     nextX: firstRange?.startX ?? args.geometry.rasterStartX,
     passIndex: 0,
-    progressive: args.progressive,
     ranges,
     rangeIndex: 0,
     retargetRanges: [],
     resolvedPeakColumnCount: 0,
+    schedule: ranges ? "full-density" : args.schedule,
   };
 }
 
@@ -8534,7 +8538,7 @@ function resolveWaveformCanvasProgressivePassCount() {
 }
 
 function resolveWaveformCanvasCursorPass(args: { cursor: WaveformCanvasRenderCursor }) {
-  return args.cursor.progressive
+  return args.cursor.schedule !== "full-density"
     ? resolveWaveformCanvasProgressivePass(args.cursor.passIndex)
     : {
         startOffsetX: 0,
@@ -8545,7 +8549,7 @@ function resolveWaveformCanvasCursorPass(args: { cursor: WaveformCanvasRenderCur
 function resolveWaveformCanvasCursorCompletionPassCount(args: {
   cursor: WaveformCanvasRenderCursor;
 }) {
-  return args.cursor.progressive && !args.cursor.ranges
+  return args.cursor.schedule !== "full-density" && !args.cursor.ranges
     ? resolveWaveformCanvasProgressivePassCount()
     : 1;
 }
@@ -8562,6 +8566,13 @@ function resolveWaveformCanvasProgressivePassStartX(args: {
 
 function resolveWaveformCanvasRasterEndX(geometry: WaveformCanvasFrameGeometry) {
   return geometry.rasterStartX + geometry.rasterWidth;
+}
+
+function resolveWaveformCanvasSpatialProgressiveChunkEndX(args: {
+  rangeEndX: number;
+  startX: number;
+}) {
+  return Math.min(args.rangeEndX, args.startX + WAVEFORM_CANVAS_MAX_CHUNK_WIDTH_PX);
 }
 
 function advanceWaveformCanvasProgressiveCursor(args: {
@@ -8726,11 +8737,11 @@ function mergeWaveformCanvasChunkCursor(args: {
     missingPeakColumnCount: args.cursor.missingPeakColumnCount + args.chunk.missingPeakColumns,
     nextX: nextPosition.nextX,
     passIndex: nextPosition.passIndex,
-    progressive: args.cursor.progressive,
     ranges: args.cursor.ranges,
     rangeIndex: nextPosition.rangeIndex,
     retargetRanges: [],
     resolvedPeakColumnCount: args.cursor.resolvedPeakColumnCount + args.chunk.resolvedPeakCount,
+    schedule: args.cursor.schedule,
   };
 }
 
@@ -8751,14 +8762,21 @@ function runWaveformCanvasJobChunkEffect(
   const activeRange = args.cursor.ranges?.[args.cursor.rangeIndex] ?? null;
   const startX = args.cursor.nextX;
   const rangeEndX = activeRange?.endX ?? resolveWaveformCanvasRasterEndX(plan.geometry);
+  const chunkRangeEndX =
+    args.cursor.schedule === "spatial-progressive"
+      ? resolveWaveformCanvasSpatialProgressiveChunkEndX({
+          rangeEndX,
+          startX,
+        })
+      : rangeEndX;
   const { maxChunkEndX, minChunkEndX } = resolveWaveformCanvasChunkWindow({
     startX,
     stepX: pass.stepX,
-    viewportWidth: rangeEndX,
+    viewportWidth: chunkRangeEndX,
   });
   let endX = startX;
 
-  for (; endX < rangeEndX; endX += pass.stepX) {
+  for (; endX < chunkRangeEndX; endX += pass.stepX) {
     if (endX >= minChunkEndX && (endX >= maxChunkEndX || args.now() >= args.deadlineMs)) {
       endX += pass.stepX;
       break;

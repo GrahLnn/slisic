@@ -413,10 +413,12 @@ function createWaveformCanvasTestCursor(
     progressive?: boolean;
     ranges?: { endX: number; startX: number }[];
     rasterStartX?: number;
+    schedule?: "full-density" | "progressive" | "spatial-progressive";
   } = {},
 ): WaveformCanvasTestCursor {
   const ranges = args.ranges ?? null;
   const firstRange = ranges?.[0] ?? null;
+  const schedule = args.schedule ?? (args.progressive === false ? "full-density" : "progressive");
 
   return {
     drawnRanges: [],
@@ -427,11 +429,11 @@ function createWaveformCanvasTestCursor(
     missingPeakColumnCount: 0,
     nextX: firstRange?.startX ?? args.rasterStartX ?? 0,
     passIndex: 0,
-    progressive: args.progressive ?? true,
     ranges,
     rangeIndex: 0,
     retargetRanges: [],
     resolvedPeakColumnCount: 0,
+    schedule: ranges ? "full-density" : schedule,
   };
 }
 
@@ -1795,6 +1797,62 @@ describe("SpectrumVisualizer", () => {
       [...new Set(drawnColumnIndexes)].sort((left, right) => left - right),
       Array.from({ length: 360 }, (_, index) => index - 120),
     );
+  });
+
+  test("renders initial waveform canvas density passes left to right in bounded chunks", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 120 });
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry: plan.geometry,
+      kind: "visible" as const,
+    };
+    const firstChunk = drawWaveformCanvasJobChunk({
+      cursor: createWaveformCanvasTestCursor({
+        rasterStartX: plan.geometry.rasterStartX,
+        schedule: "spatial-progressive",
+      }),
+      deadlineMs: 0,
+      now: () => 1,
+      plan,
+      target,
+    });
+
+    assert.equal(firstChunk.completed, false);
+    assert.equal(firstChunk.cursor.nextX, 200);
+    assert.equal(firstChunk.cursor.passIndex, 0);
+    assert.deepEqual(
+      context.moveXValues,
+      Array.from({ length: 80 }, (_, index) => -119.5 + index * 4),
+    );
+
+    const secondChunk = drawWaveformCanvasJobChunk({
+      cursor: firstChunk.cursor,
+      deadlineMs: Number.POSITIVE_INFINITY,
+      now: () => 1,
+      plan,
+      target,
+    });
+
+    assert.equal(secondChunk.completed, false);
+    assert.equal(secondChunk.cursor.nextX, -118);
+    assert.equal(secondChunk.cursor.passIndex, 1);
+    assert.equal(context.moveToCount, 90);
+
+    const thirdChunk = drawWaveformCanvasJobChunk({
+      cursor: secondChunk.cursor,
+      deadlineMs: Number.POSITIVE_INFINITY,
+      now: () => 1,
+      plan,
+      target,
+    });
+
+    assert.equal(thirdChunk.completed, false);
+    assert.equal(thirdChunk.cursor.nextX, 202);
+    assert.equal(thirdChunk.cursor.passIndex, 1);
+    assert.equal(context.moveToCount, 170);
   });
 
   test("keeps column range planning pure before canvas interpretation", () => {
