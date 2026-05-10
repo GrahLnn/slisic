@@ -663,6 +663,12 @@ type WaveformCanvasPixelColumnProbeWindow = {
   startX: number;
 };
 
+type WaveformCanvasPixelColumnReadback = {
+  context: CanvasRenderingContext2D;
+  height: number;
+  width: number;
+};
+
 type WaveformCanvasFastPresentationResult =
   | {
       dirtyRanges: WaveformCanvasColumnRange[];
@@ -3701,6 +3707,7 @@ function TrackSpectrumSession(props: {
         data-waveform-canvas-loading={shouldShowLoadingGrid ? "true" : "false"}
         className="pointer-events-none absolute inset-0 z-[1] h-full w-full text-inherit"
         style={{
+          opacity: WAVEFORM_CANVAS_STROKE_ALPHA,
           transform: "var(--waveform-canvas-pan-presentation-transform, translate3d(0, 0, 0))",
           transition: "var(--waveform-canvas-pan-presentation-transition, none)",
           willChange: "var(--waveform-canvas-pan-presentation-will-change, auto)",
@@ -5935,7 +5942,7 @@ function createWaveformCanvasRasterTarget(args: {
   context.lineWidth = resolveWaveformBarWidthPx();
   context.lineCap = "butt";
   context.strokeStyle = args.color;
-  context.globalAlpha = WAVEFORM_CANVAS_STROKE_ALPHA;
+  context.globalAlpha = 1;
 
   return {
     kind: "ready",
@@ -6949,12 +6956,42 @@ function createWaveformCanvasPixelColumnVisibleShapeColumns(args: {
   return columns;
 }
 
+function createWaveformCanvasPixelColumnReadback(
+  canvas: HTMLCanvasElement,
+): WaveformCanvasPixelColumnReadback | null {
+  const ownerDocument = canvas.ownerDocument ?? (typeof document === "undefined" ? null : document);
+  const readbackCanvas = ownerDocument?.createElement("canvas") ?? null;
+  const width = canvas.width;
+  const height = canvas.height;
+
+  if (!readbackCanvas || width <= 0 || height <= 0) {
+    return null;
+  }
+
+  readbackCanvas.width = width;
+  readbackCanvas.height = height;
+  const context = readbackCanvas.getContext("2d", {
+    willReadFrequently: true,
+  });
+  if (!context) {
+    return null;
+  }
+
+  context.drawImage(canvas, 0, 0);
+
+  return {
+    context,
+    height,
+    width,
+  };
+}
+
 function createWaveformCanvasPixelColumnProbe(args: {
   canvas: HTMLCanvasElement;
   plan: WaveformCanvasRenderPlan;
 }) {
-  const context = args.canvas.getContext("2d");
-  if (!context) {
+  const readback = createWaveformCanvasPixelColumnReadback(args.canvas);
+  if (!readback) {
     return null;
   }
 
@@ -6965,16 +7002,16 @@ function createWaveformCanvasPixelColumnProbe(args: {
   const readX = clampInteger(
     Math.floor((startX - geometry.rasterStartX) * scale),
     0,
-    args.canvas.width,
+    readback.width,
   );
-  const readWidth = clampInteger(Math.ceil((endX - startX) * scale), 0, args.canvas.width - readX);
-  const readHeight = Math.min(args.canvas.height, geometry.backingHeight);
+  const readWidth = clampInteger(Math.ceil((endX - startX) * scale), 0, readback.width - readX);
+  const readHeight = Math.min(readback.height, geometry.backingHeight);
 
   if (readWidth <= 0 || readHeight <= 0) {
     return null;
   }
 
-  const imageData = context.getImageData(readX, 0, readWidth, readHeight);
+  const imageData = readback.context.getImageData(readX, 0, readWidth, readHeight);
   const counts = createEmptyWaveformCanvasPixelColumnProbeCounts();
   const mismatchSamples: Array<{
     actualBottomY: number | null;
@@ -7637,6 +7674,7 @@ export function clearWaveformCanvasColumnRanges(args: {
 }
 
 export const __spectrumVisualizerTestHooks = {
+  createWaveformCanvasRasterTarget,
   createWaveformCanvasPixelColumnProbe,
 };
 
@@ -8058,7 +8096,7 @@ function presentWaveformCanvasFrameFast(args: {
           context.lineWidth = resolveWaveformBarWidthPx();
           context.lineCap = "butt";
           context.strokeStyle = descriptor.color;
-          context.globalAlpha = WAVEFORM_CANVAS_STROKE_ALPHA;
+          context.globalAlpha = 1;
           return exposedRanges.flatMap((range) => {
             const draw = drawWaveformCanvasColumnRange({
               plan: descriptorPlan,

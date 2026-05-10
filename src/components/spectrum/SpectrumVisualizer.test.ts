@@ -184,6 +184,47 @@ function createWaveformCanvasTestContext() {
   };
 }
 
+function createWaveformCanvasStateTestContext() {
+  const state = {
+    globalAlpha: 0,
+    lineCap: "",
+    lineWidth: 0,
+    strokeStyle: "",
+  };
+
+  return {
+    get globalAlpha() {
+      return state.globalAlpha;
+    },
+    set globalAlpha(value: number) {
+      state.globalAlpha = value;
+    },
+    get lineCap() {
+      return state.lineCap;
+    },
+    set lineCap(value: string) {
+      state.lineCap = value;
+    },
+    get lineWidth() {
+      return state.lineWidth;
+    },
+    set lineWidth(value: number) {
+      state.lineWidth = value;
+    },
+    get strokeStyle() {
+      return state.strokeStyle;
+    },
+    set strokeStyle(value: string) {
+      state.strokeStyle = value;
+    },
+    clearRect() {},
+    imageSmoothingEnabled: true,
+    resetTransform() {},
+    scale() {},
+    translate() {},
+  };
+}
+
 function createWaveformCanvasPixelProbeTestCanvas(args: {
   backingHeight: number;
   backingWidth: number;
@@ -202,8 +243,44 @@ function createWaveformCanvasPixelProbeTestCanvas(args: {
     }
   }
 
+  const createReadbackCanvas = () => ({
+    height: 0,
+    width: 0,
+    getContext(type: string, options?: CanvasRenderingContext2DSettings) {
+      assert.equal(type, "2d");
+      assert.equal(options?.willReadFrequently, true);
+      return {
+        drawImage() {},
+        getImageData(x: number, y: number, width: number, height: number) {
+          assert.equal(y, 0);
+          const imageData = new Uint8ClampedArray(width * height * 4);
+          for (let row = 0; row < height; row += 1) {
+            for (let column = 0; column < width; column += 1) {
+              const sourceIndex = (row * args.backingWidth + x + column) * 4;
+              const targetIndex = (row * width + column) * 4;
+              imageData[targetIndex] = data[sourceIndex] ?? 0;
+              imageData[targetIndex + 1] = data[sourceIndex + 1] ?? 0;
+              imageData[targetIndex + 2] = data[sourceIndex + 2] ?? 0;
+              imageData[targetIndex + 3] = data[sourceIndex + 3] ?? 0;
+            }
+          }
+
+          return {
+            data: imageData,
+          };
+        },
+      };
+    },
+  });
+
   return {
     height: args.backingHeight,
+    ownerDocument: {
+      createElement(tagName: string) {
+        assert.equal(tagName, "canvas");
+        return createReadbackCanvas();
+      },
+    },
     parentElement:
       args.parentWidth === undefined
         ? null
@@ -226,8 +303,9 @@ function createWaveformCanvasPixelProbeTestCanvas(args: {
       top: 0,
       width: args.boundingWidth ?? args.backingWidth,
     }),
-    getContext(type: string) {
+    getContext(type: string, options?: CanvasRenderingContext2DSettings) {
       assert.equal(type, "2d");
+      assert.equal(options, undefined);
       return {
         getImageData(x: number, y: number, width: number, height: number) {
           assert.equal(y, 0);
@@ -1500,6 +1578,32 @@ describe("SpectrumVisualizer", () => {
       }),
       "start-new",
     );
+  });
+
+  test("keeps waveform canvas stroke opacity out of the pixel buffer", () => {
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 120 });
+    const context = createWaveformCanvasStateTestContext();
+    const canvas = {
+      height: plan.geometry.backingHeight,
+      style: {},
+      width: plan.geometry.backingWidth,
+      getContext(type: string) {
+        assert.equal(type, "2d");
+        return context;
+      },
+    } as unknown as HTMLCanvasElement;
+
+    const target = __spectrumVisualizerTestHooks.createWaveformCanvasRasterTarget({
+      canvas,
+      color: "#262626",
+      geometry: plan.geometry,
+      presentation: {
+        kind: "fresh",
+      },
+    });
+
+    assert.equal(target.kind, "ready");
+    assert.equal(context.globalAlpha, 1);
   });
 
   test("renders new waveform canvas frames from sparse presentation passes to dense completion", () => {
