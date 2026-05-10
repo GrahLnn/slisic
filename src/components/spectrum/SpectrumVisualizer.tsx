@@ -578,6 +578,16 @@ type WaveformCanvasRasterTargetEmpty = {
   kind: "missing-context";
 };
 
+type WaveformCanvasRasterTargetResolution =
+  | {
+      empty: WaveformCanvasRasterTargetEmpty;
+      kind: "empty";
+    }
+  | {
+      kind: "ready";
+      target: WaveformCanvasRasterTarget;
+    };
+
 type WaveformCanvasRenderCursor = {
   drawnRanges: WaveformCanvasColumnRange[];
   firstMissingX: number | null;
@@ -626,6 +636,11 @@ type WaveformCanvasColumnRange = {
   startX: number;
 };
 
+type WaveformCanvasCoverageRangeUpdate = {
+  drawnRanges: readonly WaveformCanvasColumnRange[];
+  missingRanges: readonly WaveformCanvasColumnRange[];
+};
+
 type WaveformCanvasColumnScanPass = {
   startOffsetX: number;
   stepX: number;
@@ -640,6 +655,58 @@ type WaveformCanvasColumnSample = {
 type WaveformCanvasColumnRangeDrawPlan = WaveformCanvasRangeDrawResult & {
   peaksByX: Map<number, WaveformCanvasColumnSample>;
 };
+
+type WaveformCanvasColumnRangeRenderPlan = WaveformCanvasColumnRangeDrawPlan & {
+  columnPaths: Map<number, WaveformCanvasColumnPath>;
+};
+
+type WaveformCanvasColumnPath = {
+  barX: number;
+  yBottom: number;
+  yTop: number;
+};
+
+type WaveformCanvasFastPresentationCommand = {
+  canvas: HTMLCanvasElement;
+  context: CanvasRenderingContext2D;
+  descriptor: WaveformCanvasFrameDescriptor;
+  descriptorPlan: WaveformCanvasRenderPlan;
+  plan: Exclude<WaveformCanvasFastPresentationPlan, { kind: "none" }>;
+  previousGeometry: WaveformCanvasFrameGeometry;
+  previousDirtyRanges: readonly WaveformCanvasColumnRange[];
+  reuseFrame: HTMLCanvasElement;
+};
+
+type WaveformCanvasJobChunkCommand = {
+  cursor: WaveformCanvasRenderCursor;
+  deadlineMs: number;
+  now: () => number;
+  plan: WaveformCanvasRenderPlan;
+  replaceExistingColumns?: boolean;
+  target: WaveformCanvasRasterTarget;
+};
+
+type WaveformCanvasRenderEffectCommand =
+  | {
+      kind: "prepare-job-target";
+      presentation: WaveformCanvasRenderPresentation;
+      target: WaveformCanvasRasterTarget;
+    }
+  | {
+      command: WaveformCanvasFastPresentationCommand;
+      kind: "fast-presentation";
+    }
+  | {
+      command: WaveformCanvasJobChunkCommand;
+      kind: "job-chunk";
+    }
+  | {
+      kind: "column-range";
+      plan: WaveformCanvasRenderPlan;
+      range: WaveformCanvasColumnRange | null;
+      replaceExistingColumns?: boolean;
+      target: WaveformCanvasRasterTarget;
+    };
 
 type WaveformCanvasPixelColumnStatus =
   | "blank-without-plan-data"
@@ -5245,14 +5312,19 @@ function useWaveformCanvasRenderer(args: {
     }
 
     const chunkStartedAt = readWaveformPerformanceNow(ownerWindow);
-    const chunk = drawWaveformCanvasJobChunk({
-      deadlineMs: readWaveformPerformanceNow(ownerWindow) + WAVEFORM_CANVAS_FRAME_BUDGET_MS,
-      cursor: job.cursor,
-      now: () => readWaveformPerformanceNow(ownerWindow),
-      plan: job.plan,
-      replaceExistingColumns: job.presentation.kind === "dirty",
-      target: job.target,
-    });
+    const chunk = renderWaveformCanvasEffect({
+      command: {
+        command: {
+          deadlineMs: readWaveformPerformanceNow(ownerWindow) + WAVEFORM_CANVAS_FRAME_BUDGET_MS,
+          cursor: job.cursor,
+          now: () => readWaveformPerformanceNow(ownerWindow),
+          plan: job.plan,
+          replaceExistingColumns: job.presentation.kind === "dirty",
+          target: job.target,
+        },
+        kind: "job-chunk",
+      },
+    }) as WaveformCanvasChunkResult;
     const chunkEndedAt = readWaveformPerformanceNow(ownerWindow);
     accumulateSpectrumCanvasRenderJobMetrics({
       chunk: {
@@ -5907,20 +5979,83 @@ function createWaveformCanvasRasterTarget(args: {
   color: string;
   geometry: WaveformCanvasFrameGeometry;
   presentation: WaveformCanvasRenderPresentation;
-}):
-  | {
-      empty: WaveformCanvasRasterTargetEmpty;
-      kind: "empty";
-    }
-  | {
-      kind: "ready";
-      target: WaveformCanvasRasterTarget;
-    } {
-  applyWaveformVisibleCanvasGeometry({
-    canvas: args.canvas,
-    geometry: args.geometry,
+}): WaveformCanvasRasterTargetResolution {
+  const target = resolveWaveformCanvasRasterTarget(args);
+
+  if (target.kind === "empty") {
+    return target;
+  }
+
+  renderWaveformCanvasEffect({
+    command: {
+      kind: "prepare-job-target",
+      presentation: args.presentation,
+      target: target.target,
+    },
   });
 
+  return target;
+}
+
+function prepareWaveformCanvasJobTarget(args: {
+  presentation: WaveformCanvasRenderPresentation;
+  target: WaveformCanvasRasterTarget;
+}) {
+  const context = args.target.context;
+
+  applyWaveformVisibleCanvasGeometry({
+    canvas: args.target.canvas,
+    geometry: args.target.geometry,
+  });
+  context.resetTransform();
+  if (args.presentation.kind === "fresh") {
+    context.clearRect(0, 0, args.target.geometry.backingWidth, args.target.geometry.backingHeight);
+  }
+  context.scale(args.target.geometry.devicePixelRatio, args.target.geometry.devicePixelRatio);
+  context.translate(-args.target.geometry.rasterStartX, 0);
+  context.imageSmoothingEnabled = false;
+  context.lineWidth = resolveWaveformBarWidthPx();
+  context.lineCap = "butt";
+  context.strokeStyle = args.target.color;
+  context.globalAlpha = 1;
+}
+
+function renderWaveformCanvasEffect(args: {
+  command: WaveformCanvasRenderEffectCommand;
+}):
+  | WaveformCanvasChunkResult
+  | WaveformCanvasFastPresentationResult
+  | WaveformCanvasRangeDrawResult
+  | void {
+  if (args.command.kind === "prepare-job-target") {
+    prepareWaveformCanvasJobTarget({
+      presentation: args.command.presentation,
+      target: args.command.target,
+    });
+    return;
+  }
+
+  if (args.command.kind === "fast-presentation") {
+    return runWaveformCanvasFastPresentationEffect(args.command.command);
+  }
+
+  if (args.command.kind === "job-chunk") {
+    return runWaveformCanvasJobChunkEffect(args.command.command);
+  }
+
+  return runWaveformCanvasColumnRangeEffect({
+    plan: args.command.plan,
+    range: args.command.range,
+    replaceExistingColumns: args.command.replaceExistingColumns,
+    target: args.command.target,
+  });
+}
+
+function resolveWaveformCanvasRasterTarget(args: {
+  canvas: HTMLCanvasElement;
+  color: string;
+  geometry: WaveformCanvasFrameGeometry;
+}): WaveformCanvasRasterTargetResolution {
   const context = args.canvas.getContext("2d");
   if (!context) {
     return {
@@ -5931,18 +6066,6 @@ function createWaveformCanvasRasterTarget(args: {
       kind: "empty",
     };
   }
-
-  context.resetTransform();
-  if (args.presentation.kind === "fresh") {
-    context.clearRect(0, 0, args.geometry.backingWidth, args.geometry.backingHeight);
-  }
-  context.scale(args.geometry.devicePixelRatio, args.geometry.devicePixelRatio);
-  context.translate(-args.geometry.rasterStartX, 0);
-  context.imageSmoothingEnabled = false;
-  context.lineWidth = resolveWaveformBarWidthPx();
-  context.lineCap = "butt";
-  context.strokeStyle = args.color;
-  context.globalAlpha = 1;
 
   return {
     kind: "ready",
@@ -7295,7 +7418,7 @@ export function drawWaveformCanvasColumnRange(args: {
     geometry: args.plan.geometry,
     range: args.range,
   });
-  return drawWaveformCanvasResolvedColumnRange({
+  return runWaveformCanvasColumnRangeEffect({
     plan: args.plan,
     range,
     replaceExistingColumns: args.replaceExistingColumns,
@@ -7441,14 +7564,43 @@ function createWaveformCanvasColumnRangeDrawPlan(args: {
   };
 }
 
-function drawWaveformCanvasResolvedColumnRange(args: {
+function createWaveformCanvasColumnRangeRenderPlan(args: {
+  pass?: WaveformCanvasColumnScanPass;
+  plan: WaveformCanvasRenderPlan;
+  range: WaveformCanvasColumnRange | null;
+}): WaveformCanvasColumnRangeRenderPlan {
+  const drawPlan = createWaveformCanvasColumnRangeDrawPlan({
+    pass: args.pass,
+    plan: args.plan,
+    range: args.range,
+  });
+  const columnPaths = new Map<number, WaveformCanvasColumnPath>();
+
+  for (const [x, peak] of drawPlan.peaksByX) {
+    columnPaths.set(
+      x,
+      resolveWaveformCanvasColumnPath({
+        peak,
+        plan: args.plan,
+        x,
+      }),
+    );
+  }
+
+  return {
+    ...drawPlan,
+    columnPaths,
+  };
+}
+
+function runWaveformCanvasColumnRangeEffect(args: {
   plan: WaveformCanvasRenderPlan;
   range: WaveformCanvasColumnRange | null;
   replaceExistingColumns?: boolean;
   target: WaveformCanvasRasterTarget;
 }): WaveformCanvasRangeDrawResult {
   const context = args.target.context;
-  const drawPlan = createWaveformCanvasColumnRangeDrawPlan({
+  const drawPlan = createWaveformCanvasColumnRangeRenderPlan({
     plan: args.plan,
     range: args.range,
   });
@@ -7486,16 +7638,14 @@ function drawWaveformCanvasResolvedColumnRange(args: {
       x < args.range.endX;
       x += pass.stepX
     ) {
-      const peak = drawPlan.peaksByX.get(x);
-      if (!peak) {
+      const columnPath = drawPlan.columnPaths.get(x);
+      if (!columnPath) {
         continue;
       }
 
-      drawWaveformCanvasColumn({
+      drawWaveformCanvasColumnPath({
+        columnPath,
         context,
-        peak,
-        plan: args.plan,
-        x,
       });
       hasPassColumn = true;
     }
@@ -7674,8 +7824,11 @@ export function clearWaveformCanvasColumnRanges(args: {
 }
 
 export const __spectrumVisualizerTestHooks = {
+  createWaveformCanvasColumnRangeRenderPlan,
   createWaveformCanvasRasterTarget,
   createWaveformCanvasPixelColumnProbe,
+  presentWaveformCanvasFrameFast,
+  resolveWaveformCanvasCoverageRangesAfterDraw,
 };
 
 function shiftWaveformCanvasColumnRange(args: {
@@ -7780,6 +7933,69 @@ export function resolveWaveformCanvasDirtyRangesAfterPresentation(args: {
     geometry: args.geometry,
     plan: args.plan,
     previousDirtyRanges: args.previousDirtyRanges,
+  });
+}
+
+function subtractWaveformCanvasColumnRanges(args: {
+  geometry: WaveformCanvasFrameGeometry;
+  ranges: readonly WaveformCanvasColumnRange[];
+  subtract: readonly WaveformCanvasColumnRange[];
+}) {
+  let remaining = normalizeWaveformCanvasColumnRanges({
+    geometry: args.geometry,
+    ranges: args.ranges,
+  });
+  const subtract = normalizeWaveformCanvasColumnRanges({
+    geometry: args.geometry,
+    ranges: args.subtract,
+  });
+
+  for (const resolved of subtract) {
+    remaining = remaining.flatMap((range) => {
+      if (resolved.endX <= range.startX || resolved.startX >= range.endX) {
+        return [range];
+      }
+
+      const fragments: WaveformCanvasColumnRange[] = [];
+      if (resolved.startX > range.startX) {
+        fragments.push({
+          endX: resolved.startX,
+          startX: range.startX,
+        });
+      }
+      if (resolved.endX < range.endX) {
+        fragments.push({
+          endX: range.endX,
+          startX: resolved.endX,
+        });
+      }
+
+      return fragments;
+    });
+  }
+
+  return normalizeWaveformCanvasColumnRanges({
+    geometry: args.geometry,
+    ranges: remaining,
+  });
+}
+
+function resolveWaveformCanvasCoverageRangesAfterDraw(args: {
+  geometry: WaveformCanvasFrameGeometry;
+  previousMissingRanges: readonly WaveformCanvasColumnRange[];
+  update: WaveformCanvasCoverageRangeUpdate;
+}) {
+  // A redrawn column gets a fresh density verdict; fallback draws re-enter through missingRanges.
+  return normalizeWaveformCanvasColumnRanges({
+    geometry: args.geometry,
+    ranges: [
+      ...subtractWaveformCanvasColumnRanges({
+        geometry: args.geometry,
+        ranges: args.previousMissingRanges,
+        subtract: args.update.drawnRanges,
+      }),
+      ...args.update.missingRanges,
+    ],
   });
 }
 
@@ -7997,8 +8213,12 @@ function presentWaveformCanvasFrameFast(args: {
   const canvas = args.canvas;
   const descriptor = args.descriptor;
   const descriptorPlan = args.descriptorPlan;
-  const context = canvas.getContext("2d");
-  if (!context) {
+  const target = resolveWaveformCanvasRasterTarget({
+    canvas,
+    color: descriptor.color,
+    geometry: descriptor.geometry,
+  });
+  if (target.kind === "empty") {
     return {
       kind: "empty",
       plan: null,
@@ -8037,85 +8257,72 @@ function presentWaveformCanvasFrameFast(args: {
     };
   }
 
+  return renderWaveformCanvasEffect({
+    command: {
+      command: {
+        canvas,
+        context: target.target.context,
+        descriptor,
+        descriptorPlan,
+        plan: presentationPlan,
+        previousDirtyRanges: args.previousDirtyRanges,
+        previousGeometry,
+        reuseFrame,
+      },
+      kind: "fast-presentation",
+    },
+  }) as WaveformCanvasFastPresentationResult;
+}
+
+function runWaveformCanvasFastPresentationEffect(
+  command: WaveformCanvasFastPresentationCommand,
+): WaveformCanvasFastPresentationResult {
+  const context = command.context;
+  const descriptor = command.descriptor;
+  const presentationPlan = command.plan;
+  const previousGeometry = command.previousGeometry;
+  const reuseFrame = command.reuseFrame;
+  const reuseContext = reuseFrame.getContext("2d");
+
+  if (!reuseContext) {
+    return {
+      kind: "empty",
+      plan: presentationPlan,
+      reason: "missing-reuse-context",
+      reuseFrame,
+    };
+  }
+
   reuseContext.resetTransform();
   reuseContext.clearRect(0, 0, previousGeometry.backingWidth, previousGeometry.backingHeight);
-  reuseContext.drawImage(canvas, 0, 0);
+  reuseContext.drawImage(command.canvas, 0, 0);
 
   applyWaveformVisibleCanvasGeometry({
-    canvas,
+    canvas: command.canvas,
     geometry: descriptor.geometry,
   });
   context.resetTransform();
   context.clearRect(0, 0, descriptor.geometry.backingWidth, descriptor.geometry.backingHeight);
   context.globalAlpha = 1;
   context.globalCompositeOperation = "source-over";
-  if (presentationPlan.kind === "dirty-redraw") {
-    context.drawImage(reuseFrame, 0, 0);
-  } else if (presentationPlan.kind === "horizontal-pan") {
-    context.drawImage(
-      reuseFrame,
-      presentationPlan.shiftX * descriptor.geometry.devicePixelRatio,
-      0,
-    );
-  } else {
-    const scale = descriptor.geometry.devicePixelRatio;
-    const viewportResizeSourceStartX =
-      (presentationPlan.copySourceStartX - previousGeometry.rasterStartX) * scale;
-    const viewportResizeTargetStartX =
-      (presentationPlan.copyTargetStartX - descriptor.geometry.rasterStartX) * scale;
-    context.drawImage(
-      reuseFrame,
-      viewportResizeSourceStartX,
-      0,
-      presentationPlan.copyWidthPx * scale,
-      previousGeometry.backingHeight,
-      viewportResizeTargetStartX,
-      0,
-      presentationPlan.copyWidthPx * scale,
-      descriptor.geometry.backingHeight,
-    );
-  }
-  const exposedRanges =
-    presentationPlan.kind === "horizontal-pan"
-      ? [
-          {
-            endX: presentationPlan.exposedEndX,
-            startX: presentationPlan.exposedStartX,
-          },
-        ]
-      : presentationPlan.kind === "dirty-redraw"
-        ? presentationPlan.dirtyRanges
-        : presentationPlan.exposedRanges;
-  const draws: WaveformCanvasColumnRangeResult[] = [];
-  const undrawnExposedRanges =
-    presentationPlan.kind === "dirty-redraw" || presentationPlan.kind === "horizontal-pan"
-      ? (() => {
-          context.scale(descriptor.geometry.devicePixelRatio, descriptor.geometry.devicePixelRatio);
-          context.translate(-descriptor.geometry.rasterStartX, 0);
-          context.imageSmoothingEnabled = false;
-          context.lineWidth = resolveWaveformBarWidthPx();
-          context.lineCap = "butt";
-          context.strokeStyle = descriptor.color;
-          context.globalAlpha = 1;
-          return exposedRanges.flatMap((range) => {
-            const draw = drawWaveformCanvasColumnRange({
-              plan: descriptorPlan,
-              range,
-              replaceExistingColumns: presentationPlan.kind === "dirty-redraw",
-              target: {
-                canvas,
-                color: descriptor.color,
-                context,
-                geometry: descriptor.geometry,
-                kind: "visible",
-              },
-            });
-            draws.push(draw);
+  copyWaveformCanvasFastPresentationFrame({
+    context,
+    descriptor,
+    plan: presentationPlan,
+    previousGeometry,
+    reuseFrame,
+  });
 
-            return draw.missingRanges;
-          });
-        })()
-      : exposedRanges;
+  const exposedRanges = resolveWaveformCanvasFastPresentationExposedRanges(presentationPlan);
+  const redraw = redrawWaveformCanvasFastPresentationExposedRanges({
+    canvas: command.canvas,
+    context,
+    descriptor,
+    descriptorPlan: command.descriptorPlan,
+    exposedRanges,
+    plan: presentationPlan,
+  });
+  const undrawnExposedRanges = redraw.undrawnExposedRanges;
   const dirtyRanges =
     presentationPlan.kind === "dirty-redraw"
       ? normalizeWaveformCanvasColumnRanges({
@@ -8126,14 +8333,14 @@ function presentWaveformCanvasFrameFast(args: {
           exposedRanges: undrawnExposedRanges,
           geometry: descriptor.geometry,
           plan: presentationPlan,
-          previousDirtyRanges: args.previousDirtyRanges,
+          previousDirtyRanges: command.previousDirtyRanges,
         });
 
   if (presentationPlan.kind === "dirty-redraw") {
     return {
       descriptor,
       dirtyRanges,
-      draws,
+      draws: redraw.draws,
       exposedRanges,
       exposedWidthPx: exposedRanges.reduce((sum, range) => sum + range.endX - range.startX, 0),
       kind: "presented",
@@ -8147,7 +8354,7 @@ function presentWaveformCanvasFrameFast(args: {
     return {
       descriptor,
       dirtyRanges,
-      draws,
+      draws: redraw.draws,
       exposedRanges,
       exposedWidthPx: exposedRanges.reduce((sum, range) => sum + range.endX - range.startX, 0),
       kind: "presented",
@@ -8160,13 +8367,120 @@ function presentWaveformCanvasFrameFast(args: {
   return {
     descriptor,
     dirtyRanges,
-    draws,
+    draws: redraw.draws,
     exposedRanges,
     exposedWidthPx: exposedRanges.reduce((sum, range) => sum + range.endX - range.startX, 0),
     kind: "presented",
     mode: "viewport-resize",
     plan: presentationPlan,
     reuseFrame,
+  };
+}
+
+function copyWaveformCanvasFastPresentationFrame(args: {
+  context: CanvasRenderingContext2D;
+  descriptor: WaveformCanvasFrameDescriptor;
+  plan: WaveformCanvasFastPresentationCommand["plan"];
+  previousGeometry: WaveformCanvasFrameGeometry;
+  reuseFrame: HTMLCanvasElement;
+}) {
+  if (args.plan.kind === "dirty-redraw") {
+    args.context.drawImage(args.reuseFrame, 0, 0);
+    return;
+  }
+
+  if (args.plan.kind === "horizontal-pan") {
+    args.context.drawImage(
+      args.reuseFrame,
+      args.plan.shiftX * args.descriptor.geometry.devicePixelRatio,
+      0,
+    );
+    return;
+  }
+
+  const scale = args.descriptor.geometry.devicePixelRatio;
+  const sourceStartX = (args.plan.copySourceStartX - args.previousGeometry.rasterStartX) * scale;
+  const targetStartX = (args.plan.copyTargetStartX - args.descriptor.geometry.rasterStartX) * scale;
+  args.context.drawImage(
+    args.reuseFrame,
+    sourceStartX,
+    0,
+    args.plan.copyWidthPx * scale,
+    args.previousGeometry.backingHeight,
+    targetStartX,
+    0,
+    args.plan.copyWidthPx * scale,
+    args.descriptor.geometry.backingHeight,
+  );
+}
+
+function resolveWaveformCanvasFastPresentationExposedRanges(
+  plan: WaveformCanvasFastPresentationCommand["plan"],
+) {
+  if (plan.kind === "horizontal-pan") {
+    return [
+      {
+        endX: plan.exposedEndX,
+        startX: plan.exposedStartX,
+      },
+    ];
+  }
+
+  return plan.kind === "dirty-redraw" ? plan.dirtyRanges : plan.exposedRanges;
+}
+
+function redrawWaveformCanvasFastPresentationExposedRanges(args: {
+  canvas: HTMLCanvasElement;
+  context: CanvasRenderingContext2D;
+  descriptor: WaveformCanvasFrameDescriptor;
+  descriptorPlan: WaveformCanvasRenderPlan;
+  exposedRanges: readonly WaveformCanvasColumnRange[];
+  plan: WaveformCanvasFastPresentationCommand["plan"];
+}) {
+  const draws: WaveformCanvasColumnRangeResult[] = [];
+
+  if (args.plan.kind === "viewport-resize") {
+    return {
+      draws,
+      undrawnExposedRanges: args.exposedRanges,
+    };
+  }
+
+  args.context.scale(
+    args.descriptor.geometry.devicePixelRatio,
+    args.descriptor.geometry.devicePixelRatio,
+  );
+  args.context.translate(-args.descriptor.geometry.rasterStartX, 0);
+  args.context.imageSmoothingEnabled = false;
+  args.context.lineWidth = resolveWaveformBarWidthPx();
+  args.context.lineCap = "butt";
+  args.context.strokeStyle = args.descriptor.color;
+  args.context.globalAlpha = 1;
+
+  const target = {
+    canvas: args.canvas,
+    color: args.descriptor.color,
+    context: args.context,
+    geometry: args.descriptor.geometry,
+    kind: "visible" as const,
+  };
+
+  return {
+    draws,
+    undrawnExposedRanges: args.exposedRanges.flatMap((range) => {
+      const draw = renderWaveformCanvasEffect({
+        command: {
+          kind: "column-range",
+          plan: args.descriptorPlan,
+          range,
+          replaceExistingColumns: args.plan.kind === "dirty-redraw",
+          target,
+        },
+      }) as WaveformCanvasRangeDrawResult;
+      draws.push(draw);
+
+      return draw.missingRanges;
+    }),
   };
 }
 
@@ -8328,18 +8642,31 @@ function resolveWaveformCanvasColumnPeak(args: {
   });
 }
 
-function drawWaveformCanvasColumn(args: {
-  context: CanvasRenderingContext2D;
+function resolveWaveformCanvasColumnPath(args: {
   peak: WaveformCanvasColumnSample;
   plan: WaveformCanvasRenderPlan;
   x: number;
-}) {
+}): WaveformCanvasColumnPath {
   const barX = args.x + 0.5;
   const yTop = args.plan.centerY - args.peak.peak.max * args.plan.amplitude;
   const yBottom = args.plan.centerY - args.peak.peak.min * args.plan.amplitude;
 
-  args.context.moveTo(barX, yTop);
-  args.context.lineTo(barX, Math.max(yTop + 1, yBottom));
+  return {
+    barX,
+    yBottom,
+    yTop,
+  };
+}
+
+function drawWaveformCanvasColumnPath(args: {
+  columnPath: WaveformCanvasColumnPath;
+  context: CanvasRenderingContext2D;
+}) {
+  args.context.moveTo(args.columnPath.barX, args.columnPath.yTop);
+  args.context.lineTo(
+    args.columnPath.barX,
+    Math.max(args.columnPath.yTop + 1, args.columnPath.yBottom),
+  );
 }
 
 function mergeWaveformCanvasChunkCursor(args: {
@@ -8372,13 +8699,13 @@ function mergeWaveformCanvasChunkCursor(args: {
     firstMissingX: args.cursor.firstMissingX ?? args.chunk.firstMissingX,
     hasDrawnColumn: args.cursor.hasDrawnColumn || args.chunk.hasChunkColumn,
     lastMissingX: args.chunk.lastMissingX ?? args.cursor.lastMissingX,
-    missingRanges: normalizeWaveformCanvasColumnRanges({
+    missingRanges: resolveWaveformCanvasCoverageRangesAfterDraw({
       geometry: args.geometry,
-      ranges: [
-        ...args.cursor.missingRanges,
-        ...args.cursor.retargetRanges,
-        ...args.chunk.missingRanges,
-      ],
+      previousMissingRanges: [...args.cursor.missingRanges, ...args.cursor.retargetRanges],
+      update: {
+        drawnRanges: args.chunk.drawnRanges,
+        missingRanges: args.chunk.missingRanges,
+      },
     }),
     missingPeakColumnCount: args.cursor.missingPeakColumnCount + args.chunk.missingPeakColumns,
     nextX: nextPosition.nextX,
@@ -8391,14 +8718,15 @@ function mergeWaveformCanvasChunkCursor(args: {
   };
 }
 
-export function drawWaveformCanvasJobChunk(args: {
-  cursor: WaveformCanvasRenderCursor;
-  deadlineMs: number;
-  now: () => number;
-  plan: WaveformCanvasRenderPlan;
-  replaceExistingColumns?: boolean;
-  target: WaveformCanvasRasterTarget;
-}): WaveformCanvasChunkResult {
+export function drawWaveformCanvasJobChunk(
+  args: WaveformCanvasJobChunkCommand,
+): WaveformCanvasChunkResult {
+  return runWaveformCanvasJobChunkEffect(args);
+}
+
+function runWaveformCanvasJobChunkEffect(
+  args: WaveformCanvasJobChunkCommand,
+): WaveformCanvasChunkResult {
   const context = args.target.context;
   const plan = args.plan;
   const pass = resolveWaveformCanvasCursorPass({
@@ -8428,7 +8756,7 @@ export function drawWaveformCanvasJobChunk(args: {
       startX,
     },
   });
-  const drawPlan = createWaveformCanvasColumnRangeDrawPlan({
+  const drawPlan = createWaveformCanvasColumnRangeRenderPlan({
     pass,
     plan,
     range: chunkRange,
@@ -8452,12 +8780,10 @@ export function drawWaveformCanvasJobChunk(args: {
     context.beginPath();
   }
 
-  for (const [x, peak] of drawPlan.peaksByX) {
-    drawWaveformCanvasColumn({
+  for (const columnPath of drawPlan.columnPaths.values()) {
+    drawWaveformCanvasColumnPath({
+      columnPath,
       context,
-      peak,
-      plan,
-      x,
     });
   }
 

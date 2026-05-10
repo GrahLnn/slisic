@@ -159,16 +159,27 @@ function createWaveformCanvasTestContext() {
   return {
     beginPathCount: 0,
     clearRects: [] as { h: number; w: number; x: number; y: number }[],
+    drawImageCalls: [] as unknown[][],
+    globalAlpha: 0,
+    globalCompositeOperation: "",
+    imageSmoothingEnabled: true,
+    lineCap: "",
+    lineWidth: 0,
     moveXValues: [] as number[],
     lineYValues: [] as number[],
     lineToCount: 0,
     moveToCount: 0,
+    strokeStyle: "",
+    transforms: [] as Array<{ kind: "reset" | "scale" | "translate"; x?: number; y?: number }>,
     strokeCount: 0,
     beginPath() {
       this.beginPathCount += 1;
     },
     clearRect(x: number, y: number, w: number, h: number) {
       this.clearRects.push({ h, w, x, y });
+    },
+    drawImage(...args: unknown[]) {
+      this.drawImageCalls.push(args);
     },
     lineTo(_x: number, y: number) {
       this.lineToCount += 1;
@@ -178,8 +189,17 @@ function createWaveformCanvasTestContext() {
       this.moveToCount += 1;
       this.moveXValues.push(x);
     },
+    resetTransform() {
+      this.transforms.push({ kind: "reset" });
+    },
+    scale(x: number, y: number) {
+      this.transforms.push({ kind: "scale", x, y });
+    },
     stroke() {
       this.strokeCount += 1;
+    },
+    translate(x: number, y: number) {
+      this.transforms.push({ kind: "translate", x, y });
     },
   };
 }
@@ -439,6 +459,38 @@ function drawCompleteWaveformCanvasTestJob(args: {
   }
 
   return chunk;
+}
+
+function createWaveformCanvasFastPresentationTestCanvas(
+  context: ReturnType<typeof createWaveformCanvasTestContext>,
+) {
+  return {
+    height: 0,
+    ownerDocument: {
+      createElement(tagName: string) {
+        assert.equal(tagName, "canvas");
+        const reuseContext = createWaveformCanvasTestContext();
+        return {
+          height: 0,
+          width: 0,
+          getContext(type: string) {
+            assert.equal(type, "2d");
+            return reuseContext;
+          },
+        };
+      },
+    },
+    style: {
+      left: "",
+      width: "",
+      height: "",
+    },
+    width: 0,
+    getContext(type: string) {
+      assert.equal(type, "2d");
+      return context;
+    },
+  } as unknown as HTMLCanvasElement;
 }
 
 describe("SpectrumVisualizer", () => {
@@ -1434,7 +1486,84 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.equal(completed.completed, false);
-    assert.deepEqual(completed.cursor.missingRanges, retargetRanges);
+    assert.equal(
+      completed.cursor.missingRanges.reduce((sum, range) => sum + range.endX - range.startX, 0),
+      268,
+    );
+    assert.deepEqual(completed.cursor.missingRanges[0], {
+      endX: -118,
+      startX: -120,
+    });
+    assert.deepEqual(completed.cursor.missingRanges.at(-1), {
+      endX: 237,
+      startX: 235,
+    });
+  });
+
+  test("removes stale dirty evidence when target-density redraw covers it", () => {
+    const geometry = createWaveformCanvasTestPlan({ viewportWidth: 20 }).geometry;
+
+    assert.deepEqual(
+      __spectrumVisualizerTestHooks.resolveWaveformCanvasCoverageRangesAfterDraw({
+        geometry,
+        previousMissingRanges: [
+          {
+            endX: 10,
+            startX: -10,
+          },
+        ],
+        update: {
+          drawnRanges: [
+            {
+              endX: 6,
+              startX: -4,
+            },
+          ],
+          missingRanges: [],
+        },
+      }),
+      [
+        {
+          endX: -4,
+          startX: -10,
+        },
+        {
+          endX: 10,
+          startX: 6,
+        },
+      ],
+    );
+    assert.deepEqual(
+      __spectrumVisualizerTestHooks.resolveWaveformCanvasCoverageRangesAfterDraw({
+        geometry,
+        previousMissingRanges: [
+          {
+            endX: 10,
+            startX: -10,
+          },
+        ],
+        update: {
+          drawnRanges: [
+            {
+              endX: 10,
+              startX: -10,
+            },
+          ],
+          missingRanges: [
+            {
+              endX: 4,
+              startX: 2,
+            },
+          ],
+        },
+      }),
+      [
+        {
+          endX: 4,
+          startX: 2,
+        },
+      ],
+    );
   });
 
   test("continues dirty completion when pending tile coverage updates the same visual frame", () => {
@@ -1666,6 +1795,64 @@ describe("SpectrumVisualizer", () => {
       [...new Set(drawnColumnIndexes)].sort((left, right) => left - right),
       Array.from({ length: 360 }, (_, index) => index - 120),
     );
+  });
+
+  test("keeps column range planning pure before canvas interpretation", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 20 });
+    const renderPlan = __spectrumVisualizerTestHooks.createWaveformCanvasColumnRangeRenderPlan({
+      plan,
+      range: {
+        endX: 10,
+        startX: 0,
+      },
+    });
+
+    assert.equal(renderPlan.hasColumn, true);
+    assert.equal(renderPlan.columnPaths.size, 10);
+    assert.equal(context.moveToCount, 0);
+    assert.equal(context.lineToCount, 0);
+    assert.equal(context.strokeCount, 0);
+    assert.deepEqual(context.clearRects, []);
+  });
+
+  test("interprets fast presentation redraw through the single canvas effect owner", () => {
+    const context = createWaveformCanvasTestContext();
+    const previous = createWaveformTestFrameDescriptor({
+      scrollLeft: 20,
+      viewportWidth: 20,
+    });
+    const current = {
+      ...previous,
+      dataSignature: "100(0:track|100.00|0|20)",
+      renderSignature: ["100(0:track|100.00|0|20)", previous.visualSignature].join("|"),
+    };
+    const plan = {
+      ...createWaveformCanvasTestPlan({ viewportWidth: 20 }),
+      geometry: current.geometry,
+      viewport: current.viewport,
+    };
+    const canvas = createWaveformCanvasFastPresentationTestCanvas(context);
+    const result = __spectrumVisualizerTestHooks.presentWaveformCanvasFrameFast({
+      canvas,
+      descriptor: current,
+      descriptorPlan: plan,
+      previous,
+      previousDirtyRanges: [
+        {
+          endX: 10,
+          startX: 0,
+        },
+      ],
+      reuseFrame: null,
+    });
+
+    assert.equal(result.kind, "presented");
+    assert.equal(result.mode, "dirty-redraw");
+    assert.equal(context.drawImageCalls.length, 1);
+    assert.equal(context.moveToCount, 10);
+    assert.equal(context.strokeCount, 3);
+    assert.deepEqual(result.dirtyRanges, []);
   });
 
   test("renders horizontal pan refreshes at full density", () => {
