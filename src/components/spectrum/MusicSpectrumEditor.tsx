@@ -53,7 +53,6 @@ export interface MusicSpectrumSelection {
   start: number | null;
 }
 
-export type MusicSpectrumWaveformPresentation = "interactive" | "placeholder";
 export type MusicSpectrumExitPresentation = "local" | "page";
 
 export interface MusicSpectrumEditorProps {
@@ -70,7 +69,6 @@ export interface MusicSpectrumEditorProps {
   trackFilePath: string | null;
   waveformStartAction?: ReactNode;
   waveformRenderDataStore?: WaveformRenderDataStore;
-  waveformPresentation?: MusicSpectrumWaveformPresentation;
   waveformClassName?: string;
   onReset: () => void;
   onSelectionCommit?: (
@@ -102,20 +100,6 @@ export function resolveMusicSpectrumContentFadeProps(args: {
   }
 
   return args.cascade ? musicSpectrumCascadeContentFadeProps : musicSpectrumContentFadeProps;
-}
-
-export function resolveMusicSpectrumWaveformFadeProps(args: {
-  presentation: MusicSpectrumWaveformPresentation;
-}) {
-  return {
-    animate: {
-      opacity: args.presentation === "interactive" ? 1 : 0,
-    },
-    initial: {
-      opacity: 0,
-    },
-    transition: collectionTitleLayoutTransition,
-  } as const;
 }
 
 export function resolveMusicSpectrumResetActionFadeProps(args: {
@@ -158,7 +142,6 @@ type MusicSpectrumEditorTraceInputs = {
   titleLayoutId?: string;
   titleValue: string;
   trackFilePath: string | null;
-  waveformPresentation: MusicSpectrumWaveformPresentation;
 };
 
 function roundTraceNumber(value: number) {
@@ -211,7 +194,6 @@ function createMusicSpectrumEditorTracePayload(args: {
     titleLength: args.inputs.titleValue.length,
     titleValue: args.inputs.titleValue.slice(0, 160),
     trackFilePath: args.inputs.trackFilePath,
-    waveformPresentation: args.inputs.waveformPresentation,
     elements: {
       editableTitleHost: readTraceElementSnapshot(args.refs.editableTitleHost.current),
       titleRow: readTraceElementSnapshot(args.refs.titleRow.current),
@@ -301,7 +283,6 @@ function useMusicSpectrumEditorTrace(
         titleLength: latestInputsRef.current.titleValue.length,
         titleValue: latestInputsRef.current.titleValue.slice(0, 160),
         trackFilePath: latestInputsRef.current.trackFilePath,
-        waveformPresentation: latestInputsRef.current.waveformPresentation,
       });
 
       const ResizeObserverConstructor = ownerWindow.ResizeObserver;
@@ -365,7 +346,6 @@ function useMusicSpectrumEditorTrace(
     inputs.titleLayoutId,
     inputs.titleValue,
     inputs.trackFilePath,
-    inputs.waveformPresentation,
     refs,
   ]);
 }
@@ -386,7 +366,6 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
       trackFilePath,
       waveformStartAction,
       waveformRenderDataStore,
-      waveformPresentation = "interactive",
       waveformClassName,
       onReset,
       onSelectionCommit,
@@ -415,7 +394,6 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
         titleLayoutId,
         titleValue,
         trackFilePath,
-        waveformPresentation,
       },
       traceRefs.current,
     );
@@ -456,26 +434,20 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
         >
           <div className="grid">
             <div aria-hidden className="col-start-1 row-start-1 h-[13rem] w-full" />
-            <AnimatePresence initial={false}>
-              {waveformPresentation === "interactive" ? (
-                <motion.div
-                  ref={trackSpectrumHostRef}
-                  key="waveform"
-                  {...resolveMusicSpectrumWaveformFadeProps({
-                    presentation: waveformPresentation,
-                  })}
-                  className="col-start-1 row-start-1"
-                >
-                  <TrackSpectrum
-                    filePath={trackFilePath}
-                    playheadEnabled={playheadEnabled}
-                    renderDataStore={waveformRenderDataStore}
-                    selection={selection}
-                    onSelectionCommit={onSelectionCommit}
-                  />
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
+            <motion.div
+              ref={trackSpectrumHostRef}
+              key="waveform"
+              {...musicSpectrumContentFadeProps}
+              className="col-start-1 row-start-1"
+            >
+              <TrackSpectrum
+                filePath={trackFilePath}
+                playheadEnabled={playheadEnabled}
+                renderDataStore={waveformRenderDataStore}
+                selection={selection}
+                onSelectionCommit={onSelectionCommit}
+              />
+            </motion.div>
           </div>
           <AnimatePresence initial={false}>
             {waveformStartAction ? (

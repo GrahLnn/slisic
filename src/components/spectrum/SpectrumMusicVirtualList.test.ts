@@ -4,11 +4,15 @@ import {
   areSpectrumMusicVirtualListRowRenderModelsEqual,
   areSpectrumMusicVirtualListRowPropsEqual,
   areSpectrumMusicEditorViewModelsEqual,
+  createSpectrumMusicAdmissionIdentityKey,
+  createSpectrumMusicAdmissionScheduleKey,
+  createSpectrumMusicAdmissionTracePayload,
   resolveSpectrumMusicVirtualRowPlaybackSnapshot,
   resolveSpectrumMusicVirtualListHeight,
   resolveSpectrumMusicVirtualRangeIndexes,
   resolveSpectrumMusicVirtualRowTransform,
-  resolveSpectrumMusicWaveformPresentation,
+  resolveSpectrumMusicAdmissionScheduleRows,
+  resolveSpectrumMusicRowAdmission,
 } from "./SpectrumMusicVirtualList";
 import { createWaveformRenderDataStore } from "./SpectrumVisualizer";
 import type {
@@ -69,11 +73,11 @@ function createRowRenderModel(
     exitPresentation: "local",
     index: 0,
     playbackActionSnapshot: null,
+    rowAdmission: "admitted",
     scrollMargin: 0,
     start: 0,
     trackFilePath: "C:/music/current.mp3",
     waveformRenderDataStore: testWaveformRenderDataStore,
-    waveformPresentation: "interactive",
     ...overrides,
   };
 }
@@ -137,33 +141,95 @@ describe("SpectrumMusicVirtualList", () => {
     );
   });
 
-  test("keeps the current music waveform interactive before sibling rows are admitted", () => {
+  test("admits the current music row before sibling rows enter the editor pipeline", () => {
     assert.equal(
-      resolveSpectrumMusicWaveformPresentation({
+      resolveSpectrumMusicRowAdmission({
         admittedIndexes: new Set([0]),
         isCurrent: true,
-        rowIndex: 0,
+        rowIndex: 3,
       }),
-      "interactive",
+      "admitted",
     );
-  });
-
-  test("keeps sibling waveforms as placeholders until the list admits them", () => {
     assert.equal(
-      resolveSpectrumMusicWaveformPresentation({
+      resolveSpectrumMusicRowAdmission({
         admittedIndexes: new Set([0]),
         isCurrent: false,
         rowIndex: 1,
       }),
-      "placeholder",
+      "deferred",
     );
     assert.equal(
-      resolveSpectrumMusicWaveformPresentation({
+      resolveSpectrumMusicRowAdmission({
         admittedIndexes: new Set([0, 1]),
         isCurrent: false,
         rowIndex: 1,
       }),
-      "interactive",
+      "admitted",
+    );
+  });
+
+  test("keeps admission scheduling keyed to row identity and current status only", () => {
+    const editors = [
+      createEditor("alpha", {
+        isCurrent: true,
+        titleValue: "Alpha",
+      }),
+      createEditor("beta", {
+        isCurrent: false,
+        titleValue: "Beta",
+      }),
+    ];
+
+    assert.equal(
+      createSpectrumMusicAdmissionIdentityKey(editors),
+      "0:alpha:current\n1:beta:sibling",
+    );
+    assert.equal(createSpectrumMusicAdmissionScheduleKey(editors), "0:current\n1:sibling");
+    assert.deepEqual(resolveSpectrumMusicAdmissionScheduleRows("0:current\n1:sibling"), [
+      {
+        index: 0,
+        isCurrent: true,
+      },
+      {
+        index: 1,
+        isCurrent: false,
+      },
+    ]);
+    assert.equal(
+      createSpectrumMusicAdmissionScheduleKey([
+        {
+          ...editors[0]!,
+          titleValue: "Alpha Renamed",
+        },
+        editors[1]!,
+      ]),
+      "0:current\n1:sibling",
+    );
+  });
+
+  test("summarizes row admission trace data without title or path payloads", () => {
+    assert.deepEqual(
+      createSpectrumMusicAdmissionTracePayload({
+        admittedIndexes: new Set([0]),
+        scheduleKey: "0:current\n1:sibling",
+      }),
+      {
+        admittedIndexes: [0],
+        deferredIndexes: [1],
+        rowCount: 2,
+        rows: [
+          {
+            index: 0,
+            isCurrent: true,
+            rowAdmission: "admitted",
+          },
+          {
+            index: 1,
+            isCurrent: false,
+            rowAdmission: "deferred",
+          },
+        ],
+      },
     );
   });
 
@@ -209,6 +275,24 @@ describe("SpectrumMusicVirtualList", () => {
           },
           { index: 1, start: 384 },
         ),
+      ),
+      false,
+    );
+  });
+
+  test("keeps row memoization sensitive to admission changes", () => {
+    const editor = createEditor("beta", {
+      isCurrent: false,
+    });
+
+    assert.equal(
+      areSpectrumMusicVirtualListRowRenderModelsEqual(
+        createRowRenderModel(editor, {
+          rowAdmission: "deferred",
+        }),
+        createRowRenderModel(editor, {
+          rowAdmission: "admitted",
+        }),
       ),
       false,
     );

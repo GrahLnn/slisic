@@ -13,13 +13,13 @@ import {
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
+import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 import { usePageViewportScrollElementRef } from "../pageViewportScroll";
 import type { EditableTitleHandle } from "../EditableTitle";
 import {
   MusicSpectrumEditor,
   type MusicSpectrumExitPresentation,
   type MusicSpectrumSelection,
-  type MusicSpectrumWaveformPresentation,
 } from "./MusicSpectrumEditor";
 import { SpectrumPlaybackAction } from "./SpectrumPlaybackAction";
 import {
@@ -37,11 +37,14 @@ import {
 } from "./SpectrumPage.view-model";
 
 const SPECTRUM_MUSIC_VIRTUAL_ROW_ESTIMATE_PX = 336;
+const SPECTRUM_MUSIC_EDITOR_ROW_CONTENT_HEIGHT_PX = 280;
 const SPECTRUM_MUSIC_VIRTUAL_ROW_GAP_PX = 48;
 const SPECTRUM_MUSIC_VIRTUAL_OVERSCAN = 3;
 const SPECTRUM_MUSIC_VIRTUAL_PADDING_END_PX = 64;
 const SPECTRUM_MUSIC_VIRTUAL_CASCADE_START_DELAY_MS = 390;
 const SPECTRUM_MUSIC_VIRTUAL_CASCADE_STEP_MS = 70;
+
+export type SpectrumMusicRowAdmission = "admitted" | "deferred";
 
 export interface SpectrumMusicVirtualListProps {
   editorViewModels: readonly SpectrumMusicEditorViewModel[];
@@ -71,12 +74,66 @@ export function resolveSpectrumMusicVirtualRowTransform(args: {
   return `translateY(${args.start - args.scrollMargin}px)`;
 }
 
-export function resolveSpectrumMusicWaveformPresentation(args: {
+export function resolveSpectrumMusicRowAdmission(args: {
   admittedIndexes: ReadonlySet<number>;
   isCurrent: boolean;
   rowIndex: number;
-}): MusicSpectrumWaveformPresentation {
-  return args.isCurrent || args.admittedIndexes.has(args.rowIndex) ? "interactive" : "placeholder";
+}): SpectrumMusicRowAdmission {
+  return args.isCurrent || args.admittedIndexes.has(args.rowIndex) ? "admitted" : "deferred";
+}
+
+export function createSpectrumMusicAdmissionIdentityKey(
+  editors: readonly SpectrumMusicEditorViewModel[],
+) {
+  return editors
+    .map((editor, index) => `${index}:${editor.id}:${editor.isCurrent ? "current" : "sibling"}`)
+    .join("\n");
+}
+
+export function createSpectrumMusicAdmissionScheduleKey(
+  editors: readonly SpectrumMusicEditorViewModel[],
+) {
+  return editors
+    .map((editor, index) => `${index}:${editor.isCurrent ? "current" : "sibling"}`)
+    .join("\n");
+}
+
+export function resolveSpectrumMusicAdmissionScheduleRows(scheduleKey: string) {
+  return scheduleKey.split("\n").flatMap((entry) => {
+    const [indexValue, status] = entry.split(":");
+    const index = Number(indexValue);
+
+    return Number.isInteger(index)
+      ? [
+          {
+            index,
+            isCurrent: status === "current",
+          },
+        ]
+      : [];
+  });
+}
+
+export function createSpectrumMusicAdmissionTracePayload(args: {
+  admittedIndexes: ReadonlySet<number>;
+  scheduleKey: string;
+}) {
+  const rows = resolveSpectrumMusicAdmissionScheduleRows(args.scheduleKey).map((row) => ({
+    index: row.index,
+    isCurrent: row.isCurrent,
+    rowAdmission: resolveSpectrumMusicRowAdmission({
+      admittedIndexes: args.admittedIndexes,
+      isCurrent: row.isCurrent,
+      rowIndex: row.index,
+    }),
+  }));
+
+  return {
+    admittedIndexes: [...args.admittedIndexes],
+    deferredIndexes: rows.filter((row) => row.rowAdmission === "deferred").map((row) => row.index),
+    rowCount: rows.length,
+    rows,
+  } satisfies Record<string, unknown>;
 }
 
 export function resolveSpectrumMusicVirtualRangeIndexes(args: {
@@ -145,11 +202,11 @@ export interface SpectrumMusicVirtualListRowRenderModel {
   exitPresentation: MusicSpectrumExitPresentation;
   index: number;
   playbackActionSnapshot: SpectrumPlaybackActionSnapshot | null;
+  rowAdmission: SpectrumMusicRowAdmission;
   scrollMargin: number;
   start: number;
   trackFilePath: string | null;
   waveformRenderDataStore: WaveformRenderDataStore;
-  waveformPresentation: MusicSpectrumWaveformPresentation;
 }
 
 export function areSpectrumMusicVirtualListRowRenderModelsEqual(
@@ -159,11 +216,11 @@ export function areSpectrumMusicVirtualListRowRenderModelsEqual(
   return (
     left.exitPresentation === right.exitPresentation &&
     left.index === right.index &&
+    left.rowAdmission === right.rowAdmission &&
     left.scrollMargin === right.scrollMargin &&
     left.start === right.start &&
     left.trackFilePath === right.trackFilePath &&
     left.waveformRenderDataStore === right.waveformRenderDataStore &&
-    left.waveformPresentation === right.waveformPresentation &&
     areSpectrumMusicEditorViewModelsEqual(left.editor, right.editor) &&
     areSpectrumPlaybackActionSnapshotsEqual(
       resolveSpectrumMusicVirtualRowPlaybackSnapshot({
@@ -214,11 +271,11 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
   exitPresentation,
   index,
   playbackActionSnapshot,
+  rowAdmission,
   scrollMargin,
   start,
   trackFilePath,
   waveformRenderDataStore,
-  waveformPresentation,
   measureElement,
   onDelete,
   onPlaybackAction,
@@ -261,54 +318,57 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
         transform: resolveSpectrumMusicVirtualRowTransform({ scrollMargin, start }),
       }}
     >
-      <MusicSpectrumEditor
-        cascade={!editor.isCurrent}
-        ref={titleRef}
-        exitPresentation={exitPresentation}
-        handoffTone={editor.handoffTone}
-        interactionDisabled={editor.interactionDisabled}
-        titleAction={
-          <button
-            type="button"
-            aria-label="Delete music"
-            onClick={() => onDelete(editor.id)}
-            className={cn(
-              "group relative isolate inline-flex size-8 items-center justify-center rounded-[25px] p-2",
-              "text-[#737373] transition duration-300 [corner-shape:squircle_squircle_squircle_squircle]",
-              "before:absolute before:inset-0 before:-z-10 before:rounded-[25px] before:bg-transparent",
-              "before:transition before:duration-300 before:[corner-shape:squircle_squircle_squircle_squircle]",
-              "hover:text-red-600 hover:before:bg-[#e5e5e5]",
-              "dark:text-[#8a8a8a] dark:hover:text-red-400 dark:hover:before:bg-[#262626]",
-            )}
-          >
-            <icons.trashXmark size={18} />
-          </button>
-        }
-        waveformStartAction={
-          <SpectrumPlaybackAction
-            identity={editor.playbackIdentity}
-            playbackSnapshot={rowPlaybackSnapshot}
-            onAction={onPlaybackAction}
-          />
-        }
-        playheadEnabled={editor.isCurrent}
-        selection={{
-          end: editor.selectionEnd,
-          start: editor.selectionStart,
-        }}
-        shouldShowResetAction={editor.shouldShowResetAction}
-        titleLayoutId={editor.titleLayoutId}
-        titleValue={editor.titleValue}
-        trackFilePath={trackFilePath}
-        waveformRenderDataStore={waveformRenderDataStore}
-        waveformPresentation={waveformPresentation}
-        waveformClassName="left-1/2 w-screen -translate-x-1/2"
-        onReset={() => onReset(editor.id)}
-        onSelectionCommit={(range, commitPlaybackStatus) =>
-          onSelectionCommit(editor.id, range, commitPlaybackStatus)
-        }
-        onTitleChange={(name) => onTitleChange(editor.id, name)}
-      />
+      {rowAdmission === "admitted" ? (
+        <MusicSpectrumEditor
+          cascade={!editor.isCurrent}
+          ref={titleRef}
+          exitPresentation={exitPresentation}
+          handoffTone={editor.handoffTone}
+          interactionDisabled={editor.interactionDisabled}
+          titleAction={
+            <button
+              type="button"
+              aria-label="Delete music"
+              onClick={() => onDelete(editor.id)}
+              className={cn(
+                "group relative isolate inline-flex size-8 items-center justify-center rounded-[25px] p-2",
+                "text-[#737373] transition duration-300 [corner-shape:squircle_squircle_squircle_squircle]",
+                "before:absolute before:inset-0 before:-z-10 before:rounded-[25px] before:bg-transparent",
+                "before:transition before:duration-300 before:[corner-shape:squircle_squircle_squircle_squircle]",
+                "hover:text-red-600 hover:before:bg-[#e5e5e5]",
+                "dark:text-[#8a8a8a] dark:hover:text-red-400 dark:hover:before:bg-[#262626]",
+              )}
+            >
+              <icons.trashXmark size={18} />
+            </button>
+          }
+          waveformStartAction={
+            <SpectrumPlaybackAction
+              identity={editor.playbackIdentity}
+              playbackSnapshot={rowPlaybackSnapshot}
+              onAction={onPlaybackAction}
+            />
+          }
+          playheadEnabled={editor.isCurrent}
+          selection={{
+            end: editor.selectionEnd,
+            start: editor.selectionStart,
+          }}
+          shouldShowResetAction={editor.shouldShowResetAction}
+          titleLayoutId={editor.titleLayoutId}
+          titleValue={editor.titleValue}
+          trackFilePath={trackFilePath}
+          waveformRenderDataStore={waveformRenderDataStore}
+          waveformClassName="left-1/2 w-screen -translate-x-1/2"
+          onReset={() => onReset(editor.id)}
+          onSelectionCommit={(range, commitPlaybackStatus) =>
+            onSelectionCommit(editor.id, range, commitPlaybackStatus)
+          }
+          onTitleChange={(name) => onTitleChange(editor.id, name)}
+        />
+      ) : (
+        <div aria-hidden style={{ height: SPECTRUM_MUSIC_EDITOR_ROW_CONTENT_HEIGHT_PX }} />
+      )}
     </div>
   );
 }, areSpectrumMusicVirtualListRowPropsEqual);
@@ -350,6 +410,7 @@ export function SpectrumMusicVirtualList({
 }: SpectrumMusicVirtualListProps) {
   const scrollElementRef = usePageViewportScrollElementRef();
   const listRef = useRef<HTMLDivElement | null>(null);
+  const admissionTraceSignatureRef = useRef<string | null>(null);
   const waveformRenderDataStore = useMemo(() => createWaveformRenderDataStore(), []);
   const handlersRef = useRef({
     onDelete,
@@ -409,9 +470,8 @@ export function SpectrumMusicVirtualList({
   const listHeight = resolveSpectrumMusicVirtualListHeight({
     totalSize: rowVirtualizer.getTotalSize(),
   });
-  const admissionKey = editorViewModels
-    .map((editor, index) => `${index}:${editor.id}:${editor.isCurrent ? "current" : "sibling"}`)
-    .join("\n");
+  const admissionIdentityKey = createSpectrumMusicAdmissionIdentityKey(editorViewModels);
+  const admissionScheduleKey = createSpectrumMusicAdmissionScheduleKey(editorViewModels);
 
   useLayoutEffect(() => {
     handlersRef.current = {
@@ -459,33 +519,34 @@ export function SpectrumMusicVirtualList({
   }, [scrollElementRef]);
 
   useLayoutEffect(() => {
+    const admissionRows = resolveSpectrumMusicAdmissionScheduleRows(admissionScheduleKey);
     const baseIndexes = new Set<number>();
-    if (editorViewModels.length > 0) {
+    if (admissionRows.length > 0) {
       baseIndexes.add(0);
     }
     commitAdmittedIndexes(setAdmittedIndexes, baseIndexes);
 
     const ownerWindow = listRef.current?.ownerDocument.defaultView ?? window;
     const timers: number[] = [];
-    editorViewModels.forEach((editor, index) => {
-      if (editor.isCurrent || index === 0) {
+    admissionRows.forEach((row) => {
+      if (row.isCurrent || row.index === 0) {
         return;
       }
 
       const timer = ownerWindow.setTimeout(
         () => {
           setAdmittedIndexes((current) => {
-            if (current.has(index)) {
+            if (current.has(row.index)) {
               return current;
             }
 
             const next = new Set(current);
-            next.add(index);
+            next.add(row.index);
             return next;
           });
         },
         SPECTRUM_MUSIC_VIRTUAL_CASCADE_START_DELAY_MS +
-          (index - 1) * SPECTRUM_MUSIC_VIRTUAL_CASCADE_STEP_MS,
+          (row.index - 1) * SPECTRUM_MUSIC_VIRTUAL_CASCADE_STEP_MS,
       );
       timers.push(timer);
     });
@@ -495,7 +556,23 @@ export function SpectrumMusicVirtualList({
         ownerWindow.clearTimeout(timer);
       }
     };
-  }, [admissionKey]);
+  }, [admissionIdentityKey, admissionScheduleKey]);
+
+  useLayoutEffect(() => {
+    const signature = `${admissionIdentityKey}|${[...admittedIndexes].join(",")}`;
+    if (admissionTraceSignatureRef.current === signature) {
+      return;
+    }
+
+    admissionTraceSignatureRef.current = signature;
+    recordRenderPerformanceTrace(
+      "spectrum-music-row-admission",
+      createSpectrumMusicAdmissionTracePayload({
+        admittedIndexes,
+        scheduleKey: admissionScheduleKey,
+      }),
+    );
+  }, [admissionIdentityKey, admissionScheduleKey, admittedIndexes]);
 
   return (
     <div ref={listRef} className="relative" style={{ height: `${listHeight}px` }}>
@@ -504,6 +581,12 @@ export function SpectrumMusicVirtualList({
         if (!editor) {
           return null;
         }
+
+        const rowAdmission = resolveSpectrumMusicRowAdmission({
+          admittedIndexes,
+          isCurrent: editor.isCurrent,
+          rowIndex: virtualRow.index,
+        });
 
         return (
           <SpectrumMusicVirtualListRow
@@ -514,15 +597,11 @@ export function SpectrumMusicVirtualList({
             index={virtualRow.index}
             measureElement={handleMeasureElement}
             playbackActionSnapshot={playbackActionSnapshot}
+            rowAdmission={rowAdmission}
             scrollMargin={scrollMargin}
             start={virtualRow.start}
             trackFilePath={trackFilePath}
             waveformRenderDataStore={waveformRenderDataStore}
-            waveformPresentation={resolveSpectrumMusicWaveformPresentation({
-              admittedIndexes,
-              isCurrent: editor.isCurrent,
-              rowIndex: virtualRow.index,
-            })}
             onDelete={handleDelete}
             onPlaybackAction={handlePlaybackAction}
             onReset={handleReset}
