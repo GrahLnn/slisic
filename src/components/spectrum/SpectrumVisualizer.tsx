@@ -78,6 +78,7 @@ const WAVEFORM_CANVAS_REUSE_MIN_SHIFT_PX = 1;
 const WAVEFORM_CANVAS_STROKE_ALPHA = 0.88;
 const WAVEFORM_CANVAS_FAST_PRESENTATION_TRACE_FLUSH_MS = 1_000;
 const WAVEFORM_CANVAS_DIAGNOSTIC_TRACE_FLUSH_MS = 500;
+const WAVEFORM_BAR_PRESENTATION_ANIMATION_DURATION_MS = 140;
 const WAVEFORM_PAN_PRESENTATION_DURATION_MS = 140;
 const WAVEFORM_PAN_PRESENTATION_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
 const WAVEFORM_CANVAS_PAN_PRESENTATION_TRANSITION = resolveWaveformPanPresentationTransition([
@@ -654,6 +655,18 @@ type WaveformCanvasColumnSample = {
   targetDensityResolved: boolean;
 };
 
+type WaveformBarPresentationModel = {
+  pixelsPerSecond: number;
+  scrollLeft: number;
+};
+
+type WaveformBarPresentationAnimation = {
+  durationMs: number;
+  from: WaveformBarPresentationModel;
+  startedAtMs: number;
+  to: WaveformBarPresentationModel;
+};
+
 type WaveformCanvasColumnRangeDrawPlan = WaveformCanvasRangeDrawResult & {
   peaksByX: Map<number, WaveformCanvasColumnSample>;
 };
@@ -803,6 +816,10 @@ type WaveformCanvasRenderJob = {
   target: WaveformCanvasRasterTarget;
 };
 
+type WaveformCanvasBarPresentationFrame = {
+  isAnimating: boolean;
+};
+
 type WaveformCanvasRenderPresentation =
   | {
       kind: "fresh";
@@ -814,6 +831,8 @@ type WaveformCanvasRenderPresentation =
     };
 
 type WaveformCanvasRenderController = {
+  barPresentationAnimation: WaveformBarPresentationAnimation | null;
+  barPresentationModel: WaveformBarPresentationModel | null;
   dataPlan: WaveformDataPlan | null;
   frameId: number | null;
   fastPresentationMetrics: SpectrumCanvasFastPresentationMetrics;
@@ -1898,6 +1917,102 @@ export function resolveWaveformRenderScale(args: {
   renderPixelsPerSecond: number;
 }) {
   return args.pixelsPerSecond / Math.max(1, args.renderPixelsPerSecond);
+}
+
+function resolveWaveformBarPresentationModel(
+  viewport: Pick<WaveformViewportModel, "pixelsPerSecond" | "scrollLeft">,
+): WaveformBarPresentationModel {
+  return {
+    pixelsPerSecond: Math.max(1, viewport.pixelsPerSecond),
+    scrollLeft: viewport.scrollLeft,
+  };
+}
+
+export function resolveWaveformBarPresentationProgress(args: {
+  durationMs: number;
+  elapsedMs: number;
+}) {
+  const durationMs = Math.max(1, args.durationMs);
+  const t = clampNumber(args.elapsedMs / durationMs, 0, 1);
+
+  return 1 - (1 - t) ** 3;
+}
+
+export function resolveWaveformBarPresentationAtProgress(args: {
+  from: WaveformBarPresentationModel;
+  progress: number;
+  to: WaveformBarPresentationModel;
+}): WaveformBarPresentationModel {
+  const progress = clampNumber(args.progress, 0, 1);
+
+  return {
+    pixelsPerSecond:
+      args.from.pixelsPerSecond + (args.to.pixelsPerSecond - args.from.pixelsPerSecond) * progress,
+    scrollLeft: args.from.scrollLeft + (args.to.scrollLeft - args.from.scrollLeft) * progress,
+  };
+}
+
+function areWaveformBarPresentationModelsEqual(
+  left: WaveformBarPresentationModel | null,
+  right: WaveformBarPresentationModel | null,
+) {
+  if (!left || !right) {
+    return left === right;
+  }
+
+  return (
+    Math.abs(left.pixelsPerSecond - right.pixelsPerSecond) < 0.01 &&
+    Math.abs(left.scrollLeft - right.scrollLeft) < 0.5
+  );
+}
+
+function createWaveformBarPresentationAnimation(args: {
+  from: WaveformBarPresentationModel | null;
+  nowMs: number;
+  to: WaveformBarPresentationModel;
+  zoomChanged: boolean;
+}): WaveformBarPresentationAnimation | null {
+  if (!args.zoomChanged) {
+    return null;
+  }
+
+  if (!args.from || areWaveformBarPresentationModelsEqual(args.from, args.to)) {
+    return null;
+  }
+
+  return {
+    durationMs: WAVEFORM_BAR_PRESENTATION_ANIMATION_DURATION_MS,
+    from: args.from,
+    startedAtMs: args.nowMs,
+    to: args.to,
+  };
+}
+
+function resolveAnimatedWaveformBarPresentation(args: {
+  animation: WaveformBarPresentationAnimation | null;
+  nowMs: number;
+  target: WaveformBarPresentationModel;
+}) {
+  if (!args.animation) {
+    return {
+      completed: true,
+      model: args.target,
+    };
+  }
+
+  const progress = resolveWaveformBarPresentationProgress({
+    durationMs: args.animation.durationMs,
+    elapsedMs: args.nowMs - args.animation.startedAtMs,
+  });
+
+  return {
+    completed: progress >= 1,
+    model: resolveWaveformBarPresentationAtProgress({
+      from: args.animation.from,
+      progress,
+      to: args.animation.to,
+    }),
+  };
 }
 
 export function resolveWaveformBarWidthPx() {
@@ -3777,9 +3892,12 @@ function TrackSpectrumSession(props: {
         className="pointer-events-none absolute inset-0 z-[1] h-full w-full text-inherit"
         style={{
           opacity: WAVEFORM_CANVAS_STROKE_ALPHA,
-          transform: "var(--waveform-canvas-pan-presentation-transform, translate3d(0, 0, 0))",
+          transform:
+            "var(--waveform-canvas-pan-presentation-transform, var(--waveform-canvas-bar-presentation-transform, translate3d(0, 0, 0)))",
+          transformOrigin: "var(--waveform-canvas-bar-presentation-origin, 50% 50%)",
           transition: "var(--waveform-canvas-pan-presentation-transition, none)",
-          willChange: "var(--waveform-canvas-pan-presentation-will-change, auto)",
+          willChange:
+            "var(--waveform-canvas-pan-presentation-will-change, var(--waveform-canvas-bar-presentation-will-change, auto))",
         }}
       />
       {shouldShowLoadingGrid && (
@@ -5149,6 +5267,8 @@ function useWaveformCanvasRenderer(args: {
   latestArgsRef.current = args;
   const previousTraceFileKeyRef = useRef<string | null>(null);
   const controllerRef = useRef<WaveformCanvasRenderController>({
+    barPresentationAnimation: null,
+    barPresentationModel: null,
     dataPlan: null,
     frameId: null,
     fastPresentationMetrics: createSpectrumCanvasFastPresentationMetrics(),
@@ -5188,11 +5308,25 @@ function useWaveformCanvasRenderer(args: {
         });
       }
       controller.job = null;
+      controller.barPresentationAnimation = null;
+      if (canvas) {
+        resetWaveformCanvasBarPresentation(canvas);
+      }
       return;
     }
 
     const ownerWindow =
       canvas.ownerDocument.defaultView ?? (typeof window === "undefined" ? null : window);
+    const barPresentationFrame = resolveWaveformCanvasBarPresentationFrame({
+      canvas,
+      controller,
+      ownerWindow,
+      viewport,
+    });
+    if (barPresentationFrame.isAnimating && ownerWindow) {
+      controller.frameId = ownerWindow.requestAnimationFrame(runFrame);
+      return;
+    }
     let job = controller.job;
     const requestedFrameAtStart = controller.requestedFrame;
 
@@ -5493,6 +5627,11 @@ function useWaveformCanvasRenderer(args: {
               plan: renderPlan.plan,
             })
           : null;
+      syncWaveformCanvasBarPresentationAnimation({
+        controller,
+        nowMs: readWaveformPerformanceNow(ownerWindow),
+        viewport,
+      });
       const requestTransition = resolveWaveformCanvasRenderRequestTransition({
         currentJob: controller.job?.descriptor ?? null,
         currentPresentedDirtyRanges: controller.presentedDirtyRanges,
@@ -5514,6 +5653,9 @@ function useWaveformCanvasRenderer(args: {
       if (requestTransition !== "start-new") {
         controller.dataPlan = dataPlan;
         controller.requestedFrame = descriptor;
+        if (controller.barPresentationAnimation && ownerWindow && controller.frameId === null) {
+          controller.frameId = ownerWindow.requestAnimationFrame(runFrame);
+        }
         if (
           requestTransition === "retarget-job" &&
           controller.job &&
@@ -5681,11 +5823,11 @@ function useWaveformCanvasRenderer(args: {
         traceSessionId: latest.traceSessionId,
       });
 
+      if (controller.barPresentationAnimation && ownerWindow && controller.frameId === null) {
+        controller.frameId = ownerWindow.requestAnimationFrame(runFrame);
+      }
+
       if (shouldCompleteWithFastPresentation) {
-        if (controller.frameId !== null && ownerWindow) {
-          ownerWindow.cancelAnimationFrame(controller.frameId);
-        }
-        controller.frameId = null;
         controller.requestedFrame = descriptor;
         controller.presentedDirtyRanges = [];
         recordWaveformCanvasProofTrace({
@@ -5709,6 +5851,10 @@ function useWaveformCanvasRenderer(args: {
               : "horizontal-pan-presented",
           ),
         );
+        if (controller.frameId !== null && ownerWindow) {
+          ownerWindow.cancelAnimationFrame(controller.frameId);
+        }
+        controller.frameId = null;
         return drawResult;
       }
 
@@ -5759,6 +5905,120 @@ function useWaveformCanvasRenderer(args: {
   return requestDraw;
 }
 
+function syncWaveformCanvasBarPresentationAnimation(args: {
+  controller: WaveformCanvasRenderController;
+  nowMs: number;
+  viewport: WaveformViewportModel | null;
+}) {
+  const targetBarPresentation = args.viewport
+    ? resolveWaveformBarPresentationModel(args.viewport)
+    : args.controller.barPresentationModel;
+
+  if (!targetBarPresentation) {
+    args.controller.barPresentationAnimation = null;
+    return;
+  }
+
+  const currentBarPresentation =
+    args.controller.barPresentationAnimation && args.viewport
+      ? resolveAnimatedWaveformBarPresentation({
+          animation: args.controller.barPresentationAnimation,
+          nowMs: args.nowMs,
+          target: targetBarPresentation,
+        }).model
+      : args.controller.barPresentationModel;
+  const zoomChanged =
+    currentBarPresentation !== null &&
+    Math.abs(currentBarPresentation.pixelsPerSecond - targetBarPresentation.pixelsPerSecond) >=
+      0.01;
+
+  if (!zoomChanged && !args.controller.barPresentationAnimation) {
+    args.controller.barPresentationModel = targetBarPresentation;
+  }
+
+  args.controller.barPresentationAnimation = createWaveformBarPresentationAnimation({
+    from: currentBarPresentation,
+    nowMs: args.nowMs,
+    to: targetBarPresentation,
+    zoomChanged,
+  });
+  args.controller.barPresentationModel = args.controller.barPresentationAnimation
+    ? currentBarPresentation
+    : targetBarPresentation;
+}
+
+function resolveWaveformCanvasBarPresentationFrame(args: {
+  canvas: HTMLCanvasElement;
+  controller: WaveformCanvasRenderController;
+  ownerWindow: Window | null;
+  viewport: WaveformViewportModel;
+}): WaveformCanvasBarPresentationFrame {
+  const targetBarPresentation = resolveWaveformBarPresentationModel(args.viewport);
+  const barPresentationResolution = resolveAnimatedWaveformBarPresentation({
+    animation: args.controller.barPresentationAnimation,
+    nowMs: readWaveformPerformanceNow(args.ownerWindow),
+    target: targetBarPresentation,
+  });
+  const isBarPresentationAnimating =
+    args.controller.barPresentationAnimation !== null && !barPresentationResolution.completed;
+
+  args.controller.barPresentationModel = barPresentationResolution.model;
+  applyWaveformCanvasBarPresentation({
+    canvas: args.canvas,
+    presentation: isBarPresentationAnimating
+      ? {
+          current: barPresentationResolution.model,
+          target: targetBarPresentation,
+        }
+      : null,
+  });
+
+  if (barPresentationResolution.completed) {
+    args.controller.barPresentationAnimation = null;
+    args.controller.barPresentationModel = targetBarPresentation;
+  }
+
+  return {
+    isAnimating: isBarPresentationAnimating,
+  };
+}
+
+export function resolveWaveformBarPresentationTransform(args: {
+  current: WaveformBarPresentationModel;
+  target: WaveformBarPresentationModel;
+}) {
+  const scale = args.target.pixelsPerSecond / Math.max(1, args.current.pixelsPerSecond);
+  const translateX = args.current.scrollLeft * scale - args.target.scrollLeft;
+
+  return `translate3d(${translateX}px, 0, 0) scaleX(${scale})`;
+}
+
+function applyWaveformCanvasBarPresentation(args: {
+  canvas: HTMLCanvasElement;
+  presentation: {
+    current: WaveformBarPresentationModel;
+    target: WaveformBarPresentationModel;
+  } | null;
+}) {
+  if (!args.presentation) {
+    resetWaveformCanvasBarPresentation(args.canvas);
+    return;
+  }
+
+  args.canvas.style.setProperty(
+    "--waveform-canvas-bar-presentation-transform",
+    resolveWaveformBarPresentationTransform(args.presentation),
+  );
+  args.canvas.style.setProperty("--waveform-canvas-bar-presentation-origin", "0 50%");
+  args.canvas.style.setProperty("--waveform-canvas-bar-presentation-will-change", "transform");
+}
+
+function resetWaveformCanvasBarPresentation(canvas: HTMLCanvasElement) {
+  canvas.style.removeProperty("--waveform-canvas-bar-presentation-transform");
+  canvas.style.removeProperty("--waveform-canvas-bar-presentation-origin");
+  canvas.style.removeProperty("--waveform-canvas-bar-presentation-will-change");
+}
+
 function useWaveformCanvasRendererCleanup(args: {
   canvasRef: RefObject<HTMLCanvasElement | null>;
   controllerRef: RefObject<WaveformCanvasRenderController>;
@@ -5790,6 +6050,7 @@ function useWaveformCanvasRendererCleanup(args: {
       });
       if (latest.canvasRef.current) {
         resetWaveformCanvasPanPresentation(latest.canvasRef.current);
+        resetWaveformCanvasBarPresentation(latest.canvasRef.current);
       }
       recordNullableRenderPerformanceTrace(
         "waveform-canvas-fast-presentation",
@@ -5809,6 +6070,8 @@ function useWaveformCanvasRendererCleanup(args: {
       );
       controller.frameId = null;
       controller.job = null;
+      controller.barPresentationAnimation = null;
+      controller.barPresentationModel = null;
       controller.dataPlan = null;
       controller.reusableFrame = null;
       controller.presentedFrame = null;
@@ -7847,6 +8110,8 @@ export const __spectrumVisualizerTestHooks = {
   createWaveformCanvasColumnRangeRenderPlan,
   createWaveformCanvasRasterTarget,
   createWaveformCanvasPixelColumnProbe,
+  resolveWaveformBarPresentationModel,
+  resolveWaveformBarPresentationTransform,
   presentWaveformCanvasFrameFast,
   resolveWaveformCanvasCoverageRangesAfterDraw,
 };
@@ -8906,7 +9171,7 @@ function resolveWaveformPeakFromCandidateLevels(args: {
 
     if (resolution) {
       const targetDensityResolved = level.pixelsPerSecond === args.dataPixelsPerSecond;
-      const sample = {
+      const sample: WaveformCanvasColumnSample = {
         levelPixelsPerSecond: level.pixelsPerSecond,
         peak: resolution.peak,
         targetDensityResolved: targetDensityResolved && resolution.fullyCovered,

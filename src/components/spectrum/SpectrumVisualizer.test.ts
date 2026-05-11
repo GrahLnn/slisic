@@ -33,6 +33,9 @@ import {
   resolveWaveformHorizontalPanFrame,
   resolveWaveformPanPresentationTransform,
   resolveWaveformPanPresentationTransition,
+  resolveWaveformBarPresentationAtProgress,
+  resolveWaveformBarPresentationProgress,
+  resolveWaveformBarPresentationTransform,
   shouldStartWaveformHorizontalPanPresentation,
   resolveWaveformHorizontalScrollLeft,
   resolveWaveformCanvasFrameReusePlan,
@@ -708,6 +711,57 @@ describe("SpectrumVisualizer", () => {
       2,
     );
     assert.equal(resolveWaveformBarWidthPx(), 1);
+  });
+
+  test("animates waveform bar presentation values independently from data density", () => {
+    const half = resolveWaveformBarPresentationProgress({
+      durationMs: 140,
+      elapsedMs: 70,
+    });
+    const presentation = resolveWaveformBarPresentationAtProgress({
+      from: {
+        pixelsPerSecond: 50,
+        scrollLeft: 100,
+      },
+      progress: half,
+      to: {
+        pixelsPerSecond: 100,
+        scrollLeft: 300,
+      },
+    });
+
+    assert.ok(half > 0 && half < 1);
+    assert.ok(presentation.pixelsPerSecond > 50);
+    assert.ok(presentation.pixelsPerSecond < 100);
+    assert.ok(presentation.scrollLeft > 100);
+    assert.ok(presentation.scrollLeft < 300);
+    assert.equal(resolveWaveformBarWidthPx(), 1);
+    assert.equal(
+      resolveWaveformBarPresentationTransform({
+        current: {
+          pixelsPerSecond: 50,
+          scrollLeft: 100,
+        },
+        target: {
+          pixelsPerSecond: 100,
+          scrollLeft: 300,
+        },
+      }),
+      "translate3d(-100px, 0, 0) scaleX(2)",
+    );
+    assert.equal(
+      resolveWaveformBarPresentationTransform({
+        current: {
+          pixelsPerSecond: 100,
+          scrollLeft: 300,
+        },
+        target: {
+          pixelsPerSecond: 100,
+          scrollLeft: 300,
+        },
+      }),
+      "translate3d(0px, 0, 0) scaleX(1)",
+    );
   });
 
   test("keeps frontend wheel intent limited to zoom and explicit shift-pan", () => {
@@ -1872,6 +1926,50 @@ describe("SpectrumVisualizer", () => {
     assert.equal(context.lineToCount, 0);
     assert.equal(context.strokeCount, 0);
     assert.deepEqual(context.clearRects, []);
+  });
+
+  test("keeps presentation spacing outside stable canvas column planning", () => {
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 20 });
+    const renderPlan = __spectrumVisualizerTestHooks.createWaveformCanvasColumnRangeRenderPlan({
+      plan,
+      range: {
+        endX: 3,
+        startX: 0,
+      },
+    });
+
+    assert.deepEqual(
+      [...renderPlan.columnPaths.values()].map((path) => path.barX),
+      [0.5, 1.5, 2.5],
+    );
+    assert.equal(renderPlan.missingPeakColumns, 0);
+  });
+
+  test("keeps job chunk drawing in stable proof coordinates", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 20 });
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry: plan.geometry,
+      kind: "visible" as const,
+    };
+
+    const chunk = drawWaveformCanvasJobChunk({
+      cursor: createWaveformCanvasTestCursor({
+        rasterStartX: plan.geometry.rasterStartX,
+        schedule: "full-density",
+      }),
+      deadlineMs: Number.POSITIVE_INFINITY,
+      now: () => 1,
+      plan,
+      target,
+    });
+
+    assert.equal(chunk.completed, true);
+    assert.equal(chunk.missingPeakColumns, 0);
+    assert.deepEqual(context.moveXValues.slice(0, 3), [-19.5, -18.5, -17.5]);
   });
 
   test("interprets fast presentation redraw through the single canvas effect owner", () => {
