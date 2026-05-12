@@ -111,6 +111,7 @@ describe("SpectrumCanvasTrace.model", () => {
       scannedColumns: 120,
       viewportResizeCount: 0,
       windowDurationMs: 100,
+      zoomAffineCount: 0,
     });
   });
 

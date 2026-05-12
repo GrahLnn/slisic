@@ -100,12 +100,15 @@ function createWaveformTestSummary(overrides: Partial<TrackWaveformSummary> = {}
 function createWaveformTestFrameDescriptor(
   overrides: {
     dataPixelsPerSecond?: number;
+    focusSeconds?: number | null;
+    pixelsPerSecond?: number;
     scopeKey?: string;
     scrollLeft?: number;
     viewportWidth?: number;
   } = {},
 ) {
   const viewportWidth = overrides.viewportWidth ?? 1_000;
+  const pixelsPerSecond = overrides.pixelsPerSecond ?? 100;
   const dataSignature = "100(0:track|100.00|0|2048)";
   const visualSignature = [
     overrides.scopeKey ?? "track",
@@ -119,9 +122,9 @@ function createWaveformTestFrameDescriptor(
     viewportWidth,
     10_000,
     100_000,
-    "",
+    overrides.focusSeconds ?? "",
     800,
-    100,
+    pixelsPerSecond,
     (overrides.scrollLeft ?? 0).toFixed(3),
     viewportWidth,
     "0.000000",
@@ -148,9 +151,9 @@ function createWaveformTestFrameDescriptor(
     viewport: {
       contentWidth: 10_000,
       durationMs: 100_000,
-      focusSeconds: null,
+      focusSeconds: overrides.focusSeconds ?? null,
       maximumPixelsPerSecond: 800,
-      pixelsPerSecond: 100,
+      pixelsPerSecond,
       scrollLeft: overrides.scrollLeft ?? 0,
       viewportWidth,
     },
@@ -486,9 +489,11 @@ function createWaveformCanvasFastPresentationTestCanvas(
       },
     },
     style: {
-      left: "",
-      width: "",
       height: "",
+      left: "",
+      removeProperty() {},
+      setProperty() {},
+      width: "",
     },
     width: 0,
     getContext(type: string) {
@@ -747,7 +752,7 @@ describe("SpectrumVisualizer", () => {
           scrollLeft: 300,
         },
       }),
-      "translate3d(-100px, 0, 0) scaleX(2)",
+      "translate3d(-200px, 0, 0)",
     );
     assert.equal(
       resolveWaveformBarPresentationTransform({
@@ -760,7 +765,7 @@ describe("SpectrumVisualizer", () => {
           scrollLeft: 300,
         },
       }),
-      "translate3d(0px, 0, 0) scaleX(1)",
+      "translate3d(0px, 0, 0)",
     );
   });
 
@@ -814,9 +819,10 @@ describe("SpectrumVisualizer", () => {
       presentation: {
         currentPixelsPerSecond: 100,
         currentScrollLeft: 25,
+        cssTransform: null,
+        spacingEffect: "canvas-column-transport",
         targetPixelsPerSecond: 200,
         targetScrollLeft: 0,
-        transform: "translate3d(50px, 0, 0) scaleX(2)",
       },
       traceSessionId: "trace-session",
     });
@@ -1356,30 +1362,67 @@ describe("SpectrumVisualizer", () => {
     });
   });
 
-  test("rejects waveform frame reuse when the affine identity changes", () => {
-    const previous = createWaveformTestFrameDescriptor();
+  test("reuses waveform frames through an anchored zoom affine map", () => {
+    const previous = createWaveformTestFrameDescriptor({
+      focusSeconds: 8,
+      pixelsPerSecond: 100,
+      scrollLeft: 400,
+    });
+    const current = createWaveformTestFrameDescriptor({
+      focusSeconds: 8,
+      pixelsPerSecond: 200,
+      scrollLeft: 1_200,
+    });
 
     assert.deepEqual(
       resolveWaveformCanvasFrameReusePlan({
-        current: {
-          ...createWaveformTestFrameDescriptor({
-            scrollLeft: 2_500,
-          }),
-          viewport: {
-            ...createWaveformTestFrameDescriptor({
-              scrollLeft: 2_500,
-            }).viewport,
-            contentWidth: 20_000,
-            pixelsPerSecond: 200,
-          },
-        },
+        current,
         previous,
       }),
       {
-        kind: "none",
-        reason: "scale-changed",
+        anchorViewportX: 800,
+        anchorVisualSeconds: 10,
+        dirtyRanges: [
+          {
+            endX: 2_000,
+            startX: -1_000,
+          },
+        ],
+        exposedRanges: [],
+        kind: "zoom-affine",
+        scaleX: 2,
+        sourceOffsetX: -600,
+        targetOffsetX: 200,
       },
     );
+  });
+
+  test("keeps zoom affine reuse across render-density boundaries", () => {
+    const previous = createWaveformTestFrameDescriptor({
+      dataPixelsPerSecond: 50,
+      focusSeconds: 8,
+      pixelsPerSecond: 100,
+      scrollLeft: 400,
+    });
+    const current = createWaveformTestFrameDescriptor({
+      dataPixelsPerSecond: 100,
+      focusSeconds: 8,
+      pixelsPerSecond: 200,
+      scrollLeft: 1_200,
+    });
+
+    assert.equal(
+      resolveWaveformCanvasFrameReusePlan({
+        current,
+        previous,
+      }).kind,
+      "zoom-affine",
+    );
+  });
+
+  test("rejects waveform frame reuse when the content identity changes", () => {
+    const previous = createWaveformTestFrameDescriptor();
+
     assert.deepEqual(
       resolveWaveformCanvasFrameReusePlan({
         current: createWaveformTestFrameDescriptor({
@@ -1828,7 +1871,10 @@ describe("SpectrumVisualizer", () => {
     const context = createWaveformCanvasStateTestContext();
     const canvas = {
       height: plan.geometry.backingHeight,
-      style: {},
+      style: {
+        removeProperty() {},
+        setProperty() {},
+      },
       width: plan.geometry.backingWidth,
       getContext(type: string) {
         assert.equal(type, "2d");
@@ -2192,6 +2238,67 @@ describe("SpectrumVisualizer", () => {
     assert.equal(context.moveToCount, 10);
     assert.equal(context.strokeCount, 3);
     assert.deepEqual(result.dirtyRanges, []);
+  });
+
+  test("interprets zoom affine presentation without clearing the stable canvas first", () => {
+    const context = createWaveformCanvasTestContext();
+    const previous = createWaveformTestFrameDescriptor({
+      focusSeconds: -1.9,
+      pixelsPerSecond: 100,
+      scrollLeft: 0,
+      viewportWidth: 20,
+    });
+    const current = createWaveformTestFrameDescriptor({
+      focusSeconds: -1.9,
+      pixelsPerSecond: 200,
+      scrollLeft: 0,
+      viewportWidth: 20,
+    });
+    const plan = {
+      ...createWaveformCanvasTestPlan({ viewportWidth: 20 }),
+      geometry: current.geometry,
+      viewport: current.viewport,
+    };
+    const canvas = createWaveformCanvasFastPresentationTestCanvas(context);
+    const result = __spectrumVisualizerTestHooks.presentWaveformCanvasFrameFast({
+      canvas,
+      descriptor: current,
+      descriptorPlan: plan,
+      previous,
+      previousDirtyRanges: [],
+      reuseFrame: null,
+    });
+
+    assert.equal(result.kind, "presented");
+    assert.equal(result.mode, "zoom-affine");
+    assert.ok(context.drawImageCalls.length > 1);
+    assert.equal(
+      context.drawImageCalls.every((call) => call.length === 9 && call[3] === 1 && call[7] === 1),
+      true,
+    );
+    assert.equal(
+      context.drawImageCalls.every((call) => call[3] === call[7]),
+      true,
+    );
+    assert.equal(context.clearRects.length > 0, true);
+    assert.equal(context.moveToCount, 0);
+    assert.equal(context.strokeCount, 0);
+    assert.equal(
+      context.clearRects.some(
+        (rect) =>
+          rect.x === 0 &&
+          rect.y === 0 &&
+          rect.w === current.geometry.backingWidth &&
+          rect.h === current.geometry.backingHeight,
+      ),
+      false,
+    );
+    assert.deepEqual(result.dirtyRanges, [
+      {
+        endX: 40,
+        startX: -20,
+      },
+    ]);
   });
 
   test("renders horizontal pan refreshes at full density", () => {

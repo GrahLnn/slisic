@@ -45,7 +45,8 @@ export type SpectrumCanvasFastPresentationMode =
   | "dirty-redraw"
   | "exact-cache-redraw"
   | "horizontal-pan"
-  | "viewport-resize";
+  | "viewport-resize"
+  | "zoom-affine";
 
 export type SpectrumCanvasFastPresentationMetrics = {
   count: number;
@@ -67,6 +68,7 @@ export type SpectrumCanvasFastPresentationMetrics = {
   startedAt: number | null;
   totalElapsedMs: number;
   viewportResizeCount: number;
+  zoomAffineCount: number;
 };
 
 export type SpectrumCanvasRenderEmptyMetrics = {
@@ -220,6 +222,7 @@ export function createSpectrumCanvasFastPresentationMetrics(): SpectrumCanvasFas
     startedAt: null,
     totalElapsedMs: 0,
     viewportResizeCount: 0,
+    zoomAffineCount: 0,
   };
 }
 
@@ -260,6 +263,8 @@ export function accumulateSpectrumCanvasFastPresentationMetrics(args: {
     args.metrics.dirtyRedrawCount += 1;
   } else if (args.sample.mode === "horizontal-pan") {
     args.metrics.horizontalPanCount += 1;
+  } else if (args.sample.mode === "zoom-affine") {
+    args.metrics.zoomAffineCount += 1;
   } else {
     args.metrics.viewportResizeCount += 1;
   }
@@ -305,6 +310,7 @@ export function flushSpectrumCanvasFastPresentationMetrics(
     scannedColumns: metrics.scannedColumns,
     windowDurationMs: metrics.startedAt === null ? 0 : Math.max(0, now - metrics.startedAt),
     viewportResizeCount: metrics.viewportResizeCount,
+    zoomAffineCount: metrics.zoomAffineCount,
   } satisfies Record<string, unknown>;
 
   Object.assign(metrics, createSpectrumCanvasFastPresentationMetrics());
