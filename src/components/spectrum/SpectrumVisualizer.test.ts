@@ -764,6 +764,64 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
+  test("keeps continuous zoom bar presentation fixed on the shared anchor", () => {
+    const presentation = resolveWaveformBarPresentationAtProgress({
+      from: {
+        anchorViewportX: 424,
+        anchorVisualSeconds: 35.33,
+        pixelsPerSecond: 14.55,
+        scrollLeft: 90.0515,
+      },
+      progress: 0.5,
+      to: {
+        anchorViewportX: 424,
+        anchorVisualSeconds: 35.33,
+        pixelsPerSecond: 17.64,
+        scrollLeft: 199.2212,
+      },
+    });
+
+    assert.equal(presentation.anchorViewportX, 424);
+    assert.equal(presentation.anchorVisualSeconds, 35.33);
+    assert.equal(presentation.pixelsPerSecond, 16.095);
+    assert.ok(
+      Math.abs(
+        presentation.anchorVisualSeconds * presentation.pixelsPerSecond -
+          424 -
+          presentation.scrollLeft,
+      ) < 0.001,
+    );
+  });
+
+  test("summarizes waveform bar presentation trace without changing transform semantics", () => {
+    const payload = __spectrumVisualizerTestHooks.createWaveformCanvasBarPresentationTracePayload({
+      isAnimating: true,
+      presentation: {
+        current: {
+          pixelsPerSecond: 100,
+          scrollLeft: 25,
+        },
+        target: {
+          pixelsPerSecond: 200,
+          scrollLeft: 0,
+        },
+      },
+      traceSessionId: "trace-session",
+    });
+
+    assert.deepEqual(payload, {
+      isAnimating: true,
+      presentation: {
+        currentPixelsPerSecond: 100,
+        currentScrollLeft: 25,
+        targetPixelsPerSecond: 200,
+        targetScrollLeft: 0,
+        transform: "translate3d(50px, 0, 0) scaleX(2)",
+      },
+      traceSessionId: "trace-session",
+    });
+  });
+
   test("keeps frontend wheel intent limited to zoom and explicit shift-pan", () => {
     assert.deepEqual(
       resolveWaveformWheelOperation({
@@ -1909,6 +1967,131 @@ describe("SpectrumVisualizer", () => {
     assert.equal(context.moveToCount, 170);
   });
 
+  test("captures waveform canvas chunk behavior as read-only evidence", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 120 });
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry: plan.geometry,
+      kind: "visible" as const,
+    };
+    let nowCallCount = 0;
+    const chunk = drawWaveformCanvasJobChunk({
+      collectTrace: true,
+      cursor: createWaveformCanvasTestCursor({
+        rasterStartX: plan.geometry.rasterStartX,
+        schedule: "spatial-progressive",
+      }),
+      deadlineMs: 0,
+      now: () => {
+        nowCallCount += 1;
+        return 1;
+      },
+      plan,
+      target,
+    });
+
+    assert.equal(chunk.trace?.startX, -120);
+    assert.equal(chunk.trace?.endX, 200);
+    assert.equal(chunk.trace?.limitReason, "max-width");
+    assert.equal(chunk.trace?.pass.stepX, 4);
+    assert.equal(chunk.trace?.barSummary.barCount, 80);
+    assert.equal(chunk.trace?.barSummary.averageSpacingPx, 4);
+    assert.equal(chunk.trace?.barSummary.targetDensityResolvedCount, 80);
+    assert.deepEqual(
+      chunk.trace?.barSummary.sample.map((sample) => sample.x),
+      [-120, 36, 196],
+    );
+    assert.equal(nowCallCount, 0);
+    assert.equal(context.moveToCount, 80);
+    assert.deepEqual(context.moveXValues.slice(0, 3), [-119.5, -115.5, -111.5]);
+  });
+
+  test("keeps waveform canvas chunk trace opt-in outside runtime tracing", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 20 });
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry: plan.geometry,
+      kind: "visible" as const,
+    };
+
+    const chunk = drawWaveformCanvasJobChunk({
+      cursor: createWaveformCanvasTestCursor({
+        rasterStartX: plan.geometry.rasterStartX,
+        schedule: "full-density",
+      }),
+      deadlineMs: Number.POSITIVE_INFINITY,
+      now: () => 1,
+      plan,
+      target,
+    });
+
+    assert.equal(chunk.trace, null);
+    assert.equal(chunk.completed, true);
+    assert.equal(context.moveToCount, 60);
+  });
+
+  test("classifies initial and scroll waveform canvas render lifecycle traces", () => {
+    const current = createWaveformTestFrameDescriptor({
+      scrollLeft: 0,
+      viewportWidth: 120,
+    });
+    const next = createWaveformTestFrameDescriptor({
+      scrollLeft: 24,
+      viewportWidth: 120,
+    });
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 120 });
+
+    const initial = __spectrumVisualizerTestHooks.createWaveformCanvasRenderLifecycleTracePayload({
+      canvas: null,
+      cause: "initial-mount",
+      descriptor: current,
+      fileKey: "track",
+      filePath: "track.flac",
+      previousFrame: null,
+      renderPlan: plan,
+      requestTransition: "start-new",
+      requestedRevision: 0,
+      scopeKey: "track",
+      status: "ready",
+      summary: createWaveformTestSummary(),
+      traceSessionId: "trace-session",
+      viewport: plan.viewport,
+    });
+    const scroll = __spectrumVisualizerTestHooks.createWaveformCanvasRenderLifecycleTracePayload({
+      canvas: null,
+      cause: "scroll",
+      descriptor: next,
+      fileKey: "track",
+      filePath: "track.flac",
+      previousFrame: current,
+      renderPlan: plan,
+      requestTransition: "start-new",
+      requestedRevision: 1,
+      scopeKey: "track",
+      status: "ready",
+      summary: createWaveformTestSummary(),
+      traceSessionId: "trace-session",
+      viewport: {
+        ...plan.viewport,
+        scrollLeft: 24,
+      },
+    });
+
+    assert.equal(initial.cause, "initial-mount");
+    assert.equal(initial.previousFrame, null);
+    assert.equal(initial.descriptor?.scrollLeft, 0);
+    assert.equal(scroll.cause, "scroll");
+    assert.equal(scroll.previousFrame?.scrollLeft, 0);
+    assert.equal(scroll.descriptor?.scrollLeft, 24);
+    assert.equal(scroll.viewport?.scrollLeft, 24);
+  });
+
   test("keeps column range planning pure before canvas interpretation", () => {
     const context = createWaveformCanvasTestContext();
     const plan = createWaveformCanvasTestPlan({ viewportWidth: 20 });
@@ -2078,6 +2261,45 @@ describe("SpectrumVisualizer", () => {
       context.moveXValues.map((x) => Math.floor(x - 0.5)),
       Array.from({ length: 24 }, (_, index) => index + 96),
     );
+  });
+
+  test("redraws fragmented dirty proof as one bounded coverage interval", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 120 });
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry: plan.geometry,
+      kind: "visible" as const,
+    };
+    const chunk = drawWaveformCanvasJobChunk({
+      cursor: createWaveformCanvasTestCursor({
+        progressive: false,
+        ranges: Array.from({ length: 40 }, (_, index) => ({
+          endX: -119 + index * 4,
+          startX: -120 + index * 4,
+        })),
+      }),
+      deadlineMs: 0,
+      now: () => 1,
+      plan,
+      replaceExistingColumns: true,
+      target,
+    });
+
+    assert.equal(chunk.completed, false);
+    assert.equal(chunk.cursor.nextX, -23);
+    assert.equal(chunk.cursor.passIndex, 0);
+    assert.equal(context.moveToCount, 97);
+    assert.deepEqual(context.clearRects, [
+      {
+        h: 208,
+        w: 97,
+        x: -120,
+        y: 0,
+      },
+    ]);
   });
 
   test("carries unfinished horizontal pan dirty ranges across viewport resize", () => {
