@@ -44,15 +44,27 @@ export function normalizeSpectrumMusicDraftRangeBoundary(value: number | null) {
   return normalizeSpectrumMusicRangeBoundary(value);
 }
 
-function areSpectrumMusicDraftRangeBoundariesEqual(left: number | null, right: number | null) {
-  const normalizedLeft = normalizeSpectrumMusicDraftRangeBoundary(left);
-  const normalizedRight = normalizeSpectrumMusicDraftRangeBoundary(right);
+function projectSpectrumMusicDraftRangeBoundary(args: {
+  baseline: number | null;
+  value: number | null;
+}) {
+  return (
+    normalizeSpectrumMusicDraftRangeBoundary(args.value) ??
+    normalizeSpectrumMusicDraftRangeBoundary(args.baseline)
+  );
+}
 
-  if (normalizedLeft === null || normalizedRight === null) {
-    return normalizedLeft === normalizedRight;
+function areSpectrumMusicDraftRangeBoundariesEqual(args: {
+  baseline: number | null;
+  value: number | null;
+}) {
+  const normalizedBaseline = normalizeSpectrumMusicDraftRangeBoundary(args.baseline);
+
+  if (normalizedBaseline === null) {
+    return normalizeSpectrumMusicDraftRangeBoundary(args.value) === null;
   }
 
-  return normalizedLeft === normalizedRight;
+  return projectSpectrumMusicDraftRangeBoundary(args) === normalizedBaseline;
 }
 
 function createSpectrumMusicDraftValue(args: {
@@ -208,8 +220,14 @@ export function hasSpectrumMusicDraftChanges(draft: SpectrumMusicDraft | null) {
     draft !== null &&
     (draft.deleteRequested === true ||
       normalizeSpectrumMusicName(draft.name) !== normalizeSpectrumMusicName(draft.baselineName) ||
-      !areSpectrumMusicDraftRangeBoundariesEqual(draft.startMs, draft.baselineStartMs) ||
-      !areSpectrumMusicDraftRangeBoundariesEqual(draft.endMs, draft.baselineEndMs))
+      !areSpectrumMusicDraftRangeBoundariesEqual({
+        baseline: draft.baselineStartMs,
+        value: draft.startMs,
+      }) ||
+      !areSpectrumMusicDraftRangeBoundariesEqual({
+        baseline: draft.baselineEndMs,
+        value: draft.endMs,
+      }))
   );
 }
 
@@ -245,8 +263,18 @@ export function changeSpectrumMusicDraftValueRange(
     return null;
   }
 
-  const startMs = normalizeSpectrumMusicDraftRangeBoundary(range.startMs);
-  const endMs = normalizeSpectrumMusicDraftRangeBoundary(range.endMs);
+  const startMs = projectSpectrumMusicDraftRangeBoundary({
+    baseline: draft.baselineStartMs,
+    value: range.startMs,
+  });
+  const endMs = projectSpectrumMusicDraftRangeBoundary({
+    baseline: draft.baselineEndMs,
+    value: range.endMs,
+  });
+
+  if (draft.startMs === startMs && draft.endMs === endMs) {
+    return draft;
+  }
 
   return {
     ...draft,
@@ -491,18 +519,18 @@ export function createMusicDraftEditFromDraft(draft: SpectrumMusicDraft): MusicD
     return null;
   }
 
-  if (
-    draft.url === null ||
-    draft.baselineStartMs === null ||
-    draft.baselineEndMs === null ||
-    draft.startMs === null ||
-    draft.endMs === null
-  ) {
+  if (draft.url === null || draft.baselineStartMs === null || draft.baselineEndMs === null) {
     return null;
   }
 
-  const startMs = normalizeSpectrumMusicRangeBoundary(draft.startMs);
-  const endMs = normalizeSpectrumMusicRangeBoundary(draft.endMs);
+  const startMs = projectSpectrumMusicDraftRangeBoundary({
+    baseline: draft.baselineStartMs,
+    value: draft.startMs,
+  });
+  const endMs = projectSpectrumMusicDraftRangeBoundary({
+    baseline: draft.baselineEndMs,
+    value: draft.endMs,
+  });
 
   if (startMs === null || endMs === null) {
     return null;

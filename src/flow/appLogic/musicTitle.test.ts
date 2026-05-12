@@ -169,6 +169,52 @@ describe("musicDraft", () => {
     assert.equal(hasSpectrumMusicDraftChanges(draft && { ...draft, startMs: 1 }), true);
   });
 
+  test("does not mark edge-equivalent spectrum draft ranges as changed", () => {
+    const draft = createSampleSpectrumMusicDraft();
+
+    const edgeEquivalent = changeSpectrumMusicDraftValueRange(draft, {
+      endMs: null,
+      startMs: null,
+    });
+
+    assert.equal(edgeEquivalent, draft);
+    assert.equal(hasSpectrumMusicDraftChanges(draft && { ...draft, startMs: null }), false);
+    assert.equal(hasSpectrumMusicDraftChanges(draft && { ...draft, endMs: null }), false);
+    assert.equal(
+      hasSpectrumMusicDraftChanges(
+        draft && {
+          ...draft,
+          endMs: null,
+          startMs: null,
+        },
+      ),
+      false,
+    );
+    assert.deepEqual(
+      createMusicDraftEdits([edgeEquivalent].flatMap((value) => (value ? [value] : []))),
+      [],
+    );
+  });
+
+  test("uses the baseline edge when creating a partial spectrum draft range update", () => {
+    const draft = createSampleSpectrumMusicDraft();
+
+    assert.deepEqual(
+      createMusicDraftEdits(draft ? [{ ...draft, startMs: null, endMs: 112_000 }] : []),
+      [
+        {
+          id: "https://example.com/quiet-morning#a|0|120000",
+          alias: "Track A",
+          url: "https://example.com/quiet-morning#a",
+          targetStartMs: 0,
+          targetEndMs: 120_000,
+          startMs: 0,
+          endMs: 112_000,
+        },
+      ],
+    );
+  });
+
   test("resets the spectrum music draft to the current music baseline", () => {
     const draft = createSampleSpectrumMusicDraft();
 

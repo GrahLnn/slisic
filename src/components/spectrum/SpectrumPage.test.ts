@@ -149,6 +149,21 @@ describe("SpectrumPage", () => {
         musicDrafts: [
           {
             ...draft,
+            endMs: null,
+            startMs: null,
+          },
+        ],
+      }),
+      {
+        kind: "back",
+        key: "back",
+      },
+    );
+    assert.deepEqual(
+      resolveSpectrumBackActionVisualState({
+        musicDrafts: [
+          {
+            ...draft,
             name: "Disc 1 Prelude",
           },
         ],
@@ -187,6 +202,16 @@ describe("SpectrumPage", () => {
 
     assert.equal(shouldShowSpectrumDraftResetAction({ musicDraft: null }), false);
     assert.equal(shouldShowSpectrumDraftResetAction({ musicDraft: draft }), false);
+    assert.equal(
+      shouldShowSpectrumDraftResetAction({
+        musicDraft: {
+          ...draft,
+          endMs: null,
+          startMs: null,
+        },
+      }),
+      false,
+    );
     assert.equal(
       shouldShowSpectrumDraftResetAction({
         musicDraft: {
