@@ -44,6 +44,13 @@ const musicSpectrumPageExitChildFadeProps = {
   transition: { duration: 0 },
 } as const;
 
+const musicSpectrumWaveformFadeProps = {
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
+  exit: { opacity: 0 },
+  transition: collectionTitleLayoutTransition,
+} as const;
+
 const musicSpectrumEditorTraceWindowMs =
   Math.round(collectionTitleLayoutTransition.duration * 1000) + 160;
 const musicSpectrumEditorTraceInstallProbeFrames = 8;
@@ -113,6 +120,14 @@ export function resolveMusicSpectrumResetActionFadeProps(args: {
         exit: { opacity: 0 },
         transition: collectionTitleLayoutTransition,
       };
+}
+
+export function resolveMusicSpectrumWaveformFadeProps(args: {
+  exitPresentation?: MusicSpectrumExitPresentation;
+}) {
+  return args.exitPresentation === "page"
+    ? musicSpectrumPageExitChildFadeProps
+    : musicSpectrumWaveformFadeProps;
 }
 
 export type MusicSpectrumFloatingActionPlacement = "end" | "start";
@@ -437,7 +452,7 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
             <motion.div
               ref={trackSpectrumHostRef}
               key="waveform"
-              {...musicSpectrumContentFadeProps}
+              {...resolveMusicSpectrumWaveformFadeProps({ exitPresentation })}
               className="col-start-1 row-start-1"
             >
               <TrackSpectrum

@@ -6,6 +6,7 @@ import {
   resolveMusicSpectrumRowHoverActionClassName,
   resolveMusicSpectrumResetActionFadeProps,
   resolveMusicSpectrumTitleFadeProps,
+  resolveMusicSpectrumWaveformFadeProps,
 } from "./MusicSpectrumEditor";
 
 describe("MusicSpectrumEditor", () => {
@@ -74,6 +75,24 @@ describe("MusicSpectrumEditor", () => {
       }),
       pageExitFade,
     );
+  });
+
+  test("keeps the waveform stable when the page owns exit presentation", () => {
+    assert.deepEqual(resolveMusicSpectrumWaveformFadeProps({ exitPresentation: "page" }), {
+      initial: false,
+      animate: { opacity: 1 },
+      exit: { opacity: 1 },
+      transition: { duration: 0 },
+    });
+    assert.deepEqual(resolveMusicSpectrumWaveformFadeProps({ exitPresentation: "local" }), {
+      initial: { opacity: 0 },
+      animate: { opacity: 1 },
+      exit: { opacity: 0 },
+      transition: {
+        duration: 0.36,
+        ease: [0.22, 1, 0.36, 1],
+      },
+    });
   });
 
   test("places waveform floating actions on explicit canvas sides", () => {

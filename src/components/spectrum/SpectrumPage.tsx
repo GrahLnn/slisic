@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
@@ -25,6 +25,7 @@ import {
   type SpectrumMusicEditorViewModel,
   type SpectrumPlaybackActionSnapshot,
   type SpectrumPlaybackIdentity,
+  shouldCommitSpectrumPlaybackActionSnapshot,
 } from "./SpectrumPage.view-model";
 import {
   crabSpectrumPlaybackSessionPorts,
@@ -185,6 +186,7 @@ export function SpectrumPage() {
   const editableTitleRefs = useRef(new Map<string, EditableTitleHandle>());
   const primaryPlaybackResumeRef = useRef<SpectrumPlaybackResumePoint | null>(null);
   const titlePathTraceSignatureRef = useRef<string | null>(null);
+  const pageExitStartedRef = useRef(false);
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
   const playbackActionSnapshotRef = useRef<SpectrumPlaybackActionSnapshot | null>(null);
   const [playbackActionSnapshot, setPlaybackActionSnapshot] =
@@ -225,6 +227,7 @@ export function SpectrumPage() {
     freezeOnExit: true,
   });
   const renderData = pageRenderFreeze.renderValue;
+  const isPageExiting = !isPresent || pageRenderFreeze.isFrozen;
   const isBackActionLocked = isBackNavigationPending;
   const primaryEditor = renderData.editorViewModels[0] ?? null;
   const primaryPlaybackIdentity = primaryEditor?.playbackIdentity ?? null;
@@ -308,6 +311,7 @@ export function SpectrumPage() {
 
     try {
       if (renderData.backActionVisualState.kind === "back") {
+        pageExitStartedRef.current = true;
         pageRenderFreeze.freeze();
         await handleRestorePrimarySpectrumMusicPlayback();
         appLogicAction.back();
@@ -349,11 +353,13 @@ export function SpectrumPage() {
           }),
         });
       });
+      pageExitStartedRef.current = true;
       await waitForTitleShareSourceReady();
       await handleRestorePrimarySpectrumMusicPlayback();
       appLogicAction.back();
     } catch (error) {
       console.error("Failed to complete the spectrum back transition", error);
+      pageExitStartedRef.current = false;
       setIsBackNavigationPending(false);
     }
   }
@@ -410,15 +416,28 @@ export function SpectrumPage() {
     return status;
   }
 
-  function commitPlaybackActionSnapshot(status: SpectrumPlaybackSessionStatus) {
-    const snapshot = resolveSpectrumPlaybackActionSnapshotFromStatus(status);
-    if (areSpectrumPlaybackActionSnapshotsEqual(playbackActionSnapshotRef.current, snapshot)) {
-      return;
-    }
+  const commitPlaybackActionSnapshot = useCallback(
+    (status: SpectrumPlaybackSessionStatus) => {
+      if (
+        !shouldCommitSpectrumPlaybackActionSnapshot({
+          isPresent,
+          pageExitStarted: pageExitStartedRef.current,
+          pageRenderFrozen: pageRenderFreeze.isFrozen,
+        })
+      ) {
+        return;
+      }
 
-    playbackActionSnapshotRef.current = snapshot;
-    setPlaybackActionSnapshot(snapshot);
-  }
+      const snapshot = resolveSpectrumPlaybackActionSnapshotFromStatus(status);
+      if (areSpectrumPlaybackActionSnapshotsEqual(playbackActionSnapshotRef.current, snapshot)) {
+        return;
+      }
+
+      playbackActionSnapshotRef.current = snapshot;
+      setPlaybackActionSnapshot(snapshot);
+    },
+    [isPresent, pageRenderFreeze.isFrozen],
+  );
 
   useLayoutEffect(() => {
     let disposed = false;
@@ -437,6 +456,12 @@ export function SpectrumPage() {
       }
     }
 
+    if (isPageExiting) {
+      return () => {
+        disposed = true;
+      };
+    }
+
     void refresh();
     const intervalId = window.setInterval(refresh, SPECTRUM_PLAYBACK_STATUS_POLL_MS);
 
@@ -444,7 +469,7 @@ export function SpectrumPage() {
       disposed = true;
       window.clearInterval(intervalId);
     };
-  }, [playbackSession]);
+  }, [commitPlaybackActionSnapshot, isPageExiting, playbackSession]);
 
   useLayoutEffect(() => {
     installRenderPerformanceTrace();
@@ -526,7 +551,7 @@ export function SpectrumPage() {
           <SpectrumMusicVirtualList
             editableTitleRefs={editableTitleRefs}
             editorViewModels={renderData.editorViewModels}
-            exitPresentation={isPresent ? "local" : "page"}
+            exitPresentation="local"
             playbackActionSnapshot={playbackActionSnapshot}
             trackFilePath={renderData.trackFilePath}
             onDelete={(id) => appLogicAction.deleteSpectrumMusic(id)}

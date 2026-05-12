@@ -18,6 +18,7 @@ import {
   resolveSpectrumSelectionRange,
   projectSpectrumPlaybackIdentity,
   isSpectrumPlaybackStatusIdentityForAction,
+  shouldCommitSpectrumPlaybackActionSnapshot,
   shouldShowSpectrumDraftResetAction,
   type SpectrumMusicEditorViewModel,
 } from "./SpectrumPage.view-model";
@@ -617,6 +618,41 @@ describe("SpectrumPage", () => {
         key: "pause",
         kind: "pause",
       },
+    );
+  });
+
+  test("blocks playback snapshot commits after spectrum exit presentation starts", () => {
+    assert.equal(
+      shouldCommitSpectrumPlaybackActionSnapshot({
+        isPresent: true,
+        pageExitStarted: false,
+        pageRenderFrozen: false,
+      }),
+      true,
+    );
+    assert.equal(
+      shouldCommitSpectrumPlaybackActionSnapshot({
+        isPresent: false,
+        pageExitStarted: false,
+        pageRenderFrozen: false,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldCommitSpectrumPlaybackActionSnapshot({
+        isPresent: true,
+        pageExitStarted: false,
+        pageRenderFrozen: true,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldCommitSpectrumPlaybackActionSnapshot({
+        isPresent: true,
+        pageExitStarted: true,
+        pageRenderFrozen: false,
+      }),
+      false,
     );
   });
 

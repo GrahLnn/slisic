@@ -402,6 +402,14 @@ export function areSpectrumPlaybackActionSnapshotsEqual(
   );
 }
 
+export function shouldCommitSpectrumPlaybackActionSnapshot(args: {
+  isPresent: boolean;
+  pageExitStarted: boolean;
+  pageRenderFrozen: boolean;
+}) {
+  return args.isPresent && !args.pageRenderFrozen && !args.pageExitStarted;
+}
+
 export function resolveSpectrumPlaybackRestoreEffect(args: {
   identity: SpectrumPlaybackIdentity;
   statusIdentity: SpectrumPlaybackIdentity | null;
