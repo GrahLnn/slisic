@@ -41,7 +41,6 @@ import {
   resolveWaveformCanvasFrameReusePlan,
   resolveWaveformCanvasRetargetRanges,
   resolveWaveformCanvasDirtyRangesAfterPresentation,
-  shouldBeginWaveformCanvasChunkPath,
   resolveWaveformLoadingGridSize,
   resolveWaveformMaximumPixelsPerSecond,
   resolveWaveformMinimumPixelsPerSecond,
@@ -78,7 +77,6 @@ import {
   resolveWaveformZoomOwnedPixelsPerSecond,
   resolveWaveformZoomScaleFrame,
   shouldAcceptWaveformHardwareHorizontalWheel,
-  shouldStrokeWaveformCanvasChunkPath,
   shouldPresentWaveformTileAvailability,
   shouldPreventWaveformWheelDefault,
 } from "./SpectrumVisualizer";
@@ -166,6 +164,8 @@ function createWaveformCanvasTestContext() {
     beginPathCount: 0,
     clearRects: [] as { h: number; w: number; x: number; y: number }[],
     drawImageCalls: [] as unknown[][],
+    fillRects: [] as { h: number; w: number; x: number; y: number }[],
+    fillStyle: "",
     globalAlpha: 0,
     globalCompositeOperation: "",
     imageSmoothingEnabled: true,
@@ -186,6 +186,9 @@ function createWaveformCanvasTestContext() {
     },
     drawImage(...args: unknown[]) {
       this.drawImageCalls.push(args);
+    },
+    fillRect(x: number, y: number, w: number, h: number) {
+      this.fillRects.push({ h, w, x, y });
     },
     lineTo(_x: number, y: number) {
       this.lineToCount += 1;
@@ -212,6 +215,7 @@ function createWaveformCanvasTestContext() {
 
 function createWaveformCanvasStateTestContext() {
   const state = {
+    fillStyle: "",
     globalAlpha: 0,
     lineCap: "",
     lineWidth: 0,
@@ -224,6 +228,12 @@ function createWaveformCanvasStateTestContext() {
     },
     set globalAlpha(value: number) {
       state.globalAlpha = value;
+    },
+    get fillStyle() {
+      return state.fillStyle;
+    },
+    set fillStyle(value: string) {
+      state.fillStyle = value;
     },
     get lineCap() {
       return state.lineCap;
@@ -419,7 +429,7 @@ function createWaveformCanvasTestCursor(
     progressive?: boolean;
     ranges?: { endX: number; startX: number }[];
     rasterStartX?: number;
-    schedule?: "full-density" | "progressive" | "spatial-progressive";
+    schedule?: "full-density" | "progressive";
   } = {},
 ): WaveformCanvasTestCursor {
   const ranges = args.ranges ?? null;
@@ -439,6 +449,7 @@ function createWaveformCanvasTestCursor(
     rangeIndex: 0,
     retargetRanges: [],
     resolvedPeakColumnCount: 0,
+    rangeComposition: ranges ? "coalesced" : "none",
     schedule: ranges ? "full-density" : schedule,
   };
 }
@@ -1382,12 +1393,7 @@ describe("SpectrumVisualizer", () => {
       {
         anchorViewportX: 800,
         anchorVisualSeconds: 10,
-        dirtyRanges: [
-          {
-            endX: 2_000,
-            startX: -1_000,
-          },
-        ],
+        dirtyRanges: [],
         exposedRanges: [],
         kind: "zoom-affine",
         scaleX: 2,
@@ -1801,6 +1807,21 @@ describe("SpectrumVisualizer", () => {
       shouldRetainWaveformCanvasSnapshotForRenderStart({
         presentation: {
           descriptor: createWaveformTestFrameDescriptor(),
+          insertionRanges: [
+            {
+              endX: 120,
+              startX: 96,
+            },
+          ],
+          kind: "insertion",
+        },
+      }),
+      false,
+    );
+    assert.equal(
+      shouldRetainWaveformCanvasSnapshotForRenderStart({
+        presentation: {
+          descriptor: createWaveformTestFrameDescriptor(),
           dirtyRanges: [
             {
               endX: 120,
@@ -1893,6 +1914,7 @@ describe("SpectrumVisualizer", () => {
 
     assert.equal(target.kind, "ready");
     assert.equal(context.globalAlpha, 1);
+    assert.equal(context.fillStyle, "#262626");
   });
 
   test("renders new waveform canvas frames from sparse presentation passes to dense completion", () => {
@@ -1918,11 +1940,12 @@ describe("SpectrumVisualizer", () => {
     assert.equal(firstChunk.completed, false);
     assert.equal(firstChunk.cursor.nextX, -118);
     assert.equal(firstChunk.cursor.passIndex, 1);
-    assert.equal(context.beginPathCount, 1);
-    assert.equal(context.strokeCount, 1);
+    assert.equal(context.beginPathCount, 0);
+    assert.equal(context.strokeCount, 0);
+    assert.equal(context.fillRects.length, 90);
     assert.deepEqual(
-      context.moveXValues,
-      Array.from({ length: 90 }, (_, index) => -119.5 + index * 4),
+      context.fillRects.map((rect) => rect.x),
+      Array.from({ length: 90 }, (_, index) => -120 + index * 4),
     );
 
     const secondChunk = drawWaveformCanvasJobChunk({
@@ -1936,20 +1959,21 @@ describe("SpectrumVisualizer", () => {
     assert.equal(secondChunk.completed, false);
     assert.equal(secondChunk.cursor.nextX, -119);
     assert.equal(secondChunk.cursor.passIndex, 2);
-    assert.equal(context.beginPathCount, 2);
-    assert.equal(context.strokeCount, 2);
-    assert.equal(context.moveToCount, 180);
-    assert.equal(context.lineToCount, 180);
+    assert.equal(context.beginPathCount, 0);
+    assert.equal(context.strokeCount, 0);
+    assert.equal(context.moveToCount, 0);
+    assert.equal(context.lineToCount, 0);
+    assert.equal(context.fillRects.length, 180);
 
     const completed = drawCompleteWaveformCanvasTestJob({
       plan,
       target,
     });
-    const drawnColumnIndexes = context.moveXValues.map((x) => Math.floor(x - 0.5));
+    const drawnColumnIndexes = context.fillRects.map((rect) => Math.floor(rect.x));
 
     assert.equal(completed.completed, true);
     assert.equal(completed.cursor.nextX, 240);
-    assert.equal(context.moveToCount, 540);
+    assert.equal(context.fillRects.length, 540);
     assert.equal(new Set(drawnColumnIndexes).size, 360);
     assert.deepEqual(
       [...new Set(drawnColumnIndexes)].sort((left, right) => left - right),
@@ -1957,7 +1981,7 @@ describe("SpectrumVisualizer", () => {
     );
   });
 
-  test("renders initial waveform canvas density passes left to right in bounded chunks", () => {
+  test("renders initial waveform canvas through the shared progressive renderer", () => {
     const context = createWaveformCanvasTestContext();
     const plan = createWaveformCanvasTestPlan({ viewportWidth: 120 });
     const target = {
@@ -1970,7 +1994,6 @@ describe("SpectrumVisualizer", () => {
     const firstChunk = drawWaveformCanvasJobChunk({
       cursor: createWaveformCanvasTestCursor({
         rasterStartX: plan.geometry.rasterStartX,
-        schedule: "spatial-progressive",
       }),
       deadlineMs: 0,
       now: () => 1,
@@ -1979,11 +2002,11 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.equal(firstChunk.completed, false);
-    assert.equal(firstChunk.cursor.nextX, 200);
-    assert.equal(firstChunk.cursor.passIndex, 0);
+    assert.equal(firstChunk.cursor.nextX, -118);
+    assert.equal(firstChunk.cursor.passIndex, 1);
     assert.deepEqual(
-      context.moveXValues,
-      Array.from({ length: 80 }, (_, index) => -119.5 + index * 4),
+      context.fillRects.map((rect) => rect.x),
+      Array.from({ length: 90 }, (_, index) => -120 + index * 4),
     );
 
     const secondChunk = drawWaveformCanvasJobChunk({
@@ -1995,9 +2018,9 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.equal(secondChunk.completed, false);
-    assert.equal(secondChunk.cursor.nextX, -118);
-    assert.equal(secondChunk.cursor.passIndex, 1);
-    assert.equal(context.moveToCount, 90);
+    assert.equal(secondChunk.cursor.nextX, -119);
+    assert.equal(secondChunk.cursor.passIndex, 2);
+    assert.equal(context.fillRects.length, 180);
 
     const thirdChunk = drawWaveformCanvasJobChunk({
       cursor: secondChunk.cursor,
@@ -2007,10 +2030,10 @@ describe("SpectrumVisualizer", () => {
       target,
     });
 
-    assert.equal(thirdChunk.completed, false);
-    assert.equal(thirdChunk.cursor.nextX, 202);
-    assert.equal(thirdChunk.cursor.passIndex, 1);
-    assert.equal(context.moveToCount, 170);
+    assert.equal(thirdChunk.completed, true);
+    assert.equal(thirdChunk.cursor.nextX, 240);
+    assert.equal(thirdChunk.cursor.passIndex, 3);
+    assert.equal(context.fillRects.length, 360);
   });
 
   test("captures waveform canvas chunk behavior as read-only evidence", () => {
@@ -2028,7 +2051,6 @@ describe("SpectrumVisualizer", () => {
       collectTrace: true,
       cursor: createWaveformCanvasTestCursor({
         rasterStartX: plan.geometry.rasterStartX,
-        schedule: "spatial-progressive",
       }),
       deadlineMs: 0,
       now: () => {
@@ -2040,19 +2062,22 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.equal(chunk.trace?.startX, -120);
-    assert.equal(chunk.trace?.endX, 200);
-    assert.equal(chunk.trace?.limitReason, "max-width");
+    assert.equal(chunk.trace?.endX, 240);
+    assert.equal(chunk.trace?.limitReason, "range-end");
     assert.equal(chunk.trace?.pass.stepX, 4);
-    assert.equal(chunk.trace?.barSummary.barCount, 80);
+    assert.equal(chunk.trace?.barSummary.barCount, 90);
     assert.equal(chunk.trace?.barSummary.averageSpacingPx, 4);
-    assert.equal(chunk.trace?.barSummary.targetDensityResolvedCount, 80);
+    assert.equal(chunk.trace?.barSummary.targetDensityResolvedCount, 90);
     assert.deepEqual(
       chunk.trace?.barSummary.sample.map((sample) => sample.x),
-      [-120, 36, 196],
+      [-120, 56, 236],
     );
     assert.equal(nowCallCount, 0);
-    assert.equal(context.moveToCount, 80);
-    assert.deepEqual(context.moveXValues.slice(0, 3), [-119.5, -115.5, -111.5]);
+    assert.equal(context.fillRects.length, 90);
+    assert.deepEqual(
+      context.fillRects.slice(0, 3).map((rect) => rect.x),
+      [-120, -116, -112],
+    );
   });
 
   test("keeps waveform canvas chunk trace opt-in outside runtime tracing", () => {
@@ -2079,7 +2104,7 @@ describe("SpectrumVisualizer", () => {
 
     assert.equal(chunk.trace, null);
     assert.equal(chunk.completed, true);
-    assert.equal(context.moveToCount, 60);
+    assert.equal(context.fillRects.length, 60);
   });
 
   test("classifies initial and scroll waveform canvas render lifecycle traces", () => {
@@ -2154,6 +2179,7 @@ describe("SpectrumVisualizer", () => {
     assert.equal(context.moveToCount, 0);
     assert.equal(context.lineToCount, 0);
     assert.equal(context.strokeCount, 0);
+    assert.deepEqual(context.fillRects, []);
     assert.deepEqual(context.clearRects, []);
   });
 
@@ -2198,7 +2224,10 @@ describe("SpectrumVisualizer", () => {
 
     assert.equal(chunk.completed, true);
     assert.equal(chunk.missingPeakColumns, 0);
-    assert.deepEqual(context.moveXValues.slice(0, 3), [-19.5, -18.5, -17.5]);
+    assert.deepEqual(
+      context.fillRects.slice(0, 3).map((rect) => rect.x),
+      [-20, -19, -18],
+    );
   });
 
   test("interprets fast presentation redraw through the single canvas effect owner", () => {
@@ -2235,8 +2264,8 @@ describe("SpectrumVisualizer", () => {
     assert.equal(result.kind, "presented");
     assert.equal(result.mode, "dirty-redraw");
     assert.equal(context.drawImageCalls.length, 1);
-    assert.equal(context.moveToCount, 10);
-    assert.equal(context.strokeCount, 3);
+    assert.equal(context.fillRects.length, 10);
+    assert.equal(context.strokeCount, 0);
     assert.deepEqual(result.dirtyRanges, []);
   });
 
@@ -2281,7 +2310,7 @@ describe("SpectrumVisualizer", () => {
       true,
     );
     assert.equal(context.clearRects.length > 0, true);
-    assert.equal(context.moveToCount, 0);
+    assert.equal(context.fillRects.length, 29);
     assert.equal(context.strokeCount, 0);
     assert.equal(
       context.clearRects.some(
@@ -2293,12 +2322,104 @@ describe("SpectrumVisualizer", () => {
       ),
       false,
     );
-    assert.deepEqual(result.dirtyRanges, [
-      {
-        endX: 40,
-        startX: -20,
+    assert.deepEqual(result.dirtyRanges, []);
+    assert.deepEqual(result.insertionRanges, []);
+    assert.equal(result.insertionWidthPx, 29);
+  });
+
+  test("keeps unresolved zoom affine insertions separate from the transport proof", () => {
+    const context = createWaveformCanvasTestContext();
+    const previous = createWaveformTestFrameDescriptor({
+      focusSeconds: 8,
+      pixelsPerSecond: 100,
+      scrollLeft: 400,
+    });
+    const current = createWaveformTestFrameDescriptor({
+      focusSeconds: 8,
+      pixelsPerSecond: 200,
+      scrollLeft: 1_200,
+    });
+    const plan = {
+      ...createWaveformCanvasTestPlan({ viewportWidth: 1_000 }),
+      candidateLevels: [
+        {
+          pixelsPerSecond: 50,
+          tileKeysByIndex: new Map(),
+          tilesByIndex: new Map(),
+        },
+      ],
+      dataPixelsPerSecond: 50,
+      geometry: current.geometry,
+      viewport: current.viewport,
+    };
+    const canvas = createWaveformCanvasFastPresentationTestCanvas(context);
+    const result = __spectrumVisualizerTestHooks.presentWaveformCanvasFrameFast({
+      canvas,
+      descriptor: current,
+      descriptorPlan: plan,
+      previous,
+      previousDirtyRanges: [],
+      reuseFrame: null,
+    });
+
+    assert.equal(result.kind, "presented");
+    assert.equal(result.mode, "zoom-affine");
+    assert.equal(result.dirtyRanges.length, 1_399);
+    assert.deepEqual(result.dirtyRanges[0], {
+      endX: -798,
+      startX: -799,
+    });
+    assert.deepEqual(result.dirtyRanges.at(-1), {
+      endX: 1_998,
+      startX: 1_997,
+    });
+    assert.equal(result.insertionRanges.length, result.dirtyRanges.length);
+    assert.deepEqual(result.insertionRanges, result.dirtyRanges);
+    assert.equal(context.fillRects.length, 100);
+  });
+
+  test("renders zoom affine insertion gaps directly instead of starting a left-to-right job", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 120 });
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry: plan.geometry,
+      kind: "visible" as const,
+    };
+    const chunk = drawWaveformCanvasJobChunk({
+      cursor: {
+        ...createWaveformCanvasTestCursor({
+          ranges: [
+            {
+              endX: -80,
+              startX: -84,
+            },
+            {
+              endX: 24,
+              startX: 20,
+            },
+          ],
+        }),
+        rangeComposition: "direct",
+        schedule: "full-density",
       },
-    ]);
+      deadlineMs: Number.POSITIVE_INFINITY,
+      now: () => 1,
+      plan,
+      target,
+    });
+
+    assert.equal(chunk.completed, false);
+    assert.equal(chunk.cursor.nextX, 20);
+    assert.equal(chunk.cursor.passIndex, 0);
+    assert.equal(chunk.cursor.rangeIndex, 1);
+    assert.equal(context.fillRects.length, 4);
+    assert.deepEqual(
+      context.fillRects.map((rect) => Math.floor(rect.x)),
+      [-84, -83, -82, -81],
+    );
   });
 
   test("renders horizontal pan refreshes at full density", () => {
@@ -2325,11 +2446,12 @@ describe("SpectrumVisualizer", () => {
     assert.equal(chunk.completed, false);
     assert.equal(chunk.cursor.nextX, -23);
     assert.equal(chunk.cursor.passIndex, 0);
-    assert.equal(context.strokeCount, 1);
-    assert.equal(context.moveToCount, 97);
-    assert.equal(context.lineToCount, 97);
+    assert.equal(context.strokeCount, 0);
+    assert.equal(context.moveToCount, 0);
+    assert.equal(context.lineToCount, 0);
+    assert.equal(context.fillRects.length, 97);
     assert.deepEqual(
-      context.moveXValues.map((x) => Math.floor(x - 0.5)),
+      context.fillRects.map((rect) => Math.floor(rect.x)),
       Array.from({ length: 97 }, (_, index) => index - 120),
     );
   });
@@ -2363,9 +2485,9 @@ describe("SpectrumVisualizer", () => {
     assert.equal(completed.completed, true);
     assert.equal(completed.cursor.nextX, 240);
     assert.equal(completed.cursor.passIndex, 1);
-    assert.equal(context.moveToCount, 24);
+    assert.equal(context.fillRects.length, 24);
     assert.deepEqual(
-      context.moveXValues.map((x) => Math.floor(x - 0.5)),
+      context.fillRects.map((rect) => Math.floor(rect.x)),
       Array.from({ length: 24 }, (_, index) => index + 96),
     );
   });
@@ -2398,7 +2520,7 @@ describe("SpectrumVisualizer", () => {
     assert.equal(chunk.completed, false);
     assert.equal(chunk.cursor.nextX, -23);
     assert.equal(chunk.cursor.passIndex, 0);
-    assert.equal(context.moveToCount, 97);
+    assert.equal(context.fillRects.length, 97);
     assert.deepEqual(context.clearRects, [
       {
         h: 208,
@@ -2503,49 +2625,46 @@ describe("SpectrumVisualizer", () => {
     assert.equal(firstChunk.completed, false);
     assert.equal(firstChunk.cursor.nextX, 973);
     assert.deepEqual(
-      context.moveXValues.slice(0, 4).map((x) => Math.floor(x - 0.5)),
+      context.fillRects.slice(0, 4).map((rect) => Math.floor(rect.x)),
       [876, 877, 878, 879],
     );
   });
 
-  test("keeps every progressive waveform chunk immediately presentable", () => {
-    assert.equal(
-      shouldBeginWaveformCanvasChunkPath({
-        hasColumn: true,
-        startX: 120,
+  test("keeps chunk scheduling outside waveform canvas shape submission", () => {
+    const context = createWaveformCanvasTestContext();
+    const plan = createWaveformCanvasTestPlan({ viewportWidth: 120 });
+    const target = {
+      canvas: {} as HTMLCanvasElement,
+      color: "#262626",
+      context: context as unknown as CanvasRenderingContext2D,
+      geometry: plan.geometry,
+      kind: "visible" as const,
+    };
+    const firstChunk = drawWaveformCanvasJobChunk({
+      cursor: createWaveformCanvasTestCursor({
+        progressive: false,
+        rasterStartX: plan.geometry.rasterStartX,
       }),
-      true,
-    );
-    assert.equal(
-      shouldBeginWaveformCanvasChunkPath({
-        hasColumn: true,
-        startX: -120,
-      }),
-      true,
-    );
-    assert.equal(
-      shouldBeginWaveformCanvasChunkPath({
-        hasColumn: false,
-        startX: -120,
-      }),
-      false,
-    );
-    assert.equal(
-      shouldStrokeWaveformCanvasChunkPath({
-        completed: false,
-        cursorHasDrawnColumn: true,
-        hasChunkColumn: true,
-      }),
-      true,
-    );
-    assert.equal(
-      shouldStrokeWaveformCanvasChunkPath({
-        completed: true,
-        cursorHasDrawnColumn: true,
-        hasChunkColumn: true,
-      }),
-      true,
-    );
+      deadlineMs: 0,
+      now: () => 1,
+      plan,
+      target,
+    });
+    const secondChunk = drawWaveformCanvasJobChunk({
+      cursor: firstChunk.cursor,
+      deadlineMs: 0,
+      now: () => 1,
+      plan,
+      target,
+    });
+
+    assert.equal(firstChunk.completed, false);
+    assert.equal(secondChunk.completed, false);
+    assert.equal(context.beginPathCount, 0);
+    assert.equal(context.strokeCount, 0);
+    assert.equal(context.moveToCount, 0);
+    assert.equal(context.lineToCount, 0);
+    assert.equal(context.fillRects.length, 194);
   });
 
   test("draws visual padding as a zero waveform without requiring tile data", () => {
@@ -2584,9 +2703,9 @@ describe("SpectrumVisualizer", () => {
     assert.equal(chunk.completed, true);
     assert.equal(chunk.missingPeakColumns, 0);
     assert.equal(chunk.cursor.resolvedPeakColumnCount, 60);
-    assert.equal(context.moveToCount, 60);
-    assert.equal(context.strokeCount, 3);
-    assert.ok(context.lineYValues.every((y) => y === 105));
+    assert.equal(context.fillRects.length, 60);
+    assert.equal(context.strokeCount, 0);
+    assert.ok(context.fillRects.every((rect) => rect.h === 1));
   });
 
   test("keeps fallback-density waveform columns dirty until target density arrives", () => {
@@ -2653,7 +2772,8 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.equal(draw.hasColumn, true);
-    assert.equal(context.moveToCount, 10);
+    assert.equal(context.moveToCount, 0);
+    assert.equal(context.fillRects.length, 10);
     assert.equal(draw.missingPeakColumns, 10);
     assert.deepEqual(draw.missingRanges, [
       {
@@ -2722,7 +2842,8 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.equal(draw.hasColumn, true);
-    assert.equal(context.moveToCount, 1);
+    assert.equal(context.moveToCount, 0);
+    assert.equal(context.fillRects.length, 1);
     assert.equal(draw.missingPeakColumns, 1);
     assert.deepEqual(draw.missingRanges, [
       {
@@ -2787,7 +2908,7 @@ describe("SpectrumVisualizer", () => {
     });
 
     assert.equal(completed.completed, true);
-    assert.equal(context.moveToCount, 8);
+    assert.equal(context.fillRects.length, 8);
     assert.equal(completed.cursor.missingPeakColumnCount, 8);
     assert.deepEqual(completed.cursor.missingRanges, [
       {
