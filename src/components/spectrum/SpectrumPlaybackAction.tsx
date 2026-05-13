@@ -6,6 +6,7 @@ import {
   type SpectrumPlaybackIdentity,
   type SpectrumPlaybackActionVisualState,
   type SpectrumPlaybackActionSnapshot,
+  type SpectrumPlaybackActionKind,
 } from "./SpectrumPage.view-model";
 
 const SPECTRUM_PLAYBACK_STATUS_POLL_MS = 250;
@@ -129,7 +130,10 @@ export function SpectrumPlaybackAction({
 }: {
   identity: SpectrumPlaybackIdentity | null;
   playbackSnapshot: SpectrumPlaybackActionSnapshot | null;
-  onAction: (identity: SpectrumPlaybackIdentity) => Promise<void>;
+  onAction: (
+    identity: SpectrumPlaybackIdentity,
+    action: SpectrumPlaybackActionKind,
+  ) => Promise<void>;
 }) {
   const isPresent = useIsPresent();
   const [isPlaybackActionPending, setIsPlaybackActionPending] = useState(false);
@@ -149,7 +153,7 @@ export function SpectrumPlaybackAction({
     setIsPlaybackActionPending(true);
 
     try {
-      await onAction(identity);
+      await onAction(identity, visualState.kind);
     } catch (error) {
       console.error("Failed to toggle spectrum playback", error);
     } finally {

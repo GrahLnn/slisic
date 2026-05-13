@@ -92,6 +92,7 @@ function createRowProps(
     measureElement: () => undefined,
     onDelete: () => undefined,
     onPlaybackAction: async () => undefined,
+    onPlaybackControlReady: () => undefined,
     onReset: () => undefined,
     onSelectionCommit: () => undefined,
     onTitleChange: () => undefined,

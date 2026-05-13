@@ -10,6 +10,8 @@ import {
   normalizeWaveformPathKey,
   projectWaveformTrackIdentity,
   resolvePlaybackPositionMs,
+  resolvePlaybackSnapshotAfterStatusCommit,
+  resolvePlaybackSnapshotPausedAtNow,
   resolvePlaybackSnapshotDurationMs,
   resolveQuantizedWaveformDisplayPeak,
   resolveTrackWaveformInitialStatus,
@@ -727,6 +729,87 @@ describe("SpectrumVisualizer selection and playback", () => {
         snapshot,
       }),
       20_000,
+    );
+  });
+
+  test("freezes playback snapshots at the local pause timestamp", () => {
+    const snapshot = {
+      duration_ms: 20_000,
+      music_url: "https://example.com/demo",
+      path: "C:/music/demo.flac",
+      paused: false,
+      playback_end_ms: 40_000,
+      playback_start_ms: 20_000,
+      playing: true,
+      playlist_name: "Focus",
+      position_ms: 1_000,
+      received_at_ms: 100,
+      track_end_ms: 40_000,
+      track_start_ms: 20_000,
+    };
+
+    const paused = resolvePlaybackSnapshotPausedAtNow({
+      durationMs: 20_000,
+      nowMs: 350,
+      snapshot,
+    });
+
+    assert.deepEqual(paused, {
+      ...snapshot,
+      paused: true,
+      position_ms: 1_250,
+      received_at_ms: 350,
+    });
+    assert.equal(
+      resolvePlaybackPositionMs({
+        durationMs: 20_000,
+        nowMs: 900,
+        snapshot: paused,
+      }),
+      1_250,
+    );
+  });
+
+  test("keeps the local pause point across backend pause confirmation", () => {
+    const localPause = {
+      duration_ms: 20_000,
+      music_url: "https://example.com/demo",
+      path: "C:/music/demo.flac",
+      paused: true,
+      playback_end_ms: 40_000,
+      playback_start_ms: 20_000,
+      playing: true,
+      playlist_name: "Focus",
+      position_ms: 1_250,
+      received_at_ms: 350,
+      track_end_ms: 40_000,
+      track_start_ms: 20_000,
+    };
+    const backendPause = {
+      ...localPause,
+      position_ms: 1_000,
+      received_at_ms: 600,
+    };
+    const backendResume = {
+      ...localPause,
+      paused: false,
+      position_ms: 1_250,
+      received_at_ms: 800,
+    };
+
+    assert.equal(
+      resolvePlaybackSnapshotAfterStatusCommit({
+        localPauseSnapshot: localPause,
+        nextSnapshot: backendPause,
+      }),
+      localPause,
+    );
+    assert.equal(
+      resolvePlaybackSnapshotAfterStatusCommit({
+        localPauseSnapshot: localPause,
+        nextSnapshot: backendResume,
+      }),
+      backendResume,
     );
   });
 

@@ -20,6 +20,8 @@ import {
   createWaveformSharedTileCacheForFile as createWaveformSharedTileCacheForStore,
   projectWaveformTrackIdentity,
   resolvePlaybackPositionMs,
+  resolvePlaybackSnapshotAfterStatusCommit,
+  resolvePlaybackSnapshotPausedAtNow,
   resolvePlaybackSnapshotDurationMs,
   resolveQuantizedWaveformDisplayPeak,
   resolveTrackWaveformInitialStatus,
@@ -77,6 +79,8 @@ export {
   areWaveformSelectionsEqual,
   resolveCenteredWaveformScrollLeft,
   resolvePlaybackPositionMs,
+  resolvePlaybackSnapshotAfterStatusCommit,
+  resolvePlaybackSnapshotPausedAtNow,
   resolvePlaybackSnapshotDurationMs,
   resolveQuantizedWaveformDisplayPeak,
   resolveTrackWaveformInitialStatus,
@@ -156,6 +160,11 @@ export interface TrackSpectrumPlaybackPort {
 }
 
 export type TrackSpectrumPlaybackStatusCommit = (status: PlaybackStatusPayload | null) => void;
+export type TrackSpectrumImmediatePlaybackPause = () => PlaybackStatusPayload | null;
+export interface TrackSpectrumPlaybackControl {
+  commitImmediatePause: TrackSpectrumImmediatePlaybackPause;
+  releaseImmediatePause: () => void;
+}
 
 export interface TrackSpectrumPorts {
   playback: TrackSpectrumPlaybackPort;
@@ -169,6 +178,7 @@ type TrackSpectrumProps = {
     range: WaveformSelectionDragResolution,
     commitPlaybackStatus?: TrackSpectrumPlaybackStatusCommit,
   ) => void;
+  onPlaybackControlReady?: (control: TrackSpectrumPlaybackControl | null) => void;
   playheadEnabled?: boolean;
   ports?: TrackSpectrumPorts;
   renderDataStore?: WaveformRenderDataStore;
@@ -703,6 +713,7 @@ function usePlaybackController(args: {
   latestArgsRef.current = args;
   const dragPreviewRef = useRef<WaveformPlayheadDragResolution | null>(null);
   const snapshotRef = useRef<PlaybackSnapshot | null>(null);
+  const localPauseSnapshotRef = useRef<PlaybackSnapshot | null>(null);
   const frameIdRef = useRef<number | null>(null);
   const beginSeekPromiseRef = useRef<Promise<boolean> | null>(null);
 
@@ -772,17 +783,31 @@ function usePlaybackController(args: {
       const ownerWindow = latest.hostRef.current?.ownerDocument.defaultView ?? null;
       if (!latest.enabled || !isPlaybackStatusForTrack(status, latest.filePath)) {
         snapshotRef.current = null;
+        localPauseSnapshotRef.current = null;
         stopAnimation();
         syncPlayhead();
         return;
       }
 
-      snapshotRef.current = {
+      const nextSnapshot = {
         ...status!,
         received_at_ms: readPerformanceNow(ownerWindow),
       };
+      const committedSnapshot = resolvePlaybackSnapshotAfterStatusCommit({
+        localPauseSnapshot: localPauseSnapshotRef.current,
+        nextSnapshot,
+      });
+      snapshotRef.current = committedSnapshot;
+      if (nextSnapshot.paused !== true) {
+        localPauseSnapshotRef.current = null;
+      }
+      if (committedSnapshot === null) {
+        stopAnimation();
+        syncPlayhead();
+        return;
+      }
       syncPlayhead();
-      if (snapshotRef.current.playing && !snapshotRef.current.paused) {
+      if (committedSnapshot.playing && !committedSnapshot.paused) {
         startAnimation();
       } else {
         stopAnimation();
@@ -790,6 +815,32 @@ function usePlaybackController(args: {
     },
     [startAnimation, stopAnimation, syncPlayhead],
   );
+
+  const commitImmediatePause = useCallback(() => {
+    const latest = latestArgsRef.current;
+    const ownerWindow = latest.hostRef.current?.ownerDocument.defaultView ?? null;
+    const snapshot = resolvePlaybackSnapshotPausedAtNow({
+      durationMs: resolvePlaybackSnapshotDurationMs({
+        fallbackDurationMs: latest.summaryDurationMs,
+        snapshot: snapshotRef.current,
+      }),
+      nowMs: readPerformanceNow(ownerWindow),
+      snapshot: snapshotRef.current,
+    });
+    if (!snapshot || snapshotRef.current === snapshot) {
+      return snapshot;
+    }
+
+    snapshotRef.current = snapshot;
+    localPauseSnapshotRef.current = snapshot;
+    syncPlayhead(snapshot.received_at_ms);
+    stopAnimation();
+    return snapshot;
+  }, [stopAnimation, syncPlayhead]);
+
+  const releaseImmediatePause = useCallback(() => {
+    localPauseSnapshotRef.current = null;
+  }, []);
 
   useEffect(() => {
     if (!args.enabled) {
@@ -820,6 +871,7 @@ function usePlaybackController(args: {
       ownerWindow.clearInterval(intervalId);
       stopAnimation();
       snapshotRef.current = null;
+      localPauseSnapshotRef.current = null;
     };
   }, [
     args.enabled,
@@ -890,6 +942,7 @@ function usePlaybackController(args: {
         resolution.endMs,
       );
       dragPreviewRef.current = null;
+      localPauseSnapshotRef.current = null;
       commitPlaybackStatus(status);
     },
     [commitPlaybackStatus, syncPlayhead],
@@ -899,8 +952,10 @@ function usePlaybackController(args: {
     beginDrag,
     cancelDrag,
     commitDrag,
+    commitImmediatePause,
     commitPlaybackStatus,
     previewDrag,
+    releaseImmediatePause,
   };
 }
 
@@ -930,14 +985,17 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
   const [zoomOwnership, setZoomOwnership] = useState<WaveformZoomOwnership>("initial-minimum");
   const viewportUserOwnedRef = useRef(false);
   const initialReadyViewportResolvedRef = useRef(false);
-  const initialViewportSelectionRef = useRef<WaveformSelectionRange | null>(props.selection ?? null);
-  const [viewport, setViewport] = useState(() =>
-    resolveWaveformInitialViewportFrame({
-      durationMs: waveformState.summary.duration_ms,
-      maximumPixelsPerSecond,
-      selection: props.selection ?? null,
-      viewportWidth: 1,
-    }).viewport,
+  const initialViewportSelectionRef = useRef<WaveformSelectionRange | null>(
+    props.selection ?? null,
+  );
+  const [viewport, setViewport] = useState(
+    () =>
+      resolveWaveformInitialViewportFrame({
+        durationMs: waveformState.summary.duration_ms,
+        maximumPixelsPerSecond,
+        selection: props.selection ?? null,
+        viewportWidth: 1,
+      }).viewport,
   );
   const elementWidth = useElementWidth(hostRef);
   const [tileRevision, setTileRevision] = useState(0);
@@ -988,6 +1046,26 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
     summaryDurationMs: waveformState.summary.duration_ms,
     viewport,
   });
+
+  useLayoutEffect(() => {
+    props.onPlaybackControlReady?.(
+      props.playheadEnabled === true
+        ? {
+            commitImmediatePause: playback.commitImmediatePause,
+            releaseImmediatePause: playback.releaseImmediatePause,
+          }
+        : null,
+    );
+
+    return () => {
+      props.onPlaybackControlReady?.(null);
+    };
+  }, [
+    playback.commitImmediatePause,
+    playback.releaseImmediatePause,
+    props.onPlaybackControlReady,
+    props.playheadEnabled,
+  ]);
 
   const requestDataPlan = useWaveformDataLoader({
     filePath: props.filePath,

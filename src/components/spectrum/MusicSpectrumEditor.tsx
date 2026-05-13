@@ -11,6 +11,7 @@ import { collectionTitleClassName, collectionTitleLayoutTransition } from "../co
 import { EditableTitle, type EditableTitleHandle } from "../EditableTitle";
 import {
   TrackSpectrum,
+  type TrackSpectrumPlaybackControl,
   type TrackSpectrumPlaybackStatusCommit,
   type WaveformRenderDataStore,
 } from "./SpectrumVisualizer";
@@ -82,6 +83,7 @@ export interface MusicSpectrumEditorProps {
     selection: MusicSpectrumSelection,
     commitPlaybackStatus?: TrackSpectrumPlaybackStatusCommit,
   ) => void;
+  onPlaybackControlReady?: (control: TrackSpectrumPlaybackControl | null) => void;
   onTitleChange: (value: string) => void;
 }
 
@@ -384,6 +386,7 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
       waveformClassName,
       onReset,
       onSelectionCommit,
+      onPlaybackControlReady,
       onTitleChange,
     },
     ref,
@@ -460,6 +463,7 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
                 playheadEnabled={playheadEnabled}
                 renderDataStore={waveformRenderDataStore}
                 selection={selection}
+                onPlaybackControlReady={onPlaybackControlReady}
                 onSelectionCommit={onSelectionCommit}
               />
             </motion.div>

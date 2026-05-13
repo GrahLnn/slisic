@@ -210,6 +210,29 @@ describe("SpectrumPlaybackSession", () => {
     );
   });
 
+  test("keeps explicit pause from starting an inactive spectrum track", async () => {
+    const identity = createIdentity();
+    const otherStatus = createStatus({
+      music_url: "https://example.com/quiet-morning#b",
+      track_start_ms: 120_000,
+      track_end_ms: 180_000,
+    });
+    const { calls, ports } = createPorts([otherStatus]);
+
+    assert.equal(
+      await createSpectrumPlaybackSession({ ports, scopeId: 7 }).pauseOrResume({
+        action: "pause",
+        identity,
+        musicName: "Disc 1 Opening",
+      }),
+      otherStatus,
+    );
+    assert.deepEqual(
+      calls.map((call) => call.name),
+      ["getPlaybackStatus"],
+    );
+  });
+
   test("captures a resume point only from the matching playback status", async () => {
     const identity = createIdentity();
     const resume = { identity, positionMs: null };

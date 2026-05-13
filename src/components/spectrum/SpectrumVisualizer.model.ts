@@ -1458,6 +1458,51 @@ export function resolvePlaybackPositionMs(args: {
   return clampNumber(args.snapshot.position_ms + elapsedMs, 0, Math.max(0, args.durationMs));
 }
 
+export function resolvePlaybackSnapshotPausedAtNow(args: {
+  durationMs: number;
+  nowMs: number;
+  snapshot: PlaybackSnapshot | null;
+}): PlaybackSnapshot | null {
+  if (!args.snapshot) {
+    return null;
+  }
+
+  if (!args.snapshot.playing || args.snapshot.paused) {
+    return args.snapshot;
+  }
+
+  return {
+    ...args.snapshot,
+    paused: true,
+    position_ms: resolvePlaybackPositionMs(args) ?? args.snapshot.position_ms,
+    received_at_ms: args.nowMs,
+  };
+}
+
+export function resolvePlaybackSnapshotAfterStatusCommit(args: {
+  localPauseSnapshot: PlaybackSnapshot | null;
+  nextSnapshot: PlaybackSnapshot | null;
+}) {
+  return args.localPauseSnapshot !== null &&
+    args.nextSnapshot !== null &&
+    args.nextSnapshot.paused === true &&
+    arePlaybackSnapshotsSamePlaybackSegment(args.localPauseSnapshot, args.nextSnapshot)
+    ? args.localPauseSnapshot
+    : args.nextSnapshot;
+}
+
+function arePlaybackSnapshotsSamePlaybackSegment(left: PlaybackSnapshot, right: PlaybackSnapshot) {
+  return (
+    left.path === right.path &&
+    left.playlist_name === right.playlist_name &&
+    left.music_url === right.music_url &&
+    left.track_start_ms === right.track_start_ms &&
+    left.track_end_ms === right.track_end_ms &&
+    left.playback_start_ms === right.playback_start_ms &&
+    left.playback_end_ms === right.playback_end_ms
+  );
+}
+
 export function resolvePlaybackSnapshotDurationMs(args: {
   fallbackDurationMs: number;
   snapshot: PlaybackSnapshot | null;

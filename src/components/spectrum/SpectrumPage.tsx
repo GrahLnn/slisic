@@ -12,7 +12,10 @@ import { collectionTitleLayoutTransition } from "../collectionTitle";
 import type { EditableTitleHandle } from "../EditableTitle";
 import type { MusicSpectrumSelection } from "./MusicSpectrumEditor";
 import { SpectrumMusicVirtualList } from "./SpectrumMusicVirtualList";
-import type { TrackSpectrumPlaybackStatusCommit } from "./SpectrumVisualizer";
+import type {
+  TrackSpectrumPlaybackControl,
+  TrackSpectrumPlaybackStatusCommit,
+} from "./SpectrumVisualizer";
 import {
   areSpectrumPlaybackActionSnapshotsEqual,
   resolveSpectrumBackActionVisualState,
@@ -23,6 +26,7 @@ import {
   resolveSpectrumMusicEditorViewModels,
   type SpectrumBackActionVisualState,
   type SpectrumMusicEditorViewModel,
+  type SpectrumPlaybackActionKind,
   type SpectrumPlaybackActionSnapshot,
   type SpectrumPlaybackIdentity,
   shouldCommitSpectrumPlaybackActionSnapshot,
@@ -30,6 +34,7 @@ import {
 import {
   crabSpectrumPlaybackSessionPorts,
   createSpectrumPlaybackSession,
+  resolvePlaybackAbsolutePositionMs,
   resolveSpectrumPlaybackActionSnapshotFromStatus,
   type SpectrumPlaybackResumePoint,
   type SpectrumPlaybackSessionStatus,
@@ -185,6 +190,7 @@ export function SpectrumPage() {
   const isPresent = useIsPresent();
   const editableTitleRefs = useRef(new Map<string, EditableTitleHandle>());
   const primaryPlaybackResumeRef = useRef<SpectrumPlaybackResumePoint | null>(null);
+  const playbackControlByIdentityRef = useRef(new Map<string, TrackSpectrumPlaybackControl>());
   const titlePathTraceSignatureRef = useRef<string | null>(null);
   const pageExitStartedRef = useRef(false);
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
@@ -384,19 +390,51 @@ export function SpectrumPage() {
     commitPlaybackActionSnapshot(status);
   }
 
-  async function handleSpectrumPlaybackAction(identity: SpectrumPlaybackIdentity) {
+  async function handleSpectrumPlaybackAction(
+    identity: SpectrumPlaybackIdentity,
+    action: SpectrumPlaybackActionKind,
+  ) {
     const editor = resolveSpectrumEditorByPlaybackIdentity(renderData.editorViewModels, identity);
     if (editor === null) {
       return;
     }
 
-    await capturePrimarySpectrumPlaybackPosition();
+    if (action === "pause") {
+      const status = playbackControlByIdentityRef.current.get(identity.key)?.commitImmediatePause();
+      if (status) {
+        primaryPlaybackResumeRef.current = {
+          identity,
+          positionMs: resolvePlaybackAbsolutePositionMs(status),
+        };
+        commitPlaybackActionSnapshot(status);
+      } else {
+        await capturePrimarySpectrumPlaybackPosition();
+      }
+    } else {
+      playbackControlByIdentityRef.current.get(identity.key)?.releaseImmediatePause();
+      await capturePrimarySpectrumPlaybackPosition();
+    }
 
     const status = await playbackSession.pauseOrResume({
+      action,
       identity,
       musicName: editor.titleValue,
     });
     commitPlaybackActionSnapshot(status);
+  }
+
+  function handlePlaybackControlReady(
+    identity: SpectrumPlaybackIdentity | null,
+    control: TrackSpectrumPlaybackControl | null,
+  ) {
+    if (identity === null || control === null) {
+      if (identity !== null) {
+        playbackControlByIdentityRef.current.delete(identity.key);
+      }
+      return;
+    }
+
+    playbackControlByIdentityRef.current.set(identity.key, control);
   }
 
   async function capturePrimarySpectrumPlaybackPosition() {
@@ -556,6 +594,7 @@ export function SpectrumPage() {
             trackFilePath={renderData.trackFilePath}
             onDelete={(id) => appLogicAction.deleteSpectrumMusic(id)}
             onPlaybackAction={handleSpectrumPlaybackAction}
+            onPlaybackControlReady={handlePlaybackControlReady}
             onReset={(id) => appLogicAction.resetSpectrumMusicDraft(id)}
             onSelectionCommit={handleSpectrumSelectionCommit}
             onTitleChange={(id, name) =>

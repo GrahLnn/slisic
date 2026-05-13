@@ -8,6 +8,7 @@ import {
   projectSpectrumPlaybackIdentity,
   resolveSpectrumPlaybackActionSnapshot,
   resolveSpectrumPlaybackRestoreEffect,
+  type SpectrumPlaybackActionKind,
 } from "./SpectrumPage.view-model";
 
 export type SpectrumPlaybackSessionStatus = PlaybackStatusPayload | null;
@@ -37,6 +38,7 @@ export interface SpectrumPlaybackSession {
     resume: SpectrumPlaybackResumePoint | null;
   }): Promise<SpectrumPlaybackResumePoint | null>;
   pauseOrResume(args: {
+    action?: SpectrumPlaybackActionKind;
     identity: SpectrumPlaybackIdentity;
     musicName: string;
   }): Promise<SpectrumPlaybackSessionStatus>;
@@ -191,7 +193,7 @@ export function createSpectrumPlaybackSession(args: {
         positionMs: resolvePlaybackAbsolutePositionMs(status),
       };
     },
-    async pauseOrResume({ identity, musicName }) {
+    async pauseOrResume({ action, identity, musicName }) {
       if (scopeId === null) {
         return null;
       }
@@ -199,12 +201,17 @@ export function createSpectrumPlaybackSession(args: {
       const status = await args.ports.getPlaybackStatus();
 
       if (!isPlaybackStatusForSpectrumIdentity(status, identity)) {
+        if (action === "pause") {
+          return status;
+        }
+
         await play({ identity, musicName });
         return args.ports.getPlaybackStatus();
       }
 
       const track = createSpectrumPlaybackTrackPayload(identity, musicName);
-      if (status?.paused) {
+      const nextAction = action ?? (status?.paused ? "play" : "pause");
+      if (nextAction === "play") {
         await args.ports.resumeSpectrumMusic(scopeId, track);
       } else {
         await args.ports.pauseSpectrumMusic(scopeId, track);
