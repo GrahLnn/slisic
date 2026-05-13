@@ -72,6 +72,7 @@ function createRowRenderModel(
     editor,
     exitPresentation: "local",
     index: 0,
+    isPlaybackActive: false,
     playbackActionSnapshot: null,
     rowAdmission: "admitted",
     scrollMargin: 0,
@@ -293,6 +294,24 @@ describe("SpectrumMusicVirtualList", () => {
         }),
         createRowRenderModel(editor, {
           rowAdmission: "admitted",
+        }),
+      ),
+      false,
+    );
+  });
+
+  test("keeps row memoization sensitive to playhead ownership changes", () => {
+    const editor = createEditor("beta", {
+      isCurrent: false,
+    });
+
+    assert.equal(
+      areSpectrumMusicVirtualListRowRenderModelsEqual(
+        createRowRenderModel(editor, {
+          isPlaybackActive: false,
+        }),
+        createRowRenderModel(editor, {
+          isPlaybackActive: true,
         }),
       ),
       false,

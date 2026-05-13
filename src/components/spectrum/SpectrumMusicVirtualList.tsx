@@ -210,6 +210,7 @@ export interface SpectrumMusicVirtualListRowRenderModel {
   editor: SpectrumMusicEditorViewModel;
   exitPresentation: MusicSpectrumExitPresentation;
   index: number;
+  isPlaybackActive: boolean;
   playbackActionSnapshot: SpectrumPlaybackActionSnapshot | null;
   rowAdmission: SpectrumMusicRowAdmission;
   scrollMargin: number;
@@ -225,6 +226,7 @@ export function areSpectrumMusicVirtualListRowRenderModelsEqual(
   return (
     left.exitPresentation === right.exitPresentation &&
     left.index === right.index &&
+    left.isPlaybackActive === right.isPlaybackActive &&
     left.rowAdmission === right.rowAdmission &&
     left.scrollMargin === right.scrollMargin &&
     left.start === right.start &&
@@ -287,6 +289,7 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
   editor,
   exitPresentation,
   index,
+  isPlaybackActive,
   playbackActionSnapshot,
   rowAdmission,
   scrollMargin,
@@ -368,7 +371,7 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
               onAction={onPlaybackAction}
             />
           }
-          playheadEnabled={editor.isCurrent}
+          playheadEnabled={isPlaybackActive}
           selection={{
             end: editor.selectionEnd,
             start: editor.selectionStart,
@@ -638,6 +641,12 @@ export function SpectrumMusicVirtualList({
             editor={editor}
             exitPresentation={exitPresentation}
             index={virtualRow.index}
+            isPlaybackActive={
+              resolveSpectrumMusicVirtualRowPlaybackSnapshot({
+                editor,
+                playbackActionSnapshot,
+              }) !== null
+            }
             measureElement={handleMeasureElement}
             playbackActionSnapshot={playbackActionSnapshot}
             rowAdmission={rowAdmission}

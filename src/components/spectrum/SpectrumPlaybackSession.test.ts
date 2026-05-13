@@ -9,8 +9,8 @@ import {
   isPlaybackStatusForSpectrumIdentity,
   resolvePlaybackAbsolutePositionMs,
   resolveSpectrumPlaybackActionSnapshotFromStatus,
+  resolveSpectrumPlaybackResumePointFromStatus,
   resolveSpectrumPlaybackStatusIdentity,
-  type SpectrumPlaybackResumePoint,
   type SpectrumPlaybackSessionPorts,
 } from "./SpectrumPlaybackSession";
 
@@ -124,6 +124,10 @@ describe("SpectrumPlaybackSession", () => {
       identity,
       paused: false,
     });
+    assert.deepEqual(resolveSpectrumPlaybackResumePointFromStatus(status), {
+      identity,
+      positionMs: 15_000,
+    });
   });
 
   test("stores the immediate pause point as stable backend milliseconds", () => {
@@ -151,7 +155,6 @@ describe("SpectrumPlaybackSession", () => {
     const { calls, ports } = createPorts([createStatus()]);
     const session = createSpectrumPlaybackSession({ ports, scopeId: null });
     const identity = createIdentity();
-    const resume = { identity, positionMs: 8_000 };
 
     assert.equal(await session.pause({ identity, musicName: "Disc 1 Opening" }), false);
     assert.equal(
@@ -161,10 +164,6 @@ describe("SpectrumPlaybackSession", () => {
         musicName: "Disc 1 Opening",
         startMs: 8_000,
       }),
-      null,
-    );
-    assert.equal(
-      await session.restoreResumePoint({ identity, musicName: "Disc 1 Opening", resume }),
       null,
     );
     assert.deepEqual(calls, []);
@@ -191,109 +190,50 @@ describe("SpectrumPlaybackSession", () => {
     ]);
   });
 
-  test("restores the paused current track from the recorded pause point", async () => {
-    const identity = createIdentity();
-    const paused = createStatus({ paused: true, position_ms: 24_000 });
-    const resumed = createStatus({ paused: false, position_ms: 8_000 });
-    const { calls, ports } = createPorts([paused, resumed]);
-    const resume = { identity, positionMs: 8_000 } satisfies SpectrumPlaybackResumePoint;
-
-    assert.equal(
-      await createSpectrumPlaybackSession({ ports, scopeId: 7 }).restoreResumePoint({
-        identity,
-        musicName: "Disc 1 Opening",
-        resume,
-      }),
-      resumed,
-    );
-    assert.deepEqual(
-      calls.map((call) => call.name),
-      ["getPlaybackStatus", "playSpectrumMusic", "getPlaybackStatus"],
-    );
-    assert.deepEqual(calls[1]?.args, [
-      7,
-      createSpectrumPlaybackTrackPayload(identity, "Disc 1 Opening"),
-      8_000,
-    ]);
-  });
-
-  test("does not restore when the current track is not paused", async () => {
-    const identity = createIdentity();
-    const alreadyPlaying = createStatus({ paused: false, position_ms: 24_000 });
-    const { calls, ports } = createPorts([alreadyPlaying]);
-    const resume = { identity, positionMs: 8_000 } satisfies SpectrumPlaybackResumePoint;
-
-    assert.equal(
-      await createSpectrumPlaybackSession({
-        ports,
-        scopeId: 7,
-      }).restoreResumePoint({
-        identity,
-        musicName: "Disc 1 Opening",
-        resume,
-      }),
-      alreadyPlaying,
-    );
-    assert.deepEqual(
-      calls.map((call) => call.name),
-      ["getPlaybackStatus"],
-    );
-  });
-
-  test("does not restore a different current track", async () => {
-    const identity = createIdentity();
-    const inactive = createStatus({
+  test("starts any spectrum track through the scoped session owner", async () => {
+    const identity = createIdentity({
+      endMs: 180_000,
+      key: "c:/music/quiet-morning.m4a|Focus Session|https://example.com/quiet-morning#b|120000|180000",
+      startMs: 120_000,
+      url: "https://example.com/quiet-morning#b",
+    });
+    const started = createStatus({
       music_url: "https://example.com/quiet-morning#b",
-      paused: true,
+      playback_start_ms: 120_000,
+      position_ms: 0,
       track_start_ms: 120_000,
       track_end_ms: 180_000,
     });
-    const { calls, ports } = createPorts([inactive]);
-    const resume = { identity, positionMs: 8_000 } satisfies SpectrumPlaybackResumePoint;
+    const { calls, ports } = createPorts([started]);
 
     assert.equal(
-      await createSpectrumPlaybackSession({ ports, scopeId: 7 }).restoreResumePoint({
+      await createSpectrumPlaybackSession({ ports, scopeId: 7 }).play({
         identity,
-        musicName: "Disc 1 Opening",
-        resume,
+        musicName: "Disc 1 Bridge",
+        positionMs: 120_000,
       }),
-      inactive,
+      started,
     );
     assert.deepEqual(
       calls.map((call) => call.name),
-      ["getPlaybackStatus"],
+      ["playSpectrumMusic", "getPlaybackStatus"],
     );
+    assert.deepEqual(calls[0]?.args, [
+      7,
+      createSpectrumPlaybackTrackPayload(identity, "Disc 1 Bridge"),
+      120_000,
+    ]);
   });
 
-  test("does not restore without a recorded pause position", async () => {
-    const identity = createIdentity();
-    const paused = createStatus({ paused: true, position_ms: 24_000 });
-    const { calls, ports } = createPorts([paused]);
-    const resume = { identity, positionMs: null } satisfies SpectrumPlaybackResumePoint;
-
-    assert.equal(
-      await createSpectrumPlaybackSession({ ports, scopeId: 7 }).restoreResumePoint({
-        identity,
-        musicName: "Disc 1 Opening",
-        resume,
-      }),
-      paused,
-    );
-    assert.deepEqual(
-      calls.map((call) => call.name),
-      ["getPlaybackStatus"],
-    );
-  });
-
-  test("ignores resume requests without a matching pause-point object", async () => {
+  test("keeps scoped play inert before the backend scope is available", async () => {
     const identity = createIdentity();
     const { calls, ports } = createPorts([createStatus({ paused: true })]);
 
     assert.equal(
-      await createSpectrumPlaybackSession({ ports, scopeId: 7 }).restoreResumePoint({
+      await createSpectrumPlaybackSession({ ports, scopeId: null }).play({
         identity,
         musicName: "Disc 1 Opening",
-        resume: null,
+        positionMs: 0,
       }),
       null,
     );
@@ -327,21 +267,5 @@ describe("SpectrumPlaybackSession", () => {
         startMs: 8_000,
       }),
     ]);
-  });
-
-  test("keeps the restore path inert after scope loss", async () => {
-    const identity = createIdentity();
-    const { calls, ports } = createPorts([createStatus({ paused: true })]);
-    const resume = { identity, positionMs: 8_000 } satisfies SpectrumPlaybackResumePoint;
-
-    assert.equal(
-      await createSpectrumPlaybackSession({ ports, scopeId: null }).restoreResumePoint({
-        identity,
-        musicName: "Disc 1 Opening",
-        resume,
-      }),
-      null,
-    );
-    assert.deepEqual(calls, []);
   });
 });

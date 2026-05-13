@@ -7,7 +7,6 @@ import {
   isSpectrumPlaybackStatusIdentityForAction,
   projectSpectrumPlaybackIdentity,
   resolveSpectrumPlaybackActionSnapshot,
-  resolveSpectrumPlaybackRestoreEffect,
 } from "./SpectrumPage.view-model";
 
 export type SpectrumPlaybackSessionStatus = PlaybackStatusPayload | null;
@@ -28,12 +27,12 @@ export interface SpectrumPlaybackSessionPorts {
 
 export interface SpectrumPlaybackSession {
   pause(args: { identity: SpectrumPlaybackIdentity; musicName: string }): Promise<boolean>;
-  readStatus(): Promise<SpectrumPlaybackSessionStatus>;
-  restoreResumePoint(args: {
+  play(args: {
     identity: SpectrumPlaybackIdentity;
     musicName: string;
-    resume: SpectrumPlaybackResumePoint | null;
+    positionMs: number | null;
   }): Promise<SpectrumPlaybackSessionStatus>;
+  readStatus(): Promise<SpectrumPlaybackSessionStatus>;
   updateLoopSignal(args: {
     endMs: number | null;
     identity: SpectrumPlaybackIdentity;
@@ -112,6 +111,22 @@ export function resolveSpectrumPlaybackActionSnapshotFromStatus(
   });
 }
 
+export function resolveSpectrumPlaybackResumePointFromStatus(
+  status: SpectrumPlaybackSessionStatus,
+): SpectrumPlaybackResumePoint | null {
+  if (status === null) {
+    return null;
+  }
+
+  const snapshot = resolveSpectrumPlaybackActionSnapshotFromStatus(status);
+  return snapshot === null
+    ? null
+    : {
+        identity: snapshot.identity,
+        positionMs: resolvePlaybackAbsolutePositionMs(status),
+      };
+}
+
 export function resolveSpectrumPlaybackStatusIdentity(status: SpectrumPlaybackSessionStatus) {
   if (!status?.path) {
     return null;
@@ -132,7 +147,7 @@ export function createSpectrumPlaybackSession(args: {
 }): SpectrumPlaybackSession {
   const scopeId = args.scopeId;
 
-  async function restore(args_: {
+  async function playTrack(args_: {
     identity: SpectrumPlaybackIdentity;
     musicName: string;
     positionMs: number | null;
@@ -157,35 +172,19 @@ export function createSpectrumPlaybackSession(args: {
       const track = createSpectrumPlaybackTrackPayload(identity, musicName);
       return args.ports.pauseSpectrumMusic(scopeId, track);
     },
-    readStatus() {
-      return args.ports.getPlaybackStatus();
-    },
-    async restoreResumePoint({ identity, musicName, resume }) {
+    async play({ identity, musicName, positionMs }) {
       if (scopeId === null) {
         return null;
       }
 
-      if (!resume) {
-        return null;
-      }
-
-      const status = await args.ports.getPlaybackStatus();
-      const statusIdentity = resolveSpectrumPlaybackStatusIdentity(status);
-      const restoreEffect = resolveSpectrumPlaybackRestoreEffect({
-        identity,
-        statusIdentity,
-        statusPaused: status?.paused === true,
-        storedPositionMs: resume.positionMs,
-      });
-      if (restoreEffect.kind === "none") {
-        return status;
-      }
-
-      await restore({
+      await playTrack({
         identity,
         musicName,
-        positionMs: restoreEffect.positionMs,
+        positionMs,
       });
+      return args.ports.getPlaybackStatus();
+    },
+    readStatus() {
       return args.ports.getPlaybackStatus();
     },
     updateLoopSignal({ endMs, identity, musicName, startMs }) {

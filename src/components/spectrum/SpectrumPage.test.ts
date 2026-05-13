@@ -14,7 +14,6 @@ import {
   resolveSpectrumPlaybackActionSnapshot,
   resolveSpectrumMusicRangeChange,
   resolveSpectrumPlaybackActionVisualState,
-  resolveSpectrumPlaybackRestoreEffect,
   resolveSpectrumSelectionRange,
   projectSpectrumPlaybackIdentity,
   isSpectrumPlaybackStatusIdentityForAction,
@@ -562,6 +561,25 @@ describe("SpectrumPage", () => {
     );
   });
 
+  test("keeps an inactive spectrum row startable while another row is playing", () => {
+    assert.deepEqual(
+      resolveSpectrumPlaybackActionVisualState({
+        canStartTrack: true,
+        hasCurrentTrack: false,
+        isPending: false,
+        isPresent: true,
+        paused: false,
+      }),
+      {
+        ariaLabel: "Start playback",
+        disabled: false,
+        dimmed: false,
+        key: "play",
+        kind: "play",
+      },
+    );
+  });
+
   test("disables the spectrum playback action outside active playback", () => {
     assert.deepEqual(
       resolveSpectrumPlaybackActionVisualState({
@@ -678,73 +696,6 @@ describe("SpectrumPage", () => {
         pageRenderFrozen: false,
       }),
       false,
-    );
-  });
-
-  test("keeps spectrum back restore inert when the primary track is already playing", () => {
-    const identity = projectSpectrumPlaybackIdentity({
-      endMs: 120_000,
-      filePath: "C:/Music/quiet-morning.m4a",
-      playlistName: "Focus Session",
-      startMs: 0,
-      url: "https://example.com/quiet-morning#a",
-    });
-    const equivalentStatus = projectSpectrumPlaybackIdentity({
-      endMs: 120_000,
-      filePath: "c:/music/quiet-morning.m4a",
-      playlistName: "Focus Session",
-      startMs: 0,
-      url: "https://example.com/quiet-morning#a",
-    });
-
-    assert.ok(identity);
-    assert.deepEqual(
-      resolveSpectrumPlaybackRestoreEffect({
-        identity,
-        statusIdentity: equivalentStatus,
-        statusPaused: false,
-        storedPositionMs: 8_000,
-      }),
-      {
-        kind: "none",
-        reason: "already-playing",
-      },
-    );
-    assert.deepEqual(
-      resolveSpectrumPlaybackRestoreEffect({
-        identity,
-        statusIdentity: equivalentStatus,
-        statusPaused: true,
-        storedPositionMs: 8_000,
-      }),
-      {
-        kind: "restore-paused",
-        positionMs: 8_000,
-      },
-    );
-    assert.deepEqual(
-      resolveSpectrumPlaybackRestoreEffect({
-        identity,
-        statusIdentity: null,
-        statusPaused: false,
-        storedPositionMs: 8_000,
-      }),
-      {
-        kind: "none",
-        reason: "identity-mismatch",
-      },
-    );
-    assert.deepEqual(
-      resolveSpectrumPlaybackRestoreEffect({
-        identity,
-        statusIdentity: equivalentStatus,
-        statusPaused: true,
-        storedPositionMs: null,
-      }),
-      {
-        kind: "none",
-        reason: "missing-resume-position",
-      },
     );
   });
 
