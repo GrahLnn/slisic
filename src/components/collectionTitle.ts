@@ -45,7 +45,10 @@ export const collectionTitleTextHoverClassName = cn(
   "font-[680] [font-variation-settings:'wght'_680] tracking-[-0.03em]",
 );
 
-export const collectionTitleTextRetainHoverClassName = collectionTitleTextHoverClassName;
+export const collectionTitleTextRetainHoverClassName = cn(
+  "font-[680] [font-variation-settings:'wght'_680] tracking-[-0.03em]",
+  "transition-none",
+);
 
 export function resolveCollectionTitleRetainedHoverVisual(args: {
   retainWindowActive: boolean;

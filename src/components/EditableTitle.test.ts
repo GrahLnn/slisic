@@ -74,6 +74,7 @@ describe("EditableTitle text style boundary", () => {
     assert.match(collectionTitleTextRetainHoverClassName, /font-\[680\]/);
     assert.match(collectionTitleTextRetainHoverClassName, /\[font-variation-settings:'wght'_680\]/);
     assert.match(collectionTitleTextRetainHoverClassName, /tracking-\[-0\.03em\]/);
+    assert.match(collectionTitleTextRetainHoverClassName, /transition-none/);
     assert.doesNotMatch(collectionTitleTextRetainHoverClassName, /animate-/);
   });
 
