@@ -703,7 +703,6 @@ describe("SpectrumPage", () => {
         identity,
         statusIdentity: equivalentStatus,
         statusPaused: false,
-        statusPositionMs: 25_000,
         storedPositionMs: 8_000,
       }),
       {
@@ -716,12 +715,11 @@ describe("SpectrumPage", () => {
         identity,
         statusIdentity: equivalentStatus,
         statusPaused: true,
-        statusPositionMs: 25_000,
         storedPositionMs: 8_000,
       }),
       {
         kind: "restore-paused",
-        positionMs: 25_000,
+        positionMs: 8_000,
       },
     );
     assert.deepEqual(
@@ -729,12 +727,23 @@ describe("SpectrumPage", () => {
         identity,
         statusIdentity: null,
         statusPaused: false,
-        statusPositionMs: null,
         storedPositionMs: 8_000,
       }),
       {
-        kind: "restore-paused",
-        positionMs: 8_000,
+        kind: "none",
+        reason: "identity-mismatch",
+      },
+    );
+    assert.deepEqual(
+      resolveSpectrumPlaybackRestoreEffect({
+        identity,
+        statusIdentity: equivalentStatus,
+        statusPaused: true,
+        storedPositionMs: null,
+      }),
+      {
+        kind: "none",
+        reason: "missing-resume-position",
       },
     );
   });

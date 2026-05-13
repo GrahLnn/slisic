@@ -4,13 +4,11 @@ import type { ConfigSidebarItemRef, PlaylistUpsertResult } from "./core";
 import {
   chooseSavePath,
   deletePlaylistRecord,
-  getPlaybackStatus,
   enterSpectrumPlaybackScope,
   exitSpectrumPlaybackScope,
   listenNowPlayingTrackChanged,
   MainStateT,
   persistSavePath,
-  resumePlayback,
   setPlaybackContinuationMode,
   sig,
   stopPlayback,
@@ -40,7 +38,6 @@ import {
 import { action as pasteDownloadAction } from "../pasteDownload";
 import { createPlaybackContinuationModeEffectOwner } from "./playbackContinuationModeEffectOwner";
 import {
-  resolveSpectrumBackResumeEffects,
   resolveSpectrumEnterPlaybackModeEffects,
   resolveSpectrumExitPlaybackModeEffects,
   shouldCommitSpectrumPlaybackScopeExit,
@@ -170,10 +167,7 @@ async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
 
   if (effect.kind === "setPlaybackContinuationMode") {
     await playbackContinuationModeEffectOwner.request(effect.mode);
-    return;
   }
-
-  await resumePlayback();
 }
 
 async function applyPlaybackModeEffects(effects: PlaybackModeEffect[]) {
@@ -232,34 +226,6 @@ async function openSpectrumAfterPlaybackMode(sourceSnapshot: ActorSnapshot) {
 async function restorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnapshot) {
   await applyPlaybackModeEffects(
     resolveSpectrumExitPlaybackModeEffects(snapshot.context.spectrumPlaybackScopeId),
-  );
-
-  if (isNowPlayingSpectrumMusicDeleteRequested(snapshot)) {
-    return;
-  }
-
-  const spectrumTrackPath = snapshot.context.nowPlayingTrackFilePath?.trim();
-  if (!spectrumTrackPath) {
-    return;
-  }
-
-  const status = await getPlaybackStatus();
-  await applyPlaybackModeEffects(
-    resolveSpectrumBackResumeEffects({
-      currentPlaybackPath: status?.path ?? null,
-      paused: status?.paused === true,
-      spectrumTrackPath,
-    }),
-  );
-}
-
-function isNowPlayingSpectrumMusicDeleteRequested(snapshot: ActorSnapshot) {
-  return snapshot.context.spectrumMusicDrafts.some(
-    (draft) =>
-      draft.deleteRequested === true &&
-      draft.url === snapshot.context.nowPlayingTrackUrl &&
-      draft.baselineStartMs === snapshot.context.nowPlayingTrackStartMs &&
-      draft.baselineEndMs === snapshot.context.nowPlayingTrackEndMs,
   );
 }
 

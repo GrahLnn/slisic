@@ -35,7 +35,6 @@ import {
   crabSpectrumPlaybackSessionPorts,
   createSpectrumPlaybackSession,
   resolvePlaybackAbsolutePositionMs,
-  resolveSpectrumResumePositionForIdentity,
   resolveSpectrumPlaybackActionSnapshotFromStatus,
   type SpectrumPlaybackResumePoint,
   type SpectrumPlaybackSessionStatus,
@@ -401,7 +400,7 @@ export function SpectrumPage() {
 
     if (action === "pause") {
       const status = playbackControlByIdentityRef.current.get(identity.key)?.commitImmediatePause();
-      if (status && status.paused !== true) {
+      if (status) {
         primaryPlaybackResumeRef.current = {
           identity,
           positionMs: resolvePlaybackAbsolutePositionMs(status),
@@ -414,26 +413,15 @@ export function SpectrumPage() {
       });
       return;
     } else {
-      const positionMs = resolveSpectrumResumePositionForIdentity({
-        identity,
-        resume: primaryPlaybackResumeRef.current,
-      });
-      const control = playbackControlByIdentityRef.current.get(identity.key);
-      const status = control?.commitImmediateResume(positionMs);
-      control?.releaseImmediatePause();
-      if (status) {
-        commitPlaybackActionSnapshot(status);
-      } else {
-        commitPlaybackActionSnapshotValue({
-          identity,
-          paused: false,
-        });
-      }
-      await playbackSession.playFromPosition({
+      const status = await playbackSession.restoreResumePoint({
         identity,
         musicName: editor.titleValue,
-        positionMs,
+        resume:
+          primaryPlaybackResumeRef.current?.identity.key === identity.key
+            ? primaryPlaybackResumeRef.current
+            : null,
       });
+      commitPlaybackActionSnapshot(status);
     }
   }
 

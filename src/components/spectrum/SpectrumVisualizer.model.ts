@@ -1479,34 +1479,6 @@ export function resolvePlaybackSnapshotPausedAtNow(args: {
   };
 }
 
-export function resolvePlaybackSnapshotPlayingFromPosition(args: {
-  nowMs: number;
-  positionMs: number | null;
-  snapshot: PlaybackSnapshot | null;
-}): PlaybackSnapshot | null {
-  if (!args.snapshot || args.positionMs === null) {
-    return null;
-  }
-
-  const playbackStartMs = args.snapshot.playback_start_ms ?? args.snapshot.track_start_ms;
-  const playbackEndMs = args.snapshot.playback_end_ms ?? args.snapshot.track_end_ms;
-  const boundedAbsolutePositionMs = clampNumber(
-    args.positionMs,
-    playbackStartMs ?? 0,
-    playbackEndMs ?? Math.max(args.positionMs, 0),
-  );
-
-  return {
-    ...args.snapshot,
-    paused: false,
-    playing: true,
-    playback_start_ms: playbackStartMs,
-    playback_end_ms: playbackEndMs,
-    position_ms: Math.max(0, boundedAbsolutePositionMs - (playbackStartMs ?? 0)),
-    received_at_ms: args.nowMs,
-  };
-}
-
 export function resolvePlaybackSnapshotAfterStatusCommit(args: {
   localPlaybackSnapshot: PlaybackSnapshot | null;
   nextSnapshot: PlaybackSnapshot | null;

@@ -50,11 +50,11 @@ export interface SpectrumPlaybackActionSnapshot {
 export type SpectrumPlaybackRestoreEffect =
   | {
       kind: "none";
-      reason: "already-playing";
+      reason: "already-playing" | "identity-mismatch" | "missing-resume-position";
     }
   | {
       kind: "restore-paused";
-      positionMs: number | null;
+      positionMs: number;
     };
 
 export interface SpectrumMusicEditorViewModel {
@@ -414,19 +414,27 @@ export function resolveSpectrumPlaybackRestoreEffect(args: {
   identity: SpectrumPlaybackIdentity;
   statusIdentity: SpectrumPlaybackIdentity | null;
   statusPaused: boolean;
-  statusPositionMs: number | null;
   storedPositionMs: number | null;
 }): SpectrumPlaybackRestoreEffect {
-  if (isSpectrumPlaybackStatusIdentityForAction(args.statusIdentity, args.identity)) {
-    return args.statusPaused
-      ? {
-          kind: "restore-paused",
-          positionMs: args.statusPositionMs,
-        }
-      : {
-          kind: "none",
-          reason: "already-playing",
-        };
+  if (!isSpectrumPlaybackStatusIdentityForAction(args.statusIdentity, args.identity)) {
+    return {
+      kind: "none",
+      reason: "identity-mismatch",
+    };
+  }
+
+  if (!args.statusPaused) {
+    return {
+      kind: "none",
+      reason: "already-playing",
+    };
+  }
+
+  if (args.storedPositionMs === null) {
+    return {
+      kind: "none",
+      reason: "missing-resume-position",
+    };
   }
 
   return {
