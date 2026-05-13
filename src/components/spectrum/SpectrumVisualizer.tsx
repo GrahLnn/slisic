@@ -57,7 +57,6 @@ import {
   shouldAcceptWaveformHardwareHorizontalWheel,
   shouldPreventWaveformWheelDefault,
   WAVEFORM_CANVAS_HEIGHT,
-  type PlaybackSnapshotIdentity,
   type PlaybackSnapshot,
   type TrackWaveformSummaryState,
   type WaveformCachedTile,
@@ -166,10 +165,9 @@ export interface TrackSpectrumPlaybackPort {
 
 export type TrackSpectrumPlaybackStatusCommit = (status: PlaybackStatusPayload | null) => void;
 export type TrackSpectrumImmediatePlaybackPause = () => PlaybackStatusPayload | null;
-export type TrackSpectrumImmediatePlaybackResume = (args: {
-  identity: PlaybackSnapshotIdentity;
-  positionMs: number;
-}) => PlaybackStatusPayload | null;
+export type TrackSpectrumImmediatePlaybackResume = (
+  positionMs: number | null,
+) => PlaybackStatusPayload | null;
 export interface TrackSpectrumPlaybackControl {
   commitImmediatePause: TrackSpectrumImmediatePlaybackPause;
   commitImmediateResume: TrackSpectrumImmediatePlaybackResume;
@@ -852,13 +850,12 @@ function usePlaybackController(args: {
   }, [stopAnimation, syncPlayhead]);
 
   const commitImmediateResume = useCallback(
-    (args: { identity: PlaybackSnapshotIdentity; positionMs: number }) => {
+    (positionMs: number | null) => {
       const latest = latestArgsRef.current;
       const ownerWindow = latest.hostRef.current?.ownerDocument.defaultView ?? null;
       const snapshot = resolvePlaybackSnapshotPlayingFromPosition({
-        identity: args.identity,
         nowMs: readPerformanceNow(ownerWindow),
-        positionMs: args.positionMs,
+        positionMs,
         snapshot: snapshotRef.current,
       });
       if (!snapshot) {

@@ -36,7 +36,7 @@ export interface SpectrumPlaybackSession {
   playFromPosition(args: {
     identity: SpectrumPlaybackIdentity;
     musicName: string;
-    positionMs: number;
+    positionMs: number | null;
   }): Promise<boolean>;
   readStatus(): Promise<SpectrumPlaybackSessionStatus>;
   restoreResumePoint(args: {
@@ -54,16 +54,14 @@ export interface SpectrumPlaybackSession {
 
 export interface SpectrumPlaybackResumePoint {
   identity: SpectrumPlaybackIdentity;
-  positionMs: number;
+  positionMs: number | null;
 }
 
 export function resolveSpectrumResumePositionForIdentity(args: {
   identity: SpectrumPlaybackIdentity;
   resume: SpectrumPlaybackResumePoint | null;
 }) {
-  return args.resume?.identity.key === args.identity.key
-    ? args.resume.positionMs
-    : args.identity.startMs;
+  return args.resume?.identity.key === args.identity.key ? args.resume.positionMs : null;
 }
 
 export type SpectrumPlaybackLoopSignalCommandPayload = {
@@ -153,7 +151,7 @@ export function createSpectrumPlaybackSession(args: {
   async function play(args_: {
     identity: SpectrumPlaybackIdentity;
     musicName: string;
-    positionMs: number;
+    positionMs?: number | null;
   }) {
     if (scopeId === null) {
       return false;
@@ -162,7 +160,7 @@ export function createSpectrumPlaybackSession(args: {
     return args.ports.playSpectrumMusic(
       scopeId,
       createSpectrumPlaybackTrackPayload(args_.identity, args_.musicName),
-      args_.positionMs,
+      args_.positionMs ?? null,
     );
   }
 

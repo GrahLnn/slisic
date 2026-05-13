@@ -259,7 +259,7 @@ export function SpectrumPage() {
 
     primaryPlaybackResumeRef.current = {
       identity: primaryPlaybackIdentity,
-      positionMs: primaryPlaybackIdentity.startMs,
+      positionMs: null,
     };
   }, [primaryPlaybackIdentity]);
 
@@ -401,20 +401,12 @@ export function SpectrumPage() {
 
     if (action === "pause") {
       const status = playbackControlByIdentityRef.current.get(identity.key)?.commitImmediatePause();
-      if (status) {
+      if (status && status.paused !== true) {
         primaryPlaybackResumeRef.current = {
           identity,
           positionMs: resolvePlaybackAbsolutePositionMs(status),
         };
         commitPlaybackActionSnapshot(status);
-      } else {
-        primaryPlaybackResumeRef.current = {
-          identity,
-          positionMs: resolveSpectrumResumePositionForIdentity({
-            identity,
-            resume: primaryPlaybackResumeRef.current,
-          }),
-        };
       }
       await playbackSession.pause({
         identity,
@@ -427,10 +419,7 @@ export function SpectrumPage() {
         resume: primaryPlaybackResumeRef.current,
       });
       const control = playbackControlByIdentityRef.current.get(identity.key);
-      const status = control?.commitImmediateResume({
-        identity,
-        positionMs,
-      });
+      const status = control?.commitImmediateResume(positionMs);
       control?.releaseImmediatePause();
       if (status) {
         commitPlaybackActionSnapshot(status);
