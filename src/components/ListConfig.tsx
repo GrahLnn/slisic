@@ -1,4 +1,11 @@
-import { useCallback, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { flushSync } from "react-dom";
 import { me } from "@grahlnn/fn";
 import { cn } from "@/lib/utils";
@@ -20,6 +27,7 @@ import {
   collectionTitleLayoutTransition,
   collectionTitleTextHoverClassName,
   collectionTitleTextRetainHoverClassName,
+  useCollectionTitleRetainedHoverVisual,
 } from "./collectionTitle";
 import { resolveBackActionVisualState } from "./ListConfig.back-action";
 import { BackActionIcon } from "./ListConfig.back-action-icon";
@@ -321,6 +329,29 @@ function resolveListConfigTitleHoverClassName(
   }
 }
 
+function RetainedConfigTitle({
+  editableTitleRef,
+  titleHoverVisual,
+  ...props
+}: ComponentProps<typeof EditableTitle> & {
+  editableTitleRef: RefObject<EditableTitleHandle | null>;
+  titleHoverVisual: ListConfigRenderData["viewModel"]["title"]["titleHoverVisual"];
+}) {
+  const retainedTitleHoverVisual = useCollectionTitleRetainedHoverVisual(
+    titleHoverVisual,
+    `${props.layoutId ?? "__config-title"}:${props.value}`,
+  );
+
+  return (
+    <EditableTitle
+      ref={editableTitleRef}
+      {...props}
+      textClassName={resolveListConfigTitleHoverClassName(retainedTitleHoverVisual)}
+      titleHoverVisual={retainedTitleHoverVisual}
+    />
+  );
+}
+
 export function ListConfig() {
   const isPresent = useIsPresent();
   const editableTitleRef = useRef<EditableTitleHandle | null>(null);
@@ -545,8 +576,8 @@ export function ListConfig() {
           </button>
         </motion.div>
         <motion.div {...contentFadeProps} className="flex items-center gap-4">
-          <EditableTitle
-            ref={editableTitleRef}
+          <RetainedConfigTitle
+            editableTitleRef={editableTitleRef}
             autoFocus={viewModel.title.autoFocus}
             className={cn("text-4xl font-bold", "w-fit")}
             handoffTone={viewModel.title.handoffTone}
@@ -554,7 +585,6 @@ export function ListConfig() {
             layoutId={isDeletePending ? undefined : viewModel.title.layoutId}
             placeholder={viewModel.title.placeholder}
             style={{ fontFamily: "var(--font-noto-sans)" }}
-            textClassName={resolveListConfigTitleHoverClassName(viewModel.title.titleHoverVisual)}
             titleHoverTraceOwner="list-config"
             titleHoverVisual={viewModel.title.titleHoverVisual}
             value={viewModel.title.value}

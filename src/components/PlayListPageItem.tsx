@@ -8,6 +8,7 @@ import {
   collectionTitleLayoutTransition,
   collectionTitleTextHoverClassName,
   collectionTitleTextRetainHoverClassName,
+  useCollectionTitleRetainedHoverVisual,
 } from "./collectionTitle";
 import { PlayItem } from "./playItem";
 import {
@@ -65,10 +66,14 @@ export function PlayListPageItem({
     torphStage,
     textChanged,
   });
+  const titleHoverVisual = useCollectionTitleRetainedHoverVisual(
+    viewModel.titleHoverVisual,
+    `${viewModel.sourceLayoutId ?? viewModel.key}:${viewModel.text}`,
+  );
   const titleHoverClassName =
-    viewModel.titleHoverVisual === "hold"
+    titleHoverVisual === "hold"
       ? collectionTitleTextHoverClassName
-      : viewModel.titleHoverVisual === "retain"
+      : titleHoverVisual === "retain"
         ? collectionTitleTextRetainHoverClassName
         : undefined;
 
@@ -103,7 +108,7 @@ export function PlayListPageItem({
           text={viewModel.text}
           textClassName={titleHoverClassName}
           titleHoverTraceOwner="playlist-page"
-          titleHoverVisual={viewModel.titleHoverVisual}
+          titleHoverVisual={titleHoverVisual}
           onOpenSpectrum={onOpenSpectrum}
           onOpenSpectrumPointerDown={onOpenSpectrumPointerDown}
           onTorphStageChange={(stage) => {

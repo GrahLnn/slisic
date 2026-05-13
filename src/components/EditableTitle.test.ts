@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import fs from "node:fs";
-import path from "node:path";
 import {
   collectionTitleTextClassName,
   collectionTitleTextRetainHoverClassName,
+  COLLECTION_TITLE_HOVER_RETAIN_MS,
+  resolveCollectionTitleRetainedHoverVisual,
 } from "./collectionTitle";
 import { resolveEditableTitleDisplayValue, resolveEditableTitleLayoutId } from "./EditableTitle";
 
@@ -70,18 +70,34 @@ describe("EditableTitle text style boundary", () => {
   });
 
   test("keeps retained hover weight for the whole shared-title transition", () => {
-    const appCss = fs.readFileSync(path.join(import.meta.dirname, "../App.css"), "utf8");
-    const retainKeyframes = appCss.match(
-      /@keyframes collection-title-hover-retain\s*{[\s\S]*?^}/m,
-    )?.[0];
+    assert.equal(COLLECTION_TITLE_HOVER_RETAIN_MS, 360);
+    assert.match(collectionTitleTextRetainHoverClassName, /font-\[680\]/);
+    assert.match(collectionTitleTextRetainHoverClassName, /\[font-variation-settings:'wght'_680\]/);
+    assert.match(collectionTitleTextRetainHoverClassName, /tracking-\[-0\.03em\]/);
+    assert.doesNotMatch(collectionTitleTextRetainHoverClassName, /animate-/);
+  });
 
-    assert.ok(retainKeyframes);
-    assert.match(collectionTitleTextRetainHoverClassName, /collection-title-hover-retain/);
-    assert.match(retainKeyframes, /0%,\s*\n\s*100%\s*{/);
-    assert.match(retainKeyframes, /font-weight:\s*680/);
-    assert.match(retainKeyframes, /font-variation-settings:\s*"wght"\s*680/);
-    assert.match(retainKeyframes, /letter-spacing:\s*-0\.03em/);
-    assert.doesNotMatch(retainKeyframes, /font-weight:\s*520/);
-    assert.doesNotMatch(collectionTitleTextRetainHoverClassName, /(?:forwards|both)/);
+  test("keeps retain active after the caller transient state clears", () => {
+    assert.equal(
+      resolveCollectionTitleRetainedHoverVisual({
+        requestedVisual: "none",
+        retainWindowActive: true,
+      }),
+      "retain",
+    );
+    assert.equal(
+      resolveCollectionTitleRetainedHoverVisual({
+        requestedVisual: "none",
+        retainWindowActive: false,
+      }),
+      "none",
+    );
+    assert.equal(
+      resolveCollectionTitleRetainedHoverVisual({
+        requestedVisual: "hold",
+        retainWindowActive: true,
+      }),
+      "hold",
+    );
   });
 });

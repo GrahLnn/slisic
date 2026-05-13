@@ -144,15 +144,6 @@ body::-webkit-scrollbar {
   }
 }
 
-@keyframes collection-title-hover-retain {
-  0%,
-  100% {
-    font-weight: 680;
-    font-variation-settings: "wght" 680;
-    letter-spacing: -0.03em;
-  }
-}
-
 body[window-blur] {
   overflow: hidden;
   pointer-events: none;
