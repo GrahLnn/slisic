@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { collectionTitleTextRetainHoverClassName } from "./collectionTitle";
 import {
   resolvePlayListPageItemSlotPositionAnimationEnabled,
   resolvePlayListPageItemTitleProjectionLayoutId,
@@ -74,5 +75,10 @@ describe("PlayListPageItem", () => {
       }),
       undefined,
     );
+  });
+
+  test("uses an immediate title weight for shared layout handoff evidence", () => {
+    assert.match(collectionTitleTextRetainHoverClassName, /font-\[680\]/);
+    assert.match(collectionTitleTextRetainHoverClassName, /transition-none/);
   });
 });

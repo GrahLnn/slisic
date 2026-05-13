@@ -6,7 +6,6 @@ import { action as appLogicAction } from "@/src/flow/appLogic";
 import {
   collectionTitleClassName,
   collectionTitleLayoutTransition,
-  collectionTitleTextHoverClassName,
   collectionTitleTextRetainHoverClassName,
   useCollectionTitleRetainedHoverVisual,
 } from "./collectionTitle";
@@ -71,11 +70,9 @@ export function PlayListPageItem({
     `${viewModel.sourceLayoutId ?? viewModel.key}:${viewModel.text}`,
   );
   const titleHoverClassName =
-    titleHoverVisual === "hold"
-      ? collectionTitleTextHoverClassName
-      : titleHoverVisual === "retain"
-        ? collectionTitleTextRetainHoverClassName
-        : undefined;
+    titleHoverVisual === "hold" || titleHoverVisual === "retain"
+      ? collectionTitleTextRetainHoverClassName
+      : undefined;
 
   return (
     <motion.div

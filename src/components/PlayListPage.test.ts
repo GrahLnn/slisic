@@ -305,6 +305,28 @@ describe("PlayListPage", () => {
     );
   });
 
+  test("marks the pressed playlist title as the immediate source handoff before play starts", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "ready",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [
+        createPlayListFixture({ name: "Night Drive" }),
+        createPlayListFixture({ name: "Quiet Morning" }),
+      ],
+      pendingPlaylistPreview: null,
+      playingPlaylistName: null,
+      titleToneHandoff: null,
+      pressedLayoutId: "playlist-title:Quiet Morning",
+      playbackSurface: null,
+    });
+
+    assert.equal(viewModel.committedLayoutId, "playlist-title:Quiet Morning");
+    assert.equal(viewModel.itemViewModels[1]?.layoutId, "playlist-title:Quiet Morning");
+    assert.equal(viewModel.itemViewModels[1]?.titleHoverVisual, "hold");
+    assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "none");
+  });
+
   test("locks the playback target immediately before the first track is known", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "play",

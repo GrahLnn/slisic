@@ -1,4 +1,5 @@
-import { useCallback, type RefCallback } from "react";
+import { useCallback, useLayoutEffect, useRef, useState, type RefCallback } from "react";
+import { flushSync } from "react-dom";
 import { useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
@@ -50,6 +51,44 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     nowPlayingTrackName,
     nowPlayingTrackUrl,
   });
+  const [pressedTitleLayoutId, setPressedTitleLayoutId] = useState<string | null>(null);
+  const releasePressedTitleLayoutFrameRef = useRef<number | null>(null);
+  const releasePressedTitleLayoutId = useCallback(() => {
+    if (typeof window === "undefined") {
+      setPressedTitleLayoutId(null);
+      return;
+    }
+
+    if (releasePressedTitleLayoutFrameRef.current !== null) {
+      window.cancelAnimationFrame(releasePressedTitleLayoutFrameRef.current);
+    }
+
+    releasePressedTitleLayoutFrameRef.current = window.requestAnimationFrame(() => {
+      releasePressedTitleLayoutFrameRef.current = null;
+      setPressedTitleLayoutId(null);
+    });
+  }, []);
+  const commitPressedTitleLayoutId = useCallback((layoutId?: string) => {
+    if (!layoutId) {
+      return;
+    }
+
+    // Motion samples the outgoing layout source before the play state commit,
+    // so the pressed title must expose its handoff weight evidence in the same
+    // semantic playback transaction.
+    flushSync(() => {
+      setPressedTitleLayoutId(layoutId);
+    });
+  }, []);
+  useLayoutEffect(
+    () => () => {
+      if (releasePressedTitleLayoutFrameRef.current !== null) {
+        window.cancelAnimationFrame(releasePressedTitleLayoutFrameRef.current);
+        releasePressedTitleLayoutFrameRef.current = null;
+      }
+    },
+    [],
+  );
   const handleScrollContainerRef = useCallback<RefCallback<HTMLDivElement>>(
     (node) => {
       playbackSurface.containerRef.current = node;
@@ -65,7 +104,7 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     pendingPlaylistPreview,
     playingPlaylistName,
     titleToneHandoff,
-    pressedLayoutId: null,
+    pressedLayoutId: pressedTitleLayoutId,
     playbackSurface: playbackSurface.playbackSurfaceSnapshot,
   };
   const pageRenderFreeze = usePageRenderFreeze(liveRenderData, {
@@ -131,7 +170,9 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
                     return;
                   }
 
+                  commitPressedTitleLayoutId(itemViewModel.layoutId);
                   appLogicAction.playPlaylist(itemViewModel.playlistName);
+                  releasePressedTitleLayoutId();
                 }}
                 onCommit={() => {
                   if (!itemViewModel.playlistName) {
