@@ -10,6 +10,15 @@ import {
 import { motion } from "motion/react";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import {
+  createTitleHoverTraceSignature,
+  recordTitleHoverTraceState,
+  shouldRecordTitleHoverTraceCommit,
+  shouldRecordTitleHoverTraceObservation,
+  shouldSampleTitleHoverTrace,
+  startTitleHoverTrace,
+  type TitleHoverTraceVisual,
+} from "@/src/debug/titleHoverTrace";
+import {
   collectionTitleLayoutTransition,
   collectionTitleColorTransition,
   collectionTitleTextClassName,
@@ -25,6 +34,7 @@ type EditableTitleProps = {
   layoutId?: string;
   handoffTone?: CollectionTitleTone | null;
   textClassName?: string;
+  titleHoverVisual?: TitleHoverTraceVisual;
   focusHitSlopWidthClassName?: string;
 } & Omit<ComponentProps<"div">, "onChange">;
 
@@ -86,6 +96,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
       layoutId,
       handoffTone = null,
       textClassName,
+      titleHoverVisual = "none",
       focusHitSlopWidthClassName,
       className,
       style,
@@ -97,6 +108,8 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const titleRootRef = useRef<HTMLDivElement>(null);
     const autoWriteRunRef = useRef(0);
+    const previousTitleHoverVisualRef = useRef<TitleHoverTraceVisual>("none");
+    const titleHoverTraceSignatureRef = useRef<string | null>(null);
     const [isFocused, setIsFocused] = useState(false);
     const [isAutoWriting, setIsAutoWriting] = useState(false);
     const targetTone: CollectionTitleTone = value.length === 0 ? "muted" : "solid";
@@ -118,6 +131,57 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
 
       inputRef.current?.blur();
     }, [interactionDisabled]);
+
+    useLayoutEffect(() => {
+      const node = titleRootRef.current;
+      const textNode = node?.querySelector<HTMLElement>("[data-title-hover-trace-text]") ?? null;
+      const context = {
+        layoutId,
+        surface: "editable-title" as const,
+        textLength: displayValue.length,
+        visual: titleHoverVisual,
+      };
+
+      const previousVisual = previousTitleHoverVisualRef.current;
+      previousTitleHoverVisualRef.current = titleHoverVisual;
+      const signature = createTitleHoverTraceSignature(context);
+
+      if (
+        shouldRecordTitleHoverTraceObservation({
+          currentSignature: signature,
+          previousSignature: titleHoverTraceSignatureRef.current,
+        })
+      ) {
+        titleHoverTraceSignatureRef.current = signature;
+        recordTitleHoverTraceState({
+          context,
+          event: "title-hover-observed",
+          node: textNode,
+        });
+      } else if (
+        shouldRecordTitleHoverTraceCommit({ current: titleHoverVisual, previous: previousVisual })
+      ) {
+        recordTitleHoverTraceState({
+          context,
+          event: "title-hover-visual-commit",
+          node: textNode,
+        });
+      }
+
+      if (!textNode || !shouldSampleTitleHoverTrace(titleHoverVisual)) {
+        return;
+      }
+
+      const trace = startTitleHoverTrace({
+        context,
+        node: textNode,
+        ownerWindow: textNode.ownerDocument.defaultView ?? window,
+      });
+
+      return () => {
+        trace.stop("visual-changed");
+      };
+    }, [displayValue.length, layoutId, titleHoverVisual]);
 
     useImperativeHandle(
       ref,
@@ -196,6 +260,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
         >
           <motion.div
             aria-hidden="true"
+            data-title-hover-trace-text=""
             className={cn(
               "pointer-events-none whitespace-pre-wrap wrap-break-word",
               collectionTitleTextClassName,

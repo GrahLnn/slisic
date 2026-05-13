@@ -12,6 +12,15 @@ import { cn } from "@/lib/utils";
 import { AnimatePresence, motion, useAnimate, type HTMLMotionProps } from "motion/react";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import {
+  createTitleHoverTraceSignature,
+  recordTitleHoverTraceState,
+  shouldRecordTitleHoverTraceCommit,
+  shouldRecordTitleHoverTraceObservation,
+  shouldSampleTitleHoverTrace,
+  startTitleHoverTrace,
+  type TitleHoverTraceVisual,
+} from "@/src/debug/titleHoverTrace";
+import {
   collectionTitleColorTransition,
   collectionTitleTextClassName,
   useCollectionTitleColor,
@@ -33,6 +42,7 @@ type PlayItemBaseProps = Omit<HTMLMotionProps<"div">, "children"> & {
   onOpenSpectrum?: () => void;
   onOpenSpectrumPointerDown?: () => void;
   onTorphStageChange?: (stage: TorphStage) => void;
+  titleHoverVisual?: TitleHoverTraceVisual;
 };
 
 type PlayItemFrameProps = Omit<HTMLMotionProps<"div">, "children"> & {
@@ -44,6 +54,7 @@ type PlayItemTextProps = Pick<
   PlayItemBaseProps,
   | "handoffTone"
   | "isPlaybackPreparing"
+  | "layoutId"
   | "onClick"
   | "onOpenSpectrum"
   | "onOpenSpectrumPointerDown"
@@ -53,6 +64,7 @@ type PlayItemTextProps = Pick<
   | "showPlaybackIcons"
   | "text"
   | "textClassName"
+  | "titleHoverVisual"
 > & {
   tone: CollectionTitleTone;
 };
@@ -338,6 +350,7 @@ function PlayItemFn({
 function PlayItemText({
   handoffTone = null,
   isPlaybackPreparing = false,
+  layoutId,
   onClick,
   onOpenSpectrum,
   onOpenSpectrumPointerDown,
@@ -347,6 +360,7 @@ function PlayItemText({
   showPlaybackIcons = false,
   text,
   textClassName,
+  titleHoverVisual = "none",
   tone,
 }: PlayItemTextProps) {
   const [playbackIconLayerBox, setPlaybackIconLayerBox] = useState<
@@ -356,6 +370,8 @@ function PlayItemText({
   const [torphStage, setTorphStage] = useState<TorphStage>("idle");
   const portalHost = typeof document === "undefined" ? null : document.body;
   const latestMeasuredTextWidthRef = useRef<number | undefined>(undefined);
+  const previousTitleHoverVisualRef = useRef<TitleHoverTraceVisual>("none");
+  const titleHoverTraceSignatureRef = useRef<string | null>(null);
   const scope = usePlayItemColorHandoff({
     tone,
     handoffTone,
@@ -447,6 +463,56 @@ function PlayItemText({
     setPlaybackIconLayerDismissed(false);
   }, [playbackIconWidthText, showPlaybackIcons]);
 
+  useLayoutEffect(() => {
+    const node = scope.current;
+    const context = {
+      layoutId,
+      surface: "play-item" as const,
+      textLength: text.length,
+      visual: titleHoverVisual,
+    };
+
+    const previousVisual = previousTitleHoverVisualRef.current;
+    previousTitleHoverVisualRef.current = titleHoverVisual;
+    const signature = createTitleHoverTraceSignature(context);
+
+    if (
+      shouldRecordTitleHoverTraceObservation({
+        currentSignature: signature,
+        previousSignature: titleHoverTraceSignatureRef.current,
+      })
+    ) {
+      titleHoverTraceSignatureRef.current = signature;
+      recordTitleHoverTraceState({
+        context,
+        event: "title-hover-observed",
+        node,
+      });
+    } else if (
+      shouldRecordTitleHoverTraceCommit({ current: titleHoverVisual, previous: previousVisual })
+    ) {
+      recordTitleHoverTraceState({
+        context,
+        event: "title-hover-visual-commit",
+        node,
+      });
+    }
+
+    if (!node || !shouldSampleTitleHoverTrace(titleHoverVisual)) {
+      return;
+    }
+
+    const trace = startTitleHoverTrace({
+      context,
+      node,
+      ownerWindow: node.ownerDocument.defaultView ?? window,
+    });
+
+    return () => {
+      trace.stop("visual-changed");
+    };
+  }, [layoutId, scope, text.length, titleHoverVisual]);
+
   return (
     <>
       <div
@@ -528,6 +594,7 @@ export function PlayItem({
   isPlaybackPreparing = false,
   text,
   textClassName,
+  titleHoverVisual = "none",
   playbackIconWidthText,
   showPlaybackIcons = false,
   onTorphStageChange,
@@ -543,6 +610,7 @@ export function PlayItem({
       <PlayItemText
         handoffTone={handoffTone}
         isPlaybackPreparing={isPlaybackPreparing}
+        layoutId={layoutId}
         onClick={onClick}
         onOpenSpectrum={onOpenSpectrum}
         onOpenSpectrumPointerDown={onOpenSpectrumPointerDown}
@@ -552,6 +620,7 @@ export function PlayItem({
         showPlaybackIcons={showPlaybackIcons}
         text={text}
         textClassName={textClassName}
+        titleHoverVisual={titleHoverVisual}
         tone={tone}
       />
     </PlayItemFrame>
