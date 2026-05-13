@@ -268,6 +268,7 @@ export function createPlayItemTorphDebugMeta(args: {
   owner?: "list-config" | "playlist-page";
   surface: "play-item";
   text: string;
+  torphIdentityKey: string;
   visual: TitleHoverTraceVisual;
 }) {
   return {
@@ -275,8 +276,14 @@ export function createPlayItemTorphDebugMeta(args: {
     owner: args.owner ?? null,
     surface: args.surface,
     textLength: args.text.length,
+    torphIdentityKey: args.torphIdentityKey,
     visual: args.visual,
   } satisfies Record<string, unknown>;
+}
+
+export function resolvePlayItemTorphIdentityKey(args: { layoutId?: string }) {
+  const projection = resolvePlayItemFrameProjection({ layoutId: args.layoutId });
+  return projection.layoutId ? `shared:${projection.layoutId}` : "local:play-item-text";
 }
 
 function PlayItemFrame({
@@ -410,11 +417,13 @@ function PlayItemText({
     isDismissed: isPlaybackIconLayerDismissed,
   });
   const textMetricClassName = resolvePlayItemTextMetricClassName(textClassName);
+  const torphIdentityKey = resolvePlayItemTorphIdentityKey({ layoutId });
   const torphDebugMeta = createPlayItemTorphDebugMeta({
     layoutId,
     owner: titleHoverTraceOwner,
     surface: "play-item",
     text,
+    torphIdentityKey,
     visual: titleHoverVisual,
   });
 
@@ -554,6 +563,7 @@ function PlayItemText({
         onPointerDown={onPointerDown}
       >
         <Torph
+          key={torphIdentityKey}
           className={textMetricClassName}
           debugLabel="playlist-title"
           debugMeta={torphDebugMeta}

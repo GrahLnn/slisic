@@ -4,6 +4,7 @@ import { collectionTitleTextRetainHoverClassName } from "./collectionTitle";
 import {
   createPlayItemTorphDebugMeta,
   resolvePlayItemColorHandoff,
+  resolvePlayItemTorphIdentityKey,
   resolvePlayItemTextMetricClassName,
   resolvePlaybackIconLayerBox,
   shouldShowPlaybackIconLayer,
@@ -155,6 +156,7 @@ describe("playItem", () => {
         owner: "playlist-page",
         surface: "play-item",
         text: "Quiet Morning",
+        torphIdentityKey: "shared:playlist-title:Quiet Morning",
         visual: "hold",
       }),
       {
@@ -162,8 +164,20 @@ describe("playItem", () => {
         owner: "playlist-page",
         surface: "play-item",
         textLength: 13,
+        torphIdentityKey: "shared:playlist-title:Quiet Morning",
         visual: "hold",
       },
     );
+  });
+
+  test("separates shared title and local playback text Torph identities", () => {
+    assert.equal(
+      resolvePlayItemTorphIdentityKey({
+        layoutId: " playlist-title:Quiet Morning ",
+      }),
+      "shared:playlist-title:Quiet Morning",
+    );
+    assert.equal(resolvePlayItemTorphIdentityKey({}), "local:play-item-text");
+    assert.equal(resolvePlayItemTorphIdentityKey({ layoutId: "  " }), "local:play-item-text");
   });
 });
