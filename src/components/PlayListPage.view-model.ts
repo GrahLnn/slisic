@@ -162,11 +162,6 @@ function createPlayListPageItemViewModel(args: {
   const shouldShareTitleLayout =
     args.titleShareEnabled &&
     (!args.isPlaybackTarget || args.transition.committedLayoutId === itemLayoutId);
-  const titleHoverVisual = resolveTitleShareHoverVisual({
-    layoutId: itemLayoutId,
-    sourceLayoutId: args.transition.committedLayoutId,
-    targetLayoutId: args.transition.returnTargetLayoutId,
-  });
 
   return {
     key: args.playlist.name,
@@ -187,8 +182,13 @@ function createPlayListPageItemViewModel(args: {
     isHiddenInPlay: args.isHiddenInPlay,
     shouldStartHiddenInPlay: args.shouldStartHiddenInPlay,
     shouldAnimateSlotPosition: args.shouldAnimateSlotPosition,
-    titleHoverVisual:
-      args.isPlaybackTarget && titleHoverVisual === "none" ? "none" : titleHoverVisual,
+    titleHoverVisual: args.isPlaybackTarget
+      ? "none"
+      : resolveTitleShareHoverVisual({
+          layoutId: itemLayoutId,
+          sourceLayoutId: args.transition.committedLayoutId,
+          targetLayoutId: args.transition.returnTargetLayoutId,
+        }),
     commitGesture: args.commitGesture,
     playlistName: args.playlist.name,
   } satisfies PlayListPageItemViewModel;

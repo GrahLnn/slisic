@@ -382,7 +382,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.sourceLayoutId, "playlist-title:Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.text, "Track A");
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, true);
-    assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "hold");
+    assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "none");
   });
 
   test("locks the list while returning from spectrum before playback surface restores", () => {

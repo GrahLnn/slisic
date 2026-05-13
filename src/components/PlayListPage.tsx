@@ -100,14 +100,6 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
                 onTorphStageChange={(stage) => {
                   playbackSurface.handleTorphStageChange(itemViewModel.key, stage);
                 }}
-                onPrimaryPointerDown={() => {
-                  const sourceLayoutId =
-                    itemViewModel.layoutId ?? itemViewModel.sourceLayoutId ?? null;
-
-                  if (sourceLayoutId) {
-                    setPressedLayoutId(sourceLayoutId);
-                  }
-                }}
                 onPrimaryCommit={() => {
                   if (!itemViewModel.playlistName) {
                     return;
