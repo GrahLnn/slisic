@@ -16,7 +16,11 @@ import {
   resolvePlaylistsWithPreview,
   type ConfigSidebarItemRef,
 } from "@/src/flow/appLogic/core";
-import { collectionTitleLayoutTransition } from "./collectionTitle";
+import {
+  collectionTitleLayoutTransition,
+  collectionTitleTextHoverClassName,
+  collectionTitleTextRetainHoverClassName,
+} from "./collectionTitle";
 import { resolveBackActionVisualState } from "./ListConfig.back-action";
 import { BackActionIcon } from "./ListConfig.back-action-icon";
 import {
@@ -268,8 +272,13 @@ function createFrozenListConfigRenderData(args: {
   renderData: ListConfigRenderData;
   titleValue?: string;
   titleLayoutId?: string | null;
+  titleHoverVisual?: ListConfigRenderData["viewModel"]["title"]["titleHoverVisual"];
 }): ListConfigRenderData {
-  if (args.titleValue === undefined && args.titleLayoutId === undefined) {
+  if (
+    args.titleValue === undefined &&
+    args.titleLayoutId === undefined &&
+    args.titleHoverVisual === undefined
+  ) {
     return args.renderData;
   }
 
@@ -285,6 +294,7 @@ function createFrozenListConfigRenderData(args: {
       title: {
         ...currentTitle,
         layoutId: titleLayoutId,
+        titleHoverVisual: args.titleHoverVisual ?? currentTitle.titleHoverVisual,
         value: titleValue,
         snapshot: titleLayoutId
           ? {
@@ -296,6 +306,19 @@ function createFrozenListConfigRenderData(args: {
       },
     },
   };
+}
+
+function resolveListConfigTitleHoverClassName(
+  titleHoverVisual: ListConfigRenderData["viewModel"]["title"]["titleHoverVisual"],
+) {
+  switch (titleHoverVisual) {
+    case "hold":
+      return collectionTitleTextHoverClassName;
+    case "retain":
+      return collectionTitleTextRetainHoverClassName;
+    case "none":
+      return undefined;
+  }
 }
 
 export function ListConfig() {
@@ -374,7 +397,12 @@ export function ListConfig() {
 
     try {
       if (!viewModel.hasDraftChanges || !draft) {
-        pageRenderFreeze.freeze();
+        pageRenderFreeze.freeze(
+          createFrozenListConfigRenderData({
+            renderData: liveRenderData,
+            titleHoverVisual: "hold",
+          }),
+        );
         pasteDownloadAction.reset();
         appLogicAction.back();
         return;
@@ -417,6 +445,7 @@ export function ListConfig() {
             renderData: liveRenderData,
             titleValue: committedPlaylist.name,
             titleLayoutId: committedReturnLayoutId,
+            titleHoverVisual: "hold",
           }),
         );
       });
@@ -525,6 +554,7 @@ export function ListConfig() {
             layoutId={isDeletePending ? undefined : viewModel.title.layoutId}
             placeholder={viewModel.title.placeholder}
             style={{ fontFamily: "var(--font-noto-sans)" }}
+            textClassName={resolveListConfigTitleHoverClassName(viewModel.title.titleHoverVisual)}
             value={viewModel.title.value}
             onChange={appLogicAction.changeDraftName}
           />

@@ -144,6 +144,20 @@ body::-webkit-scrollbar {
   }
 }
 
+@keyframes collection-title-hover-retain {
+  0% {
+    font-weight: 680;
+    font-variation-settings: "wght" 680;
+    letter-spacing: -0.03em;
+  }
+
+  100% {
+    font-weight: 520;
+    font-variation-settings: "wght" 520;
+    letter-spacing: -0.02em;
+  }
+}
+
 body[window-blur] {
   overflow: hidden;
   pointer-events: none;

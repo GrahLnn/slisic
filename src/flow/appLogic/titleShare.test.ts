@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import {
   hasConfigDraftChanges,
   resolveConfigBackTitleSharePlan,
+  resolveTitleShareHoverVisual,
   resolveTitleSharePageTransition,
   resolveTitleShareToneFromDraft,
   shouldSuppressTitleShareFade,
@@ -61,6 +62,33 @@ describe("titleShare", () => {
     assert.equal(transition.returnTargetLayoutId, null);
     assert.equal(shouldSuppressTitleShareFade("playlist-title:PlayList 1", transition), false);
     assert.equal(shouldSuppressTitleShareFade("playlist-title:PlayList 2", transition), false);
+  });
+
+  test("derives the title hover visual from the active transition role", () => {
+    assert.equal(
+      resolveTitleShareHoverVisual({
+        layoutId: "playlist-title:PlayList 1",
+        sourceLayoutId: "playlist-title:PlayList 1",
+        targetLayoutId: null,
+      }),
+      "hold",
+    );
+    assert.equal(
+      resolveTitleShareHoverVisual({
+        layoutId: "playlist-title:PlayList 1",
+        sourceLayoutId: null,
+        targetLayoutId: "playlist-title:PlayList 1",
+      }),
+      "retain",
+    );
+    assert.equal(
+      resolveTitleShareHoverVisual({
+        layoutId: "playlist-title:PlayList 2",
+        sourceLayoutId: "playlist-title:PlayList 1",
+        targetLayoutId: null,
+      }),
+      "none",
+    );
   });
 
   test("marks config drafts as changed only when their canonical content differs", () => {

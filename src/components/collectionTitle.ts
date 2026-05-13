@@ -42,6 +42,9 @@ export const collectionTitleTextHoverClassName = cn(
   "font-[680] [font-variation-settings:'wght'_680] tracking-[-0.03em]",
 );
 
+export const collectionTitleTextRetainHoverClassName =
+  "animate-[collection-title-hover-retain_360ms_cubic-bezier(0.22,1,0.36,1)]";
+
 /**
  * Shared layout nodes need a concrete animatable color value. Reading the same
  * media query as App.css keeps title motion aligned with the actual theme

@@ -198,6 +198,7 @@ describe("ListConfig title view model", () => {
         autoFocus: false,
         handoffTone: null,
         layoutId: undefined,
+        titleHoverVisual: "none",
         placeholder: undefined,
         value: "",
       },
@@ -222,9 +223,26 @@ describe("ListConfig title view model", () => {
         autoFocus: false,
         handoffTone: null,
         layoutId: "playlist-title:Quiet Morning",
+        titleHoverVisual: "none",
         placeholder: "Quiet Morning",
         value: "Quiet Morning",
       },
+    );
+  });
+
+  test("retains the title hover visual while the config title receives a return handoff", () => {
+    assert.equal(
+      resolveListConfigTitleViewModel({
+        activeLayoutId: "playlist-title:Quiet Morning",
+        draft: editDraft,
+        draftBaseline: editDraft,
+        pendingPlaylistName: null,
+        titleToneHandoff: {
+          layoutId: "playlist-title:Quiet Morning",
+          tone: "solid",
+        },
+      }).titleHoverVisual,
+      "retain",
     );
   });
 

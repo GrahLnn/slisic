@@ -11,8 +11,10 @@ import {
 } from "@/src/flow/appLogic/core";
 import type { MainStateT } from "@/src/flow/appLogic/events";
 import {
+  resolveTitleShareHoverVisual,
   resolveTitleSharePageTransition,
   shouldSuppressTitleShareFade,
+  type TitleShareHoverVisual,
   type TitleSharePageTransition,
 } from "@/src/flow/appLogic/titleShare";
 import { collectionTitleLayoutTransition } from "./collectionTitle";
@@ -53,7 +55,7 @@ export interface PlayListPageItemViewModel {
   isHiddenInPlay: boolean;
   shouldStartHiddenInPlay: boolean;
   shouldAnimateSlotPosition: boolean;
-  isCommitted: boolean;
+  titleHoverVisual: TitleShareHoverVisual;
   commitGesture: PlayListPageCommitGesture;
   playlistName?: string;
 }
@@ -180,7 +182,13 @@ function createPlayListPageItemViewModel(args: {
     isHiddenInPlay: args.isHiddenInPlay,
     shouldStartHiddenInPlay: args.shouldStartHiddenInPlay,
     shouldAnimateSlotPosition: args.shouldAnimateSlotPosition,
-    isCommitted: !args.isPlaybackTarget && args.transition.committedLayoutId === itemLayoutId,
+    titleHoverVisual: args.isPlaybackTarget
+      ? "none"
+      : resolveTitleShareHoverVisual({
+          layoutId: itemLayoutId,
+          sourceLayoutId: args.transition.committedLayoutId,
+          targetLayoutId: args.transition.returnTargetLayoutId,
+        }),
     commitGesture: args.commitGesture,
     playlistName: args.playlist.name,
   } satisfies PlayListPageItemViewModel;
@@ -378,7 +386,11 @@ export function resolvePlayListPageViewModel(
       isHiddenInPlay: shouldLockScroll,
       shouldStartHiddenInPlay: displayLock?.kind === "return-handoff",
       shouldAnimateSlotPosition,
-      isCommitted: committedLayoutId === CREATE_COLLECTION_LAYOUT_ID,
+      titleHoverVisual: resolveTitleShareHoverVisual({
+        layoutId: CREATE_COLLECTION_LAYOUT_ID,
+        sourceLayoutId: committedLayoutId,
+        targetLayoutId: transition.returnTargetLayoutId,
+      }),
       commitGesture: "primary-and-secondary",
     },
   };

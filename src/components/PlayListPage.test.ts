@@ -199,7 +199,7 @@ describe("PlayListPage", () => {
         isHiddenInPlay: true,
         shouldStartHiddenInPlay: false,
         shouldAnimateSlotPosition: false,
-        isCommitted: false,
+        titleHoverVisual: "none",
         commitGesture: "disabled",
         playlistName: "Night Drive",
       },
@@ -217,7 +217,7 @@ describe("PlayListPage", () => {
         isHiddenInPlay: false,
         shouldStartHiddenInPlay: false,
         shouldAnimateSlotPosition: false,
-        isCommitted: false,
+        titleHoverVisual: "none",
         commitGesture: "disabled",
         playlistName: "Quiet Morning",
       },
@@ -382,6 +382,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.sourceLayoutId, "playlist-title:Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.text, "Track A");
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, true);
+    assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "none");
   });
 
   test("locks the list while returning from spectrum before playback surface restores", () => {
@@ -420,6 +421,7 @@ describe("PlayListPage", () => {
         isHiddenInPlay: item.isHiddenInPlay,
         shouldStartHiddenInPlay: item.shouldStartHiddenInPlay,
         shouldShowPlaybackIcons: item.shouldShowPlaybackIcons,
+        titleHoverVisual: item.titleHoverVisual,
       })),
       [
         {
@@ -431,6 +433,7 @@ describe("PlayListPage", () => {
           isHiddenInPlay: true,
           shouldStartHiddenInPlay: true,
           shouldShowPlaybackIcons: false,
+          titleHoverVisual: "none",
         },
         {
           key: "Quiet Morning",
@@ -441,6 +444,7 @@ describe("PlayListPage", () => {
           isHiddenInPlay: false,
           shouldStartHiddenInPlay: false,
           shouldShowPlaybackIcons: false,
+          titleHoverVisual: "retain",
         },
       ],
     );

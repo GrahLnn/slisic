@@ -8,7 +8,11 @@ import {
   type ConfigSidebarItem,
   type ConfigSidebarItemRef,
 } from "@/src/flow/appLogic/core";
-import { hasConfigDraftChanges } from "@/src/flow/appLogic/titleShare";
+import {
+  hasConfigDraftChanges,
+  resolveTitleShareHoverVisual,
+  type TitleShareHoverVisual,
+} from "@/src/flow/appLogic/titleShare";
 import type { ConfigCandidateItem, ConfigCandidateItemStatus } from "@/src/flow/pasteDownload/core";
 import { CREATE_COLLECTION_TITLE } from "./collectionTitle";
 
@@ -28,6 +32,7 @@ export interface ListConfigTitleViewModel {
   autoFocus: boolean;
   handoffTone: CollectionTitleTone | null;
   layoutId: string | undefined;
+  titleHoverVisual: TitleShareHoverVisual;
   placeholder?: string;
   value: string;
 }
@@ -133,6 +138,10 @@ export function resolveListConfigTitleViewModel(args: {
     handoffTone:
       layoutId && args.titleToneHandoff?.layoutId === layoutId ? args.titleToneHandoff.tone : null,
     layoutId,
+    titleHoverVisual: resolveTitleShareHoverVisual({
+      layoutId,
+      targetLayoutId: args.titleToneHandoff?.layoutId ?? null,
+    }),
     placeholder: snapshot?.placeholder,
     value: snapshot?.value ?? "",
   };

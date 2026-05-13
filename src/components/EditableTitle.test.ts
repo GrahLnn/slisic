@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { collectionTitleTextClassName } from "./collectionTitle";
 import { resolveEditableTitleDisplayValue, resolveEditableTitleLayoutId } from "./EditableTitle";
 
 describe("resolveEditableTitleDisplayValue", () => {
@@ -54,5 +55,12 @@ describe("resolveEditableTitleLayoutId", () => {
       }),
       undefined,
     );
+  });
+});
+
+describe("EditableTitle text style boundary", () => {
+  test("uses the shared collection title hover contract", () => {
+    assert.match(collectionTitleTextClassName, /hover:font-\[680\]/);
+    assert.match(collectionTitleTextClassName, /hover:tracking-\[-0\.03em\]/);
   });
 });

@@ -13,6 +13,8 @@ export interface TitleSharePageTransition {
   committedLayoutId: string | null;
 }
 
+export type TitleShareHoverVisual = "none" | "hold" | "retain";
+
 export function createConfigDraftComparableKey(draft: ConfigDraft | null) {
   if (!draft) {
     return "null";
@@ -93,4 +95,24 @@ export function shouldSuppressTitleShareFade(
   return (
     layoutId === transition.outgoingSourceLayoutId || layoutId === transition.returnTargetLayoutId
   );
+}
+
+export function resolveTitleShareHoverVisual(args: {
+  layoutId?: string | null;
+  sourceLayoutId?: string | null;
+  targetLayoutId?: string | null;
+}): TitleShareHoverVisual {
+  if (!args.layoutId) {
+    return "none";
+  }
+
+  if (args.layoutId === args.sourceLayoutId) {
+    return "hold";
+  }
+
+  if (args.layoutId === args.targetLayoutId) {
+    return "retain";
+  }
+
+  return "none";
 }

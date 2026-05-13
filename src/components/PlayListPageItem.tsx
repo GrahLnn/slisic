@@ -7,6 +7,7 @@ import {
   collectionTitleClassName,
   collectionTitleLayoutTransition,
   collectionTitleTextHoverClassName,
+  collectionTitleTextRetainHoverClassName,
 } from "./collectionTitle";
 import { PlayItem } from "./playItem";
 import {
@@ -64,6 +65,12 @@ export function PlayListPageItem({
     torphStage,
     textChanged,
   });
+  const titleHoverClassName =
+    viewModel.titleHoverVisual === "hold"
+      ? collectionTitleTextHoverClassName
+      : viewModel.titleHoverVisual === "retain"
+        ? collectionTitleTextRetainHoverClassName
+        : undefined;
 
   return (
     <motion.div
@@ -94,7 +101,7 @@ export function PlayListPageItem({
           playbackIconWidthText={viewModel.playbackIconWidthText}
           showPlaybackIcons={viewModel.shouldShowPlaybackIcons}
           text={viewModel.text}
-          textClassName={viewModel.isCommitted ? collectionTitleTextHoverClassName : undefined}
+          textClassName={titleHoverClassName}
           onOpenSpectrum={onOpenSpectrum}
           onOpenSpectrumPointerDown={onOpenSpectrumPointerDown}
           onTorphStageChange={(stage) => {

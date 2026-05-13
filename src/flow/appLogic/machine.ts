@@ -417,6 +417,7 @@ export const machine = src.createMachine({
               context.pendingPlaylistPreview,
             );
             const cachedDraft = createDraftFromPlaylistName(visiblePlaylists, event.output);
+            const activeLayoutId = playlistTitleLayoutId(event.output);
 
             return resetContextWith({
               hasPlayList: context.hasPlayList,
@@ -426,7 +427,8 @@ export const machine = src.createMachine({
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
-              activeLayoutId: playlistTitleLayoutId(event.output),
+              activeLayoutId,
+              titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
               pendingPlaylistName: event.output,
               draftBaseline: cachedDraft ? cloneDraft(cachedDraft) : null,
               draft: cachedDraft,
@@ -525,6 +527,7 @@ export const machine = src.createMachine({
               context.pendingPlaylistPreview,
             );
             const cachedDraft = createDraftFromPlaylistName(visiblePlaylists, event.output);
+            const activeLayoutId = playlistTitleLayoutId(event.output);
 
             return resetContextWith({
               hasPlayList: context.hasPlayList,
@@ -533,7 +536,8 @@ export const machine = src.createMachine({
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
-              activeLayoutId: playlistTitleLayoutId(event.output),
+              activeLayoutId,
+              titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
               pendingPlaylistName: event.output,
               draftBaseline: cachedDraft ? cloneDraft(cachedDraft) : null,
               draft: cachedDraft,
@@ -786,6 +790,7 @@ export const machine = src.createMachine({
               playingPlaylistName: null,
               nowPlayingTrackName: null,
               activeLayoutId: context.activeLayoutId,
+              titleToneHandoff: context.titleToneHandoff,
               draftBaseline: cloneDraft(event.output),
               draft: event.output,
             }),
@@ -802,6 +807,7 @@ export const machine = src.createMachine({
               playingPlaylistName: null,
               nowPlayingTrackName: null,
               activeLayoutId: context.activeLayoutId,
+              titleToneHandoff: context.titleToneHandoff,
               error: toErrorMessage(event.error),
             }),
           ),
@@ -875,6 +881,7 @@ export const machine = src.createMachine({
               context.pendingPlaylistPreview,
             );
             const cachedDraft = createDraftFromPlaylistName(visiblePlaylists, event.output);
+            const activeLayoutId = playlistTitleLayoutId(event.output);
 
             return resetContextWith({
               hasPlayList: context.hasPlayList,
@@ -883,7 +890,11 @@ export const machine = src.createMachine({
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
-              activeLayoutId: playlistTitleLayoutId(event.output),
+              activeLayoutId,
+              titleToneHandoff: createCollectionTitleHandoff(
+                activeLayoutId,
+                resolveTitleShareToneFromDraft(context.draft),
+              ),
               pendingPlaylistName: event.output,
               draftBaseline: cachedDraft ? cloneDraft(cachedDraft) : null,
               draft: cachedDraft,

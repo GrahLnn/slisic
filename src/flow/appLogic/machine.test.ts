@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { createActor, fromPromise } from "xstate";
 import type { Collection, Music, PlayList, PlayPlaylistSession } from "@/src/cmd";
-import type { SpectrumMusicDraft } from "./core";
+import type { ConfigDraft, SpectrumMusicDraft } from "./core";
 import { machine } from "./machine";
 import {
   payloads,
@@ -58,6 +58,70 @@ function createPlaylist(collection: Collection): PlayList {
 }
 
 describe("appLogic machine", () => {
+  test("preserves the title handoff while loading an opened playlist config", async () => {
+    const collection = createCollection([createMusic()]);
+    const playlist = createPlaylist(collection);
+
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () => ({
+            hasPlayList: true,
+            playlists: [playlist],
+            collections: [collection],
+            savePath: "C:/Music",
+          })),
+          loadPlaylistDraft: fromPromise<ConfigDraft, string>(async () => ({
+            mode: "edit" as const,
+            name: playlist.name,
+            collections: playlist.collections,
+            groups: playlist.groups,
+          })),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "ready") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+
+    actor.send(payloads["playlist.open"].load(playlist.name));
+    assert.equal(actor.getSnapshot().value, "configLoading");
+    assert.deepEqual(actor.getSnapshot().context.titleToneHandoff, {
+      layoutId: "playlist-title:Focus Session",
+      tone: "solid",
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "config") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+
+    assert.deepEqual(actor.getSnapshot().context.titleToneHandoff, {
+      layoutId: "playlist-title:Focus Session",
+      tone: "solid",
+    });
+  });
+
   test("automatically retries loading after entering the error state", async () => {
     let loadAttempt = 0;
     const states: string[] = [];

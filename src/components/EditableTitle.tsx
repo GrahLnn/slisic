@@ -12,6 +12,7 @@ import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import {
   collectionTitleLayoutTransition,
   collectionTitleColorTransition,
+  collectionTitleTextClassName,
   useCollectionTitleColor,
 } from "./collectionTitle";
 
@@ -23,6 +24,7 @@ type EditableTitleProps = {
   interactionDisabled?: boolean;
   layoutId?: string;
   handoffTone?: CollectionTitleTone | null;
+  textClassName?: string;
   focusHitSlopWidthClassName?: string;
 } & Omit<ComponentProps<"div">, "onChange">;
 
@@ -83,6 +85,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
       interactionDisabled = false,
       layoutId,
       handoffTone = null,
+      textClassName,
       focusHitSlopWidthClassName,
       className,
       style,
@@ -193,7 +196,11 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
         >
           <motion.div
             aria-hidden="true"
-            className="pointer-events-none whitespace-pre-wrap wrap-break-word"
+            className={cn(
+              "pointer-events-none whitespace-pre-wrap wrap-break-word",
+              collectionTitleTextClassName,
+              textClassName,
+            )}
             initial={false}
             animate={{ color: targetColor }}
             transition={hasColorHandoff ? collectionTitleColorTransition : { duration: 0 }}
