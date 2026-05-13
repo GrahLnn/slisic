@@ -325,6 +325,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.layoutId, undefined);
     assert.equal(viewModel.itemViewModels[0]?.sourceLayoutId, "playlist-title:Quiet Morning");
+    assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "retain");
     assert.equal(viewModel.itemViewModels[0]?.shouldAnimateSlotPosition, false);
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
     assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, undefined);
@@ -354,6 +355,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.text, "Preparing...");
     assert.equal(viewModel.itemViewModels[0]?.layoutId, undefined);
     assert.equal(viewModel.itemViewModels[0]?.sourceLayoutId, "playlist-title:Quiet Morning");
+    assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "none");
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, true);
     assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Preparing...");
     assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, true);

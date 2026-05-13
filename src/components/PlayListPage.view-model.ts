@@ -154,6 +154,7 @@ function createPlayListPageItemViewModel(args: {
   playbackIconWidthText?: string;
   isPlaybackPreparing: boolean;
   isHiddenInPlay: boolean;
+  isPlaybackTitleHandoffTarget: boolean;
   shouldStartHiddenInPlay: boolean;
   shouldAnimateSlotPosition: boolean;
   commitGesture: PlayListPageCommitGesture;
@@ -182,11 +183,13 @@ function createPlayListPageItemViewModel(args: {
     isHiddenInPlay: args.isHiddenInPlay,
     shouldStartHiddenInPlay: args.shouldStartHiddenInPlay,
     shouldAnimateSlotPosition: args.shouldAnimateSlotPosition,
-    titleHoverVisual: resolveTitleShareHoverVisual({
-      layoutId: itemLayoutId,
-      sourceLayoutId: args.isPlaybackTarget ? null : args.transition.committedLayoutId,
-      targetLayoutId: args.transition.returnTargetLayoutId,
-    }),
+    titleHoverVisual: args.isPlaybackTitleHandoffTarget
+      ? "retain"
+      : resolveTitleShareHoverVisual({
+          layoutId: itemLayoutId,
+          sourceLayoutId: args.isPlaybackTarget ? null : args.transition.committedLayoutId,
+          targetLayoutId: args.transition.returnTargetLayoutId,
+        }),
     commitGesture: args.commitGesture,
     playlistName: args.playlist.name,
   } satisfies PlayListPageItemViewModel;
@@ -216,6 +219,10 @@ function resolvePlayListPageVisibleItems(args: {
     !!displayLockPlaylistName &&
     args.visiblePlaylists.some((playlist) => playlist.name === displayLockPlaylistName);
   const shouldStartHiddenItemsInPlay = args.displayLock?.kind === "return-handoff";
+  const playbackTitleHandoffTargetName =
+    args.displayLock?.kind === "playback-surface" && playbackSurfaceTrackName === undefined
+      ? playbackSurfacePlaylistName
+      : null;
 
   return args.visiblePlaylists.map((playlist) =>
     createPlayListPageItemViewModel({
@@ -239,6 +246,7 @@ function resolvePlayListPageVisibleItems(args: {
         playlist.name === playbackSurfacePlaylistName &&
         !!playbackSurfaceTrackName &&
         !playbackSurfaceTrackIsPlayable,
+      isPlaybackTitleHandoffTarget: playlist.name === playbackTitleHandoffTargetName,
       playbackIconWidthText:
         (isPlaybackSurfacePlaying &&
           playlist.name === playbackSurfacePlaylistName &&
