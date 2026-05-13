@@ -2,6 +2,7 @@ import { useCallback, type RefCallback } from "react";
 import { useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
+import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import { PlayListPageItem, CreateNewPlayListItem } from "./PlayListPageItem";
 import { usePlayListPlaybackSurface } from "./usePlayListPlaybackSurface";
@@ -73,6 +74,30 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
   });
   const renderData = pageRenderFreeze.renderValue;
   const viewModel = resolvePlayListPageViewModel(renderData);
+  recordRenderPerformanceTrace("playlist-title-handoff-render", {
+    activeLayoutId: renderData.activeLayoutId,
+    committedLayoutId: viewModel.committedLayoutId,
+    isPresent,
+    pageState: renderData.pageState,
+    playbackSurface: renderData.playbackSurface
+      ? {
+          phase: renderData.playbackSurface.phase,
+          playlistName: renderData.playbackSurface.playlistName,
+          displayedTrackName: renderData.playbackSurface.displayedTrackName,
+        }
+      : null,
+    playingPlaylistName: renderData.playingPlaylistName,
+    titleToneHandoffLayoutId: renderData.titleToneHandoff?.layoutId ?? null,
+    titleToneHandoffTone: renderData.titleToneHandoff?.tone ?? null,
+    transitionReturnTargetLayoutId: viewModel.transition.returnTargetLayoutId,
+    items: viewModel.itemViewModels.map((item) => ({
+      key: item.key,
+      layoutId: item.layoutId ?? null,
+      sourceLayoutId: item.sourceLayoutId ?? null,
+      text: item.text,
+      titleHoverVisual: item.titleHoverVisual,
+    })),
+  });
 
   return (
     <div
