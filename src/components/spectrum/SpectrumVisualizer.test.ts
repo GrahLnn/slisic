@@ -878,6 +878,44 @@ describe("SpectrumVisualizer selection and playback", () => {
     );
   });
 
+  test("starts a local resume snapshot from identity when backend status is unavailable", () => {
+    const resumed = resolvePlaybackSnapshotPlayingFromPosition({
+      identity: {
+        endMs: 40_000,
+        filePath: "C:/music/demo.flac",
+        playlistName: "Focus",
+        startMs: 20_000,
+        url: "https://example.com/demo",
+      },
+      nowMs: 500,
+      positionMs: 21_250,
+      snapshot: null,
+    });
+
+    assert.deepEqual(resumed, {
+      duration_ms: 20_000,
+      music_url: "https://example.com/demo",
+      path: "C:/music/demo.flac",
+      paused: false,
+      playback_end_ms: 40_000,
+      playback_start_ms: 20_000,
+      playing: true,
+      playlist_name: "Focus",
+      position_ms: 1_250,
+      received_at_ms: 500,
+      track_end_ms: 40_000,
+      track_start_ms: 20_000,
+    });
+    assert.equal(
+      resolvePlaybackPositionMs({
+        durationMs: 20_000,
+        nowMs: 750,
+        snapshot: resumed,
+      }),
+      1_500,
+    );
+  });
+
   test("hides playhead without a playback origin", () => {
     assert.deepEqual(
       resolveWaveformPlayheadCssVariables({

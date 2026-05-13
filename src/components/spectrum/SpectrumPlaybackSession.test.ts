@@ -233,7 +233,14 @@ describe("SpectrumPlaybackSession", () => {
         identity: otherIdentity,
         resume,
       }),
-      null,
+      120_000,
+    );
+    assert.equal(
+      resolveSpectrumResumePositionForIdentity({
+        identity,
+        resume: null,
+      }),
+      0,
     );
   });
 

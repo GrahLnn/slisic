@@ -56,6 +56,14 @@ export type PlaybackSnapshot = PlaybackStatusPayload & {
   received_at_ms: number;
 };
 
+export type PlaybackSnapshotIdentity = {
+  endMs: number;
+  filePath: string;
+  playlistName: string;
+  startMs: number;
+  url: string;
+};
+
 export type WaveformViewportState = {
   focusSeconds: number | null;
   pixelsPerSecond: number;
@@ -1480,29 +1488,54 @@ export function resolvePlaybackSnapshotPausedAtNow(args: {
 }
 
 export function resolvePlaybackSnapshotPlayingFromPosition(args: {
+  identity?: PlaybackSnapshotIdentity;
   nowMs: number;
-  positionMs: number | null;
+  positionMs: number;
   snapshot: PlaybackSnapshot | null;
 }): PlaybackSnapshot | null {
-  if (!args.snapshot || args.positionMs === null) {
+  if (!Number.isFinite(args.positionMs)) {
     return null;
   }
 
-  const playbackStartMs = args.snapshot.playback_start_ms ?? args.snapshot.track_start_ms;
-  const playbackEndMs = args.snapshot.playback_end_ms ?? args.snapshot.track_end_ms;
-  const boundedAbsolutePositionMs = clampNumber(
-    args.positionMs,
-    playbackStartMs ?? 0,
-    playbackEndMs ?? Math.max(args.positionMs, 0),
-  );
+  if (!args.snapshot && !args.identity) {
+    return null;
+  }
+
+  const playbackStartMs =
+    args.snapshot?.playback_start_ms ?? args.snapshot?.track_start_ms ?? args.identity?.startMs;
+  const playbackEndMs =
+    args.snapshot?.playback_end_ms ?? args.snapshot?.track_end_ms ?? args.identity?.endMs;
+  if (playbackStartMs === undefined || playbackEndMs === undefined) {
+    return null;
+  }
+
+  const boundedAbsolutePositionMs = clampNumber(args.positionMs, playbackStartMs, playbackEndMs);
+  const positionMs = Math.max(0, boundedAbsolutePositionMs - playbackStartMs);
+
+  if (args.snapshot) {
+    return {
+      ...args.snapshot,
+      paused: false,
+      playing: true,
+      playback_start_ms: playbackStartMs,
+      playback_end_ms: playbackEndMs,
+      position_ms: positionMs,
+      received_at_ms: args.nowMs,
+    };
+  }
 
   return {
-    ...args.snapshot,
+    duration_ms: Math.max(0, playbackEndMs - playbackStartMs),
+    music_url: args.identity?.url ?? null,
+    path: args.identity?.filePath ?? null,
     paused: false,
     playing: true,
+    playlist_name: args.identity?.playlistName ?? null,
     playback_start_ms: playbackStartMs,
     playback_end_ms: playbackEndMs,
-    position_ms: Math.max(0, boundedAbsolutePositionMs - (playbackStartMs ?? 0)),
+    track_end_ms: playbackEndMs,
+    track_start_ms: playbackStartMs,
+    position_ms: positionMs,
     received_at_ms: args.nowMs,
   };
 }
