@@ -18,11 +18,13 @@ import {
   createWaveformDataRequestKey,
   createWaveformRenderDataStore,
   createWaveformSharedTileCacheForFile as createWaveformSharedTileCacheForStore,
+  arePlaybackSnapshotsSamePlaybackSegment,
   projectWaveformTrackIdentity,
   resolvePlaybackPositionMs,
   resolvePlaybackSnapshotAfterStatusCommit,
   resolvePlaybackSnapshotPausedAtNow,
   resolvePlaybackSnapshotDurationMs,
+  resolvePlaybackSnapshotPlayingFromPosition,
   resolveQuantizedWaveformDisplayPeak,
   resolveTrackWaveformInitialStatus,
   resolveWaveformDataPlan,
@@ -75,6 +77,7 @@ export {
   createWaveformRenderDataStore,
   normalizeWaveformPathKey,
   projectWaveformTrackIdentity,
+  arePlaybackSnapshotsSamePlaybackSegment,
   resolveAnchoredWaveformScrollLeft,
   areWaveformSelectionsEqual,
   resolveCenteredWaveformScrollLeft,
@@ -82,6 +85,7 @@ export {
   resolvePlaybackSnapshotAfterStatusCommit,
   resolvePlaybackSnapshotPausedAtNow,
   resolvePlaybackSnapshotDurationMs,
+  resolvePlaybackSnapshotPlayingFromPosition,
   resolveQuantizedWaveformDisplayPeak,
   resolveTrackWaveformInitialStatus,
   resolveWaveformContentWidth,
@@ -161,8 +165,12 @@ export interface TrackSpectrumPlaybackPort {
 
 export type TrackSpectrumPlaybackStatusCommit = (status: PlaybackStatusPayload | null) => void;
 export type TrackSpectrumImmediatePlaybackPause = () => PlaybackStatusPayload | null;
+export type TrackSpectrumImmediatePlaybackResume = (
+  positionMs: number | null,
+) => PlaybackStatusPayload | null;
 export interface TrackSpectrumPlaybackControl {
   commitImmediatePause: TrackSpectrumImmediatePlaybackPause;
+  commitImmediateResume: TrackSpectrumImmediatePlaybackResume;
   releaseImmediatePause: () => void;
 }
 
@@ -713,7 +721,7 @@ function usePlaybackController(args: {
   latestArgsRef.current = args;
   const dragPreviewRef = useRef<WaveformPlayheadDragResolution | null>(null);
   const snapshotRef = useRef<PlaybackSnapshot | null>(null);
-  const localPauseSnapshotRef = useRef<PlaybackSnapshot | null>(null);
+  const localPlaybackSnapshotRef = useRef<PlaybackSnapshot | null>(null);
   const frameIdRef = useRef<number | null>(null);
   const beginSeekPromiseRef = useRef<Promise<boolean> | null>(null);
 
@@ -783,7 +791,7 @@ function usePlaybackController(args: {
       const ownerWindow = latest.hostRef.current?.ownerDocument.defaultView ?? null;
       if (!latest.enabled || !isPlaybackStatusForTrack(status, latest.filePath)) {
         snapshotRef.current = null;
-        localPauseSnapshotRef.current = null;
+        localPlaybackSnapshotRef.current = null;
         stopAnimation();
         syncPlayhead();
         return;
@@ -794,12 +802,15 @@ function usePlaybackController(args: {
         received_at_ms: readPerformanceNow(ownerWindow),
       };
       const committedSnapshot = resolvePlaybackSnapshotAfterStatusCommit({
-        localPauseSnapshot: localPauseSnapshotRef.current,
+        localPlaybackSnapshot: localPlaybackSnapshotRef.current,
         nextSnapshot,
       });
       snapshotRef.current = committedSnapshot;
-      if (nextSnapshot.paused !== true) {
-        localPauseSnapshotRef.current = null;
+      if (
+        localPlaybackSnapshotRef.current !== null &&
+        !arePlaybackSnapshotsSamePlaybackSegment(localPlaybackSnapshotRef.current, nextSnapshot)
+      ) {
+        localPlaybackSnapshotRef.current = null;
       }
       if (committedSnapshot === null) {
         stopAnimation();
@@ -832,15 +843,35 @@ function usePlaybackController(args: {
     }
 
     snapshotRef.current = snapshot;
-    localPauseSnapshotRef.current = snapshot;
+    localPlaybackSnapshotRef.current = snapshot;
     syncPlayhead(snapshot.received_at_ms);
     stopAnimation();
     return snapshot;
   }, [stopAnimation, syncPlayhead]);
 
-  const releaseImmediatePause = useCallback(() => {
-    localPauseSnapshotRef.current = null;
-  }, []);
+  const commitImmediateResume = useCallback(
+    (positionMs: number | null) => {
+      const latest = latestArgsRef.current;
+      const ownerWindow = latest.hostRef.current?.ownerDocument.defaultView ?? null;
+      const snapshot = resolvePlaybackSnapshotPlayingFromPosition({
+        nowMs: readPerformanceNow(ownerWindow),
+        positionMs,
+        snapshot: snapshotRef.current,
+      });
+      if (!snapshot) {
+        return null;
+      }
+
+      snapshotRef.current = snapshot;
+      localPlaybackSnapshotRef.current = snapshot;
+      syncPlayhead(snapshot.received_at_ms);
+      startAnimation();
+      return snapshot;
+    },
+    [startAnimation, syncPlayhead],
+  );
+
+  const releaseImmediatePause = useCallback(() => {}, []);
 
   useEffect(() => {
     if (!args.enabled) {
@@ -871,7 +902,7 @@ function usePlaybackController(args: {
       ownerWindow.clearInterval(intervalId);
       stopAnimation();
       snapshotRef.current = null;
-      localPauseSnapshotRef.current = null;
+      localPlaybackSnapshotRef.current = null;
     };
   }, [
     args.enabled,
@@ -942,7 +973,7 @@ function usePlaybackController(args: {
         resolution.endMs,
       );
       dragPreviewRef.current = null;
-      localPauseSnapshotRef.current = null;
+      localPlaybackSnapshotRef.current = null;
       commitPlaybackStatus(status);
     },
     [commitPlaybackStatus, syncPlayhead],
@@ -953,6 +984,7 @@ function usePlaybackController(args: {
     cancelDrag,
     commitDrag,
     commitImmediatePause,
+    commitImmediateResume,
     commitPlaybackStatus,
     previewDrag,
     releaseImmediatePause,
@@ -1046,25 +1078,29 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
     summaryDurationMs: waveformState.summary.duration_ms,
     viewport,
   });
+  const onPlaybackControlReady = props.onPlaybackControlReady;
+  const playheadEnabled = props.playheadEnabled === true;
 
   useLayoutEffect(() => {
-    props.onPlaybackControlReady?.(
-      props.playheadEnabled === true
+    onPlaybackControlReady?.(
+      playheadEnabled
         ? {
             commitImmediatePause: playback.commitImmediatePause,
+            commitImmediateResume: playback.commitImmediateResume,
             releaseImmediatePause: playback.releaseImmediatePause,
           }
         : null,
     );
 
     return () => {
-      props.onPlaybackControlReady?.(null);
+      onPlaybackControlReady?.(null);
     };
   }, [
+    onPlaybackControlReady,
     playback.commitImmediatePause,
+    playback.commitImmediateResume,
     playback.releaseImmediatePause,
-    props.onPlaybackControlReady,
-    props.playheadEnabled,
+    playheadEnabled,
   ]);
 
   const requestDataPlan = useWaveformDataLoader({

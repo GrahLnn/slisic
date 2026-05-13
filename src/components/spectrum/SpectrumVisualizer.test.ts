@@ -13,6 +13,7 @@ import {
   resolvePlaybackSnapshotAfterStatusCommit,
   resolvePlaybackSnapshotPausedAtNow,
   resolvePlaybackSnapshotDurationMs,
+  resolvePlaybackSnapshotPlayingFromPosition,
   resolveQuantizedWaveformDisplayPeak,
   resolveTrackWaveformInitialStatus,
   resolveWaveformContentWidth,
@@ -790,7 +791,7 @@ describe("SpectrumVisualizer selection and playback", () => {
       position_ms: 1_000,
       received_at_ms: 600,
     };
-    const backendResume = {
+    const backendResumeAck = {
       ...localPause,
       paused: false,
       position_ms: 1_250,
@@ -799,17 +800,81 @@ describe("SpectrumVisualizer selection and playback", () => {
 
     assert.equal(
       resolvePlaybackSnapshotAfterStatusCommit({
-        localPauseSnapshot: localPause,
+        localPlaybackSnapshot: localPause,
         nextSnapshot: backendPause,
       }),
       localPause,
     );
     assert.equal(
       resolvePlaybackSnapshotAfterStatusCommit({
-        localPauseSnapshot: localPause,
-        nextSnapshot: backendResume,
+        localPlaybackSnapshot: localPause,
+        nextSnapshot: backendResumeAck,
       }),
-      backendResume,
+      localPause,
+    );
+  });
+
+  test("starts a local resume snapshot from the frontend pause point", () => {
+    const paused = {
+      duration_ms: 20_000,
+      music_url: "https://example.com/demo",
+      path: "C:/music/demo.flac",
+      paused: true,
+      playback_end_ms: 40_000,
+      playback_start_ms: 20_000,
+      playing: true,
+      playlist_name: "Focus",
+      position_ms: 1_250,
+      received_at_ms: 350,
+      track_end_ms: 40_000,
+      track_start_ms: 20_000,
+    };
+
+    const resumed = resolvePlaybackSnapshotPlayingFromPosition({
+      nowMs: 500,
+      positionMs: 21_250,
+      snapshot: paused,
+    });
+
+    assert.deepEqual(resumed, {
+      ...paused,
+      paused: false,
+      playing: true,
+      position_ms: 1_250,
+      received_at_ms: 500,
+    });
+    assert.equal(
+      resolvePlaybackPositionMs({
+        durationMs: 20_000,
+        nowMs: 750,
+        snapshot: resumed,
+      }),
+      1_500,
+    );
+    assert.equal(
+      resolvePlaybackSnapshotAfterStatusCommit({
+        localPlaybackSnapshot: resumed,
+        nextSnapshot: {
+          ...paused,
+          paused: false,
+          position_ms: 900,
+          received_at_ms: 600,
+        },
+      }),
+      resumed,
+    );
+    const laterBackend = {
+      ...paused,
+      paused: false,
+      position_ms: 1_600,
+      received_at_ms: 850,
+    };
+    assert.equal(
+      resolvePlaybackSnapshotAfterStatusCommit({
+        localPlaybackSnapshot: resumed,
+        nextSnapshot: laterBackend,
+      }),
+      laterBackend,
     );
   });
 

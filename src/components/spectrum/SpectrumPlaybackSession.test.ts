@@ -8,10 +8,19 @@ import {
   createSpectrumPlaybackTrackPayload,
   isPlaybackStatusForSpectrumIdentity,
   resolvePlaybackAbsolutePositionMs,
+  resolveSpectrumResumePositionForIdentity,
   resolveSpectrumPlaybackActionSnapshotFromStatus,
   resolveSpectrumPlaybackStatusIdentity,
+  type SpectrumPlaybackResumePoint,
   type SpectrumPlaybackSessionPorts,
 } from "./SpectrumPlaybackSession";
+
+type SpectrumPlaybackPortCallName =
+  | "getPlaybackStatus"
+  | "pauseSpectrumMusic"
+  | "playSpectrumMusic"
+  | "restoreSpectrumMusic"
+  | "updateSpectrumPlaybackLoopSignal";
 
 function createIdentity(
   overrides: Partial<SpectrumPlaybackIdentity> = {},
@@ -48,7 +57,7 @@ function createStatus(overrides: Partial<PlaybackStatusPayload> = {}): PlaybackS
 function createPorts(statuses: Array<PlaybackStatusPayload | null> = []) {
   const calls: Array<{
     args: unknown[];
-    name: keyof SpectrumPlaybackSessionPorts;
+    name: SpectrumPlaybackPortCallName;
   }> = [];
   const statusQueue = [...statuses];
   const peekStatus = () => statusQueue.shift() ?? statuses.at(-1) ?? null;
@@ -67,10 +76,6 @@ function createPorts(statuses: Array<PlaybackStatusPayload | null> = []) {
     },
     async restoreSpectrumMusic(...args) {
       calls.push({ args, name: "restoreSpectrumMusic" });
-      return true;
-    },
-    async resumeSpectrumMusic(...args) {
-      calls.push({ args, name: "resumeSpectrumMusic" });
       return true;
     },
     async updateSpectrumPlaybackLoopSignal(...args) {
@@ -133,7 +138,15 @@ describe("SpectrumPlaybackSession", () => {
     const identity = createIdentity();
     const resume = { identity, positionMs: 8_000 };
 
-    assert.equal(await session.pauseOrResume({ identity, musicName: "Disc 1 Opening" }), null);
+    assert.equal(await session.pause({ identity, musicName: "Disc 1 Opening" }), false);
+    assert.equal(
+      await session.playFromPosition({
+        identity,
+        musicName: "Disc 1 Opening",
+        positionMs: 8_000,
+      }),
+      false,
+    );
     assert.equal(
       await session.updateLoopSignal({
         endMs: 90_000,
@@ -147,118 +160,80 @@ describe("SpectrumPlaybackSession", () => {
       await session.restoreResumePoint({ identity, musicName: "Disc 1 Opening", resume }),
       null,
     );
-    assert.equal(await session.capturePosition({ resume }), resume);
     assert.deepEqual(calls, []);
   });
 
-  test("starts inactive spectrum playback instead of toggling another track", async () => {
+  test("plays from the explicit frontend resume point without reading backend status", async () => {
     const identity = createIdentity();
-    const nextStatus = createStatus();
-    const { calls, ports } = createPorts([
-      createStatus({
-        music_url: "https://example.com/quiet-morning#b",
-        track_start_ms: 120_000,
-        track_end_ms: 180_000,
-      }),
-      nextStatus,
-    ]);
+    const { calls, ports } = createPorts([createStatus()]);
     const session = createSpectrumPlaybackSession({ ports, scopeId: 7 });
 
     assert.equal(
-      await session.pauseOrResume({ identity, musicName: "Disc 1 Opening" }),
-      nextStatus,
+      await session.playFromPosition({
+        identity,
+        musicName: "Disc 1 Opening",
+        positionMs: 42_000,
+      }),
+      true,
     );
     assert.deepEqual(
       calls.map((call) => call.name),
-      ["getPlaybackStatus", "playSpectrumMusic", "getPlaybackStatus"],
+      ["playSpectrumMusic"],
     );
-    assert.deepEqual(calls[1]?.args, [
+    assert.deepEqual(calls[0]?.args, [
       7,
       createSpectrumPlaybackTrackPayload(identity, "Disc 1 Opening"),
-      null,
+      42_000,
     ]);
   });
 
-  test("toggles pause and resume only for the matching spectrum identity", async () => {
+  test("pauses explicitly without reading backend status or toggling resume", async () => {
     const identity = createIdentity();
-    const pausedStatus = createStatus({ paused: true });
-    const playingStatus = createStatus({ paused: false });
-    const pausedPorts = createPorts([pausedStatus, playingStatus]);
-    const playingPorts = createPorts([playingStatus, pausedStatus]);
+    const { calls, ports } = createPorts([createStatus({ paused: false })]);
 
     assert.equal(
-      await createSpectrumPlaybackSession({ ports: pausedPorts.ports, scopeId: 7 }).pauseOrResume({
+      await createSpectrumPlaybackSession({ ports, scopeId: 7 }).pause({
         identity,
         musicName: "Disc 1 Opening",
       }),
-      playingStatus,
-    );
-    assert.equal(
-      await createSpectrumPlaybackSession({ ports: playingPorts.ports, scopeId: 7 }).pauseOrResume({
-        identity,
-        musicName: "Disc 1 Opening",
-      }),
-      pausedStatus,
-    );
-    assert.deepEqual(
-      pausedPorts.calls.map((call) => call.name),
-      ["getPlaybackStatus", "resumeSpectrumMusic", "getPlaybackStatus"],
-    );
-    assert.deepEqual(
-      playingPorts.calls.map((call) => call.name),
-      ["getPlaybackStatus", "pauseSpectrumMusic", "getPlaybackStatus"],
-    );
-  });
-
-  test("keeps explicit pause from starting an inactive spectrum track", async () => {
-    const identity = createIdentity();
-    const otherStatus = createStatus({
-      music_url: "https://example.com/quiet-morning#b",
-      track_start_ms: 120_000,
-      track_end_ms: 180_000,
-    });
-    const { calls, ports } = createPorts([otherStatus]);
-
-    assert.equal(
-      await createSpectrumPlaybackSession({ ports, scopeId: 7 }).pauseOrResume({
-        action: "pause",
-        identity,
-        musicName: "Disc 1 Opening",
-      }),
-      otherStatus,
+      true,
     );
     assert.deepEqual(
       calls.map((call) => call.name),
-      ["getPlaybackStatus"],
+      ["pauseSpectrumMusic"],
     );
+    assert.deepEqual(calls[0]?.args, [
+      7,
+      createSpectrumPlaybackTrackPayload(identity, "Disc 1 Opening"),
+    ]);
   });
 
-  test("captures a resume point only from the matching playback status", async () => {
+  test("uses only the matching frontend pause point as the resume position", () => {
     const identity = createIdentity();
-    const resume = { identity, positionMs: null };
-    const mismatch = createPorts([
-      createStatus({
-        music_url: "https://example.com/quiet-morning#b",
-        track_start_ms: 120_000,
-        track_end_ms: 180_000,
-      }),
-    ]);
-    const match = createPorts([createStatus({ playback_start_ms: 12_000, position_ms: 4_000 })]);
+    const otherIdentity = createIdentity({
+      endMs: 180_000,
+      key: "c:/music/quiet-morning.m4a|Focus Session|https://example.com/quiet-morning#b|120000|180000",
+      startMs: 120_000,
+      url: "https://example.com/quiet-morning#b",
+    });
+    const resume = {
+      identity,
+      positionMs: 42_000,
+    } satisfies SpectrumPlaybackResumePoint;
 
     assert.equal(
-      await createSpectrumPlaybackSession({ ports: mismatch.ports, scopeId: 7 }).capturePosition({
-        resume,
-      }),
-      resume,
-    );
-    assert.deepEqual(
-      await createSpectrumPlaybackSession({ ports: match.ports, scopeId: 7 }).capturePosition({
-        resume,
-      }),
-      {
+      resolveSpectrumResumePositionForIdentity({
         identity,
-        positionMs: 16_000,
-      },
+        resume,
+      }),
+      42_000,
+    );
+    assert.equal(
+      resolveSpectrumResumePositionForIdentity({
+        identity: otherIdentity,
+        resume,
+      }),
+      null,
     );
   });
 

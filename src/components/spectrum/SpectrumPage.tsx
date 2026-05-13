@@ -35,6 +35,7 @@ import {
   crabSpectrumPlaybackSessionPorts,
   createSpectrumPlaybackSession,
   resolvePlaybackAbsolutePositionMs,
+  resolveSpectrumResumePositionForIdentity,
   resolveSpectrumPlaybackActionSnapshotFromStatus,
   type SpectrumPlaybackResumePoint,
   type SpectrumPlaybackSessionStatus,
@@ -382,12 +383,11 @@ export function SpectrumPage() {
     }
 
     const identity = primaryEditor.playbackIdentity;
-    const status = await playbackSession.restoreResumePoint({
+    await playbackSession.restoreResumePoint({
       identity,
       musicName: primaryEditor.titleValue,
       resume: primaryResume,
     });
-    commitPlaybackActionSnapshot(status);
   }
 
   async function handleSpectrumPlaybackAction(
@@ -401,26 +401,40 @@ export function SpectrumPage() {
 
     if (action === "pause") {
       const status = playbackControlByIdentityRef.current.get(identity.key)?.commitImmediatePause();
-      if (status) {
+      if (status && status.paused !== true) {
         primaryPlaybackResumeRef.current = {
           identity,
           positionMs: resolvePlaybackAbsolutePositionMs(status),
         };
         commitPlaybackActionSnapshot(status);
-      } else {
-        await capturePrimarySpectrumPlaybackPosition();
       }
+      await playbackSession.pause({
+        identity,
+        musicName: editor.titleValue,
+      });
+      return;
     } else {
-      playbackControlByIdentityRef.current.get(identity.key)?.releaseImmediatePause();
-      await capturePrimarySpectrumPlaybackPosition();
+      const positionMs = resolveSpectrumResumePositionForIdentity({
+        identity,
+        resume: primaryPlaybackResumeRef.current,
+      });
+      const control = playbackControlByIdentityRef.current.get(identity.key);
+      const status = control?.commitImmediateResume(positionMs);
+      control?.releaseImmediatePause();
+      if (status) {
+        commitPlaybackActionSnapshot(status);
+      } else {
+        commitPlaybackActionSnapshotValue({
+          identity,
+          paused: false,
+        });
+      }
+      await playbackSession.playFromPosition({
+        identity,
+        musicName: editor.titleValue,
+        positionMs,
+      });
     }
-
-    const status = await playbackSession.pauseOrResume({
-      action,
-      identity,
-      musicName: editor.titleValue,
-    });
-    commitPlaybackActionSnapshot(status);
   }
 
   function handlePlaybackControlReady(
@@ -437,25 +451,8 @@ export function SpectrumPage() {
     playbackControlByIdentityRef.current.set(identity.key, control);
   }
 
-  async function capturePrimarySpectrumPlaybackPosition() {
-    const primaryResume = primaryPlaybackResumeRef.current;
-    if (!primaryResume) {
-      return;
-    }
-
-    primaryPlaybackResumeRef.current = await playbackSession.capturePosition({
-      resume: primaryResume,
-    });
-  }
-
-  async function refreshSpectrumPlaybackStatus() {
-    const status = await playbackSession.readStatus();
-    commitPlaybackActionSnapshot(status);
-    return status;
-  }
-
-  const commitPlaybackActionSnapshot = useCallback(
-    (status: SpectrumPlaybackSessionStatus) => {
+  const commitPlaybackActionSnapshotValue = useCallback(
+    (snapshot: SpectrumPlaybackActionSnapshot | null) => {
       if (
         !shouldCommitSpectrumPlaybackActionSnapshot({
           isPresent,
@@ -466,7 +463,6 @@ export function SpectrumPage() {
         return;
       }
 
-      const snapshot = resolveSpectrumPlaybackActionSnapshotFromStatus(status);
       if (areSpectrumPlaybackActionSnapshotsEqual(playbackActionSnapshotRef.current, snapshot)) {
         return;
       }
@@ -475,6 +471,12 @@ export function SpectrumPage() {
       setPlaybackActionSnapshot(snapshot);
     },
     [isPresent, pageRenderFreeze.isFrozen],
+  );
+  const commitPlaybackActionSnapshot = useCallback(
+    (status: SpectrumPlaybackSessionStatus) => {
+      commitPlaybackActionSnapshotValue(resolveSpectrumPlaybackActionSnapshotFromStatus(status));
+    },
+    [commitPlaybackActionSnapshotValue],
   );
 
   useLayoutEffect(() => {

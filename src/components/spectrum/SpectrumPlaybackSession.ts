@@ -8,7 +8,6 @@ import {
   projectSpectrumPlaybackIdentity,
   resolveSpectrumPlaybackActionSnapshot,
   resolveSpectrumPlaybackRestoreEffect,
-  type SpectrumPlaybackActionKind,
 } from "./SpectrumPage.view-model";
 
 export type SpectrumPlaybackSessionStatus = PlaybackStatusPayload | null;
@@ -26,7 +25,6 @@ export interface SpectrumPlaybackSessionPorts {
     track: PlaybackTrackPayload,
     positionMs: number | null,
   ): Promise<boolean>;
-  resumeSpectrumMusic(scopeId: number, track: PlaybackTrackPayload): Promise<boolean>;
   updateSpectrumPlaybackLoopSignal(
     scopeId: number,
     payload: SpectrumPlaybackLoopSignalCommandPayload,
@@ -34,14 +32,12 @@ export interface SpectrumPlaybackSessionPorts {
 }
 
 export interface SpectrumPlaybackSession {
-  capturePosition(args: {
-    resume: SpectrumPlaybackResumePoint | null;
-  }): Promise<SpectrumPlaybackResumePoint | null>;
-  pauseOrResume(args: {
-    action?: SpectrumPlaybackActionKind;
+  pause(args: { identity: SpectrumPlaybackIdentity; musicName: string }): Promise<boolean>;
+  playFromPosition(args: {
     identity: SpectrumPlaybackIdentity;
     musicName: string;
-  }): Promise<SpectrumPlaybackSessionStatus>;
+    positionMs: number | null;
+  }): Promise<boolean>;
   readStatus(): Promise<SpectrumPlaybackSessionStatus>;
   restoreResumePoint(args: {
     identity: SpectrumPlaybackIdentity;
@@ -59,6 +55,13 @@ export interface SpectrumPlaybackSession {
 export interface SpectrumPlaybackResumePoint {
   identity: SpectrumPlaybackIdentity;
   positionMs: number | null;
+}
+
+export function resolveSpectrumResumePositionForIdentity(args: {
+  identity: SpectrumPlaybackIdentity;
+  resume: SpectrumPlaybackResumePoint | null;
+}) {
+  return args.resume?.identity.key === args.identity.key ? args.resume.positionMs : null;
 }
 
 export type SpectrumPlaybackLoopSignalCommandPayload = {
@@ -178,46 +181,16 @@ export function createSpectrumPlaybackSession(args: {
   }
 
   return {
-    async capturePosition({ resume }) {
-      if (scopeId === null || !resume) {
-        return resume;
-      }
-
-      const status = await args.ports.getPlaybackStatus();
-      if (status === null || !isPlaybackStatusForSpectrumIdentity(status, resume.identity)) {
-        return resume;
-      }
-
-      return {
-        identity: resume.identity,
-        positionMs: resolvePlaybackAbsolutePositionMs(status),
-      };
-    },
-    async pauseOrResume({ action, identity, musicName }) {
+    async pause({ identity, musicName }) {
       if (scopeId === null) {
-        return null;
-      }
-
-      const status = await args.ports.getPlaybackStatus();
-
-      if (!isPlaybackStatusForSpectrumIdentity(status, identity)) {
-        if (action === "pause") {
-          return status;
-        }
-
-        await play({ identity, musicName });
-        return args.ports.getPlaybackStatus();
+        return false;
       }
 
       const track = createSpectrumPlaybackTrackPayload(identity, musicName);
-      const nextAction = action ?? (status?.paused ? "play" : "pause");
-      if (nextAction === "play") {
-        await args.ports.resumeSpectrumMusic(scopeId, track);
-      } else {
-        await args.ports.pauseSpectrumMusic(scopeId, track);
-      }
-
-      return args.ports.getPlaybackStatus();
+      return args.ports.pauseSpectrumMusic(scopeId, track);
+    },
+    playFromPosition({ identity, musicName, positionMs }) {
+      return play({ identity, musicName, positionMs });
     },
     readStatus() {
       return args.ports.getPlaybackStatus();
@@ -296,9 +269,6 @@ export const crabSpectrumPlaybackSessionPorts: SpectrumPlaybackSessionPorts = {
   },
   async restoreSpectrumMusic(scopeId, track, positionMs) {
     return unwrapCrabResult<boolean>(await crab.restoreSpectrumMusic(scopeId, track, positionMs));
-  },
-  async resumeSpectrumMusic(scopeId, track) {
-    return unwrapCrabResult<boolean>(await crab.resumeSpectrumMusic(scopeId, track));
   },
   async updateSpectrumPlaybackLoopSignal(scopeId, payload) {
     return unwrapCrabResult<PlaybackStatusPayload | null>(
