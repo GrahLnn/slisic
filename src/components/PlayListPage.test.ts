@@ -484,6 +484,57 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[1]?.titleHoverVisual, "retain");
   });
 
+  test("keeps the return handoff target when ready has no playing playlist", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "ready",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [
+        createPlayListFixture({ name: "Night Drive" }),
+        createPlayListFixture({ name: "Quiet Morning" }),
+      ],
+      pendingPlaylistPreview: null,
+      playingPlaylistName: null,
+      titleToneHandoff: {
+        layoutId: "playlist-title:Quiet Morning",
+        tone: "solid",
+      },
+      pressedLayoutId: null,
+      playbackSurface: null,
+    });
+
+    assert.equal(viewModel.shouldLockScroll, true);
+    assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[1]?.layoutId, "playlist-title:Quiet Morning");
+    assert.equal(viewModel.itemViewModels[1]?.titleHoverVisual, "retain");
+  });
+
+  test("lets the title handoff target retain hover while the playback surface is active", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "play",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [createPlayListFixture({ name: "Quiet Morning" })],
+      pendingPlaylistPreview: null,
+      playingPlaylistName: "Quiet Morning",
+      titleToneHandoff: {
+        layoutId: "playlist-title:Quiet Morning",
+        tone: "solid",
+      },
+      pressedLayoutId: null,
+      playbackSurface: {
+        phase: "playing",
+        playlistName: "Quiet Morning",
+        displayedTrackName: "Track A",
+        displayedTrackIsPlayable: true,
+      },
+    });
+
+    assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[0]?.isPlaybackTarget, false);
+    assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "retain");
+  });
+
   test("keeps the playback surface locked while restoring the original playlist title", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "ready",

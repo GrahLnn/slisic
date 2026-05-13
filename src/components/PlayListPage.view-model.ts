@@ -182,13 +182,11 @@ function createPlayListPageItemViewModel(args: {
     isHiddenInPlay: args.isHiddenInPlay,
     shouldStartHiddenInPlay: args.shouldStartHiddenInPlay,
     shouldAnimateSlotPosition: args.shouldAnimateSlotPosition,
-    titleHoverVisual: args.isPlaybackTarget
-      ? "none"
-      : resolveTitleShareHoverVisual({
-          layoutId: itemLayoutId,
-          sourceLayoutId: args.transition.committedLayoutId,
-          targetLayoutId: args.transition.returnTargetLayoutId,
-        }),
+    titleHoverVisual: resolveTitleShareHoverVisual({
+      layoutId: itemLayoutId,
+      sourceLayoutId: args.isPlaybackTarget ? null : args.transition.committedLayoutId,
+      targetLayoutId: args.transition.returnTargetLayoutId,
+    }),
     commitGesture: args.commitGesture,
     playlistName: args.playlist.name,
   } satisfies PlayListPageItemViewModel;
@@ -267,25 +265,18 @@ function hasVisiblePlaylistName(args: {
 }
 
 function resolvePlayListPageReturnHandoffTargetName(args: {
-  pageState: MainStateT;
   visiblePlaylists: readonly PlayList[];
-  playingPlaylistName: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
 }) {
-  if (args.pageState !== "play" || !args.playingPlaylistName || !args.titleToneHandoff) {
+  if (!args.titleToneHandoff) {
     return null;
   }
 
-  if (args.titleToneHandoff.layoutId !== playlistTitleLayoutId(args.playingPlaylistName)) {
-    return null;
-  }
-
-  return hasVisiblePlaylistName({
-    visiblePlaylists: args.visiblePlaylists,
-    playlistName: args.playingPlaylistName,
-  })
-    ? args.playingPlaylistName
-    : null;
+  return (
+    args.visiblePlaylists.find(
+      (playlist) => playlistTitleLayoutId(playlist.name) === args.titleToneHandoff?.layoutId,
+    )?.name ?? null
+  );
 }
 
 function resolvePlayListPageDisplayLockTargetName(args: {
