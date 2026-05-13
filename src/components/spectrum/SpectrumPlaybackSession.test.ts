@@ -16,8 +16,8 @@ import {
 
 type SpectrumPlaybackPortCallName =
   | "getPlaybackStatus"
+  | "playSpectrumMusic"
   | "pauseSpectrumMusic"
-  | "restoreSpectrumMusic"
   | "updateSpectrumPlaybackLoopSignal";
 
 function createIdentity(
@@ -64,12 +64,12 @@ function createPorts(statuses: Array<PlaybackStatusPayload | null> = []) {
       calls.push({ args: [], name: "getPlaybackStatus" });
       return peekStatus();
     },
-    async pauseSpectrumMusic(...args) {
-      calls.push({ args, name: "pauseSpectrumMusic" });
+    async playSpectrumMusic(...args) {
+      calls.push({ args, name: "playSpectrumMusic" });
       return true;
     },
-    async restoreSpectrumMusic(...args) {
-      calls.push({ args, name: "restoreSpectrumMusic" });
+    async pauseSpectrumMusic(...args) {
+      calls.push({ args, name: "pauseSpectrumMusic" });
       return true;
     },
     async updateSpectrumPlaybackLoopSignal(...args) {
@@ -187,7 +187,7 @@ describe("SpectrumPlaybackSession", () => {
     );
     assert.deepEqual(
       calls.map((call) => call.name),
-      ["getPlaybackStatus", "restoreSpectrumMusic", "getPlaybackStatus"],
+      ["getPlaybackStatus", "playSpectrumMusic", "getPlaybackStatus"],
     );
     assert.deepEqual(calls[1]?.args, [
       7,
