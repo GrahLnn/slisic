@@ -209,7 +209,8 @@ function resolvePlayListPageVisibleItems(args: {
   const playbackSurfaceTrackName = args.playbackSurface?.displayedTrackName || undefined;
   const playbackSurfaceTrackIsPlayable = args.playbackSurface?.displayedTrackIsPlayable ?? false;
   const isPlaybackSurfacePlaying = args.playbackSurface?.phase === "playing";
-  const shouldApplyPlaybackSurface = args.displayLock?.kind !== "return-handoff";
+  const shouldApplyPlaybackSurface =
+    args.displayLock?.kind !== "return-handoff" && isPlaybackSurfacePlaying;
   const hasPlaybackTarget =
     shouldApplyPlaybackSurface &&
     !!playbackSurfacePlaylistName &&
