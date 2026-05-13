@@ -25,6 +25,63 @@ export function resolvePlayListPageItemTitleFrameClassName(titleHoverClassName?:
   return cn(collectionTitleClassName, titleHoverClassName);
 }
 
+export function resolvePlayListPageItemTitleRetainKey(
+  viewModel: Pick<
+    PlayListPageItemViewModel,
+    "key" | "layoutId" | "playlistName" | "sourceLayoutId"
+  >,
+) {
+  return viewModel.sourceLayoutId ?? viewModel.layoutId ?? viewModel.playlistName ?? viewModel.key;
+}
+
+export function resolvePlayListPageItemTitleRetainRequestKey(
+  viewModel: Pick<
+    PlayListPageItemViewModel,
+    "key" | "layoutId" | "playlistName" | "sourceLayoutId" | "text"
+  >,
+) {
+  return `${resolvePlayListPageItemTitleRetainKey(viewModel)}:${viewModel.text}`;
+}
+
+export function resolvePlayListPageItemRequestedTitleHoverVisual(
+  viewModel: Pick<PlayListPageItemViewModel, "titleHoverRetainLease" | "titleHoverVisual">,
+) {
+  return viewModel.titleHoverRetainLease === "stage-only" ? "none" : viewModel.titleHoverVisual;
+}
+
+export function resolvePlayListPageItemTitleHoverLock(args: {
+  previousLocked: boolean;
+  retainedVisual: "hold" | "none" | "retain";
+  requestedVisual: "hold" | "none" | "retain";
+  torphStage: TorphStage;
+}) {
+  if (args.retainedVisual !== "none") {
+    return {
+      locked: true,
+      visual: args.retainedVisual,
+    } as const;
+  }
+
+  if (args.requestedVisual !== "none") {
+    return {
+      locked: true,
+      visual: args.requestedVisual,
+    } as const;
+  }
+
+  if (args.previousLocked && args.torphStage !== "idle") {
+    return {
+      locked: true,
+      visual: "retain",
+    } as const;
+  }
+
+  return {
+    locked: false,
+    visual: "none",
+  } as const;
+}
+
 export function PlayListPageItem({
   viewModel,
   containerRef,
@@ -49,6 +106,7 @@ export function PlayListPageItem({
   const isPresent = useIsPresent();
   const [torphStage, setTorphStage] = useState<TorphStage>("idle");
   const previousTextRef = useRef(viewModel.text);
+  const titleHoverLockedUntilIdleRef = useRef(false);
   const textChanged = previousTextRef.current !== viewModel.text;
   const fadeProps = resolvePlayListPageItemFadeProps({
     isPresent,
@@ -69,10 +127,20 @@ export function PlayListPageItem({
     torphStage,
     textChanged,
   });
-  const titleHoverVisual = useCollectionTitleRetainedHoverVisual(
-    viewModel.titleHoverVisual,
-    `${viewModel.sourceLayoutId ?? viewModel.key}:${viewModel.text}`,
+  const requestedTitleHoverVisual = resolvePlayListPageItemRequestedTitleHoverVisual(viewModel);
+  const retainedTitleHoverVisual = useCollectionTitleRetainedHoverVisual(
+    requestedTitleHoverVisual,
+    resolvePlayListPageItemTitleRetainKey(viewModel),
+    resolvePlayListPageItemTitleRetainRequestKey(viewModel),
   );
+  const titleHoverLock = resolvePlayListPageItemTitleHoverLock({
+    previousLocked: titleHoverLockedUntilIdleRef.current,
+    retainedVisual: retainedTitleHoverVisual,
+    requestedVisual: viewModel.titleHoverVisual,
+    torphStage,
+  });
+  titleHoverLockedUntilIdleRef.current = titleHoverLock.locked;
+  const titleHoverVisual = titleHoverLock.visual;
   const titleHoverClassName =
     titleHoverVisual === "hold" || titleHoverVisual === "retain"
       ? collectionTitleTextRetainHoverClassName

@@ -4,6 +4,7 @@ import {
   collectionTitleTextClassName,
   collectionTitleTextRetainHoverClassName,
   COLLECTION_TITLE_HOVER_RETAIN_MS,
+  COLLECTION_TITLE_WEIGHT_TRANSITION_MS,
   resolveCollectionTitleRetainedHoverVisual,
 } from "./collectionTitle";
 import { resolveEditableTitleDisplayValue, resolveEditableTitleLayoutId } from "./EditableTitle";
@@ -65,6 +66,9 @@ describe("resolveEditableTitleLayoutId", () => {
 
 describe("EditableTitle text style boundary", () => {
   test("uses the shared collection title hover contract", () => {
+    assert.equal(COLLECTION_TITLE_WEIGHT_TRANSITION_MS, 160);
+    assert.match(collectionTitleTextClassName, /duration-\[160ms\]/);
+    assert.doesNotMatch(collectionTitleTextClassName, /duration-300/);
     assert.match(collectionTitleTextClassName, /hover:font-\[680\]/);
     assert.match(collectionTitleTextClassName, /hover:tracking-\[-0\.03em\]/);
   });

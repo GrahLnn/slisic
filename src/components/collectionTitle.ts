@@ -22,6 +22,7 @@ export const collectionTitleLayoutTransition = {
 } as const;
 
 export const COLLECTION_TITLE_HOVER_RETAIN_MS = collectionTitleLayoutTransition.duration * 1000;
+export const COLLECTION_TITLE_WEIGHT_TRANSITION_MS = 160;
 
 export const collectionTitleColorTransition = {
   duration: 0.28,
@@ -36,7 +37,7 @@ export const collectionTitleClassName = cn(
 );
 
 export const collectionTitleTextClassName = cn(
-  "transition-[font-variation-settings,font-weight,letter-spacing] duration-300 ease-in-out",
+  "transition-[font-variation-settings,font-weight,letter-spacing] duration-[160ms] ease-out",
   "will-change-[font-variation-settings]",
   "hover:font-[680] hover:[font-variation-settings:'wght'_680] hover:tracking-[-0.03em]",
 );
@@ -69,14 +70,15 @@ export function resolveCollectionTitleRetainedHoverVisual(args: {
  */
 export function useCollectionTitleRetainedHoverVisual(
   requestedVisual: TitleShareHoverVisual,
-  retainKey: string,
+  retainOwnerKey: string,
+  retainRequestKey = retainOwnerKey,
 ): TitleShareHoverVisual {
   const [retainWindow, setRetainWindow] = useState<{
     active: boolean;
-    key: string | null;
+    ownerKey: string | null;
   }>({
     active: false,
-    key: null,
+    ownerKey: null,
   });
   const previousRetainRequestKeyRef = useRef<string | null>(null);
   const timeoutRef = useRef<number | null>(null);
@@ -86,7 +88,7 @@ export function useCollectionTitleRetainedHoverVisual(
       previousRetainRequestKeyRef.current = null;
       setRetainWindow({
         active: false,
-        key: null,
+        ownerKey: null,
       });
       if (timeoutRef.current !== null) {
         window.clearTimeout(timeoutRef.current);
@@ -94,7 +96,7 @@ export function useCollectionTitleRetainedHoverVisual(
       }
     };
 
-    if (retainWindow.key !== null && retainWindow.key !== retainKey) {
+    if (retainWindow.ownerKey !== null && retainWindow.ownerKey !== retainOwnerKey) {
       clearRetainWindow();
     }
 
@@ -103,15 +105,19 @@ export function useCollectionTitleRetainedHoverVisual(
       return;
     }
 
-    if (retainWindow.active && retainWindow.key === retainKey) {
+    if (
+      retainWindow.active &&
+      retainWindow.ownerKey === retainOwnerKey &&
+      previousRetainRequestKeyRef.current === retainRequestKey
+    ) {
       return;
     }
 
-    if (previousRetainRequestKeyRef.current === retainKey) {
+    if (previousRetainRequestKeyRef.current === retainRequestKey) {
       return;
     }
 
-    previousRetainRequestKeyRef.current = retainKey;
+    previousRetainRequestKeyRef.current = retainRequestKey;
 
     if (timeoutRef.current !== null) {
       window.clearTimeout(timeoutRef.current);
@@ -119,16 +125,22 @@ export function useCollectionTitleRetainedHoverVisual(
 
     setRetainWindow({
       active: true,
-      key: retainKey,
+      ownerKey: retainOwnerKey,
     });
     timeoutRef.current = window.setTimeout(() => {
       timeoutRef.current = null;
       setRetainWindow({
         active: false,
-        key: null,
+        ownerKey: null,
       });
     }, COLLECTION_TITLE_HOVER_RETAIN_MS);
-  }, [requestedVisual, retainKey, retainWindow.active, retainWindow.key]);
+  }, [
+    requestedVisual,
+    retainOwnerKey,
+    retainRequestKey,
+    retainWindow.active,
+    retainWindow.ownerKey,
+  ]);
 
   useEffect(
     () => () => {
@@ -142,7 +154,7 @@ export function useCollectionTitleRetainedHoverVisual(
 
   return resolveCollectionTitleRetainedHoverVisual({
     requestedVisual,
-    retainWindowActive: retainWindow.active && retainWindow.key === retainKey,
+    retainWindowActive: retainWindow.active && retainWindow.ownerKey === retainOwnerKey,
   });
 }
 

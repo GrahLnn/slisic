@@ -200,6 +200,7 @@ describe("PlayListPage", () => {
         shouldStartHiddenInPlay: false,
         shouldAnimateSlotPosition: false,
         titleHoverVisual: "none",
+        titleHoverRetainLease: "timed",
         commitGesture: "disabled",
         playlistName: "Night Drive",
       },
@@ -218,6 +219,7 @@ describe("PlayListPage", () => {
         shouldStartHiddenInPlay: false,
         shouldAnimateSlotPosition: false,
         titleHoverVisual: "none",
+        titleHoverRetainLease: "timed",
         commitGesture: "disabled",
         playlistName: "Quiet Morning",
       },
@@ -587,6 +589,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.sourceLayoutId, "playlist-title:Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.isPlaybackTarget, false);
     assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "retain");
+    assert.equal(viewModel.itemViewModels[0]?.titleHoverRetainLease, "stage-only");
     assert.equal(viewModel.itemViewModels[0]?.shouldAnimateSlotPosition, false);
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
     assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, undefined);

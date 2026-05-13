@@ -4,6 +4,7 @@ import type { MainStateT } from "@/src/flow/appLogic/events";
 import {
   INACTIVE_PLAYBACK_SURFACE,
   resolveMachinePlaybackTarget,
+  resolvePlaybackSurfaceAfterTorphStage,
   syncPlaybackSurfaceState,
   toPlayListPlaybackSurfaceSnapshot,
   type PlayListPlaybackSurfaceState,
@@ -58,16 +59,13 @@ export function usePlayListPlaybackSurface({
 
   const handleTorphStageChange = useCallback((key: string, stage: TorphStage) => {
     torphStagesRef.current[key] = stage;
-    if (stage !== "idle") {
-      return;
-    }
 
     setPlaybackSurface((current) => {
-      if (current.phase !== "restoring" || current.playlistName !== key) {
-        return current;
-      }
-
-      return INACTIVE_PLAYBACK_SURFACE;
+      return resolvePlaybackSurfaceAfterTorphStage({
+        current,
+        playlistName: key,
+        stage,
+      });
     });
   }, []);
 
@@ -156,18 +154,21 @@ export function usePlayListPlaybackSurface({
       return;
     }
 
-    if (torphStagesRef.current[playbackSurface.playlistName] !== "idle") {
+    if (playbackSurface.restoreTransitionStarted) {
       return;
     }
 
-    setPlaybackSurface((current) => {
-      if (current.phase !== "restoring" || current.playlistName !== playbackSurface.playlistName) {
-        return current;
-      }
-
-      return INACTIVE_PLAYBACK_SURFACE;
-    });
-  }, [playbackSurface.phase, playbackSurface.playlistName]);
+    const currentStage = torphStagesRef.current[playbackSurface.playlistName];
+    if (currentStage !== undefined && currentStage !== "idle") {
+      setPlaybackSurface((current) =>
+        resolvePlaybackSurfaceAfterTorphStage({
+          current,
+          playlistName: playbackSurface.playlistName,
+          stage: currentStage,
+        }),
+      );
+    }
+  }, [playbackSurface]);
 
   return {
     playbackSurface,

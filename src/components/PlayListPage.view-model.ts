@@ -28,6 +28,7 @@ const contentFadeProps = {
 } as const;
 
 export type PlayListPageCommitGesture = "primary-and-secondary" | "secondary-only" | "disabled";
+export type PlayListPageTitleHoverRetainLease = "timed" | "stage-only";
 
 export interface PlayListPageRenderData {
   pageState: MainStateT;
@@ -56,6 +57,7 @@ export interface PlayListPageItemViewModel {
   shouldStartHiddenInPlay: boolean;
   shouldAnimateSlotPosition: boolean;
   titleHoverVisual: TitleShareHoverVisual;
+  titleHoverRetainLease: PlayListPageTitleHoverRetainLease;
   commitGesture: PlayListPageCommitGesture;
   playlistName?: string;
 }
@@ -159,6 +161,7 @@ function createPlayListPageItemViewModel(args: {
   isPlaybackPreparing: boolean;
   isHiddenInPlay: boolean;
   isPlaybackTitleHandoffTarget: boolean;
+  titleHoverRetainLease: PlayListPageTitleHoverRetainLease;
   shouldStartHiddenInPlay: boolean;
   shouldAnimateSlotPosition: boolean;
   commitGesture: PlayListPageCommitGesture;
@@ -196,6 +199,7 @@ function createPlayListPageItemViewModel(args: {
           sourceLayoutId: args.isPlaybackTarget ? null : args.transition.committedLayoutId,
           targetLayoutId: args.transition.returnTargetLayoutId,
         }),
+    titleHoverRetainLease: args.titleHoverRetainLease,
     commitGesture: args.commitGesture,
     playlistName: args.playlist.name,
   } satisfies PlayListPageItemViewModel;
@@ -239,6 +243,8 @@ function resolvePlayListPageVisibleItems(args: {
     args.displayLock?.kind === "playback-surface" && playbackSurfaceTrackName === undefined
       ? playbackSurfacePlaylistName
       : openingPlaybackTitleHandoffTargetName;
+  const titleHoverRetainLease =
+    args.playbackSurface?.phase === "restoring" ? "stage-only" : "timed";
 
   return args.visiblePlaylists.map((playlist) =>
     createPlayListPageItemViewModel({
@@ -263,6 +269,7 @@ function resolvePlayListPageVisibleItems(args: {
         !!playbackSurfaceTrackName &&
         !playbackSurfaceTrackIsPlayable,
       isPlaybackTitleHandoffTarget: playlist.name === playbackTitleHandoffTargetName,
+      titleHoverRetainLease,
       playbackIconWidthText:
         (isPlaybackSurfacePlaying &&
           playlist.name === playbackSurfacePlaylistName &&
@@ -427,6 +434,7 @@ export function resolvePlayListPageViewModel(
         sourceLayoutId: committedLayoutId,
         targetLayoutId: transition.returnTargetLayoutId,
       }),
+      titleHoverRetainLease: "timed",
       commitGesture: "primary-and-secondary",
     },
   };

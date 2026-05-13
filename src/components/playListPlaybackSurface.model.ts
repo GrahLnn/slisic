@@ -2,12 +2,26 @@ import type { MainStateT } from "@/src/flow/appLogic/events";
 
 export type PlayListPlaybackSurfacePhase = "inactive" | "playing" | "restoring";
 
-export interface PlayListPlaybackSurfaceState {
-  phase: PlayListPlaybackSurfacePhase;
-  playlistName: string | null;
-  displayedTrackName: string | null;
-  displayedTrackIsPlayable: boolean;
-}
+export type PlayListPlaybackSurfaceState =
+  | {
+      phase: "inactive";
+      playlistName: null;
+      displayedTrackName: null;
+      displayedTrackIsPlayable: false;
+    }
+  | {
+      phase: "playing";
+      playlistName: string;
+      displayedTrackName: string | null;
+      displayedTrackIsPlayable: boolean;
+    }
+  | {
+      phase: "restoring";
+      playlistName: string;
+      displayedTrackName: null;
+      displayedTrackIsPlayable: false;
+      restoreTransitionStarted: boolean;
+    };
 
 export interface PlayListPlaybackSurfaceSnapshot {
   phase: Exclude<PlayListPlaybackSurfacePhase, "inactive">;
@@ -88,8 +102,15 @@ export function syncPlaybackSurfaceState(args: {
     return args.current.phase === "inactive" ? args.current : INACTIVE_PLAYBACK_SURFACE;
   }
 
-  if (args.current.phase === "restoring" && args.current.displayedTrackName === null) {
+  if (args.current.phase === "restoring") {
     return args.current;
+  }
+
+  if (
+    args.current.displayedTrackName === null ||
+    args.current.displayedTrackName === args.current.playlistName
+  ) {
+    return INACTIVE_PLAYBACK_SURFACE;
   }
 
   return {
@@ -97,7 +118,29 @@ export function syncPlaybackSurfaceState(args: {
     playlistName: args.current.playlistName,
     displayedTrackName: null,
     displayedTrackIsPlayable: false,
+    restoreTransitionStarted: false,
   } satisfies PlayListPlaybackSurfaceState;
+}
+
+export function resolvePlaybackSurfaceAfterTorphStage(args: {
+  current: PlayListPlaybackSurfaceState;
+  playlistName: string;
+  stage: "idle" | "prepare" | "animate";
+}) {
+  if (args.current.phase !== "restoring" || args.current.playlistName !== args.playlistName) {
+    return args.current;
+  }
+
+  if (args.stage !== "idle") {
+    return args.current.restoreTransitionStarted
+      ? args.current
+      : ({
+          ...args.current,
+          restoreTransitionStarted: true,
+        } satisfies PlayListPlaybackSurfaceState);
+  }
+
+  return args.current.restoreTransitionStarted ? INACTIVE_PLAYBACK_SURFACE : args.current;
 }
 
 export function toPlayListPlaybackSurfaceSnapshot(

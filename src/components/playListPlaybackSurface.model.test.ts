@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import {
   INACTIVE_PLAYBACK_SURFACE,
   resolveMachinePlaybackTarget,
+  resolvePlaybackSurfaceAfterTorphStage,
   syncPlaybackSurfaceState,
   toPlayListPlaybackSurfaceSnapshot,
 } from "./playListPlaybackSurface.model";
@@ -130,7 +131,68 @@ describe("playListPlaybackSurface model", () => {
         playlistName: "Quiet Morning",
         displayedTrackName: null,
         displayedTrackIsPlayable: false,
+        restoreTransitionStarted: false,
       },
+    );
+  });
+
+  test("keeps restoring active until the restore text transition starts and then idles", () => {
+    const restoring = syncPlaybackSurfaceState({
+      current: {
+        phase: "playing",
+        playlistName: "Quiet Morning",
+        displayedTrackName: "Track B",
+        displayedTrackIsPlayable: true,
+      },
+      machinePlaybackTarget: null,
+      nowPlayingTrack: null,
+    });
+
+    assert.deepEqual(
+      resolvePlaybackSurfaceAfterTorphStage({
+        current: restoring,
+        playlistName: "Quiet Morning",
+        stage: "idle",
+      }),
+      restoring,
+    );
+
+    const started = resolvePlaybackSurfaceAfterTorphStage({
+      current: restoring,
+      playlistName: "Quiet Morning",
+      stage: "prepare",
+    });
+
+    assert.deepEqual(started, {
+      phase: "restoring",
+      playlistName: "Quiet Morning",
+      displayedTrackName: null,
+      displayedTrackIsPlayable: false,
+      restoreTransitionStarted: true,
+    });
+    assert.deepEqual(
+      resolvePlaybackSurfaceAfterTorphStage({
+        current: started,
+        playlistName: "Quiet Morning",
+        stage: "idle",
+      }),
+      INACTIVE_PLAYBACK_SURFACE,
+    );
+  });
+
+  test("does not create a restoring phase when the displayed text is already the playlist title", () => {
+    assert.deepEqual(
+      syncPlaybackSurfaceState({
+        current: {
+          phase: "playing",
+          playlistName: "Quiet Morning",
+          displayedTrackName: "Quiet Morning",
+          displayedTrackIsPlayable: true,
+        },
+        machinePlaybackTarget: null,
+        nowPlayingTrack: null,
+      }),
+      INACTIVE_PLAYBACK_SURFACE,
     );
   });
 
@@ -142,6 +204,7 @@ describe("playListPlaybackSurface model", () => {
         playlistName: "Quiet Morning",
         displayedTrackName: null,
         displayedTrackIsPlayable: false,
+        restoreTransitionStarted: true,
       }),
       {
         phase: "restoring",
