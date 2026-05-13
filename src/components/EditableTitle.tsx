@@ -35,6 +35,7 @@ type EditableTitleProps = {
   handoffTone?: CollectionTitleTone | null;
   textClassName?: string;
   titleHoverVisual?: TitleHoverTraceVisual;
+  titleHoverTraceOwner?: "list-config" | "playlist-page";
   focusHitSlopWidthClassName?: string;
 } & Omit<ComponentProps<"div">, "onChange">;
 
@@ -97,6 +98,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
       handoffTone = null,
       textClassName,
       titleHoverVisual = "none",
+      titleHoverTraceOwner,
       focusHitSlopWidthClassName,
       className,
       style,
@@ -137,6 +139,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
       const textNode = node?.querySelector<HTMLElement>("[data-title-hover-trace-text]") ?? null;
       const context = {
         layoutId,
+        owner: titleHoverTraceOwner,
         surface: "editable-title" as const,
         textLength: displayValue.length,
         visual: titleHoverVisual,
@@ -181,7 +184,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
       return () => {
         trace.stop("visual-changed");
       };
-    }, [displayValue.length, layoutId, titleHoverVisual]);
+    }, [displayValue.length, layoutId, titleHoverTraceOwner, titleHoverVisual]);
 
     useImperativeHandle(
       ref,

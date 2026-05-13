@@ -208,7 +208,9 @@ function resolvePlayListPageVisibleItems(args: {
   const playbackSurfaceTrackName = args.playbackSurface?.displayedTrackName || undefined;
   const playbackSurfaceTrackIsPlayable = args.playbackSurface?.displayedTrackIsPlayable ?? false;
   const isPlaybackSurfacePlaying = args.playbackSurface?.phase === "playing";
+  const shouldApplyPlaybackSurface = args.displayLock?.kind !== "return-handoff";
   const hasPlaybackTarget =
+    shouldApplyPlaybackSurface &&
     !!playbackSurfacePlaylistName &&
     args.visiblePlaylists.some((playlist) => playlist.name === playbackSurfacePlaylistName);
   const displayLockPlaylistName = args.displayLock?.playlistName ?? null;
@@ -293,6 +295,14 @@ function resolvePlayListPageDisplayLockTargetName(args: {
   titleToneHandoff: CollectionTitleHandoff | null;
   playbackSurface: PlayListPlaybackSurfaceSnapshot | null;
 }): PlayListPageDisplayLock | null {
+  const returnHandoffPlaylistName = resolvePlayListPageReturnHandoffTargetName(args);
+  if (returnHandoffPlaylistName) {
+    return {
+      kind: "return-handoff",
+      playlistName: returnHandoffPlaylistName,
+    };
+  }
+
   const playbackSurfacePlaylistName = args.playbackSurface?.playlistName ?? null;
   if (
     playbackSurfacePlaylistName !== null &&
@@ -306,14 +316,7 @@ function resolvePlayListPageDisplayLockTargetName(args: {
       playlistName: playbackSurfacePlaylistName,
     };
   }
-
-  const returnHandoffPlaylistName = resolvePlayListPageReturnHandoffTargetName(args);
-  return returnHandoffPlaylistName
-    ? {
-        kind: "return-handoff",
-        playlistName: returnHandoffPlaylistName,
-      }
-    : null;
+  return null;
 }
 
 export function resolvePlayListPageViewModel(

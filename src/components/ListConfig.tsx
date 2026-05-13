@@ -555,6 +555,7 @@ export function ListConfig() {
             placeholder={viewModel.title.placeholder}
             style={{ fontFamily: "var(--font-noto-sans)" }}
             textClassName={resolveListConfigTitleHoverClassName(viewModel.title.titleHoverVisual)}
+            titleHoverTraceOwner="list-config"
             titleHoverVisual={viewModel.title.titleHoverVisual}
             value={viewModel.title.value}
             onChange={appLogicAction.changeDraftName}

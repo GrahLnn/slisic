@@ -4,6 +4,7 @@ export type TitleHoverTraceVisual = "hold" | "none" | "retain";
 
 export type TitleHoverTraceContext = {
   layoutId?: string;
+  owner?: "list-config" | "playlist-page";
   surface: "editable-title" | "play-item";
   textLength: number;
   visual: TitleHoverTraceVisual;
@@ -78,7 +79,13 @@ export function shouldRecordTitleHoverTraceCommit(args: {
 }
 
 export function createTitleHoverTraceSignature(context: TitleHoverTraceContext) {
-  return [context.surface, context.layoutId ?? "", context.visual, context.textLength].join("|");
+  return [
+    context.owner ?? "",
+    context.surface,
+    context.layoutId ?? "",
+    context.visual,
+    context.textLength,
+  ].join("|");
 }
 
 export function shouldRecordTitleHoverTraceObservation(args: {

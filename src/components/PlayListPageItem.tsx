@@ -102,6 +102,7 @@ export function PlayListPageItem({
           showPlaybackIcons={viewModel.shouldShowPlaybackIcons}
           text={viewModel.text}
           textClassName={titleHoverClassName}
+          titleHoverTraceOwner="playlist-page"
           titleHoverVisual={viewModel.titleHoverVisual}
           onOpenSpectrum={onOpenSpectrum}
           onOpenSpectrumPointerDown={onOpenSpectrumPointerDown}

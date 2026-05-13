@@ -25,12 +25,13 @@ describe("titleHoverTrace", () => {
   test("records title observations when the structural signature changes", () => {
     const signature = createTitleHoverTraceSignature({
       layoutId: "playlist-title:Quiet Morning",
+      owner: "list-config",
       surface: "play-item",
       textLength: 13,
       visual: "none",
     });
 
-    assert.equal(signature, "play-item|playlist-title:Quiet Morning|none|13");
+    assert.equal(signature, "list-config|play-item|playlist-title:Quiet Morning|none|13");
     assert.equal(
       shouldRecordTitleHoverTraceObservation({
         currentSignature: signature,
@@ -51,6 +52,7 @@ describe("titleHoverTrace", () => {
     const payload = createTitleHoverTraceFramePayload({
       context: {
         layoutId: "playlist-title:Quiet Morning",
+        owner: "list-config",
         surface: "play-item",
         textLength: 13,
         visual: "retain",
@@ -64,6 +66,7 @@ describe("titleHoverTrace", () => {
       elapsedMs: 12.35,
       frame: 2,
       layoutId: "playlist-title:Quiet Morning",
+      owner: "list-config",
       snapshot: null,
       surface: "play-item",
       textLength: 13,

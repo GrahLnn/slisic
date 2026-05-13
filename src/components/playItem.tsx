@@ -42,6 +42,7 @@ type PlayItemBaseProps = Omit<HTMLMotionProps<"div">, "children"> & {
   onOpenSpectrum?: () => void;
   onOpenSpectrumPointerDown?: () => void;
   onTorphStageChange?: (stage: TorphStage) => void;
+  titleHoverTraceOwner?: "list-config" | "playlist-page";
   titleHoverVisual?: TitleHoverTraceVisual;
 };
 
@@ -64,6 +65,7 @@ type PlayItemTextProps = Pick<
   | "showPlaybackIcons"
   | "text"
   | "textClassName"
+  | "titleHoverTraceOwner"
   | "titleHoverVisual"
 > & {
   tone: CollectionTitleTone;
@@ -360,6 +362,7 @@ function PlayItemText({
   showPlaybackIcons = false,
   text,
   textClassName,
+  titleHoverTraceOwner,
   titleHoverVisual = "none",
   tone,
 }: PlayItemTextProps) {
@@ -467,6 +470,7 @@ function PlayItemText({
     const node = scope.current;
     const context = {
       layoutId,
+      owner: titleHoverTraceOwner,
       surface: "play-item" as const,
       textLength: text.length,
       visual: titleHoverVisual,
@@ -511,7 +515,7 @@ function PlayItemText({
     return () => {
       trace.stop("visual-changed");
     };
-  }, [layoutId, scope, text.length, titleHoverVisual]);
+  }, [layoutId, scope, text.length, titleHoverTraceOwner, titleHoverVisual]);
 
   return (
     <>
@@ -594,6 +598,7 @@ export function PlayItem({
   isPlaybackPreparing = false,
   text,
   textClassName,
+  titleHoverTraceOwner,
   titleHoverVisual = "none",
   playbackIconWidthText,
   showPlaybackIcons = false,
@@ -620,6 +625,7 @@ export function PlayItem({
         showPlaybackIcons={showPlaybackIcons}
         text={text}
         textClassName={textClassName}
+        titleHoverTraceOwner={titleHoverTraceOwner}
         titleHoverVisual={titleHoverVisual}
         tone={tone}
       />
