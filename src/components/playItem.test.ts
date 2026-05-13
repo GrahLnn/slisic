@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { collectionTitleTextRetainHoverClassName } from "./collectionTitle";
 import {
   resolvePlayItemColorHandoff,
+  resolvePlayItemTextMetricClassName,
   resolvePlaybackIconLayerBox,
   shouldShowPlaybackIconLayer,
 } from "./playItem";
@@ -134,5 +136,14 @@ describe("playItem", () => {
       }),
       false,
     );
+  });
+
+  test("uses one text metric class for both the wrapper and Torph root", () => {
+    const className = resolvePlayItemTextMetricClassName(collectionTitleTextRetainHoverClassName);
+
+    assert.match(className, /font-\[680\]/);
+    assert.match(className, /\[font-variation-settings:'wght'_680\]/);
+    assert.match(className, /tracking-\[-0\.03em\]/);
+    assert.match(className, /transition-none/);
   });
 });

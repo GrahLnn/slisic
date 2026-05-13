@@ -259,6 +259,10 @@ export function shouldShowPlaybackIconLayer(args: {
   );
 }
 
+export function resolvePlayItemTextMetricClassName(textClassName?: string) {
+  return cn(collectionTitleTextClassName, textClassName);
+}
+
 function PlayItemFrame({
   className,
   children,
@@ -389,6 +393,7 @@ function PlayItemText({
     torphStage,
     isDismissed: isPlaybackIconLayerDismissed,
   });
+  const textMetricClassName = resolvePlayItemTextMetricClassName(textClassName);
 
   const dismissPlaybackIconLayer = () => {
     setPlaybackIconLayerDismissed(true);
@@ -521,11 +526,12 @@ function PlayItemText({
     <>
       <div
         ref={scope}
-        className={cn("relative inline-flex", collectionTitleTextClassName, textClassName)}
+        className={cn("relative inline-flex", textMetricClassName)}
         onClick={onClick}
         onPointerDown={onPointerDown}
       >
         <Torph
+          className={textMetricClassName}
           text={text}
           onStageChange={(stage) => {
             setTorphStage(stage);

@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import {
   createTitleHoverTraceSignature,
   createTitleHoverTraceFramePayload,
+  resolveTitleHoverTraceVisibleTorphLayer,
   shouldRecordTitleHoverTraceCommit,
   shouldRecordTitleHoverTraceObservation,
   shouldSampleTitleHoverTrace,
@@ -73,5 +74,29 @@ describe("titleHoverTrace", () => {
       visual: "retain",
     });
     assert.equal("text" in payload, false);
+  });
+
+  test("classifies the visible Torph layer without driving behavior", () => {
+    assert.equal(
+      resolveTitleHoverTraceVisibleTorphLayer({
+        hasFlowShell: true,
+        hasOverlayGlyphs: true,
+      }),
+      "overlay",
+    );
+    assert.equal(
+      resolveTitleHoverTraceVisibleTorphLayer({
+        hasFlowShell: true,
+        hasOverlayGlyphs: false,
+      }),
+      "flow",
+    );
+    assert.equal(
+      resolveTitleHoverTraceVisibleTorphLayer({
+        hasFlowShell: false,
+        hasOverlayGlyphs: false,
+      }),
+      null,
+    );
   });
 });
