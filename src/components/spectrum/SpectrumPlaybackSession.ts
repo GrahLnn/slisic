@@ -9,12 +9,6 @@ import {
   resolveSpectrumPlaybackActionSnapshot,
   resolveSpectrumPlaybackRestoreEffect,
 } from "./SpectrumPage.view-model";
-import {
-  createSpectrumPlaybackIdentityTracePayload,
-  createSpectrumPlaybackResumeTracePayload,
-  createSpectrumPlaybackStatusTracePayload,
-  recordSpectrumPlaybackTrace,
-} from "./SpectrumPlaybackTrace";
 
 export type SpectrumPlaybackSessionStatus = PlaybackStatusPayload | null;
 
@@ -157,50 +151,21 @@ export function createSpectrumPlaybackSession(args: {
   return {
     async pause({ identity, musicName }) {
       if (scopeId === null) {
-        recordSpectrumPlaybackTrace("pause-skipped", {
-          identity: createSpectrumPlaybackIdentityTracePayload(identity),
-          reason: "missing-scope",
-        });
         return false;
       }
 
       const track = createSpectrumPlaybackTrackPayload(identity, musicName);
-      recordSpectrumPlaybackTrace("pause-request", {
-        identity: createSpectrumPlaybackIdentityTracePayload(identity),
-        scopeId,
-      });
-      const ok = await args.ports.pauseSpectrumMusic(scopeId, track);
-      recordSpectrumPlaybackTrace("pause-result", {
-        identity: createSpectrumPlaybackIdentityTracePayload(identity),
-        ok,
-        scopeId,
-      });
-      return ok;
+      return args.ports.pauseSpectrumMusic(scopeId, track);
     },
     readStatus() {
       return args.ports.getPlaybackStatus();
     },
     async restoreResumePoint({ identity, musicName, resume }) {
-      recordSpectrumPlaybackTrace("restore-request", {
-        identity: createSpectrumPlaybackIdentityTracePayload(identity),
-        resume: createSpectrumPlaybackResumeTracePayload(resume),
-        scopeId,
-      });
-
       if (scopeId === null) {
-        recordSpectrumPlaybackTrace("restore-skipped", {
-          identity: createSpectrumPlaybackIdentityTracePayload(identity),
-          reason: "missing-scope",
-        });
         return null;
       }
 
       if (!resume) {
-        recordSpectrumPlaybackTrace("restore-skipped", {
-          identity: createSpectrumPlaybackIdentityTracePayload(identity),
-          reason: "missing-resume",
-          scopeId,
-        });
         return null;
       }
 
@@ -212,36 +177,16 @@ export function createSpectrumPlaybackSession(args: {
         statusPaused: status?.paused === true,
         storedPositionMs: resume.positionMs,
       });
-      recordSpectrumPlaybackTrace("restore-guard", {
-        effect: restoreEffect,
-        identity: createSpectrumPlaybackIdentityTracePayload(identity),
-        resume: createSpectrumPlaybackResumeTracePayload(resume),
-        scopeId,
-        status: createSpectrumPlaybackStatusTracePayload(status),
-        statusIdentity: createSpectrumPlaybackIdentityTracePayload(statusIdentity),
-      });
       if (restoreEffect.kind === "none") {
         return status;
       }
 
-      const ok = await restore({
+      await restore({
         identity,
         musicName,
         positionMs: restoreEffect.positionMs,
       });
-      recordSpectrumPlaybackTrace("restore-backend-result", {
-        identity: createSpectrumPlaybackIdentityTracePayload(identity),
-        ok,
-        positionMs: restoreEffect.positionMs,
-        scopeId,
-      });
-      const nextStatus = await args.ports.getPlaybackStatus();
-      recordSpectrumPlaybackTrace("restore-status-after", {
-        identity: createSpectrumPlaybackIdentityTracePayload(identity),
-        scopeId,
-        status: createSpectrumPlaybackStatusTracePayload(nextStatus),
-      });
-      return nextStatus;
+      return args.ports.getPlaybackStatus();
     },
     updateLoopSignal({ endMs, identity, musicName, startMs }) {
       if (scopeId === null) {
@@ -283,32 +228,10 @@ export const crabSpectrumPlaybackSessionPorts: SpectrumPlaybackSessionPorts = {
     return unwrapCrabResult<SpectrumPlaybackSessionStatus>(await crab.getPlaybackStatus());
   },
   async playSpectrumMusic(scopeId, track, positionMs) {
-    recordSpectrumPlaybackTrace("backend-play-request", {
-      positionMs,
-      scopeId,
-      trackEndMs: track.end_ms,
-      trackStartMs: track.start_ms,
-    });
-    const ok = unwrapCrabResult<boolean>(await crab.playSpectrumMusic(scopeId, track, positionMs));
-    recordSpectrumPlaybackTrace("backend-play-result", {
-      ok,
-      positionMs,
-      scopeId,
-    });
-    return ok;
+    return unwrapCrabResult<boolean>(await crab.playSpectrumMusic(scopeId, track, positionMs));
   },
   async pauseSpectrumMusic(scopeId, track) {
-    recordSpectrumPlaybackTrace("backend-pause-request", {
-      scopeId,
-      trackEndMs: track.end_ms,
-      trackStartMs: track.start_ms,
-    });
-    const ok = unwrapCrabResult<boolean>(await crab.pauseSpectrumMusic(scopeId, track));
-    recordSpectrumPlaybackTrace("backend-pause-result", {
-      ok,
-      scopeId,
-    });
-    return ok;
+    return unwrapCrabResult<boolean>(await crab.pauseSpectrumMusic(scopeId, track));
   },
   async updateSpectrumPlaybackLoopSignal(scopeId, payload) {
     return unwrapCrabResult<PlaybackStatusPayload | null>(

@@ -39,12 +39,6 @@ import {
   type SpectrumPlaybackResumePoint,
   type SpectrumPlaybackSessionStatus,
 } from "./SpectrumPlaybackSession";
-import {
-  createSpectrumPlaybackIdentityTracePayload,
-  createSpectrumPlaybackResumeTracePayload,
-  createSpectrumPlaybackStatusTracePayload,
-  recordSpectrumPlaybackTrace,
-} from "./SpectrumPlaybackTrace";
 import { SPECTRUM_PLAYBACK_STATUS_POLL_MS } from "./SpectrumPlaybackAction";
 import { usePageRenderFreeze } from "../usePageRenderFreeze";
 
@@ -316,18 +310,10 @@ export function SpectrumPage() {
 
   async function handleBackAction() {
     if (isBackActionLocked) {
-      recordSpectrumPlaybackTrace("back-skipped", {
-        reason: "locked",
-      });
       return;
     }
 
     setIsBackNavigationPending(true);
-    recordSpectrumPlaybackTrace("back-request", {
-      actionKind: renderData.backActionVisualState.kind,
-      primaryIdentity: createSpectrumPlaybackIdentityTracePayload(primaryPlaybackIdentity),
-      primaryResume: createSpectrumPlaybackResumeTracePayload(primaryPlaybackResumeRef.current),
-    });
 
     try {
       if (renderData.backActionVisualState.kind === "back") {
@@ -386,29 +372,16 @@ export function SpectrumPage() {
 
   async function handleRestorePrimarySpectrumMusicPlayback() {
     if (isNowPlayingSpectrumMusicDeleteRequested()) {
-      recordSpectrumPlaybackTrace("back-restore-skipped", {
-        reason: "delete-requested",
-      });
       return;
     }
 
     const primaryResume = primaryPlaybackResumeRef.current;
     const primaryEditor = renderData.editorViewModels[0];
     if (!primaryResume || !primaryEditor || primaryEditor.playbackIdentity === null) {
-      recordSpectrumPlaybackTrace("back-restore-skipped", {
-        hasPrimaryEditor: !!primaryEditor,
-        hasPrimaryIdentity: primaryEditor?.playbackIdentity != null,
-        hasResume: !!primaryResume,
-        reason: "missing-input",
-      });
       return;
     }
 
     const identity = primaryEditor.playbackIdentity;
-    recordSpectrumPlaybackTrace("back-restore-request", {
-      identity: createSpectrumPlaybackIdentityTracePayload(identity),
-      resume: createSpectrumPlaybackResumeTracePayload(primaryResume),
-    });
     await playbackSession.restoreResumePoint({
       identity,
       musicName: primaryEditor.titleValue,
@@ -421,30 +394,17 @@ export function SpectrumPage() {
     action: SpectrumPlaybackActionKind,
   ) {
     const editor = resolveSpectrumEditorByPlaybackIdentity(renderData.editorViewModels, identity);
-    recordSpectrumPlaybackTrace("action-request", {
-      action,
-      hasEditor: editor !== null,
-      identity: createSpectrumPlaybackIdentityTracePayload(identity),
-      resume: createSpectrumPlaybackResumeTracePayload(primaryPlaybackResumeRef.current),
-    });
     if (editor === null) {
       return;
     }
 
     if (action === "pause") {
       const status = playbackControlByIdentityRef.current.get(identity.key)?.commitImmediatePause();
-      recordSpectrumPlaybackTrace("pause-immediate-result", {
-        identity: createSpectrumPlaybackIdentityTracePayload(identity),
-        status: createSpectrumPlaybackStatusTracePayload(status ?? null),
-      });
       if (status) {
         primaryPlaybackResumeRef.current = {
           identity,
           positionMs: resolvePlaybackAbsolutePositionMs(status),
         };
-        recordSpectrumPlaybackTrace("pause-point-committed", {
-          resume: createSpectrumPlaybackResumeTracePayload(primaryPlaybackResumeRef.current),
-        });
         commitPlaybackActionSnapshot(status);
       }
       await playbackSession.pause({
@@ -457,18 +417,10 @@ export function SpectrumPage() {
         primaryPlaybackResumeRef.current?.identity.key === identity.key
           ? primaryPlaybackResumeRef.current
           : null;
-      recordSpectrumPlaybackTrace("play-restore-dispatch", {
-        identity: createSpectrumPlaybackIdentityTracePayload(identity),
-        resume: createSpectrumPlaybackResumeTracePayload(resume),
-      });
       const status = await playbackSession.restoreResumePoint({
         identity,
         musicName: editor.titleValue,
         resume,
-      });
-      recordSpectrumPlaybackTrace("play-restore-result", {
-        identity: createSpectrumPlaybackIdentityTracePayload(identity),
-        status: createSpectrumPlaybackStatusTracePayload(status),
       });
       commitPlaybackActionSnapshot(status);
     }
