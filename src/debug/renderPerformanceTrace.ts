@@ -1,5 +1,6 @@
 import { downloadDir, join } from "@tauri-apps/api/path";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { readTorphLibraryTraceEntries } from "./torphTrace";
 
 export type RenderPerformanceTraceEntry = {
   seq: number;
@@ -21,6 +22,12 @@ type RenderPerformanceTraceApi = {
   save: () => Promise<string | null>;
   startFrameDropSampler: (args?: RenderFrameDropSamplerOptions) => RenderFrameDropSamplerHandle;
   summary: () => RenderPerformanceTraceSummary;
+};
+
+type TraceEntryLike = {
+  performanceNow?: number;
+  seq?: number;
+  source?: string;
 };
 
 export type RenderFrameDropSampleState = {
@@ -226,6 +233,52 @@ export function summarizeRenderPerformanceTraceEntries(
   };
 }
 
+export function mergeRenderPerformanceTraceEntries(args: {
+  renderEntries: readonly RenderPerformanceTraceEntry[];
+  torphEntries: readonly Record<string, unknown>[];
+}) {
+  const merged = [
+    ...args.renderEntries.map((entry, index) => ({
+      entry,
+      index,
+      performanceNow: entry.performanceNow,
+      seq: entry.seq,
+      source: "render-performance",
+    })),
+    ...args.torphEntries.map((entry, index) => {
+      const typedEntry = entry as TraceEntryLike;
+      return {
+        entry,
+        index: args.renderEntries.length + index,
+        performanceNow:
+          typeof typedEntry.performanceNow === "number"
+            ? typedEntry.performanceNow
+            : Number.POSITIVE_INFINITY,
+        seq: typeof typedEntry.seq === "number" ? typedEntry.seq : index,
+        source: typedEntry.source ?? "torph",
+      };
+    }),
+  ];
+
+  merged.sort((left, right) => {
+    if (left.performanceNow !== right.performanceNow) {
+      return left.performanceNow - right.performanceNow;
+    }
+
+    if (left.source !== right.source) {
+      return String(left.source).localeCompare(String(right.source));
+    }
+
+    if (left.seq !== right.seq) {
+      return left.seq - right.seq;
+    }
+
+    return left.index - right.index;
+  });
+
+  return merged.map((item) => item.entry);
+}
+
 export function startRenderFrameDropSampler(
   args: RenderFrameDropSamplerOptions = {},
 ): RenderFrameDropSamplerHandle {
@@ -300,7 +353,12 @@ async function saveRenderPerformanceTrace() {
     await downloadDir(),
     `render-performance-trace.${new Date().toISOString().replace(/:/g, "-")}.${Date.now()}.jsonl`,
   );
-  const contents = entries.map((entry) => JSON.stringify(entry)).join("\n");
+  const contents = mergeRenderPerformanceTraceEntries({
+    renderEntries: entries,
+    torphEntries: readTorphLibraryTraceEntries(),
+  })
+    .map((entry) => JSON.stringify(entry))
+    .join("\n");
 
   await writeTextFile(path, contents);
   console.log(`[renderPerformanceTrace] saved ${path}`);

@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import {
   createTitleHoverTraceSignature,
   createTitleHoverTraceFramePayload,
+  resolveTitleHoverTraceTorphContainerNode,
   resolveTitleHoverTraceVisibleTorphLayer,
   shouldRecordTitleHoverTraceCommit,
   shouldRecordTitleHoverTraceObservation,
@@ -98,5 +99,17 @@ describe("titleHoverTrace", () => {
       }),
       null,
     );
+  });
+
+  test("resolves the Torph measurement container from the Torph root", () => {
+    const container = {
+      parentElement: null,
+    } as HTMLElement;
+    const root = {
+      parentElement: container,
+    } as HTMLElement;
+
+    assert.equal(resolveTitleHoverTraceTorphContainerNode(root), container);
+    assert.equal(resolveTitleHoverTraceTorphContainerNode(null), null);
   });
 });

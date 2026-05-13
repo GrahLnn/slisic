@@ -381,7 +381,11 @@ function snapshotEnvironment() {
   };
 }
 
-function readTorphLibraryEntries() {
+export function readTorphLibraryTraceEntries() {
+  if (typeof window === "undefined") {
+    return [] as Record<string, unknown>[];
+  }
+
   const text = window.__TORPH_TRACE__?.text();
   if (!text) {
     return [] as Record<string, unknown>[];
@@ -401,7 +405,7 @@ function readTorphLibraryEntries() {
 
 function resolveMergedTraceEntries() {
   const hostEntries = [...entries];
-  const libraryEntries = readTorphLibraryEntries();
+  const libraryEntries = readTorphLibraryTraceEntries();
   const merged = [
     ...hostEntries.map((entry, index) => ({
       entry,

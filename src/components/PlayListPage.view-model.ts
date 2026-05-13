@@ -62,6 +62,10 @@ export interface PlayListPageItemViewModel {
 
 type PlayListPageDisplayLock =
   | {
+      kind: "opening-playback";
+      playlistName: string;
+    }
+  | {
       kind: "playback-surface";
       playlistName: string;
     }
@@ -311,6 +315,22 @@ function resolvePlayListPageDisplayLockTargetName(args: {
     return {
       kind: "return-handoff",
       playlistName: returnHandoffPlaylistName,
+    };
+  }
+
+  const openingPlaybackPlaylistName = args.playingPlaylistName;
+  if (
+    args.pageState === "play" &&
+    args.playbackSurface === null &&
+    openingPlaybackPlaylistName !== null &&
+    hasVisiblePlaylistName({
+      visiblePlaylists: args.visiblePlaylists,
+      playlistName: openingPlaybackPlaylistName,
+    })
+  ) {
+    return {
+      kind: "opening-playback",
+      playlistName: openingPlaybackPlaylistName,
     };
   }
 

@@ -25,12 +25,14 @@ export type TitleHoverTraceNodeSnapshot = {
     top: number;
     width: number;
   };
+  transform: string;
 };
 
 export type TitleHoverTraceVisibleTorphLayer = "flow" | "overlay" | null;
 
 export type TitleHoverTraceLayerSnapshots = {
   sharedLayoutHost: TitleHoverTraceNodeSnapshot | null;
+  torphContainer: TitleHoverTraceNodeSnapshot | null;
   torphFirstGlyphSlice: TitleHoverTraceNodeSnapshot | null;
   torphFlow: TitleHoverTraceNodeSnapshot | null;
   torphFlowShell: TitleHoverTraceNodeSnapshot | null;
@@ -80,6 +82,7 @@ function readTitleHoverTraceNodeSnapshot(
       top: roundTraceNumber(rect.top),
       width: roundTraceNumber(rect.width),
     },
+    transform: style.transform,
   };
 }
 
@@ -102,8 +105,13 @@ export function resolveTitleHoverTraceVisibleTorphLayer(args: {
   return null;
 }
 
+export function resolveTitleHoverTraceTorphContainerNode(torphRoot: HTMLElement | null) {
+  return torphRoot?.parentElement ?? null;
+}
+
 function readTitleHoverTraceLayerSnapshots(node: HTMLElement): TitleHoverTraceLayerSnapshots {
   const torphRoot = queryTitleHoverTraceLayer(node, "[data-torph-debug-role='root']");
+  const torphContainer = resolveTitleHoverTraceTorphContainerNode(torphRoot);
   const torphFlowShell = queryTitleHoverTraceLayer(node, "[data-torph-debug-role='flow-shell']");
   const torphFlow = queryTitleHoverTraceLayer(node, "[data-torph-debug-role='flow']");
   const torphOverlay = queryTitleHoverTraceLayer(node, "[data-torph-debug-role='overlay']");
@@ -112,6 +120,7 @@ function readTitleHoverTraceLayerSnapshots(node: HTMLElement): TitleHoverTraceLa
 
   return {
     sharedLayoutHost: readTitleHoverTraceNodeSnapshot(node.parentElement),
+    torphContainer: readTitleHoverTraceNodeSnapshot(torphContainer),
     torphFirstGlyphSlice: readTitleHoverTraceNodeSnapshot(torphFirstGlyphSlice),
     torphFlow: readTitleHoverTraceNodeSnapshot(torphFlow),
     torphFlowShell: readTitleHoverTraceNodeSnapshot(torphFlowShell),

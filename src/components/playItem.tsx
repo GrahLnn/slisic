@@ -263,6 +263,22 @@ export function resolvePlayItemTextMetricClassName(textClassName?: string) {
   return cn(collectionTitleTextClassName, textClassName);
 }
 
+export function createPlayItemTorphDebugMeta(args: {
+  layoutId?: string;
+  owner?: "list-config" | "playlist-page";
+  surface: "play-item";
+  text: string;
+  visual: TitleHoverTraceVisual;
+}) {
+  return {
+    layoutId: args.layoutId ?? null,
+    owner: args.owner ?? null,
+    surface: args.surface,
+    textLength: args.text.length,
+    visual: args.visual,
+  } satisfies Record<string, unknown>;
+}
+
 function PlayItemFrame({
   className,
   children,
@@ -394,6 +410,13 @@ function PlayItemText({
     isDismissed: isPlaybackIconLayerDismissed,
   });
   const textMetricClassName = resolvePlayItemTextMetricClassName(textClassName);
+  const torphDebugMeta = createPlayItemTorphDebugMeta({
+    layoutId,
+    owner: titleHoverTraceOwner,
+    surface: "play-item",
+    text,
+    visual: titleHoverVisual,
+  });
 
   const dismissPlaybackIconLayer = () => {
     setPlaybackIconLayerDismissed(true);
@@ -532,6 +555,8 @@ function PlayItemText({
       >
         <Torph
           className={textMetricClassName}
+          debugLabel="playlist-title"
+          debugMeta={torphDebugMeta}
           text={text}
           onStageChange={(stage) => {
             setTorphStage(stage);

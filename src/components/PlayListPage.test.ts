@@ -254,7 +254,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.createItemViewModel.isHiddenInPlay, false);
   });
 
-  test("keeps the normal ready to play container path before the playback surface syncs", () => {
+  test("locks the opening playback target before the playback surface syncs", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "play",
       activeLayoutId: null,
@@ -270,11 +270,11 @@ describe("PlayListPage", () => {
       playbackSurface: null,
     });
 
-    assert.equal(viewModel.shouldLockScroll, false);
-    assert.equal(viewModel.playbackTargetKey, null);
+    assert.equal(viewModel.shouldLockScroll, true);
+    assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.shouldRenderCreateItem, true);
-    assert.equal(viewModel.shouldShowCreateItem, true);
-    assert.equal(viewModel.createItemViewModel.isHiddenInPlay, false);
+    assert.equal(viewModel.shouldShowCreateItem, false);
+    assert.equal(viewModel.createItemViewModel.isHiddenInPlay, true);
     assert.deepEqual(
       viewModel.itemViewModels.map((item) => ({
         key: item.key,
@@ -289,7 +289,7 @@ describe("PlayListPage", () => {
           key: "Night Drive",
           layoutId: "playlist-title:Night Drive",
           isPlaybackTarget: false,
-          isHiddenInPlay: false,
+          isHiddenInPlay: true,
           shouldStartHiddenInPlay: false,
           titleHoverVisual: "none",
         },

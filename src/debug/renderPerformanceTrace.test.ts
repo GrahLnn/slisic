@@ -3,10 +3,12 @@ import { describe, test } from "node:test";
 import {
   createRenderFrameDropSampleState,
   flushRenderFrameDropSampleState,
+  mergeRenderPerformanceTraceEntries,
   sampleRenderFrameDropState,
   summarizeRenderPerformanceTraceEntries,
   type RenderPerformanceTraceEntry,
 } from "./renderPerformanceTrace";
+import { readTorphLibraryTraceEntries } from "./torphTrace";
 
 describe("renderPerformanceTrace", () => {
   test("aggregates frame drops into window summaries", () => {
@@ -81,5 +83,136 @@ describe("renderPerformanceTrace", () => {
         "waveform-canvas-job": 2,
       },
     });
+  });
+
+  test("merges render and Torph trace entries by performance time", () => {
+    const renderEntry: RenderPerformanceTraceEntry = {
+      event: "title-hover-frame",
+      isoTime: "2026-05-08T00:00:00.010Z",
+      payload: {},
+      performanceNow: 10,
+      seq: 0,
+    };
+    const torphEntry = {
+      source: "torph",
+      event: "effect:frame-snapshot",
+      performanceNow: 8,
+      seq: 1,
+      payload: {},
+    };
+
+    assert.deepEqual(
+      mergeRenderPerformanceTraceEntries({
+        renderEntries: [renderEntry],
+        torphEntries: [torphEntry],
+      }),
+      [torphEntry, renderEntry],
+    );
+  });
+
+  test("keeps untimed Torph trace entries after timed render entries", () => {
+    const renderEntry: RenderPerformanceTraceEntry = {
+      event: "title-hover-frame",
+      isoTime: "2026-05-08T00:00:00.010Z",
+      payload: {},
+      performanceNow: 10,
+      seq: 0,
+    };
+    const torphEntry = {
+      source: "torph",
+      event: "effect:trace-meta",
+      payload: {},
+    };
+
+    assert.deepEqual(
+      mergeRenderPerformanceTraceEntries({
+        renderEntries: [renderEntry],
+        torphEntries: [torphEntry],
+      }),
+      [renderEntry, torphEntry],
+    );
+  });
+
+  test("can read Torph library trace entries from the shared trace API", () => {
+    const previousWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+
+    try {
+      Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+          __TORPH_TRACE__: {
+            clear: () => undefined,
+            count: () => 1,
+            download: () => null,
+            text: () =>
+              [
+                JSON.stringify({
+                  source: "torph",
+                  event: "effect:frame-snapshot",
+                  payload: {
+                    debugLabel: "playlist-title",
+                  },
+                }),
+                "",
+              ].join("\n"),
+          },
+        },
+      });
+
+      assert.deepEqual(readTorphLibraryTraceEntries(), [
+        {
+          source: "torph",
+          event: "effect:frame-snapshot",
+          payload: {
+            debugLabel: "playlist-title",
+          },
+        },
+      ]);
+    } finally {
+      if (previousWindowDescriptor === undefined) {
+        Reflect.deleteProperty(globalThis, "window");
+      } else {
+        Object.defineProperty(globalThis, "window", previousWindowDescriptor);
+      }
+    }
+  });
+
+  test("ignores malformed Torph library trace lines", () => {
+    const previousWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+
+    try {
+      Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+          __TORPH_TRACE__: {
+            clear: () => undefined,
+            count: () => 1,
+            download: () => null,
+            text: () =>
+              [
+                "{",
+                JSON.stringify({
+                  source: "torph",
+                  event: "effect:trace-meta",
+                }),
+                "",
+              ].join("\n"),
+          },
+        },
+      });
+
+      assert.deepEqual(readTorphLibraryTraceEntries(), [
+        {
+          source: "torph",
+          event: "effect:trace-meta",
+        },
+      ]);
+    } finally {
+      if (previousWindowDescriptor === undefined) {
+        Reflect.deleteProperty(globalThis, "window");
+      } else {
+        Object.defineProperty(globalThis, "window", previousWindowDescriptor);
+      }
+    }
   });
 });

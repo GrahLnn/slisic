@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { collectionTitleTextRetainHoverClassName } from "./collectionTitle";
 import {
+  createPlayItemTorphDebugMeta,
   resolvePlayItemColorHandoff,
   resolvePlayItemTextMetricClassName,
   resolvePlaybackIconLayerBox,
@@ -145,5 +146,24 @@ describe("playItem", () => {
     assert.match(className, /\[font-variation-settings:'wght'_680\]/);
     assert.match(className, /tracking-\[-0\.03em\]/);
     assert.match(className, /transition-none/);
+  });
+
+  test("passes stable title context into Torph debug tracing", () => {
+    assert.deepEqual(
+      createPlayItemTorphDebugMeta({
+        layoutId: "playlist-title:Quiet Morning",
+        owner: "playlist-page",
+        surface: "play-item",
+        text: "Quiet Morning",
+        visual: "hold",
+      }),
+      {
+        layoutId: "playlist-title:Quiet Morning",
+        owner: "playlist-page",
+        surface: "play-item",
+        textLength: 13,
+        visual: "hold",
+      },
+    );
   });
 });
