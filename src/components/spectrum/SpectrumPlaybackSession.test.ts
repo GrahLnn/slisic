@@ -126,6 +126,27 @@ describe("SpectrumPlaybackSession", () => {
     });
   });
 
+  test("stores the immediate pause point as stable backend milliseconds", () => {
+    assert.equal(
+      resolvePlaybackAbsolutePositionMs(
+        createStatus({
+          playback_start_ms: 5_000,
+          position_ms: 533.599_999_904_633,
+        }),
+      ),
+      5_534,
+    );
+    assert.equal(
+      resolvePlaybackAbsolutePositionMs(
+        createStatus({
+          playback_start_ms: 5_000,
+          position_ms: Number.NaN,
+        }),
+      ),
+      0,
+    );
+  });
+
   test("keeps scoped actions inert before the backend scope is available", async () => {
     const { calls, ports } = createPorts([createStatus()]);
     const session = createSpectrumPlaybackSession({ ports, scopeId: null });

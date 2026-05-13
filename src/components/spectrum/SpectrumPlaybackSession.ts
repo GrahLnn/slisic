@@ -97,7 +97,8 @@ export function isPlaybackStatusForSpectrumIdentity(
 }
 
 export function resolvePlaybackAbsolutePositionMs(status: PlaybackStatusPayload) {
-  return Math.max(0, (status.playback_start_ms ?? 0) + status.position_ms);
+  const positionMs = (status.playback_start_ms ?? 0) + status.position_ms;
+  return Number.isFinite(positionMs) ? Math.max(0, Math.round(positionMs)) : 0;
 }
 
 export function resolveSpectrumPlaybackActionSnapshotFromStatus(
