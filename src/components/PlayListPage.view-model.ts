@@ -197,6 +197,8 @@ function createPlayListPageItemViewModel(args: {
 
 function resolvePlayListPageVisibleItems(args: {
   visiblePlaylists: readonly PlayList[];
+  pageState: MainStateT;
+  playingPlaylistName: string | null;
   playbackSurface: PlayListPlaybackSurfaceSnapshot | null;
   displayLock: PlayListPageDisplayLock | null;
   titleShareEnabled: boolean;
@@ -220,10 +222,17 @@ function resolvePlayListPageVisibleItems(args: {
     !!displayLockPlaylistName &&
     args.visiblePlaylists.some((playlist) => playlist.name === displayLockPlaylistName);
   const shouldStartHiddenItemsInPlay = args.displayLock?.kind === "return-handoff";
+  const openingPlaybackTitleHandoffTargetName =
+    args.pageState === "play" &&
+    args.playbackSurface === null &&
+    args.playingPlaylistName !== null &&
+    args.visiblePlaylists.some((playlist) => playlist.name === args.playingPlaylistName)
+      ? args.playingPlaylistName
+      : null;
   const playbackTitleHandoffTargetName =
     args.displayLock?.kind === "playback-surface" && playbackSurfaceTrackName === undefined
       ? playbackSurfacePlaylistName
-      : null;
+      : openingPlaybackTitleHandoffTargetName;
 
   return args.visiblePlaylists.map((playlist) =>
     createPlayListPageItemViewModel({
@@ -346,6 +355,8 @@ export function resolvePlayListPageViewModel(
   const itemCommitGesture = renderData.pageState === "ready" ? "secondary-only" : "disabled";
   const itemViewModels = resolvePlayListPageVisibleItems({
     visiblePlaylists,
+    pageState: renderData.pageState,
+    playingPlaylistName: renderData.playingPlaylistName,
     playbackSurface: renderData.playbackSurface,
     displayLock,
     titleShareEnabled,

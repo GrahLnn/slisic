@@ -282,6 +282,7 @@ describe("PlayListPage", () => {
         isPlaybackTarget: item.isPlaybackTarget,
         isHiddenInPlay: item.isHiddenInPlay,
         shouldStartHiddenInPlay: item.shouldStartHiddenInPlay,
+        titleHoverVisual: item.titleHoverVisual,
       })),
       [
         {
@@ -290,6 +291,7 @@ describe("PlayListPage", () => {
           isPlaybackTarget: false,
           isHiddenInPlay: false,
           shouldStartHiddenInPlay: false,
+          titleHoverVisual: "none",
         },
         {
           key: "Quiet Morning",
@@ -297,6 +299,7 @@ describe("PlayListPage", () => {
           isPlaybackTarget: false,
           isHiddenInPlay: false,
           shouldStartHiddenInPlay: false,
+          titleHoverVisual: "retain",
         },
       ],
     );
