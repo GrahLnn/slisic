@@ -64,6 +64,20 @@ describe("titleShare", () => {
     assert.equal(shouldSuppressTitleShareFade("playlist-title:PlayList 2", transition), false);
   });
 
+  test("does not let an old pressed source suppress a returning target", () => {
+    const transition = resolveTitleSharePageTransition({
+      activeLayoutId: null,
+      titleToneHandoff: {
+        layoutId: "playlist-title:PlayList 1",
+        tone: "solid",
+      },
+      pressedLayoutId: null,
+    });
+
+    assert.equal(transition.committedLayoutId, null);
+    assert.equal(transition.returnTargetLayoutId, "playlist-title:PlayList 1");
+  });
+
   test("derives the title hover visual from the active transition role", () => {
     assert.equal(
       resolveTitleShareHoverVisual({

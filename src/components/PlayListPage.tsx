@@ -1,12 +1,14 @@
-import { useCallback, useState, type RefCallback } from "react";
+import { useCallback, type RefCallback } from "react";
 import { useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
-import { CREATE_COLLECTION_LAYOUT_ID } from "@/src/flow/appLogic/core";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import { PlayListPageItem, CreateNewPlayListItem } from "./PlayListPageItem";
 import { usePlayListPlaybackSurface } from "./usePlayListPlaybackSurface";
-import { resolvePlayListPageViewModel } from "./PlayListPage.view-model";
+import {
+  resolvePlayListPageViewModel,
+  type PlayListPageRenderData,
+} from "./PlayListPage.view-model";
 import {
   recordStoredScrollTop,
   restoreStoredScrollTop,
@@ -26,7 +28,6 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     titleToneHandoff,
   } = appLogicHook.useContext();
   const pageState = appLogicHook.useState();
-  const [pressedLayoutId, setPressedLayoutId] = useState<string | null>(null);
   const pageStateValue = pageState.match({
     idle: () => "idle" as const,
     loading: () => "loading" as const,
@@ -55,7 +56,7 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     },
     [playbackSurface.containerRef, scrollPositionRef],
   );
-  const liveRenderData = {
+  const liveRenderData: PlayListPageRenderData = {
     pageState: pageStateValue,
     activeLayoutId,
     hasPlayList,
@@ -63,9 +64,9 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     pendingPlaylistPreview,
     playingPlaylistName,
     titleToneHandoff,
-    pressedLayoutId,
+    pressedLayoutId: null,
     playbackSurface: playbackSurface.playbackSurfaceSnapshot,
-  } as const;
+  };
   const pageRenderFreeze = usePageRenderFreeze(liveRenderData, {
     isPresent,
     freezeOnExit: true,
@@ -107,13 +108,6 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
 
                   appLogicAction.playPlaylist(itemViewModel.playlistName);
                 }}
-                onPointerDown={() => {
-                  if (!itemViewModel.layoutId) {
-                    return;
-                  }
-
-                  setPressedLayoutId(itemViewModel.layoutId);
-                }}
                 onCommit={() => {
                   if (!itemViewModel.playlistName) {
                     return;
@@ -140,9 +134,6 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
               <CreateNewPlayListItem
                 key={viewModel.createItemViewModel.key}
                 viewModel={viewModel.createItemViewModel}
-                onPointerDown={() => {
-                  setPressedLayoutId(CREATE_COLLECTION_LAYOUT_ID);
-                }}
               />
             ) : null}
             <div aria-hidden className="h-[calc(50vh-1rem)] shrink-0 snap-none" />
