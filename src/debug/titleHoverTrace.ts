@@ -30,6 +30,7 @@ export type TitleHoverTraceNodeSnapshot = {
 export type TitleHoverTraceVisibleTorphLayer = "flow" | "overlay" | null;
 
 export type TitleHoverTraceLayerSnapshots = {
+  sharedLayoutHost: TitleHoverTraceNodeSnapshot | null;
   torphFirstGlyphSlice: TitleHoverTraceNodeSnapshot | null;
   torphFlow: TitleHoverTraceNodeSnapshot | null;
   torphFlowShell: TitleHoverTraceNodeSnapshot | null;
@@ -110,6 +111,7 @@ function readTitleHoverTraceLayerSnapshots(node: HTMLElement): TitleHoverTraceLa
     torphOverlay?.querySelector<HTMLElement>("[data-morph-slice='context']") ?? null;
 
   return {
+    sharedLayoutHost: readTitleHoverTraceNodeSnapshot(node.parentElement),
     torphFirstGlyphSlice: readTitleHoverTraceNodeSnapshot(torphFirstGlyphSlice),
     torphFlow: readTitleHoverTraceNodeSnapshot(torphFlow),
     torphFlowShell: readTitleHoverTraceNodeSnapshot(torphFlowShell),

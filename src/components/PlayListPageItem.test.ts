@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { collectionTitleTextRetainHoverClassName } from "./collectionTitle";
+import { resolvePlayListPageItemTitleFrameClassName } from "./PlayListPageItem";
 import {
   resolvePlayListPageItemSlotPositionAnimationEnabled,
   resolvePlayListPageItemTitleProjectionLayoutId,
@@ -80,5 +81,16 @@ describe("PlayListPageItem", () => {
   test("uses an immediate title weight for shared layout handoff evidence", () => {
     assert.match(collectionTitleTextRetainHoverClassName, /font-\[680\]/);
     assert.match(collectionTitleTextRetainHoverClassName, /transition-none/);
+  });
+
+  test("puts retained title weight on the shared layout host", () => {
+    const className = resolvePlayListPageItemTitleFrameClassName(
+      collectionTitleTextRetainHoverClassName,
+    );
+
+    assert.match(className, /text-4xl/);
+    assert.match(className, /font-\[680\]/);
+    assert.match(className, /\[font-variation-settings:'wght'_680\]/);
+    assert.match(className, /transition-none/);
   });
 });

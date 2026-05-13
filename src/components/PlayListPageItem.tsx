@@ -21,6 +21,10 @@ import {
   resolvePlayListPageItemTitleProjectionLayoutId,
 } from "./PlayListPageItem.motion";
 
+export function resolvePlayListPageItemTitleFrameClassName(titleHoverClassName?: string) {
+  return cn(collectionTitleClassName, titleHoverClassName);
+}
+
 export function PlayListPageItem({
   viewModel,
   containerRef,
@@ -96,7 +100,7 @@ export function PlayListPageItem({
         transition={{ duration: 0.3, ease: "easeOut" }}
       >
         <PlayItem
-          className={collectionTitleClassName}
+          className={resolvePlayListPageItemTitleFrameClassName(titleHoverClassName)}
           handoffTone={viewModel.handoffTone}
           isPlaybackPreparing={viewModel.isPlaybackPreparing}
           layoutId={titleProjectionLayoutId}
