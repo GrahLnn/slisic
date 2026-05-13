@@ -825,6 +825,9 @@ export const machine = src.createMachine({
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
+              titleToneHandoff: context.activeLayoutId
+                ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
+                : context.titleToneHandoff,
             }),
           ),
         },

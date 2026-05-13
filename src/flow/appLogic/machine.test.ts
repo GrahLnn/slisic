@@ -122,6 +122,53 @@ describe("appLogic machine", () => {
     });
   });
 
+  test("keeps the target title handoff when backing out before config load completes", async () => {
+    const collection = createCollection([createMusic()]);
+    const playlist = createPlaylist(collection);
+
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () => ({
+            hasPlayList: true,
+            playlists: [playlist],
+            collections: [collection],
+            savePath: "C:/Music",
+          })),
+          loadPlaylistDraft: fromPromise<ConfigDraft, string>(
+            () => new Promise<ConfigDraft>(() => undefined),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "ready") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+
+    actor.send(payloads["playlist.open"].load(playlist.name));
+    assert.equal(actor.getSnapshot().value, "configLoading");
+
+    actor.send(sig.mainx.back);
+
+    assert.equal(actor.getSnapshot().value, "ready");
+    assert.deepEqual(actor.getSnapshot().context.titleToneHandoff, {
+      layoutId: "playlist-title:Focus Session",
+      tone: "solid",
+    });
+  });
+
   test("automatically retries loading after entering the error state", async () => {
     let loadAttempt = 0;
     const states: string[] = [];
