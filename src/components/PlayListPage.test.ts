@@ -326,7 +326,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.shouldLockScroll, true);
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
-    assert.equal(viewModel.itemViewModels[0]?.layoutId, undefined);
+    assert.equal(viewModel.itemViewModels[0]?.layoutId, "playlist-title:Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.sourceLayoutId, "playlist-title:Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "retain");
     assert.equal(viewModel.itemViewModels[0]?.shouldAnimateSlotPosition, false);

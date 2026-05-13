@@ -162,7 +162,9 @@ function createPlayListPageItemViewModel(args: {
   const itemLayoutId = playlistTitleLayoutId(args.playlist.name);
   const shouldShareTitleLayout =
     args.titleShareEnabled &&
-    (!args.isPlaybackTarget || args.transition.committedLayoutId === itemLayoutId);
+    (!args.isPlaybackTarget ||
+      args.isPlaybackTitleHandoffTarget ||
+      args.transition.committedLayoutId === itemLayoutId);
 
   return {
     key: args.playlist.name,
