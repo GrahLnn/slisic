@@ -33,6 +33,7 @@ export interface ListConfigTitleViewModel {
   handoffTone: CollectionTitleTone | null;
   layoutId: string | undefined;
   titleHoverVisual: TitleShareHoverVisual;
+  titleNativeHoverEnabled: boolean;
   placeholder?: string;
   value: string;
 }
@@ -142,6 +143,7 @@ export function resolveListConfigTitleViewModel(args: {
       layoutId,
       targetLayoutId: args.titleToneHandoff?.layoutId ?? null,
     }),
+    titleNativeHoverEnabled: false,
     placeholder: snapshot?.placeholder,
     value: snapshot?.value ?? "",
   };

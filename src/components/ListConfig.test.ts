@@ -199,6 +199,7 @@ describe("ListConfig title view model", () => {
         handoffTone: null,
         layoutId: undefined,
         titleHoverVisual: "none",
+        titleNativeHoverEnabled: false,
         placeholder: undefined,
         value: "",
       },
@@ -224,13 +225,14 @@ describe("ListConfig title view model", () => {
         handoffTone: null,
         layoutId: "playlist-title:Quiet Morning",
         titleHoverVisual: "none",
+        titleNativeHoverEnabled: false,
         placeholder: "Quiet Morning",
         value: "Quiet Morning",
       },
     );
   });
 
-  test("retains the title hover visual while the config title receives a return handoff", () => {
+  test("retains the title hover visual while the config title receives an entering handoff", () => {
     assert.equal(
       resolveListConfigTitleViewModel({
         activeLayoutId: "playlist-title:Quiet Morning",
@@ -243,6 +245,22 @@ describe("ListConfig title view model", () => {
         },
       }).titleHoverVisual,
       "retain",
+    );
+  });
+
+  test("keeps the config title hover separate from the handoff retain visual", () => {
+    assert.equal(
+      resolveListConfigTitleViewModel({
+        activeLayoutId: "playlist-title:Quiet Morning",
+        draft: editDraft,
+        draftBaseline: editDraft,
+        pendingPlaylistName: null,
+        titleToneHandoff: {
+          layoutId: "playlist-title:Quiet Morning",
+          tone: "solid",
+        },
+      }).titleNativeHoverEnabled,
+      false,
     );
   });
 

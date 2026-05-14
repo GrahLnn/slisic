@@ -47,7 +47,11 @@ export function resolvePlayListPageItemTitleRetainRequestKey(
 export function resolvePlayListPageItemRequestedTitleHoverVisual(
   viewModel: Pick<PlayListPageItemViewModel, "titleHoverRetainLease" | "titleHoverVisual">,
 ) {
-  return viewModel.titleHoverRetainLease === "stage-only" ? "none" : viewModel.titleHoverVisual;
+  if (viewModel.titleHoverRetainLease === "stage-only") {
+    return "none";
+  }
+
+  return viewModel.titleHoverVisual;
 }
 
 export function resolvePlayListPageItemTitleHoverLock(args: {
@@ -101,6 +105,7 @@ export function PlayListPageItem({
   onCommit,
   onOpenSpectrum,
   onOpenSpectrumPointerDown,
+  onLayoutAnimationComplete,
 }: {
   viewModel: PlayListPageItemViewModel;
   containerRef?: Ref<HTMLDivElement>;
@@ -111,6 +116,7 @@ export function PlayListPageItem({
   onCommit: () => void;
   onOpenSpectrum?: () => void;
   onOpenSpectrumPointerDown?: () => void;
+  onLayoutAnimationComplete?: (layoutId?: string) => void;
 }) {
   const isPresent = useIsPresent();
   const [torphStage, setTorphStage] = useState<TorphStage>("idle");
@@ -184,12 +190,14 @@ export function PlayListPageItem({
           textClassName={titleHoverClassName}
           onOpenSpectrum={onOpenSpectrum}
           onOpenSpectrumPointerDown={onOpenSpectrumPointerDown}
+          onTitleLayoutAnimationComplete={onLayoutAnimationComplete}
           onTorphStageChange={(stage) => {
-            committedTextRef.current = resolvePlayListPageItemCommittedText({
+            const nextCommittedText = resolvePlayListPageItemCommittedText({
               currentCommittedText: committedTextRef.current,
               nextText: viewModel.text,
               torphStage: stage,
             });
+            committedTextRef.current = nextCommittedText;
             setTorphStage(stage);
             onTorphStageChange?.(stage);
           }}

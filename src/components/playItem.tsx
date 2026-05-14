@@ -32,12 +32,14 @@ type PlayItemBaseProps = Omit<HTMLMotionProps<"div">, "children"> & {
   isPlaybackPreparing?: boolean;
   onOpenSpectrum?: () => void;
   onOpenSpectrumPointerDown?: () => void;
+  onTitleLayoutAnimationComplete?: (layoutId?: string) => void;
   onTorphStageChange?: (stage: TorphStage) => void;
 };
 
 type PlayItemFrameProps = Omit<HTMLMotionProps<"div">, "children"> & {
   layoutId?: string;
   children: ReactNode;
+  onTitleLayoutAnimationComplete?: (layoutId?: string) => void;
 };
 
 type PlayItemTextProps = Pick<
@@ -255,6 +257,7 @@ function PlayItemFrame({
   children,
   layoutId,
   onContextMenu,
+  onTitleLayoutAnimationComplete,
   ...domProps
 }: PlayItemFrameProps) {
   const frameProjection = resolvePlayItemFrameProjection({ layoutId });
@@ -265,6 +268,9 @@ function PlayItemFrame({
       layout={frameProjection.layout}
       layoutId={frameProjection.layoutId}
       onContextMenu={createContextMenuHandler(onContextMenu)}
+      onLayoutAnimationComplete={() => {
+        onTitleLayoutAnimationComplete?.(frameProjection.layoutId);
+      }}
       {...domProps}
     >
       {children}
@@ -538,6 +544,7 @@ export function PlayItem({
   playbackIconWidthText,
   showPlaybackIcons = false,
   onTorphStageChange,
+  onTitleLayoutAnimationComplete,
   ...domProps
 }: PlayItemProps) {
   return (
@@ -545,6 +552,7 @@ export function PlayItem({
       className={className}
       layoutId={layoutId}
       onContextMenu={onContextMenu}
+      onTitleLayoutAnimationComplete={onTitleLayoutAnimationComplete}
       {...domProps}
     >
       <PlayItemText

@@ -43,6 +43,7 @@ import {
   shouldCommitSpectrumPlaybackScopeExit,
   type PlaybackModeEffect,
 } from "./playbackMode";
+import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 
 export { actor } from "./runtime";
 
@@ -224,9 +225,20 @@ async function openSpectrumAfterPlaybackMode(sourceSnapshot: ActorSnapshot) {
 }
 
 async function restorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnapshot) {
-  await applyPlaybackModeEffects(
-    resolveSpectrumExitPlaybackModeEffects(snapshot.context.spectrumPlaybackScopeId),
-  );
+  const effects = resolveSpectrumExitPlaybackModeEffects(snapshot.context.spectrumPlaybackScopeId);
+  recordRenderPerformanceTrace("spectrum-back-restore-play-mode-start", {
+    state: formatStateValue(snapshot.value),
+    context: summarizeContext(snapshot.context),
+    effects,
+  });
+
+  await applyPlaybackModeEffects(effects);
+
+  const currentSnapshot = actor.getSnapshot();
+  recordRenderPerformanceTrace("spectrum-back-restore-play-mode-complete", {
+    state: formatStateValue(currentSnapshot.value),
+    context: summarizeContext(currentSnapshot.context),
+  });
 }
 
 function requestExitSpectrumPlaybackScope(scopeId: number | null) {
@@ -338,6 +350,12 @@ export const action = {
   back: () => {
     ensureStarted();
     const snapshot = actor.getSnapshot();
+    recordRenderPerformanceTrace("app-logic-back-requested", {
+      state: formatStateValue(snapshot.value),
+      context: summarizeContext(snapshot.context),
+      shouldExitSpectrumPlaybackScope: shouldExitSpectrumPlaybackScopeForSnapshot(snapshot),
+      shouldStopPlayback: shouldStopPlaybackForSnapshot(snapshot),
+    });
     if (shouldExitSpectrumPlaybackScopeForSnapshot(snapshot)) {
       requestRestorePlaybackPageModeBeforeBackFromSpectrum(snapshot);
     }
@@ -345,6 +363,11 @@ export const action = {
       requestPlaybackStop();
     }
     actor.send(sig.mainx.back);
+    const currentSnapshot = actor.getSnapshot();
+    recordRenderPerformanceTrace("app-logic-back-committed", {
+      state: formatStateValue(currentSnapshot.value),
+      context: summarizeContext(currentSnapshot.context),
+    });
   },
   changeDraftName: (name: string) => {
     ensureStarted();

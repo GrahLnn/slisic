@@ -8,6 +8,7 @@ import { PlayListPageItem, CreateNewPlayListItem } from "./PlayListPageItem";
 import { usePlayListPlaybackSurface } from "./usePlayListPlaybackSurface";
 import {
   resolvePlayListPageViewModel,
+  resolvePlayListPageTitleReturnSurfaceTargetLayoutId,
   type PlayListPageRenderData,
 } from "./PlayListPage.view-model";
 import {
@@ -15,6 +16,8 @@ import {
   restoreStoredScrollTop,
   type ScrollPositionRef,
 } from "./scrollPosition";
+import { usePlayListTitleReturnSurface } from "./usePlayListTitleReturnSurface";
+import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 
 export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollPositionRef }) {
   const isPresent = useIsPresent();
@@ -50,6 +53,12 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     nowPlayingTrackName,
     nowPlayingTrackUrl,
   });
+  const titleReturnSurfaceTargetLayoutId = resolvePlayListPageTitleReturnSurfaceTargetLayoutId({
+    pageState: pageStateValue,
+    visiblePlaylists: playlists,
+    titleToneHandoff,
+  });
+  const titleReturnSurface = usePlayListTitleReturnSurface(titleReturnSurfaceTargetLayoutId);
   const [pressedTitleLayoutId, setPressedTitleLayoutId] = useState<string | null>(null);
   const releasePressedTitleLayoutFrameRef = useRef<number | null>(null);
   const releasePressedTitleLayoutId = useCallback(() => {
@@ -105,6 +114,7 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     titleToneHandoff,
     pressedLayoutId: pressedTitleLayoutId,
     playbackSurface: playbackSurface.playbackSurfaceSnapshot,
+    titleReturnSurface: titleReturnSurface.titleReturnSurfaceSnapshot,
   };
   const pageRenderFreeze = usePageRenderFreeze(liveRenderData, {
     isPresent,
@@ -112,6 +122,38 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
   });
   const renderData = pageRenderFreeze.renderValue;
   const viewModel = resolvePlayListPageViewModel(renderData);
+
+  recordRenderPerformanceTrace("playlist-page-render-output", {
+    pageState: pageStateValue,
+    liveRenderData: {
+      activeLayoutId,
+      playingPlaylistName,
+      nowPlayingTrackName,
+      nowPlayingTrackUrl,
+      titleToneHandoff,
+      playbackSurface: playbackSurface.playbackSurfaceSnapshot,
+    },
+    renderData: {
+      pageState: renderData.pageState,
+      activeLayoutId: renderData.activeLayoutId,
+      playingPlaylistName: renderData.playingPlaylistName,
+      titleToneHandoff: renderData.titleToneHandoff,
+      playbackSurface: renderData.playbackSurface,
+    },
+    viewModel: {
+      shouldLockScroll: viewModel.shouldLockScroll,
+      playbackTargetKey: viewModel.playbackTargetKey,
+      items: viewModel.itemViewModels.map((item) => ({
+        key: item.key,
+        text: item.text,
+        playlistName: item.playlistName ?? null,
+        isPlaybackTarget: item.isPlaybackTarget,
+        shouldShowPlaybackIcons: item.shouldShowPlaybackIcons,
+        playbackIconWidthText: item.playbackIconWidthText ?? null,
+        titleHoverVisual: item.titleHoverVisual,
+      })),
+    },
+  });
 
   return (
     <div
@@ -140,6 +182,7 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
                 onTorphStageChange={(stage) => {
                   playbackSurface.handleTorphStageChange(itemViewModel.key, stage);
                 }}
+                onLayoutAnimationComplete={titleReturnSurface.handleLayoutAnimationComplete}
                 onPrimaryCommit={() => {
                   if (!itemViewModel.playlistName) {
                     return;

@@ -337,9 +337,10 @@ function RetainedConfigTitle({
   editableTitleRef: RefObject<EditableTitleHandle | null>;
   titleHoverVisual: ListConfigRenderData["viewModel"]["title"]["titleHoverVisual"];
 }) {
+  const retainRequestKey = `${props.layoutId ?? "__config-title"}:${props.value}`;
   const retainedTitleHoverVisual = useCollectionTitleRetainedHoverVisual(
     titleHoverVisual,
-    `${props.layoutId ?? "__config-title"}:${props.value}`,
+    retainRequestKey,
   );
 
   return (
@@ -430,7 +431,7 @@ export function ListConfig() {
         pageRenderFreeze.freeze(
           createFrozenListConfigRenderData({
             renderData: liveRenderData,
-            titleHoverVisual: "hold",
+            titleHoverVisual: "retain",
           }),
         );
         pasteDownloadAction.reset();
@@ -475,7 +476,7 @@ export function ListConfig() {
             renderData: liveRenderData,
             titleValue: committedPlaylist.name,
             titleLayoutId: committedReturnLayoutId,
-            titleHoverVisual: "hold",
+            titleHoverVisual: "retain",
           }),
         );
       });
@@ -584,6 +585,7 @@ export function ListConfig() {
             layoutId={isDeletePending ? undefined : viewModel.title.layoutId}
             placeholder={viewModel.title.placeholder}
             style={{ fontFamily: "var(--font-noto-sans)" }}
+            titleNativeHoverEnabled={viewModel.title.titleNativeHoverEnabled}
             titleHoverVisual={viewModel.title.titleHoverVisual}
             value={viewModel.title.value}
             onChange={appLogicAction.changeDraftName}

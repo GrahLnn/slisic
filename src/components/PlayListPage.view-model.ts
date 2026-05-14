@@ -19,6 +19,7 @@ import {
 } from "@/src/flow/appLogic/titleShare";
 import { collectionTitleLayoutTransition } from "./collectionTitle";
 import type { PlayListPlaybackSurfaceSnapshot } from "./playListPlaybackSurface.model";
+import type { PlayListTitleReturnSurfaceSnapshot } from "./playListTitleReturnSurface.model";
 
 const contentFadeProps = {
   initial: { opacity: 0 },
@@ -29,6 +30,7 @@ const contentFadeProps = {
 
 export type PlayListPageCommitGesture = "primary-and-secondary" | "secondary-only" | "disabled";
 export type PlayListPageTitleHoverRetainLease = "timed" | "stage-only";
+type PlayListPageTitleHoverRole = "source" | "target" | "none";
 
 export interface PlayListPageRenderData {
   pageState: MainStateT;
@@ -40,6 +42,7 @@ export interface PlayListPageRenderData {
   titleToneHandoff: CollectionTitleHandoff | null;
   pressedLayoutId: string | null;
   playbackSurface: PlayListPlaybackSurfaceSnapshot | null;
+  titleReturnSurface: PlayListTitleReturnSurfaceSnapshot | null;
 }
 
 export interface PlayListPageItemViewModel {
@@ -161,6 +164,7 @@ function createPlayListPageItemViewModel(args: {
   isPlaybackPreparing: boolean;
   isHiddenInPlay: boolean;
   isPlaybackTitleHandoffTarget: boolean;
+  titleHoverRole: PlayListPageTitleHoverRole;
   titleHoverRetainLease: PlayListPageTitleHoverRetainLease;
   shouldStartHiddenInPlay: boolean;
   shouldAnimateSlotPosition: boolean;
@@ -192,13 +196,15 @@ function createPlayListPageItemViewModel(args: {
     isHiddenInPlay: args.isHiddenInPlay,
     shouldStartHiddenInPlay: args.shouldStartHiddenInPlay,
     shouldAnimateSlotPosition: args.shouldAnimateSlotPosition,
-    titleHoverVisual: args.isPlaybackTitleHandoffTarget
-      ? "retain"
-      : resolveTitleShareHoverVisual({
-          layoutId: itemLayoutId,
-          sourceLayoutId: args.isPlaybackTarget ? null : args.transition.committedLayoutId,
-          targetLayoutId: args.transition.returnTargetLayoutId,
-        }),
+    titleHoverVisual: resolveTitleShareHoverVisual({
+      layoutId: itemLayoutId,
+      sourceLayoutId:
+        args.titleHoverRole === "source" && !args.isPlaybackTarget
+          ? args.transition.committedLayoutId
+          : null,
+      targetLayoutId:
+        args.titleHoverRole === "target" || args.isPlaybackTitleHandoffTarget ? itemLayoutId : null,
+    }),
     titleHoverRetainLease: args.titleHoverRetainLease,
     commitGesture: args.commitGesture,
     playlistName: args.playlist.name,
@@ -214,6 +220,7 @@ function resolvePlayListPageVisibleItems(args: {
   titleShareEnabled: boolean;
   transition: TitleSharePageTransition;
   titleToneHandoff: CollectionTitleHandoff | null;
+  returnHandoffHoverTargetName: string | null;
   shouldAnimateSlotPosition: boolean;
   itemCommitGesture: PlayListPageCommitGesture;
 }) {
@@ -244,7 +251,11 @@ function resolvePlayListPageVisibleItems(args: {
       ? playbackSurfacePlaylistName
       : openingPlaybackTitleHandoffTargetName;
   const titleHoverRetainLease =
-    args.playbackSurface?.phase === "restoring" ? "stage-only" : "timed";
+    args.pageState === "ready" && args.returnHandoffHoverTargetName
+      ? "stage-only"
+      : args.playbackSurface?.phase === "restoring"
+        ? "stage-only"
+        : "timed";
 
   return args.visiblePlaylists.map((playlist) =>
     createPlayListPageItemViewModel({
@@ -276,6 +287,12 @@ function resolvePlayListPageVisibleItems(args: {
           playbackSurfaceTrackName) ||
         undefined,
       isHiddenInPlay: hasDisplayLockTarget && playlist.name !== displayLockPlaylistName,
+      titleHoverRole:
+        playlist.name === args.returnHandoffHoverTargetName
+          ? "target"
+          : args.transition.committedLayoutId === playlistTitleLayoutId(playlist.name)
+            ? "source"
+            : "none",
       shouldStartHiddenInPlay:
         shouldStartHiddenItemsInPlay && playlist.name !== displayLockPlaylistName,
       shouldAnimateSlotPosition: args.shouldAnimateSlotPosition,
@@ -318,7 +335,7 @@ function resolvePlayListPageDisplayLockTargetName(args: {
   playbackSurface: PlayListPlaybackSurfaceSnapshot | null;
 }): PlayListPageDisplayLock | null {
   const returnHandoffPlaylistName = resolvePlayListPageReturnHandoffTargetName(args);
-  if (returnHandoffPlaylistName) {
+  if (args.pageState === "play" && returnHandoffPlaylistName) {
     return {
       kind: "return-handoff",
       playlistName: returnHandoffPlaylistName,
@@ -357,6 +374,40 @@ function resolvePlayListPageDisplayLockTargetName(args: {
   return null;
 }
 
+export function resolvePlayListPageTitleReturnSurfaceTargetLayoutId(args: {
+  pageState: MainStateT;
+  visiblePlaylists: readonly PlayList[];
+  titleToneHandoff: CollectionTitleHandoff | null;
+}) {
+  if (args.pageState !== "ready") {
+    return null;
+  }
+
+  const returnHandoffTargetName = resolvePlayListPageReturnHandoffTargetName(args);
+  return returnHandoffTargetName ? playlistTitleLayoutId(returnHandoffTargetName) : null;
+}
+
+function resolvePlayListPageReturnHandoffHoverTargetName(args: {
+  pageState: MainStateT;
+  visiblePlaylists: readonly PlayList[];
+  titleToneHandoff: CollectionTitleHandoff | null;
+  titleReturnSurface: PlayListTitleReturnSurfaceSnapshot | null;
+}) {
+  if (args.pageState === "play") {
+    return resolvePlayListPageReturnHandoffTargetName(args);
+  }
+
+  if (args.pageState !== "ready" || !args.titleReturnSurface) {
+    return null;
+  }
+
+  return (
+    args.visiblePlaylists.find(
+      (playlist) => playlistTitleLayoutId(playlist.name) === args.titleReturnSurface?.layoutId,
+    )?.name ?? null
+  );
+}
+
 export function resolvePlayListPageViewModel(
   renderData: PlayListPageRenderData,
 ): PlayListPageViewModel {
@@ -378,6 +429,12 @@ export function resolvePlayListPageViewModel(
     titleToneHandoff: renderData.titleToneHandoff,
     playbackSurface: renderData.playbackSurface,
   });
+  const returnHandoffHoverTargetName = resolvePlayListPageReturnHandoffHoverTargetName({
+    pageState: renderData.pageState,
+    visiblePlaylists,
+    titleToneHandoff: renderData.titleToneHandoff,
+    titleReturnSurface: renderData.titleReturnSurface,
+  });
   const shouldLockScroll = displayLock !== null;
   const playbackTargetKey = displayLock?.playlistName ?? null;
   const shouldAnimateSlotPosition = !shouldLockScroll;
@@ -391,6 +448,7 @@ export function resolvePlayListPageViewModel(
     titleShareEnabled,
     transition,
     titleToneHandoff: renderData.titleToneHandoff,
+    returnHandoffHoverTargetName,
     shouldAnimateSlotPosition,
     itemCommitGesture,
   });
@@ -431,8 +489,13 @@ export function resolvePlayListPageViewModel(
       shouldAnimateSlotPosition,
       titleHoverVisual: resolveTitleShareHoverVisual({
         layoutId: CREATE_COLLECTION_LAYOUT_ID,
-        sourceLayoutId: committedLayoutId,
-        targetLayoutId: transition.returnTargetLayoutId,
+        sourceLayoutId:
+          committedLayoutId === CREATE_COLLECTION_LAYOUT_ID ? committedLayoutId : null,
+        targetLayoutId:
+          renderData.pageState === "play" &&
+          transition.returnTargetLayoutId === CREATE_COLLECTION_LAYOUT_ID
+            ? CREATE_COLLECTION_LAYOUT_ID
+            : null,
       }),
       titleHoverRetainLease: "timed",
       commitGesture: "primary-and-secondary",

@@ -1,6 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, useState, type RefCallback } from "react";
 import type { TorphStage } from "@grahlnn/comps";
 import type { MainStateT } from "@/src/flow/appLogic/events";
+import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 import {
   INACTIVE_PLAYBACK_SURFACE,
   resolveMachinePlaybackTarget,
@@ -71,21 +72,31 @@ export function usePlayListPlaybackSurface({
 
   useLayoutEffect(() => {
     setPlaybackSurface((current) => {
+      const nowPlayingTrack =
+        nowPlayingTrackName === null
+          ? null
+          : {
+              name: nowPlayingTrackName,
+              url: nowPlayingTrackUrl ?? "",
+            };
       const next = syncPlaybackSurfaceState({
         current,
         machinePlaybackTarget,
-        nowPlayingTrack:
-          nowPlayingTrackName === null
-            ? null
-            : {
-                name: nowPlayingTrackName,
-                url: nowPlayingTrackUrl ?? "",
-              },
+        nowPlayingTrack,
+      });
+
+      recordRenderPerformanceTrace("playlist-playback-surface-sync", {
+        pageState,
+        machinePlaybackTarget,
+        nowPlayingTrack,
+        current,
+        next,
+        changed: current !== next,
       });
 
       return next;
     });
-  }, [machinePlaybackTarget, nowPlayingTrackName, nowPlayingTrackUrl]);
+  }, [machinePlaybackTarget, nowPlayingTrackName, nowPlayingTrackUrl, pageState]);
 
   useLayoutEffect(() => {
     if (playbackSurface.phase !== "playing" || playbackSurface.playlistName === null) {

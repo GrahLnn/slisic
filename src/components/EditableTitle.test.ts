@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   collectionTitleTextClassName,
+  collectionTitleTextStaticClassName,
   collectionTitleTextRetainHoverClassName,
   COLLECTION_TITLE_HOVER_RETAIN_MS,
   COLLECTION_TITLE_WEIGHT_TRANSITION_MS,
@@ -73,6 +74,12 @@ describe("EditableTitle text style boundary", () => {
     assert.match(collectionTitleTextClassName, /hover:tracking-\[-0\.03em\]/);
   });
 
+  test("can use the shared title typography without native hover weight", () => {
+    assert.match(collectionTitleTextStaticClassName, /duration-\[160ms\]/);
+    assert.doesNotMatch(collectionTitleTextStaticClassName, /hover:font-\[680\]/);
+    assert.doesNotMatch(collectionTitleTextStaticClassName, /hover:tracking-\[-0\.03em\]/);
+  });
+
   test("keeps retained hover weight for the whole shared-title transition", () => {
     assert.equal(COLLECTION_TITLE_HOVER_RETAIN_MS, 360);
     assert.match(collectionTitleTextRetainHoverClassName, /font-\[680\]/);
@@ -96,6 +103,13 @@ describe("EditableTitle text style boundary", () => {
         retainWindowActive: false,
       }),
       "none",
+    );
+    assert.equal(
+      resolveCollectionTitleRetainedHoverVisual({
+        requestedVisual: "retain",
+        retainWindowActive: false,
+      }),
+      "retain",
     );
     assert.equal(
       resolveCollectionTitleRetainedHoverVisual({

@@ -42,6 +42,11 @@ export const collectionTitleTextClassName = cn(
   "hover:font-[680] hover:[font-variation-settings:'wght'_680] hover:tracking-[-0.03em]",
 );
 
+export const collectionTitleTextStaticClassName = cn(
+  "transition-[font-variation-settings,font-weight,letter-spacing] duration-[160ms] ease-out",
+  "will-change-[font-variation-settings]",
+);
+
 export const collectionTitleTextHoverClassName = cn(
   "font-[680] [font-variation-settings:'wght'_680] tracking-[-0.03em]",
 );
@@ -138,6 +143,7 @@ export function useCollectionTitleRetainedHoverVisual(
     requestedVisual,
     retainOwnerKey,
     retainRequestKey,
+    retainWindow,
     retainWindow.active,
     retainWindow.ownerKey,
   ]);
@@ -152,10 +158,12 @@ export function useCollectionTitleRetainedHoverVisual(
     [],
   );
 
-  return resolveCollectionTitleRetainedHoverVisual({
+  const resolvedVisual = resolveCollectionTitleRetainedHoverVisual({
     requestedVisual,
     retainWindowActive: retainWindow.active && retainWindow.ownerKey === retainOwnerKey,
   });
+
+  return resolvedVisual;
 }
 
 /**

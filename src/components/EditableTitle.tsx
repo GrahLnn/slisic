@@ -13,6 +13,7 @@ import {
   collectionTitleLayoutTransition,
   collectionTitleColorTransition,
   collectionTitleTextClassName,
+  collectionTitleTextStaticClassName,
   useCollectionTitleColor,
 } from "./collectionTitle";
 
@@ -24,6 +25,7 @@ type EditableTitleProps = {
   interactionDisabled?: boolean;
   layoutId?: string;
   handoffTone?: CollectionTitleTone | null;
+  titleNativeHoverEnabled?: boolean;
   textClassName?: string;
   focusHitSlopWidthClassName?: string;
 } & Omit<ComponentProps<"div">, "onChange">;
@@ -85,6 +87,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
       interactionDisabled = false,
       layoutId,
       handoffTone = null,
+      titleNativeHoverEnabled = true,
       textClassName,
       focusHitSlopWidthClassName,
       className,
@@ -198,7 +201,9 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
             aria-hidden="true"
             className={cn(
               "pointer-events-none whitespace-pre-wrap wrap-break-word",
-              collectionTitleTextClassName,
+              titleNativeHoverEnabled
+                ? collectionTitleTextClassName
+                : collectionTitleTextStaticClassName,
               textClassName,
             )}
             initial={false}
@@ -246,12 +251,16 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
               "absolute inset-0 block h-full w-full resize-none overflow-hidden bg-transparent",
               interactionDisabled || isAutoWriting ? "pointer-events-none" : "pointer-events-auto",
               "whitespace-pre-wrap wrap-break-word text-transparent outline-none",
+              titleNativeHoverEnabled
+                ? collectionTitleTextClassName
+                : collectionTitleTextStaticClassName,
+              textClassName,
               "caret-[#090909] dark:caret-[#f6f6f6]",
             )}
             style={{
-              font: "inherit",
+              fontFamily: "inherit",
+              fontSize: "inherit",
               lineHeight: "inherit",
-              letterSpacing: "inherit",
             }}
           />
           {focusHitSlopWidthClassName && (
