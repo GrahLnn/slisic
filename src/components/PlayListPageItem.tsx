@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type Ref } from "react";
+import { useRef, useState, type Ref } from "react";
 import { motion, useIsPresent } from "motion/react";
 import type { TorphStage } from "@grahlnn/comps";
 import { cn } from "@/lib/utils";
@@ -6,6 +6,7 @@ import { action as appLogicAction } from "@/src/flow/appLogic";
 import {
   collectionTitleClassName,
   collectionTitleLayoutTransition,
+  collectionTitleTextClassName,
   collectionTitleTextRetainHoverClassName,
   useCollectionTitleRetainedHoverVisual,
 } from "./collectionTitle";
@@ -22,7 +23,7 @@ import {
 } from "./PlayListPageItem.motion";
 
 export function resolvePlayListPageItemTitleFrameClassName(titleHoverClassName?: string) {
-  return cn(collectionTitleClassName, titleHoverClassName);
+  return cn(collectionTitleClassName, collectionTitleTextClassName, titleHoverClassName);
 }
 
 export function resolvePlayListPageItemTitleRetainKey(
@@ -82,6 +83,14 @@ export function resolvePlayListPageItemTitleHoverLock(args: {
   } as const;
 }
 
+export function resolvePlayListPageItemCommittedText(args: {
+  currentCommittedText: string;
+  nextText: string;
+  torphStage: TorphStage;
+}) {
+  return args.torphStage === "idle" ? args.nextText : args.currentCommittedText;
+}
+
 export function PlayListPageItem({
   viewModel,
   containerRef,
@@ -105,17 +114,14 @@ export function PlayListPageItem({
 }) {
   const isPresent = useIsPresent();
   const [torphStage, setTorphStage] = useState<TorphStage>("idle");
-  const previousTextRef = useRef(viewModel.text);
+  const committedTextRef = useRef(viewModel.text);
+  const committedText = committedTextRef.current;
   const titleHoverLockedUntilIdleRef = useRef(false);
-  const textChanged = previousTextRef.current !== viewModel.text;
+  const textChanged = committedText !== viewModel.text;
   const fadeProps = resolvePlayListPageItemFadeProps({
     isPresent,
     suppressFade: viewModel.suppressFade,
   });
-
-  useLayoutEffect(() => {
-    previousTextRef.current = viewModel.text;
-  }, [viewModel.text]);
 
   const shouldEnableSlotPositionAnimation = resolvePlayListPageItemSlotPositionAnimationEnabled({
     requested: viewModel.shouldAnimateSlotPosition,
@@ -181,6 +187,11 @@ export function PlayListPageItem({
           onOpenSpectrum={onOpenSpectrum}
           onOpenSpectrumPointerDown={onOpenSpectrumPointerDown}
           onTorphStageChange={(stage) => {
+            committedTextRef.current = resolvePlayListPageItemCommittedText({
+              currentCommittedText: committedTextRef.current,
+              nextText: viewModel.text,
+              torphStage: stage,
+            });
             setTorphStage(stage);
             onTorphStageChange?.(stage);
           }}

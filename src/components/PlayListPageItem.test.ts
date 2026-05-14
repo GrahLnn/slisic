@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { collectionTitleTextRetainHoverClassName } from "./collectionTitle";
 import {
+  resolvePlayListPageItemCommittedText,
   resolvePlayListPageItemRequestedTitleHoverVisual,
   resolvePlayListPageItemTitleHoverLock,
   resolvePlayListPageItemTitleFrameClassName,
@@ -89,11 +90,43 @@ describe("PlayListPageItem", () => {
     assert.match(collectionTitleTextRetainHoverClassName, /transition-none/);
   });
 
+  test("commits changed title text only after Torph reaches idle", () => {
+    assert.equal(
+      resolvePlayListPageItemCommittedText({
+        currentCommittedText: "Minus Sixty One",
+        nextText: "PlayList 2",
+        torphStage: "prepare",
+      }),
+      "Minus Sixty One",
+    );
+    assert.equal(
+      resolvePlayListPageItemCommittedText({
+        currentCommittedText: "Minus Sixty One",
+        nextText: "PlayList 2",
+        torphStage: "animate",
+      }),
+      "Minus Sixty One",
+    );
+    assert.equal(
+      resolvePlayListPageItemCommittedText({
+        currentCommittedText: "Minus Sixty One",
+        nextText: "PlayList 2",
+        torphStage: "idle",
+      }),
+      "PlayList 2",
+    );
+  });
+
   test("puts retained title weight on the shared layout host", () => {
+    const releasedClassName = resolvePlayListPageItemTitleFrameClassName();
     const className = resolvePlayListPageItemTitleFrameClassName(
       collectionTitleTextRetainHoverClassName,
     );
 
+    assert.match(
+      releasedClassName,
+      /transition-\[font-variation-settings,font-weight,letter-spacing\]/,
+    );
     assert.match(className, /text-4xl/);
     assert.match(className, /font-\[680\]/);
     assert.match(className, /\[font-variation-settings:'wght'_680\]/);
