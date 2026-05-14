@@ -105,31 +105,4 @@ describe("EditableTitle text style boundary", () => {
       "hold",
     );
   });
-
-  test("consumes a retained hover request after its handoff window ends", () => {
-    assert.equal(
-      resolveCollectionTitleRetainedHoverVisual({
-        requestedVisual: "retain",
-        retainWindowActive: true,
-        retainRequestConsumed: true,
-      }),
-      "retain",
-    );
-    assert.equal(
-      resolveCollectionTitleRetainedHoverVisual({
-        requestedVisual: "retain",
-        retainWindowActive: false,
-        retainRequestConsumed: true,
-      }),
-      "none",
-    );
-    assert.equal(
-      resolveCollectionTitleRetainedHoverVisual({
-        requestedVisual: "retain",
-        retainWindowActive: false,
-        retainRequestConsumed: false,
-      }),
-      "retain",
-    );
-  });
 });

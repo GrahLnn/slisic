@@ -414,9 +414,9 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "none");
   });
 
-  test("keeps title return handoff from taking over list visibility", () => {
+  test("locks the list while returning from spectrum before playback surface restores", () => {
     const viewModel = resolvePlayListPageViewModel({
-      pageState: "ready",
+      pageState: "play",
       activeLayoutId: null,
       hasPlayList: true,
       playlists: [
@@ -424,7 +424,7 @@ describe("PlayListPage", () => {
         createPlayListFixture({ name: "Quiet Morning" }),
       ],
       pendingPlaylistPreview: null,
-      playingPlaylistName: null,
+      playingPlaylistName: "Quiet Morning",
       titleToneHandoff: {
         layoutId: "playlist-title:Quiet Morning",
         tone: "solid",
@@ -433,12 +433,12 @@ describe("PlayListPage", () => {
       playbackSurface: null,
     });
 
-    assert.equal(viewModel.shouldLockScroll, false);
-    assert.equal(viewModel.playbackTargetKey, null);
+    assert.equal(viewModel.shouldLockScroll, true);
+    assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.shouldRenderCreateItem, true);
-    assert.equal(viewModel.shouldShowCreateItem, true);
-    assert.equal(viewModel.createItemViewModel.isHiddenInPlay, false);
-    assert.equal(viewModel.createItemViewModel.shouldStartHiddenInPlay, false);
+    assert.equal(viewModel.shouldShowCreateItem, false);
+    assert.equal(viewModel.createItemViewModel.isHiddenInPlay, true);
+    assert.equal(viewModel.createItemViewModel.shouldStartHiddenInPlay, true);
     assert.equal(viewModel.itemViewModels.length, 2);
     assert.deepEqual(
       viewModel.itemViewModels.map((item) => ({
@@ -459,8 +459,8 @@ describe("PlayListPage", () => {
           layoutId: "playlist-title:Night Drive",
           sourceLayoutId: "playlist-title:Night Drive",
           isPlaybackTarget: false,
-          isHiddenInPlay: false,
-          shouldStartHiddenInPlay: false,
+          isHiddenInPlay: true,
+          shouldStartHiddenInPlay: true,
           shouldShowPlaybackIcons: false,
           titleHoverVisual: "none",
         },
@@ -479,7 +479,7 @@ describe("PlayListPage", () => {
     );
   });
 
-  test("keeps playback surface text above title return handoff evidence", () => {
+  test("keeps the return handoff target above the playback surface during title motion", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "play",
       activeLayoutId: null,
@@ -505,15 +505,15 @@ describe("PlayListPage", () => {
 
     assert.equal(viewModel.shouldLockScroll, true);
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
-    assert.equal(viewModel.itemViewModels[1]?.text, "Track A");
-    assert.equal(viewModel.itemViewModels[1]?.layoutId, undefined);
+    assert.equal(viewModel.itemViewModels[1]?.text, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[1]?.layoutId, "playlist-title:Quiet Morning");
     assert.equal(viewModel.itemViewModels[1]?.sourceLayoutId, "playlist-title:Quiet Morning");
-    assert.equal(viewModel.itemViewModels[1]?.isPlaybackTarget, true);
-    assert.equal(viewModel.itemViewModels[1]?.shouldShowPlaybackIcons, true);
+    assert.equal(viewModel.itemViewModels[1]?.isPlaybackTarget, false);
+    assert.equal(viewModel.itemViewModels[1]?.shouldShowPlaybackIcons, false);
     assert.equal(viewModel.itemViewModels[1]?.titleHoverVisual, "retain");
   });
 
-  test("keeps the title handoff target weighted without locking ready list", () => {
+  test("keeps the return handoff target when ready has no playing playlist", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "ready",
       activeLayoutId: null,
@@ -532,16 +532,13 @@ describe("PlayListPage", () => {
       playbackSurface: null,
     });
 
-    assert.equal(viewModel.shouldLockScroll, false);
-    assert.equal(viewModel.playbackTargetKey, null);
+    assert.equal(viewModel.shouldLockScroll, true);
+    assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[1]?.layoutId, "playlist-title:Quiet Morning");
-    assert.equal(viewModel.itemViewModels[0]?.isHiddenInPlay, false);
-    assert.equal(viewModel.itemViewModels[1]?.isHiddenInPlay, false);
-    assert.equal(viewModel.shouldShowCreateItem, true);
     assert.equal(viewModel.itemViewModels[1]?.titleHoverVisual, "retain");
   });
 
-  test("keeps title handoff from replacing active playback text", () => {
+  test("lets the title handoff target retain hover while the playback surface is active", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "play",
       activeLayoutId: null,
@@ -562,9 +559,8 @@ describe("PlayListPage", () => {
       },
     });
 
-    assert.equal(viewModel.itemViewModels[0]?.text, "Track A");
-    assert.equal(viewModel.itemViewModels[0]?.isPlaybackTarget, true);
-    assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, true);
+    assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[0]?.isPlaybackTarget, false);
     assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "retain");
   });
 

@@ -70,6 +70,10 @@ type PlayListPageDisplayLock =
   | {
       kind: "playback-surface";
       playlistName: string;
+    }
+  | {
+      kind: "return-handoff";
+      playlistName: string;
     };
 
 export interface PlayListPageViewModel {
@@ -217,7 +221,8 @@ function resolvePlayListPageVisibleItems(args: {
   const playbackSurfaceTrackName = args.playbackSurface?.displayedTrackName || undefined;
   const playbackSurfaceTrackIsPlayable = args.playbackSurface?.displayedTrackIsPlayable ?? false;
   const isPlaybackSurfacePlaying = args.playbackSurface?.phase === "playing";
-  const shouldApplyPlaybackSurface = isPlaybackSurfacePlaying;
+  const shouldApplyPlaybackSurface =
+    args.displayLock?.kind !== "return-handoff" && isPlaybackSurfacePlaying;
   const hasPlaybackTarget =
     shouldApplyPlaybackSurface &&
     !!playbackSurfacePlaylistName &&
@@ -226,6 +231,7 @@ function resolvePlayListPageVisibleItems(args: {
   const hasDisplayLockTarget =
     !!displayLockPlaylistName &&
     args.visiblePlaylists.some((playlist) => playlist.name === displayLockPlaylistName);
+  const shouldStartHiddenItemsInPlay = args.displayLock?.kind === "return-handoff";
   const openingPlaybackTitleHandoffTargetName =
     args.pageState === "play" &&
     args.playbackSurface === null &&
@@ -270,7 +276,8 @@ function resolvePlayListPageVisibleItems(args: {
           playbackSurfaceTrackName) ||
         undefined,
       isHiddenInPlay: hasDisplayLockTarget && playlist.name !== displayLockPlaylistName,
-      shouldStartHiddenInPlay: false,
+      shouldStartHiddenInPlay:
+        shouldStartHiddenItemsInPlay && playlist.name !== displayLockPlaylistName,
       shouldAnimateSlotPosition: args.shouldAnimateSlotPosition,
       commitGesture: args.itemCommitGesture,
     }),
@@ -288,12 +295,36 @@ function hasVisiblePlaylistName(args: {
   return args.visiblePlaylists.some((playlist) => playlist.name === args.playlistName);
 }
 
+function resolvePlayListPageReturnHandoffTargetName(args: {
+  visiblePlaylists: readonly PlayList[];
+  titleToneHandoff: CollectionTitleHandoff | null;
+}) {
+  if (!args.titleToneHandoff) {
+    return null;
+  }
+
+  return (
+    args.visiblePlaylists.find(
+      (playlist) => playlistTitleLayoutId(playlist.name) === args.titleToneHandoff?.layoutId,
+    )?.name ?? null
+  );
+}
+
 function resolvePlayListPageDisplayLockTargetName(args: {
   pageState: MainStateT;
   visiblePlaylists: readonly PlayList[];
   playingPlaylistName: string | null;
+  titleToneHandoff: CollectionTitleHandoff | null;
   playbackSurface: PlayListPlaybackSurfaceSnapshot | null;
 }): PlayListPageDisplayLock | null {
+  const returnHandoffPlaylistName = resolvePlayListPageReturnHandoffTargetName(args);
+  if (returnHandoffPlaylistName) {
+    return {
+      kind: "return-handoff",
+      playlistName: returnHandoffPlaylistName,
+    };
+  }
+
   const openingPlaybackPlaylistName = args.playingPlaylistName;
   if (
     args.pageState === "play" &&
@@ -344,6 +375,7 @@ export function resolvePlayListPageViewModel(
     pageState: renderData.pageState,
     visiblePlaylists,
     playingPlaylistName: renderData.playingPlaylistName,
+    titleToneHandoff: renderData.titleToneHandoff,
     playbackSurface: renderData.playbackSurface,
   });
   const shouldLockScroll = displayLock !== null;
@@ -395,7 +427,7 @@ export function resolvePlayListPageViewModel(
       shouldShowPlaybackIcons: false,
       isPlaybackPreparing: false,
       isHiddenInPlay: shouldLockScroll,
-      shouldStartHiddenInPlay: false,
+      shouldStartHiddenInPlay: displayLock?.kind === "return-handoff",
       shouldAnimateSlotPosition,
       titleHoverVisual: resolveTitleShareHoverVisual({
         layoutId: CREATE_COLLECTION_LAYOUT_ID,
