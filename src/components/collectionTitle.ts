@@ -54,12 +54,21 @@ export const collectionTitleTextRetainHoverClassName = cn(
 export function resolveCollectionTitleRetainedHoverVisual(args: {
   retainWindowActive: boolean;
   requestedVisual: TitleShareHoverVisual;
+  retainRequestConsumed?: boolean;
 }): TitleShareHoverVisual {
-  if (args.requestedVisual !== "none") {
+  if (args.requestedVisual === "hold") {
     return args.requestedVisual;
   }
 
-  return args.retainWindowActive ? "retain" : "none";
+  if (args.retainWindowActive) {
+    return "retain";
+  }
+
+  if (args.requestedVisual === "retain" && args.retainRequestConsumed !== true) {
+    return "retain";
+  }
+
+  return "none";
 }
 
 /**
@@ -155,6 +164,8 @@ export function useCollectionTitleRetainedHoverVisual(
   return resolveCollectionTitleRetainedHoverVisual({
     requestedVisual,
     retainWindowActive: retainWindow.active && retainWindow.ownerKey === retainOwnerKey,
+    retainRequestConsumed:
+      requestedVisual === "retain" && previousRetainRequestKeyRef.current === retainRequestKey,
   });
 }
 

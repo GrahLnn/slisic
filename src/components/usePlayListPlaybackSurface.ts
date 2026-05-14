@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState, type RefCallback } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type RefCallback } from "react";
 import type { TorphStage } from "@grahlnn/comps";
 import type { MainStateT } from "@/src/flow/appLogic/events";
 import {
@@ -43,6 +43,21 @@ export function usePlayListPlaybackSurface({
     playlists,
     playingPlaylistName,
   });
+  const nowPlayingTrack = useMemo(
+    () =>
+      nowPlayingTrackName === null
+        ? null
+        : {
+            name: nowPlayingTrackName,
+            url: nowPlayingTrackUrl ?? "",
+          },
+    [nowPlayingTrackName, nowPlayingTrackUrl],
+  );
+  const projectedPlaybackSurface = syncPlaybackSurfaceState({
+    current: playbackSurface,
+    machinePlaybackTarget,
+    nowPlayingTrack,
+  });
 
   const setItemRef = useCallback(
     (key: string): RefCallback<HTMLDivElement> =>
@@ -71,21 +86,13 @@ export function usePlayListPlaybackSurface({
 
   useLayoutEffect(() => {
     setPlaybackSurface((current) => {
-      const next = syncPlaybackSurfaceState({
+      return syncPlaybackSurfaceState({
         current,
         machinePlaybackTarget,
-        nowPlayingTrack:
-          nowPlayingTrackName === null
-            ? null
-            : {
-                name: nowPlayingTrackName,
-                url: nowPlayingTrackUrl ?? "",
-              },
+        nowPlayingTrack,
       });
-
-      return next;
     });
-  }, [machinePlaybackTarget, nowPlayingTrackName, nowPlayingTrackUrl]);
+  }, [machinePlaybackTarget, nowPlayingTrack]);
 
   useLayoutEffect(() => {
     if (playbackSurface.phase !== "playing" || playbackSurface.playlistName === null) {
@@ -171,8 +178,8 @@ export function usePlayListPlaybackSurface({
   }, [playbackSurface]);
 
   return {
-    playbackSurface,
-    playbackSurfaceSnapshot: toPlayListPlaybackSurfaceSnapshot(playbackSurface),
+    playbackSurface: projectedPlaybackSurface,
+    playbackSurfaceSnapshot: toPlayListPlaybackSurfaceSnapshot(projectedPlaybackSurface),
     containerRef,
     setItemRef,
     handleTorphStageChange,
