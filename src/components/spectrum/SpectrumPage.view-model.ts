@@ -65,58 +65,6 @@ export interface SpectrumBackTitleCommitTarget {
   title: SpectrumMusicCommitResolution;
 }
 
-export function createSpectrumTitlePathTracePayload(args: {
-  activeLayoutId: string | null;
-  editorViewModels: readonly SpectrumMusicEditorViewModel[];
-  spectrumMusicDraftCount: number;
-  trackFilePath: string | null;
-}) {
-  return {
-    activeLayoutId: args.activeLayoutId,
-    currentEditorId: args.editorViewModels.find((editor) => editor.isCurrent)?.id ?? null,
-    editorCount: args.editorViewModels.length,
-    editors: args.editorViewModels.map((editor, index) => ({
-      id: editor.id,
-      index,
-      isCurrent: editor.isCurrent,
-      playbackKey: editor.playbackIdentity?.key ?? null,
-      selectionEnd: editor.selectionEnd,
-      selectionStart: editor.selectionStart,
-      shouldShowResetAction: editor.shouldShowResetAction,
-      titleLayoutId: editor.titleLayoutId ?? null,
-      titleLength: editor.titleValue.length,
-    })),
-    spectrumMusicDraftCount: args.spectrumMusicDraftCount,
-    trackFilePath: args.trackFilePath,
-  } satisfies Record<string, unknown>;
-}
-
-export function createSpectrumTitlePathTraceSignature(args: {
-  activeLayoutId: string | null;
-  editorViewModels: readonly SpectrumMusicEditorViewModel[];
-  spectrumMusicDraftCount: number;
-  trackFilePath: string | null;
-}) {
-  return [
-    args.activeLayoutId ?? "",
-    args.trackFilePath ?? "",
-    args.spectrumMusicDraftCount,
-    ...args.editorViewModels.map((editor, index) =>
-      [
-        index,
-        editor.id,
-        editor.isCurrent ? "current" : "sibling",
-        editor.playbackIdentity?.key ?? "",
-        editor.selectionStart ?? "",
-        editor.selectionEnd ?? "",
-        editor.shouldShowResetAction ? "dirty" : "clean",
-        editor.titleLayoutId ?? "",
-        editor.titleValue.length,
-      ].join(":"),
-    ),
-  ].join("|");
-}
-
 export function findSpectrumMusicDraftById(
   drafts: readonly SpectrumMusicDraft[],
   id: string,

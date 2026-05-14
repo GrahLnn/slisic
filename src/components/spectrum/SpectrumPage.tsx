@@ -3,11 +3,6 @@ import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
-import {
-  installRenderPerformanceTrace,
-  recordRenderPerformanceTrace,
-  startRenderFrameDropSampler,
-} from "@/src/debug/renderPerformanceTrace";
 import { collectionTitleLayoutTransition } from "../collectionTitle";
 import type { EditableTitleHandle } from "../EditableTitle";
 import type { MusicSpectrumSelection } from "./MusicSpectrumEditor";
@@ -21,8 +16,6 @@ import {
   areSpectrumPlaybackIdentitiesEqual,
   resolveSpectrumBackActionVisualState,
   resolveSpectrumBackTitleCommitTargets,
-  createSpectrumTitlePathTracePayload,
-  createSpectrumTitlePathTraceSignature,
   resolveSpectrumMusicRangeChange,
   resolveSpectrumMusicEditorViewModels,
   type SpectrumBackActionVisualState,
@@ -221,7 +214,6 @@ export function SpectrumPage() {
   const editableTitleRefs = useRef(new Map<string, EditableTitleHandle>());
   const playbackResumeByIdentityRef = useRef(new Map<string, SpectrumPlaybackResumePoint>());
   const playbackControlByIdentityRef = useRef(new Map<string, TrackSpectrumPlaybackControl>());
-  const titlePathTraceSignatureRef = useRef<string | null>(null);
   const pageExitStartedRef = useRef(false);
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
   const playbackActionSnapshotRef = useRef<SpectrumPlaybackActionSnapshot | null>(null);
@@ -586,48 +578,6 @@ export function SpectrumPage() {
       window.clearInterval(intervalId);
     };
   }, [commitPlaybackActionSnapshot, isPageExiting, playbackSession]);
-
-  useLayoutEffect(() => {
-    installRenderPerformanceTrace();
-    const sampler = startRenderFrameDropSampler({
-      label: "spectrum-page",
-      payload: {
-        page: "spectrum",
-      },
-    });
-
-    return () => {
-      sampler.stop("spectrum-page-unmounted");
-    };
-  }, []);
-
-  useLayoutEffect(() => {
-    const signature = createSpectrumTitlePathTraceSignature({
-      activeLayoutId,
-      editorViewModels: renderData.editorViewModels,
-      spectrumMusicDraftCount: spectrumMusicDrafts.length,
-      trackFilePath: renderData.trackFilePath,
-    });
-    if (titlePathTraceSignatureRef.current === signature) {
-      return;
-    }
-
-    titlePathTraceSignatureRef.current = signature;
-    recordRenderPerformanceTrace(
-      "spectrum-title-path",
-      createSpectrumTitlePathTracePayload({
-        activeLayoutId,
-        editorViewModels: renderData.editorViewModels,
-        spectrumMusicDraftCount: spectrumMusicDrafts.length,
-        trackFilePath: renderData.trackFilePath,
-      }),
-    );
-  }, [
-    activeLayoutId,
-    renderData.editorViewModels,
-    renderData.trackFilePath,
-    spectrumMusicDrafts.length,
-  ]);
 
   return (
     <div

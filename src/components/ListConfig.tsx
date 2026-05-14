@@ -347,7 +347,6 @@ function RetainedConfigTitle({
       ref={editableTitleRef}
       {...props}
       textClassName={resolveListConfigTitleHoverClassName(retainedTitleHoverVisual)}
-      titleHoverVisual={retainedTitleHoverVisual}
     />
   );
 }
@@ -585,7 +584,6 @@ export function ListConfig() {
             layoutId={isDeletePending ? undefined : viewModel.title.layoutId}
             placeholder={viewModel.title.placeholder}
             style={{ fontFamily: "var(--font-noto-sans)" }}
-            titleHoverTraceOwner="list-config"
             titleHoverVisual={viewModel.title.titleHoverVisual}
             value={viewModel.title.value}
             onChange={appLogicAction.changeDraftName}

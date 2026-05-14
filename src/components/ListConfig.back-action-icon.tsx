@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { cn } from "@/lib/utils";
-import { installBackActionTrace, recordBackActionTrace } from "@/src/debug/backActionTrace";
-import type { ConfigCandidateItem } from "@/src/flow/pasteDownload/core";
 import type { BackActionVisualState } from "./ListConfig.back-action";
 
 const iconStrokeTransition = {
@@ -183,27 +181,4 @@ export function BackActionIcon({ visualState }: { visualState: BackActionVisualS
       </AnimatePresence>
     </span>
   );
-}
-
-export function BackActionTraceOwner(args: {
-  candidateItems: readonly ConfigCandidateItem[];
-  isBackActionParsing: boolean;
-}) {
-  useEffect(() => {
-    installBackActionTrace();
-  }, []);
-
-  useEffect(() => {
-    recordBackActionTrace("list-config-back-action-state", {
-      isBackActionParsing: args.isBackActionParsing,
-      candidateItems: args.candidateItems.map((item) => ({
-        id: item.id,
-        status: item.status,
-        displayText: item.displayText,
-        sourceUrl: item.sourceUrl,
-      })),
-    });
-  }, [args.candidateItems, args.isBackActionParsing]);
-
-  return null;
 }

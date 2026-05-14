@@ -6,7 +6,6 @@ import {
   areSpectrumMusicEditorViewModelsEqual,
   createSpectrumMusicAdmissionIdentityKey,
   createSpectrumMusicAdmissionScheduleKey,
-  createSpectrumMusicAdmissionTracePayload,
   resolveSpectrumMusicVirtualRowPlaybackSnapshot,
   resolveSpectrumMusicVirtualListHeight,
   resolveSpectrumMusicVirtualRangeIndexes,
@@ -206,32 +205,6 @@ describe("SpectrumMusicVirtualList", () => {
         editors[1]!,
       ]),
       "0:current\n1:sibling",
-    );
-  });
-
-  test("summarizes row admission trace data without title or path payloads", () => {
-    assert.deepEqual(
-      createSpectrumMusicAdmissionTracePayload({
-        admittedIndexes: new Set([0]),
-        scheduleKey: "0:current\n1:sibling",
-      }),
-      {
-        admittedIndexes: [0],
-        deferredIndexes: [1],
-        rowCount: 2,
-        rows: [
-          {
-            index: 0,
-            isCurrent: true,
-            rowAdmission: "admitted",
-          },
-          {
-            index: 1,
-            isCurrent: false,
-            rowAdmission: "deferred",
-          },
-        ],
-      },
     );
   });
 

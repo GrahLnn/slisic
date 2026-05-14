@@ -3,8 +3,6 @@ import { describe, test } from "node:test";
 import { areSpectrumPlaybackSnapshotsEqual } from "./SpectrumPlaybackAction";
 import {
   areSpectrumPlaybackActionSnapshotsEqual,
-  createSpectrumTitlePathTracePayload,
-  createSpectrumTitlePathTraceSignature,
   findSpectrumMusicDraftById,
   resolveSpectrumBackActionVisualState,
   resolveSpectrumBackTitleCommitTargets,
@@ -58,74 +56,6 @@ describe("SpectrumPage", () => {
       }),
       "Disc 1 Prelude",
     );
-  });
-
-  test("summarizes title path trace data without storing full title text", () => {
-    const editor = createSpectrumMusicEditorFixture({
-      id: "music:1",
-      titleLayoutId: "playlist-title:Focus",
-      titleValue: "Focus Session",
-    });
-
-    assert.deepEqual(
-      createSpectrumTitlePathTracePayload({
-        activeLayoutId: "playlist-title:Focus",
-        editorViewModels: [editor],
-        spectrumMusicDraftCount: 1,
-        trackFilePath: "C:/Music/focus.wav",
-      }),
-      {
-        activeLayoutId: "playlist-title:Focus",
-        currentEditorId: null,
-        editorCount: 1,
-        editors: [
-          {
-            id: "music:1",
-            index: 0,
-            isCurrent: false,
-            playbackKey: null,
-            selectionEnd: null,
-            selectionStart: null,
-            shouldShowResetAction: false,
-            titleLayoutId: "playlist-title:Focus",
-            titleLength: 13,
-          },
-        ],
-        spectrumMusicDraftCount: 1,
-        trackFilePath: "C:/Music/focus.wav",
-      },
-    );
-  });
-
-  test("keeps title path trace signatures stable for identical semantics", () => {
-    const editor = createSpectrumMusicEditorFixture({
-      id: "music:1",
-      selectionEnd: 20,
-      selectionStart: 10,
-      titleLayoutId: "playlist-title:Focus",
-      titleValue: "Focus Session",
-    });
-    const first = createSpectrumTitlePathTraceSignature({
-      activeLayoutId: "playlist-title:Focus",
-      editorViewModels: [editor],
-      spectrumMusicDraftCount: 1,
-      trackFilePath: "C:/Music/focus.wav",
-    });
-    const second = createSpectrumTitlePathTraceSignature({
-      activeLayoutId: "playlist-title:Focus",
-      editorViewModels: [{ ...editor }],
-      spectrumMusicDraftCount: 1,
-      trackFilePath: "C:/Music/focus.wav",
-    });
-    const changed = createSpectrumTitlePathTraceSignature({
-      activeLayoutId: "playlist-title:Focus",
-      editorViewModels: [{ ...editor, selectionEnd: 30 }],
-      spectrumMusicDraftCount: 1,
-      trackFilePath: "C:/Music/focus.wav",
-    });
-
-    assert.equal(first, second);
-    assert.notEqual(first, changed);
   });
 
   test("switches the back action only when the draft differs from current music data", () => {

@@ -182,8 +182,6 @@ export function PlayListPageItem({
           showPlaybackIcons={viewModel.shouldShowPlaybackIcons}
           text={viewModel.text}
           textClassName={titleHoverClassName}
-          titleHoverTraceOwner="playlist-page"
-          titleHoverVisual={titleHoverVisual}
           onOpenSpectrum={onOpenSpectrum}
           onOpenSpectrumPointerDown={onOpenSpectrumPointerDown}
           onTorphStageChange={(stage) => {

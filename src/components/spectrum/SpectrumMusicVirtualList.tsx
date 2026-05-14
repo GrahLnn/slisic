@@ -13,7 +13,6 @@ import {
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
-import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 import { usePageViewportScrollElementRef } from "../pageViewportScroll";
 import type { EditableTitleHandle } from "../EditableTitle";
 import {
@@ -121,28 +120,6 @@ export function resolveSpectrumMusicAdmissionScheduleRows(scheduleKey: string) {
         ]
       : [];
   });
-}
-
-export function createSpectrumMusicAdmissionTracePayload(args: {
-  admittedIndexes: ReadonlySet<number>;
-  scheduleKey: string;
-}) {
-  const rows = resolveSpectrumMusicAdmissionScheduleRows(args.scheduleKey).map((row) => ({
-    index: row.index,
-    isCurrent: row.isCurrent,
-    rowAdmission: resolveSpectrumMusicRowAdmission({
-      admittedIndexes: args.admittedIndexes,
-      isCurrent: row.isCurrent,
-      rowIndex: row.index,
-    }),
-  }));
-
-  return {
-    admittedIndexes: [...args.admittedIndexes],
-    deferredIndexes: rows.filter((row) => row.rowAdmission === "deferred").map((row) => row.index),
-    rowCount: rows.length,
-    rows,
-  } satisfies Record<string, unknown>;
 }
 
 export function resolveSpectrumMusicVirtualRangeIndexes(args: {
@@ -438,7 +415,6 @@ export function SpectrumMusicVirtualList({
 }: SpectrumMusicVirtualListProps) {
   const scrollElementRef = usePageViewportScrollElementRef();
   const listRef = useRef<HTMLDivElement | null>(null);
-  const admissionTraceSignatureRef = useRef<string | null>(null);
   const waveformRenderDataStore = useMemo(() => createWaveformRenderDataStore(), []);
   const handlersRef = useRef({
     onDelete,
@@ -603,22 +579,6 @@ export function SpectrumMusicVirtualList({
       }
     };
   }, [admissionIdentityKey, admissionScheduleKey]);
-
-  useLayoutEffect(() => {
-    const signature = `${admissionIdentityKey}|${[...admittedIndexes].join(",")}`;
-    if (admissionTraceSignatureRef.current === signature) {
-      return;
-    }
-
-    admissionTraceSignatureRef.current = signature;
-    recordRenderPerformanceTrace(
-      "spectrum-music-row-admission",
-      createSpectrumMusicAdmissionTracePayload({
-        admittedIndexes,
-        scheduleKey: admissionScheduleKey,
-      }),
-    );
-  }, [admissionIdentityKey, admissionScheduleKey, admittedIndexes]);
 
   return (
     <div ref={listRef} className="relative" style={{ height: `${listHeight}px` }}>

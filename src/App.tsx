@@ -8,8 +8,6 @@ import { useLayoutEffect, useRef, type PropsWithChildren } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useTheme } from "next-themes";
 import { Toaster } from "sileo";
-import { installRenderPerformanceTrace } from "./debug/renderPerformanceTrace";
-import { installTorphTrace } from "./debug/torphTrace";
 import { PlayListPage } from "./components/PlayListPage";
 import { ListConfig } from "./components/ListConfig";
 import { SpectrumPage } from "./components/spectrum/SpectrumPage";
@@ -97,11 +95,6 @@ function WindowToaster() {
 }
 
 function Base({ children }: PropsWithChildren) {
-  useLayoutEffect(() => {
-    installRenderPerformanceTrace();
-    installTorphTrace();
-  }, []);
-
   return (
     <div className="min-h-screen overflow-hidden hide-scrollbar">
       <TopBar />
