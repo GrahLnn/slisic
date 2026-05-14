@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { areSpectrumPlaybackSnapshotsEqual } from "./SpectrumPlaybackAction";
+import { resolveMusicSpectrumTitleTextClassName } from "./MusicSpectrumEditor";
 import {
   areSpectrumPlaybackActionSnapshotsEqual,
   findSpectrumMusicDraftById,
@@ -17,28 +18,19 @@ import {
   isSpectrumPlaybackStatusIdentityForAction,
   shouldCommitSpectrumPlaybackActionSnapshot,
   shouldShowSpectrumDraftResetAction,
-  type SpectrumMusicEditorViewModel,
 } from "./SpectrumPage.view-model";
 
-function createSpectrumMusicEditorFixture(
-  overrides: Partial<SpectrumMusicEditorViewModel> = {},
-): SpectrumMusicEditorViewModel {
-  return {
-    handoffTone: null,
-    id: "music:1",
-    interactionDisabled: false,
-    isCurrent: false,
-    playbackIdentity: null,
-    selectionEnd: null,
-    selectionStart: null,
-    shouldShowResetAction: false,
-    titleLayoutId: undefined,
-    titleValue: "Focus Session",
-    ...overrides,
-  };
-}
-
 describe("SpectrumPage", () => {
+  test("keeps spectrum titles at the shared hover weight without native hover switching", () => {
+    assert.match(resolveMusicSpectrumTitleTextClassName(), /font-\[680\]/);
+    assert.match(
+      resolveMusicSpectrumTitleTextClassName(),
+      /\[font-variation-settings:'wght'_680\]/,
+    );
+    assert.match(resolveMusicSpectrumTitleTextClassName(), /tracking-\[-0\.03em\]/);
+    assert.doesNotMatch(resolveMusicSpectrumTitleTextClassName(), /hover:/);
+  });
+
   test("uses the music draft name as the editable spectrum title", () => {
     assert.equal(
       resolveSpectrumMusicDisplayName({

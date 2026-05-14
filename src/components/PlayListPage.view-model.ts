@@ -251,11 +251,9 @@ function resolvePlayListPageVisibleItems(args: {
       ? playbackSurfacePlaylistName
       : openingPlaybackTitleHandoffTargetName;
   const titleHoverRetainLease =
-    args.pageState === "ready" && args.returnHandoffHoverTargetName
+    args.returnHandoffHoverTargetName || args.playbackSurface?.phase === "restoring"
       ? "stage-only"
-      : args.playbackSurface?.phase === "restoring"
-        ? "stage-only"
-        : "timed";
+      : "timed";
 
   return args.visiblePlaylists.map((playlist) =>
     createPlayListPageItemViewModel({
@@ -335,7 +333,14 @@ function resolvePlayListPageDisplayLockTargetName(args: {
   playbackSurface: PlayListPlaybackSurfaceSnapshot | null;
 }): PlayListPageDisplayLock | null {
   const returnHandoffPlaylistName = resolvePlayListPageReturnHandoffTargetName(args);
-  if (args.pageState === "play" && returnHandoffPlaylistName) {
+  const playbackSurfacePlaylistName = args.playbackSurface?.playlistName ?? null;
+  const playbackSurfaceTrackName = args.playbackSurface?.displayedTrackName ?? null;
+
+  if (
+    args.pageState === "play" &&
+    returnHandoffPlaylistName &&
+    (playbackSurfacePlaylistName !== returnHandoffPlaylistName || playbackSurfaceTrackName === null)
+  ) {
     return {
       kind: "return-handoff",
       playlistName: returnHandoffPlaylistName,
@@ -358,7 +363,6 @@ function resolvePlayListPageDisplayLockTargetName(args: {
     };
   }
 
-  const playbackSurfacePlaylistName = args.playbackSurface?.playlistName ?? null;
   if (
     playbackSurfacePlaylistName !== null &&
     hasVisiblePlaylistName({
@@ -391,9 +395,19 @@ function resolvePlayListPageReturnHandoffHoverTargetName(args: {
   pageState: MainStateT;
   visiblePlaylists: readonly PlayList[];
   titleToneHandoff: CollectionTitleHandoff | null;
+  playbackSurface: PlayListPlaybackSurfaceSnapshot | null;
   titleReturnSurface: PlayListTitleReturnSurfaceSnapshot | null;
 }) {
   if (args.pageState === "play") {
+    const returnHandoffTargetName = resolvePlayListPageReturnHandoffTargetName(args);
+    if (
+      returnHandoffTargetName !== null &&
+      args.playbackSurface?.playlistName === returnHandoffTargetName &&
+      args.playbackSurface.displayedTrackName !== null
+    ) {
+      return null;
+    }
+
     return resolvePlayListPageReturnHandoffTargetName(args);
   }
 
@@ -433,6 +447,7 @@ export function resolvePlayListPageViewModel(
     pageState: renderData.pageState,
     visiblePlaylists,
     titleToneHandoff: renderData.titleToneHandoff,
+    playbackSurface: renderData.playbackSurface,
     titleReturnSurface: renderData.titleReturnSurface,
   });
   const shouldLockScroll = displayLock !== null;

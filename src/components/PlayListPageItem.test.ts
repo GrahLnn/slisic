@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { collectionTitleTextRetainHoverClassName } from "./collectionTitle";
 import {
+  resolvePlayListPageItemDirectTitleHoverVisual,
   resolvePlayListPageItemCommittedText,
+  resolvePlayListPageItemNextStageHoverLock,
   resolvePlayListPageItemRequestedTitleHoverVisual,
   resolvePlayListPageItemTitleHoverLock,
   resolvePlayListPageItemTitleFrameClassName,
@@ -184,9 +186,9 @@ describe("PlayListPageItem", () => {
   test("keeps the title hover weight locked until Torph reaches idle", () => {
     assert.deepEqual(
       resolvePlayListPageItemTitleHoverLock({
-        previousLocked: false,
+        hasStageLock: false,
         retainedVisual: "retain",
-        requestedVisual: "retain",
+        directVisual: "retain",
         torphStage: "idle",
       }),
       {
@@ -196,9 +198,9 @@ describe("PlayListPageItem", () => {
     );
     assert.deepEqual(
       resolvePlayListPageItemTitleHoverLock({
-        previousLocked: true,
+        hasStageLock: true,
         retainedVisual: "none",
-        requestedVisual: "none",
+        directVisual: "none",
         torphStage: "animate",
       }),
       {
@@ -208,9 +210,9 @@ describe("PlayListPageItem", () => {
     );
     assert.deepEqual(
       resolvePlayListPageItemTitleHoverLock({
-        previousLocked: true,
+        hasStageLock: true,
         retainedVisual: "none",
-        requestedVisual: "none",
+        directVisual: "none",
         torphStage: "idle",
       }),
       {
@@ -228,11 +230,25 @@ describe("PlayListPageItem", () => {
       }),
       "none",
     );
+    assert.equal(
+      resolvePlayListPageItemDirectTitleHoverVisual({
+        titleHoverVisual: "retain",
+        titleHoverRetainLease: "stage-only",
+      }),
+      "retain",
+    );
+    assert.equal(
+      resolvePlayListPageItemDirectTitleHoverVisual({
+        titleHoverVisual: "retain",
+        titleHoverRetainLease: "timed",
+      }),
+      "none",
+    );
     assert.deepEqual(
       resolvePlayListPageItemTitleHoverLock({
-        previousLocked: false,
+        hasStageLock: false,
         retainedVisual: "none",
-        requestedVisual: "retain",
+        directVisual: "retain",
         torphStage: "animate",
       }),
       {
@@ -242,15 +258,39 @@ describe("PlayListPageItem", () => {
     );
     assert.deepEqual(
       resolvePlayListPageItemTitleHoverLock({
-        previousLocked: true,
+        hasStageLock: true,
         retainedVisual: "none",
-        requestedVisual: "none",
+        directVisual: "none",
         torphStage: "idle",
       }),
       {
         locked: false,
         visual: "none",
       },
+    );
+    assert.equal(
+      resolvePlayListPageItemNextStageHoverLock({
+        currentLocked: false,
+        directVisual: "retain",
+        torphStage: "prepare",
+      }),
+      true,
+    );
+    assert.equal(
+      resolvePlayListPageItemNextStageHoverLock({
+        currentLocked: true,
+        directVisual: "none",
+        torphStage: "animate",
+      }),
+      true,
+    );
+    assert.equal(
+      resolvePlayListPageItemNextStageHoverLock({
+        currentLocked: true,
+        directVisual: "none",
+        torphStage: "idle",
+      }),
+      false,
     );
   });
 });

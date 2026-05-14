@@ -3,7 +3,11 @@ import { AnimatePresence, motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
-import { collectionTitleClassName, collectionTitleLayoutTransition } from "../collectionTitle";
+import {
+  collectionTitleClassName,
+  collectionTitleLayoutTransition,
+  collectionTitleTextHoverClassName,
+} from "../collectionTitle";
 import { EditableTitle, type EditableTitleHandle } from "../EditableTitle";
 import {
   TrackSpectrum,
@@ -136,6 +140,10 @@ export function resolveMusicSpectrumRowHoverActionClassName() {
   return "opacity-0 transition-opacity duration-300 group-hover/spectrum-music-row:opacity-100";
 }
 
+export function resolveMusicSpectrumTitleTextClassName() {
+  return collectionTitleTextHoverClassName;
+}
+
 export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrumEditorProps>(
   function MusicSpectrumEditor(
     {
@@ -185,6 +193,8 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
               interactionDisabled={interactionDisabled}
               layoutId={titleLayoutId}
               style={{ fontFamily: "var(--font-noto-sans)" }}
+              textClassName={resolveMusicSpectrumTitleTextClassName()}
+              titleNativeHoverEnabled={false}
               value={titleValue}
               onChange={onTitleChange}
             />

@@ -54,10 +54,20 @@ export function resolvePlayListPageItemRequestedTitleHoverVisual(
   return viewModel.titleHoverVisual;
 }
 
+export function resolvePlayListPageItemDirectTitleHoverVisual(
+  viewModel: Pick<PlayListPageItemViewModel, "titleHoverRetainLease" | "titleHoverVisual">,
+) {
+  if (viewModel.titleHoverRetainLease === "timed") {
+    return "none";
+  }
+
+  return viewModel.titleHoverVisual;
+}
+
 export function resolvePlayListPageItemTitleHoverLock(args: {
-  previousLocked: boolean;
+  hasStageLock: boolean;
   retainedVisual: "hold" | "none" | "retain";
-  requestedVisual: "hold" | "none" | "retain";
+  directVisual: "hold" | "none" | "retain";
   torphStage: TorphStage;
 }) {
   if (args.retainedVisual !== "none") {
@@ -67,14 +77,14 @@ export function resolvePlayListPageItemTitleHoverLock(args: {
     } as const;
   }
 
-  if (args.requestedVisual !== "none") {
+  if (args.directVisual !== "none") {
     return {
       locked: true,
-      visual: args.requestedVisual,
+      visual: args.directVisual,
     } as const;
   }
 
-  if (args.previousLocked && args.torphStage !== "idle") {
+  if (args.hasStageLock && args.torphStage !== "idle") {
     return {
       locked: true,
       visual: "retain",
@@ -85,6 +95,18 @@ export function resolvePlayListPageItemTitleHoverLock(args: {
     locked: false,
     visual: "none",
   } as const;
+}
+
+export function resolvePlayListPageItemNextStageHoverLock(args: {
+  currentLocked: boolean;
+  directVisual: "hold" | "none" | "retain";
+  torphStage: TorphStage;
+}) {
+  if (args.directVisual !== "none") {
+    return true;
+  }
+
+  return args.currentLocked && args.torphStage !== "idle";
 }
 
 export function resolvePlayListPageItemCommittedText(args: {
@@ -145,13 +167,13 @@ export function PlayListPageItem({
     resolvePlayListPageItemTitleRetainKey(viewModel),
     resolvePlayListPageItemTitleRetainRequestKey(viewModel),
   );
+  const directTitleHoverVisual = resolvePlayListPageItemDirectTitleHoverVisual(viewModel);
   const titleHoverLock = resolvePlayListPageItemTitleHoverLock({
-    previousLocked: titleHoverLockedUntilIdleRef.current,
+    hasStageLock: titleHoverLockedUntilIdleRef.current,
     retainedVisual: retainedTitleHoverVisual,
-    requestedVisual: viewModel.titleHoverVisual,
+    directVisual: directTitleHoverVisual,
     torphStage,
   });
-  titleHoverLockedUntilIdleRef.current = titleHoverLock.locked;
   const titleHoverVisual = titleHoverLock.visual;
   const titleHoverClassName =
     titleHoverVisual === "hold" || titleHoverVisual === "retain"
@@ -198,6 +220,11 @@ export function PlayListPageItem({
               torphStage: stage,
             });
             committedTextRef.current = nextCommittedText;
+            titleHoverLockedUntilIdleRef.current = resolvePlayListPageItemNextStageHoverLock({
+              currentLocked: titleHoverLockedUntilIdleRef.current,
+              directVisual: resolvePlayListPageItemDirectTitleHoverVisual(viewModel),
+              torphStage: stage,
+            });
             setTorphStage(stage);
             onTorphStageChange?.(stage);
           }}
