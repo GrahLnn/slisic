@@ -108,6 +108,13 @@ export type WaveformViewportTransition = {
   viewport: WaveformViewportModel;
 };
 
+export type WaveformSessionViewportState = {
+  initialReadyViewportResolved: boolean;
+  userOwned: boolean;
+  viewport: WaveformViewportModel;
+  zoomOwnership: WaveformZoomOwnership;
+};
+
 export type WaveformWheelDeltas = {
   deltaMode: number;
   deltaX: number;
@@ -186,6 +193,13 @@ export type WaveformTransaction = {
     plan: WaveformDataPlan | null;
   };
   shouldScheduleCompleteData: boolean;
+};
+
+export type WaveformSessionFrame = {
+  dataPlan: WaveformDataPlan | null;
+  isLoading: boolean;
+  playheadVisible: boolean;
+  selectionVisible: boolean;
 };
 
 export type WaveformInteractiveDataDemand = {
@@ -440,6 +454,18 @@ export function toWaveformViewportState(viewport: WaveformViewportModel): Wavefo
   };
 }
 
+function areWaveformViewportsEquivalent(left: WaveformViewportModel, right: WaveformViewportModel) {
+  return (
+    left.durationMs === right.durationMs &&
+    left.maximumPixelsPerSecond === right.maximumPixelsPerSecond &&
+    left.focusSeconds === right.focusSeconds &&
+    left.viewportWidth === right.viewportWidth &&
+    left.contentWidth === right.contentWidth &&
+    Math.abs(left.pixelsPerSecond - right.pixelsPerSecond) < 0.01 &&
+    Math.abs(left.scrollLeft - right.scrollLeft) < WAVEFORM_VIEWPORT_POSITION_EPSILON_PX
+  );
+}
+
 export function resolveWaveformResizeViewportState(args: {
   current: WaveformViewportModel;
   viewportWidth: number;
@@ -614,6 +640,63 @@ export function resolveWaveformInitialViewport(args: {
   viewportWidth: number;
 }): WaveformViewportModel {
   return resolveWaveformInitialViewportFrame(args).viewport;
+}
+
+export function resolveWaveformSessionViewportFrame(args: {
+  elementWidth: number;
+  initialSelection: WaveformSelectionRange | null;
+  maximumPixelsPerSecond: number;
+  state: WaveformSessionViewportState;
+  summary: Pick<TrackWaveformSummary, "duration_ms">;
+  waveformStatus: WaveformStatus;
+}): WaveformSessionViewportState {
+  if (
+    args.state.zoomOwnership === "initial-minimum" &&
+    !args.state.userOwned &&
+    !args.state.initialReadyViewportResolved &&
+    args.waveformStatus === "ready" &&
+    args.elementWidth > 1
+  ) {
+    const frame = resolveWaveformInitialViewportFrame({
+      durationMs: args.summary.duration_ms,
+      maximumPixelsPerSecond: args.maximumPixelsPerSecond,
+      selection: args.initialSelection,
+      viewportWidth: args.elementWidth,
+    });
+
+    return {
+      initialReadyViewportResolved: true,
+      userOwned: args.state.userOwned,
+      viewport: frame.viewport,
+      zoomOwnership: frame.zoomOwnership,
+    };
+  }
+
+  const resizeState = resolveWaveformResizeViewportState({
+    current: args.state.viewport,
+    viewportWidth: args.elementWidth,
+  });
+  const viewport = resolveWaveformViewportModel({
+    durationMs: args.summary.duration_ms,
+    focusSeconds: resizeState.focusSeconds,
+    maximumPixelsPerSecond: args.maximumPixelsPerSecond,
+    pixelsPerSecond: resolveWaveformZoomOwnedPixelsPerSecond({
+      durationMs: args.summary.duration_ms,
+      maximumPixelsPerSecond: args.maximumPixelsPerSecond,
+      ownership: args.state.zoomOwnership,
+      pixelsPerSecond: resizeState.pixelsPerSecond,
+      viewportWidth: resizeState.viewportWidth,
+    }),
+    scrollLeft: resizeState.scrollLeft,
+    viewportWidth: resizeState.viewportWidth,
+  });
+
+  return areWaveformViewportsEquivalent(viewport, args.state.viewport)
+    ? args.state
+    : {
+        ...args.state,
+        viewport,
+      };
 }
 
 export function resolveWaveformViewportAudioSeconds(args: {
@@ -1346,6 +1429,44 @@ export function resolveWaveformTileAvailabilityPresentationPlan(args: {
   signal: Pick<WaveformDataPlan, "scopeKey">;
 }) {
   return args.currentPlan?.scopeKey === args.signal.scopeKey ? args.currentPlan : null;
+}
+
+export function resolveWaveformSessionFrame(args: {
+  filePath: string | null | undefined;
+  playheadEnabled: boolean;
+  summary: TrackWaveformSummary;
+  tileAvailabilitySignal?: Pick<WaveformDataPlan, "scopeKey"> | null;
+  viewport: WaveformViewportModel;
+  waveformStatus: WaveformStatus;
+}): WaveformSessionFrame {
+  const identity = projectWaveformTrackIdentity(args.filePath);
+  const isReady = args.waveformStatus === "ready" && identity.ok;
+  const dataPlan = isReady
+    ? resolveWaveformDataPlan({
+        contentWidth: args.viewport.contentWidth,
+        filePath: identity.value.filePath,
+        focusSeconds: args.viewport.focusSeconds,
+        mode: "settled",
+        pixelsPerSecond: args.viewport.pixelsPerSecond,
+        scrollLeft: args.viewport.scrollLeft,
+        summary: args.summary,
+        viewportWidth: args.viewport.viewportWidth,
+      })
+    : null;
+  const presentationPlan = args.tileAvailabilitySignal
+    ? resolveWaveformTileAvailabilityPresentationPlan({
+        currentPlan: dataPlan,
+        signal: args.tileAvailabilitySignal,
+      })
+    : dataPlan;
+  const isLoading = args.waveformStatus === "loading";
+
+  return {
+    dataPlan: presentationPlan,
+    isLoading,
+    playheadVisible: args.playheadEnabled && !isLoading,
+    selectionVisible: !isLoading,
+  };
 }
 
 export function resolveWaveformSelectionGeometry(args: {

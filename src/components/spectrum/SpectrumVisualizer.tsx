@@ -26,31 +26,27 @@ import {
   resolvePlaybackSnapshotDurationMs,
   resolveQuantizedWaveformDisplayPeak,
   resolveTrackWaveformInitialStatus,
-  resolveWaveformDataPlan,
   resolveWaveformDataPlanScopedRequests,
   resolveWaveformHardwareHorizontalWheelDelta,
   resolveWaveformInitialViewportFrame,
-  resolveWaveformInitialViewport,
   resolveWaveformMaximumPixelsPerSecond,
-  resolveWaveformMinimumPixelsPerSecond,
   resolveWaveformPeakFromTileCache,
   resolveWaveformPixelsPerSecond,
   resolveWaveformPlayheadCssVariables,
   resolveWaveformPlayheadDrag,
   resolveWaveformPointerAnchorViewportX,
   resolveWaveformRenderPixelsPerSecond,
-  resolveWaveformResizeViewportState,
   resolveWaveformSelectionDrag,
   resolveWaveformSelectionGeometry,
   resolveWaveformSelectionMarkerLayout,
-  resolveWaveformTileAvailabilityPresentationPlan,
+  resolveWaveformSessionFrame,
+  resolveWaveformSessionViewportFrame,
   resolveWaveformTileLoadResultPolicy,
   resolveWaveformTilePeakAtSeconds,
   resolveWaveformTilePeakRangeAtPixels,
   resolveWaveformTileRequestStartPolicy,
   resolveWaveformTransaction,
   resolveWaveformViewportAudioSeconds,
-  resolveWaveformViewportModel,
   resolveWaveformViewportTransition,
   resolveWaveformWheelDeltas,
   resolveWaveformWheelOperation,
@@ -68,6 +64,7 @@ import {
   type WaveformSelectionEdge,
   type WaveformSelectionGeometry,
   type WaveformSelectionRange,
+  type WaveformSessionViewportState,
   type WaveformStatus,
   type WaveformViewportModel,
   type WaveformZoomOwnership,
@@ -110,6 +107,8 @@ export {
   resolveWaveformSelectionDrag,
   resolveWaveformSelectionGeometry,
   resolveWaveformSelectionMarkerLayout,
+  resolveWaveformSessionFrame,
+  resolveWaveformSessionViewportFrame,
   resolveWaveformSelectionStartScrollLeft,
   resolveWaveformTileAvailabilityPresentationPlan,
   resolveWaveformTileLoadResultPolicy,
@@ -984,20 +983,51 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
   const maximumPixelsPerSecond = resolveWaveformRenderPixelsPerSecond({
     summary: waveformState.summary,
   });
-  const [zoomOwnership, setZoomOwnership] = useState<WaveformZoomOwnership>("initial-minimum");
-  const viewportUserOwnedRef = useRef(false);
-  const initialReadyViewportResolvedRef = useRef(false);
   const initialViewportSelectionRef = useRef<WaveformSelectionRange | null>(
     props.selection ?? null,
   );
-  const [viewport, setViewport] = useState(
-    () =>
-      resolveWaveformInitialViewportFrame({
-        durationMs: waveformState.summary.duration_ms,
-        maximumPixelsPerSecond,
-        selection: props.selection ?? null,
-        viewportWidth: 1,
-      }).viewport,
+  const [sessionViewport, setSessionViewport] = useState<WaveformSessionViewportState>(() => {
+    const frame = resolveWaveformInitialViewportFrame({
+      durationMs: waveformState.summary.duration_ms,
+      maximumPixelsPerSecond,
+      selection: props.selection ?? null,
+      viewportWidth: 1,
+    });
+
+    return {
+      initialReadyViewportResolved: false,
+      userOwned: false,
+      viewport: frame.viewport,
+      zoomOwnership: "initial-minimum",
+    };
+  });
+  const viewport = sessionViewport.viewport;
+  const updateViewportWithOwnership = useCallback(
+    (args: {
+      resolve: (current: WaveformViewportModel) => WaveformViewportModel;
+      zoomOwnership?: WaveformZoomOwnership;
+    }) => {
+      setSessionViewport((current) => {
+        const viewport = args.resolve(current.viewport);
+        const zoomOwnership = args.zoomOwnership ?? current.zoomOwnership;
+        if (
+          current.userOwned &&
+          current.zoomOwnership === zoomOwnership &&
+          viewport === current.viewport
+        ) {
+          return current;
+        }
+
+        const next = {
+          ...current,
+          userOwned: true,
+          viewport,
+          zoomOwnership,
+        };
+        return next;
+      });
+    },
+    [],
   );
   const elementWidth = useElementWidth(hostRef);
   const [tileRevision, setTileRevision] = useState(0);
@@ -1009,31 +1039,18 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
       }),
     [props.filePath, renderDataStore],
   );
-  const dataPlan = useMemo(
+  const sessionFrame = useMemo(
     () =>
-      waveformState.status === "ready" && projectWaveformTrackIdentity(props.filePath).ok
-        ? resolveWaveformDataPlan({
-            contentWidth: viewport.contentWidth,
-            filePath: props.filePath,
-            focusSeconds: viewport.focusSeconds,
-            mode: "settled",
-            pixelsPerSecond: viewport.pixelsPerSecond,
-            scrollLeft: viewport.scrollLeft,
-            summary: waveformState.summary,
-            viewportWidth: viewport.viewportWidth,
-          })
-        : null,
-    [
-      props.filePath,
-      viewport.contentWidth,
-      viewport.focusSeconds,
-      viewport.pixelsPerSecond,
-      viewport.scrollLeft,
-      viewport.viewportWidth,
-      waveformState.status,
-      waveformState.summary,
-    ],
+      resolveWaveformSessionFrame({
+        filePath: props.filePath,
+        playheadEnabled: props.playheadEnabled === true,
+        summary: waveformState.summary,
+        viewport,
+        waveformStatus: waveformState.status,
+      }),
+    [props.filePath, props.playheadEnabled, viewport, waveformState.status, waveformState.summary],
   );
+  const dataPlan = sessionFrame.dataPlan;
   const selectionRef = useRef<WaveformSelectionRange | null>(props.selection ?? null);
   const isDraggingSelectionRef = useRef(false);
   const onSelectionCommitRef = useRef(props.onSelectionCommit);
@@ -1068,12 +1085,15 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
   const requestDataPlan = useWaveformDataLoader({
     filePath: props.filePath,
     onTileAvailable: (signal) => {
-      if (
-        resolveWaveformTileAvailabilityPresentationPlan({
-          currentPlan: dataPlan,
-          signal,
-        })
-      ) {
+      const presentationFrame = resolveWaveformSessionFrame({
+        filePath: props.filePath,
+        playheadEnabled: props.playheadEnabled === true,
+        summary: waveformState.summary,
+        tileAvailabilitySignal: signal,
+        viewport,
+        waveformStatus: waveformState.status,
+      });
+      if (presentationFrame.dataPlan) {
         setTileRevision((revision) => revision + 1);
       }
     },
@@ -1084,53 +1104,18 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
   });
 
   useLayoutEffect(() => {
-    if (
-      zoomOwnership === "initial-minimum" &&
-      !viewportUserOwnedRef.current &&
-      !initialReadyViewportResolvedRef.current &&
-      waveformState.status === "ready" &&
-      elementWidth > 1
-    ) {
-      initialReadyViewportResolvedRef.current = true;
-      const frame = resolveWaveformInitialViewportFrame({
-        durationMs: waveformState.summary.duration_ms,
+    setSessionViewport((current) => {
+      const next = resolveWaveformSessionViewportFrame({
+        elementWidth,
+        initialSelection: initialViewportSelectionRef.current,
         maximumPixelsPerSecond,
-        selection: initialViewportSelectionRef.current,
-        viewportWidth: elementWidth,
+        state: current,
+        summary: waveformState.summary,
+        waveformStatus: waveformState.status,
       });
-      setZoomOwnership(frame.zoomOwnership);
-      setViewport(frame.viewport);
-      return;
-    }
-
-    setViewport((current) => {
-      const resizeState = resolveWaveformResizeViewportState({
-        current,
-        viewportWidth: elementWidth,
-      });
-      return resolveWaveformViewportModel({
-        durationMs: waveformState.summary.duration_ms,
-        focusSeconds: resizeState.focusSeconds,
-        maximumPixelsPerSecond,
-        pixelsPerSecond:
-          zoomOwnership === "initial-minimum"
-            ? resolveWaveformMinimumPixelsPerSecond({
-                durationMs: waveformState.summary.duration_ms,
-                maximumPixelsPerSecond,
-                viewportWidth: resizeState.viewportWidth,
-              })
-            : resizeState.pixelsPerSecond,
-        scrollLeft: resizeState.scrollLeft,
-        viewportWidth: resizeState.viewportWidth,
-      });
+      return next;
     });
-  }, [
-    elementWidth,
-    maximumPixelsPerSecond,
-    waveformState.status,
-    waveformState.summary.duration_ms,
-    zoomOwnership,
-  ]);
+  }, [elementWidth, maximumPixelsPerSecond, waveformState.status, waveformState.summary]);
 
   useEffect(() => {
     if (!dataPlan) {
@@ -1183,25 +1168,23 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
           viewportLeft: host.getBoundingClientRect().left,
           viewportWidth: viewport.viewportWidth,
         });
-        setViewport((current) => {
-          const transition = resolveWaveformViewportTransition({
-            command: {
-              anchorViewportX,
-              deltaY: intent.deltaY,
-              kind: "zoom",
-            },
-            current,
-          });
-          return transition.viewport;
+        updateViewportWithOwnership({
+          resolve: (current) =>
+            resolveWaveformViewportTransition({
+              command: {
+                anchorViewportX,
+                deltaY: intent.deltaY,
+                kind: "zoom",
+              },
+              current,
+            }).viewport,
+          zoomOwnership: "explicit",
         });
-        viewportUserOwnedRef.current = true;
-        setZoomOwnership("explicit");
         return;
       }
 
-      viewportUserOwnedRef.current = true;
-      setViewport(
-        (current) =>
+      updateViewportWithOwnership({
+        resolve: (current) =>
           resolveWaveformViewportTransition({
             command: {
               deltaX: intent.deltaX,
@@ -1209,14 +1192,14 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
             },
             current,
           }).viewport,
-      );
+      });
     };
 
     host.addEventListener("wheel", handleWheel, {
       passive: false,
     });
     return () => host.removeEventListener("wheel", handleWheel);
-  }, [viewport]);
+  }, [updateViewportWithOwnership, viewport]);
 
   useEffect(() => {
     let disposed = false;
@@ -1246,9 +1229,8 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
           return;
         }
 
-        viewportUserOwnedRef.current = true;
-        setViewport(
-          (current) =>
+        updateViewportWithOwnership({
+          resolve: (current) =>
             resolveWaveformViewportTransition({
               command: {
                 deltaX,
@@ -1256,7 +1238,7 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
               },
               current,
             }).viewport,
-        );
+        });
       })
       .then((nextUnlisten) => {
         if (disposed) {
@@ -1270,7 +1252,7 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
       disposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [updateViewportWithOwnership]);
 
   useLayoutEffect(() => {
     if (isDraggingSelectionRef.current) {
@@ -1290,7 +1272,7 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
     [playback.commitPlaybackStatus, props.playheadEnabled],
   );
 
-  const isLoading = waveformState.status === "loading";
+  const isLoading = sessionFrame.isLoading;
 
   return (
     <motion.div
@@ -1326,9 +1308,9 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
         isDraggingRef={isDraggingSelectionRef}
         selectionRef={selectionRef}
         viewport={viewport}
-        visible={!isLoading}
+        visible={sessionFrame.selectionVisible}
       />
-      {props.playheadEnabled === true && !isLoading ? (
+      {sessionFrame.playheadVisible ? (
         <WaveformPlayheadOverlay
           playback={playback}
           selectionRef={selectionRef}

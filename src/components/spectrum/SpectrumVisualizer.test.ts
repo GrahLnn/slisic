@@ -35,6 +35,8 @@ import {
   resolveWaveformSelectionDrag,
   resolveWaveformSelectionGeometry,
   resolveWaveformSelectionMarkerLayout,
+  resolveWaveformSessionFrame,
+  resolveWaveformSessionViewportFrame,
   resolveWaveformSelectionStartScrollLeft,
   resolveWaveformTileAvailabilityPresentationPlan,
   resolveWaveformTileLoadResultPolicy,
@@ -253,6 +255,67 @@ describe("SpectrumVisualizer viewport model", () => {
     assert.equal(changedStart.scrollLeft, frame.viewport.scrollLeft);
   });
 
+  test("resolves session initial ready viewport once and keeps resize in the same owner", () => {
+    const summary = createSummary();
+    const initialFrame = resolveWaveformInitialViewportFrame({
+      durationMs: summary.duration_ms,
+      maximumPixelsPerSecond: 800,
+      selection: {
+        end: 40,
+        start: 20,
+      },
+      viewportWidth: 1,
+    });
+    const firstReady = resolveWaveformSessionViewportFrame({
+      elementWidth: 1_000,
+      initialSelection: {
+        end: 40,
+        start: 20,
+      },
+      maximumPixelsPerSecond: 800,
+      state: {
+        initialReadyViewportResolved: false,
+        userOwned: false,
+        viewport: initialFrame.viewport,
+        zoomOwnership: "initial-minimum",
+      },
+      summary,
+      waveformStatus: "ready",
+    });
+    const resized = resolveWaveformSessionViewportFrame({
+      elementWidth: 900,
+      initialSelection: {
+        end: 80,
+        start: 60,
+      },
+      maximumPixelsPerSecond: 800,
+      state: firstReady,
+      summary,
+      waveformStatus: "ready",
+    });
+
+    assert.equal(firstReady.initialReadyViewportResolved, true);
+    assert.equal(firstReady.zoomOwnership, "initial-selection");
+    assert.equal(
+      resolveWaveformViewportAudioSeconds({
+        pixelsPerSecond: firstReady.viewport.pixelsPerSecond,
+        scrollLeft: firstReady.viewport.scrollLeft,
+        viewportX: 0,
+      }),
+      18,
+    );
+    assert.equal(resized.zoomOwnership, "initial-selection");
+    assert.notEqual(resized.viewport.viewportWidth, firstReady.viewport.viewportWidth);
+    assert.notEqual(
+      resolveWaveformViewportAudioSeconds({
+        pixelsPerSecond: resized.viewport.pixelsPerSecond,
+        scrollLeft: resized.viewport.scrollLeft,
+        viewportX: 0,
+      }),
+      58,
+    );
+  });
+
   test("keeps initial selection start minus two seconds inside the visual padding", () => {
     const viewport = resolveWaveformInitialViewport({
       durationMs: 120_000,
@@ -405,6 +468,72 @@ describe("SpectrumVisualizer input interpretation", () => {
 });
 
 describe("SpectrumVisualizer data plans", () => {
+  test("derives session frame demand only from ready projected tracks", () => {
+    const summary = createSummary();
+    const viewport = resolveWaveformViewportModel({
+      durationMs: summary.duration_ms,
+      focusSeconds: null,
+      maximumPixelsPerSecond: resolveWaveformRenderPixelsPerSecond({ summary }),
+      pixelsPerSecond: 120,
+      scrollLeft: 0,
+      viewportWidth: 800,
+    });
+
+    const loadingFrame = resolveWaveformSessionFrame({
+      filePath: "C:/music/demo.flac",
+      playheadEnabled: true,
+      summary,
+      viewport,
+      waveformStatus: "loading",
+    });
+    const readyFrame = resolveWaveformSessionFrame({
+      filePath: "C:/music/demo.flac",
+      playheadEnabled: true,
+      summary,
+      viewport,
+      waveformStatus: "ready",
+    });
+
+    assert.equal(loadingFrame.dataPlan, null);
+    assert.equal(loadingFrame.selectionVisible, false);
+    assert.equal(loadingFrame.playheadVisible, false);
+    assert.equal(readyFrame.dataPlan?.scopeKey.includes("c:/music/demo.flac"), true);
+    assert.equal(readyFrame.selectionVisible, true);
+    assert.equal(readyFrame.playheadVisible, true);
+  });
+
+  test("keeps session tile presentation scoped to the current data plan", () => {
+    const summary = createSummary();
+    const viewport = resolveWaveformViewportModel({
+      durationMs: summary.duration_ms,
+      focusSeconds: null,
+      maximumPixelsPerSecond: resolveWaveformRenderPixelsPerSecond({ summary }),
+      pixelsPerSecond: 120,
+      scrollLeft: 0,
+      viewportWidth: 800,
+    });
+    const current = resolveWaveformSessionFrame({
+      filePath: "C:/music/current.flac",
+      playheadEnabled: false,
+      summary,
+      viewport,
+      waveformStatus: "ready",
+    });
+    const stale = resolveWaveformSessionFrame({
+      filePath: "C:/music/current.flac",
+      playheadEnabled: false,
+      summary,
+      tileAvailabilitySignal: {
+        scopeKey: "stale-scope",
+      },
+      viewport,
+      waveformStatus: "ready",
+    });
+
+    assert.equal(current.dataPlan?.scopeKey.includes("c:/music/current.flac"), true);
+    assert.equal(stale.dataPlan, null);
+  });
+
   test("creates scope and request keys from stable identity and density", () => {
     const scopeKey = createWaveformDataScopeKey({
       filePath: "C:/music/demo.flac",
