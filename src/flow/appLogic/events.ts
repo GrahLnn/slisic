@@ -65,6 +65,20 @@ export interface MusicUpdatesResult {
   results: MusicUpdateResult[];
 }
 
+export interface MusicCreateInput {
+  sourceCollectionUrl: string;
+  music: Music;
+}
+
+export interface MusicCreateResult {
+  input: MusicCreateInput;
+  music: Music;
+}
+
+export interface MusicCreatesResult {
+  results: MusicCreateResult[];
+}
+
 export interface MusicDeletesResult {
   results: MusicDraftDelete[];
 }
@@ -220,6 +234,7 @@ export const ss = defineSS(
         "spectrumLoadingMusics",
         "spectrum",
         "spectrumUpdatingMusic",
+        "spectrumCreatingMusic",
         "spectrumDeletingMusic",
         "configLoading",
         "config",
@@ -354,6 +369,26 @@ export const invoker = createActors({
 
     return { results };
   },
+  createMusics: async (inputs: MusicCreateInput[]): Promise<MusicCreatesResult> => {
+    const results: MusicCreateResult[] = [];
+
+    for (const input of inputs) {
+      const result = await crab.createMusic(input.sourceCollectionUrl, input.music);
+
+      const createResult = result.match({
+        Ok: (music) => ({
+          input,
+          music,
+        }),
+        Err: (error) => {
+          throw new Error(error);
+        },
+      });
+      results.push(createResult);
+    }
+
+    return { results };
+  },
   deleteMusics: async (inputs: MusicDraftDelete[]): Promise<MusicDeletesResult> => {
     const results: MusicDraftDelete[] = [];
 
@@ -404,6 +439,7 @@ export const payloads = collect(
     "spectrum.music_range.changed",
   ),
   ...event<{ id: string }>()("spectrum.music_deleted"),
+  ...event<{ id: string }>()("spectrum.music_create_started"),
   ...event<{ id: string }>()("spectrum.music_draft.reset"),
   ...event<number | null>()("spectrum.playback_scope.changed"),
   ...event<string>()("save_path.changed"),

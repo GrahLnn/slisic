@@ -106,6 +106,14 @@ pub async fn update_music(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn create_music(source_collection_url: String, music: Music) -> Result<Music, String> {
+    super::repo::create_music(&source_collection_url, &music)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn delete_music(url: String, start_ms: u32, end_ms: u32) -> Result<bool, String> {
     super::repo::delete_music(&url, start_ms, end_ms)
         .await

@@ -41,6 +41,8 @@ function createEditor(
     id,
     interactionDisabled: false,
     isCurrent: id === "alpha",
+    isNewTitle: false,
+    showWaveform: true,
     playbackIdentity: createPlaybackIdentity(id),
     selectionEnd: 30,
     selectionStart: 0,
@@ -78,6 +80,7 @@ function createRowRenderModel(
     start: 0,
     trackFilePath: "C:/music/current.mp3",
     waveformRenderDataStore: testWaveformRenderDataStore,
+    isNewTitle: false,
     ...overrides,
   };
 }
@@ -90,6 +93,7 @@ function createRowProps(
     ...createRowRenderModel(editor),
     editableTitleRefs: { current: new Map() },
     measureElement: () => undefined,
+    onActivateNewTitle: () => undefined,
     onDelete: () => undefined,
     onPlaybackAction: async () => undefined,
     onPlaybackControlReady: () => undefined,
@@ -273,6 +277,24 @@ describe("SpectrumMusicVirtualList", () => {
     );
   });
 
+  test("keeps row memoization sensitive to new-title entry state", () => {
+    const editor = createEditor("beta", {
+      isCurrent: false,
+    });
+
+    assert.equal(
+      areSpectrumMusicVirtualListRowRenderModelsEqual(
+        createRowRenderModel(editor, {
+          isNewTitle: false,
+        }),
+        createRowRenderModel(editor, {
+          isNewTitle: true,
+        }),
+      ),
+      false,
+    );
+  });
+
   test("keeps row memoization sensitive to playhead ownership changes", () => {
     const editor = createEditor("beta", {
       isCurrent: false,
@@ -340,6 +362,19 @@ describe("SpectrumMusicVirtualList", () => {
       areSpectrumMusicVirtualListRowPropsEqual(props, {
         ...props,
         onDelete: () => undefined,
+      }),
+      false,
+    );
+  });
+
+  test("keeps row memoization sensitive to the new-title activation handler", () => {
+    const editor = createEditor("alpha");
+    const props = createRowProps(editor);
+
+    assert.equal(
+      areSpectrumMusicVirtualListRowPropsEqual(props, {
+        ...props,
+        onActivateNewTitle: () => undefined,
       }),
       false,
     );

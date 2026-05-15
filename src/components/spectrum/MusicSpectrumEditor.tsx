@@ -68,10 +68,12 @@ export interface MusicSpectrumEditorProps {
   exitPresentation?: MusicSpectrumExitPresentation;
   shouldShowResetAction: boolean;
   titleAction?: ReactNode;
+  titleIsNew?: boolean;
   titleLayoutId?: string;
   titleValue: string;
   trackFilePath: string | null;
   waveformStartAction?: ReactNode;
+  waveformVisible?: boolean;
   waveformRenderDataStore?: WaveformRenderDataStore;
   waveformClassName?: string;
   onReset: () => void;
@@ -80,6 +82,7 @@ export interface MusicSpectrumEditorProps {
     commitPlaybackStatus?: TrackSpectrumPlaybackStatusCommit,
   ) => void;
   onPlaybackControlReady?: (control: TrackSpectrumPlaybackControl | null) => void;
+  onNewTitleActivate?: () => void;
   onTitleChange: (value: string) => void;
 }
 
@@ -155,15 +158,18 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
       selection,
       shouldShowResetAction,
       titleAction,
+      titleIsNew = false,
       titleLayoutId,
       titleValue,
       trackFilePath,
       waveformStartAction,
+      waveformVisible = true,
       waveformRenderDataStore,
       waveformClassName,
       onReset,
       onSelectionCommit,
       onPlaybackControlReady,
+      onNewTitleActivate,
       onTitleChange,
     },
     ref,
@@ -188,14 +194,17 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
             <EditableTitle
               ref={ref}
               className={collectionTitleClassName}
+              customCursorEnabled
               focusHitSlopWidthClassName="w-4"
               handoffTone={handoffTone}
               interactionDisabled={interactionDisabled}
               layoutId={titleLayoutId}
               style={{ fontFamily: "var(--font-noto-sans)" }}
               textClassName={resolveMusicSpectrumTitleTextClassName()}
+              isNewTitle={titleIsNew}
               titleNativeHoverEnabled={false}
               value={titleValue}
+              onNewTitleActivate={onNewTitleActivate}
               onChange={onTitleChange}
             />
           </motion.div>
@@ -210,24 +219,28 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
           {...contentFade}
           className={cn("relative mt-8", waveformClassName)}
         >
-          <div className="grid">
-            <div aria-hidden className="col-start-1 row-start-1 h-[13rem] w-full" />
-            <motion.div
-              ref={trackSpectrumHostRef}
-              key="waveform"
-              {...resolveMusicSpectrumWaveformFadeProps({ exitPresentation })}
-              className="col-start-1 row-start-1"
-            >
-              <TrackSpectrum
-                filePath={trackFilePath}
-                playheadEnabled={playheadEnabled}
-                renderDataStore={waveformRenderDataStore}
-                selection={selection}
-                onPlaybackControlReady={onPlaybackControlReady}
-                onSelectionCommit={onSelectionCommit}
-              />
-            </motion.div>
-          </div>
+          {waveformVisible ? (
+            <div className="grid">
+              <div aria-hidden className="col-start-1 row-start-1 h-[13rem] w-full" />
+              <motion.div
+                ref={trackSpectrumHostRef}
+                key="waveform"
+                {...resolveMusicSpectrumWaveformFadeProps({ exitPresentation })}
+                className="col-start-1 row-start-1"
+              >
+                <TrackSpectrum
+                  filePath={trackFilePath}
+                  playheadEnabled={playheadEnabled}
+                  renderDataStore={waveformRenderDataStore}
+                  selection={selection}
+                  onPlaybackControlReady={onPlaybackControlReady}
+                  onSelectionCommit={onSelectionCommit}
+                />
+              </motion.div>
+            </div>
+          ) : (
+            <div aria-hidden className="h-[13rem] w-full" />
+          )}
           <AnimatePresence initial={false}>
             {waveformStartAction ? (
               <motion.div

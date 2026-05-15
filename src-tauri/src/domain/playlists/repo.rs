@@ -206,6 +206,38 @@ pub async fn update_music(
     Ok(first_updated)
 }
 
+pub async fn create_music(source_collection_url: &str, music: &Music) -> Result<Music> {
+    ensure_collection_graph_schema().await?;
+
+    if music.start_ms >= music.end_ms {
+        bail!("music start_ms must be less than end_ms");
+    }
+
+    let Some(mut collection) = get_collection_by_url(source_collection_url).await? else {
+        bail!("collection `{source_collection_url}` not found");
+    };
+
+    if collection.musics.iter().any(|candidate| {
+        candidate.url == music.url
+            && candidate.start_ms == music.start_ms
+            && candidate.end_ms == music.end_ms
+    }) {
+        return Ok(music.clone());
+    }
+
+    collection.musics.push(music.clone());
+    let saved = upsert_collection(&collection).await?;
+    Ok(saved
+        .musics
+        .into_iter()
+        .find(|candidate| {
+            candidate.url == music.url
+                && candidate.start_ms == music.start_ms
+                && candidate.end_ms == music.end_ms
+        })
+        .unwrap_or_else(|| music.clone()))
+}
+
 pub async fn delete_music(url: &str, start_ms: u32, end_ms: u32) -> Result<bool> {
     ensure_collection_graph_schema().await?;
 

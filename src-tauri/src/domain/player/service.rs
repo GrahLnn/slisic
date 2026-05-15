@@ -372,7 +372,7 @@ pub async fn resume_playback() -> Result<bool> {
 }
 
 #[cfg(not(test))]
-pub async fn pause_spectrum_music(scope_id: u64, track: PlaybackTrack) -> Result<bool> {
+pub async fn pause_spectrum_music(scope_id: u64, _track: PlaybackTrack) -> Result<bool> {
     let runtime = runtime()?;
     if !runtime.is_spectrum_playback_scope_active(SpectrumPlaybackScope { id: scope_id })? {
         return Ok(false);
@@ -380,12 +380,6 @@ pub async fn pause_spectrum_music(scope_id: u64, track: PlaybackTrack) -> Result
     let Some(playback) = runtime.current_playback()? else {
         return Ok(false);
     };
-    if !runtime
-        .is_playback_active_for_spectrum_track(&playback, &track)
-        .await?
-    {
-        return Ok(false);
-    }
 
     runtime.set_temporary_playback_pause(false)?;
     playback
@@ -397,7 +391,7 @@ pub async fn pause_spectrum_music(scope_id: u64, track: PlaybackTrack) -> Result
 }
 
 #[cfg(not(test))]
-pub async fn resume_spectrum_music(scope_id: u64, track: PlaybackTrack) -> Result<bool> {
+pub async fn resume_spectrum_music(scope_id: u64, _track: PlaybackTrack) -> Result<bool> {
     let runtime = runtime()?;
     if !runtime.is_spectrum_playback_scope_active(SpectrumPlaybackScope { id: scope_id })? {
         return Ok(false);
@@ -405,12 +399,6 @@ pub async fn resume_spectrum_music(scope_id: u64, track: PlaybackTrack) -> Resul
     let Some(playback) = runtime.current_playback()? else {
         return Ok(false);
     };
-    if !runtime
-        .is_playback_active_for_spectrum_track(&playback, &track)
-        .await?
-    {
-        return Ok(false);
-    }
 
     runtime.set_temporary_playback_pause(false)?;
     playback
@@ -1017,18 +1005,6 @@ impl PlayerRuntime {
             );
         }
 
-        let tracks = active
-            .tracks
-            .read()
-            .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))?;
-        let strategy = active
-            .strategy
-            .lock()
-            .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?;
-        let selected = strategy
-            .select_track(&track, &tracks)
-            .ok_or_else(|| anyhow!("selected spectrum music is not in the active session"))?;
-
         Ok(SpectrumPlaybackStartPlan {
             session: PlaybackSession {
                 playlist_name: active.playlist_name.clone(),
@@ -1038,37 +1014,11 @@ impl PlayerRuntime {
                     pause_after_start,
                     range: initial_range,
                     scope: Some(scope),
-                    track: selected.clone(),
+                    track: track.clone(),
                 }),
             },
-            track: selected,
+            track,
         })
-    }
-
-    async fn is_playback_active_for_spectrum_track(
-        &self,
-        playback: &Playback,
-        track: &PlaybackTrack,
-    ) -> Result<bool> {
-        let status = playback.status().await.map_err(|error| {
-            anyhow!("failed to read playback status for spectrum action: {error}")
-        })?;
-        let Some(status_path) = status.path.as_deref() else {
-            return Ok(false);
-        };
-        if Path::new(status_path) != track.file_path {
-            return Ok(false);
-        }
-
-        let Some(active_track) = self.active_request_track_snapshot()? else {
-            return Ok(false);
-        };
-
-        Ok(active_track.playlist_name == track.playlist_name
-            && active_track.music_url == track.music_url
-            && active_track.file_path == track.file_path
-            && active_track.start_ms == track.start_ms
-            && active_track.end_ms == track.end_ms)
     }
 
     fn update_current_session_track_identity(

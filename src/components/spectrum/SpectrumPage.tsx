@@ -620,6 +620,7 @@ export function SpectrumPage() {
             exitPresentation="local"
             playbackActionSnapshot={playbackActionSnapshot}
             trackFilePath={renderData.trackFilePath}
+            onActivateNewTitle={(id) => appLogicAction.startSpectrumMusicCreate(id)}
             onDelete={(id) => appLogicAction.deleteSpectrumMusic(id)}
             onPlaybackAction={handleSpectrumPlaybackAction}
             onPlaybackControlReady={handlePlaybackControlReady}

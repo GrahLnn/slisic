@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { Collection, PlayList } from "@/src/cmd";
 import {
+  activateSpectrumNewMusicDraft,
   changeSpectrumMusicDraftValueRange,
+  createMusicDraftCreates,
   createMusicDraftDeletes,
+  createMusicInCollections,
   createSpectrumCurrentMusicDraft,
+  createSpectrumNewMusicDraftIdentity,
   deleteMusicFromCollections,
   deleteMusicFromPlaylistPreview,
   deleteMusicFromPlaylists,
@@ -19,6 +23,7 @@ import {
   createSpectrumMusicDrafts,
   changeSpectrumMusicDraftName,
   createMusicDraftEdits,
+  hasSpectrumMusicDraftCommitOperations,
 } from "./musicTitle";
 
 const sampleCollection: Collection = {
@@ -81,6 +86,7 @@ describe("musicDraft", () => {
         endMs: 240_000,
       }),
       {
+        kind: "persisted" as const,
         baselineName: "Track B",
         baselineStartMs: 120_000,
         baselineEndMs: 240_000,
@@ -121,6 +127,7 @@ describe("musicDraft", () => {
       }),
       [
         {
+          kind: "persisted" as const,
           baselineName: "Track A",
           baselineStartMs: 0,
           baselineEndMs: 120_000,
@@ -350,6 +357,7 @@ describe("musicDraft", () => {
       [
         currentDraft,
         {
+          kind: "persisted" as const,
           baselineName: "Track A",
           baselineStartMs: 0,
           baselineEndMs: 120_000,
@@ -487,6 +495,153 @@ describe("musicDraft", () => {
         deletion,
       )?.playlist.collections[0]?.musics.map((music) => music.alias),
       ["Track B"],
+    );
+  });
+
+  test("activates the new spectrum music placeholder into one pending draft", () => {
+    const drafts = activateSpectrumNewMusicDraft(
+      [],
+      createSpectrumNewMusicDraftIdentity({ sourceUrl: "https://example.com/quiet-morning#a" }),
+      {
+        collections: [sampleCollection],
+        sourceEndMs: 120_000,
+        sourceStartMs: 0,
+        sourceUrl: "https://example.com/quiet-morning#a",
+      },
+    );
+
+    assert.equal(drafts.length, 1);
+    assert.equal(drafts[0]?.kind, "pending-create");
+    assert.equal(drafts[0]?.name, "");
+    assert.equal(drafts[0]?.sourceCollectionUrl, sampleCollection.url);
+    assert.equal(drafts[0]?.sourceEndMs, 120_000);
+    assert.equal(drafts[0]?.startMs, 0);
+    assert.equal(drafts[0]?.endMs, 120_000);
+  });
+
+  test("starts pending spectrum music at the full source range when activated from a segment", () => {
+    const drafts = activateSpectrumNewMusicDraft(
+      [],
+      createSpectrumNewMusicDraftIdentity({ sourceUrl: "https://example.com/quiet-morning#a" }),
+      {
+        collections: [
+          {
+            ...sampleCollection,
+            musics: [
+              {
+                ...sampleCollection.musics[0]!,
+                alias: "Track A Opening",
+                end_ms: 120_000,
+                start_ms: 0,
+              },
+              {
+                ...sampleCollection.musics[0]!,
+                alias: "Track A Duplicate Segment",
+                start_ms: 120_000,
+                end_ms: 240_000,
+              },
+            ],
+          },
+        ],
+        sourceEndMs: 240_000,
+        sourceStartMs: 120_000,
+        sourceUrl: "https://example.com/quiet-morning#a",
+      },
+    );
+
+    assert.equal(drafts.length, 1);
+    assert.equal(drafts[0]?.kind, "pending-create");
+    assert.equal(drafts[0]?.sourceEndMs, 240_000);
+    assert.equal(drafts[0]?.startMs, 0);
+    assert.equal(drafts[0]?.endMs, 240_000);
+
+    const named = changeSpectrumMusicDraftName(
+      drafts,
+      createSpectrumNewMusicDraftIdentity({ sourceUrl: "https://example.com/quiet-morning#a" }),
+      "Track Draft",
+    );
+    const create = createMusicDraftCreates(named)[0];
+    assert.equal(create?.music.start_ms, 0);
+    assert.equal(create?.music.end_ms, 240_000);
+  });
+
+  test("skips empty pending spectrum music creates", () => {
+    const drafts = activateSpectrumNewMusicDraft(
+      [],
+      createSpectrumNewMusicDraftIdentity({ sourceUrl: "https://example.com/quiet-morning#a" }),
+      {
+        collections: [sampleCollection],
+        sourceEndMs: 120_000,
+        sourceStartMs: 0,
+        sourceUrl: "https://example.com/quiet-morning#a",
+      },
+    );
+
+    assert.deepEqual(createMusicDraftCreates(drafts), []);
+    assert.equal(hasSpectrumMusicDraftCommitOperations(drafts), false);
+  });
+
+  test("creates pending spectrum music only after the title is named", () => {
+    const drafts = activateSpectrumNewMusicDraft(
+      [],
+      createSpectrumNewMusicDraftIdentity({ sourceUrl: "https://example.com/quiet-morning#a" }),
+      {
+        collections: [sampleCollection],
+        sourceEndMs: 120_000,
+        sourceStartMs: 0,
+        sourceUrl: "https://example.com/quiet-morning#a",
+      },
+    );
+    const named = changeSpectrumMusicDraftName(
+      drafts,
+      createSpectrumNewMusicDraftIdentity({ sourceUrl: "https://example.com/quiet-morning#a" }),
+      "  Track Draft  ",
+    );
+    const creates = createMusicDraftCreates(named);
+
+    assert.deepEqual(creates, [
+      {
+        id: createSpectrumNewMusicDraftIdentity({
+          sourceUrl: "https://example.com/quiet-morning#a",
+        }),
+        sourceCollectionUrl: sampleCollection.url,
+        music: {
+          name: "Track Draft",
+          alias: "Track Draft",
+          group: sampleCollection.musics[0]!.group,
+          path: sampleCollection.musics[0]!.path,
+          start_ms: 0,
+          end_ms: 120_000,
+          url: "https://example.com/quiet-morning#a#spectrum#0#120000#Track%20Draft",
+        },
+      },
+    ]);
+    assert.deepEqual(
+      createMusicInCollections([sampleCollection], creates[0]!)[0]?.musics.map(
+        (music) => music.alias,
+      ),
+      ["Track A", "Track Draft"],
+    );
+  });
+
+  test("deleting a pending spectrum music draft restores the new placeholder domain", () => {
+    const pending = activateSpectrumNewMusicDraft(
+      [],
+      createSpectrumNewMusicDraftIdentity({ sourceUrl: "https://example.com/quiet-morning#a" }),
+      {
+        collections: [sampleCollection],
+        sourceEndMs: 120_000,
+        sourceStartMs: 0,
+        sourceUrl: "https://example.com/quiet-morning#a",
+      },
+    );
+
+    assert.deepEqual(
+      deleteSpectrumMusicDraft(
+        pending,
+        createSpectrumNewMusicDraftIdentity({ sourceUrl: "https://example.com/quiet-morning#a" }),
+      ),
+      [],
     );
   });
 

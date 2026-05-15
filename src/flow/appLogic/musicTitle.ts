@@ -1,4 +1,4 @@
-import type { Collection, PlayList } from "@/src/cmd";
+import type { Collection, Group, Music, PlayList } from "@/src/cmd";
 import type { PlaylistUpsertResult, SpectrumMusicDraft } from "./core";
 
 export interface MusicEdit {
@@ -22,6 +22,17 @@ export interface MusicDraftDelete {
 }
 
 export type MusicDelete = Omit<MusicDraftDelete, "id">;
+
+export interface MusicDraftCreate {
+  id: string;
+  music: Music;
+  sourceCollectionUrl: string;
+}
+
+export interface MusicCreate {
+  sourceCollectionUrl: string;
+  music: Music;
+}
 
 export type SpectrumMusicCommitKind = "keep" | "restore";
 
@@ -76,7 +87,12 @@ function createSpectrumMusicDraftValue(args: {
   const startMs = normalizeSpectrumMusicRangeBoundary(args.startMs);
   const endMs = normalizeSpectrumMusicRangeBoundary(args.endMs);
 
+  if (startMs === null || endMs === null || startMs >= endMs) {
+    throw new Error("invalid persisted spectrum music draft range");
+  }
+
   return {
+    kind: "persisted",
     baselineName: args.name,
     baselineStartMs: startMs,
     baselineEndMs: endMs,
@@ -85,6 +101,20 @@ function createSpectrumMusicDraftValue(args: {
     startMs,
     endMs,
   };
+}
+
+export function createSpectrumNewMusicDraftIdentity(args: { sourceUrl: string | null }) {
+  return `new|${args.sourceUrl ?? ""}`;
+}
+
+export function createSpectrumMusicDraftRuntimeIdentity(draft: SpectrumMusicDraft) {
+  return draft.kind === "pending-create"
+    ? createSpectrumNewMusicDraftIdentity({ sourceUrl: draft.sourceUrl })
+    : createSpectrumMusicDraftIdentity({
+        baselineEndMs: draft.baselineEndMs,
+        baselineStartMs: draft.baselineStartMs,
+        url: draft.url,
+      });
 }
 
 export function createSpectrumCurrentMusicDraft(args: {
@@ -175,23 +205,11 @@ export function mergeSpectrumMusicDrafts(args: {
   baseDrafts: readonly SpectrumMusicDraft[];
   incomingDrafts: readonly SpectrumMusicDraft[];
 }): SpectrumMusicDraft[] {
-  const seen = new Set(
-    args.baseDrafts.map((draft) =>
-      createSpectrumMusicDraftIdentity({
-        baselineEndMs: draft.baselineEndMs,
-        baselineStartMs: draft.baselineStartMs,
-        url: draft.url,
-      }),
-    ),
-  );
+  const seen = new Set(args.baseDrafts.map(createSpectrumMusicDraftRuntimeIdentity));
   const merged = [...args.baseDrafts];
 
   for (const draft of args.incomingDrafts) {
-    const key = createSpectrumMusicDraftIdentity({
-      baselineEndMs: draft.baselineEndMs,
-      baselineStartMs: draft.baselineStartMs,
-      url: draft.url,
-    });
+    const key = createSpectrumMusicDraftRuntimeIdentity(draft);
     if (seen.has(key)) {
       continue;
     }
@@ -216,6 +234,10 @@ export function createSpectrumMusicDraftIdentity(args: {
 }
 
 export function hasSpectrumMusicDraftChanges(draft: SpectrumMusicDraft | null) {
+  if (draft?.kind === "pending-create") {
+    return draft.deleteRequested !== true;
+  }
+
   return (
     draft !== null &&
     (draft.deleteRequested === true ||
@@ -236,6 +258,10 @@ export function resetSpectrumMusicDraftValue(
 ): SpectrumMusicDraft | null {
   if (!draft) {
     return null;
+  }
+
+  if (draft.kind === "pending-create") {
+    return draft;
   }
 
   const { deleteRequested: _deleteRequested, ...draftValue } = draft;
@@ -302,6 +328,25 @@ export function resolveSpectrumMusicCommit(
     kind: "restore",
     alias: draft.baselineName,
   };
+}
+
+function normalizeMusicCreateTitle(value: string) {
+  return normalizeSpectrumMusicName(value);
+}
+
+function resolveMusicCreateUrl(args: {
+  sourceUrl: string;
+  startMs: number;
+  endMs: number;
+  title: string;
+}) {
+  return [
+    args.sourceUrl,
+    "spectrum",
+    args.startMs,
+    args.endMs,
+    encodeURIComponent(args.title),
+  ].join("#");
 }
 
 function isMusicEditTarget(music: Collection["musics"][number], edit: MusicEdit) {
@@ -389,6 +434,62 @@ function deleteMusicFromCollection(collection: Collection, deletion: MusicDelete
       };
 }
 
+function isMusicCreateSourceCollection(collection: Collection, create: MusicCreate) {
+  return collection.url === create.sourceCollectionUrl;
+}
+
+function appendCreatedMusicToCollection(collection: Collection, create: MusicCreate): Collection {
+  if (!isMusicCreateSourceCollection(collection, create)) {
+    return collection;
+  }
+
+  const exists = collection.musics.some(
+    (music) =>
+      music.url === create.music.url &&
+      music.start_ms === create.music.start_ms &&
+      music.end_ms === create.music.end_ms,
+  );
+
+  return {
+    ...collection,
+    musics: exists ? collection.musics : [...collection.musics, create.music],
+  };
+}
+
+export function createMusicInCollections(
+  collections: readonly Collection[],
+  create: MusicCreate,
+): Collection[] {
+  return collections.map((collection) => appendCreatedMusicToCollection(collection, create));
+}
+
+export function createMusicInPlaylists(
+  playlists: readonly PlayList[],
+  create: MusicCreate,
+): PlayList[] {
+  return playlists.map((playlist) => ({
+    ...playlist,
+    collections: createMusicInCollections(playlist.collections, create),
+  }));
+}
+
+export function createMusicInPlaylistPreview(
+  preview: PlaylistUpsertResult | null,
+  create: MusicCreate,
+): PlaylistUpsertResult | null {
+  if (!preview) {
+    return null;
+  }
+
+  return {
+    ...preview,
+    playlist: {
+      ...preview.playlist,
+      collections: createMusicInCollections(preview.playlist.collections, create),
+    },
+  };
+}
+
 export function deleteMusicFromCollections(
   collections: readonly Collection[],
   deletion: MusicDelete,
@@ -427,20 +528,15 @@ export function hasSpectrumMusicDraftUpdates(drafts: readonly SpectrumMusicDraft
   return drafts.some((draft) => hasSpectrumMusicDraftChanges(draft));
 }
 
+export function hasSpectrumMusicDraftCreates(drafts: readonly SpectrumMusicDraft[]) {
+  return createMusicDraftCreates(drafts).length > 0;
+}
+
 export function findSpectrumMusicDraft(
   drafts: readonly SpectrumMusicDraft[],
   id: string,
 ): SpectrumMusicDraft | null {
-  return (
-    drafts.find(
-      (draft) =>
-        createSpectrumMusicDraftIdentity({
-          baselineEndMs: draft.baselineEndMs,
-          baselineStartMs: draft.baselineStartMs,
-          url: draft.url,
-        }) === id,
-    ) ?? null
-  );
+  return drafts.find((draft) => createSpectrumMusicDraftRuntimeIdentity(draft) === id) ?? null;
 }
 
 export function changeSpectrumMusicDraftName(
@@ -449,14 +545,130 @@ export function changeSpectrumMusicDraftName(
   name: string,
 ): SpectrumMusicDraft[] {
   return drafts.map((draft) =>
-    createSpectrumMusicDraftIdentity({
-      baselineEndMs: draft.baselineEndMs,
-      baselineStartMs: draft.baselineStartMs,
-      url: draft.url,
-    }) === id
+    createSpectrumMusicDraftRuntimeIdentity(draft) === id
       ? (changeSpectrumMusicDraftValueName(draft, name) ?? draft)
       : draft,
   );
+}
+
+function createPendingSpectrumMusicDraft(args: {
+  sourceEndMs: number;
+  sourceCollectionUrl: string;
+  sourceGroup: Group;
+  sourcePath: string | null;
+  sourceUrl: string;
+}): SpectrumMusicDraft | null {
+  const sourceEndMs = normalizeSpectrumMusicRangeBoundary(args.sourceEndMs);
+
+  if (sourceEndMs === null || sourceEndMs <= 0) {
+    return null;
+  }
+
+  return {
+    kind: "pending-create",
+    baselineName: "",
+    baselineStartMs: null,
+    baselineEndMs: null,
+    name: "",
+    url: resolveMusicCreateUrl({
+      sourceUrl: args.sourceUrl,
+      startMs: 0,
+      endMs: sourceEndMs,
+      title: "",
+    }),
+    startMs: 0,
+    endMs: sourceEndMs,
+    sourceCollectionUrl: args.sourceCollectionUrl,
+    sourceEndMs,
+    sourceGroup: args.sourceGroup,
+    sourcePath: args.sourcePath,
+    sourceUrl: args.sourceUrl,
+  };
+}
+
+function resolveSpectrumSourceEndMs(
+  musics: readonly Pick<Music, "end_ms" | "start_ms" | "url">[],
+  sourceUrl: string,
+) {
+  return musics.reduce<number | null>((currentEndMs, music) => {
+    const startMs = normalizeSpectrumMusicRangeBoundary(music.start_ms);
+    const endMs = normalizeSpectrumMusicRangeBoundary(music.end_ms);
+
+    if (music.url !== sourceUrl || startMs === null || endMs === null || startMs >= endMs) {
+      return currentEndMs;
+    }
+
+    return currentEndMs === null ? endMs : Math.max(currentEndMs, endMs);
+  }, null);
+}
+
+export function activateSpectrumNewMusicDraft(
+  drafts: readonly SpectrumMusicDraft[],
+  id: string,
+  args: {
+    collections: readonly Collection[];
+    sourceEndMs: number | null;
+    sourceStartMs: number | null;
+    sourceUrl: string | null;
+  },
+): SpectrumMusicDraft[] {
+  const sourceStartMs = normalizeSpectrumMusicRangeBoundary(args.sourceStartMs);
+  const sourceEndMs = normalizeSpectrumMusicRangeBoundary(args.sourceEndMs);
+  if (
+    !args.sourceUrl ||
+    sourceStartMs === null ||
+    sourceEndMs === null ||
+    sourceStartMs >= sourceEndMs ||
+    sourceEndMs <= 0 ||
+    id !== createSpectrumNewMusicDraftIdentity({ sourceUrl: args.sourceUrl })
+  ) {
+    return [...drafts];
+  }
+
+  const sourceMusic = args.collections
+    .flatMap((collection) =>
+      collection.musics.map((music) => ({
+        collection,
+        music,
+      })),
+    )
+    .find(
+      ({ music }) =>
+        music.url === args.sourceUrl &&
+        music.start_ms === sourceStartMs &&
+        music.end_ms === sourceEndMs,
+    );
+  if (!sourceMusic) {
+    return [...drafts];
+  }
+
+  const sourceExtentEndMs = resolveSpectrumSourceEndMs(
+    sourceMusic.collection.musics,
+    args.sourceUrl,
+  );
+  if (sourceExtentEndMs === null) {
+    return [...drafts];
+  }
+
+  const pendingDraft = createPendingSpectrumMusicDraft({
+    sourceEndMs: sourceExtentEndMs,
+    sourceCollectionUrl: sourceMusic.collection.url,
+    sourceGroup: sourceMusic.music.group,
+    sourcePath: sourceMusic.music.path,
+    sourceUrl: sourceMusic.music.url,
+  });
+  if (!pendingDraft) {
+    return [...drafts];
+  }
+
+  const hasPending = drafts.some(
+    (draft) => draft.kind === "pending-create" && draft.sourceUrl === args.sourceUrl,
+  );
+  if (hasPending) {
+    return [...drafts];
+  }
+
+  return [...drafts, pendingDraft];
 }
 
 export function changeSpectrumMusicDraftRange(
@@ -465,11 +677,7 @@ export function changeSpectrumMusicDraftRange(
   range: { endMs: number | null; startMs: number | null },
 ): SpectrumMusicDraft[] {
   return drafts.map((draft) =>
-    createSpectrumMusicDraftIdentity({
-      baselineEndMs: draft.baselineEndMs,
-      baselineStartMs: draft.baselineStartMs,
-      url: draft.url,
-    }) === id
+    createSpectrumMusicDraftRuntimeIdentity(draft) === id
       ? (changeSpectrumMusicDraftValueRange(draft, range) ?? draft)
       : draft,
   );
@@ -480,11 +688,7 @@ export function resetSpectrumMusicDraft(
   id: string,
 ): SpectrumMusicDraft[] {
   return drafts.map((draft) =>
-    createSpectrumMusicDraftIdentity({
-      baselineEndMs: draft.baselineEndMs,
-      baselineStartMs: draft.baselineStartMs,
-      url: draft.url,
-    }) === id
+    createSpectrumMusicDraftRuntimeIdentity(draft) === id
       ? (resetSpectrumMusicDraftValue(draft) ?? draft)
       : draft,
   );
@@ -494,32 +698,34 @@ export function deleteSpectrumMusicDraft(
   drafts: readonly SpectrumMusicDraft[],
   id: string,
 ): SpectrumMusicDraft[] {
-  return drafts.map((draft) =>
-    createSpectrumMusicDraftIdentity({
-      baselineEndMs: draft.baselineEndMs,
-      baselineStartMs: draft.baselineStartMs,
-      url: draft.url,
-    }) === id
-      ? {
-          ...draft,
-          deleteRequested: true,
-        }
-      : draft,
-  );
+  return drafts.flatMap((draft) => {
+    const draftId = createSpectrumMusicDraftRuntimeIdentity(draft);
+
+    if (draftId !== id) {
+      return [draft];
+    }
+
+    if (draft.kind === "pending-create") {
+      return [];
+    }
+
+    return [
+      {
+        ...draft,
+        deleteRequested: true,
+      },
+    ];
+  });
 }
 
 export function createMusicDraftEditFromDraft(draft: SpectrumMusicDraft): MusicDraftEdit | null {
-  if (draft.deleteRequested === true) {
+  if (draft.deleteRequested === true || draft.kind === "pending-create") {
     return null;
   }
 
   const musicCommit = resolveSpectrumMusicCommit(draft);
 
   if (!musicCommit || !hasSpectrumMusicDraftChanges(draft)) {
-    return null;
-  }
-
-  if (draft.url === null || draft.baselineStartMs === null || draft.baselineEndMs === null) {
     return null;
   }
 
@@ -561,12 +767,7 @@ export function createMusicDraftEdits(drafts: readonly SpectrumMusicDraft[]): Mu
 export function createMusicDraftDeleteFromDraft(
   draft: SpectrumMusicDraft,
 ): MusicDraftDelete | null {
-  if (
-    draft.deleteRequested !== true ||
-    draft.url === null ||
-    draft.baselineStartMs === null ||
-    draft.baselineEndMs === null
-  ) {
+  if (draft.kind === "pending-create" || draft.deleteRequested !== true) {
     return null;
   }
 
@@ -587,4 +788,55 @@ export function createMusicDraftDeletes(drafts: readonly SpectrumMusicDraft[]): 
     const deletion = createMusicDraftDeleteFromDraft(draft);
     return deletion ? [deletion] : [];
   });
+}
+
+export function createMusicDraftCreateFromDraft(
+  draft: SpectrumMusicDraft,
+): MusicDraftCreate | null {
+  if (draft.kind !== "pending-create" || draft.deleteRequested === true) {
+    return null;
+  }
+
+  const title = normalizeMusicCreateTitle(draft.name);
+  const startMs = normalizeSpectrumMusicDraftRangeBoundary(draft.startMs);
+  const endMs =
+    normalizeSpectrumMusicDraftRangeBoundary(draft.endMs) ??
+    normalizeSpectrumMusicRangeBoundary(draft.sourceEndMs);
+  if (title.length === 0 || startMs === null || endMs === null || startMs >= endMs) {
+    return null;
+  }
+
+  return {
+    id: createSpectrumNewMusicDraftIdentity({ sourceUrl: draft.sourceUrl }),
+    sourceCollectionUrl: draft.sourceCollectionUrl,
+    music: {
+      name: title,
+      alias: title,
+      group: draft.sourceGroup,
+      path: draft.sourcePath,
+      start_ms: startMs,
+      end_ms: endMs,
+      url: resolveMusicCreateUrl({
+        sourceUrl: draft.sourceUrl,
+        startMs,
+        endMs,
+        title,
+      }),
+    },
+  };
+}
+
+export function createMusicDraftCreates(drafts: readonly SpectrumMusicDraft[]): MusicDraftCreate[] {
+  return drafts.flatMap((draft) => {
+    const create = createMusicDraftCreateFromDraft(draft);
+    return create ? [create] : [];
+  });
+}
+
+export function hasSpectrumMusicDraftCommitOperations(drafts: readonly SpectrumMusicDraft[]) {
+  return (
+    createMusicDraftEdits(drafts).length > 0 ||
+    createMusicDraftCreates(drafts).length > 0 ||
+    createMusicDraftDeletes(drafts).length > 0
+  );
 }

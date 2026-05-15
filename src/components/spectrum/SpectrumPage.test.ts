@@ -5,6 +5,7 @@ import { resolveMusicSpectrumTitleTextClassName } from "./MusicSpectrumEditor";
 import {
   areSpectrumPlaybackActionSnapshotsEqual,
   findSpectrumMusicDraftById,
+  resolveSpectrumMusicDraftsForView,
   resolveSpectrumBackActionVisualState,
   resolveSpectrumBackTitleCommitTargets,
   resolveSpectrumCommittedMusicName,
@@ -35,6 +36,7 @@ describe("SpectrumPage", () => {
     assert.equal(
       resolveSpectrumMusicDisplayName({
         musicDraft: {
+          kind: "persisted" as const,
           baselineName: "Disc 1 Opening",
           baselineStartMs: 0,
           baselineEndMs: 120_000,
@@ -52,6 +54,7 @@ describe("SpectrumPage", () => {
 
   test("switches the back action only when the draft differs from current music data", () => {
     const draft = {
+      kind: "persisted" as const,
       baselineName: "Disc 1 Opening",
       baselineStartMs: 0,
       baselineEndMs: 120_000,
@@ -112,6 +115,7 @@ describe("SpectrumPage", () => {
 
   test("shows the spectrum draft reset action only when the music draft differs", () => {
     const draft = {
+      kind: "persisted" as const,
       baselineName: "Disc 1 Opening",
       baselineStartMs: 0,
       baselineEndMs: 120_000,
@@ -151,12 +155,37 @@ describe("SpectrumPage", () => {
       }),
       false,
     );
+    assert.equal(
+      shouldShowSpectrumDraftResetAction({
+        musicDraft: {
+          kind: "pending-create" as const,
+          baselineName: "" as const,
+          baselineStartMs: null,
+          baselineEndMs: null,
+          name: "Track Draft",
+          url: "https://example.com/quiet-morning#a#spectrum#0#120000#Track%20Draft",
+          startMs: 0,
+          endMs: 120_000,
+          sourceCollectionUrl: "https://example.com/quiet-morning",
+          sourceEndMs: 120_000,
+          sourceGroup: {
+            folder: "youtube/quiet-morning",
+            name: "Quiet Morning",
+            url: "https://example.com/quiet-morning",
+          },
+          sourcePath: "C:/Music/quiet-morning.m4a",
+          sourceUrl: "https://example.com/quiet-morning#a",
+        },
+      }),
+      false,
+    );
   });
 
   test("resolves the spectrum selection from the editable draft first", () => {
     assert.deepEqual(
       resolveSpectrumSelectionRange({
         musicDraft: {
+          kind: "persisted" as const,
           baselineName: "Disc 1 Opening",
           baselineStartMs: 0,
           baselineEndMs: 120_000,
@@ -179,6 +208,7 @@ describe("SpectrumPage", () => {
     assert.deepEqual(
       resolveSpectrumSelectionRange({
         musicDraft: {
+          kind: "persisted" as const,
           baselineName: "Disc 1 Opening",
           baselineStartMs: 0,
           baselineEndMs: 120_000,
@@ -212,6 +242,7 @@ describe("SpectrumPage", () => {
     assert.deepEqual(
       resolveSpectrumCommittedMusicName({
         musicDraft: {
+          kind: "persisted" as const,
           baselineName: "Disc 1 Opening",
           baselineStartMs: 0,
           baselineEndMs: 120_000,
@@ -231,6 +262,7 @@ describe("SpectrumPage", () => {
 
   test("does not schedule title commits for range-only spectrum edits", () => {
     const draft = {
+      kind: "persisted" as const,
       baselineName: "Track A",
       baselineStartMs: 0,
       baselineEndMs: 120_000,
@@ -262,6 +294,7 @@ describe("SpectrumPage", () => {
 
   test("schedules a title commit only for the edited spectrum music", () => {
     const editedDraft = {
+      kind: "persisted" as const,
       baselineName: "Track A",
       baselineStartMs: 0,
       baselineEndMs: 120_000,
@@ -271,6 +304,7 @@ describe("SpectrumPage", () => {
       endMs: 120_000,
     };
     const untouchedDraft = {
+      kind: "persisted" as const,
       baselineName: "Track B",
       baselineStartMs: 120_000,
       baselineEndMs: 240_000,
@@ -313,6 +347,7 @@ describe("SpectrumPage", () => {
 
   test("keeps deleted spectrum music out of visible editors and title commits", () => {
     const deletedDraft = {
+      kind: "persisted" as const,
       baselineName: "Track A",
       baselineStartMs: 0,
       baselineEndMs: 120_000,
@@ -323,6 +358,7 @@ describe("SpectrumPage", () => {
       endMs: 120_000,
     };
     const visibleDraft = {
+      kind: "persisted" as const,
       baselineName: "Track B",
       baselineStartMs: 120_000,
       baselineEndMs: 240_000,
@@ -344,10 +380,12 @@ describe("SpectrumPage", () => {
       spectrumMusicDrafts: [deletedDraft, visibleDraft],
     });
 
-    assert.equal(viewModels.length, 1);
+    assert.equal(viewModels.length, 2);
     assert.equal(viewModels[0]?.id, "https://example.com/quiet-morning#b|120000|240000");
     assert.equal(viewModels[0]?.titleLayoutId, "playlist-title:Focus Session");
     assert.equal(viewModels[0]?.handoffTone, "solid");
+    assert.equal(viewModels[1]?.id, "new|https://example.com/quiet-morning#a");
+    assert.equal(viewModels[1]?.isNewTitle, true);
     assert.deepEqual(
       resolveSpectrumBackTitleCommitTargets({
         editorViewModels: viewModels,
@@ -359,6 +397,7 @@ describe("SpectrumPage", () => {
 
   test("orders the current file music draft first and keeps each draft independent", () => {
     const currentDraft = {
+      kind: "persisted" as const,
       baselineName: "Track B",
       baselineStartMs: 120_000,
       baselineEndMs: 240_000,
@@ -368,6 +407,7 @@ describe("SpectrumPage", () => {
       endMs: 235_000,
     };
     const siblingDraft = {
+      kind: "persisted" as const,
       baselineName: "Track A",
       baselineStartMs: 0,
       baselineEndMs: 120_000,
@@ -407,10 +447,197 @@ describe("SpectrumPage", () => {
     assert.equal(viewModels[1]?.isCurrent, false);
     assert.equal(viewModels[1]?.titleLayoutId, undefined);
     assert.equal(viewModels[1]?.handoffTone, null);
+    assert.equal(viewModels[2]?.id, "new|https://example.com/quiet-morning#b");
+    assert.equal(viewModels[2]?.isNewTitle, true);
+    assert.equal(viewModels[2]?.showWaveform, false);
+    assert.equal(viewModels[2]?.playbackIdentity, null);
+  });
+
+  test("projects a new spectrum music row without adding a business draft", () => {
+    const draft = {
+      kind: "persisted" as const,
+      baselineName: "Track A",
+      baselineStartMs: 0,
+      baselineEndMs: 120_000,
+      name: "Track A",
+      url: "https://example.com/quiet-morning#a",
+      startMs: 0,
+      endMs: 120_000,
+    };
+
+    const entries = resolveSpectrumMusicDraftsForView({
+      spectrumMusicDrafts: [draft],
+      sourceUrl: "https://example.com/quiet-morning#a",
+    });
+
+    assert.deepEqual(entries, [
+      {
+        kind: "draft",
+        draft,
+      },
+      {
+        kind: "new-title",
+        id: "new|https://example.com/quiet-morning#a",
+      },
+    ]);
+    assert.deepEqual(resolveSpectrumBackActionVisualState({ musicDrafts: [draft] }), {
+      kind: "back",
+      key: "back",
+    });
+  });
+
+  test("keeps the back action as back for an unnamed pending spectrum music draft", () => {
+    const pendingDraft = {
+      kind: "pending-create" as const,
+      baselineName: "" as const,
+      baselineStartMs: null,
+      baselineEndMs: null,
+      name: "",
+      url: "https://example.com/quiet-morning#a#spectrum#0#120000#",
+      startMs: 0,
+      endMs: 120_000,
+      sourceCollectionUrl: "https://example.com/quiet-morning",
+      sourceEndMs: 120_000,
+      sourceGroup: {
+        folder: "youtube/quiet-morning",
+        name: "Quiet Morning",
+        url: "https://example.com/quiet-morning",
+      },
+      sourcePath: "C:/Music/quiet-morning.m4a",
+      sourceUrl: "https://example.com/quiet-morning#a",
+    };
+
+    assert.deepEqual(resolveSpectrumBackActionVisualState({ musicDrafts: [pendingDraft] }), {
+      kind: "back",
+      key: "back",
+    });
+    assert.deepEqual(
+      resolveSpectrumBackActionVisualState({
+        musicDrafts: [
+          {
+            ...pendingDraft,
+            name: "Track Draft",
+          },
+        ],
+      }),
+      {
+        kind: "check",
+        key: "check",
+      },
+    );
+  });
+
+  test("renders an activated pending create draft as an editor with full source selection", () => {
+    const pendingDraft = {
+      kind: "pending-create" as const,
+      baselineName: "" as const,
+      baselineStartMs: null,
+      baselineEndMs: null,
+      name: "",
+      url: "https://example.com/quiet-morning#a#spectrum#0#120000#",
+      startMs: 0,
+      endMs: 120_000,
+      sourceCollectionUrl: "https://example.com/quiet-morning",
+      sourceEndMs: 120_000,
+      sourceGroup: {
+        folder: "youtube/quiet-morning",
+        name: "Quiet Morning",
+        url: "https://example.com/quiet-morning",
+      },
+      sourcePath: "C:/Music/quiet-morning.m4a",
+      sourceUrl: "https://example.com/quiet-morning#a",
+    };
+
+    const viewModels = resolveSpectrumMusicEditorViewModels({
+      activeLayoutId: "playlist-title:Focus Session",
+      handoffTone: "solid",
+      interactionDisabled: false,
+      nowPlayingTrackFilePath: "C:/Music/quiet-morning.m4a",
+      nowPlayingTrackEndMs: 120_000,
+      nowPlayingTrackStartMs: 0,
+      nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
+      playingPlaylistName: "Focus Session",
+      spectrumMusicDrafts: [pendingDraft],
+    });
+
+    assert.equal(viewModels.length, 1);
+    assert.equal(viewModels[0]?.id, "new|https://example.com/quiet-morning#a");
+    assert.equal(viewModels[0]?.isNewTitle, false);
+    assert.equal(viewModels[0]?.showWaveform, true);
+    assert.equal(viewModels[0]?.selectionStart, 0);
+    assert.equal(viewModels[0]?.selectionEnd, 120);
+    assert.equal(viewModels[0]?.shouldShowResetAction, false);
+    assert.deepEqual(viewModels[0]?.playbackIdentity, {
+      endMs: 120_000,
+      filePath: "C:/Music/quiet-morning.m4a",
+      key: "c:/music/quiet-morning.m4a|Focus Session|https://example.com/quiet-morning#a#spectrum#0#120000#|0|120000",
+      normalizedFilePath: "c:/music/quiet-morning.m4a",
+      playlistName: "Focus Session",
+      startMs: 0,
+      url: "https://example.com/quiet-morning#a#spectrum#0#120000#",
+    });
+  });
+
+  test("keeps a pending create draft playback identity separate from its source music", () => {
+    const persistedDraft = {
+      kind: "persisted" as const,
+      baselineName: "Source Track",
+      baselineStartMs: 0,
+      baselineEndMs: 120_000,
+      name: "Source Track",
+      url: "https://example.com/quiet-morning#a",
+      startMs: 0,
+      endMs: 120_000,
+    };
+    const pendingDraft = {
+      kind: "pending-create" as const,
+      baselineName: "" as const,
+      baselineStartMs: null,
+      baselineEndMs: null,
+      name: "Draft Track",
+      url: "https://example.com/quiet-morning#a#spectrum#0#120000#Draft%20Track",
+      startMs: 0,
+      endMs: 120_000,
+      sourceCollectionUrl: "https://example.com/quiet-morning",
+      sourceEndMs: 120_000,
+      sourceGroup: {
+        folder: "youtube/quiet-morning",
+        name: "Quiet Morning",
+        url: "https://example.com/quiet-morning",
+      },
+      sourcePath: "C:/Music/quiet-morning.m4a",
+      sourceUrl: "https://example.com/quiet-morning#a",
+    };
+
+    const viewModels = resolveSpectrumMusicEditorViewModels({
+      activeLayoutId: "playlist-title:Focus Session",
+      handoffTone: "solid",
+      interactionDisabled: false,
+      nowPlayingTrackFilePath: "C:/Music/quiet-morning.m4a",
+      nowPlayingTrackEndMs: 120_000,
+      nowPlayingTrackStartMs: 0,
+      nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
+      playingPlaylistName: "Focus Session",
+      spectrumMusicDrafts: [persistedDraft, pendingDraft],
+    });
+    const source = viewModels.find(
+      (editor) => editor.id === "https://example.com/quiet-morning#a|0|120000",
+    );
+    const pending = viewModels.find(
+      (editor) => editor.id === "new|https://example.com/quiet-morning#a",
+    );
+
+    assert.notEqual(source?.playbackIdentity?.key, pending?.playbackIdentity?.key);
+    assert.equal(source?.playbackIdentity?.url, "https://example.com/quiet-morning#a");
+    assert.equal(
+      pending?.playbackIdentity?.url,
+      "https://example.com/quiet-morning#a#spectrum#0#120000#Draft%20Track",
+    );
   });
 
   test("finds a spectrum music draft through the shared identity rule", () => {
     const draft = {
+      kind: "persisted" as const,
       baselineName: "Track A",
       baselineStartMs: 0,
       baselineEndMs: 120_000,

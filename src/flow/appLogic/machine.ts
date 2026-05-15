@@ -19,20 +19,27 @@ import {
 } from "./core";
 import {
   createSpectrumCurrentMusicDraft,
+  activateSpectrumNewMusicDraft,
   changeSpectrumMusicDraftName,
   changeSpectrumMusicDraftRange,
+  createMusicDraftCreates,
   createMusicDraftDeletes,
   createMusicDraftEdits,
+  createMusicInCollections,
+  createMusicInPlaylistPreview,
+  createMusicInPlaylists,
   deleteMusicFromCollections,
   deleteMusicFromPlaylistPreview,
   deleteMusicFromPlaylists,
   deleteSpectrumMusicDraft,
-  hasSpectrumMusicDraftUpdates,
+  hasSpectrumMusicDraftCreates,
+  hasSpectrumMusicDraftCommitOperations,
   mergeSpectrumMusicDrafts,
   resetSpectrumMusicDraft,
   updateMusicInCollections,
   updateMusicInPlaylistPreview,
   updateMusicInPlaylists,
+  type MusicCreate,
   type MusicDelete,
   type MusicEdit,
 } from "./musicTitle";
@@ -43,6 +50,8 @@ import {
   payloads,
   ss,
   type MusicDeletesResult,
+  type MusicCreateResult,
+  type MusicCreatesResult,
   type MusicUpdateResult,
   type MusicUpdatesResult,
 } from "./events";
@@ -57,7 +66,19 @@ function resolveSavePathFromLoadingError(error: unknown, fallback: string) {
 }
 
 function hasSpectrumMusicUpdate(context: Context) {
-  return hasSpectrumMusicDraftUpdates(context.spectrumMusicDrafts);
+  return hasSpectrumMusicDraftCommitOperations(context.spectrumMusicDrafts);
+}
+
+function hasSpectrumMusicEdit(context: Context) {
+  return createMusicDraftEdits(context.spectrumMusicDrafts).length > 0;
+}
+
+function hasSpectrumMusicCreate(context: Context) {
+  return hasSpectrumMusicDraftCreates(context.spectrumMusicDrafts);
+}
+
+function hasSpectrumMusicDelete(context: Context) {
+  return createMusicDraftDeletes(context.spectrumMusicDrafts).length > 0;
 }
 
 function createMusicEditFromUpdate(result: MusicUpdateResult): MusicEdit {
@@ -81,6 +102,17 @@ function createMusicDeletesFromResult(result: MusicDeletesResult): MusicDelete[]
     startMs: deletion.startMs,
     url: deletion.url,
   }));
+}
+
+function createMusicCreateFromResult(result: MusicCreateResult): MusicCreate {
+  return {
+    sourceCollectionUrl: result.input.sourceCollectionUrl,
+    music: result.music,
+  };
+}
+
+function createMusicCreatesFromResult(result: MusicCreatesResult): MusicCreate[] {
+  return result.results.map(createMusicCreateFromResult);
 }
 
 function updateCollectionsWithMusicEdits(collections: Context["collections"], edits: MusicEdit[]) {
@@ -137,6 +169,36 @@ function deleteMusicFromContextPlaylistPreview(
   );
 }
 
+function createMusicInContextCollections(
+  collections: Context["collections"],
+  creates: readonly MusicCreate[],
+) {
+  return creates.reduce(
+    (currentCollections, create) => createMusicInCollections(currentCollections, create),
+    collections,
+  );
+}
+
+function createMusicInContextPlaylists(
+  playlists: Context["playlists"],
+  creates: readonly MusicCreate[],
+) {
+  return creates.reduce(
+    (currentPlaylists, create) => createMusicInPlaylists(currentPlaylists, create),
+    playlists,
+  );
+}
+
+function createMusicInContextPlaylistPreview(
+  preview: Context["pendingPlaylistPreview"],
+  creates: readonly MusicCreate[],
+) {
+  return creates.reduce(
+    (currentPreview, create) => createMusicInPlaylistPreview(currentPreview, create),
+    preview,
+  );
+}
+
 function resolveCurrentMusicEdit(context: Context, edits: readonly MusicEdit[]) {
   return (
     edits.find(
@@ -162,10 +224,12 @@ function resolveCurrentMusicDelete(context: Context, deletions: readonly MusicDe
 function createSpectrumPlayReturnContext(
   context: Context,
   args: {
+    musicCreates?: readonly MusicCreate[];
     musicDeletes?: readonly MusicDelete[];
     musicEdits?: readonly MusicEdit[];
   } = {},
 ) {
+  const musicCreates = args.musicCreates ?? [];
   const musicEdits = args.musicEdits ?? [];
   const musicDeletes = args.musicDeletes ?? [];
   const currentMusicEdit = resolveCurrentMusicEdit(context, musicEdits);
@@ -176,21 +240,27 @@ function createSpectrumPlayReturnContext(
     playlists:
       musicDeletes.length > 0
         ? deleteMusicFromContextPlaylists(context.playlists, musicDeletes)
-        : musicEdits.length > 0
-          ? updatePlaylistsWithMusicEdits(context.playlists, [...musicEdits])
-          : context.playlists,
+        : musicCreates.length > 0
+          ? createMusicInContextPlaylists(context.playlists, musicCreates)
+          : musicEdits.length > 0
+            ? updatePlaylistsWithMusicEdits(context.playlists, [...musicEdits])
+            : context.playlists,
     pendingPlaylistPreview:
       musicDeletes.length > 0
         ? deleteMusicFromContextPlaylistPreview(context.pendingPlaylistPreview, musicDeletes)
-        : musicEdits.length > 0
-          ? updatePlaylistPreviewWithMusicEdits(context.pendingPlaylistPreview, [...musicEdits])
-          : context.pendingPlaylistPreview,
+        : musicCreates.length > 0
+          ? createMusicInContextPlaylistPreview(context.pendingPlaylistPreview, musicCreates)
+          : musicEdits.length > 0
+            ? updatePlaylistPreviewWithMusicEdits(context.pendingPlaylistPreview, [...musicEdits])
+            : context.pendingPlaylistPreview,
     collections:
       musicDeletes.length > 0
         ? deleteMusicFromContextCollections(context.collections, musicDeletes)
-        : musicEdits.length > 0
-          ? updateCollectionsWithMusicEdits(context.collections, [...musicEdits])
-          : context.collections,
+        : musicCreates.length > 0
+          ? createMusicInContextCollections(context.collections, musicCreates)
+          : musicEdits.length > 0
+            ? updateCollectionsWithMusicEdits(context.collections, [...musicEdits])
+            : context.collections,
     savePath: context.savePath,
     playingPlaylistName: context.playingPlaylistName,
     nowPlayingTrackName:
@@ -233,6 +303,7 @@ const draftNameChanged = payloads["draft.name.changed"];
 const spectrumMusicNameChanged = payloads["spectrum.music_name.changed"];
 const spectrumMusicRangeChanged = payloads["spectrum.music_range.changed"];
 const spectrumMusicDeleted = payloads["spectrum.music_deleted"];
+const spectrumMusicCreateStarted = payloads["spectrum.music_create_started"];
 const spectrumMusicDraftReset = payloads["spectrum.music_draft.reset"];
 const spectrumPlaybackScopeChanged = payloads["spectrum.playback_scope.changed"];
 const savePathChanged = payloads["save_path.changed"];
@@ -666,6 +737,20 @@ export const machine = src.createMachine({
             ),
           })),
         },
+        [spectrumMusicCreateStarted.evt]: {
+          actions: assign(({ context, event }) => ({
+            spectrumMusicDrafts: activateSpectrumNewMusicDraft(
+              context.spectrumMusicDrafts,
+              event.output.id,
+              {
+                collections: context.collections,
+                sourceEndMs: context.nowPlayingTrackEndMs,
+                sourceStartMs: context.nowPlayingTrackStartMs,
+                sourceUrl: context.nowPlayingTrackUrl,
+              },
+            ),
+          })),
+        },
         [spectrumMusicDraftReset.evt]: {
           actions: assign(({ context, event }) => ({
             spectrumMusicDrafts: resetSpectrumMusicDraft(
@@ -687,12 +772,18 @@ export const machine = src.createMachine({
       },
     },
     [ss.mainx.State.spectrumUpdatingMusic]: {
+      always: [
+        {
+          guard: ({ context }) => !hasSpectrumMusicEdit(context),
+          target: ss.mainx.State.spectrumCreatingMusic,
+        },
+      ],
       invoke: {
         id: invoker.updateMusics.id,
         src: invoker.updateMusics.src,
         input: ({ context }) => createMusicDraftEdits(context.spectrumMusicDrafts),
         onDone: {
-          target: ss.mainx.State.spectrumDeletingMusic,
+          target: ss.mainx.State.spectrumCreatingMusic,
           actions: assign(({ context, event }) => {
             const musicEdits = createMusicEditsFromUpdates(event.output);
             const currentMusicEdit = resolveCurrentMusicEdit(context, musicEdits);
@@ -734,7 +825,65 @@ export const machine = src.createMachine({
         },
       },
     },
+    [ss.mainx.State.spectrumCreatingMusic]: {
+      always: [
+        {
+          guard: ({ context }) => !hasSpectrumMusicCreate(context),
+          target: ss.mainx.State.spectrumDeletingMusic,
+        },
+      ],
+      invoke: {
+        id: invoker.createMusics.id,
+        src: invoker.createMusics.src,
+        input: ({ context }) =>
+          createMusicDraftCreates(context.spectrumMusicDrafts).map((create) => ({
+            sourceCollectionUrl: create.sourceCollectionUrl,
+            music: create.music,
+          })),
+        onDone: {
+          target: ss.mainx.State.spectrumDeletingMusic,
+          actions: assign(({ context, event }) => {
+            const musicCreates = createMusicCreatesFromResult(event.output);
+
+            return {
+              playlists: createMusicInContextPlaylists(context.playlists, musicCreates),
+              pendingPlaylistPreview: createMusicInContextPlaylistPreview(
+                context.pendingPlaylistPreview,
+                musicCreates,
+              ),
+              collections: createMusicInContextCollections(context.collections, musicCreates),
+            };
+          }),
+        },
+        onError: {
+          target: ss.mainx.State.error,
+          actions: assign(({ context, event }) =>
+            resetContextWith({
+              hasPlayList: context.hasPlayList,
+              playlists: context.playlists,
+              collections: context.collections,
+              savePath: context.savePath,
+              playingPlaylistName: context.playingPlaylistName,
+              nowPlayingTrackName: context.nowPlayingTrackName,
+              nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+              nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
+              nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+              nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+              spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
+              error: toErrorMessage(event.error),
+            }),
+          ),
+        },
+      },
+    },
     [ss.mainx.State.spectrumDeletingMusic]: {
+      always: [
+        {
+          guard: ({ context }) => !hasSpectrumMusicDelete(context),
+          target: ss.mainx.State.play,
+          actions: assign(({ context }) => createSpectrumPlayReturnContext(context)),
+        },
+      ],
       invoke: {
         id: invoker.deleteMusics.id,
         src: invoker.deleteMusics.src,

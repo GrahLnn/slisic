@@ -31,9 +31,6 @@
     "clipboard-manager:allow-write-image",
     "clipboard-manager:allow-write-text",
     "dialog:default",
-    "dialog:allow-open",
-    "fs:default",
-    "fs:allow-download-write",
-    "fs:allow-write-text-file"
+    "dialog:allow-open"
   ]
 }

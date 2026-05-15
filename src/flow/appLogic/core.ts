@@ -49,16 +49,40 @@ export interface PlaylistUpsertResult {
   previousName: string | null;
 }
 
-export interface SpectrumMusicDraft {
+export type SpectrumMusicDraftKind = "pending-create" | "persisted";
+
+interface SpectrumMusicDraftBase {
+  kind: SpectrumMusicDraftKind;
   baselineName: string;
   baselineStartMs: number | null;
   baselineEndMs: number | null;
   name: string;
-  url: string | null;
+  url: string;
   startMs: number | null;
   endMs: number | null;
   deleteRequested?: boolean;
 }
+
+export interface PersistedSpectrumMusicDraft extends SpectrumMusicDraftBase {
+  kind: "persisted";
+  baselineStartMs: number;
+  baselineEndMs: number;
+}
+
+export interface PendingCreateSpectrumMusicDraft extends SpectrumMusicDraftBase {
+  kind: "pending-create";
+  baselineName: "";
+  baselineStartMs: null;
+  baselineEndMs: null;
+  sourceCollectionUrl: string;
+  /** Finite source-duration evidence for creating a full-source draft. */
+  sourceEndMs: number;
+  sourceGroup: Group;
+  sourcePath: string | null;
+  sourceUrl: string;
+}
+
+export type SpectrumMusicDraft = PersistedSpectrumMusicDraft | PendingCreateSpectrumMusicDraft;
 
 export interface Context {
   hasPlayList: boolean | null;

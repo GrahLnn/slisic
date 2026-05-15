@@ -54,6 +54,7 @@ export interface SpectrumMusicVirtualListProps {
   exitPresentation?: MusicSpectrumExitPresentation;
   playbackActionSnapshot: SpectrumPlaybackActionSnapshot | null;
   onDelete: (id: string) => void;
+  onActivateNewTitle?: (id: string) => void;
   onReset: (id: string) => void;
   onPlaybackAction: (
     identity: SpectrumPlaybackIdentity,
@@ -174,6 +175,8 @@ export function areSpectrumMusicEditorViewModelsEqual(
     left.id === right.id &&
     left.interactionDisabled === right.interactionDisabled &&
     left.isCurrent === right.isCurrent &&
+    left.isNewTitle === right.isNewTitle &&
+    left.showWaveform === right.showWaveform &&
     areNullableSpectrumPlaybackIdentitiesEqual(left.playbackIdentity, right.playbackIdentity) &&
     left.selectionEnd === right.selectionEnd &&
     left.selectionStart === right.selectionStart &&
@@ -188,6 +191,7 @@ export interface SpectrumMusicVirtualListRowRenderModel {
   exitPresentation: MusicSpectrumExitPresentation;
   index: number;
   isPlaybackActive: boolean;
+  isNewTitle: boolean;
   playbackActionSnapshot: SpectrumPlaybackActionSnapshot | null;
   rowAdmission: SpectrumMusicRowAdmission;
   scrollMargin: number;
@@ -204,6 +208,7 @@ export function areSpectrumMusicVirtualListRowRenderModelsEqual(
     left.exitPresentation === right.exitPresentation &&
     left.index === right.index &&
     left.isPlaybackActive === right.isPlaybackActive &&
+    left.isNewTitle === right.isNewTitle &&
     left.rowAdmission === right.rowAdmission &&
     left.scrollMargin === right.scrollMargin &&
     left.start === right.start &&
@@ -226,6 +231,7 @@ export function areSpectrumMusicVirtualListRowRenderModelsEqual(
 type SpectrumMusicVirtualListRowProps = SpectrumMusicVirtualListRowRenderModel & {
   editableTitleRefs: RefObject<Map<string, EditableTitleHandle>>;
   measureElement: (node: HTMLDivElement | null) => void;
+  onActivateNewTitle?: (id: string) => void;
   onDelete: (id: string) => void;
   onPlaybackAction: (
     identity: SpectrumPlaybackIdentity,
@@ -251,6 +257,7 @@ export function areSpectrumMusicVirtualListRowPropsEqual(
   return (
     left.editableTitleRefs === right.editableTitleRefs &&
     left.measureElement === right.measureElement &&
+    left.onActivateNewTitle === right.onActivateNewTitle &&
     left.onDelete === right.onDelete &&
     left.onPlaybackAction === right.onPlaybackAction &&
     left.onPlaybackControlReady === right.onPlaybackControlReady &&
@@ -267,6 +274,7 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
   exitPresentation,
   index,
   isPlaybackActive,
+  isNewTitle,
   playbackActionSnapshot,
   rowAdmission,
   scrollMargin,
@@ -274,6 +282,7 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
   trackFilePath,
   waveformRenderDataStore,
   measureElement,
+  onActivateNewTitle,
   onDelete,
   onPlaybackAction,
   onPlaybackControlReady,
@@ -324,29 +333,34 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
           exitPresentation={exitPresentation}
           handoffTone={editor.handoffTone}
           interactionDisabled={editor.interactionDisabled}
+          titleIsNew={isNewTitle}
           titleAction={
-            <button
-              type="button"
-              aria-label="Delete music"
-              onClick={() => onDelete(editor.id)}
-              className={cn(
-                "group relative isolate inline-flex size-8 items-center justify-center rounded-[25px] p-2",
-                "text-[#737373] transition duration-300 [corner-shape:squircle_squircle_squircle_squircle]",
-                "before:absolute before:inset-0 before:-z-10 before:rounded-[25px] before:bg-transparent",
-                "before:transition before:duration-300 before:[corner-shape:squircle_squircle_squircle_squircle]",
-                "hover:text-red-600 hover:before:bg-[#e5e5e5]",
-                "dark:text-[#8a8a8a] dark:hover:text-red-400 dark:hover:before:bg-[#262626]",
-              )}
-            >
-              <icons.trashXmark size={18} />
-            </button>
+            editor.isNewTitle ? null : (
+              <button
+                type="button"
+                aria-label="Delete music"
+                onClick={() => onDelete(editor.id)}
+                className={cn(
+                  "group relative isolate inline-flex size-8 items-center justify-center rounded-[25px] p-2",
+                  "text-[#737373] transition duration-300 [corner-shape:squircle_squircle_squircle_squircle]",
+                  "before:absolute before:inset-0 before:-z-10 before:rounded-[25px] before:bg-transparent",
+                  "before:transition before:duration-300 before:[corner-shape:squircle_squircle_squircle_squircle]",
+                  "hover:text-red-600 hover:before:bg-[#e5e5e5]",
+                  "dark:text-[#8a8a8a] dark:hover:text-red-400 dark:hover:before:bg-[#262626]",
+                )}
+              >
+                <icons.trashXmark size={18} />
+              </button>
+            )
           }
           waveformStartAction={
-            <SpectrumPlaybackAction
-              identity={editor.playbackIdentity}
-              playbackSnapshot={rowPlaybackSnapshot}
-              onAction={onPlaybackAction}
-            />
+            editor.showWaveform ? (
+              <SpectrumPlaybackAction
+                identity={editor.playbackIdentity}
+                playbackSnapshot={rowPlaybackSnapshot}
+                onAction={onPlaybackAction}
+              />
+            ) : null
           }
           playheadEnabled={isPlaybackActive}
           selection={{
@@ -357,6 +371,7 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
           titleLayoutId={editor.titleLayoutId}
           titleValue={editor.titleValue}
           trackFilePath={trackFilePath}
+          waveformVisible={editor.showWaveform}
           waveformRenderDataStore={waveformRenderDataStore}
           waveformClassName="left-1/2 w-screen -translate-x-1/2"
           onReset={() => onReset(editor.id)}
@@ -367,6 +382,9 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
           }
           onSelectionCommit={(range, commitPlaybackStatus) =>
             onSelectionCommit(editor.id, range, commitPlaybackStatus)
+          }
+          onNewTitleActivate={
+            isNewTitle && onActivateNewTitle ? () => onActivateNewTitle(editor.id) : undefined
           }
           onTitleChange={(name) => onTitleChange(editor.id, name)}
         />
@@ -407,6 +425,7 @@ export function SpectrumMusicVirtualList({
   playbackActionSnapshot,
   trackFilePath,
   onDelete,
+  onActivateNewTitle,
   onPlaybackAction,
   onPlaybackControlReady,
   onReset,
@@ -417,6 +436,7 @@ export function SpectrumMusicVirtualList({
   const listRef = useRef<HTMLDivElement | null>(null);
   const waveformRenderDataStore = useMemo(() => createWaveformRenderDataStore(), []);
   const handlersRef = useRef({
+    onActivateNewTitle,
     onDelete,
     onPlaybackAction,
     onPlaybackControlReady,
@@ -441,6 +461,9 @@ export function SpectrumMusicVirtualList({
   );
   const handleDelete = useCallback((id: string) => {
     handlersRef.current.onDelete(id);
+  }, []);
+  const handleActivateNewTitle = useCallback((id: string) => {
+    handlersRef.current.onActivateNewTitle?.(id);
   }, []);
   const handleReset = useCallback((id: string) => {
     handlersRef.current.onReset(id);
@@ -489,6 +512,7 @@ export function SpectrumMusicVirtualList({
 
   useLayoutEffect(() => {
     handlersRef.current = {
+      onActivateNewTitle,
       onDelete,
       onPlaybackAction,
       onPlaybackControlReady,
@@ -497,6 +521,7 @@ export function SpectrumMusicVirtualList({
       onTitleChange,
     };
   }, [
+    onActivateNewTitle,
     onDelete,
     onPlaybackAction,
     onPlaybackControlReady,
@@ -602,11 +627,13 @@ export function SpectrumMusicVirtualList({
             exitPresentation={exitPresentation}
             index={virtualRow.index}
             isPlaybackActive={
+              editor.showWaveform &&
               resolveSpectrumMusicVirtualRowPlaybackSnapshot({
                 editor,
                 playbackActionSnapshot,
               }) !== null
             }
+            isNewTitle={editor.isNewTitle}
             measureElement={handleMeasureElement}
             playbackActionSnapshot={playbackActionSnapshot}
             rowAdmission={rowAdmission}
@@ -614,6 +641,7 @@ export function SpectrumMusicVirtualList({
             start={virtualRow.start}
             trackFilePath={trackFilePath}
             waveformRenderDataStore={waveformRenderDataStore}
+            onActivateNewTitle={handleActivateNewTitle}
             onDelete={handleDelete}
             onPlaybackControlReady={handlePlaybackControlReady}
             onPlaybackAction={handlePlaybackAction}

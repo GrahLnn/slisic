@@ -1,8 +1,9 @@
 use super::model::{Collection, Exclude, Group, Music, PlayList};
 use super::repo::{
-    add_exclude, delete_playlist_by_name, get_collection_by_url, get_playlist_by_name,
-    has_collections, list_collections, list_musics_by_file_path, list_playlists, remove_exclude,
-    set_collection_updates, update_music, upsert_collection, upsert_playlist, delete_music,
+    add_exclude, create_music, delete_music, delete_playlist_by_name, get_collection_by_url,
+    get_playlist_by_name, has_collections, list_collections, list_musics_by_file_path,
+    list_playlists, remove_exclude, set_collection_updates, update_music, upsert_collection,
+    upsert_playlist,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -724,6 +725,86 @@ fn update_music_changes_display_alias_and_range_from_original_identity() {
 }
 
 #[test]
+fn create_music_appends_to_the_source_collection_once() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let collection = upsert_collection(&grouped_collection("https://example.com/music-create"))
+            .await
+            .expect("grouped collection should save before music create");
+        let source_music = collection.musics[0].clone();
+        let created_music = Music {
+            name: "Created Track".to_string(),
+            alias: "Created Track".to_string(),
+            group: source_music.group,
+            url: "https://example.com/music-create#created".to_string(),
+            path: source_music.path,
+            start_ms: 0,
+            end_ms: 180_000,
+        };
+
+        let first = create_music(&collection.url, &created_music)
+            .await
+            .expect("music create should succeed");
+        let second = create_music(&collection.url, &created_music)
+            .await
+            .expect("repeated music create should be idempotent");
+        let reloaded = get_collection_by_url(&collection.url)
+            .await
+            .expect("updated collection should reload")
+            .expect("updated collection should exist");
+
+        assert_eq!(first.alias, "Created Track");
+        assert_eq!(second.alias, "Created Track");
+        assert_eq!(
+            reloaded
+                .musics
+                .iter()
+                .filter(|music| music.url == created_music.url)
+                .count(),
+            1
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn create_music_rejects_missing_source_collection() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let err = create_music(
+            "https://example.com/missing",
+            &Music {
+                name: "Created Track".to_string(),
+                alias: "Created Track".to_string(),
+                group: collection_group("Disc 1", "https://example.com/missing#disc-1", "Disc 1"),
+                url: "https://example.com/missing#created".to_string(),
+                path: Some("Disc 1/Track.m4a".to_string()),
+                start_ms: 0,
+                end_ms: 180_000,
+            },
+        )
+        .await
+        .expect_err("missing source collection should be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("collection `https://example.com/missing` not found")
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
 fn delete_music_removes_only_the_matching_music_identity() {
     let _guard = acquire_db_test_lock();
 
@@ -769,9 +850,7 @@ fn delete_music_removes_only_the_matching_music_identity() {
         let saved = upsert_collection(&collection)
             .await
             .expect("collection should save before music deletion");
-        let collection_record = load_collection_ids_by_url(&saved.url)
-            .await
-            .remove(0);
+        let collection_record = load_collection_ids_by_url(&saved.url).await.remove(0);
 
         assert!(
             delete_music("https://example.com/music-delete#a", 0, 120_000)

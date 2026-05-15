@@ -17,7 +17,6 @@ import {
   type ScrollPositionRef,
 } from "./scrollPosition";
 import { usePlayListTitleReturnSurface } from "./usePlayListTitleReturnSurface";
-import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 
 export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollPositionRef }) {
   const isPresent = useIsPresent();
@@ -40,6 +39,7 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     spectrumLoadingMusics: () => "spectrumLoadingMusics" as const,
     spectrum: () => "spectrum" as const,
     spectrumUpdatingMusic: () => "spectrumUpdatingMusic" as const,
+    spectrumCreatingMusic: () => "spectrumCreatingMusic" as const,
     spectrumDeletingMusic: () => "spectrumDeletingMusic" as const,
     configLoading: () => "configLoading" as const,
     config: () => "config" as const,
@@ -122,70 +122,6 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
   });
   const renderData = pageRenderFreeze.renderValue;
   const viewModel = resolvePlayListPageViewModel(renderData);
-
-  recordRenderPerformanceTrace("playlist-page-render-output", {
-    pageState: pageStateValue,
-    liveRenderData: {
-      activeLayoutId,
-      pageState: pageStateValue,
-      playingPlaylistName,
-      nowPlayingTrackName,
-      nowPlayingTrackUrl,
-      titleToneHandoff,
-      pressedTitleLayoutId,
-      titleReturnSurfaceTargetLayoutId,
-      playbackSurface: playbackSurface.playbackSurfaceSnapshot,
-      titleReturnSurface: titleReturnSurface.titleReturnSurfaceSnapshot,
-    },
-    renderData: {
-      pageState: renderData.pageState,
-      activeLayoutId: renderData.activeLayoutId,
-      playingPlaylistName: renderData.playingPlaylistName,
-      titleToneHandoff: renderData.titleToneHandoff,
-      pressedLayoutId: renderData.pressedLayoutId,
-      playbackSurface: renderData.playbackSurface,
-      titleReturnSurface: renderData.titleReturnSurface,
-    },
-    viewModel: {
-      transition: viewModel.transition,
-      committedLayoutId: viewModel.committedLayoutId,
-      visibleLayoutIds: viewModel.visibleLayoutIds,
-      shouldLockScroll: viewModel.shouldLockScroll,
-      playbackTargetKey: viewModel.playbackTargetKey,
-      shouldRenderContent: viewModel.shouldRenderContent,
-      shouldRenderCreateItem: viewModel.shouldRenderCreateItem,
-      shouldShowCreateItem: viewModel.shouldShowCreateItem,
-      items: viewModel.itemViewModels.map((item) => ({
-        key: item.key,
-        text: item.text,
-        layoutId: item.layoutId ?? null,
-        sourceLayoutId: item.sourceLayoutId ?? null,
-        playlistName: item.playlistName ?? null,
-        handoffTone: item.handoffTone,
-        suppressFade: item.suppressFade,
-        isPlaybackTarget: item.isPlaybackTarget,
-        isPlaybackPreparing: item.isPlaybackPreparing,
-        isHiddenInPlay: item.isHiddenInPlay,
-        shouldStartHiddenInPlay: item.shouldStartHiddenInPlay,
-        shouldAnimateSlotPosition: item.shouldAnimateSlotPosition,
-        shouldShowPlaybackIcons: item.shouldShowPlaybackIcons,
-        playbackIconWidthText: item.playbackIconWidthText ?? null,
-        titleHoverVisual: item.titleHoverVisual,
-        titleHoverRetainLease: item.titleHoverRetainLease,
-        commitGesture: item.commitGesture,
-      })),
-      createItem: {
-        key: viewModel.createItemViewModel.key,
-        text: viewModel.createItemViewModel.text,
-        layoutId: viewModel.createItemViewModel.layoutId ?? null,
-        sourceLayoutId: viewModel.createItemViewModel.sourceLayoutId ?? null,
-        titleHoverVisual: viewModel.createItemViewModel.titleHoverVisual,
-        titleHoverRetainLease: viewModel.createItemViewModel.titleHoverRetainLease,
-        isHiddenInPlay: viewModel.createItemViewModel.isHiddenInPlay,
-        shouldStartHiddenInPlay: viewModel.createItemViewModel.shouldStartHiddenInPlay,
-      },
-    },
-  });
 
   return (
     <div

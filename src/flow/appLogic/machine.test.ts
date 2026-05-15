@@ -8,6 +8,8 @@ import {
   payloads,
   sig,
   type BootstrapResult,
+  type MusicCreateInput,
+  type MusicCreatesResult,
   type MusicDeletesResult,
   type MusicUpdateInput,
   type MusicUpdatesResult,
@@ -17,6 +19,8 @@ import {
 import type { MusicDraftDelete } from "./musicTitle";
 
 const spectrumMusicDeleted = payloads["spectrum.music_deleted"];
+const spectrumMusicCreateStarted = payloads["spectrum.music_create_started"];
+const spectrumMusicNameChanged = payloads["spectrum.music_name.changed"];
 const spectrumMusicRangeChanged = payloads["spectrum.music_range.changed"];
 const spectrumPlaybackScopeChanged = payloads["spectrum.playback_scope.changed"];
 
@@ -257,6 +261,7 @@ describe("appLogic machine", () => {
             SpectrumMusicDraftBootstrapInput
           >(async () => [
             {
+              kind: "persisted" as const,
               baselineName: deletedMusic.alias,
               baselineStartMs: deletedMusic.start_ms,
               baselineEndMs: deletedMusic.end_ms,
@@ -266,6 +271,7 @@ describe("appLogic machine", () => {
               endMs: deletedMusic.end_ms,
             },
             {
+              kind: "persisted" as const,
               baselineName: siblingMusic.alias,
               baselineStartMs: siblingMusic.start_ms,
               baselineEndMs: siblingMusic.end_ms,
@@ -399,6 +405,7 @@ describe("appLogic machine", () => {
             SpectrumMusicDraftBootstrapInput
           >(async () => [
             {
+              kind: "persisted" as const,
               baselineName: music.alias,
               baselineStartMs: music.start_ms,
               baselineEndMs: music.end_ms,
@@ -516,6 +523,7 @@ describe("appLogic machine", () => {
             SpectrumMusicDraftBootstrapInput
           >(async () => [
             {
+              kind: "persisted" as const,
               baselineName: music.alias,
               baselineStartMs: music.start_ms,
               baselineEndMs: music.end_ms,
@@ -622,6 +630,7 @@ describe("appLogic machine", () => {
             SpectrumMusicDraftBootstrapInput
           >(async () => [
             {
+              kind: "persisted" as const,
               baselineName: music.alias,
               baselineStartMs: music.start_ms,
               baselineEndMs: music.end_ms,
@@ -683,5 +692,225 @@ describe("appLogic machine", () => {
       layoutId: "playlist-title:Focus Session",
       tone: "solid",
     });
+  });
+
+  test("drops an empty pending spectrum music draft when returning from spectrum", async () => {
+    const music = createMusic();
+    const collection = createCollection([music]);
+    let createCallCount = 0;
+    let updateCallCount = 0;
+    let deleteCallCount = 0;
+
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () => ({
+            hasPlayList: true,
+            playlists: [createPlaylist(collection)],
+            collections: [collection],
+            savePath: "C:/Music",
+          })),
+          playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
+            async () => null,
+          ),
+          loadSpectrumMusicDrafts: fromPromise<
+            SpectrumMusicDraft[],
+            SpectrumMusicDraftBootstrapInput
+          >(async () => []),
+          updateMusics: fromPromise<MusicUpdatesResult, MusicUpdateInput[]>(async () => {
+            updateCallCount += 1;
+            return { results: [] };
+          }),
+          createMusics: fromPromise<MusicCreatesResult, MusicCreateInput[]>(async ({ input }) => {
+            createCallCount += 1;
+            return { results: input.map((request) => ({ input: request, music: request.music })) };
+          }),
+          deleteMusics: fromPromise<MusicDeletesResult, MusicDraftDelete[]>(async () => {
+            deleteCallCount += 1;
+            return { results: [] };
+          }),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "ready") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+    actor.send(payloads["playlist.play"].load("Focus Session"));
+    actor.send(
+      payloads["player.now_playing_track.changed"].load({
+        playlist_name: "Focus Session",
+        music_name: music.alias,
+        music_url: music.url,
+        file_path: "C:/Music/quiet-morning.m4a",
+        start_ms: music.start_ms,
+        end_ms: music.end_ms,
+      }),
+    );
+    actor.send(sig.mainx.openspectrum);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "spectrum") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+
+    actor.send(spectrumMusicCreateStarted.load({ id: `new|${music.url}` }));
+    const pendingDraft = actor.getSnapshot().context.spectrumMusicDrafts.at(-1);
+    assert.equal(pendingDraft?.kind, "pending-create");
+    if (pendingDraft?.kind !== "pending-create") {
+      throw new Error("expected pending spectrum music draft");
+    }
+    assert.equal(pendingDraft.startMs, 0);
+    assert.equal(pendingDraft.endMs, music.end_ms);
+    assert.equal(pendingDraft.sourceEndMs, music.end_ms);
+    actor.send(sig.mainx.back);
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "play") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+
+    assert.equal(createCallCount, 0);
+    assert.equal(updateCallCount, 0);
+    assert.equal(deleteCallCount, 0);
+    assert.deepEqual(actor.getSnapshot().context.collections[0]?.musics, [music]);
+    assert.deepEqual(actor.getSnapshot().context.spectrumMusicDrafts, []);
+  });
+
+  test("creates named pending spectrum music inside the source collection", async () => {
+    const music = createMusic();
+    const collection = createCollection([music]);
+    const createInputs: MusicCreateInput[][] = [];
+
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () => ({
+            hasPlayList: true,
+            playlists: [createPlaylist(collection)],
+            collections: [collection],
+            savePath: "C:/Music",
+          })),
+          playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
+            async () => null,
+          ),
+          loadSpectrumMusicDrafts: fromPromise<
+            SpectrumMusicDraft[],
+            SpectrumMusicDraftBootstrapInput
+          >(async () => []),
+          updateMusics: fromPromise<MusicUpdatesResult, MusicUpdateInput[]>(async () => ({
+            results: [],
+          })),
+          createMusics: fromPromise<MusicCreatesResult, MusicCreateInput[]>(async ({ input }) => {
+            createInputs.push(input);
+            return { results: input.map((request) => ({ input: request, music: request.music })) };
+          }),
+          deleteMusics: fromPromise<MusicDeletesResult, MusicDraftDelete[]>(async () => ({
+            results: [],
+          })),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "ready") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+    actor.send(payloads["playlist.play"].load("Focus Session"));
+    actor.send(
+      payloads["player.now_playing_track.changed"].load({
+        playlist_name: "Focus Session",
+        music_name: music.alias,
+        music_url: music.url,
+        file_path: "C:/Music/quiet-morning.m4a",
+        start_ms: music.start_ms,
+        end_ms: music.end_ms,
+      }),
+    );
+    actor.send(sig.mainx.openspectrum);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "spectrum") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+
+    actor.send(spectrumMusicCreateStarted.load({ id: `new|${music.url}` }));
+    actor.send(
+      spectrumMusicNameChanged.load({
+        id: `new|${music.url}`,
+        name: "Track Draft",
+      }),
+    );
+    actor.send(sig.mainx.back);
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "play") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+
+    assert.equal(createInputs.length, 1);
+    assert.equal(createInputs[0]?.[0]?.sourceCollectionUrl, collection.url);
+    assert.equal(createInputs[0]?.[0]?.music.alias, "Track Draft");
+    assert.deepEqual(
+      actor.getSnapshot().context.collections[0]?.musics.map((candidate) => candidate.alias),
+      ["Track A", "Track Draft"],
+    );
+    assert.deepEqual(
+      actor
+        .getSnapshot()
+        .context.playlists[0]?.collections[0]?.musics.map((candidate) => candidate.alias),
+      ["Track A", "Track Draft"],
+    );
   });
 });

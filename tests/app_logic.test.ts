@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Err, Ok } from "@grahlnn/fn";
-import type { Collection, PlaybackContinuationMode, PlayList } from "../src/cmd";
+import type { Collection, PlayList } from "../src/cmd";
 import { createActor, type AnyActorRef } from "xstate";
 import { crab } from "../src/cmd";
 import {
@@ -23,7 +23,8 @@ const originalListMusicsByFilePath = crab.listMusicsByFilePath;
 const originalPlayPlaylist = crab.playPlaylist;
 const originalGetPlaybackStatus = crab.getPlaybackStatus;
 const originalResumePlayback = crab.resumePlayback;
-const originalSetPlaybackContinuationMode = crab.setPlaybackContinuationMode;
+const originalEnterSpectrumPlaybackScope = crab.enterSpectrumPlaybackScope;
+const originalExitSpectrumPlaybackScope = crab.exitSpectrumPlaybackScope;
 const openPlaylist = payloads["playlist.open"];
 const draftNameChanged = payloads["draft.name.changed"];
 const spectrumMusicNameChanged = payloads["spectrum.music_name.changed"];
@@ -140,6 +141,7 @@ function createExpectedAppLogicContext(overrides: Record<string, unknown> = {}) 
     nowPlayingTrackFilePath: null,
     nowPlayingTrackStartMs: null,
     nowPlayingTrackEndMs: null,
+    spectrumPlaybackScopeId: null,
     spectrumMusicDrafts: [],
     shouldStartPlayback: false,
     activeLayoutId: null,
@@ -201,10 +203,16 @@ function setResumePlaybackMock(mock: typeof crab.resumePlayback) {
   (crab as { resumePlayback: typeof crab.resumePlayback }).resumePlayback = mock;
 }
 
-function setPlaybackContinuationModeMock(mock: typeof crab.setPlaybackContinuationMode) {
+function setEnterSpectrumPlaybackScopeMock(mock: typeof crab.enterSpectrumPlaybackScope) {
   (
-    crab as { setPlaybackContinuationMode: typeof crab.setPlaybackContinuationMode }
-  ).setPlaybackContinuationMode = mock;
+    crab as { enterSpectrumPlaybackScope: typeof crab.enterSpectrumPlaybackScope }
+  ).enterSpectrumPlaybackScope = mock;
+}
+
+function setExitSpectrumPlaybackScopeMock(mock: typeof crab.exitSpectrumPlaybackScope) {
+  (
+    crab as { exitSpectrumPlaybackScope: typeof crab.exitSpectrumPlaybackScope }
+  ).exitSpectrumPlaybackScope = mock;
 }
 
 function deferred() {
@@ -299,7 +307,8 @@ afterEach(() => {
   setPlayPlaylistMock(originalPlayPlaylist);
   setGetPlaybackStatusMock(originalGetPlaybackStatus);
   setResumePlaybackMock(originalResumePlayback);
-  setPlaybackContinuationModeMock(originalSetPlaybackContinuationMode);
+  setEnterSpectrumPlaybackScopeMock(originalEnterSpectrumPlaybackScope);
+  setExitSpectrumPlaybackScopeMock(originalExitSpectrumPlaybackScope);
 });
 
 describe("createConfigSidebarItems", () => {
@@ -527,7 +536,10 @@ describe("appLogic machine", () => {
       playlistTitleLayoutId(samplePlaylist.name),
     );
     expect(currentConfigSidebarItems(actor)).toEqual(expectedConfigSidebarItems);
-    expect(actor.getSnapshot().context.titleToneHandoff).toBeNull();
+    expect(actor.getSnapshot().context.titleToneHandoff).toEqual({
+      layoutId: playlistTitleLayoutId(samplePlaylist.name),
+      tone: "solid",
+    });
     expect(actor.getSnapshot().context.pendingPlaylistName).toBeNull();
     expect(actor.getSnapshot().context.draft).toEqual({
       mode: "edit",
@@ -780,6 +792,7 @@ describe("appLogic machine", () => {
     await waitForState(actor, ss.mainx.State.spectrumLoadingMusics);
     expect(actor.getSnapshot().context.spectrumMusicDrafts).toEqual([
       {
+        kind: "persisted" as const,
         baselineName: "Disc 1 Opening",
         baselineStartMs: 0,
         baselineEndMs: 120_000,
@@ -809,6 +822,7 @@ describe("appLogic machine", () => {
         nowPlayingTrackEndMs: 120_000,
         spectrumMusicDrafts: [
           {
+            kind: "persisted" as const,
             baselineName: "Disc 1 Opening",
             baselineStartMs: 0,
             baselineEndMs: 120_000,
@@ -1055,6 +1069,10 @@ describe("appLogic machine", () => {
         collections: [sampleCollection],
         savePath: sampleSavePath,
         activeLayoutId: playlistTitleLayoutId("Missing"),
+        titleToneHandoff: {
+          layoutId: playlistTitleLayoutId("Missing"),
+          tone: "solid",
+        },
         error: "playlist `Missing` not found",
       }),
     );
@@ -1104,8 +1122,8 @@ describe("ensureAppLogicStarted", () => {
   });
 });
 
-describe("appLogic action playback mode effects", () => {
-  test("keeps spectrum entry repeat current after a delayed spectrum exit restore", async () => {
+describe("appLogic action playback scope effects", () => {
+  test("keeps the newer spectrum scope after a delayed previous scope exit", async () => {
     setCheckListMock(async () => Ok(true));
     setListPlaylistsMock(async () => Ok([samplePlaylist]));
     setListCollectionsMock(async () => Ok([sampleCollection]));
@@ -1131,18 +1149,27 @@ describe("appLogic action playback mode effects", () => {
     );
     setResumePlaybackMock(async () => Ok(true));
 
-    const randomRestore = deferred();
-    const writes: PlaybackContinuationMode[] = [];
-    setPlaybackContinuationModeMock(async (mode) => {
-      writes.push(mode);
-      if (mode === "random") {
-        await randomRestore.promise;
+    const exitRestore = deferred();
+    const openedScopes = [42, 43];
+    const enteredScopes: number[] = [];
+    const exitedScopes: number[] = [];
+    setEnterSpectrumPlaybackScopeMock(async () => {
+      const scopeId = openedScopes.shift();
+      if (scopeId === undefined) {
+        throw new Error("unexpected extra spectrum scope entry");
       }
-
+      enteredScopes.push(scopeId);
+      return Ok(scopeId);
+    });
+    setExitSpectrumPlaybackScopeMock(async (scopeId) => {
+      exitedScopes.push(scopeId);
+      if (scopeId === 42) {
+        await exitRestore.promise;
+      }
       return Ok(null);
     });
 
-    const mod = await import(`../src/flow/appLogic/index.ts?case=delayed-random-${Date.now()}`);
+    const mod = await import(`../src/flow/appLogic/index.ts?case=delayed-scope-${Date.now()}`);
 
     try {
       mod.ensureAppLogicStarted();
@@ -1165,30 +1192,33 @@ describe("appLogic action playback mode effects", () => {
 
       mod.action.openSpectrum();
       await waitForPredicate(
-        () => writes.length === 1 && writes[0] === "repeatCurrent",
-        "expected spectrum entry to request repeat current",
+        () => enteredScopes.length === 1 && enteredScopes[0] === 42,
+        "expected spectrum entry to open scope 42",
       );
       await waitForState(mod.actor, ss.mainx.State.spectrum);
+      expect(mod.actor.getSnapshot().context.spectrumPlaybackScopeId).toBe(42);
 
       mod.action.back();
       await waitForState(mod.actor, ss.mainx.State.play);
       await waitForPredicate(
-        () => writes.length === 2 && writes[1] === "random",
-        "expected spectrum exit to request random restore",
+        () => exitedScopes.length === 1 && exitedScopes[0] === 42,
+        "expected spectrum exit to close scope 42",
       );
 
       mod.action.openSpectrum();
-      expect(writes).toEqual(["repeatCurrent", "random"]);
       expect(mod.actor.getSnapshot().value).toBe(ss.mainx.State.play);
-
-      randomRestore.resolve();
       await waitForPredicate(
-        () => writes.length === 3 && writes[2] === "repeatCurrent",
-        "expected later spectrum entry to win over delayed random restore",
+        () => enteredScopes.length === 2 && enteredScopes[1] === 43,
+        "expected later spectrum entry to open scope 43",
       );
       await waitForState(mod.actor, ss.mainx.State.spectrum);
+      expect(mod.actor.getSnapshot().context.spectrumPlaybackScopeId).toBe(43);
+
+      exitRestore.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(mod.actor.getSnapshot().context.spectrumPlaybackScopeId).toBe(43);
     } finally {
-      randomRestore.resolve();
+      exitRestore.resolve();
       mod.stop();
     }
   });

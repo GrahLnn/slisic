@@ -35,6 +35,7 @@ pub fn run() {
             domain::playlists::upsert_playlist,
             domain::playlists::set_collection_updates,
             domain::playlists::update_music,
+            domain::playlists::create_music,
             domain::playlists::delete_music,
             domain::playlists::list_musics_by_file_path,
             domain::playlists::add_exclude,
@@ -82,7 +83,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_os::init())
