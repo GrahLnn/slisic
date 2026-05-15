@@ -2,7 +2,6 @@ import { useRef, useState, type Ref } from "react";
 import { motion, useIsPresent } from "motion/react";
 import type { TorphStage } from "@grahlnn/comps";
 import { cn } from "@/lib/utils";
-import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 import { action as appLogicAction } from "@/src/flow/appLogic";
 import {
   collectionTitleClassName,
@@ -22,56 +21,6 @@ import {
   resolvePlayListPageItemSlotPositionAnimationEnabled,
   resolvePlayListPageItemTitleProjectionLayoutId,
 } from "./PlayListPageItem.motion";
-
-type PlayListPageItemTraceViewModel = Pick<
-  PlayListPageItemViewModel,
-  | "key"
-  | "text"
-  | "layoutId"
-  | "sourceLayoutId"
-  | "playlistName"
-  | "handoffTone"
-  | "suppressFade"
-  | "isPlaybackTarget"
-  | "shouldShowPlaybackIcons"
-  | "playbackIconWidthText"
-  | "isPlaybackPreparing"
-  | "isHiddenInPlay"
-  | "shouldStartHiddenInPlay"
-  | "shouldAnimateSlotPosition"
-  | "titleHoverVisual"
-  | "titleHoverRetainLease"
-  | "commitGesture"
->;
-
-function createPlayListPageItemTraceIdentity(viewModel: PlayListPageItemTraceViewModel) {
-  return {
-    key: viewModel.key,
-    playlistName: viewModel.playlistName ?? null,
-    layoutId: viewModel.layoutId ?? null,
-    sourceLayoutId: viewModel.sourceLayoutId ?? null,
-    retainKey: resolvePlayListPageItemTitleRetainKey(viewModel),
-    retainRequestKey: resolvePlayListPageItemTitleRetainRequestKey(viewModel),
-  };
-}
-
-function createPlayListPageItemTraceViewModel(viewModel: PlayListPageItemTraceViewModel) {
-  return {
-    text: viewModel.text,
-    handoffTone: viewModel.handoffTone,
-    suppressFade: viewModel.suppressFade,
-    isPlaybackTarget: viewModel.isPlaybackTarget,
-    shouldShowPlaybackIcons: viewModel.shouldShowPlaybackIcons,
-    playbackIconWidthText: viewModel.playbackIconWidthText ?? null,
-    isPlaybackPreparing: viewModel.isPlaybackPreparing,
-    isHiddenInPlay: viewModel.isHiddenInPlay,
-    shouldStartHiddenInPlay: viewModel.shouldStartHiddenInPlay,
-    shouldAnimateSlotPosition: viewModel.shouldAnimateSlotPosition,
-    titleHoverVisual: viewModel.titleHoverVisual,
-    titleHoverRetainLease: viewModel.titleHoverRetainLease,
-    commitGesture: viewModel.commitGesture,
-  };
-}
 
 export function resolvePlayListPageItemTitleFrameClassName(titleHoverClassName?: string) {
   return cn(collectionTitleClassName, collectionTitleTextClassName, titleHoverClassName);
@@ -205,32 +154,6 @@ export function PlayListPageItem({
     titleHoverVisual === "hold" || titleHoverVisual === "retain"
       ? collectionTitleTextRetainHoverClassName
       : undefined;
-  const traceIdentity = createPlayListPageItemTraceIdentity(viewModel);
-
-  recordRenderPerformanceTrace("playlist-title-item-render", {
-    identity: traceIdentity,
-    viewModel: createPlayListPageItemTraceViewModel(viewModel),
-    torph: {
-      stage: torphStage,
-      committedText,
-      textChanged,
-      titleProjectionLayoutId: titleProjectionLayoutId ?? null,
-      shouldEnableSlotPositionAnimation,
-    },
-    hover: {
-      requestedTitleHoverVisual,
-      retainedTitleHoverVisual,
-      lockInput: {
-        previousLocked: titleHoverLockedBeforeRender,
-        requestedVisual: viewModel.titleHoverVisual,
-        torphStage,
-      },
-      lockOutput: titleHoverLock,
-      lockedAfterRender: titleHoverLockedUntilIdleRef.current,
-      visual: titleHoverVisual,
-      hasClassName: titleHoverClassName !== undefined,
-    },
-  });
 
   return (
     <motion.div
@@ -263,16 +186,6 @@ export function PlayListPageItem({
           text={viewModel.text}
           textClassName={titleHoverClassName}
           torphDebugLabel="playlist-title"
-          torphDebugMeta={{
-            identity: traceIdentity,
-            text: viewModel.text,
-            committedText,
-            torphStage,
-            titleHoverVisual,
-            titleHoverRetainLease: viewModel.titleHoverRetainLease,
-            titleProjectionLayoutId: titleProjectionLayoutId ?? null,
-            shouldEnableSlotPositionAnimation,
-          }}
           onOpenSpectrum={onOpenSpectrum}
           onOpenSpectrumPointerDown={onOpenSpectrumPointerDown}
           onTitleLayoutAnimationComplete={onLayoutAnimationComplete}
@@ -282,38 +195,14 @@ export function PlayListPageItem({
               nextText: viewModel.text,
               torphStage: stage,
             });
-            recordRenderPerformanceTrace("playlist-title-item-torph-stage", {
-              identity: traceIdentity,
-              stage,
-              previousStage: torphStage,
-              text: viewModel.text,
-              committedTextBefore: committedTextRef.current,
-              committedTextAfter: nextCommittedText,
-              textChangedBefore: committedTextRef.current !== viewModel.text,
-              titleHoverLockedBefore: titleHoverLockedUntilIdleRef.current,
-              titleHoverVisual,
-              titleHoverRetainLease: viewModel.titleHoverRetainLease,
-            });
             committedTextRef.current = nextCommittedText;
             setTorphStage(stage);
             onTorphStageChange?.(stage);
           }}
           onPointerDown={(event) => {
-            const shouldPrimaryCommit = event.button === 0;
             const shouldItemCommit = shouldCommitPlayListPageItem({
               button: event.button,
               gesture: viewModel.commitGesture,
-            });
-
-            recordRenderPerformanceTrace("playlist-title-item-pointerdown", {
-              identity: traceIdentity,
-              button: event.button,
-              detail: event.detail,
-              shouldPrimaryCommit,
-              shouldItemCommit,
-              viewModel: createPlayListPageItemTraceViewModel(viewModel),
-              torphStage,
-              titleHoverVisual,
             });
 
             if (event.button === 0) {
@@ -334,17 +223,6 @@ export function PlayListPageItem({
               gesture: viewModel.commitGesture,
             });
 
-            recordRenderPerformanceTrace("playlist-title-item-click", {
-              identity: traceIdentity,
-              button: 0,
-              detail: event.detail,
-              shouldFallbackPrimaryCommit,
-              shouldItemCommit,
-              viewModel: createPlayListPageItemTraceViewModel(viewModel),
-              torphStage,
-              titleHoverVisual,
-            });
-
             if (shouldFallbackPrimaryCommit) {
               onPrimaryCommit?.();
             }
@@ -357,15 +235,6 @@ export function PlayListPageItem({
             const shouldItemCommit = shouldCommitPlayListPageItem({
               button: 2,
               gesture: viewModel.commitGesture,
-            });
-
-            recordRenderPerformanceTrace("playlist-title-item-contextmenu", {
-              identity: traceIdentity,
-              button: 2,
-              shouldItemCommit,
-              viewModel: createPlayListPageItemTraceViewModel(viewModel),
-              torphStage,
-              titleHoverVisual,
             });
 
             if (shouldItemCommit) {

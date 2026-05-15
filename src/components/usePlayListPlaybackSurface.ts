@@ -1,7 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState, type RefCallback } from "react";
 import type { TorphStage } from "@grahlnn/comps";
 import type { MainStateT } from "@/src/flow/appLogic/events";
-import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 import {
   INACTIVE_PLAYBACK_SURFACE,
   resolveMachinePlaybackTarget,
@@ -83,15 +82,6 @@ export function usePlayListPlaybackSurface({
         current,
         machinePlaybackTarget,
         nowPlayingTrack,
-      });
-
-      recordRenderPerformanceTrace("playlist-playback-surface-sync", {
-        pageState,
-        machinePlaybackTarget,
-        nowPlayingTrack,
-        current,
-        next,
-        changed: current !== next,
       });
 
       return next;

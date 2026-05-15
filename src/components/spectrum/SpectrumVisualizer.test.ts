@@ -34,6 +34,7 @@ import {
   resolveWaveformResizeViewportState,
   resolveWaveformSelectionDrag,
   resolveWaveformSelectionGeometry,
+  resolveWaveformSelectionMarkerLayout,
   resolveWaveformSelectionStartScrollLeft,
   resolveWaveformTileAvailabilityPresentationPlan,
   resolveWaveformTileLoadResultPolicy,
@@ -576,6 +577,23 @@ describe("SpectrumVisualizer selection and playback", () => {
         startX: 296,
       },
     );
+  });
+
+  test("keeps selection marker lines on the physical pixel grid while handles use semantic coordinates", () => {
+    assert.deepEqual(resolveWaveformSelectionMarkerLayout({ devicePixelRatio: 1, x: 120.49 }), {
+      handleCenterX: 120.49,
+      visualLineLeftX: 120,
+      visualLineWidth: 1,
+    });
+
+    const highDpiMarker = resolveWaveformSelectionMarkerLayout({
+      devicePixelRatio: 1.5,
+      x: 41.06,
+    });
+
+    assert.equal(highDpiMarker.handleCenterX, 41.06);
+    assert.equal(highDpiMarker.visualLineLeftX * 1.5, 61);
+    assert.equal(highDpiMarker.visualLineWidth * 1.5, 2);
   });
 
   test("keeps selection drags in the real audio range without crossing edges", () => {

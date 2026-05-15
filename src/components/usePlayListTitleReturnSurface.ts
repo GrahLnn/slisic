@@ -1,5 +1,4 @@
 import { useCallback, useState } from "react";
-import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 import {
   INACTIVE_TITLE_RETURN_SURFACE,
   resolvePlayListTitleReturnSurfaceState,
@@ -17,25 +16,9 @@ export function usePlayListTitleReturnSurface(targetLayoutId: string | null) {
     consumedLayoutId: consumedEvidence.consumedLayoutId,
   });
 
-  recordRenderPerformanceTrace("playlist-title-return-surface-render", {
-    targetLayoutId,
-    consumedEvidence,
-    resolvedTitleReturnSurface,
-    snapshot: resolvePlayListTitleReturnSurfaceSnapshot({
-      targetLayoutId,
-      state: resolvedTitleReturnSurface,
-    }),
-  });
-
   const handleLayoutAnimationComplete = useCallback(
     (layoutId?: string) => {
       if (!layoutId) {
-        recordRenderPerformanceTrace("playlist-title-return-surface-layout-complete", {
-          action: "ignored",
-          reason: "missing-layout-id",
-          targetLayoutId,
-          layoutId: null,
-        });
         return;
       }
 
@@ -44,20 +27,6 @@ export function usePlayListTitleReturnSurface(targetLayoutId: string | null) {
           current,
           targetLayoutId,
           layoutId,
-        });
-
-        recordRenderPerformanceTrace("playlist-title-return-surface-layout-complete", {
-          action: current === next ? "ignored" : "consumed",
-          reason:
-            targetLayoutId === null
-              ? "missing-target"
-              : targetLayoutId !== layoutId
-                ? "layout-mismatch"
-                : "target-complete",
-          targetLayoutId,
-          layoutId,
-          current,
-          next,
         });
 
         return next;

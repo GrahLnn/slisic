@@ -43,6 +43,12 @@ export type WaveformSelectionGeometry = {
   startX: number;
 };
 
+export type WaveformSelectionMarkerLayout = {
+  handleCenterX: number;
+  visualLineLeftX: number;
+  visualLineWidth: number;
+};
+
 export type WaveformSelectionEdge = "end" | "start";
 
 export type WaveformSelectionDragResolution = WaveformSelectionRange;
@@ -1372,6 +1378,27 @@ export function resolveWaveformSelectionGeometry(args: {
       seconds: clampNumber(startSeconds, 0, durationSeconds),
       viewport: args.viewport,
     }),
+  };
+}
+
+export function resolveWaveformSelectionMarkerLayout(args: {
+  devicePixelRatio?: number | null;
+  x: number;
+}): WaveformSelectionMarkerLayout {
+  const handleCenterX = Number.isFinite(args.x) ? args.x : 0;
+  const devicePixelRatio =
+    typeof args.devicePixelRatio === "number" && Number.isFinite(args.devicePixelRatio)
+      ? Math.max(1, args.devicePixelRatio)
+      : 1;
+  const visualLinePhysicalWidth = Math.max(1, Math.round(devicePixelRatio));
+  const visualLineWidth = visualLinePhysicalWidth / devicePixelRatio;
+  const visualLineLeftX =
+    Math.round((handleCenterX - visualLineWidth / 2) * devicePixelRatio) / devicePixelRatio;
+
+  return {
+    handleCenterX,
+    visualLineLeftX,
+    visualLineWidth,
   };
 }
 

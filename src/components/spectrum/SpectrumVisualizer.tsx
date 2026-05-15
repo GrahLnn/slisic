@@ -42,6 +42,7 @@ import {
   resolveWaveformResizeViewportState,
   resolveWaveformSelectionDrag,
   resolveWaveformSelectionGeometry,
+  resolveWaveformSelectionMarkerLayout,
   resolveWaveformTileAvailabilityPresentationPlan,
   resolveWaveformTileLoadResultPolicy,
   resolveWaveformTilePeakAtSeconds,
@@ -108,6 +109,7 @@ export {
   resolveWaveformResizeViewportState,
   resolveWaveformSelectionDrag,
   resolveWaveformSelectionGeometry,
+  resolveWaveformSelectionMarkerLayout,
   resolveWaveformSelectionStartScrollLeft,
   resolveWaveformTileAvailabilityPresentationPlan,
   resolveWaveformTileLoadResultPolicy,
@@ -442,7 +444,8 @@ function useElementWidth(ref: RefObject<HTMLElement | null>) {
     }
 
     const sync = () => {
-      const nextWidth = Math.max(1, Math.ceil(node.getBoundingClientRect().width));
+      const rect = node.getBoundingClientRect();
+      const nextWidth = Math.max(1, Math.ceil(rect.width));
       setWidth((current) => (current === nextWidth ? current : nextWidth));
     };
 
@@ -1480,18 +1483,27 @@ function WaveformSelectionHandle(args: {
   onPointerMove: (edge: WaveformSelectionEdge, event: ReactPointerEvent<HTMLButtonElement>) => void;
   onPointerUp: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 }) {
+  const devicePixelRatio = typeof window === "undefined" ? 1 : window.devicePixelRatio;
+  const marker = resolveWaveformSelectionMarkerLayout({
+    devicePixelRatio,
+    x: args.x,
+  });
+
   return (
     <>
       <span
         aria-hidden
-        className="pointer-events-none absolute inset-y-0 block w-px bg-[#d4d4d4] dark:bg-[#373737]"
-        style={{ left: args.x, transform: "translateX(-50%)" }}
+        className="pointer-events-none absolute inset-y-0 block bg-[#d4d4d4] dark:bg-[#373737]"
+        style={{
+          left: marker.visualLineLeftX,
+          width: marker.visualLineWidth,
+        }}
       />
       <button
         type="button"
         aria-label={args.edge === "start" ? "Adjust start" : "Adjust end"}
         className="pointer-events-auto absolute inset-y-0 w-5 cursor-ew-resize touch-none bg-transparent p-0 focus:outline-none"
-        style={{ left: args.x, transform: "translateX(-50%)" }}
+        style={{ left: marker.handleCenterX, transform: "translateX(-50%)" }}
         onPointerCancel={args.onPointerCancel}
         onPointerDown={(event) => args.onPointerDown(args.edge, event)}
         onPointerMove={(event) => args.onPointerMove(args.edge, event)}
