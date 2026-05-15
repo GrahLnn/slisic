@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  composeTitleShareArrows,
+  createTitleShareArrow,
+  createTitleShareEndpoint,
   hasConfigDraftChanges,
+  resolveTitleShareEndpointInstruction,
   resolveConfigBackTitleSharePlan,
   resolveTitleShareHoverVisual,
   resolveTitleSharePageTransition,
@@ -102,6 +106,109 @@ describe("titleShare", () => {
         targetLayoutId: null,
       }),
       "none",
+    );
+  });
+
+  test("keeps equal layout ids separate across endpoint kinds", () => {
+    const arrow = createTitleShareArrow({
+      kind: "list-to-play",
+      source: createTitleShareEndpoint("list", "playlist-title:PlayList 1"),
+      target: createTitleShareEndpoint("play", "playlist-title:PlayList 1"),
+    });
+
+    assert.deepEqual(
+      resolveTitleShareEndpointInstruction({
+        arrow,
+        endpoint: createTitleShareEndpoint("list", "playlist-title:PlayList 1"),
+      }),
+      {
+        titleHoverVisual: "hold",
+        titleHoverRetainLease: "timed",
+      },
+    );
+    assert.deepEqual(
+      resolveTitleShareEndpointInstruction({
+        arrow,
+        endpoint: createTitleShareEndpoint("play", "playlist-title:PlayList 1"),
+      }),
+      {
+        titleHoverVisual: "retain",
+        titleHoverRetainLease: "timed",
+      },
+    );
+  });
+
+  test("rejects undeclared title handoff composition instead of assuming associativity", () => {
+    const listEndpoint = createTitleShareEndpoint("list", "playlist-title:PlayList 1");
+    const playEndpoint = createTitleShareEndpoint("play", "playlist-title:PlayList 1");
+    const spectrumEndpoint = createTitleShareEndpoint("spectrum", "playlist-title:PlayList 1");
+
+    assert.deepEqual(
+      composeTitleShareArrows(
+        createTitleShareArrow({
+          kind: "list-to-play",
+          source: listEndpoint,
+          target: playEndpoint,
+        }),
+        createTitleShareArrow({
+          kind: "play-to-spectrum",
+          source: playEndpoint,
+          target: spectrumEndpoint,
+        }),
+      ),
+      {
+        kind: "rejected",
+        reason: "undeclared-composition",
+      },
+    );
+  });
+
+  test("does not collapse a non-identity round trip into identity", () => {
+    const listEndpoint = createTitleShareEndpoint("list", "playlist-title:PlayList 1");
+    const playEndpoint = createTitleShareEndpoint("play", "playlist-title:PlayList 1");
+
+    assert.deepEqual(
+      composeTitleShareArrows(
+        createTitleShareArrow({
+          kind: "list-to-play",
+          source: listEndpoint,
+          target: playEndpoint,
+        }),
+        createTitleShareArrow({
+          kind: "play-to-list",
+          source: playEndpoint,
+          target: listEndpoint,
+        }),
+      ),
+      {
+        kind: "rejected",
+        reason: "undeclared-composition",
+      },
+    );
+  });
+
+  test("allows explicit identity arrows to pass through composition", () => {
+    const listEndpoint = createTitleShareEndpoint("list", "playlist-title:PlayList 1");
+    const playEndpoint = createTitleShareEndpoint("play", "playlist-title:PlayList 1");
+    const listToPlay = createTitleShareArrow({
+      kind: "list-to-play",
+      source: listEndpoint,
+      target: playEndpoint,
+    });
+
+    assert.deepEqual(
+      composeTitleShareArrows(
+        createTitleShareArrow({
+          kind: "identity",
+          source: listEndpoint,
+          target: listEndpoint,
+        }),
+        listToPlay,
+      ),
+      {
+        kind: "composed",
+        arrow: listToPlay,
+      },
     );
   });
 

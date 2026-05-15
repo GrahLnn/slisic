@@ -11,7 +11,9 @@ import {
 } from "@/src/flow/appLogic/core";
 import type { MainStateT } from "@/src/flow/appLogic/events";
 import {
-  resolveTitleShareHoverVisual,
+  createTitleShareArrow,
+  createTitleShareEndpoint,
+  resolveTitleShareEndpointInstruction,
   resolveTitleSharePageTransition,
   shouldSuppressTitleShareFade,
   type TitleSharePageTransition,
@@ -19,6 +21,7 @@ import {
 import { collectionTitleLayoutTransition } from "./collectionTitle";
 import {
   resolvePlayListTitleHandoffInstruction,
+  resolvePlayListTitleHandoffEndpointKind,
   resolvePlayListTitleHandoffPlan,
   type PlayListTitleHandoffDisplayLock,
   type PlayListTitleHandoffInstruction,
@@ -265,6 +268,11 @@ function resolvePlayListPageVisibleItems(args: {
         isPlaybackTitleHandoffTarget: playlist.name === playbackTitleHandoffTargetName,
         titleHandoffInstruction: resolvePlayListTitleHandoffInstruction({
           plan: args.titleHandoffPlan,
+          endpointKind: resolvePlayListTitleHandoffEndpointKind({
+            plan: args.titleHandoffPlan,
+            layoutId: itemLayoutId,
+            sourceEnabled: !isPlaybackTarget,
+          }),
           layoutId: itemLayoutId,
           sourceEnabled: !isPlaybackTarget,
         }),
@@ -390,18 +398,25 @@ export function resolvePlayListPageViewModel(
       isHiddenInPlay: shouldLockScroll,
       shouldStartHiddenInPlay: displayLock?.kind === "return-handoff",
       shouldAnimateSlotPosition,
-      titleHoverVisual: resolveTitleShareHoverVisual({
-        layoutId: CREATE_COLLECTION_LAYOUT_ID,
-        sourceLayoutId:
-          titleHandoffPlan.sourceLayoutId === CREATE_COLLECTION_LAYOUT_ID
-            ? committedLayoutId
-            : null,
-        targetLayoutId:
-          renderData.pageState === "play" &&
-          titleHandoffPlan.targetLayoutId === CREATE_COLLECTION_LAYOUT_ID
-            ? CREATE_COLLECTION_LAYOUT_ID
-            : null,
-      }),
+      titleHoverVisual: resolveTitleShareEndpointInstruction({
+        endpoint: createTitleShareEndpoint("list", CREATE_COLLECTION_LAYOUT_ID),
+        arrow: createTitleShareArrow({
+          kind: "identity",
+          source: createTitleShareEndpoint(
+            "list",
+            titleHandoffPlan.sourceLayoutId === CREATE_COLLECTION_LAYOUT_ID
+              ? committedLayoutId
+              : null,
+          ),
+          target: createTitleShareEndpoint(
+            "list",
+            renderData.pageState === "play" &&
+              titleHandoffPlan.targetLayoutId === CREATE_COLLECTION_LAYOUT_ID
+              ? CREATE_COLLECTION_LAYOUT_ID
+              : null,
+          ),
+        }),
+      }).titleHoverVisual,
       titleHoverRetainLease: "timed",
       commitGesture: "primary-and-secondary",
     },

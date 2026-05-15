@@ -10,7 +10,9 @@ import {
 } from "@/src/flow/appLogic/core";
 import {
   hasConfigDraftChanges,
-  resolveTitleShareHoverVisual,
+  createTitleShareArrow,
+  createTitleShareEndpoint,
+  resolveTitleShareEndpointInstruction,
   type TitleShareHoverVisual,
 } from "@/src/flow/appLogic/titleShare";
 import type { ConfigCandidateItem, ConfigCandidateItemStatus } from "@/src/flow/pasteDownload/core";
@@ -139,10 +141,15 @@ export function resolveListConfigTitleViewModel(args: {
     handoffTone:
       layoutId && args.titleToneHandoff?.layoutId === layoutId ? args.titleToneHandoff.tone : null,
     layoutId,
-    titleHoverVisual: resolveTitleShareHoverVisual({
-      layoutId,
-      targetLayoutId: args.titleToneHandoff?.layoutId ?? null,
-    }),
+    titleHoverVisual: resolveTitleShareEndpointInstruction({
+      endpoint: createTitleShareEndpoint("config", layoutId),
+      arrow: createTitleShareArrow({
+        kind: "list-to-config",
+        source: createTitleShareEndpoint("list", args.titleToneHandoff?.layoutId),
+        target: createTitleShareEndpoint("config", args.titleToneHandoff?.layoutId),
+        targetRetainLease: "timed",
+      }),
+    }).titleHoverVisual,
     titleNativeHoverEnabled: false,
     placeholder: snapshot?.placeholder,
     value: snapshot?.value ?? "",

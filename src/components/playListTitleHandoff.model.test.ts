@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  resolvePlayListTitleHandoffEndpointKind,
   resolvePlayListTitleHandoffInstruction,
   resolvePlayListTitleHandoffPlan,
   type PlayListTitleEndpoint,
@@ -37,18 +38,51 @@ describe("playListTitleHandoff model", () => {
         kind: "opening-playback",
         playlistName: "Quiet Morning",
       },
+      arrow: {
+        kind: "list-to-play",
+        source: {
+          kind: "list",
+          layoutId: "playlist-title:Quiet Morning",
+        },
+        target: {
+          kind: "play",
+          layoutId: "playlist-title:Quiet Morning",
+        },
+        targetRetainLease: "timed",
+      },
       sourceLayoutId: "playlist-title:Quiet Morning",
       targetLayoutId: "playlist-title:Quiet Morning",
       targetRetainLease: "timed",
     });
+    assert.equal(
+      resolvePlayListTitleHandoffEndpointKind({
+        plan,
+        layoutId: "playlist-title:Quiet Morning",
+        sourceEnabled: true,
+      }),
+      "play",
+    );
     assert.deepEqual(
       resolvePlayListTitleHandoffInstruction({
         plan,
+        endpointKind: "list",
         layoutId: "playlist-title:Quiet Morning",
         sourceEnabled: true,
       }),
       {
         titleHoverVisual: "hold",
+        titleHoverRetainLease: "timed",
+      },
+    );
+    assert.deepEqual(
+      resolvePlayListTitleHandoffInstruction({
+        plan,
+        endpointKind: "play",
+        layoutId: "playlist-title:Quiet Morning",
+        sourceEnabled: true,
+      }),
+      {
+        titleHoverVisual: "retain",
         titleHoverRetainLease: "timed",
       },
     );
@@ -77,6 +111,18 @@ describe("playListTitleHandoff model", () => {
         kind: "return-handoff",
         playlistName: "Quiet Morning",
       },
+      arrow: {
+        kind: "spectrum-to-play",
+        source: {
+          kind: "spectrum",
+          layoutId: "playlist-title:Quiet Morning",
+        },
+        target: {
+          kind: "play",
+          layoutId: "playlist-title:Quiet Morning",
+        },
+        targetRetainLease: "stage-only",
+      },
       sourceLayoutId: null,
       targetLayoutId: "playlist-title:Quiet Morning",
       targetRetainLease: "stage-only",
@@ -84,6 +130,7 @@ describe("playListTitleHandoff model", () => {
     assert.deepEqual(
       resolvePlayListTitleHandoffInstruction({
         plan,
+        endpointKind: "play",
         layoutId: "playlist-title:Quiet Morning",
         sourceEnabled: true,
       }),
@@ -122,6 +169,7 @@ describe("playListTitleHandoff model", () => {
         kind: "playback-surface",
         playlistName: "Quiet Morning",
       },
+      arrow: null,
       sourceLayoutId: null,
       targetLayoutId: null,
       targetRetainLease: "timed",
@@ -150,6 +198,15 @@ describe("playListTitleHandoff model", () => {
 
     assert.deepEqual(plan, {
       displayLock: null,
+      arrow: {
+        kind: "config-to-list",
+        source: null,
+        target: {
+          kind: "list",
+          layoutId: "playlist-title:Quiet Morning",
+        },
+        targetRetainLease: "stage-only",
+      },
       sourceLayoutId: null,
       targetLayoutId: "playlist-title:Quiet Morning",
       targetRetainLease: "stage-only",

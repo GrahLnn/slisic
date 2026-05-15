@@ -14,6 +14,250 @@ export interface TitleSharePageTransition {
 }
 
 export type TitleShareHoverVisual = "none" | "hold" | "retain";
+export type TitleShareRetainLease = "timed" | "stage-only";
+
+export type TitleShareEndpointKind = "config" | "list" | "play" | "spectrum";
+
+export interface TitleShareEndpoint {
+  kind: TitleShareEndpointKind;
+  layoutId: string;
+}
+
+export type TitleShareArrowKind =
+  | "config-to-list"
+  | "identity"
+  | "list-to-config"
+  | "list-to-play"
+  | "play-to-list"
+  | "play-to-spectrum"
+  | "spectrum-to-play";
+
+export interface TitleShareArrow {
+  kind: TitleShareArrowKind;
+  source: TitleShareEndpoint | null;
+  target: TitleShareEndpoint | null;
+  targetRetainLease: TitleShareRetainLease;
+}
+
+export interface TitleShareInstruction {
+  titleHoverVisual: TitleShareHoverVisual;
+  titleHoverRetainLease: TitleShareRetainLease;
+}
+
+export type TitleShareCompositionResult =
+  | {
+      arrow: TitleShareArrow;
+      kind: "composed";
+    }
+  | {
+      kind: "rejected";
+      reason: "missing-endpoint" | "endpoint-mismatch" | "undeclared-composition";
+    };
+
+export const NO_TITLE_SHARE_INSTRUCTION: TitleShareInstruction = {
+  titleHoverVisual: "none",
+  titleHoverRetainLease: "timed",
+};
+
+/**
+ * Behavior:
+ *   Shared title motion is a typed arrow between page endpoints. The arrow owns
+ *   visual weight evidence and its release rule; pages only provide endpoint
+ *   facts and interpret the resulting instruction.
+ *
+ * Core invariants:
+ *   - A target cannot manufacture retain weight without arrow evidence.
+ *   - Source and target roles are matched by full endpoint kind + layout id.
+ *   - Composition is partial. Only declared endpoint pairs may collapse into a
+ *     new arrow; otherwise callers must keep the intermediate page transition.
+ *   - Effects, Torph stages, playback status and config commits do not create
+ *     arrows. They can only consume arrow instructions.
+ */
+export function createTitleShareEndpoint(
+  kind: TitleShareEndpointKind,
+  layoutId: string | null | undefined,
+): TitleShareEndpoint | null {
+  return layoutId
+    ? {
+        kind,
+        layoutId,
+      }
+    : null;
+}
+
+export function createTitleShareArrow(args: {
+  kind: TitleShareArrowKind;
+  source?: TitleShareEndpoint | null;
+  target?: TitleShareEndpoint | null;
+  targetRetainLease?: TitleShareRetainLease;
+}): TitleShareArrow {
+  return {
+    kind: args.kind,
+    source: args.source ?? null,
+    target: args.target ?? null,
+    targetRetainLease: args.targetRetainLease ?? "timed",
+  };
+}
+
+export function areTitleShareEndpointsEqual(
+  left: TitleShareEndpoint | null | undefined,
+  right: TitleShareEndpoint | null | undefined,
+) {
+  return !!left && !!right && left.kind === right.kind && left.layoutId === right.layoutId;
+}
+
+export function resolveTitleShareArrowKind(args: {
+  sourceKind: TitleShareEndpointKind;
+  targetKind: TitleShareEndpointKind;
+}): TitleShareArrowKind | null {
+  if (args.sourceKind === args.targetKind) {
+    return "identity";
+  }
+
+  if (args.sourceKind === "list" && args.targetKind === "play") {
+    return "list-to-play";
+  }
+
+  if (args.sourceKind === "play" && args.targetKind === "list") {
+    return "play-to-list";
+  }
+
+  if (args.sourceKind === "list" && args.targetKind === "config") {
+    return "list-to-config";
+  }
+
+  if (args.sourceKind === "config" && args.targetKind === "list") {
+    return "config-to-list";
+  }
+
+  if (args.sourceKind === "play" && args.targetKind === "spectrum") {
+    return "play-to-spectrum";
+  }
+
+  if (args.sourceKind === "spectrum" && args.targetKind === "play") {
+    return "spectrum-to-play";
+  }
+
+  return null;
+}
+
+export function resolveTitleShareEndpointInstruction(args: {
+  arrow: TitleShareArrow | null;
+  endpoint: TitleShareEndpoint | null;
+  sourceEnabled?: boolean;
+}): TitleShareInstruction {
+  if (!args.arrow || !args.endpoint) {
+    return NO_TITLE_SHARE_INSTRUCTION;
+  }
+
+  if (
+    args.sourceEnabled !== false &&
+    areTitleShareEndpointsEqual(args.endpoint, args.arrow.source)
+  ) {
+    return {
+      titleHoverVisual: "hold",
+      titleHoverRetainLease: "timed",
+    };
+  }
+
+  if (areTitleShareEndpointsEqual(args.endpoint, args.arrow.target)) {
+    return {
+      titleHoverVisual: "retain",
+      titleHoverRetainLease: args.arrow.targetRetainLease,
+    };
+  }
+
+  return NO_TITLE_SHARE_INSTRUCTION;
+}
+
+export function resolveTitleShareRoleInstruction(args: {
+  layoutId?: string | null;
+  sourceLayoutId?: string | null;
+  targetLayoutId?: string | null;
+  targetRetainLease?: TitleShareRetainLease;
+  sourceEnabled?: boolean;
+}): TitleShareInstruction {
+  const endpoint = createTitleShareEndpoint("list", args.layoutId);
+  const source = createTitleShareEndpoint("list", args.sourceLayoutId);
+  const target = createTitleShareEndpoint("list", args.targetLayoutId);
+
+  return resolveTitleShareEndpointInstruction({
+    endpoint,
+    sourceEnabled: args.sourceEnabled,
+    arrow: createTitleShareArrow({
+      kind: "identity",
+      source,
+      target,
+      targetRetainLease: args.targetRetainLease,
+    }),
+  });
+}
+
+function isTitleShareIdentityArrow(arrow: TitleShareArrow) {
+  return arrow.kind === "identity" && areTitleShareEndpointsEqual(arrow.source, arrow.target);
+}
+
+export function composeTitleShareArrows(
+  first: TitleShareArrow,
+  second: TitleShareArrow,
+): TitleShareCompositionResult {
+  if (isTitleShareIdentityArrow(first)) {
+    return {
+      kind: "composed",
+      arrow: second,
+    };
+  }
+
+  if (isTitleShareIdentityArrow(second)) {
+    return {
+      kind: "composed",
+      arrow: first,
+    };
+  }
+
+  if (!first.target || !second.source) {
+    return {
+      kind: "rejected",
+      reason: "missing-endpoint",
+    };
+  }
+
+  if (!areTitleShareEndpointsEqual(first.target, second.source)) {
+    return {
+      kind: "rejected",
+      reason: "endpoint-mismatch",
+    };
+  }
+
+  if (!first.source || !second.target) {
+    return {
+      kind: "rejected",
+      reason: "missing-endpoint",
+    };
+  }
+
+  const kind = resolveTitleShareArrowKind({
+    sourceKind: first.source.kind,
+    targetKind: second.target.kind,
+  });
+
+  if (!kind || kind === "identity") {
+    return {
+      kind: "rejected",
+      reason: "undeclared-composition",
+    };
+  }
+
+  return {
+    kind: "composed",
+    arrow: createTitleShareArrow({
+      kind,
+      source: first.source,
+      target: second.target,
+      targetRetainLease: second.targetRetainLease,
+    }),
+  };
+}
 
 export function createConfigDraftComparableKey(draft: ConfigDraft | null) {
   if (!draft) {
@@ -102,17 +346,5 @@ export function resolveTitleShareHoverVisual(args: {
   sourceLayoutId?: string | null;
   targetLayoutId?: string | null;
 }): TitleShareHoverVisual {
-  if (!args.layoutId) {
-    return "none";
-  }
-
-  if (args.layoutId === args.sourceLayoutId) {
-    return "hold";
-  }
-
-  if (args.layoutId === args.targetLayoutId) {
-    return "retain";
-  }
-
-  return "none";
+  return resolveTitleShareRoleInstruction(args).titleHoverVisual;
 }

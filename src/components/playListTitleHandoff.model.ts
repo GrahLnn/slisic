@@ -1,13 +1,23 @@
 import type { CollectionTitleHandoff } from "@/src/flow/appLogic/core";
 import type { MainStateT } from "@/src/flow/appLogic/events";
 import type {
-  TitleShareHoverVisual,
+  TitleShareArrow,
+  TitleShareEndpoint,
+  TitleShareEndpointKind,
+  TitleShareInstruction,
   TitleSharePageTransition,
+  TitleShareRetainLease,
+} from "@/src/flow/appLogic/titleShare";
+import {
+  createTitleShareArrow,
+  createTitleShareEndpoint,
+  resolveTitleShareEndpointInstruction,
 } from "@/src/flow/appLogic/titleShare";
 import type { PlayListPlaybackSurfaceSnapshot } from "./playListPlaybackSurface.model";
 import type { PlayListTitleReturnSurfaceSnapshot } from "./playListTitleReturnSurface.model";
 
-export type PlayListTitleHandoffRetainLease = "timed" | "stage-only";
+export type PlayListTitleHandoffRetainLease = TitleShareRetainLease;
+export type PlayListTitleHandoffEndpointKind = Extract<TitleShareEndpointKind, "list" | "play">;
 
 export type PlayListTitleHandoffDisplayLock =
   | {
@@ -30,20 +40,38 @@ export interface PlayListTitleEndpoint {
 
 export interface PlayListTitleHandoffPlan {
   displayLock: PlayListTitleHandoffDisplayLock | null;
+  arrow: TitleShareArrow | null;
   sourceLayoutId: string | null;
   targetLayoutId: string | null;
   targetRetainLease: PlayListTitleHandoffRetainLease;
 }
 
-export interface PlayListTitleHandoffInstruction {
-  titleHoverVisual: TitleShareHoverVisual;
-  titleHoverRetainLease: PlayListTitleHandoffRetainLease;
-}
+export type PlayListTitleHandoffInstruction = TitleShareInstruction;
 
 const NO_TITLE_HANDOFF_INSTRUCTION: PlayListTitleHandoffInstruction = {
   titleHoverVisual: "none",
   titleHoverRetainLease: "timed",
 };
+
+export function resolvePlayListTitleHandoffEndpointKind(args: {
+  plan: PlayListTitleHandoffPlan;
+  layoutId?: string | null;
+  sourceEnabled: boolean;
+}): PlayListTitleHandoffEndpointKind {
+  if (!args.layoutId || !args.plan.arrow) {
+    return "list";
+  }
+
+  if (args.plan.arrow.target?.layoutId === args.layoutId) {
+    return args.plan.arrow.target.kind === "play" ? "play" : "list";
+  }
+
+  if (args.sourceEnabled && args.plan.arrow.source?.layoutId === args.layoutId) {
+    return args.plan.arrow.source.kind === "play" ? "play" : "list";
+  }
+
+  return "list";
+}
 
 function findEndpointByName(
   endpoints: readonly PlayListTitleEndpoint[],
@@ -65,6 +93,21 @@ function findEndpointByLayoutId(
   }
 
   return endpoints.find((endpoint) => endpoint.layoutId === layoutId) ?? null;
+}
+
+function createPlaylistEndpoint(
+  kind: PlayListTitleHandoffEndpointKind,
+  endpoint: PlayListTitleEndpoint | null,
+): TitleShareEndpoint | null {
+  return createTitleShareEndpoint(kind, endpoint?.layoutId);
+}
+
+function createListEndpoint(endpoint: PlayListTitleEndpoint | null): TitleShareEndpoint | null {
+  return createPlaylistEndpoint("list", endpoint);
+}
+
+function createPlayEndpoint(endpoint: PlayListTitleEndpoint | null): TitleShareEndpoint | null {
+  return createPlaylistEndpoint("play", endpoint);
 }
 
 /**
@@ -122,8 +165,16 @@ export function resolvePlayListTitleHandoffPlan(args: {
   }
 
   if (displayLock?.kind === "return-handoff" && returnEndpoint) {
+    const arrow = createTitleShareArrow({
+      kind: "spectrum-to-play",
+      source: createTitleShareEndpoint("spectrum", args.titleToneHandoff?.layoutId),
+      target: createPlayEndpoint(returnEndpoint),
+      targetRetainLease: "stage-only",
+    });
+
     return {
       displayLock,
+      arrow,
       sourceLayoutId: args.transition.committedLayoutId,
       targetLayoutId: returnEndpoint.layoutId,
       targetRetainLease: "stage-only",
@@ -131,8 +182,16 @@ export function resolvePlayListTitleHandoffPlan(args: {
   }
 
   if (readyReturnEndpoint) {
+    const arrow = createTitleShareArrow({
+      kind: "config-to-list",
+      source: createTitleShareEndpoint("config", args.transition.committedLayoutId),
+      target: createListEndpoint(readyReturnEndpoint),
+      targetRetainLease: "stage-only",
+    });
+
     return {
       displayLock,
+      arrow,
       sourceLayoutId: args.transition.committedLayoutId,
       targetLayoutId: readyReturnEndpoint.layoutId,
       targetRetainLease: "stage-only",
@@ -140,8 +199,16 @@ export function resolvePlayListTitleHandoffPlan(args: {
   }
 
   if (displayLock?.kind === "opening-playback" && openingEndpoint) {
+    const arrow = createTitleShareArrow({
+      kind: "list-to-play",
+      source: createListEndpoint(openingEndpoint),
+      target: createPlayEndpoint(openingEndpoint),
+      targetRetainLease: "timed",
+    });
+
     return {
       displayLock,
+      arrow,
       sourceLayoutId: args.transition.committedLayoutId,
       targetLayoutId: openingEndpoint.layoutId,
       targetRetainLease: "timed",
@@ -153,16 +220,32 @@ export function resolvePlayListTitleHandoffPlan(args: {
     playbackEndpoint &&
     args.playbackSurface?.displayedTrackName === null
   ) {
+    const targetRetainLease = args.playbackSurface.phase === "restoring" ? "stage-only" : "timed";
+    const arrow = createTitleShareArrow({
+      kind: args.playbackSurface.phase === "restoring" ? "play-to-list" : "list-to-play",
+      source:
+        args.playbackSurface.phase === "restoring"
+          ? createPlayEndpoint(playbackEndpoint)
+          : createListEndpoint(playbackEndpoint),
+      target:
+        args.playbackSurface.phase === "restoring"
+          ? createListEndpoint(playbackEndpoint)
+          : createPlayEndpoint(playbackEndpoint),
+      targetRetainLease,
+    });
+
     return {
       displayLock,
+      arrow,
       sourceLayoutId: args.transition.committedLayoutId,
       targetLayoutId: playbackEndpoint.layoutId,
-      targetRetainLease: args.playbackSurface.phase === "restoring" ? "stage-only" : "timed",
+      targetRetainLease,
     };
   }
 
   return {
     displayLock,
+    arrow: null,
     sourceLayoutId: args.transition.committedLayoutId,
     targetLayoutId: null,
     targetRetainLease: "timed",
@@ -171,6 +254,7 @@ export function resolvePlayListTitleHandoffPlan(args: {
 
 export function resolvePlayListTitleHandoffInstruction(args: {
   plan: PlayListTitleHandoffPlan;
+  endpointKind?: PlayListTitleHandoffEndpointKind;
   layoutId?: string | null;
   sourceEnabled: boolean;
 }): PlayListTitleHandoffInstruction {
@@ -178,19 +262,25 @@ export function resolvePlayListTitleHandoffInstruction(args: {
     return NO_TITLE_HANDOFF_INSTRUCTION;
   }
 
-  if (args.sourceEnabled && args.layoutId === args.plan.sourceLayoutId) {
-    return {
-      titleHoverVisual: "hold",
-      titleHoverRetainLease: "timed",
-    };
+  const endpoint = createTitleShareEndpoint(args.endpointKind ?? "list", args.layoutId);
+  const instruction = resolveTitleShareEndpointInstruction({
+    endpoint,
+    sourceEnabled: args.sourceEnabled,
+    arrow: args.plan.arrow,
+  });
+
+  if (instruction.titleHoverVisual !== "none") {
+    return instruction;
   }
 
-  if (args.layoutId === args.plan.targetLayoutId) {
-    return {
-      titleHoverVisual: "retain",
-      titleHoverRetainLease: args.plan.targetRetainLease,
-    };
-  }
-
-  return NO_TITLE_HANDOFF_INSTRUCTION;
+  return resolveTitleShareEndpointInstruction({
+    endpoint,
+    sourceEnabled: args.sourceEnabled,
+    arrow: createTitleShareArrow({
+      kind: "identity",
+      source: createTitleShareEndpoint("list", args.plan.sourceLayoutId),
+      target: createTitleShareEndpoint("list", args.plan.targetLayoutId),
+      targetRetainLease: args.plan.targetRetainLease,
+    }),
+  });
 }
