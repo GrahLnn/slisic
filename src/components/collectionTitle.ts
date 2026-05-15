@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import type { TitleShareHoverVisual } from "@/src/flow/appLogic/titleShare";
@@ -90,6 +91,15 @@ export function useCollectionTitleRetainedHoverVisual(
 
   useLayoutEffect(() => {
     const clearRetainWindow = () => {
+      recordRenderPerformanceTrace("collection-title-retain-window", {
+        action: "clear",
+        reason: "owner-change",
+        requestedVisual,
+        retainOwnerKey,
+        retainRequestKey,
+        previousRequestKey: previousRetainRequestKeyRef.current,
+        retainWindow,
+      });
       previousRetainRequestKeyRef.current = null;
       setRetainWindow({
         active: false,
@@ -106,6 +116,15 @@ export function useCollectionTitleRetainedHoverVisual(
     }
 
     if (requestedVisual !== "retain") {
+      recordRenderPerformanceTrace("collection-title-retain-window", {
+        action: "request-cleared",
+        reason: "requested-visual-not-retain",
+        requestedVisual,
+        retainOwnerKey,
+        retainRequestKey,
+        previousRequestKey: previousRetainRequestKeyRef.current,
+        retainWindow,
+      });
       previousRetainRequestKeyRef.current = null;
       return;
     }
@@ -115,10 +134,26 @@ export function useCollectionTitleRetainedHoverVisual(
       retainWindow.ownerKey === retainOwnerKey &&
       previousRetainRequestKeyRef.current === retainRequestKey
     ) {
+      recordRenderPerformanceTrace("collection-title-retain-window", {
+        action: "retain-existing-window",
+        requestedVisual,
+        retainOwnerKey,
+        retainRequestKey,
+        previousRequestKey: previousRetainRequestKeyRef.current,
+        retainWindow,
+      });
       return;
     }
 
     if (previousRetainRequestKeyRef.current === retainRequestKey) {
+      recordRenderPerformanceTrace("collection-title-retain-window", {
+        action: "ignore-duplicate-request",
+        requestedVisual,
+        retainOwnerKey,
+        retainRequestKey,
+        previousRequestKey: previousRetainRequestKeyRef.current,
+        retainWindow,
+      });
       return;
     }
 
@@ -132,8 +167,23 @@ export function useCollectionTitleRetainedHoverVisual(
       active: true,
       ownerKey: retainOwnerKey,
     });
+    recordRenderPerformanceTrace("collection-title-retain-window", {
+      action: "arm",
+      requestedVisual,
+      retainOwnerKey,
+      retainRequestKey,
+      retainWindowMs: COLLECTION_TITLE_HOVER_RETAIN_MS,
+      previousWindow: retainWindow,
+    });
     timeoutRef.current = window.setTimeout(() => {
       timeoutRef.current = null;
+      recordRenderPerformanceTrace("collection-title-retain-window", {
+        action: "timeout-release",
+        requestedVisual,
+        retainOwnerKey,
+        retainRequestKey,
+        retainWindowMs: COLLECTION_TITLE_HOVER_RETAIN_MS,
+      });
       setRetainWindow({
         active: false,
         ownerKey: null,
@@ -161,6 +211,17 @@ export function useCollectionTitleRetainedHoverVisual(
   const resolvedVisual = resolveCollectionTitleRetainedHoverVisual({
     requestedVisual,
     retainWindowActive: retainWindow.active && retainWindow.ownerKey === retainOwnerKey,
+  });
+
+  recordRenderPerformanceTrace("collection-title-retain-resolved", {
+    requestedVisual,
+    resolvedVisual,
+    retainOwnerKey,
+    retainRequestKey,
+    retainWindow,
+    retainWindowMatchesOwner: retainWindow.active && retainWindow.ownerKey === retainOwnerKey,
+    previousRequestKey: previousRetainRequestKeyRef.current,
+    hasTimeout: timeoutRef.current !== null,
   });
 
   return resolvedVisual;

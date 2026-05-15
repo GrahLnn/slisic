@@ -12,6 +12,10 @@ import { cn } from "@/lib/utils";
 import { AnimatePresence, motion, useAnimate, type HTMLMotionProps } from "motion/react";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import {
+  isRenderPerformanceTraceInstalled,
+  recordRenderPerformanceTrace,
+} from "@/src/debug/renderPerformanceTrace";
+import {
   collectionTitleColorTransition,
   collectionTitleTextClassName,
   useCollectionTitleColor,
@@ -34,6 +38,8 @@ type PlayItemBaseProps = Omit<HTMLMotionProps<"div">, "children"> & {
   onOpenSpectrumPointerDown?: () => void;
   onTitleLayoutAnimationComplete?: (layoutId?: string) => void;
   onTorphStageChange?: (stage: TorphStage) => void;
+  torphDebugLabel?: string | null;
+  torphDebugMeta?: Record<string, unknown> | null;
 };
 
 type PlayItemFrameProps = Omit<HTMLMotionProps<"div">, "children"> & {
@@ -56,6 +62,8 @@ type PlayItemTextProps = Pick<
   | "showPlaybackIcons"
   | "text"
   | "textClassName"
+  | "torphDebugLabel"
+  | "torphDebugMeta"
 > & {
   tone: CollectionTitleTone;
 };
@@ -68,8 +76,22 @@ type PlaybackIconLayerBox = {
   width: number;
 };
 
+type PlayItemTorphGeometryTraceContext = {
+  label: string | null;
+  meta: Record<string, unknown> | null;
+  text: string;
+  textClassName?: string;
+  textMetricClassName: string;
+  torphStage: TorphStage;
+  showPlaybackIcons: boolean;
+  playbackIconWidthText?: string;
+  shouldRenderPlaybackIconLayer: boolean;
+  playbackIconLayerBox?: PlaybackIconLayerBox;
+};
+
 const PLAYBACK_ICON_LAYER_VERTICAL_GAP = 4;
 const PLAY_ITEM_HEART_ACTIVE_COLOR = "#f91880";
+const PLAY_ITEM_TORPH_GEOMETRY_TRACE_FRAME_COUNT = 18;
 
 export function resolvePlayItemColorHandoff(args: {
   targetColor: string;
@@ -146,6 +168,154 @@ function readCssPixelValue(value: string) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function roundTraceNumber(value: number | null | undefined) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  return Math.round(value * 1000) / 1000;
+}
+
+function summarizeTraceRect(rect: DOMRect | null, anchor?: DOMRect | null) {
+  if (rect === null) {
+    return null;
+  }
+
+  return {
+    left: roundTraceNumber(rect.left),
+    top: roundTraceNumber(rect.top),
+    right: roundTraceNumber(rect.right),
+    bottom: roundTraceNumber(rect.bottom),
+    width: roundTraceNumber(rect.width),
+    height: roundTraceNumber(rect.height),
+    centerX: roundTraceNumber(rect.left + rect.width / 2),
+    centerY: roundTraceNumber(rect.top + rect.height / 2),
+    relativeLeft: anchor ? roundTraceNumber(rect.left - anchor.left) : null,
+    relativeTop: anchor ? roundTraceNumber(rect.top - anchor.top) : null,
+  };
+}
+
+function summarizeTraceElementStyle(node: HTMLElement | null) {
+  if (node === null) {
+    return null;
+  }
+
+  const style = window.getComputedStyle(node);
+  return {
+    display: style.display,
+    position: style.position,
+    opacity: style.opacity,
+    fontSize: style.fontSize,
+    fontWeight: style.fontWeight,
+    fontVariationSettings: style.fontVariationSettings,
+    letterSpacing: style.letterSpacing,
+    lineHeight: style.lineHeight,
+    whiteSpace: style.whiteSpace,
+    transform: style.transform,
+    transitionDuration: style.transitionDuration,
+    transitionProperty: style.transitionProperty,
+  };
+}
+
+function summarizeTraceElement(node: HTMLElement | null, anchor?: DOMRect | null) {
+  if (node === null) {
+    return null;
+  }
+
+  return {
+    rect: summarizeTraceRect(node.getBoundingClientRect(), anchor),
+    style: summarizeTraceElementStyle(node),
+    className: node.getAttribute("class"),
+    dataset: {
+      torphDebugRole: node.dataset.torphDebugRole ?? null,
+      torphDebugStage: node.dataset.torphDebugStage ?? null,
+      morphRole: node.dataset.morphRole ?? null,
+      morphKey: node.dataset.morphKey ?? null,
+      morphGlyph: node.dataset.morphGlyph ?? null,
+      morphKind: node.dataset.morphKind ?? null,
+    },
+  };
+}
+
+function summarizeTraceNodeGroup(nodes: readonly HTMLElement[], anchor?: DOMRect | null) {
+  if (nodes.length === 0) {
+    return {
+      count: 0,
+      bounds: null,
+      nodes: [],
+    };
+  }
+
+  const rects = nodes.map((node) => node.getBoundingClientRect());
+  const left = Math.min(...rects.map((rect) => rect.left));
+  const top = Math.min(...rects.map((rect) => rect.top));
+  const right = Math.max(...rects.map((rect) => rect.right));
+  const bottom = Math.max(...rects.map((rect) => rect.bottom));
+  const bounds = {
+    left: roundTraceNumber(left),
+    top: roundTraceNumber(top),
+    right: roundTraceNumber(right),
+    bottom: roundTraceNumber(bottom),
+    width: roundTraceNumber(right - left),
+    height: roundTraceNumber(bottom - top),
+    centerX: roundTraceNumber(left + (right - left) / 2),
+    centerY: roundTraceNumber(top + (bottom - top) / 2),
+    relativeLeft: anchor ? roundTraceNumber(left - anchor.left) : null,
+    relativeTop: anchor ? roundTraceNumber(top - anchor.top) : null,
+  };
+
+  return {
+    count: nodes.length,
+    bounds,
+    nodes: nodes.slice(0, 80).map((node, index) => ({
+      index,
+      rect: summarizeTraceRect(node.getBoundingClientRect(), anchor),
+      style: summarizeTraceElementStyle(node),
+      key: node.dataset.morphKey ?? null,
+      glyph: node.dataset.morphGlyph ?? node.textContent,
+      kind: node.dataset.morphKind ?? null,
+      role: node.dataset.morphRole ?? null,
+      transform: node.style.transform || null,
+    })),
+  };
+}
+
+function summarizePlayItemTorphGeometry(scopeNode: HTMLElement | null) {
+  if (scopeNode === null) {
+    return null;
+  }
+
+  const scopeRect = scopeNode.getBoundingClientRect();
+  const rootNode = scopeNode.querySelector<HTMLElement>("[data-torph-debug-role='root']");
+  const rootRect = rootNode?.getBoundingClientRect() ?? null;
+  const flowShellNode = scopeNode.querySelector<HTMLElement>(
+    "[data-torph-debug-role='flow-shell']",
+  );
+  const flowNode = scopeNode.querySelector<HTMLElement>("[data-torph-debug-role='flow']");
+  const overlayNode = scopeNode.querySelector<HTMLElement>("[data-torph-debug-role='overlay']");
+  const measurementNode = scopeNode.querySelector<HTMLElement>(
+    "[data-torph-debug-role='measurement']",
+  );
+  const liveGlyphNodes = Array.from(
+    scopeNode.querySelectorAll<HTMLElement>("[data-morph-role='live']"),
+  );
+  const exitGlyphNodes = Array.from(
+    scopeNode.querySelectorAll<HTMLElement>("[data-morph-role='exit']"),
+  );
+  const anchor = rootRect ?? scopeRect;
+
+  return {
+    scope: summarizeTraceElement(scopeNode, scopeRect),
+    root: summarizeTraceElement(rootNode, scopeRect),
+    flowShell: summarizeTraceElement(flowShellNode, anchor),
+    flow: summarizeTraceElement(flowNode, anchor),
+    overlay: summarizeTraceElement(overlayNode, anchor),
+    measurement: summarizeTraceElement(measurementNode, anchor),
+    liveGlyphs: summarizeTraceNodeGroup(liveGlyphNodes, anchor),
+    exitGlyphs: summarizeTraceNodeGroup(exitGlyphNodes, anchor),
+  };
+}
+
 function readPretextFont(style: CSSStyleDeclaration) {
   if (style.font) {
     return style.font;
@@ -201,6 +371,41 @@ function measurePlayItemTextWidthWithPretext(args: { source: HTMLElement; text: 
   );
 
   return (measuredWidth > 0 && measuredWidth) || undefined;
+}
+
+function shouldTracePlayItemTorphGeometry(args: PlayItemTorphGeometryTraceContext) {
+  return (
+    args.label === "playlist-title" &&
+    (args.textClassName !== undefined ||
+      args.torphStage !== "idle" ||
+      args.showPlaybackIcons ||
+      args.shouldRenderPlaybackIconLayer)
+  );
+}
+
+function recordPlayItemTorphGeometryTrace(args: {
+  frame: number;
+  reason: string;
+  scopeNode: HTMLElement | null;
+  context: PlayItemTorphGeometryTraceContext;
+}) {
+  const geometry = summarizePlayItemTorphGeometry(args.scopeNode);
+  if (geometry === null) {
+    recordRenderPerformanceTrace("play-item-torph-geometry-frame", {
+      frame: args.frame,
+      reason: args.reason,
+      context: args.context,
+      geometry: null,
+    });
+    return;
+  }
+
+  recordRenderPerformanceTrace("play-item-torph-geometry-frame", {
+    frame: args.frame,
+    reason: args.reason,
+    context: args.context,
+    geometry,
+  });
 }
 
 export function resolvePlaybackIconLayerBox(args: {
@@ -359,6 +564,8 @@ function PlayItemText({
   text,
   textClassName,
   tone,
+  torphDebugLabel = null,
+  torphDebugMeta = null,
 }: PlayItemTextProps) {
   const [playbackIconLayerBox, setPlaybackIconLayerBox] = useState<
     PlaybackIconLayerBox | undefined
@@ -459,6 +666,75 @@ function PlayItemText({
     setPlaybackIconLayerDismissed(false);
   }, [playbackIconWidthText, showPlaybackIcons]);
 
+  useLayoutEffect(() => {
+    if (!isRenderPerformanceTraceInstalled()) {
+      return;
+    }
+
+    const context: PlayItemTorphGeometryTraceContext = {
+      label: torphDebugLabel,
+      meta: torphDebugMeta,
+      text,
+      textClassName,
+      textMetricClassName,
+      torphStage,
+      showPlaybackIcons,
+      playbackIconWidthText,
+      shouldRenderPlaybackIconLayer,
+      playbackIconLayerBox,
+    };
+
+    if (!shouldTracePlayItemTorphGeometry(context)) {
+      return;
+    }
+
+    let cancelled = false;
+    let frameHandle: number | null = null;
+    let frame = 0;
+
+    const capture = () => {
+      if (cancelled) {
+        return;
+      }
+
+      recordPlayItemTorphGeometryTrace({
+        frame,
+        reason: "handoff-window",
+        scopeNode: scope.current,
+        context,
+      });
+      frame += 1;
+
+      if (frame >= PLAY_ITEM_TORPH_GEOMETRY_TRACE_FRAME_COUNT) {
+        frameHandle = null;
+        return;
+      }
+
+      frameHandle = requestAnimationFrame(capture);
+    };
+
+    frameHandle = requestAnimationFrame(capture);
+
+    return () => {
+      cancelled = true;
+      if (frameHandle !== null) {
+        cancelAnimationFrame(frameHandle);
+      }
+    };
+  }, [
+    playbackIconLayerBox,
+    playbackIconWidthText,
+    scope,
+    shouldRenderPlaybackIconLayer,
+    showPlaybackIcons,
+    text,
+    textClassName,
+    textMetricClassName,
+    torphDebugLabel,
+    torphDebugMeta,
+    torphStage,
+  ]);
+
   return (
     <>
       <div
@@ -469,6 +745,8 @@ function PlayItemText({
       >
         <Torph
           className={textMetricClassName}
+          debugLabel={torphDebugLabel}
+          debugMeta={torphDebugMeta}
           text={text}
           onStageChange={(stage) => {
             setTorphStage(stage);
@@ -545,6 +823,8 @@ export function PlayItem({
   showPlaybackIcons = false,
   onTorphStageChange,
   onTitleLayoutAnimationComplete,
+  torphDebugLabel = null,
+  torphDebugMeta = null,
   ...domProps
 }: PlayItemProps) {
   return (
@@ -568,6 +848,8 @@ export function PlayItem({
         text={text}
         textClassName={textClassName}
         tone={tone}
+        torphDebugLabel={torphDebugLabel}
+        torphDebugMeta={torphDebugMeta}
       />
     </PlayItemFrame>
   );
