@@ -13,6 +13,7 @@ import {
 import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { crab, type HardwareHorizontalWheelEvent, type PlaybackStatusPayload } from "@/src/cmd";
+import { usePrefersDarkColorScheme } from "../colorScheme";
 import {
   createPlaceholderWaveformSummary,
   createWaveformDataRequestKey,
@@ -138,6 +139,14 @@ export type {
 const PLAYBACK_STATUS_POLL_MS = 250;
 const WAVEFORM_TILE_CACHE_LIMIT = 256;
 const WAVEFORM_TILE_LOAD_CONCURRENCY = 2;
+const WAVEFORM_CANVAS_COLOR = {
+  dark: "#f5f5f5",
+  light: "#262626",
+} as const;
+
+export function resolveWaveformCanvasColor(args: { prefersDarkColorScheme: boolean }) {
+  return args.prefersDarkColorScheme ? WAVEFORM_CANVAS_COLOR.dark : WAVEFORM_CANVAS_COLOR.light;
+}
 
 export interface TrackSpectrumWaveformPort {
   getTrackWaveformTile: (
@@ -662,12 +671,9 @@ function drawWaveformCanvas(args: {
   context.globalAlpha = 1;
 }
 
-function readCanvasColor(canvas: HTMLCanvasElement | null) {
-  return canvas?.ownerDocument.defaultView?.getComputedStyle(canvas).color || "#262626";
-}
-
 function useWaveformCanvas(args: {
   canvasRef: RefObject<HTMLCanvasElement | null>;
+  color: string;
   dataPlan: WaveformDataPlan | null;
   status: WaveformStatus;
   tileCache: Map<string, WaveformCachedTile>;
@@ -685,7 +691,7 @@ function useWaveformCanvas(args: {
 
     drawWaveformCanvas({
       canvas,
-      color: readCanvasColor(canvas),
+      color: args.color,
       plan: {
         dataPlan: args.dataPlan,
         status: args.status,
@@ -695,6 +701,7 @@ function useWaveformCanvas(args: {
     });
   }, [
     args.canvasRef,
+    args.color,
     args.dataPlan,
     args.status,
     args.tileCache,
@@ -973,6 +980,8 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
   });
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const prefersDarkColorScheme = usePrefersDarkColorScheme();
+  const waveformCanvasColor = resolveWaveformCanvasColor({ prefersDarkColorScheme });
   const placeholderSummary = useMemo(() => createPlaceholderWaveformSummary(), []);
   const waveformState = useTrackWaveformSummary({
     filePath: props.filePath,
@@ -1135,6 +1144,7 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
 
   useWaveformCanvas({
     canvasRef,
+    color: waveformCanvasColor,
     dataPlan,
     status: waveformState.status,
     tileCache,

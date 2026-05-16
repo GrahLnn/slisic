@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { usePrefersDarkColorScheme } from "./colorScheme";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import type { TitleShareHoverVisual } from "@/src/flow/appLogic/titleShare";
 
@@ -164,37 +165,6 @@ export function useCollectionTitleRetainedHoverVisual(
   });
 
   return resolvedVisual;
-}
-
-/**
- * Shared layout nodes need a concrete animatable color value. Reading the same
- * media query as App.css keeps title motion aligned with the actual theme
- * without introducing a second theme source just for this animation path.
- */
-function subscribeToColorScheme(onStoreChange: () => void) {
-  if (typeof window === "undefined") {
-    return () => {};
-  }
-
-  const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-  const handleChange = () => onStoreChange();
-  mediaQuery.addEventListener("change", handleChange);
-
-  return () => {
-    mediaQuery.removeEventListener("change", handleChange);
-  };
-}
-
-function readColorSchemeSnapshot() {
-  if (typeof window === "undefined") {
-    return false;
-  }
-
-  return window.matchMedia("(prefers-color-scheme: dark)").matches;
-}
-
-function usePrefersDarkColorScheme() {
-  return useSyncExternalStore(subscribeToColorScheme, readColorSchemeSnapshot, () => false);
 }
 
 export function useCollectionTitleColor(tone: CollectionTitleTone = "solid") {

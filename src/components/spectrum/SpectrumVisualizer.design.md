@@ -23,6 +23,9 @@
 - Async tile and playback results must still match the current file/scope before they affect presentation.
 - Selection and playhead operate in real audio seconds; visual padding never becomes editable audio.
 - Canvas drawing is an effect interpreter; it never constructs stable semantic state.
+- Canvas theme follows the same color-scheme evidence as CSS. DOM nodes that can
+  react through CSS stay in CSS; drawn pixels redraw from explicit theme input
+  because canvas does not update after CSS changes.
 - Page exit owns only the outer opacity transition; it must not become an input to viewport, tile loading, canvas rendering, selection, or playhead presentation.
 
 ## Owned Invariants
@@ -46,7 +49,7 @@
 
 `CanvasRenderer` owns:
 
-- device-pixel-ratio canvas sizing and visible waveform drawing from current cache evidence.
+- device-pixel-ratio canvas sizing, explicit theme color input, and visible waveform drawing from current cache evidence.
 
 `SelectionPresenter` owns:
 

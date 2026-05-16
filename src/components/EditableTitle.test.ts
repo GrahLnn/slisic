@@ -19,6 +19,7 @@ import {
   resolveEditableTitleCursorVisible,
   editableTitleNewSymbolOpacityClassName,
   resolveEditableTitleCustomCursorOpacityClassName,
+  resolveEditableTitleCustomCursorInnerOpacityStyle,
   resolveEditableTitleCustomCursorTone,
   resolveEditableTitleCustomCursorUsesMotionOpacity,
   resolveEditableTitleInputReadOnly,
@@ -314,6 +315,20 @@ describe("EditableTitle input state", () => {
     );
     assert.equal(resolveEditableTitleCustomCursorUsesMotionOpacity({ isNewTitle: true }), false);
     assert.equal(resolveEditableTitleCustomCursorUsesMotionOpacity({ isNewTitle: false }), true);
+    assert.deepEqual(
+      resolveEditableTitleCustomCursorInnerOpacityStyle({
+        cursorOpacityAnimation: 0,
+        isNewTitle: true,
+      }),
+      { opacity: 1 },
+    );
+    assert.deepEqual(
+      resolveEditableTitleCustomCursorInnerOpacityStyle({
+        cursorOpacityAnimation: 0,
+        isNewTitle: false,
+      }),
+      { opacity: 0 },
+    );
   });
 
   test("anchors the editable cursor box to the measured line height", () => {

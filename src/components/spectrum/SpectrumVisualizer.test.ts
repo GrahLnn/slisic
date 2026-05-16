@@ -16,6 +16,7 @@ import {
   resolveQuantizedWaveformDisplayPeak,
   resolveTrackWaveformInitialStatus,
   resolveWaveformContentWidth,
+  resolveWaveformCanvasColor,
   resolveWaveformDataPlan,
   resolveWaveformDataPlanScopedRequests,
   resolveWaveformDataTileIndexes,
@@ -70,6 +71,11 @@ function createSummary(overrides: Partial<TrackWaveformSummary> = {}): TrackWave
 }
 
 describe("SpectrumVisualizer stable domains", () => {
+  test("keeps canvas theme as an explicit render color input", () => {
+    assert.equal(resolveWaveformCanvasColor({ prefersDarkColorScheme: false }), "#262626");
+    assert.equal(resolveWaveformCanvasColor({ prefersDarkColorScheme: true }), "#f5f5f5");
+  });
+
   test("projects track identity through normalized paths", () => {
     const first = projectWaveformTrackIdentity(" C:\\Music\\Track.M4A ");
     const second = projectWaveformTrackIdentity("c:/music/track.m4a");

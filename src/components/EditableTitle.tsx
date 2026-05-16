@@ -138,6 +138,15 @@ export function resolveEditableTitleCustomCursorUsesMotionOpacity(args: { isNewT
   return !args.isNewTitle;
 }
 
+export function resolveEditableTitleCustomCursorInnerOpacityStyle(args: {
+  cursorOpacityAnimation: number;
+  isNewTitle: boolean;
+}): CSSProperties {
+  return {
+    opacity: args.isNewTitle ? 1 : args.cursorOpacityAnimation,
+  };
+}
+
 export type EditableTitleCursorPoint = {
   leftPx: number;
   topPx: number;
@@ -446,6 +455,10 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
     const customCursorUsesMotionOpacity = resolveEditableTitleCustomCursorUsesMotionOpacity({
       isNewTitle,
     });
+    const customCursorInnerOpacityStyle = resolveEditableTitleCustomCursorInnerOpacityStyle({
+      cursorOpacityAnimation,
+      isNewTitle,
+    });
     const cursorMoveTransition = resolveEditableTitleCursorMoveTransition({
       isNewTitle,
       point: cursorPoint,
@@ -493,7 +506,8 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
     );
 
     useLayoutEffect(() => {
-      if (!customCursorEnabled) {
+      if (!customCursorEnabled || !customCursorUsesMotionOpacity) {
+        cursorOpacityControls.stop();
         return;
       }
 
@@ -527,6 +541,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
       cursorOpacityControls,
       cursorOpacityTransition,
       cursorShouldBlink,
+      customCursorUsesMotionOpacity,
     ]);
 
     useLayoutEffect(() => {
@@ -838,30 +853,30 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
                 }}
                 style={customCursorBoxStyle}
               >
-                <motion.span
-                  className={cn("absolute inset-0 text-current", customCursorOpacityClassName)}
-                  initial={false}
-                  animate={customCursorUsesMotionOpacity ? cursorOpacityControls : undefined}
-                  style={
-                    customCursorUsesMotionOpacity ? { opacity: cursorOpacityAnimation } : undefined
-                  }
-                >
-                  <span
-                    className="absolute top-1/2 left-1/2 w-[0.075em] -translate-x-1/2 -translate-y-1/2 rounded-full bg-current"
-                    style={{
-                      height: customCursorBarStyle.height,
-                    }}
-                  />
+                <span className={cn("absolute inset-0 text-current", customCursorOpacityClassName)}>
                   <motion.span
-                    className="absolute top-1/2 left-1/2 h-[0.075em] -translate-x-1/2 -translate-y-1/2 rounded-full bg-current"
-                    style={{
-                      width: customCursorBarStyle.width,
-                    }}
                     initial={false}
-                    animate={{ rotate: isNewTitle ? 0 : 90 }}
-                    transition={collectionTitleLayoutTransition}
-                  />
-                </motion.span>
+                    animate={customCursorUsesMotionOpacity ? cursorOpacityControls : undefined}
+                    className="absolute inset-0 text-current"
+                    style={customCursorInnerOpacityStyle}
+                  >
+                    <span
+                      className="absolute top-1/2 left-1/2 w-[0.075em] -translate-x-1/2 -translate-y-1/2 rounded-full bg-current"
+                      style={{
+                        height: customCursorBarStyle.height,
+                      }}
+                    />
+                    <motion.span
+                      className="absolute top-1/2 left-1/2 h-[0.075em] -translate-x-1/2 -translate-y-1/2 rounded-full bg-current"
+                      style={{
+                        width: customCursorBarStyle.width,
+                      }}
+                      initial={false}
+                      animate={{ rotate: isNewTitle ? 0 : 90 }}
+                      transition={collectionTitleLayoutTransition}
+                    />
+                  </motion.span>
+                </span>
               </motion.span>
             </div>
           )}
