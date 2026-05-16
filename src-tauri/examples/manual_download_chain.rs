@@ -107,6 +107,13 @@ mod domain {
             ));
         }
 
+        pub mod waveform {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/player/waveform.rs"
+            ));
+        }
+
         pub mod service {
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -148,7 +155,7 @@ use domain::downloads::service::enqueue_collection_download_for_test;
 use domain::downloads::yt_dlp::CliYtDlpClient;
 use domain::meta::model::MetaInfo;
 use domain::meta::repo::save_meta_info;
-use domain::playlist_playback::service::{collect_playlist_tracks, resolve_selected_collections};
+use domain::playlist_playback::service::resolve_playlist_playback_source_resolution;
 use domain::playlists::model::PlayList;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -284,31 +291,34 @@ fn main() {
             persisted_playlist
         );
 
-        let library_collections = domain::playlists::repo::list_collections()
-            .await
-            .expect("manual download chain library collections should list");
-        let selected_collections =
-            resolve_selected_collections(&persisted_playlist, &library_collections);
-        let playback_tracks = collect_playlist_tracks(
-            &persisted_playlist,
-            &selected_collections,
-            &library_collections,
+        let playback_selection =
+            domain::playlists::repo::get_playlist_playback_selection_by_name(&persisted_playlist.name)
+                .await
+                .expect("manual download chain playback selection should load")
+                .expect("manual download chain playback selection should exist");
+        let playback_sources =
+            domain::playlists::repo::load_playlist_playback_track_sources(&playback_selection, 16)
+                .await
+                .expect("manual download chain playback sources should load");
+        let playback_resolution = resolve_playlist_playback_source_resolution(
+            &playback_selection,
+            playback_sources,
             &save_root,
         );
+        let playback_tracks = playback_resolution.tracks;
 
         assert_eq!(
-            selected_collections.len(),
+            playback_selection.collections.len(),
             1,
-            "playback resolution should keep the downloaded collection selected: playlist={:#?} library={:#?}",
+            "playback resolution should keep the downloaded collection selected: playlist={:#?} selection={:#?}",
             persisted_playlist,
-            library_collections
+            playback_selection
         );
         assert!(
             !playback_tracks.is_empty(),
-            "playback path resolved no tracks after successful download/import: playlist={:#?} selected={:#?} library={:#?}",
+            "playback path resolved no tracks after successful download/import: playlist={:#?} selection={:#?}",
             persisted_playlist,
-            selected_collections,
-            library_collections
+            playback_selection
         );
         assert!(
             playback_tracks.iter().all(|track| track.file_path.is_file()),

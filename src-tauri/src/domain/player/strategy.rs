@@ -6,6 +6,12 @@ pub trait PlaybackStrategy: Send {
     fn next_track<'a>(&mut self, tracks: &'a [PlaybackTrack]) -> Option<&'a PlaybackTrack>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackQueueMode {
+    Random,
+    Ordered,
+}
+
 pub struct RandomPlaybackStrategy {
     remaining: Vec<usize>,
     track_count: usize,
@@ -84,17 +90,45 @@ impl PlaybackStrategySet {
         mode: PlaybackContinuationMode,
         tracks: &[PlaybackTrack],
     ) -> Option<PlaybackTrack> {
+        self.next_track_with_queue_mode(mode, PlaybackQueueMode::Random, tracks)
+    }
+
+    pub fn next_track_with_queue_mode(
+        &mut self,
+        mode: PlaybackContinuationMode,
+        queue_mode: PlaybackQueueMode,
+        tracks: &[PlaybackTrack],
+    ) -> Option<PlaybackTrack> {
         let track = match mode {
             PlaybackContinuationMode::RepeatCurrent => self
                 .current_track
                 .as_ref()
                 .and_then(|current| tracks.iter().find(|track| current.matches(track)))
                 .cloned(),
-            PlaybackContinuationMode::Random => self.random.next_track(tracks).cloned(),
+            PlaybackContinuationMode::Random => match queue_mode {
+                PlaybackQueueMode::Random => self.random.next_track(tracks).cloned(),
+                PlaybackQueueMode::Ordered => self.next_ordered_track(tracks),
+            },
         }?;
 
         self.current_track = Some(PlaybackTrackIdentity::from_track(&track));
         Some(track)
+    }
+
+    fn next_ordered_track(&self, tracks: &[PlaybackTrack]) -> Option<PlaybackTrack> {
+        if tracks.is_empty() {
+            return None;
+        }
+
+        let Some(current) = self.current_track.as_ref() else {
+            return tracks.first().cloned();
+        };
+
+        let Some(current_index) = tracks.iter().position(|track| current.matches(track)) else {
+            return tracks.first().cloned();
+        };
+
+        tracks.get((current_index + 1) % tracks.len()).cloned()
     }
 
     pub fn select_track(

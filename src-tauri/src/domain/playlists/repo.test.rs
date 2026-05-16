@@ -1,9 +1,10 @@
 use super::model::{Collection, Exclude, Group, Music, PlayList};
 use super::repo::{
     add_exclude, create_music, delete_music, delete_playlist_by_name, get_collection_by_url,
-    get_playlist_by_name, has_collections, list_collections, list_musics_by_file_path,
-    list_playlists, remove_exclude, set_collection_updates, update_music, upsert_collection,
-    upsert_playlist,
+    get_playlist_by_name, get_playlist_playback_selection_by_name, has_collections,
+    list_collections, list_musics_by_file_path, list_playlists,
+    load_playlist_playback_track_sources, remove_exclude, set_collection_updates, update_music,
+    upsert_collection, upsert_playlist,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -130,6 +131,18 @@ fn grouped_collection(url: &str) -> Collection {
         }],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
         enable_updates: Some(false),
+    }
+}
+
+fn named_music(name: &str, group: Group, path: &str) -> Music {
+    Music {
+        name: name.to_string(),
+        alias: name.to_string(),
+        group,
+        url: format!("https://example.com/watch/{name}"),
+        path: Some(path.to_string()),
+        start_ms: 0,
+        end_ms: 180_000,
     }
 }
 
@@ -346,6 +359,38 @@ async fn insert_music_edges(source: &RecordId, targets: &[RecordId]) {
         .expect("music edge insert query should succeed")
         .check()
         .expect("music edge insert response should succeed");
+}
+
+async fn insert_group_edges(source: &RecordId, targets: &[RecordId]) {
+    if targets.is_empty() {
+        return;
+    }
+
+    let db = get_db().expect("global playlist repo database handle should exist");
+    let mut sql = String::from("INSERT RELATION INTO $rel [");
+    for idx in 0..targets.len() {
+        if idx > 0 {
+            sql.push_str(", ");
+        }
+        sql.push_str(&format!(
+            "{{ in: $in_{idx}, out: $out_{idx}, position: $position_{idx} }}"
+        ));
+    }
+    sql.push_str("] RETURN NONE;");
+
+    let mut query = db.query(sql).bind(("rel", Table::from("grouped")));
+    for (idx, target) in targets.iter().enumerate() {
+        query = query
+            .bind((format!("in_{idx}"), source.clone()))
+            .bind((format!("out_{idx}"), target.clone()))
+            .bind((format!("position_{idx}"), idx as i64));
+    }
+
+    query
+        .await
+        .expect("group edge insert query should succeed")
+        .check()
+        .expect("group edge insert response should succeed");
 }
 
 async fn load_collection_ids_by_url(url: &str) -> Vec<RecordId> {
@@ -1441,6 +1486,203 @@ fn delete_playlist_by_name_removes_only_the_playlist_row() {
         assert!(missing.is_none());
         assert_eq!(collections.len(), 1);
         assert_eq!(collections[0].url, playlist.collections[0].url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn playlist_playback_selection_reads_refs_without_hydrating_unselected_collections() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let selected_group =
+            collection_group("Disc 1", "https://example.com/selected#disc-1", "Disc 1");
+        let selected_music = Music {
+            name: "Selected".to_string(),
+            alias: "Selected".to_string(),
+            group: selected_group.clone(),
+            url: "https://example.com/watch/selected".to_string(),
+            path: Some("Selected.m4a".to_string()),
+            start_ms: 0,
+            end_ms: 60_000,
+        };
+        let selected_collection = collection_with_musics(
+            "https://example.com/selected",
+            "youtube/selected",
+            Some(false),
+            vec![selected_music.clone()],
+        );
+        let unselected_collection = collection_with_musics(
+            "https://example.com/unselected",
+            "youtube/unselected",
+            Some(false),
+            vec![Music {
+                name: "Unselected".to_string(),
+                alias: "Unselected".to_string(),
+                group: collection_group("Other", "https://example.com/unselected#disc-1", "Disc 1"),
+                url: "https://example.com/watch/unselected".to_string(),
+                path: Some("Unselected.m4a".to_string()),
+                start_ms: 0,
+                end_ms: 60_000,
+            }],
+        );
+
+        let selected_collection_record =
+            insert_collection_row("playback-selected-collection", &selected_collection).await;
+        let unselected_collection_record =
+            insert_collection_row("playback-unselected-collection", &unselected_collection).await;
+        let selected_group_record =
+            insert_group_row("playback-selected-group", &selected_group).await;
+        let selected_music_record =
+            insert_music_row("playback-selected-music", &selected_music).await;
+        let unselected_music_record = insert_music_row(
+            "playback-unselected-music",
+            &unselected_collection.musics[0],
+        )
+        .await;
+
+        insert_music_edges(
+            &selected_collection_record,
+            std::slice::from_ref(&selected_music_record),
+        )
+        .await;
+        insert_music_edges(
+            &unselected_collection_record,
+            std::slice::from_ref(&unselected_music_record),
+        )
+        .await;
+        insert_group_edges(
+            &selected_group_record,
+            std::slice::from_ref(&selected_music_record),
+        )
+        .await;
+
+        let playlist = PlayList {
+            name: "Playback Fast Path".to_string(),
+            collections: vec![selected_collection.clone()],
+            groups: vec![selected_group.clone()],
+            created_at: AutoFill::pending(),
+        };
+        insert_playlist_row(
+            "playback-fast-path-playlist",
+            &playlist,
+            std::slice::from_ref(&selected_collection_record),
+            std::slice::from_ref(&selected_group_record),
+        )
+        .await;
+
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist");
+        let sources = load_playlist_playback_track_sources(&selection, 16)
+            .await
+            .expect("playback sources should load");
+
+        assert_eq!(selection.playlist_name, playlist.name);
+        assert_eq!(selection.collections.len(), 1);
+        assert_eq!(selection.collections[0].url, selected_collection.url);
+        assert_eq!(selection.groups.len(), 1);
+        assert_eq!(selection.groups[0].url, selected_group.url);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].collection_url, selected_collection.url);
+        assert_eq!(sources[0].music.url, selected_music.url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn playlist_playback_sources_respect_limit_for_seed_probe() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let selected_group = collection_group(
+            "Disc 1",
+            "https://example.com/seed-selected#disc-1",
+            "Disc 1",
+        );
+        let selected_music_a = named_music("Selected A", selected_group.clone(), "Selected A.m4a");
+        let selected_music_b = named_music("Selected B", selected_group.clone(), "Selected B.m4a");
+        let selected_collection = collection_with_musics(
+            "https://example.com/seed-selected",
+            "youtube/seed-selected",
+            Some(false),
+            vec![selected_music_a.clone(), selected_music_b.clone()],
+        );
+        let unselected_group = collection_group(
+            "Other",
+            "https://example.com/seed-unselected#disc-1",
+            "Disc 1",
+        );
+        let unselected_music = named_music("Unselected", unselected_group, "Unselected.m4a");
+        let unselected_collection = collection_with_musics(
+            "https://example.com/seed-unselected",
+            "youtube/seed-unselected",
+            Some(false),
+            vec![unselected_music.clone()],
+        );
+
+        let selected_collection_record =
+            insert_collection_row("seed-selected-collection", &selected_collection).await;
+        let unselected_collection_record =
+            insert_collection_row("seed-unselected-collection", &unselected_collection).await;
+        let selected_group_record = insert_group_row("seed-selected-group", &selected_group).await;
+        let selected_music_a_record = insert_music_row("seed-selected-a", &selected_music_a).await;
+        let selected_music_b_record = insert_music_row("seed-selected-b", &selected_music_b).await;
+        let unselected_music_record = insert_music_row("seed-unselected", &unselected_music).await;
+
+        insert_music_edges(
+            &selected_collection_record,
+            &[
+                selected_music_a_record.clone(),
+                selected_music_b_record.clone(),
+            ],
+        )
+        .await;
+        insert_music_edges(
+            &unselected_collection_record,
+            std::slice::from_ref(&unselected_music_record),
+        )
+        .await;
+        insert_group_edges(
+            &selected_group_record,
+            &[selected_music_a_record, selected_music_b_record],
+        )
+        .await;
+
+        let playlist = PlayList {
+            name: "Seed Playback Fast Path".to_string(),
+            collections: vec![selected_collection.clone()],
+            groups: vec![selected_group.clone()],
+            created_at: AutoFill::pending(),
+        };
+        insert_playlist_row(
+            "seed-playback-fast-path-playlist",
+            &playlist,
+            std::slice::from_ref(&selected_collection_record),
+            std::slice::from_ref(&selected_group_record),
+        )
+        .await;
+
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist");
+        let sources = load_playlist_playback_track_sources(&selection, 1)
+            .await
+            .expect("seed playback source should load");
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].music.url, selected_music_a.url);
+        assert_eq!(sources[0].collection_url, selected_collection.url);
 
         reset_db();
     });

@@ -6,7 +6,7 @@ use super::model::PlaybackContinuationMode;
 use super::model::PlaybackStatusPayload;
 use super::model::PlaybackTrack;
 #[cfg(not(test))]
-use super::strategy::PlaybackStrategySet;
+use super::strategy::{PlaybackQueueMode, PlaybackStrategySet};
 #[cfg(not(test))]
 use super::waveform::{self, TrackWaveform, TrackWaveformSummary, TrackWaveformTile};
 #[cfg(not(test))]
@@ -63,6 +63,7 @@ struct ActivePlaybackSession {
     generation: u64,
     tracks: SharedPlaybackTracks,
     strategy: SharedPlaybackStrategy,
+    queue_mode: PlaybackQueueMode,
 }
 
 #[cfg(not(test))]
@@ -141,12 +142,31 @@ pub(crate) fn has_active_player_binary_tasks() -> bool {
 }
 
 #[cfg(not(test))]
-pub async fn play_tracks(
+pub(crate) async fn play_tracks_from_initial_track_with_queue_mode(
     playlist_name: String,
     tracks: Vec<PlaybackTrack>,
+    initial_track: PlaybackTrack,
+    queue_mode: PlaybackQueueMode,
+) -> Result<PlaybackSessionHandle> {
+    play_tracks_with_initial_track(playlist_name, tracks, Some(initial_track), queue_mode).await
+}
+
+#[cfg(not(test))]
+async fn play_tracks_with_initial_track(
+    playlist_name: String,
+    tracks: Vec<PlaybackTrack>,
+    initial_track: Option<PlaybackTrack>,
+    queue_mode: PlaybackQueueMode,
 ) -> Result<PlaybackSessionHandle> {
     if tracks.is_empty() {
         bail!("playback session `{playlist_name}` does not contain any playable tracks");
+    }
+    if let Some(initial_track) = initial_track.as_ref()
+        && !tracks
+            .iter()
+            .any(|track| are_playback_tracks_equal(track, initial_track))
+    {
+        bail!("initial playback track is not in session `{playlist_name}`");
     }
 
     let runtime = runtime()?;
@@ -166,13 +186,23 @@ pub async fn play_tracks(
         generation,
         Arc::clone(&shared_tracks),
         Arc::clone(&shared_strategy),
+        queue_mode,
     )?;
 
     let session = PlaybackSession {
         playlist_name: playlist_name.clone(),
         tracks: shared_tracks,
         strategy: shared_strategy,
-        initial_request: None,
+        queue_mode,
+        initial_request: initial_track.map(|track| InitialPlaybackRequest {
+            pause_after_start: false,
+            range: ActivePlaybackRange {
+                start_ms: track.start_ms,
+                end_ms: track.end_ms,
+            },
+            scope: None,
+            track,
+        }),
     };
     runtime.clear_spectrum_playback_scope()?;
     runtime.clear_spectrum_playback_loop_signal()?;
@@ -318,6 +348,13 @@ pub async fn play_track_in_current_session(
 #[cfg(not(test))]
 pub(crate) fn is_session_current(handle: &PlaybackSessionHandle) -> Result<bool> {
     runtime()?.is_session_current(handle)
+}
+
+#[cfg(not(test))]
+pub(crate) fn active_request_track_snapshot_for_session(
+    handle: &PlaybackSessionHandle,
+) -> Result<Option<PlaybackTrack>> {
+    runtime()?.active_request_track_snapshot_for_session(handle)
 }
 
 #[cfg(not(test))]
@@ -794,6 +831,7 @@ impl PlayerRuntime {
         generation: u64,
         tracks: SharedPlaybackTracks,
         strategy: SharedPlaybackStrategy,
+        queue_mode: PlaybackQueueMode,
     ) -> Result<()> {
         let mut session = self
             .session
@@ -805,7 +843,11 @@ impl PlayerRuntime {
             generation,
             tracks,
             strategy,
+            queue_mode,
         });
+        drop(session);
+        self.clear_active_request_track()?;
+        self.clear_active_playback_range()?;
         Ok(())
     }
 
@@ -949,6 +991,7 @@ impl PlayerRuntime {
         if self.generation.load(Ordering::SeqCst) != handle.generation {
             return Ok(false);
         }
+        let next_current_track = self.active_request_track_snapshot_for_session(handle)?;
 
         let session = self
             .session
@@ -975,7 +1018,11 @@ impl PlayerRuntime {
                 .strategy
                 .lock()
                 .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?;
-            let _ = strategy.reconcile_current_track_identity(&previous_tracks, &tracks, None);
+            let _ = strategy.reconcile_current_track_identity(
+                &previous_tracks,
+                &tracks,
+                next_current_track.as_ref(),
+            );
         }
         *current_tracks = tracks;
         Ok(true)
@@ -1010,6 +1057,7 @@ impl PlayerRuntime {
                 playlist_name: active.playlist_name.clone(),
                 tracks: Arc::clone(&active.tracks),
                 strategy: Arc::clone(&active.strategy),
+                queue_mode: active.queue_mode,
                 initial_request: Some(InitialPlaybackRequest {
                     pause_after_start,
                     range: initial_range,
@@ -1132,6 +1180,18 @@ impl PlayerRuntime {
             .map_err(|_| anyhow!("player runtime active request track lock is poisoned"))
     }
 
+    fn active_request_track_snapshot_for_session(
+        &self,
+        handle: &PlaybackSessionHandle,
+    ) -> Result<Option<PlaybackTrack>> {
+        if !self.is_session_current(handle)? {
+            return Ok(None);
+        }
+
+        let track = self.active_request_track_snapshot()?;
+        Ok(track.filter(|track| track.playlist_name == handle.playlist_name))
+    }
+
     fn active_playback_range_snapshot(&self) -> Result<Option<ActivePlaybackRange>> {
         self.active_playback_range
             .read()
@@ -1152,6 +1212,7 @@ struct PlaybackSession {
     playlist_name: String,
     tracks: SharedPlaybackTracks,
     strategy: SharedPlaybackStrategy,
+    queue_mode: PlaybackQueueMode,
     initial_request: Option<InitialPlaybackRequest>,
 }
 
@@ -1201,7 +1262,7 @@ async fn run_playback_session(
                 .strategy
                 .lock()
                 .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?
-                .next_track(mode, &tracks),
+                .next_track_with_queue_mode(mode, session.queue_mode, &tracks),
         };
         let Some(track) = track else {
             return Ok(());
@@ -1232,6 +1293,9 @@ async fn run_playback_session(
             .play_request(request)
             .await
             .map_err(|error| anyhow!("failed to play `{}`: {error}", track.music_name))?;
+        if runtime.generation.load(Ordering::SeqCst) != generation {
+            return Ok(());
+        }
         if initial_request.is_some() {
             session
                 .strategy

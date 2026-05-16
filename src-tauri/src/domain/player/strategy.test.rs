@@ -1,6 +1,8 @@
 use super::model::PlaybackContinuationMode;
 use super::model::PlaybackTrack;
-use super::strategy::{PlaybackStrategy, PlaybackStrategySet, RandomPlaybackStrategy};
+use super::strategy::{
+    PlaybackQueueMode, PlaybackStrategy, PlaybackStrategySet, RandomPlaybackStrategy,
+};
 use std::path::PathBuf;
 
 fn track(name: &str) -> PlaybackTrack {
@@ -122,6 +124,71 @@ fn playback_strategy_set_can_select_a_requested_track_before_repeat_current() {
 
     assert_eq!(selected.music_url, requested.music_url);
     assert_eq!(repeated.music_url, requested.music_url);
+}
+
+#[test]
+fn playback_strategy_set_consumes_ordered_queue_after_explicit_seed() {
+    let mut strategy = PlaybackStrategySet::new();
+    let tracks = vec![track("seed"), track("next"), track("third")];
+
+    strategy.commit_current_track(&tracks[0]);
+    let next = strategy
+        .next_track_with_queue_mode(
+            PlaybackContinuationMode::Random,
+            PlaybackQueueMode::Ordered,
+            &tracks,
+        )
+        .expect("ordered queue should return the next recommended track");
+    let third = strategy
+        .next_track_with_queue_mode(
+            PlaybackContinuationMode::Random,
+            PlaybackQueueMode::Ordered,
+            &tracks,
+        )
+        .expect("ordered queue should keep consuming the recommended order");
+
+    assert_eq!(next.music_url, tracks[1].music_url);
+    assert_eq!(third.music_url, tracks[2].music_url);
+}
+
+#[test]
+fn playback_strategy_set_consumes_ordered_queue_after_seed_is_inserted_into_refreshed_queue() {
+    let mut strategy = PlaybackStrategySet::new();
+    let seed_only = vec![track("seed")];
+    let refreshed = vec![track("seed"), track("next"), track("third")];
+
+    strategy.commit_current_track(&seed_only[0]);
+    assert!(
+        strategy
+            .reconcile_current_track_identity(&seed_only, &refreshed, Some(&seed_only[0]))
+            .is_none()
+    );
+    let next = strategy
+        .next_track_with_queue_mode(
+            PlaybackContinuationMode::Random,
+            PlaybackQueueMode::Ordered,
+            &refreshed,
+        )
+        .expect("ordered queue should continue after the active seed");
+
+    assert_eq!(next.music_url, refreshed[1].music_url);
+}
+
+#[test]
+fn playback_strategy_set_keeps_repeat_current_above_ordered_queue_mode() {
+    let mut strategy = PlaybackStrategySet::new();
+    let tracks = vec![track("seed"), track("next")];
+
+    strategy.commit_current_track(&tracks[0]);
+    let repeated = strategy
+        .next_track_with_queue_mode(
+            PlaybackContinuationMode::RepeatCurrent,
+            PlaybackQueueMode::Ordered,
+            &tracks,
+        )
+        .expect("repeat mode should still keep the current track");
+
+    assert_eq!(repeated.music_url, tracks[0].music_url);
 }
 
 #[test]

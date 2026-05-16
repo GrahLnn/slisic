@@ -139,6 +139,126 @@ pub async fn get_playlist_by_name(name: &str) -> Result<Option<PlayList>> {
     Ok(Some(PlayList::get_record(record).await?))
 }
 
+#[derive(Debug, Clone)]
+pub struct PlaylistPlaybackSelection {
+    pub playlist_name: String,
+    pub collections: Vec<PlaylistPlaybackCollectionRef>,
+    pub groups: Vec<PlaylistPlaybackGroupRef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlaylistPlaybackCollectionRef {
+    record: RecordId,
+    pub name: String,
+    pub url: String,
+    pub folder: String,
+}
+
+impl PlaylistPlaybackCollectionRef {
+    #[cfg(test)]
+    pub(crate) fn new_for_test(name: &str, url: &str, folder: &str) -> Self {
+        Self {
+            record: RecordId::new(
+                Collection::table_name(),
+                format!("test-{}", stable_record_key(url)),
+            ),
+            name: name.to_string(),
+            url: url.to_string(),
+            folder: folder.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PlaylistPlaybackGroupRef {
+    record: RecordId,
+    pub name: String,
+    pub url: String,
+    pub folder: String,
+}
+
+impl PlaylistPlaybackGroupRef {
+    #[cfg(test)]
+    pub(crate) fn new_for_test(name: &str, url: &str, folder: &str) -> Self {
+        Self {
+            record: RecordId::new(
+                Group::table_name(),
+                format!("test-{}", stable_record_key(url)),
+            ),
+            name: name.to_string(),
+            url: url.to_string(),
+            folder: folder.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PlaylistPlaybackTrackSource {
+    pub collection_name: String,
+    pub collection_url: String,
+    pub collection_folder: String,
+    pub music: Music,
+}
+
+pub async fn get_playlist_playback_selection_by_name(
+    name: &str,
+) -> Result<Option<PlaylistPlaybackSelection>> {
+    ensure_collection_graph_schema().await?;
+
+    let Some(row) = load_playlist_playback_row_by_name(name).await? else {
+        return Ok(None);
+    };
+
+    let mut collections = Vec::with_capacity(row.collections.len());
+    for record in row.collections {
+        if let Some(collection) = load_playlist_playback_collection_ref(&record).await? {
+            collections.push(collection);
+        }
+    }
+
+    let mut groups = Vec::with_capacity(row.groups.len());
+    for record in row.groups {
+        if let Some(group) = load_playlist_playback_group_ref(&record).await? {
+            groups.push(group);
+        }
+    }
+
+    Ok(Some(PlaylistPlaybackSelection {
+        playlist_name: row.name,
+        collections,
+        groups,
+    }))
+}
+
+pub async fn load_playlist_playback_track_sources(
+    selection: &PlaylistPlaybackSelection,
+    limit: usize,
+) -> Result<Vec<PlaylistPlaybackTrackSource>> {
+    if limit == 0 {
+        return Ok(vec![]);
+    }
+
+    let mut sources = Vec::with_capacity(limit);
+    let mut seen = HashSet::new();
+
+    for collection in &selection.collections {
+        append_collection_playback_track_sources(collection, limit, &mut seen, &mut sources)
+            .await?;
+        if sources.len() >= limit {
+            return Ok(sources);
+        }
+    }
+
+    for group in &selection.groups {
+        append_group_playback_track_sources(group, limit, &mut seen, &mut sources).await?;
+        if sources.len() >= limit {
+            return Ok(sources);
+        }
+    }
+
+    Ok(sources)
+}
+
 pub async fn delete_playlist_by_name(name: &str) -> Result<bool> {
     let Some(record) = find_unique_record_id_by_string_field::<PlayList>("name", name).await?
     else {
@@ -362,6 +482,292 @@ async fn load_collection_music_ids(record: &RecordId) -> Result<Vec<RecordId>> {
 
     let rows: Vec<CollectionEdgeRow> = result.take(0)?;
     Ok(rows.into_iter().map(|row| row.out).collect())
+}
+
+async fn load_playlist_playback_row_by_name(name: &str) -> Result<Option<PlaylistPlaybackRow>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query("SELECT name, collections, groups FROM $table WHERE name = $name LIMIT 2;")
+        .bind(("table", Table::from(PlayList::table_name())))
+        .bind(("name", name.to_string()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(None),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(None),
+            other => return Err(other.into()),
+        },
+    };
+
+    let rows: Vec<PlaylistPlaybackRawRow> = result.take(0)?;
+    match rows.len() {
+        0 => Ok(None),
+        1 => rows
+            .into_iter()
+            .next()
+            .map(project_playlist_playback_raw_row)
+            .transpose(),
+        _ => bail!("playlist playback lookup matched multiple records for name `{name}`"),
+    }
+}
+
+fn project_playlist_playback_raw_row(row: PlaylistPlaybackRawRow) -> Result<PlaylistPlaybackRow> {
+    Ok(PlaylistPlaybackRow {
+        name: row.name,
+        collections: project_record_refs(row.collections)?,
+        groups: project_record_refs(row.groups)?,
+    })
+}
+
+fn project_record_refs(values: serde_json::Value) -> Result<Vec<RecordId>> {
+    let serde_json::Value::Array(values) = values else {
+        return Ok(vec![]);
+    };
+
+    values.into_iter().map(project_record_ref).collect()
+}
+
+fn project_record_ref(value: serde_json::Value) -> Result<RecordId> {
+    match value {
+        serde_json::Value::String(text) => appdb::serde_utils::id::parse_record_id_or_plain_string(
+            &text, None,
+        )
+        .map_err(|invalid| anyhow::anyhow!("invalid playlist playback record ref `{invalid}`")),
+        other => Ok(serde_json::from_value(other)?),
+    }
+}
+
+async fn load_playlist_playback_collection_ref(
+    record: &RecordId,
+) -> Result<Option<PlaylistPlaybackCollectionRef>> {
+    let Some(row) = load_collection_shell_row(record).await? else {
+        return Ok(None);
+    };
+
+    Ok(Some(PlaylistPlaybackCollectionRef {
+        record: row.id,
+        name: row.name,
+        url: row.url,
+        folder: row.folder,
+    }))
+}
+
+async fn load_playlist_playback_group_ref(
+    record: &RecordId,
+) -> Result<Option<PlaylistPlaybackGroupRef>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query("SELECT * FROM ONLY $record;")
+        .bind(("record", record.clone()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
+            other => return Err(other.into()),
+        },
+    };
+
+    let row: Option<GroupShellRow> = result.take(0)?;
+    Ok(row.map(|row| PlaylistPlaybackGroupRef {
+        record: row.id,
+        name: row.name,
+        url: row.url,
+        folder: row.folder,
+    }))
+}
+
+async fn load_collection_shell_row(record: &RecordId) -> Result<Option<CollectionShellRow>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query("SELECT * FROM ONLY $record;")
+        .bind(("record", record.clone()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(result.take(0)?)
+}
+
+async fn append_collection_playback_track_sources(
+    collection: &PlaylistPlaybackCollectionRef,
+    limit: usize,
+    seen: &mut HashSet<String>,
+    sources: &mut Vec<PlaylistPlaybackTrackSource>,
+) -> Result<()> {
+    let remaining = limit.saturating_sub(sources.len());
+    let music_records =
+        load_collection_music_ids_for_playback(&collection.record, remaining).await?;
+    for music_record in music_records {
+        let music = Music::get_record(music_record).await?;
+        append_playback_track_source(collection, music, seen, sources);
+        if sources.len() >= limit {
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}
+
+async fn append_group_playback_track_sources(
+    group: &PlaylistPlaybackGroupRef,
+    limit: usize,
+    seen: &mut HashSet<String>,
+    sources: &mut Vec<PlaylistPlaybackTrackSource>,
+) -> Result<()> {
+    let remaining = limit.saturating_sub(sources.len());
+    let music_records = load_group_music_ids_for_playback(&group.record, remaining).await?;
+    for music_record in music_records {
+        let parent_records = load_music_parent_collection_ids(&music_record).await?;
+        if parent_records.is_empty() {
+            continue;
+        }
+
+        let music = Music::get_record(music_record).await?;
+        for collection_record in parent_records {
+            let Some(collection) =
+                load_playlist_playback_collection_ref(&collection_record).await?
+            else {
+                continue;
+            };
+            append_playback_track_source(&collection, music.clone(), seen, sources);
+            if sources.len() >= limit {
+                return Ok(());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn append_playback_track_source(
+    collection: &PlaylistPlaybackCollectionRef,
+    music: Music,
+    seen: &mut HashSet<String>,
+    sources: &mut Vec<PlaylistPlaybackTrackSource>,
+) {
+    let key = format!(
+        "{}:{}:{}:{}",
+        collection.url, music.url, music.start_ms, music.end_ms
+    );
+    if !seen.insert(key) {
+        return;
+    }
+
+    sources.push(PlaylistPlaybackTrackSource {
+        collection_name: collection.name.clone(),
+        collection_url: collection.url.clone(),
+        collection_folder: collection.folder.clone(),
+        music,
+    });
+}
+
+async fn load_collection_music_ids_for_playback(
+    record: &RecordId,
+    limit: usize,
+) -> Result<Vec<RecordId>> {
+    load_relation_out_ids_for_playback("includes", record, Music::table_name(), limit).await
+}
+
+async fn load_group_music_ids_for_playback(
+    record: &RecordId,
+    limit: usize,
+) -> Result<Vec<RecordId>> {
+    load_relation_out_ids_for_playback("grouped", record, Music::table_name(), limit).await
+}
+
+async fn load_music_parent_collection_ids(record: &RecordId) -> Result<Vec<RecordId>> {
+    load_relation_in_ids("includes", record, Collection::table_name()).await
+}
+
+async fn load_relation_out_ids_for_playback(
+    relation: &str,
+    record: &RecordId,
+    out_table: &str,
+    limit: usize,
+) -> Result<Vec<RecordId>> {
+    if limit == 0 {
+        return Ok(vec![]);
+    }
+
+    let db = get_db()?;
+    let mut result = match db
+        .query(
+            "SELECT out, position FROM $rel WHERE in = $record AND record::tb(out) = $out_table ORDER BY position ASC LIMIT $limit;",
+        )
+        .bind(("rel", Table::from(relation)))
+        .bind(("record", record.clone()))
+        .bind(("out_table", out_table.to_string()))
+        .bind(("limit", limit))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(vec![]),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(vec![]),
+            other => return Err(other.into()),
+        },
+    };
+
+    let rows: Vec<CollectionEdgeRow> = result.take(0)?;
+    Ok(rows.into_iter().map(|row| row.out).collect())
+}
+
+async fn load_relation_in_ids(
+    relation: &str,
+    record: &RecordId,
+    in_table: &str,
+) -> Result<Vec<RecordId>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query("SELECT VALUE in FROM $rel WHERE out = $record AND record::tb(in) = $in_table;")
+        .bind(("rel", Table::from(relation)))
+        .bind(("record", record.clone()))
+        .bind(("in_table", in_table.to_string()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(vec![]),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(vec![]),
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(result.take(0)?)
 }
 
 async fn find_music_record_ids_by_identity(
@@ -601,4 +1007,38 @@ impl StoredExclude {
 struct CollectionEdgeRow {
     #[serde(deserialize_with = "appdb::serde_utils::id::deserialize_record_id_or_compat_string")]
     out: RecordId,
+}
+
+#[derive(Debug, Clone, Deserialize, SurrealValue)]
+struct PlaylistPlaybackRawRow {
+    name: String,
+    #[serde(default)]
+    collections: serde_json::Value,
+    #[serde(default)]
+    groups: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+struct PlaylistPlaybackRow {
+    name: String,
+    collections: Vec<RecordId>,
+    groups: Vec<RecordId>,
+}
+
+#[derive(Debug, Clone, Deserialize, SurrealValue)]
+struct CollectionShellRow {
+    #[serde(deserialize_with = "appdb::serde_utils::id::deserialize_record_id_or_compat_string")]
+    id: RecordId,
+    name: String,
+    url: String,
+    folder: String,
+}
+
+#[derive(Debug, Clone, Deserialize, SurrealValue)]
+struct GroupShellRow {
+    #[serde(deserialize_with = "appdb::serde_utils::id::deserialize_record_id_or_compat_string")]
+    id: RecordId,
+    name: String,
+    url: String,
+    folder: String,
 }

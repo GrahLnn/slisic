@@ -1,12 +1,17 @@
 use super::service::{
-    collect_playlist_tracks, playlist_has_relevant_active_downloads,
-    resolve_playlist_playback_continuation_mode, resolve_playlist_playback_inventory,
-    resolve_selected_collections,
+    PlaylistPlaybackRecommendationRequest, PlaylistPlaybackRecommender,
+    RandomPlaylistPlaybackRecommender, ensure_queue_starts_with_seed,
+    playlist_selection_has_relevant_active_downloads, resolve_playlist_playback_continuation_mode,
+    resolve_playlist_playback_source_resolution, shuffle_playback_tracks,
 };
 use crate::domain::downloads::model::{DownloadTask, DownloadTaskStatus, DownloadTrigger};
-use crate::domain::player::model::PlaybackContinuationMode;
-use crate::domain::playlists::model::{Collection, Group, Music, PlayList};
-use appdb::{AutoFill, Id};
+use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
+use crate::domain::playlists::model::{Group, Music};
+use crate::domain::playlists::repo::{
+    PlaylistPlaybackCollectionRef, PlaylistPlaybackGroupRef, PlaylistPlaybackSelection,
+    PlaylistPlaybackTrackSource,
+};
+use appdb::Id;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -50,17 +55,6 @@ fn music_with_alias(name: &str, alias: &str, url: &str, path: &str, group: Group
     }
 }
 
-fn collection(name: &str, url: &str, folder: &str, musics: Vec<Music>) -> Collection {
-    Collection {
-        name: name.to_string(),
-        url: url.to_string(),
-        folder: folder.to_string(),
-        musics,
-        last_updated: "2026-04-19T00:00:00Z".to_string(),
-        enable_updates: Some(false),
-    }
-}
-
 fn download_task(
     url: &str,
     collection_url: Option<&str>,
@@ -76,50 +70,43 @@ fn download_task(
     task
 }
 
-#[test]
-fn collect_playlist_tracks_includes_group_only_entries_from_library() {
-    let root = temp_root();
-    let folder = "youtube/library";
-    let audio_path = root.join(folder).join("disc-1").join("track-a.m4a");
-    std::fs::create_dir_all(
-        audio_path
-            .parent()
-            .expect("audio parent directory should exist"),
-    )
-    .expect("group audio parent should be created");
-    std::fs::write(&audio_path, b"ok").expect("group audio file should be created");
-
-    let disc = group("Disc 1", "https://example.com/disc-1", "disc-1");
-    let library = vec![collection(
-        "Library",
-        "https://example.com/library",
-        folder,
-        vec![music_with_alias(
-            "Track A",
-            "Track Alpha",
-            "https://example.com/watch?v=track-a",
-            "disc-1/track-a.m4a",
-            disc.clone(),
+fn playback_selection(
+    playlist_name: &str,
+    collection_url: &str,
+    group_url: Option<&str>,
+) -> PlaylistPlaybackSelection {
+    PlaylistPlaybackSelection {
+        playlist_name: playlist_name.to_string(),
+        collections: vec![PlaylistPlaybackCollectionRef::new_for_test(
+            "Album",
+            collection_url,
+            "youtube/album",
         )],
-    )];
-    let playlist = PlayList {
-        name: "Focus".to_string(),
-        collections: vec![],
-        groups: vec![disc],
-        created_at: AutoFill::pending(),
-    };
+        groups: group_url
+            .map(|url| {
+                vec![PlaylistPlaybackGroupRef::new_for_test(
+                    "Disc 1", url, "disc-1",
+                )]
+            })
+            .unwrap_or_default(),
+    }
+}
 
-    let tracks = collect_playlist_tracks(&playlist, &[], &library, &root);
-
-    assert_eq!(tracks.len(), 1);
-    assert_eq!(tracks[0].music_name, "Track Alpha");
-    assert_eq!(tracks[0].file_path, audio_path);
-
-    let _ = std::fs::remove_dir_all(root);
+fn playback_source(
+    collection_url: &str,
+    collection_folder: &str,
+    music: Music,
+) -> PlaylistPlaybackTrackSource {
+    PlaylistPlaybackTrackSource {
+        collection_name: "Album".to_string(),
+        collection_url: collection_url.to_string(),
+        collection_folder: collection_folder.to_string(),
+        music,
+    }
 }
 
 #[test]
-fn collect_playlist_tracks_deduplicates_overlap_between_selected_collections_and_groups() {
+fn playback_source_resolution_includes_group_only_sources() {
     let root = temp_root();
     let folder = "youtube/album";
     let audio_path = root.join(folder).join("disc-1").join("track-a.m4a");
@@ -131,85 +118,35 @@ fn collect_playlist_tracks_deduplicates_overlap_between_selected_collections_and
     .expect("overlap audio parent should be created");
     std::fs::write(&audio_path, b"ok").expect("overlap audio file should be created");
 
-    let disc = group("Disc 1", "https://example.com/disc-1", "disc-1");
-    let selected_collection = collection(
-        "Album",
-        "https://example.com/album",
-        folder,
-        vec![music(
-            "Track A",
-            "https://example.com/watch?v=track-a",
-            "disc-1/track-a.m4a",
-            disc.clone(),
-        )],
+    let selection = playback_selection("Focus", "https://example.com/album", None);
+    let track = music_with_alias(
+        "Track A",
+        "Track Alpha",
+        "https://example.com/watch?v=track-a",
+        "disc-1/track-a.m4a",
+        group("Disc 1", "https://example.com/disc-1", "disc-1"),
     );
-    let playlist = PlayList {
-        name: "Focus".to_string(),
-        collections: vec![selected_collection.clone()],
-        groups: vec![disc],
-        created_at: AutoFill::pending(),
-    };
 
-    let tracks = collect_playlist_tracks(
-        &playlist,
-        std::slice::from_ref(&selected_collection),
-        &[selected_collection.clone()],
+    let resolution = resolve_playlist_playback_source_resolution(
+        &selection,
+        vec![playback_source("https://example.com/album", folder, track)],
         &root,
     );
 
-    assert_eq!(tracks.len(), 1);
-    assert_eq!(tracks[0].file_path, audio_path);
+    assert_eq!(resolution.tracks.len(), 1);
+    assert_eq!(resolution.tracks[0].music_name, "Track Alpha");
+    assert_eq!(resolution.tracks[0].file_path, audio_path);
 
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
-fn resolve_selected_collections_uses_current_library_records_for_playlist_refs() {
-    let stale_disc = group("Disc 1", "https://example.com/disc-1", "disc-1");
-    let playlist = PlayList {
-        name: "Focus".to_string(),
-        collections: vec![collection(
-            "Album",
-            "https://example.com/album",
-            "youtube/album",
-            vec![],
-        )],
-        groups: vec![stale_disc],
-        created_at: AutoFill::pending(),
-    };
-    let library = vec![collection(
-        "Album",
+fn playlist_selection_active_downloads_match_collection_and_group_domains() {
+    let selection = playback_selection(
+        "Focus",
         "https://example.com/album",
-        "youtube/album",
-        vec![music(
-            "Track A",
-            "https://example.com/watch?v=track-a",
-            "disc-1/track-a.m4a",
-            group("Disc 1", "https://example.com/disc-1", "disc-1"),
-        )],
-    )];
-
-    let selected = resolve_selected_collections(&playlist, &library);
-
-    assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0].url, "https://example.com/album");
-    assert_eq!(selected[0].musics.len(), 1);
-    assert_eq!(selected[0].musics[0].name, "Track A");
-}
-
-#[test]
-fn playlist_has_relevant_active_downloads_matches_collection_and_group_domains() {
-    let playlist = PlayList {
-        name: "Focus".to_string(),
-        collections: vec![collection(
-            "Album",
-            "https://example.com/album",
-            "youtube/album",
-            vec![],
-        )],
-        groups: vec![group("Disc 1", "https://example.com/disc-1", "disc-1")],
-        created_at: AutoFill::pending(),
-    };
+        Some("https://example.com/disc-1"),
+    );
     let tasks = vec![
         download_task(
             "https://example.com/album",
@@ -226,14 +163,11 @@ fn playlist_has_relevant_active_downloads_matches_collection_and_group_domains()
             Some("https://example.com/other"),
             DownloadTaskStatus::Downloading,
         ),
-        download_task(
-            "https://example.com/album",
-            Some("https://example.com/album"),
-            DownloadTaskStatus::Completed,
-        ),
     ];
 
-    assert!(playlist_has_relevant_active_downloads(&playlist, &tasks));
+    assert!(playlist_selection_has_relevant_active_downloads(
+        &selection, &tasks
+    ));
 }
 
 #[test]
@@ -245,123 +179,183 @@ fn playlist_playback_always_starts_in_random_continuation_mode() {
 }
 
 #[test]
-fn resolve_playlist_playback_inventory_waits_for_matching_downloads_when_tracks_are_not_ready() {
+fn playback_source_resolution_keeps_only_playable_sources_from_the_selection() {
     let root = temp_root();
-    let playlist = PlayList {
-        name: "Focus".to_string(),
-        collections: vec![collection(
-            "Album",
-            "https://example.com/album",
-            "youtube/album",
-            vec![],
-        )],
-        groups: vec![],
-        created_at: AutoFill::pending(),
-    };
-    let library = vec![collection(
-        "Album",
-        "https://example.com/album",
-        "youtube/album",
-        vec![],
-    )];
-    let inventory = resolve_playlist_playback_inventory(
-        &playlist,
-        &library,
-        &library,
-        &[download_task(
-            "https://example.com/album",
-            Some("https://example.com/album"),
-            DownloadTaskStatus::Downloading,
-        )],
+    let folder = "youtube/album";
+    let audio_path = root.join(folder).join("track-a.m4a");
+    std::fs::create_dir_all(
+        audio_path
+            .parent()
+            .expect("audio parent directory should exist"),
+    )
+    .expect("audio parent should be created");
+    std::fs::write(&audio_path, b"ok").expect("audio file should be created");
+
+    let disc = group("Disc 1", "https://example.com/disc-1", "disc-1");
+    let selection = playback_selection("Focus", "https://example.com/album", None);
+    let playable = music_with_alias(
+        "Track A",
+        "Track Alpha",
+        "https://example.com/watch?v=track-a",
+        "track-a.m4a",
+        disc.clone(),
+    );
+    let missing_file = music(
+        "Missing",
+        "https://example.com/watch?v=missing",
+        "missing.m4a",
+        disc,
+    );
+
+    let resolution = resolve_playlist_playback_source_resolution(
+        &selection,
+        vec![
+            playback_source("https://example.com/album", folder, playable),
+            playback_source("https://example.com/album", folder, missing_file),
+        ],
         &root,
     );
 
-    assert!(inventory.tracks.is_empty());
-    assert!(inventory.has_relevant_active_downloads);
-    assert!(
-        inventory
-            .failure_description
-            .contains("does not contain any playable tracks")
-    );
+    assert_eq!(resolution.tracks.len(), 1);
+    assert_eq!(resolution.tracks[0].music_name, "Track Alpha");
+    assert_eq!(resolution.tracks[0].file_path, audio_path);
+    assert!(resolution.failure_description.contains("checked_sources=2"));
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
-fn resolve_playlist_playback_inventory_sees_downloaded_collection_growth() {
-    let root = temp_root();
-    let folder = "youtube/album";
-    let first_path = root.join(folder).join("track-a.m4a");
-    let second_path = root.join(folder).join("track-b.m4a");
-    std::fs::create_dir_all(root.join(folder)).expect("collection folder should be created");
-    std::fs::write(&first_path, b"ok").expect("first audio file should be created");
-    std::fs::write(&second_path, b"ok").expect("second audio file should be created");
+fn random_recommender_shuffle_preserves_candidate_identity_set() {
+    let mut tracks = (0..8)
+        .map(|index| PlaybackTrack {
+            playlist_name: "Focus".to_string(),
+            music_name: format!("Track {index}"),
+            music_url: format!("https://example.com/{index}"),
+            file_path: PathBuf::from(format!("track-{index}.m4a")),
+            start_ms: index * 1_000,
+            end_ms: index * 1_000 + 500,
+        })
+        .collect::<Vec<_>>();
+    let mut before = tracks
+        .iter()
+        .map(|track| {
+            (
+                track.music_url.clone(),
+                track.file_path.clone(),
+                track.start_ms,
+                track.end_ms,
+            )
+        })
+        .collect::<Vec<_>>();
 
-    let album = group("Album", "https://example.com/album", folder);
-    let playlist = PlayList {
-        name: "Focus".to_string(),
-        collections: vec![collection(
-            "Album",
-            "https://example.com/album",
-            folder,
-            vec![],
-        )],
-        groups: vec![],
-        created_at: AutoFill::pending(),
+    shuffle_playback_tracks(&mut tracks);
+
+    let mut after = tracks
+        .iter()
+        .map(|track| {
+            (
+                track.music_url.clone(),
+                track.file_path.clone(),
+                track.start_ms,
+                track.end_ms,
+            )
+        })
+        .collect::<Vec<_>>();
+    before.sort();
+    after.sort();
+    assert_eq!(after, before);
+}
+
+#[test]
+fn random_recommender_accepts_explicit_seed_and_playlist_context() {
+    let seed = PlaybackTrack {
+        playlist_name: "Focus".to_string(),
+        music_name: "Seed".to_string(),
+        music_url: "https://example.com/seed".to_string(),
+        file_path: PathBuf::from("seed.m4a"),
+        start_ms: 0,
+        end_ms: 60_000,
     };
-    let initial_collection = collection(
-        "Album",
-        "https://example.com/album",
-        folder,
-        vec![music(
-            "Track A",
-            "https://example.com/watch?v=track-a",
-            "track-a.m4a",
-            album.clone(),
-        )],
-    );
-    let refreshed_collection = collection(
-        "Album",
-        "https://example.com/album",
-        folder,
-        vec![
-            music(
-                "Track A",
-                "https://example.com/watch?v=track-a",
-                "track-a.m4a",
-                album.clone(),
-            ),
-            music(
-                "Track B",
-                "https://example.com/watch?v=track-b",
-                "track-b.m4a",
-                album,
-            ),
-        ],
-    );
-    let active_downloads = [download_task(
-        "https://example.com/album",
-        Some("https://example.com/album"),
-        DownloadTaskStatus::Downloading,
-    )];
+    let next = PlaybackTrack {
+        playlist_name: "Focus".to_string(),
+        music_name: "Next".to_string(),
+        music_url: "https://example.com/next".to_string(),
+        file_path: PathBuf::from("next.m4a"),
+        start_ms: 0,
+        end_ms: 60_000,
+    };
 
-    let initial = resolve_playlist_playback_inventory(
-        &playlist,
-        std::slice::from_ref(&initial_collection),
-        std::slice::from_ref(&initial_collection),
-        &active_downloads,
-        &root,
-    );
-    let refreshed = resolve_playlist_playback_inventory(
-        &playlist,
-        std::slice::from_ref(&refreshed_collection),
-        std::slice::from_ref(&refreshed_collection),
-        &active_downloads,
-        &root,
-    );
+    let proposed =
+        RandomPlaylistPlaybackRecommender.propose_queue(PlaylistPlaybackRecommendationRequest {
+            playlist_name: "Focus".to_string(),
+            seed: seed.clone(),
+            candidates: vec![seed.clone(), next.clone()],
+        });
+    let identity = proposed
+        .iter()
+        .map(|track| track.music_url.as_str())
+        .collect::<std::collections::HashSet<_>>();
 
-    assert_eq!(initial.tracks.len(), 1);
-    assert!(initial.has_relevant_active_downloads);
-    assert_eq!(refreshed.tracks.len(), 2);
-    assert!(refreshed.has_relevant_active_downloads);
+    assert_eq!(identity.len(), 2);
+    assert!(identity.contains(seed.music_url.as_str()));
+    assert!(identity.contains(next.music_url.as_str()));
+    assert_eq!(proposed[0].music_url, seed.music_url);
+}
 
-    let _ = std::fs::remove_dir_all(root);
+#[test]
+fn queue_start_projection_preserves_seed_as_the_ordered_playback_anchor() {
+    let seed = PlaybackTrack {
+        playlist_name: "Focus".to_string(),
+        music_name: "Seed".to_string(),
+        music_url: "https://example.com/seed".to_string(),
+        file_path: PathBuf::from("seed.m4a"),
+        start_ms: 0,
+        end_ms: 60_000,
+    };
+    let next = PlaybackTrack {
+        playlist_name: "Focus".to_string(),
+        music_name: "Next".to_string(),
+        music_url: "https://example.com/next".to_string(),
+        file_path: PathBuf::from("next.m4a"),
+        start_ms: 0,
+        end_ms: 60_000,
+    };
+
+    let reordered = ensure_queue_starts_with_seed(vec![next.clone(), seed.clone()], &seed);
+    assert_eq!(reordered[0].music_url, seed.music_url);
+    assert_eq!(reordered.len(), 2);
+
+    let inserted = ensure_queue_starts_with_seed(vec![next.clone()], &seed);
+    assert_eq!(inserted[0].music_url, seed.music_url);
+    assert_eq!(inserted[1].music_url, next.music_url);
+}
+
+#[test]
+fn random_recommender_keeps_explicit_seed_ahead_of_newly_loaded_queue_window() {
+    let seed = PlaybackTrack {
+        playlist_name: "Focus".to_string(),
+        music_name: "Seed".to_string(),
+        music_url: "https://example.com/seed".to_string(),
+        file_path: PathBuf::from("seed.m4a"),
+        start_ms: 0,
+        end_ms: 60_000,
+    };
+    let next = PlaybackTrack {
+        playlist_name: "Focus".to_string(),
+        music_name: "Next".to_string(),
+        music_url: "https://example.com/next".to_string(),
+        file_path: PathBuf::from("next.m4a"),
+        start_ms: 0,
+        end_ms: 60_000,
+    };
+
+    let proposed =
+        RandomPlaylistPlaybackRecommender.propose_queue(PlaylistPlaybackRecommendationRequest {
+            playlist_name: "Focus".to_string(),
+            seed: seed.clone(),
+            candidates: vec![next.clone()],
+        });
+
+    assert_eq!(proposed[0].music_url, seed.music_url);
+    assert_eq!(proposed[1].music_url, next.music_url);
 }

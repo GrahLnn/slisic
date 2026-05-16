@@ -12,11 +12,14 @@ use crate::domain::player::event::NowPlayingTrackChangedEvent;
 use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
 #[cfg(not(test))]
 use crate::domain::player::service as player_service;
-use crate::domain::playlists::model::{Collection, PlayList};
+#[cfg(not(test))]
+use crate::domain::player::strategy::PlaybackQueueMode;
 #[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
+use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlaybackTrackSource};
 #[cfg(not(test))]
 use anyhow::{Result, anyhow, bail};
+use rand::RngExt;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 #[cfg(not(test))]
@@ -26,25 +29,43 @@ use tauri_specta::Event;
 
 #[cfg(not(test))]
 const PLAYLIST_PREPARING_MESSAGE: &str = "Preparing...";
+#[cfg(not(test))]
+const INITIAL_PLAYBACK_QUEUE_LIMIT: usize = 256;
+#[cfg(not(test))]
+const PLAYLIST_PLAYBACK_SEED_SCAN_LIMIT: usize = 32;
+#[cfg(not(test))]
+const PLAYLIST_PLAYBACK_SEED_PROBE_LIMIT: usize = 1;
 
 #[cfg(not(test))]
 pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylistSession> {
     let mut download_changes = download_service::subscribe_download_task_changes();
     let material = build_playlist_playback_material(app, &name, &mut download_changes).await?;
     let playlist_name = material.playlist_name;
-    let track_count = material.tracks.len() as u32;
-    let has_relevant_active_downloads = material.has_relevant_active_downloads;
+    let track_count = material.tracks.len().max(1) as u32;
+    let seed = material.seed;
+    let tracks = ensure_queue_starts_with_seed(material.tracks, &seed);
 
     player_service::set_playback_continuation_mode(resolve_playlist_playback_continuation_mode())?;
-    let session = player_service::play_tracks(playlist_name.clone(), material.tracks).await?;
-    if has_relevant_active_downloads {
-        spawn_playlist_track_refresh(
-            app.clone(),
-            playlist_name.clone(),
-            session,
-            download_changes,
-        );
-    }
+    let session = player_service::play_tracks_from_initial_track_with_queue_mode(
+        playlist_name.clone(),
+        tracks,
+        seed.clone(),
+        PlaybackQueueMode::Ordered,
+    )
+    .await?;
+    spawn_playlist_track_queue_fill(
+        app.clone(),
+        playlist_name.clone(),
+        session.clone(),
+        seed.clone(),
+    );
+    spawn_playlist_track_refresh(
+        app.clone(),
+        playlist_name.clone(),
+        session,
+        seed,
+        download_changes,
+    );
 
     Ok(PlayPlaylistSession {
         playlist_name,
@@ -59,25 +80,19 @@ pub(crate) fn resolve_playlist_playback_continuation_mode() -> PlaybackContinuat
 #[cfg(not(test))]
 struct PlaylistPlaybackMaterial {
     playlist_name: String,
+    seed: PlaybackTrack,
     tracks: Vec<PlaybackTrack>,
-    has_relevant_active_downloads: bool,
 }
 
 #[cfg(not(test))]
 struct PlaylistTrackResolutionSource {
-    playlist: PlayList,
+    selection: PlaylistPlaybackSelection,
     playlist_name: String,
     resolution: PlaylistTrackResolution,
 }
 
 pub(crate) struct PlaylistTrackResolution {
     pub(crate) tracks: Vec<PlaybackTrack>,
-    pub(crate) failure_description: String,
-}
-
-pub(crate) struct PlaylistPlaybackInventory {
-    pub(crate) tracks: Vec<PlaybackTrack>,
-    pub(crate) has_relevant_active_downloads: bool,
     pub(crate) failure_description: String,
 }
 
@@ -89,19 +104,20 @@ async fn build_playlist_playback_material(
         download_service::DownloadTaskChangeSignal,
     >,
 ) -> Result<PlaylistPlaybackMaterial> {
-    let mut source = load_playlist_track_resolution(app, playlist_name).await?;
+    let mut source = load_playlist_playback_selection(playlist_name).await?;
     let mut preparing_emitted = false;
-    let mut has_relevant_active_downloads = playlist_has_active_downloads(&source.playlist).await?;
 
-    if !source.resolution.tracks.is_empty() {
+    if let Some(seed) = resolve_playlist_playback_seed(app, &source.selection).await? {
         return Ok(PlaylistPlaybackMaterial {
             playlist_name: source.playlist_name,
+            seed,
             tracks: source.resolution.tracks,
-            has_relevant_active_downloads,
         });
     }
 
     loop {
+        let has_relevant_active_downloads =
+            playlist_selection_has_active_downloads(&source.selection).await?;
         if !has_relevant_active_downloads {
             bail!("{}", source.resolution.failure_description);
         }
@@ -112,17 +128,33 @@ async fn build_playlist_playback_material(
         }
 
         wait_for_download_task_change(download_changes).await?;
-        source = load_playlist_track_resolution(app, playlist_name).await?;
-        has_relevant_active_downloads = playlist_has_active_downloads(&source.playlist).await?;
+        source = load_playlist_playback_selection(playlist_name).await?;
 
-        if !source.resolution.tracks.is_empty() {
+        if let Some(seed) = resolve_playlist_playback_seed(app, &source.selection).await? {
             return Ok(PlaylistPlaybackMaterial {
                 playlist_name: source.playlist_name,
+                seed,
                 tracks: source.resolution.tracks,
-                has_relevant_active_downloads,
             });
         }
     }
+}
+
+#[cfg(not(test))]
+fn spawn_playlist_track_queue_fill(
+    app: AppHandle,
+    playlist_name: String,
+    session: player_service::PlaybackSessionHandle,
+    seed: PlaybackTrack,
+) {
+    let task_playlist_name = playlist_name.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = fill_playlist_track_queue(app, playlist_name, session, seed).await {
+            eprintln!(
+                "[playlist_playback] failed to fill playback queue for `{task_playlist_name}`: {error}"
+            );
+        }
+    });
 }
 
 #[cfg(not(test))]
@@ -130,6 +162,7 @@ fn spawn_playlist_track_refresh(
     app: AppHandle,
     playlist_name: String,
     session: player_service::PlaybackSessionHandle,
+    seed: PlaybackTrack,
     download_changes: tokio::sync::broadcast::Receiver<download_service::DownloadTaskChangeSignal>,
 ) {
     let task_playlist_name = playlist_name.clone();
@@ -138,6 +171,7 @@ fn spawn_playlist_track_refresh(
             app,
             playlist_name,
             session,
+            seed,
             download_changes,
         )
         .await
@@ -150,10 +184,44 @@ fn spawn_playlist_track_refresh(
 }
 
 #[cfg(not(test))]
+async fn fill_playlist_track_queue(
+    app: AppHandle,
+    playlist_name: String,
+    session: player_service::PlaybackSessionHandle,
+    seed: PlaybackTrack,
+) -> Result<()> {
+    if !player_service::is_session_current(&session)? {
+        return Ok(());
+    }
+
+    let source =
+        load_playlist_track_resolution_window(&app, &playlist_name, INITIAL_PLAYBACK_QUEUE_LIMIT)
+            .await?;
+    if source.resolution.tracks.is_empty() {
+        return Ok(());
+    }
+
+    if !player_service::is_session_current(&session)? {
+        return Ok(());
+    }
+
+    let seed = player_service::active_request_track_snapshot_for_session(&session)?.unwrap_or(seed);
+    let tracks =
+        RandomPlaylistPlaybackRecommender.propose_queue(PlaylistPlaybackRecommendationRequest {
+            playlist_name,
+            seed,
+            candidates: source.resolution.tracks,
+        });
+    let _ = player_service::update_session_tracks(&session, tracks)?;
+    Ok(())
+}
+
+#[cfg(not(test))]
 async fn refresh_playlist_tracks_until_downloads_finish(
     app: AppHandle,
     playlist_name: String,
     session: player_service::PlaybackSessionHandle,
+    seed: PlaybackTrack,
     mut download_changes: tokio::sync::broadcast::Receiver<
         download_service::DownloadTaskChangeSignal,
     >,
@@ -164,12 +232,26 @@ async fn refresh_playlist_tracks_until_downloads_finish(
             return Ok(());
         }
 
-        let source = load_playlist_track_resolution(&app, &playlist_name).await?;
-        let has_relevant_active_downloads = playlist_has_active_downloads(&source.playlist).await?;
+        let source = load_playlist_track_resolution_window(
+            &app,
+            &playlist_name,
+            INITIAL_PLAYBACK_QUEUE_LIMIT,
+        )
+        .await?;
+        let has_relevant_active_downloads =
+            playlist_selection_has_active_downloads(&source.selection).await?;
 
         if !source.resolution.tracks.is_empty() {
-            let updated =
-                player_service::update_session_tracks(&session, source.resolution.tracks)?;
+            let seed = player_service::active_request_track_snapshot_for_session(&session)?
+                .unwrap_or_else(|| seed.clone());
+            let tracks = RandomPlaylistPlaybackRecommender.propose_queue(
+                PlaylistPlaybackRecommendationRequest {
+                    playlist_name: playlist_name.clone(),
+                    seed,
+                    candidates: source.resolution.tracks,
+                },
+            );
+            let updated = player_service::update_session_tracks(&session, tracks)?;
             if !updated {
                 return Ok(());
             }
@@ -202,26 +284,78 @@ async fn wait_for_download_task_change(
 }
 
 #[cfg(not(test))]
-async fn load_playlist_track_resolution(
-    app: &AppHandle,
+async fn load_playlist_playback_selection(
     playlist_name: &str,
 ) -> Result<PlaylistTrackResolutionSource> {
-    let playlist = playlist_repo::get_playlist_by_name(playlist_name)
+    let selection = playlist_repo::get_playlist_playback_selection_by_name(playlist_name)
+        .await?
+        .ok_or_else(|| anyhow!("playlist `{playlist_name}` not found"))?;
+    let failure_description = describe_playlist_playback_selection_failure(&selection);
+
+    Ok(PlaylistTrackResolutionSource {
+        playlist_name: selection.playlist_name.clone(),
+        selection,
+        resolution: PlaylistTrackResolution {
+            tracks: vec![],
+            failure_description,
+        },
+    })
+}
+
+#[cfg(not(test))]
+async fn resolve_playlist_playback_seed(
+    app: &AppHandle,
+    selection: &PlaylistPlaybackSelection,
+) -> Result<Option<PlaybackTrack>> {
+    let save_root = meta_service::resolve_save_root(app).await?;
+
+    let probe_sources = playlist_repo::load_playlist_playback_track_sources(
+        selection,
+        PLAYLIST_PLAYBACK_SEED_PROBE_LIMIT,
+    )
+    .await?;
+    let probe_resolution =
+        resolve_playlist_playback_source_resolution(selection, probe_sources, &save_root);
+    if let Some(seed) = probe_resolution.tracks.first().cloned() {
+        return Ok(Some(seed));
+    }
+
+    let sequential_sources = playlist_repo::load_playlist_playback_track_sources(
+        selection,
+        PLAYLIST_PLAYBACK_SEED_SCAN_LIMIT,
+    )
+    .await?;
+    let sequential_resolution =
+        resolve_playlist_playback_source_resolution(selection, sequential_sources, &save_root);
+    Ok(sequential_resolution.tracks.first().cloned())
+}
+
+#[cfg(not(test))]
+fn describe_playlist_playback_selection_failure(selection: &PlaylistPlaybackSelection) -> String {
+    format!(
+        "playlist `{}` does not contain any playable tracks [selected_collection_refs={}, selected_group_refs={}]",
+        selection.playlist_name,
+        selection.collections.len(),
+        selection.groups.len()
+    )
+}
+
+#[cfg(not(test))]
+async fn load_playlist_track_resolution_window(
+    app: &AppHandle,
+    playlist_name: &str,
+    limit: usize,
+) -> Result<PlaylistTrackResolutionSource> {
+    let selection = playlist_repo::get_playlist_playback_selection_by_name(playlist_name)
         .await?
         .ok_or_else(|| anyhow!("playlist `{playlist_name}` not found"))?;
     let save_root = meta_service::resolve_save_root(app).await?;
-    let library_collections = playlist_repo::list_collections().await?;
-    let selected_collections = resolve_selected_collections(&playlist, &library_collections);
-    let resolution = resolve_playlist_track_resolution(
-        &playlist,
-        &selected_collections,
-        &library_collections,
-        &save_root,
-    );
+    let sources = playlist_repo::load_playlist_playback_track_sources(&selection, limit).await?;
+    let resolution = resolve_playlist_playback_source_resolution(&selection, sources, &save_root);
 
     Ok(PlaylistTrackResolutionSource {
-        playlist_name: playlist.name.clone(),
-        playlist,
+        playlist_name: selection.playlist_name.clone(),
+        selection,
         resolution,
     })
 }
@@ -242,38 +376,24 @@ fn emit_playlist_preparing(app: &AppHandle, playlist_name: &str) -> Result<()> {
 }
 
 #[cfg(not(test))]
-async fn playlist_has_active_downloads(playlist: &PlayList) -> Result<bool> {
-    Ok(playlist_has_relevant_active_downloads(
-        playlist,
+async fn playlist_selection_has_active_downloads(
+    selection: &PlaylistPlaybackSelection,
+) -> Result<bool> {
+    Ok(playlist_selection_has_relevant_active_downloads(
+        selection,
         &download_repo::list_tasks().await?,
     ))
 }
 
-pub(crate) fn resolve_selected_collections(
-    playlist: &PlayList,
-    library_collections: &[Collection],
-) -> Vec<Collection> {
-    playlist
-        .collections
-        .iter()
-        .filter_map(|selected| {
-            library_collections
-                .iter()
-                .find(|candidate| candidate.url == selected.url)
-                .cloned()
-        })
-        .collect()
-}
-
-pub(crate) fn playlist_has_relevant_active_downloads(
-    playlist: &PlayList,
+pub(crate) fn playlist_selection_has_relevant_active_downloads(
+    selection: &PlaylistPlaybackSelection,
     download_tasks: &[DownloadTask],
 ) -> bool {
-    let selected_urls = playlist
+    let selected_urls = selection
         .collections
         .iter()
         .map(|collection| collection.url.as_str())
-        .chain(playlist.groups.iter().map(|group| group.url.as_str()))
+        .chain(selection.groups.iter().map(|group| group.url.as_str()))
         .collect::<HashSet<_>>();
 
     if selected_urls.is_empty() {
@@ -292,234 +412,133 @@ pub(crate) fn playlist_has_relevant_active_downloads(
         })
 }
 
-pub(crate) fn resolve_playlist_playback_inventory(
-    playlist: &PlayList,
-    selected_collections: &[Collection],
-    library_collections: &[Collection],
-    download_tasks: &[DownloadTask],
-    save_root: &Path,
-) -> PlaylistPlaybackInventory {
-    let resolution = resolve_playlist_track_resolution(
-        playlist,
-        selected_collections,
-        library_collections,
-        save_root,
-    );
-
-    PlaylistPlaybackInventory {
-        has_relevant_active_downloads: playlist_has_relevant_active_downloads(
-            playlist,
-            download_tasks,
-        ),
-        failure_description: resolution.failure_description,
-        tracks: resolution.tracks,
-    }
-}
-
-pub(crate) fn resolve_playlist_track_resolution(
-    playlist: &PlayList,
-    selected_collections: &[Collection],
-    library_collections: &[Collection],
+pub(crate) fn resolve_playlist_playback_source_resolution(
+    selection: &PlaylistPlaybackSelection,
+    sources: Vec<PlaylistPlaybackTrackSource>,
     save_root: &Path,
 ) -> PlaylistTrackResolution {
-    PlaylistTrackResolution {
-        tracks: collect_playlist_tracks(
-            playlist,
-            selected_collections,
-            library_collections,
-            save_root,
-        ),
-        failure_description: describe_playlist_track_resolution_failure(
-            playlist,
-            selected_collections,
-            library_collections,
-            save_root,
-        ),
-    }
-}
-
-fn describe_playlist_track_resolution_failure(
-    playlist: &PlayList,
-    selected_collections: &[Collection],
-    library_collections: &[Collection],
-    save_root: &Path,
-) -> String {
-    let selected_urls = playlist
-        .collections
-        .iter()
-        .map(|collection| collection.url.as_str())
-        .collect::<Vec<_>>();
-    let selected_group_urls = playlist
-        .groups
-        .iter()
-        .map(|group| group.url.as_str())
-        .collect::<HashSet<_>>();
-
-    let mut collection_summaries = Vec::new();
-
-    for selected in &playlist.collections {
-        let Some(collection) = library_collections
-            .iter()
-            .find(|candidate| candidate.url == selected.url)
-        else {
-            collection_summaries.push(format!(
-                "collection(url={}, status=missing-from-library)",
-                selected.url
-            ));
-            continue;
-        };
-
-        let mut playable = 0usize;
-        let mut missing_path = 0usize;
-        let mut missing_file = 0usize;
-
-        for music in &collection.musics {
-            let Some(path) = music.path.as_deref() else {
-                missing_path += 1;
-                continue;
-            };
-
-            let resolved = resolve_music_file_path(save_root, collection, Some(path));
-            if resolved.as_ref().is_some_and(|path| path.is_file()) {
-                playable += 1;
-            } else {
-                missing_file += 1;
-            }
-        }
-
-        collection_summaries.push(format!(
-            "collection(url={}, musics={}, playable={}, missing_path={}, missing_file={})",
-            collection.url,
-            collection.musics.len(),
-            playable,
-            missing_path,
-            missing_file
-        ));
-    }
-
-    let mut group_matches = 0usize;
-    let mut group_playable = 0usize;
-    for collection in library_collections {
-        for music in &collection.musics {
-            if !selected_group_urls.contains(music.group.url.as_str()) {
-                continue;
-            }
-
-            group_matches += 1;
-            if let Some(path) = music.path.as_deref() {
-                let resolved = resolve_music_file_path(save_root, collection, Some(path));
-                if resolved.as_ref().is_some_and(|path| path.is_file()) {
-                    group_playable += 1;
-                }
-            }
-        }
-    }
-
-    format!(
-        "playlist `{}` does not contain any playable tracks [selected_collection_refs={}, matched_collections={}, selected_group_refs={}, group_matches={}, group_playable={}, save_root={}, selected_urls=[{}], details=[{}]]",
-        playlist.name,
-        playlist.collections.len(),
-        selected_collections.len(),
-        playlist.groups.len(),
-        group_matches,
-        group_playable,
-        save_root.display(),
-        selected_urls.join(", "),
-        collection_summaries.join("; ")
-    )
-}
-
-pub(crate) fn collect_playlist_tracks(
-    playlist: &PlayList,
-    selected_collections: &[Collection],
-    library_collections: &[Collection],
-    save_root: &Path,
-) -> Vec<PlaybackTrack> {
     let mut seen = HashSet::new();
     let mut tracks = Vec::new();
+    let mut source_count = 0usize;
+    let mut playable = 0usize;
+    let mut missing_path = 0usize;
+    let mut missing_file = 0usize;
 
-    for collection in selected_collections {
-        append_collection_tracks(
-            playlist,
-            collection,
-            save_root,
-            &mut seen,
-            &mut tracks,
-            None,
-        );
-    }
-
-    let selected_group_urls = playlist
-        .groups
-        .iter()
-        .map(|group| group.url.as_str())
-        .collect::<HashSet<_>>();
-    if selected_group_urls.is_empty() {
-        return tracks;
-    }
-
-    for collection in library_collections {
-        append_collection_tracks(
-            playlist,
-            collection,
-            save_root,
-            &mut seen,
-            &mut tracks,
-            Some(&selected_group_urls),
-        );
-    }
-
-    tracks
-}
-
-fn append_collection_tracks(
-    playlist: &PlayList,
-    collection: &Collection,
-    save_root: &Path,
-    seen: &mut HashSet<String>,
-    tracks: &mut Vec<PlaybackTrack>,
-    selected_group_urls: Option<&HashSet<&str>>,
-) {
-    for music in &collection.musics {
-        if let Some(group_urls) = selected_group_urls
-            && !group_urls.contains(music.group.url.as_str())
-        {
-            continue;
-        }
-
-        let Some(file_path) = resolve_music_file_path(save_root, collection, music.path.as_deref())
-        else {
+    for source in sources {
+        source_count += 1;
+        let Some(file_path) = resolve_source_music_file_path(save_root, &source) else {
+            missing_path += 1;
             continue;
         };
         if !file_path.is_file() {
+            missing_file += 1;
             continue;
         }
 
-        let key = format!("{}:{}:{}", music.url, music.start_ms, music.end_ms);
+        let key = format!(
+            "{}:{}:{}",
+            source.music.url, source.music.start_ms, source.music.end_ms
+        );
         if !seen.insert(key) {
             continue;
         }
 
+        playable += 1;
         tracks.push(PlaybackTrack {
-            playlist_name: playlist.name.clone(),
-            music_name: music.alias.clone(),
-            music_url: music.url.clone(),
+            playlist_name: selection.playlist_name.clone(),
+            music_name: source.music.alias.clone(),
+            music_url: source.music.url.clone(),
             file_path,
-            start_ms: music.start_ms,
-            end_ms: music.end_ms,
+            start_ms: source.music.start_ms,
+            end_ms: source.music.end_ms,
         });
+    }
+
+    PlaylistTrackResolution {
+        tracks,
+        failure_description: format!(
+            "playlist `{}` does not contain any playable tracks [selected_collection_refs={}, selected_group_refs={}, checked_sources={}, playable={}, missing_path={}, missing_file={}, save_root={}]",
+            selection.playlist_name,
+            selection.collections.len(),
+            selection.groups.len(),
+            source_count,
+            playable,
+            missing_path,
+            missing_file,
+            save_root.display()
+        ),
     }
 }
 
-fn resolve_music_file_path(
+pub(crate) fn ensure_queue_starts_with_seed(
+    mut tracks: Vec<PlaybackTrack>,
+    seed: &PlaybackTrack,
+) -> Vec<PlaybackTrack> {
+    let Some(seed_index) = tracks
+        .iter()
+        .position(|track| are_playlist_playback_tracks_equal(track, seed))
+    else {
+        let mut seeded = Vec::with_capacity(tracks.len() + 1);
+        seeded.push(seed.clone());
+        seeded.extend(tracks);
+        return seeded;
+    };
+
+    if seed_index != 0 {
+        tracks.swap(0, seed_index);
+    }
+    tracks
+}
+
+fn are_playlist_playback_tracks_equal(left: &PlaybackTrack, right: &PlaybackTrack) -> bool {
+    left.playlist_name == right.playlist_name
+        && left.music_url == right.music_url
+        && left.file_path == right.file_path
+        && left.start_ms == right.start_ms
+        && left.end_ms == right.end_ms
+}
+
+fn resolve_source_music_file_path(
     save_root: &Path,
-    collection: &Collection,
-    relative_path: Option<&str>,
+    source: &PlaylistPlaybackTrackSource,
 ) -> Option<PathBuf> {
-    let path = PathBuf::from(relative_path?);
+    let path = PathBuf::from(source.music.path.as_deref()?);
     if path.is_absolute() {
         return Some(path);
     }
 
-    Some(save_root.join(&collection.folder).join(path))
+    Some(save_root.join(&source.collection_folder).join(path))
+}
+
+pub(crate) struct PlaylistPlaybackRecommendationRequest {
+    pub(crate) playlist_name: String,
+    pub(crate) seed: PlaybackTrack,
+    pub(crate) candidates: Vec<PlaybackTrack>,
+}
+
+pub(crate) trait PlaylistPlaybackRecommender {
+    fn propose_queue(&self, request: PlaylistPlaybackRecommendationRequest) -> Vec<PlaybackTrack>;
+}
+
+pub(crate) struct RandomPlaylistPlaybackRecommender;
+
+impl PlaylistPlaybackRecommender for RandomPlaylistPlaybackRecommender {
+    fn propose_queue(
+        &self,
+        mut request: PlaylistPlaybackRecommendationRequest,
+    ) -> Vec<PlaybackTrack> {
+        let _playlist_name = &request.playlist_name;
+        let tracks = &mut request.candidates;
+        shuffle_playback_tracks(tracks);
+        ensure_queue_starts_with_seed(request.candidates, &request.seed)
+    }
+}
+
+pub(crate) fn shuffle_playback_tracks(tracks: &mut [PlaybackTrack]) {
+    let mut rng = rand::rng();
+    let len = tracks.len();
+    for index in (1..len).rev() {
+        let swap_index = rng.random_range(0..=index);
+        tracks.swap(index, swap_index);
+    }
 }
