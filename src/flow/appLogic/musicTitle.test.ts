@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { Collection, PlayList } from "@/src/cmd";
+import type { Collection } from "@/src/cmd";
 import {
   activateSpectrumNewMusicDraft,
   changeSpectrumMusicDraftValueRange,
@@ -10,16 +10,12 @@ import {
   createSpectrumCurrentMusicDraft,
   createSpectrumNewMusicDraftIdentity,
   deleteMusicFromCollections,
-  deleteMusicFromPlaylistPreview,
-  deleteMusicFromPlaylists,
   deleteSpectrumMusicDraft,
   hasSpectrumMusicDraftChanges,
   mergeSpectrumMusicDrafts,
   resolveSpectrumMusicCommit,
   resetSpectrumMusicDraftValue,
   updateMusicInCollections,
-  updateMusicInPlaylistPreview,
-  updateMusicInPlaylists,
   createSpectrumMusicDrafts,
   changeSpectrumMusicDraftName,
   createMusicDraftEdits,
@@ -47,13 +43,6 @@ const sampleCollection: Collection = {
   ],
   last_updated: "2026-04-13T00:00:00Z",
   enable_updates: null,
-};
-
-const samplePlaylist: PlayList = {
-  name: "Focus Session",
-  collections: [sampleCollection],
-  groups: [],
-  created_at: "2026-04-13T00:00:00Z",
 };
 
 function createSampleSpectrumMusicDraft() {
@@ -276,20 +265,6 @@ describe("musicDraft", () => {
     assert.equal(updated?.alias, "Track B");
     assert.equal(updated?.start_ms, 8_000);
     assert.equal(updated?.end_ms, 112_000);
-    assert.equal(
-      updateMusicInPlaylists([samplePlaylist], edit)[0]?.collections[0]?.musics[0]?.alias,
-      "Track B",
-    );
-    assert.equal(
-      updateMusicInPlaylistPreview(
-        {
-          playlist: samplePlaylist,
-          previousName: null,
-        },
-        edit,
-      )?.playlist.collections[0]?.musics[0]?.end_ms,
-      112_000,
-    );
   });
 
   test("creates spectrum drafts with the current music first", () => {
@@ -477,23 +452,6 @@ describe("musicDraft", () => {
 
     assert.deepEqual(
       deleteMusicFromCollections([collection], deletion)[0]?.musics.map((music) => music.alias),
-      ["Track B"],
-    );
-    assert.deepEqual(
-      deleteMusicFromPlaylists(
-        [{ ...samplePlaylist, collections: [collection] }],
-        deletion,
-      )[0]?.collections[0]?.musics.map((music) => music.alias),
-      ["Track B"],
-    );
-    assert.deepEqual(
-      deleteMusicFromPlaylistPreview(
-        {
-          playlist: { ...samplePlaylist, collections: [collection] },
-          previousName: null,
-        },
-        deletion,
-      )?.playlist.collections[0]?.musics.map((music) => music.alias),
       ["Track B"],
     );
   });

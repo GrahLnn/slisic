@@ -11,11 +11,11 @@ import {
   type PayloadEvt,
   type SignalEvt,
 } from "@grahlnn/fn/flow";
-import { crab, type PlayList } from "@/src/cmd";
+import { crab, type PlayListListView } from "@/src/cmd";
 import type { PlaylistCommitRequest } from "./core";
 
 export interface PlaylistCommitSuccess {
-  playlist: PlayList;
+  playlist: PlayListListView;
   previousName: string | null;
 }
 

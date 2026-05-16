@@ -1,4 +1,4 @@
-import type { PlayList } from "@/src/cmd";
+import type { PlayListListView } from "@/src/cmd";
 import type {
   CollectionTitleHandoff,
   CollectionTitleTone,
@@ -45,7 +45,7 @@ export interface PlayListPageRenderData {
   pageState: MainStateT;
   activeLayoutId: string | null;
   hasPlayList: boolean | null;
-  playlists: PlayList[];
+  playlists: PlayListListView[];
   pendingPlaylistPreview: PlaylistUpsertResult | null;
   playingPlaylistName: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
@@ -77,7 +77,7 @@ export interface PlayListPageItemViewModel {
 type PlayListPageDisplayLock = PlayListTitleHandoffDisplayLock;
 
 export interface PlayListPageViewModel {
-  visiblePlaylists: PlayList[];
+  visiblePlaylists: PlayListListView[];
   visibleLayoutIds: string[];
   transition: TitleSharePageTransition;
   committedLayoutId: string | null;
@@ -145,12 +145,12 @@ export function resolvePlayListPageItemFadeProps(args: {
   } as const;
 }
 
-export function resolvePlayListPageTexts(playlists: readonly PlayList[]) {
+export function resolvePlayListPageTexts(playlists: readonly PlayListListView[]) {
   return playlists.map((playlist) => playlist.name);
 }
 
 function createPlayListPageItemViewModel(args: {
-  playlist: PlayList;
+  playlist: PlayListListView;
   text: string;
   titleShareEnabled: boolean;
   transition: TitleSharePageTransition;
@@ -200,7 +200,7 @@ function createPlayListPageItemViewModel(args: {
 }
 
 function resolvePlayListPageVisibleItems(args: {
-  visiblePlaylists: readonly PlayList[];
+  visiblePlaylists: readonly PlayListListView[];
   pageState: MainStateT;
   playingPlaylistName: string | null;
   playbackSurface: PlayListPlaybackSurfaceSnapshot | null;
@@ -292,7 +292,7 @@ function resolvePlayListPageVisibleItems(args: {
 }
 
 function resolvePlayListPageReturnHandoffTargetName(args: {
-  visiblePlaylists: readonly PlayList[];
+  visiblePlaylists: readonly PlayListListView[];
   titleToneHandoff: CollectionTitleHandoff | null;
 }) {
   if (!args.titleToneHandoff) {
@@ -308,7 +308,7 @@ function resolvePlayListPageReturnHandoffTargetName(args: {
 
 export function resolvePlayListPageTitleReturnSurfaceTargetLayoutId(args: {
   pageState: MainStateT;
-  visiblePlaylists: readonly PlayList[];
+  visiblePlaylists: readonly PlayListListView[];
   titleToneHandoff: CollectionTitleHandoff | null;
 }) {
   if (args.pageState !== "ready") {
@@ -422,3 +422,4 @@ export function resolvePlayListPageViewModel(
     },
   };
 }
+

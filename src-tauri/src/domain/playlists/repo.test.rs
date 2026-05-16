@@ -1,10 +1,13 @@
-use super::model::{Collection, Exclude, Group, Music, PlayList};
+use super::model::{
+    Collection, CollectionSurfaceView, Exclude, Group, GroupSurfaceView, Music, PlayList,
+    PlayListConfigView, PlayListListView,
+};
 use super::repo::{
     add_exclude, create_music, delete_music, delete_playlist_by_name, get_collection_by_url,
-    get_playlist_by_name, get_playlist_playback_selection_by_name, has_collections,
-    list_collections, list_musics_by_file_path, list_playlists,
-    load_playlist_playback_track_sources, remove_exclude, set_collection_updates, update_music,
-    upsert_collection, upsert_playlist,
+    get_playlist_by_name, get_playlist_config_by_name, get_playlist_playback_selection_by_name,
+    has_collections, list_collections, list_config_library, list_musics_by_file_path,
+    list_playlists, load_playlist_playback_track_sources, remove_exclude, set_collection_updates,
+    update_music, upsert_collection, upsert_playlist,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -85,6 +88,7 @@ async fn bootstrap_collection_write_schema() {
 async fn bootstrap_playlist_read_schema() {
     bootstrap_table(Music::table_name()).await;
     bootstrap_relation_table("includes").await;
+    bootstrap_relation_table("grouped").await;
 }
 
 fn sample_collection(url: &str, enable_updates: Option<bool>) -> Collection {
@@ -175,13 +179,26 @@ fn shared_music(collection_url: &str, collection_folder: &str) -> Music {
 }
 
 fn sample_playlist(name: &str) -> PlayList {
+    let collection_url = format!("https://example.com/{name}");
     PlayList {
         name: name.to_string(),
         collections: vec![Collection {
             name: "Repo Demo".to_string(),
-            url: format!("https://example.com/{name}"),
+            url: collection_url.clone(),
             folder: format!("youtube/{name}"),
-            musics: vec![],
+            musics: vec![Music {
+                name: "Track".to_string(),
+                alias: "Track".to_string(),
+                group: Group {
+                    name: "Disc 1".to_string(),
+                    url: format!("{collection_url}#disc-1"),
+                    folder: "Disc 1".to_string(),
+                },
+                url: format!("{collection_url}#track"),
+                path: Some("Disc 1/Track.m4a".to_string()),
+                start_ms: 0,
+                end_ms: 180_000,
+            }],
             last_updated: "2026-04-12T00:00:00+00:00".to_string(),
             enable_updates: Some(false),
         }],
@@ -190,7 +207,7 @@ fn sample_playlist(name: &str) -> PlayList {
             url: format!("https://example.com/{name}#disc-1"),
             folder: "Disc 1".to_string(),
         }],
-        created_at: AutoFill::pending(),
+        created_at: AutoFill::resolved(format!("2026-04-12T00:00:00.{:09}Z", 0)),
     }
 }
 
@@ -229,14 +246,67 @@ fn assert_playlist_matches(actual: &PlayList, expected: &PlayList) {
             actual_collection.enable_updates,
             expected_collection.enable_updates
         );
-        assert!(actual_collection.musics.is_empty());
-        assert!(expected_collection.musics.is_empty());
+        assert_eq!(
+            actual_collection.musics.len(),
+            expected_collection.musics.len()
+        );
+        for (actual_music, expected_music) in actual_collection
+            .musics
+            .iter()
+            .zip(expected_collection.musics.iter())
+        {
+            assert_eq!(actual_music.name, expected_music.name);
+            assert_eq!(actual_music.alias, expected_music.alias);
+            assert_eq!(actual_music.url, expected_music.url);
+            assert_eq!(actual_music.path, expected_music.path);
+            assert_eq!(actual_music.start_ms, expected_music.start_ms);
+            assert_eq!(actual_music.end_ms, expected_music.end_ms);
+            assert_eq!(actual_music.group.name, expected_music.group.name);
+            assert_eq!(actual_music.group.url, expected_music.group.url);
+            assert_eq!(actual_music.group.folder, expected_music.group.folder);
+        }
     }
 
     for (actual_group, expected_group) in actual.groups.iter().zip(expected.groups.iter()) {
         assert_eq!(actual_group.name, expected_group.name);
         assert_eq!(actual_group.url, expected_group.url);
         assert_eq!(actual_group.folder, expected_group.folder);
+    }
+}
+
+fn assert_playlist_list_view_matches(actual: &PlayListListView, expected: &PlayList) {
+    assert_eq!(actual.name, expected.name);
+    assert_eq!(actual.created_at, expected.created_at);
+}
+
+fn assert_collection_surface_matches(actual: &CollectionSurfaceView, expected: &Collection) {
+    assert_eq!(actual.name, expected.name);
+    assert_eq!(actual.url, expected.url);
+    assert_eq!(actual.folder, expected.folder);
+    assert_eq!(actual.last_updated, expected.last_updated);
+    assert_eq!(actual.enable_updates, expected.enable_updates);
+}
+
+fn assert_group_surface_matches(actual: &GroupSurfaceView, expected: &Group) {
+    assert_eq!(actual.name, expected.name);
+    assert_eq!(actual.url, expected.url);
+    assert_eq!(actual.folder, expected.folder);
+}
+
+fn assert_playlist_config_view_matches(actual: &PlayListConfigView, expected: &PlayList) {
+    assert_eq!(actual.name, expected.name);
+    assert_eq!(actual.collections.len(), expected.collections.len());
+    assert_eq!(actual.groups.len(), expected.groups.len());
+    assert_eq!(actual.created_at, expected.created_at);
+
+    for (actual_collection, expected_collection) in
+        actual.collections.iter().zip(expected.collections.iter())
+    {
+        assert_collection_surface_matches(actual_collection, expected_collection);
+    }
+
+    for (actual_group, expected_group) in actual.groups.iter().zip(expected.groups.iter()) {
+        assert_group_surface_matches(actual_group, expected_group);
     }
 }
 
@@ -1279,7 +1349,11 @@ fn get_playlist_by_name_reads_related_collections_and_groups() {
         let playlist = sample_playlist("repo-playlist");
         let collection_record =
             insert_collection_row("repo-playlist-collection", &playlist.collections[0]).await;
+        let music_record = insert_music_row("repo-playlist-track", &playlist.collections[0].musics[0])
+            .await;
+        insert_music_edges(&collection_record, std::slice::from_ref(&music_record)).await;
         let group_record = insert_group_row("repo-playlist-group", &playlist.groups[0]).await;
+        insert_group_edges(&group_record, std::slice::from_ref(&music_record)).await;
         insert_playlist_row(
             "repo-playlist",
             &playlist,
@@ -1300,7 +1374,7 @@ fn get_playlist_by_name_reads_related_collections_and_groups() {
 }
 
 #[test]
-fn list_playlists_reads_hydrated_rows() {
+fn list_playlists_reads_surface_rows_without_hydrating_music() {
     let _guard = acquire_db_test_lock();
 
     run_async(async {
@@ -1345,8 +1419,74 @@ fn list_playlists_reads_hydrated_rows() {
             .find(|playlist| playlist.name == second.name)
             .expect("second playlist should be listed");
 
-        assert_playlist_matches(first_loaded, &first);
-        assert_playlist_matches(second_loaded, &second);
+        assert_playlist_list_view_matches(first_loaded, &first);
+        assert_playlist_list_view_matches(second_loaded, &second);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn get_playlist_config_reads_one_level_surfaces_without_music() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let playlist = sample_playlist("repo-playlist-config");
+        let collection_record =
+            insert_collection_row("repo-playlist-config-collection", &playlist.collections[0])
+                .await;
+        let group_record = insert_group_row("repo-playlist-config-group", &playlist.groups[0]).await;
+        insert_playlist_row(
+            "repo-playlist-config",
+            &playlist,
+            std::slice::from_ref(&collection_record),
+            std::slice::from_ref(&group_record),
+        )
+        .await;
+
+        let loaded = get_playlist_config_by_name(&playlist.name)
+            .await
+            .expect("playlist config lookup should succeed")
+            .expect("playlist config should exist");
+
+        assert_playlist_config_view_matches(&loaded, &playlist);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn list_config_library_reads_collection_and_group_surfaces() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let playlist = sample_playlist("repo-config-library");
+        insert_collection_row("repo-config-library-collection", &playlist.collections[0]).await;
+        insert_group_row("repo-config-library-group", &playlist.groups[0]).await;
+
+        let library = list_config_library()
+            .await
+            .expect("config library should load");
+
+        let collection = library
+            .collections
+            .iter()
+            .find(|collection| collection.url == playlist.collections[0].url)
+            .expect("surface collection should be listed");
+        let group = library
+            .groups
+            .iter()
+            .find(|group| group.url == playlist.groups[0].url)
+            .expect("surface group should be listed");
+
+        assert_collection_surface_matches(collection, &playlist.collections[0]);
+        assert_group_surface_matches(group, &playlist.groups[0]);
 
         reset_db();
     });
@@ -1360,6 +1500,9 @@ fn upsert_playlist_creates_new_rows_and_updates_existing_renames() {
         ensure_db().await;
 
         let original = sample_playlist("Original");
+        upsert_collection(&original.collections[0])
+            .await
+            .expect("original collection should exist before playlist save");
         let created = upsert_playlist(&original, None)
             .await
             .expect("playlist create should succeed");
@@ -1393,7 +1536,7 @@ fn upsert_playlist_creates_new_rows_and_updates_existing_renames() {
         assert_playlist_matches(&loaded_updated, &renamed);
         assert!(missing_original.is_none());
         assert_eq!(listed.len(), 1);
-        assert_playlist_matches(&listed[0], &renamed);
+        assert_playlist_list_view_matches(&listed[0], &renamed);
 
         reset_db();
     });
@@ -1462,6 +1605,82 @@ fn upsert_playlist_does_not_clobber_existing_collection_graph_data() {
 }
 
 #[test]
+fn upsert_playlist_rejects_unknown_collection_refs() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let playlist = PlayList {
+            name: "Broken Reference".to_string(),
+            collections: vec![Collection {
+                name: "Missing".to_string(),
+                url: "https://example.com/missing-collection".to_string(),
+                folder: "youtube/missing-collection".to_string(),
+                musics: vec![],
+                last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+                enable_updates: None,
+            }],
+            groups: vec![],
+            created_at: AutoFill::pending(),
+        };
+
+        let error = upsert_playlist(&playlist, None)
+            .await
+            .expect_err("playlist save should reject unknown collection refs")
+            .to_string();
+
+        assert!(error.contains("references unknown collection"));
+
+        reset_db();
+    });
+}
+
+#[test]
+fn upsert_playlist_rejects_unknown_group_refs() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let collection_url = "https://example.com/library-album";
+        let collection_folder = "youtube/library-album";
+        let populated_collection = collection_with_musics(
+            collection_url,
+            collection_folder,
+            Some(false),
+            vec![shared_music(collection_url, collection_folder)],
+        );
+        upsert_collection(&populated_collection)
+            .await
+            .expect("library collection should persist before playlist save");
+
+        let playlist = PlayList {
+            name: "Broken Group Reference".to_string(),
+            collections: vec![Collection {
+                musics: vec![],
+                ..sample_collection(collection_url, Some(false))
+            }],
+            groups: vec![Group {
+                name: "Missing Disc".to_string(),
+                url: "https://example.com/missing-disc".to_string(),
+                folder: "Missing Disc".to_string(),
+            }],
+            created_at: AutoFill::pending(),
+        };
+
+        let error = upsert_playlist(&playlist, None)
+            .await
+            .expect_err("playlist save should reject unknown group refs")
+            .to_string();
+
+        assert!(error.contains("references unknown group"));
+
+        reset_db();
+    });
+}
+
+#[test]
 fn delete_playlist_by_name_removes_only_the_playlist_row() {
     let _guard = acquire_db_test_lock();
 
@@ -1469,6 +1688,9 @@ fn delete_playlist_by_name_removes_only_the_playlist_row() {
         ensure_db().await;
 
         let playlist = sample_playlist("Delete Me");
+        upsert_collection(&playlist.collections[0])
+            .await
+            .expect("playlist collection should exist before playlist save");
         let created = upsert_playlist(&playlist, None)
             .await
             .expect("playlist create should succeed before deletion");

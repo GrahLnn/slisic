@@ -1,4 +1,4 @@
-use super::model::{Collection, Exclude, Music, PlayList};
+use super::model::{Collection, ConfigLibraryView, Exclude, Music, PlayList, PlayListConfigView, PlayListListView};
 use crate::domain::player::service::{
     PlaybackTrackIdentityUpdate, update_current_session_track_identity,
 };
@@ -22,8 +22,16 @@ pub async fn list_collections() -> Result<Vec<Collection>, String> {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn list_playlists() -> Result<Vec<PlayList>, String> {
+pub async fn list_playlists() -> Result<Vec<PlayListListView>, String> {
     super::repo::list_playlists()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn list_config_library() -> Result<ConfigLibraryView, String> {
+    super::repo::list_config_library()
         .await
         .map_err(|error| error.to_string())
 }
@@ -46,6 +54,14 @@ pub async fn get_playlist(name: String) -> Result<Option<PlayList>, String> {
 
 #[tauri::command]
 #[specta::specta]
+pub async fn get_playlist_config(name: String) -> Result<Option<PlayListConfigView>, String> {
+    super::repo::get_playlist_config_by_name(&name)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn delete_playlist(name: String) -> Result<bool, String> {
     super::repo::delete_playlist_by_name(&name)
         .await
@@ -57,8 +73,8 @@ pub async fn delete_playlist(name: String) -> Result<bool, String> {
 pub async fn upsert_playlist(
     previous_name: Option<String>,
     playlist: PlayList,
-) -> Result<PlayList, String> {
-    super::repo::upsert_playlist(&playlist, previous_name.as_deref())
+) -> Result<PlayListListView, String> {
+    super::repo::upsert_playlist_surface(&playlist, previous_name.as_deref())
         .await
         .map_err(|error| error.to_string())
 }

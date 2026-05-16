@@ -2,8 +2,8 @@ import { assign } from "xstate";
 import {
   CREATE_COLLECTION_LAYOUT_ID,
   createCollectionTitleHandoff,
+  createConfigSidebarItemsFromLibrary,
   createDraft,
-  createDraftFromPlaylistName,
   cloneDraft,
   includeDraftSidebarItem,
   initialContext,
@@ -13,6 +13,7 @@ import {
   removeDraftSidebarItem,
   resetContextWith,
   upsertPlaylistIntoPlaylists,
+  upsertCollectionIntoConfigLibrary,
   upsertCollectionIntoDraft,
   upsertCollectionIntoCollections,
   type Context,
@@ -26,19 +27,13 @@ import {
   createMusicDraftDeletes,
   createMusicDraftEdits,
   createMusicInCollections,
-  createMusicInPlaylistPreview,
-  createMusicInPlaylists,
   deleteMusicFromCollections,
-  deleteMusicFromPlaylistPreview,
-  deleteMusicFromPlaylists,
   deleteSpectrumMusicDraft,
   hasSpectrumMusicDraftCreates,
   hasSpectrumMusicDraftCommitOperations,
   mergeSpectrumMusicDrafts,
   resetSpectrumMusicDraft,
   updateMusicInCollections,
-  updateMusicInPlaylistPreview,
-  updateMusicInPlaylists,
   type MusicCreate,
   type MusicDelete,
   type MusicEdit,
@@ -122,23 +117,6 @@ function updateCollectionsWithMusicEdits(collections: Context["collections"], ed
   );
 }
 
-function updatePlaylistsWithMusicEdits(playlists: Context["playlists"], edits: MusicEdit[]) {
-  return edits.reduce(
-    (currentPlaylists, edit) => updateMusicInPlaylists(currentPlaylists, edit),
-    playlists,
-  );
-}
-
-function updatePlaylistPreviewWithMusicEdits(
-  preview: Context["pendingPlaylistPreview"],
-  edits: MusicEdit[],
-) {
-  return edits.reduce(
-    (currentPreview, edit) => updateMusicInPlaylistPreview(currentPreview, edit),
-    preview,
-  );
-}
-
 function deleteMusicFromContextCollections(
   collections: Context["collections"],
   deletions: readonly MusicDelete[],
@@ -149,26 +127,6 @@ function deleteMusicFromContextCollections(
   );
 }
 
-function deleteMusicFromContextPlaylists(
-  playlists: Context["playlists"],
-  deletions: readonly MusicDelete[],
-) {
-  return deletions.reduce(
-    (currentPlaylists, deletion) => deleteMusicFromPlaylists(currentPlaylists, deletion),
-    playlists,
-  );
-}
-
-function deleteMusicFromContextPlaylistPreview(
-  preview: Context["pendingPlaylistPreview"],
-  deletions: readonly MusicDelete[],
-) {
-  return deletions.reduce(
-    (currentPreview, deletion) => deleteMusicFromPlaylistPreview(currentPreview, deletion),
-    preview,
-  );
-}
-
 function createMusicInContextCollections(
   collections: Context["collections"],
   creates: readonly MusicCreate[],
@@ -176,26 +134,6 @@ function createMusicInContextCollections(
   return creates.reduce(
     (currentCollections, create) => createMusicInCollections(currentCollections, create),
     collections,
-  );
-}
-
-function createMusicInContextPlaylists(
-  playlists: Context["playlists"],
-  creates: readonly MusicCreate[],
-) {
-  return creates.reduce(
-    (currentPlaylists, create) => createMusicInPlaylists(currentPlaylists, create),
-    playlists,
-  );
-}
-
-function createMusicInContextPlaylistPreview(
-  preview: Context["pendingPlaylistPreview"],
-  creates: readonly MusicCreate[],
-) {
-  return creates.reduce(
-    (currentPreview, create) => createMusicInPlaylistPreview(currentPreview, create),
-    preview,
   );
 }
 
@@ -237,22 +175,8 @@ function createSpectrumPlayReturnContext(
 
   return resetContextWith({
     hasPlayList: context.hasPlayList,
-    playlists:
-      musicDeletes.length > 0
-        ? deleteMusicFromContextPlaylists(context.playlists, musicDeletes)
-        : musicCreates.length > 0
-          ? createMusicInContextPlaylists(context.playlists, musicCreates)
-          : musicEdits.length > 0
-            ? updatePlaylistsWithMusicEdits(context.playlists, [...musicEdits])
-            : context.playlists,
-    pendingPlaylistPreview:
-      musicDeletes.length > 0
-        ? deleteMusicFromContextPlaylistPreview(context.pendingPlaylistPreview, musicDeletes)
-        : musicCreates.length > 0
-          ? createMusicInContextPlaylistPreview(context.pendingPlaylistPreview, musicCreates)
-          : musicEdits.length > 0
-            ? updatePlaylistPreviewWithMusicEdits(context.pendingPlaylistPreview, [...musicEdits])
-            : context.pendingPlaylistPreview,
+    playlists: context.playlists,
+    pendingPlaylistPreview: context.pendingPlaylistPreview,
     collections:
       musicDeletes.length > 0
         ? deleteMusicFromContextCollections(context.collections, musicDeletes)
@@ -329,6 +253,7 @@ export const machine = src.createMachine({
 
         return {
           collections,
+          configLibrary: upsertCollectionIntoConfigLibrary(context.configLibrary, event.output),
         };
       }),
     },
@@ -369,14 +294,24 @@ export const machine = src.createMachine({
 
         return {
           collections,
+          configLibrary: upsertCollectionIntoConfigLibrary(context.configLibrary, event.output),
           draft: upsertCollectionIntoDraft(context.draft, event.output),
         };
       }),
     },
     [draftItemIncluded.evt]: {
-      actions: assign(({ context, event }) => ({
-        draft: includeDraftSidebarItem(context.draft, context.collections, event.output),
-      })),
+      actions: assign(({ context, event }) => {
+        const libraryItems = createConfigSidebarItemsFromLibrary(context.configLibrary);
+
+        return {
+          draft: includeDraftSidebarItem(
+            context.draft,
+            context.collections,
+            libraryItems,
+            event.output,
+          ),
+        };
+      }),
     },
     [draftItemRemoved.evt]: {
       actions: assign(({ context, event }) => ({
@@ -429,6 +364,7 @@ export const machine = src.createMachine({
               playlists: event.output.playlists,
               pendingPlaylistPreview: null,
               collections: event.output.collections,
+              configLibrary: event.output.configLibrary,
               savePath: event.output.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
@@ -456,6 +392,7 @@ export const machine = src.createMachine({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
@@ -473,6 +410,7 @@ export const machine = src.createMachine({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: event.output,
               nowPlayingTrackName: null,
@@ -483,11 +421,6 @@ export const machine = src.createMachine({
         [openPlaylist.evt]: {
           target: ss.mainx.State.configLoading,
           actions: assign(({ context, event }) => {
-            const visiblePlaylists = resolvePlaylistsWithPreview(
-              context.playlists,
-              context.pendingPlaylistPreview,
-            );
-            const cachedDraft = createDraftFromPlaylistName(visiblePlaylists, event.output);
             const activeLayoutId = playlistTitleLayoutId(event.output);
 
             return resetContextWith({
@@ -495,14 +428,13 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
               activeLayoutId,
               titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
               pendingPlaylistName: event.output,
-              draftBaseline: cachedDraft ? cloneDraft(cachedDraft) : null,
-              draft: cachedDraft,
             });
           }),
         },
@@ -529,6 +461,7 @@ export const machine = src.createMachine({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: context.playingPlaylistName,
               nowPlayingTrackName: context.nowPlayingTrackName,
@@ -552,6 +485,7 @@ export const machine = src.createMachine({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
@@ -565,6 +499,7 @@ export const machine = src.createMachine({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
@@ -583,6 +518,7 @@ export const machine = src.createMachine({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: event.output,
               nowPlayingTrackName: null,
@@ -593,25 +529,19 @@ export const machine = src.createMachine({
         [openPlaylist.evt]: {
           target: ss.mainx.State.configLoading,
           actions: assign(({ context, event }) => {
-            const visiblePlaylists = resolvePlaylistsWithPreview(
-              context.playlists,
-              context.pendingPlaylistPreview,
-            );
-            const cachedDraft = createDraftFromPlaylistName(visiblePlaylists, event.output);
             const activeLayoutId = playlistTitleLayoutId(event.output);
 
             return resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
               activeLayoutId,
               titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
               pendingPlaylistName: event.output,
-              draftBaseline: cachedDraft ? cloneDraft(cachedDraft) : null,
-              draft: cachedDraft,
             });
           }),
         },
@@ -623,6 +553,7 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: context.playingPlaylistName,
               nowPlayingTrackName: context.nowPlayingTrackName,
@@ -665,6 +596,7 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: context.playingPlaylistName,
               nowPlayingTrackName: context.nowPlayingTrackName,
@@ -690,6 +622,7 @@ export const machine = src.createMachine({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: context.playingPlaylistName,
               nowPlayingTrackName: context.nowPlayingTrackName,
@@ -790,11 +723,6 @@ export const machine = src.createMachine({
 
             return musicEdits.length > 0
               ? {
-                  playlists: updatePlaylistsWithMusicEdits(context.playlists, musicEdits),
-                  pendingPlaylistPreview: updatePlaylistPreviewWithMusicEdits(
-                    context.pendingPlaylistPreview,
-                    musicEdits,
-                  ),
                   collections: updateCollectionsWithMusicEdits(context.collections, musicEdits),
                   nowPlayingTrackName: currentMusicEdit?.alias ?? context.nowPlayingTrackName,
                   nowPlayingTrackStartMs:
@@ -811,6 +739,7 @@ export const machine = src.createMachine({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: context.playingPlaylistName,
               nowPlayingTrackName: context.nowPlayingTrackName,
@@ -846,11 +775,6 @@ export const machine = src.createMachine({
             const musicCreates = createMusicCreatesFromResult(event.output);
 
             return {
-              playlists: createMusicInContextPlaylists(context.playlists, musicCreates),
-              pendingPlaylistPreview: createMusicInContextPlaylistPreview(
-                context.pendingPlaylistPreview,
-                musicCreates,
-              ),
               collections: createMusicInContextCollections(context.collections, musicCreates),
             };
           }),
@@ -862,6 +786,7 @@ export const machine = src.createMachine({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: context.playingPlaylistName,
               nowPlayingTrackName: context.nowPlayingTrackName,
@@ -903,6 +828,7 @@ export const machine = src.createMachine({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: context.playingPlaylistName,
               nowPlayingTrackName: context.nowPlayingTrackName,
@@ -935,6 +861,7 @@ export const machine = src.createMachine({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
@@ -952,6 +879,7 @@ export const machine = src.createMachine({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
@@ -971,6 +899,7 @@ export const machine = src.createMachine({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
@@ -999,6 +928,7 @@ export const machine = src.createMachine({
               playlists: context.playlists,
               pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
@@ -1012,6 +942,7 @@ export const machine = src.createMachine({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
@@ -1028,17 +959,13 @@ export const machine = src.createMachine({
         [openPlaylist.evt]: {
           target: ss.mainx.State.configLoading,
           actions: assign(({ context, event }) => {
-            const visiblePlaylists = resolvePlaylistsWithPreview(
-              context.playlists,
-              context.pendingPlaylistPreview,
-            );
-            const cachedDraft = createDraftFromPlaylistName(visiblePlaylists, event.output);
             const activeLayoutId = playlistTitleLayoutId(event.output);
 
             return resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
               collections: context.collections,
+              configLibrary: context.configLibrary,
               savePath: context.savePath,
               playingPlaylistName: null,
               nowPlayingTrackName: null,
@@ -1048,8 +975,6 @@ export const machine = src.createMachine({
                 resolveTitleShareToneFromDraft(context.draft),
               ),
               pendingPlaylistName: event.output,
-              draftBaseline: cachedDraft ? cloneDraft(cachedDraft) : null,
-              draft: cachedDraft,
             });
           }),
         },

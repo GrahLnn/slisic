@@ -218,6 +218,7 @@ describe("titleShare", () => {
       name: "",
       collections: [],
       groups: [],
+      createdAt: null,
     };
 
     assert.equal(hasConfigDraftChanges(createDraft, createDraft), false);
@@ -245,18 +246,19 @@ describe("titleShare", () => {
             name: "Quiet Morning",
             url: "https://example.com/quiet-morning",
             folder: "youtube/quiet-morning",
-            musics: [],
             last_updated: "2026-04-13T00:00:00Z",
             enable_updates: null,
           },
         ],
         groups: [],
+        createdAt: null,
       },
       draftBaseline: {
         mode: "create",
         name: "",
         collections: [],
         groups: [],
+        createdAt: null,
       },
     });
 
@@ -276,12 +278,14 @@ describe("titleShare", () => {
         name: "Quiet Morning",
         collections: [],
         groups: [],
+        createdAt: null,
       },
       draftBaseline: {
         mode: "edit",
         name: "Quiet Morning",
         collections: [],
         groups: [],
+        createdAt: null,
       },
     });
 
@@ -300,6 +304,7 @@ describe("titleShare", () => {
         name: "",
         collections: [],
         groups: [],
+        createdAt: null,
       }),
       "muted",
     );

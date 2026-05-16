@@ -1,4 +1,7 @@
-use super::model::{Collection, Exclude, Group, Music, PlayList};
+use super::model::{
+    Collection, CollectionSurfaceView, ConfigLibraryView, Exclude, Group, GroupSurfaceView, Music,
+    PlayList, PlayListConfigView, PlayListListView,
+};
 use anyhow::{Result, bail};
 use appdb::connection::get_db;
 use appdb::error::{DBError, classify_db_error};
@@ -37,16 +40,43 @@ pub async fn list_collections() -> Result<Vec<Collection>> {
     }
 }
 
-pub async fn list_playlists() -> Result<Vec<PlayList>> {
+pub async fn list_playlists() -> Result<Vec<PlayListListView>> {
     ensure_collection_graph_schema().await?;
 
-    match PlayList::list().order_by("created_at", Order::Asc).await {
+    match PlayListListView::list()
+        .order_by("created_at", Order::Asc)
+        .await
+    {
         Ok(playlists) => Ok(playlists),
         Err(error) => match classify_db_error(&error) {
             DBError::MissingTable(_) => Ok(vec![]),
             other => Err(other.into()),
         },
     }
+}
+
+pub async fn list_config_library() -> Result<ConfigLibraryView> {
+    ensure_collection_graph_schema().await?;
+
+    let collections = match CollectionSurfaceView::list().await {
+        Ok(collections) => collections,
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) => vec![],
+            other => return Err(other.into()),
+        },
+    };
+    let groups = match GroupSurfaceView::list().await {
+        Ok(groups) => groups,
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) => vec![],
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(ConfigLibraryView {
+        collections,
+        groups,
+    })
 }
 
 pub async fn add_exclude(music: Music) -> Result<Exclude> {
@@ -137,6 +167,18 @@ pub async fn get_playlist_by_name(name: &str) -> Result<Option<PlayList>> {
     };
 
     Ok(Some(PlayList::get_record(record).await?))
+}
+
+pub async fn get_playlist_config_by_name(name: &str) -> Result<Option<PlayListConfigView>> {
+    ensure_collection_graph_schema().await?;
+
+    match PlayListConfigView::find_one("name", name).await {
+        Ok(playlist) => Ok(Some(playlist)),
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) | DBError::NotFound => Ok(None),
+            other => Err(other.into()),
+        },
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -283,6 +325,15 @@ pub async fn upsert_playlist(playlist: &PlayList, previous_name: Option<&str>) -
         Some(record) => Ok(Repo::<PlayList>::update_at(record, playlist.clone()).await?),
         None => Ok(Repo::<PlayList>::create_at(record, playlist.clone()).await?),
     }
+}
+
+pub async fn upsert_playlist_surface(
+    playlist: &PlayList,
+    previous_name: Option<&str>,
+) -> Result<PlayListListView> {
+    upsert_playlist(playlist, previous_name)
+        .await
+        .map(PlayListListView::from)
 }
 
 pub async fn set_collection_updates(url: &str, enabled: bool) -> Result<Option<Collection>> {
@@ -897,29 +948,38 @@ async fn resolve_playlist_foreign_refs(playlist: &PlayList) -> Result<PlayList> 
     let library_collections = list_collections().await?;
     let library_groups = library_group_index(&library_collections);
 
+    let mut collections = Vec::with_capacity(playlist.collections.len());
+    for collection in &playlist.collections {
+        let Some(canonical_collection) = library_collections
+            .iter()
+            .find(|candidate| candidate.url == collection.url)
+            .cloned()
+        else {
+            bail!(
+                "playlist `{}` references unknown collection `{}`",
+                playlist.name,
+                collection.url
+            );
+        };
+        collections.push(canonical_collection);
+    }
+
+    let mut groups = Vec::with_capacity(playlist.groups.len());
+    for group in &playlist.groups {
+        let Some(canonical_group) = library_groups.get(group.url.as_str()).cloned() else {
+            bail!(
+                "playlist `{}` references unknown group `{}`",
+                playlist.name,
+                group.url
+            );
+        };
+        groups.push(canonical_group);
+    }
+
     Ok(PlayList {
         name: playlist.name.clone(),
-        collections: playlist
-            .collections
-            .iter()
-            .map(|collection| {
-                library_collections
-                    .iter()
-                    .find(|candidate| candidate.url == collection.url)
-                    .cloned()
-                    .unwrap_or_else(|| collection.clone())
-            })
-            .collect(),
-        groups: playlist
-            .groups
-            .iter()
-            .map(|group| {
-                library_groups
-                    .get(group.url.as_str())
-                    .cloned()
-                    .unwrap_or_else(|| group.clone())
-            })
-            .collect(),
+        collections,
+        groups,
         created_at: playlist.created_at.clone(),
     })
 }

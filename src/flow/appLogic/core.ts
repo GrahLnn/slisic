@@ -1,4 +1,13 @@
-import type { Collection, Group, PlayList } from "@/src/cmd";
+import type {
+  Collection,
+  CollectionSurfaceView,
+  ConfigLibraryView,
+  Group,
+  GroupSurfaceView,
+  PlayList,
+  PlayListConfigView,
+  PlayListListView,
+} from "@/src/cmd";
 
 export const CREATE_COLLECTION_LAYOUT_ID = "collection-title:create";
 
@@ -16,8 +25,17 @@ export interface CollectionTitleHandoff {
 export interface ConfigDraft {
   mode: "create" | "edit";
   name: string;
-  collections: Collection[];
+  collections: ConfigDraftCollectionRef[];
   groups: Group[];
+  createdAt: PlayList["created_at"];
+}
+
+export interface ConfigDraftCollectionRef {
+  name: string;
+  url: string;
+  folder: string;
+  last_updated: string;
+  enable_updates: Collection["enable_updates"];
 }
 
 export interface ConfigSidebarItem {
@@ -25,6 +43,8 @@ export interface ConfigSidebarItem {
   name: string;
   url: string;
   folder: string;
+  last_updated?: string;
+  enable_updates?: Collection["enable_updates"];
 }
 
 export interface ConfigSidebarItemRef {
@@ -45,7 +65,7 @@ export interface DraftCommitTitleResolution {
 }
 
 export interface PlaylistUpsertResult {
-  playlist: PlayList;
+  playlist: PlayListListView;
   previousName: string | null;
 }
 
@@ -86,9 +106,10 @@ export type SpectrumMusicDraft = PersistedSpectrumMusicDraft | PendingCreateSpec
 
 export interface Context {
   hasPlayList: boolean | null;
-  playlists: PlayList[];
+  playlists: PlayListListView[];
   pendingPlaylistPreview: PlaylistUpsertResult | null;
   collections: Collection[];
+  configLibrary: ConfigLibraryView;
   savePath: string;
   playingPlaylistName: string | null;
   nowPlayingTrackName: string | null;
@@ -116,7 +137,11 @@ export function playlistTitleLayoutId(name: string) {
   return `playlist-title:${name}`;
 }
 
-type PlayListEditableFields = Pick<PlayList, "name" | "collections" | "groups">;
+type PlayListEditableFields = {
+  name: string;
+  collections: ConfigDraftCollectionRef[];
+  groups: Group[];
+};
 
 function createEmptyPlayListFields(): PlayListEditableFields {
   return {
@@ -126,10 +151,18 @@ function createEmptyPlayListFields(): PlayListEditableFields {
   };
 }
 
+function createEmptyConfigLibrary(): ConfigLibraryView {
+  return {
+    collections: [],
+    groups: [],
+  };
+}
+
 export function createDraft(): ConfigDraft {
   return {
     mode: "create",
     ...createEmptyPlayListFields(),
+    createdAt: null,
   };
 }
 
@@ -139,6 +172,7 @@ export function cloneDraft(draft: ConfigDraft): ConfigDraft {
     name: draft.name,
     collections: [...draft.collections],
     groups: [...draft.groups],
+    createdAt: draft.createdAt,
   };
 }
 
@@ -159,13 +193,13 @@ export function createPlayListFromDraft(
 ): PlayList {
   return {
     name: draft.name,
-    collections: [...draft.collections],
+    collections: draft.collections.map(createCollectionShellFromDraftRef),
     groups: [...draft.groups],
-    created_at: options?.createdAt ?? null,
+    created_at: options?.createdAt ?? draft.createdAt,
   };
 }
 
-export function resolveNextGeneratedPlaylistName(playlists: readonly PlayList[]) {
+export function resolveNextGeneratedPlaylistName(playlists: readonly PlayListListView[]) {
   const existingNames = new Set(playlists.map((playlist) => normalizeDraftName(playlist.name)));
   let index = 1;
 
@@ -179,7 +213,7 @@ export function resolveNextGeneratedPlaylistName(playlists: readonly PlayList[])
 export function resolveDraftCommitTitle(args: {
   draft: ConfigDraft;
   draftBaseline: ConfigDraft | null;
-  playlists: readonly PlayList[];
+  playlists: readonly PlayListListView[];
 }): DraftCommitTitleResolution {
   const currentName = normalizeDraftName(args.draft.name);
 
@@ -209,22 +243,63 @@ export function createDraftFromPlayList(playlist: PlayList): ConfigDraft {
   return cloneDraft({
     mode: "edit",
     name: playlist.name,
-    collections: playlist.collections,
+    collections: playlist.collections.map(createConfigDraftCollectionRefFromCollection),
     groups: playlist.groups,
+    createdAt: playlist.created_at,
   });
 }
 
-export function createDraftFromPlaylistName(
-  playlists: readonly PlayList[],
-  name: string,
-): ConfigDraft | null {
-  const playlist = playlists.find((candidate) => candidate.name === name);
+function createConfigDraftCollectionRefFromCollection(
+  collection: Collection,
+): ConfigDraftCollectionRef {
+  return {
+    name: collection.name,
+    url: collection.url,
+    folder: collection.folder,
+    last_updated: collection.last_updated,
+    enable_updates: collection.enable_updates,
+  };
+}
 
-  if (!playlist) {
-    return null;
-  }
+function createConfigDraftCollectionRefFromSurface(
+  surface: CollectionSurfaceView,
+): ConfigDraftCollectionRef {
+  return {
+    name: surface.name,
+    url: surface.url,
+    folder: surface.folder,
+    last_updated: surface.last_updated,
+    enable_updates: surface.enable_updates,
+  };
+}
 
-  return createDraftFromPlayList(playlist);
+function createCollectionShellFromDraftRef(ref: ConfigDraftCollectionRef): Collection {
+  return {
+    name: ref.name,
+    url: ref.url,
+    folder: ref.folder,
+    musics: [],
+    last_updated: ref.last_updated,
+    enable_updates: ref.enable_updates,
+  };
+}
+
+function createGroupFromSurface(surface: GroupSurfaceView): Group {
+  return {
+    name: surface.name,
+    url: surface.url,
+    folder: surface.folder,
+  };
+}
+
+export function createDraftFromPlayListConfig(playlist: PlayListConfigView): ConfigDraft {
+  return cloneDraft({
+    mode: "edit",
+    name: playlist.name,
+    collections: playlist.collections.map(createConfigDraftCollectionRefFromSurface),
+    groups: playlist.groups.map(createGroupFromSurface),
+    createdAt: playlist.created_at,
+  });
 }
 
 export function createCollectionTitleHandoff(
@@ -285,6 +360,8 @@ export function createConfigSidebarItems(collections: readonly Collection[]): Co
       name: collection.name,
       url: collection.url,
       folder: collection.folder,
+      last_updated: collection.last_updated,
+      enable_updates: collection.enable_updates,
     });
 
     for (const music of collection.musics) {
@@ -299,14 +376,88 @@ export function createConfigSidebarItems(collections: readonly Collection[]): Co
   return items;
 }
 
-export function findConfigSidebarItem(
+export function createConfigSidebarItemsFromLibrary(
+  library: ConfigLibraryView,
+): ConfigSidebarItem[] {
+  const items: ConfigSidebarItem[] = [];
+  const seenUrls = new Set<string>();
+  const collectionNames = new Set(
+    library.collections.map((collection) => normalizeConfigSidebarName(collection.name)),
+  );
+
+  for (const collection of library.collections) {
+    appendConfigSidebarItem(items, seenUrls, {
+      kind: "collection",
+      name: collection.name,
+      url: collection.url,
+      folder: collection.folder,
+      last_updated: collection.last_updated,
+      enable_updates: collection.enable_updates,
+    });
+  }
+
+  for (const group of library.groups) {
+    if (collectionNames.has(normalizeConfigSidebarName(group.name))) {
+      continue;
+    }
+
+    appendConfigSidebarItem(items, seenUrls, createConfigSidebarGroupItem(group));
+  }
+
+  return items;
+}
+
+export function createConfigLibraryFromCollections(
   collections: readonly Collection[],
+): ConfigLibraryView {
+  const collectionSurfaces = collections.map((collection) => ({
+    name: collection.name,
+    url: collection.url,
+    folder: collection.folder,
+    last_updated: collection.last_updated,
+    enable_updates: collection.enable_updates,
+  }));
+  const items = createConfigSidebarItems(collections);
+
+  return {
+    collections: collectionSurfaces,
+    groups: items
+      .filter((item) => item.kind === "group")
+      .map((group) => ({
+        name: group.name,
+        url: group.url,
+        folder: group.folder,
+      })),
+  };
+}
+
+export function upsertCollectionIntoConfigLibrary(
+  library: ConfigLibraryView,
+  nextCollection: Collection,
+): ConfigLibraryView {
+  const nextSurface: CollectionSurfaceView = {
+    name: nextCollection.name,
+    url: nextCollection.url,
+    folder: nextCollection.folder,
+    last_updated: nextCollection.last_updated,
+    enable_updates: nextCollection.enable_updates,
+  };
+
+  return {
+    ...library,
+    collections: [
+      nextSurface,
+      ...library.collections.filter((collection) => collection.url !== nextCollection.url),
+    ],
+  };
+}
+
+export function findConfigSidebarItem(
+  libraryItems: readonly ConfigSidebarItem[],
   ref: ConfigSidebarItemRef,
 ): ConfigSidebarItem | null {
   return (
-    createConfigSidebarItems(collections).find(
-      (item) => item.kind === ref.kind && item.url === ref.url,
-    ) ?? null
+    libraryItems.find((item) => item.kind === ref.kind && item.url === ref.url) ?? null
   );
 }
 
@@ -335,15 +486,33 @@ export function upsertCollectionIntoDraft(
 
   return {
     ...draft,
-    collections: upsertCollectionIntoCollections(draft.collections, nextCollection),
+    collections: upsertCollectionRefIntoDraftCollections(
+      draft.collections,
+      createConfigDraftCollectionRefFromCollection(nextCollection),
+    ),
   };
 }
 
+function upsertCollectionRefIntoDraftCollections(
+  collections: readonly ConfigDraftCollectionRef[],
+  nextCollection: ConfigDraftCollectionRef,
+): ConfigDraftCollectionRef[] {
+  const currentIndex = collections.findIndex((collection) => collection.url === nextCollection.url);
+
+  if (currentIndex < 0) {
+    return [nextCollection, ...collections];
+  }
+
+  return collections.map((collection, index) =>
+    index === currentIndex ? nextCollection : collection,
+  );
+}
+
 export function upsertPlaylistIntoPlaylists(
-  playlists: readonly PlayList[],
-  nextPlaylist: PlayList,
+  playlists: readonly PlayListListView[],
+  nextPlaylist: PlayListListView,
   previousName: string | null = null,
-): PlayList[] {
+): PlayListListView[] {
   const matchName = previousName ?? nextPlaylist.name;
   const currentIndex = playlists.findIndex((playlist) => playlist.name === matchName);
 
@@ -354,7 +523,7 @@ export function upsertPlaylistIntoPlaylists(
   return playlists.map((playlist, index) => (index === currentIndex ? nextPlaylist : playlist));
 }
 
-export function removePlaylistFromPlaylists(playlists: readonly PlayList[], name: string) {
+export function removePlaylistFromPlaylists(playlists: readonly PlayListListView[], name: string) {
   return playlists.filter((playlist) => playlist.name !== name);
 }
 
@@ -365,7 +534,7 @@ export function resolveSavedPath(savePath: string | null | undefined, fallbackSa
 }
 
 export function resolvePlaylistsWithPreview(
-  playlists: readonly PlayList[],
+  playlists: readonly PlayListListView[],
   preview: PlaylistUpsertResult | null,
 ) {
   if (!preview) {
@@ -378,19 +547,30 @@ export function resolvePlaylistsWithPreview(
 export function includeDraftSidebarItem(
   draft: ConfigDraft | null,
   collections: readonly Collection[],
+  libraryItems: readonly ConfigSidebarItem[],
   ref: ConfigSidebarItemRef,
 ): ConfigDraft | null {
   if (!draft) {
     return null;
   }
 
-  const item = findConfigSidebarItem(collections, ref);
+  const item = findConfigSidebarItem(libraryItems, ref);
   if (!item) {
     return draft;
   }
 
   if (ref.kind === "collection") {
-    const collection = collections.find((candidate) => candidate.url === ref.url);
+    const collection =
+      collections.find((candidate) => candidate.url === ref.url) ??
+      (item.kind === "collection"
+        ? {
+            name: item.name,
+            url: item.url,
+            folder: item.folder,
+            last_updated: item.last_updated ?? "",
+            enable_updates: item.enable_updates ?? null,
+          }
+        : null);
 
     if (!collection) {
       return draft;
@@ -398,7 +578,12 @@ export function includeDraftSidebarItem(
 
     return {
       ...draft,
-      collections: upsertCollectionIntoCollections(draft.collections, collection),
+      collections: upsertCollectionRefIntoDraftCollections(
+        draft.collections,
+        "musics" in collection
+          ? createConfigDraftCollectionRefFromCollection(collection)
+          : collection,
+      ),
     };
   }
 
@@ -446,6 +631,7 @@ export function createInitialContext(): Context {
     playlists: [],
     pendingPlaylistPreview: null,
     collections: [],
+    configLibrary: createEmptyConfigLibrary(),
     savePath: "",
     playingPlaylistName: null,
     nowPlayingTrackName: null,

@@ -31,7 +31,7 @@ tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
 specta = "2.0.0-rc.24"
 specta-typescript = "0.0.11"
 tauri-plugin-os = "2"
-appdb = "0.2.17"
+appdb = { version = "0.2.17", path = "../../appdb/core" }
 anyhow = "1.0.102"
 async-trait = "0.1.89"
 inventory = "0.3.22"

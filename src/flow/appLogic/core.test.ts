@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { PlayList } from "@/src/cmd";
+import type { PlayList, PlayListConfigView, PlayListListView } from "@/src/cmd";
 import {
-  createDraftFromPlaylistName,
+  createDraftFromPlayListConfig,
+  createConfigSidebarItemsFromLibrary,
   createPlayListFromDraft,
   createContextResetter,
   createInitialContext,
@@ -22,14 +23,10 @@ import {
 
 function createPlayListFixture(args: {
   name: string;
-  collections?: PlayList["collections"];
-  groups?: PlayList["groups"];
   created_at?: PlayList["created_at"];
-}): PlayList {
+}): PlayListListView {
   return {
     name: args.name,
-    collections: args.collections ?? [],
-    groups: args.groups ?? [],
     created_at: args.created_at ?? "2026-04-13T00:00:00Z",
   };
 }
@@ -177,7 +174,6 @@ describe("upsertCollectionIntoDraft", () => {
           name: "Older",
           url: "https://example.com/older",
           folder: "youtube/older",
-          musics: [],
           last_updated: "2026-04-13T00:00:00Z",
           enable_updates: null,
         },
@@ -189,6 +185,7 @@ describe("upsertCollectionIntoDraft", () => {
           folder: "Disc 1",
         },
       ],
+      createdAt: null,
     };
     const next = {
       name: "Fresh",
@@ -201,65 +198,64 @@ describe("upsertCollectionIntoDraft", () => {
 
     assert.deepEqual(upsertCollectionIntoDraft(draft, next), {
       ...draft,
-      collections: [next, ...draft.collections],
+      collections: [
+        {
+          name: next.name,
+          url: next.url,
+          folder: next.folder,
+          last_updated: next.last_updated,
+          enable_updates: next.enable_updates,
+        },
+        ...draft.collections,
+      ],
     });
   });
 });
 
 describe("draft commit naming", () => {
-  test("hydrates an edit draft directly from an already loaded playlist snapshot", () => {
-    assert.deepEqual(
-      createDraftFromPlaylistName(
-        [
-          createPlayListFixture({
-            name: "Quiet Morning",
-            collections: [
-              {
-                name: "Quiet Morning",
-                url: "https://example.com/quiet-morning",
-                folder: "youtube/quiet-morning",
-                musics: [],
-                last_updated: "2026-04-13T00:00:00Z",
-                enable_updates: null,
-              },
-            ],
-            groups: [
-              {
-                name: "Disc 1",
-                url: "https://example.com/disc-1",
-                folder: "Disc 1",
-              },
-            ],
-          }),
-        ],
-        "Quiet Morning",
-      ),
-      {
-        mode: "edit",
-        name: "Quiet Morning",
-        collections: [
-          {
-            name: "Quiet Morning",
-            url: "https://example.com/quiet-morning",
-            folder: "youtube/quiet-morning",
-            musics: [],
-            last_updated: "2026-04-13T00:00:00Z",
-            enable_updates: null,
-          },
-        ],
-        groups: [
-          {
-            name: "Disc 1",
-            url: "https://example.com/disc-1",
-            folder: "Disc 1",
-          },
-        ],
-      },
-    );
-  });
+  test("hydrates an edit draft from a playlist config view without full music data", () => {
+    const playlist: PlayListConfigView = {
+      name: "Quiet Morning",
+      collections: [
+        {
+          name: "Quiet Morning",
+          url: "https://example.com/quiet-morning",
+          folder: "youtube/quiet-morning",
+          last_updated: "2026-04-13T00:00:00Z",
+          enable_updates: null,
+        },
+      ],
+      groups: [
+        {
+          name: "Disc 1",
+          url: "https://example.com/disc-1",
+          folder: "Disc 1",
+        },
+      ],
+      created_at: "2026-04-13T00:00:00Z",
+    };
 
-  test("returns null when the requested playlist is not in the cached list", () => {
-    assert.equal(createDraftFromPlaylistName([], "Missing"), null);
+    assert.deepEqual(createDraftFromPlayListConfig(playlist), {
+      mode: "edit",
+      name: "Quiet Morning",
+      collections: [
+        {
+          name: "Quiet Morning",
+          url: "https://example.com/quiet-morning",
+          folder: "youtube/quiet-morning",
+          last_updated: "2026-04-13T00:00:00Z",
+          enable_updates: null,
+        },
+      ],
+      groups: [
+        {
+          name: "Disc 1",
+          url: "https://example.com/disc-1",
+          folder: "Disc 1",
+        },
+      ],
+      createdAt: "2026-04-13T00:00:00Z",
+    });
   });
 
   test("normalizes draft names before they are committed", () => {
@@ -274,6 +270,7 @@ describe("draft commit naming", () => {
           name: "  Quiet Morning  ",
           collections: [],
           groups: [],
+          createdAt: null,
         },
         draftBaseline: null,
         playlists: [],
@@ -293,12 +290,14 @@ describe("draft commit naming", () => {
           name: "",
           collections: [],
           groups: [],
+          createdAt: null,
         },
         draftBaseline: {
           mode: "edit",
           name: "Original Name",
           collections: [],
           groups: [],
+          createdAt: null,
         },
         playlists: [],
       }),
@@ -317,12 +316,14 @@ describe("draft commit naming", () => {
           name: "",
           collections: [],
           groups: [],
+          createdAt: null,
         },
         draftBaseline: {
           mode: "create",
           name: "",
           collections: [],
           groups: [],
+          createdAt: null,
         },
         playlists: [
           createPlayListFixture({ name: "PlayList 1" }),
@@ -355,7 +356,6 @@ describe("draft commit naming", () => {
           name: "Collection",
           url: "https://example.com/collection",
           folder: "youtube/collection",
-          musics: [],
           last_updated: "2026-04-13T00:00:00Z",
           enable_updates: null,
         },
@@ -367,11 +367,12 @@ describe("draft commit naming", () => {
           folder: "Disc 1",
         },
       ],
+      createdAt: null,
     };
 
     assert.deepEqual(createPlayListFromDraft(draft), {
       name: "Quiet Morning",
-      collections: draft.collections,
+      collections: draft.collections.map((collection) => ({ ...collection, musics: [] })),
       groups: draft.groups,
       created_at: null,
     });
@@ -381,7 +382,7 @@ describe("draft commit naming", () => {
       }),
       {
         name: "Quiet Morning",
-        collections: draft.collections,
+        collections: draft.collections.map((collection) => ({ ...collection, musics: [] })),
         groups: draft.groups,
         created_at: "2026-04-13T00:00:00Z",
       },
@@ -407,17 +408,6 @@ describe("upsertPlaylistIntoPlaylists", () => {
     const second = createPlayListFixture({ name: "Second" });
     const updated = createPlayListFixture({
       name: "Second",
-      collections: [
-        {
-          name: "Collection",
-          url: "https://example.com/collection",
-          folder: "youtube/collection",
-          musics: [],
-          last_updated: "2026-04-13T00:00:00Z",
-          enable_updates: null,
-        },
-      ],
-      groups: [],
     });
 
     assert.deepEqual(upsertPlaylistIntoPlaylists([first, second], updated), [first, updated]);
@@ -518,10 +508,11 @@ describe("includeDraftSidebarItem", () => {
       name: "Focus Session",
       collections: [],
       groups: [],
+      createdAt: null,
     };
 
     assert.deepEqual(
-      includeDraftSidebarItem(draft, [], {
+      includeDraftSidebarItem(draft, [], [], {
         kind: "group",
         url: "https://example.com/disc-1",
       }),
@@ -543,16 +534,33 @@ describe("includeDraftSidebarItem", () => {
       name: "Focus Session",
       collections: [],
       groups: [],
+      createdAt: null,
     };
 
     assert.deepEqual(
-      includeDraftSidebarItem(draft, [collection], {
-        kind: "collection",
-        url: collection.url,
-      }),
+      includeDraftSidebarItem(
+        draft,
+        [collection],
+        createConfigSidebarItemsFromLibrary({
+          collections: [collection],
+          groups: [],
+        }),
+        {
+          kind: "collection",
+          url: collection.url,
+        },
+      ),
       {
         ...draft,
-        collections: [collection],
+        collections: [
+          {
+            name: collection.name,
+            url: collection.url,
+            folder: collection.folder,
+            last_updated: collection.last_updated,
+            enable_updates: collection.enable_updates,
+          },
+        ],
       },
     );
   });
@@ -585,13 +593,28 @@ describe("includeDraftSidebarItem", () => {
       name: "Focus Session",
       collections: [],
       groups: [],
+      createdAt: null,
     };
 
     assert.deepEqual(
-      includeDraftSidebarItem(draft, [collection], {
-        kind: "group",
-        url: "https://example.com/disc-1",
-      }),
+      includeDraftSidebarItem(
+        draft,
+        [collection],
+        createConfigSidebarItemsFromLibrary({
+          collections: [],
+          groups: [
+            {
+              name: "Disc 1",
+              url: "https://example.com/disc-1",
+              folder: "Disc 1",
+            },
+          ],
+        }),
+        {
+          kind: "group",
+          url: "https://example.com/disc-1",
+        },
+      ),
       {
         ...draft,
         groups: [
@@ -619,8 +642,17 @@ describe("removeDraftSidebarItem", () => {
     const draft = {
       mode: "edit" as const,
       name: "Focus Session",
-      collections: [collection],
+      collections: [
+        {
+          name: collection.name,
+          url: collection.url,
+          folder: collection.folder,
+          last_updated: collection.last_updated,
+          enable_updates: collection.enable_updates,
+        },
+      ],
       groups: [],
+      createdAt: null,
     };
 
     assert.deepEqual(
@@ -647,6 +679,7 @@ describe("removeDraftSidebarItem", () => {
           folder: "Disc 1",
         },
       ],
+      createdAt: null,
     };
 
     assert.deepEqual(

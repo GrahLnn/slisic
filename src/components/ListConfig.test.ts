@@ -40,6 +40,7 @@ const createDraft: ConfigDraft = {
   name: "",
   collections: [],
   groups: [],
+  createdAt: null,
 };
 
 const editDraft: ConfigDraft = {
@@ -50,12 +51,12 @@ const editDraft: ConfigDraft = {
       name: "Quiet Morning",
       url: "https://example.com/quiet-morning",
       folder: "youtube/quiet-morning",
-      musics: [],
       last_updated: "2026-04-13T00:00:00Z",
       enable_updates: null,
     },
   ],
   groups: [],
+  createdAt: "2026-04-13T00:00:00Z",
 };
 
 const draftWithGroup: ConfigDraft = {
@@ -66,7 +67,6 @@ const draftWithGroup: ConfigDraft = {
       name: "Quiet Morning",
       url: "https://example.com/quiet-morning",
       folder: "youtube/quiet-morning",
-      musics: [],
       last_updated: "2026-04-13T00:00:00Z",
       enable_updates: null,
     },
@@ -78,6 +78,7 @@ const draftWithGroup: ConfigDraft = {
       folder: "Disc 1",
     },
   ],
+  createdAt: "2026-04-13T00:00:00Z",
 };
 
 const librarySidebarItems = [
@@ -444,6 +445,7 @@ describe("ListConfig title view model", () => {
             folder: "Quiet Morning",
           },
         ],
+        createdAt: "2026-04-13T00:00:00Z",
       }),
       [
         {

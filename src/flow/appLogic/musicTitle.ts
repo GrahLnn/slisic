@@ -1,5 +1,5 @@
-import type { Collection, Group, Music, PlayList } from "@/src/cmd";
-import type { PlaylistUpsertResult, SpectrumMusicDraft } from "./core";
+import type { Collection, Group, Music } from "@/src/cmd";
+import type { SpectrumMusicDraft } from "./core";
 
 export interface MusicEdit {
   alias: string;
@@ -396,33 +396,6 @@ export function updateMusicInCollections(
   return collections.map((collection) => updateMusicInCollection(collection, edit));
 }
 
-export function updateMusicInPlaylists(
-  playlists: readonly PlayList[],
-  edit: MusicEdit,
-): PlayList[] {
-  return playlists.map((playlist) => ({
-    ...playlist,
-    collections: updateMusicInCollections(playlist.collections, edit),
-  }));
-}
-
-export function updateMusicInPlaylistPreview(
-  preview: PlaylistUpsertResult | null,
-  edit: MusicEdit,
-): PlaylistUpsertResult | null {
-  if (!preview) {
-    return null;
-  }
-
-  return {
-    ...preview,
-    playlist: {
-      ...preview.playlist,
-      collections: updateMusicInCollections(preview.playlist.collections, edit),
-    },
-  };
-}
-
 function deleteMusicFromCollection(collection: Collection, deletion: MusicDelete): Collection {
   const musics = collection.musics.filter((music) => !isMusicDeleteTarget(music, deletion));
 
@@ -463,65 +436,11 @@ export function createMusicInCollections(
   return collections.map((collection) => appendCreatedMusicToCollection(collection, create));
 }
 
-export function createMusicInPlaylists(
-  playlists: readonly PlayList[],
-  create: MusicCreate,
-): PlayList[] {
-  return playlists.map((playlist) => ({
-    ...playlist,
-    collections: createMusicInCollections(playlist.collections, create),
-  }));
-}
-
-export function createMusicInPlaylistPreview(
-  preview: PlaylistUpsertResult | null,
-  create: MusicCreate,
-): PlaylistUpsertResult | null {
-  if (!preview) {
-    return null;
-  }
-
-  return {
-    ...preview,
-    playlist: {
-      ...preview.playlist,
-      collections: createMusicInCollections(preview.playlist.collections, create),
-    },
-  };
-}
-
 export function deleteMusicFromCollections(
   collections: readonly Collection[],
   deletion: MusicDelete,
 ): Collection[] {
   return collections.map((collection) => deleteMusicFromCollection(collection, deletion));
-}
-
-export function deleteMusicFromPlaylists(
-  playlists: readonly PlayList[],
-  deletion: MusicDelete,
-): PlayList[] {
-  return playlists.map((playlist) => ({
-    ...playlist,
-    collections: deleteMusicFromCollections(playlist.collections, deletion),
-  }));
-}
-
-export function deleteMusicFromPlaylistPreview(
-  preview: PlaylistUpsertResult | null,
-  deletion: MusicDelete,
-): PlaylistUpsertResult | null {
-  if (!preview) {
-    return null;
-  }
-
-  return {
-    ...preview,
-    playlist: {
-      ...preview.playlist,
-      collections: deleteMusicFromCollections(preview.playlist.collections, deletion),
-    },
-  };
 }
 
 export function hasSpectrumMusicDraftUpdates(drafts: readonly SpectrumMusicDraft[]) {

@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { createActor, fromPromise } from "xstate";
-import type { Collection, Music, PlayList, PlayPlaylistSession } from "@/src/cmd";
+import type {
+  Collection,
+  ConfigLibraryView,
+  Music,
+  PlayList,
+  PlayListListView,
+  PlayPlaylistSession,
+} from "@/src/cmd";
 import type { ConfigDraft, SpectrumMusicDraft } from "./core";
 import { machine } from "./machine";
 import {
@@ -61,6 +68,62 @@ function createPlaylist(collection: Collection): PlayList {
   };
 }
 
+function createPlaylistSurface(playlist: PlayList): PlayListListView {
+  return {
+    name: playlist.name,
+    created_at: playlist.created_at,
+  };
+}
+
+function createConfigLibrary(collections: readonly Collection[]): ConfigLibraryView {
+  const groups = new Map<string, Music["group"]>();
+
+  for (const collection of collections) {
+    for (const music of collection.musics) {
+      groups.set(music.group.url, music.group);
+    }
+  }
+
+  return {
+    collections: collections.map((collection) => ({
+      name: collection.name,
+      url: collection.url,
+      folder: collection.folder,
+      last_updated: collection.last_updated,
+      enable_updates: collection.enable_updates,
+    })),
+    groups: [...groups.values()],
+  };
+}
+
+function createBootstrapResult(collections: readonly Collection[]): BootstrapResult {
+  const playlist = createPlaylist(collections[0] ?? createCollection([]));
+
+  return {
+    hasPlayList: collections.length > 0,
+    playlists: collections.length > 0 ? [createPlaylistSurface(playlist)] : [],
+    collections: [...collections],
+    configLibrary: createConfigLibrary(collections),
+    savePath: "C:/Music",
+  };
+}
+
+function createConfigDraftFromPlaylist(playlist: PlayList): ConfigDraft {
+  return {
+    mode: "edit",
+    name: playlist.name,
+    collections: playlist.collections.map((collection) => ({
+      name: collection.name,
+      url: collection.url,
+      folder: collection.folder,
+      last_updated: collection.last_updated,
+      enable_updates: collection.enable_updates,
+    })),
+    groups: playlist.groups,
+    createdAt: playlist.created_at,
+  };
+}
+
 describe("appLogic machine", () => {
   test("preserves the title handoff while loading an opened playlist config", async () => {
     const collection = createCollection([createMusic()]);
@@ -69,18 +132,12 @@ describe("appLogic machine", () => {
     const actor = createActor(
       machine.provide({
         actors: {
-          loadCollections: fromPromise<BootstrapResult>(async () => ({
-            hasPlayList: true,
-            playlists: [playlist],
-            collections: [collection],
-            savePath: "C:/Music",
-          })),
-          loadPlaylistDraft: fromPromise<ConfigDraft, string>(async () => ({
-            mode: "edit" as const,
-            name: playlist.name,
-            collections: playlist.collections,
-            groups: playlist.groups,
-          })),
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+          loadPlaylistDraft: fromPromise<ConfigDraft, string>(async () =>
+            createConfigDraftFromPlaylist(playlist),
+          ),
         },
       }),
     );
@@ -133,12 +190,9 @@ describe("appLogic machine", () => {
     const actor = createActor(
       machine.provide({
         actors: {
-          loadCollections: fromPromise<BootstrapResult>(async () => ({
-            hasPlayList: true,
-            playlists: [playlist],
-            collections: [collection],
-            savePath: "C:/Music",
-          })),
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
           loadPlaylistDraft: fromPromise<ConfigDraft, string>(
             () => new Promise<ConfigDraft>(() => undefined),
           ),
@@ -191,6 +245,7 @@ describe("appLogic machine", () => {
               hasPlayList: false,
               playlists: [],
               collections: [],
+              configLibrary: createConfigLibrary([]),
               savePath: "C:\\Music",
             } satisfies BootstrapResult;
           }),
@@ -247,12 +302,9 @@ describe("appLogic machine", () => {
     const actor = createActor(
       machine.provide({
         actors: {
-          loadCollections: fromPromise<BootstrapResult>(async () => ({
-            hasPlayList: true,
-            playlists: [createPlaylist(collection)],
-            collections: [collection],
-            savePath: "C:/Music",
-          })),
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
           playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
             async () => null,
           ),
@@ -368,14 +420,6 @@ describe("appLogic machine", () => {
       context.collections[0]?.musics.map((music) => music.alias),
       ["Track B"],
     );
-    assert.deepEqual(
-      context.playlists[0]?.collections[0]?.musics.map((music) => music.alias),
-      ["Track B"],
-    );
-    assert.deepEqual(
-      context.pendingPlaylistPreview?.playlist.collections[0]?.musics.map((music) => music.alias),
-      ["Track B"],
-    );
     assert.equal(context.nowPlayingTrackName, null);
     assert.equal(context.nowPlayingTrackUrl, null);
     assert.equal(context.nowPlayingTrackFilePath, null);
@@ -391,12 +435,9 @@ describe("appLogic machine", () => {
     const actor = createActor(
       machine.provide({
         actors: {
-          loadCollections: fromPromise<BootstrapResult>(async () => ({
-            hasPlayList: true,
-            playlists: [createPlaylist(collection)],
-            collections: [collection],
-            savePath: "C:/Music",
-          })),
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
           playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
             async () => null,
           ),
@@ -509,12 +550,9 @@ describe("appLogic machine", () => {
     const actor = createActor(
       machine.provide({
         actors: {
-          loadCollections: fromPromise<BootstrapResult>(async () => ({
-            hasPlayList: true,
-            playlists: [createPlaylist(collection)],
-            collections: [collection],
-            savePath: "C:/Music",
-          })),
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
           playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
             async () => null,
           ),
@@ -616,12 +654,9 @@ describe("appLogic machine", () => {
     const actor = createActor(
       machine.provide({
         actors: {
-          loadCollections: fromPromise<BootstrapResult>(async () => ({
-            hasPlayList: true,
-            playlists: [createPlaylist(collection)],
-            collections: [collection],
-            savePath: "C:/Music",
-          })),
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
           playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
             async () => null,
           ),
@@ -704,12 +739,9 @@ describe("appLogic machine", () => {
     const actor = createActor(
       machine.provide({
         actors: {
-          loadCollections: fromPromise<BootstrapResult>(async () => ({
-            hasPlayList: true,
-            playlists: [createPlaylist(collection)],
-            collections: [collection],
-            savePath: "C:/Music",
-          })),
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
           playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
             async () => null,
           ),
@@ -811,12 +843,9 @@ describe("appLogic machine", () => {
     const actor = createActor(
       machine.provide({
         actors: {
-          loadCollections: fromPromise<BootstrapResult>(async () => ({
-            hasPlayList: true,
-            playlists: [createPlaylist(collection)],
-            collections: [collection],
-            savePath: "C:/Music",
-          })),
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
           playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
             async () => null,
           ),
@@ -904,12 +933,6 @@ describe("appLogic machine", () => {
     assert.equal(createInputs[0]?.[0]?.music.alias, "Track Draft");
     assert.deepEqual(
       actor.getSnapshot().context.collections[0]?.musics.map((candidate) => candidate.alias),
-      ["Track A", "Track Draft"],
-    );
-    assert.deepEqual(
-      actor
-        .getSnapshot()
-        .context.playlists[0]?.collections[0]?.musics.map((candidate) => candidate.alias),
       ["Track A", "Track Draft"],
     );
   });

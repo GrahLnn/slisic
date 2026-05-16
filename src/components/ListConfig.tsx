@@ -17,7 +17,7 @@ import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import {
   createPlayListFromDraft,
   createConfigSidebarItemRef,
-  createConfigSidebarItems,
+  createConfigSidebarItemsFromLibrary,
   playlistTitleLayoutId,
   resolveDraftCommitTitle,
   resolvePlaylistsWithPreview,
@@ -357,6 +357,7 @@ export function ListConfig() {
   const editableTitleRef = useRef<EditableTitleHandle | null>(null);
   const {
     activeLayoutId,
+    configLibrary,
     collections,
     draft,
     draftBaseline,
@@ -370,7 +371,7 @@ export function ListConfig() {
   const emptyStateRef = useRef<ListConfigEmptyState | null>(null);
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
   const [isDeletePending, setIsDeletePending] = useState(false);
-  const libraryItems = createConfigSidebarItems(collections);
+  const libraryItems = createConfigSidebarItemsFromLibrary(configLibrary);
   const liveRenderData = {
     savePath,
     viewModel: resolveListConfigViewModel({
@@ -448,13 +449,8 @@ export function ListConfig() {
         ...draft,
         name: titleResolution.name,
       };
-      const preservedCreatedAt =
-        draft.mode === "edit"
-          ? (playlists.find((playlist) => playlist.name === draftBaseline?.name)?.created_at ??
-            null)
-          : null;
       const committedPlaylist = createPlayListFromDraft(committedDraft, {
-        createdAt: preservedCreatedAt,
+        createdAt: draft.mode === "edit" ? draft.createdAt : null,
       });
       const commitRequest = {
         playlist: committedPlaylist,

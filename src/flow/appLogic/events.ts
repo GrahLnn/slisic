@@ -14,18 +14,19 @@ import {
 import {
   crab,
   type Collection,
+  type ConfigLibraryView,
   type Music,
   type NowPlayingTrackChangedEvent,
-  type PlayList,
   type PlaybackContinuationMode,
   type PlaybackStatusPayload,
+  type PlayListListView,
   type PlayPlaylistSession,
 } from "@/src/cmd";
 import { getName } from "@tauri-apps/api/app";
 import { documentDir, join } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  createDraftFromPlayList,
+  createDraftFromPlayListConfig,
   resolveSavedPath,
   type CollectionUpdatesChange,
   type ConfigSidebarItemRef,
@@ -37,8 +38,9 @@ import { createSpectrumMusicDrafts, type MusicDraftDelete } from "./musicTitle";
 
 export interface BootstrapResult {
   hasPlayList: boolean;
-  playlists: PlayList[];
+  playlists: PlayListListView[];
   collections: Collection[];
+  configLibrary: ConfigLibraryView;
   savePath: string;
 }
 
@@ -263,22 +265,27 @@ export const invoker = createActors({
         hasPlayList: false,
         playlists: [],
         collections: [],
+        configLibrary: {
+          collections: [],
+          groups: [],
+        },
         savePath,
       };
     }
 
-    const [playlists, collections] = await Promise.all([
+    const [playlists, configLibrary] = await Promise.all([
       crab.listPlaylists(),
-      crab.listCollections(),
+      crab.listConfigLibrary(),
     ]);
 
     return playlists.match({
       Ok: (playlistValues) =>
-        collections.match({
-          Ok: (collectionValues) => ({
+        configLibrary.match({
+          Ok: (libraryValue) => ({
             hasPlayList: true,
             playlists: playlistValues,
-            collections: collectionValues,
+            collections: [],
+            configLibrary: libraryValue,
             savePath,
           }),
           Err: (error) => {
@@ -291,7 +298,7 @@ export const invoker = createActors({
     });
   },
   loadPlaylistDraft: async (playlistName: string): Promise<ConfigDraft> => {
-    const result = await crab.getPlaylist(playlistName);
+    const result = await crab.getPlaylistConfig(playlistName);
 
     return result.match({
       Ok: (playlist) => {
@@ -299,7 +306,7 @@ export const invoker = createActors({
           throw new Error(`playlist \`${playlistName}\` not found`);
         }
 
-        return createDraftFromPlayList(playlist);
+        return createDraftFromPlayListConfig(playlist);
       },
       Err: (error) => {
         throw new Error(error);
