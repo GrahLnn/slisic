@@ -89,6 +89,9 @@ fn playback_selection(
                 )]
             })
             .unwrap_or_default(),
+        download_scopes: std::iter::once(collection_url.to_string())
+            .chain(group_url.map(str::to_string))
+            .collect(),
     }
 }
 
@@ -164,6 +167,32 @@ fn playlist_selection_active_downloads_match_collection_and_group_domains() {
             DownloadTaskStatus::Downloading,
         ),
     ];
+
+    assert!(playlist_selection_has_relevant_active_downloads(
+        &selection, &tasks
+    ));
+}
+
+#[test]
+fn playlist_selection_active_downloads_match_explicit_parent_download_scope() {
+    let selection = PlaylistPlaybackSelection {
+        playlist_name: "Focus".to_string(),
+        collections: vec![],
+        groups: vec![PlaylistPlaybackGroupRef::new_for_test(
+            "Disc 1",
+            "https://example.com/album#disc-1",
+            "disc-1",
+        )],
+        download_scopes: vec![
+            "https://example.com/album#disc-1".to_string(),
+            "https://example.com/album".to_string(),
+        ],
+    };
+    let tasks = vec![download_task(
+        "https://example.com/album",
+        Some("https://example.com/album"),
+        DownloadTaskStatus::Persisting,
+    )];
 
     assert!(playlist_selection_has_relevant_active_downloads(
         &selection, &tasks

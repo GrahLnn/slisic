@@ -1,9 +1,7 @@
-import type { PlayList } from "@/src/cmd";
+import type { PlaylistDraftCommit, PlaylistUpsertResult } from "../appLogic/core";
 
-export interface PlaylistCommitRequest {
-  playlist: PlayList;
-  previousName: string | null;
-}
+export type PlaylistCommitRequest = PlaylistDraftCommit;
+export type { PlaylistUpsertResult };
 
 export interface PlaylistCommitContext {
   queue: PlaylistCommitRequest[];

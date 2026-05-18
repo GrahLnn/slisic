@@ -2,7 +2,7 @@ import type { PlayListListView } from "@/src/cmd";
 import type {
   CollectionTitleHandoff,
   CollectionTitleTone,
-  PlaylistUpsertResult,
+  PlaylistPreview,
 } from "@/src/flow/appLogic/core";
 import {
   CREATE_COLLECTION_LAYOUT_ID,
@@ -46,7 +46,7 @@ export interface PlayListPageRenderData {
   activeLayoutId: string | null;
   hasPlayList: boolean | null;
   playlists: PlayListListView[];
-  pendingPlaylistPreview: PlaylistUpsertResult | null;
+  pendingPlaylistPreview?: PlaylistPreview | null;
   playingPlaylistName: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   pressedLayoutId: string | null;
@@ -71,7 +71,7 @@ export interface PlayListPageItemViewModel {
   titleHoverVisual: PlayListTitleHandoffInstruction["titleHoverVisual"];
   titleHoverRetainLease: PlayListPageTitleHoverRetainLease;
   commitGesture: PlayListPageCommitGesture;
-  playlistName?: string;
+  playlistName: string;
 }
 
 type PlayListPageDisplayLock = PlayListTitleHandoffDisplayLock;
@@ -115,7 +115,7 @@ export function shouldEnablePlayListPageTitleShare(pageState: MainStateT) {
 export function shouldRenderPlayListPageContent(args: {
   hasPlayList: boolean | null;
   visiblePlaylistCount: number;
-  hasPendingPreview: boolean;
+  hasPendingPreview?: boolean;
   hasActiveLayoutId: boolean;
   hasTitleToneHandoff: boolean;
 }) {
@@ -324,7 +324,7 @@ export function resolvePlayListPageViewModel(
 ): PlayListPageViewModel {
   const visiblePlaylists = resolvePlaylistsWithPreview(
     renderData.playlists,
-    renderData.pendingPlaylistPreview,
+    renderData.pendingPlaylistPreview ?? null,
   );
   const titleShareEnabled = shouldEnablePlayListPageTitleShare(renderData.pageState);
   const transition = resolveTitleSharePageTransition({
@@ -419,7 +419,7 @@ export function resolvePlayListPageViewModel(
       }).titleHoverVisual,
       titleHoverRetainLease: "timed",
       commitGesture: "primary-and-secondary",
+      playlistName: "Create a List",
     },
   };
 }
-

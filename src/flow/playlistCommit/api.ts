@@ -1,11 +1,11 @@
-import { createActor } from "xstate";
 import { createSender } from "@grahlnn/fn/flow";
+import { createActor } from "xstate";
 import { machine } from "./machine";
 import { payloads, sig } from "./events";
 import type { PlaylistCommitRequest } from "./core";
 
-export const actor = createActor(machine);
-const send = createSender(actor);
+export let actor = createActor(machine);
+let send = createSender(actor);
 const commitRequested = payloads["playlist.commit.requested"];
 
 let started = false;
@@ -25,6 +25,12 @@ export function stop() {
   }
 
   actor.stop();
+  started = false;
+}
+
+export function resetRuntimeActor() {
+  actor = createActor(machine);
+  send = createSender(actor);
   started = false;
 }
 

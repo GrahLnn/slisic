@@ -18,7 +18,8 @@ use ffplayr::{Playback, PlaybackRequest, PlaybackTimeRange};
 #[cfg(not(test))]
 use std::path::Path;
 #[cfg(not(test))]
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(test))]
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 #[cfg(not(test))]
@@ -40,6 +41,7 @@ pub struct PlayerRuntime {
     app: AppHandle,
     playback: Mutex<Option<Playback>>,
     session: Mutex<Option<ActivePlaybackSession>>,
+    start_requests: PlaybackStartRequestRegistry,
     active_request_track: RwLock<Option<PlaybackTrack>>,
     active_playback_range: RwLock<Option<ActivePlaybackRange>>,
     spectrum_playback_scope: RwLock<Option<SpectrumPlaybackScope>>,
@@ -70,6 +72,25 @@ struct ActivePlaybackSession {
 struct SpectrumPlaybackStartPlan {
     session: PlaybackSession,
     track: PlaybackTrack,
+}
+
+#[cfg(not(test))]
+#[derive(Debug)]
+pub(crate) struct PlaybackStartRequestSuperseded;
+
+#[cfg(not(test))]
+impl std::fmt::Display for PlaybackStartRequestSuperseded {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("playback start request was superseded")
+    }
+}
+
+#[cfg(not(test))]
+impl std::error::Error for PlaybackStartRequestSuperseded {}
+
+#[cfg(not(test))]
+pub(crate) fn is_playback_start_request_superseded(error: &anyhow::Error) -> bool {
+    error.is::<PlaybackStartRequestSuperseded>()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +133,32 @@ pub(crate) struct PlaybackSessionHandle {
     generation: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaybackStartRequestHandle {
+    generation: u64,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PlaybackStartRequestRegistry {
+    generation: AtomicU64,
+}
+
+impl PlaybackStartRequestRegistry {
+    pub(crate) fn claim(&self) -> PlaybackStartRequestHandle {
+        PlaybackStartRequestHandle {
+            generation: self.generation.fetch_add(1, Ordering::SeqCst) + 1,
+        }
+    }
+
+    pub(crate) fn cancel_pending(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn is_current(&self, handle: &PlaybackStartRequestHandle) -> bool {
+        self.generation.load(Ordering::SeqCst) == handle.generation
+    }
+}
+
 #[cfg(not(test))]
 pub fn initialize_runtime(app: AppHandle) {
     let _ = PLAYER_RUNTIME.get_or_init(|| {
@@ -119,6 +166,7 @@ pub fn initialize_runtime(app: AppHandle) {
             app,
             playback: Mutex::new(None),
             session: Mutex::new(None),
+            start_requests: PlaybackStartRequestRegistry::default(),
             active_request_track: RwLock::new(None),
             active_playback_range: RwLock::new(None),
             spectrum_playback_scope: RwLock::new(None),
@@ -148,7 +196,26 @@ pub(crate) async fn play_tracks_from_initial_track_with_queue_mode(
     initial_track: PlaybackTrack,
     queue_mode: PlaybackQueueMode,
 ) -> Result<PlaybackSessionHandle> {
-    play_tracks_with_initial_track(playlist_name, tracks, Some(initial_track), queue_mode).await
+    play_tracks_with_initial_track(playlist_name, tracks, Some(initial_track), queue_mode, None)
+        .await
+}
+
+#[cfg(not(test))]
+pub(crate) async fn play_tracks_from_initial_track_for_request_with_queue_mode(
+    request: &PlaybackStartRequestHandle,
+    playlist_name: String,
+    tracks: Vec<PlaybackTrack>,
+    initial_track: PlaybackTrack,
+    queue_mode: PlaybackQueueMode,
+) -> Result<PlaybackSessionHandle> {
+    play_tracks_with_initial_track(
+        playlist_name,
+        tracks,
+        Some(initial_track),
+        queue_mode,
+        Some(*request),
+    )
+    .await
 }
 
 #[cfg(not(test))]
@@ -157,6 +224,7 @@ async fn play_tracks_with_initial_track(
     tracks: Vec<PlaybackTrack>,
     initial_track: Option<PlaybackTrack>,
     queue_mode: PlaybackQueueMode,
+    start_request: Option<PlaybackStartRequestHandle>,
 ) -> Result<PlaybackSessionHandle> {
     if tracks.is_empty() {
         bail!("playback session `{playlist_name}` does not contain any playable tracks");
@@ -170,12 +238,25 @@ async fn play_tracks_with_initial_track(
     }
 
     let runtime = runtime()?;
+    let start_request = start_request.unwrap_or_else(|| runtime.claim_playback_start_request());
+    if !runtime.is_playback_start_request_current(&start_request) {
+        return Err(PlaybackStartRequestSuperseded.into());
+    }
+
     let active_binary_task = ActiveBinaryTaskGuard::new(Arc::clone(runtime));
     let playback = runtime.playback()?;
+    if !runtime.is_playback_start_request_current(&start_request) {
+        return Err(PlaybackStartRequestSuperseded.into());
+    }
+
     let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
     if let Err(error) = playback.stop().await {
         eprintln!("[player] failed to stop previous playback before restart: {error}");
+    }
+    if !runtime.is_playback_start_request_current(&start_request) {
+        runtime.generation.fetch_add(1, Ordering::SeqCst);
+        return Err(PlaybackStartRequestSuperseded.into());
     }
     runtime.set_temporary_playback_pause(false)?;
 
@@ -301,8 +382,12 @@ pub async fn play_track_in_current_session(
         bail!("spectrum playback signal is not active");
     }
 
+    let start_request = runtime.claim_playback_start_request();
     if let Err(error) = playback.stop().await {
         eprintln!("[player] failed to stop previous playback before selecting track: {error}");
+    }
+    if !runtime.is_playback_start_request_current(&start_request) {
+        return Err(PlaybackStartRequestSuperseded.into());
     }
     if !runtime.is_spectrum_playback_scope_active(scope)? {
         bail!("spectrum playback signal is not active");
@@ -358,8 +443,21 @@ pub(crate) fn active_request_track_snapshot_for_session(
 }
 
 #[cfg(not(test))]
+pub(crate) fn claim_playback_start_request() -> Result<PlaybackStartRequestHandle> {
+    Ok(runtime()?.claim_playback_start_request())
+}
+
+#[cfg(not(test))]
+pub(crate) fn is_playback_start_request_current(
+    handle: &PlaybackStartRequestHandle,
+) -> Result<bool> {
+    Ok(runtime()?.is_playback_start_request_current(handle))
+}
+
+#[cfg(not(test))]
 pub async fn stop_playback() -> Result<bool> {
     let runtime = runtime()?;
+    runtime.cancel_pending_playback_start_requests();
     runtime.generation.fetch_add(1, Ordering::SeqCst);
     runtime.clear_active_session()?;
     runtime.set_temporary_playback_pause(false)?;
@@ -409,7 +507,7 @@ pub async fn resume_playback() -> Result<bool> {
 }
 
 #[cfg(not(test))]
-pub async fn pause_spectrum_music(scope_id: u64, _track: PlaybackTrack) -> Result<bool> {
+pub async fn pause_spectrum_music(scope_id: u64) -> Result<bool> {
     let runtime = runtime()?;
     if !runtime.is_spectrum_playback_scope_active(SpectrumPlaybackScope { id: scope_id })? {
         return Ok(false);
@@ -801,6 +899,18 @@ fn waveform_cache_root(app: &AppHandle) -> Result<std::path::PathBuf> {
 
 #[cfg(not(test))]
 impl PlayerRuntime {
+    fn claim_playback_start_request(&self) -> PlaybackStartRequestHandle {
+        self.start_requests.claim()
+    }
+
+    fn cancel_pending_playback_start_requests(&self) {
+        self.start_requests.cancel_pending();
+    }
+
+    fn is_playback_start_request_current(&self, handle: &PlaybackStartRequestHandle) -> bool {
+        self.start_requests.is_current(handle)
+    }
+
     fn playback(&self) -> Result<Playback> {
         let mut playback = self
             .playback

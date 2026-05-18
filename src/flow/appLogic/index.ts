@@ -1,6 +1,6 @@
 import { useSelector } from "@xstate/react";
 import { me } from "@grahlnn/fn";
-import type { ConfigSidebarItemRef, PlaylistUpsertResult } from "./core";
+import type { ConfigSidebarItemRef, PlaylistPreview, PlaylistUpsertResult } from "./core";
 import {
   chooseSavePath,
   deletePlaylistRecord,
@@ -28,12 +28,12 @@ import {
   playlistUpserted,
   resetRuntimeActor,
   savePathChanged,
+  send,
   spectrumMusicDraftReset,
   spectrumMusicDeleted,
   spectrumMusicCreateStarted,
   spectrumPlaybackScopeChanged,
   spectrumMusicRangeChanged,
-  send,
   spectrumMusicNameChanged,
 } from "./runtime";
 import { action as pasteDownloadAction } from "../pasteDownload";
@@ -77,6 +77,15 @@ function summarizeContext(context: ActorSnapshot["context"]) {
     nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
     spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
     spectrumMusicDraftCount: context.spectrumMusicDrafts.length,
+    pendingSpectrumMusicCreateId: context.pendingSpectrumMusicCreateId,
+    spectrumMusicSourceContext: context.spectrumMusicSourceContext
+      ? {
+          sourceCollectionUrl: context.spectrumMusicSourceContext.source_collection_url,
+          sourceEndMs: context.spectrumMusicSourceContext.source_end_ms,
+          sourceStartMs: context.spectrumMusicSourceContext.source_start_ms,
+          sourceUrl: context.spectrumMusicSourceContext.source_url,
+        }
+      : null,
     error: context.error,
     titleToneHandoffLayoutId: context.titleToneHandoff?.layoutId ?? null,
     titleToneHandoffTone: context.titleToneHandoff?.tone ?? null,
@@ -147,7 +156,8 @@ function requestPlaybackStop() {
 
 async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
   if (effect.kind === "enterSpectrumPlaybackScope") {
-    send(spectrumPlaybackScopeChanged.load(await enterSpectrumPlaybackScope()));
+    const scopeId = await enterSpectrumPlaybackScope();
+    send(spectrumPlaybackScopeChanged.load(scopeId));
     return;
   }
 
@@ -155,12 +165,11 @@ async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
     if (effect.scopeId !== null) {
       await exitSpectrumPlaybackScope(effect.scopeId);
     }
-    if (
-      shouldCommitSpectrumPlaybackScopeExit({
-        currentScopeId: actor.getSnapshot().context.spectrumPlaybackScopeId,
-        requestedScopeId: effect.scopeId,
-      })
-    ) {
+    const shouldCommitExit = shouldCommitSpectrumPlaybackScopeExit({
+      currentScopeId: actor.getSnapshot().context.spectrumPlaybackScopeId,
+      requestedScopeId: effect.scopeId,
+    });
+    if (shouldCommitExit) {
       send(spectrumPlaybackScopeChanged.load(null));
     }
     return;
@@ -421,7 +430,7 @@ export const action = {
       return false;
     }
   },
-  previewPlaylist: (payload: PlaylistUpsertResult | null) => {
+  previewPlaylist: (payload: PlaylistPreview | null) => {
     ensureStarted();
     send(playlistPreviewChanged.load(payload));
   },

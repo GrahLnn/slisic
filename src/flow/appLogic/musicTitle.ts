@@ -1,4 +1,4 @@
-import type { Collection, Group, Music } from "@/src/cmd";
+import type { Collection, Music, SpectrumMusicSourceContext } from "@/src/cmd";
 import type { SpectrumMusicDraft } from "./core";
 
 export interface MusicEdit {
@@ -219,6 +219,45 @@ export function mergeSpectrumMusicDrafts(args: {
   }
 
   return merged;
+}
+
+function mergeSpectrumPendingCreateDraftEvidence(args: {
+  draft: SpectrumMusicDraft;
+  source: SpectrumMusicSourceContext;
+}): SpectrumMusicDraft {
+  if (args.draft.kind !== "pending-create" || args.draft.sourceUrl !== args.source.source_url) {
+    return args.draft;
+  }
+
+  const sourceEndMs = normalizeSpectrumMusicRangeBoundary(args.source.source_end_ms);
+  if (sourceEndMs === null || sourceEndMs <= 0) {
+    return args.draft;
+  }
+
+  return {
+    ...args.draft,
+    endMs: args.draft.endMs ?? sourceEndMs,
+    sourceCollectionUrl: args.source.source_collection_url,
+    sourceEndMs,
+    sourceGroup: args.source.source_group,
+    sourcePath: args.source.source_path,
+  };
+}
+
+export function mergeSpectrumMusicDraftsWithSourceContext(args: {
+  drafts: readonly SpectrumMusicDraft[];
+  source: SpectrumMusicSourceContext | null;
+}): SpectrumMusicDraft[] {
+  if (!args.source) {
+    return [...args.drafts];
+  }
+
+  return args.drafts.map((draft) =>
+    mergeSpectrumPendingCreateDraftEvidence({
+      draft,
+      source: args.source!,
+    }),
+  );
 }
 
 export function createSpectrumMusicDraftIdentity(args: {
@@ -472,9 +511,9 @@ export function changeSpectrumMusicDraftName(
 
 function createPendingSpectrumMusicDraft(args: {
   sourceEndMs: number;
-  sourceCollectionUrl: string;
-  sourceGroup: Group;
-  sourcePath: string | null;
+  sourceCollectionUrl: string | null;
+  sourceGroup: SpectrumMusicSourceContext["source_group"] | null;
+  sourcePath: SpectrumMusicSourceContext["source_path"];
   sourceUrl: string;
 }): SpectrumMusicDraft | null {
   const sourceEndMs = normalizeSpectrumMusicRangeBoundary(args.sourceEndMs);
@@ -505,83 +544,48 @@ function createPendingSpectrumMusicDraft(args: {
   };
 }
 
-function resolveSpectrumSourceEndMs(
-  musics: readonly Pick<Music, "end_ms" | "start_ms" | "url">[],
-  sourceUrl: string,
-) {
-  return musics.reduce<number | null>((currentEndMs, music) => {
-    const startMs = normalizeSpectrumMusicRangeBoundary(music.start_ms);
-    const endMs = normalizeSpectrumMusicRangeBoundary(music.end_ms);
-
-    if (music.url !== sourceUrl || startMs === null || endMs === null || startMs >= endMs) {
-      return currentEndMs;
-    }
-
-    return currentEndMs === null ? endMs : Math.max(currentEndMs, endMs);
-  }, null);
-}
-
 export function activateSpectrumNewMusicDraft(
   drafts: readonly SpectrumMusicDraft[],
   id: string,
   args: {
-    collections: readonly Collection[];
-    sourceEndMs: number | null;
-    sourceStartMs: number | null;
-    sourceUrl: string | null;
+    fallbackSource?: {
+      endMs: number | null;
+      sourceUrl: string | null;
+    };
+    source: SpectrumMusicSourceContext | null;
   },
 ): SpectrumMusicDraft[] {
-  const sourceStartMs = normalizeSpectrumMusicRangeBoundary(args.sourceStartMs);
-  const sourceEndMs = normalizeSpectrumMusicRangeBoundary(args.sourceEndMs);
+  const source = args.source;
+  const sourceUrl = source?.source_url ?? args.fallbackSource?.sourceUrl ?? null;
+  const sourceStartMs =
+    source === null ? 0 : normalizeSpectrumMusicRangeBoundary(source.source_start_ms);
+  const sourceEndMs = normalizeSpectrumMusicRangeBoundary(
+    source?.source_end_ms ?? args.fallbackSource?.endMs ?? null,
+  );
   if (
-    !args.sourceUrl ||
+    !sourceUrl ||
     sourceStartMs === null ||
     sourceEndMs === null ||
     sourceStartMs >= sourceEndMs ||
     sourceEndMs <= 0 ||
-    id !== createSpectrumNewMusicDraftIdentity({ sourceUrl: args.sourceUrl })
+    id !== createSpectrumNewMusicDraftIdentity({ sourceUrl })
   ) {
     return [...drafts];
   }
 
-  const sourceMusic = args.collections
-    .flatMap((collection) =>
-      collection.musics.map((music) => ({
-        collection,
-        music,
-      })),
-    )
-    .find(
-      ({ music }) =>
-        music.url === args.sourceUrl &&
-        music.start_ms === sourceStartMs &&
-        music.end_ms === sourceEndMs,
-    );
-  if (!sourceMusic) {
-    return [...drafts];
-  }
-
-  const sourceExtentEndMs = resolveSpectrumSourceEndMs(
-    sourceMusic.collection.musics,
-    args.sourceUrl,
-  );
-  if (sourceExtentEndMs === null) {
-    return [...drafts];
-  }
-
   const pendingDraft = createPendingSpectrumMusicDraft({
-    sourceEndMs: sourceExtentEndMs,
-    sourceCollectionUrl: sourceMusic.collection.url,
-    sourceGroup: sourceMusic.music.group,
-    sourcePath: sourceMusic.music.path,
-    sourceUrl: sourceMusic.music.url,
+    sourceEndMs,
+    sourceCollectionUrl: source?.source_collection_url ?? null,
+    sourceGroup: source?.source_group ?? null,
+    sourcePath: source?.source_path ?? null,
+    sourceUrl,
   });
   if (!pendingDraft) {
     return [...drafts];
   }
 
   const hasPending = drafts.some(
-    (draft) => draft.kind === "pending-create" && draft.sourceUrl === args.sourceUrl,
+    (draft) => draft.kind === "pending-create" && draft.sourceUrl === sourceUrl,
   );
   if (hasPending) {
     return [...drafts];
@@ -722,6 +726,9 @@ export function createMusicDraftCreateFromDraft(
     normalizeSpectrumMusicDraftRangeBoundary(draft.endMs) ??
     normalizeSpectrumMusicRangeBoundary(draft.sourceEndMs);
   if (title.length === 0 || startMs === null || endMs === null || startMs >= endMs) {
+    return null;
+  }
+  if (!draft.sourceCollectionUrl || !draft.sourceGroup) {
     return null;
   }
 

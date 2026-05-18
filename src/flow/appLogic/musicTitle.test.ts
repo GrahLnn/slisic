@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { Collection } from "@/src/cmd";
+import type { Collection, SpectrumMusicSourceContext } from "@/src/cmd";
 import {
   activateSpectrumNewMusicDraft,
   changeSpectrumMusicDraftValueRange,
@@ -44,6 +44,22 @@ const sampleCollection: Collection = {
   last_updated: "2026-04-13T00:00:00Z",
   enable_updates: null,
 };
+
+function sampleSpectrumMusicSourceContext(
+  overrides: Partial<SpectrumMusicSourceContext> = {},
+): SpectrumMusicSourceContext {
+  const music = sampleCollection.musics[0]!;
+
+  return {
+    source_collection_url: sampleCollection.url,
+    source_end_ms: music.end_ms,
+    source_group: music.group,
+    source_path: music.path,
+    source_start_ms: music.start_ms,
+    source_url: music.url,
+    ...overrides,
+  };
+}
 
 function createSampleSpectrumMusicDraft() {
   return (
@@ -461,10 +477,7 @@ describe("musicDraft", () => {
       [],
       createSpectrumNewMusicDraftIdentity({ sourceUrl: "https://example.com/quiet-morning#a" }),
       {
-        collections: [sampleCollection],
-        sourceEndMs: 120_000,
-        sourceStartMs: 0,
-        sourceUrl: "https://example.com/quiet-morning#a",
+        source: sampleSpectrumMusicSourceContext(),
       },
     );
 
@@ -482,28 +495,10 @@ describe("musicDraft", () => {
       [],
       createSpectrumNewMusicDraftIdentity({ sourceUrl: "https://example.com/quiet-morning#a" }),
       {
-        collections: [
-          {
-            ...sampleCollection,
-            musics: [
-              {
-                ...sampleCollection.musics[0]!,
-                alias: "Track A Opening",
-                end_ms: 120_000,
-                start_ms: 0,
-              },
-              {
-                ...sampleCollection.musics[0]!,
-                alias: "Track A Duplicate Segment",
-                start_ms: 120_000,
-                end_ms: 240_000,
-              },
-            ],
-          },
-        ],
-        sourceEndMs: 240_000,
-        sourceStartMs: 120_000,
-        sourceUrl: "https://example.com/quiet-morning#a",
+        source: sampleSpectrumMusicSourceContext({
+          source_end_ms: 240_000,
+          source_start_ms: 120_000,
+        }),
       },
     );
 
@@ -528,10 +523,7 @@ describe("musicDraft", () => {
       [],
       createSpectrumNewMusicDraftIdentity({ sourceUrl: "https://example.com/quiet-morning#a" }),
       {
-        collections: [sampleCollection],
-        sourceEndMs: 120_000,
-        sourceStartMs: 0,
-        sourceUrl: "https://example.com/quiet-morning#a",
+        source: sampleSpectrumMusicSourceContext(),
       },
     );
 
@@ -544,10 +536,7 @@ describe("musicDraft", () => {
       [],
       createSpectrumNewMusicDraftIdentity({ sourceUrl: "https://example.com/quiet-morning#a" }),
       {
-        collections: [sampleCollection],
-        sourceEndMs: 120_000,
-        sourceStartMs: 0,
-        sourceUrl: "https://example.com/quiet-morning#a",
+        source: sampleSpectrumMusicSourceContext(),
       },
     );
     const named = changeSpectrumMusicDraftName(
@@ -587,10 +576,7 @@ describe("musicDraft", () => {
       [],
       createSpectrumNewMusicDraftIdentity({ sourceUrl: "https://example.com/quiet-morning#a" }),
       {
-        collections: [sampleCollection],
-        sourceEndMs: 120_000,
-        sourceStartMs: 0,
-        sourceUrl: "https://example.com/quiet-morning#a",
+        source: sampleSpectrumMusicSourceContext(),
       },
     );
 

@@ -9,7 +9,6 @@ import {
   initialContext,
   playlistTitleLayoutId,
   removePlaylistFromPlaylists,
-  resolvePlaylistsWithPreview,
   removeDraftSidebarItem,
   resetContextWith,
   upsertPlaylistIntoPlaylists,
@@ -32,6 +31,7 @@ import {
   hasSpectrumMusicDraftCreates,
   hasSpectrumMusicDraftCommitOperations,
   mergeSpectrumMusicDrafts,
+  mergeSpectrumMusicDraftsWithSourceContext,
   resetSpectrumMusicDraft,
   updateMusicInCollections,
   type MusicCreate,
@@ -47,6 +47,7 @@ import {
   type MusicDeletesResult,
   type MusicCreateResult,
   type MusicCreatesResult,
+  type SpectrumMusicDraftBootstrapInput,
   type MusicUpdateResult,
   type MusicUpdatesResult,
 } from "./events";
@@ -159,6 +160,14 @@ function resolveCurrentMusicDelete(context: Context, deletions: readonly MusicDe
   );
 }
 
+function createSpectrumPlayReturnSurfaceContext(context: Context) {
+  return {
+    titleToneHandoff: context.activeLayoutId
+      ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
+      : null,
+  };
+}
+
 function createSpectrumPlayReturnContext(
   context: Context,
   args: {
@@ -185,6 +194,7 @@ function createSpectrumPlayReturnContext(
           : musicEdits.length > 0
             ? updateCollectionsWithMusicEdits(context.collections, [...musicEdits])
             : context.collections,
+    configLibrary: context.configLibrary,
     savePath: context.savePath,
     playingPlaylistName: context.playingPlaylistName,
     nowPlayingTrackName:
@@ -201,9 +211,8 @@ function createSpectrumPlayReturnContext(
         : (currentMusicEdit?.endMs ?? context.nowPlayingTrackEndMs),
     shouldStartPlayback: false,
     spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
-    titleToneHandoff: context.activeLayoutId
-      ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
-      : null,
+    spectrumMusicSourceContext: null,
+    titleToneHandoff: createSpectrumPlayReturnSurfaceContext(context).titleToneHandoff,
   });
 }
 
@@ -216,6 +225,243 @@ function createCurrentSpectrumMusicDrafts(context: Context) {
   });
 
   return currentDraft ? [currentDraft] : [];
+}
+
+function resolveSpectrumMusicDraftsWithCreateIntent(args: {
+  fallbackSource: {
+    endMs: number | null;
+    sourceUrl: string | null;
+  };
+  drafts: Context["spectrumMusicDrafts"];
+  id: string | null;
+  source: Context["spectrumMusicSourceContext"];
+}) {
+  if (args.id === null) {
+    return args.drafts;
+  }
+
+  return activateSpectrumNewMusicDraft(args.drafts, args.id, {
+    fallbackSource: args.fallbackSource,
+    source: args.source,
+  });
+}
+
+function createSpectrumMusicDraftLoadContext(
+  context: Context,
+  output: {
+    drafts: Context["spectrumMusicDrafts"];
+    source: Context["spectrumMusicSourceContext"];
+  },
+) {
+  const mergedDrafts = mergeSpectrumMusicDrafts({
+    baseDrafts: context.spectrumMusicDrafts,
+    incomingDrafts: output.drafts,
+  });
+  const draftsWithSourceEvidence = mergeSpectrumMusicDraftsWithSourceContext({
+    drafts: mergedDrafts,
+    source: output.source,
+  });
+
+  return {
+    pendingSpectrumMusicCreateId: null,
+    spectrumMusicDrafts: resolveSpectrumMusicDraftsWithCreateIntent({
+      drafts: draftsWithSourceEvidence,
+      fallbackSource: {
+        endMs: context.nowPlayingTrackEndMs,
+        sourceUrl: context.nowPlayingTrackUrl,
+      },
+      id: context.pendingSpectrumMusicCreateId,
+      source: output.source,
+    }),
+    spectrumMusicSourceContext: output.source,
+  };
+}
+
+function createSpectrumMusicCreateStartedContext(context: Context, id: string) {
+  return {
+    pendingSpectrumMusicCreateId: null,
+    spectrumMusicDrafts: activateSpectrumNewMusicDraft(context.spectrumMusicDrafts, id, {
+      fallbackSource: {
+        endMs: context.nowPlayingTrackEndMs,
+        sourceUrl: context.nowPlayingTrackUrl,
+      },
+      source: context.spectrumMusicSourceContext,
+    }),
+  };
+}
+
+function createSpectrumMusicDraftBootstrapInput(
+  context: Context,
+): SpectrumMusicDraftBootstrapInput | null {
+  if (
+    !context.nowPlayingTrackFilePath ||
+    !context.nowPlayingTrackUrl ||
+    context.nowPlayingTrackStartMs === null ||
+    context.nowPlayingTrackEndMs === null
+  ) {
+    return null;
+  }
+
+  return {
+    filePath: context.nowPlayingTrackFilePath,
+    nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+    nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+    nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+  };
+}
+
+function createOpenSpectrumContext(context: Context) {
+  return resetContextWith({
+    hasPlayList: context.hasPlayList,
+    playlists: context.playlists,
+    pendingPlaylistPreview: context.pendingPlaylistPreview,
+    collections: context.collections,
+    configLibrary: context.configLibrary,
+    savePath: context.savePath,
+    playingPlaylistName: context.playingPlaylistName,
+    nowPlayingTrackName: context.nowPlayingTrackName,
+    nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+    nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
+    nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+    nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+    spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
+    spectrumMusicDrafts: createCurrentSpectrumMusicDrafts(context),
+    spectrumMusicSourceContext: null,
+    shouldStartPlayback: false,
+    activeLayoutId: context.playingPlaylistName
+      ? playlistTitleLayoutId(context.playingPlaylistName)
+      : null,
+  });
+}
+
+function createOpenSpectrumErrorContext(context: Context) {
+  return resetContextWith({
+    hasPlayList: context.hasPlayList,
+    playlists: context.playlists,
+    pendingPlaylistPreview: context.pendingPlaylistPreview,
+    collections: context.collections,
+    configLibrary: context.configLibrary,
+    savePath: context.savePath,
+    playingPlaylistName: context.playingPlaylistName,
+    nowPlayingTrackName: context.nowPlayingTrackName,
+    nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+    nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
+    nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+    nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+    spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
+    spectrumMusicDrafts: [],
+    spectrumMusicSourceContext: null,
+    error: "missing spectrum music identity for music loading",
+  });
+}
+
+function resolvePendingPlaylistPreviewDraft(context: Context, playlistName: string) {
+  if (context.pendingPlaylistPreview?.playlist.name !== playlistName) {
+    return null;
+  }
+
+  return context.pendingPlaylistPreview.draft;
+}
+
+function createPlayReadyContext(context: Context, playlistName: string) {
+  return resetContextWith({
+    hasPlayList: context.hasPlayList,
+    playlists: context.playlists,
+    pendingPlaylistPreview: context.pendingPlaylistPreview,
+    collections: context.collections,
+    configLibrary: context.configLibrary,
+    savePath: context.savePath,
+    playingPlaylistName: playlistName,
+    nowPlayingTrackName: null,
+    shouldStartPlayback: true,
+  });
+}
+
+function createPendingPreviewPlaybackContext(context: Context, playlistName: string) {
+  return resetContextWith({
+    hasPlayList: context.hasPlayList,
+    playlists: context.playlists,
+    pendingPlaylistPreview: context.pendingPlaylistPreview,
+    collections: context.collections,
+    configLibrary: context.configLibrary,
+    savePath: context.savePath,
+    pendingPlaylistPlaybackName: playlistName,
+    playingPlaylistName: null,
+    nowPlayingTrackName: null,
+    shouldStartPlayback: false,
+    activeLayoutId: playlistTitleLayoutId(playlistName),
+    titleToneHandoff: createCollectionTitleHandoff(playlistTitleLayoutId(playlistName), "solid"),
+  });
+}
+
+function createPlaylistUpsertedContext(
+  context: Context,
+  event: { output: { playlist: Context["playlists"][number]; previousName: string | null } },
+) {
+  const shouldStartPendingPlayback =
+    context.pendingPlaylistPlaybackName === event.output.playlist.name;
+
+  return {
+    hasPlayList: true,
+    playlists: upsertPlaylistIntoPlaylists(
+      context.playlists,
+      event.output.playlist,
+      event.output.previousName,
+    ),
+    pendingPlaylistPreview: null,
+    pendingPlaylistPlaybackName: shouldStartPendingPlayback
+      ? null
+      : context.pendingPlaylistPlaybackName,
+    ...(shouldStartPendingPlayback
+      ? {
+          playingPlaylistName: event.output.playlist.name,
+          nowPlayingTrackName: null,
+          shouldStartPlayback: true,
+        }
+      : {}),
+  };
+}
+
+function createPendingPreviewConfigContext(context: Context, playlistName: string) {
+  const draft = resolvePendingPlaylistPreviewDraft(context, playlistName);
+  const activeLayoutId = playlistTitleLayoutId(playlistName);
+
+  if (!draft) {
+    return null;
+  }
+
+  return resetContextWith({
+    hasPlayList: context.hasPlayList,
+    playlists: context.playlists,
+    pendingPlaylistPreview: context.pendingPlaylistPreview,
+    collections: context.collections,
+    configLibrary: context.configLibrary,
+    savePath: context.savePath,
+    playingPlaylistName: null,
+    nowPlayingTrackName: null,
+    activeLayoutId,
+    titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
+    draftBaseline: cloneDraft(draft),
+    draft,
+  });
+}
+
+function createConfigLoadingContext(context: Context, playlistName: string) {
+  const activeLayoutId = playlistTitleLayoutId(playlistName);
+
+  return resetContextWith({
+    hasPlayList: context.hasPlayList,
+    playlists: context.playlists,
+    pendingPlaylistPreview: context.pendingPlaylistPreview,
+    collections: context.collections,
+    configLibrary: context.configLibrary,
+    savePath: context.savePath,
+    playingPlaylistName: null,
+    nowPlayingTrackName: null,
+    activeLayoutId,
+    titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
+    pendingPlaylistName: playlistName,
+  });
 }
 
 const openPlaylist = payloads["playlist.open"];
@@ -258,14 +504,7 @@ export const machine = src.createMachine({
       }),
     },
     [playlistUpserted.evt]: {
-      actions: assign(({ context, event }) => ({
-        hasPlayList: true,
-        playlists: upsertPlaylistIntoPlaylists(
-          context.playlists,
-          event.output.playlist,
-          event.output.previousName,
-        ),
-      })),
+      actions: assign(({ context, event }) => createPlaylistUpsertedContext(context, event)),
     },
     [playlistDeleted.evt]: {
       actions: assign(({ context, event }) => {
@@ -280,6 +519,10 @@ export const machine = src.createMachine({
               context.pendingPlaylistPreview.previousName === event.output)
               ? null
               : context.pendingPlaylistPreview,
+          pendingPlaylistPlaybackName:
+            context.pendingPlaylistPlaybackName === event.output
+              ? null
+              : context.pendingPlaylistPlaybackName,
         };
       }),
     },
@@ -333,6 +576,14 @@ export const machine = src.createMachine({
           nowPlayingTrackFilePath: event.output.file_path,
           nowPlayingTrackStartMs: event.output.start_ms,
           nowPlayingTrackEndMs: event.output.end_ms,
+          pendingSpectrumMusicCreateId:
+            context.nowPlayingTrackFilePath === event.output.file_path
+              ? context.pendingSpectrumMusicCreateId
+              : null,
+          spectrumMusicSourceContext:
+            context.nowPlayingTrackFilePath === event.output.file_path
+              ? context.spectrumMusicSourceContext
+              : null,
           spectrumMusicDrafts:
             context.nowPlayingTrackFilePath === event.output.file_path
               ? context.spectrumMusicDrafts
@@ -385,12 +636,24 @@ export const machine = src.createMachine({
     [ss.mainx.State.ready]: {
       on: {
         run: ss.mainx.State.loading,
+        [playlistUpserted.evt]: [
+          {
+            guard: ({ context, event }) =>
+              context.pendingPlaylistPlaybackName === event.output.playlist.name,
+            target: ss.mainx.State.play,
+            actions: assign(({ context, event }) => createPlaylistUpsertedContext(context, event)),
+          },
+          {
+            actions: assign(({ context, event }) => createPlaylistUpsertedContext(context, event)),
+          },
+        ],
         opencreate: {
           target: ss.mainx.State.config,
           actions: assign(({ context }) =>
             resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
               configLibrary: context.configLibrary,
               savePath: context.savePath,
@@ -403,48 +666,44 @@ export const machine = src.createMachine({
             }),
           ),
         },
-        [playPlaylist.evt]: {
-          target: ss.mainx.State.play,
-          actions: assign(({ context, event }) =>
-            resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: event.output,
-              nowPlayingTrackName: null,
-              shouldStartPlayback: true,
-            }),
-          ),
-        },
-        [openPlaylist.evt]: {
-          target: ss.mainx.State.configLoading,
-          actions: assign(({ context, event }) => {
-            const activeLayoutId = playlistTitleLayoutId(event.output);
-
-            return resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              pendingPlaylistPreview: context.pendingPlaylistPreview,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: null,
-              nowPlayingTrackName: null,
-              activeLayoutId,
-              titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
-              pendingPlaylistName: event.output,
-            });
-          }),
-        },
+        [playPlaylist.evt]: [
+          {
+            guard: ({ context, event }) =>
+              resolvePendingPlaylistPreviewDraft(context, event.output) !== null,
+            actions: assign(({ context, event }) =>
+              createPendingPreviewPlaybackContext(context, event.output),
+            ),
+          },
+          {
+            target: ss.mainx.State.play,
+            actions: assign(({ context, event }) => createPlayReadyContext(context, event.output)),
+          },
+        ],
+        [openPlaylist.evt]: [
+          {
+            guard: ({ context, event }) =>
+              resolvePendingPlaylistPreviewDraft(context, event.output) !== null,
+            target: ss.mainx.State.config,
+            actions: assign(
+              ({ context, event }) =>
+                createPendingPreviewConfigContext(context, event.output) ??
+                createConfigLoadingContext(context, event.output),
+            ),
+          },
+          {
+            target: ss.mainx.State.configLoading,
+            actions: assign(({ context, event }) =>
+              createConfigLoadingContext(context, event.output),
+            ),
+          },
+        ],
       },
     },
     [ss.mainx.State.play]: {
       invoke: {
         id: invoker.playPlaylist.id,
         src: invoker.playPlaylist.src,
-        input: ({ context }) => {
+        input: ({ context }: { context: Context }) => {
           if (!context.playingPlaylistName) {
             throw new Error("missing playlist name for playback");
           }
@@ -460,6 +719,7 @@ export const machine = src.createMachine({
             resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
               configLibrary: context.configLibrary,
               savePath: context.savePath,
@@ -471,6 +731,7 @@ export const machine = src.createMachine({
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
               spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
               spectrumMusicDrafts: context.spectrumMusicDrafts,
+              spectrumMusicSourceContext: null,
               error: toErrorMessage(event.error),
             }),
           ),
@@ -484,6 +745,7 @@ export const machine = src.createMachine({
             resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
               configLibrary: context.configLibrary,
               savePath: context.savePath,
@@ -498,6 +760,7 @@ export const machine = src.createMachine({
             resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
               configLibrary: context.configLibrary,
               savePath: context.savePath,
@@ -510,109 +773,67 @@ export const machine = src.createMachine({
             }),
           ),
         },
-        [playPlaylist.evt]: {
-          target: ss.mainx.State.play,
-          reenter: true,
-          actions: assign(({ context, event }) =>
-            resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: event.output,
-              nowPlayingTrackName: null,
-              shouldStartPlayback: true,
-            }),
-          ),
-        },
-        [openPlaylist.evt]: {
-          target: ss.mainx.State.configLoading,
-          actions: assign(({ context, event }) => {
-            const activeLayoutId = playlistTitleLayoutId(event.output);
-
-            return resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: null,
-              nowPlayingTrackName: null,
-              activeLayoutId,
-              titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
-              pendingPlaylistName: event.output,
-            });
-          }),
-        },
-        openspectrum: {
-          target: ss.mainx.State.spectrumLoadingMusics,
-          actions: assign(({ context }) =>
-            resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              pendingPlaylistPreview: context.pendingPlaylistPreview,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: context.playingPlaylistName,
-              nowPlayingTrackName: context.nowPlayingTrackName,
-              nowPlayingTrackUrl: context.nowPlayingTrackUrl,
-              nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-              nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
-              nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
-              spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
-              spectrumMusicDrafts: createCurrentSpectrumMusicDrafts(context),
-              shouldStartPlayback: false,
-              activeLayoutId: context.playingPlaylistName
-                ? playlistTitleLayoutId(context.playingPlaylistName)
-                : null,
-            }),
-          ),
-        },
+        [playPlaylist.evt]: [
+          {
+            guard: ({ context, event }) =>
+              resolvePendingPlaylistPreviewDraft(context, event.output) !== null,
+            target: ss.mainx.State.ready,
+            actions: assign(({ context, event }) =>
+              createPendingPreviewPlaybackContext(context, event.output),
+            ),
+          },
+          {
+            target: ss.mainx.State.play,
+            reenter: true,
+            actions: assign(({ context, event }) => createPlayReadyContext(context, event.output)),
+          },
+        ],
+        [openPlaylist.evt]: [
+          {
+            guard: ({ context, event }) =>
+              resolvePendingPlaylistPreviewDraft(context, event.output) !== null,
+            target: ss.mainx.State.config,
+            actions: assign(
+              ({ context, event }) =>
+                createPendingPreviewConfigContext(context, event.output) ??
+                createConfigLoadingContext(context, event.output),
+            ),
+          },
+          {
+            target: ss.mainx.State.configLoading,
+            actions: assign(({ context, event }) =>
+              createConfigLoadingContext(context, event.output),
+            ),
+          },
+        ],
+        openspectrum: [
+          {
+            guard: ({ context }) => createSpectrumMusicDraftBootstrapInput(context) !== null,
+            target: ss.mainx.State.spectrum,
+            actions: assign(({ context }) => createOpenSpectrumContext(context)),
+          },
+          {
+            target: ss.mainx.State.error,
+            actions: assign(({ context }) => createOpenSpectrumErrorContext(context)),
+          },
+        ],
       },
     },
-    [ss.mainx.State.spectrumLoadingMusics]: {
+    [ss.mainx.State.spectrum]: {
       invoke: {
         id: invoker.loadSpectrumMusicDrafts.id,
         src: invoker.loadSpectrumMusicDrafts.src,
         input: ({ context }) => {
-          if (!context.nowPlayingTrackFilePath) {
-            throw new Error("missing spectrum file path for music loading");
+          const input = createSpectrumMusicDraftBootstrapInput(context);
+          if (input === null) {
+            throw new Error("missing spectrum music identity for music loading");
           }
 
-          return {
-            filePath: context.nowPlayingTrackFilePath,
-            nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
-            nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
-            nowPlayingTrackUrl: context.nowPlayingTrackUrl,
-          };
+          return input;
         },
         onDone: {
-          target: ss.mainx.State.spectrum,
           actions: assign(({ context, event }) =>
-            resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              pendingPlaylistPreview: context.pendingPlaylistPreview,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: context.playingPlaylistName,
-              nowPlayingTrackName: context.nowPlayingTrackName,
-              nowPlayingTrackUrl: context.nowPlayingTrackUrl,
-              nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-              nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
-              nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
-              spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
-              spectrumMusicDrafts: mergeSpectrumMusicDrafts({
-                baseDrafts: context.spectrumMusicDrafts,
-                incomingDrafts: event.output,
-              }),
-              shouldStartPlayback: false,
-              activeLayoutId: context.activeLayoutId,
-              titleToneHandoff: context.titleToneHandoff,
-            }),
+            createSpectrumMusicDraftLoadContext(context, event.output),
           ),
         },
         onError: {
@@ -621,6 +842,7 @@ export const machine = src.createMachine({
             resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
               configLibrary: context.configLibrary,
               savePath: context.savePath,
@@ -632,13 +854,12 @@ export const machine = src.createMachine({
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
               spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
               spectrumMusicDrafts: context.spectrumMusicDrafts,
+              spectrumMusicSourceContext: context.spectrumMusicSourceContext,
               error: toErrorMessage(event.error),
             }),
           ),
         },
       },
-    },
-    [ss.mainx.State.spectrum]: {
       on: {
         run: ss.mainx.State.loading,
         [spectrumMusicNameChanged.evt]: {
@@ -671,18 +892,9 @@ export const machine = src.createMachine({
           })),
         },
         [spectrumMusicCreateStarted.evt]: {
-          actions: assign(({ context, event }) => ({
-            spectrumMusicDrafts: activateSpectrumNewMusicDraft(
-              context.spectrumMusicDrafts,
-              event.output.id,
-              {
-                collections: context.collections,
-                sourceEndMs: context.nowPlayingTrackEndMs,
-                sourceStartMs: context.nowPlayingTrackStartMs,
-                sourceUrl: context.nowPlayingTrackUrl,
-              },
-            ),
-          })),
+          actions: assign(({ context, event }) =>
+            createSpectrumMusicCreateStartedContext(context, event.output.id),
+          ),
         },
         [spectrumMusicDraftReset.evt]: {
           actions: assign(({ context, event }) => ({
@@ -696,6 +908,7 @@ export const machine = src.createMachine({
           {
             guard: ({ context }) => hasSpectrumMusicUpdate(context),
             target: ss.mainx.State.spectrumUpdatingMusic,
+            actions: assign(({ context }) => createSpectrumPlayReturnSurfaceContext(context)),
           },
           {
             target: ss.mainx.State.play,
@@ -728,6 +941,7 @@ export const machine = src.createMachine({
                   nowPlayingTrackStartMs:
                     currentMusicEdit?.startMs ?? context.nowPlayingTrackStartMs,
                   nowPlayingTrackEndMs: currentMusicEdit?.endMs ?? context.nowPlayingTrackEndMs,
+                  spectrumMusicSourceContext: context.spectrumMusicSourceContext,
                 }
               : {};
           }),
@@ -738,6 +952,7 @@ export const machine = src.createMachine({
             resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
               configLibrary: context.configLibrary,
               savePath: context.savePath,
@@ -748,6 +963,7 @@ export const machine = src.createMachine({
               nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
               spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
+              spectrumMusicSourceContext: context.spectrumMusicSourceContext,
               error: toErrorMessage(event.error),
             }),
           ),
@@ -785,6 +1001,7 @@ export const machine = src.createMachine({
             resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
               configLibrary: context.configLibrary,
               savePath: context.savePath,
@@ -795,6 +1012,7 @@ export const machine = src.createMachine({
               nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
               spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
+              spectrumMusicSourceContext: context.spectrumMusicSourceContext,
               error: toErrorMessage(event.error),
             }),
           ),
@@ -827,6 +1045,7 @@ export const machine = src.createMachine({
             resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
               configLibrary: context.configLibrary,
               savePath: context.savePath,
@@ -837,6 +1056,7 @@ export const machine = src.createMachine({
               nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
               nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
               spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
+              spectrumMusicSourceContext: context.spectrumMusicSourceContext,
               error: toErrorMessage(event.error),
             }),
           ),
@@ -860,6 +1080,7 @@ export const machine = src.createMachine({
             resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
               configLibrary: context.configLibrary,
               savePath: context.savePath,
@@ -878,6 +1099,7 @@ export const machine = src.createMachine({
             resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
               configLibrary: context.configLibrary,
               savePath: context.savePath,
@@ -898,6 +1120,7 @@ export const machine = src.createMachine({
             resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
               configLibrary: context.configLibrary,
               savePath: context.savePath,
@@ -941,6 +1164,7 @@ export const machine = src.createMachine({
             resetContextWith({
               hasPlayList: context.hasPlayList,
               playlists: context.playlists,
+              pendingPlaylistPreview: context.pendingPlaylistPreview,
               collections: context.collections,
               configLibrary: context.configLibrary,
               savePath: context.savePath,
@@ -956,28 +1180,36 @@ export const machine = src.createMachine({
             }),
           ),
         },
-        [openPlaylist.evt]: {
-          target: ss.mainx.State.configLoading,
-          actions: assign(({ context, event }) => {
-            const activeLayoutId = playlistTitleLayoutId(event.output);
+        [openPlaylist.evt]: [
+          {
+            guard: ({ context, event }) =>
+              resolvePendingPlaylistPreviewDraft(context, event.output) !== null,
+            target: ss.mainx.State.config,
+            actions: assign(({ context, event }) => {
+              const nextContext = createPendingPreviewConfigContext(context, event.output);
 
-            return resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: null,
-              nowPlayingTrackName: null,
-              activeLayoutId,
+              return nextContext
+                ? {
+                    ...nextContext,
+                    titleToneHandoff: createCollectionTitleHandoff(
+                      playlistTitleLayoutId(event.output),
+                      resolveTitleShareToneFromDraft(context.draft),
+                    ),
+                  }
+                : createConfigLoadingContext(context, event.output);
+            }),
+          },
+          {
+            target: ss.mainx.State.configLoading,
+            actions: assign(({ context, event }) => ({
+              ...createConfigLoadingContext(context, event.output),
               titleToneHandoff: createCollectionTitleHandoff(
-                activeLayoutId,
+                playlistTitleLayoutId(event.output),
                 resolveTitleShareToneFromDraft(context.draft),
               ),
-              pendingPlaylistName: event.output,
-            });
-          }),
-        },
+            })),
+          },
+        ],
         [draftNameChanged.evt]: {
           actions: assign({
             draft: ({ context, event }) =>

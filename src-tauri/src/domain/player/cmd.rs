@@ -85,17 +85,10 @@ pub async fn restore_spectrum_music(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn pause_spectrum_music(
-    scope_id: u64,
-    track: PlaybackTrackPayload,
-) -> Result<bool, String> {
-    super::service::pause_spectrum_music(
-        scope_id,
-        super::model::PlaybackTrack::try_from_payload(track)
-            .map_err(|error| format!("invalid playback track payload: {error}"))?,
-    )
-    .await
-    .map_err(|error| error.to_string())
+pub async fn pause_spectrum_music(scope_id: u64) -> Result<bool, String> {
+    super::service::pause_spectrum_music(scope_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

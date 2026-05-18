@@ -6,19 +6,16 @@ import {
 } from "../appLogic/runtime";
 import {
   activateNextCandidateCheck,
-  activateNextCandidate,
   appendCandidateItem,
   applyActiveCandidateUrlResolution,
   clearActiveCandidate,
   completeActiveCandidateProbe,
-  createDraftCollectionFromProbe,
   createInitialContext,
   deleteCandidateItem,
   failActiveCandidateEnqueue,
   failActiveCandidateProbe,
   findActiveCandidateItem,
   hasPendingCandidateToCheck,
-  hasPendingCandidateToProbe,
   removeActiveCandidate,
   toErrorMessage,
 } from "./core";
@@ -45,18 +42,11 @@ export const machine = src.createMachine({
   },
   states: {
     [ss.mainx.State.idle]: {
-      always: [
-        {
-          guard: ({ context }) => hasPendingCandidateToCheck(context),
-          target: ss.mainx.State.checking,
-          actions: assign(({ context }) => activateNextCandidateCheck(context)),
-        },
-        {
-          guard: ({ context }) => hasPendingCandidateToProbe(context),
-          target: ss.mainx.State.probing,
-          actions: assign(({ context }) => activateNextCandidate(context)),
-        },
-      ],
+      always: {
+        guard: ({ context }) => hasPendingCandidateToCheck(context),
+        target: ss.mainx.State.checking,
+        actions: assign(({ context }) => activateNextCandidateCheck(context)),
+      },
     },
     [ss.mainx.State.checking]: {
       invoke: {
@@ -121,14 +111,9 @@ export const machine = src.createMachine({
         },
         onDone: {
           target: ss.mainx.State.enqueueing,
-          actions: [
-            assign(({ context, event }) => completeActiveCandidateProbe(context, event.output)),
-            ({ event }) => {
-              sendAppLogic(
-                draftCollectionUpserted.load(createDraftCollectionFromProbe(event.output)),
-              );
-            },
-          ],
+          actions: assign(({ context, event }) =>
+            completeActiveCandidateProbe(context, event.output),
+          ),
         },
         onError: {
           target: ss.mainx.State.idle,

@@ -1,6 +1,7 @@
 use super::model::{
     Collection, CollectionSurfaceView, ConfigLibraryView, Exclude, Group, GroupSurfaceView, Music,
-    PlayList, PlayListConfigView, PlayListListView,
+    PlayList, PlayListConfigView, PlayListListView, SpectrumMusicContext,
+    SpectrumMusicSourceContext,
 };
 use anyhow::{Result, bail};
 use appdb::connection::get_db;
@@ -11,7 +12,7 @@ use appdb::repository::Repo;
 use appdb::{AutoFill, Crud, Id, Order, Store};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use surrealdb::types::{RecordId, Table};
 use surrealdb_types::SurrealValue;
@@ -186,6 +187,7 @@ pub struct PlaylistPlaybackSelection {
     pub playlist_name: String,
     pub collections: Vec<PlaylistPlaybackCollectionRef>,
     pub groups: Vec<PlaylistPlaybackGroupRef>,
+    pub download_scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -234,6 +236,26 @@ impl PlaylistPlaybackGroupRef {
     }
 }
 
+/**
+ * Behavior:
+ *   Project a committed playlist row into the stable playback selection domain.
+ *
+ * Core invariants:
+ *   - The playlist row is the only source of selected collection/group refs.
+ *   - Download readiness is represented by explicit collection URL scopes
+ *     owned by this projection, not inferred by downloads or UI fallback.
+ *   - Group-only selections carry parent collection scopes when persisted
+ *     music evidence exists; before that evidence exists they still retain
+ *     their own group URL as a stable waiting scope.
+ */
+fn push_unique_download_scope(scopes: &mut Vec<String>, url: &str) {
+    if scopes.iter().any(|scope| scope == url) {
+        return;
+    }
+
+    scopes.push(url.to_string());
+}
+
 #[derive(Debug, Clone)]
 pub struct PlaylistPlaybackTrackSource {
     pub collection_name: String,
@@ -252,8 +274,10 @@ pub async fn get_playlist_playback_selection_by_name(
     };
 
     let mut collections = Vec::with_capacity(row.collections.len());
+    let mut download_scopes = Vec::new();
     for record in row.collections {
         if let Some(collection) = load_playlist_playback_collection_ref(&record).await? {
+            push_unique_download_scope(&mut download_scopes, &collection.url);
             collections.push(collection);
         }
     }
@@ -261,6 +285,10 @@ pub async fn get_playlist_playback_selection_by_name(
     let mut groups = Vec::with_capacity(row.groups.len());
     for record in row.groups {
         if let Some(group) = load_playlist_playback_group_ref(&record).await? {
+            push_unique_download_scope(&mut download_scopes, &group.url);
+            for url in load_group_parent_collection_urls(&group).await? {
+                push_unique_download_scope(&mut download_scopes, &url);
+            }
             groups.push(group);
         }
     }
@@ -269,6 +297,7 @@ pub async fn get_playlist_playback_selection_by_name(
         playlist_name: row.name,
         collections,
         groups,
+        download_scopes,
     }))
 }
 
@@ -312,7 +341,7 @@ pub async fn delete_playlist_by_name(name: &str) -> Result<bool> {
 }
 
 pub async fn upsert_playlist(playlist: &PlayList, previous_name: Option<&str>) -> Result<PlayList> {
-    let playlist = resolve_playlist_foreign_refs(playlist).await?;
+    let foreign_ids = resolve_playlist_foreign_record_ids(playlist).await?;
     let existing_record = match previous_name {
         Some(name) => find_unique_record_id_by_string_field::<PlayList>("name", name).await?,
         None => None,
@@ -320,10 +349,15 @@ pub async fn upsert_playlist(playlist: &PlayList, previous_name: Option<&str>) -
     let record = existing_record
         .clone()
         .unwrap_or_else(|| playlist_record_id(&playlist.name));
+    let write = playlist
+        .clone()
+        .foreign()
+        .collections(foreign_ids.collections)?
+        .groups(foreign_ids.groups)?;
 
     match existing_record {
-        Some(record) => Ok(Repo::<PlayList>::update_at(record, playlist.clone()).await?),
-        None => Ok(Repo::<PlayList>::create_at(record, playlist.clone()).await?),
+        Some(record) => Ok(write.update_at(record).await?),
+        None => Ok(write.create_at(record).await?),
     }
 }
 
@@ -331,9 +365,28 @@ pub async fn upsert_playlist_surface(
     playlist: &PlayList,
     previous_name: Option<&str>,
 ) -> Result<PlayListListView> {
-    upsert_playlist(playlist, previous_name)
-        .await
-        .map(PlayListListView::from)
+    let foreign_ids = resolve_playlist_foreign_record_ids(playlist).await?;
+    let existing_record = match previous_name {
+        Some(name) => find_unique_record_id_by_string_field::<PlayList>("name", name).await?,
+        None => None,
+    };
+    let record = existing_record
+        .clone()
+        .unwrap_or_else(|| playlist_record_id(&playlist.name));
+    let write = playlist
+        .clone()
+        .foreign()
+        .collections(foreign_ids.collections)?
+        .groups(foreign_ids.groups)?;
+
+    match existing_record {
+        Some(record) => Ok(write
+            .update_at_returning::<PlayListListView>(record)
+            .await?),
+        None => Ok(write
+            .create_at_returning::<PlayListListView>(record)
+            .await?),
+    }
 }
 
 pub async fn set_collection_updates(url: &str, enabled: bool) -> Result<Option<Collection>> {
@@ -433,14 +486,53 @@ pub async fn delete_music(url: &str, start_ms: u32, end_ms: u32) -> Result<bool>
 }
 
 pub async fn list_musics_by_file_path(file_path: &Path, save_root: &Path) -> Result<Vec<Music>> {
+    Ok(load_spectrum_music_context(file_path, save_root, None)
+        .await?
+        .file_musics)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SpectrumMusicSourceIdentity<'a> {
+    pub url: &'a str,
+    pub start_ms: u32,
+    pub end_ms: u32,
+}
+
+impl SpectrumMusicSourceIdentity<'_> {
+    fn matches(&self, music: &Music) -> bool {
+        music.url == self.url && music.start_ms == self.start_ms && music.end_ms == self.end_ms
+    }
+}
+
+/**
+ * Behavior:
+ *   Project persisted collection music rows into the stable spectrum page
+ *   context for one file and one currently playing source identity.
+ *
+ * Core invariants:
+ *   - The UI receives owner evidence from collection persistence, never from a
+ *     shallow playlist/cache reconstruction.
+ *   - File-level draft listing and source-owner evidence are produced by the
+ *     same scan, so duplicate or late consumers cannot diverge.
+ *   - Missing source evidence stays explicit as `None`; callers cannot create a
+ *     pending music draft from an unowned fixed point.
+ */
+pub async fn load_spectrum_music_context(
+    file_path: &Path,
+    save_root: &Path,
+    source_identity: Option<SpectrumMusicSourceIdentity<'_>>,
+) -> Result<SpectrumMusicContext> {
     ensure_collection_graph_schema().await?;
 
     let target_key = normalize_music_file_path_key(file_path);
     let collections = list_collections().await?;
     let mut seen = HashSet::new();
-    let mut musics = Vec::new();
+    let mut file_musics = Vec::new();
+    let mut source = None;
 
     for collection in collections {
+        let mut matched_file_musics = Vec::new();
+
         for music in &collection.musics {
             let Some(resolved_path) =
                 resolve_music_file_path(save_root, &collection, music.path.as_deref())
@@ -452,14 +544,45 @@ pub async fn list_musics_by_file_path(file_path: &Path, save_root: &Path) -> Res
                 continue;
             }
 
+            matched_file_musics.push(music);
             let key = format!("{}:{}:{}", music.url, music.start_ms, music.end_ms);
             if seen.insert(key) {
-                musics.push(music.clone());
+                file_musics.push(music.clone());
             }
+        }
+
+        if source.is_none()
+            && let Some(identity) = source_identity
+            && let Some(source_music) = matched_file_musics
+                .iter()
+                .copied()
+                .find(|music| identity.matches(music))
+            && let Some(source_end_ms) =
+                resolve_spectrum_source_end_ms(&collection.musics, identity.url)
+        {
+            source = Some(SpectrumMusicSourceContext {
+                source_collection_url: collection.url.clone(),
+                source_end_ms,
+                source_group: source_music.group.clone(),
+                source_path: source_music.path.clone(),
+                source_start_ms: identity.start_ms,
+                source_url: identity.url.to_string(),
+            });
         }
     }
 
-    Ok(musics)
+    Ok(SpectrumMusicContext {
+        file_musics,
+        source,
+    })
+}
+
+fn resolve_spectrum_source_end_ms(musics: &[Music], source_url: &str) -> Option<u32> {
+    musics
+        .iter()
+        .filter(|music| music.url == source_url && music.start_ms < music.end_ms)
+        .map(|music| music.end_ms)
+        .max()
 }
 
 pub async fn list_auto_update_collections() -> Result<Vec<Collection>> {
@@ -714,6 +837,57 @@ async fn append_group_playback_track_sources(
     Ok(())
 }
 
+async fn load_group_parent_collection_urls(
+    group: &PlaylistPlaybackGroupRef,
+) -> Result<Vec<String>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query(
+            "SELECT VALUE in FROM includes WHERE out IN (
+                SELECT VALUE out FROM grouped WHERE in = $group AND record::tb(out) = $music_table
+            ) AND record::tb(in) = $collection_table;",
+        )
+        .bind(("group", group.record().clone()))
+        .bind(("music_table", Music::table_name().to_string()))
+        .bind(("collection_table", Collection::table_name().to_string()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(vec![]),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(vec![]),
+            other => return Err(other.into()),
+        },
+    };
+
+    let records: Vec<RecordId> = result.take(0)?;
+    let mut seen = HashSet::new();
+    let mut urls = Vec::new();
+
+    for record in records {
+        if !seen.insert(record.clone()) {
+            continue;
+        }
+
+        if let Some(collection) = load_playlist_playback_collection_ref(&record).await? {
+            urls.push(collection.url);
+        }
+    }
+
+    Ok(urls)
+}
+
+impl PlaylistPlaybackGroupRef {
+    fn record(&self) -> &RecordId {
+        &self.record
+    }
+}
+
 fn append_playback_track_source(
     collection: &PlaylistPlaybackCollectionRef,
     music: Music,
@@ -942,18 +1116,22 @@ async fn delete_orphaned_music_records(
     Ok(())
 }
 
-/// Playlists reference canonical library entities. Saving a draft playlist must
-/// never overwrite hydrated collection/group records with UI-side shells.
-async fn resolve_playlist_foreign_refs(playlist: &PlayList) -> Result<PlayList> {
-    let library_collections = list_collections().await?;
-    let library_groups = library_group_index(&library_collections);
+#[derive(Debug, Clone)]
+struct PlaylistForeignRecordIds {
+    collections: Vec<RecordId>,
+    groups: Vec<RecordId>,
+}
 
+/// Playlists reference canonical library entities. Saving a draft playlist
+/// resolves only the referenced ids; collection/group persistence owns their
+/// own fields and graph edges.
+async fn resolve_playlist_foreign_record_ids(
+    playlist: &PlayList,
+) -> Result<PlaylistForeignRecordIds> {
     let mut collections = Vec::with_capacity(playlist.collections.len());
     for collection in &playlist.collections {
-        let Some(canonical_collection) = library_collections
-            .iter()
-            .find(|candidate| candidate.url == collection.url)
-            .cloned()
+        let Some(record) =
+            find_unique_record_id_by_string_field::<Collection>("url", &collection.url).await?
         else {
             bail!(
                 "playlist `{}` references unknown collection `{}`",
@@ -961,41 +1139,27 @@ async fn resolve_playlist_foreign_refs(playlist: &PlayList) -> Result<PlayList> 
                 collection.url
             );
         };
-        collections.push(canonical_collection);
+        collections.push(record);
     }
 
     let mut groups = Vec::with_capacity(playlist.groups.len());
     for group in &playlist.groups {
-        let Some(canonical_group) = library_groups.get(group.url.as_str()).cloned() else {
+        let Some(record) =
+            find_unique_record_id_by_string_field::<Group>("url", &group.url).await?
+        else {
             bail!(
                 "playlist `{}` references unknown group `{}`",
                 playlist.name,
                 group.url
             );
         };
-        groups.push(canonical_group);
+        groups.push(record);
     }
 
-    Ok(PlayList {
-        name: playlist.name.clone(),
+    Ok(PlaylistForeignRecordIds {
         collections,
         groups,
-        created_at: playlist.created_at.clone(),
     })
-}
-
-fn library_group_index(collections: &[Collection]) -> HashMap<String, Group> {
-    let mut groups = HashMap::new();
-
-    for collection in collections {
-        for music in &collection.musics {
-            groups
-                .entry(music.group.url.clone())
-                .or_insert_with(|| music.group.clone());
-        }
-    }
-
-    groups
 }
 
 async fn music_parent_count(record: &RecordId) -> Result<i64> {

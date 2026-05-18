@@ -373,8 +373,10 @@ export function resolveListConfigEmptyState(
 export function countListConfigParsingCandidateItems(
   candidateItems: readonly ConfigCandidateItem[],
 ) {
-  return candidateItems.filter((item) => item.status === "checking" || item.status === "probing")
-    .length;
+  return candidateItems.filter(
+    (item) =>
+      item.status === "checking" || item.status === "probing" || item.status === "enqueueing",
+  ).length;
 }
 
 export function hasListConfigParsingCandidateItems(candidateItems: readonly ConfigCandidateItem[]) {

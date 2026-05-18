@@ -1,4 +1,7 @@
-use super::model::{Collection, ConfigLibraryView, Exclude, Music, PlayList, PlayListConfigView, PlayListListView};
+use super::model::{
+    Collection, ConfigLibraryView, Exclude, Music, PlayList, PlayListConfigView, PlayListListView,
+    SpectrumMusicContext,
+};
 use crate::domain::player::service::{
     PlaybackTrackIdentityUpdate, update_current_session_track_identity,
 };
@@ -149,6 +152,33 @@ pub async fn list_musics_by_file_path(
     super::repo::list_musics_by_file_path(std::path::Path::new(&file_path), &save_root)
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn load_spectrum_music_context(
+    app: AppHandle,
+    file_path: String,
+    source_url: String,
+    source_start_ms: u32,
+    source_end_ms: u32,
+) -> Result<SpectrumMusicContext, String> {
+    let save_root = crate::domain::meta::service::resolve_save_root(&app)
+        .await
+        .map_err(|error| error.to_string())?;
+    let source_identity = super::repo::SpectrumMusicSourceIdentity {
+        url: &source_url,
+        start_ms: source_start_ms,
+        end_ms: source_end_ms,
+    };
+
+    super::repo::load_spectrum_music_context(
+        std::path::Path::new(&file_path),
+        &save_root,
+        Some(source_identity),
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

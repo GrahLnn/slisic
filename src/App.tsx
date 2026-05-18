@@ -117,141 +117,137 @@ function MainWindowApp() {
   });
   const playListScrollPositionRef = useRef(0);
 
+  const viewport = appLogicState.match({
+    config: () => ({
+      key: "config",
+      pageKey: "config",
+      pageState: "config",
+      scrollPositionRef: pageScrollPositionRefs.current.config,
+      sourceState: "config",
+      surface: "config",
+      children: <ListConfig />,
+    }),
+    configLoading: () => ({
+      key: "config",
+      pageKey: "config",
+      pageState: "config-loading",
+      scrollPositionRef: pageScrollPositionRefs.current.config,
+      sourceState: "configLoading",
+      surface: "config",
+      children: <ListConfig />,
+    }),
+    configUpdatingCollectionUpdates: () => ({
+      key: "config",
+      pageKey: "config",
+      pageState: "config-updating",
+      scrollPositionRef: pageScrollPositionRefs.current.config,
+      sourceState: "configUpdatingCollectionUpdates",
+      surface: "config",
+      children: <ListConfig />,
+    }),
+    idle: () => ({
+      key: "list",
+      pageKey: "list",
+      pageState: "idle",
+      scrollPositionRef: pageScrollPositionRefs.current.list,
+      sourceState: "idle",
+      surface: "playlist",
+      children: <PlayListPage scrollPositionRef={playListScrollPositionRef} />,
+    }),
+    loading: () => ({
+      key: "list",
+      pageKey: "list",
+      pageState: "loading",
+      scrollPositionRef: pageScrollPositionRefs.current.list,
+      sourceState: "loading",
+      surface: "playlist",
+      children: <PlayListPage scrollPositionRef={playListScrollPositionRef} />,
+    }),
+    ready: () => ({
+      key: "list",
+      pageKey: "list",
+      pageState: "ready",
+      scrollPositionRef: pageScrollPositionRefs.current.list,
+      sourceState: "ready",
+      surface: "playlist",
+      children: <PlayListPage scrollPositionRef={playListScrollPositionRef} />,
+    }),
+    play: () => ({
+      key: "list",
+      pageKey: "list",
+      pageState: "play",
+      scrollPositionRef: pageScrollPositionRefs.current.list,
+      sourceState: "play",
+      surface: "playlist",
+      children: <PlayListPage scrollPositionRef={playListScrollPositionRef} />,
+    }),
+    spectrum: () => ({
+      key: "spectrum",
+      pageKey: "spectrum",
+      pageState: "spectrum",
+      scrollPositionRef: pageScrollPositionRefs.current.spectrum,
+      sourceState: "spectrum",
+      surface: "spectrum",
+      children: <SpectrumPage />,
+    }),
+    spectrumUpdatingMusic: () => ({
+      key: "list",
+      pageKey: "list",
+      pageState: "play",
+      scrollPositionRef: pageScrollPositionRefs.current.list,
+      sourceState: "spectrumUpdatingMusic",
+      surface: "playlist",
+      surfacePageState: "play",
+      children: (
+        <PlayListPage scrollPositionRef={playListScrollPositionRef} surfacePageState="play" />
+      ),
+    }),
+    spectrumCreatingMusic: () => ({
+      key: "list",
+      pageKey: "list",
+      pageState: "play",
+      scrollPositionRef: pageScrollPositionRefs.current.list,
+      sourceState: "spectrumCreatingMusic",
+      surface: "playlist",
+      surfacePageState: "play",
+      children: (
+        <PlayListPage scrollPositionRef={playListScrollPositionRef} surfacePageState="play" />
+      ),
+    }),
+    spectrumDeletingMusic: () => ({
+      key: "list",
+      pageKey: "list",
+      pageState: "play",
+      scrollPositionRef: pageScrollPositionRefs.current.list,
+      sourceState: "spectrumDeletingMusic",
+      surface: "playlist",
+      surfacePageState: "play",
+      children: (
+        <PlayListPage scrollPositionRef={playListScrollPositionRef} surfacePageState="play" />
+      ),
+    }),
+    error: () => ({
+      key: "list",
+      pageKey: "list",
+      pageState: "error",
+      scrollPositionRef: pageScrollPositionRefs.current.list,
+      sourceState: "error",
+      surface: "playlist",
+      children: <PlayListPage scrollPositionRef={playListScrollPositionRef} />,
+    }),
+  });
+
   return (
     <Base>
       <AnimatePresence initial={false}>
-        {appLogicState.match({
-          config: () => (
-            <PageViewport
-              key="config"
-              pageKey="config"
-              pageState="config"
-              scrollPositionRef={pageScrollPositionRefs.current.config}
-            >
-              <ListConfig />
-            </PageViewport>
-          ),
-          configLoading: () => (
-            <PageViewport
-              key="config"
-              pageKey="config"
-              pageState="config-loading"
-              scrollPositionRef={pageScrollPositionRefs.current.config}
-            >
-              <ListConfig />
-            </PageViewport>
-          ),
-          configUpdatingCollectionUpdates: () => (
-            <PageViewport
-              key="config"
-              pageKey="config"
-              pageState="config-updating"
-              scrollPositionRef={pageScrollPositionRefs.current.config}
-            >
-              <ListConfig />
-            </PageViewport>
-          ),
-          idle: () => (
-            <PageViewport
-              key="list"
-              pageKey="list"
-              pageState="idle"
-              scrollPositionRef={pageScrollPositionRefs.current.list}
-            >
-              <PlayListPage scrollPositionRef={playListScrollPositionRef} />
-            </PageViewport>
-          ),
-          loading: () => (
-            <PageViewport
-              key="list"
-              pageKey="list"
-              pageState="loading"
-              scrollPositionRef={pageScrollPositionRefs.current.list}
-            >
-              <PlayListPage scrollPositionRef={playListScrollPositionRef} />
-            </PageViewport>
-          ),
-          ready: () => (
-            <PageViewport
-              key="list"
-              pageKey="list"
-              pageState="ready"
-              scrollPositionRef={pageScrollPositionRefs.current.list}
-            >
-              <PlayListPage scrollPositionRef={playListScrollPositionRef} />
-            </PageViewport>
-          ),
-          play: () => (
-            <PageViewport
-              key="list"
-              pageKey="list"
-              pageState="play"
-              scrollPositionRef={pageScrollPositionRefs.current.list}
-            >
-              <PlayListPage scrollPositionRef={playListScrollPositionRef} />
-            </PageViewport>
-          ),
-          spectrumLoadingMusics: () => (
-            <PageViewport
-              key="spectrum"
-              pageKey="spectrum"
-              pageState="spectrum-loading-musics"
-              scrollPositionRef={pageScrollPositionRefs.current.spectrum}
-            >
-              <SpectrumPage />
-            </PageViewport>
-          ),
-          spectrum: () => (
-            <PageViewport
-              key="spectrum"
-              pageKey="spectrum"
-              pageState="spectrum"
-              scrollPositionRef={pageScrollPositionRefs.current.spectrum}
-            >
-              <SpectrumPage />
-            </PageViewport>
-          ),
-          spectrumUpdatingMusic: () => (
-            <PageViewport
-              key="spectrum"
-              pageKey="spectrum"
-              pageState="spectrum-updating"
-              scrollPositionRef={pageScrollPositionRefs.current.spectrum}
-            >
-              <SpectrumPage />
-            </PageViewport>
-          ),
-          spectrumCreatingMusic: () => (
-            <PageViewport
-              key="spectrum"
-              pageKey="spectrum"
-              pageState="spectrum-creating"
-              scrollPositionRef={pageScrollPositionRefs.current.spectrum}
-            >
-              <SpectrumPage />
-            </PageViewport>
-          ),
-          spectrumDeletingMusic: () => (
-            <PageViewport
-              key="spectrum"
-              pageKey="spectrum"
-              pageState="spectrum-deleting"
-              scrollPositionRef={pageScrollPositionRefs.current.spectrum}
-            >
-              <SpectrumPage />
-            </PageViewport>
-          ),
-          error: () => (
-            <PageViewport
-              key="list"
-              pageKey="list"
-              pageState="error"
-              scrollPositionRef={pageScrollPositionRefs.current.list}
-            >
-              <PlayListPage scrollPositionRef={playListScrollPositionRef} />
-            </PageViewport>
-          ),
-        })}
+        <PageViewport
+          key={viewport.key}
+          pageKey={viewport.pageKey}
+          pageState={viewport.pageState}
+          scrollPositionRef={viewport.scrollPositionRef}
+        >
+          {viewport.children}
+        </PageViewport>
       </AnimatePresence>
     </Base>
   );

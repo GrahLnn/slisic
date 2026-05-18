@@ -53,6 +53,13 @@ export type WaveformSelectionEdge = "end" | "start";
 
 export type WaveformSelectionDragResolution = WaveformSelectionRange;
 
+export type WaveformPresentationSelectionInput = {
+  committedSelection: WaveformSelectionRange | null;
+  interactiveSelection: WaveformSelectionRange | null;
+  isDragging: boolean;
+  previewSelection: WaveformSelectionRange | null;
+};
+
 export type WaveformPlayheadDragResolution = {
   endMs: number;
   positionMs: number;
@@ -1528,6 +1535,16 @@ export function areWaveformSelectionsEqual(
   right: WaveformSelectionRange | null,
 ) {
   return left?.start === right?.start && left?.end === right?.end;
+}
+
+export function resolveWaveformPresentationSelection(
+  args: WaveformPresentationSelectionInput,
+): WaveformSelectionRange | null {
+  if (args.previewSelection !== null) {
+    return args.previewSelection;
+  }
+
+  return args.isDragging ? args.interactiveSelection : args.committedSelection;
 }
 
 export function resolveWaveformSelectionDrag(args: {

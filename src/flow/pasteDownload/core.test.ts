@@ -2,16 +2,13 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   activateNextCandidateCheck,
-  activateNextCandidate,
   applyActiveCandidateUrlResolution,
   appendCandidateItem,
   candidateItemAllowsDelete,
   candidateItemIsErrored,
-  createDraftCollectionFromProbe,
   createInitialContext,
   deleteCandidateItem,
   hasPendingCandidateToCheck,
-  hasPendingCandidateToProbe,
   parseClipboardDownloadUrl,
   removeActiveCandidate,
 } from "./core";
@@ -21,7 +18,6 @@ describe("createInitialContext", () => {
     assert.deepEqual(createInitialContext(), {
       items: [],
       pendingCheckItemIds: [],
-      pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 0,
     });
@@ -52,27 +48,6 @@ describe("parseClipboardDownloadUrl", () => {
 });
 
 describe("candidate item helpers", () => {
-  test("creates a draft-ready collection shell from a resolved probe", () => {
-    assert.deepEqual(
-      createDraftCollectionFromProbe({
-        url: "https://example.com/watch?v=abc",
-        source_kind: "single",
-        title: "Example",
-        item_count: 1,
-        collection_folder: "youtube/Example",
-        enable_updates: null,
-      }),
-      {
-        name: "Example",
-        url: "https://example.com/watch?v=abc",
-        folder: "youtube/Example",
-        musics: [],
-        last_updated: "",
-        enable_updates: null,
-      },
-    );
-  });
-
   test("prepends new pasted items and queues them for url checks", () => {
     const withFirst = appendCandidateItem(
       createInitialContext(),
@@ -113,7 +88,6 @@ describe("candidate item helpers", () => {
       collection: null,
     });
 
-    assert.equal(hasPendingCandidateToProbe(next), false);
     assert.equal(next.items[0]?.sourceUrl, "https://example.com/watch?v=abc");
     assert.equal(next.items[0]?.displayText, "https://example.com/watch?v=abc");
     assert.equal(next.items[0]?.status, "probing");
@@ -121,11 +95,10 @@ describe("candidate item helpers", () => {
 
   test("deletes a candidate item and removes it from every tracking list", () => {
     const context = {
-      ...activateNextCandidate(
+      ...activateNextCandidateCheck(
         appendCandidateItem(createInitialContext(), "https://example.com/watch?v=abc"),
       ),
       pendingCheckItemIds: ["candidate:2"],
-      pendingProbeItemIds: ["candidate:1"],
       items: [
         {
           id: "candidate:1",
@@ -135,7 +108,6 @@ describe("candidate item helpers", () => {
           status: "probing" as const,
           error: null,
           probe: null,
-          task: null,
         },
         {
           id: "candidate:0",
@@ -145,7 +117,6 @@ describe("candidate item helpers", () => {
           status: "probing" as const,
           error: null,
           probe: null,
-          task: null,
         },
       ],
     };
@@ -154,7 +125,6 @@ describe("candidate item helpers", () => {
       ...context,
       items: [context.items[0]!],
       pendingCheckItemIds: ["candidate:2"],
-      pendingProbeItemIds: ["candidate:1"],
       activeItemId: null,
     });
   });
@@ -169,10 +139,9 @@ describe("candidate item helpers", () => {
           rawText: "https://example.com/watch?v=abc",
           sourceUrl: "https://example.com/watch?v=abc",
           displayText: "Example",
-          status: "resolved" as const,
+          status: "enqueueing" as const,
           error: null,
           probe: null,
-          task: null,
         },
       ],
     };
@@ -190,8 +159,8 @@ describe("candidate item helpers", () => {
     assert.equal(candidateItemAllowsDelete("enqueue_failed"), true);
     assert.equal(candidateItemAllowsDelete("checking"), false);
     assert.equal(candidateItemAllowsDelete("probing"), false);
-    assert.equal(candidateItemAllowsDelete("resolved"), false);
+    assert.equal(candidateItemAllowsDelete("enqueueing"), false);
     assert.equal(candidateItemIsErrored("probe_failed"), true);
-    assert.equal(candidateItemIsErrored("resolved"), false);
+    assert.equal(candidateItemIsErrored("enqueueing"), false);
   });
 });

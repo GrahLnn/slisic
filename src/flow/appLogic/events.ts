@@ -21,6 +21,8 @@ import {
   type PlaybackStatusPayload,
   type PlayListListView,
   type PlayPlaylistSession,
+  type SpectrumMusicContext,
+  type SpectrumMusicSourceContext,
 } from "@/src/cmd";
 import { getName } from "@tauri-apps/api/app";
 import { documentDir, join } from "@tauri-apps/api/path";
@@ -31,6 +33,7 @@ import {
   type CollectionUpdatesChange,
   type ConfigSidebarItemRef,
   type ConfigDraft,
+  type PlaylistPreview,
   type PlaylistUpsertResult,
   type SpectrumMusicDraft,
 } from "./core";
@@ -87,9 +90,14 @@ export interface MusicDeletesResult {
 
 export interface SpectrumMusicDraftBootstrapInput {
   filePath: string;
-  nowPlayingTrackEndMs: number | null;
-  nowPlayingTrackStartMs: number | null;
-  nowPlayingTrackUrl: string | null;
+  nowPlayingTrackEndMs: number;
+  nowPlayingTrackStartMs: number;
+  nowPlayingTrackUrl: string;
+}
+
+export interface SpectrumMusicDraftBootstrapResult {
+  drafts: SpectrumMusicDraft[];
+  source: SpectrumMusicSourceContext | null;
 }
 
 export class BootstrapLoadError extends Error {
@@ -233,7 +241,6 @@ export const ss = defineSS(
         "loading",
         "ready",
         "play",
-        "spectrumLoadingMusics",
         "spectrum",
         "spectrumUpdatingMusic",
         "spectrumCreatingMusic",
@@ -337,7 +344,7 @@ export const invoker = createActors({
     const result = await crab.playPlaylist(input.playlistName);
 
     return result.match({
-      Ok: (session) => session,
+      Ok: (session) => (session.status === "started" ? session : null),
       Err: (error) => {
         throw new Error(error);
       },
@@ -415,19 +422,30 @@ export const invoker = createActors({
   },
   loadSpectrumMusicDrafts: async (
     input: SpectrumMusicDraftBootstrapInput,
-  ): Promise<SpectrumMusicDraft[]> => {
-    const result = await crab.listMusicsByFilePath(input.filePath);
+  ): Promise<SpectrumMusicDraftBootstrapResult> => {
+    const result = await crab.loadSpectrumMusicContext(
+      input.filePath,
+      input.nowPlayingTrackUrl,
+      input.nowPlayingTrackStartMs,
+      input.nowPlayingTrackEndMs,
+    );
 
     return result.match({
-      Ok: (fileMusics) =>
-        createSpectrumMusicDrafts({
+      Ok: (context: SpectrumMusicContext) => {
+        const drafts = createSpectrumMusicDrafts({
           currentMusicIdentity: {
             endMs: input.nowPlayingTrackEndMs,
             startMs: input.nowPlayingTrackStartMs,
             url: input.nowPlayingTrackUrl,
           },
-          fileMusics,
-        }),
+          fileMusics: context.file_musics,
+        });
+
+        return {
+          drafts,
+          source: context.source,
+        };
+      },
       Err: (error) => {
         throw new Error(error);
       },
@@ -439,7 +457,7 @@ export const payloads = collect(
   ...event<string>()("playlist.play"),
   ...event<PlaylistUpsertResult>()("playlist.upserted"),
   ...event<string>()("playlist.deleted"),
-  ...event<PlaylistUpsertResult | null>()("playlist.preview.changed"),
+  ...event<PlaylistPreview | null>()("playlist.preview.changed"),
   ...event<string>()("draft.name.changed"),
   ...event<{ id: string; name: string }>()("spectrum.music_name.changed"),
   ...event<{ endMs: number | null; id: string; startMs: number | null }>()(

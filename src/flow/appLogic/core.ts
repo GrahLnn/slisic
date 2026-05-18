@@ -7,6 +7,7 @@ import type {
   PlayList,
   PlayListConfigView,
   PlayListListView,
+  SpectrumMusicSourceContext,
 } from "@/src/cmd";
 
 export const CREATE_COLLECTION_LAYOUT_ID = "collection-title:create";
@@ -69,6 +70,24 @@ export interface PlaylistUpsertResult {
   previousName: string | null;
 }
 
+export interface PlaylistPreview extends PlaylistUpsertResult {
+  draft: ConfigDraft;
+}
+
+export interface PlaylistPersistenceRequest {
+  playlist: PlayList;
+  previousName: string | null;
+}
+
+export interface PlaylistDraftCommit {
+  titleResolution: DraftCommitTitleResolution;
+  draft: ConfigDraft;
+  request: PlaylistPersistenceRequest;
+  preview: PlaylistPreview;
+  layoutId: string;
+  titleToneHandoff: CollectionTitleHandoff;
+}
+
 export type SpectrumMusicDraftKind = "pending-create" | "persisted";
 
 interface SpectrumMusicDraftBase {
@@ -94,10 +113,10 @@ export interface PendingCreateSpectrumMusicDraft extends SpectrumMusicDraftBase 
   baselineName: "";
   baselineStartMs: null;
   baselineEndMs: null;
-  sourceCollectionUrl: string;
+  sourceCollectionUrl: string | null;
   /** Finite source-duration evidence for creating a full-source draft. */
   sourceEndMs: number;
-  sourceGroup: Group;
+  sourceGroup: Group | null;
   sourcePath: string | null;
   sourceUrl: string;
 }
@@ -107,7 +126,7 @@ export type SpectrumMusicDraft = PersistedSpectrumMusicDraft | PendingCreateSpec
 export interface Context {
   hasPlayList: boolean | null;
   playlists: PlayListListView[];
-  pendingPlaylistPreview: PlaylistUpsertResult | null;
+  pendingPlaylistPreview: PlaylistPreview | null;
   collections: Collection[];
   configLibrary: ConfigLibraryView;
   savePath: string;
@@ -119,10 +138,13 @@ export interface Context {
   nowPlayingTrackEndMs: number | null;
   spectrumPlaybackScopeId: number | null;
   spectrumMusicDrafts: SpectrumMusicDraft[];
+  spectrumMusicSourceContext: SpectrumMusicSourceContext | null;
+  pendingSpectrumMusicCreateId: string | null;
   shouldStartPlayback: boolean;
   activeLayoutId: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   pendingPlaylistName: string | null;
+  pendingPlaylistPlaybackName: string | null;
   pendingCollectionUpdatesChange: CollectionUpdatesChange | null;
   draftBaseline: ConfigDraft | null;
   draft: ConfigDraft | null;
@@ -312,6 +334,56 @@ export function createCollectionTitleHandoff(
   };
 }
 
+/**
+ * Behavior:
+ *   Project an edited config draft into a single playlist commit transaction.
+ *
+ * Invariants:
+ *   - The generated playlist title is derived from the caller-provided visible
+ *     playlist surfaces, so pending previews reserve their displayed names.
+ *   - The returned layout id, committed draft, and persistence request share
+ *     the same normalized playlist identity.
+ *   - New playlist records keep `created_at` pending so persistence remains the
+ *     only owner of fill metadata.
+ */
+export function resolvePlaylistDraftCommit(args: {
+  draft: ConfigDraft;
+  draftBaseline: ConfigDraft | null;
+  playlists: readonly PlayListListView[];
+}): PlaylistDraftCommit {
+  const titleResolution = resolveDraftCommitTitle(args);
+  const committedDraft: ConfigDraft = {
+    ...args.draft,
+    name: titleResolution.name,
+  };
+  const playlist = createPlayListFromDraft(committedDraft, {
+    createdAt: args.draft.mode === "edit" ? args.draft.createdAt : null,
+  });
+  const layoutId = playlistTitleLayoutId(playlist.name);
+
+  return {
+    titleResolution,
+    draft: committedDraft,
+    request: {
+      playlist,
+      previousName: args.draft.mode === "edit" ? (args.draftBaseline?.name ?? null) : null,
+    },
+    preview: {
+      playlist: {
+        name: playlist.name,
+        created_at: playlist.created_at,
+      },
+      previousName: args.draft.mode === "edit" ? (args.draftBaseline?.name ?? null) : null,
+      draft: cloneDraft(committedDraft),
+    },
+    layoutId,
+    titleToneHandoff: createCollectionTitleHandoff(
+      layoutId,
+      committedDraft.name.length === 0 ? "muted" : "solid",
+    ),
+  };
+}
+
 export function createConfigSidebarItemRef(
   item: Pick<ConfigSidebarItem, "kind" | "url">,
 ): ConfigSidebarItemRef {
@@ -456,9 +528,7 @@ export function findConfigSidebarItem(
   libraryItems: readonly ConfigSidebarItem[],
   ref: ConfigSidebarItemRef,
 ): ConfigSidebarItem | null {
-  return (
-    libraryItems.find((item) => item.kind === ref.kind && item.url === ref.url) ?? null
-  );
+  return libraryItems.find((item) => item.kind === ref.kind && item.url === ref.url) ?? null;
 }
 
 export function upsertCollectionIntoCollections(
@@ -523,16 +593,6 @@ export function upsertPlaylistIntoPlaylists(
   return playlists.map((playlist, index) => (index === currentIndex ? nextPlaylist : playlist));
 }
 
-export function removePlaylistFromPlaylists(playlists: readonly PlayListListView[], name: string) {
-  return playlists.filter((playlist) => playlist.name !== name);
-}
-
-export function resolveSavedPath(savePath: string | null | undefined, fallbackSavePath: string) {
-  const resolvedPath = savePath?.trim();
-
-  return resolvedPath || fallbackSavePath;
-}
-
 export function resolvePlaylistsWithPreview(
   playlists: readonly PlayListListView[],
   preview: PlaylistUpsertResult | null,
@@ -542,6 +602,16 @@ export function resolvePlaylistsWithPreview(
   }
 
   return upsertPlaylistIntoPlaylists(playlists, preview.playlist, preview.previousName);
+}
+
+export function removePlaylistFromPlaylists(playlists: readonly PlayListListView[], name: string) {
+  return playlists.filter((playlist) => playlist.name !== name);
+}
+
+export function resolveSavedPath(savePath: string | null | undefined, fallbackSavePath: string) {
+  const resolvedPath = savePath?.trim();
+
+  return resolvedPath || fallbackSavePath;
 }
 
 export function includeDraftSidebarItem(
@@ -641,10 +711,13 @@ export function createInitialContext(): Context {
     nowPlayingTrackEndMs: null,
     spectrumPlaybackScopeId: null,
     spectrumMusicDrafts: [],
+    spectrumMusicSourceContext: null,
+    pendingSpectrumMusicCreateId: null,
     shouldStartPlayback: false,
     activeLayoutId: null,
     titleToneHandoff: null,
     pendingPlaylistName: null,
+    pendingPlaylistPlaybackName: null,
     pendingCollectionUpdatesChange: null,
     draftBaseline: null,
     draft: null,

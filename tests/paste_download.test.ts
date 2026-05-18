@@ -14,6 +14,8 @@ const sampleProbe: DownloadResourceProbe = {
   source_kind: "single",
   title: "Quiet Morning",
   item_count: 1,
+  collection_folder: "youtube/quiet-morning",
+  enable_updates: null,
 };
 
 const secondProbe: DownloadResourceProbe = {
@@ -21,6 +23,8 @@ const secondProbe: DownloadResourceProbe = {
   source_kind: "single",
   title: "Night Walk",
   item_count: 1,
+  collection_folder: "youtube/night-walk",
+  enable_updates: null,
 };
 
 const sampleTask: DownloadTask = {
@@ -163,7 +167,6 @@ describe("pasteDownload machine", () => {
     expect(actor.getSnapshot().context).toEqual({
       items: [],
       pendingCheckItemIds: [],
-      pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 0,
     });
@@ -181,10 +184,53 @@ describe("pasteDownload machine", () => {
     expect(actor.getSnapshot().context).toEqual({
       items: [],
       pendingCheckItemIds: [],
-      pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 1,
     });
+  });
+
+  test("keeps a probed new url as enqueueing until the persisted collection returns", async () => {
+    let releaseEnqueue: (() => void) | null = null;
+    const enqueueGate = new Promise<void>((resolve) => {
+      releaseEnqueue = resolve;
+    });
+    setEnqueueCollectionDownloadMock(async () => {
+      await enqueueGate;
+      return {
+        task: sampleTask,
+        collection: sampleCollection,
+      };
+    });
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(pasteRequested.load(sampleProbe.url));
+
+    await waitForContext(
+      actor,
+      (context: { items: Array<{ status: string; displayText: string }> }) =>
+        context.items[0]?.status === "enqueueing",
+    );
+
+    expect(actor.getSnapshot().value).toBe(ss.mainx.State.enqueueing);
+    expect(actor.getSnapshot().context.items).toEqual([
+      {
+        id: "candidate:0",
+        rawText: sampleProbe.url,
+        sourceUrl: sampleProbe.url,
+        displayText: sampleProbe.title,
+        status: "enqueueing",
+        error: null,
+        probe: sampleProbe,
+      },
+    ]);
+
+    releaseEnqueue?.();
+    await waitForContext(actor, (context: { items: Array<unknown> }) => {
+      return context.items.length === 0;
+    });
+
+    expect(actor.getSnapshot().context.items).toEqual([]);
   });
 
   test("keeps invalid pasted text as a delete-only candidate without probing", async () => {
@@ -217,11 +263,9 @@ describe("pasteDownload machine", () => {
           status: "invalid_url",
           error: "Clipboard does not contain a valid URL.",
           probe: null,
-          task: null,
         },
       ],
       pendingCheckItemIds: [],
-      pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 1,
     });
@@ -250,11 +294,9 @@ describe("pasteDownload machine", () => {
           status: "probe_failed",
           error: "resource is not downloadable",
           probe: null,
-          task: null,
         },
       ],
       pendingCheckItemIds: [],
-      pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 1,
     });
@@ -294,7 +336,6 @@ describe("pasteDownload machine", () => {
     expect(actor.getSnapshot().context).toEqual({
       items: [],
       pendingCheckItemIds: [],
-      pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 1,
     });
@@ -343,7 +384,6 @@ describe("pasteDownload machine", () => {
         status: "checking",
         error: null,
         probe: null,
-        task: null,
       },
       {
         id: "candidate:0",
@@ -353,7 +393,6 @@ describe("pasteDownload machine", () => {
         status: "probing",
         error: null,
         probe: null,
-        task: null,
       },
     ]);
 
@@ -383,7 +422,6 @@ describe("pasteDownload machine", () => {
     expect(actor.getSnapshot().context).toEqual({
       items: [],
       pendingCheckItemIds: [],
-      pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 1,
     });
@@ -407,7 +445,6 @@ describe("pasteDownload machine", () => {
     expect(actor.getSnapshot().context).toEqual({
       items: [],
       pendingCheckItemIds: [],
-      pendingProbeItemIds: [],
       activeItemId: null,
       nextItemSequence: 0,
     });

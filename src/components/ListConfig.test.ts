@@ -104,7 +104,7 @@ const candidateItems: ConfigCandidateItem[] = [
     rawText: "https://www.youtube.com/watch?v=abc123",
     sourceUrl: "https://www.youtube.com/watch?v=abc123",
     displayText: "Quiet Morning",
-    status: "resolved",
+    status: "enqueueing",
     error: null,
     probe: {
       url: "https://www.youtube.com/watch?v=abc123",
@@ -114,7 +114,6 @@ const candidateItems: ConfigCandidateItem[] = [
       collection_folder: "youtube/quiet-morning",
       enable_updates: null,
     },
-    task: null,
   },
   {
     id: "candidate:1",
@@ -124,7 +123,6 @@ const candidateItems: ConfigCandidateItem[] = [
     status: "invalid_url",
     error: "Clipboard does not contain a valid URL.",
     probe: null,
-    task: null,
   },
 ];
 
@@ -419,7 +417,7 @@ describe("ListConfig title view model", () => {
         }),
         candidateId: "candidate:0",
         text: "Quiet Morning",
-        status: "resolved",
+        status: "enqueueing",
       },
       {
         kind: "candidate",
@@ -481,7 +479,7 @@ describe("ListConfig title view model", () => {
           }),
           candidateId: "candidate:0",
           text: "Quiet Morning",
-          status: "resolved",
+          status: "enqueueing",
         },
         {
           kind: "candidate",
@@ -540,7 +538,7 @@ describe("ListConfig title view model", () => {
         }),
         candidateId: "candidate:0",
         text: "Quiet Morning",
-        status: "resolved",
+        status: "enqueueing",
       }),
       "passive",
     );
@@ -651,10 +649,9 @@ describe("ListConfig title view model", () => {
             rawText: "https://www.youtube.com/watch?v=abc123",
             sourceUrl: "https://www.youtube.com/watch?v=abc123",
             displayText: "Night Walk",
-            status: "resolved",
+            status: "enqueueing",
             error: null,
             probe: null,
-            task: null,
           },
         ],
       }),
@@ -692,7 +689,7 @@ describe("ListConfig title view model", () => {
         }),
         candidateId: "candidate:0",
         text: "Quiet Morning",
-        status: "resolved",
+        status: "enqueueing",
       }),
       "passive",
     );
@@ -835,10 +832,9 @@ describe("ListConfig title view model", () => {
             rawText: "https://www.youtube.com/watch?v=abc123",
             sourceUrl: "https://www.youtube.com/watch?v=abc123",
             displayText: "Quiet Morning",
-            status: "resolved",
+            status: "enqueueing",
             error: null,
             probe: null,
-            task: null,
           },
         ],
       }),
@@ -953,7 +949,7 @@ describe("ListConfig title view model", () => {
     ]);
   });
 
-  test("marks the back action as parsing while candidate checks or probes still exist", () => {
+  test("marks the back action as parsing while candidate checks, probes, or enqueue waits still exist", () => {
     assert.equal(
       countListConfigParsingCandidateItems([
         ...candidateItems,
@@ -965,7 +961,6 @@ describe("ListConfig title view model", () => {
           status: "checking",
           error: null,
           probe: null,
-          task: null,
         },
         {
           id: "candidate:probing",
@@ -975,12 +970,11 @@ describe("ListConfig title view model", () => {
           status: "probing",
           error: null,
           probe: null,
-          task: null,
         },
       ]),
-      2,
+      3,
     );
-    assert.equal(hasListConfigParsingCandidateItems(candidateItems), false);
+    assert.equal(hasListConfigParsingCandidateItems(candidateItems), true);
 
     const viewModel = resolveListConfigViewModel({
       activeLayoutId: "playlist-title:Focus Session",
@@ -1000,7 +994,6 @@ describe("ListConfig title view model", () => {
           status: "probing",
           error: null,
           probe: null,
-          task: null,
         },
       ],
       previousEmptyState: null,

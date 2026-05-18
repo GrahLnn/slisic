@@ -156,7 +156,7 @@ describe("SpectrumPlaybackSession", () => {
     const session = createSpectrumPlaybackSession({ ports, scopeId: null });
     const identity = createIdentity();
 
-    assert.equal(await session.pause({ identity, musicName: "Disc 1 Opening" }), false);
+    assert.equal(await session.pause(), false);
     assert.equal(
       await session.updateLoopSignal({
         endMs: 90_000,
@@ -169,25 +169,32 @@ describe("SpectrumPlaybackSession", () => {
     assert.deepEqual(calls, []);
   });
 
-  test("pauses explicitly without reading backend status or toggling resume", async () => {
-    const identity = createIdentity();
+  test("pauses explicitly through the scoped backend owner", async () => {
     const { calls, ports } = createPorts([createStatus({ paused: false })]);
 
-    assert.equal(
-      await createSpectrumPlaybackSession({ ports, scopeId: 7 }).pause({
-        identity,
-        musicName: "Disc 1 Opening",
-      }),
-      true,
-    );
+    assert.equal(await createSpectrumPlaybackSession({ ports, scopeId: 7 }).pause(), true);
     assert.deepEqual(
       calls.map((call) => call.name),
       ["pauseSpectrumMusic"],
     );
-    assert.deepEqual(calls[0]?.args, [
-      7,
-      createSpectrumPlaybackTrackPayload(identity, "Disc 1 Opening"),
-    ]);
+    assert.deepEqual(calls[0]?.args, [7]);
+  });
+
+  test("reports backend pause rejection as a false scoped result", async () => {
+    const { calls, ports } = createPorts();
+    const rejectingPorts: SpectrumPlaybackSessionPorts = {
+      ...ports,
+      async pauseSpectrumMusic(...args) {
+        calls.push({ args, name: "pauseSpectrumMusic" });
+        return false;
+      },
+    };
+
+    assert.equal(
+      await createSpectrumPlaybackSession({ ports: rejectingPorts, scopeId: 7 }).pause(),
+      false,
+    );
+    assert.deepEqual(calls[0]?.args, [7]);
   });
 
   test("starts any spectrum track through the scoped session owner", async () => {

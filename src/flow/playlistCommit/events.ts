@@ -11,25 +11,23 @@ import {
   type PayloadEvt,
   type SignalEvt,
 } from "@grahlnn/fn/flow";
-import { crab, type PlayListListView } from "@/src/cmd";
-import type { PlaylistCommitRequest } from "./core";
-
-export interface PlaylistCommitSuccess {
-  playlist: PlayListListView;
-  previousName: string | null;
-}
+import { crab } from "@/src/cmd";
+import type { PlaylistCommitRequest, PlaylistUpsertResult } from "./core";
 
 export const ss = defineSS(ns("mainx", sst(["idle", "submitting"], ["reset"])));
 export const state = allState(ss);
 export const sig = allSignal(ss);
 export const invoker = createActors({
-  submitPlaylist: async (request: PlaylistCommitRequest): Promise<PlaylistCommitSuccess> => {
-    const result = await crab.upsertPlaylist(request.previousName, request.playlist);
+  submitPlaylist: async (request: PlaylistCommitRequest): Promise<PlaylistUpsertResult> => {
+    const result = await crab.upsertPlaylist(
+      request.request.previousName,
+      request.request.playlist,
+    );
 
     return result.match({
       Ok: (playlist) => ({
         playlist,
-        previousName: request.previousName,
+        previousName: request.request.previousName,
       }),
       Err: (error) => {
         throw new Error(error);

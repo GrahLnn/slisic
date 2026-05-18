@@ -3,11 +3,13 @@ use super::model::{
     PlayListConfigView, PlayListListView,
 };
 use super::repo::{
-    add_exclude, create_music, delete_music, delete_playlist_by_name, get_collection_by_url,
-    get_playlist_by_name, get_playlist_config_by_name, get_playlist_playback_selection_by_name,
-    has_collections, list_collections, list_config_library, list_musics_by_file_path,
-    list_playlists, load_playlist_playback_track_sources, remove_exclude, set_collection_updates,
-    update_music, upsert_collection, upsert_playlist,
+    SpectrumMusicSourceIdentity, add_exclude, create_music, delete_music, delete_playlist_by_name,
+    get_collection_by_url, get_playlist_by_name, get_playlist_config_by_name,
+    get_playlist_playback_selection_by_name, has_collections, list_collections,
+    list_config_library, list_musics_by_file_path, list_playlists,
+    load_playlist_playback_track_sources, load_spectrum_music_context, remove_exclude,
+    set_collection_updates, update_music, upsert_collection, upsert_playlist,
+    upsert_playlist_surface,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -978,7 +980,7 @@ fn delete_music_removes_only_the_matching_music_identity() {
                 .expect("repeated music deletion should be idempotent")
         );
 
-        let lookup_path = save_root.join(&collection.folder).join(shared_path);
+        let lookup_path = save_root.join(&collection.folder).join(&shared_path);
         let musics = list_musics_by_file_path(&lookup_path, &save_root)
             .await
             .expect("music lookup by file path should succeed after deletion");
@@ -1051,7 +1053,7 @@ fn list_musics_by_file_path_reads_matching_database_music_records() {
             .await
             .expect("collection should save before file music lookup");
 
-        let lookup_path = save_root.join(&collection.folder).join(shared_path);
+        let lookup_path = save_root.join(&collection.folder).join(&shared_path);
         let musics = list_musics_by_file_path(&lookup_path, &save_root)
             .await
             .expect("music lookup by file path should succeed");
@@ -1059,6 +1061,91 @@ fn list_musics_by_file_path_reads_matching_database_music_records() {
         assert_eq!(musics.len(), 2);
         assert_eq!(musics[0].alias, "Track A");
         assert_eq!(musics[1].alias, "Track B");
+
+        reset_db();
+    });
+}
+
+#[test]
+fn load_spectrum_music_context_carries_source_owner_evidence_without_playlist_hydration() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let save_root = PathBuf::from("C:/Media");
+        let shared_path = PathBuf::from("Disc 1").join("Shared.m4a");
+        let source_url = "https://example.com/spectrum-source#a";
+        let source_group = collection_group(
+            "Disc 1",
+            "https://example.com/spectrum-source#disc-1",
+            "Disc 1",
+        );
+        let collection = collection_with_musics(
+            "https://example.com/spectrum-source",
+            "youtube/spectrum-source",
+            Some(false),
+            vec![
+                Music {
+                    name: "Track A Intro".to_string(),
+                    alias: "Track A Intro".to_string(),
+                    group: source_group.clone(),
+                    url: source_url.to_string(),
+                    path: Some(shared_path.to_string_lossy().to_string()),
+                    start_ms: 0,
+                    end_ms: 120_000,
+                },
+                Music {
+                    name: "Track A Tail".to_string(),
+                    alias: "Track A Tail".to_string(),
+                    group: source_group.clone(),
+                    url: source_url.to_string(),
+                    path: Some(shared_path.to_string_lossy().to_string()),
+                    start_ms: 120_000,
+                    end_ms: 240_000,
+                },
+                Music {
+                    name: "Track B".to_string(),
+                    alias: "Track B".to_string(),
+                    group: source_group.clone(),
+                    url: "https://example.com/spectrum-source#b".to_string(),
+                    path: Some(shared_path.to_string_lossy().to_string()),
+                    start_ms: 0,
+                    end_ms: 60_000,
+                },
+            ],
+        );
+        let _ = upsert_collection(&collection)
+            .await
+            .expect("collection should save before spectrum context lookup");
+
+        let lookup_path = save_root.join(&collection.folder).join(&shared_path);
+        let context = load_spectrum_music_context(
+            &lookup_path,
+            &save_root,
+            Some(SpectrumMusicSourceIdentity {
+                url: source_url,
+                start_ms: 120_000,
+                end_ms: 240_000,
+            }),
+        )
+        .await
+        .expect("spectrum context lookup should succeed");
+
+        assert_eq!(context.file_musics.len(), 3);
+        let source = context
+            .source
+            .expect("matching source identity should carry owner evidence");
+        assert_eq!(source.source_collection_url, collection.url);
+        assert_eq!(source.source_url, source_url);
+        assert_eq!(source.source_start_ms, 120_000);
+        assert_eq!(source.source_end_ms, 240_000);
+        assert_eq!(source.source_group.url, source_group.url);
+        assert_eq!(
+            source.source_path.as_deref(),
+            Some(shared_path.to_string_lossy().as_ref())
+        );
 
         reset_db();
     });
@@ -1349,8 +1436,8 @@ fn get_playlist_by_name_reads_related_collections_and_groups() {
         let playlist = sample_playlist("repo-playlist");
         let collection_record =
             insert_collection_row("repo-playlist-collection", &playlist.collections[0]).await;
-        let music_record = insert_music_row("repo-playlist-track", &playlist.collections[0].musics[0])
-            .await;
+        let music_record =
+            insert_music_row("repo-playlist-track", &playlist.collections[0].musics[0]).await;
         insert_music_edges(&collection_record, std::slice::from_ref(&music_record)).await;
         let group_record = insert_group_row("repo-playlist-group", &playlist.groups[0]).await;
         insert_group_edges(&group_record, std::slice::from_ref(&music_record)).await;
@@ -1438,7 +1525,8 @@ fn get_playlist_config_reads_one_level_surfaces_without_music() {
         let collection_record =
             insert_collection_row("repo-playlist-config-collection", &playlist.collections[0])
                 .await;
-        let group_record = insert_group_row("repo-playlist-config-group", &playlist.groups[0]).await;
+        let group_record =
+            insert_group_row("repo-playlist-config-group", &playlist.groups[0]).await;
         insert_playlist_row(
             "repo-playlist-config",
             &playlist,
@@ -1599,6 +1687,71 @@ fn upsert_playlist_does_not_clobber_existing_collection_graph_data() {
             persisted_playlist.collections[0].musics[0].url,
             populated_collection.musics[0].url
         );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn upsert_playlist_surface_is_immediately_usable_for_playback_selection() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let collection_url = "https://example.com/immediate-playback";
+        let collection_folder = "youtube/immediate-playback";
+        let populated_collection = collection_with_musics(
+            collection_url,
+            collection_folder,
+            Some(false),
+            vec![shared_music(collection_url, collection_folder)],
+        );
+        upsert_collection(&populated_collection)
+            .await
+            .expect("library collection should persist before playlist save");
+
+        let playlist = PlayList {
+            name: "Immediate Playback".to_string(),
+            collections: vec![Collection {
+                musics: vec![],
+                ..sample_collection(collection_url, Some(false))
+            }],
+            groups: vec![],
+            created_at: AutoFill::pending(),
+        };
+
+        let saved = upsert_playlist_surface(&playlist, None)
+            .await
+            .expect("playlist save should succeed");
+        let persisted_collection = get_collection_by_url(collection_url)
+            .await
+            .expect("library collection reload should succeed")
+            .expect("library collection should still exist");
+        let selection = get_playlist_playback_selection_by_name(&saved.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist immediately after save");
+        let sources = load_playlist_playback_track_sources(&selection, 1)
+            .await
+            .expect("playback source should load immediately after save");
+
+        assert_eq!(selection.playlist_name, playlist.name);
+        assert_eq!(saved.name, playlist.name);
+        assert_eq!(persisted_collection.musics.len(), 1);
+        assert_eq!(
+            persisted_collection.musics[0].url,
+            populated_collection.musics[0].url
+        );
+        assert_eq!(selection.collections.len(), 1);
+        assert_eq!(selection.collections[0].url, populated_collection.url);
+        assert_eq!(
+            selection.download_scopes,
+            vec![populated_collection.url.clone()]
+        );
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].collection_url, populated_collection.url);
+        assert_eq!(sources[0].music.url, populated_collection.musics[0].url);
 
         reset_db();
     });
@@ -1810,9 +1963,86 @@ fn playlist_playback_selection_reads_refs_without_hydrating_unselected_collectio
         assert_eq!(selection.collections[0].url, selected_collection.url);
         assert_eq!(selection.groups.len(), 1);
         assert_eq!(selection.groups[0].url, selected_group.url);
+        assert_eq!(
+            selection.download_scopes,
+            vec![selected_collection.url.clone(), selected_group.url.clone()]
+        );
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].collection_url, selected_collection.url);
         assert_eq!(sources[0].music.url, selected_music.url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn playlist_playback_selection_adds_parent_download_scope_for_group_only_refs() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let selected_group =
+            collection_group("Disc 1", "https://example.com/group-only#disc-1", "Disc 1");
+        let selected_music = Music {
+            name: "Selected".to_string(),
+            alias: "Selected".to_string(),
+            group: selected_group.clone(),
+            url: "https://example.com/watch/group-only".to_string(),
+            path: Some("Selected.m4a".to_string()),
+            start_ms: 0,
+            end_ms: 60_000,
+        };
+        let selected_collection = collection_with_musics(
+            "https://example.com/group-only",
+            "youtube/group-only",
+            Some(false),
+            vec![selected_music.clone()],
+        );
+        let selected_collection_record =
+            insert_collection_row("group-only-selected-collection", &selected_collection).await;
+        let selected_group_record =
+            insert_group_row("group-only-selected-group", &selected_group).await;
+        let selected_music_record =
+            insert_music_row("group-only-selected-music", &selected_music).await;
+
+        insert_music_edges(
+            &selected_collection_record,
+            std::slice::from_ref(&selected_music_record),
+        )
+        .await;
+        insert_group_edges(
+            &selected_group_record,
+            std::slice::from_ref(&selected_music_record),
+        )
+        .await;
+
+        let playlist = PlayList {
+            name: "Group Only Playback".to_string(),
+            collections: vec![],
+            groups: vec![selected_group.clone()],
+            created_at: AutoFill::pending(),
+        };
+        insert_playlist_row(
+            "group-only-playback-playlist",
+            &playlist,
+            &[],
+            std::slice::from_ref(&selected_group_record),
+        )
+        .await;
+
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist");
+
+        assert_eq!(selection.collections.len(), 0);
+        assert_eq!(selection.groups.len(), 1);
+        assert_eq!(
+            selection.download_scopes,
+            vec![selected_group.url.clone(), selected_collection.url.clone()]
+        );
 
         reset_db();
     });

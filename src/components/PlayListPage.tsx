@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
+import type { MainStateT } from "@/src/flow/appLogic/events";
 import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import { PlayListPageItem, CreateNewPlayListItem } from "./PlayListPageItem";
 import { usePlayListPlaybackSurface } from "./usePlayListPlaybackSurface";
@@ -18,7 +19,13 @@ import {
 } from "./scrollPosition";
 import { usePlayListTitleReturnSurface } from "./usePlayListTitleReturnSurface";
 
-export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollPositionRef }) {
+export function PlayListPage({
+  scrollPositionRef,
+  surfacePageState,
+}: {
+  scrollPositionRef: ScrollPositionRef;
+  surfacePageState?: MainStateT;
+}) {
   const isPresent = useIsPresent();
   const {
     activeLayoutId,
@@ -31,12 +38,11 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     titleToneHandoff,
   } = appLogicHook.useContext();
   const pageState = appLogicHook.useState();
-  const pageStateValue = pageState.match({
+  const livePageStateValue = pageState.match({
     idle: () => "idle" as const,
     loading: () => "loading" as const,
     ready: () => "ready" as const,
     play: () => "play" as const,
-    spectrumLoadingMusics: () => "spectrumLoadingMusics" as const,
     spectrum: () => "spectrum" as const,
     spectrumUpdatingMusic: () => "spectrumUpdatingMusic" as const,
     spectrumCreatingMusic: () => "spectrumCreatingMusic" as const,
@@ -46,6 +52,7 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
     configUpdatingCollectionUpdates: () => "configUpdatingCollectionUpdates" as const,
     error: () => "error" as const,
   });
+  const pageStateValue = surfacePageState ?? livePageStateValue;
   const playbackSurface = usePlayListPlaybackSurface({
     pageState: pageStateValue,
     playlists,
@@ -55,7 +62,9 @@ export function PlayListPage({ scrollPositionRef }: { scrollPositionRef: ScrollP
   });
   const titleReturnSurfaceTargetLayoutId = resolvePlayListPageTitleReturnSurfaceTargetLayoutId({
     pageState: pageStateValue,
-    visiblePlaylists: playlists,
+    visiblePlaylists: pendingPlaylistPreview
+      ? [pendingPlaylistPreview.playlist, ...playlists]
+      : playlists,
     titleToneHandoff,
   });
   const titleReturnSurface = usePlayListTitleReturnSurface(titleReturnSurfaceTargetLayoutId);

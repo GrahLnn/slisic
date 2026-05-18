@@ -226,7 +226,8 @@ fn repair_stale_single_source_collections_restores_playable_music_from_completed
         assert_eq!(restored.musics[0].group.name, collection.name);
         assert_eq!(restored.musics[0].group.url, collection.url);
         assert_eq!(restored.musics[0].group.folder, collection.folder);
-        assert_eq!(restored.musics[0].end, 245);
+        assert_eq!(restored.musics[0].start_ms, 0);
+        assert_eq!(restored.musics[0].end_ms, 245_000);
 
         let _ = std::fs::remove_dir_all(&save_root);
         reset_db();

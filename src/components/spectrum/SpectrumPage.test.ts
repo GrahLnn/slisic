@@ -486,6 +486,39 @@ describe("SpectrumPage", () => {
     });
   });
 
+  test("keeps the new spectrum music row activatable before any draft changes exist", () => {
+    const viewModels = resolveSpectrumMusicEditorViewModels({
+      activeLayoutId: "playlist-title:Focus Session",
+      handoffTone: "solid",
+      interactionDisabled: false,
+      nowPlayingTrackFilePath: "C:/Music/quiet-morning.m4a",
+      nowPlayingTrackEndMs: 120_000,
+      nowPlayingTrackStartMs: 0,
+      nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
+      playingPlaylistName: "Focus Session",
+      spectrumMusicDrafts: [],
+    });
+
+    assert.equal(viewModels.length, 1);
+    assert.equal(viewModels[0]?.id, "new|https://example.com/quiet-morning#a");
+    assert.equal(viewModels[0]?.isNewTitle, true);
+    assert.equal(viewModels[0]?.interactionDisabled, false);
+
+    const pageExitingViewModels = resolveSpectrumMusicEditorViewModels({
+      activeLayoutId: "playlist-title:Focus Session",
+      handoffTone: "solid",
+      interactionDisabled: true,
+      nowPlayingTrackFilePath: "C:/Music/quiet-morning.m4a",
+      nowPlayingTrackEndMs: 120_000,
+      nowPlayingTrackStartMs: 0,
+      nowPlayingTrackUrl: "https://example.com/quiet-morning#a",
+      playingPlaylistName: "Focus Session",
+      spectrumMusicDrafts: [],
+    });
+
+    assert.equal(pageExitingViewModels[0]?.interactionDisabled, true);
+  });
+
   test("keeps the back action as back for an unnamed pending spectrum music draft", () => {
     const pendingDraft = {
       kind: "pending-create" as const,

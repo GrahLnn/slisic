@@ -16,7 +16,6 @@ import { crab, type HardwareHorizontalWheelEvent, type PlaybackStatusPayload } f
 import { usePrefersDarkColorScheme } from "../colorScheme";
 import {
   createPlaceholderWaveformSummary,
-  createWaveformDataRequestKey,
   createWaveformRenderDataStore,
   createWaveformSharedTileCacheForFile as createWaveformSharedTileCacheForStore,
   arePlaybackSnapshotsSamePlaybackSegment,
@@ -25,31 +24,26 @@ import {
   resolvePlaybackSnapshotAfterStatusCommit,
   resolvePlaybackSnapshotPausedAtNow,
   resolvePlaybackSnapshotDurationMs,
-  resolveQuantizedWaveformDisplayPeak,
   resolveTrackWaveformInitialStatus,
   resolveWaveformDataPlanScopedRequests,
   resolveWaveformHardwareHorizontalWheelDelta,
   resolveWaveformInitialViewportFrame,
-  resolveWaveformMaximumPixelsPerSecond,
   resolveWaveformPeakFromTileCache,
-  resolveWaveformPixelsPerSecond,
   resolveWaveformPlayheadCssVariables,
   resolveWaveformPlayheadDrag,
   resolveWaveformPointerAnchorViewportX,
   resolveWaveformRenderPixelsPerSecond,
+  resolveWaveformPresentationSelection,
   resolveWaveformSelectionDrag,
   resolveWaveformSelectionGeometry,
   resolveWaveformSelectionMarkerLayout,
   resolveWaveformSessionFrame,
   resolveWaveformSessionViewportFrame,
   resolveWaveformTileLoadResultPolicy,
-  resolveWaveformTilePeakAtSeconds,
-  resolveWaveformTilePeakRangeAtPixels,
   resolveWaveformTileRequestStartPolicy,
   resolveWaveformTransaction,
   resolveWaveformViewportAudioSeconds,
   resolveWaveformViewportTransition,
-  resolveWaveformWheelDeltas,
   resolveWaveformWheelOperation,
   shouldAcceptWaveformHardwareHorizontalWheel,
   shouldPreventWaveformWheelDefault,
@@ -63,7 +57,6 @@ import {
   type WaveformRenderDataStore,
   type WaveformSelectionDragResolution,
   type WaveformSelectionEdge,
-  type WaveformSelectionGeometry,
   type WaveformSelectionRange,
   type WaveformSessionViewportState,
   type WaveformStatus,
@@ -102,6 +95,7 @@ export {
   resolveWaveformPixelsPerSecond,
   resolveWaveformPlayheadCssVariables,
   resolveWaveformPlayheadDrag,
+  resolveWaveformPresentationSelection,
   resolveWaveformPointerAnchorViewportX,
   resolveWaveformRenderPixelsPerSecond,
   resolveWaveformResizeViewportState,
@@ -175,6 +169,7 @@ export type TrackSpectrumPlaybackStatusCommit = (status: PlaybackStatusPayload |
 export type TrackSpectrumImmediatePlaybackPause = () => PlaybackStatusPayload | null;
 export interface TrackSpectrumPlaybackControl {
   commitImmediatePause: TrackSpectrumImmediatePlaybackPause;
+  commitPlaybackStatus: TrackSpectrumPlaybackStatusCommit;
 }
 
 export interface TrackSpectrumPorts {
@@ -1082,6 +1077,7 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
       playheadEnabled
         ? {
             commitImmediatePause: playback.commitImmediatePause,
+            commitPlaybackStatus: playback.commitPlaybackStatus,
           }
         : null,
     );
@@ -1089,7 +1085,12 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
     return () => {
       onPlaybackControlReady?.(null);
     };
-  }, [onPlaybackControlReady, playback.commitImmediatePause, playheadEnabled]);
+  }, [
+    onPlaybackControlReady,
+    playback.commitImmediatePause,
+    playback.commitPlaybackStatus,
+    playheadEnabled,
+  ]);
 
   const requestDataPlan = useWaveformDataLoader({
     filePath: props.filePath,
@@ -1314,6 +1315,7 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
       />
       {isLoading ? <WaveformLoadingOverlay /> : null}
       <WaveformSelectionOverlay
+        committedSelection={props.selection ?? null}
         onCommit={commitSelection}
         isDraggingRef={isDraggingSelectionRef}
         selectionRef={selectionRef}
@@ -1347,6 +1349,7 @@ function WaveformLoadingOverlay() {
 }
 
 function WaveformSelectionOverlay(args: {
+  committedSelection: WaveformSelectionRange | null;
   isDraggingRef: MutableRefObject<boolean>;
   onCommit: (selection: WaveformSelectionDragResolution) => void;
   selectionRef: MutableRefObject<WaveformSelectionRange | null>;
@@ -1354,7 +1357,12 @@ function WaveformSelectionOverlay(args: {
   visible: boolean;
 }) {
   const [preview, setPreview] = useState<WaveformSelectionRange | null>(null);
-  const activeSelection = preview ?? args.selectionRef.current;
+  const activeSelection = resolveWaveformPresentationSelection({
+    committedSelection: args.committedSelection,
+    interactiveSelection: args.selectionRef.current,
+    isDragging: args.isDraggingRef.current,
+    previewSelection: preview,
+  });
   const geometry = resolveWaveformSelectionGeometry({
     selection: activeSelection,
     viewport: args.viewport,

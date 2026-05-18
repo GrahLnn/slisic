@@ -688,6 +688,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
       onNewTitleActivate();
       scheduleFocusWhenEditable(node);
     }
+    const newTitleActivationBlocked = interactionDisabled || isAutoWriting || !onNewTitleActivate;
 
     return (
       <div {...props}>
@@ -884,7 +885,8 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
             <button
               type="button"
               aria-label="Activate new title"
-              disabled={interactionDisabled || isAutoWriting || !onNewTitleActivate}
+              aria-disabled={newTitleActivationBlocked}
+              tabIndex={newTitleActivationBlocked ? -1 : undefined}
               onPointerDown={(event) => {
                 event.preventDefault();
               }}

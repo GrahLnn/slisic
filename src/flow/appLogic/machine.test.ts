@@ -8,8 +8,9 @@ import type {
   PlayList,
   PlayListListView,
   PlayPlaylistSession,
+  SpectrumMusicSourceContext,
 } from "@/src/cmd";
-import type { ConfigDraft, SpectrumMusicDraft } from "./core";
+import type { ConfigDraft } from "./core";
 import { machine } from "./machine";
 import {
   payloads,
@@ -22,6 +23,7 @@ import {
   type MusicUpdatesResult,
   type PlayPlaylistInput,
   type SpectrumMusicDraftBootstrapInput,
+  type SpectrumMusicDraftBootstrapResult,
 } from "./events";
 import type { MusicDraftDelete } from "./musicTitle";
 
@@ -105,6 +107,32 @@ function createBootstrapResult(collections: readonly Collection[]): BootstrapRes
     collections: [...collections],
     configLibrary: createConfigLibrary(collections),
     savePath: "C:/Music",
+  };
+}
+
+function createShallowBootstrapResult(collections: readonly Collection[]): BootstrapResult {
+  const playlist = createPlaylist(collections[0] ?? createCollection([]));
+
+  return {
+    hasPlayList: collections.length > 0,
+    playlists: collections.length > 0 ? [createPlaylistSurface(playlist)] : [],
+    collections: [],
+    configLibrary: createConfigLibrary(collections),
+    savePath: "C:/Music",
+  };
+}
+
+function createSpectrumMusicSourceContext(
+  collection: Collection,
+  music: Music,
+): SpectrumMusicSourceContext {
+  return {
+    source_collection_url: collection.url,
+    source_end_ms: music.end_ms,
+    source_group: music.group,
+    source_path: music.path,
+    source_start_ms: music.start_ms,
+    source_url: music.url,
   };
 }
 
@@ -309,30 +337,33 @@ describe("appLogic machine", () => {
             async () => null,
           ),
           loadSpectrumMusicDrafts: fromPromise<
-            SpectrumMusicDraft[],
+            SpectrumMusicDraftBootstrapResult,
             SpectrumMusicDraftBootstrapInput
-          >(async () => [
-            {
-              kind: "persisted" as const,
-              baselineName: deletedMusic.alias,
-              baselineStartMs: deletedMusic.start_ms,
-              baselineEndMs: deletedMusic.end_ms,
-              name: deletedMusic.alias,
-              url: deletedMusic.url,
-              startMs: deletedMusic.start_ms,
-              endMs: deletedMusic.end_ms,
-            },
-            {
-              kind: "persisted" as const,
-              baselineName: siblingMusic.alias,
-              baselineStartMs: siblingMusic.start_ms,
-              baselineEndMs: siblingMusic.end_ms,
-              name: siblingMusic.alias,
-              url: siblingMusic.url,
-              startMs: siblingMusic.start_ms,
-              endMs: siblingMusic.end_ms,
-            },
-          ]),
+          >(async () => ({
+            source: null,
+            drafts: [
+              {
+                kind: "persisted" as const,
+                baselineName: deletedMusic.alias,
+                baselineStartMs: deletedMusic.start_ms,
+                baselineEndMs: deletedMusic.end_ms,
+                name: deletedMusic.alias,
+                url: deletedMusic.url,
+                startMs: deletedMusic.start_ms,
+                endMs: deletedMusic.end_ms,
+              },
+              {
+                kind: "persisted" as const,
+                baselineName: siblingMusic.alias,
+                baselineStartMs: siblingMusic.start_ms,
+                baselineEndMs: siblingMusic.end_ms,
+                name: siblingMusic.alias,
+                url: siblingMusic.url,
+                startMs: siblingMusic.start_ms,
+                endMs: siblingMusic.end_ms,
+              },
+            ],
+          })),
           updateMusics: fromPromise<MusicUpdatesResult, MusicUpdateInput[]>(async () => ({
             results: [],
           })),
@@ -359,12 +390,6 @@ describe("appLogic machine", () => {
       });
     });
     actor.send(payloads["playlist.play"].load("Focus Session"));
-    actor.send(
-      payloads["playlist.preview.changed"].load({
-        playlist: createPlaylist(collection),
-        previousName: null,
-      }),
-    );
     actor.send(
       payloads["player.now_playing_track.changed"].load({
         playlist_name: "Focus Session",
@@ -442,20 +467,23 @@ describe("appLogic machine", () => {
             async () => null,
           ),
           loadSpectrumMusicDrafts: fromPromise<
-            SpectrumMusicDraft[],
+            SpectrumMusicDraftBootstrapResult,
             SpectrumMusicDraftBootstrapInput
-          >(async () => [
-            {
-              kind: "persisted" as const,
-              baselineName: music.alias,
-              baselineStartMs: music.start_ms,
-              baselineEndMs: music.end_ms,
-              name: music.alias,
-              url: music.url,
-              startMs: music.start_ms,
-              endMs: music.end_ms,
-            },
-          ]),
+          >(async () => ({
+            source: null,
+            drafts: [
+              {
+                kind: "persisted" as const,
+                baselineName: music.alias,
+                baselineStartMs: music.start_ms,
+                baselineEndMs: music.end_ms,
+                name: music.alias,
+                url: music.url,
+                startMs: music.start_ms,
+                endMs: music.end_ms,
+              },
+            ],
+          })),
           updateMusics: fromPromise<MusicUpdatesResult, MusicUpdateInput[]>(async ({ input }) => ({
             results: input.map((request) => ({
               input: request,
@@ -524,6 +552,12 @@ describe("appLogic machine", () => {
       }),
     );
     actor.send(sig.mainx.back);
+    assert.equal(actor.getSnapshot().value, "spectrumUpdatingMusic");
+    assert.deepEqual(actor.getSnapshot().context.titleToneHandoff, {
+      layoutId: "playlist-title:Focus Session",
+      tone: "solid",
+    });
+    assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
@@ -557,20 +591,23 @@ describe("appLogic machine", () => {
             async () => null,
           ),
           loadSpectrumMusicDrafts: fromPromise<
-            SpectrumMusicDraft[],
+            SpectrumMusicDraftBootstrapResult,
             SpectrumMusicDraftBootstrapInput
-          >(async () => [
-            {
-              kind: "persisted" as const,
-              baselineName: music.alias,
-              baselineStartMs: music.start_ms,
-              baselineEndMs: music.end_ms,
-              name: music.alias,
-              url: music.url,
-              startMs: music.start_ms,
-              endMs: music.end_ms,
-            },
-          ]),
+          >(async () => ({
+            source: null,
+            drafts: [
+              {
+                kind: "persisted" as const,
+                baselineName: music.alias,
+                baselineStartMs: music.start_ms,
+                baselineEndMs: music.end_ms,
+                name: music.alias,
+                url: music.url,
+                startMs: music.start_ms,
+                endMs: music.end_ms,
+              },
+            ],
+          })),
           updateMusics: fromPromise<MusicUpdatesResult, MusicUpdateInput[]>(async () => {
             updateCallCount += 1;
             return { results: [] };
@@ -661,20 +698,23 @@ describe("appLogic machine", () => {
             async () => null,
           ),
           loadSpectrumMusicDrafts: fromPromise<
-            SpectrumMusicDraft[],
+            SpectrumMusicDraftBootstrapResult,
             SpectrumMusicDraftBootstrapInput
-          >(async () => [
-            {
-              kind: "persisted" as const,
-              baselineName: music.alias,
-              baselineStartMs: music.start_ms,
-              baselineEndMs: music.end_ms,
-              name: music.alias,
-              url: music.url,
-              startMs: music.start_ms,
-              endMs: music.end_ms,
-            },
-          ]),
+          >(async () => ({
+            source: null,
+            drafts: [
+              {
+                kind: "persisted" as const,
+                baselineName: music.alias,
+                baselineStartMs: music.start_ms,
+                baselineEndMs: music.end_ms,
+                name: music.alias,
+                url: music.url,
+                startMs: music.start_ms,
+                endMs: music.end_ms,
+              },
+            ],
+          })),
         },
       }),
     );
@@ -729,7 +769,7 @@ describe("appLogic machine", () => {
     });
   });
 
-  test("drops an empty pending spectrum music draft when returning from spectrum", async () => {
+  test("drops an empty pending spectrum music draft from shallow spectrum context", async () => {
     const music = createMusic();
     const collection = createCollection([music]);
     let createCallCount = 0;
@@ -740,15 +780,18 @@ describe("appLogic machine", () => {
       machine.provide({
         actors: {
           loadCollections: fromPromise<BootstrapResult>(async () =>
-            createBootstrapResult([collection]),
+            createShallowBootstrapResult([collection]),
           ),
           playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
             async () => null,
           ),
           loadSpectrumMusicDrafts: fromPromise<
-            SpectrumMusicDraft[],
+            SpectrumMusicDraftBootstrapResult,
             SpectrumMusicDraftBootstrapInput
-          >(async () => []),
+          >(async () => ({
+            drafts: [],
+            source: createSpectrumMusicSourceContext(collection, music),
+          })),
           updateMusics: fromPromise<MusicUpdatesResult, MusicUpdateInput[]>(async () => {
             updateCallCount += 1;
             return { results: [] };
@@ -831,11 +874,11 @@ describe("appLogic machine", () => {
     assert.equal(createCallCount, 0);
     assert.equal(updateCallCount, 0);
     assert.equal(deleteCallCount, 0);
-    assert.deepEqual(actor.getSnapshot().context.collections[0]?.musics, [music]);
+    assert.deepEqual(actor.getSnapshot().context.collections, []);
     assert.deepEqual(actor.getSnapshot().context.spectrumMusicDrafts, []);
   });
 
-  test("creates named pending spectrum music inside the source collection", async () => {
+  test("creates named pending spectrum music from shallow spectrum source context", async () => {
     const music = createMusic();
     const collection = createCollection([music]);
     const createInputs: MusicCreateInput[][] = [];
@@ -844,15 +887,18 @@ describe("appLogic machine", () => {
       machine.provide({
         actors: {
           loadCollections: fromPromise<BootstrapResult>(async () =>
-            createBootstrapResult([collection]),
+            createShallowBootstrapResult([collection]),
           ),
           playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
             async () => null,
           ),
           loadSpectrumMusicDrafts: fromPromise<
-            SpectrumMusicDraft[],
+            SpectrumMusicDraftBootstrapResult,
             SpectrumMusicDraftBootstrapInput
-          >(async () => []),
+          >(async () => ({
+            drafts: [],
+            source: createSpectrumMusicSourceContext(collection, music),
+          })),
           updateMusics: fromPromise<MusicUpdatesResult, MusicUpdateInput[]>(async () => ({
             results: [],
           })),
@@ -931,9 +977,6 @@ describe("appLogic machine", () => {
     assert.equal(createInputs.length, 1);
     assert.equal(createInputs[0]?.[0]?.sourceCollectionUrl, collection.url);
     assert.equal(createInputs[0]?.[0]?.music.alias, "Track Draft");
-    assert.deepEqual(
-      actor.getSnapshot().context.collections[0]?.musics.map((candidate) => candidate.alias),
-      ["Track A", "Track Draft"],
-    );
+    assert.deepEqual(actor.getSnapshot().context.collections, []);
   });
 });

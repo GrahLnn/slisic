@@ -13,7 +13,7 @@ import {
   removeDraftSidebarItem,
   resolveDraftCommitTitle,
   resolveNextGeneratedPlaylistName,
-  resolvePlaylistsWithPreview,
+  resolvePlaylistDraftCommit,
   resolveSavedPath,
   resetContextWith,
   upsertPlaylistIntoPlaylists,
@@ -388,6 +388,55 @@ describe("draft commit naming", () => {
       },
     );
   });
+
+  test("creates one explicit commit request from a changed draft", () => {
+    const draft = {
+      mode: "create" as const,
+      name: "",
+      collections: [],
+      groups: [],
+      createdAt: null,
+    };
+    const commit = resolvePlaylistDraftCommit({
+      draft,
+      draftBaseline: draft,
+      playlists: [
+        createPlayListFixture({ name: "PlayList 1" }),
+        createPlayListFixture({ name: "PlayList 2" }),
+      ],
+    });
+
+    assert.deepEqual(commit.titleResolution, {
+      kind: "generate",
+      name: "PlayList 3",
+    });
+    assert.equal(commit.request.previousName, null);
+    assert.deepEqual(commit.request.playlist, {
+      name: "PlayList 3",
+      collections: [],
+      groups: [],
+      created_at: null,
+    });
+    assert.deepEqual(commit.preview, {
+      playlist: {
+        name: "PlayList 3",
+        created_at: null,
+      },
+      previousName: null,
+      draft: {
+        mode: "create",
+        name: "PlayList 3",
+        collections: [],
+        groups: [],
+        createdAt: null,
+      },
+    });
+    assert.equal(commit.layoutId, "playlist-title:PlayList 3");
+    assert.deepEqual(commit.titleToneHandoff, {
+      layoutId: "playlist-title:PlayList 3",
+      tone: "solid",
+    });
+  });
 });
 
 describe("upsertPlaylistIntoPlaylists", () => {
@@ -466,37 +515,6 @@ describe("resolveSavedPath", () => {
     assert.equal(
       resolveSavedPath("   ", "C:\\Users\\admin\\Documents\\ransic"),
       "C:\\Users\\admin\\Documents\\ransic",
-    );
-  });
-});
-
-describe("resolvePlaylistsWithPreview", () => {
-  test("returns a detached copy when there is no pending preview", () => {
-    const playlists = [createPlayListFixture({ name: "Existing" })];
-
-    const resolved = resolvePlaylistsWithPreview(playlists, null);
-
-    assert.deepEqual(resolved, playlists);
-    assert.notEqual(resolved, playlists);
-  });
-
-  test("materializes the returning playlist immediately while the commit is still pending", () => {
-    assert.deepEqual(
-      resolvePlaylistsWithPreview([createPlayListFixture({ name: "Existing" })], {
-        playlist: createPlayListFixture({ name: "PlayList 1" }),
-        previousName: null,
-      }),
-      [createPlayListFixture({ name: "Existing" }), createPlayListFixture({ name: "PlayList 1" })],
-    );
-  });
-
-  test("replaces the previous title immediately for rename previews", () => {
-    assert.deepEqual(
-      resolvePlaylistsWithPreview([createPlayListFixture({ name: "Original" })], {
-        playlist: createPlayListFixture({ name: "Renamed" }),
-        previousName: "Original",
-      }),
-      [createPlayListFixture({ name: "Renamed" })],
     );
   });
 });

@@ -15,11 +15,9 @@ import { action as playlistCommitAction } from "@/src/flow/playlistCommit";
 import { action as pasteDownloadAction, hook as pasteDownloadHook } from "@/src/flow/pasteDownload";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import {
-  createPlayListFromDraft,
   createConfigSidebarItemRef,
   createConfigSidebarItemsFromLibrary,
-  playlistTitleLayoutId,
-  resolveDraftCommitTitle,
+  resolvePlaylistDraftCommit,
   resolvePlaylistsWithPreview,
   type ConfigSidebarItemRef,
 } from "@/src/flow/appLogic/core";
@@ -358,7 +356,6 @@ export function ListConfig() {
   const {
     activeLayoutId,
     configLibrary,
-    collections,
     draft,
     draftBaseline,
     pendingPlaylistPreview,
@@ -425,9 +422,9 @@ export function ListConfig() {
     if (isBackActionLocked) {
       return;
     }
-    setIsBackNavigationPending(true);
 
     try {
+      setIsBackNavigationPending(true);
       if (!viewModel.hasDraftChanges || !draft) {
         pageRenderFreeze.freeze(
           createFrozenListConfigRenderData({
@@ -440,38 +437,26 @@ export function ListConfig() {
         return;
       }
 
-      const titleResolution = resolveDraftCommitTitle({
+      const commit = resolvePlaylistDraftCommit({
         draft,
         draftBaseline,
         playlists: resolvePlaylistsWithPreview(playlists, pendingPlaylistPreview),
       });
-      const committedDraft = {
-        ...draft,
-        name: titleResolution.name,
-      };
-      const committedPlaylist = createPlayListFromDraft(committedDraft, {
-        createdAt: draft.mode === "edit" ? draft.createdAt : null,
-      });
-      const commitRequest = {
-        playlist: committedPlaylist,
-        previousName: draft.mode === "edit" ? (draftBaseline?.name ?? null) : null,
-      };
 
-      playlistCommitAction.commit(commitRequest);
+      playlistCommitAction.commit(commit);
 
       await editableTitleRef.current?.commitResolvedValue({
-        value: titleResolution.name,
-        animateTyping: titleResolution.kind !== "keep",
+        value: commit.titleResolution.name,
+        animateTyping: commit.titleResolution.kind !== "keep",
       });
 
-      const committedReturnLayoutId = playlistTitleLayoutId(committedPlaylist.name);
       flushSync(() => {
-        appLogicAction.changeDraftName(titleResolution.name);
+        appLogicAction.changeDraftName(commit.titleResolution.name);
         pageRenderFreeze.freeze(
           createFrozenListConfigRenderData({
             renderData: liveRenderData,
-            titleValue: committedPlaylist.name,
-            titleLayoutId: committedReturnLayoutId,
+            titleValue: commit.request.playlist.name,
+            titleLayoutId: commit.layoutId,
             titleHoverVisual: "retain",
           }),
         );
@@ -486,7 +471,7 @@ export function ListConfig() {
   }
 
   async function handleDeletePlaylistAction() {
-    if (isDeletePending || isBackNavigationPending) {
+    if (isDeletePending || isBackActionLocked) {
       return;
     }
 

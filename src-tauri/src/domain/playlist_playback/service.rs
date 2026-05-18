@@ -1,5 +1,5 @@
 #[cfg(not(test))]
-use super::model::PlayPlaylistSession;
+use super::model::{PlayPlaylistSession, PlayPlaylistSessionStatus};
 use crate::domain::downloads::model::DownloadTask;
 #[cfg(not(test))]
 use crate::domain::downloads::repo as download_repo;
@@ -39,14 +39,18 @@ const PLAYLIST_PLAYBACK_SEED_PROBE_LIMIT: usize = 1;
 #[cfg(not(test))]
 pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylistSession> {
     let mut download_changes = download_service::subscribe_download_task_changes();
-    let material = build_playlist_playback_material(app, &name, &mut download_changes).await?;
+    let request = player_service::claim_playback_start_request()?;
+    let material =
+        build_playlist_playback_material(app, &name, &request, &mut download_changes).await?;
     let playlist_name = material.playlist_name;
     let track_count = material.tracks.len().max(1) as u32;
     let seed = material.seed;
     let tracks = ensure_queue_starts_with_seed(material.tracks, &seed);
 
+    ensure_playlist_playback_request_current(&request)?;
     player_service::set_playback_continuation_mode(resolve_playlist_playback_continuation_mode())?;
-    let session = player_service::play_tracks_from_initial_track_with_queue_mode(
+    let session = player_service::play_tracks_from_initial_track_for_request_with_queue_mode(
+        &request,
         playlist_name.clone(),
         tracks,
         seed.clone(),
@@ -68,6 +72,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
     );
 
     Ok(PlayPlaylistSession {
+        status: PlayPlaylistSessionStatus::Started,
         playlist_name,
         track_count,
     })
@@ -100,6 +105,7 @@ pub(crate) struct PlaylistTrackResolution {
 async fn build_playlist_playback_material(
     app: &AppHandle,
     playlist_name: &str,
+    request: &player_service::PlaybackStartRequestHandle,
     download_changes: &mut tokio::sync::broadcast::Receiver<
         download_service::DownloadTaskChangeSignal,
     >,
@@ -107,7 +113,9 @@ async fn build_playlist_playback_material(
     let mut source = load_playlist_playback_selection(playlist_name).await?;
     let mut preparing_emitted = false;
 
+    ensure_playlist_playback_request_current(request)?;
     if let Some(seed) = resolve_playlist_playback_seed(app, &source.selection).await? {
+        ensure_playlist_playback_request_current(request)?;
         return Ok(PlaylistPlaybackMaterial {
             playlist_name: source.playlist_name,
             seed,
@@ -119,18 +127,31 @@ async fn build_playlist_playback_material(
         let has_relevant_active_downloads =
             playlist_selection_has_active_downloads(&source.selection).await?;
         if !has_relevant_active_downloads {
+            source = load_playlist_playback_selection(playlist_name).await?;
+            if let Some(seed) = resolve_playlist_playback_seed(app, &source.selection).await? {
+                ensure_playlist_playback_request_current(request)?;
+                return Ok(PlaylistPlaybackMaterial {
+                    playlist_name: source.playlist_name,
+                    seed,
+                    tracks: source.resolution.tracks,
+                });
+            }
+
             bail!("{}", source.resolution.failure_description);
         }
 
+        ensure_playlist_playback_request_current(request)?;
         if !preparing_emitted {
             emit_playlist_preparing(app, &source.playlist_name)?;
             preparing_emitted = true;
         }
 
         wait_for_download_task_change(download_changes).await?;
+        ensure_playlist_playback_request_current(request)?;
         source = load_playlist_playback_selection(playlist_name).await?;
 
         if let Some(seed) = resolve_playlist_playback_seed(app, &source.selection).await? {
+            ensure_playlist_playback_request_current(request)?;
             return Ok(PlaylistPlaybackMaterial {
                 playlist_name: source.playlist_name,
                 seed,
@@ -138,6 +159,17 @@ async fn build_playlist_playback_material(
             });
         }
     }
+}
+
+#[cfg(not(test))]
+fn ensure_playlist_playback_request_current(
+    request: &player_service::PlaybackStartRequestHandle,
+) -> Result<()> {
+    if player_service::is_playback_start_request_current(request)? {
+        return Ok(());
+    }
+
+    Err(player_service::PlaybackStartRequestSuperseded.into())
 }
 
 #[cfg(not(test))]
@@ -390,10 +422,9 @@ pub(crate) fn playlist_selection_has_relevant_active_downloads(
     download_tasks: &[DownloadTask],
 ) -> bool {
     let selected_urls = selection
-        .collections
+        .download_scopes
         .iter()
-        .map(|collection| collection.url.as_str())
-        .chain(selection.groups.iter().map(|group| group.url.as_str()))
+        .map(String::as_str)
         .collect::<HashSet<_>>();
 
     if selected_urls.is_empty() {

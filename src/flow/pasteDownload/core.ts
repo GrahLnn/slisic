@@ -1,10 +1,5 @@
 import { type as arkType } from "arktype";
-import type {
-  Collection,
-  DownloadResourceProbe,
-  DownloadTask,
-  PastedDownloadUrlResolution,
-} from "@/src/cmd";
+import type { DownloadResourceProbe, PastedDownloadUrlResolution } from "@/src/cmd";
 
 const downloadUrl = arkType("string.url");
 const EMPTY_CLIPBOARD_TEXT = "Empty clipboard";
@@ -12,7 +7,7 @@ const EMPTY_CLIPBOARD_TEXT = "Empty clipboard";
 export type ConfigCandidateItemStatus =
   | "checking"
   | "probing"
-  | "resolved"
+  | "enqueueing"
   | "invalid_url"
   | "probe_failed"
   | "enqueue_failed";
@@ -25,13 +20,11 @@ export interface ConfigCandidateItem {
   status: ConfigCandidateItemStatus;
   error: string | null;
   probe: DownloadResourceProbe | null;
-  task: DownloadTask | null;
 }
 
 export interface Context {
   items: ConfigCandidateItem[];
   pendingCheckItemIds: string[];
-  pendingProbeItemIds: string[];
   activeItemId: string | null;
   nextItemSequence: number;
 }
@@ -50,7 +43,6 @@ export function createInitialContext(): Context {
   return {
     items: [],
     pendingCheckItemIds: [],
-    pendingProbeItemIds: [],
     activeItemId: null,
     nextItemSequence: 0,
   };
@@ -108,7 +100,6 @@ export function appendCandidateItem(context: Context, rawText: string): Context 
     status: "checking",
     error: null,
     probe: null,
-    task: null,
   };
 
   return {
@@ -133,26 +124,8 @@ export function activateNextCandidateCheck(context: Context): Context {
   };
 }
 
-export function activateNextCandidate(context: Context): Context {
-  const [activeItemId, ...pendingProbeItemIds] = context.pendingProbeItemIds;
-
-  if (!activeItemId) {
-    return context;
-  }
-
-  return {
-    ...context,
-    activeItemId,
-    pendingProbeItemIds,
-  };
-}
-
 export function hasPendingCandidateToCheck(context: Context) {
   return context.activeItemId === null && context.pendingCheckItemIds.length > 0;
-}
-
-export function hasPendingCandidateToProbe(context: Context) {
-  return context.activeItemId === null && context.pendingProbeItemIds.length > 0;
 }
 
 export function findActiveCandidateItem(context: Context): ConfigCandidateItem | null {
@@ -185,7 +158,7 @@ export function completeActiveCandidateProbe(
     ...item,
     sourceUrl: probe.url,
     displayText: probe.title,
-    status: "resolved",
+    status: "enqueueing",
     error: null,
     probe,
   }));
@@ -223,29 +196,11 @@ export function applyActiveCandidateUrlResolution(
   });
 }
 
-export function createDraftCollectionFromProbe(probe: DownloadResourceProbe): Collection {
-  return {
-    name: probe.title,
-    url: probe.url,
-    folder: probe.collection_folder,
-    musics: [],
-    last_updated: "",
-    enable_updates: probe.enable_updates,
-  };
-}
-
 export function failActiveCandidateProbe(context: Context, error: string): Context {
   return updateActiveCandidateItem(context, (item) => ({
     ...item,
     status: "probe_failed",
     error,
-  }));
-}
-
-export function storeActiveCandidateTask(context: Context, task: DownloadTask): Context {
-  return updateActiveCandidateItem(context, (item) => ({
-    ...item,
-    task,
   }));
 }
 
@@ -273,7 +228,6 @@ export function deleteCandidateItem(context: Context, id: string): Context {
     ...context,
     items: context.items.filter((item) => item.id !== id),
     pendingCheckItemIds: context.pendingCheckItemIds.filter((itemId) => itemId !== id),
-    pendingProbeItemIds: context.pendingProbeItemIds.filter((itemId) => itemId !== id),
     activeItemId: context.activeItemId === id ? null : context.activeItemId,
   };
 }

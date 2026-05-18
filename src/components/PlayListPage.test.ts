@@ -114,12 +114,64 @@ describe("PlayListPage", () => {
     );
   });
 
+  test("shows pending playlist previews with the same visible item behavior as stable playlists", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "ready",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [createPlayListFixture({ name: "Quiet Morning" })],
+      pendingPlaylistPreview: {
+        playlist: createPlayListFixture({
+          name: "PlayList 3",
+          created_at: null,
+        }),
+        previousName: null,
+        draft: {
+          mode: "create",
+          name: "PlayList 3",
+          collections: [],
+          groups: [],
+          createdAt: null,
+        },
+      },
+      playingPlaylistName: null,
+      titleToneHandoff: null,
+      pressedLayoutId: null,
+      playbackSurface: null,
+      titleReturnSurface: null,
+    });
+
+    const pendingItem = viewModel.itemViewModels.find((item) => item.key === "PlayList 3");
+
+    assert.deepEqual(pendingItem, {
+      key: "PlayList 3",
+      text: "PlayList 3",
+      layoutId: "playlist-title:PlayList 3",
+      sourceLayoutId: "playlist-title:PlayList 3",
+      handoffTone: null,
+      suppressFade: false,
+      isPlaybackTarget: false,
+      shouldShowPlaybackIcons: false,
+      isPlaybackPreparing: false,
+      isHiddenInPlay: false,
+      shouldStartHiddenInPlay: false,
+      shouldAnimateSlotPosition: true,
+      titleHoverVisual: "none",
+      titleHoverRetainLease: "timed",
+      commitGesture: "secondary-only",
+      playlistName: "PlayList 3",
+    });
+    assert.deepEqual(
+      viewModel.itemViewModels.map((item) => item.playlistName),
+      ["Quiet Morning", "PlayList 3"],
+    );
+  });
+
   test("enables title share only after the playlist page is ready to hand off titles", () => {
     assert.equal(shouldEnablePlayListPageTitleShare("idle"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("loading"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("ready"), true);
     assert.equal(shouldEnablePlayListPageTitleShare("play"), true);
-    assert.equal(shouldEnablePlayListPageTitleShare("spectrumLoadingMusics"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("spectrum"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("spectrumUpdatingMusic"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("spectrumDeletingMusic"), false);
@@ -160,6 +212,16 @@ describe("PlayListPage", () => {
       }),
       true,
     );
+    assert.equal(
+      shouldRenderPlayListPageContent({
+        hasPlayList: null,
+        visiblePlaylistCount: 0,
+        hasPendingPreview: true,
+        hasActiveLayoutId: false,
+        hasTitleToneHandoff: false,
+      }),
+      true,
+    );
   });
 
   test("keeps the playing playlist in the same item slot, swaps only its text, and hides siblings", () => {
@@ -171,7 +233,7 @@ describe("PlayListPage", () => {
         createPlayListFixture({ name: "Night Drive" }),
         createPlayListFixture({ name: "Quiet Morning" }),
       ],
-      pendingPlaylistPreview: null,
+
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: null,
@@ -237,7 +299,7 @@ describe("PlayListPage", () => {
       activeLayoutId: null,
       hasPlayList: true,
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
-      pendingPlaylistPreview: null,
+
       playingPlaylistName: null,
       titleToneHandoff: null,
       pressedLayoutId: null,
@@ -267,7 +329,7 @@ describe("PlayListPage", () => {
         createPlayListFixture({ name: "Night Drive" }),
         createPlayListFixture({ name: "Quiet Morning" }),
       ],
-      pendingPlaylistPreview: null,
+
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: null,
@@ -319,7 +381,7 @@ describe("PlayListPage", () => {
         createPlayListFixture({ name: "Night Drive" }),
         createPlayListFixture({ name: "Quiet Morning" }),
       ],
-      pendingPlaylistPreview: null,
+
       playingPlaylistName: null,
       titleToneHandoff: null,
       pressedLayoutId: "playlist-title:Quiet Morning",
@@ -339,7 +401,7 @@ describe("PlayListPage", () => {
       activeLayoutId: null,
       hasPlayList: true,
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
-      pendingPlaylistPreview: null,
+
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: null,
@@ -372,7 +434,7 @@ describe("PlayListPage", () => {
       activeLayoutId: null,
       hasPlayList: true,
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
-      pendingPlaylistPreview: null,
+
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: null,
@@ -401,7 +463,7 @@ describe("PlayListPage", () => {
       activeLayoutId: null,
       hasPlayList: true,
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
-      pendingPlaylistPreview: null,
+
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: "playlist-title:Quiet Morning",
@@ -430,7 +492,7 @@ describe("PlayListPage", () => {
         createPlayListFixture({ name: "Night Drive" }),
         createPlayListFixture({ name: "Quiet Morning" }),
       ],
-      pendingPlaylistPreview: null,
+
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: {
         layoutId: "playlist-title:Quiet Morning",
@@ -496,7 +558,7 @@ describe("PlayListPage", () => {
         createPlayListFixture({ name: "Night Drive" }),
         createPlayListFixture({ name: "Quiet Morning" }),
       ],
-      pendingPlaylistPreview: null,
+
       playingPlaylistName: null,
       titleToneHandoff: {
         layoutId: "playlist-title:Quiet Morning",
@@ -521,7 +583,7 @@ describe("PlayListPage", () => {
         createPlayListFixture({ name: "Night Drive" }),
         createPlayListFixture({ name: "Quiet Morning" }),
       ],
-      pendingPlaylistPreview: null,
+
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: {
         layoutId: "playlist-title:Quiet Morning",
@@ -552,7 +614,7 @@ describe("PlayListPage", () => {
         createPlayListFixture({ name: "Night Drive" }),
         createPlayListFixture({ name: "Quiet Morning" }),
       ],
-      pendingPlaylistPreview: null,
+
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: {
         layoutId: "playlist-title:Quiet Morning",
@@ -587,7 +649,7 @@ describe("PlayListPage", () => {
         createPlayListFixture({ name: "Night Drive" }),
         createPlayListFixture({ name: "Quiet Morning" }),
       ],
-      pendingPlaylistPreview: null,
+
       playingPlaylistName: null,
       titleToneHandoff: {
         layoutId: "playlist-title:Quiet Morning",
@@ -636,7 +698,7 @@ describe("PlayListPage", () => {
       activeLayoutId: null,
       hasPlayList: true,
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
-      pendingPlaylistPreview: null,
+
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: {
         layoutId: "playlist-title:Quiet Morning",
@@ -663,7 +725,7 @@ describe("PlayListPage", () => {
       activeLayoutId: null,
       hasPlayList: true,
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
-      pendingPlaylistPreview: null,
+
       playingPlaylistName: null,
       titleToneHandoff: null,
       pressedLayoutId: null,

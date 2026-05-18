@@ -22,12 +22,7 @@ const commitRequested = payloads["playlist.commit.requested"];
 function resolveQueuedPreview(context: { queue: PlaylistCommitRequest[] }) {
   const nextRequest = context.queue[0];
 
-  return nextRequest
-    ? {
-        playlist: nextRequest.playlist,
-        previousName: nextRequest.previousName,
-      }
-    : null;
+  return nextRequest?.preview ?? null;
 }
 
 export const machine = src.createMachine({
@@ -87,7 +82,7 @@ export const machine = src.createMachine({
           target: ss.mainx.State.idle,
           actions: [
             ({ context, event }) => {
-              const title = context.activeRequest?.playlist.name || "PlayList";
+              const title = context.activeRequest?.request.playlist.name || "PlayList";
               const description = toErrorMessage(event.error);
 
               console.error("Failed to commit playlist draft", {

@@ -18,7 +18,7 @@ export interface SpectrumPlaybackSessionPorts {
     track: PlaybackTrackPayload,
     positionMs: number | null,
   ): Promise<boolean>;
-  pauseSpectrumMusic(scopeId: number, track: PlaybackTrackPayload): Promise<boolean>;
+  pauseSpectrumMusic(scopeId: number): Promise<boolean>;
   updateSpectrumPlaybackLoopSignal(
     scopeId: number,
     payload: SpectrumPlaybackLoopSignalCommandPayload,
@@ -26,7 +26,7 @@ export interface SpectrumPlaybackSessionPorts {
 }
 
 export interface SpectrumPlaybackSession {
-  pause(args: { identity: SpectrumPlaybackIdentity; musicName: string }): Promise<boolean>;
+  pause(): Promise<boolean>;
   play(args: {
     identity: SpectrumPlaybackIdentity;
     musicName: string;
@@ -164,13 +164,12 @@ export function createSpectrumPlaybackSession(args: {
   }
 
   return {
-    async pause({ identity, musicName }) {
+    async pause() {
       if (scopeId === null) {
         return false;
       }
 
-      const track = createSpectrumPlaybackTrackPayload(identity, musicName);
-      return args.ports.pauseSpectrumMusic(scopeId, track);
+      return args.ports.pauseSpectrumMusic(scopeId);
     },
     async play({ identity, musicName, positionMs }) {
       if (scopeId === null) {
@@ -229,8 +228,8 @@ export const crabSpectrumPlaybackSessionPorts: SpectrumPlaybackSessionPorts = {
   async playSpectrumMusic(scopeId, track, positionMs) {
     return unwrapCrabResult<boolean>(await crab.playSpectrumMusic(scopeId, track, positionMs));
   },
-  async pauseSpectrumMusic(scopeId, track) {
-    return unwrapCrabResult<boolean>(await crab.pauseSpectrumMusic(scopeId, track));
+  async pauseSpectrumMusic(scopeId) {
+    return unwrapCrabResult<boolean>(await crab.pauseSpectrumMusic(scopeId));
   },
   async updateSpectrumPlaybackLoopSignal(scopeId, payload) {
     return unwrapCrabResult<PlaybackStatusPayload | null>(

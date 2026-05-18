@@ -29,6 +29,7 @@ import {
   crabSpectrumPlaybackSessionPorts,
   createSpectrumPlaybackSession,
   resolvePlaybackAbsolutePositionMs,
+  resolveSpectrumPlaybackStatusIdentity,
   resolveSpectrumPlaybackActionSnapshotFromStatus,
   resolveSpectrumPlaybackResumePointFromStatus,
   type SpectrumPlaybackResumePoint,
@@ -246,7 +247,7 @@ export function SpectrumPage() {
   const editorViewModels = resolveSpectrumMusicEditorViewModels({
     activeLayoutId,
     handoffTone,
-    interactionDisabled: !isPresent || spectrumMusicDrafts.length === 0,
+    interactionDisabled: !isPresent,
     nowPlayingTrackFilePath: primaryPlaybackAnchor.filePath,
     nowPlayingTrackEndMs: primaryPlaybackAnchor.trackEndMs,
     nowPlayingTrackStartMs: primaryPlaybackAnchor.trackStartMs,
@@ -382,12 +383,21 @@ export function SpectrumPage() {
 
     setIsBackNavigationPending(true);
 
+    const sendBackSignal = () => {
+      if (pageExitStartedRef.current) {
+        return;
+      }
+
+      pageExitStartedRef.current = true;
+      appLogicAction.back();
+    };
+
     try {
       if (renderData.backActionVisualState.kind === "back") {
-        pageExitStartedRef.current = true;
         pageRenderFreeze.freeze();
+        // Restore belongs to the active spectrum scope; appLogic.back exits that scope.
         await handleRestorePrimarySpectrumMusicPlayback();
-        appLogicAction.back();
+        sendBackSignal();
         return;
       }
 
@@ -395,13 +405,6 @@ export function SpectrumPage() {
         editorViewModels: renderData.editorViewModels,
         musicDrafts: spectrumMusicDrafts,
       });
-
-      for (const { editor, title } of committedTitles) {
-        await editableTitleRefs.current.get(editor.id)?.commitResolvedValue({
-          value: title.alias,
-          animateTyping: title.kind !== "keep",
-        });
-      }
 
       flushSync(() => {
         for (const { editor, title } of committedTitles) {
@@ -426,14 +429,21 @@ export function SpectrumPage() {
           }),
         });
       });
-      pageExitStartedRef.current = true;
+      for (const { editor, title } of committedTitles) {
+        await editableTitleRefs.current.get(editor.id)?.commitResolvedValue({
+          value: title.alias,
+          animateTyping: title.kind !== "keep",
+        });
+      }
+
       await waitForTitleShareSourceReady();
+      // Restore belongs to the active spectrum scope; appLogic.back exits that scope.
       await handleRestorePrimarySpectrumMusicPlayback();
-      appLogicAction.back();
+      sendBackSignal();
     } catch (error) {
       console.error("Failed to complete the spectrum back transition", error);
-      pageExitStartedRef.current = false;
-      setIsBackNavigationPending(false);
+      pageRenderFreeze.freeze();
+      sendBackSignal();
     }
   }
 
@@ -448,15 +458,26 @@ export function SpectrumPage() {
     }
 
     const identity = primaryEditor.playbackIdentity;
-    const primaryResume = playbackResumeByIdentityRef.current.get(identity.key) ?? null;
-    if (primaryResume?.positionMs === null || primaryResume?.positionMs === undefined) {
+    const currentStatus = await playbackSession.readStatus();
+    const currentIdentity = resolveSpectrumPlaybackStatusIdentity(currentStatus);
+    if (
+      !currentStatus?.paused ||
+      currentIdentity === null ||
+      !areSpectrumPlaybackIdentitiesEqual(currentIdentity, identity)
+    ) {
       return;
     }
 
+    const primaryResume = playbackResumeByIdentityRef.current.get(identity.key) ?? null;
+    const positionMs =
+      primaryResume?.positionMs ?? resolvePlaybackAbsolutePositionMs(currentStatus);
+
+    // The shared back/check button is a signal emitter, not a playback toggle.
+    // Back restores only a paused primary spectrum track; active playback exits unchanged.
     await playbackSession.play({
       identity,
       musicName: primaryEditor.titleValue,
-      positionMs: primaryResume.positionMs,
+      positionMs,
     });
   }
 
@@ -470,15 +491,18 @@ export function SpectrumPage() {
     }
 
     if (action === "pause") {
-      const status = playbackControlByIdentityRef.current.get(identity.key)?.commitImmediatePause();
+      const control = playbackControlByIdentityRef.current.get(identity.key);
+      const status = control?.commitImmediatePause();
       if (status) {
         rememberPlaybackResumePoint(identity, status);
         commitPlaybackActionSnapshot(status);
       }
-      await playbackSession.pause({
-        identity,
-        musicName: editor.titleValue,
-      });
+      const paused = await playbackSession.pause();
+      if (!paused) {
+        const restoredStatus = await playbackSession.readStatus();
+        control?.commitPlaybackStatus(restoredStatus);
+        commitPlaybackActionSnapshot(restoredStatus);
+      }
       return;
     } else {
       const currentResume = await captureCurrentPlaybackResumePoint();
@@ -517,6 +541,10 @@ export function SpectrumPage() {
     }
 
     playbackControlByIdentityRef.current.set(identity.key, control);
+  }
+
+  function handleActivateNewTitle(id: string) {
+    appLogicAction.startSpectrumMusicCreate(id);
   }
 
   const commitPlaybackActionSnapshotValue = useCallback(
@@ -620,7 +648,7 @@ export function SpectrumPage() {
             exitPresentation="local"
             playbackActionSnapshot={playbackActionSnapshot}
             trackFilePath={renderData.trackFilePath}
-            onActivateNewTitle={(id) => appLogicAction.startSpectrumMusicCreate(id)}
+            onActivateNewTitle={handleActivateNewTitle}
             onDelete={(id) => appLogicAction.deleteSpectrumMusic(id)}
             onPlaybackAction={handleSpectrumPlaybackAction}
             onPlaybackControlReady={handlePlaybackControlReady}

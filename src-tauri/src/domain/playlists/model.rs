@@ -111,6 +111,22 @@ pub struct Music {
     pub end_ms: u32,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct SpectrumMusicSourceContext {
+    pub source_collection_url: String,
+    pub source_end_ms: u32,
+    pub source_group: Group,
+    pub source_path: Option<String>,
+    pub source_start_ms: u32,
+    pub source_url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct SpectrumMusicContext {
+    pub file_musics: Vec<Music>,
+    pub source: Option<SpectrumMusicSourceContext>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, Store, Type)]
 pub struct Exclude {
     #[foreign]

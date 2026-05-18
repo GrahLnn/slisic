@@ -31,6 +31,7 @@ import {
   resolveWaveformPlayheadDrag,
   resolveWaveformPlayheadStyle,
   resolveWaveformPointerAnchorViewportX,
+  resolveWaveformPresentationSelection,
   resolveWaveformRenderPixelsPerSecond,
   resolveWaveformResizeViewportState,
   resolveWaveformSelectionDrag,
@@ -729,6 +730,49 @@ describe("SpectrumVisualizer selection and playback", () => {
     assert.equal(highDpiMarker.handleCenterX, 41.06);
     assert.equal(highDpiMarker.visualLineLeftX * 1.5, 61);
     assert.equal(highDpiMarker.visualLineWidth * 1.5, 2);
+  });
+
+  test("uses the committed draft selection after reset when the interactive selection is stale", () => {
+    const baselineSelection = {
+      end: 120,
+      start: 0,
+    };
+    const staleInteractiveSelection = {
+      end: 112,
+      start: 8,
+    };
+    const previewSelection = {
+      end: 90,
+      start: 12,
+    };
+
+    assert.deepEqual(
+      resolveWaveformPresentationSelection({
+        committedSelection: baselineSelection,
+        interactiveSelection: staleInteractiveSelection,
+        isDragging: false,
+        previewSelection: null,
+      }),
+      baselineSelection,
+    );
+    assert.deepEqual(
+      resolveWaveformPresentationSelection({
+        committedSelection: baselineSelection,
+        interactiveSelection: staleInteractiveSelection,
+        isDragging: true,
+        previewSelection: null,
+      }),
+      staleInteractiveSelection,
+    );
+    assert.deepEqual(
+      resolveWaveformPresentationSelection({
+        committedSelection: baselineSelection,
+        interactiveSelection: staleInteractiveSelection,
+        isDragging: false,
+        previewSelection,
+      }),
+      previewSelection,
+    );
   });
 
   test("keeps selection drags in the real audio range without crossing edges", () => {
