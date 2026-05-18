@@ -17,6 +17,8 @@ import {
   resolveTrackWaveformInitialStatus,
   resolveWaveformContentWidth,
   resolveWaveformCanvasColor,
+  resolveWaveformLoadingColorChannels,
+  resolveWaveformLoadingGridSize,
   resolveWaveformDataPlan,
   resolveWaveformDataPlanScopedRequests,
   resolveWaveformDataTileIndexes,
@@ -75,6 +77,31 @@ describe("SpectrumVisualizer stable domains", () => {
   test("keeps canvas theme as an explicit render color input", () => {
     assert.equal(resolveWaveformCanvasColor({ prefersDarkColorScheme: false }), "#262626");
     assert.equal(resolveWaveformCanvasColor({ prefersDarkColorScheme: true }), "#f5f5f5");
+  });
+
+  test("keeps the loading dot field density derived from the canvas field", () => {
+    assert.deepEqual(resolveWaveformLoadingGridSize({ height: 208, width: 96 }), {
+      columns: 8,
+      rows: 9,
+    });
+    assert.deepEqual(resolveWaveformLoadingGridSize({ height: 208, width: 240 }), {
+      columns: 20,
+      rows: 9,
+    });
+  });
+
+  test("projects loading shader color from the canvas color input", () => {
+    assert.deepEqual(resolveWaveformLoadingColorChannels("#262626"), [
+      0x26 / 255,
+      0x26 / 255,
+      0x26 / 255,
+    ]);
+    assert.deepEqual(resolveWaveformLoadingColorChannels("rgb(245, 245, 245)"), [
+      245 / 255,
+      245 / 255,
+      245 / 255,
+    ]);
+    assert.deepEqual(resolveWaveformLoadingColorChannels("rgb(50%, 25%, 0%)"), [0.5, 0.25, 0]);
   });
 
   test("projects track identity through normalized paths", () => {

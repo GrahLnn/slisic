@@ -10,6 +10,7 @@ use appdb::graph;
 use appdb::model::meta::ModelMeta;
 use appdb::repository::Repo;
 use appdb::{AutoFill, Crud, Id, Order, Store};
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -328,6 +329,45 @@ pub async fn load_playlist_playback_track_sources(
     }
 
     Ok(sources)
+}
+
+pub async fn load_random_playlist_playback_track_source(
+    selection: &PlaylistPlaybackSelection,
+) -> Result<Option<PlaylistPlaybackTrackSource>> {
+    let owner_count = selection.collections.len() + selection.groups.len();
+    if owner_count == 0 {
+        return Ok(None);
+    }
+
+    for owner_index in playlist_playback_owner_attempt_order(owner_count) {
+        let source = if owner_index < selection.collections.len() {
+            load_random_collection_playback_track_source(&selection.collections[owner_index])
+                .await?
+        } else {
+            let group_index = owner_index - selection.collections.len();
+            load_random_group_playback_track_source(&selection.groups[group_index]).await?
+        };
+
+        if source.is_some() {
+            return Ok(source);
+        }
+    }
+
+    Ok(None)
+}
+
+pub(crate) fn playlist_playback_owner_attempt_order(owner_count: usize) -> Vec<usize> {
+    let mut owners = (0..owner_count).collect::<Vec<_>>();
+    shuffle_indices(&mut owners);
+    owners
+}
+
+fn shuffle_indices(indices: &mut [usize]) {
+    let mut rng = rand::rng();
+    for index in (1..indices.len()).rev() {
+        let swap_index = rng.random_range(0..=index);
+        indices.swap(index, swap_index);
+    }
 }
 
 pub async fn delete_playlist_by_name(name: &str) -> Result<bool> {
@@ -837,6 +877,74 @@ async fn append_group_playback_track_sources(
     Ok(())
 }
 
+async fn load_random_collection_playback_track_source(
+    collection: &PlaylistPlaybackCollectionRef,
+) -> Result<Option<PlaylistPlaybackTrackSource>> {
+    let Some(music_record) = load_random_relation_out_id_for_playback(
+        &collection.record,
+        "includes",
+        Music::table_name(),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    let music = Music::get_record(music_record).await?;
+    Ok(Some(project_playback_track_source(collection, music)))
+}
+
+async fn load_random_group_playback_track_source(
+    group: &PlaylistPlaybackGroupRef,
+) -> Result<Option<PlaylistPlaybackTrackSource>> {
+    let Some(music_record) =
+        load_random_relation_out_id_for_playback(&group.record, "grouped", Music::table_name())
+            .await?
+    else {
+        return Ok(None);
+    };
+
+    let parent_records = load_music_parent_collection_ids(&music_record).await?;
+    if parent_records.is_empty() {
+        return Ok(None);
+    }
+
+    let Some(parent_index) = random_index(parent_records.len()) else {
+        return Ok(None);
+    };
+    let Some(collection) =
+        load_playlist_playback_collection_ref(&parent_records[parent_index]).await?
+    else {
+        return Ok(None);
+    };
+    let music = Music::get_record(music_record).await?;
+    Ok(Some(project_playback_track_source(&collection, music)))
+}
+
+async fn load_random_relation_out_id_for_playback(
+    record: &RecordId,
+    relation: &str,
+    out_table: &str,
+) -> Result<Option<RecordId>> {
+    let count = count_relation_out_ids_for_playback(record, relation, out_table).await?;
+    if count == 0 {
+        return Ok(None);
+    }
+
+    let Some(offset) = random_index(count) else {
+        return Ok(None);
+    };
+    load_relation_out_id_for_playback_at(record, relation, out_table, offset).await
+}
+
+fn random_index(len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+
+    Some(rand::rng().random_range(0..len))
+}
+
 async fn load_group_parent_collection_urls(
     group: &PlaylistPlaybackGroupRef,
 ) -> Result<Vec<String>> {
@@ -910,6 +1018,18 @@ fn append_playback_track_source(
     });
 }
 
+fn project_playback_track_source(
+    collection: &PlaylistPlaybackCollectionRef,
+    music: Music,
+) -> PlaylistPlaybackTrackSource {
+    PlaylistPlaybackTrackSource {
+        collection_name: collection.name.clone(),
+        collection_url: collection.url.clone(),
+        collection_folder: collection.folder.clone(),
+        music,
+    }
+}
+
 async fn load_collection_music_ids_for_playback(
     record: &RecordId,
     limit: usize,
@@ -964,6 +1084,72 @@ async fn load_relation_out_ids_for_playback(
 
     let rows: Vec<CollectionEdgeRow> = result.take(0)?;
     Ok(rows.into_iter().map(|row| row.out).collect())
+}
+
+async fn count_relation_out_ids_for_playback(
+    record: &RecordId,
+    relation: &str,
+    out_table: &str,
+) -> Result<usize> {
+    let db = get_db()?;
+    let mut result = match db
+        .query(
+            "RETURN count((SELECT VALUE out FROM $rel WHERE in = $record AND record::tb(out) = $out_table));",
+        )
+        .bind(("rel", Table::from(relation)))
+        .bind(("record", record.clone()))
+        .bind(("out_table", out_table.to_string()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(0),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(0),
+            other => return Err(other.into()),
+        },
+    };
+
+    let count: Option<i64> = result.take(0)?;
+    Ok(count.unwrap_or(0).max(0) as usize)
+}
+
+async fn load_relation_out_id_for_playback_at(
+    record: &RecordId,
+    relation: &str,
+    out_table: &str,
+    offset: usize,
+) -> Result<Option<RecordId>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query(
+            "SELECT out, position FROM $rel WHERE in = $record AND record::tb(out) = $out_table ORDER BY position ASC LIMIT 1 START $offset;",
+        )
+        .bind(("rel", Table::from(relation)))
+        .bind(("record", record.clone()))
+        .bind(("out_table", out_table.to_string()))
+        .bind(("offset", offset))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(None),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(None),
+            other => return Err(other.into()),
+        },
+    };
+
+    let rows: Vec<CollectionEdgeRow> = result.take(0)?;
+    Ok(rows.into_iter().next().map(|row| row.out))
 }
 
 async fn load_relation_in_ids(

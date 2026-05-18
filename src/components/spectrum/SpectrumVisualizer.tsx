@@ -19,6 +19,8 @@ import {
   createWaveformRenderDataStore,
   createWaveformSharedTileCacheForFile as createWaveformSharedTileCacheForStore,
   arePlaybackSnapshotsSamePlaybackSegment,
+  clampInteger,
+  clampNumber,
   projectWaveformTrackIdentity,
   resolvePlaybackPositionMs,
   resolvePlaybackSnapshotAfterStatusCommit,
@@ -137,9 +139,120 @@ const WAVEFORM_CANVAS_COLOR = {
   dark: "#f5f5f5",
   light: "#262626",
 } as const;
+const WAVEFORM_LOADING_DOT_PITCH_PX = 12;
+const WAVEFORM_LOADING_MIN_FIELD_WIDTH_PX = 96;
+const WAVEFORM_LOADING_MIN_FIELD_HEIGHT_PX = 44;
+const WAVEFORM_LOADING_MAX_FIELD_HEIGHT_PX = 112;
+const WAVEFORM_LOADING_MAX_DEVICE_PIXEL_RATIO = 1.5;
+const WAVEFORM_LOADING_VERTEX_DATA = new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]);
+const WAVEFORM_LOADING_VERTEX_SHADER_SOURCE = `
+attribute vec2 a_position;
+
+void main() {
+  gl_Position = vec4(a_position, 0.0, 1.0);
+}
+`;
+const WAVEFORM_LOADING_FRAGMENT_SHADER_SOURCE = `
+precision mediump float;
+
+uniform vec2 u_resolution;
+uniform vec2 u_grid;
+uniform float u_time;
+uniform vec3 u_color;
+
+float random(vec2 value) {
+  return fract(sin(dot(value, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+void main() {
+  vec2 pitch = u_resolution / u_grid;
+  vec2 cell = floor(gl_FragCoord.xy / pitch);
+  vec2 center = (cell + 0.5) * pitch;
+  float distanceToCenter = length(gl_FragCoord.xy - center);
+  float radius = 1.35;
+  float dotMask = smoothstep(radius + 0.9, radius, distanceToCenter);
+  float seed = random(cell + u_grid * 0.173);
+  float pulse = 0.5 + 0.5 * sin(u_time * (4.8 + seed * 2.4) + seed * 6.28318);
+  float alpha = dotMask * (0.08 + pulse * (0.18 + seed * 0.62));
+
+  gl_FragColor = vec4(u_color, alpha);
+}
+`;
 
 export function resolveWaveformCanvasColor(args: { prefersDarkColorScheme: boolean }) {
   return args.prefersDarkColorScheme ? WAVEFORM_CANVAS_COLOR.dark : WAVEFORM_CANVAS_COLOR.light;
+}
+
+export function resolveWaveformLoadingGridSize(args: {
+  height: number;
+  width: number;
+}): WaveformLoadingGridSize {
+  const width = Number.isFinite(args.width) ? Math.max(0, args.width) : 0;
+  const height = Number.isFinite(args.height) ? Math.max(0, args.height) : 0;
+  const fieldWidth = Math.max(WAVEFORM_LOADING_MIN_FIELD_WIDTH_PX, Math.floor(width));
+  const fieldHeight = clampNumber(
+    Math.floor(height * 0.52),
+    WAVEFORM_LOADING_MIN_FIELD_HEIGHT_PX,
+    WAVEFORM_LOADING_MAX_FIELD_HEIGHT_PX,
+  );
+
+  return {
+    columns: Math.max(8, Math.floor(fieldWidth / WAVEFORM_LOADING_DOT_PITCH_PX)),
+    rows: clampInteger(Math.floor(fieldHeight / WAVEFORM_LOADING_DOT_PITCH_PX), 4, 12),
+  };
+}
+
+export function resolveWaveformLoadingColorChannels(
+  color: string,
+): readonly [number, number, number] | null {
+  const trimmedColor = color.trim();
+  const hex = trimmedColor.match(/^#([\da-f]{3}|[\da-f]{6})$/i);
+
+  if (hex) {
+    const value =
+      hex[1].length === 3
+        ? hex[1]
+            .split("")
+            .map((character) => character + character)
+            .join("")
+        : hex[1];
+
+    return [
+      Number.parseInt(value.slice(0, 2), 16) / 255,
+      Number.parseInt(value.slice(2, 4), 16) / 255,
+      Number.parseInt(value.slice(4, 6), 16) / 255,
+    ];
+  }
+
+  if (!/^rgba?\(/i.test(trimmedColor)) {
+    return null;
+  }
+
+  const colorComponents = trimmedColor.match(/-?\d*\.?\d+(?:e[+-]?\d+)?%?/gi);
+
+  if (!colorComponents || colorComponents.length < 3) {
+    return null;
+  }
+
+  const red = parseWaveformLoadingRgbChannel(colorComponents[0]);
+  const green = parseWaveformLoadingRgbChannel(colorComponents[1]);
+  const blue = parseWaveformLoadingRgbChannel(colorComponents[2]);
+
+  if (red === null || green === null || blue === null) {
+    return null;
+  }
+
+  return [red, green, blue];
+}
+
+function parseWaveformLoadingRgbChannel(value: string) {
+  if (value.endsWith("%")) {
+    const percent = Number.parseFloat(value);
+    return Number.isFinite(percent) ? clampNumber(percent / 100, 0, 1) : null;
+  }
+
+  const channel = Number.parseFloat(value);
+  return Number.isFinite(channel) ? clampNumber(channel / 255, 0, 1) : null;
 }
 
 export interface TrackSpectrumWaveformPort {
@@ -202,6 +315,28 @@ type WaveformDrawPlan = {
   status: WaveformStatus;
   tileCache: ReadonlyMap<string, WaveformCachedTile>;
   viewport: WaveformViewportModel;
+};
+
+type WaveformLoadingGridSize = {
+  columns: number;
+  rows: number;
+};
+
+type WaveformLoadingRenderer = {
+  animationFrameId: number | null;
+  animationOwnerWindow: Window | null;
+  backingHeight: number | null;
+  backingWidth: number | null;
+  buffer: WebGLBuffer;
+  colorUniform: WebGLUniformLocation;
+  gl: WebGLRenderingContext;
+  gridUniform: WebGLUniformLocation;
+  positionAttribute: number;
+  program: WebGLProgram;
+  resolutionUniform: WebGLUniformLocation;
+  resizeObserver: ResizeObserver | null;
+  startTimeMs: number;
+  timeUniform: WebGLUniformLocation;
 };
 
 /**
@@ -705,6 +840,78 @@ function useWaveformCanvas(args: {
   ]);
 }
 
+function useWaveformLoadingRenderer(args: {
+  canvasRef: RefObject<HTMLCanvasElement | null>;
+  color: string;
+  gridSize: WaveformLoadingGridSize;
+  visible: boolean;
+}) {
+  const latestArgsRef = useRef(args);
+  latestArgsRef.current = args;
+  const rendererRef = useRef<WaveformLoadingRenderer | null>(null);
+
+  useEffect(() => {
+    if (!args.visible) {
+      destroyWaveformLoadingRenderer(rendererRef.current);
+      rendererRef.current = null;
+      return undefined;
+    }
+
+    const canvas = args.canvasRef.current;
+    if (!canvas) {
+      return undefined;
+    }
+
+    const ownerWindow =
+      canvas.ownerDocument.defaultView ?? (typeof window === "undefined" ? null : window);
+    if (!ownerWindow) {
+      return undefined;
+    }
+
+    const renderer = rendererRef.current ?? createWaveformLoadingRenderer(canvas);
+    rendererRef.current = renderer;
+
+    if (!renderer) {
+      return undefined;
+    }
+
+    renderer.startTimeMs = readPerformanceNow(ownerWindow);
+
+    const render = () => {
+      const latest = latestArgsRef.current;
+      const currentCanvas = latest.canvasRef.current;
+      if (!latest.visible || !currentCanvas) {
+        stopWaveformLoadingRenderer(renderer);
+        return;
+      }
+
+      drawWaveformLoadingRenderer({
+        canvas: currentCanvas,
+        color: latest.color,
+        gridSize: latest.gridSize,
+        nowMs: readPerformanceNow(ownerWindow),
+        renderer,
+      });
+      renderer.animationOwnerWindow = ownerWindow;
+      renderer.animationFrameId = ownerWindow.requestAnimationFrame(render);
+    };
+
+    render();
+
+    return () => {
+      stopWaveformLoadingRenderer(renderer);
+    };
+  }, [args.canvasRef, args.gridSize, args.visible]);
+
+  useEffect(
+    () => () => {
+      destroyWaveformLoadingRenderer(rendererRef.current);
+      rendererRef.current = null;
+    },
+    [],
+  );
+}
+
 function usePlaybackController(args: {
   enabled: boolean;
   filePath: string | null;
@@ -975,6 +1182,7 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
   });
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const loadingCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const prefersDarkColorScheme = usePrefersDarkColorScheme();
   const waveformCanvasColor = resolveWaveformCanvasColor({ prefersDarkColorScheme });
   const placeholderSummary = useMemo(() => createPlaceholderWaveformSummary(), []);
@@ -1055,6 +1263,14 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
     [props.filePath, props.playheadEnabled, viewport, waveformState.status, waveformState.summary],
   );
   const dataPlan = sessionFrame.dataPlan;
+  const loadingGridSize = useMemo(
+    () =>
+      resolveWaveformLoadingGridSize({
+        height: WAVEFORM_CANVAS_HEIGHT,
+        width: viewport.viewportWidth,
+      }),
+    [viewport.viewportWidth],
+  );
   const selectionRef = useRef<WaveformSelectionRange | null>(props.selection ?? null);
   const isDraggingSelectionRef = useRef(false);
   const onSelectionCommitRef = useRef(props.onSelectionCommit);
@@ -1151,6 +1367,12 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
     tileCache,
     tileRevision,
     viewport,
+  });
+  useWaveformLoadingRenderer({
+    canvasRef: loadingCanvasRef,
+    color: waveformCanvasColor,
+    gridSize: loadingGridSize,
+    visible: sessionFrame.isLoading,
   });
 
   useEffect(() => {
@@ -1313,7 +1535,13 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
         aria-hidden
         className="pointer-events-none absolute inset-0 z-[1] h-full w-full text-inherit"
       />
-      {isLoading ? <WaveformLoadingOverlay /> : null}
+      {isLoading ? (
+        <canvas
+          ref={loadingCanvasRef}
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-[2] h-full w-full text-inherit"
+        />
+      ) : null}
       <WaveformSelectionOverlay
         committedSelection={props.selection ?? null}
         onCommit={commitSelection}
@@ -1330,21 +1558,6 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
         />
       ) : null}
     </motion.div>
-  );
-}
-
-function WaveformLoadingOverlay() {
-  return (
-    <div
-      aria-hidden
-      className="pointer-events-none absolute inset-0 z-[2] opacity-60"
-      style={{
-        backgroundImage:
-          "radial-gradient(currentColor 1px, transparent 1.6px), radial-gradient(currentColor 1px, transparent 1.6px)",
-        backgroundPosition: "0 0, 6px 6px",
-        backgroundSize: "12px 12px",
-      }}
-    />
   );
 }
 
@@ -1602,4 +1815,243 @@ function WaveformPlayheadOverlay(args: {
       />
     </>
   );
+}
+
+function createWaveformLoadingRenderer(canvas: HTMLCanvasElement): WaveformLoadingRenderer | null {
+  const gl = canvas.getContext("webgl", {
+    alpha: true,
+    antialias: false,
+    depth: false,
+    powerPreference: "low-power",
+    preserveDrawingBuffer: false,
+    stencil: false,
+  });
+
+  if (!gl) {
+    return null;
+  }
+
+  const vertexShader = createWaveformLoadingShader(
+    gl,
+    gl.VERTEX_SHADER,
+    WAVEFORM_LOADING_VERTEX_SHADER_SOURCE,
+  );
+  const fragmentShader = createWaveformLoadingShader(
+    gl,
+    gl.FRAGMENT_SHADER,
+    WAVEFORM_LOADING_FRAGMENT_SHADER_SOURCE,
+  );
+
+  if (!vertexShader || !fragmentShader) {
+    if (vertexShader) {
+      gl.deleteShader(vertexShader);
+    }
+    if (fragmentShader) {
+      gl.deleteShader(fragmentShader);
+    }
+    return null;
+  }
+
+  const program = gl.createProgram();
+
+  if (!program) {
+    gl.deleteShader(vertexShader);
+    gl.deleteShader(fragmentShader);
+    return null;
+  }
+
+  gl.attachShader(program, vertexShader);
+  gl.attachShader(program, fragmentShader);
+  gl.linkProgram(program);
+  gl.deleteShader(vertexShader);
+  gl.deleteShader(fragmentShader);
+
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    gl.deleteProgram(program);
+    return null;
+  }
+
+  const buffer = gl.createBuffer();
+
+  if (!buffer) {
+    gl.deleteProgram(program);
+    return null;
+  }
+
+  const positionAttribute = gl.getAttribLocation(program, "a_position");
+
+  if (positionAttribute < 0) {
+    gl.deleteBuffer(buffer);
+    gl.deleteProgram(program);
+    return null;
+  }
+
+  const resolutionUniform = gl.getUniformLocation(program, "u_resolution");
+  const gridUniform = gl.getUniformLocation(program, "u_grid");
+  const timeUniform = gl.getUniformLocation(program, "u_time");
+  const colorUniform = gl.getUniformLocation(program, "u_color");
+
+  if (!resolutionUniform || !gridUniform || !timeUniform || !colorUniform) {
+    gl.deleteBuffer(buffer);
+    gl.deleteProgram(program);
+    return null;
+  }
+
+  gl.useProgram(program);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, WAVEFORM_LOADING_VERTEX_DATA, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(positionAttribute);
+  gl.vertexAttribPointer(positionAttribute, 2, gl.FLOAT, false, 0, 0);
+  gl.disable(gl.DEPTH_TEST);
+  gl.disable(gl.STENCIL_TEST);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+  const renderer: WaveformLoadingRenderer = {
+    animationFrameId: null,
+    animationOwnerWindow: null,
+    backingHeight: null,
+    backingWidth: null,
+    buffer,
+    colorUniform,
+    gl,
+    gridUniform,
+    positionAttribute,
+    program,
+    resolutionUniform,
+    resizeObserver: null,
+    startTimeMs: 0,
+    timeUniform,
+  };
+
+  resizeWaveformLoadingRendererCanvas(canvas, renderer);
+
+  const ResizeObserverConstructor = canvas.ownerDocument.defaultView?.ResizeObserver;
+  if (ResizeObserverConstructor) {
+    renderer.resizeObserver = new ResizeObserverConstructor(() => {
+      resizeWaveformLoadingRendererCanvas(canvas, renderer);
+    });
+    renderer.resizeObserver.observe(canvas);
+  }
+
+  return renderer;
+}
+
+function drawWaveformLoadingRenderer(args: {
+  canvas: HTMLCanvasElement;
+  color: string;
+  gridSize: WaveformLoadingGridSize;
+  nowMs: number;
+  renderer: WaveformLoadingRenderer;
+}) {
+  const renderer = args.renderer;
+  const gl = renderer.gl;
+
+  if (renderer.backingWidth === null || renderer.backingHeight === null) {
+    resizeWaveformLoadingRendererCanvas(args.canvas, renderer);
+  }
+
+  if (renderer.backingWidth === null || renderer.backingHeight === null) {
+    return;
+  }
+
+  const color = resolveWaveformLoadingColorChannels(args.color);
+  if (!color) {
+    return;
+  }
+
+  gl.useProgram(renderer.program);
+  gl.bindBuffer(gl.ARRAY_BUFFER, renderer.buffer);
+  gl.enableVertexAttribArray(renderer.positionAttribute);
+  gl.vertexAttribPointer(renderer.positionAttribute, 2, gl.FLOAT, false, 0, 0);
+  gl.uniform2f(renderer.resolutionUniform, renderer.backingWidth, renderer.backingHeight);
+  gl.uniform2f(
+    renderer.gridUniform,
+    Math.max(1, args.gridSize.columns),
+    Math.max(1, args.gridSize.rows),
+  );
+  gl.uniform1f(renderer.timeUniform, (args.nowMs - renderer.startTimeMs) / 1000);
+  gl.uniform3f(renderer.colorUniform, color[0], color[1], color[2]);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+function resizeWaveformLoadingRendererCanvas(
+  canvas: HTMLCanvasElement,
+  renderer: WaveformLoadingRenderer,
+) {
+  const rect = canvas.getBoundingClientRect();
+  const width = rect.width || canvas.clientWidth;
+  const height = rect.height || canvas.clientHeight;
+
+  if (width <= 0 || height <= 0) {
+    renderer.backingWidth = null;
+    renderer.backingHeight = null;
+    return;
+  }
+
+  const ownerWindow = canvas.ownerDocument.defaultView;
+  const devicePixelRatio = clampNumber(
+    ownerWindow?.devicePixelRatio ?? 1,
+    1,
+    WAVEFORM_LOADING_MAX_DEVICE_PIXEL_RATIO,
+  );
+  const backingWidth = Math.max(1, Math.ceil(width * devicePixelRatio));
+  const backingHeight = Math.max(1, Math.ceil(height * devicePixelRatio));
+
+  renderer.backingWidth = backingWidth;
+  renderer.backingHeight = backingHeight;
+
+  if (canvas.width !== backingWidth) {
+    canvas.width = backingWidth;
+  }
+
+  if (canvas.height !== backingHeight) {
+    canvas.height = backingHeight;
+  }
+
+  renderer.gl.viewport(0, 0, backingWidth, backingHeight);
+}
+
+function createWaveformLoadingShader(gl: WebGLRenderingContext, type: number, source: string) {
+  const shader = gl.createShader(type);
+
+  if (!shader) {
+    return null;
+  }
+
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    gl.deleteShader(shader);
+    return null;
+  }
+
+  return shader;
+}
+
+function stopWaveformLoadingRenderer(renderer: WaveformLoadingRenderer | null) {
+  if (!renderer) {
+    return;
+  }
+
+  if (renderer.animationFrameId !== null) {
+    renderer.animationOwnerWindow?.cancelAnimationFrame(renderer.animationFrameId);
+  }
+
+  renderer.animationFrameId = null;
+  renderer.animationOwnerWindow = null;
+}
+
+function destroyWaveformLoadingRenderer(renderer: WaveformLoadingRenderer | null) {
+  if (!renderer) {
+    return;
+  }
+
+  stopWaveformLoadingRenderer(renderer);
+  renderer.resizeObserver?.disconnect();
+  renderer.gl.deleteBuffer(renderer.buffer);
+  renderer.gl.deleteProgram(renderer.program);
 }

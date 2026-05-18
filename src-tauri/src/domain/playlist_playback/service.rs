@@ -32,9 +32,9 @@ const PLAYLIST_PREPARING_MESSAGE: &str = "Preparing...";
 #[cfg(not(test))]
 const INITIAL_PLAYBACK_QUEUE_LIMIT: usize = 256;
 #[cfg(not(test))]
-const PLAYLIST_PLAYBACK_SEED_SCAN_LIMIT: usize = 32;
+const PLAYLIST_PLAYBACK_INITIAL_RANDOM_ATTEMPT_LIMIT: usize = 32;
 #[cfg(not(test))]
-const PLAYLIST_PLAYBACK_SEED_PROBE_LIMIT: usize = 1;
+const PLAYLIST_PLAYBACK_INITIAL_WINDOW_LIMIT: usize = 32;
 
 #[cfg(not(test))]
 pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylistSession> {
@@ -44,8 +44,8 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
         build_playlist_playback_material(app, &name, &request, &mut download_changes).await?;
     let playlist_name = material.playlist_name;
     let track_count = material.tracks.len().max(1) as u32;
-    let seed = material.seed;
-    let tracks = ensure_queue_starts_with_seed(material.tracks, &seed);
+    let initial_track = material.initial_track;
+    let tracks = place_track_at_queue_start(material.tracks, &initial_track);
 
     ensure_playlist_playback_request_current(&request)?;
     player_service::set_playback_continuation_mode(resolve_playlist_playback_continuation_mode())?;
@@ -53,7 +53,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
         &request,
         playlist_name.clone(),
         tracks,
-        seed.clone(),
+        initial_track.clone(),
         PlaybackQueueMode::Ordered,
     )
     .await?;
@@ -61,13 +61,13 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
         app.clone(),
         playlist_name.clone(),
         session.clone(),
-        seed.clone(),
+        initial_track.clone(),
     );
     spawn_playlist_track_refresh(
         app.clone(),
         playlist_name.clone(),
         session,
-        seed,
+        initial_track,
         download_changes,
     );
 
@@ -85,7 +85,7 @@ pub(crate) fn resolve_playlist_playback_continuation_mode() -> PlaybackContinuat
 #[cfg(not(test))]
 struct PlaylistPlaybackMaterial {
     playlist_name: String,
-    seed: PlaybackTrack,
+    initial_track: PlaybackTrack,
     tracks: Vec<PlaybackTrack>,
 }
 
@@ -114,11 +114,11 @@ async fn build_playlist_playback_material(
     let mut preparing_emitted = false;
 
     ensure_playlist_playback_request_current(request)?;
-    if let Some(seed) = resolve_playlist_playback_seed(app, &source.selection).await? {
+    if let Some(initial_track) = resolve_playlist_initial_track(app, &source.selection).await? {
         ensure_playlist_playback_request_current(request)?;
         return Ok(PlaylistPlaybackMaterial {
             playlist_name: source.playlist_name,
-            seed,
+            initial_track,
             tracks: source.resolution.tracks,
         });
     }
@@ -128,11 +128,13 @@ async fn build_playlist_playback_material(
             playlist_selection_has_active_downloads(&source.selection).await?;
         if !has_relevant_active_downloads {
             source = load_playlist_playback_selection(playlist_name).await?;
-            if let Some(seed) = resolve_playlist_playback_seed(app, &source.selection).await? {
+            if let Some(initial_track) =
+                resolve_playlist_initial_track(app, &source.selection).await?
+            {
                 ensure_playlist_playback_request_current(request)?;
                 return Ok(PlaylistPlaybackMaterial {
                     playlist_name: source.playlist_name,
-                    seed,
+                    initial_track,
                     tracks: source.resolution.tracks,
                 });
             }
@@ -150,11 +152,11 @@ async fn build_playlist_playback_material(
         ensure_playlist_playback_request_current(request)?;
         source = load_playlist_playback_selection(playlist_name).await?;
 
-        if let Some(seed) = resolve_playlist_playback_seed(app, &source.selection).await? {
+        if let Some(initial_track) = resolve_playlist_initial_track(app, &source.selection).await? {
             ensure_playlist_playback_request_current(request)?;
             return Ok(PlaylistPlaybackMaterial {
                 playlist_name: source.playlist_name,
-                seed,
+                initial_track,
                 tracks: source.resolution.tracks,
             });
         }
@@ -177,11 +179,13 @@ fn spawn_playlist_track_queue_fill(
     app: AppHandle,
     playlist_name: String,
     session: player_service::PlaybackSessionHandle,
-    seed: PlaybackTrack,
+    initial_track: PlaybackTrack,
 ) {
     let task_playlist_name = playlist_name.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = fill_playlist_track_queue(app, playlist_name, session, seed).await {
+        if let Err(error) =
+            fill_playlist_track_queue(app, playlist_name, session, initial_track).await
+        {
             eprintln!(
                 "[playlist_playback] failed to fill playback queue for `{task_playlist_name}`: {error}"
             );
@@ -194,7 +198,7 @@ fn spawn_playlist_track_refresh(
     app: AppHandle,
     playlist_name: String,
     session: player_service::PlaybackSessionHandle,
-    seed: PlaybackTrack,
+    initial_track: PlaybackTrack,
     download_changes: tokio::sync::broadcast::Receiver<download_service::DownloadTaskChangeSignal>,
 ) {
     let task_playlist_name = playlist_name.clone();
@@ -203,7 +207,7 @@ fn spawn_playlist_track_refresh(
             app,
             playlist_name,
             session,
-            seed,
+            initial_track,
             download_changes,
         )
         .await
@@ -220,7 +224,7 @@ async fn fill_playlist_track_queue(
     app: AppHandle,
     playlist_name: String,
     session: player_service::PlaybackSessionHandle,
-    seed: PlaybackTrack,
+    initial_track: PlaybackTrack,
 ) -> Result<()> {
     if !player_service::is_session_current(&session)? {
         return Ok(());
@@ -237,11 +241,12 @@ async fn fill_playlist_track_queue(
         return Ok(());
     }
 
-    let seed = player_service::active_request_track_snapshot_for_session(&session)?.unwrap_or(seed);
+    let current_track = player_service::active_request_track_snapshot_for_session(&session)?
+        .unwrap_or(initial_track);
     let tracks =
         RandomPlaylistPlaybackRecommender.propose_queue(PlaylistPlaybackRecommendationRequest {
             playlist_name,
-            seed,
+            current_track,
             candidates: source.resolution.tracks,
         });
     let _ = player_service::update_session_tracks(&session, tracks)?;
@@ -253,7 +258,7 @@ async fn refresh_playlist_tracks_until_downloads_finish(
     app: AppHandle,
     playlist_name: String,
     session: player_service::PlaybackSessionHandle,
-    seed: PlaybackTrack,
+    initial_track: PlaybackTrack,
     mut download_changes: tokio::sync::broadcast::Receiver<
         download_service::DownloadTaskChangeSignal,
     >,
@@ -274,12 +279,13 @@ async fn refresh_playlist_tracks_until_downloads_finish(
             playlist_selection_has_active_downloads(&source.selection).await?;
 
         if !source.resolution.tracks.is_empty() {
-            let seed = player_service::active_request_track_snapshot_for_session(&session)?
-                .unwrap_or_else(|| seed.clone());
+            let current_track =
+                player_service::active_request_track_snapshot_for_session(&session)?
+                    .unwrap_or_else(|| initial_track.clone());
             let tracks = RandomPlaylistPlaybackRecommender.propose_queue(
                 PlaylistPlaybackRecommendationRequest {
                     playlist_name: playlist_name.clone(),
-                    seed,
+                    current_track,
                     candidates: source.resolution.tracks,
                 },
             );
@@ -335,31 +341,39 @@ async fn load_playlist_playback_selection(
 }
 
 #[cfg(not(test))]
-async fn resolve_playlist_playback_seed(
+async fn resolve_playlist_initial_track(
     app: &AppHandle,
     selection: &PlaylistPlaybackSelection,
 ) -> Result<Option<PlaybackTrack>> {
     let save_root = meta_service::resolve_save_root(app).await?;
 
-    let probe_sources = playlist_repo::load_playlist_playback_track_sources(
-        selection,
-        PLAYLIST_PLAYBACK_SEED_PROBE_LIMIT,
-    )
-    .await?;
-    let probe_resolution =
-        resolve_playlist_playback_source_resolution(selection, probe_sources, &save_root);
-    if let Some(seed) = probe_resolution.tracks.first().cloned() {
-        return Ok(Some(seed));
+    let mut seen = HashSet::new();
+    for _ in 0..PLAYLIST_PLAYBACK_INITIAL_RANDOM_ATTEMPT_LIMIT {
+        let Some(source) =
+            playlist_repo::load_random_playlist_playback_track_source(selection).await?
+        else {
+            break;
+        };
+        let source_key = playlist_playback_track_source_key(&source);
+        if !seen.insert(source_key) {
+            continue;
+        }
+
+        if let Some(track) = resolve_playlist_playback_source_track(selection, source, &save_root) {
+            return Ok(Some(track));
+        }
     }
 
-    let sequential_sources = playlist_repo::load_playlist_playback_track_sources(
+    let window_sources = playlist_repo::load_playlist_playback_track_sources(
         selection,
-        PLAYLIST_PLAYBACK_SEED_SCAN_LIMIT,
+        PLAYLIST_PLAYBACK_INITIAL_WINDOW_LIMIT,
     )
     .await?;
-    let sequential_resolution =
-        resolve_playlist_playback_source_resolution(selection, sequential_sources, &save_root);
-    Ok(sequential_resolution.tracks.first().cloned())
+    let window_resolution =
+        resolve_playlist_playback_source_resolution(selection, window_sources, &save_root);
+    Ok(select_random_playlist_initial_track(
+        window_resolution.tracks,
+    ))
 }
 
 #[cfg(not(test))]
@@ -466,23 +480,15 @@ pub(crate) fn resolve_playlist_playback_source_resolution(
             continue;
         }
 
-        let key = format!(
-            "{}:{}:{}",
-            source.music.url, source.music.start_ms, source.music.end_ms
-        );
+        let key = playlist_playback_track_source_key(&source);
         if !seen.insert(key) {
             continue;
         }
 
         playable += 1;
-        tracks.push(PlaybackTrack {
-            playlist_name: selection.playlist_name.clone(),
-            music_name: source.music.alias.clone(),
-            music_url: source.music.url.clone(),
-            file_path,
-            start_ms: source.music.start_ms,
-            end_ms: source.music.end_ms,
-        });
+        tracks.push(project_playlist_playback_track(
+            selection, &source, file_path,
+        ));
     }
 
     PlaylistTrackResolution {
@@ -501,22 +507,82 @@ pub(crate) fn resolve_playlist_playback_source_resolution(
     }
 }
 
-pub(crate) fn ensure_queue_starts_with_seed(
+fn resolve_playlist_playback_source_track(
+    selection: &PlaylistPlaybackSelection,
+    source: PlaylistPlaybackTrackSource,
+    save_root: &Path,
+) -> Option<PlaybackTrack> {
+    let file_path = resolve_source_music_file_path(save_root, &source)?;
+    if !file_path.is_file() {
+        return None;
+    }
+
+    Some(project_playlist_playback_track(
+        selection, &source, file_path,
+    ))
+}
+
+fn project_playlist_playback_track(
+    selection: &PlaylistPlaybackSelection,
+    source: &PlaylistPlaybackTrackSource,
+    file_path: PathBuf,
+) -> PlaybackTrack {
+    PlaybackTrack {
+        playlist_name: selection.playlist_name.clone(),
+        music_name: source.music.alias.clone(),
+        music_url: source.music.url.clone(),
+        file_path,
+        start_ms: source.music.start_ms,
+        end_ms: source.music.end_ms,
+    }
+}
+
+fn playlist_playback_track_source_key(source: &PlaylistPlaybackTrackSource) -> String {
+    format!(
+        "{}:{}:{}",
+        source.music.url, source.music.start_ms, source.music.end_ms
+    )
+}
+
+pub(crate) fn select_playlist_initial_track_at_index(
+    tracks: Vec<PlaybackTrack>,
+    index: usize,
+) -> Option<PlaybackTrack> {
+    let len = tracks.len();
+    if len == 0 {
+        return None;
+    }
+
+    tracks.into_iter().nth(index % len)
+}
+
+pub(crate) fn select_random_playlist_initial_track(
+    tracks: Vec<PlaybackTrack>,
+) -> Option<PlaybackTrack> {
+    if tracks.is_empty() {
+        return None;
+    }
+
+    let index = rand::rng().random_range(0..tracks.len());
+    select_playlist_initial_track_at_index(tracks, index)
+}
+
+pub(crate) fn place_track_at_queue_start(
     mut tracks: Vec<PlaybackTrack>,
-    seed: &PlaybackTrack,
+    anchor: &PlaybackTrack,
 ) -> Vec<PlaybackTrack> {
-    let Some(seed_index) = tracks
+    let Some(anchor_index) = tracks
         .iter()
-        .position(|track| are_playlist_playback_tracks_equal(track, seed))
+        .position(|track| are_playlist_playback_tracks_equal(track, anchor))
     else {
-        let mut seeded = Vec::with_capacity(tracks.len() + 1);
-        seeded.push(seed.clone());
-        seeded.extend(tracks);
-        return seeded;
+        let mut anchored = Vec::with_capacity(tracks.len() + 1);
+        anchored.push(anchor.clone());
+        anchored.extend(tracks);
+        return anchored;
     };
 
-    if seed_index != 0 {
-        tracks.swap(0, seed_index);
+    if anchor_index != 0 {
+        tracks.swap(0, anchor_index);
     }
     tracks
 }
@@ -543,7 +609,7 @@ fn resolve_source_music_file_path(
 
 pub(crate) struct PlaylistPlaybackRecommendationRequest {
     pub(crate) playlist_name: String,
-    pub(crate) seed: PlaybackTrack,
+    pub(crate) current_track: PlaybackTrack,
     pub(crate) candidates: Vec<PlaybackTrack>,
 }
 
@@ -561,7 +627,7 @@ impl PlaylistPlaybackRecommender for RandomPlaylistPlaybackRecommender {
         let _playlist_name = &request.playlist_name;
         let tracks = &mut request.candidates;
         shuffle_playback_tracks(tracks);
-        ensure_queue_starts_with_seed(request.candidates, &request.seed)
+        place_track_at_queue_start(request.candidates, &request.current_track)
     }
 }
 

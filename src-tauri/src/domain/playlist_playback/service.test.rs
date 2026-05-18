@@ -1,8 +1,9 @@
 use super::service::{
     PlaylistPlaybackRecommendationRequest, PlaylistPlaybackRecommender,
-    RandomPlaylistPlaybackRecommender, ensure_queue_starts_with_seed,
+    RandomPlaylistPlaybackRecommender, place_track_at_queue_start,
     playlist_selection_has_relevant_active_downloads, resolve_playlist_playback_continuation_mode,
-    resolve_playlist_playback_source_resolution, shuffle_playback_tracks,
+    resolve_playlist_playback_source_resolution, select_playlist_initial_track_at_index,
+    shuffle_playback_tracks,
 };
 use crate::domain::downloads::model::{DownloadTask, DownloadTaskStatus, DownloadTrigger};
 use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
@@ -296,12 +297,34 @@ fn random_recommender_shuffle_preserves_candidate_identity_set() {
 }
 
 #[test]
-fn random_recommender_accepts_explicit_seed_and_playlist_context() {
-    let seed = PlaybackTrack {
+fn initial_track_selection_uses_the_requested_random_index() {
+    let tracks = (0..4)
+        .map(|index| PlaybackTrack {
+            playlist_name: "Focus".to_string(),
+            music_name: format!("Track {index}"),
+            music_url: format!("https://example.com/{index}"),
+            file_path: PathBuf::from(format!("track-{index}.m4a")),
+            start_ms: 0,
+            end_ms: 60_000,
+        })
+        .collect::<Vec<_>>();
+
+    let selected = select_playlist_initial_track_at_index(tracks.clone(), 2)
+        .expect("random index should select one initial track");
+    let wrapped = select_playlist_initial_track_at_index(tracks, 6)
+        .expect("oversized random index should wrap into the available window");
+
+    assert_eq!(selected.music_url, "https://example.com/2");
+    assert_eq!(wrapped.music_url, "https://example.com/2");
+}
+
+#[test]
+fn random_recommender_keeps_current_track_at_the_queue_start() {
+    let current_track = PlaybackTrack {
         playlist_name: "Focus".to_string(),
-        music_name: "Seed".to_string(),
-        music_url: "https://example.com/seed".to_string(),
-        file_path: PathBuf::from("seed.m4a"),
+        music_name: "Current".to_string(),
+        music_url: "https://example.com/current".to_string(),
+        file_path: PathBuf::from("current.m4a"),
         start_ms: 0,
         end_ms: 60_000,
     };
@@ -317,8 +340,8 @@ fn random_recommender_accepts_explicit_seed_and_playlist_context() {
     let proposed =
         RandomPlaylistPlaybackRecommender.propose_queue(PlaylistPlaybackRecommendationRequest {
             playlist_name: "Focus".to_string(),
-            seed: seed.clone(),
-            candidates: vec![seed.clone(), next.clone()],
+            current_track: current_track.clone(),
+            candidates: vec![current_track.clone(), next.clone()],
         });
     let identity = proposed
         .iter()
@@ -326,18 +349,18 @@ fn random_recommender_accepts_explicit_seed_and_playlist_context() {
         .collect::<std::collections::HashSet<_>>();
 
     assert_eq!(identity.len(), 2);
-    assert!(identity.contains(seed.music_url.as_str()));
+    assert!(identity.contains(current_track.music_url.as_str()));
     assert!(identity.contains(next.music_url.as_str()));
-    assert_eq!(proposed[0].music_url, seed.music_url);
+    assert_eq!(proposed[0].music_url, current_track.music_url);
 }
 
 #[test]
-fn queue_start_projection_preserves_seed_as_the_ordered_playback_anchor() {
-    let seed = PlaybackTrack {
+fn queue_start_projection_preserves_the_initial_playback_anchor() {
+    let initial_track = PlaybackTrack {
         playlist_name: "Focus".to_string(),
-        music_name: "Seed".to_string(),
-        music_url: "https://example.com/seed".to_string(),
-        file_path: PathBuf::from("seed.m4a"),
+        music_name: "Initial".to_string(),
+        music_url: "https://example.com/initial".to_string(),
+        file_path: PathBuf::from("initial.m4a"),
         start_ms: 0,
         end_ms: 60_000,
     };
@@ -350,22 +373,23 @@ fn queue_start_projection_preserves_seed_as_the_ordered_playback_anchor() {
         end_ms: 60_000,
     };
 
-    let reordered = ensure_queue_starts_with_seed(vec![next.clone(), seed.clone()], &seed);
-    assert_eq!(reordered[0].music_url, seed.music_url);
+    let reordered =
+        place_track_at_queue_start(vec![next.clone(), initial_track.clone()], &initial_track);
+    assert_eq!(reordered[0].music_url, initial_track.music_url);
     assert_eq!(reordered.len(), 2);
 
-    let inserted = ensure_queue_starts_with_seed(vec![next.clone()], &seed);
-    assert_eq!(inserted[0].music_url, seed.music_url);
+    let inserted = place_track_at_queue_start(vec![next.clone()], &initial_track);
+    assert_eq!(inserted[0].music_url, initial_track.music_url);
     assert_eq!(inserted[1].music_url, next.music_url);
 }
 
 #[test]
-fn random_recommender_keeps_explicit_seed_ahead_of_newly_loaded_queue_window() {
-    let seed = PlaybackTrack {
+fn random_recommender_keeps_current_track_ahead_of_newly_loaded_queue_window() {
+    let current_track = PlaybackTrack {
         playlist_name: "Focus".to_string(),
-        music_name: "Seed".to_string(),
-        music_url: "https://example.com/seed".to_string(),
-        file_path: PathBuf::from("seed.m4a"),
+        music_name: "Current".to_string(),
+        music_url: "https://example.com/current".to_string(),
+        file_path: PathBuf::from("current.m4a"),
         start_ms: 0,
         end_ms: 60_000,
     };
@@ -381,10 +405,10 @@ fn random_recommender_keeps_explicit_seed_ahead_of_newly_loaded_queue_window() {
     let proposed =
         RandomPlaylistPlaybackRecommender.propose_queue(PlaylistPlaybackRecommendationRequest {
             playlist_name: "Focus".to_string(),
-            seed: seed.clone(),
+            current_track: current_track.clone(),
             candidates: vec![next.clone()],
         });
 
-    assert_eq!(proposed[0].music_url, seed.music_url);
+    assert_eq!(proposed[0].music_url, current_track.music_url);
     assert_eq!(proposed[1].music_url, next.music_url);
 }
