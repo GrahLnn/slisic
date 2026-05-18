@@ -63,7 +63,6 @@ export const icons = {
         className={className}
         {...props}
       >
-        <title>circle-sterling</title>
         <g fill={color || "currentColor"}>
           <path
             d="M8 2L16 2"
@@ -191,7 +190,6 @@ export const icons = {
         className={className}
         {...props}
       >
-        <title>trash-xmark</title>
         <g
           fill="none"
           strokeLinecap="round"

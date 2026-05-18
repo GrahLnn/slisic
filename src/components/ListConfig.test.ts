@@ -949,6 +949,38 @@ describe("ListConfig title view model", () => {
     ]);
   });
 
+  test("defers arc-track rendering while an existing playlist draft is still loading", () => {
+    const viewModel = resolveListConfigViewModel({
+      activeLayoutId: "playlist-title:Focus Session",
+      draft: null,
+      draftBaseline: null,
+      pendingPlaylistName: "Focus Session",
+      titleToneHandoff: null,
+      isPresent: true,
+      libraryItems: [
+        {
+          kind: "collection",
+          name: "Quiet Morning",
+          url: "https://example.com/quiet-morning",
+          folder: "youtube/quiet-morning",
+        },
+        {
+          kind: "collection",
+          name: "Late Night Tape",
+          url: "https://example.com/late-night-tape",
+          folder: "youtube/late-night-tape",
+        },
+      ],
+      candidateItems: [],
+      previousEmptyState: null,
+    });
+
+    assert.equal(viewModel.title.value, "Focus Session");
+    assert.deepEqual(viewModel.arcTrackItems, []);
+    assert.equal(viewModel.interactionFlags.shouldRenderArcTrack, false);
+    assert.equal(viewModel.shouldShowEmptyState, false);
+  });
+
   test("marks the back action as parsing while candidate checks, probes, or enqueue waits still exist", () => {
     assert.equal(
       countListConfigParsingCandidateItems([

@@ -711,7 +711,10 @@ pub async fn seek_playback(position_ms: u32, end_ms: u32) -> Result<Option<Playb
     let Some(range) = resolve_playback_seek_range(position_ms, end_ms) else {
         return Ok(None);
     };
-    let request = playback_request_for_path_range(&active_track.file_path, range)?;
+    let request = playback_request_for_path_position(
+        &active_track.file_path,
+        resolve_playback_request_position(range),
+    );
     playback
         .play_request(request)
         .await
@@ -1391,14 +1394,10 @@ async fn run_playback_session(
                 start_ms: track.start_ms,
                 end_ms: track.end_ms,
             });
-        let request = match resolve_playback_session_request_mode(repeated_loop_signal) {
-            PlaybackSessionRequestMode::OpenEndedPosition => {
-                playback_request_for_path_position(&track.file_path, active_range.start_ms)
-            }
-            PlaybackSessionRequestMode::BoundedRange => {
-                playback_request_for_path_range(&track.file_path, active_range)?
-            }
-        };
+        let request = playback_request_for_path_position(
+            &track.file_path,
+            resolve_playback_request_position(active_range),
+        );
         playback
             .play_request(request)
             .await
@@ -1532,30 +1531,6 @@ pub(crate) fn resolve_active_playback_range_identity_update(
 }
 
 #[cfg(not(test))]
-fn playback_request_for_path_range(
-    path: &Path,
-    range: ActivePlaybackRange,
-) -> Result<PlaybackRequest> {
-    let request = PlaybackRequest::new(path.to_path_buf());
-
-    if range.end_ms > range.start_ms {
-        return Ok(request.with_time_range(PlaybackTimeRange {
-            start_ms: range.start_ms,
-            duration_ms: range.end_ms.checked_sub(range.start_ms),
-        }));
-    }
-
-    if range.start_ms > 0 {
-        return Ok(request.with_time_range(PlaybackTimeRange {
-            start_ms: range.start_ms,
-            duration_ms: None,
-        }));
-    }
-
-    Ok(request)
-}
-
-#[cfg(not(test))]
 fn playback_request_for_path_position(path: &Path, position_ms: u32) -> PlaybackRequest {
     let request = PlaybackRequest::new(path.to_path_buf());
 
@@ -1582,6 +1557,10 @@ pub(crate) fn resolve_playback_seek_range(
     Some(ActivePlaybackRange { start_ms, end_ms })
 }
 
+pub(crate) fn resolve_playback_request_position(range: ActivePlaybackRange) -> u32 {
+    range.start_ms
+}
+
 pub(crate) fn resolve_playback_absolute_position_ms(
     status: &ffplayr::AudioStatus,
     active_range: Option<ActivePlaybackRange>,
@@ -1593,25 +1572,10 @@ pub(crate) fn resolve_playback_absolute_position_ms(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlaybackSessionRequestMode {
-    BoundedRange,
-    OpenEndedPosition,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaybackRangeCompletion {
     Continue,
     Finish,
     Repeat(ActivePlaybackRange),
-}
-
-pub(crate) fn resolve_playback_session_request_mode(
-    spectrum_loop_range: Option<ActivePlaybackRange>,
-) -> PlaybackSessionRequestMode {
-    match spectrum_loop_range {
-        Some(_) => PlaybackSessionRequestMode::OpenEndedPosition,
-        None => PlaybackSessionRequestMode::BoundedRange,
-    }
 }
 
 pub(crate) fn resolve_playback_range_completion(

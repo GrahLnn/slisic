@@ -408,6 +408,7 @@ export function resolveListConfigViewModel(args: {
   previousEmptyState: ListConfigEmptyState | null;
 }) {
   const playlistItems = createListConfigPlaylistSidebarItems(args.draft);
+  const isArcTrackDeferred = !args.draft && Boolean(args.pendingPlaylistName);
   const emptyState = resolveListConfigEmptyState(
     shouldShowListConfigEmptyState({
       draft: args.draft,
@@ -422,11 +423,13 @@ export function resolveListConfigViewModel(args: {
     pendingPlaylistName: args.pendingPlaylistName,
     titleToneHandoff: args.titleToneHandoff,
   });
-  const arcTrackItems = createListConfigArcTrackItems({
-    libraryItems: args.libraryItems,
-    playlistItems,
-    candidateItems: args.candidateItems,
-  });
+  const arcTrackItems = isArcTrackDeferred
+    ? []
+    : createListConfigArcTrackItems({
+        libraryItems: args.libraryItems,
+        playlistItems,
+        candidateItems: args.candidateItems,
+      });
   const isBackActionParsing = hasListConfigParsingCandidateItems(args.candidateItems);
   const interactionFlags = resolveListConfigInteractionFlags({
     isPresent: args.isPresent,

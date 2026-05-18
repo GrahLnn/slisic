@@ -1,18 +1,17 @@
 use super::model::{PlaybackTrack, PlaybackTrackPayload, PlaybackTrackProjectionError};
 use super::service::{
-    ActivePlaybackRange, PlaybackRangeCompletion, PlaybackSessionRequestMode,
-    PlaybackStartRequestRegistry, PlaybackTrackIdentityUpdate, SpectrumPlaybackScope,
-    are_playback_tracks_equal, playback_tracks_match,
-    resolve_active_playback_range_identity_update, resolve_active_request_track_identity_update,
-    resolve_playback_absolute_position_ms, resolve_playback_range_completion,
+    ActivePlaybackRange, PlaybackRangeCompletion, PlaybackStartRequestRegistry,
+    PlaybackTrackIdentityUpdate, SpectrumPlaybackScope, are_playback_tracks_equal,
+    playback_tracks_match, resolve_active_playback_range_identity_update,
+    resolve_active_request_track_identity_update, resolve_playback_absolute_position_ms,
+    resolve_playback_range_completion, resolve_playback_request_position,
     resolve_playback_seek_pause_after_request, resolve_playback_seek_range,
-    resolve_playback_session_request_mode, resolve_playback_status_track_identity,
-    resolve_repeated_playback_range_override, resolve_session_track_identity_update,
-    resolve_spectrum_loop_playback_range, resolve_spectrum_loop_signal_active_range,
-    resolve_spectrum_loop_signal_seek_position, resolve_spectrum_music_playback_range,
-    resolve_spectrum_playback_loop_signal, should_accept_spectrum_playback_signal,
-    should_commit_spectrum_playback_scope_exit, should_resume_playback_seek_cancel,
-    should_start_spectrum_playback_session,
+    resolve_playback_status_track_identity, resolve_repeated_playback_range_override,
+    resolve_session_track_identity_update, resolve_spectrum_loop_playback_range,
+    resolve_spectrum_loop_signal_active_range, resolve_spectrum_loop_signal_seek_position,
+    resolve_spectrum_music_playback_range, resolve_spectrum_playback_loop_signal,
+    should_accept_spectrum_playback_signal, should_commit_spectrum_playback_scope_exit,
+    should_resume_playback_seek_cancel, should_start_spectrum_playback_session,
 };
 use std::path::PathBuf;
 
@@ -471,21 +470,6 @@ fn spectrum_loop_signal_rejects_invalid_range() {
 }
 
 #[test]
-fn playback_session_uses_open_ended_requests_only_for_spectrum_loop_signal() {
-    assert_eq!(
-        resolve_playback_session_request_mode(None),
-        PlaybackSessionRequestMode::BoundedRange,
-    );
-    assert_eq!(
-        resolve_playback_session_request_mode(Some(ActivePlaybackRange {
-            start_ms: 25_000,
-            end_ms: 45_000,
-        })),
-        PlaybackSessionRequestMode::OpenEndedPosition,
-    );
-}
-
-#[test]
 fn playback_absolute_position_uses_active_range_origin() {
     let status = ffplayr::AudioStatus {
         duration_ms: Some(60_000),
@@ -506,6 +490,24 @@ fn playback_absolute_position_uses_active_range_origin() {
         21_250,
     );
     assert_eq!(resolve_playback_absolute_position_ms(&status, None), 1_250);
+}
+
+#[test]
+fn playback_request_position_ignores_range_end_signal() {
+    assert_eq!(
+        resolve_playback_request_position(ActivePlaybackRange {
+            start_ms: 25_000,
+            end_ms: 45_000,
+        }),
+        25_000,
+    );
+    assert_eq!(
+        resolve_playback_request_position(ActivePlaybackRange {
+            start_ms: 25_000,
+            end_ms: 120_000,
+        }),
+        25_000,
+    );
 }
 
 #[test]
