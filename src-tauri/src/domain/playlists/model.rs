@@ -111,6 +111,31 @@ pub struct Music {
     pub end_ms: u32,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View, Type)]
+#[view(source = Music)]
+pub struct MusicSpectrumView {
+    pub name: String,
+    pub alias: String,
+    pub url: String,
+    pub path: Option<String>,
+    pub start_ms: u32,
+    pub end_ms: u32,
+}
+
+impl MusicSpectrumView {
+    pub fn into_music(self, group: Group) -> Music {
+        Music {
+            name: self.name,
+            alias: self.alias,
+            group,
+            url: self.url,
+            path: self.path,
+            start_ms: self.start_ms,
+            end_ms: self.end_ms,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct SpectrumMusicSourceContext {
     pub source_collection_url: String,

@@ -1,6 +1,6 @@
 use super::model::{
     Collection, CollectionSurfaceView, ConfigLibraryView, Exclude, Group, GroupSurfaceView, Music,
-    PlayList, PlayListConfigView, PlayListListView, SpectrumMusicContext,
+    MusicSpectrumView, PlayList, PlayListConfigView, PlayListListView, SpectrumMusicContext,
     SpectrumMusicSourceContext,
 };
 use anyhow::{Result, bail};
@@ -9,11 +9,12 @@ use appdb::error::{DBError, classify_db_error};
 use appdb::graph;
 use appdb::model::meta::ModelMeta;
 use appdb::repository::Repo;
+use appdb::repository::ViewRecord;
 use appdb::{AutoFill, Crud, Id, Order, Store};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use surrealdb::types::{RecordId, Table};
 use surrealdb_types::SurrealValue;
@@ -539,7 +540,7 @@ pub struct SpectrumMusicSourceIdentity<'a> {
 }
 
 impl SpectrumMusicSourceIdentity<'_> {
-    fn matches(&self, music: &Music) -> bool {
+    fn matches_spectrum_view(&self, music: &MusicSpectrumView) -> bool {
         music.url == self.url && music.start_ms == self.start_ms && music.end_ms == self.end_ms
     }
 }
@@ -564,52 +565,68 @@ pub async fn load_spectrum_music_context(
 ) -> Result<SpectrumMusicContext> {
     ensure_collection_graph_schema().await?;
 
-    let target_key = normalize_music_file_path_key(file_path);
-    let collections = list_collections().await?;
+    let relative_file_path = file_path
+        .strip_prefix(save_root)
+        .ok()
+        .map(Path::to_path_buf);
+    let collections = match CollectionSurfaceView::list_records().await {
+        Ok(collections) => collections,
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) => vec![],
+            other => return Err(other.into()),
+        },
+    };
     let mut seen = HashSet::new();
-    let mut file_musics = Vec::new();
-    let mut source = None;
+    let mut file_music_records = Vec::<PendingSpectrumMusicContextRecord>::new();
 
     for collection in collections {
-        let mut matched_file_musics = Vec::new();
+        if !is_collection_candidate_for_file_path(&collection.folder, relative_file_path.as_deref())
+        {
+            continue;
+        }
 
-        for music in &collection.musics {
+        let music_records =
+            match MusicSpectrumView::outgoing_records(collection.id().clone(), "includes").await {
+                Ok(musics) => musics,
+                Err(error) => match classify_db_error(&error) {
+                    DBError::MissingTable(_) => vec![],
+                    other => return Err(other.into()),
+                },
+            };
+
+        for music_record in music_records {
+            let music_view = music_record.value();
             let Some(resolved_path) =
-                resolve_music_file_path(save_root, &collection, music.path.as_deref())
+                resolve_music_file_path(save_root, &collection.folder, music_view.path.as_deref())
             else {
                 continue;
             };
 
-            if normalize_music_file_path_key(&resolved_path) != target_key {
+            if !same_music_file_path(&resolved_path, file_path) {
                 continue;
             }
 
-            matched_file_musics.push(music);
-            let key = format!("{}:{}:{}", music.url, music.start_ms, music.end_ms);
-            if seen.insert(key) {
-                file_musics.push(music.clone());
+            let key = format!(
+                "{}:{}:{}",
+                music_view.url, music_view.start_ms, music_view.end_ms
+            );
+            if !seen.insert(key) {
+                continue;
             }
-        }
 
-        if source.is_none()
-            && let Some(identity) = source_identity
-            && let Some(source_music) = matched_file_musics
-                .iter()
-                .copied()
-                .find(|music| identity.matches(music))
-            && let Some(source_end_ms) =
-                resolve_spectrum_source_end_ms(&collection.musics, identity.url)
-        {
-            source = Some(SpectrumMusicSourceContext {
-                source_collection_url: collection.url.clone(),
-                source_end_ms,
-                source_group: source_music.group.clone(),
-                source_path: source_music.path.clone(),
-                source_start_ms: identity.start_ms,
-                source_url: identity.url.to_string(),
+            file_music_records.push(PendingSpectrumMusicContextRecord {
+                collection_url: collection.url.clone(),
+                music: music_record,
             });
         }
     }
+
+    let file_music_views = load_spectrum_music_records_with_groups(file_music_records).await?;
+    let source = resolve_spectrum_music_source_context(&file_music_views, source_identity).await?;
+    let file_musics = file_music_views
+        .iter()
+        .map(|record| record.music.clone().into_music(record.group.clone()))
+        .collect();
 
     Ok(SpectrumMusicContext {
         file_musics,
@@ -617,9 +634,94 @@ pub async fn load_spectrum_music_context(
     })
 }
 
-fn resolve_spectrum_source_end_ms(musics: &[Music], source_url: &str) -> Option<u32> {
+#[derive(Debug, Clone)]
+struct PendingSpectrumMusicContextRecord {
+    collection_url: String,
+    music: ViewRecord<MusicSpectrumView>,
+}
+
+#[derive(Debug, Clone)]
+struct SpectrumMusicContextRecord {
+    collection_url: String,
+    group: Group,
+    music: MusicSpectrumView,
+}
+
+async fn resolve_spectrum_music_source_context(
+    file_musics: &[SpectrumMusicContextRecord],
+    source_identity: Option<SpectrumMusicSourceIdentity<'_>>,
+) -> Result<Option<SpectrumMusicSourceContext>> {
+    let Some(identity) = source_identity else {
+        return Ok(None);
+    };
+    let Some(source_record) = file_musics
+        .iter()
+        .find(|record| identity.matches_spectrum_view(&record.music))
+    else {
+        return Ok(None);
+    };
+    let Some(source_end_ms) = resolve_spectrum_source_end_ms(file_musics, identity.url) else {
+        return Ok(None);
+    };
+
+    Ok(Some(SpectrumMusicSourceContext {
+        source_collection_url: source_record.collection_url.clone(),
+        source_end_ms,
+        source_group: source_record.group.clone(),
+        source_path: source_record.music.path.clone(),
+        source_start_ms: identity.start_ms,
+        source_url: identity.url.to_string(),
+    }))
+}
+
+async fn load_spectrum_music_records_with_groups(
+    records: Vec<PendingSpectrumMusicContextRecord>,
+) -> Result<Vec<SpectrumMusicContextRecord>> {
+    let music_ids = records
+        .iter()
+        .map(|record| record.music.id().clone())
+        .collect::<Vec<_>>();
+    let group_records =
+        match GroupSurfaceView::incoming_records_by_owners(music_ids, "grouped").await {
+            Ok(groups) => groups,
+            Err(error) => match classify_db_error(&error) {
+                DBError::MissingTable(_) => vec![],
+                other => return Err(other.into()),
+            },
+        };
+    let mut groups_by_music = HashMap::<RecordId, Group>::new();
+    for related in group_records {
+        let (music_id, group) = related.into_parts();
+        groups_by_music.entry(music_id).or_insert_with(|| {
+            let group = group.into_value();
+            Group {
+                name: group.name,
+                url: group.url,
+                folder: group.folder,
+            }
+        });
+    }
+
+    Ok(records
+        .into_iter()
+        .filter_map(|record| {
+            let group = groups_by_music.remove(record.music.id())?;
+            Some(SpectrumMusicContextRecord {
+                collection_url: record.collection_url,
+                group,
+                music: record.music.into_value(),
+            })
+        })
+        .collect())
+}
+
+fn resolve_spectrum_source_end_ms(
+    musics: &[SpectrumMusicContextRecord],
+    source_url: &str,
+) -> Option<u32> {
     musics
         .iter()
+        .map(|record| &record.music)
         .filter(|music| music.url == source_url && music.start_ms < music.end_ms)
         .map(|music| music.end_ms)
         .max()
@@ -1378,7 +1480,7 @@ fn stable_record_key(seed: &str) -> String {
 
 fn resolve_music_file_path(
     save_root: &Path,
-    collection: &Collection,
+    collection_folder: &str,
     relative_path: Option<&str>,
 ) -> Option<PathBuf> {
     let path = PathBuf::from(relative_path?);
@@ -1386,7 +1488,22 @@ fn resolve_music_file_path(
         return Some(path);
     }
 
-    Some(save_root.join(&collection.folder).join(path))
+    Some(save_root.join(collection_folder).join(path))
+}
+
+fn is_collection_candidate_for_file_path(
+    collection_folder: &str,
+    relative_file_path: Option<&Path>,
+) -> bool {
+    let Some(relative_file_path) = relative_file_path else {
+        return true;
+    };
+    let collection_folder = Path::new(collection_folder);
+    relative_file_path == collection_folder || relative_file_path.starts_with(collection_folder)
+}
+
+fn same_music_file_path(left: &Path, right: &Path) -> bool {
+    normalize_music_file_path_key(left) == normalize_music_file_path_key(right)
 }
 
 fn normalize_music_file_path_key(path: &Path) -> String {

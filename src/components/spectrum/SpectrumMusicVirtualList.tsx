@@ -23,6 +23,7 @@ import {
 import { SpectrumPlaybackAction } from "./SpectrumPlaybackAction";
 import {
   createWaveformRenderDataStore,
+  TrackSpectrumWaveformResourceOwner,
   type TrackSpectrumPlaybackControl,
   type TrackSpectrumPlaybackStatusCommit,
   type WaveformRenderDataStore,
@@ -42,8 +43,8 @@ const SPECTRUM_MUSIC_EDITOR_ROW_CONTENT_HEIGHT_PX = 280;
 const SPECTRUM_MUSIC_VIRTUAL_ROW_GAP_PX = 48;
 const SPECTRUM_MUSIC_VIRTUAL_OVERSCAN = 3;
 const SPECTRUM_MUSIC_VIRTUAL_PADDING_END_PX = 64;
-const SPECTRUM_MUSIC_VIRTUAL_CASCADE_START_DELAY_MS = 390;
-const SPECTRUM_MUSIC_VIRTUAL_CASCADE_STEP_MS = 70;
+const SPECTRUM_MUSIC_VIRTUAL_ADMISSION_BATCH_SIZE = 12;
+const SPECTRUM_MUSIC_VIRTUAL_ADMISSION_BATCH_DELAY_MS = 48;
 
 export type SpectrumMusicRowAdmission = "admitted" | "deferred";
 
@@ -121,6 +122,18 @@ export function resolveSpectrumMusicAdmissionScheduleRows(scheduleKey: string) {
         ]
       : [];
   });
+}
+
+export function resolveSpectrumMusicAdmissionBatchRows(args: {
+  batchIndex: number;
+  rows: readonly { index: number; isCurrent: boolean }[];
+}) {
+  return args.rows
+    .filter((row) => !row.isCurrent && row.index !== 0)
+    .slice(
+      args.batchIndex * SPECTRUM_MUSIC_VIRTUAL_ADMISSION_BATCH_SIZE,
+      (args.batchIndex + 1) * SPECTRUM_MUSIC_VIRTUAL_ADMISSION_BATCH_SIZE,
+    );
 }
 
 export function resolveSpectrumMusicVirtualRangeIndexes(args: {
@@ -507,6 +520,16 @@ export function SpectrumMusicVirtualList({
   const listHeight = resolveSpectrumMusicVirtualListHeight({
     totalSize: rowVirtualizer.getTotalSize(),
   });
+  const waveformPreloadSelections = useMemo(
+    () =>
+      editorViewModels
+        .filter((editor) => editor.showWaveform)
+        .map((editor) => ({
+          end: editor.selectionEnd,
+          start: editor.selectionStart,
+        })),
+    [editorViewModels],
+  );
   const admissionIdentityKey = createSpectrumMusicAdmissionIdentityKey(editorViewModels);
   const admissionScheduleKey = createSpectrumMusicAdmissionScheduleKey(editorViewModels);
 
@@ -573,30 +596,31 @@ export function SpectrumMusicVirtualList({
     }
     commitAdmittedIndexes(setAdmittedIndexes, baseIndexes);
 
+    const deferredRows = admissionRows.filter((row) => !row.isCurrent && row.index !== 0);
     const ownerWindow = listRef.current?.ownerDocument.defaultView ?? window;
     const timers: number[] = [];
-    admissionRows.forEach((row) => {
-      if (row.isCurrent || row.index === 0) {
-        return;
-      }
+    for (
+      let batchIndex = 0;
+      batchIndex * SPECTRUM_MUSIC_VIRTUAL_ADMISSION_BATCH_SIZE < deferredRows.length;
+      batchIndex += 1
+    ) {
+      const batchRows = resolveSpectrumMusicAdmissionBatchRows({
+        batchIndex,
+        rows: admissionRows,
+      });
+      const timer = ownerWindow.setTimeout(() => {
+        setAdmittedIndexes((current) => {
+          if (batchRows.every((row) => current.has(row.index))) {
+            return current;
+          }
 
-      const timer = ownerWindow.setTimeout(
-        () => {
-          setAdmittedIndexes((current) => {
-            if (current.has(row.index)) {
-              return current;
-            }
-
-            const next = new Set(current);
-            next.add(row.index);
-            return next;
-          });
-        },
-        SPECTRUM_MUSIC_VIRTUAL_CASCADE_START_DELAY_MS +
-          (row.index - 1) * SPECTRUM_MUSIC_VIRTUAL_CASCADE_STEP_MS,
-      );
+          const next = new Set(current);
+          batchRows.forEach((row) => next.add(row.index));
+          return next;
+        });
+      }, batchIndex * SPECTRUM_MUSIC_VIRTUAL_ADMISSION_BATCH_DELAY_MS);
       timers.push(timer);
-    });
+    }
 
     return () => {
       for (const timer of timers) {
@@ -607,6 +631,11 @@ export function SpectrumMusicVirtualList({
 
   return (
     <div ref={listRef} className="relative" style={{ height: `${listHeight}px` }}>
+      <TrackSpectrumWaveformResourceOwner
+        filePath={trackFilePath}
+        renderDataStore={waveformRenderDataStore}
+        selections={waveformPreloadSelections}
+      />
       {virtualRows.map((virtualRow) => {
         const editor = editorViewModels[virtualRow.index];
         if (!editor) {

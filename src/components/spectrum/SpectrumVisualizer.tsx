@@ -572,6 +572,187 @@ function useTrackWaveformSummary(args: {
   return state;
 }
 
+export function resolveTrackSpectrumWaveformResourcePreloadPlans(args: {
+  filePath: string | null;
+  selections: readonly WaveformSelectionRange[];
+  summary: import("@/src/cmd").TrackWaveformSummary;
+  viewportWidth: number;
+}) {
+  const maximumPixelsPerSecond = resolveWaveformRenderPixelsPerSecond({
+    summary: args.summary,
+  });
+  return args.selections.flatMap((selection) => {
+    const initialViewport = resolveWaveformInitialViewportFrame({
+      durationMs: args.summary.duration_ms,
+      maximumPixelsPerSecond,
+      selection,
+      viewportWidth: args.viewportWidth,
+    });
+    const sessionFrame = resolveWaveformSessionFrame({
+      filePath: args.filePath,
+      playheadEnabled: false,
+      summary: args.summary,
+      viewport: initialViewport.viewport,
+      waveformStatus: "ready",
+    });
+
+    return sessionFrame.dataPlan ? [sessionFrame.dataPlan] : [];
+  });
+}
+
+function usePreloadTrackWaveformTiles(args: {
+  filePath: string | null;
+  renderDataStore: WaveformRenderDataStore;
+  selections: readonly WaveformSelectionRange[];
+  status: WaveformStatus;
+  summary: import("@/src/cmd").TrackWaveformSummary;
+  tileCache: Map<string, WaveformCachedTile>;
+  viewportWidth: number;
+  waveformPort: TrackSpectrumWaveformPort;
+}) {
+  useEffect(() => {
+    const identity = projectWaveformTrackIdentity(args.filePath);
+    if (!identity.ok || args.status !== "ready" || args.selections.length === 0) {
+      return;
+    }
+
+    const plans = resolveTrackSpectrumWaveformResourcePreloadPlans({
+      filePath: identity.value.filePath,
+      selections: args.selections,
+      summary: args.summary,
+      viewportWidth: args.viewportWidth,
+    });
+    if (plans.length === 0) {
+      return;
+    }
+
+    const protectedCacheKeys = plans.flatMap((plan) => plan.protectedCacheKeys);
+    const requestsByKey = new Map<
+      string,
+      ReturnType<typeof resolveWaveformDataPlanScopedRequests>[number]
+    >();
+    plans.forEach((plan) => {
+      resolveWaveformDataPlanScopedRequests(plan, "visible").forEach((request) => {
+        if (!args.tileCache.has(request.cacheKey) && !requestsByKey.has(request.cacheKey)) {
+          requestsByKey.set(request.cacheKey, request);
+        }
+      });
+    });
+    const requests = Array.from(requestsByKey.values());
+    if (requests.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    let activeCount = 0;
+    let cursor = 0;
+    const pump = () => {
+      if (cancelled) {
+        return;
+      }
+
+      while (activeCount < WAVEFORM_TILE_LOAD_CONCURRENCY && cursor < requests.length) {
+        const request = requests[cursor];
+        cursor += 1;
+        activeCount += 1;
+        const promise =
+          args.renderDataStore.tilePromises.get(request.cacheKey) ??
+          args.waveformPort.getTrackWaveformTile(
+            identity.value.filePath,
+            null,
+            null,
+            request.dataPixelsPerSecond,
+            request.startPx,
+            request.widthPx,
+          );
+        args.renderDataStore.tilePromises.set(request.cacheKey, promise);
+
+        void promise
+          .then((tile) => {
+            if (cancelled) {
+              return;
+            }
+            args.tileCache.set(request.cacheKey, {
+              data: tile,
+              dataPixelsPerSecond: request.dataPixelsPerSecond,
+              requestKey: request.cacheKey,
+              scopeKey: request.scopeKey,
+            });
+            pruneWaveformTileCache(args.tileCache, protectedCacheKeys);
+          })
+          .catch((error) => {
+            if (!cancelled) {
+              console.error("Failed to preload track waveform tile", error);
+            }
+          })
+          .finally(() => {
+            if (args.renderDataStore.tilePromises.get(request.cacheKey) === promise) {
+              args.renderDataStore.tilePromises.delete(request.cacheKey);
+            }
+            activeCount -= 1;
+            pump();
+          });
+      }
+    };
+
+    pump();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    args.filePath,
+    args.renderDataStore,
+    args.selections,
+    args.status,
+    args.summary,
+    args.tileCache,
+    args.viewportWidth,
+    args.waveformPort,
+  ]);
+}
+
+export function TrackSpectrumWaveformResourceOwner(props: {
+  filePath: string | null;
+  ports?: TrackSpectrumPorts;
+  renderDataStore?: WaveformRenderDataStore;
+  selections?: readonly WaveformSelectionRange[];
+  viewportWidth?: number;
+}) {
+  const ports = props.ports ?? crabTrackSpectrumPorts;
+  const renderDataStore = resolveWaveformRenderDataStore({
+    port: ports.waveform,
+    provided: props.renderDataStore,
+  });
+  const placeholderSummary = useMemo(() => createPlaceholderWaveformSummary(), []);
+  const waveformState = useTrackWaveformSummary({
+    filePath: props.filePath,
+    placeholderSummary,
+    renderDataStore,
+    waveformPort: ports.waveform,
+  });
+  const tileCache = useMemo(
+    () =>
+      createWaveformSharedTileCacheForStore({
+        filePath: props.filePath,
+        store: renderDataStore,
+      }),
+    [props.filePath, renderDataStore],
+  );
+  usePreloadTrackWaveformTiles({
+    filePath: props.filePath,
+    renderDataStore,
+    selections: props.selections ?? [],
+    status: waveformState.status,
+    summary: waveformState.summary,
+    tileCache,
+    viewportWidth: props.viewportWidth ?? 1,
+    waveformPort: ports.waveform,
+  });
+
+  return null;
+}
+
 function useElementWidth(ref: RefObject<HTMLElement | null>) {
   const [width, setWidth] = useState(1);
 

@@ -1153,6 +1153,72 @@ fn load_spectrum_music_context_carries_source_owner_evidence_without_playlist_hy
 }
 
 #[test]
+fn load_spectrum_music_context_filters_collection_candidates_by_path_components() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let save_root = PathBuf::from("C:/Media");
+        let shared_path = PathBuf::from("Disc 1").join("Shared.m4a");
+        let source_group = collection_group(
+            "Disc 1",
+            "https://example.com/spectrum-path#disc-1",
+            "Disc 1",
+        );
+        let collection = collection_with_musics(
+            "https://example.com/spectrum-path",
+            "youtube/spectrum-path",
+            Some(false),
+            vec![Music {
+                name: "Track".to_string(),
+                alias: "Track".to_string(),
+                group: source_group.clone(),
+                url: "https://example.com/spectrum-path#track".to_string(),
+                path: Some(shared_path.to_string_lossy().to_string()),
+                start_ms: 0,
+                end_ms: 120_000,
+            }],
+        );
+        let neighbor = collection_with_musics(
+            "https://example.com/spectrum-path-neighbor",
+            "youtube/spectrum-path-neighbor",
+            Some(false),
+            vec![Music {
+                name: "Neighbor Track".to_string(),
+                alias: "Neighbor Track".to_string(),
+                group: collection_group(
+                    "Disc 1",
+                    "https://example.com/spectrum-path-neighbor#disc-1",
+                    "Disc 1",
+                ),
+                url: "https://example.com/spectrum-path-neighbor#track".to_string(),
+                path: Some(shared_path.to_string_lossy().to_string()),
+                start_ms: 0,
+                end_ms: 120_000,
+            }],
+        );
+        let _ = upsert_collection(&collection)
+            .await
+            .expect("source collection should save");
+        let _ = upsert_collection(&neighbor)
+            .await
+            .expect("neighbor collection should save");
+
+        let lookup_path = save_root.join(&collection.folder).join(&shared_path);
+        let context = load_spectrum_music_context(&lookup_path, &save_root, None)
+            .await
+            .expect("spectrum context lookup should succeed");
+
+        assert_eq!(context.file_musics.len(), 1);
+        assert_eq!(context.file_musics[0].alias, "Track");
+
+        reset_db();
+    });
+}
+
+#[test]
 fn get_collection_by_url_reads_legacy_record_ids_via_url_lookup() {
     let _guard = acquire_db_test_lock();
 

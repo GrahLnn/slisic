@@ -6,6 +6,7 @@ import {
   areSpectrumMusicEditorViewModelsEqual,
   createSpectrumMusicAdmissionIdentityKey,
   createSpectrumMusicAdmissionScheduleKey,
+  resolveSpectrumMusicAdmissionBatchRows,
   resolveSpectrumMusicVirtualRowPlaybackSnapshot,
   resolveSpectrumMusicVirtualListHeight,
   resolveSpectrumMusicVirtualRangeIndexes,
@@ -210,6 +211,31 @@ describe("SpectrumMusicVirtualList", () => {
       ]),
       "0:current\n1:sibling",
     );
+  });
+
+  test("admits sibling rows in bounded batches instead of a per-row cascade", () => {
+    const rows = Array.from({ length: 26 }, (_, index) => ({
+      index,
+      isCurrent: index === 0,
+    }));
+
+    assert.deepEqual(resolveSpectrumMusicAdmissionBatchRows({ batchIndex: 0, rows }), [
+      { index: 1, isCurrent: false },
+      { index: 2, isCurrent: false },
+      { index: 3, isCurrent: false },
+      { index: 4, isCurrent: false },
+      { index: 5, isCurrent: false },
+      { index: 6, isCurrent: false },
+      { index: 7, isCurrent: false },
+      { index: 8, isCurrent: false },
+      { index: 9, isCurrent: false },
+      { index: 10, isCurrent: false },
+      { index: 11, isCurrent: false },
+      { index: 12, isCurrent: false },
+    ]);
+    assert.deepEqual(resolveSpectrumMusicAdmissionBatchRows({ batchIndex: 2, rows }), [
+      { index: 25, isCurrent: false },
+    ]);
   });
 
   test("compares editor view models by row-owned semantic fields", () => {

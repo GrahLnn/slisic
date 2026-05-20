@@ -9,6 +9,7 @@ import {
   createWaveformSharedTileCacheForFile,
   normalizeWaveformPathKey,
   projectWaveformTrackIdentity,
+  resolveTrackSpectrumWaveformResourcePreloadPlans,
   resolvePlaybackPositionMs,
   resolvePlaybackSnapshotAfterStatusCommit,
   resolvePlaybackSnapshotPausedAtNow,
@@ -141,6 +142,34 @@ describe("SpectrumVisualizer stable domains", () => {
     assert.equal(resolveTrackWaveformInitialStatus("C:/music/demo.flac"), "loading");
     assert.equal(resolveTrackWaveformInitialStatus("   "), "idle");
     assert.equal(resolveTrackWaveformInitialStatus(null), "idle");
+  });
+
+  test("preloads visible waveform demand for every declared slice", () => {
+    const plans = resolveTrackSpectrumWaveformResourcePreloadPlans({
+      filePath: "C:/Music/Demo.flac",
+      selections: [
+        {
+          end: 8,
+          start: 4,
+        },
+        {
+          end: 42,
+          start: 36,
+        },
+      ],
+      summary: createSummary(),
+      viewportWidth: 1_000,
+    });
+
+    assert.equal(plans.length, 2);
+    assert.equal(
+      plans.every((plan) => plan.requests.length > 0),
+      true,
+    );
+    assert.notEqual(
+      plans[0]?.visibleSecondsWindow.startSeconds,
+      plans[1]?.visibleSecondsWindow.startSeconds,
+    );
   });
 });
 
