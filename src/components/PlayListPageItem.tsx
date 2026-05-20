@@ -253,15 +253,18 @@ export function PlayListPageItem({
 export function CreateNewPlayListItem({
   viewModel,
   onPointerDown,
+  onCommit,
 }: {
   viewModel: PlayListPageItemViewModel;
   onPointerDown?: () => void;
+  onCommit?: () => void;
 }) {
   return (
     <PlayListPageItem
       viewModel={viewModel}
       onPointerDown={onPointerDown}
       onCommit={() => {
+        onCommit?.();
         appLogicAction.openCreate();
       }}
     />

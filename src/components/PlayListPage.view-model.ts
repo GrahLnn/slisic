@@ -6,6 +6,7 @@ import type {
 } from "@/src/flow/appLogic/core";
 import {
   CREATE_COLLECTION_LAYOUT_ID,
+  createCollectionTitleHandoff,
   playlistTitleLayoutId,
   resolvePlaylistsWithPreview,
 } from "@/src/flow/appLogic/core";
@@ -317,6 +318,37 @@ export function resolvePlayListPageTitleReturnSurfaceTargetLayoutId(args: {
 
   const returnHandoffTargetName = resolvePlayListPageReturnHandoffTargetName(args);
   return returnHandoffTargetName ? playlistTitleLayoutId(returnHandoffTargetName) : null;
+}
+
+/**
+ * Opening config replaces any previous config-to-list return surface. The
+ * exiting playlist page needs that replacement before React switches page keys,
+ * otherwise the old return target can keep suppressing its fade until unmount.
+ */
+function createConfigExitRenderDataByLayoutId(
+  renderData: PlayListPageRenderData,
+  layoutId: string,
+): PlayListPageRenderData {
+  return {
+    ...renderData,
+    activeLayoutId: layoutId,
+    titleToneHandoff: createCollectionTitleHandoff(layoutId, "solid"),
+    pressedLayoutId: null,
+    titleReturnSurface: null,
+  };
+}
+
+export function createPlayListPageConfigExitRenderData(
+  renderData: PlayListPageRenderData,
+  playlistName: string,
+): PlayListPageRenderData {
+  return createConfigExitRenderDataByLayoutId(renderData, playlistTitleLayoutId(playlistName));
+}
+
+export function createPlayListPageCreateConfigExitRenderData(
+  renderData: PlayListPageRenderData,
+): PlayListPageRenderData {
+  return createConfigExitRenderDataByLayoutId(renderData, CREATE_COLLECTION_LAYOUT_ID);
 }
 
 export function resolvePlayListPageViewModel(

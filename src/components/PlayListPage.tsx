@@ -8,6 +8,8 @@ import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import { PlayListPageItem, CreateNewPlayListItem } from "./PlayListPageItem";
 import { usePlayListPlaybackSurface } from "./usePlayListPlaybackSurface";
 import {
+  createPlayListPageCreateConfigExitRenderData,
+  createPlayListPageConfigExitRenderData,
   resolvePlayListPageViewModel,
   resolvePlayListPageTitleReturnSurfaceTargetLayoutId,
   type PlayListPageRenderData,
@@ -174,6 +176,14 @@ export function PlayListPage({
                     return;
                   }
 
+                  flushSync(() => {
+                    pageRenderFreeze.freeze(
+                      createPlayListPageConfigExitRenderData(
+                        renderData,
+                        itemViewModel.playlistName,
+                      ),
+                    );
+                  });
                   appLogicAction.openPlaylist(itemViewModel.playlistName);
                 }}
                 onOpenSpectrum={() => {
@@ -198,6 +208,13 @@ export function PlayListPage({
               <CreateNewPlayListItem
                 key={viewModel.createItemViewModel.key}
                 viewModel={viewModel.createItemViewModel}
+                onCommit={() => {
+                  flushSync(() => {
+                    pageRenderFreeze.freeze(
+                      createPlayListPageCreateConfigExitRenderData(renderData),
+                    );
+                  });
+                }}
               />
             ) : null}
             <div aria-hidden className="h-[calc(50vh-1rem)] shrink-0 snap-none" />
