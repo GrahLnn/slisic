@@ -5,10 +5,12 @@ import {
   chooseSavePath,
   deletePlaylistRecord,
   enterSpectrumPlaybackScope,
+  excludeCurrentMusicAndSkip,
   exitSpectrumPlaybackScope,
   listenNowPlayingTrackChanged,
   MainStateT,
   persistSavePath,
+  removeExclude,
   setPlaybackContinuationMode,
   sig,
   stopPlayback,
@@ -20,6 +22,8 @@ import {
   draftNameChanged,
   draftItemIncluded,
   draftItemRemoved,
+  excludeAdded,
+  excludeRemoved,
   nowPlayingTrackChanged,
   openPlaylist,
   playPlaylist,
@@ -65,48 +69,6 @@ function formatStateValue(value: unknown) {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
-function summarizeContext(context: ActorSnapshot["context"]) {
-  return {
-    activeLayoutId: context.activeLayoutId,
-    pendingPlaylistName: context.pendingPlaylistName,
-    playingPlaylistName: context.playingPlaylistName,
-    nowPlayingTrackName: context.nowPlayingTrackName,
-    nowPlayingTrackUrl: context.nowPlayingTrackUrl,
-    nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-    nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
-    nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
-    spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
-    spectrumMusicDraftCount: context.spectrumMusicDrafts.length,
-    pendingSpectrumMusicCreateId: context.pendingSpectrumMusicCreateId,
-    spectrumMusicSourceContext: context.spectrumMusicSourceContext
-      ? {
-          sourceCollectionUrl: context.spectrumMusicSourceContext.source_collection_url,
-          sourceEndMs: context.spectrumMusicSourceContext.source_end_ms,
-          sourceStartMs: context.spectrumMusicSourceContext.source_start_ms,
-          sourceUrl: context.spectrumMusicSourceContext.source_url,
-        }
-      : null,
-    error: context.error,
-    titleToneHandoffLayoutId: context.titleToneHandoff?.layoutId ?? null,
-    titleToneHandoffTone: context.titleToneHandoff?.tone ?? null,
-    pendingPlaylistPreview: context.pendingPlaylistPreview
-      ? {
-          name: context.pendingPlaylistPreview.playlist.name,
-          previousName: context.pendingPlaylistPreview.previousName,
-        }
-      : null,
-    playlists: context.playlists.map((playlist) => playlist.name),
-    draft: context.draft
-      ? {
-          mode: context.draft.mode,
-          name: context.draft.name,
-          collectionCount: context.draft.collections.length,
-          groupCount: context.draft.groups.length,
-        }
-      : null,
-  };
-}
-
 export function attachDebugLogger() {
   if (unsubscribeDebug !== null) {
     return;
@@ -114,33 +76,29 @@ export function attachDebugLogger() {
 
   const initialSnapshot = actor.getSnapshot();
   let prevState = formatStateValue(initialSnapshot.value);
-  let prevContextSummary = summarizeContext(initialSnapshot.context);
-  let prevContextKey = JSON.stringify(prevContextSummary);
+  let prevError = initialSnapshot.context.error;
 
-  console.log(`[appLogic] enter ${prevState}`);
-  if (prevContextSummary.error) {
-    console.error(`[appLogic:error] ${prevState}`, prevContextSummary.error);
+  if (prevError) {
+    console.error(`[appLogic:error] ${prevState}`, prevError);
   }
 
   const subscription = actor.subscribe((snapshot) => {
     const nextState = formatStateValue(snapshot.value);
-    const contextSummary = summarizeContext(snapshot.context);
-    const nextContextKey = JSON.stringify(contextSummary);
-    if (nextState === prevState && nextContextKey === prevContextKey) {
+    const nextError = snapshot.context.error;
+    if (nextState === prevState) {
+      if (nextError && nextError !== prevError) {
+        console.error(`[appLogic:error] ${nextState}`, nextError);
+      }
+      prevError = nextError;
       return;
     }
 
-    console.log(`[appLogic] ${prevState} -> ${nextState}`);
-    if (
-      contextSummary.error &&
-      (contextSummary.error !== prevContextSummary.error || nextState === "error")
-    ) {
-      console.error(`[appLogic:error] ${nextState}`, contextSummary.error);
+    if (nextError) {
+      console.error(`[appLogic:error] ${nextState}`, nextError);
     }
 
     prevState = nextState;
-    prevContextSummary = contextSummary;
-    prevContextKey = nextContextKey;
+    prevError = nextError;
   });
 
   unsubscribeDebug = () => subscription.unsubscribe();
@@ -152,6 +110,39 @@ function requestPlaybackStop() {
     .catch((error) => {
       console.error("Failed to stop playlist playback", error);
     });
+}
+
+async function excludeCurrentMusicAndSkipFromPlayback(snapshot: ActorSnapshot) {
+  const result = await excludeCurrentMusicAndSkip();
+  if (result.status === "skipped" || result.status === "deleted_playlist") {
+    send(
+      excludeAdded.load({
+        exclude: result.exclude,
+        excludeAvailability: result.exclude_availability,
+      }),
+    );
+  }
+
+  if (result.status !== "deleted_playlist") {
+    return;
+  }
+
+  send(playlistDeleted.load(result.playlist_name));
+  const current = actor.getSnapshot();
+  if (
+    snapshot.value === "play" &&
+    current.value === "play" &&
+    snapshot.context.playingPlaylistName === result.playlist_name &&
+    current.context.playingPlaylistName === result.playlist_name
+  ) {
+    actor.send(sig.mainx.back);
+  }
+}
+
+function requestExcludeCurrentMusicAndSkip(snapshot: ActorSnapshot) {
+  void excludeCurrentMusicAndSkipFromPlayback(snapshot).catch((error) => {
+    console.error("Failed to exclude current music and skip playback", error);
+  });
 }
 
 async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
@@ -332,6 +323,21 @@ export const action = {
 
     send(playPlaylist.load(playlistName));
   },
+  excludeCurrentMusicAndSkip: () => {
+    ensureStarted();
+    const snapshot = actor.getSnapshot();
+    if (
+      snapshot.value !== "play" ||
+      snapshot.context.playingPlaylistName === null ||
+      snapshot.context.nowPlayingTrackUrl === null ||
+      snapshot.context.nowPlayingTrackStartMs === null ||
+      snapshot.context.nowPlayingTrackEndMs === null
+    ) {
+      return;
+    }
+
+    requestExcludeCurrentMusicAndSkip(snapshot);
+  },
   openSpectrum: () => {
     ensureStarted();
     const snapshot = actor.getSnapshot();
@@ -451,6 +457,25 @@ export const action = {
       }),
     );
   },
+  removeExclude: async (
+    music: ActorSnapshot["context"]["configLibrary"]["excludes"][number]["music"],
+  ) => {
+    ensureStarted();
+    try {
+      send(
+        excludeRemoved.load(
+          await removeExclude({
+            music,
+            excludeAvailability: actor.getSnapshot().context.configLibrary.exclude_availability,
+          }),
+        ),
+      );
+      return true;
+    } catch (error) {
+      console.error("Failed to remove excluded music", error);
+      return false;
+    }
+  },
 };
 
 export const hook = {
@@ -464,6 +489,7 @@ export function ensureStarted() {
   }
 
   actor.start();
+  attachDebugLogger();
   attachNowPlayingTrackListener();
   started = true;
 }

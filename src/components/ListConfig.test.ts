@@ -7,6 +7,7 @@ import {
   type ConfigDraft,
 } from "@/src/flow/appLogic/core";
 import { hasConfigDraftChanges } from "@/src/flow/appLogic/titleShare";
+import type { Music } from "@/src/cmd";
 import type { ConfigCandidateItem } from "@/src/flow/pasteDownload/core";
 import {
   LIST_CONFIG_EMPTY_STATE_TEXT,
@@ -15,6 +16,7 @@ import {
 import {
   createListConfigArcTrackItems,
   createListConfigCandidateToolLabelItems,
+  createListConfigExcludeToolLabelItems,
   createListConfigPlaylistSidebarItems,
   createListConfigPlaylistToolLabelItems,
   createListConfigToolLabelLayoutId,
@@ -23,6 +25,7 @@ import {
   hasListConfigParsingCandidateItems,
   resolveListConfigTitlePlaceholder,
   resolveListConfigEmptyState,
+  resolveListConfigExcludeToolLabelText,
   resolveListConfigInteractionFlags,
   resolveListConfigCollectionUpdatesToolText,
   resolveListConfigToolLabelAffordance,
@@ -125,6 +128,25 @@ const candidateItems: ConfigCandidateItem[] = [
     probe: null,
   },
 ];
+
+const excludedMusic: Music = {
+  name: "Blocked Track",
+  alias: "Blocked Alias",
+  group: {
+    name: "Blocked Collection",
+    url: "https://example.com/blocked-collection",
+    folder: "youtube/blocked-collection",
+  },
+  url: "https://example.com/watch?v=blocked",
+  path: "Blocked Track.m4a",
+  start_ms: 0,
+  end_ms: 180_000,
+};
+
+const emptyExcludeAvailability = {
+  fully_excluded_collection_urls: [],
+  fully_excluded_group_urls: [],
+};
 
 describe("ListConfig title view model", () => {
   test("hides the left row content only while a playlist item is leaving toward the arc track", () => {
@@ -607,6 +629,7 @@ describe("ListConfig title view model", () => {
         ],
         playlistItems: createListConfigPlaylistSidebarItems(draftWithGroup),
         candidateItems: [],
+        excludeAvailability: emptyExcludeAvailability,
       }),
       [
         {
@@ -654,8 +677,53 @@ describe("ListConfig title view model", () => {
             probe: null,
           },
         ],
+        excludeAvailability: emptyExcludeAvailability,
       }),
       [],
+    );
+  });
+
+  test("removes fully excluded collection and group owners from the arc-track", () => {
+    const collectionUrl = "https://example.com/blocked-collection";
+    const groupUrl = `${collectionUrl}#disc-1`;
+
+    assert.deepEqual(
+      createListConfigArcTrackItems({
+        libraryItems: [
+          {
+            kind: "collection",
+            name: "Blocked Collection",
+            url: collectionUrl,
+            folder: "youtube/blocked-collection",
+          },
+          {
+            kind: "group",
+            name: "Disc 1",
+            url: groupUrl,
+            folder: "Disc 1",
+          },
+          {
+            kind: "collection",
+            name: "Playable Collection",
+            url: "https://example.com/playable-collection",
+            folder: "youtube/playable-collection",
+          },
+        ],
+        playlistItems: [],
+        candidateItems: [],
+        excludeAvailability: {
+          fully_excluded_collection_urls: [collectionUrl],
+          fully_excluded_group_urls: [groupUrl],
+        },
+      }),
+      [
+        {
+          kind: "collection",
+          name: "Playable Collection",
+          url: "https://example.com/playable-collection",
+          folder: "youtube/playable-collection",
+        },
+      ],
     );
   });
 
@@ -776,6 +844,26 @@ describe("ListConfig title view model", () => {
         enableUpdates: false,
       }),
       false,
+    );
+  });
+
+  test("derives exclude tool labels from excluded music identity", () => {
+    assert.equal(resolveListConfigExcludeToolLabelText(excludedMusic), "Blocked Alias");
+    assert.deepEqual(
+      createListConfigExcludeToolLabelItems([
+        {
+          music: excludedMusic,
+          created_at: "2026-05-20T00:00:00Z",
+        },
+      ]),
+      [
+        {
+          kind: "exclude",
+          id: "exclude:https://example.com/watch?v=blocked:0:180000",
+          music: excludedMusic,
+          text: "Blocked Alias",
+        },
+      ],
     );
   });
 
@@ -927,6 +1015,8 @@ describe("ListConfig title view model", () => {
           folder: "youtube/late-night-tape",
         },
       ],
+      excludeItems: [],
+      excludeAvailability: emptyExcludeAvailability,
       candidateItems: [],
       previousEmptyState: null,
     });
@@ -971,6 +1061,8 @@ describe("ListConfig title view model", () => {
           folder: "youtube/late-night-tape",
         },
       ],
+      excludeItems: [],
+      excludeAvailability: emptyExcludeAvailability,
       candidateItems: [],
       previousEmptyState: null,
     });
@@ -1016,6 +1108,13 @@ describe("ListConfig title view model", () => {
       titleToneHandoff: null,
       isPresent: true,
       libraryItems: librarySidebarItems,
+      excludeItems: [
+        {
+          music: excludedMusic,
+          created_at: "2026-05-20T00:00:00Z",
+        },
+      ],
+      excludeAvailability: emptyExcludeAvailability,
       candidateItems: [
         ...candidateItems,
         {
@@ -1035,5 +1134,6 @@ describe("ListConfig title view model", () => {
     assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, true);
     assert.equal(viewModel.interactionFlags.isTitleInteractionDisabled, false);
     assert.equal(viewModel.interactionFlags.isToolListInteractionDisabled, false);
+    assert.equal(viewModel.excludeToolLabelItems[0]?.text, "Blocked Alias");
   });
 });

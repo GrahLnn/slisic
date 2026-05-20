@@ -189,6 +189,9 @@ export function PlayListPage({
 
                   appLogicAction.openSpectrum();
                 }}
+                onExcludeCurrentMusic={() => {
+                  appLogicAction.excludeCurrentMusicAndSkip();
+                }}
               />
             ))}
             {viewModel.shouldRenderCreateItem ? (

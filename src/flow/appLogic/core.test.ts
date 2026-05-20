@@ -562,6 +562,11 @@ describe("includeDraftSidebarItem", () => {
         createConfigSidebarItemsFromLibrary({
           collections: [collection],
           groups: [],
+          excludes: [],
+          exclude_availability: {
+            fully_excluded_collection_urls: [],
+            fully_excluded_group_urls: [],
+          },
         }),
         {
           kind: "collection",
@@ -627,6 +632,11 @@ describe("includeDraftSidebarItem", () => {
               folder: "Disc 1",
             },
           ],
+          excludes: [],
+          exclude_availability: {
+            fully_excluded_collection_urls: [],
+            fully_excluded_group_urls: [],
+          },
         }),
         {
           kind: "group",

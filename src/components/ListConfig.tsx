@@ -41,10 +41,12 @@ import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import {
   resolveListConfigToolLabelAffordance,
   resolveListConfigCollectionUpdatesToolText,
+  resolveListConfigExcludeToolLabelTextClassName,
   resolveListConfigToolLabelTextClassName,
   resolveListConfigViewModel,
   shouldShowListConfigAutoDownloadIcon,
   type ListConfigEmptyState,
+  type ListConfigExcludeToolLabelItem,
   type ListConfigToolLabelItem,
 } from "./ListConfig.view-model";
 import { ToolLabel, MaskL, MaskR } from "./toollabel";
@@ -187,6 +189,13 @@ type ListConfigToolLabelRowProps = {
   onDeleteCandidateItem: (id: string) => void;
 };
 
+type ListConfigExcludeToolLabelRowProps = {
+  item: ListConfigExcludeToolLabelItem;
+  dismissHoverSignal: number;
+  interactionDisabled: boolean;
+  onRemoveExcludeItem: (item: ListConfigExcludeToolLabelItem) => Promise<boolean>;
+};
+
 function waitForNextFrame() {
   return new Promise<void>((resolve) => {
     requestAnimationFrame(() => resolve());
@@ -265,6 +274,65 @@ function ListConfigToolLabelRow({
         />
         {shouldShowListConfigAutoDownloadIcon(item) && <icons.autoDownload size={12} />}
       </div>
+    </motion.div>
+  );
+}
+
+function ListConfigExcludeToolLabelRow({
+  item,
+  dismissHoverSignal,
+  interactionDisabled,
+  onRemoveExcludeItem,
+}: ListConfigExcludeToolLabelRowProps) {
+  const [isRemoving, setIsRemoving] = useState(false);
+
+  return (
+    <motion.div
+      className="group overflow-visible"
+      initial={{ height: 0 }}
+      animate={{ height: isRemoving ? 0 : "auto" }}
+      exit={{ height: 0 }}
+      transition={{
+        ...toolLabelRowHeightTransition,
+        delay: isRemoving ? 0.14 : 0,
+      }}
+    >
+      <motion.div
+        className="flex w-fit items-center py-1.5 pr-1.5"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: isRemoving ? 0 : 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.18 }}
+      >
+        <ToolLabel
+          dismissHoverSignal={dismissHoverSignal}
+          hoverMode="group"
+          interactionDisabled={interactionDisabled || isRemoving}
+          text={item.text}
+          textClassName={resolveListConfigExcludeToolLabelTextClassName()}
+          toolLayer="portal"
+          tool={
+            <div className="flex h-fit">
+              <CoverTool
+                text="Restore"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  flushSync(() => {
+                    setIsRemoving(true);
+                  });
+                  void onRemoveExcludeItem(item).then((didRemove) => {
+                    if (!didRemove) {
+                      setIsRemoving(false);
+                    }
+                  });
+                }}
+              />
+              <MaskR />
+            </div>
+          }
+        />
+      </motion.div>
     </motion.div>
   );
 }
@@ -379,6 +447,8 @@ export function ListConfig() {
       titleToneHandoff,
       isPresent,
       libraryItems,
+      excludeItems: configLibrary.excludes,
+      excludeAvailability: configLibrary.exclude_availability,
       candidateItems,
       previousEmptyState: emptyStateRef.current,
     }),
@@ -618,62 +688,86 @@ export function ListConfig() {
         </motion.div>
       </div>
 
-      <div className="relative z-10 overflow-visible">
-        {viewModel.emptyState.match({
-          true: () => (
-            <motion.div
-              {...contentFadeProps}
-              className="pointer-events-none absolute inset-x-0 top-0"
-            >
-              <p
+      <div className="relative z-10 overflow-visible flex flex-col gap-8">
+        <div className="relative overflow-visible">
+          {viewModel.emptyState.match({
+            true: () => (
+              <motion.div {...contentFadeProps} className="pointer-events-none">
+                <p
+                  className={cn(
+                    "max-w-xl cursor-default select-none whitespace-pre-line text-pretty text-sm leading-6",
+                    "text-[#525252] dark:text-[#a3a3a3]",
+                  )}
+                >
+                  {LIST_CONFIG_EMPTY_STATE_TEXT}
+                </p>
+              </motion.div>
+            ),
+            false: () => (
+              <motion.div
+                {...contentFadeProps}
                 className={cn(
-                  "max-w-xl cursor-default select-none whitespace-pre-line text-pretty text-sm leading-6",
-                  "text-[#525252] dark:text-[#a3a3a3]",
+                  "flex flex-col",
+                  viewModel.interactionFlags.isToolListInteractionDisabled && "pointer-events-none",
                 )}
               >
-                {LIST_CONFIG_EMPTY_STATE_TEXT}
-              </p>
-            </motion.div>
-          ),
-          false: () => (
-            <motion.div
-              {...contentFadeProps}
-              className={cn(
-                "flex flex-col",
-                viewModel.interactionFlags.isToolListInteractionDisabled && "pointer-events-none",
-              )}
-            >
-              <AnimatePresence initial={false}>
-                {viewModel.toolLabelItems.map((item) => (
-                  <ListConfigToolLabelRow
-                    key={item.id}
-                    item={item}
-                    activeGhostLayoutId={activeGhostLayoutId}
-                    activeGhostTargetOwnerId={activeGhostTargetOwnerId}
-                    dismissHoverSignal={dismissHoverSignal}
-                    interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
-                    registerGhostNode={registerGhostNode}
-                    onRemoveDraftItem={({ layoutId, ref, sourceNode }) => {
-                      popInsertionPlannerRef.current?.({
-                        layoutId,
-                        sourceNode,
-                      });
-                      startGhostTransition({
-                        layoutId,
-                        sourceNode,
-                        targetOwnerId: LIST_CONFIG_GHOST_NODE_OWNER.arcTrack,
-                      });
-                      appLogicAction.removeDraftItem(ref);
-                    }}
-                    onDeleteCandidateItem={(id) => {
-                      pasteDownloadAction.delete(id);
-                    }}
-                  />
-                ))}
-              </AnimatePresence>
-            </motion.div>
-          ),
-        })}
+                <AnimatePresence initial={false}>
+                  {viewModel.toolLabelItems.map((item) => (
+                    <ListConfigToolLabelRow
+                      key={item.id}
+                      item={item}
+                      activeGhostLayoutId={activeGhostLayoutId}
+                      activeGhostTargetOwnerId={activeGhostTargetOwnerId}
+                      dismissHoverSignal={dismissHoverSignal}
+                      interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
+                      registerGhostNode={registerGhostNode}
+                      onRemoveDraftItem={({ layoutId, ref, sourceNode }) => {
+                        popInsertionPlannerRef.current?.({
+                          layoutId,
+                          sourceNode,
+                        });
+                        startGhostTransition({
+                          layoutId,
+                          sourceNode,
+                          targetOwnerId: LIST_CONFIG_GHOST_NODE_OWNER.arcTrack,
+                        });
+                        appLogicAction.removeDraftItem(ref);
+                      }}
+                      onDeleteCandidateItem={(id) => {
+                        pasteDownloadAction.delete(id);
+                      }}
+                    />
+                  ))}
+                </AnimatePresence>
+              </motion.div>
+            ),
+          })}
+        </div>
+        <motion.div
+          {...contentFadeProps}
+          animate={isPresent ? contentFadeProps.animate : contentFadeProps.exit}
+          className="flex flex-col overflow-visible"
+        >
+          <div className="text-sm text-[#525252] dark:text-[#d4d4d4]">Exclude</div>
+          <div
+            className={cn(
+              "flex flex-col overflow-visible",
+              viewModel.interactionFlags.isToolListInteractionDisabled && "pointer-events-none",
+            )}
+          >
+            <AnimatePresence initial={false}>
+              {viewModel.excludeToolLabelItems.map((item) => (
+                <ListConfigExcludeToolLabelRow
+                  key={item.id}
+                  item={item}
+                  dismissHoverSignal={dismissHoverSignal}
+                  interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
+                  onRemoveExcludeItem={({ music }) => appLogicAction.removeExclude(music)}
+                />
+              ))}
+            </AnimatePresence>
+          </div>
+        </motion.div>
       </div>
       {viewModel.interactionFlags.shouldRenderArcTrack && (
         <ArcTrackList

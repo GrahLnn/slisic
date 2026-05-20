@@ -1,6 +1,6 @@
 use super::model::{
-    Collection, ConfigLibraryView, Exclude, Music, PlayList, PlayListConfigView, PlayListListView,
-    SpectrumMusicContext,
+    AddExcludeResult, Collection, ConfigLibraryView, Music, PlayList, PlayListConfigView,
+    PlayListListView, RemoveExcludeResult, SpectrumMusicContext,
 };
 use crate::domain::player::service::{
     PlaybackTrackIdentityUpdate, update_current_session_track_identity,
@@ -183,7 +183,7 @@ pub async fn load_spectrum_music_context(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn add_exclude(music: Music) -> Result<Exclude, String> {
+pub async fn add_exclude(music: Music) -> Result<AddExcludeResult, String> {
     super::repo::add_exclude(music)
         .await
         .map_err(|error| error.to_string())
@@ -191,7 +191,7 @@ pub async fn add_exclude(music: Music) -> Result<Exclude, String> {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn remove_exclude(music: Music) -> Result<bool, String> {
+pub async fn remove_exclude(music: Music) -> Result<RemoveExcludeResult, String> {
     super::repo::remove_exclude(&music)
         .await
         .map_err(|error| error.to_string())

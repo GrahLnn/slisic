@@ -1,5 +1,6 @@
 import { me, type ME } from "@grahlnn/fn";
 import { cn } from "@/lib/utils";
+import type { Exclude, ExcludeAvailability, Music } from "@/src/cmd";
 import {
   createConfigSidebarItemRef,
   type CollectionTitleHandoff,
@@ -66,6 +67,13 @@ export interface ListConfigCandidateToolLabelItem {
   candidateId: string;
   text: string;
   status: ConfigCandidateItemStatus;
+}
+
+export interface ListConfigExcludeToolLabelItem {
+  kind: "exclude";
+  id: string;
+  music: Music;
+  text: string;
 }
 
 export type ListConfigToolLabelItem =
@@ -248,6 +256,27 @@ export function createListConfigCandidateToolLabelItems(
   }));
 }
 
+export function createListConfigExcludeToolLabelItems(
+  excludes: readonly Exclude[],
+): ListConfigExcludeToolLabelItem[] {
+  return excludes.map((exclude) => ({
+    kind: "exclude",
+    id: createListConfigExcludeToolLabelLayoutId(exclude.music),
+    music: exclude.music,
+    text: resolveListConfigExcludeToolLabelText(exclude.music),
+  }));
+}
+
+export function createListConfigExcludeToolLabelLayoutId(music: Music) {
+  return `exclude:${music.url}:${music.start_ms}:${music.end_ms}`;
+}
+
+export function resolveListConfigExcludeToolLabelText(music: Music) {
+  const alias = music.alias.trim();
+  const name = music.name.trim();
+  return alias || name || music.url;
+}
+
 export function resolveListConfigToolLabelItems(args: {
   playlistItems: readonly ListConfigPlaylistSidebarItem[];
   candidateItems: readonly ConfigCandidateItem[];
@@ -265,8 +294,13 @@ export function createListConfigArcTrackItems(args: {
   libraryItems: readonly ConfigSidebarItem[];
   playlistItems: readonly ConfigSidebarItem[];
   candidateItems: readonly ConfigCandidateItem[];
+  excludeAvailability: ExcludeAvailability;
 }) {
   const foregroundUrls = new Set(args.playlistItems.map((item) => item.url));
+  const fullyExcludedCollectionUrls = new Set(
+    args.excludeAvailability.fully_excluded_collection_urls,
+  );
+  const fullyExcludedGroupUrls = new Set(args.excludeAvailability.fully_excluded_group_urls);
 
   for (const item of args.candidateItems) {
     if (!item.sourceUrl) {
@@ -284,7 +318,17 @@ export function createListConfigArcTrackItems(args: {
     foregroundUrls.add(item.sourceUrl);
   }
 
-  return args.libraryItems.filter((item) => !foregroundUrls.has(item.url));
+  return args.libraryItems.filter((item) => {
+    if (foregroundUrls.has(item.url)) {
+      return false;
+    }
+
+    if (item.kind === "collection") {
+      return !fullyExcludedCollectionUrls.has(item.url);
+    }
+
+    return !fullyExcludedGroupUrls.has(item.url);
+  });
 }
 
 export function resolveListConfigToolLabelTextClassName(item: ListConfigToolLabelItem): string {
@@ -297,6 +341,10 @@ export function resolveListConfigToolLabelTextClassName(item: ListConfigToolLabe
           "line-through opacity-70",
       ),
   });
+}
+
+export function resolveListConfigExcludeToolLabelTextClassName(): string {
+  return "text-[12px] text-[#404040] dark:text-[#a3a3a3]";
 }
 
 export function resolveListConfigToolLabelAffordance(
@@ -404,6 +452,8 @@ export function resolveListConfigViewModel(args: {
   titleToneHandoff: CollectionTitleHandoff | null;
   isPresent: boolean;
   libraryItems: readonly ConfigSidebarItem[];
+  excludeItems: readonly Exclude[];
+  excludeAvailability: ExcludeAvailability;
   candidateItems: readonly ConfigCandidateItem[];
   previousEmptyState: ListConfigEmptyState | null;
 }) {
@@ -429,6 +479,7 @@ export function resolveListConfigViewModel(args: {
         libraryItems: args.libraryItems,
         playlistItems,
         candidateItems: args.candidateItems,
+        excludeAvailability: args.excludeAvailability,
       });
   const isBackActionParsing = hasListConfigParsingCandidateItems(args.candidateItems);
   const interactionFlags = resolveListConfigInteractionFlags({
@@ -446,6 +497,7 @@ export function resolveListConfigViewModel(args: {
       playlistItems,
       candidateItems: args.candidateItems,
     }),
+    excludeToolLabelItems: createListConfigExcludeToolLabelItems(args.excludeItems),
     arcTrackItems,
     emptyState,
     interactionFlags,

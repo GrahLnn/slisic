@@ -95,6 +95,11 @@ function createConfigLibrary(collections: readonly Collection[]): ConfigLibraryV
       enable_updates: collection.enable_updates,
     })),
     groups: [...groups.values()],
+    excludes: [],
+    exclude_availability: {
+      fully_excluded_collection_urls: [],
+      fully_excluded_group_urls: [],
+    },
   };
 }
 

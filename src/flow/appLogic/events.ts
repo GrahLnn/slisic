@@ -15,6 +15,7 @@ import {
   crab,
   type Collection,
   type ConfigLibraryView,
+  type ExcludeCurrentMusicAndSkipResult,
   type Music,
   type NowPlayingTrackChangedEvent,
   type PlaybackContinuationMode,
@@ -33,6 +34,8 @@ import {
   type CollectionUpdatesChange,
   type ConfigSidebarItemRef,
   type ConfigDraft,
+  type ExcludeAddedChange,
+  type ExcludeRemovedChange,
   type PlaylistPreview,
   type PlaylistUpsertResult,
   type SpectrumMusicDraft,
@@ -204,6 +207,31 @@ export async function setPlaybackContinuationMode(
   });
 }
 
+export async function excludeCurrentMusicAndSkip(): Promise<ExcludeCurrentMusicAndSkipResult> {
+  const result = await crab.excludeCurrentMusicAndSkip();
+
+  return result.match({
+    Ok: (excludeResult) => excludeResult,
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+}
+
+export async function removeExclude(change: ExcludeRemovedChange): Promise<ExcludeRemovedChange> {
+  const result = await crab.removeExclude(change.music);
+
+  return result.match({
+    Ok: (removeResult) => ({
+      music: change.music,
+      excludeAvailability: removeResult.exclude_availability,
+    }),
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+}
+
 export async function enterSpectrumPlaybackScope(): Promise<number> {
   const result = await crab.enterSpectrumPlaybackScope();
 
@@ -275,6 +303,11 @@ export const invoker = createActors({
         configLibrary: {
           collections: [],
           groups: [],
+          excludes: [],
+          exclude_availability: {
+            fully_excluded_collection_urls: [],
+            fully_excluded_group_urls: [],
+          },
         },
         savePath,
       };
@@ -336,6 +369,7 @@ export const invoker = createActors({
       },
     });
   },
+  removeExclude,
   playPlaylist: async (input: PlayPlaylistInput): Promise<PlayPlaylistSession | null> => {
     if (!input.shouldStartPlayback) {
       return null;
@@ -473,6 +507,8 @@ export const payloads = collect(
   ...event<ConfigSidebarItemRef>()("draft.item.included"),
   ...event<ConfigSidebarItemRef>()("draft.item.removed"),
   ...event<CollectionUpdatesChange>()("collection.updates.requested"),
+  ...event<ExcludeAddedChange>()("exclude.added"),
+  ...event<ExcludeRemovedChange>()("exclude.removed"),
   ...event<NowPlayingTrackChangedEvent>()("player.now_playing_track.changed"),
 );
 

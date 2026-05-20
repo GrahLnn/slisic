@@ -28,9 +28,11 @@ const originalListConfigLibrary = crab.listConfigLibrary;
 const originalUpsertPlaylist = crab.upsertPlaylist;
 const originalGetMetaInfo = crab.getMetaInfo;
 const originalSetCollectionUpdates = crab.setCollectionUpdates;
+const originalRemoveExclude = crab.removeExclude;
 const originalUpdateMusic = crab.updateMusic;
 const originalLoadSpectrumMusicContext = crab.loadSpectrumMusicContext;
 const originalPlayPlaylist = crab.playPlaylist;
+const originalExcludeCurrentMusicAndSkip = crab.excludeCurrentMusicAndSkip;
 const originalGetPlaybackStatus = crab.getPlaybackStatus;
 const originalResumePlayback = crab.resumePlayback;
 const originalEnterSpectrumPlaybackScope = crab.enterSpectrumPlaybackScope;
@@ -126,6 +128,8 @@ const samplePlaylist: PlayList = {
   created_at: "2026-04-13T00:00:00Z",
 };
 
+const sampleExcludedMusic = sampleCollection.musics[1]!;
+
 const syncedCollection: Collection = {
   name: "Fresh Import",
   url: "https://example.com/fresh-import",
@@ -148,6 +152,11 @@ function createExpectedAppLogicContext(overrides: Record<string, unknown> = {}) 
     configLibrary: {
       collections: [],
       groups: [],
+      excludes: [],
+      exclude_availability: {
+        fully_excluded_collection_urls: [],
+        fully_excluded_group_urls: [],
+      },
     },
     collections: [],
     savePath: "",
@@ -208,6 +217,25 @@ function createConfigLibrary(collections: readonly Collection[]): ConfigLibraryV
       enable_updates: collection.enable_updates,
     })),
     groups: [...groups.values()],
+    excludes: [],
+    exclude_availability: {
+      fully_excluded_collection_urls: [],
+      fully_excluded_group_urls: [],
+    },
+  };
+}
+
+function createExclude(music: Music) {
+  return {
+    music,
+    created_at: "2026-05-20T00:00:00Z",
+  };
+}
+
+function createEmptyExcludeAvailability() {
+  return {
+    fully_excluded_collection_urls: [],
+    fully_excluded_group_urls: [],
   };
 }
 
@@ -267,6 +295,10 @@ function setSetCollectionUpdatesMock(mock: typeof crab.setCollectionUpdates) {
   (crab as { setCollectionUpdates: typeof crab.setCollectionUpdates }).setCollectionUpdates = mock;
 }
 
+function setRemoveExcludeMock(mock: typeof crab.removeExclude) {
+  (crab as { removeExclude: typeof crab.removeExclude }).removeExclude = mock;
+}
+
 function setUpdateMusicMock(mock: typeof crab.updateMusic) {
   (crab as { updateMusic: typeof crab.updateMusic }).updateMusic = mock;
 }
@@ -279,6 +311,12 @@ function setLoadSpectrumMusicContextMock(mock: typeof crab.loadSpectrumMusicCont
 
 function setPlayPlaylistMock(mock: typeof crab.playPlaylist) {
   (crab as { playPlaylist: typeof crab.playPlaylist }).playPlaylist = mock;
+}
+
+function setExcludeCurrentMusicAndSkipMock(mock: typeof crab.excludeCurrentMusicAndSkip) {
+  (
+    crab as { excludeCurrentMusicAndSkip: typeof crab.excludeCurrentMusicAndSkip }
+  ).excludeCurrentMusicAndSkip = mock;
 }
 
 function setGetPlaybackStatusMock(mock: typeof crab.getPlaybackStatus) {
@@ -391,9 +429,11 @@ afterEach(() => {
   setUpsertPlaylistMock(originalUpsertPlaylist);
   setGetMetaInfoMock(originalGetMetaInfo);
   setSetCollectionUpdatesMock(originalSetCollectionUpdates);
+  setRemoveExcludeMock(originalRemoveExclude);
   setUpdateMusicMock(originalUpdateMusic);
   setLoadSpectrumMusicContextMock(originalLoadSpectrumMusicContext);
   setPlayPlaylistMock(originalPlayPlaylist);
+  setExcludeCurrentMusicAndSkipMock(originalExcludeCurrentMusicAndSkip);
   setGetPlaybackStatusMock(originalGetPlaybackStatus);
   setResumePlaybackMock(originalResumePlayback);
   setEnterSpectrumPlaybackScopeMock(originalEnterSpectrumPlaybackScope);
@@ -1050,6 +1090,47 @@ describe("appLogic machine", () => {
       groups: samplePlaylist.groups,
       createdAt: samplePlaylist.created_at,
     });
+  });
+
+  test("removes exclude entries from config library after the domain command succeeds", async () => {
+    let removeCalls = 0;
+    const initialLibrary: ConfigLibraryView = {
+      ...createConfigLibrary([sampleCollection]),
+      excludes: [
+        {
+          music: sampleExcludedMusic,
+          created_at: "2026-05-20T00:00:00Z",
+        },
+      ],
+    };
+
+    setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([createPlaylistSurface(samplePlaylist)]));
+    setListConfigLibraryMock(async () => Ok(initialLibrary));
+    setRemoveExcludeMock(async (music) => {
+      removeCalls += 1;
+      expect(music).toEqual(sampleExcludedMusic);
+      return Ok({
+        removed: true,
+        exclude_availability: createEmptyExcludeAvailability(),
+      });
+    });
+
+    const mod = await import(`../src/flow/appLogic/index.ts?case=remove-exclude-${Date.now()}`);
+
+    try {
+      mod.ensureAppLogicStarted();
+      await waitForState(mod.actor, ss.mainx.State.ready);
+      expect(mod.actor.getSnapshot().context.configLibrary.excludes).toHaveLength(1);
+
+      const didRemove = await mod.action.removeExclude(sampleExcludedMusic);
+
+      expect(didRemove).toBe(true);
+      expect(removeCalls).toBe(1);
+      expect(mod.actor.getSnapshot().context.configLibrary.excludes).toEqual([]);
+    } finally {
+      mod.stop();
+    }
   });
 
   test("pushes a sidebar item into the draft through appLogic instead of local ui state", async () => {
@@ -1785,6 +1866,131 @@ describe("ensureAppLogicStarted", () => {
 });
 
 describe("appLogic action playback scope effects", () => {
+  test("excludes current music and skips only when a concrete track is active", async () => {
+    let excludeSkipCalls = 0;
+    setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([createPlaylistSurface(samplePlaylist)]));
+    setPlayPlaylistMock(async () =>
+      Ok({
+        status: "started",
+        playlist_name: samplePlaylist.name,
+        track_count: 1,
+      }),
+    );
+    setExcludeCurrentMusicAndSkipMock(async () => {
+      excludeSkipCalls += 1;
+      return Ok({
+        status: "skipped",
+        exclude: createExclude(sampleExcludedMusic),
+        exclude_availability: createEmptyExcludeAvailability(),
+      });
+    });
+
+    const mod = await import(`../src/flow/appLogic/index.ts?case=exclude-skip-${Date.now()}`);
+
+    try {
+      mod.ensureAppLogicStarted();
+      await waitForState(mod.actor, ss.mainx.State.ready);
+
+      mod.action.excludeCurrentMusicAndSkip();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(excludeSkipCalls).toBe(0);
+
+      mod.action.playPlaylist(samplePlaylist.name);
+      await waitForState(mod.actor, ss.mainx.State.play);
+
+      mod.actor.send(
+        payloads["player.now_playing_track.changed"].load({
+          playlist_name: samplePlaylist.name,
+          music_name: "Disc 1 Opening",
+          music_url: "https://example.com/quiet-morning#disc-1-opening",
+          file_path:
+            "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+          start_ms: 0,
+          end_ms: 120_000,
+        }),
+      );
+
+      mod.action.excludeCurrentMusicAndSkip();
+      await waitForPredicate(
+        () => excludeSkipCalls === 1,
+        "expected current track exclude skip request",
+      );
+      await waitForPredicate(
+        () => mod.actor.getSnapshot().context.configLibrary.excludes.length === 1,
+        "expected excluded music in config library",
+      );
+      expect(mod.actor.getSnapshot().context.configLibrary.excludes).toEqual([
+        createExclude(sampleExcludedMusic),
+      ]);
+    } finally {
+      mod.stop();
+    }
+  });
+
+  test("removes the current playlist from play when excluding the final playable music", async () => {
+    let excludeSkipCalls = 0;
+    setCheckListMock(async () => Ok(true));
+    setListPlaylistsMock(async () => Ok([createPlaylistSurface(samplePlaylist)]));
+    setPlayPlaylistMock(async () =>
+      Ok({
+        status: "started",
+        playlist_name: samplePlaylist.name,
+        track_count: 1,
+      }),
+    );
+    setExcludeCurrentMusicAndSkipMock(async () => {
+      excludeSkipCalls += 1;
+      return Ok({
+        status: "deleted_playlist",
+        playlist_name: samplePlaylist.name,
+        exclude: createExclude(sampleExcludedMusic),
+        exclude_availability: createEmptyExcludeAvailability(),
+      });
+    });
+
+    const mod = await import(
+      `../src/flow/appLogic/index.ts?case=exclude-final-track-${Date.now()}`
+    );
+
+    try {
+      mod.ensureAppLogicStarted();
+      await waitForState(mod.actor, ss.mainx.State.ready);
+
+      mod.action.playPlaylist(samplePlaylist.name);
+      await waitForState(mod.actor, ss.mainx.State.play);
+      mod.actor.send(
+        payloads["player.now_playing_track.changed"].load({
+          playlist_name: samplePlaylist.name,
+          music_name: "Disc 1 Opening",
+          music_url: "https://example.com/quiet-morning#disc-1-opening",
+          file_path:
+            "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+          start_ms: 0,
+          end_ms: 120_000,
+        }),
+      );
+
+      mod.action.excludeCurrentMusicAndSkip();
+      await waitForState(mod.actor, ss.mainx.State.ready);
+
+      expect(excludeSkipCalls).toBe(1);
+      expect(mod.actor.getSnapshot().context).toEqual(
+        createExpectedAppLogicContext({
+          hasPlayList: false,
+          playlists: [],
+          configLibrary: {
+            ...createConfigLibrary([sampleCollection]),
+            excludes: [createExclude(sampleExcludedMusic)],
+          },
+          savePath: sampleSavePath,
+        }),
+      );
+    } finally {
+      mod.stop();
+    }
+  });
+
   test("keeps the newer spectrum scope after a delayed previous scope exit", async () => {
     setCheckListMock(async () => Ok(true));
     setListPlaylistsMock(async () => Ok([createPlaylistSurface(samplePlaylist)]));

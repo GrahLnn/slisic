@@ -1,4 +1,6 @@
-use super::model::{PlayPlaylistSession, PlayPlaylistSessionStatus};
+use super::model::{
+    ExcludeCurrentMusicAndSkipResult, PlayPlaylistSession, PlayPlaylistSessionStatus,
+};
 use tauri::AppHandle;
 
 #[tauri::command]
@@ -17,4 +19,14 @@ pub async fn play_playlist(app: AppHandle, name: String) -> Result<PlayPlaylistS
         }
         Err(error) => Err(error.to_string()),
     }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn exclude_current_music_and_skip(
+    app: AppHandle,
+) -> Result<ExcludeCurrentMusicAndSkipResult, String> {
+    super::service::exclude_current_music_and_skip(&app)
+        .await
+        .map_err(|error| error.to_string())
 }

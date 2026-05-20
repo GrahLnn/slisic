@@ -30,6 +30,7 @@ type PlayItemBaseProps = Omit<HTMLMotionProps<"div">, "children"> & {
   showPlaybackIcons?: boolean;
   playbackIconWidthText?: string;
   isPlaybackPreparing?: boolean;
+  onExcludeCurrentMusic?: () => void;
   onOpenSpectrum?: () => void;
   onOpenSpectrumPointerDown?: () => void;
   onTitleLayoutAnimationComplete?: (layoutId?: string) => void;
@@ -49,6 +50,7 @@ type PlayItemTextProps = Pick<
   | "isPlaybackPreparing"
   | "layoutId"
   | "onClick"
+  | "onExcludeCurrentMusic"
   | "onOpenSpectrum"
   | "onOpenSpectrumPointerDown"
   | "onPointerDown"
@@ -352,6 +354,7 @@ function PlayItemText({
   handoffTone = null,
   isPlaybackPreparing = false,
   onClick,
+  onExcludeCurrentMusic,
   onOpenSpectrum,
   onOpenSpectrumPointerDown,
   onPointerDown,
@@ -398,6 +401,11 @@ function PlayItemText({
   const handleOpenSpectrumPointerDown = () => {
     dismissPlaybackIconLayer();
     onOpenSpectrumPointerDown?.();
+  };
+
+  const handleExcludeCurrentMusic = () => {
+    dismissPlaybackIconLayer();
+    onExcludeCurrentMusic?.();
   };
 
   useLayoutEffect(() => {
@@ -520,7 +528,11 @@ function PlayItemText({
                       onClick={handleOpenSpectrum}
                       onPointerDown={handleOpenSpectrumPointerDown}
                     />
-                    <PlayItemFn icon={<icons.brush2 size={14} />} label="Open style controls" />
+                    <PlayItemFn
+                      icon={<icons.brush2 size={14} />}
+                      label="Exclude current music"
+                      onClick={handleExcludeCurrentMusic}
+                    />
                   </div>
                 </div>
               </motion.div>
@@ -536,6 +548,7 @@ export function PlayItem({
   className,
   onClick,
   onContextMenu,
+  onExcludeCurrentMusic,
   onOpenSpectrum,
   onOpenSpectrumPointerDown,
   onPointerDown,
@@ -564,6 +577,7 @@ export function PlayItem({
         handoffTone={handoffTone}
         isPlaybackPreparing={isPlaybackPreparing}
         onClick={onClick}
+        onExcludeCurrentMusic={onExcludeCurrentMusic}
         onOpenSpectrum={onOpenSpectrum}
         onOpenSpectrumPointerDown={onOpenSpectrumPointerDown}
         onPointerDown={onPointerDown}

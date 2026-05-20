@@ -1,6 +1,7 @@
 use super::model::{
-    Collection, CollectionSurfaceView, ConfigLibraryView, Exclude, Group, GroupSurfaceView, Music,
-    MusicSpectrumView, PlayList, PlayListConfigView, PlayListListView, SpectrumMusicContext,
+    AddExcludeResult, Collection, CollectionSurfaceView, ConfigLibraryView, Exclude,
+    ExcludeAvailability, Group, GroupSurfaceView, Music, MusicSpectrumView, PlayList,
+    PlayListConfigView, PlayListListView, RemoveExcludeResult, SpectrumMusicContext,
     SpectrumMusicSourceContext,
 };
 use anyhow::{Result, bail};
@@ -9,7 +10,6 @@ use appdb::error::{DBError, classify_db_error};
 use appdb::graph;
 use appdb::model::meta::ModelMeta;
 use appdb::repository::Repo;
-use appdb::repository::ViewRecord;
 use appdb::{AutoFill, Crud, Id, Order, Store};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use surrealdb::types::{RecordId, Table};
-use surrealdb_types::SurrealValue;
+use surrealdb_types::{SurrealValue, ToSql};
 
 pub async fn list_collections() -> Result<Vec<Collection>> {
     ensure_collection_graph_schema().await?;
@@ -75,29 +75,66 @@ pub async fn list_config_library() -> Result<ConfigLibraryView> {
             other => return Err(other.into()),
         },
     };
+    let excludes = match Exclude::list().order_by("created_at", Order::Desc).await {
+        Ok(excludes) => excludes,
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) => vec![],
+            other => return Err(other.into()),
+        },
+    };
 
     Ok(ConfigLibraryView {
         collections,
         groups,
+        excludes,
+        exclude_availability: load_exclude_availability().await?,
     })
 }
 
-pub async fn add_exclude(music: Music) -> Result<Exclude> {
+pub async fn add_exclude(music: Music) -> Result<AddExcludeResult> {
     let record = exclude_record_id(&music);
     let saved = Repo::<StoredExclude>::upsert_at(
         RecordId::new(StoredExclude::table_name(), record.to_string()),
         StoredExclude {
             id: record,
-            music,
+            music: music.clone(),
             created_at: AutoFill::pending(),
         },
     )
     .await?;
 
-    Ok(saved.into_public())
+    refresh_exclude_availability_for_music_identity(&music).await?;
+
+    Ok(AddExcludeResult {
+        exclude: saved.into_public(),
+        exclude_availability: load_exclude_availability().await?,
+    })
 }
 
-pub async fn remove_exclude(music: &Music) -> Result<bool> {
+pub async fn get_music_by_identity(url: &str, start_ms: u32, end_ms: u32) -> Result<Option<Music>> {
+    ensure_collection_graph_schema().await?;
+
+    let Some(record) = find_music_record_ids_by_identity(url, start_ms, end_ms)
+        .await?
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(Music::get_record(record).await?))
+}
+
+pub async fn is_music_identity_excluded_for_playback(
+    url: &str,
+    start_ms: u32,
+    end_ms: u32,
+) -> Result<bool> {
+    ensure_collection_graph_schema().await?;
+    is_music_identity_excluded(url, start_ms, end_ms).await
+}
+
+pub async fn remove_exclude(music: &Music) -> Result<RemoveExcludeResult> {
     let record = RecordId::new(
         StoredExclude::table_name(),
         exclude_record_id(music).to_string(),
@@ -106,16 +143,28 @@ pub async fn remove_exclude(music: &Music) -> Result<bool> {
     let exists = match Repo::<StoredExclude>::exists_record(record.clone()).await {
         Ok(exists) => exists,
         Err(error) => match classify_db_error(&error) {
-            DBError::MissingTable(_) => return Ok(false),
+            DBError::MissingTable(_) => {
+                return Ok(RemoveExcludeResult {
+                    removed: false,
+                    exclude_availability: load_exclude_availability().await?,
+                });
+            }
             other => return Err(other.into()),
         },
     };
     if !exists {
-        return Ok(false);
+        return Ok(RemoveExcludeResult {
+            removed: false,
+            exclude_availability: load_exclude_availability().await?,
+        });
     }
 
     Repo::<StoredExclude>::delete_record(record).await?;
-    Ok(true)
+    refresh_exclude_availability_for_music_identity(music).await?;
+    Ok(RemoveExcludeResult {
+        removed: true,
+        exclude_availability: load_exclude_availability().await?,
+    })
 }
 
 pub async fn has_collections() -> Result<bool> {
@@ -458,10 +507,13 @@ pub async fn update_music(
 
     for record in records {
         let mut music = Music::get_record(record.clone()).await?;
+        let previous_music = music.clone();
         music.alias = alias.to_string();
         music.start_ms = next_start_ms;
         music.end_ms = next_end_ms;
-        let updated = Repo::<Music>::update_at(record, music).await?;
+        let updated = Repo::<Music>::update_at(record.clone(), music).await?;
+        refresh_exclude_availability_for_music_record(&record).await?;
+        refresh_exclude_availability_for_music_identity(&previous_music).await?;
 
         if first_updated.is_none() {
             first_updated = Some(updated);
@@ -512,6 +564,9 @@ pub async fn delete_music(url: &str, start_ms: u32, end_ms: u32) -> Result<bool>
     }
 
     for record in records {
+        let music = Music::get_record(record.clone()).await?;
+        let parent_collections = load_music_parent_collection_ids(&record).await?;
+        let parent_groups = load_music_group_ids(&record).await?;
         delete_music_parent_edges(&record).await?;
 
         match Music::delete_record(record).await {
@@ -521,6 +576,8 @@ pub async fn delete_music(url: &str, start_ms: u32, end_ms: u32) -> Result<bool>
                 other => return Err(other.into()),
             },
         }
+        refresh_exclude_availability_for_owner_records(&parent_collections, &parent_groups).await?;
+        refresh_exclude_availability_for_music_identity(&music).await?;
     }
 
     Ok(true)
@@ -585,14 +642,13 @@ pub async fn load_spectrum_music_context(
             continue;
         }
 
-        let music_records =
-            match MusicSpectrumView::outgoing_records(collection.id().clone(), "includes").await {
-                Ok(musics) => musics,
-                Err(error) => match classify_db_error(&error) {
-                    DBError::MissingTable(_) => vec![],
-                    other => return Err(other.into()),
-                },
-            };
+        let music_records = match load_collection_music_spectrum_records(collection.id()).await {
+            Ok(musics) => musics,
+            Err(error) => match classify_db_error(&error) {
+                DBError::MissingTable(_) => vec![],
+                other => return Err(other.into()),
+            },
+        };
 
         for music_record in music_records {
             let music_view = music_record.value();
@@ -637,7 +693,27 @@ pub async fn load_spectrum_music_context(
 #[derive(Debug, Clone)]
 struct PendingSpectrumMusicContextRecord {
     collection_url: String,
-    music: ViewRecord<MusicSpectrumView>,
+    music: OrderedMusicSpectrumRecord,
+}
+
+#[derive(Debug, Clone)]
+struct OrderedMusicSpectrumRecord {
+    id: RecordId,
+    value: MusicSpectrumView,
+}
+
+impl OrderedMusicSpectrumRecord {
+    fn id(&self) -> &RecordId {
+        &self.id
+    }
+
+    fn value(&self) -> &MusicSpectrumView {
+        &self.value
+    }
+
+    fn into_value(self) -> MusicSpectrumView {
+        self.value
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -715,6 +791,22 @@ async fn load_spectrum_music_records_with_groups(
         .collect())
 }
 
+async fn load_collection_music_spectrum_records(
+    collection_record: &RecordId,
+) -> Result<Vec<OrderedMusicSpectrumRecord>> {
+    let music_ids = load_collection_music_ids(collection_record).await?;
+    let mut records = Vec::with_capacity(music_ids.len());
+
+    for music_id in music_ids {
+        records.push(OrderedMusicSpectrumRecord {
+            id: music_id.clone(),
+            value: MusicSpectrumView::get_record(music_id).await?,
+        });
+    }
+
+    Ok(records)
+}
+
 fn resolve_spectrum_source_end_ms(
     musics: &[SpectrumMusicContextRecord],
     source_url: &str,
@@ -744,12 +836,19 @@ pub async fn upsert_collection(collection: &Collection) -> Result<Collection> {
         .clone()
         .unwrap_or_else(|| collection_record_id(&collection.url));
     let previous_music_ids = load_collection_music_ids(&record).await?;
+    let previous_group_ids = load_group_ids_for_music_records(&previous_music_ids).await?;
+    let previous_group_urls = load_group_urls_for_records(&previous_group_ids).await?;
     let saved = match existing_record {
         Some(record) => Repo::<Collection>::update_at(record, collection.clone()).await?,
         None => Repo::<Collection>::create_at(record.clone(), collection.clone()).await?,
     };
     let next_music_ids = load_collection_music_ids(&record).await?;
+    let next_group_ids = load_group_ids_for_music_records(&next_music_ids).await?;
     delete_orphaned_music_records(previous_music_ids, &next_music_ids).await?;
+    refresh_exclude_availability_for_collection_record(&record).await?;
+    refresh_exclude_availability_for_owner_records(&[], &previous_group_ids).await?;
+    refresh_exclude_availability_for_owner_records(&[], &next_group_ids).await?;
+    delete_exclude_availability_for_missing_group_urls(previous_group_urls).await?;
     Ok(saved)
 }
 
@@ -877,6 +976,19 @@ async fn load_playlist_playback_collection_ref(
 async fn load_playlist_playback_group_ref(
     record: &RecordId,
 ) -> Result<Option<PlaylistPlaybackGroupRef>> {
+    let Some(row) = load_group_shell_row(record).await? else {
+        return Ok(None);
+    };
+
+    Ok(Some(PlaylistPlaybackGroupRef {
+        record: row.id,
+        name: row.name,
+        url: row.url,
+        folder: row.folder,
+    }))
+}
+
+async fn load_group_shell_row(record: &RecordId) -> Result<Option<GroupShellRow>> {
     let db = get_db()?;
     let mut result = match db
         .query("SELECT * FROM ONLY $record;")
@@ -897,12 +1009,7 @@ async fn load_playlist_playback_group_ref(
     };
 
     let row: Option<GroupShellRow> = result.take(0)?;
-    Ok(row.map(|row| PlaylistPlaybackGroupRef {
-        record: row.id,
-        name: row.name,
-        url: row.url,
-        folder: row.folder,
-    }))
+    Ok(row)
 }
 
 async fn load_collection_shell_row(record: &RecordId) -> Result<Option<CollectionShellRow>> {
@@ -1033,10 +1140,24 @@ async fn load_random_relation_out_id_for_playback(
         return Ok(None);
     }
 
-    let Some(offset) = random_index(count) else {
+    let Some(start_offset) = random_index(count) else {
         return Ok(None);
     };
-    load_relation_out_id_for_playback_at(record, relation, out_table, offset).await
+
+    for step in 0..count {
+        let offset = (start_offset + step) % count;
+        let Some(candidate) =
+            load_relation_out_id_for_playback_at(record, relation, out_table, offset).await?
+        else {
+            continue;
+        };
+
+        if !is_music_record_excluded_for_playback(&candidate, out_table).await? {
+            return Ok(Some(candidate));
+        }
+    }
+
+    Ok(None)
 }
 
 fn random_index(len: usize) -> Option<usize> {
@@ -1150,6 +1271,10 @@ async fn load_music_parent_collection_ids(record: &RecordId) -> Result<Vec<Recor
     load_relation_in_ids("includes", record, Collection::table_name()).await
 }
 
+async fn load_music_group_ids(record: &RecordId) -> Result<Vec<RecordId>> {
+    load_relation_in_ids("grouped", record, Group::table_name()).await
+}
+
 async fn load_relation_out_ids_for_playback(
     relation: &str,
     record: &RecordId,
@@ -1160,15 +1285,59 @@ async fn load_relation_out_ids_for_playback(
         return Ok(vec![]);
     }
 
+    let mut accepted = Vec::with_capacity(limit);
+    let mut offset = 0usize;
+    let batch_limit = limit.max(32);
+
+    loop {
+        let rows = load_relation_out_id_rows_for_playback(
+            relation,
+            record,
+            out_table,
+            batch_limit,
+            offset,
+        )
+        .await?;
+        if rows.is_empty() {
+            return Ok(accepted);
+        }
+
+        let row_count = rows.len();
+        for row in rows {
+            if is_music_record_excluded_for_playback(&row.out, out_table).await? {
+                continue;
+            }
+
+            accepted.push(row.out);
+            if accepted.len() >= limit {
+                return Ok(accepted);
+            }
+        }
+
+        offset += row_count;
+        if row_count < batch_limit {
+            return Ok(accepted);
+        }
+    }
+}
+
+async fn load_relation_out_id_rows_for_playback(
+    relation: &str,
+    record: &RecordId,
+    out_table: &str,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<CollectionEdgeRow>> {
     let db = get_db()?;
     let mut result = match db
         .query(
-            "SELECT out, position FROM $rel WHERE in = $record AND record::tb(out) = $out_table ORDER BY position ASC LIMIT $limit;",
+            "SELECT out, position FROM $rel WHERE in = $record AND record::tb(out) = $out_table ORDER BY position ASC LIMIT $limit START $offset;",
         )
         .bind(("rel", Table::from(relation)))
         .bind(("record", record.clone()))
         .bind(("out_table", out_table.to_string()))
         .bind(("limit", limit))
+        .bind(("offset", offset))
         .await
     {
         Ok(result) => match result.check() {
@@ -1184,8 +1353,34 @@ async fn load_relation_out_ids_for_playback(
         },
     };
 
-    let rows: Vec<CollectionEdgeRow> = result.take(0)?;
-    Ok(rows.into_iter().map(|row| row.out).collect())
+    Ok(result.take(0)?)
+}
+
+async fn is_music_record_excluded_for_playback(record: &RecordId, out_table: &str) -> Result<bool> {
+    if out_table != Music::table_name() {
+        return Ok(false);
+    }
+
+    let Some(identity) = load_music_playback_identity(record).await? else {
+        return Ok(false);
+    };
+
+    is_music_identity_excluded(&identity.url, identity.start_ms, identity.end_ms).await
+}
+
+async fn is_music_identity_excluded(url: &str, start_ms: u32, end_ms: u32) -> Result<bool> {
+    let record = RecordId::new(
+        StoredExclude::table_name(),
+        exclude_identity_record_id(url, start_ms, end_ms).to_string(),
+    );
+
+    match Repo::<StoredExclude>::exists_record(record).await {
+        Ok(exists) => Ok(exists),
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) => Ok(false),
+            other => Err(other.into()),
+        },
+    }
 }
 
 async fn count_relation_out_ids_for_playback(
@@ -1316,6 +1511,31 @@ async fn find_music_record_ids_by_identity(
     Ok(result.take(0)?)
 }
 
+async fn load_music_playback_identity(
+    record: &RecordId,
+) -> Result<Option<MusicPlaybackIdentityRow>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query("SELECT url, start_ms, end_ms FROM ONLY $record;")
+        .bind(("record", record.clone()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(result.take(0)?)
+}
+
 async fn delete_music_parent_edges(record: &RecordId) -> Result<()> {
     let db = get_db()?;
 
@@ -1404,6 +1624,270 @@ async fn delete_orphaned_music_records(
     Ok(())
 }
 
+async fn load_exclude_availability() -> Result<ExcludeAvailability> {
+    let records = load_exclude_availability_rows().await?;
+    let mut fully_excluded_collection_urls = Vec::new();
+    let mut fully_excluded_group_urls = Vec::new();
+
+    for record in records {
+        if !record.is_fully_excluded() {
+            continue;
+        }
+
+        match ExcludeOwnerKind::from_legacy_value(&record.owner_kind) {
+            Some(ExcludeOwnerKind::Collection) => {
+                fully_excluded_collection_urls.push(record.owner_url)
+            }
+            Some(ExcludeOwnerKind::Group) => fully_excluded_group_urls.push(record.owner_url),
+            None => continue,
+        }
+    }
+
+    Ok(ExcludeAvailability {
+        fully_excluded_collection_urls,
+        fully_excluded_group_urls,
+    })
+}
+
+async fn load_exclude_availability_rows() -> Result<Vec<StoredExcludeOwnerAvailabilityRow>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query("SELECT owner_kind, owner_url, total_music_count, excluded_music_count FROM $table;")
+        .bind((
+            "table",
+            Table::from(StoredExcludeOwnerAvailability::table_name()),
+        ))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(vec![]),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(vec![]),
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(result.take(0)?)
+}
+
+async fn refresh_exclude_availability_for_music_identity(music: &Music) -> Result<()> {
+    let records =
+        find_music_record_ids_by_identity(&music.url, music.start_ms, music.end_ms).await?;
+    for record in records {
+        refresh_exclude_availability_for_music_record(&record).await?;
+    }
+
+    Ok(())
+}
+
+async fn refresh_exclude_availability_for_music_record(record: &RecordId) -> Result<()> {
+    let parent_collections = load_music_parent_collection_ids(record).await?;
+    let parent_groups = load_music_group_ids(record).await?;
+    refresh_exclude_availability_for_owner_records(&parent_collections, &parent_groups).await
+}
+
+async fn load_group_ids_for_music_records(records: &[RecordId]) -> Result<Vec<RecordId>> {
+    let mut seen = HashSet::new();
+    let mut groups = Vec::new();
+
+    for record in records {
+        for group in load_music_group_ids(record).await? {
+            if seen.insert(group.clone()) {
+                groups.push(group);
+            }
+        }
+    }
+
+    Ok(groups)
+}
+
+async fn load_group_urls_for_records(records: &[RecordId]) -> Result<Vec<String>> {
+    let mut urls = Vec::new();
+
+    for record in records {
+        if let Some(group) = load_group_shell_row(record).await? {
+            urls.push(group.url);
+        }
+    }
+
+    Ok(urls)
+}
+
+async fn refresh_exclude_availability_for_owner_records(
+    collection_records: &[RecordId],
+    group_records: &[RecordId],
+) -> Result<()> {
+    for collection_record in collection_records {
+        refresh_exclude_availability_for_collection_record(collection_record).await?;
+    }
+    for group_record in group_records {
+        refresh_exclude_availability_for_group_record(group_record).await?;
+    }
+
+    Ok(())
+}
+
+async fn delete_exclude_availability_for_missing_group_urls(urls: Vec<String>) -> Result<()> {
+    for url in urls {
+        let exists = find_unique_record_id_by_string_field::<Group>("url", &url)
+            .await?
+            .is_some();
+        if exists {
+            continue;
+        }
+
+        delete_exclude_availability_for_owner_url(ExcludeOwnerKind::Group, &url).await?;
+    }
+
+    Ok(())
+}
+
+async fn refresh_exclude_availability_for_collection_record(record: &RecordId) -> Result<()> {
+    let Some(collection) = load_collection_shell_row(record).await? else {
+        delete_exclude_availability_record(ExcludeOwnerKind::Collection, record).await?;
+        return Ok(());
+    };
+
+    refresh_exclude_availability_for_owner_record(
+        ExcludeOwnerKind::Collection,
+        record,
+        collection.url,
+        "includes",
+    )
+    .await?;
+
+    let music_records = load_collection_music_ids(record).await?;
+    let mut seen_groups = HashSet::<RecordId>::new();
+    for music_record in music_records {
+        for group_record in load_music_group_ids(&music_record).await? {
+            if seen_groups.insert(group_record.clone()) {
+                refresh_exclude_availability_for_group_record(&group_record).await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn refresh_exclude_availability_for_group_record(record: &RecordId) -> Result<()> {
+    let Some(group) = load_group_shell_row(record).await? else {
+        delete_exclude_availability_record(ExcludeOwnerKind::Group, record).await?;
+        return Ok(());
+    };
+
+    refresh_exclude_availability_for_owner_record(
+        ExcludeOwnerKind::Group,
+        record,
+        group.url,
+        "grouped",
+    )
+    .await
+}
+
+async fn refresh_exclude_availability_for_owner_record(
+    owner_kind: ExcludeOwnerKind,
+    owner_record: &RecordId,
+    owner_url: String,
+    relation: &str,
+) -> Result<()> {
+    let music_records = load_relation_out_ids(relation, owner_record, Music::table_name()).await?;
+    let total_music_count = music_records.len() as u32;
+    let mut excluded_music_count = 0u32;
+
+    for music_record in music_records {
+        if is_music_record_excluded_for_playback(&music_record, Music::table_name()).await? {
+            excluded_music_count += 1;
+        }
+    }
+
+    let id = exclude_availability_record_id(owner_kind, owner_record);
+    let record = RecordId::new(StoredExcludeOwnerAvailability::table_name(), id.to_string());
+    Repo::<StoredExcludeOwnerAvailability>::upsert_at(
+        record,
+        StoredExcludeOwnerAvailability {
+            id,
+            owner_kind: owner_kind.as_str().to_string(),
+            owner_url,
+            total_music_count,
+            excluded_music_count,
+            updated_at: AutoFill::pending(),
+        },
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn delete_exclude_availability_record(
+    owner_kind: ExcludeOwnerKind,
+    owner_record: &RecordId,
+) -> Result<()> {
+    let record = RecordId::new(
+        StoredExcludeOwnerAvailability::table_name(),
+        exclude_availability_record_id(owner_kind, owner_record).to_string(),
+    );
+    delete_exclude_availability_record_id(record).await
+}
+
+async fn delete_exclude_availability_for_owner_url(
+    owner_kind: ExcludeOwnerKind,
+    owner_url: &str,
+) -> Result<()> {
+    let owner_record = match owner_kind {
+        ExcludeOwnerKind::Collection => collection_record_id(owner_url),
+        ExcludeOwnerKind::Group => group_record_id(owner_url),
+    };
+    let record = RecordId::new(
+        StoredExcludeOwnerAvailability::table_name(),
+        exclude_availability_record_id(owner_kind, &owner_record).to_string(),
+    );
+    delete_exclude_availability_record_id(record).await
+}
+
+async fn delete_exclude_availability_record_id(record: RecordId) -> Result<()> {
+    match Repo::<StoredExcludeOwnerAvailability>::delete_record(record).await {
+        Ok(()) => Ok(()),
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) | DBError::NotFound => Ok(()),
+            other => Err(other.into()),
+        },
+    }
+}
+
+async fn load_relation_out_ids(
+    relation: &str,
+    record: &RecordId,
+    out_table: &str,
+) -> Result<Vec<RecordId>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query("SELECT VALUE out FROM $rel WHERE in = $record AND record::tb(out) = $out_table;")
+        .bind(("rel", Table::from(relation)))
+        .bind(("record", record.clone()))
+        .bind(("out_table", out_table.to_string()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(vec![]),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(vec![]),
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(result.take(0)?)
+}
+
 #[derive(Debug, Clone)]
 struct PlaylistForeignRecordIds {
     collections: Vec<RecordId>,
@@ -1464,12 +1948,28 @@ fn collection_record_id(url: &str) -> RecordId {
     RecordId::new(Collection::table_name(), stable_record_key(url))
 }
 
+fn group_record_id(url: &str) -> RecordId {
+    RecordId::new(Group::table_name(), stable_record_key(url))
+}
+
 fn playlist_record_id(name: &str) -> RecordId {
     RecordId::new(PlayList::table_name(), stable_record_key(name))
 }
 
 fn exclude_record_id(music: &Music) -> Id {
-    Id::from(stable_record_key(&music.url))
+    exclude_identity_record_id(&music.url, music.start_ms, music.end_ms)
+}
+
+fn exclude_identity_record_id(url: &str, start_ms: u32, end_ms: u32) -> Id {
+    Id::from(stable_record_key(&format!("{url}:{start_ms}:{end_ms}")))
+}
+
+fn exclude_availability_record_id(owner_kind: ExcludeOwnerKind, owner_record: &RecordId) -> Id {
+    Id::from(stable_record_key(&format!(
+        "{}:{}",
+        owner_kind.as_str(),
+        owner_record.key.to_sql()
+    )))
 }
 
 fn stable_record_key(seed: &str) -> String {
@@ -1530,10 +2030,87 @@ impl StoredExclude {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]
+#[serde(rename_all = "snake_case")]
+enum ExcludeOwnerKind {
+    Collection,
+    Group,
+}
+
+impl ExcludeOwnerKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Collection => "collection",
+            Self::Group => "group",
+        }
+    }
+
+    fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "collection" => Some(Self::Collection),
+            "group" => Some(Self::Group),
+            _ => None,
+        }
+    }
+
+    fn from_legacy_value(value: &serde_json::Value) -> Option<Self> {
+        if let Some(owner_kind) = value.as_str().and_then(Self::from_str) {
+            return Some(owner_kind);
+        }
+
+        let object = value.as_object()?;
+        if object.contains_key("Collection") || object.contains_key("collection") {
+            return Some(Self::Collection);
+        }
+        if object.contains_key("Group") || object.contains_key("group") {
+            return Some(Self::Group);
+        }
+
+        None
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Store)]
+struct StoredExcludeOwnerAvailability {
+    id: Id,
+    owner_kind: String,
+    owner_url: String,
+    total_music_count: u32,
+    excluded_music_count: u32,
+    #[pagin]
+    #[fill(now)]
+    updated_at: AutoFill,
+}
+
+#[derive(Debug, Clone, Deserialize, SurrealValue)]
+struct StoredExcludeOwnerAvailabilityRow {
+    #[serde(default)]
+    owner_kind: serde_json::Value,
+    #[serde(default)]
+    owner_url: String,
+    #[serde(default)]
+    total_music_count: u32,
+    #[serde(default)]
+    excluded_music_count: u32,
+}
+
+impl StoredExcludeOwnerAvailabilityRow {
+    fn is_fully_excluded(&self) -> bool {
+        self.total_music_count > 0 && self.excluded_music_count >= self.total_music_count
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize, surrealdb_types::SurrealValue)]
 struct CollectionEdgeRow {
     #[serde(deserialize_with = "appdb::serde_utils::id::deserialize_record_id_or_compat_string")]
     out: RecordId,
+}
+
+#[derive(Debug, Clone, Deserialize, SurrealValue)]
+struct MusicPlaybackIdentityRow {
+    url: String,
+    start_ms: u32,
+    end_ms: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, SurrealValue)]

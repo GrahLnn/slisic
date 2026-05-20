@@ -99,6 +99,7 @@ export function PlayListPageItem({
   onPointerDown,
   onTorphStageChange,
   onCommit,
+  onExcludeCurrentMusic,
   onOpenSpectrum,
   onOpenSpectrumPointerDown,
   onLayoutAnimationComplete,
@@ -110,6 +111,7 @@ export function PlayListPageItem({
   onPointerDown?: () => void;
   onTorphStageChange?: (stage: TorphStage) => void;
   onCommit: () => void;
+  onExcludeCurrentMusic?: () => void;
   onOpenSpectrum?: () => void;
   onOpenSpectrumPointerDown?: () => void;
   onLayoutAnimationComplete?: (layoutId?: string) => void;
@@ -186,6 +188,7 @@ export function PlayListPageItem({
           text={viewModel.text}
           textClassName={titleHoverClassName}
           torphDebugLabel="playlist-title"
+          onExcludeCurrentMusic={onExcludeCurrentMusic}
           onOpenSpectrum={onOpenSpectrum}
           onOpenSpectrumPointerDown={onOpenSpectrumPointerDown}
           onTitleLayoutAnimationComplete={onLayoutAnimationComplete}

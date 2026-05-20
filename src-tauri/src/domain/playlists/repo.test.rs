@@ -596,10 +596,10 @@ fn add_exclude_is_idempotent_and_remove_exclude_deletes_the_row() {
             .expect("second exclude add should reuse the same row");
         let exclude_count = count_excludes().await;
 
-        assert_eq!(first.music.url, music.url);
-        assert!(!first.created_at.is_pending());
-        assert_eq!(second.music.url, music.url);
-        assert!(!second.created_at.is_pending());
+        assert_eq!(first.exclude.music.url, music.url);
+        assert!(!first.exclude.created_at.is_pending());
+        assert_eq!(second.exclude.music.url, music.url);
+        assert!(!second.exclude.created_at.is_pending());
         assert_eq!(exclude_count, 1);
 
         let removed = remove_exclude(&music)
@@ -610,9 +610,42 @@ fn add_exclude_is_idempotent_and_remove_exclude_deletes_the_row() {
             .expect("repeated exclude removal should succeed");
         let exclude_count_after = count_excludes().await;
 
-        assert!(removed);
-        assert!(!removed_again);
+        assert!(removed.removed);
+        assert!(!removed_again.removed);
         assert_eq!(exclude_count_after, 0);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn exclude_identity_keeps_different_segments_separate() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_table(Music::table_name()).await;
+
+        let first_segment = sample_excluded_music();
+        let mut second_segment = first_segment.clone();
+        second_segment.start_ms = 180_000;
+        second_segment.end_ms = 240_000;
+
+        add_exclude(first_segment.clone())
+            .await
+            .expect("first segment exclude should succeed");
+        add_exclude(second_segment.clone())
+            .await
+            .expect("second segment exclude should succeed");
+
+        assert_eq!(count_excludes().await, 2);
+
+        let removed = remove_exclude(&first_segment)
+            .await
+            .expect("first segment exclude removal should succeed");
+
+        assert!(removed.removed);
+        assert_eq!(count_excludes().await, 1);
 
         reset_db();
     });
@@ -629,7 +662,205 @@ fn remove_exclude_returns_false_when_table_is_missing() {
             .await
             .expect("missing exclude table should not error");
 
-        assert!(!removed);
+        assert!(!removed.removed);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn exclude_availability_marks_and_restores_fully_excluded_owners() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let collection_url = "https://example.com/exclude-availability";
+        let group = collection_group("Disc 1", &format!("{collection_url}#disc-1"), "Disc 1");
+        let first_music = named_music("Availability A", group.clone(), "Disc 1/A.m4a");
+        let second_music = named_music("Availability B", group.clone(), "Disc 1/B.m4a");
+        let collection = collection_with_musics(
+            collection_url,
+            "youtube/exclude-availability",
+            Some(false),
+            vec![first_music.clone(), second_music.clone()],
+        );
+
+        upsert_collection(&collection)
+            .await
+            .expect("collection should exist before exclude availability updates");
+        let first_result = add_exclude(first_music.clone())
+            .await
+            .expect("first exclude should update availability");
+
+        assert!(
+            first_result
+                .exclude_availability
+                .fully_excluded_collection_urls
+                .is_empty()
+        );
+        assert!(
+            first_result
+                .exclude_availability
+                .fully_excluded_group_urls
+                .is_empty()
+        );
+
+        let second_result = add_exclude(second_music.clone())
+            .await
+            .expect("second exclude should update availability");
+
+        assert!(
+            second_result
+                .exclude_availability
+                .fully_excluded_collection_urls
+                .contains(&collection_url.to_string())
+        );
+        assert!(
+            second_result
+                .exclude_availability
+                .fully_excluded_group_urls
+                .contains(&group.url)
+        );
+
+        let new_music = named_music("Availability C", group.clone(), "Disc 1/C.m4a");
+        create_music(collection_url, &new_music)
+            .await
+            .expect("adding music should refresh owner availability");
+        let library_after_create = list_config_library()
+            .await
+            .expect("config library should reload availability");
+
+        assert!(
+            !library_after_create
+                .exclude_availability
+                .fully_excluded_collection_urls
+                .contains(&collection_url.to_string())
+        );
+        assert!(
+            !library_after_create
+                .exclude_availability
+                .fully_excluded_group_urls
+                .contains(&group.url)
+        );
+
+        let removed = remove_exclude(&first_music)
+            .await
+            .expect("exclude removal should refresh availability");
+        assert!(removed.removed);
+        assert!(
+            removed
+                .exclude_availability
+                .fully_excluded_collection_urls
+                .is_empty()
+        );
+        assert!(
+            removed
+                .exclude_availability
+                .fully_excluded_group_urls
+                .is_empty()
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn list_config_library_does_not_rebuild_missing_exclude_availability() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let collection_url = "https://example.com/passive-exclude-availability";
+        let group = collection_group("Disc 1", &format!("{collection_url}#disc-1"), "Disc 1");
+        let music = named_music("Passive Availability", group.clone(), "Disc 1/A.m4a");
+        let collection = collection_with_musics(
+            collection_url,
+            "youtube/passive-exclude-availability",
+            Some(false),
+            vec![music.clone()],
+        );
+
+        upsert_collection(&collection)
+            .await
+            .expect("collection should exist before passive availability read");
+        let library_before_exclude = list_config_library()
+            .await
+            .expect("config library read should not rebuild availability");
+
+        assert!(
+            library_before_exclude
+                .exclude_availability
+                .fully_excluded_collection_urls
+                .is_empty()
+        );
+        assert!(
+            library_before_exclude
+                .exclude_availability
+                .fully_excluded_group_urls
+                .is_empty()
+        );
+
+        add_exclude(music)
+            .await
+            .expect("exclude write should update availability");
+        let library_after_exclude = list_config_library()
+            .await
+            .expect("config library should read write-maintained availability");
+
+        assert!(
+            library_after_exclude
+                .exclude_availability
+                .fully_excluded_collection_urls
+                .contains(&collection_url.to_string())
+        );
+        assert!(
+            library_after_exclude
+                .exclude_availability
+                .fully_excluded_group_urls
+                .contains(&group.url)
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn list_config_library_reads_legacy_object_owner_kind_exclude_availability() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_table("stored_exclude_owner_availability").await;
+
+        let db = get_db().expect("global playlist repo database handle should exist");
+        db.query(
+            "CREATE stored_exclude_owner_availability:legacy_group CONTENT {
+                owner_kind: { Group: {} },
+                owner_url: $owner_url,
+                total_music_count: 1,
+                excluded_music_count: 1
+            };",
+        )
+        .bind(("owner_url", "https://example.com/legacy-group".to_string()))
+        .await
+        .expect("legacy availability insert should succeed")
+        .check()
+        .expect("legacy availability insert response should succeed");
+
+        let library = list_config_library()
+            .await
+            .expect("legacy owner_kind object should not break config library");
+
+        assert!(
+            library
+                .exclude_availability
+                .fully_excluded_group_urls
+                .contains(&"https://example.com/legacy-group".to_string())
+        );
 
         reset_db();
     });
@@ -1624,6 +1855,10 @@ fn list_config_library_reads_collection_and_group_surfaces() {
         let playlist = sample_playlist("repo-config-library");
         insert_collection_row("repo-config-library-collection", &playlist.collections[0]).await;
         insert_group_row("repo-config-library-group", &playlist.groups[0]).await;
+        let excluded_music = sample_excluded_music();
+        add_exclude(excluded_music.clone())
+            .await
+            .expect("exclude row should save before config library load");
 
         let library = list_config_library()
             .await
@@ -1642,6 +1877,10 @@ fn list_config_library_reads_collection_and_group_surfaces() {
 
         assert_collection_surface_matches(collection, &playlist.collections[0]);
         assert_group_surface_matches(group, &playlist.groups[0]);
+        assert_eq!(library.excludes.len(), 1);
+        assert_eq!(library.excludes[0].music.url, excluded_music.url);
+        assert_eq!(library.excludes[0].music.start_ms, excluded_music.start_ms);
+        assert_eq!(library.excludes[0].music.end_ms, excluded_music.end_ms);
 
         reset_db();
     });
@@ -2037,6 +2276,148 @@ fn playlist_playback_selection_reads_refs_without_hydrating_unselected_collectio
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].collection_url, selected_collection.url);
         assert_eq!(sources[0].music.url, selected_music.url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn playlist_playback_sources_skip_excluded_music() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let selected_group = collection_group(
+            "Disc 1",
+            "https://example.com/excluded-source#disc-1",
+            "Disc 1",
+        );
+        let excluded_music = named_music("Excluded Source", selected_group.clone(), "Excluded.m4a");
+        let playable_music = named_music("Playable Source", selected_group.clone(), "Playable.m4a");
+        let selected_collection = collection_with_musics(
+            "https://example.com/excluded-source",
+            "youtube/excluded-source",
+            Some(false),
+            vec![excluded_music.clone(), playable_music.clone()],
+        );
+        let selected_collection_record =
+            insert_collection_row("excluded-source-collection", &selected_collection).await;
+        let selected_group_record =
+            insert_group_row("excluded-source-group", &selected_group).await;
+        let selected_music_record =
+            insert_music_row("excluded-source-music", &excluded_music).await;
+        let playable_music_record =
+            insert_music_row("playable-source-music", &playable_music).await;
+
+        insert_music_edges(
+            &selected_collection_record,
+            &[selected_music_record.clone(), playable_music_record.clone()],
+        )
+        .await;
+        insert_group_edges(
+            &selected_group_record,
+            &[selected_music_record, playable_music_record],
+        )
+        .await;
+        add_exclude(excluded_music.clone())
+            .await
+            .expect("exclude row should save before playback source load");
+
+        let playlist = PlayList {
+            name: "Exclude Playback Sources".to_string(),
+            collections: vec![selected_collection.clone()],
+            groups: vec![],
+            created_at: AutoFill::pending(),
+        };
+        insert_playlist_row(
+            "exclude-playback-sources-playlist",
+            &playlist,
+            std::slice::from_ref(&selected_collection_record),
+            &[],
+        )
+        .await;
+
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist");
+        let sources = load_playlist_playback_track_sources(&selection, 2)
+            .await
+            .expect("playback sources should load");
+        let random_source = load_random_playlist_playback_track_source(&selection)
+            .await
+            .expect("random playback source should load")
+            .expect("random playback source should exist");
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].music.url, playable_music.url);
+        assert_eq!(random_source.music.url, playable_music.url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn playlist_playback_sources_return_empty_when_all_music_is_excluded() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let selected_group = collection_group(
+            "Disc 1",
+            "https://example.com/all-excluded#disc-1",
+            "Disc 1",
+        );
+        let excluded_music = named_music("All Excluded", selected_group.clone(), "Excluded.m4a");
+        let selected_collection = collection_with_musics(
+            "https://example.com/all-excluded",
+            "youtube/all-excluded",
+            Some(false),
+            vec![excluded_music.clone()],
+        );
+        let selected_collection_record =
+            insert_collection_row("all-excluded-collection", &selected_collection).await;
+        let selected_music_record = insert_music_row("all-excluded-music", &excluded_music).await;
+        insert_music_edges(
+            &selected_collection_record,
+            std::slice::from_ref(&selected_music_record),
+        )
+        .await;
+        add_exclude(excluded_music)
+            .await
+            .expect("exclude row should save before playback source load");
+
+        let playlist = PlayList {
+            name: "All Excluded Playback Sources".to_string(),
+            collections: vec![selected_collection],
+            groups: vec![],
+            created_at: AutoFill::pending(),
+        };
+        insert_playlist_row(
+            "all-excluded-playback-sources-playlist",
+            &playlist,
+            std::slice::from_ref(&selected_collection_record),
+            &[],
+        )
+        .await;
+
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist");
+        let sources = load_playlist_playback_track_sources(&selection, 2)
+            .await
+            .expect("playback sources should load");
+        let random_source = load_random_playlist_playback_track_source(&selection)
+            .await
+            .expect("random playback source should load");
+
+        assert!(sources.is_empty());
+        assert!(random_source.is_none());
 
         reset_db();
     });

@@ -2,8 +2,11 @@ import type {
   Collection,
   CollectionSurfaceView,
   ConfigLibraryView,
+  Exclude,
+  ExcludeAvailability,
   Group,
   GroupSurfaceView,
+  Music,
   PlayList,
   PlayListConfigView,
   PlayListListView,
@@ -56,6 +59,16 @@ export interface ConfigSidebarItemRef {
 export interface CollectionUpdatesChange {
   url: string;
   enabled: boolean;
+}
+
+export interface ExcludeRemovedChange {
+  music: Music;
+  excludeAvailability: ExcludeAvailability;
+}
+
+export interface ExcludeAddedChange {
+  exclude: Exclude;
+  excludeAvailability: ExcludeAvailability;
 }
 
 export type DraftCommitTitleResolutionKind = "keep" | "restore" | "generate";
@@ -177,6 +190,15 @@ function createEmptyConfigLibrary(): ConfigLibraryView {
   return {
     collections: [],
     groups: [],
+    excludes: [],
+    exclude_availability: createEmptyExcludeAvailability(),
+  };
+}
+
+function createEmptyExcludeAvailability(): ExcludeAvailability {
+  return {
+    fully_excluded_collection_urls: [],
+    fully_excluded_group_urls: [],
   };
 }
 
@@ -500,7 +522,42 @@ export function createConfigLibraryFromCollections(
         url: group.url,
         folder: group.folder,
       })),
+    excludes: [],
+    exclude_availability: createEmptyExcludeAvailability(),
   };
+}
+
+export function removeExcludeFromConfigLibrary(
+  library: ConfigLibraryView,
+  removed: ExcludeRemovedChange,
+): ConfigLibraryView {
+  return {
+    ...library,
+    exclude_availability: removed.excludeAvailability,
+    excludes: library.excludes.filter(
+      (exclude) => !isSameExcludeMusic(exclude.music, removed.music),
+    ),
+  };
+}
+
+export function upsertExcludeIntoConfigLibrary(
+  library: ConfigLibraryView,
+  added: ExcludeAddedChange,
+): ConfigLibraryView {
+  return {
+    ...library,
+    exclude_availability: added.excludeAvailability,
+    excludes: [
+      added.exclude,
+      ...library.excludes.filter(
+        (exclude) => !isSameExcludeMusic(exclude.music, added.exclude.music),
+      ),
+    ],
+  };
+}
+
+function isSameExcludeMusic(left: Music, right: Music) {
+  return left.url === right.url && left.start_ms === right.start_ms && left.end_ms === right.end_ms;
 }
 
 export function upsertCollectionIntoConfigLibrary(

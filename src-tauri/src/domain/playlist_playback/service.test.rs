@@ -384,6 +384,42 @@ fn queue_start_projection_preserves_the_initial_playback_anchor() {
 }
 
 #[test]
+fn random_recommender_after_exclude_does_not_reinsert_current_track() {
+    let current = PlaybackTrack {
+        playlist_name: "Focus".to_string(),
+        music_name: "Current".to_string(),
+        music_url: "https://example.com/current".to_string(),
+        file_path: PathBuf::from("current.m4a"),
+        start_ms: 0,
+        end_ms: 60_000,
+    };
+    let next = PlaybackTrack {
+        playlist_name: "Focus".to_string(),
+        music_name: "Next".to_string(),
+        music_url: "https://example.com/next".to_string(),
+        file_path: PathBuf::from("next.m4a"),
+        start_ms: 0,
+        end_ms: 60_000,
+    };
+
+    let proposed = RandomPlaylistPlaybackRecommender.propose_queue_after_exclude(
+        PlaylistPlaybackRecommendationRequest {
+            playlist_name: "Focus".to_string(),
+            current_track: current.clone(),
+            candidates: vec![next.clone()],
+        },
+    );
+
+    assert_eq!(proposed.len(), 1);
+    assert_eq!(proposed[0].music_url, next.music_url);
+    assert!(
+        !proposed
+            .iter()
+            .any(|track| track.music_url == current.music_url)
+    );
+}
+
+#[test]
 fn random_recommender_keeps_current_track_ahead_of_newly_loaded_queue_window() {
     let current_track = PlaybackTrack {
         playlist_name: "Focus".to_string(),

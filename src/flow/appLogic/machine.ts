@@ -10,7 +10,9 @@ import {
   playlistTitleLayoutId,
   removePlaylistFromPlaylists,
   removeDraftSidebarItem,
+  removeExcludeFromConfigLibrary,
   resetContextWith,
+  upsertExcludeIntoConfigLibrary,
   upsertPlaylistIntoPlaylists,
   upsertCollectionIntoConfigLibrary,
   upsertCollectionIntoDraft,
@@ -482,6 +484,8 @@ const draftCollectionUpserted = payloads["draft.collection.upserted"];
 const draftItemIncluded = payloads["draft.item.included"];
 const draftItemRemoved = payloads["draft.item.removed"];
 const collectionUpdatesRequested = payloads["collection.updates.requested"];
+const excludeAdded = payloads["exclude.added"];
+const excludeRemoved = payloads["exclude.removed"];
 const nowPlayingTrackChanged = payloads["player.now_playing_track.changed"];
 
 export const machine = src.createMachine({
@@ -559,6 +563,16 @@ export const machine = src.createMachine({
     [draftItemRemoved.evt]: {
       actions: assign(({ context, event }) => ({
         draft: removeDraftSidebarItem(context.draft, event.output),
+      })),
+    },
+    [excludeAdded.evt]: {
+      actions: assign(({ context, event }) => ({
+        configLibrary: upsertExcludeIntoConfigLibrary(context.configLibrary, event.output),
+      })),
+    },
+    [excludeRemoved.evt]: {
+      actions: assign(({ context, event }) => ({
+        configLibrary: removeExcludeFromConfigLibrary(context.configLibrary, event.output),
       })),
     },
     [nowPlayingTrackChanged.evt]: {

@@ -341,6 +341,16 @@ pub(crate) fn update_session_tracks(
     runtime()?.replace_session_tracks(handle, tracks)
 }
 
+#[cfg(not(test))]
+pub(crate) fn update_current_session_tracks(tracks: Vec<PlaybackTrack>) -> Result<bool> {
+    runtime()?.replace_current_session_tracks(tracks)
+}
+
+#[cfg(not(test))]
+pub(crate) fn active_request_track_snapshot() -> Result<Option<PlaybackTrack>> {
+    runtime()?.active_request_track_snapshot()
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PlaybackTrackIdentityUpdate {
     pub(crate) music_name: String,
@@ -502,6 +512,24 @@ pub async fn resume_playback() -> Result<bool> {
         .resume()
         .await
         .map_err(|error| anyhow!("failed to resume playback: {error}"))?;
+
+    Ok(true)
+}
+
+#[cfg(not(test))]
+pub async fn skip_current_track() -> Result<bool> {
+    let runtime = runtime()?;
+    runtime.set_temporary_playback_pause(false)?;
+    runtime.clear_spectrum_playback_loop_signal()?;
+    runtime.clear_active_playback_range()?;
+    let Some(playback) = runtime.current_playback()? else {
+        return Ok(false);
+    };
+
+    playback
+        .stop()
+        .await
+        .map_err(|error| anyhow!("failed to skip current playback: {error}"))?;
 
     Ok(true)
 }
@@ -1137,6 +1165,27 @@ impl PlayerRuntime {
                 next_current_track.as_ref(),
             );
         }
+        *current_tracks = tracks;
+        Ok(true)
+    }
+
+    fn replace_current_session_tracks(&self, tracks: Vec<PlaybackTrack>) -> Result<bool> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
+        let Some(active) = session.as_ref() else {
+            return Ok(false);
+        };
+
+        let mut current_tracks = active
+            .tracks
+            .write()
+            .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))?;
+        if playback_tracks_match(&current_tracks, &tracks) {
+            return Ok(true);
+        }
+
         *current_tracks = tracks;
         Ok(true)
     }

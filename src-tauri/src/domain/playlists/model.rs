@@ -97,6 +97,26 @@ pub struct PlayListConfigView {
 pub struct ConfigLibraryView {
     pub collections: Vec<CollectionSurfaceView>,
     pub groups: Vec<GroupSurfaceView>,
+    pub excludes: Vec<Exclude>,
+    pub exclude_availability: ExcludeAvailability,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct ExcludeAvailability {
+    pub fully_excluded_collection_urls: Vec<String>,
+    pub fully_excluded_group_urls: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct AddExcludeResult {
+    pub exclude: Exclude,
+    pub exclude_availability: ExcludeAvailability,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct RemoveExcludeResult {
+    pub removed: bool,
+    pub exclude_availability: ExcludeAvailability,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, Store, Type)]
