@@ -6,13 +6,18 @@ import {
   areSpectrumMusicEditorViewModelsEqual,
   createSpectrumMusicAdmissionIdentityKey,
   createSpectrumMusicAdmissionScheduleKey,
-  resolveSpectrumMusicAdmissionBatchRows,
+  resolveSpectrumMusicViewportAdmissionPlan,
+  resolveSpectrumMusicAdmissionExtraHeight,
+  resolveSpectrumMusicAdmissionDeferredRows,
+  resolveSpectrumMusicVirtualViewportRows,
   resolveSpectrumMusicVirtualRowPlaybackSnapshot,
   resolveSpectrumMusicVirtualListHeight,
   resolveSpectrumMusicVirtualRangeIndexes,
   resolveSpectrumMusicVirtualRowTransform,
   resolveSpectrumMusicAdmissionScheduleRows,
   resolveSpectrumMusicRowAdmission,
+  shouldAdmitSpectrumMusicViewportRows,
+  shouldRunSpectrumMusicAdmissionIdleCallback,
 } from "./SpectrumMusicVirtualList";
 import { createWaveformRenderDataStore } from "./SpectrumVisualizer";
 import type {
@@ -147,6 +152,167 @@ describe("SpectrumMusicVirtualList", () => {
     );
   });
 
+  test("admits real viewport rows only after viewport movement makes them urgent", () => {
+    assert.equal(
+      shouldAdmitSpectrumMusicViewportRows({
+        previousViewportStart: null,
+        viewportAdmissionStarted: false,
+        viewportStart: 0,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldAdmitSpectrumMusicViewportRows({
+        previousViewportStart: 0,
+        viewportAdmissionStarted: false,
+        viewportStart: 384,
+      }),
+      true,
+    );
+    assert.equal(
+      shouldAdmitSpectrumMusicViewportRows({
+        previousViewportStart: 384,
+        viewportAdmissionStarted: true,
+        viewportStart: 0,
+      }),
+      true,
+    );
+    assert.deepEqual(
+      resolveSpectrumMusicVirtualViewportRows({
+        rows: [
+          {
+            admitted: true,
+            index: 0,
+            isCurrent: true,
+            size: 336,
+            start: 0,
+          },
+          {
+            admitted: false,
+            index: 4,
+            isCurrent: false,
+            size: 336,
+            start: 1_344,
+          },
+          {
+            admitted: false,
+            index: 5,
+            isCurrent: false,
+            size: 336,
+            start: 1_680,
+          },
+        ],
+        viewport: {
+          clientHeight: 336,
+          scrollTop: 1_344,
+        },
+      }).map((row) => row.index),
+      [4],
+    );
+    assert.deepEqual(
+      resolveSpectrumMusicVirtualViewportRows({
+        extraHeight: 336,
+        rows: [
+          {
+            admitted: false,
+            index: 3,
+            isCurrent: false,
+            size: 336,
+            start: 1_008,
+          },
+          {
+            admitted: false,
+            index: 4,
+            isCurrent: false,
+            size: 336,
+            start: 1_344,
+          },
+          {
+            admitted: false,
+            index: 5,
+            isCurrent: false,
+            size: 336,
+            start: 1_680,
+          },
+        ],
+        viewport: {
+          clientHeight: 336,
+          scrollTop: 1_344,
+        },
+      }).map((row) => row.index),
+      [3, 4, 5],
+    );
+    assert.equal(resolveSpectrumMusicAdmissionExtraHeight({ clientHeight: 779 }), 2_337);
+  });
+
+  test("projects urgent viewport admission before the commit effect catches up", () => {
+    const plan = resolveSpectrumMusicViewportAdmissionPlan({
+      admittedIndexes: new Set([0, 1, 2]),
+      previousViewportStart: 0,
+      viewport: {
+        clientHeight: 336,
+        scrollTop: 1_344,
+      },
+      viewportAdmissionStarted: true,
+      virtualRows: [
+        {
+          index: 0,
+          isCurrent: true,
+          size: 336,
+          start: 0,
+        },
+        {
+          index: 3,
+          size: 336,
+          start: 1_008,
+        },
+        {
+          index: 4,
+          size: 336,
+          start: 1_344,
+        },
+        {
+          index: 5,
+          size: 336,
+          start: 1_680,
+        },
+      ],
+    });
+
+    assert.deepEqual(plan.missingViewportIndexes, [3, 4, 5]);
+    assert.deepEqual(Array.from(plan.nextAdmittedIndexes), [0, 1, 2, 3, 4, 5]);
+    assert.equal(plan.nextAdmittedIndexes.has(4), true);
+  });
+
+  test("keeps first mount admission constrained until viewport movement starts", () => {
+    const admittedIndexes = new Set([0]);
+    const plan = resolveSpectrumMusicViewportAdmissionPlan({
+      admittedIndexes,
+      previousViewportStart: null,
+      viewport: {
+        clientHeight: 336,
+        scrollTop: 0,
+      },
+      viewportAdmissionStarted: false,
+      virtualRows: [
+        {
+          index: 0,
+          isCurrent: true,
+          size: 336,
+          start: 0,
+        },
+        {
+          index: 1,
+          size: 336,
+          start: 336,
+        },
+      ],
+    });
+
+    assert.equal(plan.nextAdmittedIndexes, admittedIndexes);
+    assert.deepEqual(plan.missingViewportIndexes, []);
+  });
+
   test("admits the current music row before sibling rows enter the editor pipeline", () => {
     assert.equal(
       resolveSpectrumMusicRowAdmission({
@@ -213,29 +379,40 @@ describe("SpectrumMusicVirtualList", () => {
     );
   });
 
-  test("admits sibling rows in bounded batches instead of a per-row cascade", () => {
-    const rows = Array.from({ length: 26 }, (_, index) => ({
+  test("keeps sibling admission idle-gated after the current row", () => {
+    const rows = Array.from({ length: 5 }, (_, index) => ({
       index,
       isCurrent: index === 0,
     }));
 
-    assert.deepEqual(resolveSpectrumMusicAdmissionBatchRows({ batchIndex: 0, rows }), [
+    assert.deepEqual(resolveSpectrumMusicAdmissionDeferredRows({ rows }), [
       { index: 1, isCurrent: false },
       { index: 2, isCurrent: false },
       { index: 3, isCurrent: false },
       { index: 4, isCurrent: false },
-      { index: 5, isCurrent: false },
-      { index: 6, isCurrent: false },
-      { index: 7, isCurrent: false },
-      { index: 8, isCurrent: false },
-      { index: 9, isCurrent: false },
-      { index: 10, isCurrent: false },
-      { index: 11, isCurrent: false },
-      { index: 12, isCurrent: false },
     ]);
-    assert.deepEqual(resolveSpectrumMusicAdmissionBatchRows({ batchIndex: 2, rows }), [
-      { index: 25, isCurrent: false },
-    ]);
+
+    assert.equal(
+      shouldRunSpectrumMusicAdmissionIdleCallback({
+        didTimeout: false,
+        timeRemainingMs: 7,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldRunSpectrumMusicAdmissionIdleCallback({
+        didTimeout: false,
+        timeRemainingMs: 8,
+      }),
+      true,
+    );
+    assert.equal(
+      shouldRunSpectrumMusicAdmissionIdleCallback({
+        didTimeout: true,
+        timeRemainingMs: 0,
+      }),
+      true,
+    );
   });
 
   test("compares editor view models by row-owned semantic fields", () => {

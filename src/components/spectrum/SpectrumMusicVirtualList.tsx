@@ -1,5 +1,6 @@
 import {
   memo,
+  startTransition,
   useCallback,
   useLayoutEffect,
   useMemo,
@@ -41,10 +42,11 @@ import {
 const SPECTRUM_MUSIC_VIRTUAL_ROW_ESTIMATE_PX = 336;
 const SPECTRUM_MUSIC_EDITOR_ROW_CONTENT_HEIGHT_PX = 280;
 const SPECTRUM_MUSIC_VIRTUAL_ROW_GAP_PX = 48;
-const SPECTRUM_MUSIC_VIRTUAL_OVERSCAN = 3;
+const SPECTRUM_MUSIC_VIRTUAL_OVERSCAN = 10;
 const SPECTRUM_MUSIC_VIRTUAL_PADDING_END_PX = 64;
-const SPECTRUM_MUSIC_VIRTUAL_ADMISSION_BATCH_SIZE = 12;
-const SPECTRUM_MUSIC_VIRTUAL_ADMISSION_BATCH_DELAY_MS = 48;
+const SPECTRUM_MUSIC_VIRTUAL_ADMISSION_IDLE_MIN_REMAINING_MS = 8;
+const SPECTRUM_MUSIC_VIRTUAL_ADMISSION_FALLBACK_DELAY_MS = 32;
+const SPECTRUM_MUSIC_VIRTUAL_ADMISSION_EXTRA_VIEWPORT_RATIO = 3;
 
 export type SpectrumMusicRowAdmission = "admitted" | "deferred";
 
@@ -124,16 +126,20 @@ export function resolveSpectrumMusicAdmissionScheduleRows(scheduleKey: string) {
   });
 }
 
-export function resolveSpectrumMusicAdmissionBatchRows(args: {
-  batchIndex: number;
+export function resolveSpectrumMusicAdmissionDeferredRows(args: {
   rows: readonly { index: number; isCurrent: boolean }[];
 }) {
-  return args.rows
-    .filter((row) => !row.isCurrent && row.index !== 0)
-    .slice(
-      args.batchIndex * SPECTRUM_MUSIC_VIRTUAL_ADMISSION_BATCH_SIZE,
-      (args.batchIndex + 1) * SPECTRUM_MUSIC_VIRTUAL_ADMISSION_BATCH_SIZE,
-    );
+  return args.rows.filter((row) => !row.isCurrent && row.index !== 0);
+}
+
+export function shouldRunSpectrumMusicAdmissionIdleCallback(args: {
+  didTimeout: boolean;
+  timeRemainingMs: number;
+}) {
+  return (
+    args.didTimeout ||
+    args.timeRemainingMs >= SPECTRUM_MUSIC_VIRTUAL_ADMISSION_IDLE_MIN_REMAINING_MS
+  );
 }
 
 export function resolveSpectrumMusicVirtualRangeIndexes(args: {
@@ -145,6 +151,136 @@ export function resolveSpectrumMusicVirtualRangeIndexes(args: {
   }
 
   return [...args.indexes, args.pinnedIndex].toSorted((left, right) => left - right);
+}
+
+type SpectrumMusicVirtualViewportSnapshot = {
+  clientHeight: number;
+  scrollTop: number;
+};
+
+type SpectrumMusicVirtualRangeRowSnapshot = {
+  index: number;
+  isCurrent?: boolean;
+  start: number;
+  size: number;
+};
+
+type SpectrumMusicVirtualRangeProjectedRow = {
+  admitted: boolean;
+  index: number;
+  isCurrent: boolean;
+  size: number;
+  start: number;
+};
+
+export function resolveSpectrumMusicVirtualViewportRows(args: {
+  extraHeight?: number;
+  rows: readonly SpectrumMusicVirtualRangeProjectedRow[];
+  viewport: SpectrumMusicVirtualViewportSnapshot | null;
+}) {
+  if (args.viewport === null) {
+    return [];
+  }
+
+  const extraHeight = Math.max(0, args.extraHeight ?? 0);
+  const viewportStart = args.viewport.scrollTop - extraHeight;
+  const viewportEnd = args.viewport.scrollTop + args.viewport.clientHeight + extraHeight;
+  return args.rows.filter((row) => row.start + row.size > viewportStart && row.start < viewportEnd);
+}
+
+export function resolveSpectrumMusicAdmissionExtraHeight(args: { clientHeight: number }) {
+  return Math.max(0, args.clientHeight * SPECTRUM_MUSIC_VIRTUAL_ADMISSION_EXTRA_VIEWPORT_RATIO);
+}
+
+export function shouldAdmitSpectrumMusicViewportRows(args: {
+  previousViewportStart: number | null;
+  viewportAdmissionStarted: boolean;
+  viewportStart: number | null;
+}) {
+  return (
+    args.viewportStart !== null &&
+    (args.viewportAdmissionStarted ||
+      args.viewportStart > 0 ||
+      (args.previousViewportStart !== null && args.previousViewportStart !== args.viewportStart))
+  );
+}
+
+function projectSpectrumMusicVirtualRangeRows(args: {
+  admittedIndexes: ReadonlySet<number>;
+  virtualRows: readonly SpectrumMusicVirtualRangeRowSnapshot[];
+}): SpectrumMusicVirtualRangeProjectedRow[] {
+  return args.virtualRows.map((row) => ({
+    admitted: row.isCurrent === true || args.admittedIndexes.has(row.index),
+    index: row.index,
+    isCurrent: row.isCurrent === true,
+    size: row.size,
+    start: row.start,
+  }));
+}
+
+export function resolveSpectrumMusicViewportAdmissionPlan(args: {
+  admittedIndexes: ReadonlySet<number>;
+  previousViewportStart: number | null;
+  viewport: SpectrumMusicVirtualViewportSnapshot | null;
+  viewportAdmissionStarted: boolean;
+  virtualRows: readonly SpectrumMusicVirtualRangeRowSnapshot[];
+}) {
+  const viewportStart = args.viewport?.scrollTop ?? null;
+  const shouldAdmitViewportRows = shouldAdmitSpectrumMusicViewportRows({
+    previousViewportStart: args.previousViewportStart,
+    viewportAdmissionStarted: args.viewportAdmissionStarted,
+    viewportStart,
+  });
+
+  if (!shouldAdmitViewportRows || args.viewport === null) {
+    return {
+      admissionExtraHeight: 0,
+      missingViewportIndexes: [],
+      nextAdmittedIndexes: args.admittedIndexes,
+      shouldAdmitViewportRows,
+      viewportIndexes: [],
+      viewportStart,
+    };
+  }
+
+  const admissionExtraHeight = resolveSpectrumMusicAdmissionExtraHeight({
+    clientHeight: args.viewport.clientHeight,
+  });
+  const viewportRows = resolveSpectrumMusicVirtualViewportRows({
+    extraHeight: admissionExtraHeight,
+    rows: projectSpectrumMusicVirtualRangeRows({
+      admittedIndexes: args.admittedIndexes,
+      virtualRows: args.virtualRows,
+    }),
+    viewport: args.viewport,
+  });
+  const viewportIndexes = viewportRows.filter((row) => !row.isCurrent).map((row) => row.index);
+  const missingViewportIndexes = viewportIndexes.filter(
+    (index) => !args.admittedIndexes.has(index),
+  );
+
+  if (missingViewportIndexes.length === 0) {
+    return {
+      admissionExtraHeight,
+      missingViewportIndexes,
+      nextAdmittedIndexes: args.admittedIndexes,
+      shouldAdmitViewportRows,
+      viewportIndexes,
+      viewportStart,
+    };
+  }
+
+  const nextAdmittedIndexes = new Set(args.admittedIndexes);
+  missingViewportIndexes.forEach((index) => nextAdmittedIndexes.add(index));
+
+  return {
+    admissionExtraHeight,
+    missingViewportIndexes,
+    nextAdmittedIndexes,
+    shouldAdmitViewportRows,
+    viewportIndexes,
+    viewportStart,
+  };
 }
 
 function extractSpectrumMusicVirtualRange(range: Range) {
@@ -431,6 +567,69 @@ function commitAdmittedIndexes(
   );
 }
 
+type SpectrumMusicAdmissionIdleDeadline = {
+  didTimeout: boolean;
+  timeRemaining: () => number;
+};
+
+type SpectrumMusicAdmissionIdleWindow = Window & {
+  cancelIdleCallback?: (handle: number) => void;
+  requestIdleCallback?: (
+    callback: (deadline: SpectrumMusicAdmissionIdleDeadline) => void,
+  ) => number;
+};
+
+type SpectrumMusicAdmissionIdleHandle =
+  | {
+      handle: number;
+      kind: "idle";
+    }
+  | {
+      handle: number;
+      kind: "timeout";
+    };
+
+function scheduleSpectrumMusicAdmissionIdleCallback(
+  ownerWindow: Window,
+  callback: (deadline: SpectrumMusicAdmissionIdleDeadline) => void,
+): SpectrumMusicAdmissionIdleHandle {
+  const idleWindow = ownerWindow as SpectrumMusicAdmissionIdleWindow;
+  if (typeof idleWindow.requestIdleCallback === "function") {
+    return {
+      handle: idleWindow.requestIdleCallback(callback),
+      kind: "idle",
+    };
+  }
+
+  return {
+    handle: ownerWindow.setTimeout(
+      () =>
+        callback({
+          didTimeout: true,
+          timeRemaining: () => SPECTRUM_MUSIC_VIRTUAL_ADMISSION_IDLE_MIN_REMAINING_MS,
+        }),
+      SPECTRUM_MUSIC_VIRTUAL_ADMISSION_FALLBACK_DELAY_MS,
+    ),
+    kind: "timeout",
+  };
+}
+
+function cancelSpectrumMusicAdmissionIdleCallback(
+  ownerWindow: Window,
+  idleHandle: SpectrumMusicAdmissionIdleHandle | null,
+) {
+  if (!idleHandle) {
+    return;
+  }
+
+  if (idleHandle.kind === "idle") {
+    (ownerWindow as SpectrumMusicAdmissionIdleWindow).cancelIdleCallback?.(idleHandle.handle);
+    return;
+  }
+
+  ownerWindow.clearTimeout(idleHandle.handle);
+}
+
 export function SpectrumMusicVirtualList({
   editableTitleRefs,
   editorViewModels,
@@ -520,6 +719,16 @@ export function SpectrumMusicVirtualList({
   const listHeight = resolveSpectrumMusicVirtualListHeight({
     totalSize: rowVirtualizer.getTotalSize(),
   });
+  const virtualRangeRows = useMemo(
+    () =>
+      virtualRows.map((row) => ({
+        index: row.index,
+        isCurrent: editorViewModels[row.index]?.isCurrent === true,
+        size: row.size,
+        start: row.start,
+      })),
+    [editorViewModels, virtualRows],
+  );
   const waveformPreloadSelections = useMemo(
     () =>
       editorViewModels
@@ -532,6 +741,22 @@ export function SpectrumMusicVirtualList({
   );
   const admissionIdentityKey = createSpectrumMusicAdmissionIdentityKey(editorViewModels);
   const admissionScheduleKey = createSpectrumMusicAdmissionScheduleKey(editorViewModels);
+  const lastViewportAdmissionStartRef = useRef<number | null>(null);
+  const viewportAdmissionStartedRef = useRef(false);
+  const viewport = scrollElementRef.current
+    ? {
+        clientHeight: scrollElementRef.current.clientHeight,
+        scrollTop: scrollElementRef.current.scrollTop,
+      }
+    : null;
+  const viewportAdmissionPlan = resolveSpectrumMusicViewportAdmissionPlan({
+    admittedIndexes,
+    previousViewportStart: lastViewportAdmissionStartRef.current,
+    viewport,
+    viewportAdmissionStarted: viewportAdmissionStartedRef.current,
+    virtualRows: virtualRangeRows,
+  });
+  const renderAdmittedIndexes = viewportAdmissionPlan.nextAdmittedIndexes;
 
   useLayoutEffect(() => {
     handlersRef.current = {
@@ -552,6 +777,39 @@ export function SpectrumMusicVirtualList({
     onSelectionCommit,
     onTitleChange,
   ]);
+
+  useLayoutEffect(() => {
+    lastViewportAdmissionStartRef.current = null;
+    viewportAdmissionStartedRef.current = false;
+  }, [admissionIdentityKey]);
+
+  useLayoutEffect(() => {
+    if (viewportAdmissionPlan.viewportStart !== null) {
+      lastViewportAdmissionStartRef.current = viewportAdmissionPlan.viewportStart;
+    }
+
+    if (!viewportAdmissionPlan.shouldAdmitViewportRows) {
+      return;
+    }
+
+    viewportAdmissionStartedRef.current = true;
+    if (viewportAdmissionPlan.missingViewportIndexes.length === 0) {
+      return;
+    }
+
+    setAdmittedIndexes((current) => {
+      const currentMissingIndexes = viewportAdmissionPlan.missingViewportIndexes.filter(
+        (index) => !current.has(index),
+      );
+      if (currentMissingIndexes.length === 0) {
+        return current;
+      }
+
+      const next = new Set(current);
+      currentMissingIndexes.forEach((index) => next.add(index));
+      return next;
+    });
+  }, [viewportAdmissionPlan]);
 
   useLayoutEffect(() => {
     const list = listRef.current;
@@ -596,36 +854,60 @@ export function SpectrumMusicVirtualList({
     }
     commitAdmittedIndexes(setAdmittedIndexes, baseIndexes);
 
-    const deferredRows = admissionRows.filter((row) => !row.isCurrent && row.index !== 0);
+    const deferredRows = resolveSpectrumMusicAdmissionDeferredRows({ rows: admissionRows });
     const ownerWindow = listRef.current?.ownerDocument.defaultView ?? window;
-    const timers: number[] = [];
-    for (
-      let batchIndex = 0;
-      batchIndex * SPECTRUM_MUSIC_VIRTUAL_ADMISSION_BATCH_SIZE < deferredRows.length;
-      batchIndex += 1
-    ) {
-      const batchRows = resolveSpectrumMusicAdmissionBatchRows({
-        batchIndex,
-        rows: admissionRows,
-      });
-      const timer = ownerWindow.setTimeout(() => {
+    let cancelled = false;
+    let idleHandle: SpectrumMusicAdmissionIdleHandle | null = null;
+    let nextDeferredRowIndex = 0;
+    const scheduleNextDeferredRow = () => {
+      idleHandle = scheduleSpectrumMusicAdmissionIdleCallback(ownerWindow, admitNextDeferredRow);
+    };
+    const admitNextDeferredRow = (deadline: SpectrumMusicAdmissionIdleDeadline) => {
+      idleHandle = null;
+      if (cancelled) {
+        return;
+      }
+
+      const timeRemainingMs = deadline.timeRemaining();
+      if (
+        !shouldRunSpectrumMusicAdmissionIdleCallback({
+          didTimeout: deadline.didTimeout,
+          timeRemainingMs,
+        })
+      ) {
+        scheduleNextDeferredRow();
+        return;
+      }
+
+      const row = deferredRows[nextDeferredRowIndex];
+      if (!row) {
+        return;
+      }
+
+      nextDeferredRowIndex += 1;
+      startTransition(() => {
         setAdmittedIndexes((current) => {
-          if (batchRows.every((row) => current.has(row.index))) {
+          if (cancelled || current.has(row.index)) {
             return current;
           }
 
           const next = new Set(current);
-          batchRows.forEach((row) => next.add(row.index));
+          next.add(row.index);
           return next;
         });
-      }, batchIndex * SPECTRUM_MUSIC_VIRTUAL_ADMISSION_BATCH_DELAY_MS);
-      timers.push(timer);
+      });
+      if (nextDeferredRowIndex < deferredRows.length) {
+        scheduleNextDeferredRow();
+      }
+    };
+
+    if (deferredRows.length > 0) {
+      scheduleNextDeferredRow();
     }
 
     return () => {
-      for (const timer of timers) {
-        ownerWindow.clearTimeout(timer);
-      }
+      cancelled = true;
+      cancelSpectrumMusicAdmissionIdleCallback(ownerWindow, idleHandle);
     };
   }, [admissionIdentityKey, admissionScheduleKey]);
 
@@ -643,7 +925,7 @@ export function SpectrumMusicVirtualList({
         }
 
         const rowAdmission = resolveSpectrumMusicRowAdmission({
-          admittedIndexes,
+          admittedIndexes: renderAdmittedIndexes,
           isCurrent: editor.isCurrent,
           rowIndex: virtualRow.index,
         });

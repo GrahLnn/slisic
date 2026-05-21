@@ -312,7 +312,6 @@ type WaveformTileAvailabilitySignal = {
 
 type WaveformDrawPlan = {
   dataPlan: WaveformDataPlan;
-  status: WaveformStatus;
   tileCache: ReadonlyMap<string, WaveformCachedTile>;
   viewport: WaveformViewportModel;
 };
@@ -910,6 +909,7 @@ function clearWaveformCanvas(canvas: HTMLCanvasElement) {
   if (!context) {
     return;
   }
+
   context.clearRect(0, 0, canvas.width, canvas.height);
 }
 
@@ -1005,7 +1005,6 @@ function useWaveformCanvas(args: {
       color: args.color,
       plan: {
         dataPlan: args.dataPlan,
-        status: args.status,
         tileCache: args.tileCache,
         viewport: args.viewport,
       },
