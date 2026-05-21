@@ -28,6 +28,7 @@ import {
   resolveWaveformInitialViewportFrame,
   resolveWaveformInitialViewport,
   resolveWaveformMaximumPixelsPerSecond,
+  resolveWaveformMaximumRenderPixelsPerSecond,
   resolveWaveformMinimumPixelsPerSecond,
   resolveWaveformPixelsPerSecond,
   resolveWaveformPlayheadCssVariables,
@@ -62,13 +63,13 @@ import {
 
 function createSummary(overrides: Partial<TrackWaveformSummary> = {}): TrackWaveformSummary {
   return {
-    base_points_per_second: 800,
+    base_points_per_second: 3200,
     cache_key: "track",
     chunk_duration_ms: 2_000,
     duration_ms: 120_000,
-    levels: [50, 100, 200, 400, 800],
+    levels: [50, 100, 200, 400, 800, 1600, 3200],
     sample_rate: 48_000,
-    samples_per_point: 60,
+    samples_per_point: 15,
     start_ms: 0,
     ...overrides,
   };
@@ -170,6 +171,10 @@ describe("SpectrumVisualizer stable domains", () => {
       plans[0]?.visibleSecondsWindow.startSeconds,
       plans[1]?.visibleSecondsWindow.startSeconds,
     );
+    assert.equal(
+      plans.every((plan) => plan.dataPixelsPerSecond > 50),
+      true,
+    );
   });
 });
 
@@ -208,6 +213,7 @@ describe("SpectrumVisualizer viewport model", () => {
       1_000 / 14,
     );
     assert.equal(resolveWaveformMaximumPixelsPerSecond({ maximumPixelsPerSecond: 640 }), 640);
+    assert.equal(resolveWaveformMaximumRenderPixelsPerSecond(createSummary()), 3200);
     assert.equal(
       resolveWaveformPixelsPerSecond(10_000, {
         durationMs: 120_000,
@@ -536,7 +542,7 @@ describe("SpectrumVisualizer data plans", () => {
     const viewport = resolveWaveformViewportModel({
       durationMs: summary.duration_ms,
       focusSeconds: null,
-      maximumPixelsPerSecond: resolveWaveformRenderPixelsPerSecond({ summary }),
+      maximumPixelsPerSecond: resolveWaveformMaximumRenderPixelsPerSecond(summary),
       pixelsPerSecond: 120,
       scrollLeft: 0,
       viewportWidth: 800,
@@ -570,7 +576,7 @@ describe("SpectrumVisualizer data plans", () => {
     const viewport = resolveWaveformViewportModel({
       durationMs: summary.duration_ms,
       focusSeconds: null,
-      maximumPixelsPerSecond: resolveWaveformRenderPixelsPerSecond({ summary }),
+      maximumPixelsPerSecond: resolveWaveformMaximumRenderPixelsPerSecond(summary),
       pixelsPerSecond: 120,
       scrollLeft: 0,
       viewportWidth: 800,
@@ -1105,6 +1111,14 @@ describe("SpectrumVisualizer tile peak projection", () => {
     assert.equal(
       resolveWaveformRenderPixelsPerSecond({ pixelsPerSecond: 250, summary: createSummary() }),
       400,
+    );
+    assert.equal(
+      resolveWaveformRenderPixelsPerSecond({ pixelsPerSecond: 900, summary: createSummary() }),
+      1600,
+    );
+    assert.equal(
+      resolveWaveformRenderPixelsPerSecond({ pixelsPerSecond: 4_000, summary: createSummary() }),
+      3200,
     );
   });
 

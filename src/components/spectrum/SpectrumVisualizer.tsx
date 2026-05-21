@@ -34,7 +34,7 @@ import {
   resolveWaveformPlayheadCssVariables,
   resolveWaveformPlayheadDrag,
   resolveWaveformPointerAnchorViewportX,
-  resolveWaveformRenderPixelsPerSecond,
+  resolveWaveformMaximumRenderPixelsPerSecond,
   resolveWaveformPresentationSelection,
   resolveWaveformSelectionDrag,
   resolveWaveformSelectionGeometry,
@@ -93,6 +93,7 @@ export {
   resolveWaveformInitialViewportFrame,
   resolveWaveformInitialViewport,
   resolveWaveformMaximumPixelsPerSecond,
+  resolveWaveformMaximumRenderPixelsPerSecond,
   resolveWaveformMinimumPixelsPerSecond,
   resolveWaveformPixelsPerSecond,
   resolveWaveformPlayheadCssVariables,
@@ -577,9 +578,7 @@ export function resolveTrackSpectrumWaveformResourcePreloadPlans(args: {
   summary: import("@/src/cmd").TrackWaveformSummary;
   viewportWidth: number;
 }) {
-  const maximumPixelsPerSecond = resolveWaveformRenderPixelsPerSecond({
-    summary: args.summary,
-  });
+  const maximumPixelsPerSecond = resolveWaveformMaximumRenderPixelsPerSecond(args.summary);
   return args.selections.flatMap((selection) => {
     const initialViewport = resolveWaveformInitialViewportFrame({
       durationMs: args.summary.duration_ms,
@@ -1372,9 +1371,7 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
     renderDataStore,
     waveformPort: ports.waveform,
   });
-  const maximumPixelsPerSecond = resolveWaveformRenderPixelsPerSecond({
-    summary: waveformState.summary,
-  });
+  const maximumPixelsPerSecond = resolveWaveformMaximumRenderPixelsPerSecond(waveformState.summary);
   const initialViewportSelectionRef = useRef<WaveformSelectionRange | null>(
     props.selection ?? null,
   );

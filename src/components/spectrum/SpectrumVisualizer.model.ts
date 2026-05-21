@@ -1042,6 +1042,10 @@ export function resolveWaveformRenderPixelsPerSecond(args: {
   return levels.find((level) => level >= target) ?? levels[levels.length - 1];
 }
 
+export function resolveWaveformMaximumRenderPixelsPerSecond(summary: TrackWaveformSummary) {
+  return sortWaveformLevels(summary).at(-1) ?? WAVEFORM_FALLBACK_MAX_PIXELS_PER_SECOND;
+}
+
 export function resolveWaveformDataScopeKey(args: {
   filePath: string | null;
   summary: TrackWaveformSummary;

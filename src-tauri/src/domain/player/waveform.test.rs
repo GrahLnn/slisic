@@ -49,14 +49,16 @@ fn waveform_accumulator_keeps_negative_and_positive_peak_per_bucket() {
 
 #[test]
 fn waveform_level_uses_the_lowest_resolution_that_preserves_pixel_density() {
-    let levels = [50, 100, 200, 400, 800];
+    let levels = [50, 100, 200, 400, 800, 1600, 3200];
 
     assert_eq!(resolve_waveform_level(12, &levels), 50);
     assert_eq!(resolve_waveform_level(50, &levels), 50);
     assert_eq!(resolve_waveform_level(51, &levels), 100);
     assert_eq!(resolve_waveform_level(192, &levels), 200);
     assert_eq!(resolve_waveform_level(401, &levels), 800);
-    assert_eq!(resolve_waveform_level(900, &levels), 800);
+    assert_eq!(resolve_waveform_level(900, &levels), 1600);
+    assert_eq!(resolve_waveform_level(1_601, &levels), 3200);
+    assert_eq!(resolve_waveform_level(3_600, &levels), 3200);
 }
 
 #[test]
@@ -66,6 +68,8 @@ fn waveform_cache_chunks_are_large_enough_for_viewport_tile_reads() {
     assert_eq!(resolve_waveform_points_per_chunk(200), 12_000);
     assert_eq!(resolve_waveform_points_per_chunk(400), 24_000);
     assert_eq!(resolve_waveform_points_per_chunk(800), 48_000);
+    assert_eq!(resolve_waveform_points_per_chunk(1600), 96_000);
+    assert_eq!(resolve_waveform_points_per_chunk(3200), 192_000);
 }
 
 #[test]
