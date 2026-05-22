@@ -141,6 +141,7 @@ const excludedMusic: Music = {
   path: "Blocked Track.m4a",
   start_ms: 0,
   end_ms: 180_000,
+  liked: false,
 };
 
 const emptyExcludeAvailability = {

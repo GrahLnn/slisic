@@ -3,7 +3,8 @@ use super::model::{
     PlayListListView, RemoveExcludeResult, SpectrumMusicContext,
 };
 use crate::domain::player::service::{
-    PlaybackTrackIdentityUpdate, update_current_session_track_identity,
+    PlaybackTrackIdentityUpdate, PlaybackTrackLikedUpdate, active_request_track_snapshot,
+    update_current_session_track_identity, update_current_session_track_liked,
 };
 use tauri::AppHandle;
 
@@ -116,6 +117,35 @@ pub async fn update_music(
             end_ms,
             next_start_ms: music.start_ms,
             next_end_ms: music.end_ms,
+        })
+        .map_err(|error| error.to_string())?;
+    }
+
+    Ok(updated)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_current_music_liked(liked: bool) -> Result<Option<Music>, String> {
+    let Some(track) = active_request_track_snapshot().map_err(|error| error.to_string())? else {
+        return Ok(None);
+    };
+
+    let updated = super::repo::set_music_liked_by_identity(
+        &track.music_url,
+        track.start_ms,
+        track.end_ms,
+        liked,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    if updated.is_some() {
+        update_current_session_track_liked(&PlaybackTrackLikedUpdate {
+            music_url: track.music_url,
+            start_ms: track.start_ms,
+            end_ms: track.end_ms,
+            liked,
         })
         .map_err(|error| error.to_string())?;
     }

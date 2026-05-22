@@ -7,10 +7,10 @@ use super::repo::{
     get_collection_by_url, get_playlist_by_name, get_playlist_config_by_name,
     get_playlist_playback_selection_by_name, has_collections, list_collections,
     list_config_library, list_musics_by_file_path, list_playlists,
-    load_playlist_playback_track_sources, load_random_playlist_playback_track_source,
-    load_spectrum_music_context, playlist_playback_owner_attempt_order, remove_exclude,
-    set_collection_updates, update_music, upsert_collection, upsert_playlist,
-    upsert_playlist_surface,
+    load_liked_playlist_playback_track_sources, load_playlist_playback_track_sources,
+    load_random_playlist_playback_track_source, load_spectrum_music_context,
+    playlist_playback_owner_attempt_order, remove_exclude, set_collection_updates, update_music,
+    upsert_collection, upsert_playlist, upsert_playlist_surface,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -135,6 +135,7 @@ fn grouped_collection(url: &str) -> Collection {
             ),
             start_ms: 0,
             end_ms: 180_000,
+            liked: false,
         }],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
         enable_updates: Some(false),
@@ -150,6 +151,7 @@ fn named_music(name: &str, group: Group, path: &str) -> Music {
         path: Some(path.to_string()),
         start_ms: 0,
         end_ms: 180_000,
+        liked: false,
     }
 }
 
@@ -178,6 +180,7 @@ fn shared_music(collection_url: &str, collection_folder: &str) -> Music {
         path: Some("Shared Track.m4a".to_string()),
         start_ms: 0,
         end_ms: 180_000,
+        liked: false,
     }
 }
 
@@ -201,6 +204,7 @@ fn sample_playlist(name: &str) -> PlayList {
                 path: Some("Disc 1/Track.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 180_000,
+                liked: false,
             }],
             last_updated: "2026-04-12T00:00:00+00:00".to_string(),
             enable_updates: Some(false),
@@ -227,6 +231,7 @@ fn sample_excluded_music() -> Music {
         path: Some("Blocked Track.m4a".to_string()),
         start_ms: 0,
         end_ms: 180_000,
+        liked: false,
     }
 }
 
@@ -972,6 +977,7 @@ fn upsert_collection_bootstraps_collection_graph_schema_on_clean_db() {
                 path: Some("Minus Sixty One.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 316_000,
+                liked: false,
             }],
         );
 
@@ -1093,6 +1099,7 @@ fn create_music_appends_to_the_source_collection_once() {
             path: source_music.path,
             start_ms: 0,
             end_ms: 180_000,
+            liked: false,
         };
 
         let first = create_music(&collection.url, &created_music)
@@ -1139,6 +1146,7 @@ fn create_music_rejects_missing_source_collection() {
                 path: Some("Disc 1/Track.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 180_000,
+                liked: false,
             },
         )
         .await
@@ -1180,6 +1188,7 @@ fn delete_music_removes_only_the_matching_music_identity() {
                     path: Some(shared_path.to_string_lossy().to_string()),
                     start_ms: 0,
                     end_ms: 120_000,
+                    liked: false,
                 },
                 Music {
                     name: "Track B".to_string(),
@@ -1193,6 +1202,7 @@ fn delete_music_removes_only_the_matching_music_identity() {
                     path: Some(shared_path.to_string_lossy().to_string()),
                     start_ms: 120_000,
                     end_ms: 240_000,
+                    liked: false,
                 },
             ],
         );
@@ -1252,6 +1262,7 @@ fn list_musics_by_file_path_reads_matching_database_music_records() {
                     path: Some(shared_path.to_string_lossy().to_string()),
                     start_ms: 0,
                     end_ms: 120_000,
+                    liked: false,
                 },
                 Music {
                     name: "Track B".to_string(),
@@ -1265,6 +1276,7 @@ fn list_musics_by_file_path_reads_matching_database_music_records() {
                     path: Some(shared_path.to_string_lossy().to_string()),
                     start_ms: 120_000,
                     end_ms: 240_000,
+                    liked: false,
                 },
                 Music {
                     name: "Other".to_string(),
@@ -1278,6 +1290,7 @@ fn list_musics_by_file_path_reads_matching_database_music_records() {
                     path: Some("Disc 1/Other.m4a".to_string()),
                     start_ms: 0,
                     end_ms: 60_000,
+                    liked: false,
                 },
             ],
         );
@@ -1327,6 +1340,7 @@ fn load_spectrum_music_context_carries_source_owner_evidence_without_playlist_hy
                     path: Some(shared_path.to_string_lossy().to_string()),
                     start_ms: 0,
                     end_ms: 120_000,
+                    liked: false,
                 },
                 Music {
                     name: "Track A Tail".to_string(),
@@ -1336,6 +1350,7 @@ fn load_spectrum_music_context_carries_source_owner_evidence_without_playlist_hy
                     path: Some(shared_path.to_string_lossy().to_string()),
                     start_ms: 120_000,
                     end_ms: 240_000,
+                    liked: false,
                 },
                 Music {
                     name: "Track B".to_string(),
@@ -1345,6 +1360,7 @@ fn load_spectrum_music_context_carries_source_owner_evidence_without_playlist_hy
                     path: Some(shared_path.to_string_lossy().to_string()),
                     start_ms: 0,
                     end_ms: 60_000,
+                    liked: false,
                 },
             ],
         );
@@ -1410,6 +1426,7 @@ fn load_spectrum_music_context_filters_collection_candidates_by_path_components(
                 path: Some(shared_path.to_string_lossy().to_string()),
                 start_ms: 0,
                 end_ms: 120_000,
+                liked: false,
             }],
         );
         let neighbor = collection_with_musics(
@@ -1428,6 +1445,7 @@ fn load_spectrum_music_context_filters_collection_candidates_by_path_components(
                 path: Some(shared_path.to_string_lossy().to_string()),
                 start_ms: 0,
                 end_ms: 120_000,
+                liked: false,
             }],
         );
         let _ = upsert_collection(&collection)
@@ -1540,6 +1558,7 @@ fn upsert_collection_reuses_existing_legacy_record_id_and_removes_old_music() {
             path: Some("Stale Track.m4a".to_string()),
             start_ms: 0,
             end_ms: 90_000,
+            liked: false,
         };
         let stale_music_record = insert_music_row("legacy-stale-music", &stale_music).await;
         insert_music_edges(&legacy_record, std::slice::from_ref(&stale_music_record)).await;
@@ -2190,6 +2209,7 @@ fn playlist_playback_selection_reads_refs_without_hydrating_unselected_collectio
             path: Some("Selected.m4a".to_string()),
             start_ms: 0,
             end_ms: 60_000,
+            liked: false,
         };
         let selected_collection = collection_with_musics(
             "https://example.com/selected",
@@ -2209,6 +2229,7 @@ fn playlist_playback_selection_reads_refs_without_hydrating_unselected_collectio
                 path: Some("Unselected.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 60_000,
+                liked: false,
             }],
         );
 
@@ -2360,6 +2381,89 @@ fn playlist_playback_sources_skip_excluded_music() {
 }
 
 #[test]
+fn liked_playlist_playback_sources_skip_excluded_music() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let selected_group = collection_group(
+            "Disc 1",
+            "https://example.com/liked-excluded-source#disc-1",
+            "Disc 1",
+        );
+        let mut excluded_music = named_music(
+            "Liked Excluded Source",
+            selected_group.clone(),
+            "Excluded.m4a",
+        );
+        let mut playable_music = named_music(
+            "Liked Playable Source",
+            selected_group.clone(),
+            "Playable.m4a",
+        );
+        excluded_music.liked = true;
+        playable_music.liked = true;
+        let selected_collection = collection_with_musics(
+            "https://example.com/liked-excluded-source",
+            "youtube/liked-excluded-source",
+            Some(false),
+            vec![excluded_music.clone(), playable_music.clone()],
+        );
+        let selected_collection_record =
+            insert_collection_row("liked-excluded-source-collection", &selected_collection).await;
+        let selected_group_record =
+            insert_group_row("liked-excluded-source-group", &selected_group).await;
+        let selected_music_record =
+            insert_music_row("liked-excluded-source-music", &excluded_music).await;
+        let playable_music_record =
+            insert_music_row("liked-playable-source-music", &playable_music).await;
+
+        insert_music_edges(
+            &selected_collection_record,
+            &[selected_music_record.clone(), playable_music_record.clone()],
+        )
+        .await;
+        insert_group_edges(
+            &selected_group_record,
+            &[selected_music_record.clone(), playable_music_record],
+        )
+        .await;
+        add_exclude(excluded_music)
+            .await
+            .expect("exclude row should save before liked playback source load");
+
+        let playlist = PlayList {
+            name: "Liked Exclude Playback Sources".to_string(),
+            collections: vec![selected_collection],
+            groups: vec![],
+            created_at: AutoFill::pending(),
+        };
+        insert_playlist_row(
+            "liked-exclude-playback-sources-playlist",
+            &playlist,
+            std::slice::from_ref(&selected_collection_record),
+            &[],
+        )
+        .await;
+
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist");
+        let sources = load_liked_playlist_playback_track_sources(&selection, 2)
+            .await
+            .expect("liked playback sources should load");
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].music.url, playable_music.url);
+
+        reset_db();
+    });
+}
+
+#[test]
 fn playlist_playback_sources_return_empty_when_all_music_is_excluded() {
     let _guard = acquire_db_test_lock();
 
@@ -2441,6 +2545,7 @@ fn playlist_playback_selection_adds_parent_download_scope_for_group_only_refs() 
             path: Some("Selected.m4a".to_string()),
             start_ms: 0,
             end_ms: 60_000,
+            liked: false,
         };
         let selected_collection = collection_with_musics(
             "https://example.com/group-only",

@@ -292,6 +292,7 @@ pub(crate) fn materialize_music_entries(
             path: Some(relative_path.to_string()),
             start_ms: 0,
             end_ms: seconds_to_millis(probe.duration_seconds.unwrap_or(0)),
+            liked: false,
         }];
     }
 
@@ -306,6 +307,7 @@ pub(crate) fn materialize_music_entries(
             path: Some(relative_path.to_string()),
             start_ms: chapter.start_ms,
             end_ms: chapter.end_ms,
+            liked: false,
         })
         .collect()
 }
@@ -492,6 +494,7 @@ pub(crate) fn restore_single_source_musics_from_task(
             path: Some(relative_path.to_string()),
             start_ms: 0,
             end_ms: seconds_to_millis(leaf.duration_seconds.unwrap_or(0)),
+            liked: false,
         });
     }
 

@@ -11,6 +11,7 @@ pub struct NowPlayingTrackChangedEvent {
     pub file_path: String,
     pub start_ms: u32,
     pub end_ms: u32,
+    pub liked: bool,
 }
 
 impl From<PlaybackTrackPayload> for NowPlayingTrackChangedEvent {
@@ -22,6 +23,7 @@ impl From<PlaybackTrackPayload> for NowPlayingTrackChangedEvent {
             file_path: value.file_path,
             start_ms: value.start_ms,
             end_ms: value.end_ms,
+            liked: value.liked,
         }
     }
 }

@@ -46,6 +46,7 @@ function createMusic(overrides: Partial<Music> = {}): Music {
     path: "Disc 1/Track A.m4a",
     start_ms: 0,
     end_ms: 120_000,
+    liked: false,
     ...overrides,
   };
 }
@@ -403,6 +404,7 @@ describe("appLogic machine", () => {
         file_path: "C:/Music/quiet-morning.m4a",
         start_ms: deletedMusic.start_ms,
         end_ms: deletedMusic.end_ms,
+        liked: false,
       }),
     );
     actor.send(sig.mainx.openspectrum);
@@ -530,6 +532,7 @@ describe("appLogic machine", () => {
         file_path: "C:/Music/quiet-morning.m4a",
         start_ms: music.start_ms,
         end_ms: music.end_ms,
+        liked: false,
       }),
     );
     actor.send(spectrumPlaybackScopeChanged.load(42));
@@ -647,6 +650,7 @@ describe("appLogic machine", () => {
         file_path: "C:/Music/quiet-morning.m4a",
         start_ms: music.start_ms,
         end_ms: music.end_ms,
+        liked: false,
       }),
     );
     actor.send(sig.mainx.openspectrum);
@@ -747,6 +751,7 @@ describe("appLogic machine", () => {
         file_path: "C:/Music/quiet-morning.m4a",
         start_ms: music.start_ms,
         end_ms: music.end_ms,
+        liked: false,
       }),
     );
     actor.send(sig.mainx.openspectrum);
@@ -836,6 +841,7 @@ describe("appLogic machine", () => {
         file_path: "C:/Music/quiet-morning.m4a",
         start_ms: music.start_ms,
         end_ms: music.end_ms,
+        liked: false,
       }),
     );
     actor.send(sig.mainx.openspectrum);
@@ -941,6 +947,7 @@ describe("appLogic machine", () => {
         file_path: "C:/Music/quiet-morning.m4a",
         start_ms: music.start_ms,
         end_ms: music.end_ms,
+        liked: false,
       }),
     );
     actor.send(sig.mainx.openspectrum);

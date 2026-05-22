@@ -211,6 +211,7 @@ function createSpectrumPlayReturnContext(
       currentMusicDelete !== null
         ? null
         : (currentMusicEdit?.endMs ?? context.nowPlayingTrackEndMs),
+    nowPlayingTrackLiked: currentMusicDelete !== null ? null : context.nowPlayingTrackLiked,
     shouldStartPlayback: false,
     spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
     spectrumMusicSourceContext: null,
@@ -326,6 +327,7 @@ function createOpenSpectrumContext(context: Context) {
     nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
     nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
     nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+    nowPlayingTrackLiked: context.nowPlayingTrackLiked,
     spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
     spectrumMusicDrafts: createCurrentSpectrumMusicDrafts(context),
     spectrumMusicSourceContext: null,
@@ -375,6 +377,7 @@ function createPlayReadyContext(context: Context, playlistName: string) {
     savePath: context.savePath,
     playingPlaylistName: playlistName,
     nowPlayingTrackName: null,
+    nowPlayingTrackLiked: null,
     shouldStartPlayback: true,
   });
 }
@@ -390,6 +393,7 @@ function createPendingPreviewPlaybackContext(context: Context, playlistName: str
     pendingPlaylistPlaybackName: playlistName,
     playingPlaylistName: null,
     nowPlayingTrackName: null,
+    nowPlayingTrackLiked: null,
     shouldStartPlayback: false,
     activeLayoutId: playlistTitleLayoutId(playlistName),
     titleToneHandoff: createCollectionTitleHandoff(playlistTitleLayoutId(playlistName), "solid"),
@@ -418,6 +422,7 @@ function createPlaylistUpsertedContext(
       ? {
           playingPlaylistName: event.output.playlist.name,
           nowPlayingTrackName: null,
+          nowPlayingTrackLiked: null,
           shouldStartPlayback: true,
         }
       : {}),
@@ -441,6 +446,7 @@ function createPendingPreviewConfigContext(context: Context, playlistName: strin
     savePath: context.savePath,
     playingPlaylistName: null,
     nowPlayingTrackName: null,
+    nowPlayingTrackLiked: null,
     activeLayoutId,
     titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
     draftBaseline: cloneDraft(draft),
@@ -460,6 +466,7 @@ function createConfigLoadingContext(context: Context, playlistName: string) {
     savePath: context.savePath,
     playingPlaylistName: null,
     nowPlayingTrackName: null,
+    nowPlayingTrackLiked: null,
     activeLayoutId,
     titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
     pendingPlaylistName: playlistName,
@@ -590,6 +597,7 @@ export const machine = src.createMachine({
           nowPlayingTrackFilePath: event.output.file_path,
           nowPlayingTrackStartMs: event.output.start_ms,
           nowPlayingTrackEndMs: event.output.end_ms,
+          nowPlayingTrackLiked: event.output.liked,
           pendingSpectrumMusicCreateId:
             context.nowPlayingTrackFilePath === event.output.file_path
               ? context.pendingSpectrumMusicCreateId

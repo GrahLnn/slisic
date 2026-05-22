@@ -41,6 +41,7 @@ fn music(name: &str, url: &str, path: &str, group: Group) -> Music {
         path: Some(path.to_string()),
         start_ms: 0,
         end_ms: 180_000,
+        liked: false,
     }
 }
 
@@ -53,6 +54,7 @@ fn music_with_alias(name: &str, alias: &str, url: &str, path: &str, group: Group
         path: Some(path.to_string()),
         start_ms: 0,
         end_ms: 180_000,
+        liked: false,
     }
 }
 
@@ -264,6 +266,7 @@ fn random_recommender_shuffle_preserves_candidate_identity_set() {
             file_path: PathBuf::from(format!("track-{index}.m4a")),
             start_ms: index * 1_000,
             end_ms: index * 1_000 + 500,
+            liked: false,
         })
         .collect::<Vec<_>>();
     let mut before = tracks
@@ -306,6 +309,7 @@ fn initial_track_selection_uses_the_requested_random_index() {
             file_path: PathBuf::from(format!("track-{index}.m4a")),
             start_ms: 0,
             end_ms: 60_000,
+            liked: false,
         })
         .collect::<Vec<_>>();
 
@@ -327,6 +331,7 @@ fn random_recommender_keeps_current_track_at_the_queue_start() {
         file_path: PathBuf::from("current.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        liked: false,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -335,6 +340,7 @@ fn random_recommender_keeps_current_track_at_the_queue_start() {
         file_path: PathBuf::from("next.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        liked: false,
     };
 
     let proposed =
@@ -363,6 +369,7 @@ fn queue_start_projection_preserves_the_initial_playback_anchor() {
         file_path: PathBuf::from("initial.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        liked: false,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -371,6 +378,7 @@ fn queue_start_projection_preserves_the_initial_playback_anchor() {
         file_path: PathBuf::from("next.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        liked: false,
     };
 
     let reordered =
@@ -392,6 +400,7 @@ fn random_recommender_after_exclude_does_not_reinsert_current_track() {
         file_path: PathBuf::from("current.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        liked: false,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -400,6 +409,7 @@ fn random_recommender_after_exclude_does_not_reinsert_current_track() {
         file_path: PathBuf::from("next.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        liked: false,
     };
 
     let proposed = RandomPlaylistPlaybackRecommender.propose_queue_after_exclude(
@@ -428,6 +438,7 @@ fn random_recommender_keeps_current_track_ahead_of_newly_loaded_queue_window() {
         file_path: PathBuf::from("current.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        liked: false,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -436,6 +447,7 @@ fn random_recommender_keeps_current_track_ahead_of_newly_loaded_queue_window() {
         file_path: PathBuf::from("next.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        liked: false,
     };
 
     let proposed =

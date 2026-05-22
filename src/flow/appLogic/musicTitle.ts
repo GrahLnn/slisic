@@ -742,6 +742,7 @@ export function createMusicDraftCreateFromDraft(
       path: draft.sourcePath,
       start_ms: startMs,
       end_ms: endMs,
+      liked: false,
       url: resolveMusicCreateUrl({
         sourceUrl: draft.sourceUrl,
         startMs,

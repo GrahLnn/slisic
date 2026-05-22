@@ -125,6 +125,30 @@ pub async fn get_music_by_identity(url: &str, start_ms: u32, end_ms: u32) -> Res
     Ok(Some(Music::get_record(record).await?))
 }
 
+pub async fn set_music_liked_by_identity(
+    url: &str,
+    start_ms: u32,
+    end_ms: u32,
+    liked: bool,
+) -> Result<Option<Music>> {
+    ensure_collection_graph_schema().await?;
+
+    let records = find_music_record_ids_by_identity(url, start_ms, end_ms).await?;
+    let mut first_updated = None;
+
+    for record in records {
+        let mut music = Music::get_record(record.clone()).await?;
+        music.liked = liked;
+        let updated = Repo::<Music>::update_at(record, music).await?;
+
+        if first_updated.is_none() {
+            first_updated = Some(updated);
+        }
+    }
+
+    Ok(first_updated)
+}
+
 pub async fn is_music_identity_excluded_for_playback(
     url: &str,
     start_ms: u32,
@@ -373,6 +397,35 @@ pub async fn load_playlist_playback_track_sources(
 
     for group in &selection.groups {
         append_group_playback_track_sources(group, limit, &mut seen, &mut sources).await?;
+        if sources.len() >= limit {
+            return Ok(sources);
+        }
+    }
+
+    Ok(sources)
+}
+
+pub async fn load_liked_playlist_playback_track_sources(
+    selection: &PlaylistPlaybackSelection,
+    limit: usize,
+) -> Result<Vec<PlaylistPlaybackTrackSource>> {
+    if limit == 0 {
+        return Ok(vec![]);
+    }
+
+    let mut sources = Vec::with_capacity(limit);
+    let mut seen = HashSet::new();
+
+    for collection in &selection.collections {
+        append_liked_collection_playback_track_sources(collection, limit, &mut seen, &mut sources)
+            .await?;
+        if sources.len() >= limit {
+            return Ok(sources);
+        }
+    }
+
+    for group in &selection.groups {
+        append_liked_group_playback_track_sources(group, limit, &mut seen, &mut sources).await?;
         if sources.len() >= limit {
             return Ok(sources);
         }
@@ -1071,6 +1124,63 @@ async fn append_group_playback_track_sources(
 
         let music = Music::get_record(music_record).await?;
         for collection_record in parent_records {
+            let Some(collection) =
+                load_playlist_playback_collection_ref(&collection_record).await?
+            else {
+                continue;
+            };
+            append_playback_track_source(&collection, music.clone(), seen, sources);
+            if sources.len() >= limit {
+                return Ok(());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn append_liked_collection_playback_track_sources(
+    collection: &PlaylistPlaybackCollectionRef,
+    limit: usize,
+    seen: &mut HashSet<String>,
+    sources: &mut Vec<PlaylistPlaybackTrackSource>,
+) -> Result<()> {
+    for music_record in load_collection_music_ids(&collection.record).await? {
+        if is_music_record_excluded_for_playback(&music_record, Music::table_name()).await? {
+            continue;
+        }
+
+        let music = Music::get_record(music_record).await?;
+        if !music.liked {
+            continue;
+        }
+        append_playback_track_source(collection, music, seen, sources);
+        if sources.len() >= limit {
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}
+
+async fn append_liked_group_playback_track_sources(
+    group: &PlaylistPlaybackGroupRef,
+    limit: usize,
+    seen: &mut HashSet<String>,
+    sources: &mut Vec<PlaylistPlaybackTrackSource>,
+) -> Result<()> {
+    for music_record in load_relation_out_ids("grouped", &group.record, Music::table_name()).await?
+    {
+        if is_music_record_excluded_for_playback(&music_record, Music::table_name()).await? {
+            continue;
+        }
+
+        let music = Music::get_record(music_record.clone()).await?;
+        if !music.liked {
+            continue;
+        }
+
+        for collection_record in load_music_parent_collection_ids(&music_record).await? {
             let Some(collection) =
                 load_playlist_playback_collection_ref(&collection_record).await?
             else {

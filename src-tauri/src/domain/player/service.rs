@@ -368,6 +368,21 @@ pub(crate) fn update_current_session_track_identity(
     runtime()?.update_current_session_track_identity(update)
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PlaybackTrackLikedUpdate {
+    pub(crate) music_url: String,
+    pub(crate) start_ms: u32,
+    pub(crate) end_ms: u32,
+    pub(crate) liked: bool,
+}
+
+#[cfg(not(test))]
+pub(crate) fn update_current_session_track_liked(
+    update: &PlaybackTrackLikedUpdate,
+) -> Result<bool> {
+    runtime()?.update_current_session_track_liked(update)
+}
+
 #[cfg(not(test))]
 pub async fn play_track_in_current_session(
     scope_id: u64,
@@ -1292,6 +1307,46 @@ impl PlayerRuntime {
         Ok(true)
     }
 
+    fn update_current_session_track_liked(
+        &self,
+        update: &PlaybackTrackLikedUpdate,
+    ) -> Result<bool> {
+        let active_update = {
+            let session = self
+                .session
+                .lock()
+                .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
+            let Some(active) = session.as_ref() else {
+                return Ok(false);
+            };
+
+            let mut current_tracks = active
+                .tracks
+                .write()
+                .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))?;
+            let Some(next_tracks) = resolve_session_track_liked_update(&current_tracks, update)
+            else {
+                return Ok(false);
+            };
+
+            let next_active_track = resolve_active_request_track_liked_update(
+                self.active_request_track_snapshot()?.as_ref(),
+                update,
+            );
+            *current_tracks = next_tracks;
+            if let Some(track) = next_active_track.as_ref() {
+                self.set_active_request_track(track.clone())?;
+            }
+            next_active_track
+        };
+
+        if let Some(track) = active_update {
+            NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&self.app)?;
+        }
+
+        Ok(true)
+    }
+
     fn is_session_current(&self, handle: &PlaybackSessionHandle) -> Result<bool> {
         if self.generation.load(Ordering::SeqCst) != handle.generation {
             return Ok(false);
@@ -1487,6 +1542,7 @@ pub(crate) fn playback_tracks_match(left: &[PlaybackTrack], right: &[PlaybackTra
                 && left.file_path == right.file_path
                 && left.start_ms == right.start_ms
                 && left.end_ms == right.end_ms
+                && left.liked == right.liked
         })
 }
 
@@ -1553,6 +1609,49 @@ pub(crate) fn resolve_active_request_track_identity_update(
     next.music_name = update.music_name.clone();
     next.start_ms = update.next_start_ms;
     next.end_ms = update.next_end_ms;
+    Some(next)
+}
+
+pub(crate) fn resolve_session_track_liked_update(
+    tracks: &[PlaybackTrack],
+    update: &PlaybackTrackLikedUpdate,
+) -> Option<Vec<PlaybackTrack>> {
+    let mut changed = false;
+    let next_tracks = tracks
+        .iter()
+        .map(|track| {
+            if track.music_url != update.music_url
+                || track.start_ms != update.start_ms
+                || track.end_ms != update.end_ms
+            {
+                return track.clone();
+            }
+
+            let mut next = track.clone();
+            next.liked = update.liked;
+            changed = changed || track.liked != next.liked;
+            next
+        })
+        .collect::<Vec<_>>();
+
+    changed.then_some(next_tracks)
+}
+
+pub(crate) fn resolve_active_request_track_liked_update(
+    active_request_track: Option<&PlaybackTrack>,
+    update: &PlaybackTrackLikedUpdate,
+) -> Option<PlaybackTrack> {
+    let track = active_request_track?;
+
+    if track.music_url != update.music_url
+        || track.start_ms != update.start_ms
+        || track.end_ms != update.end_ms
+    {
+        return None;
+    }
+
+    let mut next = track.clone();
+    next.liked = update.liked;
     Some(next)
 }
 

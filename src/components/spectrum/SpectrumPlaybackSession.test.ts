@@ -88,6 +88,7 @@ describe("SpectrumPlaybackSession", () => {
     assert.deepEqual(createSpectrumPlaybackTrackPayload(identity, "Disc 1 Opening"), {
       end_ms: 120_000,
       file_path: "C:/Music/quiet-morning.m4a",
+      liked: false,
       music_name: "Disc 1 Opening",
       music_url: "https://example.com/quiet-morning#a",
       playlist_name: "Focus Session",

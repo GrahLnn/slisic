@@ -37,6 +37,7 @@ export function PlayListPage({
     playingPlaylistName,
     nowPlayingTrackName,
     nowPlayingTrackUrl,
+    nowPlayingTrackLiked,
     titleToneHandoff,
   } = appLogicHook.useContext();
   const pageState = appLogicHook.useState();
@@ -61,6 +62,7 @@ export function PlayListPage({
     playingPlaylistName,
     nowPlayingTrackName,
     nowPlayingTrackUrl,
+    nowPlayingTrackLiked,
   });
   const titleReturnSurfaceTargetLayoutId = resolvePlayListPageTitleReturnSurfaceTargetLayoutId({
     pageState: pageStateValue,
@@ -201,6 +203,9 @@ export function PlayListPage({
                 }}
                 onExcludeCurrentMusic={() => {
                   appLogicAction.excludeCurrentMusicAndSkip();
+                }}
+                onToggleCurrentMusicLike={(liked) => {
+                  appLogicAction.setCurrentMusicLiked(liked);
                 }}
               />
             ))}

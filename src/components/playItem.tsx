@@ -28,9 +28,11 @@ type PlayItemBaseProps = Omit<HTMLMotionProps<"div">, "children"> & {
   handoffTone?: CollectionTitleTone | null;
   textClassName?: string;
   showPlaybackIcons?: boolean;
+  isLiked?: boolean;
   playbackIconWidthText?: string;
   isPlaybackPreparing?: boolean;
   onExcludeCurrentMusic?: () => void;
+  onToggleLike?: (liked: boolean) => void;
   onOpenSpectrum?: () => void;
   onOpenSpectrumPointerDown?: () => void;
   onTitleLayoutAnimationComplete?: (layoutId?: string) => void;
@@ -48,12 +50,14 @@ type PlayItemTextProps = Pick<
   PlayItemBaseProps,
   | "handoffTone"
   | "isPlaybackPreparing"
+  | "isLiked"
   | "layoutId"
   | "onClick"
   | "onExcludeCurrentMusic"
   | "onOpenSpectrum"
   | "onOpenSpectrumPointerDown"
   | "onPointerDown"
+  | "onToggleLike"
   | "onTorphStageChange"
   | "playbackIconWidthText"
   | "showPlaybackIcons"
@@ -285,18 +289,21 @@ function PlayItemFrame({
 function PlayItemFn({
   activeColor,
   icon,
+  isActive: controlledActive,
   label,
   onClick,
   onPointerDown,
 }: {
   activeColor?: string;
   icon: ReactNode;
+  isActive?: boolean;
   label: string;
-  onClick?: () => void;
+  onClick?: (nextActive: boolean) => void;
   onPointerDown?: () => void;
 }) {
-  const [isActive, setIsActive] = useState(false);
+  const [internalActive, setInternalActive] = useState(false);
   const inactiveColorRef = useRef<string | undefined>(undefined);
+  const isActive = controlledActive ?? internalActive;
   const isInteractive = Boolean(activeColor || onClick || onPointerDown);
   const animatedColor =
     activeColor && (isActive || inactiveColorRef.current)
@@ -337,12 +344,14 @@ function PlayItemFn({
 
         if (activeColor) {
           inactiveColorRef.current ||= window.getComputedStyle(event.currentTarget).color;
-          setIsActive((current) => !current);
+          if (controlledActive === undefined) {
+            setInternalActive((current) => !current);
+          }
         }
         onPointerDown?.();
       }}
       onClick={() => {
-        onClick?.();
+        onClick?.(!isActive);
       }}
     >
       {icon}
@@ -353,11 +362,13 @@ function PlayItemFn({
 function PlayItemText({
   handoffTone = null,
   isPlaybackPreparing = false,
+  isLiked = false,
   onClick,
   onExcludeCurrentMusic,
   onOpenSpectrum,
   onOpenSpectrumPointerDown,
   onPointerDown,
+  onToggleLike,
   onTorphStageChange,
   playbackIconWidthText,
   showPlaybackIcons = false,
@@ -406,6 +417,10 @@ function PlayItemText({
   const handleExcludeCurrentMusic = () => {
     dismissPlaybackIconLayer();
     onExcludeCurrentMusic?.();
+  };
+
+  const handleToggleLike = (liked: boolean) => {
+    onToggleLike?.(liked);
   };
 
   useLayoutEffect(() => {
@@ -518,7 +533,9 @@ function PlayItemText({
                     <PlayItemFn
                       activeColor={PLAY_ITEM_HEART_ACTIVE_COLOR}
                       icon={<icons.suitHearts size={14} />}
+                      isActive={isLiked}
                       label="Toggle favorite"
+                      onClick={handleToggleLike}
                     />
                   </div>
                   <div className="flex items-center">
@@ -556,11 +573,13 @@ export function PlayItem({
   tone = "solid",
   handoffTone = null,
   isPlaybackPreparing = false,
+  isLiked = false,
   text,
   textClassName,
   playbackIconWidthText,
   showPlaybackIcons = false,
   onTorphStageChange,
+  onToggleLike,
   onTitleLayoutAnimationComplete,
   torphDebugLabel = null,
   ...domProps
@@ -576,12 +595,14 @@ export function PlayItem({
       <PlayItemText
         handoffTone={handoffTone}
         isPlaybackPreparing={isPlaybackPreparing}
+        isLiked={isLiked}
         onClick={onClick}
         onExcludeCurrentMusic={onExcludeCurrentMusic}
         onOpenSpectrum={onOpenSpectrum}
         onOpenSpectrumPointerDown={onOpenSpectrumPointerDown}
         onPointerDown={onPointerDown}
         onTorphStageChange={onTorphStageChange}
+        onToggleLike={onToggleLike}
         playbackIconWidthText={playbackIconWidthText}
         showPlaybackIcons={showPlaybackIcons}
         text={text}

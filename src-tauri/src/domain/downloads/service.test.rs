@@ -393,6 +393,7 @@ fn existing_leaf_urls_only_counts_entries_with_present_files() {
                 path: Some("present.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 60_000,
+                liked: false,
             },
             Music {
                 name: "Missing".to_string(),
@@ -402,6 +403,7 @@ fn existing_leaf_urls_only_counts_entries_with_present_files() {
                 path: Some("missing.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 60_000,
+                liked: false,
             },
         ],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
@@ -709,6 +711,7 @@ fn create_collection_shell_reuses_existing_music_and_updates_collection_metadata
             path: Some("Disc 1/track-1.m4a".to_string()),
             start_ms: 0,
             end_ms: 120_000,
+            liked: false,
         }],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
         enable_updates: Some(false),

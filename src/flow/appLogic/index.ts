@@ -11,6 +11,7 @@ import {
   MainStateT,
   persistSavePath,
   removeExclude,
+  setCurrentMusicLiked,
   setPlaybackContinuationMode,
   sig,
   stopPlayback,
@@ -142,6 +143,12 @@ async function excludeCurrentMusicAndSkipFromPlayback(snapshot: ActorSnapshot) {
 function requestExcludeCurrentMusicAndSkip(snapshot: ActorSnapshot) {
   void excludeCurrentMusicAndSkipFromPlayback(snapshot).catch((error) => {
     console.error("Failed to exclude current music and skip playback", error);
+  });
+}
+
+function requestSetCurrentPlaybackMusicLiked(liked: boolean) {
+  void setCurrentMusicLiked(liked).catch((error) => {
+    console.error("Failed to update current music like", error);
   });
 }
 
@@ -337,6 +344,21 @@ export const action = {
     }
 
     requestExcludeCurrentMusicAndSkip(snapshot);
+  },
+  setCurrentMusicLiked: (liked: boolean) => {
+    ensureStarted();
+    const snapshot = actor.getSnapshot();
+    if (
+      snapshot.value !== "play" ||
+      snapshot.context.playingPlaylistName === null ||
+      snapshot.context.nowPlayingTrackUrl === null ||
+      snapshot.context.nowPlayingTrackStartMs === null ||
+      snapshot.context.nowPlayingTrackEndMs === null
+    ) {
+      return;
+    }
+
+    requestSetCurrentPlaybackMusicLiked(liked);
   },
   openSpectrum: () => {
     ensureStarted();

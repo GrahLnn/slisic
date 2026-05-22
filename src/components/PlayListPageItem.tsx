@@ -100,6 +100,7 @@ export function PlayListPageItem({
   onTorphStageChange,
   onCommit,
   onExcludeCurrentMusic,
+  onToggleCurrentMusicLike,
   onOpenSpectrum,
   onOpenSpectrumPointerDown,
   onLayoutAnimationComplete,
@@ -112,6 +113,7 @@ export function PlayListPageItem({
   onTorphStageChange?: (stage: TorphStage) => void;
   onCommit: () => void;
   onExcludeCurrentMusic?: () => void;
+  onToggleCurrentMusicLike?: (liked: boolean) => void;
   onOpenSpectrum?: () => void;
   onOpenSpectrumPointerDown?: () => void;
   onLayoutAnimationComplete?: (layoutId?: string) => void;
@@ -184,11 +186,13 @@ export function PlayListPageItem({
           isPlaybackPreparing={viewModel.isPlaybackPreparing}
           layoutId={titleProjectionLayoutId}
           playbackIconWidthText={viewModel.playbackIconWidthText}
+          isLiked={viewModel.isCurrentMusicLiked}
           showPlaybackIcons={viewModel.shouldShowPlaybackIcons}
           text={viewModel.text}
           textClassName={titleHoverClassName}
           torphDebugLabel="playlist-title"
           onExcludeCurrentMusic={onExcludeCurrentMusic}
+          onToggleLike={onToggleCurrentMusicLike}
           onOpenSpectrum={onOpenSpectrum}
           onOpenSpectrumPointerDown={onOpenSpectrumPointerDown}
           onTitleLayoutAnimationComplete={onLayoutAnimationComplete}

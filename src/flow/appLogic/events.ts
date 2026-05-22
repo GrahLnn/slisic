@@ -218,6 +218,17 @@ export async function excludeCurrentMusicAndSkip(): Promise<ExcludeCurrentMusicA
   });
 }
 
+export async function setCurrentMusicLiked(liked: boolean): Promise<Music | null> {
+  const result = await crab.setCurrentMusicLiked(liked);
+
+  return result.match({
+    Ok: (music) => music,
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+}
+
 export async function removeExclude(change: ExcludeRemovedChange): Promise<ExcludeRemovedChange> {
   const result = await crab.removeExclude(change.music);
 

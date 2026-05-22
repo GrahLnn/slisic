@@ -142,6 +142,7 @@ describe("upsertCollectionIntoCollections", () => {
           path: "opening.m4a",
           start_ms: 0,
           end_ms: 120_000,
+          liked: false,
         },
       ],
     };
@@ -606,6 +607,7 @@ describe("includeDraftSidebarItem", () => {
           path: "Disc 1/opening.m4a",
           start_ms: 0,
           end_ms: 120_000,
+          liked: false,
         },
       ],
       last_updated: "2026-04-13T00:00:00Z",

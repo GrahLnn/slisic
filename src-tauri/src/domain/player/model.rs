@@ -17,6 +17,7 @@ pub struct PlaybackTrackPayload {
     pub file_path: String,
     pub start_ms: u32,
     pub end_ms: u32,
+    pub liked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -70,6 +71,7 @@ pub struct PlaybackTrack {
     pub file_path: PathBuf,
     pub start_ms: u32,
     pub end_ms: u32,
+    pub liked: bool,
 }
 
 impl PlaybackTrack {
@@ -99,6 +101,7 @@ impl PlaybackTrack {
             file_path: PathBuf::from(payload.file_path),
             start_ms: payload.start_ms,
             end_ms: payload.end_ms,
+            liked: payload.liked,
         })
     }
 
@@ -110,6 +113,7 @@ impl PlaybackTrack {
             file_path: self.file_path.to_string_lossy().to_string(),
             start_ms: self.start_ms,
             end_ms: self.end_ms,
+            liked: self.liked,
         }
     }
 }

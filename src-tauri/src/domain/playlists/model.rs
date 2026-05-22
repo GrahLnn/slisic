@@ -129,6 +129,7 @@ pub struct Music {
     pub path: Option<String>,
     pub start_ms: u32,
     pub end_ms: u32,
+    pub liked: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View, Type)]
@@ -140,6 +141,7 @@ pub struct MusicSpectrumView {
     pub path: Option<String>,
     pub start_ms: u32,
     pub end_ms: u32,
+    pub liked: bool,
 }
 
 impl MusicSpectrumView {
@@ -152,6 +154,7 @@ impl MusicSpectrumView {
             path: self.path,
             start_ms: self.start_ms,
             end_ms: self.end_ms,
+            liked: self.liked,
         }
     }
 }

@@ -159,6 +159,7 @@ describe("playListTitleHandoff model", () => {
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Track A",
+        displayedTrackLiked: null,
         displayedTrackIsPlayable: true,
       },
       titleReturnSurface: null,

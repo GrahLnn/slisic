@@ -39,6 +39,7 @@ const sampleCollection: Collection = {
       path: "a.m4a",
       start_ms: 0,
       end_ms: 120_000,
+      liked: false,
     },
   ],
   last_updated: "2026-04-13T00:00:00Z",
@@ -455,6 +456,7 @@ describe("musicDraft", () => {
       url: "https://example.com/quiet-morning#b",
       start_ms: 120_000,
       end_ms: 240_000,
+      liked: false,
     };
     const collection = {
       ...sampleCollection,
@@ -559,6 +561,7 @@ describe("musicDraft", () => {
           path: sampleCollection.musics[0]!.path,
           start_ms: 0,
           end_ms: 120_000,
+          liked: false,
           url: "https://example.com/quiet-morning#a#spectrum#0#120000#Track%20Draft",
         },
       },

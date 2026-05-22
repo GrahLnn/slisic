@@ -55,10 +55,12 @@ export type SpectrumPlaybackLoopSignalCommandPayload = {
 export function createSpectrumPlaybackTrackPayload(
   identity: SpectrumPlaybackIdentity,
   musicName: string,
+  liked = false,
 ): PlaybackTrackPayload {
   return {
     end_ms: identity.endMs,
     file_path: identity.filePath,
+    liked,
     music_name: musicName,
     music_url: identity.url,
     playlist_name: identity.playlistName,

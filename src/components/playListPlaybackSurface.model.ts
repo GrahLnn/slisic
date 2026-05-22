@@ -7,18 +7,21 @@ export type PlayListPlaybackSurfaceState =
       phase: "inactive";
       playlistName: null;
       displayedTrackName: null;
+      displayedTrackLiked: null;
       displayedTrackIsPlayable: false;
     }
   | {
       phase: "playing";
       playlistName: string;
       displayedTrackName: string | null;
+      displayedTrackLiked: boolean | null;
       displayedTrackIsPlayable: boolean;
     }
   | {
       phase: "restoring";
       playlistName: string;
       displayedTrackName: null;
+      displayedTrackLiked: null;
       displayedTrackIsPlayable: false;
       restoreTransitionStarted: boolean;
     };
@@ -27,6 +30,7 @@ export interface PlayListPlaybackSurfaceSnapshot {
   phase: Exclude<PlayListPlaybackSurfacePhase, "inactive">;
   playlistName: string;
   displayedTrackName: string | null;
+  displayedTrackLiked: boolean | null;
   displayedTrackIsPlayable: boolean;
 }
 
@@ -34,6 +38,7 @@ export const INACTIVE_PLAYBACK_SURFACE: PlayListPlaybackSurfaceState = {
   phase: "inactive",
   playlistName: null,
   displayedTrackName: null,
+  displayedTrackLiked: null,
   displayedTrackIsPlayable: false,
 };
 
@@ -65,9 +70,10 @@ export function resolveMachinePlaybackTarget(args: {
 export function syncPlaybackSurfaceState(args: {
   current: PlayListPlaybackSurfaceState;
   machinePlaybackTarget: string | null;
-  nowPlayingTrack: { name: string; url: string } | null;
+  nowPlayingTrack: { liked: boolean | null; name: string; url: string } | null;
 }) {
   const displayedTrackName = args.nowPlayingTrack?.name ?? null;
+  const displayedTrackLiked = args.nowPlayingTrack?.liked ?? null;
   const displayedTrackIsPlayable = !!args.nowPlayingTrack?.url;
 
   if (args.machinePlaybackTarget !== null) {
@@ -79,6 +85,7 @@ export function syncPlaybackSurfaceState(args: {
         phase: "playing",
         playlistName: args.machinePlaybackTarget,
         displayedTrackName,
+        displayedTrackLiked,
         displayedTrackIsPlayable,
       } satisfies PlayListPlaybackSurfaceState;
     }
@@ -86,11 +93,13 @@ export function syncPlaybackSurfaceState(args: {
     if (
       displayedTrackName !== null &&
       (args.current.displayedTrackName !== displayedTrackName ||
+        args.current.displayedTrackLiked !== displayedTrackLiked ||
         args.current.displayedTrackIsPlayable !== displayedTrackIsPlayable)
     ) {
       return {
         ...args.current,
         displayedTrackName,
+        displayedTrackLiked,
         displayedTrackIsPlayable,
       };
     }
@@ -117,6 +126,7 @@ export function syncPlaybackSurfaceState(args: {
     phase: "restoring",
     playlistName: args.current.playlistName,
     displayedTrackName: null,
+    displayedTrackLiked: null,
     displayedTrackIsPlayable: false,
     restoreTransitionStarted: false,
   } satisfies PlayListPlaybackSurfaceState;
@@ -154,6 +164,7 @@ export function toPlayListPlaybackSurfaceSnapshot(
     phase: state.phase,
     playlistName: state.playlistName,
     displayedTrackName: state.displayedTrackName,
+    displayedTrackLiked: state.displayedTrackLiked,
     displayedTrackIsPlayable: state.displayedTrackIsPlayable,
   };
 }

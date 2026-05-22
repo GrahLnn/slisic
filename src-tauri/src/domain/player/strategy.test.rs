@@ -13,6 +13,7 @@ fn track(name: &str) -> PlaybackTrack {
         file_path: PathBuf::from(format!("{name}.m4a")),
         start_ms: 0,
         end_ms: 60_000,
+        liked: false,
     }
 }
 

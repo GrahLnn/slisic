@@ -17,17 +17,21 @@ use crate::domain::player::service as player_service;
 #[cfg(not(test))]
 use crate::domain::player::strategy::PlaybackQueueMode;
 #[cfg(not(test))]
+use crate::domain::playlist_playback::recommendation::{
+    AudioStyleEmbeddingCache, AudioStylePlaylistPlaybackRecommender,
+};
+#[cfg(not(test))]
 use crate::domain::playlists::model::Music;
 #[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
 use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlaybackTrackSource};
 #[cfg(not(test))]
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use rand::RngExt;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 #[cfg(not(test))]
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 #[cfg(not(test))]
 use tauri_specta::Event;
 
@@ -36,9 +40,15 @@ const PLAYLIST_PREPARING_MESSAGE: &str = "Preparing...";
 #[cfg(not(test))]
 const INITIAL_PLAYBACK_QUEUE_LIMIT: usize = 256;
 #[cfg(not(test))]
+const PLAYLIST_AUDIO_STYLE_WARMUP_LIMIT: usize = 64;
+#[cfg(not(test))]
 const PLAYLIST_PLAYBACK_INITIAL_RANDOM_ATTEMPT_LIMIT: usize = 32;
 #[cfg(not(test))]
 const PLAYLIST_PLAYBACK_INITIAL_WINDOW_LIMIT: usize = 32;
+#[cfg(not(test))]
+const PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS: u64 = 250;
+#[cfg(not(test))]
+const PLAYLIST_PLAYBACK_LIKED_CANDIDATE_LIMIT: usize = 128;
 
 #[cfg(not(test))]
 pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylistSession> {
@@ -49,7 +59,14 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
     let playlist_name = material.playlist_name;
     let track_count = material.tracks.len().max(1) as u32;
     let initial_track = material.initial_track;
-    let tracks = place_track_at_queue_start(material.tracks, &initial_track);
+    let tracks = propose_playlist_playback_queue(
+        app,
+        PlaylistPlaybackRecommendationRequest {
+            playlist_name: playlist_name.clone(),
+            current_track: initial_track.clone(),
+            candidates: material.tracks,
+        },
+    );
 
     ensure_playlist_playback_request_current(&request)?;
     player_service::set_playback_continuation_mode(resolve_playlist_playback_continuation_mode())?;
@@ -131,7 +148,8 @@ async fn refresh_current_session_after_exclude(
         });
     }
 
-    let tracks = RandomPlaylistPlaybackRecommender.propose_queue_after_exclude(
+    let tracks = propose_playlist_playback_queue_after_exclude(
+        app,
         PlaylistPlaybackRecommendationRequest {
             playlist_name: source.playlist_name,
             current_track: track.clone(),
@@ -330,30 +348,32 @@ async fn fill_playlist_track_queue(
     session: player_service::PlaybackSessionHandle,
     initial_track: PlaybackTrack,
 ) -> Result<()> {
-    if !player_service::is_session_current(&session)? {
-        return Ok(());
-    }
+    let mut current_anchor: Option<PlaybackTrack> = None;
+    loop {
+        if !player_service::is_session_current(&session)? {
+            return Ok(());
+        }
 
-    let source =
-        load_playlist_track_resolution_window(&app, &playlist_name, INITIAL_PLAYBACK_QUEUE_LIMIT)
+        let active_track = resolve_playlist_playback_queue_anchor(&session, &initial_track).await?;
+        if current_anchor
+            .as_ref()
+            .is_none_or(|anchor| !are_playlist_playback_tracks_equal(anchor, &active_track))
+        {
+            refresh_playlist_track_queue_for_anchor(
+                &app,
+                &playlist_name,
+                &session,
+                active_track.clone(),
+            )
             .await?;
-    if source.resolution.tracks.is_empty() {
-        return Ok(());
-    }
+            current_anchor = Some(active_track);
+        }
 
-    if !player_service::is_session_current(&session)? {
-        return Ok(());
+        tokio::time::sleep(std::time::Duration::from_millis(
+            PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS,
+        ))
+        .await;
     }
-
-    let current_track = resolve_playlist_playback_queue_anchor(&session, &initial_track).await?;
-    let tracks =
-        RandomPlaylistPlaybackRecommender.propose_queue(PlaylistPlaybackRecommendationRequest {
-            playlist_name,
-            current_track,
-            candidates: source.resolution.tracks,
-        });
-    let _ = player_service::update_session_tracks(&session, tracks)?;
-    Ok(())
 }
 
 #[cfg(not(test))]
@@ -384,14 +404,13 @@ async fn refresh_playlist_tracks_until_downloads_finish(
         if !source.resolution.tracks.is_empty() {
             let current_track =
                 resolve_playlist_playback_queue_anchor(&session, &initial_track).await?;
-            let tracks = RandomPlaylistPlaybackRecommender.propose_queue(
-                PlaylistPlaybackRecommendationRequest {
-                    playlist_name: playlist_name.clone(),
-                    current_track,
-                    candidates: source.resolution.tracks,
-                },
-            );
-            let updated = player_service::update_session_tracks(&session, tracks)?;
+            let updated = refresh_playlist_track_queue_for_anchor(
+                &app,
+                &playlist_name,
+                &session,
+                current_track,
+            )
+            .await?;
             if !updated {
                 return Ok(());
             }
@@ -401,6 +420,35 @@ async fn refresh_playlist_tracks_until_downloads_finish(
             return Ok(());
         }
     }
+}
+
+#[cfg(not(test))]
+async fn refresh_playlist_track_queue_for_anchor(
+    app: &AppHandle,
+    playlist_name: &str,
+    session: &player_service::PlaybackSessionHandle,
+    current_track: PlaybackTrack,
+) -> Result<bool> {
+    let source =
+        load_playlist_track_resolution_window(app, playlist_name, INITIAL_PLAYBACK_QUEUE_LIMIT)
+            .await?;
+    if source.resolution.tracks.is_empty() {
+        return Ok(true);
+    }
+
+    if !player_service::is_session_current(session)? {
+        return Ok(false);
+    }
+
+    let tracks = propose_playlist_playback_queue(
+        app,
+        PlaylistPlaybackRecommendationRequest {
+            playlist_name: playlist_name.to_string(),
+            current_track,
+            candidates: source.resolution.tracks,
+        },
+    );
+    player_service::update_session_tracks(session, tracks)
 }
 
 #[cfg(not(test))]
@@ -522,6 +570,12 @@ async fn load_playlist_track_resolution_window(
         .ok_or_else(|| anyhow!("playlist `{playlist_name}` not found"))?;
     let save_root = meta_service::resolve_save_root(app).await?;
     let sources = playlist_repo::load_playlist_playback_track_sources(&selection, limit).await?;
+    let liked_sources = playlist_repo::load_liked_playlist_playback_track_sources(
+        &selection,
+        PLAYLIST_PLAYBACK_LIKED_CANDIDATE_LIMIT,
+    )
+    .await?;
+    let sources = merge_playlist_playback_track_sources(sources, liked_sources);
     let resolution = resolve_playlist_playback_source_resolution(&selection, sources, &save_root);
 
     Ok(PlaylistTrackResolutionSource {
@@ -529,6 +583,22 @@ async fn load_playlist_track_resolution_window(
         selection,
         resolution,
     })
+}
+
+#[cfg(not(test))]
+fn merge_playlist_playback_track_sources(
+    base: Vec<PlaylistPlaybackTrackSource>,
+    extra: Vec<PlaylistPlaybackTrackSource>,
+) -> Vec<PlaylistPlaybackTrackSource> {
+    let mut seen = HashSet::new();
+    let mut merged = Vec::with_capacity(base.len() + extra.len());
+    for source in base.into_iter().chain(extra) {
+        let key = playlist_playback_track_source_key(&source);
+        if seen.insert(key) {
+            merged.push(source);
+        }
+    }
+    merged
 }
 
 #[cfg(not(test))]
@@ -540,10 +610,131 @@ fn emit_playlist_preparing(app: &AppHandle, playlist_name: &str) -> Result<()> {
         file_path: String::new(),
         start_ms: 0,
         end_ms: 0,
+        liked: false,
     }
     .emit(app)?;
 
     Ok(())
+}
+
+#[cfg(not(test))]
+fn propose_playlist_playback_queue(
+    app: &AppHandle,
+    request: PlaylistPlaybackRecommendationRequest,
+) -> Vec<PlaybackTrack> {
+    propose_playlist_playback_queue_with_mode(
+        app,
+        request,
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+    )
+}
+
+#[cfg(not(test))]
+fn propose_playlist_playback_queue_after_exclude(
+    app: &AppHandle,
+    request: PlaylistPlaybackRecommendationRequest,
+) -> Vec<PlaybackTrack> {
+    propose_playlist_playback_queue_with_mode(
+        app,
+        request,
+        PlaylistPlaybackRecommendationMode::ExcludeCurrent,
+    )
+}
+
+#[cfg(not(test))]
+#[derive(Clone, Copy)]
+enum PlaylistPlaybackRecommendationMode {
+    KeepCurrent,
+    ExcludeCurrent,
+}
+
+#[cfg(not(test))]
+fn propose_playlist_playback_queue_with_mode(
+    app: &AppHandle,
+    request: PlaylistPlaybackRecommendationRequest,
+    mode: PlaylistPlaybackRecommendationMode,
+) -> Vec<PlaybackTrack> {
+    let random_request = request.clone();
+    let random_fallback = || match mode {
+        PlaylistPlaybackRecommendationMode::KeepCurrent => {
+            RandomPlaylistPlaybackRecommender.propose_queue(random_request)
+        }
+        PlaylistPlaybackRecommendationMode::ExcludeCurrent => {
+            RandomPlaylistPlaybackRecommender.propose_queue_after_exclude(random_request)
+        }
+    };
+
+    let result = try_propose_audio_style_playlist_playback_queue(request, app, mode);
+    match result {
+        Ok(Some(tracks)) => tracks,
+        Ok(None) => random_fallback(),
+        Err(error) => {
+            eprintln!("[playlist_playback] audio style recommendation unavailable: {error}");
+            random_fallback()
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn try_propose_audio_style_playlist_playback_queue(
+    request: PlaylistPlaybackRecommendationRequest,
+    app: &AppHandle,
+    mode: PlaylistPlaybackRecommendationMode,
+) -> Result<Option<Vec<PlaybackTrack>>> {
+    let ffmpeg_path = crate::utils::binaries::resolve_installed_managed_binary(
+        app,
+        crate::utils::binaries::ManagedBinary::Ffmpeg,
+    )
+    .map_err(|error| anyhow!(error))?
+    .ok_or_else(|| anyhow!("ffmpeg is not installed yet"))?;
+    let cache_root = app
+        .path()
+        .app_cache_dir()
+        .context("failed to resolve app cache directory")?
+        .join("audio-style-embeddings");
+    let cache =
+        AudioStyleEmbeddingCache::new(ffmpeg_path, cache_root).map_err(|error| anyhow!(error))?;
+    let mut embedding_tracks = Vec::with_capacity(request.candidates.len() + 1);
+    embedding_tracks.push(request.current_track.clone());
+    embedding_tracks.extend(request.candidates.iter().cloned());
+    let (recommender, missing_tracks, failures) =
+        AudioStylePlaylistPlaybackRecommender::from_cached_tracks(&cache, &embedding_tracks);
+    for failure in failures.iter().take(8) {
+        eprintln!("[playlist_playback] audio style embedding unavailable: {failure}");
+    }
+    spawn_audio_style_embedding_warmup(cache, missing_tracks);
+
+    if recommender.has_embedding_for(&request.current_track) {
+        let tracks = match mode {
+            PlaylistPlaybackRecommendationMode::KeepCurrent => {
+                recommender.propose_queue(request.current_track, request.candidates)
+            }
+            PlaylistPlaybackRecommendationMode::ExcludeCurrent => {
+                recommender.propose_queue_after_exclude(request.current_track, request.candidates)
+            }
+        };
+        return Ok(Some(tracks));
+    }
+
+    Ok(None)
+}
+
+#[cfg(not(test))]
+fn spawn_audio_style_embedding_warmup(cache: AudioStyleEmbeddingCache, tracks: Vec<PlaybackTrack>) {
+    if tracks.is_empty() {
+        return;
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        for track in tracks.into_iter().take(PLAYLIST_AUDIO_STYLE_WARMUP_LIMIT) {
+            if let Err(error) = cache.embedding_for_track(&track) {
+                eprintln!(
+                    "[playlist_playback] failed to warm audio style embedding for `{}`: {error}",
+                    track.file_path.display()
+                );
+            }
+        }
+    });
 }
 
 #[cfg(not(test))]
@@ -659,6 +850,7 @@ fn project_playlist_playback_track(
         file_path,
         start_ms: source.music.start_ms,
         end_ms: source.music.end_ms,
+        liked: source.music.liked,
     }
 }
 
@@ -732,6 +924,7 @@ fn resolve_source_music_file_path(
     Some(save_root.join(&source.collection_folder).join(path))
 }
 
+#[derive(Clone)]
 pub(crate) struct PlaylistPlaybackRecommendationRequest {
     pub(crate) playlist_name: String,
     pub(crate) current_track: PlaybackTrack,
@@ -752,7 +945,7 @@ impl PlaylistPlaybackRecommender for RandomPlaylistPlaybackRecommender {
         let _playlist_name = &request.playlist_name;
         let tracks = &mut request.candidates;
         shuffle_playback_tracks(tracks);
-        place_track_at_queue_start(request.candidates, &request.current_track)
+        create_short_playback_queue(request.current_track, request.candidates)
     }
 }
 
@@ -764,8 +957,23 @@ impl RandomPlaylistPlaybackRecommender {
         let _playlist_name = &request.playlist_name;
         let tracks = &mut request.candidates;
         shuffle_playback_tracks(tracks);
-        request.candidates
+        request.candidates.into_iter().take(1).collect()
     }
+}
+
+pub(crate) fn create_short_playback_queue(
+    current_track: PlaybackTrack,
+    candidates: Vec<PlaybackTrack>,
+) -> Vec<PlaybackTrack> {
+    let mut queue = Vec::with_capacity(2);
+    queue.push(current_track.clone());
+    if let Some(next) = candidates
+        .into_iter()
+        .find(|candidate| !are_playlist_playback_tracks_equal(candidate, &current_track))
+    {
+        queue.push(next);
+    }
+    queue
 }
 
 pub(crate) fn shuffle_playback_tracks(tracks: &mut [PlaybackTrack]) {

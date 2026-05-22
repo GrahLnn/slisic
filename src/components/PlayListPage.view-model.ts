@@ -64,6 +64,7 @@ export interface PlayListPageItemViewModel {
   suppressFade: boolean;
   isPlaybackTarget: boolean;
   shouldShowPlaybackIcons: boolean;
+  isCurrentMusicLiked: boolean;
   playbackIconWidthText?: string;
   isPlaybackPreparing: boolean;
   isHiddenInPlay: boolean;
@@ -158,6 +159,7 @@ function createPlayListPageItemViewModel(args: {
   titleToneHandoff: CollectionTitleHandoff | null;
   isPlaybackTarget: boolean;
   shouldShowPlaybackIcons: boolean;
+  isCurrentMusicLiked: boolean;
   playbackIconWidthText?: string;
   isPlaybackPreparing: boolean;
   isHiddenInPlay: boolean;
@@ -188,6 +190,7 @@ function createPlayListPageItemViewModel(args: {
       args.isPlaybackTarget || shouldSuppressTitleShareFade(itemLayoutId, args.transition),
     isPlaybackTarget: args.isPlaybackTarget,
     shouldShowPlaybackIcons: args.shouldShowPlaybackIcons,
+    isCurrentMusicLiked: args.isCurrentMusicLiked,
     ...(args.playbackIconWidthText && { playbackIconWidthText: args.playbackIconWidthText }),
     isPlaybackPreparing: args.isPlaybackPreparing,
     isHiddenInPlay: args.isHiddenInPlay,
@@ -215,6 +218,7 @@ function resolvePlayListPageVisibleItems(args: {
 }) {
   const playbackSurfacePlaylistName = args.playbackSurface?.playlistName;
   const playbackSurfaceTrackName = args.playbackSurface?.displayedTrackName || undefined;
+  const playbackSurfaceTrackLiked = args.playbackSurface?.displayedTrackLiked ?? null;
   const playbackSurfaceTrackIsPlayable = args.playbackSurface?.displayedTrackIsPlayable ?? false;
   const isPlaybackSurfacePlaying = args.playbackSurface?.phase === "playing";
   const shouldApplyPlaybackSurface =
@@ -260,6 +264,11 @@ function resolvePlayListPageVisibleItems(args: {
           hasPlaybackTarget &&
           playlist.name === playbackSurfacePlaylistName &&
           !!playbackSurfaceTrackName,
+        isCurrentMusicLiked:
+          isPlaybackSurfacePlaying &&
+          hasPlaybackTarget &&
+          playlist.name === playbackSurfacePlaylistName &&
+          playbackSurfaceTrackLiked === true,
         isPlaybackPreparing:
           isPlaybackSurfacePlaying &&
           hasPlaybackTarget &&
@@ -426,6 +435,7 @@ export function resolvePlayListPageViewModel(
       suppressFade: shouldSuppressTitleShareFade(CREATE_COLLECTION_LAYOUT_ID, transition),
       isPlaybackTarget: false,
       shouldShowPlaybackIcons: false,
+      isCurrentMusicLiked: false,
       isPlaybackPreparing: false,
       isHiddenInPlay: shouldLockScroll,
       shouldStartHiddenInPlay: displayLock?.kind === "return-handoff",

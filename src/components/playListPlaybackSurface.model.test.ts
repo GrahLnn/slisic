@@ -47,6 +47,7 @@ describe("playListPlaybackSurface model", () => {
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
+        displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
       },
     );
@@ -59,11 +60,13 @@ describe("playListPlaybackSurface model", () => {
           phase: "playing",
           playlistName: "Quiet Morning",
           displayedTrackName: "Track A",
+          displayedTrackLiked: null,
           displayedTrackIsPlayable: true,
         },
         machinePlaybackTarget: "Quiet Morning",
         nowPlayingTrack: {
           name: "Track B",
+          liked: false,
           url: "https://example.com/track-b",
         },
       }),
@@ -71,6 +74,7 @@ describe("playListPlaybackSurface model", () => {
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Track B",
+        displayedTrackLiked: null,
         displayedTrackIsPlayable: true,
       },
     );
@@ -83,6 +87,7 @@ describe("playListPlaybackSurface model", () => {
         machinePlaybackTarget: "Quiet Morning",
         nowPlayingTrack: {
           name: "Track A",
+          liked: false,
           url: "https://example.com/track-a",
         },
       }),
@@ -90,6 +95,7 @@ describe("playListPlaybackSurface model", () => {
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Track A",
+        displayedTrackLiked: null,
         displayedTrackIsPlayable: true,
       },
     );
@@ -102,6 +108,7 @@ describe("playListPlaybackSurface model", () => {
         machinePlaybackTarget: "Quiet Morning",
         nowPlayingTrack: {
           name: "Preparing...",
+          liked: false,
           url: "",
         },
       }),
@@ -109,6 +116,7 @@ describe("playListPlaybackSurface model", () => {
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Preparing...",
+        displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
       },
     );
@@ -121,6 +129,7 @@ describe("playListPlaybackSurface model", () => {
           phase: "playing",
           playlistName: "Quiet Morning",
           displayedTrackName: "Track B",
+          displayedTrackLiked: null,
           displayedTrackIsPlayable: true,
         },
         machinePlaybackTarget: null,
@@ -130,6 +139,7 @@ describe("playListPlaybackSurface model", () => {
         phase: "restoring",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
+        displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
         restoreTransitionStarted: false,
       },
@@ -142,6 +152,7 @@ describe("playListPlaybackSurface model", () => {
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Track B",
+        displayedTrackLiked: null,
         displayedTrackIsPlayable: true,
       },
       machinePlaybackTarget: null,
@@ -167,6 +178,7 @@ describe("playListPlaybackSurface model", () => {
       phase: "restoring",
       playlistName: "Quiet Morning",
       displayedTrackName: null,
+      displayedTrackLiked: null,
       displayedTrackIsPlayable: false,
       restoreTransitionStarted: true,
     });
@@ -187,6 +199,7 @@ describe("playListPlaybackSurface model", () => {
           phase: "playing",
           playlistName: "Quiet Morning",
           displayedTrackName: "Quiet Morning",
+          displayedTrackLiked: null,
           displayedTrackIsPlayable: true,
         },
         machinePlaybackTarget: null,
@@ -203,6 +216,7 @@ describe("playListPlaybackSurface model", () => {
         phase: "restoring",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
+        displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
         restoreTransitionStarted: true,
       }),
@@ -210,6 +224,7 @@ describe("playListPlaybackSurface model", () => {
         phase: "restoring",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
+        displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
       },
     );
@@ -222,6 +237,7 @@ describe("playListPlaybackSurface model", () => {
           phase: "playing",
           playlistName: "Quiet Morning",
           displayedTrackName: null,
+          displayedTrackLiked: null,
           displayedTrackIsPlayable: false,
         },
         machinePlaybackTarget: "Quiet Morning",
@@ -231,6 +247,7 @@ describe("playListPlaybackSurface model", () => {
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
+        displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
       },
     );

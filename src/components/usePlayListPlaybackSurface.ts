@@ -25,12 +25,14 @@ export function usePlayListPlaybackSurface({
   playingPlaylistName,
   nowPlayingTrackName,
   nowPlayingTrackUrl,
+  nowPlayingTrackLiked,
 }: {
   pageState: MainStateT;
   playlists: readonly { name: string }[];
   playingPlaylistName: string | null;
   nowPlayingTrackName: string | null;
   nowPlayingTrackUrl: string | null;
+  nowPlayingTrackLiked: boolean | null;
 }) {
   const [playbackSurface, setPlaybackSurface] =
     useState<PlayListPlaybackSurfaceState>(INACTIVE_PLAYBACK_SURFACE);
@@ -75,6 +77,7 @@ export function usePlayListPlaybackSurface({
         nowPlayingTrackName === null
           ? null
           : {
+              liked: nowPlayingTrackLiked,
               name: nowPlayingTrackName,
               url: nowPlayingTrackUrl ?? "",
             };
@@ -86,7 +89,13 @@ export function usePlayListPlaybackSurface({
 
       return next;
     });
-  }, [machinePlaybackTarget, nowPlayingTrackName, nowPlayingTrackUrl, pageState]);
+  }, [
+    machinePlaybackTarget,
+    nowPlayingTrackLiked,
+    nowPlayingTrackName,
+    nowPlayingTrackUrl,
+    pageState,
+  ]);
 
   useLayoutEffect(() => {
     if (playbackSurface.phase !== "playing" || playbackSurface.playlistName === null) {
