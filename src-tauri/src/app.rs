@@ -126,6 +126,7 @@ pub fn run() {
 
                     utils::window::configure_existing_primary_windows(&handle);
                     domain::downloads::service::initialize_runtime(handle.clone());
+                    domain::playlist_playback::service::initialize_runtime(handle.clone());
                     domain::player::service::initialize_runtime(handle.clone());
                     utils::binaries::spawn_binary_maintenance(
                         handle.clone(),

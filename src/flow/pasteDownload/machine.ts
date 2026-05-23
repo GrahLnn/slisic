@@ -9,21 +9,37 @@ import {
   appendCandidateItem,
   applyActiveCandidateUrlResolution,
   clearActiveCandidate,
-  completeActiveCandidateProbe,
+  createCollectionShellFromProbe,
   createInitialContext,
   deleteCandidateItem,
-  failActiveCandidateEnqueue,
   failActiveCandidateProbe,
   findActiveCandidateItem,
   hasPendingCandidateToCheck,
   removeActiveCandidate,
   toErrorMessage,
 } from "./core";
-import { invoker, payloads, ss } from "./events";
+import { deps, invoker, payloads, ss } from "./events";
 import { src } from "./src";
 
 const pasteRequested = payloads["paste.requested"];
 const candidateDelete = payloads["candidate.delete"];
+
+function enqueueCollectionDownloadInBackground(url: string) {
+  void deps.enqueueCollectionDownload(url).then(
+    (enqueued) => {
+      sendAppLogic(draftCollectionUpserted.load(enqueued.collection));
+    },
+    (error) => {
+      console.error("Failed to enqueue pasted collection download", error);
+      sendAppLogic(
+        draftItemRemoved.load({
+          kind: "collection",
+          url,
+        }),
+      );
+    },
+  );
+}
 
 export const machine = src.createMachine({
   initial: ss.mainx.State.idle,
@@ -110,63 +126,24 @@ export const machine = src.createMachine({
           return item.sourceUrl;
         },
         onDone: {
-          target: ss.mainx.State.enqueueing,
-          actions: assign(({ context, event }) =>
-            completeActiveCandidateProbe(context, event.output),
-          ),
+          target: ss.mainx.State.idle,
+          actions: [
+            assign(({ context }) => removeActiveCandidate(context)),
+            ({ event }) => {
+              const collection = createCollectionShellFromProbe(
+                event.output,
+                new Date().toISOString(),
+              );
+              sendAppLogic(draftCollectionUpserted.load(collection));
+              enqueueCollectionDownloadInBackground(event.output.url);
+            },
+          ],
         },
         onError: {
           target: ss.mainx.State.idle,
           actions: assign(({ context, event }) =>
             clearActiveCandidate(failActiveCandidateProbe(context, toErrorMessage(event.error))),
           ),
-        },
-      },
-    },
-    [ss.mainx.State.enqueueing]: {
-      invoke: {
-        id: invoker.enqueueCollectionDownload.id,
-        src: invoker.enqueueCollectionDownload.src,
-        input: ({ context }) => {
-          const item = findActiveCandidateItem(context);
-
-          if (!item?.sourceUrl) {
-            throw new Error("missing candidate URL for enqueue");
-          }
-
-          return item.sourceUrl;
-        },
-        onDone: {
-          target: ss.mainx.State.idle,
-          actions: [
-            assign(({ context }) => removeActiveCandidate(context)),
-            ({ event }) => {
-              sendAppLogic(draftCollectionUpserted.load(event.output.collection));
-            },
-          ],
-        },
-        onError: {
-          target: ss.mainx.State.idle,
-          actions: [
-            assign(({ context, event }) =>
-              clearActiveCandidate(
-                failActiveCandidateEnqueue(context, toErrorMessage(event.error)),
-              ),
-            ),
-            ({ context }) => {
-              const item = findActiveCandidateItem(context);
-              if (!item?.sourceUrl) {
-                return;
-              }
-
-              sendAppLogic(
-                draftItemRemoved.load({
-                  kind: "collection",
-                  url: item.sourceUrl,
-                }),
-              );
-            },
-          ],
         },
       },
     },

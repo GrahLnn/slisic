@@ -6,6 +6,7 @@ import {
   appendCandidateItem,
   candidateItemAllowsDelete,
   candidateItemIsErrored,
+  createCollectionShellFromProbe,
   createInitialContext,
   deleteCandidateItem,
   hasPendingCandidateToCheck,
@@ -139,7 +140,7 @@ describe("candidate item helpers", () => {
           rawText: "https://example.com/watch?v=abc",
           sourceUrl: "https://example.com/watch?v=abc",
           displayText: "Example",
-          status: "enqueueing" as const,
+          status: "probing" as const,
           error: null,
           probe: null,
         },
@@ -156,11 +157,33 @@ describe("candidate item helpers", () => {
   test("marks only invalid or failed candidates as delete-only", () => {
     assert.equal(candidateItemAllowsDelete("invalid_url"), true);
     assert.equal(candidateItemAllowsDelete("probe_failed"), true);
-    assert.equal(candidateItemAllowsDelete("enqueue_failed"), true);
     assert.equal(candidateItemAllowsDelete("checking"), false);
     assert.equal(candidateItemAllowsDelete("probing"), false);
-    assert.equal(candidateItemAllowsDelete("enqueueing"), false);
     assert.equal(candidateItemIsErrored("probe_failed"), true);
-    assert.equal(candidateItemIsErrored("enqueueing"), false);
+    assert.equal(candidateItemIsErrored("probing"), false);
+  });
+
+  test("creates a draft collection shell directly from the resource probe", () => {
+    assert.deepEqual(
+      createCollectionShellFromProbe(
+        {
+          url: "https://example.com/watch?v=abc",
+          source_kind: "list",
+          title: "Example Collection",
+          item_count: 42,
+          collection_folder: "youtube/example-collection",
+          enable_updates: true,
+        },
+        "2026-05-23T00:00:00.000Z",
+      ),
+      {
+        name: "Example Collection",
+        url: "https://example.com/watch?v=abc",
+        folder: "youtube/example-collection",
+        musics: [],
+        last_updated: "2026-05-23T00:00:00.000Z",
+        enable_updates: true,
+      },
+    );
   });
 });

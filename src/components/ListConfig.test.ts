@@ -107,7 +107,7 @@ const candidateItems: ConfigCandidateItem[] = [
     rawText: "https://www.youtube.com/watch?v=abc123",
     sourceUrl: "https://www.youtube.com/watch?v=abc123",
     displayText: "Quiet Morning",
-    status: "enqueueing",
+    status: "probing",
     error: null,
     probe: {
       url: "https://www.youtube.com/watch?v=abc123",
@@ -440,7 +440,7 @@ describe("ListConfig title view model", () => {
         }),
         candidateId: "candidate:0",
         text: "Quiet Morning",
-        status: "enqueueing",
+        status: "probing",
       },
       {
         kind: "candidate",
@@ -502,7 +502,7 @@ describe("ListConfig title view model", () => {
           }),
           candidateId: "candidate:0",
           text: "Quiet Morning",
-          status: "enqueueing",
+          status: "probing",
         },
         {
           kind: "candidate",
@@ -561,7 +561,7 @@ describe("ListConfig title view model", () => {
         }),
         candidateId: "candidate:0",
         text: "Quiet Morning",
-        status: "enqueueing",
+        status: "probing",
       }),
       "passive",
     );
@@ -673,7 +673,7 @@ describe("ListConfig title view model", () => {
             rawText: "https://www.youtube.com/watch?v=abc123",
             sourceUrl: "https://www.youtube.com/watch?v=abc123",
             displayText: "Night Walk",
-            status: "enqueueing",
+            status: "probing",
             error: null,
             probe: null,
           },
@@ -758,7 +758,7 @@ describe("ListConfig title view model", () => {
         }),
         candidateId: "candidate:0",
         text: "Quiet Morning",
-        status: "enqueueing",
+        status: "probing",
       }),
       "passive",
     );
@@ -921,7 +921,7 @@ describe("ListConfig title view model", () => {
             rawText: "https://www.youtube.com/watch?v=abc123",
             sourceUrl: "https://www.youtube.com/watch?v=abc123",
             displayText: "Quiet Morning",
-            status: "enqueueing",
+            status: "probing",
             error: null,
             probe: null,
           },
@@ -1074,7 +1074,7 @@ describe("ListConfig title view model", () => {
     assert.equal(viewModel.shouldShowEmptyState, false);
   });
 
-  test("marks the back action as parsing while candidate checks, probes, or enqueue waits still exist", () => {
+  test("marks the back action as parsing while candidate checks or probes still exist", () => {
     assert.equal(
       countListConfigParsingCandidateItems([
         ...candidateItems,

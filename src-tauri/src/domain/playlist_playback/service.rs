@@ -18,7 +18,8 @@ use crate::domain::player::service as player_service;
 use crate::domain::player::strategy::PlaybackQueueMode;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
-    AudioStyleEmbeddingCache, AudioStylePlaylistPlaybackRecommender,
+    AudioStyleCandidateSelection, AudioStylePlaylistPlaybackProposal,
+    initialize_audio_style_recommendation_runtime, published_audio_style_model_snapshot,
 };
 #[cfg(not(test))]
 use crate::domain::playlists::model::Music;
@@ -26,12 +27,12 @@ use crate::domain::playlists::model::Music;
 use crate::domain::playlists::repo as playlist_repo;
 use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlaybackTrackSource};
 #[cfg(not(test))]
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use rand::RngExt;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 #[cfg(not(test))]
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 #[cfg(not(test))]
 use tauri_specta::Event;
 
@@ -39,8 +40,6 @@ use tauri_specta::Event;
 const PLAYLIST_PREPARING_MESSAGE: &str = "Preparing...";
 #[cfg(not(test))]
 const INITIAL_PLAYBACK_QUEUE_LIMIT: usize = 256;
-#[cfg(not(test))]
-const PLAYLIST_AUDIO_STYLE_WARMUP_LIMIT: usize = 64;
 #[cfg(not(test))]
 const PLAYLIST_PLAYBACK_INITIAL_RANDOM_ATTEMPT_LIMIT: usize = 32;
 #[cfg(not(test))]
@@ -51,6 +50,11 @@ const PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS: u64 = 250;
 const PLAYLIST_PLAYBACK_LIKED_CANDIDATE_LIMIT: usize = 128;
 
 #[cfg(not(test))]
+pub fn initialize_runtime(app: AppHandle) {
+    initialize_audio_style_recommendation_runtime(app);
+}
+
+#[cfg(not(test))]
 pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylistSession> {
     let mut download_changes = download_service::subscribe_download_task_changes();
     let request = player_service::claim_playback_start_request()?;
@@ -59,14 +63,11 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
     let playlist_name = material.playlist_name;
     let track_count = material.tracks.len().max(1) as u32;
     let initial_track = material.initial_track;
-    let tracks = propose_playlist_playback_queue(
-        app,
-        PlaylistPlaybackRecommendationRequest {
-            playlist_name: playlist_name.clone(),
-            current_track: initial_track.clone(),
-            candidates: material.tracks,
-        },
-    );
+    let tracks = propose_playlist_playback_queue(PlaylistPlaybackRecommendationRequest {
+        playlist_name: playlist_name.clone(),
+        current_track: initial_track.clone(),
+        candidates: material.tracks,
+    });
 
     ensure_playlist_playback_request_current(&request)?;
     player_service::set_playback_continuation_mode(resolve_playlist_playback_continuation_mode())?;
@@ -148,8 +149,7 @@ async fn refresh_current_session_after_exclude(
         });
     }
 
-    let tracks = propose_playlist_playback_queue_after_exclude(
-        app,
+    let tracks = propose_playlist_playback_queue_after_exclude_with_logging(
         PlaylistPlaybackRecommendationRequest {
             playlist_name: source.playlist_name,
             current_track: track.clone(),
@@ -364,6 +364,7 @@ async fn fill_playlist_track_queue(
                 &playlist_name,
                 &session,
                 active_track.clone(),
+                true,
             )
             .await?;
             current_anchor = Some(active_track);
@@ -409,6 +410,7 @@ async fn refresh_playlist_tracks_until_downloads_finish(
                 &playlist_name,
                 &session,
                 current_track,
+                false,
             )
             .await?;
             if !updated {
@@ -428,6 +430,7 @@ async fn refresh_playlist_track_queue_for_anchor(
     playlist_name: &str,
     session: &player_service::PlaybackSessionHandle,
     current_track: PlaybackTrack,
+    should_log_selection: bool,
 ) -> Result<bool> {
     let source =
         load_playlist_track_resolution_window(app, playlist_name, INITIAL_PLAYBACK_QUEUE_LIMIT)
@@ -440,13 +443,14 @@ async fn refresh_playlist_track_queue_for_anchor(
         return Ok(false);
     }
 
-    let tracks = propose_playlist_playback_queue(
-        app,
+    let tracks = propose_playlist_playback_queue_with_mode(
         PlaylistPlaybackRecommendationRequest {
             playlist_name: playlist_name.to_string(),
             current_track,
             candidates: source.resolution.tracks,
         },
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+        should_log_selection,
     );
     player_service::update_session_tracks(session, tracks)
 }
@@ -619,25 +623,34 @@ fn emit_playlist_preparing(app: &AppHandle, playlist_name: &str) -> Result<()> {
 
 #[cfg(not(test))]
 fn propose_playlist_playback_queue(
-    app: &AppHandle,
     request: PlaylistPlaybackRecommendationRequest,
 ) -> Vec<PlaybackTrack> {
     propose_playlist_playback_queue_with_mode(
-        app,
         request,
         PlaylistPlaybackRecommendationMode::KeepCurrent,
+        false,
     )
 }
 
 #[cfg(not(test))]
 fn propose_playlist_playback_queue_after_exclude(
-    app: &AppHandle,
     request: PlaylistPlaybackRecommendationRequest,
 ) -> Vec<PlaybackTrack> {
     propose_playlist_playback_queue_with_mode(
-        app,
         request,
         PlaylistPlaybackRecommendationMode::ExcludeCurrent,
+        false,
+    )
+}
+
+#[cfg(not(test))]
+fn propose_playlist_playback_queue_after_exclude_with_logging(
+    request: PlaylistPlaybackRecommendationRequest,
+) -> Vec<PlaybackTrack> {
+    propose_playlist_playback_queue_with_mode(
+        request,
+        PlaylistPlaybackRecommendationMode::ExcludeCurrent,
+        true,
     )
 }
 
@@ -649,24 +662,51 @@ enum PlaylistPlaybackRecommendationMode {
 }
 
 #[cfg(not(test))]
+impl PlaylistPlaybackRecommendationMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::KeepCurrent => "keep_current",
+            Self::ExcludeCurrent => "exclude_current",
+        }
+    }
+}
+
+#[cfg(not(test))]
 fn propose_playlist_playback_queue_with_mode(
-    app: &AppHandle,
     request: PlaylistPlaybackRecommendationRequest,
     mode: PlaylistPlaybackRecommendationMode,
+    should_log_selection: bool,
 ) -> Vec<PlaybackTrack> {
     let random_request = request.clone();
-    let random_fallback = || match mode {
-        PlaylistPlaybackRecommendationMode::KeepCurrent => {
-            RandomPlaylistPlaybackRecommender.propose_queue(random_request)
+    let random_fallback = || {
+        let proposal = propose_random_playlist_playback_queue_with_trace(random_request, mode);
+        if should_log_selection {
+            log_playlist_playback_next_track_selection(
+                "random",
+                mode,
+                proposal.tracks.as_slice(),
+                proposal.selection,
+            );
         }
-        PlaylistPlaybackRecommendationMode::ExcludeCurrent => {
-            RandomPlaylistPlaybackRecommender.propose_queue_after_exclude(random_request)
-        }
+        proposal.tracks
     };
 
-    let result = try_propose_audio_style_playlist_playback_queue(request, app, mode);
+    let result = try_propose_audio_style_playlist_playback_queue(request, mode);
     match result {
-        Ok(Some(tracks)) => tracks,
+        Ok(Some(proposal)) => {
+            if should_log_selection {
+                log_playlist_playback_next_track_selection(
+                    "audio_style",
+                    mode,
+                    proposal.tracks.as_slice(),
+                    proposal
+                        .selection
+                        .as_ref()
+                        .map(PlaylistPlaybackSelectionTrace::from),
+                );
+            }
+            proposal.tracks
+        }
         Ok(None) => random_fallback(),
         Err(error) => {
             eprintln!("[playlist_playback] audio style recommendation unavailable: {error}");
@@ -678,63 +718,194 @@ fn propose_playlist_playback_queue_with_mode(
 #[cfg(not(test))]
 fn try_propose_audio_style_playlist_playback_queue(
     request: PlaylistPlaybackRecommendationRequest,
-    app: &AppHandle,
     mode: PlaylistPlaybackRecommendationMode,
-) -> Result<Option<Vec<PlaybackTrack>>> {
-    let ffmpeg_path = crate::utils::binaries::resolve_installed_managed_binary(
-        app,
-        crate::utils::binaries::ManagedBinary::Ffmpeg,
-    )
-    .map_err(|error| anyhow!(error))?
-    .ok_or_else(|| anyhow!("ffmpeg is not installed yet"))?;
-    let cache_root = app
-        .path()
-        .app_cache_dir()
-        .context("failed to resolve app cache directory")?
-        .join("audio-style-embeddings");
-    let cache =
-        AudioStyleEmbeddingCache::new(ffmpeg_path, cache_root).map_err(|error| anyhow!(error))?;
-    let mut embedding_tracks = Vec::with_capacity(request.candidates.len() + 1);
-    embedding_tracks.push(request.current_track.clone());
-    embedding_tracks.extend(request.candidates.iter().cloned());
-    let (recommender, missing_tracks, failures) =
-        AudioStylePlaylistPlaybackRecommender::from_cached_tracks(&cache, &embedding_tracks);
-    for failure in failures.iter().take(8) {
-        eprintln!("[playlist_playback] audio style embedding unavailable: {failure}");
-    }
-    spawn_audio_style_embedding_warmup(cache, missing_tracks);
+) -> Result<Option<AudioStylePlaylistPlaybackProposal>> {
+    let Some(snapshot) = published_audio_style_model_snapshot() else {
+        return Ok(None);
+    };
+    let recommender = snapshot.recommender();
 
     if recommender.has_embedding_for(&request.current_track) {
-        let tracks = match mode {
+        let mut proposal = match mode {
             PlaylistPlaybackRecommendationMode::KeepCurrent => {
-                recommender.propose_queue(request.current_track, request.candidates)
+                recommender.propose_queue_with_trace(request.current_track, request.candidates)
             }
-            PlaylistPlaybackRecommendationMode::ExcludeCurrent => {
-                recommender.propose_queue_after_exclude(request.current_track, request.candidates)
-            }
+            PlaylistPlaybackRecommendationMode::ExcludeCurrent => recommender
+                .propose_queue_after_exclude_with_trace(request.current_track, request.candidates),
         };
-        return Ok(Some(tracks));
+        if let Some(selection) = proposal.selection.as_mut() {
+            selection.model_generation = Some(snapshot.generation());
+        }
+        return Ok(Some(proposal));
     }
 
     Ok(None)
 }
 
 #[cfg(not(test))]
-fn spawn_audio_style_embedding_warmup(cache: AudioStyleEmbeddingCache, tracks: Vec<PlaybackTrack>) {
-    if tracks.is_empty() {
-        return;
-    }
-
-    tauri::async_runtime::spawn_blocking(move || {
-        for track in tracks.into_iter().take(PLAYLIST_AUDIO_STYLE_WARMUP_LIMIT) {
-            if let Err(error) = cache.embedding_for_track(&track) {
-                eprintln!(
-                    "[playlist_playback] failed to warm audio style embedding for `{}`: {error}",
-                    track.file_path.display()
-                );
-            }
+fn propose_random_playlist_playback_queue_with_trace(
+    request: PlaylistPlaybackRecommendationRequest,
+    mode: PlaylistPlaybackRecommendationMode,
+) -> PlaylistPlaybackQueueProposal {
+    let current_track = request.current_track.clone();
+    let candidates = request.candidates.clone();
+    let candidate_count = candidates
+        .iter()
+        .filter(|candidate| !are_playlist_playback_tracks_equal(candidate, &current_track))
+        .count();
+    let tracks = match mode {
+        PlaylistPlaybackRecommendationMode::KeepCurrent => {
+            RandomPlaylistPlaybackRecommender.propose_queue(request)
+        }
+        PlaylistPlaybackRecommendationMode::ExcludeCurrent => {
+            RandomPlaylistPlaybackRecommender.propose_queue_after_exclude(request)
+        }
+    };
+    let selection = next_track_for_recommendation_mode(mode, tracks.as_slice()).map(|track| {
+        let selected_occurrences = candidates
+            .iter()
+            .filter(|candidate| are_playlist_playback_tracks_equal(candidate, track))
+            .count();
+        let probability = if candidate_count == 0 {
+            0.0
+        } else {
+            selected_occurrences as f32 / candidate_count as f32
+        };
+        PlaylistPlaybackSelectionTrace {
+            source: "random",
+            reason: None,
+            probability,
+            uniform_probability: probability,
+            similarity: None,
+            best_similarity: None,
+            local_rank_fraction: None,
+            draw_unit: None,
+            candidate_count,
+            model_generation: None,
         }
     });
+    PlaylistPlaybackQueueProposal { tracks, selection }
+}
+
+#[cfg(not(test))]
+struct PlaylistPlaybackQueueProposal {
+    tracks: Vec<PlaybackTrack>,
+    selection: Option<PlaylistPlaybackSelectionTrace>,
+}
+
+#[cfg(not(test))]
+struct PlaylistPlaybackSelectionTrace {
+    source: &'static str,
+    reason: Option<&'static str>,
+    probability: f32,
+    uniform_probability: f32,
+    similarity: Option<f32>,
+    best_similarity: Option<f32>,
+    local_rank_fraction: Option<f32>,
+    draw_unit: Option<f32>,
+    candidate_count: usize,
+    model_generation: Option<u64>,
+}
+
+#[cfg(not(test))]
+impl From<&AudioStyleCandidateSelection> for PlaylistPlaybackSelectionTrace {
+    fn from(selection: &AudioStyleCandidateSelection) -> Self {
+        Self {
+            source: selection.source.as_str(),
+            reason: selection.reason,
+            probability: selection.probability,
+            uniform_probability: selection.uniform_probability,
+            similarity: selection.similarity,
+            best_similarity: selection.best_similarity,
+            local_rank_fraction: selection.local_rank_fraction,
+            draw_unit: Some(selection.draw_unit),
+            candidate_count: selection.candidate_count,
+            model_generation: selection.model_generation,
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn log_playlist_playback_next_track_selection(
+    requested_source: &'static str,
+    mode: PlaylistPlaybackRecommendationMode,
+    tracks: &[PlaybackTrack],
+    selection: Option<PlaylistPlaybackSelectionTrace>,
+) {
+    let next_track = next_track_for_recommendation_mode(mode, tracks);
+    let Some(next_track) = next_track else {
+        return;
+    };
+    let trace = selection;
+    let source = trace
+        .as_ref()
+        .map(|trace| trace.source)
+        .unwrap_or(requested_source);
+    let reason = trace
+        .as_ref()
+        .and_then(|trace| trace.reason)
+        .unwrap_or("none");
+    let probability = trace.as_ref().map(|trace| trace.probability).unwrap_or(0.0);
+    let uniform_probability = trace
+        .as_ref()
+        .map(|trace| trace.uniform_probability)
+        .unwrap_or(0.0);
+    let similarity = trace
+        .as_ref()
+        .and_then(|trace| trace.similarity)
+        .map(|similarity| format!("{similarity:.6}"))
+        .unwrap_or_else(|| "none".to_string());
+    let best_similarity = trace
+        .as_ref()
+        .and_then(|trace| trace.best_similarity)
+        .map(|similarity| format!("{similarity:.6}"))
+        .unwrap_or_else(|| "none".to_string());
+    let local_rank_fraction = trace
+        .as_ref()
+        .and_then(|trace| trace.local_rank_fraction)
+        .map(|rank| format!("{rank:.6}"))
+        .unwrap_or_else(|| "none".to_string());
+    let candidate_count = trace
+        .as_ref()
+        .map(|trace| trace.candidate_count)
+        .unwrap_or(0);
+    let draw = trace
+        .as_ref()
+        .and_then(|trace| trace.draw_unit)
+        .map(|draw| format!("{draw:.6}"))
+        .unwrap_or_else(|| "none".to_string());
+    let model_generation = trace
+        .as_ref()
+        .and_then(|trace| trace.model_generation)
+        .map(|generation| generation.to_string())
+        .unwrap_or_else(|| "none".to_string());
+
+    println!(
+        "[playlist_playback] next track selected source={source} requested_source={requested_source} mode={} model_generation={model_generation} probability={probability:.6} uniform_probability={uniform_probability:.6} similarity={similarity} best_similarity={best_similarity} local_rank_fraction={local_rank_fraction} draw={draw} candidates={candidate_count} reason={reason} playlist=\"{}\" music=\"{}\" url=\"{}\" range={}..{} file=\"{}\"",
+        mode.as_str(),
+        escape_log_value(&next_track.playlist_name),
+        escape_log_value(&next_track.music_name),
+        escape_log_value(&next_track.music_url),
+        next_track.start_ms,
+        next_track.end_ms,
+        escape_log_value(&next_track.file_path.display().to_string()),
+    );
+}
+
+#[cfg(not(test))]
+fn next_track_for_recommendation_mode(
+    mode: PlaylistPlaybackRecommendationMode,
+    tracks: &[PlaybackTrack],
+) -> Option<&PlaybackTrack> {
+    match mode {
+        PlaylistPlaybackRecommendationMode::KeepCurrent => tracks.get(1),
+        PlaylistPlaybackRecommendationMode::ExcludeCurrent => tracks.first(),
+    }
+}
+
+#[cfg(not(test))]
+fn escape_log_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[cfg(not(test))]

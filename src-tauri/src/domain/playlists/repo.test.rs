@@ -4,9 +4,9 @@ use super::model::{
 };
 use super::repo::{
     SpectrumMusicSourceIdentity, add_exclude, create_music, delete_music, delete_playlist_by_name,
-    get_collection_by_url, get_playlist_by_name, get_playlist_config_by_name,
-    get_playlist_playback_selection_by_name, has_collections, list_collections,
-    list_config_library, list_musics_by_file_path, list_playlists,
+    ensure_playlist_collection_refs_exist, get_collection_by_url, get_playlist_by_name,
+    get_playlist_config_by_name, get_playlist_playback_selection_by_name, has_collections,
+    list_collections, list_config_library, list_musics_by_file_path, list_playlists,
     load_liked_playlist_playback_track_sources, load_playlist_playback_track_sources,
     load_random_playlist_playback_track_source, load_spectrum_music_context,
     playlist_playback_owner_attempt_order, remove_exclude, set_collection_updates, update_music,
@@ -2077,6 +2077,125 @@ fn upsert_playlist_surface_is_immediately_usable_for_playback_selection() {
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].collection_url, populated_collection.url);
         assert_eq!(sources[0].music.url, populated_collection.musics[0].url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn ensure_playlist_collection_refs_exist_materializes_shell_before_surface_save() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let collection = Collection {
+            name: "Parsed Shell".to_string(),
+            url: "https://example.com/parsed-shell".to_string(),
+            folder: "youtube/parsed-shell".to_string(),
+            musics: vec![named_music(
+                "Draft Only Track",
+                collection_group(
+                    "Draft Group",
+                    "https://example.com/parsed-shell#draft",
+                    "Draft Group",
+                ),
+                "Draft Only Track.m4a",
+            )],
+            last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+            enable_updates: Some(true),
+        };
+        let playlist = PlayList {
+            name: "Parsed Shell Playlist".to_string(),
+            collections: vec![collection.clone()],
+            groups: vec![],
+            created_at: AutoFill::pending(),
+        };
+
+        ensure_playlist_collection_refs_exist(&playlist.collections)
+            .await
+            .expect("collection shell should materialize before playlist save");
+        let saved = upsert_playlist_surface(&playlist, None)
+            .await
+            .expect("playlist save should accept the materialized shell");
+        let persisted_collection = get_collection_by_url(&collection.url)
+            .await
+            .expect("materialized shell should load")
+            .expect("materialized shell should exist");
+        let selection = get_playlist_playback_selection_by_name(&saved.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist");
+
+        assert_eq!(saved.name, playlist.name);
+        assert_eq!(persisted_collection.name, collection.name);
+        assert_eq!(persisted_collection.url, collection.url);
+        assert_eq!(persisted_collection.folder, collection.folder);
+        assert_eq!(persisted_collection.last_updated, collection.last_updated);
+        assert_eq!(
+            persisted_collection.enable_updates,
+            collection.enable_updates
+        );
+        assert!(persisted_collection.musics.is_empty());
+        assert_eq!(selection.collections.len(), 1);
+        assert_eq!(selection.collections[0].url, collection.url);
+        assert_eq!(selection.download_scopes, vec![collection.url.clone()]);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn ensure_playlist_collection_refs_exist_does_not_clobber_existing_collection() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let collection_url = "https://example.com/existing-library";
+        let collection_folder = "youtube/existing-library";
+        let populated_collection = collection_with_musics(
+            collection_url,
+            collection_folder,
+            Some(false),
+            vec![shared_music(collection_url, collection_folder)],
+        );
+        upsert_collection(&populated_collection)
+            .await
+            .expect("existing collection should persist before shell ensure");
+
+        let draft_collection = Collection {
+            name: "Draft Existing".to_string(),
+            url: collection_url.to_string(),
+            folder: "youtube/draft-existing".to_string(),
+            musics: vec![],
+            last_updated: "2026-05-01T00:00:00+00:00".to_string(),
+            enable_updates: Some(true),
+        };
+
+        ensure_playlist_collection_refs_exist(std::slice::from_ref(&draft_collection))
+            .await
+            .expect("existing collection ref ensure should be a no-op");
+        let persisted_collection = get_collection_by_url(collection_url)
+            .await
+            .expect("existing collection should load")
+            .expect("existing collection should still exist");
+
+        assert_eq!(persisted_collection.name, populated_collection.name);
+        assert_eq!(persisted_collection.folder, populated_collection.folder);
+        assert_eq!(
+            persisted_collection.last_updated,
+            populated_collection.last_updated
+        );
+        assert_eq!(
+            persisted_collection.enable_updates,
+            populated_collection.enable_updates
+        );
+        assert_eq!(persisted_collection.musics.len(), 1);
+        assert_eq!(
+            persisted_collection.musics[0].url,
+            populated_collection.musics[0].url
+        );
 
         reset_db();
     });

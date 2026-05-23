@@ -10,7 +10,9 @@ use super::yt_dlp::CliYtDlpClient;
 use super::yt_dlp::{
     DownloadProgress, LeafProbe, LeafReference, RootProbe, YtDlpClient, classify_root_preference,
 };
-use crate::domain::collection_import::{self, CollectionSyncPlan, PlannedLeaf};
+use crate::domain::collection_import::{
+    self, CollectionShellPlan, CollectionSyncPlan, PlannedLeaf,
+};
 #[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
 use crate::domain::playlists::model::{Collection, Group};
@@ -90,6 +92,15 @@ struct PendingLeafExpansion {
     depth: u8,
 }
 
+#[derive(Debug, Clone)]
+struct ExpandedLeafCandidate {
+    id: Id,
+    url: String,
+    title: Option<String>,
+    initial_probe: Option<LeafProbe>,
+    group_hint: Option<Group>,
+}
+
 #[derive(Debug, Default, Clone)]
 struct GroupCatalog {
     groups: HashMap<String, Group>,
@@ -107,6 +118,7 @@ struct DownloadExecutionDeps {
 struct LeafDownloadInput {
     leaf: DownloadLeaf,
     probe: LeafProbe,
+    music_probe: LeafProbe,
     group: Option<Group>,
     url: String,
     target_dir: PathBuf,
@@ -117,6 +129,7 @@ struct LeafDownloadInput {
 struct CompletedLeafDownload {
     leaf: DownloadLeaf,
     probe: LeafProbe,
+    music_probe: LeafProbe,
     group: Option<Group>,
     downloaded: super::yt_dlp::DownloadedLeaf,
     progress: DownloadProgress,
@@ -371,8 +384,8 @@ async fn bootstrap_enqueued_collection_with_deps(
     task: DownloadTask,
     deps: DownloadExecutionDeps,
 ) -> Result<(DownloadTask, Collection)> {
-    let plan = resolve_collection_plan(&task, deps.client, &deps.save_root).await?;
-    collection_import::persist_enqueued_collection_state(task, &plan).await
+    let plan = resolve_collection_shell_plan(&task, deps.client).await?;
+    collection_import::persist_enqueued_collection_shell(task, &plan).await
 }
 
 #[cfg(not(test))]
@@ -462,6 +475,10 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
                 }
             }
         };
+        let mut music_probe = probe.clone();
+        if let Some(music_title) = &planned.music_title {
+            music_probe.title = music_title.clone();
+        }
 
         let group = match planned.group_hint.clone() {
             Some(group) => Some(group),
@@ -480,12 +497,40 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
         leaf_snapshot.title = Some(probe.title.clone());
         leaf_snapshot.duration_seconds = probe.duration_seconds;
         leaf_snapshot.chapter_count = Some(probe.chapters.len() as u32);
+        let file_stem = sanitize_path_component(&probe.title);
+        let music_group = resolve_music_group(group.clone(), &collection);
+
+        if let Some(relative_path) = collection_import::resolve_existing_leaf_file(
+            &collection,
+            &music_group,
+            &save_root,
+            &file_stem,
+        ) {
+            collection_import::persist_downloaded_leaf_music(
+                &mut collection,
+                plan.source_kind,
+                &music_probe,
+                &relative_path,
+                music_group,
+            )
+            .await?;
+            leaf_snapshot.file_name = Some(relative_path.clone());
+            leaf_snapshot.relative_path = Some(relative_path);
+            leaf_snapshot.status = DownloadLeafStatus::Completed;
+            leaf_snapshot.last_error = None;
+            leaf_snapshot.touch();
+            task_snapshot.replace_leaf(leaf_snapshot);
+            let saved = repo::save_task(task_snapshot.clone()).await?;
+            publish_download_task_change(&saved);
+            task_snapshot = saved;
+            continue;
+        }
+
         leaf_snapshot.status = DownloadLeafStatus::Downloading;
         leaf_snapshot.touch();
         task_snapshot.replace_leaf(leaf_snapshot.clone());
         repo::save_task(task_snapshot.clone()).await?;
 
-        let file_stem = sanitize_path_component(&probe.title);
         let target_dir = save_root.join(&collection.folder);
         let leaf_url = planned.url.clone();
         let temp_file_stem = temporary_download_stem(&file_stem, &task_snapshot.id, &planned.id);
@@ -495,6 +540,7 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
             LeafDownloadInput {
                 leaf: leaf_snapshot,
                 probe,
+                music_probe,
                 group,
                 url: leaf_url,
                 target_dir,
@@ -549,6 +595,7 @@ async fn download_leaf_audio_worker(
         Ok((downloaded, progress)) => Ok(CompletedLeafDownload {
             leaf: input.leaf,
             probe: input.probe,
+            music_probe: input.music_probe,
             group: input.group,
             downloaded,
             progress,
@@ -601,7 +648,7 @@ async fn handle_finished_leaf_download(
     collection_import::persist_downloaded_leaf_music(
         collection,
         source_kind,
-        &completed.probe,
+        &completed.music_probe,
         &file_name,
         music_group,
     )
@@ -672,6 +719,7 @@ async fn resolve_collection_plan(
                     url: collection_url,
                     sequence: 0,
                     initial_probe: (!should_reprobe_single_leaf(root_preference)).then_some(leaf),
+                    music_title: None,
                     group_hint: None,
                 }],
             })
@@ -709,6 +757,61 @@ async fn resolve_collection_plan(
     }
 }
 
+#[cfg(not(test))]
+async fn resolve_collection_shell_plan(
+    task: &DownloadTask,
+    client: Arc<dyn YtDlpClient>,
+) -> Result<CollectionShellPlan> {
+    let root_probe = {
+        let client = client.clone();
+        let url = task.url.clone();
+        run_blocking(move || client.probe_root(&url)).await?
+    };
+
+    match root_probe {
+        RootProbe::Single(leaf) => {
+            let collection_url = leaf.webpage_url.clone();
+            let existing = collection_import::get_collection_by_url(&collection_url).await?;
+            Ok(CollectionShellPlan {
+                source_kind: CollectionSourceKind::Single,
+                collection_name: leaf.title.clone(),
+                collection_url: collection_url.clone(),
+                collection_folder: collection_import::resolve_collection_folder(
+                    &collection_url,
+                    &leaf.title,
+                    existing.as_ref(),
+                )
+                .await?,
+                enable_updates: None,
+            })
+        }
+        RootProbe::List(list) => {
+            if list.entries.is_empty() {
+                bail!("download resource does not contain any downloadable entries");
+            }
+
+            let collection_url = list.webpage_url.clone();
+            let existing = collection_import::get_collection_by_url(&collection_url).await?;
+            Ok(CollectionShellPlan {
+                source_kind: CollectionSourceKind::List,
+                collection_name: list.title.clone(),
+                collection_url: collection_url.clone(),
+                collection_folder: collection_import::resolve_collection_folder(
+                    &collection_url,
+                    &list.title,
+                    existing.as_ref(),
+                )
+                .await?,
+                enable_updates: Some(
+                    existing
+                        .and_then(|collection| collection.enable_updates)
+                        .unwrap_or(false),
+                ),
+            })
+        }
+    }
+}
+
 const MAX_NESTED_LIST_DEPTH: u8 = 4;
 
 pub(crate) async fn expand_root_entries_to_planned_leafs(
@@ -726,15 +829,16 @@ pub(crate) async fn expand_root_entries_to_planned_leafs(
             depth: 0,
         })
         .collect::<Vec<_>>();
-    let mut planned = Vec::new();
+    let mut candidates = Vec::new();
 
     while let Some(next) = pending.pop() {
         let preference = classify_root_preference(&next.entry.url);
         if preference == CollectionSourceKind::Single {
-            planned.push(PlannedLeaf {
-                id: leaf_id_for(task_id, &next.entry.url),
-                url: next.entry.url,
-                sequence: planned.len() as u32,
+            let url = next.entry.url;
+            candidates.push(ExpandedLeafCandidate {
+                id: leaf_id_for(task_id, &url),
+                url,
+                title: next.entry.title,
                 initial_probe: None,
                 group_hint: next.group_hint,
             });
@@ -758,10 +862,10 @@ pub(crate) async fn expand_root_entries_to_planned_leafs(
         match nested_probe {
             RootProbe::Single(leaf) => {
                 let leaf_url = leaf.webpage_url.clone();
-                planned.push(PlannedLeaf {
+                candidates.push(ExpandedLeafCandidate {
                     id: leaf_id_for(task_id, &leaf_url),
                     url: leaf_url,
-                    sequence: planned.len() as u32,
+                    title: Some(leaf.title.clone()),
                     initial_probe: (!should_reprobe_single_leaf(preference)).then_some(leaf),
                     group_hint: next.group_hint,
                 });
@@ -784,7 +888,65 @@ pub(crate) async fn expand_root_entries_to_planned_leafs(
         }
     }
 
-    Ok(planned)
+    Ok(assign_normalized_music_titles(candidates))
+}
+
+fn assign_normalized_music_titles(candidates: Vec<ExpandedLeafCandidate>) -> Vec<PlannedLeaf> {
+    let mut group_titles = HashMap::<String, Vec<String>>::new();
+    for candidate in &candidates {
+        let Some(title) = &candidate.title else {
+            continue;
+        };
+        group_titles
+            .entry(candidate_title_group_key(candidate))
+            .or_default()
+            .push(title.clone());
+    }
+
+    let normalized_by_group = group_titles
+        .into_iter()
+        .map(|(group, titles)| {
+            (
+                group,
+                collection_import::normalize_music_title_batch(&titles),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut group_offsets = HashMap::<String, usize>::new();
+
+    candidates
+        .into_iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            let group_key = candidate_title_group_key(&candidate);
+            let music_title = candidate.title.as_ref().and_then(|_| {
+                let offset = group_offsets.entry(group_key.clone()).or_default();
+                let title = normalized_by_group
+                    .get(&group_key)
+                    .and_then(|titles| titles.get(*offset))
+                    .cloned();
+                *offset += 1;
+                title
+            });
+
+            PlannedLeaf {
+                id: candidate.id,
+                url: candidate.url,
+                sequence: index as u32,
+                initial_probe: candidate.initial_probe,
+                music_title,
+                group_hint: candidate.group_hint,
+            }
+        })
+        .collect()
+}
+
+fn candidate_title_group_key(candidate: &ExpandedLeafCandidate) -> String {
+    candidate
+        .group_hint
+        .as_ref()
+        .map(|group| group.url.clone())
+        .unwrap_or_default()
 }
 
 #[cfg(not(test))]

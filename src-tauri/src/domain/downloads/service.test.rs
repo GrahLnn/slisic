@@ -16,9 +16,10 @@ use super::yt_dlp::{
 /// dependencies so `cargo test` only exercises pure download-domain contracts.
 /// Manual end-to-end download checks belong in `examples/manual_download_chain.rs`.
 use crate::domain::collection_import::{
-    CollectionSyncPlan, PlannedLeaf, apply_collection_plan_to_task, create_collection_shell,
-    describe_download_resource, existing_leaf_urls, materialize_music_entries,
-    persist_enqueued_collection_state,
+    CollectionShellPlan, CollectionSyncPlan, PlannedLeaf, apply_collection_plan_to_task,
+    create_collection_shell, describe_download_resource, existing_leaf_urls,
+    materialize_music_entries, normalize_music_titles_within_collection,
+    persist_enqueued_collection_shell, resolve_existing_leaf_file,
 };
 use crate::domain::downloads::model::{
     DownloadTask, DownloadTaskStatus, DownloadTrigger, PastedDownloadUrlResolutionStatus,
@@ -167,6 +168,128 @@ fn materialize_music_entries_falls_back_to_single_full_track_when_no_chapters_ex
     assert_eq!(musics[0].path.as_deref(), Some("single-track.m4a"));
     assert_eq!(musics[0].start_ms, 0);
     assert_eq!(musics[0].end_ms, 245_000);
+}
+
+#[test]
+fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
+    let group = collection_group(
+        "ZWEI2 Original Soundtrack",
+        "https://example.com/playlist/zwei2",
+        "ZWEI2 Original Soundtrack",
+    );
+    let death_stranding_group = collection_group(
+        "Death Stranding 2",
+        "https://example.com/playlist/death-stranding-2",
+        "Death Stranding 2",
+    );
+    let mut collection = Collection {
+        name: "Mixed Downloads".to_string(),
+        url: "https://example.com/root".to_string(),
+        folder: "example/root".to_string(),
+        musics: vec![
+            Music {
+                name: "ZWEI2 - Disturbing Atmosphere".to_string(),
+                alias: "ZWEI2 - Disturbing Atmosphere".to_string(),
+                group: group.clone(),
+                url: "https://example.com/watch?v=zwei2-1".to_string(),
+                path: Some("zwei2-1.m4a".to_string()),
+                start_ms: 0,
+                end_ms: 79_000,
+                liked: false,
+            },
+            Music {
+                name: "ZWEI2 - Zahar's Ambition".to_string(),
+                alias: "Pinned Alias".to_string(),
+                group,
+                url: "https://example.com/watch?v=zwei2-2".to_string(),
+                path: Some("zwei2-2.m4a".to_string()),
+                start_ms: 0,
+                end_ms: 152_000,
+                liked: false,
+            },
+            Music {
+                name: "Ludvig Forssell - A Heartfelt Apology | Death Stranding 2 On The Beach Original Video Game Score".to_string(),
+                alias: "Ludvig Forssell - A Heartfelt Apology | Death Stranding 2 On The Beach Original Video Game Score".to_string(),
+                group: death_stranding_group.clone(),
+                url: "https://example.com/watch?v=ds2-1".to_string(),
+                path: Some("ds2-1.m4a".to_string()),
+                start_ms: 0,
+                end_ms: 213_000,
+                liked: false,
+            },
+            Music {
+                name: "Ludvig Forssell - Drawbridge | Death Stranding 2 On The Beach Original Video Game Score".to_string(),
+                alias: "Ludvig Forssell - Drawbridge | Death Stranding 2 On The Beach Original Video Game Score".to_string(),
+                group: death_stranding_group,
+                url: "https://example.com/watch?v=ds2-2".to_string(),
+                path: Some("ds2-2.m4a".to_string()),
+                start_ms: 0,
+                end_ms: 180_000,
+                liked: false,
+            },
+        ],
+        last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    normalize_music_titles_within_collection(&mut collection);
+
+    assert_eq!(collection.musics[0].name, "Disturbing Atmosphere");
+    assert_eq!(collection.musics[0].alias, "Disturbing Atmosphere");
+    assert_eq!(collection.musics[1].name, "Zahar's Ambition");
+    assert_eq!(collection.musics[1].alias, "Pinned Alias");
+    assert_eq!(collection.musics[2].name, "A Heartfelt Apology");
+    assert_eq!(collection.musics[2].alias, "A Heartfelt Apology");
+    assert_eq!(collection.musics[3].name, "Drawbridge");
+    assert_eq!(collection.musics[3].alias, "Drawbridge");
+}
+
+#[test]
+fn normalize_music_titles_does_not_compare_across_download_groups() {
+    let first_group = collection_group(
+        "First Playlist",
+        "https://example.com/playlist/first",
+        "first",
+    );
+    let second_group = collection_group(
+        "Second Playlist",
+        "https://example.com/playlist/second",
+        "second",
+    );
+    let mut collection = Collection {
+        name: "Root".to_string(),
+        url: "https://example.com/root".to_string(),
+        folder: "example/root".to_string(),
+        musics: vec![
+            Music {
+                name: "Album - Alpha".to_string(),
+                alias: "Album - Alpha".to_string(),
+                group: first_group,
+                url: "https://example.com/watch?v=alpha".to_string(),
+                path: Some("alpha.m4a".to_string()),
+                start_ms: 0,
+                end_ms: 120_000,
+                liked: false,
+            },
+            Music {
+                name: "Album - Beta".to_string(),
+                alias: "Album - Beta".to_string(),
+                group: second_group,
+                url: "https://example.com/watch?v=beta".to_string(),
+                path: Some("beta.m4a".to_string()),
+                start_ms: 0,
+                end_ms: 120_000,
+                liked: false,
+            },
+        ],
+        last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    normalize_music_titles_within_collection(&mut collection);
+
+    assert_eq!(collection.musics[0].name, "Album - Alpha");
+    assert_eq!(collection.musics[1].name, "Album - Beta");
 }
 
 #[test]
@@ -452,6 +575,58 @@ fn materialize_music_entries_preserves_group_and_nested_relative_path() {
 }
 
 #[test]
+fn resolve_existing_leaf_file_matches_expected_final_m4a_path() {
+    let root = temp_test_dir();
+    let collection = Collection {
+        name: "Recovered".to_string(),
+        url: "https://example.com/collection".to_string(),
+        folder: "example/recovered".to_string(),
+        musics: vec![],
+        last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+    let group = collection_group("Recovered", &collection.url, &collection.folder);
+    let collection_dir = root.join(&collection.folder);
+    std::fs::create_dir_all(&collection_dir).expect("test collection dir should be created");
+    std::fs::write(collection_dir.join("Track One.m4a"), b"existing")
+        .expect("existing audio file should be created");
+
+    let relative_path = resolve_existing_leaf_file(&collection, &group, &root, "Track One");
+
+    assert_eq!(relative_path.as_deref(), Some("Track One.m4a"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn resolve_existing_leaf_file_matches_nested_group_path() {
+    let root = temp_test_dir();
+    let collection = Collection {
+        name: "Recovered".to_string(),
+        url: "https://example.com/collection".to_string(),
+        folder: "example/recovered".to_string(),
+        musics: vec![],
+        last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+    let group = collection_group("Disc 1", "https://example.com/group", "Disc 1");
+    let group_dir = root.join(&collection.folder).join(&group.folder);
+    std::fs::create_dir_all(&group_dir).expect("test group dir should be created");
+    std::fs::write(group_dir.join("Track One.m4a"), b"existing")
+        .expect("existing nested audio file should be created");
+
+    let relative_path = resolve_existing_leaf_file(&collection, &group, &root, "Track One");
+    let expected = Path::new(&group.folder)
+        .join("Track One.m4a")
+        .to_string_lossy()
+        .to_string();
+
+    assert_eq!(relative_path.as_deref(), Some(expected.as_str()));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn derives_channel_url_from_uploads_playlist_id() {
     let derived = derive_youtube_channel_url_from_uploads_playlist(
         "https://www.youtube.com/playlist?list=UUyp_JApwUNqb9v595vPRvhg",
@@ -685,6 +860,29 @@ fn expand_root_entries_to_planned_leafs_flattens_nested_playlists_into_grouped_l
         assert_eq!(leaves.len(), 2);
         assert_eq!(leaves[0].url, "https://www.youtube.com/watch?v=track1");
         assert_eq!(leaves[1].url, "https://www.youtube.com/watch?v=track2");
+        assert_eq!(
+            leaves[0]
+                .initial_probe
+                .as_ref()
+                .map(|probe| probe.title.as_str()),
+            None
+        );
+        assert_eq!(
+            leaves[0]
+                .initial_probe
+                .as_ref()
+                .map(|probe| probe.webpage_url.as_str()),
+            None
+        );
+        assert_eq!(
+            leaves[0]
+                .initial_probe
+                .as_ref()
+                .and_then(|probe| probe.album.as_deref()),
+            None
+        );
+        assert_eq!(leaves[0].music_title.as_deref(), Some("Track 1"));
+        assert_eq!(leaves[1].music_title.as_deref(), Some("Track 2"));
         assert_eq!(leaves[0].sequence, 0);
         assert_eq!(leaves[1].sequence, 1);
         let group = leaves[0]
@@ -694,6 +892,53 @@ fn expand_root_entries_to_planned_leafs_flattens_nested_playlists_into_grouped_l
         assert_eq!(group.name, "Album One");
         assert_eq!(group.url, nested_url);
         assert_eq!(group.folder, "Album One");
+    });
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_normalizes_music_titles_from_playlist_context() {
+    run_async(async {
+        let leaves = expand_root_entries_to_planned_leafs(
+            &Id::from("task-galacticare"),
+            Arc::new(FakeYtDlpClient::default()),
+            vec![
+                LeafReference {
+                    url: "https://www.youtube.com/watch?v=patient".to_string(),
+                    title: Some("One Patient at a Time - Galacticare Soundtrack".to_string()),
+                    sequence: 0,
+                },
+                LeafReference {
+                    url: "https://www.youtube.com/watch?v=algaemist".to_string(),
+                    title: Some("Algaemist - Galacticare Soundtrack".to_string()),
+                    sequence: 1,
+                },
+            ],
+            Some(collection_group(
+                "Galacticare",
+                "https://example.com/playlist/galacticare",
+                "Galacticare",
+            )),
+        )
+        .await
+        .expect("flat playlist leaf titles should normalize without leaf probing");
+
+        assert_eq!(
+            leaves
+                .iter()
+                .map(|leaf| leaf
+                    .initial_probe
+                    .as_ref()
+                    .map(|probe| probe.title.as_str()))
+                .collect::<Vec<_>>(),
+            vec![None, None]
+        );
+        assert_eq!(
+            leaves
+                .iter()
+                .map(|leaf| leaf.music_title.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("One Patient at a Time"), Some("Algaemist")]
+        );
     });
 }
 
@@ -753,6 +998,7 @@ fn apply_collection_plan_to_task_populates_collection_metadata_and_leaf_queue() 
             url: "https://example.com/watch?v=leaf".to_string(),
             sequence: 0,
             initial_probe: None,
+            music_title: None,
             group_hint: None,
         }],
     };
@@ -774,48 +1020,45 @@ fn apply_collection_plan_to_task_populates_collection_metadata_and_leaf_queue() 
 }
 
 #[test]
-fn persist_enqueued_collection_state_saves_collection_before_leaf_downloads_start() {
+fn persist_enqueued_collection_shell_does_not_require_leaf_expansion() {
     let _guard = acquire_db_test_lock();
 
     run_async(async {
         ensure_db().await;
 
         let task = save_task(DownloadTask::new(
-            "task-persist",
-            "https://example.com/list",
+            "task-shell",
+            "https://example.com/channel",
             DownloadTrigger::Manual,
         ))
         .await
-        .expect("task should save before bootstrap persistence");
-        let plan = CollectionSyncPlan {
+        .expect("task should save before shell persistence");
+        let plan = CollectionShellPlan {
             source_kind: CollectionSourceKind::List,
-            collection_name: "Bootstrap Persist".to_string(),
-            collection_url: "https://example.com/list".to_string(),
-            collection_folder: "youtube/bootstrap-persist".to_string(),
+            collection_name: "Channel Shell".to_string(),
+            collection_url: "https://example.com/channel".to_string(),
+            collection_folder: "example/channel-shell".to_string(),
             enable_updates: Some(false),
-            leaves: vec![PlannedLeaf {
-                id: Id::from("leaf-persist"),
-                url: "https://example.com/watch?v=persist".to_string(),
-                sequence: 0,
-                initial_probe: None,
-                group_hint: None,
-            }],
         };
 
-        let (saved_task, saved_collection) = persist_enqueued_collection_state(task, &plan)
+        let (saved_task, saved_collection) = persist_enqueued_collection_shell(task, &plan)
             .await
-            .expect("enqueue bootstrap should persist collection and task metadata");
+            .expect("enqueue shell should persist without expanded leaves");
         let reloaded_collection =
             crate::domain::playlists::repo::get_collection_by_url(&plan.collection_url)
                 .await
                 .expect("collection lookup should succeed")
-                .expect("collection should exist immediately after bootstrap");
+                .expect("collection should exist immediately after shell persistence");
 
         assert_eq!(
             saved_task.collection_url.as_deref(),
             Some(plan.collection_url.as_str())
         );
-        assert_eq!(saved_task.leafs.len(), 1);
+        assert_eq!(saved_task.collection_name.as_deref(), Some("Channel Shell"));
+        assert_eq!(saved_task.source_kind, Some(CollectionSourceKind::List));
+        assert_eq!(saved_task.status, DownloadTaskStatus::Queued);
+        assert!(saved_task.leafs.is_empty());
+        assert_eq!(saved_task.total_leaves, 0);
         assert_eq!(saved_collection.url, plan.collection_url);
         assert_eq!(reloaded_collection.name, plan.collection_name);
         assert!(reloaded_collection.musics.is_empty());

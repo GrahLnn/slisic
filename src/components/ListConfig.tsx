@@ -743,31 +743,36 @@ export function ListConfig() {
             ),
           })}
         </div>
-        <motion.div
-          {...contentFadeProps}
-          animate={isPresent ? contentFadeProps.animate : contentFadeProps.exit}
-          className="flex flex-col overflow-visible"
-        >
-          <div className="text-sm text-[#525252] dark:text-[#d4d4d4]">Exclude</div>
-          <div
-            className={cn(
-              "flex flex-col overflow-visible",
-              viewModel.interactionFlags.isToolListInteractionDisabled && "pointer-events-none",
-            )}
+        {viewModel.excludeToolLabelItems.length > 0 ? (
+          <motion.div
+            {...contentFadeProps}
+            animate={isPresent ? contentFadeProps.animate : contentFadeProps.exit}
+            className="flex flex-col overflow-visible"
           >
-            <AnimatePresence initial={false}>
-              {viewModel.excludeToolLabelItems.map((item) => (
-                <ListConfigExcludeToolLabelRow
-                  key={item.id}
-                  item={item}
-                  dismissHoverSignal={dismissHoverSignal}
-                  interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
-                  onRemoveExcludeItem={({ music }) => appLogicAction.removeExclude(music)}
-                />
-              ))}
-            </AnimatePresence>
-          </div>
-        </motion.div>
+            <div className="cursor-default select-none text-sm text-[#525252] dark:text-[#d4d4d4]">
+              Exclude
+            </div>
+            <div
+              className={cn(
+                "flex flex-col overflow-visible",
+                viewModel.interactionFlags.isToolListInteractionDisabled &&
+                  "pointer-events-none",
+              )}
+            >
+              <AnimatePresence initial={false}>
+                {viewModel.excludeToolLabelItems.map((item) => (
+                  <ListConfigExcludeToolLabelRow
+                    key={item.id}
+                    item={item}
+                    dismissHoverSignal={dismissHoverSignal}
+                    interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
+                    onRemoveExcludeItem={({ music }) => appLogicAction.removeExclude(music)}
+                  />
+                ))}
+              </AnimatePresence>
+            </div>
+          </motion.div>
+        ) : null}
       </div>
       {viewModel.interactionFlags.shouldRenderArcTrack && (
         <ArcTrackList

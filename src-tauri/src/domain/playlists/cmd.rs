@@ -78,6 +78,10 @@ pub async fn upsert_playlist(
     previous_name: Option<String>,
     playlist: PlayList,
 ) -> Result<PlayListListView, String> {
+    super::repo::ensure_playlist_collection_refs_exist(&playlist.collections)
+        .await
+        .map_err(|error| error.to_string())?;
+
     super::repo::upsert_playlist_surface(&playlist, previous_name.as_deref())
         .await
         .map_err(|error| error.to_string())

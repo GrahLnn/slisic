@@ -19,9 +19,7 @@ import {
   type PastedDownloadUrlResolution,
 } from "@/src/cmd";
 
-export const ss = defineSS(
-  ns("mainx", sst(["idle", "checking", "probing", "enqueueing"], ["reset"])),
-);
+export const ss = defineSS(ns("mainx", sst(["idle", "checking", "probing"], ["reset"])));
 export const state = allState(ss);
 export const sig = allSignal(ss);
 

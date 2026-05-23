@@ -1,5 +1,5 @@
 import { type as arkType } from "arktype";
-import type { DownloadResourceProbe, PastedDownloadUrlResolution } from "@/src/cmd";
+import type { Collection, DownloadResourceProbe, PastedDownloadUrlResolution } from "@/src/cmd";
 
 const downloadUrl = arkType("string.url");
 const EMPTY_CLIPBOARD_TEXT = "Empty clipboard";
@@ -7,10 +7,8 @@ const EMPTY_CLIPBOARD_TEXT = "Empty clipboard";
 export type ConfigCandidateItemStatus =
   | "checking"
   | "probing"
-  | "enqueueing"
   | "invalid_url"
-  | "probe_failed"
-  | "enqueue_failed";
+  | "probe_failed";
 
 export interface ConfigCandidateItem {
   id: string;
@@ -150,20 +148,6 @@ export function updateActiveCandidateItem(
   };
 }
 
-export function completeActiveCandidateProbe(
-  context: Context,
-  probe: DownloadResourceProbe,
-): Context {
-  return updateActiveCandidateItem(context, (item) => ({
-    ...item,
-    sourceUrl: probe.url,
-    displayText: probe.title,
-    status: "enqueueing",
-    error: null,
-    probe,
-  }));
-}
-
 export function applyActiveCandidateUrlResolution(
   context: Context,
   resolution: PastedDownloadUrlResolution,
@@ -204,14 +188,6 @@ export function failActiveCandidateProbe(context: Context, error: string): Conte
   }));
 }
 
-export function failActiveCandidateEnqueue(context: Context, error: string): Context {
-  return updateActiveCandidateItem(context, (item) => ({
-    ...item,
-    status: "enqueue_failed",
-    error,
-  }));
-}
-
 export function clearActiveCandidate(context: Context): Context {
   return {
     ...context,
@@ -233,11 +209,25 @@ export function deleteCandidateItem(context: Context, id: string): Context {
 }
 
 export function candidateItemAllowsDelete(status: ConfigCandidateItemStatus) {
-  return status === "invalid_url" || status === "probe_failed" || status === "enqueue_failed";
+  return status === "invalid_url" || status === "probe_failed";
 }
 
 export function candidateItemIsErrored(status: ConfigCandidateItemStatus) {
   return candidateItemAllowsDelete(status);
+}
+
+export function createCollectionShellFromProbe(
+  probe: DownloadResourceProbe,
+  lastUpdated: string,
+): Collection {
+  return {
+    name: probe.title,
+    url: probe.url,
+    folder: probe.collection_folder,
+    musics: [],
+    last_updated: lastUpdated,
+    enable_updates: probe.enable_updates,
+  };
 }
 
 export function toErrorMessage(error: unknown) {

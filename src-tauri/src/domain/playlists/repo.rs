@@ -434,6 +434,40 @@ pub async fn load_liked_playlist_playback_track_sources(
     Ok(sources)
 }
 
+pub async fn load_audio_style_training_track_sources() -> Result<Vec<PlaylistPlaybackTrackSource>> {
+    ensure_collection_graph_schema().await?;
+
+    let records = match Collection::list().await {
+        Ok(collections) => collections
+            .into_iter()
+            .map(|collection| collection_record_id(&collection.url))
+            .collect::<Vec<_>>(),
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) => return Ok(vec![]),
+            other => return Err(other.into()),
+        },
+    };
+
+    let mut sources = Vec::new();
+    let mut seen = HashSet::new();
+    for record in records {
+        let Some(collection) = load_playlist_playback_collection_ref(&record).await? else {
+            continue;
+        };
+
+        for music_record in load_collection_music_ids(&record).await? {
+            if is_music_record_excluded_for_playback(&music_record, Music::table_name()).await? {
+                continue;
+            }
+
+            let music = Music::get_record(music_record).await?;
+            append_playback_track_source(&collection, music, &mut seen, &mut sources);
+        }
+    }
+
+    Ok(sources)
+}
+
 pub async fn load_random_playlist_playback_track_source(
     selection: &PlaylistPlaybackSelection,
 ) -> Result<Option<PlaylistPlaybackTrackSource>> {
@@ -530,6 +564,39 @@ pub async fn upsert_playlist_surface(
             .create_at_returning::<PlayListListView>(record)
             .await?),
     }
+}
+
+pub async fn ensure_playlist_collection_refs_exist(collections: &[Collection]) -> Result<()> {
+    ensure_collection_graph_schema().await?;
+
+    for collection in collections {
+        if find_unique_record_id_by_string_field::<Collection>("url", &collection.url)
+            .await?
+            .is_some()
+        {
+            continue;
+        }
+
+        let shell = Collection {
+            name: collection.name.clone(),
+            url: collection.url.clone(),
+            folder: collection.folder.clone(),
+            musics: vec![],
+            last_updated: collection.last_updated.clone(),
+            enable_updates: collection.enable_updates,
+        };
+        let record = collection_record_id(&shell.url);
+
+        match Repo::<Collection>::create_at(record, shell).await {
+            Ok(_) => {}
+            Err(error) => match classify_db_error(&error) {
+                DBError::Conflict(_) => {}
+                other => return Err(other.into()),
+            },
+        }
+    }
+
+    Ok(())
 }
 
 pub async fn set_collection_updates(url: &str, enabled: bool) -> Result<Option<Collection>> {
