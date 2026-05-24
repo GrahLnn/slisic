@@ -347,6 +347,11 @@ pub(crate) fn update_current_session_tracks(tracks: Vec<PlaybackTrack>) -> Resul
 }
 
 #[cfg(not(test))]
+pub(crate) fn current_session_tracks_snapshot() -> Result<Vec<PlaybackTrack>> {
+    runtime()?.current_session_tracks_snapshot()
+}
+
+#[cfg(not(test))]
 pub(crate) fn active_request_track_snapshot() -> Result<Option<PlaybackTrack>> {
     runtime()?.active_request_track_snapshot()
 }
@@ -370,9 +375,7 @@ pub(crate) fn update_current_session_track_identity(
 
 #[derive(Debug, Clone)]
 pub(crate) struct PlaybackTrackLikedUpdate {
-    pub(crate) music_url: String,
-    pub(crate) start_ms: u32,
-    pub(crate) end_ms: u32,
+    pub(crate) canonical_music_id: String,
     pub(crate) liked: bool,
 }
 
@@ -1205,6 +1208,22 @@ impl PlayerRuntime {
         Ok(true)
     }
 
+    fn current_session_tracks_snapshot(&self) -> Result<Vec<PlaybackTrack>> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
+        let Some(active) = session.as_ref() else {
+            return Ok(vec![]);
+        };
+
+        active
+            .tracks
+            .read()
+            .map(|tracks| tracks.clone())
+            .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))
+    }
+
     fn resolve_spectrum_playback_start_plan(
         &self,
         scope: SpectrumPlaybackScope,
@@ -1484,6 +1503,7 @@ async fn run_playback_session(
         let Some(track) = track else {
             return Ok(());
         };
+        runtime.set_active_request_track(track.clone())?;
         NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&runtime.app)?;
         let repeated_loop_signal = resolve_spectrum_loop_playback_range(
             runtime.spectrum_playback_scope_snapshot()?,
@@ -1516,7 +1536,6 @@ async fn run_playback_session(
                 .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?
                 .commit_current_track(&track);
         }
-        runtime.set_active_request_track(track.clone())?;
         runtime.set_active_playback_range(Some(active_range))?;
         if initial_request
             .as_ref()
@@ -1573,6 +1592,7 @@ pub(crate) fn resolve_session_track_identity_update(
             next.music_name = update.music_name.clone();
             next.start_ms = update.next_start_ms;
             next.end_ms = update.next_end_ms;
+            sync_playback_track_source_music(&mut next);
             changed = changed
                 || !playback_tracks_match(std::slice::from_ref(track), std::slice::from_ref(&next));
             next
@@ -1609,6 +1629,7 @@ pub(crate) fn resolve_active_request_track_identity_update(
     next.music_name = update.music_name.clone();
     next.start_ms = update.next_start_ms;
     next.end_ms = update.next_end_ms;
+    sync_playback_track_source_music(&mut next);
     Some(next)
 }
 
@@ -1620,15 +1641,13 @@ pub(crate) fn resolve_session_track_liked_update(
     let next_tracks = tracks
         .iter()
         .map(|track| {
-            if track.music_url != update.music_url
-                || track.start_ms != update.start_ms
-                || track.end_ms != update.end_ms
-            {
+            if track.canonical_music_id != update.canonical_music_id {
                 return track.clone();
             }
 
             let mut next = track.clone();
             next.liked = update.liked;
+            sync_playback_track_source_music(&mut next);
             changed = changed || track.liked != next.liked;
             next
         })
@@ -1643,16 +1662,26 @@ pub(crate) fn resolve_active_request_track_liked_update(
 ) -> Option<PlaybackTrack> {
     let track = active_request_track?;
 
-    if track.music_url != update.music_url
-        || track.start_ms != update.start_ms
-        || track.end_ms != update.end_ms
-    {
+    if track.canonical_music_id != update.canonical_music_id {
         return None;
     }
 
     let mut next = track.clone();
     next.liked = update.liked;
+    sync_playback_track_source_music(&mut next);
     Some(next)
+}
+
+fn sync_playback_track_source_music(track: &mut PlaybackTrack) {
+    let Some(music) = track.source_music.as_mut() else {
+        return;
+    };
+
+    music.alias = track.music_name.clone();
+    music.path = Some(track.file_path.to_string_lossy().to_string());
+    music.start_ms = track.start_ms;
+    music.end_ms = track.end_ms;
+    music.liked = track.liked;
 }
 
 pub(crate) fn resolve_active_playback_range_identity_update(

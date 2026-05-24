@@ -6,6 +6,7 @@ use crate::domain::player::service::{
     PlaybackTrackIdentityUpdate, PlaybackTrackLikedUpdate, active_request_track_snapshot,
     update_current_session_track_identity, update_current_session_track_liked,
 };
+use crate::domain::playlist_playback::recommendation::notify_audio_style_training_inputs_changed;
 use tauri::AppHandle;
 
 #[tauri::command]
@@ -114,6 +115,7 @@ pub async fn update_music(
             .map_err(|error| error.to_string())?;
 
     if let Some(music) = updated.as_ref() {
+        notify_audio_style_training_inputs_changed("music_identity_update");
         update_current_session_track_identity(&PlaybackTrackIdentityUpdate {
             music_name: music.alias.clone(),
             music_url: url,
@@ -146,9 +148,7 @@ pub async fn set_current_music_liked(liked: bool) -> Result<Option<Music>, Strin
 
     if updated.is_some() {
         update_current_session_track_liked(&PlaybackTrackLikedUpdate {
-            music_url: track.music_url,
-            start_ms: track.start_ms,
-            end_ms: track.end_ms,
+            canonical_music_id: track.canonical_music_id,
             liked,
         })
         .map_err(|error| error.to_string())?;
@@ -160,9 +160,11 @@ pub async fn set_current_music_liked(liked: bool) -> Result<Option<Music>, Strin
 #[tauri::command]
 #[specta::specta]
 pub async fn create_music(source_collection_url: String, music: Music) -> Result<Music, String> {
-    super::repo::create_music(&source_collection_url, &music)
+    let created = super::repo::create_music(&source_collection_url, &music)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    notify_audio_style_training_inputs_changed("music_create");
+    Ok(created)
 }
 
 #[tauri::command]

@@ -86,6 +86,7 @@ describe("SpectrumPlaybackSession", () => {
     const identity = createIdentity();
 
     assert.deepEqual(createSpectrumPlaybackTrackPayload(identity, "Disc 1 Opening"), {
+      canonical_music_id: "source:https://example.com/quiet-morning#a:0:120000",
       end_ms: 120_000,
       file_path: "C:/Music/quiet-morning.m4a",
       liked: false,

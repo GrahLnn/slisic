@@ -1,8 +1,9 @@
+#[cfg(not(test))]
+use crate::domain::meta::service as meta_service;
 use crate::domain::player::model::PlaybackTrack;
 #[cfg(not(test))]
-use crate::domain::{downloads::service as download_service, meta::service as meta_service};
-#[cfg(not(test))]
 use anyhow::{Context, Result, anyhow};
+use appdb::{VectorDistance, VectorIndexType, impl_hnsw_index};
 use rand::RngExt;
 use rustfft::{FftPlanner, num_complex::Complex};
 use serde::{Deserialize, Serialize};
@@ -20,8 +21,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(test))]
 use std::sync::{Mutex, OnceLock, RwLock};
-#[cfg(not(test))]
-use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(not(test))]
 use tauri::{AppHandle, Manager};
@@ -46,10 +45,30 @@ const AUDIO_STYLE_HOP_SIZE: usize = 256;
 const AUDIO_STYLE_SMOOTHNESS: f32 = 5.0;
 const AUDIO_STYLE_EXPLORATION_FLOOR: f32 = 0.04;
 const AUDIO_STYLE_LOCAL_DENSITY_TOP_K: usize = 10;
+#[cfg(not(test))]
+const AUDIO_STYLE_INPUT_CHANGE_DEBOUNCE_MS: u64 = 500;
+
+struct AudioStyleEmbeddingVectorIndex;
+
+impl_hnsw_index!(
+    AudioStyleEmbeddingVectorIndex,
+    name: "audio_style_embedding_vector_hnsw",
+    table: "audio_style_embedding",
+    field: "embedding",
+    dimension: AUDIO_STYLE_EMBEDDING_WIDTH,
+    vector_type: VectorIndexType::F32,
+    distance: VectorDistance::Cosine,
+    ef_construction: 150,
+    m: 12,
+    concurrently: true,
+);
 
 #[cfg(not(test))]
 static AUDIO_STYLE_RECOMMENDATION_RUNTIME: OnceLock<Arc<AudioStyleRecommendationRuntime>> =
     OnceLock::new();
+
+#[cfg(not(test))]
+static AUDIO_STYLE_PENDING_INPUT_CHANGES: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PlaybackTrackKey {
@@ -70,32 +89,63 @@ pub(crate) struct AudioStyleEmbedding {
     values: Vec<f32>,
 }
 
+type AudioStyleEmbeddingMap = HashMap<PlaybackTrackKey, Arc<AudioStyleEmbedding>>;
+
 pub(crate) struct AudioStyleEmbeddingCache {
     cache_root: PathBuf,
     ffmpeg_path: PathBuf,
 }
 
 pub(crate) struct AudioStylePlaylistPlaybackRecommender {
-    embeddings: HashMap<PlaybackTrackKey, AudioStyleEmbedding>,
+    embeddings: AudioStyleEmbeddingMap,
     sampling_geometry: Option<AudioStyleSamplingGeometry>,
     trained: bool,
 }
 
+#[derive(Clone)]
+struct AudioStyleModelState {
+    embeddings: AudioStyleEmbeddingMap,
+    stats: AudioStyleStats,
+    neighbor_index: AudioStyleNeighborIndex,
+}
+
+struct AudioStyleModelUpdateFailure {
+    #[allow(dead_code)]
+    state: AudioStyleModelState,
+    message: String,
+}
+
+impl AudioStyleModelUpdateFailure {
+    fn into_message(self) -> String {
+        self.message
+    }
+}
+
+#[derive(Clone)]
+struct AudioStyleStats {
+    count: usize,
+    sum: Vec<f32>,
+}
+
+#[derive(Clone)]
+struct AudioStyleNeighborIndex {
+    neighbors: HashMap<PlaybackTrackKey, Vec<PlaybackTrackKey>>,
+    similarity_low: f32,
+    similarity_high: f32,
+}
+
+#[derive(Clone)]
 struct AudioStyleSamplingGeometry {
-    centered_embeddings: HashMap<PlaybackTrackKey, AudioStyleSamplingEmbedding>,
+    mean: Vec<f32>,
     local_density: HashMap<PlaybackTrackKey, f32>,
     similarity_low: f32,
     similarity_high: f32,
 }
 
-#[derive(Debug, Clone)]
-struct AudioStyleSamplingEmbedding {
-    values: Vec<f32>,
-}
-
 #[derive(Clone)]
 pub(crate) struct AudioStyleModelSnapshot {
     generation: u64,
+    state: Arc<AudioStyleModelState>,
     recommender: Arc<AudioStylePlaylistPlaybackRecommender>,
 }
 
@@ -170,6 +220,7 @@ struct AudioStyleRecommendationRuntime {
 struct AudioStyleTrainingState {
     running: bool,
     rerun_requested: bool,
+    debounce_pending: bool,
 }
 
 #[cfg(not(test))]
@@ -179,9 +230,6 @@ impl AudioStyleRecommendationRuntime {
             Ok(mut training) => {
                 if training.running {
                     training.rerun_requested = true;
-                    println!(
-                        "[playlist_playback] audio style model training queued reason={reason}"
-                    );
                     false
                 } else {
                     training.running = true;
@@ -189,7 +237,7 @@ impl AudioStyleRecommendationRuntime {
                 }
             }
             Err(_) => {
-                eprintln!("[playlist_playback] audio style training state is poisoned");
+                eprintln!("[playlist_playback] audio style update state is poisoned");
                 false
             }
         };
@@ -208,7 +256,7 @@ impl AudioStyleRecommendationRuntime {
         let mut reason = initial_reason;
         loop {
             if let Err(error) = self.train_and_publish(reason).await {
-                eprintln!("[playlist_playback] audio style model training failed: {error}");
+                eprintln!("[playlist_playback] audio style model update failed: {error}");
             }
 
             let should_continue = match self.training.lock() {
@@ -222,7 +270,7 @@ impl AudioStyleRecommendationRuntime {
                     }
                 }
                 Err(_) => {
-                    eprintln!("[playlist_playback] audio style training state is poisoned");
+                    eprintln!("[playlist_playback] audio style update state is poisoned");
                     false
                 }
             };
@@ -234,17 +282,8 @@ impl AudioStyleRecommendationRuntime {
         }
     }
 
-    async fn train_and_publish(&self, reason: &'static str) -> Result<()> {
+    async fn train_and_publish(&self, _reason: &'static str) -> Result<()> {
         let generation = self.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let has_published_snapshot = self
-            .published_snapshot
-            .read()
-            .ok()
-            .is_some_and(|snapshot| snapshot.is_some());
-        println!(
-            "[playlist_playback] audio style model training started generation={generation} reason={reason} has_published_snapshot={has_published_snapshot}"
-        );
-        let started_at = Instant::now();
         let ffmpeg_path = crate::utils::binaries::resolve_installed_managed_binary(
             &self.app,
             crate::utils::binaries::ManagedBinary::Ffmpeg,
@@ -259,17 +298,22 @@ impl AudioStyleRecommendationRuntime {
         let save_root = meta_service::resolve_save_root(&self.app).await?;
         let sources =
             crate::domain::playlists::repo::load_audio_style_training_track_sources().await?;
-        let tracks = resolve_audio_style_training_tracks(&save_root, sources);
-        let requested_track_count = tracks.len();
+        let resolved = resolve_audio_style_training_tracks(&save_root, sources);
+        let tracks = resolved.tracks;
 
+        let previous_snapshot = self.snapshot();
         let snapshot = tauri::async_runtime::spawn_blocking(move || {
-            AudioStyleModelSnapshot::train(generation, &cache, tracks)
+            AudioStyleModelSnapshot::refresh(
+                generation,
+                previous_snapshot.as_deref(),
+                &cache,
+                tracks,
+            )
         })
         .await
-        .context("audio style model training task panicked")?
-        .map_err(|error| anyhow!(error))?;
+        .context("audio style model update task panicked")?
+        .map_err(|error| anyhow!(error.into_message()))?;
 
-        let track_count = snapshot.track_count();
         match self.published_snapshot.write() {
             Ok(mut published) => {
                 *published = Some(Arc::new(snapshot));
@@ -280,10 +324,6 @@ impl AudioStyleRecommendationRuntime {
             }
         }
 
-        let elapsed_ms = started_at.elapsed().as_millis();
-        println!(
-            "[playlist_playback] audio style model training finished generation={generation} trained_tracks={track_count} requested_tracks={requested_track_count} elapsed_ms={elapsed_ms} reason={reason}"
-        );
         Ok(())
     }
 
@@ -306,8 +346,21 @@ pub(crate) fn initialize_audio_style_recommendation_runtime(app: AppHandle) {
         })
     });
 
+    AUDIO_STYLE_PENDING_INPUT_CHANGES.store(0, Ordering::SeqCst);
     runtime.request_training("startup");
-    spawn_audio_style_download_training_listener(Arc::clone(runtime));
+}
+
+#[cfg(not(test))]
+pub(crate) fn notify_audio_style_training_inputs_changed(reason: &'static str) {
+    let Some(runtime) = AUDIO_STYLE_RECOMMENDATION_RUNTIME.get() else {
+        let pending_changes = AUDIO_STYLE_PENDING_INPUT_CHANGES.fetch_add(1, Ordering::SeqCst) + 1;
+        eprintln!(
+            "[playlist_playback] audio style input change queued before runtime reason={reason} pending={pending_changes}"
+        );
+        return;
+    };
+
+    runtime.request_training_after_input_change_debounce(reason);
 }
 
 #[cfg(not(test))]
@@ -318,21 +371,50 @@ pub(crate) fn published_audio_style_model_snapshot() -> Option<Arc<AudioStyleMod
 }
 
 #[cfg(not(test))]
-fn spawn_audio_style_download_training_listener(runtime: Arc<AudioStyleRecommendationRuntime>) {
-    let mut changes = download_service::subscribe_download_task_changes();
-    tauri::async_runtime::spawn(async move {
-        loop {
-            match changes.recv().await {
-                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    runtime.request_training("download_update");
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    eprintln!("[playlist_playback] audio style training download channel closed");
-                    return;
+impl AudioStyleRecommendationRuntime {
+    fn request_training_after_input_change_debounce(self: &Arc<Self>, reason: &'static str) {
+        let should_spawn = match self.training.lock() {
+            Ok(mut training) => {
+                if training.debounce_pending {
+                    false
+                } else {
+                    training.debounce_pending = true;
+                    true
                 }
             }
+            Err(_) => {
+                eprintln!("[playlist_playback] audio style update state is poisoned");
+                false
+            }
+        };
+        if !should_spawn {
+            return;
         }
-    });
+
+        let runtime = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(
+                AUDIO_STYLE_INPUT_CHANGE_DEBOUNCE_MS,
+            ))
+            .await;
+
+            let debounce_released = match runtime.training.lock() {
+                Ok(mut training) => {
+                    training.debounce_pending = false;
+                    true
+                }
+                Err(_) => {
+                    eprintln!("[playlist_playback] audio style update state is poisoned");
+                    false
+                }
+            };
+            if !debounce_released {
+                return;
+            }
+
+            runtime.request_training(reason);
+        });
+    }
 }
 
 impl AudioStyleEmbedding {
@@ -353,80 +435,435 @@ impl AudioStyleEmbedding {
     }
 }
 
-impl AudioStyleSamplingEmbedding {
-    fn normalize(mut values: Vec<f32>) -> Option<Self> {
-        if values.len() != AUDIO_STYLE_EMBEDDING_WIDTH {
-            return None;
-        }
-        let norm = values
-            .iter()
-            .map(|value| value * value)
-            .sum::<f32>()
-            .sqrt()
-            .max(1.0e-6);
-        for value in &mut values {
-            *value = (*value / norm).clamp(-1.0, 1.0);
-        }
-        Some(Self { values })
-    }
-
-    fn cosine(&self, other: &Self) -> f32 {
-        self.values
-            .iter()
-            .zip(other.values.iter())
-            .map(|(left, right)| left * right)
-            .sum::<f32>()
-            .clamp(-1.0, 1.0)
-    }
-}
-
 impl AudioStyleSamplingGeometry {
-    fn from_embeddings(
-        embeddings: &HashMap<PlaybackTrackKey, AudioStyleEmbedding>,
-    ) -> Option<Self> {
-        if embeddings.len() < 2 {
+    fn from_state(state: &AudioStyleModelState) -> Option<Self> {
+        if state.embeddings.len() < 2 {
             return None;
         }
 
-        let mean = audio_style_embedding_mean(embeddings.values());
-        let mut centered_embeddings = HashMap::with_capacity(embeddings.len());
-        for (key, embedding) in embeddings {
-            let centered = embedding
-                .values
-                .iter()
-                .zip(mean.iter())
-                .map(|(value, mean)| value - mean)
-                .collect::<Vec<_>>();
-            let sampling_embedding = AudioStyleSamplingEmbedding::normalize(centered)?;
-            centered_embeddings.insert(key.clone(), sampling_embedding);
-        }
-        let local_density = audio_style_local_density(&centered_embeddings);
-        let (similarity_low, similarity_high) =
-            audio_style_corrected_similarity_scale(&centered_embeddings, &local_density);
+        let mean = state.stats.mean();
+        let local_density = state
+            .neighbor_index
+            .local_density_map(&state.embeddings, &mean);
         Some(Self {
-            centered_embeddings,
+            mean,
             local_density,
-            similarity_low,
-            similarity_high,
+            similarity_low: state.neighbor_index.similarity_low,
+            similarity_high: state.neighbor_index.similarity_high,
         })
     }
 
     fn corrected_similarity(
         &self,
+        embeddings: &AudioStyleEmbeddingMap,
         left: &PlaybackTrackKey,
         right: &PlaybackTrackKey,
     ) -> Option<f32> {
-        let left_embedding = self.centered_embeddings.get(left)?;
-        let right_embedding = self.centered_embeddings.get(right)?;
+        self.corrected_similarity_for_embeddings(
+            left,
+            right,
+            embeddings.get(left)?,
+            embeddings.get(right)?,
+        )
+    }
+
+    fn corrected_similarity_for_embeddings(
+        &self,
+        left: &PlaybackTrackKey,
+        right: &PlaybackTrackKey,
+        left_embedding: &AudioStyleEmbedding,
+        right_embedding: &AudioStyleEmbedding,
+    ) -> Option<f32> {
         let left_density = self.local_density.get(left).copied().unwrap_or(0.0);
         let right_density = self.local_density.get(right).copied().unwrap_or(0.0);
-        let similarity = left_embedding.cosine(right_embedding);
+        let similarity = centered_cosine(left_embedding, right_embedding, &self.mean)?;
         let corrected = 2.0 * similarity - left_density - right_density;
         Some(
             minmax_unit_similarity(corrected, self.similarity_low, self.similarity_high)
                 .clamp(-1.0, 1.0),
         )
     }
+}
+
+impl AudioStyleModelState {
+    fn refresh_from(
+        previous: Option<&Self>,
+        cache: &AudioStyleEmbeddingCache,
+        tracks: Vec<PlaybackTrack>,
+    ) -> Result<Self, AudioStyleModelUpdateFailure> {
+        let mut embeddings = AudioStyleEmbeddingMap::new();
+        let mut previous_reused = HashSet::new();
+        let mut failed = Vec::new();
+        let mut seen = HashSet::new();
+
+        for track in tracks {
+            let key = PlaybackTrackKey::from_track(&track);
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+
+            if let Some(embedding) = previous.and_then(|state| state.embeddings.get(&key)) {
+                embeddings.insert(key.clone(), Arc::clone(embedding));
+                previous_reused.insert(key);
+                continue;
+            }
+
+            match cache.embedding_for_track(&track) {
+                Ok(embedding) => {
+                    embeddings.insert(key, Arc::new(embedding));
+                }
+                Err(error) => {
+                    eprintln!(
+                        "[playlist_playback] failed to index audio style embedding for `{}`: {error}",
+                        track.file_path.display()
+                    );
+                    failed.push(format!("{}: {error}", track.file_path.display()));
+                }
+            }
+        }
+
+        let previous_state = previous.cloned();
+        let state = Self::from_embeddings(previous_state.as_ref(), embeddings, &previous_reused);
+        if state.embeddings.is_empty() {
+            return Err(AudioStyleModelUpdateFailure {
+                state,
+                message: if failed.is_empty() {
+                    "audio style model has no indexable tracks".to_string()
+                } else {
+                    format!(
+                        "audio style model has no indexable tracks; {} failures",
+                        failed.len()
+                    )
+                },
+            });
+        }
+        Ok(state)
+    }
+
+    fn from_embeddings(
+        previous: Option<&Self>,
+        embeddings: AudioStyleEmbeddingMap,
+        previous_reused: &HashSet<PlaybackTrackKey>,
+    ) -> Self {
+        let stats = AudioStyleStats::from_embeddings(&embeddings);
+        let neighbor_index =
+            AudioStyleNeighborIndex::refresh_from(previous, &embeddings, &stats, previous_reused);
+        Self {
+            embeddings,
+            stats,
+            neighbor_index,
+        }
+    }
+}
+
+impl AudioStyleStats {
+    fn from_embeddings(embeddings: &AudioStyleEmbeddingMap) -> Self {
+        let mut stats = Self {
+            count: 0,
+            sum: vec![0.0; AUDIO_STYLE_EMBEDDING_WIDTH],
+        };
+        for embedding in embeddings.values() {
+            stats.add(embedding);
+        }
+        stats
+    }
+
+    fn add(&mut self, embedding: &AudioStyleEmbedding) {
+        self.count += 1;
+        for (sum, value) in self.sum.iter_mut().zip(embedding.values.iter()) {
+            *sum += *value;
+        }
+    }
+
+    fn mean(&self) -> Vec<f32> {
+        if self.count == 0 {
+            return vec![0.0; AUDIO_STYLE_EMBEDDING_WIDTH];
+        }
+        let scale = 1.0 / self.count as f32;
+        self.sum.iter().map(|value| value * scale).collect()
+    }
+}
+
+impl AudioStyleNeighborIndex {
+    fn refresh_from(
+        previous: Option<&AudioStyleModelState>,
+        embeddings: &AudioStyleEmbeddingMap,
+        stats: &AudioStyleStats,
+        previous_reused: &HashSet<PlaybackTrackKey>,
+    ) -> Self {
+        if embeddings.len() < 2 {
+            return Self {
+                neighbors: HashMap::new(),
+                similarity_low: -1.0,
+                similarity_high: 1.0,
+            };
+        }
+
+        let Some(previous) = previous else {
+            return Self::from_embeddings(embeddings, stats);
+        };
+
+        let mean = stats.mean();
+        let mut neighbors =
+            HashMap::<PlaybackTrackKey, Vec<PlaybackTrackKey>>::with_capacity(embeddings.len());
+        let deleted_keys = previous
+            .embeddings
+            .keys()
+            .filter(|key| !embeddings.contains_key(*key))
+            .collect::<HashSet<_>>();
+        let added_keys = embeddings
+            .keys()
+            .filter(|key| !previous_reused.contains(*key))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for key in embeddings.keys() {
+            let should_repair = !previous_reused.contains(key)
+                || previous
+                    .neighbor_index
+                    .neighbors
+                    .get(key)
+                    .is_none_or(|old_neighbors| {
+                        old_neighbors
+                            .iter()
+                            .any(|neighbor| deleted_keys.contains(neighbor))
+                    });
+            if should_repair {
+                neighbors.insert(
+                    key.clone(),
+                    Self::top_neighbors_for(key, embeddings, &mean)
+                        .into_iter()
+                        .map(|(neighbor, _)| neighbor)
+                        .collect(),
+                );
+                continue;
+            }
+
+            neighbors.insert(
+                key.clone(),
+                previous
+                    .neighbor_index
+                    .neighbors
+                    .get(key)
+                    .into_iter()
+                    .flatten()
+                    .filter(|neighbor| embeddings.contains_key(*neighbor))
+                    .cloned()
+                    .collect(),
+            );
+        }
+
+        for added_key in &added_keys {
+            let Some(added_embedding) = embeddings.get(added_key) else {
+                continue;
+            };
+            for key in embeddings.keys() {
+                if key == added_key {
+                    continue;
+                }
+                let Some(embedding) = embeddings.get(key) else {
+                    continue;
+                };
+                let Some(similarity) = centered_cosine(embedding, added_embedding, &mean) else {
+                    continue;
+                };
+                let mut indexed = neighbors
+                    .remove(key)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|neighbor| {
+                        let neighbor_embedding = embeddings.get(&neighbor)?;
+                        centered_cosine(embedding, neighbor_embedding, &mean)
+                            .map(|value| (neighbor, value))
+                    })
+                    .collect::<Vec<_>>();
+                push_audio_style_neighbor(Some(&mut indexed), added_key.clone(), similarity);
+                neighbors.insert(
+                    key.clone(),
+                    indexed
+                        .into_iter()
+                        .map(|(neighbor, _)| neighbor)
+                        .collect::<Vec<_>>(),
+                );
+            }
+        }
+
+        let local_density = audio_style_local_density_from_neighbors(embeddings, &mean, &neighbors);
+        let (similarity_low, similarity_high) =
+            audio_style_corrected_similarity_scale_from_neighbors(
+                embeddings,
+                &mean,
+                &neighbors,
+                &local_density,
+            );
+        Self {
+            neighbors,
+            similarity_low,
+            similarity_high,
+        }
+    }
+
+    fn from_embeddings(embeddings: &AudioStyleEmbeddingMap, stats: &AudioStyleStats) -> Self {
+        if embeddings.len() < 2 {
+            return Self {
+                neighbors: HashMap::new(),
+                similarity_low: -1.0,
+                similarity_high: 1.0,
+            };
+        }
+
+        let mean = stats.mean();
+        let mut neighbor_lists =
+            HashMap::<PlaybackTrackKey, Vec<(PlaybackTrackKey, f32)>>::with_capacity(
+                embeddings.len(),
+            );
+        for key in embeddings.keys() {
+            neighbor_lists.insert(key.clone(), Vec::new());
+        }
+
+        let keys = embeddings.keys().cloned().collect::<Vec<_>>();
+        for left_index in 0..keys.len() {
+            for right_index in (left_index + 1)..keys.len() {
+                let left = &keys[left_index];
+                let right = &keys[right_index];
+                let Some(left_embedding) = embeddings.get(left) else {
+                    continue;
+                };
+                let Some(right_embedding) = embeddings.get(right) else {
+                    continue;
+                };
+                let Some(similarity) = centered_cosine(left_embedding, right_embedding, &mean)
+                else {
+                    continue;
+                };
+                push_audio_style_neighbor(neighbor_lists.get_mut(left), right.clone(), similarity);
+                push_audio_style_neighbor(neighbor_lists.get_mut(right), left.clone(), similarity);
+            }
+        }
+
+        let neighbors = neighbor_lists
+            .into_iter()
+            .map(|(key, values)| {
+                (
+                    key,
+                    values
+                        .into_iter()
+                        .map(|(neighbor, _)| neighbor)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let local_density = audio_style_local_density_from_neighbors(embeddings, &mean, &neighbors);
+        let (similarity_low, similarity_high) =
+            audio_style_corrected_similarity_scale_from_neighbors(
+                embeddings,
+                &mean,
+                &neighbors,
+                &local_density,
+            );
+        Self {
+            neighbors,
+            similarity_low,
+            similarity_high,
+        }
+    }
+
+    fn top_neighbors_for(
+        key: &PlaybackTrackKey,
+        embeddings: &AudioStyleEmbeddingMap,
+        mean: &[f32],
+    ) -> Vec<(PlaybackTrackKey, f32)> {
+        let Some(embedding) = embeddings.get(key) else {
+            return Vec::new();
+        };
+        let mut neighbors = Vec::new();
+        for (other_key, other_embedding) in embeddings {
+            if other_key == key {
+                continue;
+            }
+            let Some(similarity) = centered_cosine(embedding, other_embedding, mean) else {
+                continue;
+            };
+            push_audio_style_neighbor(Some(&mut neighbors), other_key.clone(), similarity);
+        }
+        neighbors
+    }
+
+    fn local_density_map(
+        &self,
+        embeddings: &AudioStyleEmbeddingMap,
+        mean: &[f32],
+    ) -> HashMap<PlaybackTrackKey, f32> {
+        audio_style_local_density_from_neighbors(embeddings, mean, &self.neighbors)
+    }
+}
+
+fn push_audio_style_neighbor(
+    neighbors: Option<&mut Vec<(PlaybackTrackKey, f32)>>,
+    key: PlaybackTrackKey,
+    similarity: f32,
+) {
+    let Some(neighbors) = neighbors else {
+        return;
+    };
+    if !similarity.is_finite() {
+        return;
+    }
+    neighbors.push((key, similarity));
+    neighbors.sort_by(|left, right| right.1.total_cmp(&left.1));
+    neighbors.truncate(AUDIO_STYLE_LOCAL_DENSITY_TOP_K);
+}
+
+fn centered_cosine(
+    left: &AudioStyleEmbedding,
+    right: &AudioStyleEmbedding,
+    mean: &[f32],
+) -> Option<f32> {
+    if mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH {
+        return None;
+    }
+    let mut dot = 0.0_f32;
+    let mut left_norm = 0.0_f32;
+    let mut right_norm = 0.0_f32;
+    for ((left_value, right_value), mean_value) in
+        left.values.iter().zip(right.values.iter()).zip(mean.iter())
+    {
+        let left_centered = *left_value - *mean_value;
+        let right_centered = *right_value - *mean_value;
+        dot += left_centered * right_centered;
+        left_norm += left_centered * left_centered;
+        right_norm += right_centered * right_centered;
+    }
+    let denom = (left_norm.sqrt() * right_norm.sqrt()).max(1.0e-6);
+    Some((dot / denom).clamp(-1.0, 1.0))
+}
+
+fn audio_style_local_density_from_neighbors(
+    embeddings: &AudioStyleEmbeddingMap,
+    mean: &[f32],
+    neighbors: &HashMap<PlaybackTrackKey, Vec<PlaybackTrackKey>>,
+) -> HashMap<PlaybackTrackKey, f32> {
+    let mut result = HashMap::with_capacity(embeddings.len());
+    for (key, embedding) in embeddings {
+        let similarities = neighbors
+            .get(key)
+            .into_iter()
+            .flatten()
+            .filter_map(|neighbor| {
+                embeddings
+                    .get(neighbor)
+                    .and_then(|other| centered_cosine(embedding, other, mean))
+            })
+            .filter(|similarity| similarity.is_finite())
+            .collect::<Vec<_>>();
+        if similarities.is_empty() {
+            result.insert(key.clone(), 0.0);
+            continue;
+        }
+        let density = similarities.iter().copied().sum::<f32>() / similarities.len() as f32;
+        result.insert(key.clone(), density);
+    }
+    result
 }
 
 impl AudioStyleEmbeddingCache {
@@ -471,6 +908,19 @@ impl AudioStyleEmbeddingCache {
             Err(error) => Err(error.message),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn write_test_embedding_for_track(
+        &self,
+        track: &PlaybackTrack,
+        values: Vec<f32>,
+    ) -> Result<(), String> {
+        let embedding = AudioStyleEmbedding::normalize(values)
+            .ok_or_else(|| "test audio style embedding has invalid width".to_string())?;
+        let cache_key = build_audio_style_embedding_cache_key(track)?;
+        let cache_path = self.cache_root.join(format!("{cache_key}.json"));
+        write_cached_audio_style_embedding(&cache_path, &embedding)
+    }
 }
 
 impl AudioStylePlaylistPlaybackRecommender {
@@ -489,7 +939,7 @@ impl AudioStylePlaylistPlaybackRecommender {
             }
             match cache.cached_embedding_for_track(track) {
                 Ok(Some(embedding)) => {
-                    embeddings.insert(key, embedding);
+                    embeddings.insert(key, Arc::new(embedding));
                 }
                 Ok(None) => {
                     missing_tracks.push(track.clone());
@@ -519,7 +969,7 @@ impl AudioStylePlaylistPlaybackRecommender {
             .into_iter()
             .filter_map(|(track, values)| {
                 AudioStyleEmbedding::normalize(values)
-                    .map(|embedding| (PlaybackTrackKey::from_track(&track), embedding))
+                    .map(|embedding| (PlaybackTrackKey::from_track(&track), Arc::new(embedding)))
             })
             .collect::<HashMap<_, _>>();
         Self::from_trained_embeddings(embeddings)
@@ -533,7 +983,7 @@ impl AudioStylePlaylistPlaybackRecommender {
             .into_iter()
             .filter_map(|(track, values)| {
                 AudioStyleEmbedding::normalize(values)
-                    .map(|embedding| (PlaybackTrackKey::from_track(&track), embedding))
+                    .map(|embedding| (PlaybackTrackKey::from_track(&track), Arc::new(embedding)))
             })
             .collect();
         Self {
@@ -629,53 +1079,60 @@ impl AudioStylePlaylistPlaybackRecommender {
             .map(|track| AudioStyleNextTrackProposal { track, selection })
     }
 
-    fn from_trained_embeddings(embeddings: HashMap<PlaybackTrackKey, AudioStyleEmbedding>) -> Self {
-        let sampling_geometry = AudioStyleSamplingGeometry::from_embeddings(&embeddings);
+    fn from_trained_embeddings(embeddings: AudioStyleEmbeddingMap) -> Self {
+        let state = AudioStyleModelState::from_embeddings(None, embeddings, &HashSet::new());
+        Self::from_state(&state, true)
+    }
+
+    fn from_state(state: &AudioStyleModelState, trained: bool) -> Self {
+        let sampling_geometry = AudioStyleSamplingGeometry::from_state(state);
         Self {
-            embeddings,
+            embeddings: state.embeddings.clone(),
             sampling_geometry,
-            trained: true,
+            trained,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn centered_similarity_for_test(
+        &self,
+        left: &PlaybackTrack,
+        right: &PlaybackTrack,
+    ) -> Option<f32> {
+        let mean = &self.sampling_geometry.as_ref()?.mean;
+        centered_cosine(
+            self.embeddings.get(&PlaybackTrackKey::from_track(left))?,
+            self.embeddings.get(&PlaybackTrackKey::from_track(right))?,
+            mean,
+        )
     }
 }
 
 impl AudioStyleModelSnapshot {
-    fn train(
+    fn refresh(
         generation: u64,
+        previous: Option<&Self>,
         cache: &AudioStyleEmbeddingCache,
         tracks: Vec<PlaybackTrack>,
-    ) -> Result<Self, String> {
-        let mut embeddings = HashMap::new();
-        let mut seen = HashSet::new();
-        for track in tracks {
-            let key = PlaybackTrackKey::from_track(&track);
-            if !seen.insert(key.clone()) {
-                continue;
-            }
+    ) -> Result<Self, AudioStyleModelUpdateFailure> {
+        let state = Arc::new(AudioStyleModelState::refresh_from(
+            previous.map(|snapshot| snapshot.state.as_ref()),
+            cache,
+            tracks,
+        )?);
+        Ok(Self::from_state(generation, state))
+    }
 
-            match cache.embedding_for_track(&track) {
-                Ok(embedding) => {
-                    embeddings.insert(key, embedding);
-                }
-                Err(error) => {
-                    eprintln!(
-                        "[playlist_playback] failed to train audio style embedding for `{}`: {error}",
-                        track.file_path.display()
-                    );
-                }
-            }
-        }
-
-        if embeddings.is_empty() {
-            return Err("audio style model has no trainable tracks".to_string());
-        }
-
-        Ok(Self {
+    fn from_state(generation: u64, state: Arc<AudioStyleModelState>) -> Self {
+        let recommender = Arc::new(AudioStylePlaylistPlaybackRecommender::from_state(
+            state.as_ref(),
+            true,
+        ));
+        Self {
             generation,
-            recommender: Arc::new(
-                AudioStylePlaylistPlaybackRecommender::from_trained_embeddings(embeddings),
-            ),
-        })
+            state,
+            recommender,
+        }
     }
 
     pub(crate) fn generation(&self) -> u64 {
@@ -695,12 +1152,34 @@ impl AudioStyleModelSnapshot {
         generation: u64,
         values: impl IntoIterator<Item = (PlaybackTrack, Vec<f32>)>,
     ) -> Self {
-        Self {
-            generation,
-            recommender: Arc::new(AudioStylePlaylistPlaybackRecommender::from_test_embeddings(
-                values,
-            )),
-        }
+        let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(values);
+        let state = Arc::new(AudioStyleModelState::from_embeddings(
+            None,
+            recommender.embeddings.clone(),
+            &HashSet::new(),
+        ));
+        Self::from_state(generation, state)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn refresh_for_test(
+        generation: u64,
+        previous: Option<&Self>,
+        cache: &AudioStyleEmbeddingCache,
+        tracks: Vec<PlaybackTrack>,
+    ) -> Result<Self, String> {
+        Self::refresh(generation, previous, cache, tracks).map_err(|error| error.into_message())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn embedding_arc_for_track(
+        &self,
+        track: &PlaybackTrack,
+    ) -> Option<Arc<AudioStyleEmbedding>> {
+        self.state
+            .embeddings
+            .get(&PlaybackTrackKey::from_track(track))
+            .cloned()
     }
 }
 
@@ -727,7 +1206,7 @@ fn dedupe_tracks_excluding(
 fn select_next_audio_style_candidate(
     candidates: &[PlaybackTrack],
     anchor_key: &PlaybackTrackKey,
-    embeddings: &HashMap<PlaybackTrackKey, AudioStyleEmbedding>,
+    embeddings: &AudioStyleEmbeddingMap,
     sampling_geometry: Option<&AudioStyleSamplingGeometry>,
     model_trained: bool,
     draw_unit: f32,
@@ -764,20 +1243,13 @@ fn select_next_audio_style_candidate(
             Some("missing_sampling_geometry"),
         );
     };
-    if !geometry.centered_embeddings.contains_key(anchor_key) {
-        return random_fallback_selection(
-            candidates.len(),
-            draw_unit,
-            Some("missing_anchor_embedding"),
-        );
-    };
 
     let mut candidate_likes = Vec::with_capacity(candidates.len());
     let mut similarities = Vec::with_capacity(candidates.len());
     for candidate in candidates {
         let key = PlaybackTrackKey::from_track(candidate);
         let similarity = geometry
-            .corrected_similarity(anchor_key, &key)
+            .corrected_similarity(embeddings, anchor_key, &key)
             .filter(|similarity| similarity.is_finite());
         candidate_likes.push(candidate.liked);
         similarities.push(similarity);
@@ -923,85 +1395,27 @@ fn liked_candidate_weight(non_liked_weights: &[f32]) -> f32 {
     median.max(AUDIO_STYLE_EXPLORATION_FLOOR)
 }
 
-fn audio_style_embedding_mean<'a>(
-    embeddings: impl IntoIterator<Item = &'a AudioStyleEmbedding>,
-) -> Vec<f32> {
-    let mut mean = vec![0.0_f32; AUDIO_STYLE_EMBEDDING_WIDTH];
-    let mut count = 0usize;
-    for embedding in embeddings {
-        for (mean_value, value) in mean.iter_mut().zip(embedding.values.iter()) {
-            *mean_value += *value;
-        }
-        count += 1;
-    }
-    if count > 0 {
-        let scale = 1.0 / count as f32;
-        for value in &mut mean {
-            *value *= scale;
-        }
-    }
-    mean
-}
-
-fn audio_style_local_density(
-    embeddings: &HashMap<PlaybackTrackKey, AudioStyleSamplingEmbedding>,
-) -> HashMap<PlaybackTrackKey, f32> {
-    let keys = embeddings.keys().cloned().collect::<Vec<_>>();
-    let mut result = HashMap::with_capacity(keys.len());
-    for key in &keys {
-        let Some(embedding) = embeddings.get(key) else {
-            continue;
-        };
-        let mut similarities = keys
-            .iter()
-            .filter(|other_key| *other_key != key)
-            .filter_map(|other_key| {
-                embeddings
-                    .get(other_key)
-                    .map(|other_embedding| embedding.cosine(other_embedding))
-            })
-            .filter(|similarity| similarity.is_finite())
-            .collect::<Vec<_>>();
-        if similarities.is_empty() {
-            result.insert(key.clone(), 0.0);
-            continue;
-        }
-        similarities.sort_by(|left, right| right.total_cmp(left));
-        let runtime_top_k = AUDIO_STYLE_LOCAL_DENSITY_TOP_K
-            .min(similarities.len())
-            .max(1);
-        let density = similarities
-            .iter()
-            .take(runtime_top_k)
-            .copied()
-            .sum::<f32>()
-            / runtime_top_k as f32;
-        result.insert(key.clone(), density);
-    }
-    result
-}
-
-fn audio_style_corrected_similarity_scale(
-    embeddings: &HashMap<PlaybackTrackKey, AudioStyleSamplingEmbedding>,
+fn audio_style_corrected_similarity_scale_from_neighbors(
+    embeddings: &AudioStyleEmbeddingMap,
+    mean: &[f32],
+    neighbors: &HashMap<PlaybackTrackKey, Vec<PlaybackTrackKey>>,
     local_density: &HashMap<PlaybackTrackKey, f32>,
 ) -> (f32, f32) {
-    let keys = embeddings.keys().collect::<Vec<_>>();
     let mut values = Vec::new();
-    for left in &keys {
+    for (left, linked) in neighbors {
         let Some(left_embedding) = embeddings.get(left) else {
             continue;
         };
         let left_density = local_density.get(left).copied().unwrap_or(0.0);
-        for right in &keys {
-            if left == right {
-                continue;
-            }
+        for right in linked {
             let Some(right_embedding) = embeddings.get(right) else {
                 continue;
             };
             let right_density = local_density.get(right).copied().unwrap_or(0.0);
-            let corrected =
-                2.0 * left_embedding.cosine(right_embedding) - left_density - right_density;
+            let Some(similarity) = centered_cosine(left_embedding, right_embedding, mean) else {
+                continue;
+            };
+            let corrected = 2.0 * similarity - left_density - right_density;
             if corrected.is_finite() {
                 values.push(corrected);
             }
@@ -1739,14 +2153,23 @@ fn audio_style_embedding_cache_root(app: &AppHandle) -> Result<PathBuf> {
 }
 
 #[cfg(not(test))]
+struct AudioStyleTrainingTrackResolution {
+    tracks: Vec<PlaybackTrack>,
+}
+
+#[cfg(not(test))]
 fn resolve_audio_style_training_tracks(
     save_root: &Path,
     sources: Vec<crate::domain::playlists::repo::PlaylistPlaybackTrackSource>,
-) -> Vec<PlaybackTrack> {
-    sources
-        .into_iter()
-        .filter_map(|source| resolve_audio_style_training_track(save_root, source))
-        .collect()
+) -> AudioStyleTrainingTrackResolution {
+    let mut tracks = Vec::new();
+    for source in sources {
+        if let Some(track) = resolve_audio_style_training_track(save_root, source) {
+            tracks.push(track);
+        }
+    }
+
+    AudioStyleTrainingTrackResolution { tracks }
 }
 
 #[cfg(not(test))]
@@ -1754,7 +2177,10 @@ fn resolve_audio_style_training_track(
     save_root: &Path,
     source: crate::domain::playlists::repo::PlaylistPlaybackTrackSource,
 ) -> Option<PlaybackTrack> {
-    let path = PathBuf::from(source.music.path.as_deref()?);
+    let Some(path) = source.music.path.as_deref() else {
+        return None;
+    };
+    let path = PathBuf::from(path);
     let file_path = if path.is_absolute() {
         path
     } else {
@@ -1767,8 +2193,10 @@ fn resolve_audio_style_training_track(
     Some(PlaybackTrack {
         playlist_name: "__audio_style_model__".to_string(),
         music_name: source.music.alias,
+        canonical_music_id: source.music.canonical_music_id,
         music_url: source.music.url,
         file_path,
+        source_music: None,
         start_ms: source.music.start_ms,
         end_ms: source.music.end_ms,
         liked: source.music.liked,

@@ -137,6 +137,7 @@ const excludedMusic: Music = {
     url: "https://example.com/blocked-collection",
     folder: "youtube/blocked-collection",
   },
+  canonical_music_id: "source:https://example.com/watch?v=blocked:0:180000",
   url: "https://example.com/watch?v=blocked",
   path: "Blocked Track.m4a",
   start_ms: 0,

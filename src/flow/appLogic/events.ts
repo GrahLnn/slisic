@@ -18,6 +18,8 @@ import {
   type ExcludeCurrentMusicAndSkipResult,
   type Music,
   type NowPlayingTrackChangedEvent,
+  type PlaybackExcludeCommittedEvent,
+  type PlaybackDiagnosticTraceEvent,
   type PlaybackContinuationMode,
   type PlaybackStatusPayload,
   type PlayListListView,
@@ -269,6 +271,18 @@ export async function listenNowPlayingTrackChanged(
   handler: (payload: NowPlayingTrackChangedEvent) => void,
 ): Promise<() => void> {
   return crab.evt("nowPlayingTrackChangedEvent")(handler);
+}
+
+export async function listenPlaybackDiagnosticTrace(
+  handler: (payload: PlaybackDiagnosticTraceEvent) => void,
+): Promise<() => void> {
+  return crab.evt("playbackDiagnosticTraceEvent")(handler);
+}
+
+export async function listenPlaybackExcludeCommitted(
+  handler: (payload: PlaybackExcludeCommittedEvent) => void,
+): Promise<() => void> {
+  return crab.evt("playbackExcludeCommittedEvent")(handler);
 }
 
 export const ss = defineSS(

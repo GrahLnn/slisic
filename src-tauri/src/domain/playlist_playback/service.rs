@@ -10,7 +10,7 @@ use crate::domain::downloads::service as download_service;
 #[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
 #[cfg(not(test))]
-use crate::domain::player::event::NowPlayingTrackChangedEvent;
+use crate::domain::player::event::{NowPlayingTrackChangedEvent, PlaybackExcludeCommittedEvent};
 use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
 #[cfg(not(test))]
 use crate::domain::player::service as player_service;
@@ -107,26 +107,138 @@ pub async fn exclude_current_music_and_skip(
     let Some(track) = player_service::active_request_track_snapshot()? else {
         return Ok(ExcludeCurrentMusicAndSkipResult::NoActiveTrack);
     };
-    let Some(music) =
-        playlist_repo::get_music_by_identity(&track.music_url, track.start_ms, track.end_ms)
-            .await?
-    else {
+    let Some(music) = track.source_music.as_deref().cloned() else {
         return Ok(ExcludeCurrentMusicAndSkipResult::MissingMusic);
     };
-
-    let exclude_result =
-        playlist_repo::add_exclude(project_excluded_current_music(&track, music)).await?;
-    let outcome = refresh_current_session_after_exclude(app, &track).await?;
-    match outcome {
-        ExcludeCurrentMusicAndSkipOutcome::Skipped => {
-            player_service::skip_current_track().await?;
+    let excluded_music = project_excluded_current_music(&track, music);
+    PlaybackExcludeCommittedEvent {
+        exclude: crate::domain::playlists::model::Exclude {
+            music: excluded_music.clone(),
+            created_at: appdb::AutoFill::pending(),
+        },
+    }
+    .emit(app)?;
+    let immediate_action = prepare_current_session_after_exclude(app, &track).await?;
+    match immediate_action {
+        ExcludeCurrentImmediatePlaybackAction::Skip => {
+            spawn_exclude_current_playback_skip(track.clone());
         }
-        ExcludeCurrentMusicAndSkipOutcome::DeletedPlaylist { .. } => {
-            player_service::stop_playback().await?;
+        ExcludeCurrentImmediatePlaybackAction::Stop => {
+            spawn_exclude_current_playback_stop(track.clone());
         }
     }
 
+    let exclude_result = playlist_repo::add_exclude(excluded_music).await?;
+    let outcome = refresh_current_session_after_exclude(app, &track).await?;
+    if let ExcludeCurrentMusicAndSkipOutcome::DeletedPlaylist { .. } = outcome
+        && !matches!(
+            immediate_action,
+            ExcludeCurrentImmediatePlaybackAction::Stop
+        )
+    {
+        spawn_exclude_current_playback_stop(track);
+    }
+
     Ok(outcome.into_result(exclude_result))
+}
+
+#[cfg(not(test))]
+fn spawn_exclude_current_playback_skip(track: PlaybackTrack) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = player_service::skip_current_track().await {
+            eprintln!(
+                "[playlist_playback] failed to skip excluded current music `{}`: {error}",
+                track.music_name
+            );
+            return;
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn spawn_exclude_current_playback_stop(track: PlaybackTrack) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = player_service::stop_playback().await {
+            eprintln!(
+                "[playlist_playback] failed to stop playback after excluding `{}`: {error}",
+                track.music_name
+            );
+            return;
+        }
+    });
+}
+
+#[cfg(not(test))]
+async fn prepare_current_session_after_exclude(
+    app: &AppHandle,
+    track: &PlaybackTrack,
+) -> Result<ExcludeCurrentImmediatePlaybackAction> {
+    let prepared_tracks = load_current_session_track_resolution_snapshot(track)?;
+    if !prepared_tracks.is_empty() {
+        player_service::update_current_session_tracks(prepared_tracks)?;
+        return Ok(ExcludeCurrentImmediatePlaybackAction::Skip);
+    }
+
+    let fallback_candidates = load_immediate_playlist_playback_candidates(app, track).await?;
+
+    let fallback_tracks = propose_playlist_playback_queue_after_exclude_with_logging(
+        PlaylistPlaybackRecommendationRequest {
+            playlist_name: track.playlist_name.clone(),
+            current_track: track.clone(),
+            candidates: fallback_candidates,
+        },
+    );
+    if fallback_tracks.is_empty() {
+        return Ok(ExcludeCurrentImmediatePlaybackAction::Stop);
+    }
+
+    player_service::update_current_session_tracks(fallback_tracks)?;
+    Ok(ExcludeCurrentImmediatePlaybackAction::Skip)
+}
+
+#[cfg(not(test))]
+async fn load_immediate_playlist_playback_candidates(
+    app: &AppHandle,
+    track: &PlaybackTrack,
+) -> Result<Vec<PlaybackTrack>> {
+    let selection = playlist_repo::get_playlist_playback_selection_by_name(&track.playlist_name)
+        .await?
+        .ok_or_else(|| anyhow!("playlist `{}` not found", track.playlist_name))?;
+    let save_root = meta_service::resolve_save_root(app).await?;
+    let mut seen = HashSet::new();
+
+    for _ in 0..PLAYLIST_PLAYBACK_INITIAL_RANDOM_ATTEMPT_LIMIT {
+        let Some(source) =
+            playlist_repo::load_random_playlist_playback_track_source(&selection).await?
+        else {
+            break;
+        };
+        let source_key = playlist_playback_track_source_key(&source);
+        if !seen.insert(source_key) {
+            continue;
+        }
+
+        let Some(candidate) =
+            resolve_playlist_playback_source_track(&selection, source, &save_root)
+        else {
+            continue;
+        };
+        if !are_playlist_playback_tracks_equal(&candidate, track) {
+            return Ok(vec![candidate]);
+        }
+    }
+
+    Ok(vec![])
+}
+
+#[cfg(not(test))]
+fn load_current_session_track_resolution_snapshot(
+    track: &PlaybackTrack,
+) -> Result<Vec<PlaybackTrack>> {
+    Ok(player_service::current_session_tracks_snapshot()?
+        .into_iter()
+        .filter(|candidate| !are_playlist_playback_tracks_equal(candidate, track))
+        .collect())
 }
 
 #[cfg(not(test))]
@@ -164,6 +276,13 @@ async fn refresh_current_session_after_exclude(
 enum ExcludeCurrentMusicAndSkipOutcome {
     Skipped,
     DeletedPlaylist { playlist_name: String },
+}
+
+#[cfg(not(test))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExcludeCurrentImmediatePlaybackAction {
+    Skip,
+    Stop,
 }
 
 #[cfg(not(test))]
@@ -610,6 +729,7 @@ fn emit_playlist_preparing(app: &AppHandle, playlist_name: &str) -> Result<()> {
     NowPlayingTrackChangedEvent {
         playlist_name: playlist_name.to_string(),
         music_name: PLAYLIST_PREPARING_MESSAGE.to_string(),
+        canonical_music_id: String::new(),
         music_url: String::new(),
         file_path: String::new(),
         start_ms: 0,
@@ -654,15 +774,14 @@ fn propose_playlist_playback_queue_after_exclude_with_logging(
     )
 }
 
-#[cfg(not(test))]
 #[derive(Clone, Copy)]
-enum PlaylistPlaybackRecommendationMode {
+pub(crate) enum PlaylistPlaybackRecommendationMode {
     KeepCurrent,
     ExcludeCurrent,
 }
 
-#[cfg(not(test))]
 impl PlaylistPlaybackRecommendationMode {
+    #[cfg(not(test))]
     fn as_str(self) -> &'static str {
         match self {
             Self::KeepCurrent => "keep_current",
@@ -736,10 +855,31 @@ fn try_propose_audio_style_playlist_playback_queue(
         if let Some(selection) = proposal.selection.as_mut() {
             selection.model_generation = Some(snapshot.generation());
         }
+        if !playlist_playback_proposal_contains_next_track(mode, proposal.tracks.as_slice()) {
+            return Ok(None);
+        }
         return Ok(Some(proposal));
     }
 
     Ok(None)
+}
+
+pub(crate) fn playlist_playback_proposal_contains_next_track(
+    mode: PlaylistPlaybackRecommendationMode,
+    tracks: &[PlaybackTrack],
+) -> bool {
+    match mode {
+        PlaylistPlaybackRecommendationMode::KeepCurrent => {
+            let Some(current) = tracks.first() else {
+                return false;
+            };
+            tracks
+                .iter()
+                .skip(1)
+                .any(|track| !are_playlist_playback_tracks_equal(track, current))
+        }
+        PlaylistPlaybackRecommendationMode::ExcludeCurrent => !tracks.is_empty(),
+    }
 }
 
 #[cfg(not(test))]
@@ -1017,8 +1157,10 @@ fn project_playlist_playback_track(
     PlaybackTrack {
         playlist_name: selection.playlist_name.clone(),
         music_name: source.music.alias.clone(),
+        canonical_music_id: source.music.canonical_music_id.clone(),
         music_url: source.music.url.clone(),
         file_path,
+        source_music: Some(Box::new(source.music.clone())),
         start_ms: source.music.start_ms,
         end_ms: source.music.end_ms,
         liked: source.music.liked,
@@ -1125,11 +1267,17 @@ impl RandomPlaylistPlaybackRecommender {
         &self,
         mut request: PlaylistPlaybackRecommendationRequest,
     ) -> Vec<PlaybackTrack> {
-        let _playlist_name = &request.playlist_name;
-        let tracks = &mut request.candidates;
-        shuffle_playback_tracks(tracks);
-        request.candidates.into_iter().take(1).collect()
+        propose_random_queue_after_exclude(&mut request.candidates, &request.current_track)
     }
+}
+
+pub(crate) fn propose_random_queue_after_exclude(
+    candidates: &mut Vec<PlaybackTrack>,
+    current_track: &PlaybackTrack,
+) -> Vec<PlaybackTrack> {
+    candidates.retain(|candidate| !are_playlist_playback_tracks_equal(candidate, current_track));
+    shuffle_playback_tracks(candidates);
+    candidates.drain(..).take(1).collect()
 }
 
 pub(crate) fn create_short_playback_queue(

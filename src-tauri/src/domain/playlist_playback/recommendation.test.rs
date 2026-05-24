@@ -14,10 +14,12 @@ fn track(name: &str) -> PlaybackTrack {
     PlaybackTrack {
         playlist_name: "Focus".to_string(),
         music_name: name.to_string(),
+        canonical_music_id: format!("source:https://example.com/{name}:0:60000"),
         music_url: format!("https://example.com/{name}"),
         file_path: PathBuf::from(format!("{name}.m4a")),
         start_ms: 0,
         end_ms: 60_000,
+        source_music: None,
         liked: false,
     }
 }
@@ -269,6 +271,89 @@ fn audio_style_recommender_without_trained_weights_falls_back_to_random() {
     assert_eq!(selection.source.as_str(), "random_fallback");
     assert_eq!(selection.reason, Some("untrained_model"));
     assert_eq!(selection.index, 1);
+}
+
+#[test]
+fn audio_style_model_refresh_reuses_unchanged_embeddings() {
+    let root = temp_cache_root("refresh_reuse");
+    std::fs::create_dir_all(&root).expect("cache test root should be created");
+    let cache = AudioStyleEmbeddingCache::new(PathBuf::from("missing-ffmpeg"), root.clone())
+        .expect("cache should be created without ffmpeg");
+    let mut current = track("current");
+    let mut near = track("near");
+    let mut added = track("added");
+    current.file_path = root.join("current.m4a");
+    near.file_path = root.join("near.m4a");
+    added.file_path = root.join("added.m4a");
+    std::fs::write(&current.file_path, b"current").expect("current test audio should exist");
+    std::fs::write(&near.file_path, b"near").expect("near test audio should exist");
+    std::fs::write(&added.file_path, b"added").expect("added test audio should exist");
+
+    let previous = AudioStyleModelSnapshot::from_test_embeddings(
+        1,
+        [
+            (current.clone(), embedding(2)),
+            (near.clone(), embedding(3)),
+        ],
+    );
+    cache
+        .write_test_embedding_for_track(&added, embedding(4))
+        .expect("new embedding should be cached");
+
+    let refreshed = AudioStyleModelSnapshot::refresh_for_test(
+        2,
+        Some(&previous),
+        &cache,
+        vec![current.clone(), near.clone(), added.clone()],
+    )
+    .expect("refresh should reuse previous embeddings and load only added track");
+
+    let previous_current = previous
+        .embedding_arc_for_track(&current)
+        .expect("previous current embedding should exist");
+    let refreshed_current = refreshed
+        .embedding_arc_for_track(&current)
+        .expect("refreshed current embedding should exist");
+    assert!(std::sync::Arc::ptr_eq(
+        &previous_current,
+        &refreshed_current
+    ));
+    assert!(refreshed.recommender().has_embedding_for(&added));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn audio_style_model_refresh_recenters_reused_embeddings_with_new_mean() {
+    let current = track("current");
+    let near = track("near");
+    let far = track("far");
+    let previous = AudioStyleModelSnapshot::from_test_embeddings(
+        1,
+        [
+            (current.clone(), dense_embedding(&[(0, 1.0)])),
+            (near.clone(), dense_embedding(&[(0, 0.8), (1, 0.6)])),
+            (far.clone(), dense_embedding(&[(1, 1.0)])),
+        ],
+    );
+    let added = track("added");
+    let previous_similarity = previous
+        .recommender()
+        .centered_similarity_for_test(&current, &near)
+        .expect("previous similarity should exist");
+    let embeddings = [
+        (current.clone(), dense_embedding(&[(0, 1.0)])),
+        (near.clone(), dense_embedding(&[(0, 0.8), (1, 0.6)])),
+        (far, dense_embedding(&[(1, 1.0)])),
+        (added, dense_embedding(&[(0, -1.0)])),
+    ];
+    let refreshed = AudioStyleModelSnapshot::from_test_embeddings(2, embeddings);
+    let refreshed_similarity = refreshed
+        .recommender()
+        .centered_similarity_for_test(&current, &near)
+        .expect("refreshed similarity should exist");
+
+    assert!((previous_similarity - refreshed_similarity).abs() > 0.01);
 }
 
 #[test]

@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
 
+use crate::domain::playlists::model::Music;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum PlaybackContinuationMode {
@@ -13,6 +15,7 @@ pub enum PlaybackContinuationMode {
 pub struct PlaybackTrackPayload {
     pub playlist_name: String,
     pub music_name: String,
+    pub canonical_music_id: String,
     pub music_url: String,
     pub file_path: String,
     pub start_ms: u32,
@@ -67,8 +70,10 @@ pub struct PlaybackStatusPayload {
 pub struct PlaybackTrack {
     pub playlist_name: String,
     pub music_name: String,
+    pub canonical_music_id: String,
     pub music_url: String,
     pub file_path: PathBuf,
+    pub source_music: Option<Box<Music>>,
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
@@ -97,8 +102,10 @@ impl PlaybackTrack {
         Ok(Self {
             playlist_name: payload.playlist_name,
             music_name: payload.music_name,
+            canonical_music_id: payload.canonical_music_id,
             music_url: payload.music_url,
             file_path: PathBuf::from(payload.file_path),
+            source_music: None,
             start_ms: payload.start_ms,
             end_ms: payload.end_ms,
             liked: payload.liked,
@@ -109,6 +116,7 @@ impl PlaybackTrack {
         PlaybackTrackPayload {
             playlist_name: self.playlist_name.clone(),
             music_name: self.music_name.clone(),
+            canonical_music_id: self.canonical_music_id.clone(),
             music_url: self.music_url.clone(),
             file_path: self.file_path.to_string_lossy().to_string(),
             start_ms: self.start_ms,

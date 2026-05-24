@@ -19,10 +19,12 @@ fn track(name: &str) -> PlaybackTrack {
     PlaybackTrack {
         playlist_name: "Focus".to_string(),
         music_name: name.to_string(),
+        canonical_music_id: format!("source:https://example.com/{name}:0:60000"),
         music_url: format!("https://example.com/{name}"),
         file_path: PathBuf::from(format!("{name}.m4a")),
         start_ms: 0,
         end_ms: 60_000,
+        source_music: None,
         liked: false,
     }
 }
@@ -31,6 +33,7 @@ fn track_payload(name: &str) -> PlaybackTrackPayload {
     PlaybackTrackPayload {
         playlist_name: "Focus".to_string(),
         music_name: name.to_string(),
+        canonical_music_id: format!("source:https://example.com/{name}:0:60000"),
         music_url: format!("https://example.com/{name}"),
         file_path: format!("{name}.m4a"),
         start_ms: 0,

@@ -1,13 +1,14 @@
 use super::service::{
-    PlaylistPlaybackRecommendationRequest, PlaylistPlaybackRecommender,
-    RandomPlaylistPlaybackRecommender, place_track_at_queue_start,
-    playlist_selection_has_relevant_active_downloads, resolve_playlist_playback_continuation_mode,
-    resolve_playlist_playback_source_resolution, select_playlist_initial_track_at_index,
-    shuffle_playback_tracks,
+    PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
+    PlaylistPlaybackRecommender, RandomPlaylistPlaybackRecommender, place_track_at_queue_start,
+    playlist_playback_proposal_contains_next_track,
+    playlist_selection_has_relevant_active_downloads, propose_random_queue_after_exclude,
+    resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
+    select_playlist_initial_track_at_index, shuffle_playback_tracks,
 };
 use crate::domain::downloads::model::{DownloadTask, DownloadTaskStatus, DownloadTrigger};
 use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
-use crate::domain::playlists::model::{Group, Music};
+use crate::domain::playlists::model::{Group, Music, canonical_music_id_for_source};
 use crate::domain::playlists::repo::{
     PlaylistPlaybackCollectionRef, PlaylistPlaybackGroupRef, PlaylistPlaybackSelection,
     PlaylistPlaybackTrackSource,
@@ -38,6 +39,7 @@ fn music(name: &str, url: &str, path: &str, group: Group) -> Music {
         alias: name.to_string(),
         group,
         url: url.to_string(),
+        canonical_music_id: canonical_music_id_for_source(&url.to_string(), 0, 180_000),
         path: Some(path.to_string()),
         start_ms: 0,
         end_ms: 180_000,
@@ -51,6 +53,7 @@ fn music_with_alias(name: &str, alias: &str, url: &str, path: &str, group: Group
         alias: alias.to_string(),
         group,
         url: url.to_string(),
+        canonical_music_id: canonical_music_id_for_source(&url.to_string(), 0, 180_000),
         path: Some(path.to_string()),
         start_ms: 0,
         end_ms: 180_000,
@@ -262,10 +265,16 @@ fn random_recommender_shuffle_preserves_candidate_identity_set() {
         .map(|index| PlaybackTrack {
             playlist_name: "Focus".to_string(),
             music_name: format!("Track {index}"),
+            canonical_music_id: format!(
+                "source:https://example.com/{index}:{}:{}",
+                index * 1_000,
+                index * 1_000 + 500
+            ),
             music_url: format!("https://example.com/{index}"),
             file_path: PathBuf::from(format!("track-{index}.m4a")),
             start_ms: index * 1_000,
             end_ms: index * 1_000 + 500,
+            source_music: None,
             liked: false,
         })
         .collect::<Vec<_>>();
@@ -305,10 +314,12 @@ fn initial_track_selection_uses_the_requested_random_index() {
         .map(|index| PlaybackTrack {
             playlist_name: "Focus".to_string(),
             music_name: format!("Track {index}"),
+            canonical_music_id: format!("source:https://example.com/{index}:0:60000"),
             music_url: format!("https://example.com/{index}"),
             file_path: PathBuf::from(format!("track-{index}.m4a")),
             start_ms: 0,
             end_ms: 60_000,
+            source_music: None,
             liked: false,
         })
         .collect::<Vec<_>>();
@@ -327,19 +338,23 @@ fn random_recommender_keeps_current_track_at_the_queue_start() {
     let current_track = PlaybackTrack {
         playlist_name: "Focus".to_string(),
         music_name: "Current".to_string(),
+        canonical_music_id: "source:https://example.com/current:0:60000".to_string(),
         music_url: "https://example.com/current".to_string(),
         file_path: PathBuf::from("current.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        source_music: None,
         liked: false,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
         music_name: "Next".to_string(),
+        canonical_music_id: "source:https://example.com/next:0:60000".to_string(),
         music_url: "https://example.com/next".to_string(),
         file_path: PathBuf::from("next.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        source_music: None,
         liked: false,
     };
 
@@ -365,19 +380,23 @@ fn queue_start_projection_preserves_the_initial_playback_anchor() {
     let initial_track = PlaybackTrack {
         playlist_name: "Focus".to_string(),
         music_name: "Initial".to_string(),
+        canonical_music_id: "source:https://example.com/initial:0:60000".to_string(),
         music_url: "https://example.com/initial".to_string(),
         file_path: PathBuf::from("initial.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        source_music: None,
         liked: false,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
         music_name: "Next".to_string(),
+        canonical_music_id: "source:https://example.com/next:0:60000".to_string(),
         music_url: "https://example.com/next".to_string(),
         file_path: PathBuf::from("next.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        source_music: None,
         liked: false,
     };
 
@@ -396,19 +415,23 @@ fn random_recommender_after_exclude_does_not_reinsert_current_track() {
     let current = PlaybackTrack {
         playlist_name: "Focus".to_string(),
         music_name: "Current".to_string(),
+        canonical_music_id: "source:https://example.com/current:0:60000".to_string(),
         music_url: "https://example.com/current".to_string(),
         file_path: PathBuf::from("current.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        source_music: None,
         liked: false,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
         music_name: "Next".to_string(),
+        canonical_music_id: "source:https://example.com/next:0:60000".to_string(),
         music_url: "https://example.com/next".to_string(),
         file_path: PathBuf::from("next.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        source_music: None,
         liked: false,
     };
 
@@ -430,23 +453,60 @@ fn random_recommender_after_exclude_does_not_reinsert_current_track() {
 }
 
 #[test]
-fn random_recommender_keeps_current_track_ahead_of_newly_loaded_queue_window() {
-    let current_track = PlaybackTrack {
+fn random_queue_after_exclude_filters_current_track_before_selecting_next() {
+    let current = PlaybackTrack {
         playlist_name: "Focus".to_string(),
         music_name: "Current".to_string(),
+        canonical_music_id: "source:https://example.com/current:0:60000".to_string(),
         music_url: "https://example.com/current".to_string(),
         file_path: PathBuf::from("current.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        source_music: None,
         liked: false,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
         music_name: "Next".to_string(),
+        canonical_music_id: "source:https://example.com/next:0:60000".to_string(),
         music_url: "https://example.com/next".to_string(),
         file_path: PathBuf::from("next.m4a"),
         start_ms: 0,
         end_ms: 60_000,
+        source_music: None,
+        liked: false,
+    };
+    let mut candidates = vec![current.clone(), next.clone(), current.clone()];
+
+    let proposed = propose_random_queue_after_exclude(&mut candidates, &current);
+
+    assert_eq!(proposed.len(), 1);
+    assert_eq!(proposed[0].music_url, next.music_url);
+    assert!(candidates.is_empty());
+}
+
+#[test]
+fn random_recommender_keeps_current_track_ahead_of_newly_loaded_queue_window() {
+    let current_track = PlaybackTrack {
+        playlist_name: "Focus".to_string(),
+        music_name: "Current".to_string(),
+        canonical_music_id: "source:https://example.com/current:0:60000".to_string(),
+        music_url: "https://example.com/current".to_string(),
+        file_path: PathBuf::from("current.m4a"),
+        start_ms: 0,
+        end_ms: 60_000,
+        source_music: None,
+        liked: false,
+    };
+    let next = PlaybackTrack {
+        playlist_name: "Focus".to_string(),
+        music_name: "Next".to_string(),
+        canonical_music_id: "source:https://example.com/next:0:60000".to_string(),
+        music_url: "https://example.com/next".to_string(),
+        file_path: PathBuf::from("next.m4a"),
+        start_ms: 0,
+        end_ms: 60_000,
+        source_music: None,
         liked: false,
     };
 
@@ -459,4 +519,55 @@ fn random_recommender_keeps_current_track_ahead_of_newly_loaded_queue_window() {
 
     assert_eq!(proposed[0].music_url, current_track.music_url);
     assert_eq!(proposed[1].music_url, next.music_url);
+}
+
+#[test]
+fn playlist_playback_keep_current_proposal_without_next_track_is_not_complete() {
+    let current_track = PlaybackTrack {
+        playlist_name: "Focus".to_string(),
+        music_name: "Current".to_string(),
+        canonical_music_id: "source:https://example.com/current:0:60000".to_string(),
+        music_url: "https://example.com/current".to_string(),
+        file_path: PathBuf::from("current.m4a"),
+        start_ms: 0,
+        end_ms: 60_000,
+        source_music: None,
+        liked: false,
+    };
+
+    assert!(!playlist_playback_proposal_contains_next_track(
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+        &[current_track]
+    ));
+}
+
+#[test]
+fn playlist_playback_keep_current_proposal_with_distinct_next_track_is_complete() {
+    let current_track = PlaybackTrack {
+        playlist_name: "Focus".to_string(),
+        music_name: "Current".to_string(),
+        canonical_music_id: "source:https://example.com/current:0:60000".to_string(),
+        music_url: "https://example.com/current".to_string(),
+        file_path: PathBuf::from("current.m4a"),
+        start_ms: 0,
+        end_ms: 60_000,
+        source_music: None,
+        liked: false,
+    };
+    let next = PlaybackTrack {
+        playlist_name: "Focus".to_string(),
+        music_name: "Next".to_string(),
+        canonical_music_id: "source:https://example.com/next:0:60000".to_string(),
+        music_url: "https://example.com/next".to_string(),
+        file_path: PathBuf::from("next.m4a"),
+        start_ms: 0,
+        end_ms: 60_000,
+        source_music: None,
+        liked: false,
+    };
+
+    assert!(playlist_playback_proposal_contains_next_track(
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+        &[current_track, next]
+    ));
 }

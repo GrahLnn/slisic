@@ -7,6 +7,8 @@ import {
   enterSpectrumPlaybackScope,
   excludeCurrentMusicAndSkip,
   exitSpectrumPlaybackScope,
+  listenPlaybackDiagnosticTrace,
+  listenPlaybackExcludeCommitted,
   listenNowPlayingTrackChanged,
   MainStateT,
   persistSavePath,
@@ -41,6 +43,7 @@ import {
   spectrumMusicRangeChanged,
   spectrumMusicNameChanged,
 } from "./runtime";
+import type { Exclude } from "@/src/cmd";
 import { action as pasteDownloadAction } from "../pasteDownload";
 import { createPlaybackContinuationModeEffectOwner } from "./playbackContinuationModeEffectOwner";
 import {
@@ -49,6 +52,7 @@ import {
   shouldCommitSpectrumPlaybackScopeExit,
   type PlaybackModeEffect,
 } from "./playbackMode";
+import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 
 export { actor } from "./runtime";
 
@@ -62,6 +66,8 @@ const selectContext = me.select((shot: { context: ActorSnapshot["context"] }) =>
 let started = false;
 let unsubscribeDebug: (() => void) | null = null;
 let unsubscribeNowPlayingTrackChanged: (() => void) | null = null;
+let unsubscribePlaybackDiagnosticTrace: (() => void) | null = null;
+let unsubscribePlaybackExcludeCommitted: (() => void) | null = null;
 const playbackContinuationModeEffectOwner = createPlaybackContinuationModeEffectOwner({
   setPlaybackContinuationMode,
 });
@@ -144,6 +150,13 @@ function requestExcludeCurrentMusicAndSkip(snapshot: ActorSnapshot) {
   void excludeCurrentMusicAndSkipFromPlayback(snapshot).catch((error) => {
     console.error("Failed to exclude current music and skip playback", error);
   });
+}
+
+function createOptimisticExcludeAddedChange(exclude: Exclude) {
+  return {
+    exclude,
+    excludeAvailability: actor.getSnapshot().context.configLibrary.exclude_availability,
+  };
 }
 
 function requestSetCurrentPlaybackMusicLiked(liked: boolean) {
@@ -271,6 +284,49 @@ function attachNowPlayingTrackListener() {
     })
     .catch((error) => {
       console.error("Failed to subscribe to now playing track changes", error);
+    });
+}
+
+function attachPlaybackDiagnosticTraceListener() {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+    return;
+  }
+
+  void listenPlaybackDiagnosticTrace((payload) => {
+    recordRenderPerformanceTrace(payload.event, {
+      playlistName: payload.playlist_name,
+      musicName: payload.music_name,
+      musicUrl: payload.music_url,
+      startMs: payload.start_ms,
+      endMs: payload.end_ms,
+      elapsedMs: payload.elapsed_ms,
+      candidateCount: payload.candidate_count,
+      queueCount: payload.queue_count,
+      status: payload.status,
+      error: payload.error,
+    });
+  })
+    .then((unlisten) => {
+      unsubscribePlaybackDiagnosticTrace = unlisten;
+    })
+    .catch((error) => {
+      console.error("Failed to subscribe to playback diagnostic trace", error);
+    });
+}
+
+function attachPlaybackExcludeCommittedListener() {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+    return;
+  }
+
+  void listenPlaybackExcludeCommitted((payload) => {
+    send(excludeAdded.load(createOptimisticExcludeAddedChange(payload.exclude)));
+  })
+    .then((unlisten) => {
+      unsubscribePlaybackExcludeCommitted = unlisten;
+    })
+    .catch((error) => {
+      console.error("Failed to subscribe to playback exclude commit events", error);
     });
 }
 
@@ -513,6 +569,8 @@ export function ensureStarted() {
   actor.start();
   attachDebugLogger();
   attachNowPlayingTrackListener();
+  attachPlaybackDiagnosticTraceListener();
+  attachPlaybackExcludeCommittedListener();
   started = true;
 }
 
@@ -526,6 +584,10 @@ export function stop() {
   unsubscribeDebug = null;
   unsubscribeNowPlayingTrackChanged?.();
   unsubscribeNowPlayingTrackChanged = null;
+  unsubscribePlaybackDiagnosticTrace?.();
+  unsubscribePlaybackDiagnosticTrace = null;
+  unsubscribePlaybackExcludeCommitted?.();
+  unsubscribePlaybackExcludeCommitted = null;
   started = false;
   resetRuntimeActor();
 }

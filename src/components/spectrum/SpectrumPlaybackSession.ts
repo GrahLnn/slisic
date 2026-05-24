@@ -58,6 +58,7 @@ export function createSpectrumPlaybackTrackPayload(
   liked = false,
 ): PlaybackTrackPayload {
   return {
+    canonical_music_id: `source:${identity.url.trim()}:${identity.startMs}:${identity.endMs}`,
     end_ms: identity.endMs,
     file_path: identity.filePath,
     liked,

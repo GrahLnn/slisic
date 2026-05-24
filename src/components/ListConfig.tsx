@@ -193,7 +193,9 @@ type ListConfigExcludeToolLabelRowProps = {
   item: ListConfigExcludeToolLabelItem;
   dismissHoverSignal: number;
   interactionDisabled: boolean;
+  isRemoving: boolean;
   onRemoveExcludeItem: (item: ListConfigExcludeToolLabelItem) => Promise<boolean>;
+  onRemoveExcludeItemStart: (item: ListConfigExcludeToolLabelItem) => void;
 };
 
 function waitForNextFrame() {
@@ -282,10 +284,10 @@ function ListConfigExcludeToolLabelRow({
   item,
   dismissHoverSignal,
   interactionDisabled,
+  isRemoving,
   onRemoveExcludeItem,
+  onRemoveExcludeItemStart,
 }: ListConfigExcludeToolLabelRowProps) {
-  const [isRemoving, setIsRemoving] = useState(false);
-
   return (
     <motion.div
       className="group overflow-visible"
@@ -318,12 +320,15 @@ function ListConfigExcludeToolLabelRow({
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
+                  if (isRemoving) {
+                    return;
+                  }
                   flushSync(() => {
-                    setIsRemoving(true);
+                    onRemoveExcludeItemStart(item);
                   });
                   void onRemoveExcludeItem(item).then((didRemove) => {
                     if (!didRemove) {
-                      setIsRemoving(false);
+                      onRemoveExcludeItemStart(item);
                     }
                   });
                 }}
@@ -436,6 +441,9 @@ export function ListConfig() {
   const emptyStateRef = useRef<ListConfigEmptyState | null>(null);
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
   const [isDeletePending, setIsDeletePending] = useState(false);
+  const [removingExcludeItemIds, setRemovingExcludeItemIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const libraryItems = createConfigSidebarItemsFromLibrary(configLibrary);
   const liveRenderData = {
     savePath,
@@ -456,6 +464,9 @@ export function ListConfig() {
   const pageRenderFreeze = usePageRenderFreeze(liveRenderData);
   const renderData = pageRenderFreeze.renderValue;
   const { savePath: renderedSavePath, viewModel } = renderData;
+  const visibleExcludeToolLabelItems = viewModel.excludeToolLabelItems.filter(
+    (item) => !removingExcludeItemIds.has(item.id),
+  );
   emptyStateRef.current = viewModel.emptyState;
   const backActionVisualState = resolveBackActionVisualState({
     hasDraftChanges: viewModel.hasDraftChanges,
@@ -483,6 +494,28 @@ export function ListConfig() {
     },
     [],
   );
+  const markExcludeItemRemoving = useCallback((item: ListConfigExcludeToolLabelItem) => {
+    setRemovingExcludeItemIds((current) => {
+      const next = new Set(current);
+      if (next.has(item.id)) {
+        next.delete(item.id);
+      } else {
+        next.add(item.id);
+      }
+      return next;
+    });
+  }, []);
+  const handleRemoveExcludeItem = useCallback(async (item: ListConfigExcludeToolLabelItem) => {
+    const didRemove = await appLogicAction.removeExclude(item.music);
+    if (didRemove) {
+      setRemovingExcludeItemIds((current) => {
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
+    }
+    return didRemove;
+  }, []);
 
   async function handleChangeSavePath() {
     await appLogicAction.chooseSavePath(renderedSavePath);
@@ -749,14 +782,20 @@ export function ListConfig() {
             animate={isPresent ? contentFadeProps.animate : contentFadeProps.exit}
             className="flex flex-col overflow-visible"
           >
-            <div className="cursor-default select-none text-sm text-[#525252] dark:text-[#d4d4d4]">
-              Exclude
-            </div>
+            <AnimatePresence initial={false}>
+              {visibleExcludeToolLabelItems.length > 0 ? (
+                <motion.div
+                  {...contentFadeProps}
+                  className="cursor-default select-none text-sm text-[#525252] dark:text-[#d4d4d4]"
+                >
+                  Exclude
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
             <div
               className={cn(
                 "flex flex-col overflow-visible",
-                viewModel.interactionFlags.isToolListInteractionDisabled &&
-                  "pointer-events-none",
+                viewModel.interactionFlags.isToolListInteractionDisabled && "pointer-events-none",
               )}
             >
               <AnimatePresence initial={false}>
@@ -766,7 +805,9 @@ export function ListConfig() {
                     item={item}
                     dismissHoverSignal={dismissHoverSignal}
                     interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
-                    onRemoveExcludeItem={({ music }) => appLogicAction.removeExclude(music)}
+                    isRemoving={removingExcludeItemIds.has(item.id)}
+                    onRemoveExcludeItem={handleRemoveExcludeItem}
+                    onRemoveExcludeItemStart={markExcludeItemRemoving}
                   />
                 ))}
               </AnimatePresence>

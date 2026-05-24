@@ -715,7 +715,7 @@ async fn resolve_collection_plan(
                 .await?,
                 enable_updates: None,
                 leaves: vec![PlannedLeaf {
-                    id: leaf_id_for(&task.id, &collection_url),
+                    id: leaf_id_for(&task.id, &collection_url, None),
                     url: collection_url,
                     sequence: 0,
                     initial_probe: (!should_reprobe_single_leaf(root_preference)).then_some(leaf),
@@ -728,13 +728,13 @@ async fn resolve_collection_plan(
             let collection_url = list.webpage_url.clone();
             let existing = collection_import::get_collection_by_url(&collection_url).await?;
             let existing_leafs =
-                collection_import::existing_leaf_urls(existing.as_ref(), save_root);
-            let leaves =
+                collection_import::existing_leaf_identities(existing.as_ref(), save_root);
+            let leaves = collection_import::filter_new_planned_leaves(
+                &collection_url,
                 expand_root_entries_to_planned_leafs(&task.id, client.clone(), list.entries, None)
-                    .await?
-                    .into_iter()
-                    .filter(|leaf| !existing_leafs.contains(&leaf.url))
-                    .collect::<Vec<_>>();
+                    .await?,
+                &existing_leafs,
+            );
 
             Ok(CollectionSyncPlan {
                 source_kind: CollectionSourceKind::List,
@@ -835,8 +835,9 @@ pub(crate) async fn expand_root_entries_to_planned_leafs(
         let preference = classify_root_preference(&next.entry.url);
         if preference == CollectionSourceKind::Single {
             let url = next.entry.url;
+            let id = leaf_id_for(task_id, &url, next.group_hint.as_ref());
             candidates.push(ExpandedLeafCandidate {
-                id: leaf_id_for(task_id, &url),
+                id,
                 url,
                 title: next.entry.title,
                 initial_probe: None,
@@ -863,7 +864,7 @@ pub(crate) async fn expand_root_entries_to_planned_leafs(
             RootProbe::Single(leaf) => {
                 let leaf_url = leaf.webpage_url.clone();
                 candidates.push(ExpandedLeafCandidate {
-                    id: leaf_id_for(task_id, &leaf_url),
+                    id: leaf_id_for(task_id, &leaf_url, next.group_hint.as_ref()),
                     url: leaf_url,
                     title: Some(leaf.title.clone()),
                     initial_probe: (!should_reprobe_single_leaf(preference)).then_some(leaf),
@@ -1308,8 +1309,9 @@ fn task_id_for(url: &str, trigger: DownloadTrigger) -> String {
     )
 }
 
-fn leaf_id_for(task_id: &Id, leaf_url: &str) -> Id {
-    Id::from(stable_id(&format!("{task_id}|{leaf_url}")))
+fn leaf_id_for(task_id: &Id, leaf_url: &str, group: Option<&Group>) -> Id {
+    let group_url = group.map(|group| group.url.as_str()).unwrap_or_default();
+    Id::from(stable_id(&format!("{task_id}|{group_url}|{leaf_url}")))
 }
 
 fn normalize_url(url: &str) -> Result<String> {

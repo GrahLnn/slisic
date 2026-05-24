@@ -125,6 +125,7 @@ pub struct Music {
     pub alias: String,
     #[back_relate("grouped")]
     pub group: Group,
+    pub canonical_music_id: String,
     pub url: String,
     pub path: Option<String>,
     pub start_ms: u32,
@@ -137,6 +138,7 @@ pub struct Music {
 pub struct MusicSpectrumView {
     pub name: String,
     pub alias: String,
+    pub canonical_music_id: String,
     pub url: String,
     pub path: Option<String>,
     pub start_ms: u32,
@@ -150,6 +152,7 @@ impl MusicSpectrumView {
             name: self.name,
             alias: self.alias,
             group,
+            canonical_music_id: self.canonical_music_id,
             url: self.url,
             path: self.path,
             start_ms: self.start_ms,
@@ -157,6 +160,10 @@ impl MusicSpectrumView {
             liked: self.liked,
         }
     }
+}
+
+pub fn canonical_music_id_for_source(url: &str, start_ms: u32, end_ms: u32) -> String {
+    format!("source:{}:{}:{}", url.trim(), start_ms, end_ms)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]

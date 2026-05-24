@@ -1,4 +1,4 @@
-use super::model::{Collection, Group, Music, PlayList};
+use super::model::{Collection, Group, Music, PlayList, canonical_music_id_for_source};
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
 use appdb::model::meta::ModelMeta;
 use appdb::query::{RawSqlStmt, query_bound_checked, query_bound_return};
@@ -328,6 +328,11 @@ fn sample_collection(
                 name: format!("{name} intro"),
                 alias: format!("{name} intro"),
                 group: group.clone(),
+                canonical_music_id: canonical_music_id_for_source(
+                    &format!("{url}#intro"),
+                    0,
+                    42_000,
+                ),
                 url: format!("{url}#intro"),
                 path: Some(format!("{name}.m4a")),
                 start_ms: 0,
@@ -338,6 +343,11 @@ fn sample_collection(
                 name: format!("{name} outro"),
                 alias: format!("{name} outro"),
                 group,
+                canonical_music_id: canonical_music_id_for_source(
+                    &format!("{url}#outro"),
+                    42_000,
+                    84_000,
+                ),
                 url: format!("{url}#outro"),
                 path: Some(format!("{name}.m4a")),
                 start_ms: 42_000,

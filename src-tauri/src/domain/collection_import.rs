@@ -5,7 +5,9 @@ use crate::domain::downloads::model::{
 use crate::domain::downloads::naming::{provider_segment, sanitize_path_component, short_hash};
 use crate::domain::downloads::repo as download_repo;
 use crate::domain::downloads::yt_dlp::{LeafProbe, RootProbe};
-use crate::domain::playlists::model::{Collection, Group, Music};
+#[cfg(not(test))]
+use crate::domain::playlist_playback::recommendation::notify_audio_style_training_inputs_changed;
+use crate::domain::playlists::model::{Collection, Group, Music, canonical_music_id_for_source};
 use crate::domain::playlists::repo as collection_repo;
 use anyhow::{Context, Result, bail};
 use appdb::Id;
@@ -30,6 +32,32 @@ pub(crate) struct PlannedLeaf {
     pub(crate) initial_probe: Option<LeafProbe>,
     pub(crate) music_title: Option<String>,
     pub(crate) group_hint: Option<Group>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct LeafGroupIdentity {
+    url: String,
+    group_url: String,
+}
+
+impl LeafGroupIdentity {
+    pub(crate) fn from_plan(collection_url: &str, leaf: &PlannedLeaf) -> Self {
+        Self {
+            url: leaf.url.clone(),
+            group_url: leaf
+                .group_hint
+                .as_ref()
+                .map(|group| group.url.clone())
+                .unwrap_or_else(|| collection_url.to_string()),
+        }
+    }
+
+    fn from_music(music: &Music) -> Self {
+        Self {
+            url: music.url.clone(),
+            group_url: music.group.url.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -199,6 +227,7 @@ pub(crate) async fn persist_empty_collection(collection: &mut Collection) -> Res
     collection.last_updated = now_timestamp();
     let saved = collection_repo::upsert_collection(collection).await?;
     *collection = saved;
+    notify_audio_style_inputs_changed("downloaded_music_persisted");
     Ok(())
 }
 
@@ -212,17 +241,22 @@ pub(crate) async fn persist_downloaded_leaf_music(
     let mut materialized = materialize_music_entries(probe, file_name, group);
     inherit_existing_music_aliases(&mut materialized, &collection.musics);
     if source_kind == CollectionSourceKind::Single {
-        collection.musics = materialized.clone();
+        collection.musics = materialized;
     } else {
-        collection
-            .musics
-            .retain(|music| music.url != probe.webpage_url);
+        let replacement_group_url = materialized
+            .first()
+            .map(|music| music.group.url.clone())
+            .unwrap_or_default();
+        collection.musics.retain(|music| {
+            music.url != probe.webpage_url || music.group.url != replacement_group_url
+        });
         collection.musics.append(&mut materialized);
     }
     normalize_music_titles_within_collection(collection);
     collection.last_updated = now_timestamp();
     let saved = collection_repo::upsert_collection(collection).await?;
     *collection = saved;
+    notify_audio_style_inputs_changed("downloaded_music_persisted");
     Ok(())
 }
 
@@ -287,7 +321,7 @@ pub(crate) fn finalize_downloaded_leaf(
     let relative_path = relative_music_path(collection, &final_file_name, group);
     let final_path = save_root.join(&collection.folder).join(&relative_path);
 
-    remove_existing_leaf_files(collection, leaf_url, save_root)?;
+    remove_existing_leaf_files(collection, leaf_url, group, save_root)?;
     if final_path.exists() && final_path != downloaded_path {
         std::fs::remove_file(&final_path)
             .with_context(|| format!("failed to remove existing file {}", final_path.display()))?;
@@ -323,6 +357,21 @@ pub(crate) fn resolve_existing_leaf_file(
     absolute_path.is_file().then_some(relative_path)
 }
 
+pub(crate) fn filter_new_planned_leaves(
+    collection_url: &str,
+    leaves: Vec<PlannedLeaf>,
+    existing_leafs: &HashSet<LeafGroupIdentity>,
+) -> Vec<PlannedLeaf> {
+    let mut planned_leafs = HashSet::new();
+    leaves
+        .into_iter()
+        .filter(|leaf| {
+            let identity = LeafGroupIdentity::from_plan(collection_url, leaf);
+            !existing_leafs.contains(&identity) && planned_leafs.insert(identity)
+        })
+        .collect()
+}
+
 pub(crate) fn materialize_music_entries(
     probe: &LeafProbe,
     relative_path: &str,
@@ -334,6 +383,11 @@ pub(crate) fn materialize_music_entries(
             name: name.clone(),
             alias: name,
             group,
+            canonical_music_id: canonical_music_id_for_source(
+                &probe.webpage_url,
+                0,
+                seconds_to_millis(probe.duration_seconds.unwrap_or(0)),
+            ),
             url: probe.webpage_url.clone(),
             path: Some(relative_path.to_string()),
             start_ms: 0,
@@ -349,6 +403,11 @@ pub(crate) fn materialize_music_entries(
             name: chapter.title.clone(),
             alias: chapter.title.clone(),
             group: group.clone(),
+            canonical_music_id: canonical_music_id_for_source(
+                &probe.webpage_url,
+                chapter.start_ms,
+                chapter.end_ms,
+            ),
             url: probe.webpage_url.clone(),
             path: Some(relative_path.to_string()),
             start_ms: chapter.start_ms,
@@ -358,10 +417,10 @@ pub(crate) fn materialize_music_entries(
         .collect()
 }
 
-pub(crate) fn existing_leaf_urls(
+pub(crate) fn existing_leaf_identities(
     collection: Option<&Collection>,
     save_root: &Path,
-) -> HashSet<String> {
+) -> HashSet<LeafGroupIdentity> {
     collection
         .map(|collection| {
             collection
@@ -379,8 +438,8 @@ pub(crate) fn existing_leaf_urls(
                         })
                         .unwrap_or(false)
                 })
-                .map(|music| music.url.clone())
-                .collect::<HashSet<String>>()
+                .map(LeafGroupIdentity::from_music)
+                .collect::<HashSet<_>>()
         })
         .unwrap_or_default()
 }
@@ -585,14 +644,24 @@ fn inherit_existing_music_aliases(musics: &mut [Music], existing_musics: &[Music
         .iter()
         .map(|music| {
             (
-                (music.url.as_str(), music.start_ms, music.end_ms),
+                (
+                    music.url.as_str(),
+                    music.group.url.as_str(),
+                    music.start_ms,
+                    music.end_ms,
+                ),
                 music.alias.as_str(),
             )
         })
         .collect::<HashMap<_, _>>();
 
     for music in musics {
-        if let Some(alias) = aliases.get(&(music.url.as_str(), music.start_ms, music.end_ms)) {
+        if let Some(alias) = aliases.get(&(
+            music.url.as_str(),
+            music.group.url.as_str(),
+            music.start_ms,
+            music.end_ms,
+        )) {
             music.alias = (*alias).to_string();
         }
     }
@@ -612,11 +681,12 @@ fn relative_music_path(collection: &Collection, file_name: &str, group: &Group) 
 fn remove_existing_leaf_files(
     collection: &Collection,
     leaf_url: &str,
+    group: &Group,
     save_root: &Path,
 ) -> Result<()> {
     let mut seen_paths = std::collections::BTreeSet::new();
     for music in &collection.musics {
-        if music.url != leaf_url {
+        if music.url != leaf_url || music.group.url != group.url {
             continue;
         }
 
@@ -677,6 +747,7 @@ pub(crate) async fn repair_stale_single_source_collections(save_root: &Path) -> 
             collection.musics = restored;
             collection.last_updated = now_timestamp();
             let _ = collection_repo::upsert_collection(&collection).await?;
+            notify_audio_style_inputs_changed("download_recovery_music_restored");
             repaired += 1;
             break;
         }
@@ -731,6 +802,11 @@ pub(crate) fn restore_single_source_musics_from_task(
             name: name.clone(),
             alias: name,
             group: default_group.clone(),
+            canonical_music_id: canonical_music_id_for_source(
+                &leaf.url,
+                0,
+                seconds_to_millis(leaf.duration_seconds.unwrap_or(0)),
+            ),
             url: leaf.url.clone(),
             path: Some(relative_path.to_string()),
             start_ms: 0,
@@ -740,6 +816,11 @@ pub(crate) fn restore_single_source_musics_from_task(
     }
 
     restored
+}
+
+fn notify_audio_style_inputs_changed(_reason: &'static str) {
+    #[cfg(not(test))]
+    notify_audio_style_training_inputs_changed(_reason);
 }
 
 fn seconds_to_millis(seconds: u32) -> u32 {

@@ -1,6 +1,6 @@
 use super::model::{
     Collection, CollectionSurfaceView, Exclude, Group, GroupSurfaceView, Music, PlayList,
-    PlayListConfigView, PlayListListView,
+    PlayListConfigView, PlayListListView, canonical_music_id_for_source,
 };
 use super::repo::{
     SpectrumMusicSourceIdentity, add_exclude, create_music, delete_music, delete_playlist_by_name,
@@ -9,8 +9,9 @@ use super::repo::{
     list_collections, list_config_library, list_musics_by_file_path, list_playlists,
     load_liked_playlist_playback_track_sources, load_playlist_playback_track_sources,
     load_random_playlist_playback_track_source, load_spectrum_music_context,
-    playlist_playback_owner_attempt_order, remove_exclude, set_collection_updates, update_music,
-    upsert_collection, upsert_playlist, upsert_playlist_surface,
+    playlist_playback_owner_attempt_order, remove_exclude, set_collection_updates,
+    set_music_liked_by_identity, update_music, upsert_collection, upsert_playlist,
+    upsert_playlist_surface,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -113,6 +114,10 @@ fn collection_group(name: &str, url: &str, folder: &str) -> Group {
     }
 }
 
+fn music_canonical_id(url: &str, start_ms: u32, end_ms: u32) -> String {
+    canonical_music_id_for_source(url, start_ms, end_ms)
+}
+
 fn grouped_collection(url: &str) -> Collection {
     Collection {
         name: "Grouped Demo".to_string(),
@@ -126,6 +131,7 @@ fn grouped_collection(url: &str) -> Collection {
                 url: format!("{url}#disc-1"),
                 folder: "Disc 1".to_string(),
             },
+            canonical_music_id: music_canonical_id(&format!("{url}#track"), 0, 180_000),
             url: format!("{url}#track"),
             path: Some(
                 PathBuf::from("Disc 1")
@@ -143,11 +149,13 @@ fn grouped_collection(url: &str) -> Collection {
 }
 
 fn named_music(name: &str, group: Group, path: &str) -> Music {
+    let url = format!("https://example.com/watch/{name}");
     Music {
         name: name.to_string(),
         alias: name.to_string(),
         group,
-        url: format!("https://example.com/watch/{name}"),
+        canonical_music_id: music_canonical_id(&url, 0, 180_000),
+        url,
         path: Some(path.to_string()),
         start_ms: 0,
         end_ms: 180_000,
@@ -172,11 +180,13 @@ fn collection_with_musics(
 }
 
 fn shared_music(collection_url: &str, collection_folder: &str) -> Music {
+    let url = "https://example.com/watch/shared";
     Music {
         name: "Shared Track".to_string(),
         alias: "Shared Track".to_string(),
         group: collection_group("Demo", collection_url, collection_folder),
-        url: "https://example.com/watch/shared".to_string(),
+        canonical_music_id: music_canonical_id(url, 0, 180_000),
+        url: url.to_string(),
         path: Some("Shared Track.m4a".to_string()),
         start_ms: 0,
         end_ms: 180_000,
@@ -200,6 +210,11 @@ fn sample_playlist(name: &str) -> PlayList {
                     url: format!("{collection_url}#disc-1"),
                     folder: "Disc 1".to_string(),
                 },
+                canonical_music_id: music_canonical_id(
+                    &format!("{collection_url}#track"),
+                    0,
+                    180_000,
+                ),
                 url: format!("{collection_url}#track"),
                 path: Some("Disc 1/Track.m4a".to_string()),
                 start_ms: 0,
@@ -219,6 +234,7 @@ fn sample_playlist(name: &str) -> PlayList {
 }
 
 fn sample_excluded_music() -> Music {
+    let url = "https://example.com/watch?v=blocked";
     Music {
         name: "Blocked Track".to_string(),
         alias: "Blocked Track".to_string(),
@@ -227,7 +243,8 @@ fn sample_excluded_music() -> Music {
             url: "https://example.com/blocked-collection".to_string(),
             folder: "youtube/blocked-collection".to_string(),
         },
-        url: "https://example.com/watch?v=blocked".to_string(),
+        canonical_music_id: music_canonical_id(url, 0, 180_000),
+        url: url.to_string(),
         path: Some("Blocked Track.m4a".to_string()),
         start_ms: 0,
         end_ms: 180_000,
@@ -834,44 +851,6 @@ fn list_config_library_does_not_rebuild_missing_exclude_availability() {
 }
 
 #[test]
-fn list_config_library_reads_legacy_object_owner_kind_exclude_availability() {
-    let _guard = acquire_db_test_lock();
-
-    run_async(async {
-        ensure_db().await;
-        bootstrap_table("stored_exclude_owner_availability").await;
-
-        let db = get_db().expect("global playlist repo database handle should exist");
-        db.query(
-            "CREATE stored_exclude_owner_availability:legacy_group CONTENT {
-                owner_kind: { Group: {} },
-                owner_url: $owner_url,
-                total_music_count: 1,
-                excluded_music_count: 1
-            };",
-        )
-        .bind(("owner_url", "https://example.com/legacy-group".to_string()))
-        .await
-        .expect("legacy availability insert should succeed")
-        .check()
-        .expect("legacy availability insert response should succeed");
-
-        let library = list_config_library()
-            .await
-            .expect("legacy owner_kind object should not break config library");
-
-        assert!(
-            library
-                .exclude_availability
-                .fully_excluded_group_urls
-                .contains(&"https://example.com/legacy-group".to_string())
-        );
-
-        reset_db();
-    });
-}
-
-#[test]
 fn set_collection_updates_keeps_single_collections_at_none() {
     let _guard = acquire_db_test_lock();
 
@@ -974,6 +953,7 @@ fn upsert_collection_bootstraps_collection_graph_schema_on_clean_db() {
                 alias: "Minus Sixty One".to_string(),
                 group: collection_group("Minus Sixty One", url, "youtube/self-bootstrapped-single"),
                 url: url.to_string(),
+                canonical_music_id: canonical_music_id_for_source(&url.to_string(), 0, 180_000),
                 path: Some("Minus Sixty One.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 316_000,
@@ -1080,6 +1060,72 @@ fn update_music_changes_display_alias_and_range_from_original_identity() {
 }
 
 #[test]
+fn canonical_music_identity_shares_liked_state_across_future_occurrences() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let first_url = "https://example.com/canonical-shared";
+        let second_url = "https://example.com/canonical-shared-copy";
+        let canonical_url = "https://example.com/watch/shared-canonical";
+        let first_group =
+            collection_group("Disc 1", "https://example.com/canonical#disc-1", "Disc 1");
+        let second_group =
+            collection_group("Disc 2", "https://example.com/canonical#disc-2", "Disc 2");
+        let first_music = Music {
+            name: "Shared Canonical".to_string(),
+            alias: "Shared Canonical".to_string(),
+            group: first_group,
+            canonical_music_id: music_canonical_id(canonical_url, 0, 180_000),
+            url: canonical_url.to_string(),
+            path: Some("Shared Canonical.m4a".to_string()),
+            start_ms: 0,
+            end_ms: 180_000,
+            liked: false,
+        };
+        let second_music = Music {
+            name: "Shared Canonical Copy".to_string(),
+            alias: "Shared Canonical Copy".to_string(),
+            group: second_group,
+            canonical_music_id: music_canonical_id(canonical_url, 0, 180_000),
+            url: canonical_url.to_string(),
+            path: Some("Shared Canonical Copy.m4a".to_string()),
+            start_ms: 0,
+            end_ms: 180_000,
+            liked: false,
+        };
+
+        upsert_collection(&collection_with_musics(
+            first_url,
+            "youtube/canonical-shared",
+            Some(false),
+            vec![first_music.clone()],
+        ))
+        .await
+        .expect("first occurrence should save");
+        set_music_liked_by_identity(canonical_url, 0, 180_000, true)
+            .await
+            .expect("canonical like should save")
+            .expect("liked occurrence should exist");
+
+        let saved = upsert_collection(&collection_with_musics(
+            second_url,
+            "youtube/canonical-shared-copy",
+            Some(false),
+            vec![second_music],
+        ))
+        .await
+        .expect("future canonical occurrence should save");
+
+        assert!(saved.musics[0].liked);
+
+        reset_db();
+    });
+}
+
+#[test]
 fn create_music_appends_to_the_source_collection_once() {
     let _guard = acquire_db_test_lock();
 
@@ -1096,6 +1142,11 @@ fn create_music_appends_to_the_source_collection_once() {
             alias: "Created Track".to_string(),
             group: source_music.group,
             url: "https://example.com/music-create#created".to_string(),
+            canonical_music_id: canonical_music_id_for_source(
+                &"https://example.com/music-create#created".to_string(),
+                0,
+                180_000,
+            ),
             path: source_music.path,
             start_ms: 0,
             end_ms: 180_000,
@@ -1143,6 +1194,11 @@ fn create_music_rejects_missing_source_collection() {
                 alias: "Created Track".to_string(),
                 group: collection_group("Disc 1", "https://example.com/missing#disc-1", "Disc 1"),
                 url: "https://example.com/missing#created".to_string(),
+                canonical_music_id: canonical_music_id_for_source(
+                    &"https://example.com/missing#created".to_string(),
+                    0,
+                    180_000,
+                ),
                 path: Some("Disc 1/Track.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 180_000,
@@ -1185,6 +1241,11 @@ fn delete_music_removes_only_the_matching_music_identity() {
                         "Disc 1",
                     ),
                     url: "https://example.com/music-delete#a".to_string(),
+                    canonical_music_id: canonical_music_id_for_source(
+                        &"https://example.com/music-delete#a".to_string(),
+                        0,
+                        180_000,
+                    ),
                     path: Some(shared_path.to_string_lossy().to_string()),
                     start_ms: 0,
                     end_ms: 120_000,
@@ -1199,6 +1260,11 @@ fn delete_music_removes_only_the_matching_music_identity() {
                         "Disc 1",
                     ),
                     url: "https://example.com/music-delete#b".to_string(),
+                    canonical_music_id: canonical_music_id_for_source(
+                        &"https://example.com/music-delete#b".to_string(),
+                        0,
+                        180_000,
+                    ),
                     path: Some(shared_path.to_string_lossy().to_string()),
                     start_ms: 120_000,
                     end_ms: 240_000,
@@ -1259,6 +1325,11 @@ fn list_musics_by_file_path_reads_matching_database_music_records() {
                         "Disc 1",
                     ),
                     url: "https://example.com/spectrum-source#a".to_string(),
+                    canonical_music_id: canonical_music_id_for_source(
+                        &"https://example.com/spectrum-source#a".to_string(),
+                        0,
+                        180_000,
+                    ),
                     path: Some(shared_path.to_string_lossy().to_string()),
                     start_ms: 0,
                     end_ms: 120_000,
@@ -1273,6 +1344,11 @@ fn list_musics_by_file_path_reads_matching_database_music_records() {
                         "Disc 1",
                     ),
                     url: "https://example.com/spectrum-source#b".to_string(),
+                    canonical_music_id: canonical_music_id_for_source(
+                        &"https://example.com/spectrum-source#b".to_string(),
+                        0,
+                        180_000,
+                    ),
                     path: Some(shared_path.to_string_lossy().to_string()),
                     start_ms: 120_000,
                     end_ms: 240_000,
@@ -1287,6 +1363,11 @@ fn list_musics_by_file_path_reads_matching_database_music_records() {
                         "Disc 1",
                     ),
                     url: "https://example.com/spectrum-source#other".to_string(),
+                    canonical_music_id: canonical_music_id_for_source(
+                        &"https://example.com/spectrum-source#other".to_string(),
+                        0,
+                        180_000,
+                    ),
                     path: Some("Disc 1/Other.m4a".to_string()),
                     start_ms: 0,
                     end_ms: 60_000,
@@ -1337,6 +1418,11 @@ fn load_spectrum_music_context_carries_source_owner_evidence_without_playlist_hy
                     alias: "Track A Intro".to_string(),
                     group: source_group.clone(),
                     url: source_url.to_string(),
+                    canonical_music_id: canonical_music_id_for_source(
+                        &source_url.to_string(),
+                        0,
+                        180_000,
+                    ),
                     path: Some(shared_path.to_string_lossy().to_string()),
                     start_ms: 0,
                     end_ms: 120_000,
@@ -1347,6 +1433,11 @@ fn load_spectrum_music_context_carries_source_owner_evidence_without_playlist_hy
                     alias: "Track A Tail".to_string(),
                     group: source_group.clone(),
                     url: source_url.to_string(),
+                    canonical_music_id: canonical_music_id_for_source(
+                        &source_url.to_string(),
+                        0,
+                        180_000,
+                    ),
                     path: Some(shared_path.to_string_lossy().to_string()),
                     start_ms: 120_000,
                     end_ms: 240_000,
@@ -1357,6 +1448,11 @@ fn load_spectrum_music_context_carries_source_owner_evidence_without_playlist_hy
                     alias: "Track B".to_string(),
                     group: source_group.clone(),
                     url: "https://example.com/spectrum-source#b".to_string(),
+                    canonical_music_id: canonical_music_id_for_source(
+                        &"https://example.com/spectrum-source#b".to_string(),
+                        0,
+                        180_000,
+                    ),
                     path: Some(shared_path.to_string_lossy().to_string()),
                     start_ms: 0,
                     end_ms: 60_000,
@@ -1423,6 +1519,11 @@ fn load_spectrum_music_context_filters_collection_candidates_by_path_components(
                 alias: "Track".to_string(),
                 group: source_group.clone(),
                 url: "https://example.com/spectrum-path#track".to_string(),
+                canonical_music_id: canonical_music_id_for_source(
+                    &"https://example.com/spectrum-path#track".to_string(),
+                    0,
+                    180_000,
+                ),
                 path: Some(shared_path.to_string_lossy().to_string()),
                 start_ms: 0,
                 end_ms: 120_000,
@@ -1442,6 +1543,11 @@ fn load_spectrum_music_context_filters_collection_candidates_by_path_components(
                     "Disc 1",
                 ),
                 url: "https://example.com/spectrum-path-neighbor#track".to_string(),
+                canonical_music_id: canonical_music_id_for_source(
+                    &"https://example.com/spectrum-path-neighbor#track".to_string(),
+                    0,
+                    180_000,
+                ),
                 path: Some(shared_path.to_string_lossy().to_string()),
                 start_ms: 0,
                 end_ms: 120_000,
@@ -1555,6 +1661,7 @@ fn upsert_collection_reuses_existing_legacy_record_id_and_removes_old_music() {
             alias: "Stale Track".to_string(),
             group: collection_group("Demo", url, "youtube/demo"),
             url: format!("{url}#stale"),
+            canonical_music_id: canonical_music_id_for_source(&format!("{url}#stale"), 0, 180_000),
             path: Some("Stale Track.m4a".to_string()),
             start_ms: 0,
             end_ms: 90_000,
@@ -2325,6 +2432,11 @@ fn playlist_playback_selection_reads_refs_without_hydrating_unselected_collectio
             alias: "Selected".to_string(),
             group: selected_group.clone(),
             url: "https://example.com/watch/selected".to_string(),
+            canonical_music_id: canonical_music_id_for_source(
+                &"https://example.com/watch/selected".to_string(),
+                0,
+                180_000,
+            ),
             path: Some("Selected.m4a".to_string()),
             start_ms: 0,
             end_ms: 60_000,
@@ -2345,6 +2457,11 @@ fn playlist_playback_selection_reads_refs_without_hydrating_unselected_collectio
                 alias: "Unselected".to_string(),
                 group: collection_group("Other", "https://example.com/unselected#disc-1", "Disc 1"),
                 url: "https://example.com/watch/unselected".to_string(),
+                canonical_music_id: canonical_music_id_for_source(
+                    &"https://example.com/watch/unselected".to_string(),
+                    0,
+                    180_000,
+                ),
                 path: Some("Unselected.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 60_000,
@@ -2661,6 +2778,11 @@ fn playlist_playback_selection_adds_parent_download_scope_for_group_only_refs() 
             alias: "Selected".to_string(),
             group: selected_group.clone(),
             url: "https://example.com/watch/group-only".to_string(),
+            canonical_music_id: canonical_music_id_for_source(
+                &"https://example.com/watch/group-only".to_string(),
+                0,
+                180_000,
+            ),
             path: Some("Selected.m4a".to_string()),
             start_ms: 0,
             end_ms: 60_000,

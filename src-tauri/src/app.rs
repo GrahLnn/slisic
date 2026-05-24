@@ -74,7 +74,9 @@ pub fn run() {
         .events(collect_events![
             event::FullScreenEvent,
             utils::hardware_wheel::HardwareHorizontalWheelEvent,
-            domain::player::event::NowPlayingTrackChangedEvent
+            domain::player::event::NowPlayingTrackChangedEvent,
+            domain::player::event::PlaybackExcludeCommittedEvent,
+            domain::player::event::PlaybackDiagnosticTraceEvent
         ]);
 
     #[cfg(debug_assertions)]

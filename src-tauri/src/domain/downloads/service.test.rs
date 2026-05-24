@@ -17,20 +17,20 @@ use super::yt_dlp::{
 /// Manual end-to-end download checks belong in `examples/manual_download_chain.rs`.
 use crate::domain::collection_import::{
     CollectionShellPlan, CollectionSyncPlan, PlannedLeaf, apply_collection_plan_to_task,
-    create_collection_shell, describe_download_resource, existing_leaf_urls,
-    materialize_music_entries, normalize_music_titles_within_collection,
-    persist_enqueued_collection_shell, resolve_existing_leaf_file,
+    create_collection_shell, describe_download_resource, existing_leaf_identities,
+    filter_new_planned_leaves, materialize_music_entries, normalize_music_titles_within_collection,
+    persist_downloaded_leaf_music, persist_enqueued_collection_shell, resolve_existing_leaf_file,
 };
 use crate::domain::downloads::model::{
     DownloadTask, DownloadTaskStatus, DownloadTrigger, PastedDownloadUrlResolutionStatus,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
-use crate::domain::playlists::model::{Collection, Group, Music};
+use crate::domain::playlists::model::{Collection, Group, Music, canonical_music_id_for_source};
 use crate::domain::playlists::repo::upsert_collection;
 use anyhow::{Result, anyhow};
 use appdb::Id;
 use appdb::connection::{InitDbOptions, reinit_db_with_options, reset_db};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, LazyLock};
@@ -171,6 +171,102 @@ fn materialize_music_entries_falls_back_to_single_full_track_when_no_chapters_ex
 }
 
 #[test]
+fn persist_downloaded_leaf_music_replaces_only_the_matching_group_copy() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let first_group = collection_group("Disc 1", "https://example.com/disc-1", "Disc 1");
+        let second_group = collection_group("Disc 2", "https://example.com/disc-2", "Disc 2");
+        let mut collection = Collection {
+            name: "Demo".to_string(),
+            url: "https://example.com/root".to_string(),
+            folder: "youtube/demo".to_string(),
+            musics: vec![
+                Music {
+                    name: "Original First".to_string(),
+                    alias: "Pinned First".to_string(),
+                    group: first_group.clone(),
+                    url: "https://example.com/watch?v=same".to_string(),
+                    canonical_music_id: canonical_music_id_for_source(
+                        &"https://example.com/watch?v=same".to_string(),
+                        0,
+                        180_000,
+                    ),
+                    path: Some("Disc 1/original.m4a".to_string()),
+                    start_ms: 0,
+                    end_ms: 10_000,
+                    liked: false,
+                },
+                Music {
+                    name: "Original Second".to_string(),
+                    alias: "Pinned Second".to_string(),
+                    group: second_group.clone(),
+                    url: "https://example.com/watch?v=same".to_string(),
+                    canonical_music_id: canonical_music_id_for_source(
+                        &"https://example.com/watch?v=same".to_string(),
+                        0,
+                        180_000,
+                    ),
+                    path: Some("Disc 2/original.m4a".to_string()),
+                    start_ms: 0,
+                    end_ms: 10_000,
+                    liked: false,
+                },
+            ],
+            last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        };
+
+        let probe = LeafProbe {
+            title: "Replacement First".to_string(),
+            webpage_url: "https://example.com/watch?v=same".to_string(),
+            extractor_key: Some("Youtube".to_string()),
+            album: None,
+            duration_seconds: Some(10),
+            chapters: vec![],
+        };
+
+        persist_downloaded_leaf_music(
+            &mut collection,
+            CollectionSourceKind::List,
+            &probe,
+            "Disc 1/replacement.m4a",
+            first_group,
+        )
+        .await
+        .expect("same video in one group should not remove another group copy");
+
+        let by_group = collection
+            .musics
+            .iter()
+            .map(|music| {
+                (
+                    music.group.url.as_str(),
+                    music.path.as_deref(),
+                    music.alias.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(by_group.len(), 2);
+        assert!(by_group.contains(&(
+            "https://example.com/disc-1",
+            Some("Disc 1/replacement.m4a"),
+            "Pinned First"
+        )));
+        assert!(by_group.contains(&(
+            "https://example.com/disc-2",
+            Some("Disc 2/original.m4a"),
+            "Pinned Second"
+        )));
+
+        reset_db();
+    });
+}
+
+#[test]
 fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
     let group = collection_group(
         "ZWEI2 Original Soundtrack",
@@ -192,6 +288,7 @@ fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
                 alias: "ZWEI2 - Disturbing Atmosphere".to_string(),
                 group: group.clone(),
                 url: "https://example.com/watch?v=zwei2-1".to_string(),
+                canonical_music_id: canonical_music_id_for_source(&"https://example.com/watch?v=zwei2-1".to_string(), 0, 180_000),
                 path: Some("zwei2-1.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 79_000,
@@ -202,6 +299,7 @@ fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
                 alias: "Pinned Alias".to_string(),
                 group,
                 url: "https://example.com/watch?v=zwei2-2".to_string(),
+                canonical_music_id: canonical_music_id_for_source(&"https://example.com/watch?v=zwei2-2".to_string(), 0, 180_000),
                 path: Some("zwei2-2.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 152_000,
@@ -212,6 +310,7 @@ fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
                 alias: "Ludvig Forssell - A Heartfelt Apology | Death Stranding 2 On The Beach Original Video Game Score".to_string(),
                 group: death_stranding_group.clone(),
                 url: "https://example.com/watch?v=ds2-1".to_string(),
+                canonical_music_id: canonical_music_id_for_source(&"https://example.com/watch?v=ds2-1".to_string(), 0, 180_000),
                 path: Some("ds2-1.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 213_000,
@@ -222,6 +321,7 @@ fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
                 alias: "Ludvig Forssell - Drawbridge | Death Stranding 2 On The Beach Original Video Game Score".to_string(),
                 group: death_stranding_group,
                 url: "https://example.com/watch?v=ds2-2".to_string(),
+                canonical_music_id: canonical_music_id_for_source(&"https://example.com/watch?v=ds2-2".to_string(), 0, 180_000),
                 path: Some("ds2-2.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 180_000,
@@ -266,6 +366,11 @@ fn normalize_music_titles_does_not_compare_across_download_groups() {
                 alias: "Album - Alpha".to_string(),
                 group: first_group,
                 url: "https://example.com/watch?v=alpha".to_string(),
+                canonical_music_id: canonical_music_id_for_source(
+                    &"https://example.com/watch?v=alpha".to_string(),
+                    0,
+                    180_000,
+                ),
                 path: Some("alpha.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 120_000,
@@ -276,6 +381,11 @@ fn normalize_music_titles_does_not_compare_across_download_groups() {
                 alias: "Album - Beta".to_string(),
                 group: second_group,
                 url: "https://example.com/watch?v=beta".to_string(),
+                canonical_music_id: canonical_music_id_for_source(
+                    &"https://example.com/watch?v=beta".to_string(),
+                    0,
+                    180_000,
+                ),
                 path: Some("beta.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 120_000,
@@ -495,7 +605,7 @@ fn resolve_pasted_download_url_returns_existing_collection_for_known_url() {
 }
 
 #[test]
-fn existing_leaf_urls_only_counts_entries_with_present_files() {
+fn existing_leaf_identities_only_count_entries_with_present_files() {
     let root = temp_test_dir();
     let folder = "youtube/demo";
     let collection_dir = root.join(folder);
@@ -513,6 +623,11 @@ fn existing_leaf_urls_only_counts_entries_with_present_files() {
                 alias: "Present".to_string(),
                 group: collection_group("Demo", "https://example.com/playlist", folder),
                 url: "https://example.com/watch?v=present".to_string(),
+                canonical_music_id: canonical_music_id_for_source(
+                    &"https://example.com/watch?v=present".to_string(),
+                    0,
+                    180_000,
+                ),
                 path: Some("present.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 60_000,
@@ -523,6 +638,11 @@ fn existing_leaf_urls_only_counts_entries_with_present_files() {
                 alias: "Missing".to_string(),
                 group: collection_group("Demo", "https://example.com/playlist", folder),
                 url: "https://example.com/watch?v=missing".to_string(),
+                canonical_music_id: canonical_music_id_for_source(
+                    &"https://example.com/watch?v=missing".to_string(),
+                    0,
+                    180_000,
+                ),
                 path: Some("missing.m4a".to_string()),
                 start_ms: 0,
                 end_ms: 60_000,
@@ -533,12 +653,144 @@ fn existing_leaf_urls_only_counts_entries_with_present_files() {
         enable_updates: Some(false),
     };
 
-    let urls = existing_leaf_urls(Some(&collection), &root);
+    let identities = existing_leaf_identities(Some(&collection), &root);
 
-    assert!(urls.contains("https://example.com/watch?v=present"));
-    assert!(!urls.contains("https://example.com/watch?v=missing"));
+    let planned = vec![
+        PlannedLeaf {
+            id: Id::from("leaf-present"),
+            url: "https://example.com/watch?v=present".to_string(),
+            sequence: 0,
+            initial_probe: None,
+            music_title: None,
+            group_hint: Some(collection_group(
+                "Demo",
+                "https://example.com/playlist",
+                folder,
+            )),
+        },
+        PlannedLeaf {
+            id: Id::from("leaf-missing"),
+            url: "https://example.com/watch?v=missing".to_string(),
+            sequence: 1,
+            initial_probe: None,
+            music_title: None,
+            group_hint: Some(collection_group(
+                "Demo",
+                "https://example.com/playlist",
+                folder,
+            )),
+        },
+    ];
+
+    let remaining = filter_new_planned_leaves(&collection.url, planned, &identities);
+
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].url, "https://example.com/watch?v=missing");
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn existing_leaf_identities_keep_same_video_distinct_across_playlist_groups() {
+    let root = temp_test_dir();
+    let folder = "youtube/demo";
+    std::fs::create_dir_all(root.join(folder).join("Disc 1"))
+        .expect("first group dir should be created");
+    std::fs::write(root.join(folder).join("Disc 1").join("track.m4a"), b"ok")
+        .expect("first group audio file should be created");
+
+    let collection = Collection {
+        name: "Demo".to_string(),
+        url: "https://example.com/playlist".to_string(),
+        folder: folder.to_string(),
+        musics: vec![Music {
+            name: "Track".to_string(),
+            alias: "Track".to_string(),
+            group: collection_group("Disc 1", "https://example.com/disc-1", "Disc 1"),
+            url: "https://example.com/watch?v=same".to_string(),
+            canonical_music_id: canonical_music_id_for_source(
+                &"https://example.com/watch?v=same".to_string(),
+                0,
+                180_000,
+            ),
+            path: Some("Disc 1/track.m4a".to_string()),
+            start_ms: 0,
+            end_ms: 60_000,
+            liked: false,
+        }],
+        last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    let identities = existing_leaf_identities(Some(&collection), &root);
+    let planned = vec![
+        PlannedLeaf {
+            id: Id::from("leaf-disc-1"),
+            url: "https://example.com/watch?v=same".to_string(),
+            sequence: 0,
+            initial_probe: None,
+            music_title: None,
+            group_hint: Some(collection_group(
+                "Disc 1",
+                "https://example.com/disc-1",
+                "Disc 1",
+            )),
+        },
+        PlannedLeaf {
+            id: Id::from("leaf-disc-2"),
+            url: "https://example.com/watch?v=same".to_string(),
+            sequence: 1,
+            initial_probe: None,
+            music_title: None,
+            group_hint: Some(collection_group(
+                "Disc 2",
+                "https://example.com/disc-2",
+                "Disc 2",
+            )),
+        },
+    ];
+
+    let remaining = filter_new_planned_leaves(&collection.url, planned, &identities);
+
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(
+        remaining[0]
+            .group_hint
+            .as_ref()
+            .map(|group| group.url.as_str()),
+        Some("https://example.com/disc-2")
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn filter_new_planned_leaves_collapses_same_group_duplicate_video_urls() {
+    let collection_url = "https://example.com/root";
+    let group = collection_group("Disc 1", "https://example.com/disc-1", "Disc 1");
+    let planned = vec![
+        PlannedLeaf {
+            id: Id::from("leaf-first"),
+            url: "https://example.com/watch?v=same".to_string(),
+            sequence: 0,
+            initial_probe: None,
+            music_title: None,
+            group_hint: Some(group.clone()),
+        },
+        PlannedLeaf {
+            id: Id::from("leaf-duplicate"),
+            url: "https://example.com/watch?v=same".to_string(),
+            sequence: 1,
+            initial_probe: None,
+            music_title: None,
+            group_hint: Some(group),
+        },
+    ];
+
+    let remaining = filter_new_planned_leaves(collection_url, planned, &HashSet::new());
+
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id.to_string(), "leaf-first");
 }
 #[test]
 fn materialize_music_entries_preserves_group_and_nested_relative_path() {
@@ -943,6 +1195,77 @@ fn expand_root_entries_to_planned_leafs_normalizes_music_titles_from_playlist_co
 }
 
 #[test]
+fn expand_root_entries_to_planned_leafs_keeps_same_video_distinct_across_groups() {
+    run_async(async {
+        let first_url = "https://www.youtube.com/playlist?list=PLfirst";
+        let second_url = "https://www.youtube.com/playlist?list=PLsecond";
+        let repeated_video_url = "https://www.youtube.com/watch?v=same";
+        let client = Arc::new(FakeYtDlpClient {
+            roots: HashMap::from([
+                (
+                    first_url.to_string(),
+                    RootProbe::List(PlaylistRoot {
+                        title: "First Album".to_string(),
+                        webpage_url: first_url.to_string(),
+                        extractor_key: Some("YoutubeTab".to_string()),
+                        entries: vec![LeafReference {
+                            url: repeated_video_url.to_string(),
+                            title: Some("Shared Track".to_string()),
+                            sequence: 0,
+                        }],
+                    }),
+                ),
+                (
+                    second_url.to_string(),
+                    RootProbe::List(PlaylistRoot {
+                        title: "Second Album".to_string(),
+                        webpage_url: second_url.to_string(),
+                        extractor_key: Some("YoutubeTab".to_string()),
+                        entries: vec![LeafReference {
+                            url: repeated_video_url.to_string(),
+                            title: Some("Shared Track".to_string()),
+                            sequence: 0,
+                        }],
+                    }),
+                ),
+            ]),
+        });
+
+        let leaves = expand_root_entries_to_planned_leafs(
+            &Id::from("task-shared-video"),
+            client,
+            vec![
+                LeafReference {
+                    url: first_url.to_string(),
+                    title: Some("First Album".to_string()),
+                    sequence: 0,
+                },
+                LeafReference {
+                    url: second_url.to_string(),
+                    title: Some("Second Album".to_string()),
+                    sequence: 1,
+                },
+            ],
+            None,
+        )
+        .await
+        .expect("same video can belong to two playlist groups");
+
+        assert_eq!(leaves.len(), 2);
+        assert_eq!(leaves[0].url, repeated_video_url);
+        assert_eq!(leaves[1].url, repeated_video_url);
+        assert_ne!(leaves[0].id, leaves[1].id);
+        assert_eq!(
+            leaves
+                .iter()
+                .map(|leaf| leaf.group_hint.as_ref().map(|group| group.url.as_str()))
+                .collect::<Vec<_>>(),
+            vec![Some(first_url), Some(second_url)]
+        );
+    });
+}
+
+#[test]
 fn create_collection_shell_reuses_existing_music_and_updates_collection_metadata() {
     let existing = Collection {
         name: "Original List".to_string(),
@@ -953,6 +1276,11 @@ fn create_collection_shell_reuses_existing_music_and_updates_collection_metadata
             alias: "Track 1".to_string(),
             group: collection_group("Disc 1", "https://example.com/list#disc-1", "Disc 1"),
             url: "https://example.com/watch?v=track-1".to_string(),
+            canonical_music_id: canonical_music_id_for_source(
+                &"https://example.com/watch?v=track-1".to_string(),
+                0,
+                180_000,
+            ),
             path: Some("Disc 1/track-1.m4a".to_string()),
             start_ms: 0,
             end_ms: 120_000,

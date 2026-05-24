@@ -32,6 +32,73 @@ mod domain {
         }
     }
 
+    pub mod player {
+        pub mod model {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/player/model.rs"
+            ));
+        }
+
+        pub mod strategy {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/player/strategy.rs"
+            ));
+        }
+
+        pub mod service {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/player/service.rs"
+            ));
+        }
+
+        mod model_test {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/player/service.test.rs"
+            ));
+        }
+
+        mod strategy_test {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/player/strategy.test.rs"
+            ));
+        }
+    }
+
+    pub mod playlist_playback {
+        pub mod recommendation {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/playlist_playback/recommendation.rs"
+            ));
+        }
+
+        pub mod service {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/playlist_playback/service.rs"
+            ));
+        }
+
+        mod recommendation_test {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/playlist_playback/recommendation.test.rs"
+            ));
+        }
+
+        mod service_test {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/playlist_playback/service.test.rs"
+            ));
+        }
+    }
+
     pub mod meta {
         pub mod model {
             include!(concat!(

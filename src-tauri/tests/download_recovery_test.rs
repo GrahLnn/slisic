@@ -76,6 +76,13 @@ mod domain {
                 "/src/domain/downloads/service.rs"
             ));
         }
+
+        mod service_test {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/downloads/service.test.rs"
+            ));
+        }
     }
 
     pub mod collection_import {

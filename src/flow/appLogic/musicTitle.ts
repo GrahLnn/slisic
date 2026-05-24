@@ -732,6 +732,13 @@ export function createMusicDraftCreateFromDraft(
     return null;
   }
 
+  const url = resolveMusicCreateUrl({
+    sourceUrl: draft.sourceUrl,
+    startMs,
+    endMs,
+    title,
+  });
+
   return {
     id: createSpectrumNewMusicDraftIdentity({ sourceUrl: draft.sourceUrl }),
     sourceCollectionUrl: draft.sourceCollectionUrl,
@@ -739,16 +746,12 @@ export function createMusicDraftCreateFromDraft(
       name: title,
       alias: title,
       group: draft.sourceGroup,
+      canonical_music_id: `source:${url.trim()}:${startMs}:${endMs}`,
       path: draft.sourcePath,
       start_ms: startMs,
       end_ms: endMs,
       liked: false,
-      url: resolveMusicCreateUrl({
-        sourceUrl: draft.sourceUrl,
-        startMs,
-        endMs,
-        title,
-      }),
+      url,
     },
   };
 }

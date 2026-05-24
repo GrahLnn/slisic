@@ -2,7 +2,7 @@ use super::model::{
     AddExcludeResult, Collection, CollectionSurfaceView, ConfigLibraryView, Exclude,
     ExcludeAvailability, Group, GroupSurfaceView, Music, MusicSpectrumView, PlayList,
     PlayListConfigView, PlayListListView, RemoveExcludeResult, SpectrumMusicContext,
-    SpectrumMusicSourceContext,
+    SpectrumMusicSourceContext, canonical_music_id_for_source,
 };
 use anyhow::{Result, bail};
 use appdb::connection::get_db;
@@ -114,7 +114,8 @@ pub async fn add_exclude(music: Music) -> Result<AddExcludeResult> {
 pub async fn get_music_by_identity(url: &str, start_ms: u32, end_ms: u32) -> Result<Option<Music>> {
     ensure_collection_graph_schema().await?;
 
-    let Some(record) = find_music_record_ids_by_identity(url, start_ms, end_ms)
+    let canonical_music_id = canonical_music_id_for_source(url, start_ms, end_ms);
+    let Some(record) = find_music_record_ids_by_canonical_id(&canonical_music_id)
         .await?
         .into_iter()
         .next()
@@ -133,7 +134,8 @@ pub async fn set_music_liked_by_identity(
 ) -> Result<Option<Music>> {
     ensure_collection_graph_schema().await?;
 
-    let records = find_music_record_ids_by_identity(url, start_ms, end_ms).await?;
+    let canonical_music_id = canonical_music_id_for_source(url, start_ms, end_ms);
+    let records = find_music_record_ids_by_canonical_id(&canonical_music_id).await?;
     let mut first_updated = None;
 
     for record in records {
@@ -155,7 +157,8 @@ pub async fn is_music_identity_excluded_for_playback(
     end_ms: u32,
 ) -> Result<bool> {
     ensure_collection_graph_schema().await?;
-    is_music_identity_excluded(url, start_ms, end_ms).await
+    let canonical_music_id = canonical_music_id_for_source(url, start_ms, end_ms);
+    is_music_canonical_id_excluded(&canonical_music_id).await
 }
 
 pub async fn remove_exclude(music: &Music) -> Result<RemoveExcludeResult> {
@@ -631,6 +634,8 @@ pub async fn update_music(
         music.alias = alias.to_string();
         music.start_ms = next_start_ms;
         music.end_ms = next_end_ms;
+        music.canonical_music_id =
+            canonical_music_id_for_source(&music.url, music.start_ms, music.end_ms);
         let updated = Repo::<Music>::update_at(record.clone(), music).await?;
         refresh_exclude_availability_for_music_record(&record).await?;
         refresh_exclude_availability_for_music_identity(&previous_music).await?;
@@ -649,6 +654,9 @@ pub async fn create_music(source_collection_url: &str, music: &Music) -> Result<
     if music.start_ms >= music.end_ms {
         bail!("music start_ms must be less than end_ms");
     }
+    let mut music = music.clone();
+    music.canonical_music_id =
+        canonical_music_id_for_source(&music.url, music.start_ms, music.end_ms);
 
     let Some(mut collection) = get_collection_by_url(source_collection_url).await? else {
         bail!("collection `{source_collection_url}` not found");
@@ -672,7 +680,7 @@ pub async fn create_music(source_collection_url: &str, music: &Music) -> Result<
                 && candidate.start_ms == music.start_ms
                 && candidate.end_ms == music.end_ms
         })
-        .unwrap_or_else(|| music.clone()))
+        .unwrap_or(music))
 }
 
 pub async fn delete_music(url: &str, start_ms: u32, end_ms: u32) -> Result<bool> {
@@ -950,6 +958,7 @@ pub async fn list_auto_update_collections() -> Result<Vec<Collection>> {
 pub async fn upsert_collection(collection: &Collection) -> Result<Collection> {
     ensure_collection_graph_schema().await?;
 
+    let collection = inherit_canonical_liked_state(collection).await?;
     let existing_record =
         find_unique_record_id_by_string_field::<Collection>("url", &collection.url).await?;
     let record = existing_record
@@ -959,8 +968,8 @@ pub async fn upsert_collection(collection: &Collection) -> Result<Collection> {
     let previous_group_ids = load_group_ids_for_music_records(&previous_music_ids).await?;
     let previous_group_urls = load_group_urls_for_records(&previous_group_ids).await?;
     let saved = match existing_record {
-        Some(record) => Repo::<Collection>::update_at(record, collection.clone()).await?,
-        None => Repo::<Collection>::create_at(record.clone(), collection.clone()).await?,
+        Some(record) => Repo::<Collection>::update_at(record, collection).await?,
+        None => Repo::<Collection>::create_at(record.clone(), collection).await?,
     };
     let next_music_ids = load_collection_music_ids(&record).await?;
     let next_group_ids = load_group_ids_for_music_records(&next_music_ids).await?;
@@ -970,6 +979,49 @@ pub async fn upsert_collection(collection: &Collection) -> Result<Collection> {
     refresh_exclude_availability_for_owner_records(&[], &next_group_ids).await?;
     delete_exclude_availability_for_missing_group_urls(previous_group_urls).await?;
     Ok(saved)
+}
+
+async fn inherit_canonical_liked_state(collection: &Collection) -> Result<Collection> {
+    let mut collection = collection.clone();
+    for music in &mut collection.musics {
+        if music.liked {
+            continue;
+        }
+
+        if canonical_music_id_has_liked_record(&music.canonical_music_id).await? {
+            music.liked = true;
+        }
+    }
+
+    Ok(collection)
+}
+
+async fn canonical_music_id_has_liked_record(canonical_music_id: &str) -> Result<bool> {
+    let db = get_db()?;
+    let mut result = match db
+        .query(
+            "RETURN count((SELECT VALUE id FROM $table
+             WHERE canonical_music_id = $canonical_music_id AND liked = true LIMIT 1));",
+        )
+        .bind(("table", Table::from(Music::table_name())))
+        .bind(("canonical_music_id", canonical_music_id.to_string()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(false),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(false),
+            other => return Err(other.into()),
+        },
+    };
+
+    let count: Option<i64> = result.take(0)?;
+    Ok(count.unwrap_or(0) > 0)
 }
 
 /// Collection persistence owns its graph schema so callers never need to
@@ -1402,11 +1454,7 @@ fn append_playback_track_source(
     seen: &mut HashSet<String>,
     sources: &mut Vec<PlaylistPlaybackTrackSource>,
 ) {
-    let key = format!(
-        "{}:{}:{}:{}",
-        collection.url, music.url, music.start_ms, music.end_ms
-    );
-    if !seen.insert(key) {
+    if !seen.insert(music.canonical_music_id.clone()) {
         return;
     }
 
@@ -1542,13 +1590,13 @@ async fn is_music_record_excluded_for_playback(record: &RecordId, out_table: &st
         return Ok(false);
     };
 
-    is_music_identity_excluded(&identity.url, identity.start_ms, identity.end_ms).await
+    is_music_canonical_id_excluded(&identity.canonical_music_id).await
 }
 
-async fn is_music_identity_excluded(url: &str, start_ms: u32, end_ms: u32) -> Result<bool> {
+async fn is_music_canonical_id_excluded(canonical_music_id: &str) -> Result<bool> {
     let record = RecordId::new(
         StoredExclude::table_name(),
-        exclude_identity_record_id(url, start_ms, end_ms).to_string(),
+        exclude_canonical_record_id(canonical_music_id).to_string(),
     );
 
     match Repo::<StoredExclude>::exists_record(record).await {
@@ -1688,12 +1736,39 @@ async fn find_music_record_ids_by_identity(
     Ok(result.take(0)?)
 }
 
+async fn find_music_record_ids_by_canonical_id(canonical_music_id: &str) -> Result<Vec<RecordId>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query(
+            "SELECT VALUE id FROM $table
+             WHERE canonical_music_id = $canonical_music_id;",
+        )
+        .bind(("table", Table::from(Music::table_name())))
+        .bind(("canonical_music_id", canonical_music_id.to_string()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(vec![]),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(vec![]),
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(result.take(0)?)
+}
+
 async fn load_music_playback_identity(
     record: &RecordId,
 ) -> Result<Option<MusicPlaybackIdentityRow>> {
     let db = get_db()?;
     let mut result = match db
-        .query("SELECT url, start_ms, end_ms FROM ONLY $record;")
+        .query("SELECT canonical_music_id FROM ONLY $record;")
         .bind(("record", record.clone()))
         .await
     {
@@ -1811,7 +1886,7 @@ async fn load_exclude_availability() -> Result<ExcludeAvailability> {
             continue;
         }
 
-        match ExcludeOwnerKind::from_legacy_value(&record.owner_kind) {
+        match ExcludeOwnerKind::from_str(&record.owner_kind) {
             Some(ExcludeOwnerKind::Collection) => {
                 fully_excluded_collection_urls.push(record.owner_url)
             }
@@ -1853,8 +1928,7 @@ async fn load_exclude_availability_rows() -> Result<Vec<StoredExcludeOwnerAvaila
 }
 
 async fn refresh_exclude_availability_for_music_identity(music: &Music) -> Result<()> {
-    let records =
-        find_music_record_ids_by_identity(&music.url, music.start_ms, music.end_ms).await?;
+    let records = find_music_record_ids_by_canonical_id(&music.canonical_music_id).await?;
     for record in records {
         refresh_exclude_availability_for_music_record(&record).await?;
     }
@@ -2134,11 +2208,11 @@ fn playlist_record_id(name: &str) -> RecordId {
 }
 
 fn exclude_record_id(music: &Music) -> Id {
-    exclude_identity_record_id(&music.url, music.start_ms, music.end_ms)
+    exclude_canonical_record_id(&music.canonical_music_id)
 }
 
-fn exclude_identity_record_id(url: &str, start_ms: u32, end_ms: u32) -> Id {
-    Id::from(stable_record_key(&format!("{url}:{start_ms}:{end_ms}")))
+fn exclude_canonical_record_id(canonical_music_id: &str) -> Id {
+    Id::from(stable_record_key(canonical_music_id))
 }
 
 fn exclude_availability_record_id(owner_kind: ExcludeOwnerKind, owner_record: &RecordId) -> Id {
@@ -2229,22 +2303,6 @@ impl ExcludeOwnerKind {
             _ => None,
         }
     }
-
-    fn from_legacy_value(value: &serde_json::Value) -> Option<Self> {
-        if let Some(owner_kind) = value.as_str().and_then(Self::from_str) {
-            return Some(owner_kind);
-        }
-
-        let object = value.as_object()?;
-        if object.contains_key("Collection") || object.contains_key("collection") {
-            return Some(Self::Collection);
-        }
-        if object.contains_key("Group") || object.contains_key("group") {
-            return Some(Self::Group);
-        }
-
-        None
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Store)]
@@ -2262,7 +2320,7 @@ struct StoredExcludeOwnerAvailability {
 #[derive(Debug, Clone, Deserialize, SurrealValue)]
 struct StoredExcludeOwnerAvailabilityRow {
     #[serde(default)]
-    owner_kind: serde_json::Value,
+    owner_kind: String,
     #[serde(default)]
     owner_url: String,
     #[serde(default)]
@@ -2285,9 +2343,7 @@ struct CollectionEdgeRow {
 
 #[derive(Debug, Clone, Deserialize, SurrealValue)]
 struct MusicPlaybackIdentityRow {
-    url: String,
-    start_ms: u32,
-    end_ms: u32,
+    canonical_music_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, SurrealValue)]

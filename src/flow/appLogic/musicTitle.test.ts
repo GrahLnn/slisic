@@ -35,6 +35,7 @@ const sampleCollection: Collection = {
         url: "https://example.com/quiet-morning",
         folder: "youtube/quiet-morning",
       },
+      canonical_music_id: "source:https://example.com/quiet-morning#a:0:120000",
       url: "https://example.com/quiet-morning#a",
       path: "a.m4a",
       start_ms: 0,
