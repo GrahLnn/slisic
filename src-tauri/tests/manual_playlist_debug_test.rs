@@ -65,14 +65,14 @@ fn local_db_path() -> PathBuf {
     }
 
     PathBuf::from(std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA should exist"))
-        .join("com.ransic.app")
+        .join("slisic")
         .join("surreal.db")
 }
 
 fn default_save_root() -> PathBuf {
     PathBuf::from(std::env::var("USERPROFILE").expect("USERPROFILE should exist"))
         .join("Documents")
-        .join("ransic")
+        .join("slisic")
 }
 
 fn resolve_music_file_path(save_root: &Path, folder: &str, relative_path: Option<&str>) -> PathBuf {

@@ -360,19 +360,19 @@ describe("ListConfig title view model", () => {
 
   test("prefers meta.save_path over the generated default save path", () => {
     assert.equal(
-      resolveSavedPath("D:\\MediaLibrary", "C:\\Users\\admin\\Documents\\ransic"),
+      resolveSavedPath("D:\\MediaLibrary", "C:\\Users\\admin\\Documents\\slisic"),
       "D:\\MediaLibrary",
     );
   });
 
   test("falls back to the generated default save path when meta.save_path is empty", () => {
     assert.equal(
-      resolveSavedPath(null, "C:\\Users\\admin\\Documents\\ransic"),
-      "C:\\Users\\admin\\Documents\\ransic",
+      resolveSavedPath(null, "C:\\Users\\admin\\Documents\\slisic"),
+      "C:\\Users\\admin\\Documents\\slisic",
     );
     assert.equal(
-      resolveSavedPath("", "C:\\Users\\admin\\Documents\\ransic"),
-      "C:\\Users\\admin\\Documents\\ransic",
+      resolveSavedPath("", "C:\\Users\\admin\\Documents\\slisic"),
+      "C:\\Users\\admin\\Documents\\slisic",
     );
   });
 

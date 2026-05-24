@@ -120,7 +120,7 @@ fn temp_test_dir(prefix: &str) -> PathBuf {
         .expect("clock before epoch")
         .as_nanos();
 
-    std::env::temp_dir().join(format!("ransic_{prefix}_{}_{}", std::process::id(), nanos))
+    std::env::temp_dir().join(format!("slisic_{prefix}_{}_{}", std::process::id(), nanos))
 }
 
 async fn bootstrap_table(table: &str) {

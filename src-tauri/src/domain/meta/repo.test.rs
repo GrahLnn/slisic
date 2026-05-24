@@ -17,7 +17,7 @@ fn test_db_path() -> PathBuf {
         .as_nanos();
 
     std::env::temp_dir().join(format!(
-        "ransic_meta_repo_test_{}_{}",
+        "slisic_meta_repo_test_{}_{}",
         std::process::id(),
         nanos
     ))
@@ -77,25 +77,26 @@ fn saves_and_loads_singleton_meta_info() {
 
 #[test]
 fn resolve_meta_info_backfills_the_default_save_path() {
-    let resolved_missing = resolve_meta_info(None, "C:\\Users\\admin\\Documents\\ransic".to_string());
+    let resolved_missing =
+        resolve_meta_info(None, "C:\\Users\\admin\\Documents\\slisic".to_string());
     let resolved_null = resolve_meta_info(
         Some(MetaInfo { save_path: None }),
-        "C:\\Users\\admin\\Documents\\ransic".to_string(),
+        "C:\\Users\\admin\\Documents\\slisic".to_string(),
     );
     let resolved_existing = resolve_meta_info(
         Some(MetaInfo {
             save_path: Some("D:\\MediaLibrary".to_string()),
         }),
-        "C:\\Users\\admin\\Documents\\ransic".to_string(),
+        "C:\\Users\\admin\\Documents\\slisic".to_string(),
     );
 
     assert_eq!(
         resolved_missing.save_path.as_deref(),
-        Some("C:\\Users\\admin\\Documents\\ransic")
+        Some("C:\\Users\\admin\\Documents\\slisic")
     );
     assert_eq!(
         resolved_null.save_path.as_deref(),
-        Some("C:\\Users\\admin\\Documents\\ransic")
+        Some("C:\\Users\\admin\\Documents\\slisic")
     );
     assert_eq!(
         resolved_existing.save_path.as_deref(),
@@ -110,7 +111,7 @@ fn ensure_meta_info_persists_the_default_save_path_when_missing() {
     run_async(async {
         ensure_db().await;
 
-        let default_path = "C:\\Users\\admin\\Documents\\ransic".to_string();
+        let default_path = "C:\\Users\\admin\\Documents\\slisic".to_string();
         let meta = ensure_meta_info(default_path.clone())
             .await
             .expect("default meta info should be created");

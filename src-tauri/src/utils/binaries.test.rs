@@ -18,7 +18,7 @@ fn temp_binary_test_dir(prefix: &str) -> PathBuf {
         .as_nanos();
 
     std::env::temp_dir().join(format!(
-        "ransic-binary-{prefix}-{}-{nanos}",
+        "slisic-binary-{prefix}-{}-{nanos}",
         std::process::id()
     ))
 }

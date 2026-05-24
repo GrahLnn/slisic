@@ -21,7 +21,7 @@ fn test_db_path() -> PathBuf {
         .as_nanos();
 
     std::env::temp_dir().join(format!(
-        "ransic_download_repo_test_{}_{}",
+        "slisic_download_repo_test_{}_{}",
         std::process::id(),
         nanos
     ))

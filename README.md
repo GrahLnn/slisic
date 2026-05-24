@@ -1,50 +1,30 @@
-# ransic
+<p align="center">
+  <img src="https://stone.professorlee.work/api/stone/GrahLnn/slisic" alt="Stone Badge" width="200" />
+</p>
 
-A feature-rich Tauri + React starter based on `GrahLnn/tauri-react`, prepared for the `ransic` project.
+
+# Slisic
+
+A compact music player built around smart shuffle and consistent listening experience.
 
 ## Features
 
-- [Tauri](https://tauri.app/) - Build smaller, faster, and more secure desktop applications
-- [Rsbuild](https://rsbuild.dev/) - High-performance build tool
-- [React 19](https://react.dev/) - Latest version of React
-- [Tailwind CSS v4](https://tailwindcss.com/) - Next generation utility-first CSS framework
-- [Bun](https://bun.sh/) - High-performance JavaScript runtime and package manager
-- [React Scan](https://github.com/react-scan/react-scan) - React application performance analysis tool
-- [shadcn/ui](https://ui.shadcn.com/docs) - Beautifully designed components built with Radix UI and Tailwind CSS
-- [tauri-specta](https://github.com/specta-rs/tauri-specta) - Generate TypeScript bindings for Tauri commands and events
-- [surrealdb](https://surrealdb.com/) - A NoSQL database designed for the next generation of applications
-- [xstate](https://xstate.js.org/) - A state management library for React, using state machines
-- [arktype](https://arktype.dev/) - A type system for JavaScript and TypeScript
-- [Effect](https://www.effect.institute/) - A functional programming library for TypeScript
-- [React Doctor](https://github.com/millionco/react-doctor) - One command scans your codebase for security, performance, correctness, and architecture issues, then outputs a 0–100 score with actionable diagnostics.
+- Download from most major streaming platforms (powered by yt-dlp), or import from local folders.
+
+- Loudness normalization (LUFS) for consistent volume across tracks.
+
+- Auto split & naming for media with embedded chapters (via FFmpeg).
+
+- Perceptually balanced, user-guided shuffle: probabilities follow your tastes while smoothing spikes, so nothing is overplayed or forgotten.
+
+- Real-time music visualizer.
 
 ## Getting Started
 
-### Installation
-
-```bash
-bun install
-bunx tauri signer generate -w .tauri/myapp.key
-```
-
 ### Development
 
-Start the development server:
-
 ```bash
+// Clone the repository
+bun install
 bun tauri dev
-```
-
-Quality gates:
-
-```bash
-bun run fmt:check
-bun run typecheck
-bun run check:all
-```
-
-Add a shadcn component:
-
-```bash
-bunx --bun shadcn@latest add [components]
 ```

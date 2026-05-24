@@ -18,7 +18,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **tauri-react** (6085 symbols, 13758 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **slisic** (6045 symbols, 13710 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -41,10 +41,10 @@ This project is indexed by GitNexus as **tauri-react** (6085 symbols, 13758 rela
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/tauri-react/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/tauri-react/clusters` | All functional areas |
-| `gitnexus://repo/tauri-react/processes` | All execution flows |
-| `gitnexus://repo/tauri-react/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/slisic/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/slisic/clusters` | All functional areas |
+| `gitnexus://repo/slisic/processes` | All execution flows |
+| `gitnexus://repo/slisic/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

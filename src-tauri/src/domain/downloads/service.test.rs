@@ -460,7 +460,7 @@ fn temp_test_dir() -> PathBuf {
         .as_nanos();
 
     std::env::temp_dir().join(format!(
-        "ransic_service_test_{}_{}",
+        "slisic_service_test_{}_{}",
         std::process::id(),
         nanos
     ))

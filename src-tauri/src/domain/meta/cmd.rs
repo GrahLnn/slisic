@@ -1,14 +1,9 @@
 use super::model::MetaInfo;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 fn default_save_path(app: &AppHandle) -> Result<String, String> {
-    let document_dir = app
-        .path()
-        .document_dir()
-        .map_err(|error| error.to_string())?;
-
-    Ok(document_dir
-        .join(&app.package_info().name)
+    Ok(super::service::default_save_root(app)
+        .map_err(|error| error.to_string())?
         .to_string_lossy()
         .to_string())
 }

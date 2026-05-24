@@ -2,9 +2,11 @@ use anyhow::{Context, Result, anyhow};
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+pub const DEFAULT_SAVE_FOLDER_NAME: &str = "slisic";
+
 pub fn default_save_root(app: &AppHandle) -> Result<PathBuf> {
     let document_dir = app.path().document_dir().map_err(|error| anyhow!(error))?;
-    Ok(document_dir.join(&app.package_info().name))
+    Ok(document_dir.join(DEFAULT_SAVE_FOLDER_NAME))
 }
 
 pub async fn resolve_save_root(app: &AppHandle) -> Result<PathBuf> {

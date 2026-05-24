@@ -27,7 +27,6 @@ import {
   type SpectrumMusicContext,
   type SpectrumMusicSourceContext,
 } from "@/src/cmd";
-import { getName } from "@tauri-apps/api/app";
 import { documentDir, join } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -43,6 +42,8 @@ import {
   type SpectrumMusicDraft,
 } from "./core";
 import { createSpectrumMusicDrafts, type MusicDraftDelete } from "./musicTitle";
+
+const DEFAULT_SAVE_FOLDER_NAME = "slisic";
 
 export interface BootstrapResult {
   hasPlayList: boolean;
@@ -125,7 +126,7 @@ async function resolveBootstrapSavePath() {
 }
 
 export async function resolveDefaultSavePath() {
-  return join(await documentDir(), await getName());
+  return join(await documentDir(), DEFAULT_SAVE_FOLDER_NAME);
 }
 
 export async function chooseSavePath(currentSavePath: string): Promise<string | null> {

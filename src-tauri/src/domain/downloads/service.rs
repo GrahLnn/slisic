@@ -953,7 +953,7 @@ fn candidate_title_group_key(candidate: &ExpandedLeafCandidate) -> String {
 #[cfg(not(test))]
 fn temporary_download_stem(file_stem: &str, task_id: &Id, leaf_id: &Id) -> String {
     format!(
-        "{file_stem}.__ransic_tmp__{}",
+        "{file_stem}.__slisic_tmp__{}",
         short_hash(&format!("{task_id}|{leaf_id}"))
     )
 }

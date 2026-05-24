@@ -172,12 +172,12 @@ fn temp_test_dir(prefix: &str) -> PathBuf {
         .expect("clock before epoch")
         .as_nanos();
 
-    std::env::temp_dir().join(format!("ransic_{prefix}_{}_{}", std::process::id(), nanos))
+    std::env::temp_dir().join(format!("slisic_{prefix}_{}_{}", std::process::id(), nanos))
 }
 
 fn installed_bin_dir() -> PathBuf {
     PathBuf::from(std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA should exist"))
-        .join("com.ransic.app")
+        .join("slisic")
         .join("bin")
 }
 

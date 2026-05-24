@@ -22,7 +22,7 @@ fn temp_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock should be after unix epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("ransic_playlist_playback_service_test_{nanos}"))
+    std::env::temp_dir().join(format!("slisic_playlist_playback_service_test_{nanos}"))
 }
 
 fn group(name: &str, url: &str, folder: &str) -> Group {

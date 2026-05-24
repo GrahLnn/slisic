@@ -47,7 +47,7 @@ const draftItemIncluded = payloads["draft.item.included"];
 const draftItemRemoved = payloads["draft.item.removed"];
 const collectionUpdatesRequested = payloads["collection.updates.requested"];
 const spectrumMusicCreateStarted = payloads["spectrum.music_create_started"];
-const sampleSavePath = "C:\\Users\\admin\\Documents\\ransic";
+const sampleSavePath = "C:\\Users\\admin\\Documents\\slisic";
 
 const sampleCollection: Collection = {
   name: "Quiet Morning",
@@ -1243,7 +1243,7 @@ describe("appLogic machine", () => {
         music_name: "Disc 1 Opening",
         music_url: "https://example.com/quiet-morning#disc-1-opening",
         file_path:
-          "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+          "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start_ms: 0,
         end_ms: 120_000,
       }),
@@ -1286,7 +1286,7 @@ describe("appLogic machine", () => {
         nowPlayingTrackName: "Disc 1 Opening",
         nowPlayingTrackUrl: "https://example.com/quiet-morning#disc-1-opening",
         nowPlayingTrackFilePath:
-          "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+          "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         nowPlayingTrackStartMs: 0,
         nowPlayingTrackEndMs: 120_000,
         spectrumMusicDrafts: [
@@ -1352,7 +1352,7 @@ describe("appLogic machine", () => {
         music_name: "Disc 1 Opening",
         music_url: "https://example.com/quiet-morning#disc-1-opening",
         file_path:
-          "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+          "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start_ms: 0,
         end_ms: 120_000,
       }),
@@ -1442,7 +1442,7 @@ describe("appLogic machine", () => {
         music_name: "Disc 1 Opening",
         music_url: "https://example.com/quiet-morning#disc-1-opening",
         file_path:
-          "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+          "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start_ms: 0,
         end_ms: 120_000,
       }),
@@ -1554,7 +1554,7 @@ describe("appLogic machine", () => {
         music_name: "Disc 1 Opening",
         music_url: "https://example.com/quiet-morning#disc-1-opening",
         file_path:
-          "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+          "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start_ms: 0,
         end_ms: 120_000,
       }),
@@ -1575,7 +1575,7 @@ describe("appLogic machine", () => {
         nowPlayingTrackName: "Disc 1 Opening",
         nowPlayingTrackUrl: "https://example.com/quiet-morning#disc-1-opening",
         nowPlayingTrackFilePath:
-          "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+          "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         nowPlayingTrackStartMs: 0,
         nowPlayingTrackEndMs: 120_000,
         spectrumPlaybackScopeId: null,
@@ -1628,7 +1628,7 @@ describe("appLogic machine", () => {
         music_name: "Disc 1 Opening",
         music_url: "https://example.com/quiet-morning#disc-1-opening",
         file_path:
-          "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+          "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start_ms: 0,
         end_ms: 120_000,
       }),
@@ -1696,7 +1696,7 @@ describe("appLogic machine", () => {
         music_name: "Disc 1 Opening",
         music_url: "https://example.com/quiet-morning#disc-1-opening",
         file_path:
-          "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+          "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start_ms: 0,
         end_ms: 120_000,
       }),
@@ -1767,7 +1767,7 @@ describe("appLogic machine", () => {
         music_name: "Disc 1 Opening",
         music_url: "https://example.com/quiet-morning#disc-1-opening",
         file_path:
-          "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+          "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start_ms: 0,
         end_ms: 120_000,
       }),
@@ -1905,7 +1905,7 @@ describe("appLogic action playback scope effects", () => {
           music_name: "Disc 1 Opening",
           music_url: "https://example.com/quiet-morning#disc-1-opening",
           file_path:
-            "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+            "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
           start_ms: 0,
           end_ms: 120_000,
         }),
@@ -1965,7 +1965,7 @@ describe("appLogic action playback scope effects", () => {
           music_name: "Disc 1 Opening",
           music_url: "https://example.com/quiet-morning#disc-1-opening",
           file_path:
-            "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+            "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
           start_ms: 0,
           end_ms: 120_000,
         }),
@@ -2008,7 +2008,7 @@ describe("appLogic action playback scope effects", () => {
       Ok({
         duration_ms: 120_000,
         music_url: "https://example.com/quiet-morning#disc-1-opening",
-        path: "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+        path: "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         paused: true,
         playback_end_ms: 120_000,
         playback_start_ms: 0,
@@ -2054,7 +2054,7 @@ describe("appLogic action playback scope effects", () => {
           music_name: "Disc 1 Opening",
           music_url: "https://example.com/quiet-morning#disc-1-opening",
           file_path:
-            "C:\\Users\\admin\\Documents\\ransic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
+            "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
           start_ms: 0,
           end_ms: 120_000,
         }),
