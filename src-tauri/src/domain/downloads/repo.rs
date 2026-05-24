@@ -68,7 +68,9 @@ pub async fn mark_interrupted_tasks() -> Result<Vec<DownloadTask>> {
     Ok(updated)
 }
 
-fn is_retryable_transaction_conflict(error: &anyhow::Error) -> bool {
+pub(crate) fn is_retryable_transaction_conflict(error: &anyhow::Error) -> bool {
     let text = error.to_string();
-    text.contains("Transaction conflict") || text.contains("write conflict")
+    text.contains("Transaction conflict")
+        || text.contains("write conflict")
+        || text.contains("failed transaction")
 }

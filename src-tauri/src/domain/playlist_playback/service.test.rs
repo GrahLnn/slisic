@@ -206,6 +206,22 @@ fn playlist_selection_active_downloads_match_explicit_parent_download_scope() {
 }
 
 #[test]
+fn playlist_selection_waits_for_local_import_collection_scope() {
+    let selection = playback_selection("Focus", "local://collection/pending", None);
+    let mut task = download_task(
+        "local://collection/pending",
+        Some("local://collection/pending"),
+        DownloadTaskStatus::Queued,
+    );
+    task.trigger = DownloadTrigger::LocalImport;
+
+    assert!(playlist_selection_has_relevant_active_downloads(
+        &selection,
+        &[task]
+    ));
+}
+
+#[test]
 fn playlist_playback_always_starts_in_random_continuation_mode() {
     assert_eq!(
         resolve_playlist_playback_continuation_mode(),

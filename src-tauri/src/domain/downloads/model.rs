@@ -68,6 +68,7 @@ impl_string_surreal_enum!(CollectionSourceKind {
 
 impl_string_surreal_enum!(DownloadTrigger {
     Manual => "manual",
+    LocalImport => "local_import",
     AutoUpdate => "auto_update",
 });
 

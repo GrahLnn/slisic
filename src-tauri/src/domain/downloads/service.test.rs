@@ -2,9 +2,12 @@ use super::model::CollectionSourceKind;
 use super::naming::{provider_segment, sanitize_path_component};
 use super::repo::{list_tasks, save_task};
 use super::service::{
-    derive_youtube_channel_url_from_uploads_playlist, expand_root_entries_to_planned_leafs,
-    extract_olak_playlist_ids, leaf_download_parallelism, prepare_task_enqueue,
-    resolve_pasted_download_url, resume_download_task, should_reprobe_single_leaf,
+    CompletedLeafDownload, derive_youtube_channel_url_from_uploads_playlist,
+    expand_root_entries_to_planned_leafs, extract_olak_playlist_ids, handle_finished_leaf_download,
+    leaf_download_parallelism, prepare_task_enqueue, resolve_existing_temp_downloaded_file,
+    resolve_pasted_download_url, resolve_task_collection_folder, resume_download_task,
+    should_interrupt_unresumable_active_task_after_restart,
+    should_recover_download_task_after_restart, should_reprobe_single_leaf,
     should_resume_download_task_after_restart, try_claim_enqueue_url,
 };
 use super::yt_dlp::{
@@ -22,7 +25,8 @@ use crate::domain::collection_import::{
     persist_downloaded_leaf_music, persist_enqueued_collection_shell, resolve_existing_leaf_file,
 };
 use crate::domain::downloads::model::{
-    DownloadTask, DownloadTaskStatus, DownloadTrigger, PastedDownloadUrlResolutionStatus,
+    DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
+    PastedDownloadUrlResolutionStatus,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use crate::domain::playlists::model::{Collection, Group, Music, canonical_music_id_for_source};
@@ -96,6 +100,149 @@ fn restart_recovery_resumes_only_unfinished_download_tasks() {
     assert!(!should_resume_download_task_after_restart(
         DownloadTaskStatus::Cancelled
     ));
+}
+
+#[test]
+fn restart_recovery_interrupts_local_import_wait_markers_without_resuming_them() {
+    let mut local_import = DownloadTask::new(
+        "local-import-task",
+        "local://collection/pending",
+        DownloadTrigger::LocalImport,
+    );
+    local_import.status = DownloadTaskStatus::Queued;
+    let mut manual_download = DownloadTask::new(
+        "manual-download-task",
+        "https://example.com/album",
+        DownloadTrigger::Manual,
+    );
+    manual_download.status = DownloadTaskStatus::Queued;
+
+    assert!(should_interrupt_unresumable_active_task_after_restart(
+        &local_import
+    ));
+    assert!(!should_recover_download_task_after_restart(&local_import));
+    assert!(!should_interrupt_unresumable_active_task_after_restart(
+        &manual_download
+    ));
+    assert!(should_recover_download_task_after_restart(&manual_download));
+}
+
+#[test]
+fn list_download_marks_finalize_failures_on_leaf_without_aborting_task() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        let save_root = temp_test_dir();
+        let collection_folder = "youtube/Finalize Failure".to_string();
+        let target_dir = save_root.join(&collection_folder);
+        std::fs::create_dir_all(&target_dir).expect("target dir should be created");
+
+        let blocked_final_path = target_dir.join("Track A.m4a");
+        std::fs::create_dir_all(&blocked_final_path)
+            .expect("directory should block final file rename");
+        let downloaded_path = target_dir.join("Track A.__slisic_tmp__leaf-a.m4a");
+        std::fs::write(&downloaded_path, b"audio").expect("temp file should exist");
+
+        let collection_owner = collection_group(
+            "Finalize Failure",
+            "https://example.com/playlist",
+            &collection_folder,
+        );
+        let mut collection = Collection {
+            name: "Finalize Failure".to_string(),
+            url: "https://example.com/playlist".to_string(),
+            folder: collection_folder,
+            musics: vec![],
+            last_updated: "2026-05-24T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        };
+        upsert_collection(&collection)
+            .await
+            .expect("collection should save");
+
+        let mut task = DownloadTask::new(
+            "task-finalize-failure",
+            "https://example.com/playlist",
+            DownloadTrigger::Manual,
+        );
+        task.collection_url = Some(collection.url.clone());
+        task.collection_name = Some(collection.name.clone());
+        task.collection_folder = Some(collection.folder.clone());
+        task.source_kind = Some(CollectionSourceKind::List);
+        task.status = DownloadTaskStatus::Downloading;
+        let mut failed_leaf = DownloadLeaf::new("leaf-a", "https://example.com/watch?v=a", 0);
+        failed_leaf.status = DownloadLeafStatus::Downloading;
+        let mut completed_leaf = DownloadLeaf::new("leaf-b", "https://example.com/watch?v=b", 1);
+        completed_leaf.status = DownloadLeafStatus::Downloading;
+        task.replace_leaf(failed_leaf.clone());
+        task.replace_leaf(completed_leaf.clone());
+        let mut task = save_task(task).await.expect("task should save");
+
+        let probe_a = leaf_probe("Track A", "https://example.com/watch?v=a", 60);
+        handle_finished_leaf_download(
+            &mut task,
+            &mut collection,
+            CollectionSourceKind::List,
+            &save_root,
+            Ok(CompletedLeafDownload {
+                leaf: failed_leaf,
+                probe: probe_a.clone(),
+                music_probe: probe_a,
+                group: Some(collection_owner.clone()),
+                downloaded: DownloadedLeaf {
+                    absolute_path: downloaded_path,
+                },
+                progress: DownloadProgress::default(),
+            }),
+        )
+        .await
+        .expect("leaf finalize failure should not abort list task");
+
+        assert_eq!(
+            task.leafs
+                .iter()
+                .find(|leaf| leaf.id.to_string() == "leaf-a")
+                .map(|leaf| leaf.status),
+            Some(DownloadLeafStatus::Failed)
+        );
+        assert_eq!(task.failed_leaves, 1);
+
+        let downloaded_path = target_dir.join("Track B.__slisic_tmp__leaf-b.m4a");
+        std::fs::write(&downloaded_path, b"audio").expect("second temp file should exist");
+        let probe_b = leaf_probe("Track B", "https://example.com/watch?v=b", 60);
+        handle_finished_leaf_download(
+            &mut task,
+            &mut collection,
+            CollectionSourceKind::List,
+            &save_root,
+            Ok(CompletedLeafDownload {
+                leaf: completed_leaf,
+                probe: probe_b.clone(),
+                music_probe: probe_b,
+                group: Some(collection_owner),
+                downloaded: DownloadedLeaf {
+                    absolute_path: downloaded_path,
+                },
+                progress: DownloadProgress::default(),
+            }),
+        )
+        .await
+        .expect("later leaf should still complete after earlier finalize failure");
+
+        assert_eq!(task.completed_leaves, 1);
+        assert_eq!(task.failed_leaves, 1);
+        assert_eq!(
+            task.leafs
+                .iter()
+                .find(|leaf| leaf.id.to_string() == "leaf-b")
+                .and_then(|leaf| leaf.relative_path.as_deref()),
+            Some("Track B.m4a")
+        );
+
+        reset_db();
+        let _ = std::fs::remove_dir_all(save_root);
+    });
 }
 
 #[test]
@@ -477,6 +624,17 @@ fn collection_group(name: &str, url: &str, folder: &str) -> Group {
     }
 }
 
+fn leaf_probe(title: &str, url: &str, duration_seconds: u32) -> LeafProbe {
+    LeafProbe {
+        title: title.to_string(),
+        webpage_url: url.to_string(),
+        extractor_key: Some("Youtube".to_string()),
+        album: None,
+        duration_seconds: Some(duration_seconds),
+        chapters: vec![],
+    }
+}
+
 #[derive(Debug, Default)]
 struct FakeYtDlpClient {
     roots: HashMap<String, RootProbe>,
@@ -558,6 +716,52 @@ fn resolve_pasted_download_url_returns_new_url_when_library_has_no_match() {
         assert_eq!(resolution.url.as_deref(), Some("https://example.com/fresh"));
         assert!(resolution.error.is_none());
         assert!(resolution.collection.is_none());
+
+        reset_db();
+    });
+}
+
+#[test]
+fn resolve_pasted_download_url_canonicalizes_youtube_watch_playlist_identity() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let resolution = resolve_pasted_download_url(
+            "https://www.youtube.com/watch?v=abc123&list=PLtenet&index=14".to_string(),
+        )
+        .await
+        .expect("watch playlist url should resolve");
+
+        assert_eq!(resolution.status, PastedDownloadUrlResolutionStatus::NewUrl);
+        assert_eq!(
+            resolution.url.as_deref(),
+            Some("https://www.youtube.com/playlist?list=PLtenet")
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn resolve_pasted_download_url_keeps_youtube_mix_watch_urls_as_single_identity() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let resolution = resolve_pasted_download_url(
+            "https://www.youtube.com/watch?v=ZE5zXLOyEOQ&list=RDMMIHIRrASFLcg&index=3".to_string(),
+        )
+        .await
+        .expect("mix watch url should resolve");
+
+        assert_eq!(resolution.status, PastedDownloadUrlResolutionStatus::NewUrl);
+        assert_eq!(
+            resolution.url.as_deref(),
+            Some("https://www.youtube.com/watch?v=ZE5zXLOyEOQ")
+        );
 
         reset_db();
     });
@@ -879,6 +1083,49 @@ fn resolve_existing_leaf_file_matches_nested_group_path() {
 }
 
 #[test]
+fn resolve_existing_temp_downloaded_file_recovers_matching_temporary_audio() {
+    let root = temp_test_dir();
+    std::fs::create_dir_all(&root).expect("temp dir should be created");
+    let expected = root.join("Track.__slisic_tmp__abc123.m4a");
+    std::fs::write(&expected, b"downloaded").expect("temp audio should be created");
+    std::fs::write(root.join("Track.__slisic_tmp__other.m4a"), b"other")
+        .expect("other temp audio should be created");
+
+    let recovered = resolve_existing_temp_downloaded_file(&root, "Track.__slisic_tmp__abc123");
+
+    assert_eq!(recovered.as_deref(), Some(expected.as_path()));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn resolve_task_collection_folder_keeps_existing_task_download_folder_after_url_canonicalization() {
+    let task = {
+        let mut task = DownloadTask::new(
+            "task-existing-folder",
+            "https://www.youtube.com/playlist?list=PLtenet",
+            DownloadTrigger::Manual,
+        );
+        task.collection_folder =
+            Some("youtube/TENET Official Soundtrack - WaterTower Music".to_string());
+        task
+    };
+
+    let folder = run_async(resolve_task_collection_folder(
+        &task,
+        "https://www.youtube.com/playlist?list=PLtenet",
+        "TENET Official Soundtrack - WaterTower Music",
+        None,
+    ))
+    .expect("existing task folder should resolve");
+
+    assert_eq!(
+        folder,
+        "youtube/TENET Official Soundtrack - WaterTower Music"
+    );
+}
+
+#[test]
 fn derives_channel_url_from_uploads_playlist_id() {
     let derived = derive_youtube_channel_url_from_uploads_playlist(
         "https://www.youtube.com/playlist?list=UUyp_JApwUNqb9v595vPRvhg",
@@ -1067,6 +1314,14 @@ fn resume_download_task_rejects_completed_tasks() {
 
         reset_db();
     });
+}
+
+#[test]
+fn save_task_retries_surrealdb_failed_transaction_wrappers() {
+    let error =
+        anyhow!("Query response error: The query was not executed due to a failed transaction");
+
+    assert!(super::repo::is_retryable_transaction_conflict(&error));
 }
 
 #[test]
@@ -1345,6 +1600,46 @@ fn apply_collection_plan_to_task_populates_collection_metadata_and_leaf_queue() 
     assert_eq!(task.source_kind, Some(CollectionSourceKind::List));
     assert_eq!(task.leafs.len(), 1);
     assert_eq!(task.leafs[0].url, "https://example.com/watch?v=leaf");
+}
+
+#[test]
+fn apply_collection_plan_to_task_preserves_existing_leaf_evidence_when_plan_is_partial() {
+    let mut task = DownloadTask::new(
+        "task-existing",
+        "https://example.com/list",
+        DownloadTrigger::Manual,
+    );
+    let mut completed = crate::domain::downloads::model::DownloadLeaf::new(
+        "leaf-completed",
+        "https://example.com/watch?v=completed",
+        0,
+    );
+    completed.status = crate::domain::downloads::model::DownloadLeafStatus::Completed;
+    completed.file_name = Some("completed.m4a".to_string());
+    task.replace_leaf(completed);
+
+    let plan = CollectionSyncPlan {
+        source_kind: CollectionSourceKind::List,
+        collection_name: "Partial List".to_string(),
+        collection_url: "https://example.com/list".to_string(),
+        collection_folder: "youtube/partial-list".to_string(),
+        enable_updates: Some(false),
+        leaves: vec![PlannedLeaf {
+            id: Id::from("leaf-new"),
+            url: "https://example.com/watch?v=new".to_string(),
+            sequence: 1,
+            initial_probe: None,
+            music_title: None,
+            group_hint: None,
+        }],
+    };
+
+    apply_collection_plan_to_task(&mut task, &plan);
+
+    assert_eq!(task.leafs.len(), 2);
+    assert_eq!(task.leafs[0].id.to_string(), "leaf-completed");
+    assert_eq!(task.leafs[0].file_name.as_deref(), Some("completed.m4a"));
+    assert_eq!(task.leafs[1].id.to_string(), "leaf-new");
 }
 
 #[test]

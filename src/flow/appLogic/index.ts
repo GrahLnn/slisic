@@ -3,10 +3,13 @@ import { me } from "@grahlnn/fn";
 import type { ConfigSidebarItemRef, PlaylistPreview, PlaylistUpsertResult } from "./core";
 import {
   chooseSavePath,
+  chooseCollectionFolder,
+  createLocalCollectionShell,
   deletePlaylistRecord,
   enterSpectrumPlaybackScope,
   excludeCurrentMusicAndSkip,
   exitSpectrumPlaybackScope,
+  importLocalCollection,
   listenPlaybackDiagnosticTrace,
   listenPlaybackExcludeCommitted,
   listenNowPlayingTrackChanged,
@@ -22,6 +25,7 @@ import {
   actor,
   collectionUpserted,
   collectionUpdatesRequested,
+  draftCollectionUpserted,
   draftNameChanged,
   draftItemIncluded,
   draftItemRemoved,
@@ -489,6 +493,39 @@ export const action = {
       return action.changeSavePath(selectedPath);
     } catch (error) {
       console.error("Failed to choose a save path", error);
+      return false;
+    }
+  },
+  importLocalCollection: async (currentSavePath: string) => {
+    ensureStarted();
+    try {
+      const selectedPath = await chooseCollectionFolder(currentSavePath);
+      if (!selectedPath) {
+        return false;
+      }
+
+      const collectionShell = await createLocalCollectionShell(selectedPath);
+      send(collectionUpserted.load(collectionShell));
+      send(draftCollectionUpserted.load(collectionShell));
+
+      void importLocalCollection(selectedPath).then(
+        (collection) => {
+          send(collectionUpserted.load(collection));
+          send(draftCollectionUpserted.load(collection));
+        },
+        (error) => {
+          console.error("Failed to import local collection", error);
+          send(
+            draftItemRemoved.load({
+              kind: "collection",
+              url: collectionShell.url,
+            }),
+          );
+        },
+      );
+      return true;
+    } catch (error) {
+      console.error("Failed to import local collection", error);
       return false;
     }
   },

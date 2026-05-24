@@ -44,6 +44,8 @@ pub fn run() {
             domain::playlists::load_spectrum_music_context,
             domain::playlists::add_exclude,
             domain::playlists::remove_exclude,
+            domain::collection_import::create_local_collection_shell,
+            domain::collection_import::import_local_collection,
             domain::playlist_playback::play_playlist,
             domain::playlist_playback::exclude_current_music_and_skip,
             domain::player::set_playback_continuation_mode,

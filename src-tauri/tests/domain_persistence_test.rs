@@ -137,6 +137,13 @@ mod domain {
             ));
         }
 
+        pub mod naming {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/downloads/naming.rs"
+            ));
+        }
+
         pub mod yt_dlp {
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -162,6 +169,20 @@ mod domain {
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/domain/downloads/yt_dlp.test.rs"
+            ));
+        }
+    }
+
+    mod collection_import {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/domain/collection_import.rs"
+        ));
+
+        mod collection_import_test {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/collection_import.test.rs"
             ));
         }
     }

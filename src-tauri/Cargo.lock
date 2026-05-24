@@ -47,6 +47,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tauri-specta",
  "tokio",
+ "toml 1.1.2+spec-1.1.0",
  "walkdir",
  "webview2-com",
  "windows 0.62.2",

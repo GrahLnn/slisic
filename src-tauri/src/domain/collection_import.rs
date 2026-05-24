@@ -1,9 +1,17 @@
+#[cfg(not(test))]
+use crate::domain::downloads::model::DownloadTaskStatus;
 use crate::domain::downloads::model::{
-    CollectionSourceKind, DownloadLeaf, DownloadResourceProbe, DownloadTask,
+    CollectionSourceKind, DownloadLeaf, DownloadResourceProbe, DownloadTask, DownloadTrigger,
     PastedDownloadUrlResolution, now_timestamp,
 };
-use crate::domain::downloads::naming::{provider_segment, sanitize_path_component, short_hash};
+use crate::domain::downloads::naming::{
+    provider_segment, sanitize_path_component, short_hash, stable_id,
+};
 use crate::domain::downloads::repo as download_repo;
+#[cfg(not(test))]
+use crate::domain::downloads::service::{
+    DownloadTaskChangeSignal, publish_download_task_change, try_claim_task,
+};
 use crate::domain::downloads::yt_dlp::{LeafProbe, RootProbe};
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::notify_audio_style_training_inputs_changed;
@@ -11,8 +19,23 @@ use crate::domain::playlists::model::{Collection, Group, Music, canonical_music_
 use crate::domain::playlists::repo as collection_repo;
 use anyhow::{Context, Result, bail};
 use appdb::Id;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::{BufReader, Read};
+use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Stdio};
+#[cfg(not(test))]
+use tokio::sync::broadcast;
+use walkdir::WalkDir;
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const COLLECTION_MANIFEST_FILE_NAME: &str = ".slisic.collection.toml";
+const LOCAL_AUDIO_PROBE_SAMPLE_RATE: u32 = 48_000;
+const TEMP_DOWNLOAD_MARKER: &str = ".__slisic_tmp__";
 
 #[derive(Debug, Clone)]
 pub(crate) struct CollectionSyncPlan {
@@ -67,6 +90,66 @@ pub(crate) struct CollectionShellPlan {
     pub(crate) collection_url: String,
     pub(crate) collection_folder: String,
     pub(crate) enable_updates: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CollectionManifest {
+    #[serde(default = "default_manifest_version")]
+    version: u32,
+    collection: CollectionManifestCollection,
+    #[serde(default)]
+    groups: Vec<CollectionManifestGroup>,
+    #[serde(default, rename = "music")]
+    musics: Vec<CollectionManifestMusic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CollectionManifestCollection {
+    name: String,
+    url: String,
+    folder: String,
+    #[serde(default)]
+    source_kind: Option<CollectionSourceKind>,
+    #[serde(default)]
+    enable_updates: Option<bool>,
+    #[serde(default)]
+    last_updated: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CollectionManifestGroup {
+    name: String,
+    url: String,
+    folder: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CollectionManifestMusic {
+    name: String,
+    alias: String,
+    url: String,
+    path: String,
+    group_url: String,
+    start_ms: u32,
+    end_ms: u32,
+    #[serde(default)]
+    liked: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LocalAudioProbe {
+    duration_ms: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalAudioFile {
+    absolute_path: PathBuf,
+    relative_path: String,
+    duration_ms: u32,
+}
+
+fn default_manifest_version() -> u32 {
+    1
 }
 
 pub(crate) async fn resolve_pasted_download_url(
@@ -200,11 +283,18 @@ pub(crate) fn apply_collection_shell_plan_to_task(
 
 pub(crate) fn apply_collection_plan_to_task(task: &mut DownloadTask, plan: &CollectionSyncPlan) {
     apply_collection_shell_plan_to_task(task, &plan.shell_plan());
-    task.leafs = plan
-        .leaves
-        .iter()
-        .map(|leaf| DownloadLeaf::new(leaf.id.clone(), leaf.url.clone(), leaf.sequence))
-        .collect();
+    for leaf in &plan.leaves {
+        if task.leafs.iter().any(|existing| existing.id == leaf.id) {
+            continue;
+        }
+
+        task.leafs.push(DownloadLeaf::new(
+            leaf.id.clone(),
+            leaf.url.clone(),
+            leaf.sequence,
+        ));
+    }
+    task.leafs.sort_by_key(|leaf| leaf.sequence);
     task.refresh_counts();
 }
 
@@ -260,6 +350,276 @@ pub(crate) async fn persist_downloaded_leaf_music(
     Ok(())
 }
 
+pub(crate) async fn import_local_collection_folder(
+    collection_path: &Path,
+    save_root: &Path,
+    ffmpeg_path: &Path,
+) -> Result<Collection> {
+    let collection_path = collection_path
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {}", collection_path.display()))?;
+    if !collection_path.is_dir() {
+        bail!("local collection import only accepts a folder");
+    }
+
+    let collection_folder = collection_folder_from_local_path(save_root, &collection_path)?;
+    let local_audio_files = collect_local_audio_files(&collection_path, ffmpeg_path)?;
+    let manifest = read_collection_manifest(&collection_path)?;
+    let mut collection = match manifest {
+        Some(manifest) => {
+            collection_from_manifest(collection_folder, manifest, &local_audio_files)?
+        }
+        None => collection_from_local_audio_files(
+            &collection_path,
+            &collection_folder,
+            &local_audio_files,
+        )?,
+    };
+
+    if collection.musics.is_empty() {
+        bail!("collection folder does not contain ffmpeg-playable audio files");
+    }
+
+    normalize_music_titles_within_collection(&mut collection);
+    collection.last_updated = now_timestamp();
+    let saved = collection_repo::upsert_collection(&collection).await?;
+    notify_audio_style_inputs_changed("local_collection_imported");
+    Ok(saved)
+}
+
+#[cfg(not(test))]
+async fn import_local_collection_folder_with_task_signal(
+    collection_path: &Path,
+    save_root: &Path,
+    ffmpeg_path: &Path,
+) -> Result<Collection> {
+    let shell = project_local_collection_shell(collection_path, save_root)?;
+    let mut task = create_local_import_task(&shell);
+    let task_id = task.id.to_string();
+
+    if !try_claim_task(&task_id)? {
+        return wait_for_local_import_collection(shell, &task_id).await;
+    }
+
+    let result: Result<Collection> = async {
+        task.status = DownloadTaskStatus::Resolving;
+        task.touch();
+        task = download_repo::save_task(task).await?;
+        publish_download_task_change(&task);
+
+        let collection =
+            import_local_collection_folder(collection_path, save_root, ffmpeg_path).await?;
+
+        task.status = DownloadTaskStatus::Completed;
+        task.last_error = None;
+        task.touch();
+        task = download_repo::save_task(task).await?;
+        publish_download_task_change(&task);
+
+        Ok(collection)
+    }
+    .await;
+
+    crate::domain::downloads::service::release_task(&task_id);
+    if let Err(error) = &result {
+        let mut failed = create_local_import_task(&shell);
+        failed.status = DownloadTaskStatus::Failed;
+        failed.last_error = Some(error.to_string());
+        failed.touch();
+        if let Ok(saved) = download_repo::save_task(failed).await {
+            publish_download_task_change(&saved);
+        }
+    }
+
+    result
+}
+
+#[cfg(not(test))]
+async fn prepare_local_import_collection_shell(
+    collection_path: &Path,
+    save_root: &Path,
+) -> Result<Collection> {
+    let shell = project_local_collection_shell(collection_path, save_root)?;
+    let existing = collection_repo::get_collection_by_url(&shell.url).await?;
+    let saved = collection_repo::upsert_collection(&create_collection_shell_from_plan(
+        &CollectionShellPlan {
+            source_kind: CollectionSourceKind::List,
+            collection_name: shell.name.clone(),
+            collection_url: shell.url.clone(),
+            collection_folder: shell.folder.clone(),
+            enable_updates: shell.enable_updates,
+        },
+        existing,
+    ))
+    .await?;
+
+    let active_task = match download_repo::get_task(&local_import_task_id(&saved.url)).await {
+        Ok(task) if task.status.is_active() => task,
+        _ => download_repo::save_task(create_local_import_task(&saved)).await?,
+    };
+    publish_download_task_change(&active_task);
+
+    Ok(saved)
+}
+
+#[cfg(not(test))]
+async fn wait_for_local_import_collection(shell: Collection, task_id: &str) -> Result<Collection> {
+    let mut changes = crate::domain::downloads::service::subscribe_download_task_changes();
+    loop {
+        if let Some(collection) = collection_repo::get_collection_by_url(&shell.url).await?
+            && !collection.musics.is_empty()
+        {
+            return Ok(collection);
+        }
+
+        match download_repo::get_task(task_id).await {
+            Ok(task) if task.status.is_terminal() => {
+                if task.status == DownloadTaskStatus::Failed {
+                    bail!(
+                        "{}",
+                        task.last_error
+                            .unwrap_or_else(|| "local collection import failed".to_string())
+                    );
+                }
+                if let Some(collection) = collection_repo::get_collection_by_url(&shell.url).await?
+                {
+                    return Ok(collection);
+                }
+                bail!("local collection import finished without persisted collection");
+            }
+            Ok(_) => {}
+            Err(_) => {}
+        }
+
+        wait_for_collection_task_change(&mut changes, task_id, &shell.url).await?;
+    }
+}
+
+#[cfg(not(test))]
+async fn wait_for_collection_task_change(
+    changes: &mut broadcast::Receiver<DownloadTaskChangeSignal>,
+    task_id: &str,
+    collection_url: &str,
+) -> Result<()> {
+    loop {
+        let signal = changes
+            .recv()
+            .await
+            .context("local import task change channel closed")?;
+        if signal.task_id == task_id
+            || signal.collection_url.as_deref() == Some(collection_url)
+            || signal.task_url == collection_url
+        {
+            return Ok(());
+        }
+    }
+}
+
+pub(crate) fn create_local_import_task(shell: &Collection) -> DownloadTask {
+    let mut task = DownloadTask::new(
+        local_import_task_id(&shell.url),
+        shell.url.clone(),
+        DownloadTrigger::LocalImport,
+    );
+    task.collection_url = Some(shell.url.clone());
+    task.collection_name = Some(shell.name.clone());
+    task.collection_folder = Some(shell.folder.clone());
+    task.source_kind = Some(CollectionSourceKind::List);
+    task
+}
+
+fn local_import_task_id(collection_url: &str) -> String {
+    format!("local-{}", stable_id(collection_url))
+}
+
+pub(crate) fn project_local_collection_shell(
+    collection_path: &Path,
+    save_root: &Path,
+) -> Result<Collection> {
+    let collection_path = collection_path
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {}", collection_path.display()))?;
+    if !collection_path.is_dir() {
+        bail!("local collection import only accepts a folder");
+    }
+
+    let collection_folder = collection_folder_from_local_path(save_root, &collection_path)?;
+    if let Some(manifest) = read_collection_manifest(&collection_path)? {
+        return Ok(Collection {
+            name: manifest.collection.name,
+            url: manifest.collection.url,
+            folder: collection_folder,
+            musics: vec![],
+            last_updated: manifest
+                .collection
+                .last_updated
+                .unwrap_or_else(now_timestamp),
+            enable_updates: manifest.collection.enable_updates,
+        });
+    }
+
+    let collection_name = local_collection_name(&collection_path);
+    Ok(Collection {
+        name: collection_name,
+        url: local_collection_url(&collection_path)?,
+        folder: collection_folder,
+        musics: vec![],
+        last_updated: now_timestamp(),
+        enable_updates: None,
+    })
+}
+
+#[cfg(not(test))]
+pub(crate) fn write_collection_manifest(
+    collection_root: &Path,
+    collection: &Collection,
+    source_kind: CollectionSourceKind,
+) -> Result<()> {
+    let manifest = manifest_from_collection(collection, source_kind);
+    write_collection_manifest_file(collection_root, &manifest)
+}
+
+#[cfg(not(test))]
+#[tauri::command]
+#[specta::specta]
+pub async fn import_local_collection(
+    app: tauri::AppHandle,
+    collection_path: String,
+) -> Result<Collection, String> {
+    let save_root = crate::domain::meta::service::resolve_save_root(&app)
+        .await
+        .map_err(|error| error.to_string())?;
+    let ffmpeg_path = crate::utils::binaries::ensure_managed_binary(
+        &app,
+        crate::utils::binaries::ManagedBinary::Ffmpeg,
+    )
+    .map_err(|error| error.to_string())?;
+
+    import_local_collection_folder_with_task_signal(
+        Path::new(&collection_path),
+        &save_root,
+        &ffmpeg_path,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(not(test))]
+#[tauri::command]
+#[specta::specta]
+pub async fn create_local_collection_shell(
+    app: tauri::AppHandle,
+    collection_path: String,
+) -> Result<Collection, String> {
+    let save_root = crate::domain::meta::service::resolve_save_root(&app)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    prepare_local_import_collection_shell(Path::new(&collection_path), &save_root)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 pub(crate) async fn get_collection_by_url(url: &str) -> Result<Option<Collection>> {
     collection_repo::get_collection_by_url(url).await
 }
@@ -301,23 +661,15 @@ pub(crate) async fn resolve_collection_folder(
     ))
 }
 
-#[cfg(not(test))]
 pub(crate) fn finalize_downloaded_leaf(
     collection: &Collection,
     leaf_url: &str,
     group: &Group,
     save_root: &Path,
-    file_stem: &str,
+    _file_stem: &str,
     downloaded_path: PathBuf,
 ) -> Result<String> {
-    let extension = downloaded_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let final_file_name = extension
-        .map(|extension| format!("{file_stem}.{extension}"))
-        .unwrap_or_else(|| file_stem.to_string());
+    let final_file_name = finalized_download_file_name(&downloaded_path)?;
     let relative_path = relative_music_path(collection, &final_file_name, group);
     let final_path = save_root.join(&collection.folder).join(&relative_path);
 
@@ -343,6 +695,28 @@ pub(crate) fn finalize_downloaded_leaf(
     }
 
     Ok(relative_path)
+}
+
+fn finalized_download_file_name(downloaded_path: &Path) -> Result<String> {
+    let file_name = downloaded_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .context("downloaded audio path does not contain a unicode file name")?;
+    let Some(file_stem) = downloaded_path.file_stem().and_then(|value| value.to_str()) else {
+        return Ok(file_name.to_string());
+    };
+
+    let Some((stable_stem, suffix)) = file_stem.rsplit_once(TEMP_DOWNLOAD_MARKER) else {
+        return Ok(file_name.to_string());
+    };
+    if stable_stem.is_empty() || suffix.is_empty() {
+        return Ok(file_name.to_string());
+    }
+
+    match downloaded_path.extension().and_then(|value| value.to_str()) {
+        Some(extension) if !extension.is_empty() => Ok(format!("{stable_stem}.{extension}")),
+        _ => Ok(stable_stem.to_string()),
+    }
 }
 
 pub(crate) fn resolve_existing_leaf_file(
@@ -825,4 +1199,597 @@ fn notify_audio_style_inputs_changed(_reason: &'static str) {
 
 fn seconds_to_millis(seconds: u32) -> u32 {
     seconds.saturating_mul(1_000)
+}
+
+fn collection_folder_from_local_path(save_root: &Path, collection_path: &Path) -> Result<String> {
+    let save_root = save_root
+        .canonicalize()
+        .unwrap_or_else(|_| save_root.to_path_buf());
+    match collection_path.strip_prefix(&save_root) {
+        Ok(relative) if !relative.as_os_str().is_empty() => normalize_relative_path_text(relative),
+        _ => Ok(normalize_path_text(&collection_path.to_string_lossy())),
+    }
+}
+
+fn read_collection_manifest(collection_path: &Path) -> Result<Option<CollectionManifest>> {
+    read_collection_manifest_file(&collection_path.join(COLLECTION_MANIFEST_FILE_NAME))
+}
+
+fn read_collection_manifest_file(manifest_path: &Path) -> Result<Option<CollectionManifest>> {
+    if !manifest_path.is_file() {
+        return Ok(None);
+    }
+
+    let text = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    let manifest = toml::from_str::<CollectionManifest>(&text)
+        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    if manifest.version != 1 {
+        bail!(
+            "unsupported collection manifest version {} in {}",
+            manifest.version,
+            manifest_path.display()
+        );
+    }
+
+    Ok(Some(manifest))
+}
+
+fn collection_from_manifest(
+    collection_folder: String,
+    manifest: CollectionManifest,
+    local_audio_files: &[LocalAudioFile],
+) -> Result<Collection> {
+    let local_files_by_path = local_audio_files
+        .iter()
+        .map(|file| (file.relative_path.clone(), file))
+        .collect::<BTreeMap<_, _>>();
+    let groups = manifest
+        .groups
+        .into_iter()
+        .map(|group| {
+            let group = group.into_group(&manifest.collection.url, &collection_folder)?;
+            Ok((group.url.clone(), group))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+
+    let collection_owner = Group {
+        name: manifest.collection.name.clone(),
+        url: manifest.collection.url.clone(),
+        folder: collection_folder.clone(),
+    };
+    let mut musics = Vec::new();
+    let mut seen = HashSet::new();
+    let mut manifest_file_paths = HashSet::new();
+
+    for music in manifest.musics {
+        let relative_path = normalize_manifest_relative_path(&music.path)?;
+        let Some(local_file) = local_files_by_path.get(&relative_path) else {
+            continue;
+        };
+        if music.end_ms > local_file.duration_ms.saturating_add(1_000) {
+            continue;
+        }
+        if !seen.insert((
+            music.url.clone(),
+            music.group_url.clone(),
+            music.start_ms,
+            music.end_ms,
+            relative_path.clone(),
+        )) {
+            continue;
+        }
+
+        let group = resolve_manifest_music_group(
+            &music.group_url,
+            &manifest.collection.url,
+            &collection_owner,
+            &groups,
+        );
+        let Some(group) = group else {
+            continue;
+        };
+        let name = music.name.trim();
+        let name = if name.is_empty() {
+            local_music_name_from_path(Path::new(&relative_path))
+        } else {
+            name.to_string()
+        };
+        let alias = music.alias.trim();
+        let alias = if alias.is_empty() {
+            name.clone()
+        } else {
+            alias.to_string()
+        };
+
+        if music.start_ms >= music.end_ms {
+            continue;
+        }
+
+        manifest_file_paths.insert(relative_path.clone());
+        musics.push(Music {
+            name,
+            alias,
+            group,
+            canonical_music_id: canonical_music_id_for_source(
+                &music.url,
+                music.start_ms,
+                music.end_ms,
+            ),
+            url: music.url,
+            path: Some(relative_path),
+            start_ms: music.start_ms,
+            end_ms: music.end_ms,
+            liked: music.liked,
+        });
+    }
+
+    for local_file in local_audio_files {
+        if manifest_file_paths.contains(&local_file.relative_path) {
+            continue;
+        }
+
+        let music =
+            local_music_from_audio_file(&manifest.collection.url, &collection_owner, local_file);
+        if seen.insert((
+            music.url.clone(),
+            music.group.url.clone(),
+            music.start_ms,
+            music.end_ms,
+            local_file.relative_path.clone(),
+        )) {
+            musics.push(music);
+        }
+    }
+
+    Ok(Collection {
+        name: manifest.collection.name,
+        url: manifest.collection.url,
+        folder: collection_folder,
+        musics,
+        last_updated: manifest
+            .collection
+            .last_updated
+            .unwrap_or_else(now_timestamp),
+        enable_updates: manifest.collection.enable_updates,
+    })
+}
+
+fn collection_from_local_audio_files(
+    collection_path: &Path,
+    collection_folder: &str,
+    local_audio_files: &[LocalAudioFile],
+) -> Result<Collection> {
+    let collection_name = local_collection_name(collection_path);
+    let collection_url = local_collection_url(collection_path)?;
+    let group = Group {
+        name: collection_name.clone(),
+        url: collection_url.clone(),
+        folder: collection_folder.to_string(),
+    };
+    let mut musics = Vec::new();
+
+    for file in local_audio_files {
+        musics.push(local_music_from_audio_file(&collection_url, &group, file));
+    }
+
+    Ok(Collection {
+        name: collection_name,
+        url: collection_url,
+        folder: collection_folder.to_string(),
+        musics,
+        last_updated: now_timestamp(),
+        enable_updates: None,
+    })
+}
+
+fn local_collection_name(collection_path: &Path) -> String {
+    collection_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Local Collection")
+        .to_string()
+}
+
+fn collect_local_audio_files(
+    collection_path: &Path,
+    ffmpeg_path: &Path,
+) -> Result<Vec<LocalAudioFile>> {
+    let mut files = Vec::new();
+    for file_path in local_collection_file_candidates(collection_path) {
+        let relative_path = normalize_local_relative_path(collection_path, &file_path)?;
+        let Some(probe) = probe_local_audio_file(ffmpeg_path, &file_path)? else {
+            continue;
+        };
+        if probe.duration_ms == 0 {
+            continue;
+        }
+
+        files.push(LocalAudioFile {
+            absolute_path: file_path,
+            relative_path,
+            duration_ms: probe.duration_ms,
+        });
+    }
+
+    Ok(files)
+}
+
+fn local_collection_file_candidates(collection_path: &Path) -> Vec<PathBuf> {
+    let mut files = WalkDir::new(collection_path)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .map(|name| name != COLLECTION_MANIFEST_FILE_NAME)
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| {
+        normalize_music_file_path_key(left).cmp(&normalize_music_file_path_key(right))
+    });
+    files
+}
+
+fn probe_local_audio_file(ffmpeg_path: &Path, file_path: &Path) -> Result<Option<LocalAudioProbe>> {
+    let mut command = Command::new(ffmpeg_path);
+    command
+        .arg("-hide_banner")
+        .arg("-nostdin")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-i")
+        .arg(file_path)
+        .arg("-map")
+        .arg("0:a:0")
+        .arg("-vn")
+        .arg("-sn")
+        .arg("-dn")
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg(LOCAL_AUDIO_PROBE_SAMPLE_RATE.to_string())
+        .arg("-f")
+        .arg("f32le")
+        .arg("-c:a")
+        .arg("pcm_f32le")
+        .arg("pipe:1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("failed to run ffmpeg at {}", ffmpeg_path.display()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("ffmpeg local audio probe stdout pipe is missing")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("ffmpeg local audio probe stderr pipe is missing")?;
+    let stderr_reader = std::thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut message = String::new();
+        let _ = reader.read_to_string(&mut message);
+        message
+    });
+
+    let decoded_bytes = read_local_audio_probe_output(stdout)?;
+    let status = child
+        .wait()
+        .context("failed to wait for ffmpeg local audio probe")?;
+    let _stderr_message = stderr_reader.join().unwrap_or_default();
+    if !status.success() {
+        return Ok(None);
+    }
+
+    Ok(Some(LocalAudioProbe {
+        duration_ms: duration_ms_from_f32le_bytes(decoded_bytes, LOCAL_AUDIO_PROBE_SAMPLE_RATE),
+    }))
+}
+
+fn read_local_audio_probe_output(stdout: std::process::ChildStdout) -> Result<u64> {
+    let mut reader = BufReader::new(stdout);
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut decoded_bytes = 0_u64;
+
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .context("failed to read ffmpeg local audio probe output")?;
+        if read == 0 {
+            break;
+        }
+        decoded_bytes = decoded_bytes.saturating_add(read as u64);
+    }
+
+    Ok(decoded_bytes)
+}
+
+fn duration_ms_from_f32le_bytes(decoded_bytes: u64, sample_rate: u32) -> u32 {
+    if sample_rate == 0 {
+        return 0;
+    }
+
+    let frame_count = decoded_bytes / 4;
+    let sample_rate = sample_rate as u64;
+    let duration_ms = frame_count
+        .saturating_mul(1_000)
+        .saturating_add(sample_rate / 2)
+        / sample_rate;
+    duration_ms.min(u32::MAX as u64) as u32
+}
+
+fn local_collection_url(collection_path: &Path) -> Result<String> {
+    Ok(format!(
+        "local://collection/{}",
+        short_hash(&collection_path.canonicalize()?.to_string_lossy())
+    ))
+}
+
+fn local_music_url(collection_url: &str, relative_path: &str) -> String {
+    format!("{collection_url}#{}", relative_path.replace('\\', "/"))
+}
+
+fn local_music_name_from_path(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("Untitled")
+                .to_string()
+        })
+}
+
+fn local_music_from_audio_file(
+    collection_url: &str,
+    group: &Group,
+    file: &LocalAudioFile,
+) -> Music {
+    let name = local_music_name_from_path(&file.absolute_path);
+    let url = local_music_url(collection_url, &file.relative_path);
+    Music {
+        name: name.clone(),
+        alias: name,
+        group: group.clone(),
+        canonical_music_id: canonical_music_id_for_source(&url, 0, file.duration_ms),
+        url,
+        path: Some(file.relative_path.clone()),
+        start_ms: 0,
+        end_ms: file.duration_ms,
+        liked: false,
+    }
+}
+
+fn manifest_from_collection(
+    collection: &Collection,
+    source_kind: CollectionSourceKind,
+) -> CollectionManifest {
+    let mut groups = BTreeMap::<String, CollectionManifestGroup>::new();
+    let musics = collection
+        .musics
+        .iter()
+        .filter_map(|music| {
+            let path = music.path.as_deref()?.trim();
+            if path.is_empty() {
+                return None;
+            }
+
+            if music.group.url != collection.url {
+                groups
+                    .entry(music.group.url.clone())
+                    .or_insert_with(|| CollectionManifestGroup {
+                        name: music.group.name.clone(),
+                        url: music.group.url.clone(),
+                        folder: music.group.folder.clone(),
+                    });
+            }
+
+            Some(CollectionManifestMusic {
+                name: music.name.clone(),
+                alias: music.alias.clone(),
+                url: music.url.clone(),
+                path: normalize_path_text(path),
+                group_url: music.group.url.clone(),
+                start_ms: music.start_ms,
+                end_ms: music.end_ms,
+                liked: music.liked,
+            })
+        })
+        .collect();
+
+    CollectionManifest {
+        version: 1,
+        collection: CollectionManifestCollection {
+            name: collection.name.clone(),
+            url: collection.url.clone(),
+            folder: collection.folder.clone(),
+            source_kind: Some(source_kind),
+            enable_updates: collection.enable_updates,
+            last_updated: Some(collection.last_updated.clone()),
+        },
+        groups: groups.into_values().collect(),
+        musics,
+    }
+}
+
+fn resolve_manifest_music_group(
+    group_url: &str,
+    collection_url: &str,
+    collection_owner: &Group,
+    groups: &BTreeMap<String, Group>,
+) -> Option<Group> {
+    if group_url == collection_url {
+        return Some(collection_owner.clone());
+    }
+
+    groups.get(group_url).cloned()
+}
+
+fn write_collection_manifest_file(
+    collection_root: &Path,
+    manifest: &CollectionManifest,
+) -> Result<()> {
+    std::fs::create_dir_all(collection_root)
+        .with_context(|| format!("failed to create {}", collection_root.display()))?;
+    let manifest_path = collection_root.join(COLLECTION_MANIFEST_FILE_NAME);
+    let manifest = match read_collection_manifest_file(&manifest_path)? {
+        Some(existing) => merge_collection_manifest(existing, manifest.clone()),
+        None => manifest.clone(),
+    };
+    let text =
+        toml::to_string_pretty(&manifest).context("failed to serialize collection manifest")?;
+    std::fs::write(&manifest_path, text)
+        .with_context(|| format!("failed to write {}", manifest_path.display()))
+}
+
+fn merge_collection_manifest(
+    existing: CollectionManifest,
+    next: CollectionManifest,
+) -> CollectionManifest {
+    if existing.collection.url != next.collection.url {
+        return next;
+    }
+
+    let mut merged = existing;
+    let mut group_urls = merged
+        .groups
+        .iter()
+        .map(|group| group.url.clone())
+        .collect::<HashSet<_>>();
+    for group in next.groups {
+        if group_urls.insert(group.url.clone()) {
+            merged.groups.push(group);
+        }
+    }
+
+    let mut music_keys = merged
+        .musics
+        .iter()
+        .map(collection_manifest_music_key)
+        .collect::<HashSet<_>>();
+    let existing_file_scopes = merged
+        .musics
+        .iter()
+        .map(collection_manifest_music_file_scope)
+        .collect::<HashSet<_>>();
+    for music in next.musics {
+        if existing_file_scopes.contains(&collection_manifest_music_file_scope(&music)) {
+            continue;
+        }
+
+        let key = collection_manifest_music_key(&music);
+        if music_keys.insert(key) {
+            merged.musics.push(music);
+        }
+    }
+
+    merged
+}
+
+fn collection_manifest_music_key(music: &CollectionManifestMusic) -> String {
+    format!(
+        "{}\n{}\n{}\n{}\n{}",
+        music.url,
+        music.group_url,
+        normalize_path_text(&music.path),
+        music.start_ms,
+        music.end_ms
+    )
+}
+
+fn collection_manifest_music_file_scope(music: &CollectionManifestMusic) -> String {
+    format!(
+        "{}\n{}\n{}",
+        music.url,
+        music.group_url,
+        normalize_path_text(&music.path)
+    )
+}
+
+impl CollectionManifestGroup {
+    fn into_group(self, collection_url: &str, collection_folder: &str) -> Result<Group> {
+        let folder = if self.url == collection_url {
+            collection_folder.to_string()
+        } else {
+            normalize_manifest_relative_path(&self.folder)?
+        };
+
+        Ok(Group {
+            name: self.name,
+            url: self.url,
+            folder,
+        })
+    }
+}
+
+fn normalize_manifest_relative_path(path: &str) -> Result<String> {
+    let path = Path::new(path.trim());
+    if path.is_absolute() {
+        bail!("collection manifest music path must be relative");
+    }
+
+    normalize_relative_path_text(path)
+}
+
+fn normalize_local_relative_path(collection_path: &Path, file_path: &Path) -> Result<String> {
+    let relative = file_path.strip_prefix(collection_path).with_context(|| {
+        format!(
+            "{} is not inside {}",
+            file_path.display(),
+            collection_path.display()
+        )
+    })?;
+
+    normalize_relative_path_text(relative)
+}
+
+fn normalize_relative_path_text(path: &Path) -> Result<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(value) => {
+                let text = value
+                    .to_str()
+                    .context("collection path contains non-unicode component")?
+                    .trim();
+                if text.is_empty() {
+                    bail!("collection path contains an empty component");
+                }
+                parts.push(text.to_string());
+            }
+            Component::CurDir => {}
+            _ => bail!("collection path must stay relative to the collection folder"),
+        }
+    }
+
+    if parts.is_empty() {
+        bail!("collection path is empty");
+    }
+
+    Ok(parts.join("/"))
+}
+
+fn normalize_path_text(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn normalize_music_file_path_key(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/").to_lowercase()
 }

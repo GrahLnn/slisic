@@ -2,6 +2,7 @@ use super::model::CollectionSourceKind;
 use super::yt_dlp::{
     RootProbe, build_leaf_audio_download_args, classify_root_preference,
     looks_like_direct_leaf_url, parse_leaf_probe, parse_progress_line, parse_root_probe,
+    resolve_downloaded_file,
 };
 use serde_json::json;
 
@@ -190,4 +191,44 @@ fn leaf_audio_download_args_select_audio_only_formats_before_extracting() {
         !args.iter().any(|arg| arg.contains("bestvideo")),
         "audio downloads should never select a video stream"
     );
+}
+
+#[test]
+fn leaf_audio_download_args_allow_unicode_file_names() {
+    let args = build_leaf_audio_download_args(
+        std::path::Path::new("C:/tools/ffmpeg"),
+        "C:/music/Ludwig Göransson.%(ext)s",
+        "https://www.youtube.com/watch?v=leaf1",
+    );
+
+    assert!(args.iter().any(|arg| arg == "--no-restrict-filenames"));
+    assert!(!args.iter().any(|arg| arg == "--restrict-filenames"));
+}
+
+#[test]
+fn resolves_real_unicode_file_when_stdout_path_loses_diacritic() {
+    let target_dir = std::env::temp_dir().join(format!(
+        "slisic-yt-dlp-unicode-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&target_dir).expect("temp target dir should be created");
+
+    let real_file_name =
+        "TENET Official Soundtrack - MEETING NEIL - Ludwig Göransson.__slisic_tmp__6758e898.m4a";
+    let file_stem =
+        "TENET Official Soundtrack - MEETING NEIL - Ludwig Göransson.__slisic_tmp__6758e898";
+    let corrupted_stdout_path = target_dir.join(
+        "TENET Official Soundtrack - MEETING NEIL - Ludwig Gransson.__slisic_tmp__6758e898.m4a",
+    );
+    let real_path = target_dir.join(real_file_name);
+    std::fs::write(&real_path, b"audio").expect("unicode temp file should be written");
+
+    let resolved = resolve_downloaded_file(&target_dir, file_stem, Some(&corrupted_stdout_path))
+        .expect("resolver should fall back to the real unicode file");
+
+    assert_eq!(resolved, real_path);
+    std::fs::remove_dir_all(&target_dir).expect("temp target dir should be removed");
 }

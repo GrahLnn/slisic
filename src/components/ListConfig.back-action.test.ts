@@ -7,6 +7,7 @@ describe("ListConfig back action visuals", () => {
     assert.deepEqual(
       resolveBackActionVisualState({
         hasDraftChanges: true,
+        isImporting: false,
         isParsing: true,
       }),
       {
@@ -19,10 +20,12 @@ describe("ListConfig back action visuals", () => {
   test("replays the check symbol when dirty draft content changes", () => {
     const before = resolveBackActionVisualState({
       hasDraftChanges: true,
+      isImporting: false,
       isParsing: false,
     });
     const after = resolveBackActionVisualState({
       hasDraftChanges: true,
+      isImporting: false,
       isParsing: false,
     });
 
@@ -34,15 +37,31 @@ describe("ListConfig back action visuals", () => {
   test("switches symbol kinds when draft cleanliness changes", () => {
     const clean = resolveBackActionVisualState({
       hasDraftChanges: false,
+      isImporting: false,
       isParsing: false,
     });
     const dirty = resolveBackActionVisualState({
       hasDraftChanges: true,
+      isImporting: false,
       isParsing: false,
     });
 
     assert.equal(clean.kind, "back");
     assert.equal(dirty.kind, "check");
     assert.notEqual(clean.key, dirty.key);
+  });
+
+  test("uses the processing grid while local import is pending", () => {
+    assert.deepEqual(
+      resolveBackActionVisualState({
+        hasDraftChanges: false,
+        isImporting: true,
+        isParsing: false,
+      }),
+      {
+        kind: "processing",
+        key: "processing",
+      },
+    );
   });
 });

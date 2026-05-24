@@ -149,10 +149,19 @@ function resolveListConfigToolLabelTool(args: {
   });
 }
 
-function FnButton({ text, onClick }: { text: string; onClick?: () => void }) {
+function FnButton({
+  disabled = false,
+  text,
+  onClick,
+}: {
+  disabled?: boolean;
+  text: string;
+  onClick?: () => void;
+}) {
   return (
     <button
       type="button"
+      disabled={disabled}
       className={cn(
         "group relative isolate inline-flex h-7 w-fit items-center justify-center",
         "cursor-pointer select-none text-xs leading-none outline-none transition duration-300 ease-in-out",
@@ -161,6 +170,7 @@ function FnButton({ text, onClick }: { text: string; onClick?: () => void }) {
         "before:rounded-[25px] before:bg-transparent before:transition before:duration-300",
         "before:[corner-shape:squircle_squircle_squircle_squircle]",
         "hover:before:bg-[#e7eced] dark:hover:before:bg-[#383838]",
+        "disabled:pointer-events-none disabled:opacity-50",
       )}
       onClick={onClick}
     >
@@ -441,6 +451,7 @@ export function ListConfig() {
   const emptyStateRef = useRef<ListConfigEmptyState | null>(null);
   const [isBackNavigationPending, setIsBackNavigationPending] = useState(false);
   const [isDeletePending, setIsDeletePending] = useState(false);
+  const [isImportPending, setIsImportPending] = useState(false);
   const [removingExcludeItemIds, setRemovingExcludeItemIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -470,6 +481,7 @@ export function ListConfig() {
   emptyStateRef.current = viewModel.emptyState;
   const backActionVisualState = resolveBackActionVisualState({
     hasDraftChanges: viewModel.hasDraftChanges,
+    isImporting: isImportPending,
     isParsing: viewModel.isBackActionParsing,
   });
   const isBackActionLocked =
@@ -519,6 +531,19 @@ export function ListConfig() {
 
   async function handleChangeSavePath() {
     await appLogicAction.chooseSavePath(renderedSavePath);
+  }
+
+  async function handleImportCollection() {
+    if (isImportPending) {
+      return;
+    }
+
+    setIsImportPending(true);
+    try {
+      await appLogicAction.importLocalCollection(renderedSavePath);
+    } finally {
+      setIsImportPending(false);
+    }
   }
 
   async function handleBackAction() {
@@ -646,9 +671,7 @@ export function ListConfig() {
             }}
             className={cn(
               "group relative isolate inline-flex w-fit select-none py-2 pr-2",
-              viewModel.interactionFlags.isBackActionInteractionLocked
-                ? "cursor-wait"
-                : "cursor-pointer",
+              isBackActionLocked ? "cursor-wait" : "cursor-pointer",
               isBackNavigationPending && "pointer-events-none",
               "before:absolute before:inset-y-0 before:-left-2 before:right-0 before:-z-10",
               "before:rounded-[25px] before:bg-transparent before:transition before:duration-300",
@@ -712,7 +735,11 @@ export function ListConfig() {
           <div className="flex justify-between">
             <div className="flex gap-5">
               <FnButton text="Paste" onClick={pasteDownloadAction.paste} />
-              <FnButton text="Import" />
+              <FnButton
+                disabled={isImportPending}
+                text={isImportPending ? "Importing" : "Import"}
+                onClick={handleImportCollection}
+              />
             </div>
 
             <div>{/*<FnButton text="Save" />*/}</div>

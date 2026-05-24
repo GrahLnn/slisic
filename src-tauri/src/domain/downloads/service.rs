@@ -9,6 +9,7 @@ use super::repo;
 use super::yt_dlp::CliYtDlpClient;
 use super::yt_dlp::{
     DownloadProgress, LeafProbe, LeafReference, RootProbe, YtDlpClient, classify_root_preference,
+    is_youtube_mix_playlist_id,
 };
 use crate::domain::collection_import::{
     self, CollectionShellPlan, CollectionSyncPlan, PlannedLeaf,
@@ -21,7 +22,7 @@ use crate::utils::binaries::{ManagedBinary, ensure_managed_binary, managed_bin_d
 use anyhow::{Context, Result, anyhow, bail};
 use appdb::Id;
 use reqwest::{Url, blocking::Client as BlockingHttpClient};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 #[cfg(not(test))]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -126,23 +127,88 @@ struct LeafDownloadInput {
 }
 
 #[cfg(not(test))]
-struct CompletedLeafDownload {
+struct LeafPreparationInput {
+    leaf: DownloadLeaf,
+    planned: PlannedLeaf,
+}
+
+#[cfg(not(test))]
+#[derive(Debug)]
+struct PreparedLeafDownload {
     leaf: DownloadLeaf,
     probe: LeafProbe,
     music_probe: LeafProbe,
     group: Option<Group>,
-    downloaded: super::yt_dlp::DownloadedLeaf,
-    progress: DownloadProgress,
+    url: String,
 }
 
 #[cfg(not(test))]
-struct FailedLeafDownload {
+#[derive(Debug)]
+struct FailedLeafPreparation {
     leaf: DownloadLeaf,
     error: String,
 }
 
-#[cfg(not(test))]
+#[derive(Debug)]
+pub(crate) struct CompletedLeafDownload {
+    pub(crate) leaf: DownloadLeaf,
+    pub(crate) probe: LeafProbe,
+    pub(crate) music_probe: LeafProbe,
+    pub(crate) group: Option<Group>,
+    pub(crate) downloaded: super::yt_dlp::DownloadedLeaf,
+    pub(crate) progress: DownloadProgress,
+}
+
+#[derive(Debug)]
+pub(crate) struct FailedLeafDownload {
+    pub(crate) leaf: DownloadLeaf,
+    pub(crate) error: String,
+}
+
 type LeafDownloadOutcome = std::result::Result<CompletedLeafDownload, FailedLeafDownload>;
+
+#[cfg(not(test))]
+#[derive(Debug, Default)]
+struct LeafPipelineState {
+    workers: JoinSet<LeafPipelineEvent>,
+    pending_prepares: VecDeque<PlannedLeaf>,
+    ready_downloads: VecDeque<PreparedLeafDownload>,
+    active_prepares: usize,
+    active_downloads: usize,
+    prepare_parallelism: usize,
+    download_parallelism: usize,
+}
+
+#[cfg(not(test))]
+impl LeafPipelineState {
+    fn new(leaves: Vec<PlannedLeaf>, download_parallelism: usize) -> Self {
+        Self {
+            workers: JoinSet::new(),
+            pending_prepares: VecDeque::from(leaves),
+            ready_downloads: VecDeque::new(),
+            active_prepares: 0,
+            active_downloads: 0,
+            prepare_parallelism: download_parallelism,
+            download_parallelism,
+        }
+    }
+
+    fn has_work(&self) -> bool {
+        self.active_prepares > 0
+            || self.active_downloads > 0
+            || !self.pending_prepares.is_empty()
+            || !self.ready_downloads.is_empty()
+    }
+}
+
+#[cfg(not(test))]
+type LeafPreparationOutcome = std::result::Result<PreparedLeafDownload, FailedLeafPreparation>;
+
+#[cfg(not(test))]
+enum LeafPipelineEvent {
+    Prepared(LeafPreparationOutcome),
+    Downloaded(LeafDownloadOutcome),
+}
 
 #[cfg(not(test))]
 #[derive(Debug, Clone)]
@@ -400,6 +466,7 @@ async fn run_task(task_id: String, app: AppHandle) -> Result<()> {
 #[cfg(not(test))]
 async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Result<()> {
     let mut task_snapshot = repo::get_task(&task_id).await?;
+    task_snapshot.url = normalize_url(&task_snapshot.url)?;
     update_task_status(&mut task_snapshot, DownloadTaskStatus::Resolving, None).await?;
 
     let client = deps.client;
@@ -416,20 +483,116 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
         return Ok(());
     }
 
-    let mut active_downloads = JoinSet::new();
+    let runnable_leaves = runnable_plan_leaves(&task_snapshot, &plan);
     let parallelism = leaf_download_parallelism(plan.source_kind, plan.leaves.len());
-    for planned in &plan.leaves {
-        while active_downloads.len() >= parallelism {
-            handle_finished_leaf_download(
-                &mut active_downloads,
-                &mut task_snapshot,
-                &mut collection,
-                plan.source_kind,
-                &save_root,
-            )
-            .await?;
-        }
+    eprintln!(
+        "[downloads] task {} pipeline start source_kind={} total_leaves={} runnable_leaves={} download_parallelism={} folder={}",
+        task_snapshot.id,
+        plan.source_kind.as_str(),
+        plan.leaves.len(),
+        runnable_leaves.len(),
+        parallelism,
+        collection.folder
+    );
 
+    let mut pipeline = LeafPipelineState::new(runnable_leaves, parallelism);
+    fill_leaf_pipeline(
+        &mut pipeline,
+        &mut task_snapshot,
+        client.clone(),
+        plan.source_kind,
+        &save_root,
+    )
+    .await?;
+
+    while pipeline.has_work() {
+        handle_leaf_pipeline_event(
+            &mut pipeline,
+            &mut task_snapshot,
+            &mut collection,
+            &mut group_catalog,
+            client.clone(),
+            plan.source_kind,
+            &save_root,
+        )
+        .await?;
+        fill_leaf_pipeline(
+            &mut pipeline,
+            &mut task_snapshot,
+            client.clone(),
+            plan.source_kind,
+            &save_root,
+        )
+        .await?;
+    }
+
+    let completed = task_snapshot.completed_leaves;
+    let next_status = if task_snapshot.failed_leaves == 0 {
+        DownloadTaskStatus::Completed
+    } else if completed > 0 {
+        DownloadTaskStatus::CompletedWithErrors
+    } else {
+        DownloadTaskStatus::Failed
+    };
+    let last_error = task_snapshot.last_error.clone();
+    update_task_status(&mut task_snapshot, next_status, last_error).await?;
+    eprintln!(
+        "[downloads] task {} pipeline finished status={} completed={} failed={} total={}",
+        task_snapshot.id,
+        task_snapshot.status.as_str(),
+        task_snapshot.completed_leaves,
+        task_snapshot.failed_leaves,
+        task_snapshot.total_leaves
+    );
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn runnable_plan_leaves(task: &DownloadTask, plan: &CollectionSyncPlan) -> Vec<PlannedLeaf> {
+    plan.leaves
+        .iter()
+        .filter(|planned| {
+            task.leafs
+                .iter()
+                .find(|leaf| leaf.id == planned.id)
+                .map(|leaf| leaf.status != DownloadLeafStatus::Completed)
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect()
+}
+
+#[cfg(not(test))]
+async fn fill_leaf_pipeline(
+    pipeline: &mut LeafPipelineState,
+    task_snapshot: &mut DownloadTask,
+    client: Arc<dyn YtDlpClient>,
+    source_kind: CollectionSourceKind,
+    save_root: &Path,
+) -> Result<()> {
+    spawn_ready_leaf_downloads(
+        pipeline,
+        task_snapshot,
+        source_kind,
+        save_root,
+        client.clone(),
+    )
+    .await?;
+    spawn_ready_leaf_preparations(pipeline, task_snapshot, client).await
+}
+
+#[cfg(not(test))]
+async fn spawn_ready_leaf_preparations(
+    pipeline: &mut LeafPipelineState,
+    task_snapshot: &mut DownloadTask,
+    client: Arc<dyn YtDlpClient>,
+) -> Result<()> {
+    while pipeline.active_prepares < pipeline.prepare_parallelism
+        && !pipeline.pending_prepares.is_empty()
+    {
+        let Some(planned) = pipeline.pending_prepares.pop_front() else {
+            break;
+        };
         let mut leaf_snapshot = task_snapshot
             .leafs
             .iter()
@@ -448,136 +611,69 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
         task_snapshot.replace_leaf(leaf_snapshot.clone());
         repo::save_task(task_snapshot.clone()).await?;
 
-        let probe = match planned.initial_probe.clone() {
-            Some(probe) => probe,
-            None => {
-                let client = client.clone();
-                let url = planned.url.clone();
-                match run_blocking(move || client.probe_leaf(&url)).await {
-                    Ok(probe) => probe,
-                    Err(error) => {
-                        mark_leaf_failed(&mut task_snapshot, leaf_snapshot, error.to_string())
-                            .await?;
+        eprintln!(
+            "[downloads] leaf {} prepare queued sequence={} url={} active_prepares={} active_downloads={} pending={}",
+            leaf_snapshot.id,
+            leaf_snapshot.sequence,
+            planned.url,
+            pipeline.active_prepares + 1,
+            pipeline.active_downloads,
+            pipeline.pending_prepares.len()
+        );
 
-                        if plan.source_kind == CollectionSourceKind::Single {
-                            let last_error = task_snapshot.last_error.clone();
-                            update_task_status(
-                                &mut task_snapshot,
-                                DownloadTaskStatus::Failed,
-                                last_error,
-                            )
-                            .await?;
-                            return Ok(());
-                        }
-
-                        continue;
-                    }
-                }
-            }
-        };
-        let mut music_probe = probe.clone();
-        if let Some(music_title) = &planned.music_title {
-            music_probe.title = music_title.clone();
-        }
-
-        let group = match planned.group_hint.clone() {
-            Some(group) => Some(group),
-            None => {
-                resolve_probe_group(
-                    plan.source_kind,
-                    &probe,
-                    &task_snapshot.url,
-                    client.clone(),
-                    &mut group_catalog,
-                )
-                .await
-            }
-        };
-
-        leaf_snapshot.title = Some(probe.title.clone());
-        leaf_snapshot.duration_seconds = probe.duration_seconds;
-        leaf_snapshot.chapter_count = Some(probe.chapters.len() as u32);
-        let file_stem = sanitize_path_component(&probe.title);
-        let music_group = resolve_music_group(group.clone(), &collection);
-
-        if let Some(relative_path) = collection_import::resolve_existing_leaf_file(
-            &collection,
-            &music_group,
-            &save_root,
-            &file_stem,
-        ) {
-            collection_import::persist_downloaded_leaf_music(
-                &mut collection,
-                plan.source_kind,
-                &music_probe,
-                &relative_path,
-                music_group,
-            )
-            .await?;
-            leaf_snapshot.file_name = Some(relative_path.clone());
-            leaf_snapshot.relative_path = Some(relative_path);
-            leaf_snapshot.status = DownloadLeafStatus::Completed;
-            leaf_snapshot.last_error = None;
-            leaf_snapshot.touch();
-            task_snapshot.replace_leaf(leaf_snapshot);
-            let saved = repo::save_task(task_snapshot.clone()).await?;
-            publish_download_task_change(&saved);
-            task_snapshot = saved;
-            continue;
-        }
-
-        leaf_snapshot.status = DownloadLeafStatus::Downloading;
-        leaf_snapshot.touch();
-        task_snapshot.replace_leaf(leaf_snapshot.clone());
-        repo::save_task(task_snapshot.clone()).await?;
-
-        let target_dir = save_root.join(&collection.folder);
-        let leaf_url = planned.url.clone();
-        let temp_file_stem = temporary_download_stem(&file_stem, &task_snapshot.id, &planned.id);
-        let client = client.clone();
-        active_downloads.spawn(download_leaf_audio_worker(
-            client,
-            LeafDownloadInput {
+        pipeline.workers.spawn(prepare_leaf_download_worker(
+            client.clone(),
+            LeafPreparationInput {
                 leaf: leaf_snapshot,
-                probe,
-                music_probe,
-                group,
-                url: leaf_url,
-                target_dir,
-                temp_file_stem,
+                planned,
             },
         ));
+        pipeline.active_prepares += 1;
     }
 
-    while !active_downloads.is_empty() {
-        handle_finished_leaf_download(
-            &mut active_downloads,
-            &mut task_snapshot,
-            &mut collection,
-            plan.source_kind,
-            &save_root,
-        )
-        .await?;
-    }
-
-    let completed = task_snapshot.completed_leaves;
-    let next_status = if task_snapshot.failed_leaves == 0 {
-        DownloadTaskStatus::Completed
-    } else if completed > 0 {
-        DownloadTaskStatus::CompletedWithErrors
-    } else {
-        DownloadTaskStatus::Failed
-    };
-    let last_error = task_snapshot.last_error.clone();
-    update_task_status(&mut task_snapshot, next_status, last_error).await?;
     Ok(())
+}
+
+#[cfg(not(test))]
+async fn prepare_leaf_download_worker(
+    client: Arc<dyn YtDlpClient>,
+    input: LeafPreparationInput,
+) -> LeafPipelineEvent {
+    let probe = match input.planned.initial_probe.clone() {
+        Some(probe) => probe,
+        None => {
+            let url = input.planned.url.clone();
+            match run_blocking(move || client.probe_leaf(&url)).await {
+                Ok(probe) => probe,
+                Err(error) => {
+                    return LeafPipelineEvent::Prepared(Err(FailedLeafPreparation {
+                        leaf: input.leaf,
+                        error: error.to_string(),
+                    }));
+                }
+            }
+        }
+    };
+
+    let mut music_probe = probe.clone();
+    if let Some(music_title) = &input.planned.music_title {
+        music_probe.title = music_title.clone();
+    }
+
+    LeafPipelineEvent::Prepared(Ok(PreparedLeafDownload {
+        leaf: input.leaf,
+        probe,
+        music_probe,
+        group: input.planned.group_hint,
+        url: input.planned.url,
+    }))
 }
 
 #[cfg(not(test))]
 async fn download_leaf_audio_worker(
     client: Arc<dyn YtDlpClient>,
     input: LeafDownloadInput,
-) -> LeafDownloadOutcome {
+) -> LeafPipelineEvent {
     let url = input.url.clone();
     let target_dir = input.target_dir.clone();
     let temp_file_stem = input.temp_file_stem.clone();
@@ -592,39 +688,310 @@ async fn download_leaf_audio_worker(
     .await;
 
     match download_result {
-        Ok((downloaded, progress)) => Ok(CompletedLeafDownload {
+        Ok((downloaded, progress)) => LeafPipelineEvent::Downloaded(Ok(CompletedLeafDownload {
             leaf: input.leaf,
             probe: input.probe,
             music_probe: input.music_probe,
             group: input.group,
             downloaded,
             progress,
-        }),
-        Err(error) => Err(FailedLeafDownload {
+        })),
+        Err(error) => LeafPipelineEvent::Downloaded(Err(FailedLeafDownload {
             leaf: input.leaf,
             error: error.to_string(),
-        }),
+        })),
     }
 }
 
 #[cfg(not(test))]
-async fn handle_finished_leaf_download(
-    active_downloads: &mut JoinSet<LeafDownloadOutcome>,
+async fn handle_leaf_pipeline_event(
+    pipeline: &mut LeafPipelineState,
+    task_snapshot: &mut DownloadTask,
+    collection: &mut Collection,
+    group_catalog: &mut GroupCatalog,
+    client: Arc<dyn YtDlpClient>,
+    source_kind: CollectionSourceKind,
+    save_root: &Path,
+) -> Result<()> {
+    if pipeline.active_prepares == 0 && pipeline.active_downloads == 0 {
+        return Ok(());
+    }
+
+    let event = pipeline
+        .workers
+        .join_next()
+        .await
+        .context("download pipeline worker set was unexpectedly empty")?
+        .context("download pipeline worker panicked")?;
+
+    match event {
+        LeafPipelineEvent::Prepared(outcome) => {
+            pipeline.active_prepares = pipeline.active_prepares.saturating_sub(1);
+            handle_prepared_leaf_download(
+                pipeline,
+                task_snapshot,
+                collection,
+                group_catalog,
+                client,
+                source_kind,
+                save_root,
+                outcome,
+            )
+            .await
+        }
+        LeafPipelineEvent::Downloaded(outcome) => {
+            pipeline.active_downloads = pipeline.active_downloads.saturating_sub(1);
+            handle_finished_leaf_download(
+                task_snapshot,
+                collection,
+                source_kind,
+                save_root,
+                outcome,
+            )
+            .await
+        }
+    }
+}
+
+#[cfg(not(test))]
+async fn handle_prepared_leaf_download(
+    pipeline: &mut LeafPipelineState,
+    task_snapshot: &mut DownloadTask,
+    collection: &mut Collection,
+    group_catalog: &mut GroupCatalog,
+    client: Arc<dyn YtDlpClient>,
+    source_kind: CollectionSourceKind,
+    save_root: &Path,
+    outcome: LeafPreparationOutcome,
+) -> Result<()> {
+    let prepared = match outcome {
+        Ok(prepared) => prepared,
+        Err(failed) => {
+            eprintln!(
+                "[downloads] leaf {} prepare failed: {}",
+                failed.leaf.id, failed.error
+            );
+            mark_leaf_failed(task_snapshot, failed.leaf, failed.error.clone()).await?;
+
+            if source_kind == CollectionSourceKind::Single {
+                let last_error = task_snapshot.last_error.clone();
+                update_task_status(task_snapshot, DownloadTaskStatus::Failed, last_error).await?;
+            }
+            return Ok(());
+        }
+    };
+    eprintln!(
+        "[downloads] leaf {} prepared title={} url={} active_prepares={} active_downloads={}",
+        prepared.leaf.id,
+        prepared.probe.title,
+        prepared.url,
+        pipeline.active_prepares,
+        pipeline.active_downloads
+    );
+
+    let group = match prepared.group.clone() {
+        Some(group) => Some(group),
+        None => {
+            resolve_probe_group(
+                source_kind,
+                &prepared.probe,
+                &task_snapshot.url,
+                client.clone(),
+                group_catalog,
+            )
+            .await
+        }
+    };
+
+    let mut leaf_snapshot = prepared.leaf;
+    leaf_snapshot.title = Some(prepared.probe.title.clone());
+    leaf_snapshot.duration_seconds = prepared.probe.duration_seconds;
+    leaf_snapshot.chapter_count = Some(prepared.probe.chapters.len() as u32);
+    let file_stem = sanitize_path_component(&prepared.probe.title);
+    let music_group = resolve_music_group(group.clone(), collection);
+    let target_dir = save_root.join(&collection.folder);
+    let temp_file_stem = temporary_download_stem(&file_stem, &task_snapshot.id, &leaf_snapshot.id);
+
+    if let Some(relative_path) = collection_import::resolve_existing_leaf_file(
+        collection,
+        &music_group,
+        save_root,
+        &file_stem,
+    ) {
+        eprintln!(
+            "[downloads] leaf {} reusing existing file {}",
+            leaf_snapshot.id, relative_path
+        );
+        collection_import::persist_downloaded_leaf_music(
+            collection,
+            source_kind,
+            &prepared.music_probe,
+            &relative_path,
+            music_group,
+        )
+        .await?;
+        write_collection_manifest_after_download(save_root, collection, source_kind)?;
+        leaf_snapshot.file_name = Some(relative_path.clone());
+        leaf_snapshot.relative_path = Some(relative_path);
+        leaf_snapshot.status = DownloadLeafStatus::Completed;
+        leaf_snapshot.last_error = None;
+        leaf_snapshot.touch();
+        task_snapshot.replace_leaf(leaf_snapshot);
+        let saved = repo::save_task(task_snapshot.clone()).await?;
+        publish_download_task_change(&saved);
+        *task_snapshot = saved;
+        return Ok(());
+    }
+
+    if let Some(downloaded_path) =
+        resolve_existing_temp_downloaded_file(&target_dir, &temp_file_stem)
+    {
+        eprintln!(
+            "[downloads] leaf {} found existing temp file {}",
+            leaf_snapshot.id,
+            downloaded_path.display()
+        );
+        handle_finished_leaf_download(
+            task_snapshot,
+            collection,
+            source_kind,
+            save_root,
+            Ok(CompletedLeafDownload {
+                leaf: leaf_snapshot,
+                probe: prepared.probe,
+                music_probe: prepared.music_probe,
+                group,
+                downloaded: super::yt_dlp::DownloadedLeaf {
+                    absolute_path: downloaded_path,
+                },
+                progress: DownloadProgress::default(),
+            }),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    pipeline.ready_downloads.push_back(PreparedLeafDownload {
+        leaf: leaf_snapshot,
+        probe: prepared.probe,
+        music_probe: prepared.music_probe,
+        group,
+        url: prepared.url,
+    });
+    Ok(())
+}
+
+#[cfg(not(test))]
+async fn spawn_ready_leaf_downloads(
+    pipeline: &mut LeafPipelineState,
+    task_snapshot: &mut DownloadTask,
+    source_kind: CollectionSourceKind,
+    save_root: &Path,
+    client: Arc<dyn YtDlpClient>,
+) -> Result<()> {
+    while pipeline.active_downloads < pipeline.download_parallelism {
+        let Some(prepared) = pipeline.ready_downloads.pop_front() else {
+            break;
+        };
+
+        let mut leaf_snapshot = prepared.leaf;
+        leaf_snapshot.status = DownloadLeafStatus::Downloading;
+        leaf_snapshot.touch();
+        task_snapshot.replace_leaf(leaf_snapshot.clone());
+        repo::save_task(task_snapshot.clone()).await?;
+
+        let file_stem = sanitize_path_component(&prepared.probe.title);
+        let target_dir = save_root.join(
+            task_snapshot
+                .collection_folder
+                .as_deref()
+                .context("download task is missing collection folder")?,
+        );
+        let temp_file_stem =
+            temporary_download_stem(&file_stem, &task_snapshot.id, &leaf_snapshot.id);
+        eprintln!(
+            "[downloads] leaf {} download queued sequence={} source_kind={} active_downloads={} parallelism={} temp_stem={} target_dir={}",
+            leaf_snapshot.id,
+            leaf_snapshot.sequence,
+            source_kind.as_str(),
+            pipeline.active_downloads + 1,
+            pipeline.download_parallelism,
+            temp_file_stem,
+            target_dir.display()
+        );
+
+        pipeline.workers.spawn(download_leaf_audio_worker(
+            client.clone(),
+            LeafDownloadInput {
+                leaf: leaf_snapshot,
+                probe: prepared.probe,
+                music_probe: prepared.music_probe,
+                group: prepared.group,
+                url: prepared.url,
+                target_dir,
+                temp_file_stem,
+            },
+        ));
+        pipeline.active_downloads += 1;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) async fn handle_finished_leaf_download(
     task_snapshot: &mut DownloadTask,
     collection: &mut Collection,
     source_kind: CollectionSourceKind,
     save_root: &Path,
+    outcome: LeafDownloadOutcome,
 ) -> Result<()> {
-    let outcome = active_downloads
-        .join_next()
-        .await
-        .context("download worker set was unexpectedly empty")?
-        .context("download worker panicked")?;
+    handle_finished_leaf_download_for_test(
+        task_snapshot,
+        collection,
+        source_kind,
+        save_root,
+        outcome,
+    )
+    .await
+}
 
+pub(crate) fn resolve_existing_temp_downloaded_file(
+    target_dir: &Path,
+    temp_file_stem: &str,
+) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(target_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let stem = path.file_stem().and_then(|value| value.to_str())?;
+        if stem == temp_file_stem {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+#[cfg(not(test))]
+async fn handle_finished_leaf_download(
+    task_snapshot: &mut DownloadTask,
+    collection: &mut Collection,
+    source_kind: CollectionSourceKind,
+    save_root: &Path,
+    outcome: LeafDownloadOutcome,
+) -> Result<()> {
     let completed = match outcome {
         Ok(completed) => completed,
         Err(failed) => {
-            mark_leaf_failed(task_snapshot, failed.leaf, failed.error).await?;
+            eprintln!(
+                "[downloads] leaf {} download failed: {}",
+                failed.leaf.id, failed.error
+            );
+            mark_leaf_failed(task_snapshot, failed.leaf, failed.error.clone()).await?;
 
             if source_kind == CollectionSourceKind::Single {
                 let last_error = task_snapshot.last_error.clone();
@@ -637,22 +1004,88 @@ async fn handle_finished_leaf_download(
     let mut leaf_snapshot = completed.leaf;
     let file_stem = sanitize_path_component(&completed.probe.title);
     let music_group = resolve_music_group(completed.group, collection);
-    let file_name = collection_import::finalize_downloaded_leaf(
+    let downloaded_path = completed.downloaded.absolute_path;
+    let file_name = match persist_completed_leaf_download(
         collection,
+        source_kind,
         &completed.probe.webpage_url,
+        &completed.music_probe,
+        &music_group,
+        save_root,
+        &file_stem,
+        downloaded_path.clone(),
+    )
+    .await
+    {
+        Ok(file_name) => file_name,
+        Err(error) => {
+            let error = error.to_string();
+            eprintln!(
+                "[downloads] leaf {} persist failed downloaded_path={} error={}",
+                leaf_snapshot.id,
+                downloaded_path.display(),
+                error
+            );
+            mark_leaf_failed(task_snapshot, leaf_snapshot, error).await?;
+            return Ok(());
+        }
+    };
+
+    let leaf_id = leaf_snapshot.id.to_string();
+    leaf_snapshot.file_name = Some(file_name.clone());
+    leaf_snapshot.relative_path = Some(file_name.clone());
+    leaf_snapshot.downloaded_bytes = completed.progress.downloaded_bytes;
+    leaf_snapshot.total_bytes = completed.progress.total_bytes;
+    leaf_snapshot.speed_bytes_per_second = completed.progress.speed_bytes_per_second;
+    leaf_snapshot.eta_seconds = completed.progress.eta_seconds;
+    leaf_snapshot.status = DownloadLeafStatus::Completed;
+    leaf_snapshot.last_error = None;
+    leaf_snapshot.touch();
+    task_snapshot.replace_leaf(leaf_snapshot);
+    let saved = repo::save_task(task_snapshot.clone()).await?;
+    publish_download_task_change(&saved);
+    *task_snapshot = saved;
+    eprintln!("[downloads] leaf {} completed file={}", leaf_id, file_name);
+    Ok(())
+}
+
+#[cfg(test)]
+async fn handle_finished_leaf_download_for_test(
+    task_snapshot: &mut DownloadTask,
+    collection: &mut Collection,
+    source_kind: CollectionSourceKind,
+    save_root: &Path,
+    outcome: LeafDownloadOutcome,
+) -> Result<()> {
+    let completed = match outcome {
+        Ok(completed) => completed,
+        Err(failed) => {
+            mark_leaf_failed(task_snapshot, failed.leaf, failed.error).await?;
+            return Ok(());
+        }
+    };
+
+    let mut leaf_snapshot = completed.leaf;
+    let file_stem = sanitize_path_component(&completed.probe.title);
+    let music_group = resolve_music_group(completed.group, collection);
+    let file_name = match persist_completed_leaf_download(
+        collection,
+        source_kind,
+        &completed.probe.webpage_url,
+        &completed.music_probe,
         &music_group,
         save_root,
         &file_stem,
         completed.downloaded.absolute_path,
-    )?;
-    collection_import::persist_downloaded_leaf_music(
-        collection,
-        source_kind,
-        &completed.music_probe,
-        &file_name,
-        music_group,
     )
-    .await?;
+    .await
+    {
+        Ok(file_name) => file_name,
+        Err(error) => {
+            mark_leaf_failed(task_snapshot, leaf_snapshot, error.to_string()).await?;
+            return Ok(());
+        }
+    };
 
     leaf_snapshot.file_name = Some(file_name.clone());
     leaf_snapshot.relative_path = Some(file_name);
@@ -665,9 +1098,56 @@ async fn handle_finished_leaf_download(
     leaf_snapshot.touch();
     task_snapshot.replace_leaf(leaf_snapshot);
     let saved = repo::save_task(task_snapshot.clone()).await?;
-    publish_download_task_change(&saved);
     *task_snapshot = saved;
     Ok(())
+}
+
+async fn persist_completed_leaf_download(
+    collection: &mut Collection,
+    source_kind: CollectionSourceKind,
+    leaf_url: &str,
+    music_probe: &LeafProbe,
+    music_group: &Group,
+    save_root: &Path,
+    file_stem: &str,
+    downloaded_path: PathBuf,
+) -> Result<String> {
+    eprintln!(
+        "[downloads] finalize leaf url={} downloaded_path={} file_stem={} group_url={}",
+        leaf_url,
+        downloaded_path.display(),
+        file_stem,
+        music_group.url
+    );
+    let file_name = collection_import::finalize_downloaded_leaf(
+        collection,
+        leaf_url,
+        music_group,
+        save_root,
+        file_stem,
+        downloaded_path,
+    )?;
+    eprintln!(
+        "[downloads] persist music leaf url={} relative_path={}",
+        leaf_url, file_name
+    );
+    collection_import::persist_downloaded_leaf_music(
+        collection,
+        source_kind,
+        music_probe,
+        &file_name,
+        music_group.clone(),
+    )
+    .await
+    .with_context(|| format!("failed to persist downloaded music for {leaf_url}"))?;
+    write_collection_manifest_after_download(save_root, collection, source_kind)
+        .with_context(|| format!("failed to write collection manifest for {leaf_url}"))?;
+    eprintln!(
+        "[downloads] manifest updated collection_folder={} relative_path={}",
+        collection.folder, file_name
+    );
+
+    Ok(file_name)
 }
 
 async fn mark_leaf_failed(
@@ -683,6 +1163,25 @@ async fn mark_leaf_failed(
     let saved = repo::save_task(task_snapshot.clone()).await?;
     publish_download_task_change(&saved);
     *task_snapshot = saved;
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn write_collection_manifest_after_download(
+    save_root: &Path,
+    collection: &Collection,
+    source_kind: CollectionSourceKind,
+) -> Result<()> {
+    let collection_root = save_root.join(&collection.folder);
+    collection_import::write_collection_manifest(&collection_root, collection, source_kind)
+}
+
+#[cfg(test)]
+fn write_collection_manifest_after_download(
+    _save_root: &Path,
+    _collection: &Collection,
+    _source_kind: CollectionSourceKind,
+) -> Result<()> {
     Ok(())
 }
 
@@ -707,7 +1206,8 @@ async fn resolve_collection_plan(
                 source_kind: CollectionSourceKind::Single,
                 collection_name: leaf.title.clone(),
                 collection_url: collection_url.clone(),
-                collection_folder: collection_import::resolve_collection_folder(
+                collection_folder: resolve_task_collection_folder(
+                    task,
                     &collection_url,
                     &leaf.title,
                     existing.as_ref(),
@@ -740,7 +1240,8 @@ async fn resolve_collection_plan(
                 source_kind: CollectionSourceKind::List,
                 collection_name: list.title.clone(),
                 collection_url: collection_url.clone(),
-                collection_folder: collection_import::resolve_collection_folder(
+                collection_folder: resolve_task_collection_folder(
+                    task,
                     &collection_url,
                     &list.title,
                     existing.as_ref(),
@@ -755,6 +1256,24 @@ async fn resolve_collection_plan(
             })
         }
     }
+}
+
+pub(crate) async fn resolve_task_collection_folder(
+    task: &DownloadTask,
+    collection_url: &str,
+    collection_name: &str,
+    existing: Option<&Collection>,
+) -> Result<String> {
+    if let Some(folder) = task
+        .collection_folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|folder| !folder.is_empty())
+    {
+        return Ok(folder.to_string());
+    }
+
+    collection_import::resolve_collection_folder(collection_url, collection_name, existing).await
 }
 
 #[cfg(not(test))]
@@ -1108,7 +1627,7 @@ fn runtime() -> Result<&'static DownloadRuntime> {
 }
 
 #[cfg(not(test))]
-fn try_claim_task(task_id: &str) -> Result<bool> {
+pub(crate) fn try_claim_task(task_id: &str) -> Result<bool> {
     let runtime = runtime()?;
     let mut active = runtime
         .active_task_ids
@@ -1135,7 +1654,7 @@ pub(crate) fn try_claim_enqueue_url(url: &str) -> Result<Option<PendingEnqueueUr
 }
 
 #[cfg(not(test))]
-fn release_task(task_id: &str) {
+pub(crate) fn release_task(task_id: &str) {
     if let Some(runtime) = DOWNLOAD_RUNTIME.get()
         && let Ok(mut active) = runtime.active_task_ids.lock()
     {
@@ -1149,7 +1668,7 @@ fn download_task_change_sender() -> &'static broadcast::Sender<DownloadTaskChang
 }
 
 #[cfg(not(test))]
-fn publish_download_task_change(task: &DownloadTask) {
+pub(crate) fn publish_download_task_change(task: &DownloadTask) {
     let _ = download_task_change_sender().send(DownloadTaskChangeSignal {
         task_id: task.id.to_string(),
         task_url: task.url.clone(),
@@ -1203,12 +1722,18 @@ fn spawn_recovery(app: AppHandle) {
 }
 
 #[cfg(not(test))]
-async fn recover_incomplete_download_tasks() -> Result<usize> {
+pub(crate) async fn recover_incomplete_download_tasks() -> Result<usize> {
     let tasks = repo::list_tasks().await?;
     let mut recovered = 0_usize;
 
     for mut task in tasks {
-        if !should_resume_download_task_after_restart(task.status) {
+        if should_interrupt_unresumable_active_task_after_restart(&task) {
+            let last_error = task.last_error.clone();
+            update_task_status(&mut task, DownloadTaskStatus::Interrupted, last_error).await?;
+            continue;
+        }
+
+        if !should_recover_download_task_after_restart(&task) {
             continue;
         }
 
@@ -1303,6 +1828,7 @@ fn task_id_for(url: &str, trigger: DownloadTrigger) -> String {
         "{}-{}",
         match trigger {
             DownloadTrigger::Manual => "manual",
+            DownloadTrigger::LocalImport => "local",
             DownloadTrigger::AutoUpdate => "auto",
         },
         stable_id(&format!("{url}|{}", now_timestamp()))
@@ -1318,6 +1844,10 @@ fn normalize_url(url: &str) -> Result<String> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
         bail!("download url is empty");
+    }
+
+    if let Some(canonical) = normalize_youtube_playlist_url(trimmed) {
+        return Ok(canonical);
     }
 
     if let Some(canonical) = normalize_youtube_direct_leaf_url(trimmed) {
@@ -1382,6 +1912,26 @@ fn normalize_youtube_direct_leaf_url(url: &str) -> Option<String> {
     }
 }
 
+fn normalize_youtube_playlist_url(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    if host != "youtu.be" && !host.ends_with("youtube.com") {
+        return None;
+    }
+
+    let playlist_id = parsed
+        .query_pairs()
+        .find(|(key, value)| key == "list" && !value.is_empty())
+        .map(|(_, value)| value.to_string())?;
+    if is_youtube_mix_playlist_id(&playlist_id) {
+        return None;
+    }
+
+    Some(format!(
+        "https://www.youtube.com/playlist?list={playlist_id}"
+    ))
+}
+
 /// Root probing decides collection shape; full leaf metadata should only be
 /// reused when the input was already classified as a direct leaf URL.
 pub(crate) fn should_reprobe_single_leaf(preference: CollectionSourceKind) -> bool {
@@ -1401,6 +1951,15 @@ pub(crate) fn leaf_download_parallelism(
 
 pub(crate) fn should_resume_download_task_after_restart(status: DownloadTaskStatus) -> bool {
     status.is_active() || status == DownloadTaskStatus::Interrupted
+}
+
+pub(crate) fn should_recover_download_task_after_restart(task: &DownloadTask) -> bool {
+    task.trigger != DownloadTrigger::LocalImport
+        && should_resume_download_task_after_restart(task.status)
+}
+
+pub(crate) fn should_interrupt_unresumable_active_task_after_restart(task: &DownloadTask) -> bool {
+    task.trigger == DownloadTrigger::LocalImport && task.status.is_active()
 }
 
 impl GroupCatalog {

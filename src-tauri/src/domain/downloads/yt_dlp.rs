@@ -13,6 +13,9 @@ use std::thread;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const AUDIO_ONLY_FORMAT_SELECTOR: &str = "bestaudio[ext=m4a]/bestaudio";
+const PYTHON_UTF8_ENV_VAR: &str = "PYTHONUTF8";
+const PYTHON_IO_ENCODING_ENV_VAR: &str = "PYTHONIOENCODING";
+const UTF8_ENCODING_VALUE: &str = "utf-8";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistRoot {
@@ -111,7 +114,9 @@ impl CliYtDlpClient {
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .env(PYTHON_UTF8_ENV_VAR, "1")
+            .env(PYTHON_IO_ENCODING_ENV_VAR, UTF8_ENCODING_VALUE);
 
         #[cfg(windows)]
         {
@@ -164,6 +169,13 @@ impl YtDlpClient for CliYtDlpClient {
             .join(format!("{file_stem}.%(ext)s"))
             .to_string_lossy()
             .to_string();
+        eprintln!(
+            "[downloads:yt-dlp] spawn download url={} target_dir={} file_stem={} output_template={}",
+            url,
+            target_dir.display(),
+            file_stem,
+            output_template
+        );
         let mut command = self.base_command();
         command.args(build_leaf_audio_download_args(
             &self.ffmpeg_dir,
@@ -206,13 +218,27 @@ impl YtDlpClient for CliYtDlpClient {
         let status = child.wait().context("failed waiting for yt-dlp download")?;
         let _ = stdout_handle.join();
         let _ = stderr_handle.join();
+        eprintln!(
+            "[downloads:yt-dlp] process exited url={} status={} after_move={}",
+            url,
+            status,
+            final_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        );
         if !status.success() {
             bail!("yt-dlp download exited with status {status}");
         }
 
-        let absolute_path = final_path
-            .or_else(|| find_downloaded_file(target_dir, file_stem))
-            .context("yt-dlp completed but final audio path could not be resolved")?;
+        let absolute_path =
+            resolve_downloaded_file(target_dir, file_stem, final_path.as_deref())
+                .context("yt-dlp completed but final audio path could not be resolved")?;
+        eprintln!(
+            "[downloads:yt-dlp] resolved audio url={} path={}",
+            url,
+            absolute_path.display()
+        );
 
         Ok(DownloadedLeaf { absolute_path })
     }
@@ -227,6 +253,7 @@ pub(crate) fn build_leaf_audio_download_args(
 
     [
             "--no-warnings",
+            "--no-restrict-filenames",
             "--ignore-errors",
             "--no-playlist",
             "--format",
@@ -487,7 +514,7 @@ fn looks_like_youtube_root(url: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn is_youtube_mix_playlist_id(list_id: &str) -> bool {
+pub(crate) fn is_youtube_mix_playlist_id(list_id: &str) -> bool {
     list_id.to_ascii_uppercase().starts_with("RD")
 }
 
@@ -548,6 +575,17 @@ fn spawn_line_reader(
             let _ = sender.send(line);
         }
     })
+}
+
+pub(crate) fn resolve_downloaded_file(
+    target_dir: &Path,
+    file_stem: &str,
+    reported_path: Option<&Path>,
+) -> Option<PathBuf> {
+    reported_path
+        .filter(|path| path.is_file())
+        .map(Path::to_path_buf)
+        .or_else(|| find_downloaded_file(target_dir, file_stem))
 }
 
 fn find_downloaded_file(target_dir: &Path, file_stem: &str) -> Option<PathBuf> {

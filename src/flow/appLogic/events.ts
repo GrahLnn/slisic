@@ -140,6 +140,17 @@ export async function chooseSavePath(currentSavePath: string): Promise<string | 
   return typeof selectedPath === "string" ? selectedPath : null;
 }
 
+export async function chooseCollectionFolder(currentSavePath: string): Promise<string | null> {
+  const defaultPath = currentSavePath || (await resolveDefaultSavePath());
+  const selectedPath = await open({
+    directory: true,
+    multiple: false,
+    defaultPath,
+  });
+
+  return typeof selectedPath === "string" ? selectedPath : null;
+}
+
 export async function persistSavePath(selectedPath: string): Promise<string> {
   const result = await crab.saveMetaInfo({
     save_path: selectedPath,
@@ -147,6 +158,28 @@ export async function persistSavePath(selectedPath: string): Promise<string> {
 
   return result.match({
     Ok: (meta) => resolveSavedPath(meta.save_path, selectedPath),
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+}
+
+export async function createLocalCollectionShell(collectionPath: string): Promise<Collection> {
+  const result = await crab.createLocalCollectionShell(collectionPath);
+
+  return result.match({
+    Ok: (collection) => collection,
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+}
+
+export async function importLocalCollection(collectionPath: string): Promise<Collection> {
+  const result = await crab.importLocalCollection(collectionPath);
+
+  return result.match({
+    Ok: (collection) => collection,
     Err: (error) => {
       throw new Error(error);
     },

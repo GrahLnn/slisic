@@ -12,9 +12,10 @@ export interface BackActionVisualState {
  */
 export function resolveBackActionVisualState(args: {
   hasDraftChanges: boolean;
+  isImporting: boolean;
   isParsing: boolean;
 }): BackActionVisualState {
-  if (args.isParsing) {
+  if (args.isParsing || args.isImporting) {
     return {
       kind: "processing",
       key: "processing",
