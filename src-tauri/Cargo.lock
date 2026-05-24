@@ -9,6 +9,53 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe438c63458706e03479442743baae6c88256498e6431708f6dfc520a26515d3"
 
 [[package]]
+name = "Slisic"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "appdb",
+ "async-trait",
+ "block2",
+ "chrono",
+ "ffplayr",
+ "hex",
+ "inventory",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "rand 0.10.1",
+ "reqwest",
+ "rustfft",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "specta",
+ "specta-typescript",
+ "surrealdb",
+ "surrealdb-types",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-log",
+ "tauri-plugin-os",
+ "tauri-plugin-process",
+ "tauri-plugin-shell",
+ "tauri-plugin-updater",
+ "tauri-specta",
+ "tokio",
+ "walkdir",
+ "webview2-com",
+ "windows 0.62.2",
+ "windows-sys 0.61.2",
+ "xz2",
+ "zip 8.6.0",
+]
+
+[[package]]
 name = "addr"
 version = "0.15.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5350,53 +5397,6 @@ checksum = "4d431c2703ccf129de4d45253c03f49ebb22b97d6ad79ee3ecfc7e3f4862c1d8"
 dependencies = [
  "num-traits",
  "rand 0.10.1",
-]
-
-[[package]]
-name = "ransic"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "appdb",
- "async-trait",
- "block2",
- "chrono",
- "ffplayr",
- "hex",
- "inventory",
- "log",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "rand 0.10.1",
- "reqwest",
- "rustfft",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "specta",
- "specta-typescript",
- "surrealdb",
- "surrealdb-types",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-log",
- "tauri-plugin-os",
- "tauri-plugin-process",
- "tauri-plugin-shell",
- "tauri-plugin-updater",
- "tauri-specta",
- "tokio",
- "walkdir",
- "webview2-com",
- "windows 0.62.2",
- "windows-sys 0.61.2",
- "xz2",
- "zip 8.6.0",
 ]
 
 [[package]]

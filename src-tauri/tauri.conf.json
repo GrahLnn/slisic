@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "ransic",
+  "productName": "Slisic",
   "version": "0.0.1",
-  "identifier": "com.ransic.app",
+  "identifier": "slisic",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:3000",
@@ -61,8 +61,10 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE4QTk2Nzk3Q0FEQ0I0RTMKUldUanROektsMmVwR0F1ZWE4Y1ozY3E4WEhjbWN2cHFXVnl2dXV3dTBGemFzVFY4WGlqd0s3Wm4K",
-      "endpoints": ["https://github.com/{}/{}/releases/latest/download/latest.json"]
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFRTI2NTJBQTZDODNGQzkKUldUSlA4aW1LbVhpdmlZUVJJcHBJQW1abW9hOWJkTjQ4NkhIQTdOT21Gd2hLc1c2SURCbTROKysK",
+      "endpoints": [
+        "https://github.com/GrahLnn/slisic/releases/latest/download/latest.json"
+      ]
     }
   }
 }
