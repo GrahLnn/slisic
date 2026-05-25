@@ -16,6 +16,7 @@ use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
 use crate::domain::player::service as player_service;
 #[cfg(not(test))]
 use crate::domain::player::strategy::PlaybackQueueMode;
+use crate::domain::playlist_playback::recommendation::filter_recently_played_recommendation_candidates;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
     AudioStyleCandidateSelection, AudioStylePlaylistPlaybackProposal,
@@ -31,6 +32,8 @@ use anyhow::{Result, anyhow, bail};
 use rand::RngExt;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+#[cfg(not(test))]
+use std::sync::{Arc, Mutex};
 #[cfg(not(test))]
 use tauri::AppHandle;
 #[cfg(not(test))]
@@ -50,6 +53,38 @@ const PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS: u64 = 250;
 const PLAYLIST_PLAYBACK_LIKED_CANDIDATE_LIMIT: usize = 128;
 
 #[cfg(not(test))]
+type SharedPlaylistPlaybackRecentHistory = Arc<Mutex<PlaylistPlaybackRecentHistory>>;
+
+#[cfg(not(test))]
+#[derive(Clone, Default)]
+pub(crate) struct PlaylistPlaybackRecentHistory {
+    tracks: Vec<PlaybackTrack>,
+}
+
+#[cfg(not(test))]
+impl PlaylistPlaybackRecentHistory {
+    pub(crate) fn from_initial_track(track: PlaybackTrack) -> Self {
+        let mut history = Self::default();
+        history.observe(track);
+        history
+    }
+
+    pub(crate) fn observe(&mut self, track: PlaybackTrack) {
+        if !self
+            .tracks
+            .iter()
+            .any(|recorded| are_playlist_playback_tracks_equal(recorded, &track))
+        {
+            self.tracks.push(track);
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> Vec<PlaybackTrack> {
+        self.tracks.clone()
+    }
+}
+
+#[cfg(not(test))]
 pub fn initialize_runtime(app: AppHandle) {
     initialize_audio_style_recommendation_runtime(app);
 }
@@ -63,11 +98,14 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
     let playlist_name = material.playlist_name;
     let track_count = material.tracks.len().max(1) as u32;
     let initial_track = material.initial_track;
+    let recent_history = PlaylistPlaybackRecentHistory::from_initial_track(initial_track.clone());
     let tracks = propose_playlist_playback_queue(PlaylistPlaybackRecommendationRequest {
         playlist_name: playlist_name.clone(),
         current_track: initial_track.clone(),
         candidates: material.tracks,
+        recently_played_tracks: recent_history.snapshot(),
     });
+    let shared_recent_history = Arc::new(Mutex::new(recent_history));
 
     ensure_playlist_playback_request_current(&request)?;
     player_service::set_playback_continuation_mode(resolve_playlist_playback_continuation_mode())?;
@@ -84,6 +122,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
         playlist_name.clone(),
         session.clone(),
         initial_track.clone(),
+        Arc::clone(&shared_recent_history),
     );
     spawn_playlist_track_refresh(
         app.clone(),
@@ -91,6 +130,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
         session,
         initial_track,
         download_changes,
+        shared_recent_history,
     );
 
     Ok(PlayPlaylistSession {
@@ -186,6 +226,7 @@ async fn prepare_current_session_after_exclude(
             playlist_name: track.playlist_name.clone(),
             current_track: track.clone(),
             candidates: fallback_candidates,
+            recently_played_tracks: vec![track.clone()],
         },
     );
     if fallback_tracks.is_empty() {
@@ -266,6 +307,7 @@ async fn refresh_current_session_after_exclude(
             playlist_name: source.playlist_name,
             current_track: track.clone(),
             candidates: source.resolution.tracks,
+            recently_played_tracks: vec![track.clone()],
         },
     );
     player_service::update_current_session_tracks(tracks)?;
@@ -421,11 +463,13 @@ fn spawn_playlist_track_queue_fill(
     playlist_name: String,
     session: player_service::PlaybackSessionHandle,
     initial_track: PlaybackTrack,
+    recent_history: SharedPlaylistPlaybackRecentHistory,
 ) {
     let task_playlist_name = playlist_name.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(error) =
-            fill_playlist_track_queue(app, playlist_name, session, initial_track).await
+            fill_playlist_track_queue(app, playlist_name, session, initial_track, recent_history)
+                .await
         {
             eprintln!(
                 "[playlist_playback] failed to fill playback queue for `{task_playlist_name}`: {error}"
@@ -441,6 +485,7 @@ fn spawn_playlist_track_refresh(
     session: player_service::PlaybackSessionHandle,
     initial_track: PlaybackTrack,
     download_changes: tokio::sync::broadcast::Receiver<download_service::DownloadTaskChangeSignal>,
+    recent_history: SharedPlaylistPlaybackRecentHistory,
 ) {
     let task_playlist_name = playlist_name.clone();
     tauri::async_runtime::spawn(async move {
@@ -450,6 +495,7 @@ fn spawn_playlist_track_refresh(
             session,
             initial_track,
             download_changes,
+            recent_history,
         )
         .await
         {
@@ -466,6 +512,7 @@ async fn fill_playlist_track_queue(
     playlist_name: String,
     session: player_service::PlaybackSessionHandle,
     initial_track: PlaybackTrack,
+    recent_history: SharedPlaylistPlaybackRecentHistory,
 ) -> Result<()> {
     let mut current_anchor: Option<PlaybackTrack> = None;
     loop {
@@ -474,6 +521,8 @@ async fn fill_playlist_track_queue(
         }
 
         let active_track = resolve_playlist_playback_queue_anchor(&session, &initial_track).await?;
+        let recent_history_snapshot =
+            observe_playlist_playback_recent_history(&recent_history, active_track.clone())?;
         if current_anchor
             .as_ref()
             .is_none_or(|anchor| !are_playlist_playback_tracks_equal(anchor, &active_track))
@@ -483,6 +532,7 @@ async fn fill_playlist_track_queue(
                 &playlist_name,
                 &session,
                 active_track.clone(),
+                &recent_history_snapshot,
                 true,
             )
             .await?;
@@ -505,6 +555,7 @@ async fn refresh_playlist_tracks_until_downloads_finish(
     mut download_changes: tokio::sync::broadcast::Receiver<
         download_service::DownloadTaskChangeSignal,
     >,
+    recent_history: SharedPlaylistPlaybackRecentHistory,
 ) -> Result<()> {
     loop {
         wait_for_download_task_change(&mut download_changes).await?;
@@ -524,11 +575,14 @@ async fn refresh_playlist_tracks_until_downloads_finish(
         if !source.resolution.tracks.is_empty() {
             let current_track =
                 resolve_playlist_playback_queue_anchor(&session, &initial_track).await?;
+            let recent_history_snapshot =
+                observe_playlist_playback_recent_history(&recent_history, current_track.clone())?;
             let updated = refresh_playlist_track_queue_for_anchor(
                 &app,
                 &playlist_name,
                 &session,
                 current_track,
+                &recent_history_snapshot,
                 false,
             )
             .await?;
@@ -549,6 +603,7 @@ async fn refresh_playlist_track_queue_for_anchor(
     playlist_name: &str,
     session: &player_service::PlaybackSessionHandle,
     current_track: PlaybackTrack,
+    recently_played_tracks: &[PlaybackTrack],
     should_log_selection: bool,
 ) -> Result<bool> {
     let source =
@@ -567,11 +622,24 @@ async fn refresh_playlist_track_queue_for_anchor(
             playlist_name: playlist_name.to_string(),
             current_track,
             candidates: source.resolution.tracks,
+            recently_played_tracks: recently_played_tracks.to_vec(),
         },
         PlaylistPlaybackRecommendationMode::KeepCurrent,
         should_log_selection,
     );
     player_service::update_session_tracks(session, tracks)
+}
+
+#[cfg(not(test))]
+fn observe_playlist_playback_recent_history(
+    recent_history: &SharedPlaylistPlaybackRecentHistory,
+    track: PlaybackTrack,
+) -> Result<Vec<PlaybackTrack>> {
+    let mut history = recent_history
+        .lock()
+        .map_err(|_| anyhow!("playlist playback recent history lock is poisoned"))?;
+    history.observe(track);
+    Ok(history.snapshot())
 }
 
 #[cfg(not(test))]
@@ -836,11 +904,18 @@ fn try_propose_audio_style_playlist_playback_queue(
 
     if recommender.has_embedding_for(&request.current_track) {
         let mut proposal = match mode {
-            PlaylistPlaybackRecommendationMode::KeepCurrent => {
-                recommender.propose_queue_with_trace(request.current_track, request.candidates)
-            }
+            PlaylistPlaybackRecommendationMode::KeepCurrent => recommender
+                .propose_queue_with_trace_and_recent_history(
+                    request.current_track,
+                    request.candidates,
+                    &request.recently_played_tracks,
+                ),
             PlaylistPlaybackRecommendationMode::ExcludeCurrent => recommender
-                .propose_queue_after_exclude_with_trace(request.current_track, request.candidates),
+                .propose_queue_after_exclude_with_trace_and_recent_history(
+                    request.current_track,
+                    request.candidates,
+                    &request.recently_played_tracks,
+                ),
         };
         if let Some(selection) = proposal.selection.as_mut() {
             selection.model_generation = Some(snapshot.generation());
@@ -877,12 +952,14 @@ fn propose_random_playlist_playback_queue_with_trace(
     request: PlaylistPlaybackRecommendationRequest,
     mode: PlaylistPlaybackRecommendationMode,
 ) -> PlaylistPlaybackQueueProposal {
+    let mut request = request.with_recent_history_applied();
     let current_track = request.current_track.clone();
     let candidates = request.candidates.clone();
     let candidate_count = candidates
         .iter()
         .filter(|candidate| !are_playlist_playback_tracks_equal(candidate, &current_track))
         .count();
+    request.recently_played_tracks.clear();
     let tracks = match mode {
         PlaylistPlaybackRecommendationMode::KeepCurrent => {
             RandomPlaylistPlaybackRecommender.propose_queue(request)
@@ -1234,6 +1311,17 @@ pub(crate) struct PlaylistPlaybackRecommendationRequest {
     pub(crate) playlist_name: String,
     pub(crate) current_track: PlaybackTrack,
     pub(crate) candidates: Vec<PlaybackTrack>,
+    pub(crate) recently_played_tracks: Vec<PlaybackTrack>,
+}
+
+impl PlaylistPlaybackRecommendationRequest {
+    fn with_recent_history_applied(mut self) -> Self {
+        self.candidates = filter_recently_played_recommendation_candidates(
+            self.candidates,
+            &self.recently_played_tracks,
+        );
+        self
+    }
 }
 
 pub(crate) trait PlaylistPlaybackRecommender {
@@ -1248,6 +1336,7 @@ impl PlaylistPlaybackRecommender for RandomPlaylistPlaybackRecommender {
         mut request: PlaylistPlaybackRecommendationRequest,
     ) -> Vec<PlaybackTrack> {
         let _playlist_name = &request.playlist_name;
+        request = request.with_recent_history_applied();
         let tracks = &mut request.candidates;
         shuffle_playback_tracks(tracks);
         create_short_playback_queue(request.current_track, request.candidates)
@@ -1259,6 +1348,7 @@ impl RandomPlaylistPlaybackRecommender {
         &self,
         mut request: PlaylistPlaybackRecommendationRequest,
     ) -> Vec<PlaybackTrack> {
+        request = request.with_recent_history_applied();
         propose_random_queue_after_exclude(&mut request.candidates, &request.current_track)
     }
 }

@@ -1011,12 +1011,39 @@ impl AudioStylePlaylistPlaybackRecommender {
             .tracks
     }
 
+    #[cfg(test)]
+    pub(crate) fn propose_queue_with_recent_history(
+        &self,
+        current_track: PlaybackTrack,
+        candidates: Vec<PlaybackTrack>,
+        recently_played_tracks: &[PlaybackTrack],
+    ) -> Vec<PlaybackTrack> {
+        self.propose_queue_with_trace_and_recent_history(
+            current_track,
+            candidates,
+            recently_played_tracks,
+        )
+        .tracks
+    }
+
+    #[cfg(test)]
     pub(crate) fn propose_queue_with_trace(
         &self,
         current_track: PlaybackTrack,
         candidates: Vec<PlaybackTrack>,
     ) -> AudioStylePlaylistPlaybackProposal {
+        self.propose_queue_with_trace_and_recent_history(current_track, candidates, &[])
+    }
+
+    pub(crate) fn propose_queue_with_trace_and_recent_history(
+        &self,
+        current_track: PlaybackTrack,
+        candidates: Vec<PlaybackTrack>,
+        recently_played_tracks: &[PlaybackTrack],
+    ) -> AudioStylePlaylistPlaybackProposal {
         let remaining = dedupe_tracks_excluding(candidates, Some(&current_track));
+        let remaining =
+            filter_recently_played_recommendation_candidates(remaining, recently_played_tracks);
         let mut queue = Vec::with_capacity(2);
         queue.push(current_track.clone());
         let selection = self
@@ -1041,12 +1068,28 @@ impl AudioStylePlaylistPlaybackRecommender {
             .tracks
     }
 
+    #[cfg(test)]
     pub(crate) fn propose_queue_after_exclude_with_trace(
         &self,
         current_track: PlaybackTrack,
         candidates: Vec<PlaybackTrack>,
     ) -> AudioStylePlaylistPlaybackProposal {
+        self.propose_queue_after_exclude_with_trace_and_recent_history(
+            current_track,
+            candidates,
+            &[],
+        )
+    }
+
+    pub(crate) fn propose_queue_after_exclude_with_trace_and_recent_history(
+        &self,
+        current_track: PlaybackTrack,
+        candidates: Vec<PlaybackTrack>,
+        recently_played_tracks: &[PlaybackTrack],
+    ) -> AudioStylePlaylistPlaybackProposal {
         let remaining = dedupe_tracks_excluding(candidates, Some(&current_track));
+        let remaining =
+            filter_recently_played_recommendation_candidates(remaining, recently_played_tracks);
         let mut selection = None;
         let tracks = self
             .propose_next_with_trace(&current_track, remaining)
@@ -1203,6 +1246,32 @@ fn dedupe_tracks_excluding(
         }
     }
     result
+}
+
+pub(crate) fn filter_recently_played_recommendation_candidates(
+    candidates: Vec<PlaybackTrack>,
+    recently_played_tracks: &[PlaybackTrack],
+) -> Vec<PlaybackTrack> {
+    if recently_played_tracks.is_empty() {
+        return candidates;
+    }
+
+    let filtered = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.liked
+                || !recently_played_tracks
+                    .iter()
+                    .any(|played| PlaybackTrackKey::from_track(played).matches_track(candidate))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if filtered.is_empty() {
+        candidates
+    } else {
+        filtered
+    }
 }
 
 fn select_next_audio_style_candidate(

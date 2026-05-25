@@ -1,3 +1,4 @@
+use super::recommendation::filter_recently_played_recommendation_candidates;
 use super::service::{
     PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
     PlaylistPlaybackRecommender, RandomPlaylistPlaybackRecommender, place_track_at_queue_start,
@@ -23,6 +24,20 @@ fn temp_root() -> PathBuf {
         .expect("clock should be after unix epoch")
         .as_nanos();
     std::env::temp_dir().join(format!("slisic_playlist_playback_service_test_{nanos}"))
+}
+
+fn playback_track(name: &str) -> PlaybackTrack {
+    PlaybackTrack {
+        playlist_name: "Focus".to_string(),
+        music_name: name.to_string(),
+        canonical_music_id: format!("source:https://example.com/{name}:0:60000"),
+        music_url: format!("https://example.com/{name}"),
+        file_path: PathBuf::from(format!("{name}.m4a")),
+        start_ms: 0,
+        end_ms: 60_000,
+        source_music: None,
+        liked: false,
+    }
 }
 
 fn group(name: &str, url: &str, folder: &str) -> Group {
@@ -381,6 +396,7 @@ fn random_recommender_keeps_current_track_at_the_queue_start() {
             playlist_name: "Focus".to_string(),
             current_track: current_track.clone(),
             candidates: vec![current_track.clone(), next.clone()],
+            recently_played_tracks: vec![],
         });
     let identity = proposed
         .iter()
@@ -458,6 +474,7 @@ fn random_recommender_after_exclude_does_not_reinsert_current_track() {
             playlist_name: "Focus".to_string(),
             current_track: current.clone(),
             candidates: vec![next.clone()],
+            recently_played_tracks: vec![],
         },
     );
 
@@ -533,10 +550,81 @@ fn random_recommender_keeps_current_track_ahead_of_newly_loaded_queue_window() {
             playlist_name: "Focus".to_string(),
             current_track: current_track.clone(),
             candidates: vec![next.clone()],
+            recently_played_tracks: vec![],
         });
 
     assert_eq!(proposed[0].music_url, current_track.music_url);
     assert_eq!(proposed[1].music_url, next.music_url);
+}
+
+#[test]
+fn recommendation_history_excludes_recent_non_liked_candidates() {
+    let played = playback_track("played");
+    let fresh = playback_track("fresh");
+
+    let filtered = filter_recently_played_recommendation_candidates(
+        vec![played.clone(), fresh.clone()],
+        std::slice::from_ref(&played),
+    );
+
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].music_url, fresh.music_url);
+}
+
+#[test]
+fn recommendation_history_keeps_liked_recent_candidates() {
+    let mut liked = playback_track("liked");
+    liked.liked = true;
+    let fresh = playback_track("fresh");
+
+    let filtered = filter_recently_played_recommendation_candidates(
+        vec![liked.clone(), fresh.clone()],
+        std::slice::from_ref(&liked),
+    );
+
+    assert_eq!(filtered.len(), 2);
+    assert!(
+        filtered
+            .iter()
+            .any(|track| track.music_url == liked.music_url)
+    );
+    assert!(
+        filtered
+            .iter()
+            .any(|track| track.music_url == fresh.music_url)
+    );
+}
+
+#[test]
+fn recommendation_history_falls_back_when_every_candidate_was_recently_played() {
+    let played = playback_track("played");
+
+    let filtered = filter_recently_played_recommendation_candidates(
+        vec![played.clone()],
+        std::slice::from_ref(&played),
+    );
+
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].music_url, played.music_url);
+}
+
+#[test]
+fn random_recommender_uses_recent_history_before_selecting_next() {
+    let current = playback_track("current");
+    let played = playback_track("played");
+    let fresh = playback_track("fresh");
+
+    let proposed =
+        RandomPlaylistPlaybackRecommender.propose_queue(PlaylistPlaybackRecommendationRequest {
+            playlist_name: "Focus".to_string(),
+            current_track: current.clone(),
+            candidates: vec![played.clone(), fresh.clone()],
+            recently_played_tracks: vec![played.clone()],
+        });
+
+    assert_eq!(proposed.len(), 2);
+    assert_eq!(proposed[0].music_url, current.music_url);
+    assert_eq!(proposed[1].music_url, fresh.music_url);
 }
 
 #[test]

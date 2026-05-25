@@ -3,6 +3,7 @@ use super::recommendation::{
     AudioStylePlaylistPlaybackRecommender, audio_style_transition_fingerprint_for_test,
     choose_next_audio_style_candidate_for_test,
     choose_next_audio_style_candidate_with_generation_for_test,
+    filter_recently_played_recommendation_candidates,
 };
 use crate::domain::player::model::PlaybackTrack;
 use std::path::PathBuf;
@@ -123,6 +124,54 @@ fn audio_style_recommender_prefers_near_embedding_when_sampling_low_draw() {
     );
 
     assert_eq!(index, 0);
+}
+
+#[test]
+fn audio_style_recommender_skips_recent_non_liked_candidate() {
+    let current = track("current");
+    let played_near = track("played_near");
+    let fresh_far = track("fresh_far");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (played_near.clone(), embedding(2)),
+        (fresh_far.clone(), embedding(128)),
+    ]);
+
+    let proposed = recommender.propose_queue_with_recent_history(
+        current.clone(),
+        vec![played_near.clone(), fresh_far.clone()],
+        std::slice::from_ref(&played_near),
+    );
+
+    assert_eq!(proposed.len(), 2);
+    assert_eq!(proposed[0].music_url, current.music_url);
+    assert_eq!(proposed[1].music_url, fresh_far.music_url);
+}
+
+#[test]
+fn audio_style_history_filter_keeps_recent_liked_candidate_in_weight_band() {
+    let current = track("current");
+    let low = track("low");
+    let mut liked = track("liked");
+    let high = track("high");
+    liked.liked = true;
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (low.clone(), embedding(128)),
+        (high.clone(), embedding(2)),
+    ]);
+    let filtered = filter_recently_played_recommendation_candidates(
+        vec![low.clone(), liked.clone(), high.clone()],
+        std::slice::from_ref(&liked),
+    );
+
+    let selected_after_low =
+        choose_next_audio_style_candidate_for_test(&current, &filtered, &recommender, 0.15);
+    let selected_after_liked =
+        choose_next_audio_style_candidate_for_test(&current, &filtered, &recommender, 0.5);
+
+    assert_eq!(selected_after_low, 1);
+    assert_eq!(selected_after_liked, 2);
 }
 
 #[test]
