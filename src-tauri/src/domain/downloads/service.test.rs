@@ -814,7 +814,7 @@ fn resolve_pasted_download_url_returns_new_url_when_library_has_no_match() {
 }
 
 #[test]
-fn resolve_pasted_download_url_canonicalizes_youtube_watch_playlist_identity() {
+fn resolve_pasted_download_url_canonicalizes_youtube_watch_playlist_item_as_single_video() {
     let _guard = acquire_db_test_lock();
 
     run_async(async {
@@ -829,7 +829,53 @@ fn resolve_pasted_download_url_canonicalizes_youtube_watch_playlist_identity() {
         assert_eq!(resolution.status, PastedDownloadUrlResolutionStatus::NewUrl);
         assert_eq!(
             resolution.url.as_deref(),
+            Some("https://www.youtube.com/watch?v=abc123")
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn resolve_pasted_download_url_keeps_youtube_watch_playlist_without_index_as_playlist() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let resolution = resolve_pasted_download_url(
+            "https://www.youtube.com/watch?v=abc123&list=PLtenet".to_string(),
+        )
+        .await
+        .expect("watch playlist url without index should resolve");
+
+        assert_eq!(resolution.status, PastedDownloadUrlResolutionStatus::NewUrl);
+        assert_eq!(
+            resolution.url.as_deref(),
             Some("https://www.youtube.com/playlist?list=PLtenet")
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn resolve_pasted_download_url_keeps_youtube_watch_index_without_playlist_as_single_video() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let resolution = resolve_pasted_download_url(
+            "https://www.youtube.com/watch?v=abc123&index=14".to_string(),
+        )
+        .await
+        .expect("watch url without playlist should resolve");
+
+        assert_eq!(resolution.status, PastedDownloadUrlResolutionStatus::NewUrl);
+        assert_eq!(
+            resolution.url.as_deref(),
+            Some("https://www.youtube.com/watch?v=abc123&index=14")
         );
 
         reset_db();

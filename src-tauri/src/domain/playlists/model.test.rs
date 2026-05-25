@@ -21,6 +21,7 @@ struct StoredPlayListRow {
     name: String,
     collections: Vec<RecordId>,
     groups: Vec<RecordId>,
+    extra: Vec<RecordId>,
     created_at: AutoFill,
 }
 
@@ -232,6 +233,7 @@ async fn insert_playlist_row(
     playlist: &PlayList,
     collections: &[RecordId],
     groups: &[RecordId],
+    extra: &[RecordId],
 ) -> RecordId {
     let db = get_db().expect("global playlist database handle should exist");
     let mut result = db
@@ -243,6 +245,7 @@ async fn insert_playlist_row(
                 "name": playlist.name,
                 "collections": collections,
                 "groups": groups,
+                "extra": extra,
                 "created_at": playlist.created_at.clone(),
             }),
         ))
@@ -389,6 +392,8 @@ fn sample_playlist() -> PlayList {
                 folder: "youtube/single-beta".to_string(),
             },
         ],
+        extra: vec![],
+
         created_at: AutoFill::pending(),
     }
 }
@@ -428,6 +433,7 @@ fn assert_playlist_eq(actual: &PlayList, expected: &PlayList) {
     assert_eq!(actual.name, expected.name);
     assert_eq!(actual.collections.len(), expected.collections.len());
     assert_eq!(actual.groups.len(), expected.groups.len());
+    assert_eq!(actual.extra.len(), expected.extra.len());
 
     for (actual_collection, expected_collection) in
         actual.collections.iter().zip(expected.collections.iter())
@@ -437,6 +443,10 @@ fn assert_playlist_eq(actual: &PlayList, expected: &PlayList) {
 
     for (actual_group, expected_group) in actual.groups.iter().zip(expected.groups.iter()) {
         assert_group_eq(actual_group, expected_group);
+    }
+
+    for (actual_extra, expected_extra) in actual.extra.iter().zip(expected.extra.iter()) {
+        assert_music_eq(actual_extra, expected_extra);
     }
 }
 
@@ -475,6 +485,7 @@ fn deserializes_playlist_with_collection_update_flags() {
     let value = json!({
         "name": "study",
         "created_at": "2026-04-12T00:00:00.000000000Z",
+        "extra": [],
         "groups": [
             {
                 "name": "playlist-a",
@@ -503,10 +514,12 @@ fn deserializes_playlist_with_collection_update_flags() {
                             "url": "https://example.com/playlist-a",
                             "folder": "youtube/playlist-a"
                         },
+                        "canonical_music_id": "source:https://example.com/track-a:0:120000",
                         "url": "https://example.com/track-a",
                         "path": "track-a.m4a",
                         "start_ms": 0,
-                        "end_ms": 120000
+                        "end_ms": 120000,
+                        "liked": false
                     }
                 ]
             },
@@ -525,10 +538,12 @@ fn deserializes_playlist_with_collection_update_flags() {
                             "url": "https://example.com/single-b",
                             "folder": "youtube/single-b"
                         },
+                        "canonical_music_id": "source:https://example.com/track-b:0:90000",
                         "url": "https://example.com/track-b",
                         "path": null,
                         "start_ms": 0,
-                        "end_ms": 90000
+                        "end_ms": 90000,
+                        "liked": false
                     }
                 ]
             }
@@ -624,6 +639,8 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
         let playlist = sample_playlist();
         let mut collection_records = Vec::with_capacity(playlist.collections.len());
         let mut group_records = Vec::with_capacity(playlist.groups.len());
+        let extra = playlist.collections[0].musics[0].clone();
+        let mut extra_record = None;
 
         for (index, group) in playlist.groups.iter().enumerate() {
             group_records.push(insert_group_row(&format!("seeded-group-{index}"), group).await);
@@ -634,6 +651,9 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
             for music in &collection.musics {
                 music_records.push(insert_music_row(music).await);
             }
+            if index == 0 {
+                extra_record = music_records.first().cloned();
+            }
 
             let collection_record =
                 insert_collection_row(&format!("seeded-collection-{index}"), collection).await;
@@ -642,11 +662,15 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
             collection_records.push(collection_record);
         }
 
+        let mut playlist = playlist;
+        playlist.extra.push(extra.clone());
+        let extra_record = extra_record.expect("extra should reuse seeded collection music");
         let playlist_record = insert_playlist_row(
             "seeded-playlist",
             &playlist,
             &collection_records,
             &group_records,
+            std::slice::from_ref(&extra_record),
         )
         .await;
 
@@ -689,7 +713,13 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
         assert_eq!(stored_root.name, playlist.name);
         assert_eq!(stored_root.collections.len(), playlist.collections.len());
         assert_eq!(stored_root.groups.len(), playlist.groups.len());
+        assert_eq!(stored_root.extra.len(), playlist.extra.len());
         assert_eq!(stored_root.created_at, playlist.created_at);
+
+        for (extra_record, expected_extra) in stored_root.extra.iter().zip(playlist.extra.iter()) {
+            let stored_extra = load_music_record(extra_record).await;
+            assert_music_eq(&stored_extra, expected_extra);
+        }
 
         for (group_record, expected_group) in stored_root.groups.iter().zip(playlist.groups.iter())
         {

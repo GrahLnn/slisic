@@ -26,6 +26,7 @@ import {
   collectionUpserted,
   collectionUpdatesRequested,
   draftCollectionUpserted,
+  draftExtraRemoved,
   draftNameChanged,
   draftItemIncluded,
   draftItemRemoved,
@@ -47,7 +48,7 @@ import {
   spectrumMusicRangeChanged,
   spectrumMusicNameChanged,
 } from "./runtime";
-import type { Exclude } from "@/src/cmd";
+import type { Exclude, Music } from "@/src/cmd";
 import { action as pasteDownloadAction } from "../pasteDownload";
 import { createPlaybackContinuationModeEffectOwner } from "./playbackContinuationModeEffectOwner";
 import {
@@ -562,6 +563,10 @@ export const action = {
   removeDraftItem: (item: ConfigSidebarItemRef) => {
     ensureStarted();
     send(draftItemRemoved.load(item));
+  },
+  removeDraftExtra: (music: Music) => {
+    ensureStarted();
+    send(draftExtraRemoved.load(music));
   },
   setCollectionUpdates: (url: string, enabled: boolean) => {
     ensureStarted();

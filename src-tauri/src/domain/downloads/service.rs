@@ -2044,6 +2044,10 @@ fn normalize_url(url: &str) -> Result<String> {
         bail!("download url is empty");
     }
 
+    if let Some(canonical) = normalize_youtube_watch_playlist_item_url(trimmed) {
+        return Ok(canonical);
+    }
+
     if let Some(canonical) = normalize_youtube_playlist_url(trimmed) {
         return Ok(canonical);
     }
@@ -2089,11 +2093,27 @@ fn normalize_youtube_direct_leaf_url(url: &str) -> Option<String> {
         return None;
     }
 
-    if let Some(video_id) = parsed
-        .query_pairs()
+    let query = parsed.query_pairs().collect::<Vec<_>>();
+    if let Some(video_id) = query
+        .iter()
         .find(|(key, value)| key == "v" && !value.is_empty())
         .map(|(_, value)| value.to_string())
     {
+        let playlist_id = query
+            .iter()
+            .find(|(key, value)| key == "list" && !value.is_empty())
+            .map(|(_, value)| value.to_string());
+        let has_non_video_query = query
+            .iter()
+            .any(|(key, value)| key != "v" && !value.is_empty());
+        if has_non_video_query
+            && !playlist_id
+                .as_deref()
+                .is_some_and(is_youtube_mix_playlist_id)
+        {
+            return None;
+        }
+
         return Some(format!("https://www.youtube.com/watch?v={video_id}"));
     }
 
@@ -2108,6 +2128,42 @@ fn normalize_youtube_direct_leaf_url(url: &str) -> Option<String> {
         "shorts" | "live" => Some(format!("https://www.youtube.com/watch?v={video_id}")),
         _ => None,
     }
+}
+
+fn normalize_youtube_watch_playlist_item_url(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    if !host.ends_with("youtube.com") {
+        return None;
+    }
+
+    let mut segments = parsed.path_segments()?;
+    if segments.next()? != "watch" {
+        return None;
+    }
+
+    let mut video_id = None;
+    let mut has_playlist = false;
+    let mut has_index = false;
+
+    for (key, value) in parsed.query_pairs() {
+        if value.is_empty() {
+            continue;
+        }
+
+        match key.as_ref() {
+            "v" => video_id = Some(value.to_string()),
+            "list" => has_playlist = true,
+            "index" => has_index = true,
+            _ => {}
+        }
+    }
+
+    if !has_playlist || !has_index {
+        return None;
+    }
+
+    video_id.map(|video_id| format!("https://www.youtube.com/watch?v={video_id}"))
 }
 
 fn normalize_youtube_playlist_url(url: &str) -> Option<String> {

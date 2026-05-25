@@ -270,6 +270,8 @@ fn main() {
                 ..collection.clone()
             }],
             groups: vec![],
+            extra: vec![],
+
             created_at: AutoFill::pending(),
         };
         domain::playlists::repo::upsert_playlist_surface(&playlist, None)

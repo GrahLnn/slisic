@@ -90,6 +90,25 @@ pub async fn upsert_playlist(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn push_extra(name: String, music: Music) -> Result<Option<PlayListConfigView>, String> {
+    super::repo::push_extra(&name, music)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn remove_extra(
+    name: String,
+    music: Music,
+) -> Result<Option<PlayListConfigView>, String> {
+    super::repo::remove_extra(&name, &music)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn set_collection_updates(
     url: String,
     enabled: bool,

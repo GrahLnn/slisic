@@ -21,6 +21,7 @@ import {
   createListConfigArcTrackItems,
   createListConfigCandidateToolLabelItems,
   createListConfigExcludeToolLabelItems,
+  createListConfigExtraToolLabelItems,
   createListConfigPlaylistSidebarItems,
   createListConfigPlaylistToolLabelItems,
   createListConfigToolLabelLayoutId,
@@ -49,6 +50,7 @@ const createDraft: ConfigDraft = {
   name: "",
   collections: [],
   groups: [],
+  extra: [],
   createdAt: null,
 };
 
@@ -65,6 +67,7 @@ const editDraft: ConfigDraft = {
     },
   ],
   groups: [],
+  extra: [],
   createdAt: "2026-04-13T00:00:00Z",
 };
 
@@ -87,6 +90,7 @@ const draftWithGroup: ConfigDraft = {
       folder: "Disc 1",
     },
   ],
+  extra: [],
   createdAt: "2026-04-13T00:00:00Z",
 };
 
@@ -473,6 +477,7 @@ describe("ListConfig title view model", () => {
             folder: "Quiet Morning",
           },
         ],
+        extra: [],
         createdAt: "2026-04-13T00:00:00Z",
       }),
       [
@@ -677,8 +682,19 @@ describe("ListConfig title view model", () => {
       ),
       [
         "https://www.youtube.com/watch?v=abc123&list=PLtenet&index=14",
+        "https://www.youtube.com/watch?v=abc123",
+      ],
+    );
+    assert.deepEqual(
+      resolveListConfigPastedUrlCandidates("https://www.youtube.com/watch?v=abc123&list=PLtenet"),
+      [
+        "https://www.youtube.com/watch?v=abc123&list=PLtenet",
         "https://www.youtube.com/playlist?list=PLtenet",
       ],
+    );
+    assert.deepEqual(
+      resolveListConfigPastedUrlCandidates("https://www.youtube.com/watch?v=abc123&index=14"),
+      ["https://www.youtube.com/watch?v=abc123&index=14"],
     );
     assert.deepEqual(
       resolveListConfigPastedUrlCandidates(
@@ -1022,6 +1038,17 @@ describe("ListConfig title view model", () => {
     );
   });
 
+  test("derives extra tool labels from music identity", () => {
+    assert.deepEqual(createListConfigExtraToolLabelItems([excludedMusic]), [
+      {
+        kind: "extra",
+        id: `extra:${excludedMusic.canonical_music_id}`,
+        music: excludedMusic,
+        text: "Blocked Alias",
+      },
+    ]);
+  });
+
   test("shows the empty-state hint when the playlist is empty and there are no candidates", () => {
     assert.equal(
       resolveListConfigEmptyState(
@@ -1047,6 +1074,25 @@ describe("ListConfig title view model", () => {
         shouldShowListConfigEmptyState({
           draft: createDraft,
           candidateItemCount: 1,
+        }),
+        null,
+      ).match({
+        true: () => true,
+        false: () => false,
+      }),
+      false,
+    );
+  });
+
+  test("hides the empty-state hint as soon as extra music exists", () => {
+    assert.equal(
+      resolveListConfigEmptyState(
+        shouldShowListConfigEmptyState({
+          draft: {
+            ...createDraft,
+            extra: [excludedMusic],
+          },
+          candidateItemCount: 0,
         }),
         null,
       ).match({
@@ -1184,6 +1230,7 @@ describe("ListConfig title view model", () => {
     assert.equal(viewModel.interactionFlags.isToolListInteractionDisabled, false);
     assert.equal(viewModel.interactionFlags.shouldRenderArcTrack, true);
     assert.equal(viewModel.shouldShowEmptyState, false);
+    assert.deepEqual(viewModel.extraToolLabelItems, []);
     assert.deepEqual(viewModel.arcTrackItems, [
       {
         kind: "collection",

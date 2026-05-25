@@ -121,6 +121,7 @@ describe("playlistCommit machine", () => {
               name: "New Draft",
               collections: [],
               groups: [],
+              extra: [],
               createdAt: null,
             },
             draftBaseline: null,
@@ -141,6 +142,7 @@ describe("playlistCommit machine", () => {
           name: "New Draft",
           collections: [],
           groups: [],
+          extra: [],
           createdAt: null,
         },
       });
@@ -184,6 +186,7 @@ describe("playlistCommit machine", () => {
               name: "Failed Draft",
               collections: [],
               groups: [],
+              extra: [],
               createdAt: null,
             },
             draftBaseline: null,

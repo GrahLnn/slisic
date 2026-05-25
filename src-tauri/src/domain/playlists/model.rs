@@ -1,6 +1,7 @@
-use appdb::{AutoFill, Store, View};
+use appdb::{AutoFill, Crud, Store, View};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
 
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, Store, Type)]
@@ -11,6 +12,8 @@ pub struct PlayList {
     pub collections: Vec<Collection>,
     #[foreign]
     pub groups: Vec<Group>,
+    #[foreign]
+    pub extra: Vec<Music>,
     #[pagin]
     #[fill(now)]
     pub created_at: AutoFill,
@@ -90,6 +93,8 @@ pub struct PlayListConfigView {
     pub collections: Vec<CollectionSurfaceView>,
     #[view(nested)]
     pub groups: Vec<GroupSurfaceView>,
+    #[view(nested)]
+    pub extra: Vec<Music>,
     pub created_at: AutoFill,
 }
 
@@ -131,6 +136,15 @@ pub struct Music {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
+}
+
+#[async_trait::async_trait]
+impl appdb::ViewShape for Music {
+    type Stored = RecordId;
+
+    async fn hydrate_view_shape(stored: Self::Stored) -> anyhow::Result<Self> {
+        Music::get_record(stored).await
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View, Type)]

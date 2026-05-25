@@ -675,10 +675,11 @@ async fn resolve_playlist_initial_track(
 #[cfg(not(test))]
 fn describe_playlist_playback_selection_failure(selection: &PlaylistPlaybackSelection) -> String {
     format!(
-        "playlist `{}` does not contain any playable tracks [selected_collection_refs={}, selected_group_refs={}]",
+        "playlist `{}` does not contain any playable tracks [selected_collection_refs={}, selected_group_refs={}, selected_extra_refs={}]",
         selection.playlist_name,
         selection.collections.len(),
-        selection.groups.len()
+        selection.groups.len(),
+        selection.extra.len()
     )
 }
 
@@ -1110,10 +1111,11 @@ pub(crate) fn resolve_playlist_playback_source_resolution(
     PlaylistTrackResolution {
         tracks,
         failure_description: format!(
-            "playlist `{}` does not contain any playable tracks [selected_collection_refs={}, selected_group_refs={}, checked_sources={}, playable={}, missing_path={}, missing_file={}, save_root={}]",
+            "playlist `{}` does not contain any playable tracks [selected_collection_refs={}, selected_group_refs={}, selected_extra_refs={}, checked_sources={}, playable={}, missing_path={}, missing_file={}, save_root={}]",
             selection.playlist_name,
             selection.collections.len(),
             selection.groups.len(),
+            selection.extra.len(),
             source_count,
             playable,
             missing_path,

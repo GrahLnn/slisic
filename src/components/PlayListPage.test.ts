@@ -14,12 +14,14 @@ function createPlayListFixture(args: {
   name: string;
   collections?: PlayList["collections"];
   groups?: PlayList["groups"];
+  extra?: PlayList["extra"];
   created_at?: PlayList["created_at"];
 }): PlayList {
   return {
     name: args.name,
     collections: args.collections ?? [],
     groups: args.groups ?? [],
+    extra: args.extra ?? [],
     created_at: args.created_at ?? "2026-04-13T00:00:00Z",
   };
 }
@@ -131,6 +133,7 @@ describe("PlayListPage", () => {
           name: "PlayList 3",
           collections: [],
           groups: [],
+          extra: [],
           createdAt: null,
         },
       },
@@ -152,6 +155,7 @@ describe("PlayListPage", () => {
       suppressFade: false,
       isPlaybackTarget: false,
       shouldShowPlaybackIcons: false,
+      isCurrentMusicLiked: false,
       isPlaybackPreparing: false,
       isHiddenInPlay: false,
       shouldStartHiddenInPlay: false,
@@ -259,6 +263,7 @@ describe("PlayListPage", () => {
         suppressFade: false,
         isPlaybackTarget: false,
         shouldShowPlaybackIcons: false,
+        isCurrentMusicLiked: false,
         isPlaybackPreparing: false,
         isHiddenInPlay: true,
         shouldStartHiddenInPlay: false,
@@ -277,6 +282,7 @@ describe("PlayListPage", () => {
         suppressFade: true,
         isPlaybackTarget: true,
         shouldShowPlaybackIcons: true,
+        isCurrentMusicLiked: false,
         playbackIconWidthText: "Track A",
         isPlaybackPreparing: false,
         isHiddenInPlay: false,

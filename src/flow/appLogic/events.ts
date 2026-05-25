@@ -565,6 +565,7 @@ export const payloads = collect(
   ...event<Collection>()("draft.collection.upserted"),
   ...event<ConfigSidebarItemRef>()("draft.item.included"),
   ...event<ConfigSidebarItemRef>()("draft.item.removed"),
+  ...event<Music>()("draft.extra.removed"),
   ...event<CollectionUpdatesChange>()("collection.updates.requested"),
   ...event<ExcludeAddedChange>()("exclude.added"),
   ...event<ExcludeRemovedChange>()("exclude.removed"),

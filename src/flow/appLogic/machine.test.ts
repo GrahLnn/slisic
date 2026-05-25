@@ -68,6 +68,7 @@ function createPlaylist(collection: Collection): PlayList {
     name: "Focus Session",
     collections: [collection],
     groups: [],
+    extra: [],
     created_at: "2026-04-13T00:00:00Z",
   };
 }
@@ -155,6 +156,7 @@ function createConfigDraftFromPlaylist(playlist: PlayList): ConfigDraft {
       enable_updates: collection.enable_updates,
     })),
     groups: playlist.groups,
+    extra: playlist.extra,
     createdAt: playlist.created_at,
   };
 }

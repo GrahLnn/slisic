@@ -23,6 +23,7 @@ export const collectionUpserted = payloads["collection.upserted"];
 export const draftCollectionUpserted = payloads["draft.collection.upserted"];
 export const draftItemIncluded = payloads["draft.item.included"];
 export const draftItemRemoved = payloads["draft.item.removed"];
+export const draftExtraRemoved = payloads["draft.extra.removed"];
 export const collectionUpdatesRequested = payloads["collection.updates.requested"];
 export const excludeAdded = payloads["exclude.added"];
 export const excludeRemoved = payloads["exclude.removed"];

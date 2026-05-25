@@ -10,6 +10,7 @@ import {
   playlistTitleLayoutId,
   removePlaylistFromPlaylists,
   removeDraftSidebarItem,
+  removeExtraFromDraft,
   removeExcludeFromConfigLibrary,
   resetContextWith,
   upsertExcludeIntoConfigLibrary,
@@ -490,6 +491,7 @@ const collectionUpserted = payloads["collection.upserted"];
 const draftCollectionUpserted = payloads["draft.collection.upserted"];
 const draftItemIncluded = payloads["draft.item.included"];
 const draftItemRemoved = payloads["draft.item.removed"];
+const draftExtraRemoved = payloads["draft.extra.removed"];
 const collectionUpdatesRequested = payloads["collection.updates.requested"];
 const excludeAdded = payloads["exclude.added"];
 const excludeRemoved = payloads["exclude.removed"];
@@ -570,6 +572,11 @@ export const machine = src.createMachine({
     [draftItemRemoved.evt]: {
       actions: assign(({ context, event }) => ({
         draft: removeDraftSidebarItem(context.draft, event.output),
+      })),
+    },
+    [draftExtraRemoved.evt]: {
+      actions: assign(({ context, event }) => ({
+        draft: removeExtraFromDraft(context.draft, event.output),
       })),
     },
     [excludeAdded.evt]: {

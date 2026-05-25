@@ -9,6 +9,7 @@ import {
   createInitialContext,
   includeDraftSidebarItem,
   normalizeDraftName,
+  removeExtraFromDraft,
   removePlaylistFromPlaylists,
   removeDraftSidebarItem,
   resolveDraftCommitTitle,
@@ -28,6 +29,25 @@ function createPlayListFixture(args: {
   return {
     name: args.name,
     created_at: args.created_at ?? "2026-04-13T00:00:00Z",
+  };
+}
+
+function createMusicFixture(overrides: Partial<PlayList["extra"][number]> = {}) {
+  return {
+    name: "Track A",
+    alias: "Track A",
+    group: {
+      name: "Disc 1",
+      url: "https://example.com/disc-1",
+      folder: "Disc 1",
+    },
+    canonical_music_id: "source:https://example.com/track-a:0:120000",
+    url: "https://example.com/track-a",
+    path: "Disc 1/Track A.m4a",
+    start_ms: 0,
+    end_ms: 120_000,
+    liked: false,
+    ...overrides,
   };
 }
 
@@ -187,6 +207,7 @@ describe("upsertCollectionIntoDraft", () => {
           folder: "Disc 1",
         },
       ],
+      extra: [],
       createdAt: null,
     };
     const next = {
@@ -234,6 +255,7 @@ describe("draft commit naming", () => {
           folder: "Disc 1",
         },
       ],
+      extra: [createMusicFixture()],
       created_at: "2026-04-13T00:00:00Z",
     };
 
@@ -256,6 +278,7 @@ describe("draft commit naming", () => {
           folder: "Disc 1",
         },
       ],
+      extra: playlist.extra,
       createdAt: "2026-04-13T00:00:00Z",
     });
   });
@@ -272,6 +295,7 @@ describe("draft commit naming", () => {
           name: "  Quiet Morning  ",
           collections: [],
           groups: [],
+          extra: [],
           createdAt: null,
         },
         draftBaseline: null,
@@ -292,6 +316,7 @@ describe("draft commit naming", () => {
           name: "",
           collections: [],
           groups: [],
+          extra: [],
           createdAt: null,
         },
         draftBaseline: {
@@ -299,6 +324,7 @@ describe("draft commit naming", () => {
           name: "Original Name",
           collections: [],
           groups: [],
+          extra: [],
           createdAt: null,
         },
         playlists: [],
@@ -318,6 +344,7 @@ describe("draft commit naming", () => {
           name: "",
           collections: [],
           groups: [],
+          extra: [],
           createdAt: null,
         },
         draftBaseline: {
@@ -325,6 +352,7 @@ describe("draft commit naming", () => {
           name: "",
           collections: [],
           groups: [],
+          extra: [],
           createdAt: null,
         },
         playlists: [
@@ -369,6 +397,7 @@ describe("draft commit naming", () => {
           folder: "Disc 1",
         },
       ],
+      extra: [createMusicFixture()],
       createdAt: null,
     };
 
@@ -376,6 +405,7 @@ describe("draft commit naming", () => {
       name: "Quiet Morning",
       collections: draft.collections.map((collection) => ({ ...collection, musics: [] })),
       groups: draft.groups,
+      extra: draft.extra,
       created_at: null,
     });
     assert.deepEqual(
@@ -386,6 +416,7 @@ describe("draft commit naming", () => {
         name: "Quiet Morning",
         collections: draft.collections.map((collection) => ({ ...collection, musics: [] })),
         groups: draft.groups,
+        extra: draft.extra,
         created_at: "2026-04-13T00:00:00Z",
       },
     );
@@ -397,6 +428,7 @@ describe("draft commit naming", () => {
       name: "",
       collections: [],
       groups: [],
+      extra: [],
       createdAt: null,
     };
     const commit = resolvePlaylistDraftCommit({
@@ -417,6 +449,7 @@ describe("draft commit naming", () => {
       name: "PlayList 3",
       collections: [],
       groups: [],
+      extra: [],
       created_at: null,
     });
     assert.deepEqual(commit.preview, {
@@ -430,6 +463,7 @@ describe("draft commit naming", () => {
         name: "PlayList 3",
         collections: [],
         groups: [],
+        extra: [],
         createdAt: null,
       },
     });
@@ -528,6 +562,7 @@ describe("includeDraftSidebarItem", () => {
       name: "Focus Session",
       collections: [],
       groups: [],
+      extra: [],
       createdAt: null,
     };
 
@@ -554,6 +589,7 @@ describe("includeDraftSidebarItem", () => {
       name: "Focus Session",
       collections: [],
       groups: [],
+      extra: [],
       createdAt: null,
     };
 
@@ -620,6 +656,7 @@ describe("includeDraftSidebarItem", () => {
       name: "Focus Session",
       collections: [],
       groups: [],
+      extra: [],
       createdAt: null,
     };
 
@@ -684,6 +721,7 @@ describe("removeDraftSidebarItem", () => {
         },
       ],
       groups: [],
+      extra: [],
       createdAt: null,
     };
 
@@ -711,6 +749,7 @@ describe("removeDraftSidebarItem", () => {
           folder: "Disc 1",
         },
       ],
+      extra: [],
       createdAt: null,
     };
 
@@ -724,5 +763,29 @@ describe("removeDraftSidebarItem", () => {
         groups: [],
       },
     );
+  });
+});
+
+describe("removeExtraFromDraft", () => {
+  test("removes music by canonical identity only", () => {
+    const kept = createMusicFixture({
+      canonical_music_id: "source:https://example.com/track-b:0:120000",
+      url: "https://example.com/track-b",
+    });
+    const removed = createMusicFixture();
+    const draft = {
+      mode: "edit" as const,
+      name: "Focus Session",
+      collections: [],
+      groups: [],
+      extra: [removed, kept],
+      createdAt: null,
+    };
+
+    assert.deepEqual(removeExtraFromDraft(draft, { ...removed, url: "changed" }), {
+      ...draft,
+      extra: [kept],
+    });
+    assert.equal(removeExtraFromDraft(null, removed), null);
   });
 });

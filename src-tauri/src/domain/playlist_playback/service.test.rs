@@ -95,6 +95,8 @@ fn playback_selection(
                 )]
             })
             .unwrap_or_default(),
+        extra: vec![],
+
         download_scopes: std::iter::once(collection_url.to_string())
             .chain(group_url.map(str::to_string))
             .collect(),
@@ -187,6 +189,8 @@ fn playlist_selection_active_downloads_match_explicit_parent_download_scope() {
             "https://example.com/album#disc-1",
             "disc-1",
         )],
+        extra: vec![],
+
         download_scopes: vec![
             "https://example.com/album#disc-1".to_string(),
             "https://example.com/album".to_string(),

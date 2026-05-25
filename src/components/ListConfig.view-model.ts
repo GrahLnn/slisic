@@ -76,6 +76,13 @@ export interface ListConfigExcludeToolLabelItem {
   text: string;
 }
 
+export interface ListConfigExtraToolLabelItem {
+  kind: "extra";
+  id: string;
+  music: Music;
+  text: string;
+}
+
 export type ListConfigToolLabelItem =
   | ListConfigPlaylistToolLabelItem
   | ListConfigCandidateToolLabelItem;
@@ -230,6 +237,18 @@ function resolveYouTubeDirectVideoId(url: URL): string | null {
   return (scope === "shorts" || scope === "live") && scopedVideoId ? scopedVideoId : null;
 }
 
+function isYouTubeWatchPlaylistItemUrl(url: URL) {
+  const host = url.hostname.toLocaleLowerCase();
+
+  return (
+    host.endsWith("youtube.com") &&
+    url.pathname === "/watch" &&
+    Boolean(url.searchParams.get("v")?.trim()) &&
+    Boolean(url.searchParams.get("list")?.trim()) &&
+    Boolean(url.searchParams.get("index")?.trim())
+  );
+}
+
 export function resolveListConfigPastedUrlCandidates(text: string): string[] {
   const trimmed = text.trim();
 
@@ -247,14 +266,25 @@ export function resolveListConfigPastedUrlCandidates(text: string): string[] {
   candidates.add(url.href);
 
   if (isYouTubeHost(url.hostname)) {
+    const directVideoId = resolveYouTubeDirectVideoId(url);
+    if (directVideoId && isYouTubeWatchPlaylistItemUrl(url)) {
+      candidates.add(`https://www.youtube.com/watch?v=${directVideoId}`);
+      return [...candidates];
+    }
+
     const playlistId = url.searchParams.get("list")?.trim();
     if (playlistId && !isYouTubeMixPlaylistId(playlistId)) {
       candidates.add(`https://www.youtube.com/playlist?list=${playlistId}`);
       return [...candidates];
     }
 
-    const directVideoId = resolveYouTubeDirectVideoId(url);
-    if (directVideoId) {
+    const hasNonVideoQuery = [...url.searchParams].some(
+      ([key, value]) => key !== "v" && value.trim().length > 0,
+    );
+    if (
+      directVideoId &&
+      (!hasNonVideoQuery || Boolean(playlistId && isYouTubeMixPlaylistId(playlistId)))
+    ) {
       candidates.add(`https://www.youtube.com/watch?v=${directVideoId}`);
     }
   }
@@ -389,8 +419,23 @@ export function createListConfigExcludeToolLabelItems(
   }));
 }
 
+export function createListConfigExtraToolLabelItems(
+  extra: readonly Music[],
+): ListConfigExtraToolLabelItem[] {
+  return extra.map((music) => ({
+    kind: "extra",
+    id: createListConfigExtraToolLabelLayoutId(music),
+    music,
+    text: resolveListConfigExcludeToolLabelText(music),
+  }));
+}
+
 export function createListConfigExcludeToolLabelLayoutId(music: Music) {
   return `exclude:${music.url}:${music.start_ms}:${music.end_ms}`;
+}
+
+export function createListConfigExtraToolLabelLayoutId(music: Music) {
+  return `extra:${music.canonical_music_id}`;
 }
 
 export function resolveListConfigExcludeToolLabelText(music: Music) {
@@ -518,7 +563,11 @@ export function shouldShowListConfigEmptyState(args: {
   }
 
   return me<ListConfigEmptyStateKind>(
-    args.draft.collections.length === 0 && args.draft.groups.length === 0 ? "show" : "hide",
+    args.draft.collections.length === 0 &&
+      args.draft.groups.length === 0 &&
+      args.draft.extra.length === 0
+      ? "show"
+      : "hide",
   );
 }
 
@@ -610,6 +659,7 @@ export function resolveListConfigViewModel(args: {
       playlistItems,
       candidateItems: args.candidateItems,
     }),
+    extraToolLabelItems: createListConfigExtraToolLabelItems(args.draft?.extra ?? []),
     excludeToolLabelItems: createListConfigExcludeToolLabelItems(args.excludeItems),
     arcTrackItems,
     emptyState,

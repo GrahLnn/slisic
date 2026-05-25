@@ -8,7 +8,7 @@ use anyhow::{Result, bail};
 use appdb::connection::get_db;
 use appdb::error::{DBError, classify_db_error};
 use appdb::graph;
-use appdb::model::meta::ModelMeta;
+use appdb::model::meta::{ModelMeta, ResolveRecordId};
 use appdb::repository::Repo;
 use appdb::{AutoFill, Crud, Id, Order, Store};
 use rand::RngExt;
@@ -250,6 +250,7 @@ pub struct PlaylistPlaybackSelection {
     pub playlist_name: String,
     pub collections: Vec<PlaylistPlaybackCollectionRef>,
     pub groups: Vec<PlaylistPlaybackGroupRef>,
+    pub extra: Vec<PlaylistPlaybackExtraRef>,
     pub download_scopes: Vec<String>,
 }
 
@@ -293,12 +294,24 @@ impl PlaylistPlaybackGroupRef {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PlaylistPlaybackExtraRef {
+    record: RecordId,
+}
+
+impl PlaylistPlaybackExtraRef {
+    #[cfg(test)]
+    pub(crate) fn new_for_test(record: RecordId) -> Self {
+        Self { record }
+    }
+}
+
 /**
  * Behavior:
  *   Project a committed playlist row into the stable playback selection domain.
  *
  * Core invariants:
- *   - The playlist row is the only source of selected collection/group refs.
+ *   - The playlist row is the only source of selected collection/group/extra refs.
  *   - Download readiness is represented by explicit collection URL scopes
  *     owned by this projection, not inferred by downloads or UI fallback.
  *   - Group-only selections carry parent collection scopes when persisted
@@ -348,10 +361,17 @@ pub async fn get_playlist_playback_selection_by_name(
         }
     }
 
+    let extra = row
+        .extra
+        .into_iter()
+        .map(|record| PlaylistPlaybackExtraRef { record })
+        .collect();
+
     Ok(Some(PlaylistPlaybackSelection {
         playlist_name: row.name,
         collections,
         groups,
+        extra,
         download_scopes,
     }))
 }
@@ -382,6 +402,8 @@ pub async fn load_playlist_playback_track_sources(
         }
     }
 
+    append_extra_playback_track_sources(selection, limit, &mut seen, &mut sources).await?;
+
     Ok(sources)
 }
 
@@ -410,6 +432,8 @@ pub async fn load_liked_playlist_playback_track_sources(
             return Ok(sources);
         }
     }
+
+    append_liked_extra_playback_track_sources(selection, limit, &mut seen, &mut sources).await?;
 
     Ok(sources)
 }
@@ -451,7 +475,7 @@ pub async fn load_audio_style_training_track_sources() -> Result<Vec<PlaylistPla
 pub async fn load_random_playlist_playback_track_source(
     selection: &PlaylistPlaybackSelection,
 ) -> Result<Option<PlaylistPlaybackTrackSource>> {
-    let owner_count = selection.collections.len() + selection.groups.len();
+    let owner_count = selection.collections.len() + selection.groups.len() + selection.extra.len();
     if owner_count == 0 {
         return Ok(None);
     }
@@ -460,9 +484,12 @@ pub async fn load_random_playlist_playback_track_source(
         let source = if owner_index < selection.collections.len() {
             load_random_collection_playback_track_source(&selection.collections[owner_index])
                 .await?
-        } else {
+        } else if owner_index < selection.collections.len() + selection.groups.len() {
             let group_index = owner_index - selection.collections.len();
             load_random_group_playback_track_source(&selection.groups[group_index]).await?
+        } else {
+            let extra_index = owner_index - selection.collections.len() - selection.groups.len();
+            load_extra_playback_track_source(&selection.extra[extra_index]).await?
         };
 
         if source.is_some() {
@@ -511,7 +538,8 @@ pub async fn upsert_playlist(playlist: &PlayList, previous_name: Option<&str>) -
         .clone()
         .foreign()
         .collections(foreign_ids.collections)?
-        .groups(foreign_ids.groups)?;
+        .groups(foreign_ids.groups)?
+        .extra(foreign_ids.extra)?;
 
     match existing_record {
         Some(record) => Ok(write.update_at(record).await?),
@@ -535,7 +563,8 @@ pub async fn upsert_playlist_surface(
         .clone()
         .foreign()
         .collections(foreign_ids.collections)?
-        .groups(foreign_ids.groups)?;
+        .groups(foreign_ids.groups)?
+        .extra(foreign_ids.extra)?;
 
     match existing_record {
         Some(record) => Ok(write
@@ -545,6 +574,46 @@ pub async fn upsert_playlist_surface(
             .create_at_returning::<PlayListListView>(record)
             .await?),
     }
+}
+
+pub async fn push_extra(playlist_name: &str, music: Music) -> Result<Option<PlayListConfigView>> {
+    let Some(record) =
+        find_unique_record_id_by_string_field::<PlayList>("name", playlist_name).await?
+    else {
+        return Ok(None);
+    };
+
+    let music_record = music.resolve_record_id().await?;
+    let mut extra = load_playlist_extra_record_ids(&record).await?;
+    if extra.contains(&music_record) {
+        return get_playlist_config_by_name(playlist_name).await;
+    }
+
+    extra.push(music_record);
+    update_playlist_extra_record_ids(&record, &extra).await?;
+    get_playlist_config_by_name(playlist_name).await
+}
+
+pub async fn remove_extra(
+    playlist_name: &str,
+    music: &Music,
+) -> Result<Option<PlayListConfigView>> {
+    let Some(record) =
+        find_unique_record_id_by_string_field::<PlayList>("name", playlist_name).await?
+    else {
+        return Ok(None);
+    };
+
+    let music_record = music.resolve_record_id().await?;
+    let mut extra = load_playlist_extra_record_ids(&record).await?;
+    let previous_len = extra.len();
+    extra.retain(|record| record != &music_record);
+    if extra.len() == previous_len {
+        return get_playlist_config_by_name(playlist_name).await;
+    }
+
+    update_playlist_extra_record_ids(&record, &extra).await?;
+    get_playlist_config_by_name(playlist_name).await
 }
 
 pub async fn ensure_playlist_collection_refs_exist(collections: &[Collection]) -> Result<()> {
@@ -1052,7 +1121,7 @@ async fn load_collection_music_ids(record: &RecordId) -> Result<Vec<RecordId>> {
 async fn load_playlist_playback_row_by_name(name: &str) -> Result<Option<PlaylistPlaybackRow>> {
     let db = get_db()?;
     let mut result = match db
-        .query("SELECT name, collections, groups FROM $table WHERE name = $name LIMIT 2;")
+        .query("SELECT name, collections, groups, extra FROM $table WHERE name = $name LIMIT 2;")
         .bind(("table", Table::from(PlayList::table_name())))
         .bind(("name", name.to_string()))
         .await
@@ -1087,12 +1156,21 @@ fn project_playlist_playback_raw_row(row: PlaylistPlaybackRawRow) -> Result<Play
         name: row.name,
         collections: project_record_refs(row.collections)?,
         groups: project_record_refs(row.groups)?,
+        extra: project_required_record_refs(row.extra, "extra")?,
     })
 }
 
 fn project_record_refs(values: serde_json::Value) -> Result<Vec<RecordId>> {
     let serde_json::Value::Array(values) = values else {
         return Ok(vec![]);
+    };
+
+    values.into_iter().map(project_record_ref).collect()
+}
+
+fn project_required_record_refs(values: serde_json::Value, field: &str) -> Result<Vec<RecordId>> {
+    let serde_json::Value::Array(values) = values else {
+        bail!("playlist playback field `{field}` must be an array of record refs");
     };
 
     values.into_iter().map(project_record_ref).collect()
@@ -1106,6 +1184,35 @@ fn project_record_ref(value: serde_json::Value) -> Result<RecordId> {
         .map_err(|invalid| anyhow::anyhow!("invalid playlist playback record ref `{invalid}`")),
         other => Ok(serde_json::from_value(other)?),
     }
+}
+
+async fn load_playlist_extra_record_ids(record: &RecordId) -> Result<Vec<RecordId>> {
+    let db = get_db()?;
+    let mut result = db
+        .query("SELECT extra FROM ONLY $record;")
+        .bind(("record", record.clone()))
+        .await?
+        .check()?;
+    let row: Option<serde_json::Value> = result.take(0)?;
+    let Some(row) = row else {
+        bail!("playlist record must exist before updating extra")
+    };
+    let Some(extra) = row.get("extra") else {
+        bail!("playlist field `extra` must exist");
+    };
+
+    project_required_record_refs(extra.clone(), "extra")
+}
+
+async fn update_playlist_extra_record_ids(record: &RecordId, extra: &[RecordId]) -> Result<()> {
+    let db = get_db()?;
+    db.query("UPDATE ONLY $record SET extra = $extra RETURN NONE;")
+        .bind(("record", record.clone()))
+        .bind(("extra", extra.to_vec()))
+        .await?
+        .check()?;
+
+    Ok(())
 }
 
 async fn load_playlist_playback_collection_ref(
@@ -1290,6 +1397,47 @@ async fn append_liked_group_playback_track_sources(
     Ok(())
 }
 
+async fn append_extra_playback_track_sources(
+    selection: &PlaylistPlaybackSelection,
+    limit: usize,
+    seen: &mut HashSet<String>,
+    sources: &mut Vec<PlaylistPlaybackTrackSource>,
+) -> Result<()> {
+    for extra in &selection.extra {
+        let Some(source) = load_extra_playback_track_source(extra).await? else {
+            continue;
+        };
+        append_extra_playback_track_source(source, seen, sources);
+        if sources.len() >= limit {
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}
+
+async fn append_liked_extra_playback_track_sources(
+    selection: &PlaylistPlaybackSelection,
+    limit: usize,
+    seen: &mut HashSet<String>,
+    sources: &mut Vec<PlaylistPlaybackTrackSource>,
+) -> Result<()> {
+    for extra in &selection.extra {
+        let Some(source) = load_extra_playback_track_source(extra).await? else {
+            continue;
+        };
+        if !source.music.liked {
+            continue;
+        }
+        append_extra_playback_track_source(source, seen, sources);
+        if sources.len() >= limit {
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}
+
 async fn load_random_collection_playback_track_source(
     collection: &PlaylistPlaybackCollectionRef,
 ) -> Result<Option<PlaylistPlaybackTrackSource>> {
@@ -1331,6 +1479,21 @@ async fn load_random_group_playback_track_source(
         return Ok(None);
     };
     let music = Music::get_record(music_record).await?;
+    Ok(Some(project_playback_track_source(&collection, music)))
+}
+
+async fn load_extra_playback_track_source(
+    extra: &PlaylistPlaybackExtraRef,
+) -> Result<Option<PlaylistPlaybackTrackSource>> {
+    if is_music_record_excluded_for_playback(&extra.record, Music::table_name()).await? {
+        return Ok(None);
+    }
+
+    let music = Music::get_record(extra.record.clone()).await?;
+    let Some(collection) = resolve_extra_playback_collection(&extra.record).await? else {
+        return Ok(None);
+    };
+
     Ok(Some(project_playback_track_source(&collection, music)))
 }
 
@@ -1439,6 +1602,18 @@ fn append_playback_track_source(
     });
 }
 
+fn append_extra_playback_track_source(
+    source: PlaylistPlaybackTrackSource,
+    seen: &mut HashSet<String>,
+    sources: &mut Vec<PlaylistPlaybackTrackSource>,
+) {
+    if !seen.insert(source.music.canonical_music_id.clone()) {
+        return;
+    }
+
+    sources.push(source);
+}
+
 fn project_playback_track_source(
     collection: &PlaylistPlaybackCollectionRef,
     music: Music,
@@ -1465,6 +1640,18 @@ async fn load_group_music_ids_for_playback(
 
 async fn load_music_parent_collection_ids(record: &RecordId) -> Result<Vec<RecordId>> {
     load_relation_in_ids("includes", record, Collection::table_name()).await
+}
+
+async fn resolve_extra_playback_collection(
+    record: &RecordId,
+) -> Result<Option<PlaylistPlaybackCollectionRef>> {
+    for collection_record in load_music_parent_collection_ids(record).await? {
+        if let Some(collection) = load_playlist_playback_collection_ref(&collection_record).await? {
+            return Ok(Some(collection));
+        }
+    }
+
+    Ok(None)
 }
 
 async fn load_music_group_ids(record: &RecordId) -> Result<Vec<RecordId>> {
@@ -2114,11 +2301,12 @@ async fn load_relation_out_ids(
 struct PlaylistForeignRecordIds {
     collections: Vec<RecordId>,
     groups: Vec<RecordId>,
+    extra: Vec<RecordId>,
 }
 
 /// Playlists reference canonical library entities. Saving a draft playlist
-/// resolves only the referenced ids; collection/group persistence owns their
-/// own fields and graph edges.
+/// resolves only the referenced ids; collection/group/music persistence owns
+/// their own fields and graph edges.
 async fn resolve_playlist_foreign_record_ids(
     playlist: &PlayList,
 ) -> Result<PlaylistForeignRecordIds> {
@@ -2150,9 +2338,19 @@ async fn resolve_playlist_foreign_record_ids(
         groups.push(record);
     }
 
+    let mut extra = Vec::with_capacity(playlist.extra.len());
+    let mut seen_extra = HashSet::new();
+    for music in &playlist.extra {
+        let record = music.resolve_record_id().await?;
+        if seen_extra.insert(record.clone()) {
+            extra.push(record);
+        }
+    }
+
     Ok(PlaylistForeignRecordIds {
         collections,
         groups,
+        extra,
     })
 }
 
@@ -2324,6 +2522,7 @@ struct PlaylistPlaybackRawRow {
     collections: serde_json::Value,
     #[serde(default)]
     groups: serde_json::Value,
+    extra: serde_json::Value,
 }
 
 #[derive(Debug, Clone)]
@@ -2331,6 +2530,7 @@ struct PlaylistPlaybackRow {
     name: String,
     collections: Vec<RecordId>,
     groups: Vec<RecordId>,
+    extra: Vec<RecordId>,
 }
 
 #[derive(Debug, Clone, Deserialize, SurrealValue)]

@@ -31,6 +31,7 @@ export interface ConfigDraft {
   name: string;
   collections: ConfigDraftCollectionRef[];
   groups: Group[];
+  extra: Music[];
   createdAt: PlayList["created_at"];
 }
 
@@ -177,6 +178,7 @@ type PlayListEditableFields = {
   name: string;
   collections: ConfigDraftCollectionRef[];
   groups: Group[];
+  extra: Music[];
 };
 
 function createEmptyPlayListFields(): PlayListEditableFields {
@@ -184,6 +186,7 @@ function createEmptyPlayListFields(): PlayListEditableFields {
     name: "",
     collections: [],
     groups: [],
+    extra: [],
   };
 }
 
@@ -217,6 +220,7 @@ export function cloneDraft(draft: ConfigDraft): ConfigDraft {
     name: draft.name,
     collections: [...draft.collections],
     groups: [...draft.groups],
+    extra: [...draft.extra],
     createdAt: draft.createdAt,
   };
 }
@@ -240,6 +244,7 @@ export function createPlayListFromDraft(
     name: draft.name,
     collections: draft.collections.map(createCollectionShellFromDraftRef),
     groups: [...draft.groups],
+    extra: [...draft.extra],
     created_at: options?.createdAt ?? draft.createdAt,
   };
 }
@@ -290,6 +295,7 @@ export function createDraftFromPlayList(playlist: PlayList): ConfigDraft {
     name: playlist.name,
     collections: playlist.collections.map(createConfigDraftCollectionRefFromCollection),
     groups: playlist.groups,
+    extra: playlist.extra,
     createdAt: playlist.created_at,
   });
 }
@@ -343,6 +349,7 @@ export function createDraftFromPlayListConfig(playlist: PlayListConfigView): Con
     name: playlist.name,
     collections: playlist.collections.map(createConfigDraftCollectionRefFromSurface),
     groups: playlist.groups.map(createGroupFromSurface),
+    extra: playlist.extra,
     createdAt: playlist.created_at,
   });
 }
@@ -561,6 +568,10 @@ function isSameExcludeMusic(left: Music, right: Music) {
   return left.url === right.url && left.start_ms === right.start_ms && left.end_ms === right.end_ms;
 }
 
+function isSameMusicIdentity(left: Music, right: Music) {
+  return left.canonical_music_id === right.canonical_music_id;
+}
+
 export function upsertCollectionIntoConfigLibrary(
   library: ConfigLibraryView,
   nextCollection: Collection,
@@ -750,6 +761,17 @@ export function removeDraftSidebarItem(
   return {
     ...draft,
     groups: draft.groups.filter((group) => group.url !== ref.url),
+  };
+}
+
+export function removeExtraFromDraft(draft: ConfigDraft | null, music: Music): ConfigDraft | null {
+  if (!draft) {
+    return null;
+  }
+
+  return {
+    ...draft,
+    extra: draft.extra.filter((extra) => !isSameMusicIdentity(extra, music)),
   };
 }
 

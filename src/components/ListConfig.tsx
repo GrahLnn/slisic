@@ -51,6 +51,7 @@ import {
   shouldShowListConfigAutoDownloadIcon,
   type ListConfigEmptyState,
   type ListConfigExcludeToolLabelItem,
+  type ListConfigExtraToolLabelItem,
   type ListConfigPlaylistToolLabelItem,
   type ListConfigToolLabelItem,
 } from "./ListConfig.view-model";
@@ -225,6 +226,15 @@ type ListConfigExcludeToolLabelRowProps = {
   isRemoving: boolean;
   onRemoveExcludeItem: (item: ListConfigExcludeToolLabelItem) => Promise<boolean>;
   onRemoveExcludeItemStart: (item: ListConfigExcludeToolLabelItem) => void;
+};
+
+type ListConfigExtraToolLabelRowProps = {
+  item: ListConfigExtraToolLabelItem;
+  dismissHoverSignal: number;
+  interactionDisabled: boolean;
+  isRemoving: boolean;
+  onRemoveExtraItem: (item: ListConfigExtraToolLabelItem) => Promise<boolean>;
+  onRemoveExtraItemStart: (item: ListConfigExtraToolLabelItem) => void;
 };
 
 function waitForNextFrame() {
@@ -404,6 +414,68 @@ function ListConfigExcludeToolLabelRow({
   );
 }
 
+function ListConfigExtraToolLabelRow({
+  item,
+  dismissHoverSignal,
+  interactionDisabled,
+  isRemoving,
+  onRemoveExtraItem,
+  onRemoveExtraItemStart,
+}: ListConfigExtraToolLabelRowProps) {
+  return (
+    <motion.div
+      className="group overflow-visible"
+      initial={{ height: 0 }}
+      animate={{ height: isRemoving ? 0 : "auto" }}
+      exit={{ height: 0 }}
+      transition={{
+        ...toolLabelRowHeightTransition,
+        delay: isRemoving ? 0.14 : 0,
+      }}
+    >
+      <motion.div
+        className="flex w-fit items-center py-1.5 pr-1.5"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: isRemoving ? 0 : 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.18 }}
+      >
+        <ToolLabel
+          dismissHoverSignal={dismissHoverSignal}
+          hoverMode="group"
+          interactionDisabled={interactionDisabled || isRemoving}
+          text={item.text}
+          textClassName={resolveListConfigExcludeToolLabelTextClassName()}
+          toolLayer="portal"
+          tool={
+            <div className="flex h-fit">
+              <CoverTool
+                text="Remove"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (isRemoving) {
+                    return;
+                  }
+                  flushSync(() => {
+                    onRemoveExtraItemStart(item);
+                  });
+                  void onRemoveExtraItem(item).then((didRemove) => {
+                    if (!didRemove) {
+                      onRemoveExtraItemStart(item);
+                    }
+                  });
+                }}
+              />
+              <MaskR />
+            </div>
+          }
+        />
+      </motion.div>
+    </motion.div>
+  );
+}
+
 async function waitForTitleShareSourceReady() {
   await waitForNextFrame();
   await waitForNextFrame();
@@ -540,6 +612,9 @@ export function ListConfig() {
   const [removingExcludeItemIds, setRemovingExcludeItemIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  const [removingExtraItemIds, setRemovingExtraItemIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const libraryItems = createConfigSidebarItemsFromLibrary(configLibrary);
   const liveRenderData = {
     savePath,
@@ -562,6 +637,9 @@ export function ListConfig() {
   const { savePath: renderedSavePath, viewModel } = renderData;
   const visibleExcludeToolLabelItems = viewModel.excludeToolLabelItems.filter(
     (item) => !removingExcludeItemIds.has(item.id),
+  );
+  const visibleExtraToolLabelItems = viewModel.extraToolLabelItems.filter(
+    (item) => !removingExtraItemIds.has(item.id),
   );
   emptyStateRef.current = viewModel.emptyState;
   const backActionVisualState = resolveBackActionVisualState({
@@ -627,6 +705,26 @@ export function ListConfig() {
       });
     }
     return didRemove;
+  }, []);
+  const markExtraItemRemoving = useCallback((item: ListConfigExtraToolLabelItem) => {
+    setRemovingExtraItemIds((current) => {
+      const next = new Set(current);
+      if (next.has(item.id)) {
+        next.delete(item.id);
+      } else {
+        next.add(item.id);
+      }
+      return next;
+    });
+  }, []);
+  const handleRemoveExtraItem = useCallback(async (item: ListConfigExtraToolLabelItem) => {
+    appLogicAction.removeDraftExtra(item.music);
+    setRemovingExtraItemIds((current) => {
+      const next = new Set(current);
+      next.delete(item.id);
+      return next;
+    });
+    return true;
   }, []);
 
   async function handleChangeSavePath() {
@@ -944,6 +1042,44 @@ export function ListConfig() {
             ),
           })}
         </div>
+        {viewModel.extraToolLabelItems.length > 0 ? (
+          <motion.div
+            {...contentFadeProps}
+            animate={isPresent ? contentFadeProps.animate : contentFadeProps.exit}
+            className="flex flex-col overflow-visible"
+          >
+            <AnimatePresence initial={false}>
+              {visibleExtraToolLabelItems.length > 0 ? (
+                <motion.div
+                  {...contentFadeProps}
+                  className="cursor-default select-none text-sm text-[#525252] dark:text-[#d4d4d4]"
+                >
+                  Extra
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+            <div
+              className={cn(
+                "flex flex-col overflow-visible",
+                viewModel.interactionFlags.isToolListInteractionDisabled && "pointer-events-none",
+              )}
+            >
+              <AnimatePresence initial={false}>
+                {viewModel.extraToolLabelItems.map((item) => (
+                  <ListConfigExtraToolLabelRow
+                    key={item.id}
+                    item={item}
+                    dismissHoverSignal={dismissHoverSignal}
+                    interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
+                    isRemoving={removingExtraItemIds.has(item.id)}
+                    onRemoveExtraItem={handleRemoveExtraItem}
+                    onRemoveExtraItemStart={markExtraItemRemoving}
+                  />
+                ))}
+              </AnimatePresence>
+            </div>
+          </motion.div>
+        ) : null}
         {viewModel.excludeToolLabelItems.length > 0 ? (
           <motion.div
             {...contentFadeProps}

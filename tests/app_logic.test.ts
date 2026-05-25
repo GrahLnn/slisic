@@ -66,6 +66,8 @@ const sampleCollection: Collection = {
       path: "quiet-morning.m4a",
       start_ms: 0,
       end_ms: 120_000,
+      canonical_music_id: "source:https://example.com/quiet-morning#title:0:120000",
+      liked: false,
     },
     {
       name: "Disc 1 Opening",
@@ -79,6 +81,8 @@ const sampleCollection: Collection = {
       path: "Disc 1/opening.m4a",
       start_ms: 0,
       end_ms: 120_000,
+      canonical_music_id: "source:https://example.com/quiet-morning#disc-1-opening:0:120000",
+      liked: false,
     },
     {
       name: "Quiet Morning Live",
@@ -92,6 +96,8 @@ const sampleCollection: Collection = {
       path: "Live/quiet-morning-live.m4a",
       start_ms: 0,
       end_ms: 120_000,
+      canonical_music_id: "source:https://example.com/quiet-morning#live:0:120000",
+      liked: false,
     },
   ],
   last_updated: "2026-04-13T00:00:00Z",
@@ -125,6 +131,7 @@ const samplePlaylist: PlayList = {
       folder: "Disc 1",
     },
   ],
+  extra: [],
   created_at: "2026-04-13T00:00:00Z",
 };
 
@@ -166,6 +173,7 @@ function createExpectedAppLogicContext(overrides: Record<string, unknown> = {}) 
     nowPlayingTrackFilePath: null,
     nowPlayingTrackStartMs: null,
     nowPlayingTrackEndMs: null,
+    nowPlayingTrackLiked: null,
     spectrumPlaybackScopeId: null,
     spectrumMusicDrafts: [],
     pendingSpectrumMusicCreateId: null,
@@ -541,6 +549,7 @@ describe("appLogic machine", () => {
       name: "",
       collections: [],
       groups: [],
+      extra: [],
       createdAt: null,
     });
     expect(actor.getSnapshot().context.draftBaseline).toEqual({
@@ -548,6 +557,7 @@ describe("appLogic machine", () => {
       name: "",
       collections: [],
       groups: [],
+      extra: [],
       createdAt: null,
     });
 
@@ -566,6 +576,7 @@ describe("appLogic machine", () => {
           name: "New Draft",
           collections: [],
           groups: [],
+          extra: [],
           createdAt: null,
         },
       }),
@@ -585,6 +596,7 @@ describe("appLogic machine", () => {
         name: "New Draft",
         collections: [],
         groups: [],
+        extra: [],
         createdAt: null,
       },
     });
@@ -668,6 +680,7 @@ describe("appLogic machine", () => {
           name: "Playlist 3",
           collections: [createCollectionDraftRef(sampleCollection)],
           groups: [],
+          extra: [],
           createdAt: null,
         },
       }),
@@ -687,6 +700,7 @@ describe("appLogic machine", () => {
         name: "Playlist 3",
         collections: [createCollectionDraftRef(sampleCollection)],
         groups: [],
+        extra: [],
         createdAt: null,
       },
     });
@@ -766,6 +780,7 @@ describe("appLogic machine", () => {
           enable_updates: collection.enable_updates,
         })),
         groups: samplePlaylist.groups,
+        extra: samplePlaylist.extra,
         created_at: samplePlaylist.created_at,
       }),
     );
@@ -796,6 +811,7 @@ describe("appLogic machine", () => {
           name: renamedPlaylist.name,
           collections: samplePlaylist.collections.map(createCollectionDraftRef),
           groups: samplePlaylist.groups,
+          extra: samplePlaylist.extra,
           createdAt: samplePlaylist.created_at,
         },
       }),
@@ -815,6 +831,7 @@ describe("appLogic machine", () => {
         name: renamedPlaylist.name,
         collections: samplePlaylist.collections.map(createCollectionDraftRef),
         groups: samplePlaylist.groups,
+        extra: samplePlaylist.extra,
         createdAt: samplePlaylist.created_at,
       },
     });
@@ -858,6 +875,7 @@ describe("appLogic machine", () => {
           name: "Playlist 3",
           collections: [],
           groups: [],
+          extra: [],
           createdAt: null,
         },
       }),
@@ -912,6 +930,7 @@ describe("appLogic machine", () => {
           enable_updates: collection.enable_updates,
         })),
         groups: samplePlaylist.groups,
+        extra: samplePlaylist.extra,
         created_at: samplePlaylist.created_at,
       });
     });
@@ -942,6 +961,7 @@ describe("appLogic machine", () => {
         ...createCollectionDraftRef(collection),
       })),
       groups: samplePlaylist.groups,
+      extra: samplePlaylist.extra,
       createdAt: samplePlaylist.created_at,
     });
     expect(actor.getSnapshot().context.draftBaseline).toEqual({
@@ -951,6 +971,7 @@ describe("appLogic machine", () => {
         ...createCollectionDraftRef(collection),
       })),
       groups: samplePlaylist.groups,
+      extra: samplePlaylist.extra,
       createdAt: samplePlaylist.created_at,
     });
   });
@@ -1001,6 +1022,7 @@ describe("appLogic machine", () => {
       name: "",
       collections: [createCollectionDraftRef(syncedCollection)],
       groups: [],
+      extra: [],
       createdAt: null,
     });
     expect(actor.getSnapshot().context.draftBaseline).toEqual({
@@ -1008,6 +1030,7 @@ describe("appLogic machine", () => {
       name: "",
       collections: [],
       groups: [],
+      extra: [],
       createdAt: null,
     });
     expect(currentConfigSidebarItems(actor)).toEqual([
@@ -1053,6 +1076,7 @@ describe("appLogic machine", () => {
           enable_updates: collection.enable_updates,
         })),
         groups: samplePlaylist.groups,
+        extra: samplePlaylist.extra,
         created_at: samplePlaylist.created_at,
       }),
     );
@@ -1081,6 +1105,7 @@ describe("appLogic machine", () => {
       name: samplePlaylist.name,
       collections: [createCollectionDraftRef(updateEnabledCollection)],
       groups: samplePlaylist.groups,
+      extra: samplePlaylist.extra,
       createdAt: samplePlaylist.created_at,
     });
     expect(actor.getSnapshot().context.draftBaseline).toEqual({
@@ -1088,6 +1113,7 @@ describe("appLogic machine", () => {
       name: samplePlaylist.name,
       collections: samplePlaylist.collections.map(createCollectionDraftRef),
       groups: samplePlaylist.groups,
+      extra: samplePlaylist.extra,
       createdAt: samplePlaylist.created_at,
     });
   });
@@ -1157,6 +1183,7 @@ describe("appLogic machine", () => {
       name: "",
       collections: [createCollectionDraftRef(syncedCollection)],
       groups: [],
+      extra: [],
       createdAt: null,
     });
     expect(actor.getSnapshot().context.draftBaseline).toEqual({
@@ -1164,6 +1191,7 @@ describe("appLogic machine", () => {
       name: "",
       collections: [],
       groups: [],
+      extra: [],
       createdAt: null,
     });
 
@@ -1180,6 +1208,7 @@ describe("appLogic machine", () => {
           folder: "Disc 1",
         },
       ],
+      extra: [],
       createdAt: null,
     });
 
@@ -1196,6 +1225,7 @@ describe("appLogic machine", () => {
       name: "",
       collections: [],
       groups: [],
+      extra: [],
       createdAt: null,
     });
     expect(actor.getSnapshot().context.draftBaseline).toEqual({
@@ -1203,6 +1233,7 @@ describe("appLogic machine", () => {
       name: "",
       collections: [],
       groups: [],
+      extra: [],
       createdAt: null,
     });
   });
@@ -1246,6 +1277,7 @@ describe("appLogic machine", () => {
           "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start_ms: 0,
         end_ms: 120_000,
+        liked: false,
       }),
     );
     const listMusicsDeferred = deferred();
@@ -1289,6 +1321,7 @@ describe("appLogic machine", () => {
           "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         nowPlayingTrackStartMs: 0,
         nowPlayingTrackEndMs: 120_000,
+        nowPlayingTrackLiked: false,
         spectrumMusicDrafts: [
           {
             kind: "persisted" as const,
@@ -1355,6 +1388,7 @@ describe("appLogic machine", () => {
           "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start_ms: 0,
         end_ms: 120_000,
+        liked: false,
       }),
     );
     actor.send(sig.mainx.openspectrum);
@@ -1445,6 +1479,7 @@ describe("appLogic machine", () => {
           "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start_ms: 0,
         end_ms: 120_000,
+        liked: false,
       }),
     );
     actor.send(sig.mainx.openspectrum);
@@ -1557,6 +1592,7 @@ describe("appLogic machine", () => {
           "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start_ms: 0,
         end_ms: 120_000,
+        liked: false,
       }),
     );
     actor.send(sig.mainx.openspectrum);
@@ -1578,6 +1614,7 @@ describe("appLogic machine", () => {
           "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         nowPlayingTrackStartMs: 0,
         nowPlayingTrackEndMs: 120_000,
+        nowPlayingTrackLiked: false,
         spectrumPlaybackScopeId: null,
         shouldStartPlayback: false,
         activeLayoutId: null,
@@ -1631,6 +1668,7 @@ describe("appLogic machine", () => {
           "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start_ms: 0,
         end_ms: 120_000,
+        liked: false,
       }),
     );
     actor.send(sig.mainx.openspectrum);
@@ -1699,6 +1737,7 @@ describe("appLogic machine", () => {
           "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start_ms: 0,
         end_ms: 120_000,
+        liked: false,
       }),
     );
     actor.send(sig.mainx.openspectrum);
@@ -1770,6 +1809,7 @@ describe("appLogic machine", () => {
           "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
         start_ms: 0,
         end_ms: 120_000,
+        liked: false,
       }),
     );
     actor.send(sig.mainx.openspectrum);
@@ -1908,6 +1948,7 @@ describe("appLogic action playback scope effects", () => {
             "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
           start_ms: 0,
           end_ms: 120_000,
+          liked: false,
         }),
       );
 
@@ -1968,6 +2009,7 @@ describe("appLogic action playback scope effects", () => {
             "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
           start_ms: 0,
           end_ms: 120_000,
+          liked: false,
         }),
       );
 
@@ -2057,6 +2099,7 @@ describe("appLogic action playback scope effects", () => {
             "C:\\Users\\admin\\Documents\\slisic\\youtube\\quiet-morning\\Disc 1\\opening.m4a",
           start_ms: 0,
           end_ms: 120_000,
+          liked: false,
         }),
       );
 

@@ -7,6 +7,7 @@ import {
   type ConfigDraft,
   type ConfigDraftCollectionRef,
 } from "./core";
+import type { Music } from "@/src/cmd";
 
 export interface TitleSharePageTransition {
   outgoingSourceLayoutId: string | null;
@@ -289,6 +290,28 @@ function createConfigDraftComparableGroups(groups: ConfigDraft["groups"]) {
     .sort(compareConfigDraftItemUrl);
 }
 
+function compareConfigDraftMusic(
+  left: Pick<Music, "canonical_music_id">,
+  right: Pick<Music, "canonical_music_id">,
+) {
+  return left.canonical_music_id.localeCompare(right.canonical_music_id);
+}
+
+function createConfigDraftComparableExtra(extra: ConfigDraft["extra"]) {
+  return extra
+    .map((music) => ({
+      alias: music.alias,
+      canonical_music_id: music.canonical_music_id,
+      end_ms: music.end_ms,
+      liked: music.liked,
+      name: music.name,
+      path: music.path,
+      start_ms: music.start_ms,
+      url: music.url,
+    }))
+    .sort(compareConfigDraftMusic);
+}
+
 export function createConfigDraftComparableKey(draft: ConfigDraft | null) {
   if (!draft) {
     return "null";
@@ -299,6 +322,7 @@ export function createConfigDraftComparableKey(draft: ConfigDraft | null) {
     name: draft.name,
     collections: createConfigDraftComparableCollections(draft.collections),
     groups: createConfigDraftComparableGroups(draft.groups),
+    extra: createConfigDraftComparableExtra(draft.extra),
   });
 }
 

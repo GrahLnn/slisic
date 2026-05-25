@@ -14,6 +14,22 @@ import {
 } from "./titleShare";
 
 describe("titleShare", () => {
+  const extraTrack = {
+    name: "Extra Track",
+    alias: "Extra Track",
+    group: {
+      name: "Disc 1",
+      url: "https://example.com/extra#disc-1",
+      folder: "Disc 1",
+    },
+    canonical_music_id: "source:https://example.com/extra:0:120000",
+    url: "https://example.com/extra",
+    path: "Disc 1/Extra Track.m4a",
+    start_ms: 0,
+    end_ms: 120_000,
+    liked: false,
+  };
+
   test("treats config-entering states as an outgoing source transition only", () => {
     const transition = resolveTitleSharePageTransition({
       activeLayoutId: "playlist-title:PlayList 1",
@@ -218,6 +234,7 @@ describe("titleShare", () => {
       name: "",
       collections: [],
       groups: [],
+      extra: [],
       createdAt: null,
     };
 
@@ -267,6 +284,7 @@ describe("titleShare", () => {
           folder: "Disc B",
         },
       ],
+      extra: [],
       createdAt: "2026-04-13T00:00:00Z",
     };
 
@@ -276,6 +294,36 @@ describe("titleShare", () => {
           ...baseline,
           collections: [...baseline.collections].reverse(),
           groups: [...baseline.groups].reverse(),
+          extra: [...baseline.extra].reverse(),
+        },
+        baseline,
+      ),
+      false,
+    );
+  });
+
+  test("keeps reordered extra refs equivalent to the baseline", () => {
+    const baseline = {
+      mode: "edit" as const,
+      name: "Focus Session",
+      collections: [],
+      groups: [],
+      extra: [
+        extraTrack,
+        {
+          ...extraTrack,
+          canonical_music_id: "source:https://example.com/extra-b:0:120000",
+          url: "https://example.com/extra-b",
+        },
+      ],
+      createdAt: "2026-04-13T00:00:00Z",
+    };
+
+    assert.equal(
+      hasConfigDraftChanges(
+        {
+          ...baseline,
+          extra: [...baseline.extra].reverse(),
         },
         baseline,
       ),
@@ -303,6 +351,7 @@ describe("titleShare", () => {
           folder: "Disc A",
         },
       ],
+      extra: [],
       createdAt: "2026-04-13T00:00:00Z",
     };
 
@@ -336,6 +385,16 @@ describe("titleShare", () => {
       ),
       true,
     );
+    assert.equal(
+      hasConfigDraftChanges(
+        {
+          ...baseline,
+          extra: [extraTrack],
+        },
+        baseline,
+      ),
+      true,
+    );
   });
 
   test("resolves the committed playlist handoff when a create draft becomes saveable", () => {
@@ -354,6 +413,7 @@ describe("titleShare", () => {
           },
         ],
         groups: [],
+        extra: [],
         createdAt: null,
       },
       draftBaseline: {
@@ -361,6 +421,7 @@ describe("titleShare", () => {
         name: "",
         collections: [],
         groups: [],
+        extra: [],
         createdAt: null,
       },
     });
@@ -381,6 +442,7 @@ describe("titleShare", () => {
         name: "Quiet Morning",
         collections: [],
         groups: [],
+        extra: [],
         createdAt: null,
       },
       draftBaseline: {
@@ -388,6 +450,7 @@ describe("titleShare", () => {
         name: "Quiet Morning",
         collections: [],
         groups: [],
+        extra: [],
         createdAt: null,
       },
     });
@@ -407,6 +470,7 @@ describe("titleShare", () => {
         name: "",
         collections: [],
         groups: [],
+        extra: [],
         createdAt: null,
       }),
       "muted",
