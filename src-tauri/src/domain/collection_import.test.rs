@@ -427,6 +427,53 @@ fn finalize_downloaded_leaf_commits_the_actual_downloaded_file_name_without_temp
 }
 
 #[test]
+fn finalize_downloaded_leaf_is_idempotent_after_temp_file_was_already_committed() {
+    let save_root = unique_temp_path("download-finalize-idempotent-root");
+    let collection_folder = "youtube/Recovered Temp";
+    let target_dir = save_root.join(collection_folder);
+    std::fs::create_dir_all(&target_dir).expect("download target dir should be creatable");
+    let final_path = target_dir.join("Recovered Track.m4a");
+    std::fs::write(&final_path, b"audio").expect("stable file should exist");
+    let collection = Collection {
+        name: "Recovered Temp".to_string(),
+        url: "https://www.youtube.com/playlist?list=PLtemp".to_string(),
+        folder: collection_folder.to_string(),
+        musics: vec![music_with_group(
+            "Recovered Track",
+            "https://www.youtube.com/watch?v=temp",
+            "Recovered Track.m4a",
+            Group {
+                name: "Recovered Temp".to_string(),
+                url: "https://www.youtube.com/playlist?list=PLtemp".to_string(),
+                folder: collection_folder.to_string(),
+            },
+        )],
+        last_updated: "2026-05-24T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+    let group = Group {
+        name: collection.name.clone(),
+        url: collection.url.clone(),
+        folder: collection.folder.clone(),
+    };
+
+    let relative_path = finalize_downloaded_leaf(
+        &collection,
+        "https://www.youtube.com/watch?v=temp",
+        &group,
+        &save_root,
+        "Recovered Track",
+        final_path.clone(),
+    )
+    .expect("already committed stable files should be accepted");
+
+    assert_eq!(relative_path, "Recovered Track.m4a");
+    assert!(final_path.is_file());
+
+    let _ = std::fs::remove_dir_all(save_root);
+}
+
+#[test]
 fn manifest_relative_paths_cannot_escape_collection_folder() {
     assert!(normalize_manifest_relative_path("../escape.m4a").is_err());
     assert!(normalize_manifest_relative_path("Disc 1/track.m4a").is_ok());

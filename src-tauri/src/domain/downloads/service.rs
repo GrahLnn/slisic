@@ -147,6 +147,13 @@ struct PreparedLeafDownload {
     url: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResidualTempFileResolution {
+    Missing,
+    Ready(PathBuf),
+    Ambiguous(Vec<PathBuf>),
+}
+
 #[cfg(not(test))]
 #[derive(Debug)]
 struct FailedLeafPreparation {
@@ -676,6 +683,7 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
         .await?;
     }
 
+    mark_unresolved_leaves_failed(&mut task_snapshot).await?;
     let completed = task_snapshot.completed_leaves;
     let next_status = if task_snapshot.failed_leaves == 0 {
         DownloadTaskStatus::Completed
@@ -710,6 +718,24 @@ fn runnable_plan_leaves(task: &DownloadTask, plan: &CollectionSyncPlan) -> Vec<P
         })
         .cloned()
         .collect()
+}
+
+async fn mark_unresolved_leaves_failed(task_snapshot: &mut DownloadTask) -> Result<()> {
+    let unresolved = task_snapshot
+        .leafs
+        .iter()
+        .filter(|leaf| leaf.status.is_active())
+        .cloned()
+        .collect::<Vec<_>>();
+    for leaf in unresolved {
+        mark_leaf_failed(
+            task_snapshot,
+            leaf,
+            "download pipeline drained before this leaf reached a terminal state".to_string(),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 #[cfg(not(test))]
@@ -1039,33 +1065,48 @@ async fn handle_prepared_leaf_download(
         return Ok(());
     }
 
-    if let Some(downloaded_path) =
-        resolve_existing_temp_downloaded_file(&target_dir, &temp_file_stem)
-    {
-        eprintln!(
-            "[downloads] leaf {} found existing temp file {}",
-            leaf_snapshot.id,
-            downloaded_path.display()
-        );
-        handle_finished_leaf_download(
-            task_snapshot,
-            collection,
-            source_kind,
-            save_root,
-            Ok(CompletedLeafDownload {
-                leaf: leaf_snapshot,
-                probe: prepared.probe,
-                music_probe: prepared.music_probe,
-                group,
-                downloaded: super::yt_dlp::DownloadedLeaf {
-                    absolute_path: downloaded_path,
-                },
-                progress: DownloadProgress::default(),
-                retry_failures: 0,
-            }),
-        )
-        .await?;
-        return Ok(());
+    match resolve_residual_temp_downloaded_file(&target_dir, &temp_file_stem) {
+        ResidualTempFileResolution::Ready(downloaded_path) => {
+            eprintln!(
+                "[downloads] leaf {} found existing temp file {}",
+                leaf_snapshot.id,
+                downloaded_path.display()
+            );
+            handle_finished_leaf_download(
+                task_snapshot,
+                collection,
+                source_kind,
+                save_root,
+                Ok(CompletedLeafDownload {
+                    leaf: leaf_snapshot,
+                    probe: prepared.probe,
+                    music_probe: prepared.music_probe,
+                    group,
+                    downloaded: super::yt_dlp::DownloadedLeaf {
+                        absolute_path: downloaded_path,
+                    },
+                    progress: DownloadProgress::default(),
+                    retry_failures: 0,
+                }),
+            )
+            .await?;
+            return Ok(());
+        }
+        ResidualTempFileResolution::Ambiguous(candidates) => {
+            let candidate_list = candidates
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            mark_leaf_failed(
+                task_snapshot,
+                leaf_snapshot,
+                format!("ambiguous residual temp files for `{temp_file_stem}`: {candidate_list}"),
+            )
+            .await?;
+            return Ok(());
+        }
+        ResidualTempFileResolution::Missing => {}
     }
 
     pipeline.ready_downloads.push_back(PreparedLeafDownload {
@@ -1153,24 +1194,73 @@ pub(crate) async fn handle_finished_leaf_download(
     .await
 }
 
-pub(crate) fn resolve_existing_temp_downloaded_file(
+pub(crate) fn resolve_residual_temp_downloaded_file(
     target_dir: &Path,
     temp_file_stem: &str,
-) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(target_dir).ok()?;
+) -> ResidualTempFileResolution {
+    let candidates = residual_temp_downloaded_files(target_dir, temp_file_stem);
+    match candidates.len() {
+        0 => ResidualTempFileResolution::Missing,
+        1 => ResidualTempFileResolution::Ready(candidates[0].clone()),
+        _ => ResidualTempFileResolution::Ambiguous(candidates),
+    }
+}
+
+fn residual_temp_downloaded_files(target_dir: &Path, temp_file_stem: &str) -> Vec<PathBuf> {
+    let Some(entries) = std::fs::read_dir(target_dir).ok() else {
+        return vec![];
+    };
+    let stable_stem = stable_stem_from_temp_stem(temp_file_stem);
+    let expected_marker = temp_marker_from_stem(temp_file_stem);
+    let mut exact = Vec::new();
+    let mut stable = Vec::new();
+
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_file() {
             continue;
         }
 
-        let stem = path.file_stem().and_then(|value| value.to_str())?;
+        let stem = match path.file_stem().and_then(|value| value.to_str()) {
+            Some(stem) => stem,
+            None => continue,
+        };
         if stem == temp_file_stem {
-            return Some(path);
+            exact.push(path);
+            continue;
+        }
+
+        if !stem.contains(".__slisic_tmp__") {
+            continue;
+        }
+        let Some(stem_stable) = stable_stem_from_temp_stem(stem) else {
+            continue;
+        };
+        if Some(stem_stable) != stable_stem {
+            continue;
+        }
+        if let Some(marker) = expected_marker
+            && stem.contains(marker)
+        {
+            exact.push(path);
+        } else {
+            stable.push(path);
         }
     }
 
-    None
+    exact.sort();
+    stable.sort();
+    if !exact.is_empty() { exact } else { stable }
+}
+
+fn stable_stem_from_temp_stem(stem: &str) -> Option<&str> {
+    let (stable, suffix) = stem.rsplit_once(".__slisic_tmp__")?;
+    (!stable.is_empty() && !suffix.is_empty()).then_some(stable)
+}
+
+fn temp_marker_from_stem(stem: &str) -> Option<&str> {
+    let (_, suffix) = stem.rsplit_once(".__slisic_tmp__")?;
+    (!suffix.is_empty()).then_some(suffix)
 }
 
 #[cfg(not(test))]

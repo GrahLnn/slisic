@@ -1,8 +1,8 @@
 use super::model::CollectionSourceKind;
 use super::yt_dlp::{
-    RootProbe, build_leaf_audio_download_args, classify_root_preference,
-    looks_like_direct_leaf_url, parse_leaf_probe, parse_progress_line, parse_root_probe,
-    resolve_downloaded_file,
+    RootProbe, build_leaf_audio_download_args, build_root_playlist_probe_args,
+    classify_root_preference, looks_like_direct_leaf_url, parse_leaf_probe, parse_progress_line,
+    parse_root_probe, resolve_downloaded_file,
 };
 use serde_json::json;
 
@@ -191,6 +191,44 @@ fn leaf_audio_download_args_select_audio_only_formats_before_extracting() {
         !args.iter().any(|arg| arg.contains("bestvideo")),
         "audio downloads should never select a video stream"
     );
+}
+
+#[test]
+fn rejects_partial_playlist_root_when_provider_reports_more_entries() {
+    let value = json!({
+        "_type": "playlist",
+        "title": "Large Playlist",
+        "webpage_url": "https://www.youtube.com/playlist?list=PLlarge",
+        "playlist_count": 116,
+        "entries": (0..100)
+            .map(|index| {
+                json!({
+                    "_type": "url",
+                    "url": format!("leaf{index:011}"),
+                    "title": format!("Leaf {index}")
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+
+    let error = parse_root_probe(value, "https://www.youtube.com/playlist?list=PLlarge")
+        .expect_err("partial playlist probes should fail explicitly");
+
+    assert!(error.to_string().contains("100/116 playlist entries"));
+}
+
+#[test]
+fn root_playlist_probe_args_request_youtube_continuation_pages() {
+    let args = build_root_playlist_probe_args("https://www.youtube.com/playlist?list=PLPfHaI9XqTn");
+
+    assert!(args.iter().any(|arg| arg == "--flat-playlist"));
+    let extractor_args = args
+        .windows(2)
+        .find_map(|window| (window[0] == "--extractor-args").then_some(window[1].as_str()))
+        .expect("playlist probe should pass extractor args");
+    assert!(extractor_args.contains("youtube:"));
+    assert!(extractor_args.contains("playlist_ajax=true"));
+    assert!(extractor_args.contains("tab_max_pages=50"));
 }
 
 #[test]

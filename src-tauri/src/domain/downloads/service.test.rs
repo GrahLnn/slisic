@@ -5,8 +5,8 @@ use super::service::{
     CompletedLeafDownload, LeafDownloadRetryPolicy, LeafDownloadWindow,
     derive_youtube_channel_url_from_uploads_playlist, expand_root_entries_to_planned_leafs,
     extract_olak_playlist_ids, handle_finished_leaf_download, is_retryable_leaf_download_error,
-    leaf_download_parallelism, prepare_task_enqueue, resolve_existing_temp_downloaded_file,
-    resolve_pasted_download_url, resolve_task_collection_folder, resume_download_task,
+    leaf_download_parallelism, prepare_task_enqueue, resolve_pasted_download_url,
+    resolve_residual_temp_downloaded_file, resolve_task_collection_folder, resume_download_task,
     should_interrupt_unresumable_active_task_after_restart,
     should_recover_download_task_after_restart, should_reprobe_single_leaf,
     should_resume_download_task_after_restart, try_claim_enqueue_url,
@@ -1221,7 +1221,7 @@ fn resolve_existing_leaf_file_matches_nested_group_path() {
 }
 
 #[test]
-fn resolve_existing_temp_downloaded_file_recovers_matching_temporary_audio() {
+fn residual_temp_resolution_recovers_matching_temporary_audio() {
     let root = temp_test_dir();
     std::fs::create_dir_all(&root).expect("temp dir should be created");
     let expected = root.join("Track.__slisic_tmp__abc123.m4a");
@@ -1229,9 +1229,131 @@ fn resolve_existing_temp_downloaded_file_recovers_matching_temporary_audio() {
     std::fs::write(root.join("Track.__slisic_tmp__other.m4a"), b"other")
         .expect("other temp audio should be created");
 
-    let recovered = resolve_existing_temp_downloaded_file(&root, "Track.__slisic_tmp__abc123");
+    let resolution = resolve_residual_temp_downloaded_file(&root, "Track.__slisic_tmp__abc123");
 
-    assert_eq!(recovered.as_deref(), Some(expected.as_path()));
+    assert!(matches!(
+        resolution,
+        super::service::ResidualTempFileResolution::Ready(ref path) if path == &expected
+    ));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn residual_temp_file_completion_moves_file_and_persists_music_once() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        let save_root = temp_test_dir();
+        let collection_folder = "youtube/Recovered Temp".to_string();
+        let target_dir = save_root.join(&collection_folder);
+        std::fs::create_dir_all(&target_dir).expect("target dir should be created");
+        let downloaded_path = target_dir.join("Recovered Track.__slisic_tmp__abc123.m4a");
+        std::fs::write(&downloaded_path, b"audio").expect("temp audio should exist");
+
+        let collection_owner = collection_group(
+            "Recovered Temp",
+            "https://example.com/playlist",
+            &collection_folder,
+        );
+        let mut collection = Collection {
+            name: "Recovered Temp".to_string(),
+            url: "https://example.com/playlist".to_string(),
+            folder: collection_folder,
+            musics: vec![],
+            last_updated: "2026-05-24T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        };
+        upsert_collection(&collection)
+            .await
+            .expect("collection should save");
+
+        let mut task = DownloadTask::new(
+            "task-residual-temp",
+            "https://example.com/playlist",
+            DownloadTrigger::Manual,
+        );
+        task.collection_url = Some(collection.url.clone());
+        task.collection_name = Some(collection.name.clone());
+        task.collection_folder = Some(collection.folder.clone());
+        task.source_kind = Some(CollectionSourceKind::List);
+        task.status = DownloadTaskStatus::Downloading;
+        let mut leaf = DownloadLeaf::new("leaf-a", "https://example.com/watch?v=a", 0);
+        leaf.status = DownloadLeafStatus::Downloading;
+        task.replace_leaf(leaf.clone());
+        let mut task = save_task(task).await.expect("task should save");
+
+        let probe = leaf_probe("Recovered Track", "https://example.com/watch?v=a", 60);
+        handle_finished_leaf_download(
+            &mut task,
+            &mut collection,
+            CollectionSourceKind::List,
+            &save_root,
+            Ok(CompletedLeafDownload {
+                leaf,
+                probe: probe.clone(),
+                music_probe: probe,
+                group: Some(collection_owner),
+                downloaded: DownloadedLeaf {
+                    absolute_path: downloaded_path.clone(),
+                },
+                progress: DownloadProgress::default(),
+                retry_failures: 0,
+            }),
+        )
+        .await
+        .expect("residual temp file should complete through normal leaf commit");
+
+        assert!(!downloaded_path.exists());
+        assert!(target_dir.join("Recovered Track.m4a").is_file());
+        assert_eq!(task.completed_leaves, 1);
+        assert_eq!(task.failed_leaves, 0);
+        assert_eq!(collection.musics.len(), 1);
+        assert_eq!(
+            collection.musics[0].path.as_deref(),
+            Some("Recovered Track.m4a")
+        );
+
+        reset_db();
+        let _ = std::fs::remove_dir_all(save_root);
+    });
+}
+
+#[test]
+fn residual_temp_resolution_recovers_unique_same_title_artifact_after_task_identity_changes() {
+    let root = temp_test_dir();
+    std::fs::create_dir_all(&root).expect("temp dir should be created");
+    let expected = root.join("Track.__slisic_tmp__oldtask.m4a");
+    std::fs::write(&expected, b"downloaded").expect("residual temp audio should be created");
+    std::fs::write(root.join("Other.__slisic_tmp__oldtask.m4a"), b"other")
+        .expect("unrelated temp audio should be created");
+
+    let resolution = resolve_residual_temp_downloaded_file(&root, "Track.__slisic_tmp__newtask");
+
+    assert!(matches!(
+        resolution,
+        super::service::ResidualTempFileResolution::Ready(ref path) if path == &expected
+    ));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn residual_temp_resolution_rejects_ambiguous_same_title_artifacts() {
+    let root = temp_test_dir();
+    std::fs::create_dir_all(&root).expect("temp dir should be created");
+    std::fs::write(root.join("Track.__slisic_tmp__first.m4a"), b"first")
+        .expect("first temp audio should be created");
+    std::fs::write(root.join("Track.__slisic_tmp__second.m4a"), b"second")
+        .expect("second temp audio should be created");
+
+    let resolution = resolve_residual_temp_downloaded_file(&root, "Track.__slisic_tmp__newtask");
+
+    assert!(matches!(
+        resolution,
+        super::service::ResidualTempFileResolution::Ambiguous(ref paths) if paths.len() == 2
+    ));
 
     let _ = std::fs::remove_dir_all(root);
 }

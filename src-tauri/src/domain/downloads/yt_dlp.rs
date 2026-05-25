@@ -13,6 +13,7 @@ use std::thread;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const AUDIO_ONLY_FORMAT_SELECTOR: &str = "bestaudio[ext=m4a]/bestaudio";
+const YOUTUBE_PLAYLIST_EXTRACTOR_ARGS: &str = "youtube:playlist_ajax=true;tab_max_pages=50";
 const PYTHON_UTF8_ENV_VAR: &str = "PYTHONUTF8";
 const PYTHON_IO_ENCODING_ENV_VAR: &str = "PYTHONIOENCODING";
 const UTF8_ENCODING_VALUE: &str = "utf-8";
@@ -140,9 +141,7 @@ impl YtDlpClient for CliYtDlpClient {
         match classify_root_preference(url) {
             CollectionSourceKind::Single => self.probe_leaf(url).map(RootProbe::Single),
             CollectionSourceKind::List => {
-                let mut args = self.common_probe_args();
-                args.push("--flat-playlist".to_string());
-                args.push(url.to_string());
+                let args = build_root_playlist_probe_args(url);
                 parse_root_probe(self.run_json_command(&args)?, url)
             }
         }
@@ -279,6 +278,21 @@ pub(crate) fn build_leaf_audio_download_args(
     .collect()
 }
 
+pub(crate) fn build_root_playlist_probe_args(url: &str) -> Vec<String> {
+    [
+        "-J",
+        "--no-warnings",
+        "--ignore-errors",
+        "--flat-playlist",
+        "--extractor-args",
+        YOUTUBE_PLAYLIST_EXTRACTOR_ARGS,
+        url,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
 pub fn classify_root_preference(url: &str) -> CollectionSourceKind {
     if looks_like_direct_leaf_url(url) {
         CollectionSourceKind::Single
@@ -374,6 +388,19 @@ pub fn parse_root_probe(value: Value, input_url: &str) -> Result<RootProbe> {
             title,
             sequence: index as u32,
         });
+    }
+
+    if let Some(expected_count) = value
+        .get("playlist_count")
+        .and_then(parse_number_like)
+        .map(|value| value as usize)
+        && expected_count > leafs.len()
+    {
+        bail!(
+            "yt-dlp returned {}/{} playlist entries; refusing to complete a partial playlist probe",
+            leafs.len(),
+            expected_count
+        );
     }
 
     Ok(RootProbe::List(PlaylistRoot {

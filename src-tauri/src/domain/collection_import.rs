@@ -673,28 +673,48 @@ pub(crate) fn finalize_downloaded_leaf(
     let relative_path = relative_music_path(collection, &final_file_name, group);
     let final_path = save_root.join(&collection.folder).join(&relative_path);
 
-    remove_existing_leaf_files(collection, leaf_url, group, save_root)?;
     if final_path.exists() && final_path != downloaded_path {
         std::fs::remove_file(&final_path)
             .with_context(|| format!("failed to remove existing file {}", final_path.display()))?;
     }
+    remove_existing_leaf_files(collection, leaf_url, group, save_root, Some(&final_path))?;
 
-    if downloaded_path != final_path {
-        if let Some(parent) = final_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-
-        std::fs::rename(&downloaded_path, &final_path).with_context(|| {
-            format!(
-                "failed to move downloaded audio from {} to {}",
-                downloaded_path.display(),
-                final_path.display()
-            )
-        })?;
-    }
+    commit_downloaded_file(&downloaded_path, &final_path)?;
 
     Ok(relative_path)
+}
+
+fn commit_downloaded_file(downloaded_path: &Path, final_path: &Path) -> Result<()> {
+    if downloaded_path == final_path {
+        return Ok(());
+    }
+
+    if let Some(parent) = final_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    match std::fs::rename(downloaded_path, final_path) {
+        Ok(()) => Ok(()),
+        Err(rename_error) => {
+            std::fs::copy(downloaded_path, final_path).with_context(|| {
+                format!(
+                    "failed to copy downloaded audio from {} to {} after rename failed: {}",
+                    downloaded_path.display(),
+                    final_path.display(),
+                    rename_error
+                )
+            })?;
+            std::fs::remove_file(downloaded_path).with_context(|| {
+                format!(
+                    "failed to remove downloaded temp file {} after copying it to {}",
+                    downloaded_path.display(),
+                    final_path.display()
+                )
+            })?;
+            Ok(())
+        }
+    }
 }
 
 fn finalized_download_file_name(downloaded_path: &Path) -> Result<String> {
@@ -1057,6 +1077,7 @@ fn remove_existing_leaf_files(
     leaf_url: &str,
     group: &Group,
     save_root: &Path,
+    except: Option<&Path>,
 ) -> Result<()> {
     let mut seen_paths = std::collections::BTreeSet::new();
     for music in &collection.musics {
@@ -1072,6 +1093,9 @@ fn remove_existing_leaf_files(
         }
 
         let absolute_path = save_root.join(&collection.folder).join(relative_path);
+        if except.is_some_and(|except| except == absolute_path) {
+            continue;
+        }
         if absolute_path.exists() {
             std::fs::remove_file(&absolute_path).with_context(|| {
                 format!("failed to remove existing file {}", absolute_path.display())
