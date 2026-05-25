@@ -235,6 +235,109 @@ describe("titleShare", () => {
     assert.equal(hasConfigDraftChanges(null, createDraft), false);
   });
 
+  test("keeps pop-then-push reordered draft refs equivalent to the baseline", () => {
+    const baseline = {
+      mode: "edit" as const,
+      name: "Focus Session",
+      collections: [
+        {
+          name: "Ambient One",
+          url: "https://example.com/ambient-one",
+          folder: "youtube/ambient-one",
+          last_updated: "2026-04-13T00:00:00Z",
+          enable_updates: null,
+        },
+        {
+          name: "Ambient Two",
+          url: "https://example.com/ambient-two",
+          folder: "youtube/ambient-two",
+          last_updated: "2026-04-14T00:00:00Z",
+          enable_updates: true,
+        },
+      ],
+      groups: [
+        {
+          name: "Disc A",
+          url: "https://example.com/disc-a",
+          folder: "Disc A",
+        },
+        {
+          name: "Disc B",
+          url: "https://example.com/disc-b",
+          folder: "Disc B",
+        },
+      ],
+      createdAt: "2026-04-13T00:00:00Z",
+    };
+
+    assert.equal(
+      hasConfigDraftChanges(
+        {
+          ...baseline,
+          collections: [...baseline.collections].reverse(),
+          groups: [...baseline.groups].reverse(),
+        },
+        baseline,
+      ),
+      false,
+    );
+  });
+
+  test("still marks draft refs as changed when canonical item content differs", () => {
+    const baseline = {
+      mode: "edit" as const,
+      name: "Focus Session",
+      collections: [
+        {
+          name: "Ambient One",
+          url: "https://example.com/ambient-one",
+          folder: "youtube/ambient-one",
+          last_updated: "2026-04-13T00:00:00Z",
+          enable_updates: null,
+        },
+      ],
+      groups: [
+        {
+          name: "Disc A",
+          url: "https://example.com/disc-a",
+          folder: "Disc A",
+        },
+      ],
+      createdAt: "2026-04-13T00:00:00Z",
+    };
+
+    assert.equal(
+      hasConfigDraftChanges(
+        {
+          ...baseline,
+          collections: [
+            {
+              ...baseline.collections[0],
+              enable_updates: true,
+            },
+          ],
+        },
+        baseline,
+      ),
+      true,
+    );
+    assert.equal(
+      hasConfigDraftChanges(
+        {
+          ...baseline,
+          groups: [
+            {
+              ...baseline.groups[0],
+              folder: "Renamed Disc A",
+            },
+          ],
+        },
+        baseline,
+      ),
+      true,
+    );
+  });
+
   test("resolves the committed playlist handoff when a create draft becomes saveable", () => {
     const plan = resolveConfigBackTitleSharePlan({
       activeLayoutId: "collection-title:create",

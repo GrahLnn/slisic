@@ -11,7 +11,11 @@ import type { Music } from "@/src/cmd";
 import type { ConfigCandidateItem } from "@/src/flow/pasteDownload/core";
 import {
   LIST_CONFIG_EMPTY_STATE_TEXT,
+  consumeListConfigDuplicateShakeState,
+  resolveListConfigDuplicateShakeDecision,
+  resolveToolLabelShakeSignal,
   shouldHideListConfigToolLabelRowContent,
+  type ListConfigDuplicateShakeState,
 } from "./ListConfig";
 import {
   createListConfigArcTrackItems,
@@ -28,6 +32,8 @@ import {
   resolveListConfigExcludeToolLabelText,
   resolveListConfigInteractionFlags,
   resolveListConfigCollectionUpdatesToolText,
+  resolveListConfigPasteTarget,
+  resolveListConfigPastedUrlCandidates,
   resolveListConfigToolLabelAffordance,
   resolveListConfigToolLabelItems,
   resolveListConfigToolLabelTextClassName,
@@ -534,6 +540,153 @@ describe("ListConfig title view model", () => {
           sourceKind: "group",
           enableUpdates: null,
         },
+      ],
+    );
+  });
+
+  test("resolves pasted current playlist urls into duplicate shake targets", () => {
+    assert.deepEqual(
+      resolveListConfigPasteTarget({
+        text: " https://example.com/quiet-morning ",
+        playlistItems: createListConfigPlaylistToolLabelItems(
+          createListConfigPlaylistSidebarItems(draftWithGroup),
+        ),
+        arcTrackItems: [
+          {
+            kind: "collection",
+            name: "Quiet Morning",
+            url: "https://example.com/quiet-morning",
+            folder: "youtube/quiet-morning",
+          },
+        ],
+      }),
+      {
+        kind: "playlist-duplicate",
+        layoutId: "playlist:collection:https://example.com/quiet-morning",
+      },
+    );
+  });
+
+  test("consumes duplicate shake requests before matching pushed rows mount later", () => {
+    const duplicateShakeState: ListConfigDuplicateShakeState = {
+      layoutId: "playlist:collection:https://example.com/quiet-morning",
+      signal: 1,
+    };
+    const playlistItem = createListConfigPlaylistToolLabelItems(
+      createListConfigPlaylistSidebarItems(draftWithGroup),
+    )[0];
+
+    assert.equal(resolveToolLabelShakeSignal(duplicateShakeState, playlistItem), 1);
+    assert.equal(
+      resolveToolLabelShakeSignal(
+        consumeListConfigDuplicateShakeState(duplicateShakeState, 1),
+        playlistItem,
+      ),
+      0,
+    );
+    assert.deepEqual(consumeListConfigDuplicateShakeState(duplicateShakeState, 2), {
+      layoutId: "playlist:collection:https://example.com/quiet-morning",
+      signal: 1,
+    });
+  });
+
+  test("discards stale duplicate shake requests seen by later-mounted rows", () => {
+    assert.equal(
+      resolveListConfigDuplicateShakeDecision({
+        duplicateShakeSignal: 1,
+        isRowReady: false,
+      }),
+      "discard",
+    );
+    assert.equal(
+      resolveListConfigDuplicateShakeDecision({
+        duplicateShakeSignal: 1,
+        isRowReady: true,
+      }),
+      "shake",
+    );
+    assert.equal(
+      resolveListConfigDuplicateShakeDecision({
+        duplicateShakeSignal: 0,
+        isRowReady: true,
+      }),
+      "ignore",
+    );
+  });
+
+  test("resolves pasted library collection and group urls into arc-track push targets", () => {
+    const playlistItems = createListConfigPlaylistToolLabelItems(
+      createListConfigPlaylistSidebarItems(editDraft),
+    );
+
+    assert.deepEqual(
+      resolveListConfigPasteTarget({
+        text: "https://example.com/late-night-tape",
+        playlistItems,
+        arcTrackItems: [
+          {
+            kind: "collection",
+            name: "Late Night Tape",
+            url: "https://example.com/late-night-tape",
+            folder: "youtube/late-night-tape",
+          },
+        ],
+      }),
+      {
+        kind: "arc-track-push",
+        layoutId: "playlist:collection:https://example.com/late-night-tape",
+      },
+    );
+    assert.deepEqual(
+      resolveListConfigPasteTarget({
+        text: "https://example.com/late-night-tape#disc-1",
+        playlistItems,
+        arcTrackItems: [
+          {
+            kind: "group",
+            name: "Disc 1",
+            url: "https://example.com/late-night-tape#disc-1",
+            folder: "Disc 1",
+          },
+        ],
+      }),
+      {
+        kind: "arc-track-push",
+        layoutId: "playlist:group:https://example.com/late-night-tape#disc-1",
+      },
+    );
+  });
+
+  test("keeps pasted unknown urls in the regular paste download flow", () => {
+    assert.equal(
+      resolveListConfigPasteTarget({
+        text: "not a url",
+        playlistItems: createListConfigPlaylistToolLabelItems(
+          createListConfigPlaylistSidebarItems(draftWithGroup),
+        ),
+        arcTrackItems: [],
+      }),
+      null,
+    );
+  });
+
+  test("matches pasted YouTube urls against frontend-safe canonical candidates", () => {
+    assert.deepEqual(
+      resolveListConfigPastedUrlCandidates(
+        "https://www.youtube.com/watch?v=abc123&list=PLtenet&index=14",
+      ),
+      [
+        "https://www.youtube.com/watch?v=abc123&list=PLtenet&index=14",
+        "https://www.youtube.com/playlist?list=PLtenet",
+      ],
+    );
+    assert.deepEqual(
+      resolveListConfigPastedUrlCandidates(
+        "https://www.youtube.com/watch?v=abc123&list=RDMMIHIRrASFLcg",
+      ),
+      [
+        "https://www.youtube.com/watch?v=abc123&list=RDMMIHIRrASFLcg",
+        "https://www.youtube.com/watch?v=abc123",
       ],
     );
   });

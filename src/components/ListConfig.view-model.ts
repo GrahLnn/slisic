@@ -80,6 +80,16 @@ export type ListConfigToolLabelItem =
   | ListConfigPlaylistToolLabelItem
   | ListConfigCandidateToolLabelItem;
 
+export type ListConfigPasteTarget =
+  | {
+      kind: "playlist-duplicate";
+      layoutId: string;
+    }
+  | {
+      kind: "arc-track-push";
+      layoutId: string;
+    };
+
 export function resolveListConfigTitlePlaceholder(args: {
   draft: ConfigDraft | null;
   draftBaseline: ConfigDraft | null;
@@ -170,6 +180,118 @@ function normalizeListConfigSidebarName(name: string) {
 
 export function createListConfigToolLabelLayoutId(ref: ConfigSidebarItemRef) {
   return `playlist:${ref.kind}:${ref.url}`;
+}
+
+function parseListConfigPastedUrl(text: string): URL | null {
+  try {
+    return new URL(text);
+  } catch {
+    return null;
+  }
+}
+
+function isYouTubeHost(hostname: string) {
+  const host = hostname.toLocaleLowerCase();
+
+  return host === "youtu.be" || host.endsWith("youtube.com");
+}
+
+function isYouTubeMixPlaylistId(playlistId: string) {
+  return playlistId.toLocaleUpperCase().startsWith("RD");
+}
+
+function firstNonEmptyPathSegment(url: URL) {
+  return url.pathname
+    .split("/")
+    .map((segment) => segment.trim())
+    .find((segment) => segment.length > 0);
+}
+
+function resolveYouTubeDirectVideoId(url: URL): string | null {
+  const host = url.hostname.toLocaleLowerCase();
+
+  if (host === "youtu.be") {
+    return firstNonEmptyPathSegment(url) ?? null;
+  }
+
+  if (!host.endsWith("youtube.com")) {
+    return null;
+  }
+
+  const videoId = url.searchParams.get("v")?.trim();
+  if (videoId) {
+    return videoId;
+  }
+
+  const segments = url.pathname.split("/").map((segment) => segment.trim());
+  const scope = segments[1];
+  const scopedVideoId = segments[2];
+
+  return (scope === "shorts" || scope === "live") && scopedVideoId ? scopedVideoId : null;
+}
+
+export function resolveListConfigPastedUrlCandidates(text: string): string[] {
+  const trimmed = text.trim();
+
+  if (trimmed.length === 0) {
+    return [];
+  }
+
+  const candidates = new Set([trimmed]);
+  const url = parseListConfigPastedUrl(trimmed);
+
+  if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) {
+    return [...candidates];
+  }
+
+  candidates.add(url.href);
+
+  if (isYouTubeHost(url.hostname)) {
+    const playlistId = url.searchParams.get("list")?.trim();
+    if (playlistId && !isYouTubeMixPlaylistId(playlistId)) {
+      candidates.add(`https://www.youtube.com/playlist?list=${playlistId}`);
+      return [...candidates];
+    }
+
+    const directVideoId = resolveYouTubeDirectVideoId(url);
+    if (directVideoId) {
+      candidates.add(`https://www.youtube.com/watch?v=${directVideoId}`);
+    }
+  }
+
+  return [...candidates];
+}
+
+export function resolveListConfigPasteTarget(args: {
+  text: string;
+  playlistItems: readonly ListConfigPlaylistToolLabelItem[];
+  arcTrackItems: readonly ConfigSidebarItem[];
+}): ListConfigPasteTarget | null {
+  const candidateUrls = resolveListConfigPastedUrlCandidates(args.text);
+
+  if (candidateUrls.length === 0) {
+    return null;
+  }
+
+  const candidateUrlSet = new Set(candidateUrls);
+  const playlistItem = args.playlistItems.find((item) => candidateUrlSet.has(item.ref.url));
+
+  if (playlistItem) {
+    return {
+      kind: "playlist-duplicate",
+      layoutId: playlistItem.id,
+    };
+  }
+
+  const arcTrackItem = args.arcTrackItems.find((item) => candidateUrlSet.has(item.url));
+  if (!arcTrackItem) {
+    return null;
+  }
+
+  return {
+    kind: "arc-track-push",
+    layoutId: createListConfigToolLabelLayoutId(createConfigSidebarItemRef(arcTrackItem)),
+  };
 }
 
 export function createListConfigPlaylistSidebarItems(
@@ -307,10 +429,7 @@ export function createListConfigArcTrackItems(args: {
       continue;
     }
 
-    if (
-      item.status === "invalid_url" ||
-      item.status === "probe_failed"
-    ) {
+    if (item.status === "invalid_url" || item.status === "probe_failed") {
       continue;
     }
 
@@ -351,9 +470,7 @@ export function resolveListConfigToolLabelAffordance(
   return me(item).match("kind", {
     playlist: (): ListConfigToolLabelAffordance => "playlist",
     candidate: ({ status }): ListConfigToolLabelAffordance =>
-      status === "invalid_url" || status === "probe_failed"
-        ? "candidate-delete"
-        : "passive",
+      status === "invalid_url" || status === "probe_failed" ? "candidate-delete" : "passive",
   });
 }
 
@@ -419,9 +536,8 @@ export function resolveListConfigEmptyState(
 export function countListConfigParsingCandidateItems(
   candidateItems: readonly ConfigCandidateItem[],
 ) {
-  return candidateItems.filter(
-    (item) => item.status === "checking" || item.status === "probing",
-  ).length;
+  return candidateItems.filter((item) => item.status === "checking" || item.status === "probing")
+    .length;
 }
 
 export function hasListConfigParsingCandidateItems(candidateItems: readonly ConfigCandidateItem[]) {

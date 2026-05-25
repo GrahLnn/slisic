@@ -4,6 +4,7 @@ import {
   resolveArcTrackAnimatedStart,
   resolveArcTrackDisplayItems,
   resolveArcTrackItemFrame,
+  resolveArcTrackItemIndexByLayoutId,
   resolveArcTrackItemMountState,
   resolveArcTrackPathClassName,
   resolveArcTrackPathStrokeWidth,
@@ -275,6 +276,33 @@ describe("resolveArcTrackDisplayItems", () => {
     assert.deepEqual(
       resolution.items.map((item) => item.url),
       ["bravo", "alpha", "charlie"],
+    );
+  });
+});
+
+describe("resolveArcTrackItemIndexByLayoutId", () => {
+  test("finds collection and group items by kind-aware layout id", () => {
+    assert.equal(
+      resolveArcTrackItemIndexByLayoutId(
+        [
+          createItem("Alpha", "shared"),
+          {
+            kind: "group",
+            name: "Alpha Disc",
+            url: "shared",
+            folder: "/music/alpha-disc",
+          },
+        ],
+        "playlist:group:shared",
+      ),
+      1,
+    );
+  });
+
+  test("returns -1 when no arc-track item owns the layout id", () => {
+    assert.equal(
+      resolveArcTrackItemIndexByLayoutId([createItem("Alpha", "alpha")], "playlist:group:alpha"),
+      -1,
     );
   });
 });

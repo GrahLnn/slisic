@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useRef,
   useState,
   type ComponentProps,
@@ -7,13 +8,14 @@ import {
   type RefObject,
 } from "react";
 import { flushSync } from "react-dom";
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { me } from "@grahlnn/fn";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { action as playlistCommitAction } from "@/src/flow/playlistCommit";
 import { action as pasteDownloadAction, hook as pasteDownloadHook } from "@/src/flow/pasteDownload";
-import { AnimatePresence, motion, useIsPresent } from "motion/react";
+import { AnimatePresence, motion, useAnimationControls, useIsPresent } from "motion/react";
 import {
   createConfigSidebarItemRef,
   createConfigSidebarItemsFromLibrary,
@@ -32,6 +34,7 @@ import { BackActionIcon } from "./ListConfig.back-action-icon";
 import {
   ArcTrackList,
   type ArcTrackPopInsertionPlanner,
+  type ArcTrackProgrammaticPushController,
   type ArcTrackPushTransitionSource,
 } from "./ArcTrackList";
 import { CoverTool } from "./coverTool";
@@ -42,11 +45,13 @@ import {
   resolveListConfigToolLabelAffordance,
   resolveListConfigCollectionUpdatesToolText,
   resolveListConfigExcludeToolLabelTextClassName,
+  resolveListConfigPasteTarget,
   resolveListConfigToolLabelTextClassName,
   resolveListConfigViewModel,
   shouldShowListConfigAutoDownloadIcon,
   type ListConfigEmptyState,
   type ListConfigExcludeToolLabelItem,
+  type ListConfigPlaylistToolLabelItem,
   type ListConfigToolLabelItem,
 } from "./ListConfig.view-model";
 import { ToolLabel, MaskL, MaskR } from "./toollabel";
@@ -65,6 +70,18 @@ const toolLabelRowHeightTransition = {
   duration: 0.24,
   ease: [0.22, 1, 0.36, 1],
 } as const;
+
+const duplicateToolLabelShakeTransition = {
+  duration: 0.46,
+  ease: [0.16, 1, 0.3, 1],
+} as const;
+
+export type ListConfigDuplicateShakeState = {
+  layoutId: string;
+  signal: number;
+};
+
+export type ListConfigDuplicateShakeDecision = "ignore" | "discard" | "shake";
 
 const LIST_CONFIG_GHOST_NODE_OWNER = {
   arcTrack: "arc-track",
@@ -189,8 +206,10 @@ type ListConfigToolLabelRowProps = {
   activeGhostLayoutId: string | null;
   activeGhostTargetOwnerId: string | null;
   dismissHoverSignal: number;
+  duplicateShakeSignal: number;
   interactionDisabled: boolean;
   registerGhostNode: (layoutId: string, ownerId: string, node: HTMLDivElement | null) => void;
+  onDuplicateShakeConsumed: (signal: number) => void;
   onRemoveDraftItem: (source: {
     layoutId: string;
     ref: ConfigSidebarItemRef;
@@ -231,12 +250,16 @@ function ListConfigToolLabelRow({
   activeGhostLayoutId,
   activeGhostTargetOwnerId,
   dismissHoverSignal,
+  duplicateShakeSignal,
   interactionDisabled,
   registerGhostNode,
+  onDuplicateShakeConsumed,
   onRemoveDraftItem,
   onDeleteCandidateItem,
 }: ListConfigToolLabelRowProps) {
   const sourceNodeRef = useRef<HTMLDivElement | null>(null);
+  const isDuplicateShakeReadyRef = useRef(false);
+  const shakeControls = useAnimationControls();
   const shouldHideRowContent = shouldHideListConfigToolLabelRowContent({
     item,
     activeGhostLayoutId,
@@ -250,15 +273,44 @@ function ListConfigToolLabelRow({
     [item.id, registerGhostNode],
   );
 
+  useEffect(() => {
+    const duplicateShakeDecision = resolveListConfigDuplicateShakeDecision({
+      duplicateShakeSignal,
+      isRowReady: isDuplicateShakeReadyRef.current,
+    });
+
+    if (duplicateShakeDecision === "ignore") {
+      return;
+    }
+
+    onDuplicateShakeConsumed(duplicateShakeSignal);
+    if (duplicateShakeDecision === "discard") {
+      return;
+    }
+
+    void shakeControls.start({
+      x: [0, -14, 10, -7, 4, -2, 0],
+      transition: duplicateToolLabelShakeTransition,
+    });
+  }, [duplicateShakeSignal, onDuplicateShakeConsumed, shakeControls]);
+
+  useEffect(() => {
+    isDuplicateShakeReadyRef.current = true;
+    return () => {
+      isDuplicateShakeReadyRef.current = false;
+    };
+  }, []);
+
   return (
     <motion.div
-      className="group overflow-hidden"
+      className="group overflow-y-clip overflow-x-visible"
       initial={{ height: 0 }}
       animate={{ height: "auto" }}
       exit={{ height: 0 }}
       transition={toolLabelRowHeightTransition}
     >
-      <div
+      <motion.div
+        animate={shakeControls}
         className={cn(
           "flex items-center backdrop-blur-md w-fit gap-2 pr-1.5 py-2",
           "rounded-full",
@@ -285,7 +337,7 @@ function ListConfigToolLabelRow({
           })}
         />
         {shouldShowListConfigAutoDownloadIcon(item) && <icons.autoDownload size={12} />}
-      </div>
+      </motion.div>
     </motion.div>
   );
 }
@@ -433,6 +485,39 @@ function RetainedConfigTitle({
   );
 }
 
+export function resolveToolLabelShakeSignal(
+  duplicateShakeState: ListConfigDuplicateShakeState | null,
+  item: ListConfigToolLabelItem,
+) {
+  return item.kind === "playlist" && duplicateShakeState?.layoutId === item.id
+    ? duplicateShakeState.signal
+    : 0;
+}
+
+export function resolveListConfigDuplicateShakeDecision(args: {
+  duplicateShakeSignal: number;
+  isRowReady: boolean;
+}): ListConfigDuplicateShakeDecision {
+  if (args.duplicateShakeSignal <= 0) {
+    return "ignore";
+  }
+
+  return args.isRowReady ? "shake" : "discard";
+}
+
+export function consumeListConfigDuplicateShakeState(
+  current: ListConfigDuplicateShakeState | null,
+  signal: number,
+) {
+  return current?.signal === signal ? null : current;
+}
+
+function createListConfigPasteItemsSnapshot(
+  items: readonly ListConfigToolLabelItem[],
+): ListConfigPlaylistToolLabelItem[] {
+  return items.filter((item): item is ListConfigPlaylistToolLabelItem => item.kind === "playlist");
+}
+
 export function ListConfig() {
   const isPresent = useIsPresent();
   const editableTitleRef = useRef<EditableTitleHandle | null>(null);
@@ -486,6 +571,9 @@ export function ListConfig() {
   });
   const isBackActionLocked =
     isBackNavigationPending || viewModel.interactionFlags.isBackActionInteractionLocked;
+  const [duplicateShakeState, setDuplicateShakeState] =
+    useState<ListConfigDuplicateShakeState | null>(null);
+  const duplicateShakeSequenceRef = useRef(0);
   const {
     activeLayoutId: activeGhostLayoutId,
     activeTargetOwnerId: activeGhostTargetOwnerId,
@@ -494,6 +582,9 @@ export function ListConfig() {
     startGhostTransition,
   } = useListConfigGhostTransition();
   const popInsertionPlannerRef = useRef<ArcTrackPopInsertionPlanner | null>(null);
+  const arcTrackProgrammaticPushControllerRef = useRef<ArcTrackProgrammaticPushController | null>(
+    null,
+  );
   const handleArcTrackGhostNodeChange = useCallback(
     (layoutId: string, node: HTMLDivElement | null) => {
       registerGhostNode(layoutId, LIST_CONFIG_GHOST_NODE_OWNER.arcTrack, node);
@@ -506,6 +597,15 @@ export function ListConfig() {
     },
     [],
   );
+  const handleProgrammaticPushControllerChange = useCallback(
+    (controller: ArcTrackProgrammaticPushController | null) => {
+      arcTrackProgrammaticPushControllerRef.current = controller;
+    },
+    [],
+  );
+  const handleDuplicateShakeConsumed = useCallback((signal: number) => {
+    setDuplicateShakeState((current) => consumeListConfigDuplicateShakeState(current, signal));
+  }, []);
   const markExcludeItemRemoving = useCallback((item: ListConfigExcludeToolLabelItem) => {
     setRemovingExcludeItemIds((current) => {
       const next = new Set(current);
@@ -543,6 +643,40 @@ export function ListConfig() {
       await appLogicAction.importLocalCollection(renderedSavePath);
     } finally {
       setIsImportPending(false);
+    }
+  }
+
+  async function handlePasteAction() {
+    try {
+      const clipboardText = await readText();
+      const pasteTarget = resolveListConfigPasteTarget({
+        text: clipboardText,
+        playlistItems: createListConfigPasteItemsSnapshot(viewModel.toolLabelItems),
+        arcTrackItems: viewModel.arcTrackItems,
+      });
+
+      if (pasteTarget?.kind === "playlist-duplicate") {
+        duplicateShakeSequenceRef.current += 1;
+        setDuplicateShakeState({
+          layoutId: pasteTarget.layoutId,
+          signal: duplicateShakeSequenceRef.current,
+        });
+        return;
+      }
+
+      if (pasteTarget?.kind === "arc-track-push") {
+        const didPush =
+          arcTrackProgrammaticPushControllerRef.current?.pushItemByLayoutId(pasteTarget.layoutId) ??
+          false;
+
+        if (didPush) {
+          return;
+        }
+      }
+
+      pasteDownloadAction.pasteText(clipboardText);
+    } catch (error) {
+      console.error("Failed to read clipboard for paste download", error);
     }
   }
 
@@ -734,7 +868,12 @@ export function ListConfig() {
           <div className="h-24" />
           <div className="flex justify-between">
             <div className="flex gap-5">
-              <FnButton text="Paste" onClick={pasteDownloadAction.paste} />
+              <FnButton
+                text="Paste"
+                onClick={() => {
+                  void handlePasteAction();
+                }}
+              />
               <FnButton
                 disabled={isImportPending}
                 text={isImportPending ? "Importing" : "Import"}
@@ -779,8 +918,10 @@ export function ListConfig() {
                       activeGhostLayoutId={activeGhostLayoutId}
                       activeGhostTargetOwnerId={activeGhostTargetOwnerId}
                       dismissHoverSignal={dismissHoverSignal}
+                      duplicateShakeSignal={resolveToolLabelShakeSignal(duplicateShakeState, item)}
                       interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
                       registerGhostNode={registerGhostNode}
+                      onDuplicateShakeConsumed={handleDuplicateShakeConsumed}
                       onRemoveDraftItem={({ layoutId, ref, sourceNode }) => {
                         popInsertionPlannerRef.current?.({
                           layoutId,
@@ -848,6 +989,7 @@ export function ListConfig() {
           dismissHoverSignal={dismissHoverSignal}
           onGhostNodeChange={handleArcTrackGhostNodeChange}
           onPopInsertionPlannerChange={handlePopInsertionPlannerChange}
+          onProgrammaticPushControllerChange={handleProgrammaticPushControllerChange}
           onPushItem={(source: ArcTrackPushTransitionSource) => {
             const sourceNode = source.sourceNode;
             const layoutRef = createConfigSidebarItemRef(source.item);

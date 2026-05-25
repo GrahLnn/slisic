@@ -5,6 +5,7 @@ import {
   type CollectionTitleHandoff,
   type CollectionTitleTone,
   type ConfigDraft,
+  type ConfigDraftCollectionRef,
 } from "./core";
 
 export interface TitleSharePageTransition {
@@ -259,6 +260,35 @@ export function composeTitleShareArrows(
   };
 }
 
+function compareConfigDraftItemUrl(
+  left: Pick<ConfigDraftCollectionRef, "url">,
+  right: Pick<ConfigDraftCollectionRef, "url">,
+) {
+  return left.url.localeCompare(right.url);
+}
+
+function createConfigDraftComparableCollections(collections: readonly ConfigDraftCollectionRef[]) {
+  return collections
+    .map((collection) => ({
+      name: collection.name,
+      url: collection.url,
+      folder: collection.folder,
+      last_updated: collection.last_updated,
+      enable_updates: collection.enable_updates,
+    }))
+    .sort(compareConfigDraftItemUrl);
+}
+
+function createConfigDraftComparableGroups(groups: ConfigDraft["groups"]) {
+  return groups
+    .map((group) => ({
+      name: group.name,
+      url: group.url,
+      folder: group.folder,
+    }))
+    .sort(compareConfigDraftItemUrl);
+}
+
 export function createConfigDraftComparableKey(draft: ConfigDraft | null) {
   if (!draft) {
     return "null";
@@ -267,8 +297,8 @@ export function createConfigDraftComparableKey(draft: ConfigDraft | null) {
   return JSON.stringify({
     mode: draft.mode,
     name: draft.name,
-    collections: draft.collections,
-    groups: draft.groups,
+    collections: createConfigDraftComparableCollections(draft.collections),
+    groups: createConfigDraftComparableGroups(draft.groups),
   });
 }
 

@@ -38,12 +38,18 @@ export type ArcTrackPopInsertionRequest = {
 };
 
 export type ArcTrackPopInsertionPlanner = (request: ArcTrackPopInsertionRequest) => void;
+export type ArcTrackProgrammaticPushController = {
+  pushItemByLayoutId: (layoutId: string) => boolean;
+};
 
 type ArcTrackListProps = {
   items: readonly ConfigSidebarItem[];
   onPushItem?: (source: ArcTrackPushTransitionSource) => void;
   onGhostNodeChange?: (layoutId: string, node: HTMLDivElement | null) => void;
   onPopInsertionPlannerChange?: (planner: ArcTrackPopInsertionPlanner | null) => void;
+  onProgrammaticPushControllerChange?: (
+    controller: ArcTrackProgrammaticPushController | null,
+  ) => void;
   motionProps?: MotionProps;
   dismissHoverSignal?: number;
 };
@@ -70,6 +76,7 @@ type ArcTrackItemNodeState = {
 type ArcTrackItemNodeRegistry = Map<ArcTrackItemRegistryKey, ArcTrackItemNodeState>;
 type ArcTrackDetachedNodeState = Pick<ArcTrackItemNodeState, "start" | "renderedStart">;
 type ArcTrackDetachedNodeRegistry = Map<ArcTrackItemRegistryKey, ArcTrackDetachedNodeState>;
+type ArcTrackLabelNodeRegistry = Map<string, HTMLDivElement>;
 
 type ArcTrackPositionController = {
   itemRegistryRef: RefObject<ArcTrackItemNodeRegistry>;
@@ -89,6 +96,7 @@ type ArcTrackItemProps = {
   snapMountLayoutIdRef: RefObject<string | null>;
   onPushItem?: (source: ArcTrackPushTransitionSource) => void;
   onGhostNodeChange?: (layoutId: string, node: HTMLDivElement | null) => void;
+  labelNodeRegistryRef: RefObject<ArcTrackLabelNodeRegistry>;
   start: number;
   dismissHoverSignal?: number;
   detachedItemRegistryRef: RefObject<ArcTrackDetachedNodeRegistry>;
@@ -108,6 +116,7 @@ type ArcTrackLabelHostProps = {
   onPushItem?: (source: ArcTrackPushTransitionSource) => void;
   onGhostNodeChange?: (layoutId: string, node: HTMLDivElement | null) => void;
   labelNodeRef: RefObject<HTMLDivElement | null>;
+  labelNodeRegistryRef: RefObject<ArcTrackLabelNodeRegistry>;
 };
 
 type ArcTrackIndicatorProps = {
@@ -292,6 +301,19 @@ export function resolveArcTrackDisplayItems(args: {
       .filter((item): item is ConfigSidebarItem => item !== null),
     layoutOrder: orderedLayoutIds,
   };
+}
+
+export function resolveArcTrackItemIndexByLayoutId(
+  items: readonly ConfigSidebarItem[],
+  layoutId: string,
+) {
+  return items.findIndex(
+    (item) =>
+      createListConfigToolLabelLayoutId({
+        kind: item.kind,
+        url: item.url,
+      }) === layoutId,
+  );
 }
 
 export function resolveArcTrackItemMountState(args: {
@@ -786,13 +808,19 @@ function ArcTrackLabelHost({
   onPushItem,
   onGhostNodeChange,
   labelNodeRef,
+  labelNodeRegistryRef,
 }: ArcTrackLabelHostProps) {
   const handleLabelNodeChange = useCallback(
     (node: HTMLDivElement | null) => {
       labelNodeRef.current = node;
+      if (node) {
+        labelNodeRegistryRef.current.set(layoutId, node);
+      } else {
+        labelNodeRegistryRef.current.delete(layoutId);
+      }
       onGhostNodeChange?.(layoutId, node);
     },
-    [layoutId, onGhostNodeChange, labelNodeRef],
+    [layoutId, onGhostNodeChange, labelNodeRef, labelNodeRegistryRef],
   );
 
   return (
@@ -840,6 +868,7 @@ const ArcTrackItem = memo(function ArcTrackItem({
   snapMountLayoutIdRef,
   onPushItem,
   onGhostNodeChange,
+  labelNodeRegistryRef,
   start,
   dismissHoverSignal,
   detachedItemRegistryRef,
@@ -881,6 +910,7 @@ const ArcTrackItem = memo(function ArcTrackItem({
           onPushItem={onPushItem}
           onGhostNodeChange={onGhostNodeChange}
           labelNodeRef={labelNodeRef}
+          labelNodeRegistryRef={labelNodeRegistryRef}
         />
         <ArcTrackIndicator itemKind={item.kind} />
       </div>
@@ -893,6 +923,7 @@ function ArcTrackListBody({
   onPushItem,
   onGhostNodeChange,
   onPopInsertionPlannerChange,
+  onProgrammaticPushControllerChange,
   dismissHoverSignal,
 }: Pick<
   ArcTrackListProps,
@@ -900,11 +931,13 @@ function ArcTrackListBody({
   | "onPushItem"
   | "onGhostNodeChange"
   | "onPopInsertionPlannerChange"
+  | "onProgrammaticPushControllerChange"
   | "dismissHoverSignal"
 >) {
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
   const itemRegistryRef = useRef<ArcTrackItemNodeRegistry>(new Map());
   const detachedItemRegistryRef = useRef<ArcTrackDetachedNodeRegistry>(new Map());
+  const labelNodeRegistryRef = useRef<ArcTrackLabelNodeRegistry>(new Map());
   const positionFrameRef = useRef<number | null>(null);
   const scrollElementRef = useRef<HTMLDivElement | null>(null);
   const scrollOffsetRef = useRef(0);
@@ -1019,6 +1052,72 @@ function ArcTrackListBody({
   const arcTrackHeight = rowVirtualizer.getTotalSize();
   const virtualItems = rowVirtualizer.getVirtualItems();
 
+  const createProgrammaticPushController = useCallback(
+    (): ArcTrackProgrammaticPushController => ({
+      pushItemByLayoutId: (layoutId) => {
+        const index = resolveArcTrackItemIndexByLayoutId(displayItems, layoutId);
+
+        if (index < 0) {
+          return false;
+        }
+
+        const item = displayItems[index];
+        if (!item) {
+          return false;
+        }
+
+        const scrollElement = scrollElementRef.current;
+        const ownerWindow = scrollElement?.ownerDocument.defaultView;
+
+        if (!scrollElement || !ownerWindow) {
+          onPushItem?.({
+            item,
+            layoutId,
+            sourceNode: null,
+          });
+          return true;
+        }
+
+        rowVirtualizer.scrollToIndex(index, {
+          align: "center",
+        });
+
+        const pushWhenMounted = (remainingFrames: number) => {
+          const sourceNode = labelNodeRegistryRef.current.get(layoutId) ?? null;
+
+          if (sourceNode || remainingFrames <= 0) {
+            startTransition(() => {
+              onPushItem?.({
+                item,
+                layoutId,
+                sourceNode,
+              });
+            });
+            return;
+          }
+
+          ownerWindow.requestAnimationFrame(() => {
+            pushWhenMounted(remainingFrames - 1);
+          });
+        };
+
+        ownerWindow.requestAnimationFrame(() => {
+          pushWhenMounted(6);
+        });
+        return true;
+      },
+    }),
+    [displayItems, onPushItem, rowVirtualizer],
+  );
+
+  useLayoutEffect(() => {
+    onProgrammaticPushControllerChange?.(createProgrammaticPushController());
+
+    return () => {
+      onProgrammaticPushControllerChange?.(null);
+    };
+  }, [onProgrammaticPushControllerChange, createProgrammaticPushController]);
+
   return (
     <div className="relative h-screen w-72">
       <svg
@@ -1064,6 +1163,7 @@ function ArcTrackListBody({
                     snapMountLayoutIdRef={snapMountLayoutIdRef}
                     onPushItem={onPushItem}
                     onGhostNodeChange={onGhostNodeChange}
+                    labelNodeRegistryRef={labelNodeRegistryRef}
                     start={virtualItem.start}
                     dismissHoverSignal={dismissHoverSignal}
                     detachedItemRegistryRef={detachedItemRegistryRef}
@@ -1084,6 +1184,7 @@ export function ArcTrackList({
   onPushItem,
   onGhostNodeChange,
   onPopInsertionPlannerChange,
+  onProgrammaticPushControllerChange,
   dismissHoverSignal,
 }: ArcTrackListProps) {
   return (
@@ -1097,6 +1198,7 @@ export function ArcTrackList({
         onPushItem={onPushItem}
         onGhostNodeChange={onGhostNodeChange}
         onPopInsertionPlannerChange={onPopInsertionPlannerChange}
+        onProgrammaticPushControllerChange={onProgrammaticPushControllerChange}
         dismissHoverSignal={dismissHoverSignal}
       />
     </motion.div>

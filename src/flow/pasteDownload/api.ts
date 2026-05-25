@@ -39,6 +39,11 @@ export function stop() {
   started = false;
 }
 
+function requestPasteDownload(text: string) {
+  ensureStarted();
+  send(pasteRequested.load(text));
+}
+
 export const hook = {
   useState: () => me(useSelector(actor, selectMainState.project, selectMainState.compare)),
   useContext: () => useSelector(actor, selectContext.project, selectContext.compare),
@@ -46,13 +51,14 @@ export const hook = {
 
 export const action = {
   paste: async () => {
-    ensureStarted();
-
     try {
-      send(pasteRequested.load(await readText()));
+      requestPasteDownload(await readText());
     } catch (error) {
       console.error("Failed to read clipboard for paste download", error);
     }
+  },
+  pasteText: (text: string) => {
+    requestPasteDownload(text);
   },
   delete: (id: string) => {
     ensureStarted();
