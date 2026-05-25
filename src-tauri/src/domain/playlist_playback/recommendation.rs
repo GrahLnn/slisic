@@ -48,6 +48,7 @@ const AUDIO_STYLE_LOCAL_DENSITY_TOP_K: usize = 10;
 #[cfg(not(test))]
 const AUDIO_STYLE_INPUT_CHANGE_DEBOUNCE_MS: u64 = 500;
 
+#[allow(dead_code)]
 struct AudioStyleEmbeddingVectorIndex;
 
 impl_hnsw_index!(
@@ -896,6 +897,7 @@ impl AudioStyleEmbeddingCache {
         Ok(embedding)
     }
 
+    #[cfg(test)]
     pub(crate) fn cached_embedding_for_track(
         &self,
         track: &PlaybackTrack,
@@ -924,6 +926,7 @@ impl AudioStyleEmbeddingCache {
 }
 
 impl AudioStylePlaylistPlaybackRecommender {
+    #[cfg(test)]
     pub(crate) fn from_cached_tracks(
         cache: &AudioStyleEmbeddingCache,
         tracks: &[PlaybackTrack],
@@ -998,6 +1001,7 @@ impl AudioStylePlaylistPlaybackRecommender {
             .contains_key(&PlaybackTrackKey::from_track(track))
     }
 
+    #[cfg(test)]
     pub(crate) fn propose_queue(
         &self,
         current_track: PlaybackTrack,
@@ -1027,6 +1031,7 @@ impl AudioStylePlaylistPlaybackRecommender {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn propose_queue_after_exclude(
         &self,
         current_track: PlaybackTrack,
@@ -1079,6 +1084,7 @@ impl AudioStylePlaylistPlaybackRecommender {
             .map(|track| AudioStyleNextTrackProposal { track, selection })
     }
 
+    #[cfg(test)]
     fn from_trained_embeddings(embeddings: AudioStyleEmbeddingMap) -> Self {
         let state = AudioStyleModelState::from_embeddings(None, embeddings, &HashSet::new());
         Self::from_state(&state, true)
@@ -1141,10 +1147,6 @@ impl AudioStyleModelSnapshot {
 
     pub(crate) fn recommender(&self) -> &AudioStylePlaylistPlaybackRecommender {
         &self.recommender
-    }
-
-    fn track_count(&self) -> usize {
-        self.recommender.embeddings.len()
     }
 
     #[cfg(test)]
@@ -2051,6 +2053,7 @@ enum AudioStyleEmbeddingCacheReadErrorKind {
 
 #[derive(Debug)]
 struct AudioStyleEmbeddingCacheReadError {
+    #[cfg_attr(not(test), allow(dead_code))]
     kind: AudioStyleEmbeddingCacheReadErrorKind,
     message: String,
 }

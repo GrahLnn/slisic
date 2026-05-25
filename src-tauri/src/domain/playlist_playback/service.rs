@@ -753,17 +753,6 @@ fn propose_playlist_playback_queue(
 }
 
 #[cfg(not(test))]
-fn propose_playlist_playback_queue_after_exclude(
-    request: PlaylistPlaybackRecommendationRequest,
-) -> Vec<PlaybackTrack> {
-    propose_playlist_playback_queue_with_mode(
-        request,
-        PlaylistPlaybackRecommendationMode::ExcludeCurrent,
-        false,
-    )
-}
-
-#[cfg(not(test))]
 fn propose_playlist_playback_queue_after_exclude_with_logging(
     request: PlaylistPlaybackRecommendationRequest,
 ) -> Vec<PlaybackTrack> {
@@ -1197,6 +1186,7 @@ pub(crate) fn select_random_playlist_initial_track(
     select_playlist_initial_track_at_index(tracks, index)
 }
 
+#[cfg(test)]
 pub(crate) fn place_track_at_queue_start(
     mut tracks: Vec<PlaybackTrack>,
     anchor: &PlaybackTrack,

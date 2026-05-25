@@ -111,21 +111,6 @@ pub async fn add_exclude(music: Music) -> Result<AddExcludeResult> {
     })
 }
 
-pub async fn get_music_by_identity(url: &str, start_ms: u32, end_ms: u32) -> Result<Option<Music>> {
-    ensure_collection_graph_schema().await?;
-
-    let canonical_music_id = canonical_music_id_for_source(url, start_ms, end_ms);
-    let Some(record) = find_music_record_ids_by_canonical_id(&canonical_music_id)
-        .await?
-        .into_iter()
-        .next()
-    else {
-        return Ok(None);
-    };
-
-    Ok(Some(Music::get_record(record).await?))
-}
-
 pub async fn set_music_liked_by_identity(
     url: &str,
     start_ms: u32,
@@ -271,20 +256,18 @@ pub struct PlaylistPlaybackSelection {
 #[derive(Debug, Clone)]
 pub struct PlaylistPlaybackCollectionRef {
     record: RecordId,
-    pub name: String,
     pub url: String,
     pub folder: String,
 }
 
 impl PlaylistPlaybackCollectionRef {
     #[cfg(test)]
-    pub(crate) fn new_for_test(name: &str, url: &str, folder: &str) -> Self {
+    pub(crate) fn new_for_test(_name: &str, url: &str, folder: &str) -> Self {
         Self {
             record: RecordId::new(
                 Collection::table_name(),
                 format!("test-{}", stable_record_key(url)),
             ),
-            name: name.to_string(),
             url: url.to_string(),
             folder: folder.to_string(),
         }
@@ -294,22 +277,18 @@ impl PlaylistPlaybackCollectionRef {
 #[derive(Debug, Clone)]
 pub struct PlaylistPlaybackGroupRef {
     record: RecordId,
-    pub name: String,
     pub url: String,
-    pub folder: String,
 }
 
 impl PlaylistPlaybackGroupRef {
     #[cfg(test)]
-    pub(crate) fn new_for_test(name: &str, url: &str, folder: &str) -> Self {
+    pub(crate) fn new_for_test(_name: &str, url: &str, _folder: &str) -> Self {
         Self {
             record: RecordId::new(
                 Group::table_name(),
                 format!("test-{}", stable_record_key(url)),
             ),
-            name: name.to_string(),
             url: url.to_string(),
-            folder: folder.to_string(),
         }
     }
 }
@@ -336,8 +315,6 @@ fn push_unique_download_scope(scopes: &mut Vec<String>, url: &str) {
 
 #[derive(Debug, Clone)]
 pub struct PlaylistPlaybackTrackSource {
-    pub collection_name: String,
-    pub collection_url: String,
     pub collection_folder: String,
     pub music: Music,
 }
@@ -520,6 +497,7 @@ pub async fn delete_playlist_by_name(name: &str) -> Result<bool> {
     Ok(true)
 }
 
+#[cfg(test)]
 pub async fn upsert_playlist(playlist: &PlayList, previous_name: Option<&str>) -> Result<PlayList> {
     let foreign_ids = resolve_playlist_foreign_record_ids(playlist).await?;
     let existing_record = match previous_name {
@@ -1139,7 +1117,6 @@ async fn load_playlist_playback_collection_ref(
 
     Ok(Some(PlaylistPlaybackCollectionRef {
         record: row.id,
-        name: row.name,
         url: row.url,
         folder: row.folder,
     }))
@@ -1154,9 +1131,7 @@ async fn load_playlist_playback_group_ref(
 
     Ok(Some(PlaylistPlaybackGroupRef {
         record: row.id,
-        name: row.name,
         url: row.url,
-        folder: row.folder,
     }))
 }
 
@@ -1459,8 +1434,6 @@ fn append_playback_track_source(
     }
 
     sources.push(PlaylistPlaybackTrackSource {
-        collection_name: collection.name.clone(),
-        collection_url: collection.url.clone(),
         collection_folder: collection.folder.clone(),
         music,
     });
@@ -1471,8 +1444,6 @@ fn project_playback_track_source(
     music: Music,
 ) -> PlaylistPlaybackTrackSource {
     PlaylistPlaybackTrackSource {
-        collection_name: collection.name.clone(),
-        collection_url: collection.url.clone(),
         collection_folder: collection.folder.clone(),
         music,
     }
@@ -2375,7 +2346,5 @@ struct CollectionShellRow {
 struct GroupShellRow {
     #[serde(deserialize_with = "appdb::serde_utils::id::deserialize_record_id_or_compat_string")]
     id: RecordId,
-    name: String,
     url: String,
-    folder: String,
 }

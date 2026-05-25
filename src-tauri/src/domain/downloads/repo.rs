@@ -1,6 +1,4 @@
 use super::model::DownloadTask;
-#[cfg(test)]
-use super::model::DownloadTaskStatus;
 use anyhow::Result;
 use appdb::error::{DBError, classify_db_error};
 use std::time::Duration;
@@ -60,7 +58,6 @@ pub async fn mark_interrupted_tasks() -> Result<Vec<DownloadTask>> {
             continue;
         }
 
-        task.status = DownloadTaskStatus::Interrupted;
         task.mark_interrupted();
         updated.push(save_task(task).await?);
     }

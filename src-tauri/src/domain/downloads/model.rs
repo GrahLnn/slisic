@@ -249,12 +249,7 @@ impl DownloadTask {
             .leafs
             .iter()
             .filter(|leaf| {
-                matches!(
-                    leaf.status,
-                    DownloadLeafStatus::Failed
-                        | DownloadLeafStatus::Cancelled
-                        | DownloadLeafStatus::Interrupted
-                )
+                leaf.status.is_terminal() && leaf.status != DownloadLeafStatus::Completed
             })
             .count() as u32;
         self.touch();
@@ -270,7 +265,6 @@ impl DownloadTask {
         self.refresh_counts();
     }
 
-    #[cfg(test)]
     pub fn mark_interrupted(&mut self) {
         if self.status.is_active() {
             self.status = DownloadTaskStatus::Interrupted;

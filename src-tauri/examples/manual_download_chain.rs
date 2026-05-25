@@ -130,6 +130,13 @@ mod domain {
             ));
         }
 
+        pub mod recommendation {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/playlist_playback/recommendation.rs"
+            ));
+        }
+
         pub mod service {
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -265,7 +272,7 @@ fn main() {
             groups: vec![],
             created_at: AutoFill::pending(),
         };
-        domain::playlists::repo::upsert_playlist(&playlist, None)
+        domain::playlists::repo::upsert_playlist_surface(&playlist, None)
             .await
             .expect("manual download chain playlist save should succeed");
         let persisted_collection = domain::playlists::repo::get_collection_by_url(url)

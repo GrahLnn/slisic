@@ -2182,7 +2182,6 @@ fn upsert_playlist_surface_is_immediately_usable_for_playback_selection() {
             vec![populated_collection.url.clone()]
         );
         assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].collection_url, populated_collection.url);
         assert_eq!(sources[0].music.url, populated_collection.musics[0].url);
 
         reset_db();
@@ -2531,7 +2530,6 @@ fn playlist_playback_selection_reads_refs_without_hydrating_unselected_collectio
             vec![selected_collection.url.clone(), selected_group.url.clone()]
         );
         assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].collection_url, selected_collection.url);
         assert_eq!(sources[0].music.url, selected_music.url);
 
         reset_db();
@@ -2922,7 +2920,6 @@ fn playlist_playback_sources_respect_ordered_window_limit() {
 
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].music.url, selected_music_a.url);
-        assert_eq!(sources[0].collection_url, selected_collection.url);
 
         reset_db();
     });
@@ -3036,7 +3033,6 @@ fn random_playlist_playback_source_uses_selected_playlist_scope() {
 
         assert!(selected_urls.contains(&source.music.url.as_str()));
         assert_ne!(source.music.url, unselected_music.url);
-        assert_eq!(source.collection_url, selected_collection.url);
 
         reset_db();
     });

@@ -40,7 +40,12 @@ use tokio::task::JoinSet;
 
 #[cfg(not(test))]
 const AUTO_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
-const MAX_PARALLEL_LEAF_DOWNLOADS: usize = 4;
+const MIN_PARALLEL_LEAF_DOWNLOADS: usize = 1;
+const INITIAL_PARALLEL_LEAF_DOWNLOADS: usize = 4;
+const MAX_PARALLEL_LEAF_DOWNLOADS: usize = 8;
+const MAX_LEAF_DOWNLOAD_ATTEMPTS: usize = 3;
+const LEAF_DOWNLOAD_RETRY_BASE_DELAY_SECS: u64 = 2;
+const LEAF_DOWNLOAD_RETRY_MAX_JITTER_MILLIS: u64 = 750;
 const GROUP_DISCOVERY_USER_AGENT: &str =
     concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
@@ -157,6 +162,7 @@ pub(crate) struct CompletedLeafDownload {
     pub(crate) group: Option<Group>,
     pub(crate) downloaded: super::yt_dlp::DownloadedLeaf,
     pub(crate) progress: DownloadProgress,
+    pub(crate) retry_failures: usize,
 }
 
 #[derive(Debug)]
@@ -176,20 +182,21 @@ struct LeafPipelineState {
     active_prepares: usize,
     active_downloads: usize,
     prepare_parallelism: usize,
-    download_parallelism: usize,
+    download_window: LeafDownloadWindow,
 }
 
 #[cfg(not(test))]
 impl LeafPipelineState {
-    fn new(leaves: Vec<PlannedLeaf>, download_parallelism: usize) -> Self {
+    fn new(leaves: Vec<PlannedLeaf>, download_window: LeafDownloadWindow) -> Self {
+        let prepare_parallelism = download_window.current_limit();
         Self {
             workers: JoinSet::new(),
             pending_prepares: VecDeque::from(leaves),
             ready_downloads: VecDeque::new(),
             active_prepares: 0,
             active_downloads: 0,
-            prepare_parallelism: download_parallelism,
-            download_parallelism,
+            prepare_parallelism,
+            download_window,
         }
     }
 
@@ -199,6 +206,144 @@ impl LeafPipelineState {
             || !self.pending_prepares.is_empty()
             || !self.ready_downloads.is_empty()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LeafDownloadWindow {
+    min_limit: usize,
+    current_limit: usize,
+    max_limit: usize,
+    sustained_successes: usize,
+}
+
+impl Default for LeafDownloadWindow {
+    fn default() -> Self {
+        Self::fixed(0)
+    }
+}
+
+impl LeafDownloadWindow {
+    pub(crate) fn for_collection(source_kind: CollectionSourceKind, leaf_count: usize) -> Self {
+        if leaf_count == 0 {
+            return Self::fixed(0);
+        }
+
+        if source_kind == CollectionSourceKind::Single {
+            return Self::fixed(1);
+        }
+
+        let max_limit = leaf_count.min(MAX_PARALLEL_LEAF_DOWNLOADS);
+        let current_limit = leaf_count
+            .min(INITIAL_PARALLEL_LEAF_DOWNLOADS)
+            .clamp(MIN_PARALLEL_LEAF_DOWNLOADS, max_limit);
+
+        Self {
+            min_limit: MIN_PARALLEL_LEAF_DOWNLOADS,
+            current_limit,
+            max_limit,
+            sustained_successes: 0,
+        }
+    }
+
+    fn fixed(limit: usize) -> Self {
+        Self {
+            min_limit: limit,
+            current_limit: limit,
+            max_limit: limit,
+            sustained_successes: 0,
+        }
+    }
+
+    pub(crate) fn current_limit(&self) -> usize {
+        self.current_limit
+    }
+
+    pub(crate) fn max_limit(&self) -> usize {
+        self.max_limit
+    }
+
+    pub(crate) fn record_success(&mut self) {
+        if self.current_limit >= self.max_limit {
+            self.sustained_successes = 0;
+            return;
+        }
+
+        self.sustained_successes += 1;
+        if self.sustained_successes < self.current_limit {
+            return;
+        }
+
+        self.current_limit += 1;
+        self.sustained_successes = 0;
+    }
+
+    pub(crate) fn record_failure(&mut self) {
+        if self.current_limit <= self.min_limit {
+            self.sustained_successes = 0;
+            return;
+        }
+
+        self.current_limit = (self.current_limit / 2).max(self.min_limit);
+        self.sustained_successes = 0;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LeafDownloadRetryPolicy {
+    max_attempts: usize,
+    base_delay: Duration,
+}
+
+impl Default for LeafDownloadRetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: MAX_LEAF_DOWNLOAD_ATTEMPTS,
+            base_delay: Duration::from_secs(LEAF_DOWNLOAD_RETRY_BASE_DELAY_SECS),
+        }
+    }
+}
+
+impl LeafDownloadRetryPolicy {
+    pub(crate) fn cooldown_after_failure(
+        &self,
+        failed_attempt: usize,
+        retry_key: &str,
+        error: &anyhow::Error,
+    ) -> Option<Duration> {
+        if failed_attempt == 0
+            || failed_attempt >= self.max_attempts
+            || !is_retryable_leaf_download_error(error)
+        {
+            return None;
+        }
+
+        let multiplier = 1_u32
+            .checked_shl((failed_attempt - 1) as u32)
+            .unwrap_or(u32::MAX);
+        self.base_delay
+            .checked_mul(multiplier)?
+            .checked_add(retry_cooldown_jitter(retry_key, failed_attempt))
+    }
+}
+
+fn retry_cooldown_jitter(retry_key: &str, failed_attempt: usize) -> Duration {
+    let hash = short_hash(&format!("{retry_key}|{failed_attempt}"));
+    let jitter_millis =
+        u64::from_str_radix(&hash, 16).unwrap_or(0) % (LEAF_DOWNLOAD_RETRY_MAX_JITTER_MILLIS + 1);
+    Duration::from_millis(jitter_millis)
+}
+
+pub(crate) fn is_retryable_leaf_download_error(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}");
+    ![
+        "failed to create ",
+        "failed to spawn yt-dlp download process",
+        "yt-dlp stdout pipe was not captured",
+        "yt-dlp stderr pipe was not captured",
+        "yt-dlp completed but final audio path could not be resolved",
+    ]
+    .iter()
+    .any(|fatal| message.contains(fatal))
 }
 
 #[cfg(not(test))]
@@ -330,6 +475,7 @@ async fn enqueue_collection_download_with_trigger(
 }
 
 #[cfg(not(test))]
+#[allow(dead_code)]
 pub(crate) async fn enqueue_collection_download_for_test(
     url: String,
     client: Arc<dyn YtDlpClient>,
@@ -370,6 +516,7 @@ pub(crate) async fn enqueue_collection_download_for_test(
 /// Batch imports can enqueue many URLs in parallel, so duplicate suppression
 /// must cover the repository read/save window instead of relying on a plain
 /// "find active task, then insert" sequence.
+#[cfg(test)]
 pub(crate) async fn prepare_task_enqueue(
     url: String,
     trigger: DownloadTrigger,
@@ -484,18 +631,21 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
     }
 
     let runnable_leaves = runnable_plan_leaves(&task_snapshot, &plan);
-    let parallelism = leaf_download_parallelism(plan.source_kind, plan.leaves.len());
+    let download_window =
+        LeafDownloadWindow::for_collection(plan.source_kind, runnable_leaves.len());
+    let parallelism = download_window.current_limit();
     eprintln!(
-        "[downloads] task {} pipeline start source_kind={} total_leaves={} runnable_leaves={} download_parallelism={} folder={}",
+        "[downloads] task {} pipeline start source_kind={} total_leaves={} runnable_leaves={} download_parallelism={} max_download_parallelism={} folder={}",
         task_snapshot.id,
         plan.source_kind.as_str(),
         plan.leaves.len(),
         runnable_leaves.len(),
         parallelism,
+        download_window.max_limit(),
         collection.folder
     );
 
-    let mut pipeline = LeafPipelineState::new(runnable_leaves, parallelism);
+    let mut pipeline = LeafPipelineState::new(runnable_leaves, download_window);
     fill_leaf_pipeline(
         &mut pipeline,
         &mut task_snapshot,
@@ -674,32 +824,63 @@ async fn download_leaf_audio_worker(
     client: Arc<dyn YtDlpClient>,
     input: LeafDownloadInput,
 ) -> LeafPipelineEvent {
-    let url = input.url.clone();
-    let target_dir = input.target_dir.clone();
-    let temp_file_stem = input.temp_file_stem.clone();
-    let download_result = run_blocking(move || {
-        let mut latest_progress = DownloadProgress::default();
-        let downloaded =
-            client.download_leaf_audio(&url, &target_dir, &temp_file_stem, &mut |progress| {
-                latest_progress = progress;
-            })?;
-        Ok::<_, anyhow::Error>((downloaded, latest_progress))
-    })
-    .await;
+    let retry_policy = LeafDownloadRetryPolicy::default();
+    let retry_key = input.leaf.id.to_string();
+    let mut attempt = 1;
+    let mut retry_failures = 0;
 
-    match download_result {
-        Ok((downloaded, progress)) => LeafPipelineEvent::Downloaded(Ok(CompletedLeafDownload {
-            leaf: input.leaf,
-            probe: input.probe,
-            music_probe: input.music_probe,
-            group: input.group,
-            downloaded,
-            progress,
-        })),
-        Err(error) => LeafPipelineEvent::Downloaded(Err(FailedLeafDownload {
-            leaf: input.leaf,
-            error: error.to_string(),
-        })),
+    loop {
+        let client = client.clone();
+        let url = input.url.clone();
+        let target_dir = input.target_dir.clone();
+        let temp_file_stem = input.temp_file_stem.clone();
+        let download_result = run_blocking(move || {
+            let mut latest_progress = DownloadProgress::default();
+            let downloaded = client.download_leaf_audio(
+                &url,
+                &target_dir,
+                &temp_file_stem,
+                &mut |progress| {
+                    latest_progress = progress;
+                },
+            )?;
+            Ok::<_, anyhow::Error>((downloaded, latest_progress))
+        })
+        .await;
+
+        match download_result {
+            Ok((downloaded, progress)) => {
+                return LeafPipelineEvent::Downloaded(Ok(CompletedLeafDownload {
+                    leaf: input.leaf,
+                    probe: input.probe,
+                    music_probe: input.music_probe,
+                    group: input.group,
+                    downloaded,
+                    progress,
+                    retry_failures,
+                }));
+            }
+            Err(error) => {
+                let Some(delay) = retry_policy.cooldown_after_failure(attempt, &retry_key, &error)
+                else {
+                    return LeafPipelineEvent::Downloaded(Err(FailedLeafDownload {
+                        leaf: input.leaf,
+                        error: error.to_string(),
+                    }));
+                };
+
+                retry_failures += 1;
+                eprintln!(
+                    "[downloads] leaf {} download attempt {} failed; retrying after {}ms: {}",
+                    input.leaf.id,
+                    attempt,
+                    delay.as_millis(),
+                    error
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+        }
     }
 }
 
@@ -741,6 +922,21 @@ async fn handle_leaf_pipeline_event(
         }
         LeafPipelineEvent::Downloaded(outcome) => {
             pipeline.active_downloads = pipeline.active_downloads.saturating_sub(1);
+            match &outcome {
+                Ok(completed) if completed.retry_failures == 0 => {
+                    pipeline.download_window.record_success();
+                }
+                Ok(completed) => {
+                    eprintln!(
+                        "[downloads] leaf {} download succeeded after {} retry failure(s); reducing future download parallelism",
+                        completed.leaf.id, completed.retry_failures
+                    );
+                    pipeline.download_window.record_failure();
+                }
+                Err(_) => {
+                    pipeline.download_window.record_failure();
+                }
+            }
             handle_finished_leaf_download(
                 task_snapshot,
                 collection,
@@ -865,6 +1061,7 @@ async fn handle_prepared_leaf_download(
                     absolute_path: downloaded_path,
                 },
                 progress: DownloadProgress::default(),
+                retry_failures: 0,
             }),
         )
         .await?;
@@ -889,7 +1086,7 @@ async fn spawn_ready_leaf_downloads(
     save_root: &Path,
     client: Arc<dyn YtDlpClient>,
 ) -> Result<()> {
-    while pipeline.active_downloads < pipeline.download_parallelism {
+    while pipeline.active_downloads < pipeline.download_window.current_limit() {
         let Some(prepared) = pipeline.ready_downloads.pop_front() else {
             break;
         };
@@ -915,7 +1112,7 @@ async fn spawn_ready_leaf_downloads(
             leaf_snapshot.sequence,
             source_kind.as_str(),
             pipeline.active_downloads + 1,
-            pipeline.download_parallelism,
+            pipeline.download_window.current_limit(),
             temp_file_stem,
             target_dir.display()
         );
@@ -1728,6 +1925,7 @@ pub(crate) async fn recover_incomplete_download_tasks() -> Result<usize> {
 
     for mut task in tasks {
         if should_interrupt_unresumable_active_task_after_restart(&task) {
+            task.mark_interrupted();
             let last_error = task.last_error.clone();
             update_task_status(&mut task, DownloadTaskStatus::Interrupted, last_error).await?;
             continue;
@@ -1938,15 +2136,12 @@ pub(crate) fn should_reprobe_single_leaf(preference: CollectionSourceKind) -> bo
     preference != CollectionSourceKind::Single
 }
 
+#[cfg(test)]
 pub(crate) fn leaf_download_parallelism(
     source_kind: CollectionSourceKind,
     leaf_count: usize,
 ) -> usize {
-    if leaf_count == 0 || source_kind == CollectionSourceKind::Single {
-        return leaf_count.min(1);
-    }
-
-    leaf_count.min(MAX_PARALLEL_LEAF_DOWNLOADS)
+    LeafDownloadWindow::for_collection(source_kind, leaf_count).current_limit()
 }
 
 pub(crate) fn should_resume_download_task_after_restart(status: DownloadTaskStatus) -> bool {

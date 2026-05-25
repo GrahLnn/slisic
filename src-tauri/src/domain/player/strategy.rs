@@ -8,6 +8,7 @@ pub trait PlaybackStrategy: Send {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackQueueMode {
+    #[cfg_attr(not(test), allow(dead_code))]
     Random,
     Ordered,
 }
@@ -85,6 +86,7 @@ impl PlaybackStrategySet {
         }
     }
 
+    #[cfg(test)]
     pub fn next_track(
         &mut self,
         mode: PlaybackContinuationMode,
@@ -131,6 +133,7 @@ impl PlaybackStrategySet {
         tracks.get((current_index + 1) % tracks.len()).cloned()
     }
 
+    #[cfg(test)]
     pub fn select_track(
         &self,
         requested: &PlaybackTrack,

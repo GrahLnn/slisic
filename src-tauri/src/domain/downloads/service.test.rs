@@ -2,8 +2,9 @@ use super::model::CollectionSourceKind;
 use super::naming::{provider_segment, sanitize_path_component};
 use super::repo::{list_tasks, save_task};
 use super::service::{
-    CompletedLeafDownload, derive_youtube_channel_url_from_uploads_playlist,
-    expand_root_entries_to_planned_leafs, extract_olak_playlist_ids, handle_finished_leaf_download,
+    CompletedLeafDownload, LeafDownloadRetryPolicy, LeafDownloadWindow,
+    derive_youtube_channel_url_from_uploads_playlist, expand_root_entries_to_planned_leafs,
+    extract_olak_playlist_ids, handle_finished_leaf_download, is_retryable_leaf_download_error,
     leaf_download_parallelism, prepare_task_enqueue, resolve_existing_temp_downloaded_file,
     resolve_pasted_download_url, resolve_task_collection_folder, resume_download_task,
     should_interrupt_unresumable_active_task_after_restart,
@@ -75,6 +76,95 @@ fn leaf_download_parallelism_keeps_single_downloads_serial_and_batches_lists() {
     );
     assert_eq!(leaf_download_parallelism(CollectionSourceKind::List, 3), 3);
     assert_eq!(leaf_download_parallelism(CollectionSourceKind::List, 8), 4);
+}
+
+#[test]
+fn leaf_download_window_grows_after_sustained_successes() {
+    let mut window = LeafDownloadWindow::for_collection(CollectionSourceKind::List, 8);
+
+    assert_eq!(window.current_limit(), 4);
+    for _ in 0..3 {
+        window.record_success();
+        assert_eq!(window.current_limit(), 4);
+    }
+
+    window.record_success();
+    assert_eq!(window.current_limit(), 5);
+
+    for _ in 0..5 {
+        window.record_success();
+    }
+    assert_eq!(window.current_limit(), 6);
+}
+
+#[test]
+fn leaf_download_window_halves_after_failures_without_stalling_lists() {
+    let mut window = LeafDownloadWindow::for_collection(CollectionSourceKind::List, 8);
+
+    window.record_failure();
+    assert_eq!(window.current_limit(), 2);
+
+    window.record_failure();
+    assert_eq!(window.current_limit(), 1);
+
+    window.record_failure();
+    assert_eq!(window.current_limit(), 1);
+
+    window.record_success();
+    assert_eq!(window.current_limit(), 2);
+}
+
+#[test]
+fn leaf_download_window_keeps_single_downloads_serial() {
+    let mut window = LeafDownloadWindow::for_collection(CollectionSourceKind::Single, 3);
+
+    assert_eq!(window.current_limit(), 1);
+    window.record_success();
+    window.record_failure();
+    assert_eq!(window.current_limit(), 1);
+}
+
+#[test]
+fn leaf_download_retry_policy_cools_down_retryable_failures_then_stops() {
+    let policy = LeafDownloadRetryPolicy::default();
+    let error = anyhow!("yt-dlp download exited with status exit code: 1");
+
+    assert_eq!(
+        policy.cooldown_after_failure(1, "leaf-a", &error),
+        Some(std::time::Duration::from_millis(2037))
+    );
+    assert_eq!(
+        policy.cooldown_after_failure(2, "leaf-a", &error),
+        Some(std::time::Duration::from_millis(4047))
+    );
+    assert_eq!(policy.cooldown_after_failure(3, "leaf-a", &error), None);
+}
+
+#[test]
+fn leaf_download_retry_policy_does_not_retry_structural_failures() {
+    let error = anyhow!("yt-dlp completed but final audio path could not be resolved");
+
+    assert!(!is_retryable_leaf_download_error(&error));
+    assert_eq!(
+        LeafDownloadRetryPolicy::default().cooldown_after_failure(1, "leaf-a", &error),
+        None
+    );
+}
+
+#[test]
+fn leaf_download_retry_policy_spreads_parallel_retries_by_leaf_identity() {
+    let policy = LeafDownloadRetryPolicy::default();
+    let error = anyhow!("yt-dlp download exited with status exit code: 1");
+
+    assert_eq!(
+        policy.cooldown_after_failure(1, "leaf-a", &error),
+        Some(std::time::Duration::from_millis(2037))
+    );
+    assert_eq!(
+        policy.cooldown_after_failure(1, "leaf-b", &error),
+        Some(std::time::Duration::from_millis(2531))
+    );
+    assert_eq!(policy.cooldown_after_failure(0, "leaf-a", &error), None);
 }
 
 #[test]
@@ -194,6 +284,7 @@ fn list_download_marks_finalize_failures_on_leaf_without_aborting_task() {
                     absolute_path: downloaded_path,
                 },
                 progress: DownloadProgress::default(),
+                retry_failures: 0,
             }),
         )
         .await
@@ -225,6 +316,7 @@ fn list_download_marks_finalize_failures_on_leaf_without_aborting_task() {
                     absolute_path: downloaded_path,
                 },
                 progress: DownloadProgress::default(),
+                retry_failures: 0,
             }),
         )
         .await

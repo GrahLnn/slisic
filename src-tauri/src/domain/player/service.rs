@@ -190,17 +190,6 @@ pub(crate) fn has_active_player_binary_tasks() -> bool {
 }
 
 #[cfg(not(test))]
-pub(crate) async fn play_tracks_from_initial_track_with_queue_mode(
-    playlist_name: String,
-    tracks: Vec<PlaybackTrack>,
-    initial_track: PlaybackTrack,
-    queue_mode: PlaybackQueueMode,
-) -> Result<PlaybackSessionHandle> {
-    play_tracks_with_initial_track(playlist_name, tracks, Some(initial_track), queue_mode, None)
-        .await
-}
-
-#[cfg(not(test))]
 pub(crate) async fn play_tracks_from_initial_track_for_request_with_queue_mode(
     request: &PlaybackStartRequestHandle,
     playlist_name: String,

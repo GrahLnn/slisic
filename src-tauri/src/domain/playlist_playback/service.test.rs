@@ -102,13 +102,11 @@ fn playback_selection(
 }
 
 fn playback_source(
-    collection_url: &str,
+    _collection_url: &str,
     collection_folder: &str,
     music: Music,
 ) -> PlaylistPlaybackTrackSource {
     PlaylistPlaybackTrackSource {
-        collection_name: "Album".to_string(),
-        collection_url: collection_url.to_string(),
         collection_folder: collection_folder.to_string(),
         music,
     }
