@@ -642,6 +642,71 @@ fn normalize_music_titles_does_not_compare_across_download_groups() {
 }
 
 #[test]
+fn normalize_music_titles_uses_file_name_evidence_without_renaming_paths() {
+    let group = collection_group(
+        "ZWEI2 Original Soundtrack",
+        "https://example.com/playlist/zwei2",
+        "ZWEI2 Original Soundtrack",
+    );
+    let mut collection = Collection {
+        name: "ZWEI2 Original Soundtrack".to_string(),
+        url: "https://example.com/playlist/zwei2".to_string(),
+        folder: "youtube/zwei2".to_string(),
+        musics: vec![
+            Music {
+                name: "Help Alwen".to_string(),
+                alias: "Help Alwen".to_string(),
+                group: group.clone(),
+                url: "https://example.com/watch?v=zwei2-help".to_string(),
+                canonical_music_id: canonical_music_id_for_source(
+                    &"https://example.com/watch?v=zwei2-help".to_string(),
+                    0,
+                    137_000,
+                ),
+                path: Some("ZWEI2 - Help Alwen.m4a".to_string()),
+                start_ms: 0,
+                end_ms: 137_000,
+                liked: false,
+            },
+            Music {
+                name: "ZWEI2 - Help Alwen −Rushing in Version−".to_string(),
+                alias: "ZWEI2 - Help Alwen −Rushing in Version−".to_string(),
+                group,
+                url: "https://example.com/watch?v=zwei2-rushing".to_string(),
+                canonical_music_id: canonical_music_id_for_source(
+                    &"https://example.com/watch?v=zwei2-rushing".to_string(),
+                    0,
+                    136_000,
+                ),
+                path: Some("ZWEI2 - Help Alwen −Rushing in Version−.m4a".to_string()),
+                start_ms: 0,
+                end_ms: 136_000,
+                liked: false,
+            },
+        ],
+        last_updated: "2026-05-26T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    normalize_music_titles_within_collection(&mut collection);
+
+    assert_eq!(collection.musics[0].name, "Help Alwen");
+    assert_eq!(
+        collection.musics[0].path.as_deref(),
+        Some("ZWEI2 - Help Alwen.m4a")
+    );
+    assert_eq!(collection.musics[1].name, "Help Alwen −Rushing in Version−");
+    assert_eq!(
+        collection.musics[1].alias,
+        "Help Alwen −Rushing in Version−"
+    );
+    assert_eq!(
+        collection.musics[1].path.as_deref(),
+        Some("ZWEI2 - Help Alwen −Rushing in Version−.m4a")
+    );
+}
+
+#[test]
 fn describe_download_resource_maps_single_probe_to_one_item_result() {
     let _guard = acquire_db_test_lock();
     let probe = run_async(async {
@@ -714,6 +779,38 @@ fn collection_group(name: &str, url: &str, folder: &str) -> Group {
         url: url.to_string(),
         folder: folder.to_string(),
     }
+}
+
+fn planned_music_titles_from_playlist_titles(titles: &[String]) -> Vec<String> {
+    run_async(async {
+        expand_root_entries_to_planned_leafs(
+            &Id::from("task-bracket-title-normalization"),
+            Arc::new(FakeYtDlpClient::default()),
+            titles
+                .iter()
+                .enumerate()
+                .map(|(index, title)| LeafReference {
+                    url: format!("https://www.youtube.com/watch?v=bracket-{index}"),
+                    title: Some(title.clone()),
+                    sequence: index as u32,
+                })
+                .collect(),
+            Some(collection_group(
+                "Bracket Album",
+                "https://example.com/playlist/bracket-album",
+                "Bracket Album",
+            )),
+        )
+        .await
+        .expect("playlist titles should normalize without leaf probing")
+        .into_iter()
+        .map(|leaf| leaf.music_title.expect("leaf should preserve a title"))
+        .collect()
+    })
+}
+
+fn bracket_pair_cases() -> [(char, char); 4] {
+    [('(', ')'), ('[', ']'), ('{', '}'), ('<', '>')]
 }
 
 fn leaf_probe(title: &str, url: &str, duration_seconds: u32) -> LeafProbe {
@@ -1707,6 +1804,291 @@ fn expand_root_entries_to_planned_leafs_normalizes_music_titles_from_playlist_co
             vec![Some("One Patient at a Time"), Some("Algaemist")]
         );
     });
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_keeps_terminal_punctuation_after_prefix_removal() {
+    let titles = planned_music_titles_from_playlist_titles(&[
+        "ZWEI2 - Dog Fight!!".to_string(),
+        "ZWEI2 - Now Relax...".to_string(),
+        "ZWEI2 - Let's Exercise!!".to_string(),
+        "ZWEI2 - The Great Sorcery War Once More...".to_string(),
+    ]);
+
+    assert_eq!(
+        titles,
+        vec![
+            "Dog Fight!!",
+            "Now Relax...",
+            "Let's Exercise!!",
+            "The Great Sorcery War Once More...",
+        ]
+    );
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_removes_language_prefix_noise_by_evidence_only() {
+    let titles = planned_music_titles_from_playlist_titles(&[
+        "Album - ...And Then".to_string(),
+        "Album - \"Quoted\"".to_string(),
+        "Album - (Hidden)".to_string(),
+        "Album - What?".to_string(),
+    ]);
+
+    assert_eq!(
+        titles,
+        vec!["...And Then", "\"Quoted\"", "(Hidden)", "What?"]
+    );
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_keeps_symbol_only_boundary_repetition() {
+    let titles = planned_music_titles_from_playlist_titles(&[
+        "#01 Alpha #99".to_string(),
+        "#01 Beta #99".to_string(),
+    ]);
+
+    assert_eq!(titles, vec!["#01 Alpha #99", "#01 Beta #99"]);
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_normalizes_zwei2_playlist_titles() {
+    let raw_titles = [
+        "ZWEI2 - Bokura no Mirai (Opening Version)",
+        "ZWEI2 - To the Frontier of Unlimited Adventures",
+        "ZWEI2 - The Legend of Granvallen",
+        "ZWEI2 - Dog Fight!!",
+        "ZWEI2 - Driven by Passion",
+        "ZWEI2 - Leave it to Ragna",
+        "ZWEI2 - Meal is at the Giant Panda's Tower",
+        "ZWEI2 - Now Relax...",
+        "ZWEI2 - Artte Village",
+        "ZWEI2 - Floating Island \"Ilvard\"",
+        "ZWEI2 - Artte Airfield",
+        "ZWEI2 - Brandy Hill",
+        "ZWEI2 - Secundum Abandoned Mine",
+        "ZWEI2 - Montblanc's Theme",
+        "ZWEI2 - Roar! Anchor Gear!!",
+        "ZWEI2 - Even If I Use Up All of My Energy...",
+        "ZWEI2 - Roalta Village",
+        "ZWEI2 - Ordium Shrine",
+        "ZWEI2 - Stand in the Night Wind",
+        "ZWEI2 - Masked Superman Gallandou",
+        "ZWEI2 - Let's Exercise!!",
+        "ZWEI2 - Gloomgeld Woods",
+        "ZWEI2 - Witch Ra-Laira",
+        "ZWEI2 - Aurone Forgetower",
+        "ZWEI2 - Help Alwen",
+        "ZWEI2 - Disturbing Atmosphere",
+        "ZWEI2 - Moonbria Castle",
+        "ZWEI2 - Dance in the Dark Night",
+        "ZWEI2 - Restless Prison",
+        "ZWEI2 - A Prayer to Espina",
+        "ZWEI2 - Zahar's Ambition",
+        "ZWEI2 - Prostrate Yourself Before Me",
+        "ZWEI2 - Mechanical Girl",
+        "ZWEI2 - Ragna in Despair",
+        "ZWEI2 - Warm Feelings",
+        "ZWEI2 - Starry Peak",
+        "ZWEI2 - Starfall Hamlet",
+        "ZWEI2 - Prepare Yourself",
+        "ZWEI2 - Imposed Mission",
+        "ZWEI2 - Crystal Valley",
+        "ZWEI2 - Moon World \"Luna Mundus\"",
+        "ZWEI2 - The Force of a Trueblood",
+        "ZWEI2 - Destined Girl",
+        "ZWEI2 - The Great Sorcery War Once More...",
+        "ZWEI2 - The Worst Situation",
+        "ZWEI2 - A Heart Connected with Another",
+        "ZWEI2 - Help Alwen Rushing in Version",
+        "ZWEI2 - Spiral Fortress Melzedek",
+        "ZWEI2 - For My Master",
+        "ZWEI2 - Break Through Obstacles",
+        "ZWEI2 - Risk Everything on This Moment",
+        "ZWEI2 - Demise of Destiny",
+        "ZWEI2 - Irreplaceable Days",
+        "ZWEI2 - Pledge Another Meeting",
+        "ZWEI2 - ZWEI II End Credit",
+        "ZWEI2 - Bokura no Mirai",
+    ];
+    let titles = planned_music_titles_from_playlist_titles(
+        &raw_titles
+            .iter()
+            .map(|title| (*title).to_string())
+            .collect::<Vec<_>>(),
+    );
+    let expected_titles = [
+        "Bokura no Mirai (Opening Version)",
+        "To the Frontier of Unlimited Adventures",
+        "The Legend of Granvallen",
+        "Dog Fight!!",
+        "Driven by Passion",
+        "Leave it to Ragna",
+        "Meal is at the Giant Panda's Tower",
+        "Now Relax...",
+        "Artte Village",
+        "Floating Island \"Ilvard\"",
+        "Artte Airfield",
+        "Brandy Hill",
+        "Secundum Abandoned Mine",
+        "Montblanc's Theme",
+        "Roar! Anchor Gear!!",
+        "Even If I Use Up All of My Energy...",
+        "Roalta Village",
+        "Ordium Shrine",
+        "Stand in the Night Wind",
+        "Masked Superman Gallandou",
+        "Let's Exercise!!",
+        "Gloomgeld Woods",
+        "Witch Ra-Laira",
+        "Aurone Forgetower",
+        "Help Alwen",
+        "Disturbing Atmosphere",
+        "Moonbria Castle",
+        "Dance in the Dark Night",
+        "Restless Prison",
+        "A Prayer to Espina",
+        "Zahar's Ambition",
+        "Prostrate Yourself Before Me",
+        "Mechanical Girl",
+        "Ragna in Despair",
+        "Warm Feelings",
+        "Starry Peak",
+        "Starfall Hamlet",
+        "Prepare Yourself",
+        "Imposed Mission",
+        "Crystal Valley",
+        "Moon World \"Luna Mundus\"",
+        "The Force of a Trueblood",
+        "Destined Girl",
+        "The Great Sorcery War Once More...",
+        "The Worst Situation",
+        "A Heart Connected with Another",
+        "Help Alwen Rushing in Version",
+        "Spiral Fortress Melzedek",
+        "For My Master",
+        "Break Through Obstacles",
+        "Risk Everything on This Moment",
+        "Demise of Destiny",
+        "Irreplaceable Days",
+        "Pledge Another Meeting",
+        "ZWEI II End Credit",
+        "Bokura no Mirai",
+    ];
+
+    assert_eq!(titles, expected_titles);
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_keeps_titles_when_bracket_removal_would_empty_them() {
+    for (opening, closing) in bracket_pair_cases() {
+        let titles = planned_music_titles_from_playlist_titles(&[
+            format!("Album {opening}Track A{closing}"),
+            format!("Album {opening}Track B{closing}"),
+        ]);
+
+        assert_eq!(
+            titles,
+            vec![
+                format!("Album {opening}Track A{closing}"),
+                format!("Album {opening}Track B{closing}"),
+            ]
+        );
+    }
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_removes_cut_bracket_expression_as_a_unit() {
+    for (opening, closing) in bracket_pair_cases() {
+        let titles = planned_music_titles_from_playlist_titles(&[
+            format!("{opening}Track A{closing} Album"),
+            format!("{opening}Track B{closing} Album"),
+        ]);
+
+        assert_eq!(titles, vec!["Album", "Album"]);
+    }
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_removes_balanced_common_brackets_across_affixes() {
+    for (opening, closing) in bracket_pair_cases() {
+        let titles = planned_music_titles_from_playlist_titles(&[
+            format!("Album {opening}Track A{closing} OST"),
+            format!("Album {opening}Track B{closing} OST"),
+        ]);
+
+        assert_eq!(titles, vec!["OST", "OST"]);
+    }
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_preserves_unmatched_opening_brackets_in_common_prefix() {
+    for (opening, _) in bracket_pair_cases() {
+        let titles = planned_music_titles_from_playlist_titles(&[
+            format!("Album {opening}Track A"),
+            format!("Album {opening}Track B"),
+        ]);
+
+        assert_eq!(
+            titles,
+            vec![format!("{opening}Track A"), format!("{opening}Track B")]
+        );
+    }
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_preserves_unmatched_closing_brackets_in_common_suffix() {
+    for (_, closing) in bracket_pair_cases() {
+        let titles = planned_music_titles_from_playlist_titles(&[
+            format!("Track A{closing} - Album"),
+            format!("Track B{closing} - Album"),
+        ]);
+
+        assert_eq!(
+            titles,
+            vec![format!("Track A{closing}"), format!("Track B{closing}")]
+        );
+    }
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_removes_repeated_subset_affixes_from_all_matches() {
+    let titles = planned_music_titles_from_playlist_titles(&[
+        "Magnolian - Indigo (Official Video)".to_string(),
+        "Magnolian - Famous Men (Official Video)".to_string(),
+        "Grimm Grimm - Deathly (Official Video)".to_string(),
+        "Grimm Grimm - Mothers (Official Video)".to_string(),
+        "Hania Rani — 'Leaving' (Official Video) [Gondwana Records]".to_string(),
+        "Hania Rani – Dancing with Ghosts ft. Patrick Watson (Official Video)".to_string(),
+    ]);
+
+    assert_eq!(
+        titles,
+        vec![
+            "Indigo",
+            "Famous Men",
+            "Deathly",
+            "Mothers",
+            "Hania Rani — 'Leaving' [Gondwana Records]",
+            "Hania Rani – Dancing with Ghosts ft. Patrick Watson",
+        ]
+    );
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_keeps_mixed_separator_artist_prefixes() {
+    let titles = planned_music_titles_from_playlist_titles(&[
+        "SILENT POETS / Asylums For The Feeling feat. Leila Adu".to_string(),
+        "SILENT POETS - Chariot I Plead feat. Tim Smith (Official Audio)".to_string(),
+    ]);
+
+    assert_eq!(
+        titles,
+        vec![
+            "SILENT POETS / Asylums For The Feeling feat. Leila Adu",
+            "SILENT POETS - Chariot I Plead feat. Tim Smith (Official Audio)",
+        ]
+    );
 }
 
 #[test]

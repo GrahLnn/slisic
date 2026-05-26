@@ -20,7 +20,7 @@ use crate::domain::playlists::repo as collection_repo;
 use anyhow::{Context, Result, bail};
 use appdb::Id;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -861,7 +861,14 @@ fn normalize_music_titles_for_group(musics: &mut [Music], indexes: &[usize]) {
         .iter()
         .map(|index| musics[*index].name.clone())
         .collect::<Vec<_>>();
-    let normalized = normalize_music_title_batch(&titles);
+    let evidence_titles = indexes
+        .iter()
+        .enumerate()
+        .flat_map(|(source_index, index)| {
+            music_title_normalization_evidence(&musics[*index], source_index)
+        })
+        .collect::<Vec<_>>();
+    let normalized = normalize_music_title_batch_with_evidence(&titles, &evidence_titles);
     for (index, title) in indexes.iter().zip(normalized.into_iter()) {
         if title == musics[*index].name {
             continue;
@@ -875,158 +882,566 @@ fn normalize_music_titles_for_group(musics: &mut [Music], indexes: &[usize]) {
 }
 
 pub(crate) fn normalize_music_title_batch(titles: &[String]) -> Vec<String> {
-    let title_refs = titles.iter().map(String::as_str).collect::<Vec<_>>();
-    normalize_common_music_title_affixes(&title_refs)
+    let evidence_titles = titles
+        .iter()
+        .enumerate()
+        .map(|(source_index, title)| TitleNoiseEvidence {
+            source_index,
+            title: title.clone(),
+        })
+        .collect::<Vec<_>>();
+    normalize_music_title_batch_with_evidence(titles, &evidence_titles)
 }
 
-fn normalize_common_music_title_affixes(titles: &[&str]) -> Vec<String> {
-    let tokenized = titles
-        .iter()
-        .map(|title| title_words(title))
-        .collect::<Vec<_>>();
-    if tokenized.iter().any(|words| words.len() < 2) {
-        return titles.iter().map(|title| (*title).to_string()).collect();
+fn normalize_music_title_batch_with_evidence(
+    titles: &[String],
+    evidence_titles: &[TitleNoiseEvidence],
+) -> Vec<String> {
+    let mut normalized = titles.to_vec();
+    let mut evidence = evidence_titles.to_vec();
+
+    while let Some(pattern) = best_repeated_title_noise_pattern(&evidence) {
+        let mut changed = false;
+        for evidence in &mut evidence {
+            let next = apply_title_noise_pattern(&evidence.title, &pattern);
+            if next != evidence.title {
+                evidence.title = next;
+                changed = true;
+            }
+        }
+
+        for title in &mut normalized {
+            let next = apply_title_noise_pattern(title, &pattern);
+            if next != *title {
+                *title = next;
+                changed = true;
+            }
+        }
+
+        if !changed {
+            break;
+        }
     }
 
-    let mut prefix_len = common_prefix_word_count(&tokenized);
-    let mut suffix_len = common_suffix_word_count(&tokenized);
-    let min_word_count = tokenized.iter().map(Vec::len).min().unwrap_or(0);
-    while prefix_len + suffix_len >= min_word_count && suffix_len > 0 {
-        suffix_len -= 1;
+    normalized
+}
+
+fn music_title_normalization_evidence(
+    music: &Music,
+    source_index: usize,
+) -> Vec<TitleNoiseEvidence> {
+    let mut evidence = vec![TitleNoiseEvidence {
+        source_index,
+        title: music.name.clone(),
+    }];
+    if let Some(path_title) = music
+        .path
+        .as_deref()
+        .and_then(music_path_stem_for_title_evidence)
+    {
+        if path_title != music.name {
+            evidence.push(TitleNoiseEvidence {
+                source_index,
+                title: path_title,
+            });
+        }
     }
-    while prefix_len + suffix_len >= min_word_count && prefix_len > 0 {
-        prefix_len -= 1;
+    evidence
+}
+
+fn music_path_stem_for_title_evidence(relative_path: &str) -> Option<String> {
+    let stem = Path::new(relative_path)
+        .file_stem()
+        .and_then(|value| value.to_str())?
+        .trim();
+    (!stem.is_empty()).then(|| stem.to_string())
+}
+
+fn best_repeated_title_noise_pattern(evidence: &[TitleNoiseEvidence]) -> Option<TitleNoisePattern> {
+    repeated_title_noise_patterns(evidence)
+        .into_iter()
+        .max_by_key(title_noise_pattern_rank)
+}
+
+fn repeated_title_noise_patterns(evidence: &[TitleNoiseEvidence]) -> Vec<TitleNoisePattern> {
+    let mut patterns = Vec::new();
+    patterns.extend(repeated_boundary_title_noise_patterns(
+        TitleNoisePatternKind::Prefix,
+        evidence,
+    ));
+    patterns.extend(repeated_boundary_title_noise_patterns(
+        TitleNoisePatternKind::Suffix,
+        evidence,
+    ));
+    patterns.extend(repeated_bracketed_title_noise_patterns(evidence));
+    patterns
+}
+
+fn repeated_boundary_title_noise_patterns(
+    kind: TitleNoisePatternKind,
+    evidence: &[TitleNoiseEvidence],
+) -> Vec<TitleNoisePattern> {
+    let mut groups = BTreeMap::<String, BTreeSet<usize>>::new();
+    for evidence in evidence {
+        for text in boundary_title_noise_text_candidates(kind, &evidence.title) {
+            if !boundary_title_noise_occurrence_has_external_anchor(kind, &evidence.title, text) {
+                continue;
+            }
+            groups
+                .entry(text.to_string())
+                .or_default()
+                .insert(evidence.source_index);
+        }
     }
 
-    if prefix_len > 0 && !common_prefix_is_removable(titles, &tokenized, prefix_len, suffix_len) {
-        prefix_len = 0;
-    }
-    if suffix_len > 0 && !common_suffix_is_removable(titles, &tokenized, prefix_len, suffix_len) {
-        suffix_len = 0;
-    }
-
-    titles
-        .iter()
-        .zip(tokenized.iter())
-        .map(|(title, words)| {
-            let start = if prefix_len == 0 {
-                0
-            } else {
-                words[prefix_len].start
-            };
-            let end = if suffix_len == 0 {
-                title.len()
-            } else {
-                words[words.len() - suffix_len - 1].end
-            };
-            title[start..end].trim().to_string()
+    groups
+        .into_iter()
+        .filter_map(|(text, indexes)| {
+            let support = indexes.len();
+            (support >= 2).then(|| TitleNoisePattern {
+                word_count: title_word_count(&text),
+                kind,
+                text,
+                support,
+            })
         })
         .collect()
 }
 
-#[derive(Debug, Clone)]
-struct TitleWord {
-    normalized: String,
-    start: usize,
-    end: usize,
+fn boundary_title_noise_text_candidates(kind: TitleNoisePatternKind, title: &str) -> Vec<&str> {
+    let mut candidates = Vec::new();
+    match kind {
+        TitleNoisePatternKind::Prefix => {
+            for (end, _) in title.char_indices().skip(1) {
+                let text = &title[..end];
+                if boundary_title_noise_text_is_candidate(kind, text) {
+                    candidates.push(text);
+                }
+            }
+        }
+        TitleNoisePatternKind::Suffix => {
+            for (start, _) in title.char_indices().skip(1) {
+                let text = &title[start..];
+                if boundary_title_noise_text_is_candidate(kind, text) {
+                    candidates.push(text);
+                }
+            }
+        }
+        TitleNoisePatternKind::Bracketed => {}
+    }
+    candidates
 }
 
-fn title_words(title: &str) -> Vec<TitleWord> {
-    let mut words = Vec::new();
-    let mut current_start = None;
+fn boundary_title_noise_occurrence_has_external_anchor(
+    kind: TitleNoisePatternKind,
+    title: &str,
+    text: &str,
+) -> bool {
+    title_noise_affix_deletion_span(kind, title, text)
+        .is_some_and(|(start, end)| start < end && (start > 0 || end < title.len()))
+}
+
+fn boundary_title_noise_text_is_candidate(kind: TitleNoisePatternKind, text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() || !title_noise_text_has_language_character(text) {
+        return false;
+    }
+
+    match kind {
+        TitleNoisePatternKind::Prefix => {
+            let first = text.chars().next();
+            let last = text.chars().next_back();
+            first.is_some_and(is_title_affix_separator)
+                || last.is_some_and(|character| {
+                    is_title_affix_separator(character) || is_title_bracket(character)
+                })
+                || !unmatched_opening_brackets(text).is_empty()
+        }
+        TitleNoisePatternKind::Suffix => text.chars().next().is_some_and(|character| {
+            is_title_affix_separator(character) || is_title_bracket(character)
+        }),
+        TitleNoisePatternKind::Bracketed => false,
+    }
+}
+
+fn repeated_bracketed_title_noise_patterns(
+    evidence: &[TitleNoiseEvidence],
+) -> Vec<TitleNoisePattern> {
+    let mut groups = BTreeMap::<String, BTreeSet<usize>>::new();
+    for evidence in evidence {
+        for (start, end) in balanced_bracket_spans(&evidence.title) {
+            if start == 0 && end == evidence.title.len() {
+                continue;
+            }
+            let text = &evidence.title[start..end];
+            if bracketed_title_noise_text_is_candidate(text) {
+                groups
+                    .entry(text.to_string())
+                    .or_default()
+                    .insert(evidence.source_index);
+            }
+        }
+    }
+
+    groups
+        .into_iter()
+        .filter_map(|(text, indexes)| {
+            let support = indexes.len();
+            (support >= 2).then(|| TitleNoisePattern {
+                word_count: title_word_count(&text),
+                kind: TitleNoisePatternKind::Bracketed,
+                text,
+                support,
+            })
+        })
+        .collect()
+}
+
+fn bracketed_title_noise_text_is_candidate(text: &str) -> bool {
+    title_noise_text_has_language_character(text)
+}
+
+fn title_noise_text_has_language_character(text: &str) -> bool {
+    text.chars().any(char::is_alphabetic)
+}
+
+fn balanced_bracket_spans(title: &str) -> Vec<(usize, usize)> {
+    let mut stack = Vec::<(char, usize)>::new();
+    let mut spans = Vec::new();
     for (index, character) in title.char_indices() {
-        if character.is_alphanumeric() {
-            current_start.get_or_insert(index);
+        if opening_bracket_pair(character).is_some() {
+            stack.push((character, index));
             continue;
         }
-        if let Some(start) = current_start.take() {
-            push_title_word(&mut words, title, start, index);
+
+        let Some(expected_opening) = closing_bracket_pair(character) else {
+            continue;
+        };
+        if stack
+            .last()
+            .is_some_and(|(opening, _)| *opening == expected_opening)
+        {
+            let (_, start) = stack.pop().expect("matching bracket is on stack");
+            spans.push((start, index + character.len_utf8()));
         }
     }
-    if let Some(start) = current_start {
-        push_title_word(&mut words, title, start, title.len());
+
+    spans
+}
+
+fn apply_title_noise_pattern(title: &str, pattern: &TitleNoisePattern) -> String {
+    if pattern.text.is_empty() {
+        return title.to_string();
     }
-    words
+
+    match pattern.kind {
+        TitleNoisePatternKind::Prefix => {
+            if !title.starts_with(&pattern.text) {
+                return title.to_string();
+            }
+            delete_title_noise_affix_occurrence(pattern.kind, title, &pattern.text)
+        }
+        TitleNoisePatternKind::Suffix => {
+            if !title.ends_with(&pattern.text) {
+                return title.to_string();
+            }
+            delete_title_noise_affix_occurrence(pattern.kind, title, &pattern.text)
+        }
+        TitleNoisePatternKind::Bracketed => {
+            remove_title_noise_fragment_occurrences(title, &pattern.text)
+        }
+    }
 }
 
-fn push_title_word(words: &mut Vec<TitleWord>, title: &str, start: usize, end: usize) {
-    words.push(TitleWord {
-        normalized: title[start..end].to_lowercase(),
-        start,
-        end,
-    });
+fn title_noise_pattern_rank(pattern: &TitleNoisePattern) -> (usize, usize, usize, usize) {
+    let kind_rank = match pattern.kind {
+        TitleNoisePatternKind::Prefix => 1,
+        TitleNoisePatternKind::Suffix => 2,
+        TitleNoisePatternKind::Bracketed => 3,
+    };
+    (
+        pattern.word_count,
+        pattern.support,
+        pattern.text.chars().count(),
+        kind_rank,
+    )
 }
 
-fn common_prefix_word_count(tokenized: &[Vec<TitleWord>]) -> usize {
-    let min_word_count = tokenized.iter().map(Vec::len).min().unwrap_or(0);
-    let mut count = 0usize;
-    'outer: while count < min_word_count {
-        let value = &tokenized[0][count].normalized;
-        for words in tokenized.iter().skip(1) {
-            if words[count].normalized != *value {
-                break 'outer;
+#[derive(Debug, Clone)]
+struct TitleNoisePattern {
+    kind: TitleNoisePatternKind,
+    text: String,
+    support: usize,
+    word_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct TitleNoiseEvidence {
+    source_index: usize,
+    title: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TitleNoisePatternKind {
+    Prefix,
+    Suffix,
+    Bracketed,
+}
+
+fn delete_title_noise_affix_occurrence(
+    kind: TitleNoisePatternKind,
+    title: &str,
+    noise: &str,
+) -> String {
+    let Some((start, end)) = title_noise_affix_deletion_span(kind, title, noise) else {
+        return title.to_string();
+    };
+    if start == 0 && end == title.len() {
+        return title.to_string();
+    }
+
+    let mut normalized = String::new();
+    normalized.push_str(&title[..start]);
+    normalized.push_str(&title[end..]);
+    cleanup_title_after_noise_deletion(&normalized)
+}
+
+fn remove_title_noise_fragment_occurrences(title: &str, fragment: &str) -> String {
+    let mut normalized = title.to_string();
+    while let Some(start) = normalized.find(fragment) {
+        let end = start + fragment.len();
+        if start == 0 && end == normalized.len() {
+            break;
+        }
+        let mut next = String::new();
+        next.push_str(&normalized[..start]);
+        next.push_str(&normalized[end..]);
+        let next = cleanup_title_after_noise_deletion(&next);
+        if next == normalized {
+            break;
+        }
+        normalized = next;
+    }
+    normalized
+}
+
+fn cleanup_title_after_noise_deletion(title: &str) -> String {
+    let normalized = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    normalized
+        .trim_matches(|character: char| {
+            character.is_whitespace() || is_dangling_title_separator(character)
+        })
+        .trim()
+        .to_string()
+}
+
+fn is_dangling_title_separator(character: char) -> bool {
+    matches!(
+        character,
+        '-' | '–' | '—' | '/' | '\\' | '|' | ':' | ';' | '_' | '•'
+    )
+}
+
+fn title_noise_affix_deletion_span(
+    kind: TitleNoisePatternKind,
+    title: &str,
+    noise: &str,
+) -> Option<(usize, usize)> {
+    match kind {
+        TitleNoisePatternKind::Prefix => {
+            if !title.starts_with(noise) {
+                return None;
+            }
+            let mut end = noise.len();
+            let openings = unmatched_opening_brackets(noise);
+            if !openings.is_empty() {
+                if let Some(closing_end) = prefix_openings_closing_end(title, end, &openings) {
+                    end = closing_end;
+                } else {
+                    end = openings.first().map(|opening| opening.index).unwrap_or(end);
+                }
+            }
+            Some((0, end))
+        }
+        TitleNoisePatternKind::Suffix => {
+            if !title.ends_with(noise) {
+                return None;
+            }
+            let mut start = title.len() - noise.len();
+            let closings = unmatched_closing_brackets(noise);
+            if !closings.is_empty() {
+                if let Some(opening_start) = suffix_closings_opening_start(title, start, &closings)
+                {
+                    start = opening_start;
+                } else {
+                    start += closings
+                        .last()
+                        .map(|closing| closing.index + closing.character.len_utf8())
+                        .unwrap_or(0);
+                }
+            }
+            Some((start, title.len()))
+        }
+        TitleNoisePatternKind::Bracketed => None,
+    }
+}
+
+fn prefix_openings_closing_end(
+    title: &str,
+    search_start: usize,
+    prefix_openings: &[BracketBoundary],
+) -> Option<usize> {
+    let mut stack = prefix_openings
+        .iter()
+        .map(|opening| opening.character)
+        .collect::<Vec<_>>();
+    for (relative_index, character) in title[search_start..].char_indices() {
+        let index = search_start + relative_index;
+        if opening_bracket_pair(character).is_some() {
+            stack.push(character);
+            continue;
+        }
+
+        let Some(expected_opening) = closing_bracket_pair(character) else {
+            continue;
+        };
+        if stack
+            .last()
+            .is_some_and(|opening| *opening == expected_opening)
+        {
+            stack.pop();
+            if stack.is_empty() {
+                return Some(index + character.len_utf8());
             }
         }
-        count += 1;
     }
-    count
+
+    None
 }
 
-fn common_suffix_word_count(tokenized: &[Vec<TitleWord>]) -> usize {
-    let min_word_count = tokenized.iter().map(Vec::len).min().unwrap_or(0);
-    let mut count = 0usize;
-    'outer: while count < min_word_count {
-        let first_index = tokenized[0].len() - 1 - count;
-        let value = &tokenized[0][first_index].normalized;
-        for words in tokenized.iter().skip(1) {
-            let index = words.len() - 1 - count;
-            if words[index].normalized != *value {
-                break 'outer;
+fn suffix_closings_opening_start(
+    title: &str,
+    search_end: usize,
+    suffix_closings: &[BracketBoundary],
+) -> Option<usize> {
+    let mut stack = suffix_closings
+        .iter()
+        .rev()
+        .map(|closing| closing.character)
+        .collect::<Vec<_>>();
+    for (index, character) in title[..search_end].char_indices().rev() {
+        if closing_bracket_pair(character).is_some() {
+            stack.push(character);
+            continue;
+        }
+
+        let Some(expected_closing) = opening_bracket_pair(character) else {
+            continue;
+        };
+        if stack
+            .last()
+            .is_some_and(|closing| *closing == expected_closing)
+        {
+            stack.pop();
+            if stack.is_empty() {
+                return Some(index);
             }
         }
-        count += 1;
+    }
+
+    None
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BracketBoundary {
+    character: char,
+    index: usize,
+}
+
+fn unmatched_opening_brackets(prefix: &str) -> Vec<BracketBoundary> {
+    let mut stack = Vec::new();
+    for (index, character) in prefix.char_indices() {
+        if opening_bracket_pair(character).is_some() {
+            stack.push(BracketBoundary { character, index });
+            continue;
+        }
+
+        let Some(expected_opening) = closing_bracket_pair(character) else {
+            continue;
+        };
+        if stack
+            .last()
+            .is_some_and(|opening| opening.character == expected_opening)
+        {
+            stack.pop();
+        }
+    }
+    stack
+}
+
+fn unmatched_closing_brackets(suffix: &str) -> Vec<BracketBoundary> {
+    let mut opening_stack = Vec::new();
+    let mut closings = Vec::new();
+    for (index, character) in suffix.char_indices() {
+        if opening_bracket_pair(character).is_some() {
+            opening_stack.push(character);
+            continue;
+        }
+
+        let Some(expected_opening) = closing_bracket_pair(character) else {
+            continue;
+        };
+        if opening_stack
+            .last()
+            .is_some_and(|opening| *opening == expected_opening)
+        {
+            opening_stack.pop();
+            continue;
+        }
+
+        closings.push(BracketBoundary { character, index });
+    }
+    closings
+}
+
+fn opening_bracket_pair(character: char) -> Option<char> {
+    match character {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '<' => Some('>'),
+        _ => None,
+    }
+}
+
+fn closing_bracket_pair(character: char) -> Option<char> {
+    match character {
+        ')' => Some('('),
+        ']' => Some('['),
+        '}' => Some('{'),
+        '>' => Some('<'),
+        _ => None,
+    }
+}
+
+fn is_title_bracket(character: char) -> bool {
+    opening_bracket_pair(character).is_some() || closing_bracket_pair(character).is_some()
+}
+
+fn title_word_count(title: &str) -> usize {
+    let mut count = 0usize;
+    let mut in_word = false;
+    for character in title.chars() {
+        if character.is_alphanumeric() {
+            if !in_word {
+                count += 1;
+                in_word = true;
+            }
+            continue;
+        }
+        in_word = false;
     }
     count
-}
-
-fn common_prefix_is_removable(
-    titles: &[&str],
-    tokenized: &[Vec<TitleWord>],
-    prefix_len: usize,
-    suffix_len: usize,
-) -> bool {
-    if prefix_len >= 2 {
-        return true;
-    }
-    titles.iter().zip(tokenized.iter()).all(|(title, words)| {
-        let kept_start = prefix_len;
-        if kept_start + suffix_len >= words.len() {
-            return false;
-        }
-        title[words[prefix_len - 1].end..words[kept_start].start]
-            .chars()
-            .any(is_title_affix_separator)
-    })
-}
-
-fn common_suffix_is_removable(
-    titles: &[&str],
-    tokenized: &[Vec<TitleWord>],
-    prefix_len: usize,
-    suffix_len: usize,
-) -> bool {
-    if suffix_len >= 2 {
-        return true;
-    }
-    titles.iter().zip(tokenized.iter()).all(|(title, words)| {
-        if prefix_len + suffix_len >= words.len() {
-            return false;
-        }
-        let suffix_start = words.len() - suffix_len;
-        title[words[suffix_start - 1].end..words[suffix_start].start]
-            .chars()
-            .any(is_title_affix_separator)
-    })
 }
 
 fn is_title_affix_separator(character: char) -> bool {
