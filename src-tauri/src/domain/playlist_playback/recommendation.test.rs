@@ -3,6 +3,7 @@ use super::recommendation::{
     AudioStylePlaylistPlaybackRecommender, audio_style_transition_fingerprint_for_test,
     choose_next_audio_style_candidate_for_test,
     choose_next_audio_style_candidate_with_generation_for_test,
+    choose_next_audio_style_candidate_with_recent_history_for_test,
     filter_recently_played_recommendation_candidates,
 };
 use crate::domain::player::model::PlaybackTrack;
@@ -22,6 +23,20 @@ fn track(name: &str) -> PlaybackTrack {
         end_ms: 60_000,
         source_music: None,
         liked: false,
+    }
+}
+
+fn track_in_basin(basin: &str, name: &str) -> PlaybackTrack {
+    PlaybackTrack {
+        file_path: PathBuf::from(format!("youtube/{basin}/{name}.m4a")),
+        ..track(name)
+    }
+}
+
+fn track_in_source_leaf(source: &str, leaf: &str, name: &str) -> PlaybackTrack {
+    PlaybackTrack {
+        file_path: PathBuf::from(format!("youtube/{source}/{leaf}/{name}.m4a")),
+        ..track(name)
     }
 }
 
@@ -146,6 +161,249 @@ fn audio_style_recommender_skips_recent_non_liked_candidate() {
     assert_eq!(proposed.len(), 2);
     assert_eq!(proposed[0].music_url, current.music_url);
     assert_eq!(proposed[1].music_url, fresh_far.music_url);
+}
+
+#[test]
+fn recommendation_history_filter_does_not_delete_basin_candidates() {
+    let played_a = track_in_basin("Kurzgesagt", "played_a");
+    let played_b = track_in_basin("Kurzgesagt", "played_b");
+    let played_c = track_in_basin("Kurzgesagt", "played_c");
+    let same_basin = track_in_basin("Kurzgesagt", "same_basin");
+    let other_basin = track_in_basin("ZWEI2", "other_basin");
+
+    let filtered = filter_recently_played_recommendation_candidates(
+        vec![same_basin.clone(), other_basin.clone()],
+        &[played_a, played_b, played_c],
+    );
+
+    assert_eq!(filtered.len(), 2);
+    assert!(
+        filtered
+            .iter()
+            .any(|track| track.music_url == same_basin.music_url)
+    );
+    assert!(
+        filtered
+            .iter()
+            .any(|track| track.music_url == other_basin.music_url)
+    );
+}
+
+#[test]
+fn audio_style_sampler_applies_continuous_attractor_basin_pressure() {
+    let current = track_in_basin("Kurzgesagt", "current");
+    let played_a = track_in_basin("Kurzgesagt", "played_a");
+    let played_b = track_in_basin("Kurzgesagt", "played_b");
+    let played_c = track_in_basin("Kurzgesagt", "played_c");
+    let same_basin = track_in_basin("Kurzgesagt", "same_basin");
+    let other_basin = track_in_basin("ZWEI2", "other_basin");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (same_basin.clone(), embedding(2)),
+        (other_basin.clone(), embedding(2)),
+    ]);
+
+    let without_pressure = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[same_basin.clone(), other_basin.clone()],
+        &recommender,
+        &[],
+        0.45,
+    );
+    let with_pressure = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[same_basin.clone(), other_basin.clone()],
+        &recommender,
+        &[played_a, played_b, played_c],
+        0.55,
+    );
+
+    assert_eq!(without_pressure.index, 0);
+    assert_eq!(with_pressure.index, 1);
+    assert!(with_pressure.probability > without_pressure.probability);
+}
+
+#[test]
+fn audio_style_sampler_keeps_liked_candidate_under_attractor_basin_pressure() {
+    let current = track_in_source_leaf("Shared Source", "Kurzgesagt", "current");
+    let played_a = track_in_source_leaf("Shared Source", "Kurzgesagt", "played_a");
+    let played_b = track_in_source_leaf("Shared Source", "Kurzgesagt", "played_b");
+    let played_c = track_in_source_leaf("Shared Source", "Kurzgesagt", "played_c");
+    let mut liked_same_basin =
+        track_in_source_leaf("Shared Source", "Kurzgesagt", "liked_same_basin");
+    let other_basin = track_in_source_leaf("Shared Source", "ZWEI2", "other_basin");
+    liked_same_basin.liked = true;
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (liked_same_basin.clone(), embedding(2)),
+        (other_basin.clone(), embedding(2)),
+    ]);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[liked_same_basin.clone(), other_basin.clone()],
+        &recommender,
+        &[played_a, played_b, played_c],
+        0.2,
+    );
+
+    assert_eq!(selection.index, 0);
+    assert!(selection.probability > 0.0);
+    assert_eq!(selection.reason, None);
+}
+
+#[test]
+fn audio_style_source_basin_first_sampling_limits_large_source_count_bias() {
+    let current = track_in_source_leaf("Epic Mountain - Playlists", "Kurzgesagt 2024", "current");
+    let epic_tracks = (0..24)
+        .map(|index| {
+            track_in_source_leaf(
+                "Epic Mountain - Playlists",
+                &format!("Kurzgesagt {index}"),
+                &format!("epic_{index}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let small_tracks = [
+        track_in_source_leaf("ZWEI2 Original Soundtrack", "Disc 1", "zwei2_a"),
+        track_in_source_leaf("Death Stranding", "OST", "death_a"),
+    ];
+    let mut embeddings = vec![(current.clone(), embedding(2))];
+    embeddings.extend(
+        epic_tracks
+            .iter()
+            .cloned()
+            .map(|track| (track, embedding(2))),
+    );
+    embeddings.extend(
+        small_tracks
+            .iter()
+            .cloned()
+            .map(|track| (track, embedding(2))),
+    );
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
+    let candidates = epic_tracks
+        .iter()
+        .cloned()
+        .chain(small_tracks.iter().cloned())
+        .collect::<Vec<_>>();
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &candidates,
+        &recommender,
+        &[],
+        0.50,
+    );
+
+    assert!(selection.index >= epic_tracks.len());
+    assert!(selection.probability > 0.10);
+}
+
+#[test]
+fn audio_style_source_basin_first_keeps_smooth_source_preferred() {
+    let current = track_in_source_leaf("Epic Mountain - Playlists", "Kurzgesagt 2024", "current");
+    let smooth = track_in_source_leaf("Smooth Source", "Leaf", "smooth");
+    let far = track_in_source_leaf("Far Source", "Leaf", "far");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (smooth.clone(), embedding(2)),
+        (far.clone(), embedding(128)),
+    ]);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[smooth.clone(), far.clone()],
+        &recommender,
+        &[],
+        0.75,
+    );
+
+    assert_eq!(selection.index, 0);
+    assert!(selection.probability > 0.85);
+}
+
+#[test]
+fn audio_style_source_basin_pressure_can_move_out_of_repeated_large_source() {
+    let current = track_in_source_leaf("Epic Mountain - Playlists", "Kurzgesagt 2024", "current");
+    let played = (0..8)
+        .map(|index| {
+            track_in_source_leaf(
+                "Epic Mountain - Playlists",
+                &format!("Kurzgesagt {index}"),
+                &format!("played_epic_{index}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let epic_candidate =
+        track_in_source_leaf("Epic Mountain - Playlists", "Kurzgesagt 2025", "epic_next");
+    let other_candidate = track_in_source_leaf("ZWEI2 Original Soundtrack", "Disc 1", "zwei2_next");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (epic_candidate.clone(), embedding(2)),
+        (other_candidate.clone(), embedding(2)),
+    ]);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[epic_candidate.clone(), other_candidate.clone()],
+        &recommender,
+        &played,
+        0.35,
+    );
+
+    assert_eq!(selection.index, 1);
+    assert!(selection.probability > 0.70);
+}
+
+#[test]
+fn audio_style_source_basin_pressure_does_not_remove_liked_tracks() {
+    let current = track_in_source_leaf("Epic Mountain - Playlists", "Kurzgesagt 2024", "current");
+    let played = (0..8)
+        .map(|index| {
+            track_in_source_leaf(
+                "Epic Mountain - Playlists",
+                &format!("Kurzgesagt {index}"),
+                &format!("played_epic_{index}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut liked_epic =
+        track_in_source_leaf("Epic Mountain - Playlists", "Kurzgesagt 2025", "liked_epic");
+    liked_epic.liked = true;
+    let other_candidate = track_in_source_leaf("ZWEI2 Original Soundtrack", "Disc 1", "zwei2_next");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (liked_epic.clone(), embedding(2)),
+        (other_candidate.clone(), embedding(2)),
+    ]);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[liked_epic.clone(), other_candidate.clone()],
+        &recommender,
+        &played,
+        0.02,
+    );
+
+    assert_eq!(selection.index, 0);
+    assert!(selection.probability > 0.0);
+}
+
+#[test]
+fn recommendation_history_falls_back_when_attractor_basin_fatigue_would_empty_candidates() {
+    let played_a = track_in_basin("Kurzgesagt", "played_a");
+    let played_b = track_in_basin("Kurzgesagt", "played_b");
+    let played_c = track_in_basin("Kurzgesagt", "played_c");
+    let same_basin = track_in_basin("Kurzgesagt", "same_basin");
+
+    let filtered = filter_recently_played_recommendation_candidates(
+        vec![same_basin.clone()],
+        &[played_a, played_b, played_c],
+    );
+
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].music_url, same_basin.music_url);
 }
 
 #[test]

@@ -45,6 +45,20 @@ const AUDIO_STYLE_HOP_SIZE: usize = 256;
 const AUDIO_STYLE_SMOOTHNESS: f32 = 5.0;
 const AUDIO_STYLE_EXPLORATION_FLOOR: f32 = 0.04;
 const AUDIO_STYLE_LOCAL_DENSITY_TOP_K: usize = 10;
+const AUDIO_STYLE_SOURCE_BASIN_SMOOTH_TOP_K: usize = 4;
+const AUDIO_STYLE_SOURCE_BASIN_SMOOTHNESS: f32 = 4.20;
+const AUDIO_STYLE_SOURCE_BASIN_USAGE_DECAY: f32 = 0.965;
+const AUDIO_STYLE_SOURCE_BASIN_USAGE_IMPULSE: f32 = 1.0;
+const AUDIO_STYLE_SOURCE_BASIN_HOMEOSTATIC_STRENGTH: f32 = 5.80;
+const AUDIO_STYLE_SOURCE_BASIN_RUN_HAZARD_STRENGTH: f32 = 0.45;
+const AUDIO_STYLE_SOURCE_BASIN_TARGET_POWER: f32 = 0.35;
+const AUDIO_STYLE_BASIN_FATIGUE_DECAY: f32 = 0.86;
+const AUDIO_STYLE_BASIN_FATIGUE_IMPULSE: f32 = 1.0;
+const AUDIO_STYLE_BASIN_FATIGUE_STRENGTH: f32 = 1.20;
+const AUDIO_STYLE_BASIN_HOMEOSTATIC_DECAY: f32 = 0.93;
+const AUDIO_STYLE_BASIN_HOMEOSTATIC_IMPULSE: f32 = 1.0;
+const AUDIO_STYLE_BASIN_HOMEOSTATIC_STRENGTH: f32 = 3.40;
+const AUDIO_STYLE_BASIN_RUN_HAZARD_STRENGTH: f32 = 0.95;
 #[cfg(not(test))]
 const AUDIO_STYLE_INPUT_CHANGE_DEBOUNCE_MS: u64 = 500;
 
@@ -77,6 +91,33 @@ struct PlaybackTrackKey {
     file_path: PathBuf,
     start_ms: u32,
     end_ms: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PlaybackAttractorBasinKey {
+    value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PlaybackSourceBasinKey {
+    value: String,
+}
+
+#[derive(Debug, Clone)]
+struct PlaybackAttractorBasinPressure {
+    current_basin: Option<PlaybackAttractorBasinKey>,
+    current_basin_run: usize,
+    fatigue: HashMap<PlaybackAttractorBasinKey, f32>,
+    usage: HashMap<PlaybackAttractorBasinKey, f32>,
+    target_share: HashMap<PlaybackAttractorBasinKey, f32>,
+}
+
+#[derive(Debug, Clone)]
+struct PlaybackSourceBasinPressure {
+    current_basin: Option<PlaybackSourceBasinKey>,
+    current_basin_run: usize,
+    usage: HashMap<PlaybackSourceBasinKey, f32>,
+    target_share: HashMap<PlaybackSourceBasinKey, f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1047,7 +1088,7 @@ impl AudioStylePlaylistPlaybackRecommender {
         let mut queue = Vec::with_capacity(2);
         queue.push(current_track.clone());
         let selection = self
-            .propose_next_with_trace(&current_track, remaining)
+            .propose_next_with_trace(&current_track, remaining, recently_played_tracks)
             .map(|proposal| {
                 queue.push(proposal.track);
                 proposal.selection
@@ -1092,7 +1133,7 @@ impl AudioStylePlaylistPlaybackRecommender {
             filter_recently_played_recommendation_candidates(remaining, recently_played_tracks);
         let mut selection = None;
         let tracks = self
-            .propose_next_with_trace(&current_track, remaining)
+            .propose_next_with_trace(&current_track, remaining, recently_played_tracks)
             .map(|proposal| {
                 selection = Some(proposal.selection);
                 proposal.track
@@ -1106,6 +1147,7 @@ impl AudioStylePlaylistPlaybackRecommender {
         &self,
         current_track: &PlaybackTrack,
         candidates: Vec<PlaybackTrack>,
+        recently_played_tracks: &[PlaybackTrack],
     ) -> Option<AudioStyleNextTrackProposal> {
         if candidates.is_empty() {
             return None;
@@ -1119,6 +1161,7 @@ impl AudioStylePlaylistPlaybackRecommender {
             &self.embeddings,
             self.sampling_geometry.as_ref(),
             self.trained,
+            recently_played_tracks,
             draw,
         );
         candidates
@@ -1256,7 +1299,7 @@ pub(crate) fn filter_recently_played_recommendation_candidates(
         return candidates;
     }
 
-    let filtered = candidates
+    let exact_filtered = candidates
         .iter()
         .filter(|candidate| {
             candidate.liked
@@ -1267,11 +1310,302 @@ pub(crate) fn filter_recently_played_recommendation_candidates(
         .cloned()
         .collect::<Vec<_>>();
 
-    if filtered.is_empty() {
-        candidates
-    } else {
-        filtered
+    if exact_filtered.is_empty() {
+        return candidates;
     }
+
+    exact_filtered
+}
+
+impl PlaybackAttractorBasinKey {
+    fn from_track(track: &PlaybackTrack) -> Option<Self> {
+        if let Some(value) = youtube_leaf_basin_from_path(&track.file_path) {
+            return Some(Self { value });
+        }
+
+        if let Some(value) = parent_directory_basin_from_path(&track.file_path) {
+            return Some(Self { value });
+        }
+
+        let source_music = track.source_music.as_deref()?;
+        let group_url = source_music.group.url.trim();
+        if group_url.is_empty() {
+            return None;
+        }
+
+        Some(Self {
+            value: format!("group:{}", group_url.to_ascii_lowercase()),
+        })
+    }
+}
+
+impl PlaybackSourceBasinKey {
+    fn from_track(track: &PlaybackTrack) -> Option<Self> {
+        if let Some(value) = youtube_source_basin_from_path(&track.file_path) {
+            return Some(Self { value });
+        }
+
+        if let Some(value) = parent_directory_basin_from_path(&track.file_path) {
+            return Some(Self { value });
+        }
+
+        let source_music = track.source_music.as_deref()?;
+        let group_url = source_music.group.url.trim();
+        if group_url.is_empty() {
+            return None;
+        }
+
+        Some(Self {
+            value: format!("group:{}", group_url.to_ascii_lowercase()),
+        })
+    }
+}
+
+impl PlaybackAttractorBasinPressure {
+    fn from_recent_history_and_candidates(
+        recently_played_tracks: &[PlaybackTrack],
+        candidates: &[PlaybackTrack],
+    ) -> Self {
+        let target_share = basin_target_share(candidates);
+        let mut pressure = Self {
+            current_basin: None,
+            current_basin_run: 0,
+            fatigue: HashMap::new(),
+            usage: HashMap::new(),
+            target_share,
+        };
+
+        for track in recently_played_tracks {
+            let Some(basin) = PlaybackAttractorBasinKey::from_track(track) else {
+                continue;
+            };
+            decay_attractor_basin_map(&mut pressure.fatigue, AUDIO_STYLE_BASIN_FATIGUE_DECAY);
+            decay_attractor_basin_map(&mut pressure.usage, AUDIO_STYLE_BASIN_HOMEOSTATIC_DECAY);
+            *pressure.fatigue.entry(basin.clone()).or_insert(0.0) +=
+                AUDIO_STYLE_BASIN_FATIGUE_IMPULSE;
+            *pressure.usage.entry(basin.clone()).or_insert(0.0) +=
+                AUDIO_STYLE_BASIN_HOMEOSTATIC_IMPULSE;
+
+            if pressure.current_basin.as_ref() == Some(&basin) {
+                pressure.current_basin_run += 1;
+            } else {
+                pressure.current_basin = Some(basin);
+                pressure.current_basin_run = 1;
+            }
+        }
+
+        pressure
+    }
+
+    fn penalty_for_track(&self, track: &PlaybackTrack) -> f32 {
+        let Some(basin) = PlaybackAttractorBasinKey::from_track(track) else {
+            return 0.0;
+        };
+
+        let fatigue =
+            self.fatigue.get(&basin).copied().unwrap_or(0.0) * AUDIO_STYLE_BASIN_FATIGUE_STRENGTH;
+        let usage_share = self.usage_share(&basin);
+        let target_share = self.target_share.get(&basin).copied().unwrap_or(0.0);
+        let homeostatic =
+            (usage_share - target_share).max(0.0) * AUDIO_STYLE_BASIN_HOMEOSTATIC_STRENGTH;
+        let run_hazard = if self.current_basin.as_ref() == Some(&basin) {
+            (self.current_basin_run as f32).max(1.0).ln() * AUDIO_STYLE_BASIN_RUN_HAZARD_STRENGTH
+        } else {
+            0.0
+        };
+
+        (fatigue + homeostatic + run_hazard).max(0.0)
+    }
+
+    fn usage_share(&self, basin: &PlaybackAttractorBasinKey) -> f32 {
+        let total = self
+            .usage
+            .values()
+            .copied()
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .sum::<f32>();
+        if total <= 0.0 || !total.is_finite() {
+            return 0.0;
+        }
+        self.usage.get(basin).copied().unwrap_or(0.0).max(0.0) / total
+    }
+}
+
+impl PlaybackSourceBasinPressure {
+    fn from_recent_history_and_candidates(
+        recently_played_tracks: &[PlaybackTrack],
+        candidates: &[PlaybackTrack],
+    ) -> Self {
+        let target_share = source_basin_target_share(candidates);
+        let mut pressure = Self {
+            current_basin: None,
+            current_basin_run: 0,
+            usage: HashMap::new(),
+            target_share,
+        };
+
+        for track in recently_played_tracks {
+            let Some(basin) = PlaybackSourceBasinKey::from_track(track) else {
+                continue;
+            };
+            decay_source_basin_map(&mut pressure.usage, AUDIO_STYLE_SOURCE_BASIN_USAGE_DECAY);
+            *pressure.usage.entry(basin.clone()).or_insert(0.0) +=
+                AUDIO_STYLE_SOURCE_BASIN_USAGE_IMPULSE;
+
+            if pressure.current_basin.as_ref() == Some(&basin) {
+                pressure.current_basin_run += 1;
+            } else {
+                pressure.current_basin = Some(basin);
+                pressure.current_basin_run = 1;
+            }
+        }
+
+        pressure
+    }
+
+    fn penalty_for_basin(&self, basin: &PlaybackSourceBasinKey) -> f32 {
+        let usage_share = self.usage_share(basin);
+        let target_share = self.target_share.get(basin).copied().unwrap_or(0.0);
+        let homeostatic =
+            (usage_share - target_share).max(0.0) * AUDIO_STYLE_SOURCE_BASIN_HOMEOSTATIC_STRENGTH;
+        let run_hazard = if self.current_basin.as_ref() == Some(basin) {
+            (self.current_basin_run as f32).max(1.0).ln()
+                * AUDIO_STYLE_SOURCE_BASIN_RUN_HAZARD_STRENGTH
+        } else {
+            0.0
+        };
+
+        (homeostatic + run_hazard).max(0.0)
+    }
+
+    fn usage_share(&self, basin: &PlaybackSourceBasinKey) -> f32 {
+        let total = self
+            .usage
+            .values()
+            .copied()
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .sum::<f32>();
+        if total <= 0.0 || !total.is_finite() {
+            return 0.0;
+        }
+        self.usage.get(basin).copied().unwrap_or(0.0).max(0.0) / total
+    }
+}
+
+fn decay_attractor_basin_map(map: &mut HashMap<PlaybackAttractorBasinKey, f32>, decay: f32) {
+    map.retain(|_, value| {
+        *value *= decay;
+        value.is_finite() && *value > 1.0e-6
+    });
+}
+
+fn decay_source_basin_map(map: &mut HashMap<PlaybackSourceBasinKey, f32>, decay: f32) {
+    map.retain(|_, value| {
+        *value *= decay;
+        value.is_finite() && *value > 1.0e-6
+    });
+}
+
+fn basin_target_share(candidates: &[PlaybackTrack]) -> HashMap<PlaybackAttractorBasinKey, f32> {
+    let mut counts = HashMap::<PlaybackAttractorBasinKey, usize>::new();
+    for candidate in candidates {
+        let Some(basin) = PlaybackAttractorBasinKey::from_track(candidate) else {
+            continue;
+        };
+        *counts.entry(basin).or_insert(0) += 1;
+    }
+    let total = counts
+        .values()
+        .map(|count| (*count as f32).sqrt())
+        .sum::<f32>();
+    if total <= 0.0 || !total.is_finite() {
+        return HashMap::new();
+    }
+    counts
+        .into_iter()
+        .map(|(basin, count)| (basin, (count as f32).sqrt() / total))
+        .collect()
+}
+
+fn source_basin_target_share(candidates: &[PlaybackTrack]) -> HashMap<PlaybackSourceBasinKey, f32> {
+    let mut counts = HashMap::<PlaybackSourceBasinKey, usize>::new();
+    for candidate in candidates {
+        let Some(basin) = PlaybackSourceBasinKey::from_track(candidate) else {
+            continue;
+        };
+        *counts.entry(basin).or_insert(0) += 1;
+    }
+    let total = counts
+        .values()
+        .map(|count| (*count as f32).powf(AUDIO_STYLE_SOURCE_BASIN_TARGET_POWER))
+        .sum::<f32>();
+    if total <= 0.0 || !total.is_finite() {
+        return HashMap::new();
+    }
+    counts
+        .into_iter()
+        .map(|(basin, count)| {
+            (
+                basin,
+                (count as f32).powf(AUDIO_STYLE_SOURCE_BASIN_TARGET_POWER) / total,
+            )
+        })
+        .collect()
+}
+
+fn youtube_source_basin_from_path(path: &Path) -> Option<String> {
+    youtube_basin_from_path(path, YoutubeBasinDepth::Source)
+}
+
+fn youtube_leaf_basin_from_path(path: &Path) -> Option<String> {
+    youtube_basin_from_path(path, YoutubeBasinDepth::Leaf)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum YoutubeBasinDepth {
+    Source,
+    Leaf,
+}
+
+fn youtube_basin_from_path(path: &Path, depth: YoutubeBasinDepth) -> Option<String> {
+    let parts = normalized_path_components(path);
+    let youtube_index = parts.iter().position(|part| part == "youtube")?;
+    let tail = &parts[(youtube_index + 1)..];
+    let basin = match depth {
+        YoutubeBasinDepth::Source => tail.first(),
+        YoutubeBasinDepth::Leaf => {
+            if tail.len() >= 3 {
+                tail.get(1)
+            } else {
+                tail.first()
+            }
+        }
+    }?;
+    if basin.is_empty() {
+        return None;
+    }
+    Some(format!("youtube:{basin}"))
+}
+
+fn parent_directory_basin_from_path(path: &Path) -> Option<String> {
+    path.parent()
+        .map(|parent| normalized_path_components(parent).join("/"))
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("dir:{value}"))
+}
+
+fn normalized_path_components(path: &Path) -> Vec<String> {
+    path.components()
+        .filter_map(|component| {
+            let text = component.as_os_str().to_string_lossy();
+            let normalized = text.trim().replace('\\', "/").to_ascii_lowercase();
+            if normalized.is_empty() {
+                None
+            } else {
+                Some(normalized)
+            }
+        })
+        .collect()
 }
 
 fn select_next_audio_style_candidate(
@@ -1280,6 +1614,7 @@ fn select_next_audio_style_candidate(
     embeddings: &AudioStyleEmbeddingMap,
     sampling_geometry: Option<&AudioStyleSamplingGeometry>,
     model_trained: bool,
+    recently_played_tracks: &[PlaybackTrack],
     draw_unit: f32,
 ) -> AudioStyleCandidateSelection {
     if candidates.is_empty() {
@@ -1317,6 +1652,7 @@ fn select_next_audio_style_candidate(
 
     let mut candidate_likes = Vec::with_capacity(candidates.len());
     let mut similarities = Vec::with_capacity(candidates.len());
+    let mut source_basins = Vec::with_capacity(candidates.len());
     for candidate in candidates {
         let key = PlaybackTrackKey::from_track(candidate);
         let similarity = geometry
@@ -1324,22 +1660,38 @@ fn select_next_audio_style_candidate(
             .filter(|similarity| similarity.is_finite());
         candidate_likes.push(candidate.liked);
         similarities.push(similarity);
+        source_basins.push(PlaybackSourceBasinKey::from_track(candidate));
     }
 
-    let style_weights = audio_style_candidate_weights(&similarities);
+    let basin_pressure = PlaybackAttractorBasinPressure::from_recent_history_and_candidates(
+        recently_played_tracks,
+        candidates,
+    );
+    let basin_penalties = candidates
+        .iter()
+        .map(|candidate| basin_pressure.penalty_for_track(candidate))
+        .collect::<Vec<_>>();
+    let style_weights = audio_style_candidate_weights(&similarities, &basin_penalties);
+    let source_pressure = PlaybackSourceBasinPressure::from_recent_history_and_candidates(
+        recently_played_tracks,
+        candidates,
+    );
+    let source_weights =
+        audio_style_source_basin_weights(&source_basins, &similarities, &source_pressure);
     let non_liked_weights = candidate_likes
         .iter()
         .zip(style_weights.iter())
         .filter_map(|(liked, weight)| if *liked { None } else { Some(*weight) })
         .collect::<Vec<_>>();
     let liked_weight = liked_candidate_weight(&non_liked_weights);
-    let mut weights = Vec::with_capacity(style_weights.len());
-    let mut total = 0.0_f32;
+    let mut within_weights = Vec::with_capacity(style_weights.len());
     for (liked, style_weight) in candidate_likes.iter().zip(style_weights.iter()) {
         let safe_weight = if *liked { liked_weight } else { *style_weight };
-        weights.push(safe_weight);
-        total += safe_weight;
+        within_weights.push(safe_weight);
     }
+    let weights =
+        audio_style_compose_source_first_weights(&source_basins, &source_weights, &within_weights);
+    let total = weights.iter().copied().sum::<f32>();
 
     if total <= 0.0 || !total.is_finite() {
         return random_fallback_selection(candidates.len(), draw_unit, Some("invalid_weights"));
@@ -1382,7 +1734,10 @@ fn select_next_audio_style_candidate(
     }
 }
 
-fn audio_style_candidate_weights(similarities: &[Option<f32>]) -> Vec<f32> {
+fn audio_style_candidate_weights(
+    similarities: &[Option<f32>],
+    basin_penalties: &[f32],
+) -> Vec<f32> {
     let valid = similarities
         .iter()
         .enumerate()
@@ -1395,11 +1750,97 @@ fn audio_style_candidate_weights(similarities: &[Option<f32>]) -> Vec<f32> {
     let mut weights = vec![AUDIO_STYLE_EXPLORATION_FLOOR; similarities.len()];
 
     for (index, similarity) in &valid {
-        let weight = (AUDIO_STYLE_SMOOTHNESS * *similarity).exp() + AUDIO_STYLE_EXPLORATION_FLOOR;
+        let basin_penalty = basin_penalties.get(*index).copied().unwrap_or(0.0);
+        let logit = AUDIO_STYLE_SMOOTHNESS * *similarity - basin_penalty.max(0.0);
+        let weight = logit.clamp(-30.0, 30.0).exp() + AUDIO_STYLE_EXPLORATION_FLOOR;
         weights[*index] = weight.max(AUDIO_STYLE_EXPLORATION_FLOOR);
     }
 
     weights
+}
+
+fn audio_style_source_basin_weights(
+    source_basins: &[Option<PlaybackSourceBasinKey>],
+    similarities: &[Option<f32>],
+    pressure: &PlaybackSourceBasinPressure,
+) -> HashMap<PlaybackSourceBasinKey, f32> {
+    let mut basin_similarities = HashMap::<PlaybackSourceBasinKey, Vec<f32>>::new();
+    for (basin, similarity) in source_basins.iter().zip(similarities.iter()) {
+        let Some(basin) = basin.clone() else {
+            continue;
+        };
+        let basin_values = basin_similarities.entry(basin).or_default();
+        if let Some(similarity) = *similarity {
+            basin_values.push(similarity);
+        }
+    }
+
+    let mut weights = HashMap::new();
+    for (basin, mut basin_values) in basin_similarities {
+        if basin_values.is_empty() {
+            weights.insert(basin, AUDIO_STYLE_EXPLORATION_FLOOR);
+            continue;
+        }
+        basin_values.sort_by(|left, right| right.total_cmp(left));
+        let top_count = basin_values
+            .len()
+            .min(AUDIO_STYLE_SOURCE_BASIN_SMOOTH_TOP_K)
+            .max(1);
+        let smooth_similarity =
+            basin_values.iter().take(top_count).copied().sum::<f32>() / top_count as f32;
+        let logit = AUDIO_STYLE_SOURCE_BASIN_SMOOTHNESS * smooth_similarity
+            - pressure.penalty_for_basin(&basin);
+        let weight = logit.clamp(-30.0, 30.0).exp() + AUDIO_STYLE_EXPLORATION_FLOOR;
+        weights.insert(basin, weight.max(AUDIO_STYLE_EXPLORATION_FLOOR));
+    }
+
+    weights
+}
+
+fn audio_style_compose_source_first_weights(
+    source_basins: &[Option<PlaybackSourceBasinKey>],
+    source_weights: &HashMap<PlaybackSourceBasinKey, f32>,
+    within_weights: &[f32],
+) -> Vec<f32> {
+    let mut source_totals = HashMap::<PlaybackSourceBasinKey, f32>::new();
+    for (basin, within_weight) in source_basins.iter().zip(within_weights.iter()) {
+        let Some(basin) = basin.clone() else {
+            continue;
+        };
+        let safe_within = if within_weight.is_finite() && *within_weight > 0.0 {
+            *within_weight
+        } else {
+            0.0
+        };
+        *source_totals.entry(basin).or_insert(0.0) += safe_within;
+    }
+
+    source_basins
+        .iter()
+        .zip(within_weights.iter())
+        .map(|(basin, within_weight)| {
+            let Some(basin) = basin.as_ref() else {
+                return if within_weight.is_finite() && *within_weight > 0.0 {
+                    *within_weight
+                } else {
+                    AUDIO_STYLE_EXPLORATION_FLOOR
+                };
+            };
+            let Some(source_weight) = source_weights.get(basin).copied() else {
+                return AUDIO_STYLE_EXPLORATION_FLOOR;
+            };
+            let source_total = source_totals.get(basin).copied().unwrap_or(0.0);
+            if source_total <= 0.0 || !source_total.is_finite() {
+                return AUDIO_STYLE_EXPLORATION_FLOOR;
+            }
+            let safe_within = if within_weight.is_finite() && *within_weight > 0.0 {
+                *within_weight
+            } else {
+                AUDIO_STYLE_EXPLORATION_FLOOR
+            };
+            source_weight * safe_within / source_total
+        })
+        .collect()
 }
 
 struct AudioStyleSelectionSimilarityDiagnostics {
@@ -2288,6 +2729,7 @@ pub(crate) fn choose_next_audio_style_candidate_for_test(
         &embeddings.embeddings,
         embeddings.sampling_geometry.as_ref(),
         embeddings.trained,
+        &[],
         draw_unit,
     )
     .index
@@ -2307,8 +2749,28 @@ pub(crate) fn choose_next_audio_style_candidate_with_generation_for_test(
         &embeddings.embeddings,
         embeddings.sampling_geometry.as_ref(),
         embeddings.trained,
+        &[],
         draw_unit,
     );
     selection.model_generation = model_generation;
     selection
+}
+
+#[cfg(test)]
+pub(crate) fn choose_next_audio_style_candidate_with_recent_history_for_test(
+    current_track: &PlaybackTrack,
+    candidates: &[PlaybackTrack],
+    embeddings: &AudioStylePlaylistPlaybackRecommender,
+    recently_played_tracks: &[PlaybackTrack],
+    draw_unit: f32,
+) -> AudioStyleCandidateSelection {
+    select_next_audio_style_candidate(
+        candidates,
+        &PlaybackTrackKey::from_track(current_track),
+        &embeddings.embeddings,
+        embeddings.sampling_geometry.as_ref(),
+        embeddings.trained,
+        recently_played_tracks,
+        draw_unit,
+    )
 }
