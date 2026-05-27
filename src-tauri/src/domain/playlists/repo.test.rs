@@ -3162,6 +3162,328 @@ fn playlist_playback_sources_return_empty_when_all_music_is_excluded() {
 }
 
 #[test]
+fn playlist_playback_sources_deduplicate_collection_group_and_extra_by_canonical_music_id() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let collection_url = "https://example.com/canonical-playback";
+        let group = collection_group("Disc 1", &format!("{collection_url}#disc-1"), "Disc 1");
+        let primary_music = named_music("Canonical Primary", group.clone(), "Primary.m4a");
+        let mut duplicate_music =
+            named_music("Canonical Duplicate", group.clone(), "Duplicate.m4a");
+        duplicate_music.canonical_music_id = primary_music.canonical_music_id.clone();
+        let collection = collection_with_musics(
+            collection_url,
+            "youtube/canonical-playback",
+            Some(false),
+            vec![primary_music.clone(), duplicate_music.clone()],
+        );
+        let collection_record =
+            insert_collection_row("canonical-playback-collection", &collection).await;
+        let group_record = insert_group_row("canonical-playback-group", &group).await;
+        let primary_record = insert_music_row("canonical-playback-primary", &primary_music).await;
+        let duplicate_record =
+            insert_music_row("canonical-playback-duplicate", &duplicate_music).await;
+
+        insert_music_edges(
+            &collection_record,
+            &[primary_record.clone(), duplicate_record.clone()],
+        )
+        .await;
+        insert_group_edges(
+            &group_record,
+            &[primary_record.clone(), duplicate_record.clone()],
+        )
+        .await;
+
+        let playlist = PlayList {
+            name: "Canonical Playback Sources".to_string(),
+            collections: vec![collection],
+            groups: vec![group],
+            extra: vec![duplicate_music.clone()],
+
+            created_at: AutoFill::pending(),
+        };
+        insert_playlist_row(
+            "canonical-playback-playlist",
+            &playlist,
+            std::slice::from_ref(&collection_record),
+            std::slice::from_ref(&group_record),
+            std::slice::from_ref(&duplicate_record),
+        )
+        .await;
+
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist");
+        let sources = load_playlist_playback_track_sources(&selection, 8)
+            .await
+            .expect("playback sources should load");
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].music.url, primary_music.url);
+        assert_eq!(
+            sources[0].music.canonical_music_id,
+            primary_music.canonical_music_id
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn liked_playlist_playback_sources_preserve_owner_and_position_order() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let first_group = collection_group(
+            "Disc 1",
+            "https://example.com/liked-order-first#disc-1",
+            "Disc 1",
+        );
+        let second_group = collection_group(
+            "Disc 1",
+            "https://example.com/liked-order-second#disc-1",
+            "Disc 1",
+        );
+        let unliked_first = named_music(
+            "Liked Order Unliked First",
+            first_group.clone(),
+            "Unliked First.m4a",
+        );
+        let mut liked_first =
+            named_music("Liked Order First", first_group.clone(), "Liked First.m4a");
+        let mut liked_second = named_music(
+            "Liked Order Second",
+            second_group.clone(),
+            "Liked Second.m4a",
+        );
+        liked_first.liked = true;
+        liked_second.liked = true;
+
+        let first_collection = collection_with_musics(
+            "https://example.com/liked-order-first",
+            "youtube/liked-order-first",
+            Some(false),
+            vec![unliked_first.clone(), liked_first.clone()],
+        );
+        let second_collection = collection_with_musics(
+            "https://example.com/liked-order-second",
+            "youtube/liked-order-second",
+            Some(false),
+            vec![liked_second.clone()],
+        );
+        let first_collection_record =
+            insert_collection_row("liked-order-first-collection", &first_collection).await;
+        let second_collection_record =
+            insert_collection_row("liked-order-second-collection", &second_collection).await;
+        let first_group_record = insert_group_row("liked-order-first-group", &first_group).await;
+        let second_group_record = insert_group_row("liked-order-second-group", &second_group).await;
+        let unliked_first_record =
+            insert_music_row("liked-order-unliked-first", &unliked_first).await;
+        let liked_first_record = insert_music_row("liked-order-first", &liked_first).await;
+        let liked_second_record = insert_music_row("liked-order-second", &liked_second).await;
+
+        insert_music_edges(
+            &first_collection_record,
+            &[unliked_first_record.clone(), liked_first_record.clone()],
+        )
+        .await;
+        insert_music_edges(
+            &second_collection_record,
+            std::slice::from_ref(&liked_second_record),
+        )
+        .await;
+        insert_group_edges(
+            &first_group_record,
+            &[unliked_first_record, liked_first_record],
+        )
+        .await;
+        insert_group_edges(
+            &second_group_record,
+            std::slice::from_ref(&liked_second_record),
+        )
+        .await;
+
+        let playlist = PlayList {
+            name: "Liked Playback Owner Order".to_string(),
+            collections: vec![first_collection, second_collection],
+            groups: vec![],
+            extra: vec![],
+
+            created_at: AutoFill::pending(),
+        };
+        insert_playlist_row(
+            "liked-playback-owner-order-playlist",
+            &playlist,
+            &[first_collection_record, second_collection_record],
+            &[],
+            &[],
+        )
+        .await;
+
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist");
+        let sources = load_liked_playlist_playback_track_sources(&selection, 8)
+            .await
+            .expect("liked playback sources should load");
+
+        assert_eq!(
+            sources
+                .iter()
+                .map(|source| source.music.url.as_str())
+                .collect::<Vec<_>>(),
+            vec![liked_first.url.as_str(), liked_second.url.as_str()]
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn group_playlist_playback_sources_skip_music_without_parent_collection() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let group = collection_group(
+            "Loose Group",
+            "https://example.com/group-without-parent#disc-1",
+            "Disc 1",
+        );
+        let loose_music = named_music("Loose Group Music", group.clone(), "Loose.m4a");
+        let group_record = insert_group_row("group-without-parent", &group).await;
+        let loose_record = insert_music_row("group-without-parent-music", &loose_music).await;
+        insert_group_edges(&group_record, std::slice::from_ref(&loose_record)).await;
+
+        let playlist = PlayList {
+            name: "Group Without Parent Playback".to_string(),
+            collections: vec![],
+            groups: vec![group.clone()],
+            extra: vec![],
+
+            created_at: AutoFill::pending(),
+        };
+        insert_playlist_row(
+            "group-without-parent-playlist",
+            &playlist,
+            &[],
+            std::slice::from_ref(&group_record),
+            &[],
+        )
+        .await;
+
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist");
+        let sources = load_playlist_playback_track_sources(&selection, 8)
+            .await
+            .expect("playback sources should load");
+        let random_source = load_random_playlist_playback_track_source(&selection)
+            .await
+            .expect("random playback source should load");
+
+        assert_eq!(selection.download_scopes, vec![group.url]);
+        assert!(sources.is_empty());
+        assert!(random_source.is_none());
+
+        reset_db();
+    });
+}
+
+#[test]
+fn extra_playlist_playback_sources_preserve_playlist_ref_order_after_filtering() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let collection_url = "https://example.com/extra-order";
+        let group = collection_group("Disc 1", &format!("{collection_url}#disc-1"), "Disc 1");
+        let first_music = named_music("Extra Order First", group.clone(), "First.m4a");
+        let mut skipped_music = named_music("Extra Order Skipped", group.clone(), "Skipped.m4a");
+        let second_music = named_music("Extra Order Second", group.clone(), "Second.m4a");
+        skipped_music.path = None;
+
+        let collection = collection_with_musics(
+            collection_url,
+            "youtube/extra-order",
+            Some(false),
+            vec![
+                first_music.clone(),
+                skipped_music.clone(),
+                second_music.clone(),
+            ],
+        );
+        let collection_record = insert_collection_row("extra-order-collection", &collection).await;
+        let group_record = insert_group_row("extra-order-group", &group).await;
+        let first_record = insert_music_row("extra-order-first", &first_music).await;
+        let skipped_record = insert_music_row("extra-order-skipped", &skipped_music).await;
+        let second_record = insert_music_row("extra-order-second", &second_music).await;
+        let music_records = vec![
+            first_record.clone(),
+            skipped_record.clone(),
+            second_record.clone(),
+        ];
+
+        insert_music_edges(&collection_record, &music_records).await;
+        insert_group_edges(&group_record, &music_records).await;
+
+        let playlist = PlayList {
+            name: "Extra Playback Ref Order".to_string(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![
+                second_music.clone(),
+                skipped_music.clone(),
+                first_music.clone(),
+            ],
+
+            created_at: AutoFill::pending(),
+        };
+        insert_playlist_row(
+            "extra-playback-ref-order-playlist",
+            &playlist,
+            &[],
+            &[],
+            &[second_record, skipped_record, first_record],
+        )
+        .await;
+
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist");
+        let sources = load_playlist_playback_track_sources(&selection, 8)
+            .await
+            .expect("extra playback sources should load");
+
+        assert_eq!(
+            sources
+                .iter()
+                .map(|source| source.music.url.as_str())
+                .collect::<Vec<_>>(),
+            vec![second_music.url.as_str(), first_music.url.as_str()]
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
 fn playlist_playback_selection_adds_parent_download_scope_for_group_only_refs() {
     let _guard = acquire_db_test_lock();
 
@@ -3442,6 +3764,141 @@ fn random_playlist_playback_source_uses_selected_playlist_scope() {
 
         assert!(selected_urls.contains(&source.music.url.as_str()));
         assert_ne!(source.music.url, unselected_music.url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn random_playlist_playback_source_skips_music_without_downloaded_path() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let group = collection_group("Disc 1", "https://example.com/random-path#disc-1", "Disc 1");
+        let mut pending_music = named_music("Random Pending", group.clone(), "Pending.m4a");
+        pending_music.path = None;
+        let playable_music = named_music("Random Playable", group.clone(), "Playable.m4a");
+        let collection = collection_with_musics(
+            "https://example.com/random-path",
+            "youtube/random-path",
+            Some(false),
+            vec![pending_music.clone(), playable_music.clone()],
+        );
+        let collection_record = insert_collection_row("random-path-collection", &collection).await;
+        let group_record = insert_group_row("random-path-group", &group).await;
+        let pending_record = insert_music_row("random-path-pending", &pending_music).await;
+        let playable_record = insert_music_row("random-path-playable", &playable_music).await;
+
+        insert_music_edges(
+            &collection_record,
+            &[pending_record.clone(), playable_record.clone()],
+        )
+        .await;
+        insert_group_edges(&group_record, &[pending_record, playable_record]).await;
+
+        let playlist = PlayList {
+            name: "Random Playback Path".to_string(),
+            collections: vec![collection],
+            groups: vec![],
+            extra: vec![],
+
+            created_at: AutoFill::pending(),
+        };
+        insert_playlist_row(
+            "random-path-playlist",
+            &playlist,
+            std::slice::from_ref(&collection_record),
+            &[],
+            &[],
+        )
+        .await;
+
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist");
+        let sources = load_playlist_playback_track_sources(&selection, 8)
+            .await
+            .expect("playback sources should load");
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].music.url, playable_music.url);
+
+        for _ in 0..8 {
+            let source = load_random_playlist_playback_track_source(&selection)
+                .await
+                .expect("random playback source should load")
+                .expect("random playback source should exist");
+            assert_eq!(source.music.url, playable_music.url);
+        }
+
+        reset_db();
+    });
+}
+
+#[test]
+fn extra_playlist_playback_sources_skip_music_without_downloaded_path() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let collection_url = "https://example.com/extra-path";
+        let group = collection_group("Disc 1", &format!("{collection_url}#disc-1"), "Disc 1");
+        let mut pending_music = named_music("Extra Pending", group.clone(), "Pending.m4a");
+        pending_music.path = None;
+        let playable_music = named_music("Extra Playable", group, "Playable.m4a");
+        let collection = collection_with_musics(
+            collection_url,
+            "youtube/extra-path",
+            Some(false),
+            vec![pending_music.clone(), playable_music.clone()],
+        );
+        let collection_record = insert_collection_row("extra-path-collection", &collection).await;
+        let group_record = insert_group_row("extra-path-group", &playable_music.group).await;
+        let pending_record = insert_music_row("extra-path-pending", &pending_music).await;
+        let playable_record = insert_music_row("extra-path-playable", &playable_music).await;
+        let music_records = vec![pending_record.clone(), playable_record.clone()];
+
+        insert_music_edges(&collection_record, &music_records).await;
+        insert_group_edges(&group_record, &music_records).await;
+
+        let playlist = PlayList {
+            name: "Extra Playback Path".to_string(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![pending_music, playable_music.clone()],
+
+            created_at: AutoFill::pending(),
+        };
+        insert_playlist_row(
+            "extra-path-playlist",
+            &playlist,
+            &[],
+            &[],
+            &[pending_record, playable_record],
+        )
+        .await;
+
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist");
+        let sources = load_playlist_playback_track_sources(&selection, 8)
+            .await
+            .expect("extra playback sources should load");
+        let random_source = load_random_playlist_playback_track_source(&selection)
+            .await
+            .expect("random extra playback source should load")
+            .expect("random extra playback source should exist");
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].music.url, playable_music.url);
+        assert_eq!(random_source.music.url, playable_music.url);
 
         reset_db();
     });

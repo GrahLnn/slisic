@@ -1,4 +1,4 @@
-use crate::domain::playlists::model::Collection;
+use crate::domain::playlists::model::{Collection, Group};
 use appdb::{Id, Store};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -151,14 +151,31 @@ pub struct DownloadTask {
     pub updated_at: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq)]
-pub struct DownloadResourceProbe {
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, SurrealValue, Type)]
+pub struct DownloadLeafGroupContext {
+    pub name: String,
     pub url: String,
-    pub source_kind: CollectionSourceKind,
-    pub title: String,
-    pub item_count: u32,
-    pub collection_folder: String,
-    pub enable_updates: Option<bool>,
+    pub folder: String,
+}
+
+impl From<Group> for DownloadLeafGroupContext {
+    fn from(value: Group) -> Self {
+        Self {
+            name: value.name,
+            url: value.url,
+            folder: value.folder,
+        }
+    }
+}
+
+impl From<DownloadLeafGroupContext> for Group {
+    fn from(value: DownloadLeafGroupContext) -> Self {
+        Self {
+            name: value.name,
+            url: value.url,
+            folder: value.folder,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Type)]
@@ -240,11 +257,6 @@ impl DownloadTask {
 
     pub fn refresh_counts(&mut self) {
         self.total_leaves = self.leafs.len() as u32;
-        self.completed_leaves = self
-            .leafs
-            .iter()
-            .filter(|leaf| leaf.status == DownloadLeafStatus::Completed)
-            .count() as u32;
         self.failed_leaves = self
             .leafs
             .iter()
@@ -256,12 +268,33 @@ impl DownloadTask {
     }
 
     pub fn replace_leaf(&mut self, next: DownloadLeaf) {
+        if next.status == DownloadLeafStatus::Completed {
+            if self.remove_leaf(&next.id).is_some() {
+                self.completed_leaves = self.completed_leaves.saturating_add(1);
+                self.touch();
+            }
+            return;
+        }
+
         if let Some(current) = self.leafs.iter_mut().find(|leaf| leaf.id == next.id) {
             *current = next;
         } else {
             self.leafs.push(next);
             self.leafs.sort_by_key(|leaf| leaf.sequence);
         }
+        self.refresh_counts();
+    }
+
+    pub fn remove_leaf(&mut self, leaf_id: &Id) -> Option<DownloadLeaf> {
+        let index = self.leafs.iter().position(|leaf| &leaf.id == leaf_id)?;
+        let removed = self.leafs.remove(index);
+        self.refresh_counts();
+        Some(removed)
+    }
+
+    pub fn discard_completed_leafs(&mut self) {
+        self.leafs
+            .retain(|leaf| leaf.status != DownloadLeafStatus::Completed);
         self.refresh_counts();
     }
 
@@ -288,6 +321,7 @@ pub struct DownloadLeaf {
     pub title: Option<String>,
     pub file_name: Option<String>,
     pub relative_path: Option<String>,
+    pub group: Option<DownloadLeafGroupContext>,
     pub duration_seconds: Option<u32>,
     pub chapter_count: Option<u32>,
     pub downloaded_bytes: Option<u64>,
@@ -310,6 +344,7 @@ impl DownloadLeaf {
             title: None,
             file_name: None,
             relative_path: None,
+            group: None,
             duration_seconds: None,
             chapter_count: None,
             downloaded_bytes: None,

@@ -309,6 +309,7 @@ function attachPlaybackDiagnosticTraceListener() {
       queueCount: payload.queue_count,
       status: payload.status,
       error: payload.error,
+      details: payload.details,
     });
   })
     .then((unlisten) => {
@@ -378,18 +379,34 @@ export const action = {
   },
   playPlaylist: (playlistName: string) => {
     ensureStarted();
+    const actionStartedAt = window.performance.now();
     pasteDownloadAction.reset();
     const snapshot = actor.getSnapshot();
+    recordRenderPerformanceTrace("playlist-play-action-start", {
+      playlistName,
+      state: formatStateValue(snapshot.value),
+      playingPlaylistName: snapshot.context.playingPlaylistName,
+      shouldToggleStop:
+        snapshot.value === "play" && snapshot.context.playingPlaylistName === playlistName,
+    });
     if (shouldExitSpectrumPlaybackScopeForSnapshot(snapshot)) {
       requestExitSpectrumPlaybackScope(snapshot.context.spectrumPlaybackScopeId);
     }
     if (snapshot.value === "play" && snapshot.context.playingPlaylistName === playlistName) {
       requestPlaybackStop();
       actor.send(sig.mainx.back);
+      recordRenderPerformanceTrace("playlist-play-action-stop-current", {
+        playlistName,
+        elapsedMs: window.performance.now() - actionStartedAt,
+      });
       return;
     }
 
     send(playPlaylist.load(playlistName));
+    recordRenderPerformanceTrace("playlist-play-action-sent", {
+      playlistName,
+      elapsedMs: window.performance.now() - actionStartedAt,
+    });
   },
   excludeCurrentMusicAndSkip: () => {
     ensureStarted();

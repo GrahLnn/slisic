@@ -6,7 +6,9 @@ The download system turns a user supplied collection URL into a stable playlist
 collection on disk. It probes the root URL, projects it into a complete ordered
 leaf plan, downloads each leaf into a scoped temporary artifact, commits each
 artifact into its final collection-relative path, persists collection metadata,
-and derives the terminal task status from leaf evidence.
+and then removes the completed leaf from the resumable task record. The task row
+keeps only residual work and diagnostic counters; completed music identity is
+owned by the collection and its manifest.
 
 ## Participants
 
@@ -23,19 +25,25 @@ and derives the terminal task status from leaf evidence.
 
 - A playlist plan is complete or explicit failure. The system must not silently
   turn a partial root probe into a completed task.
-- A leaf can become `Completed` only after its audio file is committed to a
-  stable collection-relative path and its music metadata is persisted.
+- A leaf can be consumed as completed only after its audio file is committed to
+  a stable collection-relative path and its music metadata is persisted.
+- Completed music evidence is owned only by `Collection.musics` and the
+  collection manifest. `DownloadTask.leafs` is residual work, not a history log.
+- Resume must rebuild its plan from residual task leafs when they exist. It must
+  not root-probe already materialized music to rediscover completed work.
 - A temporary artifact is not a stable file. It can only be consumed by the leaf
   commit path that owns the matching leaf context.
 - A leftover temporary artifact can be recovered only when the target is
   unambiguous. Ambiguous residue is rejected instead of guessing.
-- Re-running the same task is idempotent: completed leaves stay completed,
-  final files are reused, and uncommitted temporary artifacts are either
-  committed once or rejected explicitly.
+- Re-running the same task is idempotent: materialized leaves are absent from
+  the residual queue, final files are reused only for still-residual leaves, and
+  uncommitted temporary artifacts are either committed once or rejected
+  explicitly.
 - Download failures and post-download commit failures are leaf-local for list
   downloads. One failed leaf cannot stop the remaining leaf pipeline.
-- Task terminal status is derived from all leaf states. A task with unresolved
-  non-terminal leaves cannot be marked `Completed`.
+- Task terminal status is derived from residual failures plus consumed
+  completion count. A task with unresolved non-terminal leaves cannot be marked
+  `Completed`.
 - Cache, existing files, and temporary residue are acceleration or recovery
   evidence only. They do not define playlist membership.
 
@@ -60,6 +68,10 @@ and derives the terminal task status from leaf evidence.
 - Active worker counters match worker events.
 - Existing final files and residual temporary files are consumed through the
   same leaf completion semantics as fresh downloads.
+- Completed leafs are garbage collected from the task row after collection
+  persistence succeeds.
+- Residual leafs carry the group context needed to resume without re-expanding a
+  root playlist.
 - Unresolved leaves are terminally rejected before task status is finalized.
 
 `LeafDownloadWindow` owns:
@@ -80,6 +92,14 @@ and derives the terminal task status from leaf evidence.
 - Owner: `downloads::service::resolve_collection_plan`.
 - Total: no.
 - Failure: probe failure, empty downloadable list, or unsupported nested depth.
+
+`ResidualDownloadTask -> CollectionSyncPlan`
+
+- Owner: `downloads::service::residual_collection_plan`.
+- Total: no.
+- Failure: missing collection identity or collection folder on a residual task.
+- Eliminates: root probe and manifest-to-completed-leaf reconstruction during
+  resume.
 
 `DownloadedTempFile -> CommittedLeafFile`
 
@@ -109,19 +129,19 @@ Queued/failed/interrupted leaf + metadata success -> Prepared leaf:
 
 Prepared leaf + fresh download success -> Commit leaf:
 
-- Writes: stable file, music entries, manifest, completed leaf evidence.
+- Writes: stable file, music entries, manifest, and removes residual leaf.
 - Emits: task change signal.
 - Rejection: leaf-local failed download or failed commit.
 
 Prepared leaf + existing final file -> Commit existing file:
 
-- Writes: music entries, manifest, completed leaf evidence.
+- Writes: music entries, manifest, and removes residual leaf.
 - Emits: task change signal.
 - Rejection: metadata persistence failure.
 
 Prepared leaf + unambiguous temp residue -> Commit recovered temp:
 
-- Writes: stable file, music entries, manifest, completed leaf evidence.
+- Writes: stable file, music entries, manifest, and removes residual leaf.
 - Emits: task change signal.
 - Rejection: ambiguous residue or failed commit.
 
@@ -138,6 +158,9 @@ Focused tests must cover:
 - Root playlist probe arguments request YouTube continuation pages.
 - 116-entry YouTube playlists are not capped at the initial 100-entry page.
 - Existing final files complete leaves without redownload.
+- Completed leaves are removed from `DownloadTask.leafs`; the task row contains
+  only residual work.
+- Resume from residual task leafs does not root-probe completed music.
 - Exact residual temp files are committed and removed.
 - Cross-task residual temp files recover only when the stable title match is
   unique.

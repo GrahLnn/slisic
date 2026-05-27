@@ -1,7 +1,9 @@
+use appdb::model::meta::{ModelMeta, ViewParams};
+use appdb::query::RawSqlStmt;
 use appdb::{AutoFill, Crud, Store, View};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use surrealdb::types::RecordId;
+use surrealdb::types::{RecordId, Table};
 use surrealdb_types::SurrealValue;
 
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, Store, Type)]
@@ -174,6 +176,188 @@ impl MusicSpectrumView {
             liked: self.liked,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct PlaylistRelationPlayableTrackViewParams {
+    pub relation: &'static str,
+    pub owner_records: Vec<RecordId>,
+    pub liked_only: bool,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+impl ViewParams for PlaylistRelationPlayableTrackViewParams {
+    fn bind_view_params(self, stmt: RawSqlStmt) -> anyhow::Result<RawSqlStmt> {
+        Ok(stmt
+            .bind("relation", Table::from(self.relation))
+            .bind("owner_records", self.owner_records)
+            .bind("music_table", Music::table_name().to_string())
+            .bind("liked_only", self.liked_only)
+            .bind("limit", self.limit)
+            .bind("offset", self.offset))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View)]
+#[view(
+    sql = r#"
+        SELECT
+            in AS owner_record,
+            out AS music_record,
+            position,
+            out.name AS name,
+            out.alias AS alias,
+            out.canonical_music_id AS canonical_music_id,
+            out.url AS url,
+            out.path AS path,
+            out.start_ms AS start_ms,
+            out.end_ms AS end_ms,
+            out.liked AS liked
+        FROM $relation
+        WHERE in IN $owner_records
+            AND record::tb(out) = $music_table
+            AND out.path IS NOT NONE
+            AND ($liked_only = false OR out.liked = true)
+        ORDER BY position ASC
+        LIMIT $limit
+        START $offset;
+    "#,
+    params = PlaylistRelationPlayableTrackViewParams
+)]
+pub struct PlaylistRelationPlayableTrackView {
+    pub owner_record: RecordId,
+    pub music_record: RecordId,
+    pub position: i64,
+    pub name: String,
+    pub alias: String,
+    pub canonical_music_id: String,
+    pub url: String,
+    pub path: Option<String>,
+    pub start_ms: u32,
+    pub end_ms: u32,
+    pub liked: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlaylistRecordPlayableTrackViewParams {
+    pub music_records: Vec<RecordId>,
+    pub liked_only: bool,
+}
+
+impl ViewParams for PlaylistRecordPlayableTrackViewParams {
+    fn bind_view_params(self, stmt: RawSqlStmt) -> anyhow::Result<RawSqlStmt> {
+        Ok(stmt
+            .bind("music_table", Table::from(Music::table_name()))
+            .bind("music_records", self.music_records)
+            .bind("liked_only", self.liked_only))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View)]
+#[view(
+    sql = r#"
+        SELECT
+            id AS music_record,
+            name,
+            alias,
+            canonical_music_id,
+            url,
+            path,
+            start_ms,
+            end_ms,
+            liked
+        FROM $music_table
+        WHERE id IN $music_records
+            AND path IS NOT NONE
+            AND ($liked_only = false OR liked = true);
+    "#,
+    params = PlaylistRecordPlayableTrackViewParams
+)]
+pub struct PlaylistRecordPlayableTrackView {
+    pub music_record: RecordId,
+    pub name: String,
+    pub alias: String,
+    pub canonical_music_id: String,
+    pub url: String,
+    pub path: Option<String>,
+    pub start_ms: u32,
+    pub end_ms: u32,
+    pub liked: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlaylistMusicSourceCollectionViewParams {
+    pub music_records: Vec<RecordId>,
+}
+
+impl ViewParams for PlaylistMusicSourceCollectionViewParams {
+    fn bind_view_params(self, stmt: RawSqlStmt) -> anyhow::Result<RawSqlStmt> {
+        Ok(stmt
+            .bind("relation", Table::from("includes"))
+            .bind("music_records", self.music_records)
+            .bind("collection_table", Collection::table_name().to_string()))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View)]
+#[view(
+    sql = r#"
+        SELECT
+            out AS music_record,
+            in AS collection_record,
+            in.folder AS collection_folder,
+            position
+        FROM $relation
+        WHERE out IN $music_records
+            AND record::tb(in) = $collection_table
+        ORDER BY position ASC;
+    "#,
+    params = PlaylistMusicSourceCollectionViewParams
+)]
+pub struct PlaylistMusicSourceCollectionView {
+    pub music_record: RecordId,
+    pub collection_record: RecordId,
+    pub collection_folder: String,
+    pub position: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlaylistMusicGroupViewParams {
+    pub music_records: Vec<RecordId>,
+}
+
+impl ViewParams for PlaylistMusicGroupViewParams {
+    fn bind_view_params(self, stmt: RawSqlStmt) -> anyhow::Result<RawSqlStmt> {
+        Ok(stmt
+            .bind("relation", Table::from("grouped"))
+            .bind("music_records", self.music_records)
+            .bind("group_table", Group::table_name().to_string()))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View)]
+#[view(
+    sql = r#"
+        SELECT
+            out AS music_record,
+            in.name AS group_name,
+            in.url AS group_url,
+            in.folder AS group_folder,
+            position
+        FROM $relation
+        WHERE out IN $music_records
+            AND record::tb(in) = $group_table
+        ORDER BY position ASC;
+    "#,
+    params = PlaylistMusicGroupViewParams
+)]
+pub struct PlaylistMusicGroupView {
+    pub music_record: RecordId,
+    pub group_name: String,
+    pub group_url: String,
+    pub group_folder: String,
+    pub position: i64,
 }
 
 pub fn canonical_music_id_for_source(url: &str, start_ms: u32, end_ms: u32) -> String {

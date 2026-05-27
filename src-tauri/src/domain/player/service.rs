@@ -1,5 +1,5 @@
 #[cfg(not(test))]
-use super::event::NowPlayingTrackChangedEvent;
+use super::event::{NowPlayingTrackChangedEvent, PlaybackDiagnosticTraceEvent};
 #[cfg(not(test))]
 use super::model::PlaybackContinuationMode;
 #[cfg(not(test))]
@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(test))]
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 #[cfg(not(test))]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 #[cfg(not(test))]
 use tauri::{AppHandle, Manager};
 #[cfg(not(test))]
@@ -181,6 +181,93 @@ pub fn initialize_runtime(app: AppHandle) {
 }
 
 #[cfg(not(test))]
+struct PlayerTrace<'a> {
+    app: &'a AppHandle,
+    playlist_name: Option<&'a str>,
+    track: Option<&'a PlaybackTrack>,
+    elapsed_ms: Option<u128>,
+    queue_count: Option<usize>,
+    status: Option<&'a str>,
+    error: Option<String>,
+}
+
+#[cfg(not(test))]
+impl<'a> PlayerTrace<'a> {
+    fn new(app: &'a AppHandle) -> Self {
+        Self {
+            app,
+            playlist_name: None,
+            track: None,
+            elapsed_ms: None,
+            queue_count: None,
+            status: None,
+            error: None,
+        }
+    }
+
+    fn playlist_name(mut self, playlist_name: &'a str) -> Self {
+        self.playlist_name = Some(playlist_name);
+        self
+    }
+
+    fn track(mut self, track: &'a PlaybackTrack) -> Self {
+        self.track = Some(track);
+        self
+    }
+
+    fn elapsed(mut self, start: Instant) -> Self {
+        self.elapsed_ms = Some(start.elapsed().as_millis());
+        self
+    }
+
+    fn queue_count(mut self, queue_count: usize) -> Self {
+        self.queue_count = Some(queue_count);
+        self
+    }
+
+    fn status(mut self, status: &'a str) -> Self {
+        self.status = Some(status);
+        self
+    }
+
+    fn error(mut self, error: impl ToString) -> Self {
+        self.error = Some(error.to_string());
+        self
+    }
+}
+
+#[cfg(not(test))]
+fn emit_player_trace(event: &str, trace: PlayerTrace<'_>) {
+    let playlist_name = trace
+        .playlist_name
+        .map(str::to_string)
+        .or_else(|| trace.track.map(|track| track.playlist_name.clone()));
+    let music_name = trace.track.map(|track| track.music_name.clone());
+    let music_url = trace.track.map(|track| track.music_url.clone());
+    let start_ms = trace.track.map(|track| track.start_ms);
+    let end_ms = trace.track.map(|track| track.end_ms);
+
+    if let Err(error) = (PlaybackDiagnosticTraceEvent {
+        event: event.to_string(),
+        playlist_name,
+        music_name,
+        music_url,
+        start_ms,
+        end_ms,
+        elapsed_ms: trace.elapsed_ms,
+        candidate_count: None,
+        queue_count: trace.queue_count,
+        status: trace.status.map(str::to_string),
+        error: trace.error,
+        details: None,
+    })
+    .emit(trace.app)
+    {
+        eprintln!("[player] failed to emit diagnostic trace `{event}`: {error}");
+    }
+}
+
+#[cfg(not(test))]
 pub(crate) fn has_active_player_binary_tasks() -> bool {
     let Some(runtime) = PLAYER_RUNTIME.get() else {
         return false;
@@ -215,6 +302,7 @@ async fn play_tracks_with_initial_track(
     queue_mode: PlaybackQueueMode,
     start_request: Option<PlaybackStartRequestHandle>,
 ) -> Result<PlaybackSessionHandle> {
+    let trace_start = Instant::now();
     if tracks.is_empty() {
         bail!("playback session `{playlist_name}` does not contain any playable tracks");
     }
@@ -227,24 +315,69 @@ async fn play_tracks_with_initial_track(
     }
 
     let runtime = runtime()?;
+    emit_player_trace(
+        "player-session-start",
+        PlayerTrace::new(&runtime.app)
+            .playlist_name(&playlist_name)
+            .elapsed(trace_start)
+            .queue_count(tracks.len()),
+    );
     let start_request = start_request.unwrap_or_else(|| runtime.claim_playback_start_request());
     if !runtime.is_playback_start_request_current(&start_request) {
+        emit_player_trace(
+            "player-session-superseded-before-playback",
+            PlayerTrace::new(&runtime.app)
+                .playlist_name(&playlist_name)
+                .elapsed(trace_start),
+        );
         return Err(PlaybackStartRequestSuperseded.into());
     }
 
     let active_binary_task = ActiveBinaryTaskGuard::new(Arc::clone(runtime));
     let playback = runtime.playback()?;
     if !runtime.is_playback_start_request_current(&start_request) {
+        emit_player_trace(
+            "player-session-superseded-after-playback",
+            PlayerTrace::new(&runtime.app)
+                .playlist_name(&playlist_name)
+                .elapsed(trace_start),
+        );
         return Err(PlaybackStartRequestSuperseded.into());
     }
 
     let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
+    emit_player_trace(
+        "player-session-stop-start",
+        PlayerTrace::new(&runtime.app)
+            .playlist_name(&playlist_name)
+            .elapsed(trace_start),
+    );
     if let Err(error) = playback.stop().await {
         eprintln!("[player] failed to stop previous playback before restart: {error}");
+        emit_player_trace(
+            "player-session-stop-error",
+            PlayerTrace::new(&runtime.app)
+                .playlist_name(&playlist_name)
+                .elapsed(trace_start)
+                .error(error),
+        );
+    } else {
+        emit_player_trace(
+            "player-session-stop-ok",
+            PlayerTrace::new(&runtime.app)
+                .playlist_name(&playlist_name)
+                .elapsed(trace_start),
+        );
     }
     if !runtime.is_playback_start_request_current(&start_request) {
         runtime.generation.fetch_add(1, Ordering::SeqCst);
+        emit_player_trace(
+            "player-session-superseded-after-stop",
+            PlayerTrace::new(&runtime.app)
+                .playlist_name(&playlist_name)
+                .elapsed(trace_start),
+        );
         return Err(PlaybackStartRequestSuperseded.into());
     }
     runtime.set_temporary_playback_pause(false)?;
@@ -258,6 +391,12 @@ async fn play_tracks_with_initial_track(
         Arc::clone(&shared_strategy),
         queue_mode,
     )?;
+    emit_player_trace(
+        "player-session-active-replaced",
+        PlayerTrace::new(&runtime.app)
+            .playlist_name(&playlist_name)
+            .elapsed(trace_start),
+    );
 
     let session = PlaybackSession {
         playlist_name: playlist_name.clone(),
@@ -276,6 +415,12 @@ async fn play_tracks_with_initial_track(
     };
     runtime.clear_spectrum_playback_scope()?;
     runtime.clear_spectrum_playback_loop_signal()?;
+    emit_player_trace(
+        "player-session-spawn",
+        PlayerTrace::new(&runtime.app)
+            .playlist_name(&playlist_name)
+            .elapsed(trace_start),
+    );
     let runtime_for_task = Arc::clone(runtime);
     let playback_for_task = playback.clone();
     let task_playlist_name = playlist_name.clone();
@@ -1467,18 +1612,38 @@ async fn run_playback_session(
     generation: u64,
     mut session: PlaybackSession,
 ) -> Result<()> {
+    let trace_start = Instant::now();
     loop {
         if runtime.generation.load(Ordering::SeqCst) != generation {
+            emit_player_trace(
+                "player-run-session-generation-ended",
+                PlayerTrace::new(&runtime.app)
+                    .playlist_name(&session.playlist_name)
+                    .elapsed(trace_start),
+            );
             return Ok(());
         }
 
         let mode = runtime.continuation_mode()?;
         let tracks = session.tracks_snapshot()?;
+        emit_player_trace(
+            "player-run-session-tracks-ready",
+            PlayerTrace::new(&runtime.app)
+                .playlist_name(&session.playlist_name)
+                .elapsed(trace_start)
+                .queue_count(tracks.len()),
+        );
         let initial_request = session.initial_request.take();
         if !should_start_spectrum_playback_session(
             runtime.spectrum_playback_scope_snapshot()?,
             initial_request.as_ref().and_then(|request| request.scope),
         ) {
+            emit_player_trace(
+                "player-run-session-scope-ended",
+                PlayerTrace::new(&runtime.app)
+                    .playlist_name(&session.playlist_name)
+                    .elapsed(trace_start),
+            );
             return Ok(());
         }
         let track = match initial_request.as_ref() {
@@ -1490,10 +1655,37 @@ async fn run_playback_session(
                 .next_track_with_queue_mode(mode, session.queue_mode, &tracks),
         };
         let Some(track) = track else {
+            emit_player_trace(
+                "player-run-session-no-track",
+                PlayerTrace::new(&runtime.app)
+                    .playlist_name(&session.playlist_name)
+                    .elapsed(trace_start)
+                    .queue_count(tracks.len()),
+            );
             return Ok(());
         };
+        emit_player_trace(
+            "player-run-track-selected",
+            PlayerTrace::new(&runtime.app)
+                .playlist_name(&session.playlist_name)
+                .track(&track)
+                .elapsed(trace_start)
+                .queue_count(tracks.len())
+                .status(if initial_request.is_some() {
+                    "initial"
+                } else {
+                    "strategy"
+                }),
+        );
         runtime.set_active_request_track(track.clone())?;
         NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&runtime.app)?;
+        emit_player_trace(
+            "player-run-now-playing-emitted",
+            PlayerTrace::new(&runtime.app)
+                .playlist_name(&session.playlist_name)
+                .track(&track)
+                .elapsed(trace_start),
+        );
         let repeated_loop_signal = resolve_spectrum_loop_playback_range(
             runtime.spectrum_playback_scope_snapshot()?,
             &track,
@@ -1511,11 +1703,43 @@ async fn run_playback_session(
             &track.file_path,
             resolve_playback_request_position(active_range),
         );
-        playback
-            .play_request(request)
-            .await
-            .map_err(|error| anyhow!("failed to play `{}`: {error}", track.music_name))?;
+        emit_player_trace(
+            "player-run-play-request-start",
+            PlayerTrace::new(&runtime.app)
+                .playlist_name(&session.playlist_name)
+                .track(&track)
+                .elapsed(trace_start),
+        );
+        match playback.play_request(request).await {
+            Ok(_) => {
+                emit_player_trace(
+                    "player-run-play-request-ok",
+                    PlayerTrace::new(&runtime.app)
+                        .playlist_name(&session.playlist_name)
+                        .track(&track)
+                        .elapsed(trace_start),
+                );
+            }
+            Err(error) => {
+                emit_player_trace(
+                    "player-run-play-request-error",
+                    PlayerTrace::new(&runtime.app)
+                        .playlist_name(&session.playlist_name)
+                        .track(&track)
+                        .elapsed(trace_start)
+                        .error(&error),
+                );
+                return Err(anyhow!("failed to play `{}`: {error}", track.music_name));
+            }
+        }
         if runtime.generation.load(Ordering::SeqCst) != generation {
+            emit_player_trace(
+                "player-run-session-generation-ended-after-play",
+                PlayerTrace::new(&runtime.app)
+                    .playlist_name(&session.playlist_name)
+                    .track(&track)
+                    .elapsed(trace_start),
+            );
             return Ok(());
         }
         if initial_request.is_some() {
@@ -1526,6 +1750,13 @@ async fn run_playback_session(
                 .commit_current_track(&track);
         }
         runtime.set_active_playback_range(Some(active_range))?;
+        emit_player_trace(
+            "player-run-active-range-set",
+            PlayerTrace::new(&runtime.app)
+                .playlist_name(&session.playlist_name)
+                .track(&track)
+                .elapsed(trace_start),
+        );
         if initial_request
             .as_ref()
             .is_some_and(|request| request.pause_after_start)

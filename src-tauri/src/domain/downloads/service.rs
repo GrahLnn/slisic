@@ -1,7 +1,10 @@
+#[cfg(not(test))]
+use super::model::DownloadLeafGroupContext;
+#[cfg(not(test))]
+use super::model::EnqueuedCollectionDownload;
 use super::model::{
-    CollectionSourceKind, DownloadLeaf, DownloadLeafStatus, DownloadResourceProbe, DownloadTask,
-    DownloadTaskStatus, DownloadTrigger, EnqueuedCollectionDownload, PastedDownloadUrlResolution,
-    now_timestamp,
+    CollectionSourceKind, DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus,
+    DownloadTrigger, PastedDownloadUrlResolution, now_timestamp,
 };
 use super::naming::{sanitize_path_component, short_hash, stable_id};
 use super::repo;
@@ -11,9 +14,9 @@ use super::yt_dlp::{
     DownloadProgress, LeafProbe, LeafReference, RootProbe, YtDlpClient, classify_root_preference,
     is_youtube_mix_playlist_id,
 };
-use crate::domain::collection_import::{
-    self, CollectionShellPlan, CollectionSyncPlan, PlannedLeaf,
-};
+#[cfg(not(test))]
+use crate::domain::collection_import::CollectionShellPlan;
+use crate::domain::collection_import::{self, CollectionSyncPlan, PlannedLeaf};
 #[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
 use crate::domain::playlists::model::{Collection, Group};
@@ -22,7 +25,9 @@ use crate::utils::binaries::{ManagedBinary, ensure_managed_binary, managed_bin_d
 use anyhow::{Context, Result, anyhow, bail};
 use appdb::Id;
 use reqwest::{Url, blocking::Client as BlockingHttpClient};
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+#[cfg(not(test))]
+use std::collections::VecDeque;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 #[cfg(not(test))]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -407,25 +412,6 @@ pub async fn enqueue_collection_download(url: String) -> Result<EnqueuedCollecti
     enqueue_collection_download_with_trigger(url, DownloadTrigger::Manual).await
 }
 
-#[cfg(not(test))]
-pub async fn probe_download_resource(url: String) -> Result<DownloadResourceProbe> {
-    let normalized_url = normalize_url(&url)?;
-    let app = runtime()?.app.clone();
-    let active_binary_task = ActiveBinaryTaskGuard::new(runtime()?);
-    let deps = resolve_execution_deps(&app).await?;
-    let root_probe = {
-        let client = deps.client.clone();
-        let probe_url = normalized_url.clone();
-        run_blocking(move || {
-            let _active_binary_task = active_binary_task;
-            client.probe_root(&probe_url)
-        })
-        .await?
-    };
-
-    collection_import::describe_download_resource(root_probe).await
-}
-
 pub async fn resume_download_task(task_id: String) -> Result<DownloadTask> {
     let task = repo::get_task(&task_id).await?;
     if task.status == DownloadTaskStatus::Completed {
@@ -625,13 +611,17 @@ async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Res
 
     let client = deps.client;
     let save_root = deps.save_root;
-    let plan = resolve_collection_plan(&task_snapshot, client.clone(), &save_root).await?;
-    let mut collection = collection_import::load_collection_shell(&plan).await?;
+    let plan = resolve_collection_plan(&task_snapshot, client.clone()).await?;
+    let mut collection = collection_import::load_collection_shell(&plan, &save_root).await?;
     let mut group_catalog = GroupCatalog::seed(&collection);
     collection_import::apply_collection_plan_to_task(&mut task_snapshot, &plan);
+    discard_materialized_planned_leaves(
+        &mut task_snapshot,
+        collection_import::existing_planned_leaf_completions(&collection, &plan, &save_root),
+    );
     repo::save_task(task_snapshot.clone()).await?;
 
-    if plan.leaves.is_empty() {
+    if task_snapshot.leafs.is_empty() {
         collection_import::persist_empty_collection(&mut collection).await?;
         update_task_status(&mut task_snapshot, DownloadTaskStatus::Completed, None).await?;
         return Ok(());
@@ -710,14 +700,28 @@ fn runnable_plan_leaves(task: &DownloadTask, plan: &CollectionSyncPlan) -> Vec<P
     plan.leaves
         .iter()
         .filter(|planned| {
-            task.leafs
+            matches!(
+                task.leafs
                 .iter()
                 .find(|leaf| leaf.id == planned.id)
-                .map(|leaf| leaf.status != DownloadLeafStatus::Completed)
-                .unwrap_or(true)
+                    .map(|leaf| leaf.status),
+                Some(status) if !status.is_terminal()
+            )
         })
         .cloned()
         .collect()
+}
+
+pub(crate) fn discard_materialized_planned_leaves(
+    task: &mut DownloadTask,
+    completions: Vec<collection_import::ExistingPlannedLeafCompletion>,
+) {
+    for completion in completions {
+        if task.remove_leaf(&completion.leaf_id).is_some() {
+            task.completed_leaves = task.completed_leaves.saturating_add(1);
+            task.touch();
+        }
+    }
 }
 
 async fn mark_unresolved_leaves_failed(task_snapshot: &mut DownloadTask) -> Result<()> {
@@ -1031,6 +1035,7 @@ async fn handle_prepared_leaf_download(
     leaf_snapshot.chapter_count = Some(prepared.probe.chapters.len() as u32);
     let file_stem = sanitize_path_component(&prepared.probe.title);
     let music_group = resolve_music_group(group.clone(), collection);
+    leaf_snapshot.group = Some(DownloadLeafGroupContext::from(music_group.clone()));
     let target_dir = save_root.join(&collection.folder);
     let temp_file_stem = temporary_download_stem(&file_stem, &task_snapshot.id, &leaf_snapshot.id);
 
@@ -1472,12 +1477,14 @@ fn write_collection_manifest_after_download(
     Ok(())
 }
 
-#[cfg(not(test))]
-async fn resolve_collection_plan(
+pub(crate) async fn resolve_collection_plan(
     task: &DownloadTask,
     client: Arc<dyn YtDlpClient>,
-    save_root: &Path,
 ) -> Result<CollectionSyncPlan> {
+    if let Some(plan) = residual_collection_plan(task) {
+        return Ok(plan);
+    }
+
     let root_preference = classify_root_preference(&task.url);
     let root_probe = {
         let client = client.clone();
@@ -1514,13 +1521,10 @@ async fn resolve_collection_plan(
         RootProbe::List(list) => {
             let collection_url = list.webpage_url.clone();
             let existing = collection_import::get_collection_by_url(&collection_url).await?;
-            let existing_leafs =
-                collection_import::existing_leaf_identities(existing.as_ref(), save_root);
-            let leaves = collection_import::filter_new_planned_leaves(
+            let leaves = collection_import::deduplicate_planned_leaves(
                 &collection_url,
                 expand_root_entries_to_planned_leafs(&task.id, client.clone(), list.entries, None)
                     .await?,
-                &existing_leafs,
             );
 
             Ok(CollectionSyncPlan {
@@ -1542,6 +1546,32 @@ async fn resolve_collection_plan(
                 leaves,
             })
         }
+    }
+}
+
+pub(crate) fn residual_collection_plan(task: &DownloadTask) -> Option<CollectionSyncPlan> {
+    if task.leafs.is_empty() {
+        return None;
+    }
+
+    Some(CollectionSyncPlan {
+        source_kind: task.source_kind?,
+        collection_name: task.collection_name.clone()?,
+        collection_url: task.collection_url.clone()?,
+        collection_folder: task.collection_folder.clone()?,
+        enable_updates: None,
+        leaves: task.leafs.iter().map(planned_leaf_from_residual).collect(),
+    })
+}
+
+fn planned_leaf_from_residual(leaf: &DownloadLeaf) -> PlannedLeaf {
+    PlannedLeaf {
+        id: leaf.id.clone(),
+        url: leaf.url.clone(),
+        sequence: leaf.sequence,
+        initial_probe: None,
+        music_title: leaf.title.clone(),
+        group_hint: leaf.group.clone().map(Into::into),
     }
 }
 

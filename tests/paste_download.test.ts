@@ -1,39 +1,32 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { AnyActorRef } from "xstate";
 import { createActor } from "xstate";
-import type { Collection, DownloadResourceProbe, DownloadTask } from "../src/cmd";
+import type { Collection, DownloadTask } from "../src/cmd";
 import { deps, payloads, sig, ss } from "../src/flow/pasteDownload/events";
 import { machine } from "../src/flow/pasteDownload/machine";
 
-const originalProbeDownloadResource = deps.probeDownloadResource;
 const originalEnqueueCollectionDownload = deps.enqueueCollectionDownload;
 const originalResolvePastedDownloadUrl = deps.resolvePastedDownloadUrl;
 
-const sampleProbe: DownloadResourceProbe = {
+const sampleResource = {
   url: "https://www.youtube.com/watch?v=abc123",
   source_kind: "single",
   title: "Quiet Morning",
-  item_count: 1,
-  collection_folder: "youtube/quiet-morning",
-  enable_updates: null,
-};
+} as const;
 
-const secondProbe: DownloadResourceProbe = {
+const secondResource = {
   url: "https://www.youtube.com/watch?v=def456",
   source_kind: "single",
   title: "Night Walk",
-  item_count: 1,
-  collection_folder: "youtube/night-walk",
-  enable_updates: null,
-};
+} as const;
 
 const sampleTask: DownloadTask = {
   id: { String: "task-1" },
-  url: sampleProbe.url,
-  collection_url: sampleProbe.url,
-  collection_name: sampleProbe.title,
+  url: sampleResource.url,
+  collection_url: sampleResource.url,
+  collection_name: sampleResource.title,
   collection_folder: "youtube/quiet-morning",
-  source_kind: sampleProbe.source_kind,
+  source_kind: sampleResource.source_kind,
   trigger: "manual",
   status: "queued",
   leafs: [],
@@ -46,8 +39,8 @@ const sampleTask: DownloadTask = {
 };
 
 const sampleCollection: Collection = {
-  name: sampleProbe.title,
-  url: sampleProbe.url,
+  name: sampleResource.title,
+  url: sampleResource.url,
   folder: "youtube/quiet-morning",
   musics: [],
   last_updated: "2026-04-17T00:00:00Z",
@@ -55,8 +48,8 @@ const sampleCollection: Collection = {
 };
 
 const secondCollection: Collection = {
-  name: secondProbe.title,
-  url: secondProbe.url,
+  name: secondResource.title,
+  url: secondResource.url,
   folder: "youtube/night-walk",
   musics: [],
   last_updated: "2026-04-17T00:00:00Z",
@@ -66,17 +59,13 @@ const secondCollection: Collection = {
 const secondTask: DownloadTask = {
   ...sampleTask,
   id: { String: "task-2" },
-  url: secondProbe.url,
-  collection_url: secondProbe.url,
-  collection_name: secondProbe.title,
+  url: secondResource.url,
+  collection_url: secondResource.url,
+  collection_name: secondResource.title,
 };
 
 const pasteRequested = payloads["paste.requested"];
 const candidateDelete = payloads["candidate.delete"];
-
-function setProbeDownloadResourceMock(mock: typeof deps.probeDownloadResource) {
-  deps.probeDownloadResource = mock;
-}
 
 function setResolvePastedDownloadUrlMock(mock: typeof deps.resolvePastedDownloadUrl) {
   deps.resolvePastedDownloadUrl = mock;
@@ -145,7 +134,6 @@ beforeEach(() => {
     error: null,
     collection: null,
   }));
-  setProbeDownloadResourceMock(async () => sampleProbe);
   setEnqueueCollectionDownloadMock(async () => ({
     task: sampleTask,
     collection: sampleCollection,
@@ -154,7 +142,6 @@ beforeEach(() => {
 
 afterEach(() => {
   setResolvePastedDownloadUrlMock(originalResolvePastedDownloadUrl);
-  setProbeDownloadResourceMock(originalProbeDownloadResource);
   setEnqueueCollectionDownloadMock(originalEnqueueCollectionDownload);
 });
 
@@ -189,7 +176,7 @@ describe("pasteDownload machine", () => {
     });
   });
 
-  test("keeps a probed new url as enqueueing until the persisted collection returns", async () => {
+  test("keeps a new url as enqueueing until the persisted collection returns", async () => {
     let releaseEnqueue: (() => void) | null = null;
     const enqueueGate = new Promise<void>((resolve) => {
       releaseEnqueue = resolve;
@@ -204,7 +191,7 @@ describe("pasteDownload machine", () => {
 
     const actor = createActor(machine);
     actor.start();
-    actor.send(pasteRequested.load(sampleProbe.url));
+    actor.send(pasteRequested.load(sampleResource.url));
 
     await waitForContext(
       actor,
@@ -216,12 +203,11 @@ describe("pasteDownload machine", () => {
     expect(actor.getSnapshot().context.items).toEqual([
       {
         id: "candidate:0",
-        rawText: sampleProbe.url,
-        sourceUrl: sampleProbe.url,
-        displayText: sampleProbe.title,
+        rawText: sampleResource.url,
+        sourceUrl: sampleResource.url,
+        displayText: sampleResource.url,
         status: "enqueueing",
         error: null,
-        probe: sampleProbe,
       },
     ]);
 
@@ -233,88 +219,14 @@ describe("pasteDownload machine", () => {
     expect(actor.getSnapshot().context.items).toEqual([]);
   });
 
-  test("keeps invalid pasted text as a delete-only candidate without probing", async () => {
-    let probeCalls = 0;
+  test("keeps invalid pasted text as a delete-only candidate without enqueueing", async () => {
+    let enqueueCalls = 0;
     setResolvePastedDownloadUrlMock(async () => ({
       status: "invalid_url",
       url: null,
       error: "Clipboard does not contain a valid URL.",
       collection: null,
     }));
-    setProbeDownloadResourceMock(async () => {
-      probeCalls += 1;
-      return sampleProbe;
-    });
-
-    const actor = createActor(machine);
-    actor.start();
-    actor.send(pasteRequested.load("not a url"));
-
-    await waitForState(actor, ss.mainx.State.idle);
-
-    expect(probeCalls).toBe(0);
-    expect(actor.getSnapshot().context).toEqual({
-      items: [
-        {
-          id: "candidate:0",
-          rawText: "not a url",
-          sourceUrl: null,
-          displayText: "not a url",
-          status: "invalid_url",
-          error: "Clipboard does not contain a valid URL.",
-          probe: null,
-        },
-      ],
-      pendingCheckItemIds: [],
-      activeItemId: null,
-      nextItemSequence: 1,
-    });
-  });
-
-  test("keeps probe failures as delete-only candidates", async () => {
-    setProbeDownloadResourceMock(async () => {
-      throw new Error("resource is not downloadable");
-    });
-
-    const actor = createActor(machine);
-    actor.start();
-    actor.send(pasteRequested.load("https://www.youtube.com/watch?v=abc123"));
-
-    await waitForContext(actor, (context: { items: Array<{ status: string }> }) => {
-      return context.items[0]?.status === "probe_failed";
-    });
-
-    expect(actor.getSnapshot().context).toEqual({
-      items: [
-        {
-          id: "candidate:0",
-          rawText: "https://www.youtube.com/watch?v=abc123",
-          sourceUrl: "https://www.youtube.com/watch?v=abc123",
-          displayText: "https://www.youtube.com/watch?v=abc123",
-          status: "probe_failed",
-          error: "resource is not downloadable",
-          probe: null,
-        },
-      ],
-      pendingCheckItemIds: [],
-      activeItemId: null,
-      nextItemSequence: 1,
-    });
-  });
-
-  test("adds an existing collection directly to the draft without probing", async () => {
-    let probeCalls = 0;
-    let enqueueCalls = 0;
-    setResolvePastedDownloadUrlMock(async () => ({
-      status: "existing_collection",
-      url: sampleCollection.url,
-      error: null,
-      collection: sampleCollection,
-    }));
-    setProbeDownloadResourceMock(async () => {
-      probeCalls += 1;
-      return sampleProbe;
-    });
     setEnqueueCollectionDownloadMock(async () => {
       enqueueCalls += 1;
       return {
@@ -325,13 +237,82 @@ describe("pasteDownload machine", () => {
 
     const actor = createActor(machine);
     actor.start();
-    actor.send(pasteRequested.load(sampleProbe.url));
+    actor.send(pasteRequested.load("not a url"));
+
+    await waitForState(actor, ss.mainx.State.idle);
+
+    expect(enqueueCalls).toBe(0);
+    expect(actor.getSnapshot().context).toEqual({
+      items: [
+        {
+          id: "candidate:0",
+          rawText: "not a url",
+          sourceUrl: null,
+          displayText: "not a url",
+          status: "invalid_url",
+          error: "Clipboard does not contain a valid URL.",
+        },
+      ],
+      pendingCheckItemIds: [],
+      activeItemId: null,
+      nextItemSequence: 1,
+    });
+  });
+
+  test("keeps enqueue failures as delete-only candidates", async () => {
+    setEnqueueCollectionDownloadMock(async () => {
+      throw new Error("resource is not downloadable");
+    });
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(pasteRequested.load("https://www.youtube.com/watch?v=abc123"));
+
+    await waitForContext(actor, (context: { items: Array<{ status: string }> }) => {
+      return context.items[0]?.status === "enqueue_failed";
+    });
+
+    expect(actor.getSnapshot().context).toEqual({
+      items: [
+        {
+          id: "candidate:0",
+          rawText: "https://www.youtube.com/watch?v=abc123",
+          sourceUrl: "https://www.youtube.com/watch?v=abc123",
+          displayText: "https://www.youtube.com/watch?v=abc123",
+          status: "enqueue_failed",
+          error: "resource is not downloadable",
+        },
+      ],
+      pendingCheckItemIds: [],
+      activeItemId: null,
+      nextItemSequence: 1,
+    });
+  });
+
+  test("adds an existing collection directly to the draft without enqueueing", async () => {
+    let enqueueCalls = 0;
+    setResolvePastedDownloadUrlMock(async () => ({
+      status: "existing_collection",
+      url: sampleCollection.url,
+      error: null,
+      collection: sampleCollection,
+    }));
+    setEnqueueCollectionDownloadMock(async () => {
+      enqueueCalls += 1;
+      return {
+        task: sampleTask,
+        collection: sampleCollection,
+      };
+    });
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(pasteRequested.load(sampleResource.url));
 
     await waitForContext(actor, (context: { items: Array<unknown> }) => {
       return context.items.length === 0;
     });
 
-    expect(probeCalls).toBe(0);
     expect(enqueueCalls).toBe(0);
     expect(actor.getSnapshot().context).toEqual({
       items: [],
@@ -342,61 +323,54 @@ describe("pasteDownload machine", () => {
   });
 
   test("prepends later pasted candidates while earlier ones are still processing", async () => {
-    let releaseFirstProbe: (() => void) | null = null;
-    const firstProbe = new Promise<DownloadResourceProbe>((resolve) => {
-      releaseFirstProbe = () => resolve(sampleProbe);
+    let releaseFirstEnqueue: (() => void) | null = null;
+    const firstEnqueue = new Promise<void>((resolve) => {
+      releaseFirstEnqueue = resolve;
     });
-    let probeCalls = 0;
-
-    setProbeDownloadResourceMock(async (url: string) => {
-      probeCalls += 1;
-      if (url === sampleProbe.url) {
-        return firstProbe;
+    let enqueueCalls = 0;
+    setEnqueueCollectionDownloadMock(async (url: string) => {
+      enqueueCalls += 1;
+      if (url === sampleResource.url) {
+        await firstEnqueue;
+        return {
+          task: sampleTask,
+          collection: sampleCollection,
+        };
       }
 
-      return secondProbe;
-    });
-    setEnqueueCollectionDownloadMock(async (url: string) => {
-      return url === sampleProbe.url
-        ? {
-            task: sampleTask,
-            collection: sampleCollection,
-          }
-        : {
-            task: secondTask,
-            collection: secondCollection,
-          };
+      return {
+        task: secondTask,
+        collection: secondCollection,
+      };
     });
 
     const actor = createActor(machine);
     actor.start();
-    actor.send(pasteRequested.load(sampleProbe.url));
-    await waitForState(actor, ss.mainx.State.probing);
-    actor.send(pasteRequested.load(secondProbe.url));
+    actor.send(pasteRequested.load(sampleResource.url));
+    await waitForState(actor, ss.mainx.State.enqueueing);
+    actor.send(pasteRequested.load(secondResource.url));
 
-    expect(probeCalls).toBe(1);
+    expect(enqueueCalls).toBe(1);
     expect(actor.getSnapshot().context.items).toEqual([
       {
         id: "candidate:1",
-        rawText: secondProbe.url,
+        rawText: secondResource.url,
         sourceUrl: null,
-        displayText: secondProbe.url,
+        displayText: secondResource.url,
         status: "checking",
         error: null,
-        probe: null,
       },
       {
         id: "candidate:0",
-        rawText: sampleProbe.url,
-        sourceUrl: sampleProbe.url,
-        displayText: sampleProbe.url,
-        status: "probing",
+        rawText: sampleResource.url,
+        sourceUrl: sampleResource.url,
+        displayText: sampleResource.url,
+        status: "enqueueing",
         error: null,
-        probe: null,
       },
     ]);
 
-    releaseFirstProbe?.();
+    releaseFirstEnqueue?.();
     await waitForContext(actor, (context: { items: Array<{ id: string }> }) => {
       return context.items.length === 0;
     });

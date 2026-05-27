@@ -27,6 +27,7 @@ import {
   type SpectrumMusicContext,
   type SpectrumMusicSourceContext,
 } from "@/src/cmd";
+import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 import { documentDir, join } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -431,14 +432,35 @@ export const invoker = createActors({
   removeExclude,
   playPlaylist: async (input: PlayPlaylistInput): Promise<PlayPlaylistSession | null> => {
     if (!input.shouldStartPlayback) {
+      recordRenderPerformanceTrace("playlist-play-invoke-skipped", {
+        playlistName: input.playlistName,
+      });
       return null;
     }
 
+    const startedAt = performance.now();
+    recordRenderPerformanceTrace("playlist-play-invoke-start", {
+      playlistName: input.playlistName,
+    });
     const result = await crab.playPlaylist(input.playlistName);
+    const elapsedMs = performance.now() - startedAt;
 
     return result.match({
-      Ok: (session) => (session.status === "started" ? session : null),
+      Ok: (session) => {
+        recordRenderPerformanceTrace("playlist-play-invoke-ok", {
+          playlistName: input.playlistName,
+          elapsedMs,
+          status: session.status,
+          trackCount: session.track_count,
+        });
+        return session.status === "started" ? session : null;
+      },
       Err: (error) => {
+        recordRenderPerformanceTrace("playlist-play-invoke-error", {
+          playlistName: input.playlistName,
+          elapsedMs,
+          error,
+        });
         throw new Error(error);
       },
     });

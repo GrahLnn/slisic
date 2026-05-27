@@ -1,14 +1,19 @@
 use super::model::{
     AddExcludeResult, Collection, CollectionSurfaceView, ConfigLibraryView, Exclude,
     ExcludeAvailability, Group, GroupSurfaceView, Music, MusicSpectrumView, PlayList,
-    PlayListConfigView, PlayListListView, RemoveExcludeResult, SpectrumMusicContext,
-    SpectrumMusicSourceContext, canonical_music_id_for_source,
+    PlayListConfigView, PlayListListView, PlaylistMusicGroupView, PlaylistMusicGroupViewParams,
+    PlaylistMusicSourceCollectionView, PlaylistMusicSourceCollectionViewParams,
+    PlaylistRecordPlayableTrackView, PlaylistRecordPlayableTrackViewParams,
+    PlaylistRelationPlayableTrackView, PlaylistRelationPlayableTrackViewParams,
+    RemoveExcludeResult, SpectrumMusicContext, SpectrumMusicSourceContext,
+    canonical_music_id_for_source,
 };
 use anyhow::{Result, bail};
 use appdb::connection::get_db;
 use appdb::error::{DBError, classify_db_error};
 use appdb::graph;
 use appdb::model::meta::{ModelMeta, ResolveRecordId};
+use appdb::query::{RawSqlStmt, query_bound_return};
 use appdb::repository::Repo;
 use appdb::{AutoFill, Crud, Id, Order, Store};
 use rand::RngExt;
@@ -276,20 +281,49 @@ impl PlaylistPlaybackCollectionRef {
 }
 
 #[derive(Debug, Clone)]
+struct PlaylistPlaybackSourceCollectionRef {
+    record: RecordId,
+    folder: String,
+}
+
+impl From<&PlaylistPlaybackCollectionRef> for PlaylistPlaybackSourceCollectionRef {
+    fn from(value: &PlaylistPlaybackCollectionRef) -> Self {
+        Self {
+            record: value.record.clone(),
+            folder: value.folder.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct PlaylistPlaybackGroupRef {
     record: RecordId,
+    name: String,
     pub url: String,
+    folder: String,
+    parent_collection_records: Vec<RecordId>,
 }
 
 impl PlaylistPlaybackGroupRef {
     #[cfg(test)]
-    pub(crate) fn new_for_test(_name: &str, url: &str, _folder: &str) -> Self {
+    pub(crate) fn new_for_test(name: &str, url: &str, folder: &str) -> Self {
         Self {
             record: RecordId::new(
                 Group::table_name(),
                 format!("test-{}", stable_record_key(url)),
             ),
+            name: name.to_string(),
             url: url.to_string(),
+            folder: folder.to_string(),
+            parent_collection_records: vec![],
+        }
+    }
+
+    fn as_group(&self) -> Group {
+        Group {
+            name: self.name.clone(),
+            url: self.url.clone(),
+            folder: self.folder.clone(),
         }
     }
 }
@@ -380,36 +414,20 @@ pub async fn load_playlist_playback_track_sources(
     selection: &PlaylistPlaybackSelection,
     limit: usize,
 ) -> Result<Vec<PlaylistPlaybackTrackSource>> {
-    if limit == 0 {
-        return Ok(vec![]);
-    }
-
-    let mut sources = Vec::with_capacity(limit);
-    let mut seen = HashSet::new();
-
-    for collection in &selection.collections {
-        append_collection_playback_track_sources(collection, limit, &mut seen, &mut sources)
-            .await?;
-        if sources.len() >= limit {
-            return Ok(sources);
-        }
-    }
-
-    for group in &selection.groups {
-        append_group_playback_track_sources(group, limit, &mut seen, &mut sources).await?;
-        if sources.len() >= limit {
-            return Ok(sources);
-        }
-    }
-
-    append_extra_playback_track_sources(selection, limit, &mut seen, &mut sources).await?;
-
-    Ok(sources)
+    load_playlist_playback_track_sources_by_filter(selection, limit, false).await
 }
 
 pub async fn load_liked_playlist_playback_track_sources(
     selection: &PlaylistPlaybackSelection,
     limit: usize,
+) -> Result<Vec<PlaylistPlaybackTrackSource>> {
+    load_playlist_playback_track_sources_by_filter(selection, limit, true).await
+}
+
+async fn load_playlist_playback_track_sources_by_filter(
+    selection: &PlaylistPlaybackSelection,
+    limit: usize,
+    liked_only: bool,
 ) -> Result<Vec<PlaylistPlaybackTrackSource>> {
     if limit == 0 {
         return Ok(vec![]);
@@ -418,22 +436,12 @@ pub async fn load_liked_playlist_playback_track_sources(
     let mut sources = Vec::with_capacity(limit);
     let mut seen = HashSet::new();
 
-    for collection in &selection.collections {
-        append_liked_collection_playback_track_sources(collection, limit, &mut seen, &mut sources)
-            .await?;
-        if sources.len() >= limit {
-            return Ok(sources);
-        }
-    }
-
-    for group in &selection.groups {
-        append_liked_group_playback_track_sources(group, limit, &mut seen, &mut sources).await?;
-        if sources.len() >= limit {
-            return Ok(sources);
-        }
-    }
-
-    append_liked_extra_playback_track_sources(selection, limit, &mut seen, &mut sources).await?;
+    append_collection_playback_track_sources(selection, limit, liked_only, &mut seen, &mut sources)
+        .await?;
+    append_group_playback_track_sources(selection, limit, liked_only, &mut seen, &mut sources)
+        .await?;
+    append_extra_playback_track_sources(selection, limit, liked_only, &mut seen, &mut sources)
+        .await?;
 
     Ok(sources)
 }
@@ -1235,10 +1243,14 @@ async fn load_playlist_playback_group_ref(
     let Some(row) = load_group_shell_row(record).await? else {
         return Ok(None);
     };
+    let parent_collection_records = load_group_parent_collection_records(record).await?;
 
     Ok(Some(PlaylistPlaybackGroupRef {
         record: row.id,
+        name: row.name,
         url: row.url,
+        folder: row.folder,
+        parent_collection_records,
     }))
 }
 
@@ -1290,49 +1302,59 @@ async fn load_collection_shell_row(record: &RecordId) -> Result<Option<Collectio
 }
 
 async fn append_collection_playback_track_sources(
-    collection: &PlaylistPlaybackCollectionRef,
+    selection: &PlaylistPlaybackSelection,
     limit: usize,
+    liked_only: bool,
     seen: &mut HashSet<String>,
     sources: &mut Vec<PlaylistPlaybackTrackSource>,
 ) -> Result<()> {
-    let remaining = limit.saturating_sub(sources.len());
-    let music_records =
-        load_collection_music_ids_for_playback(&collection.record, remaining).await?;
-    for music_record in music_records {
-        let music = Music::get_record(music_record).await?;
-        append_playback_track_source(collection, music, seen, sources);
-        if sources.len() >= limit {
-            return Ok(());
-        }
+    if sources.len() >= limit || selection.collections.is_empty() {
+        return Ok(());
     }
 
-    Ok(())
-}
-
-async fn append_group_playback_track_sources(
-    group: &PlaylistPlaybackGroupRef,
-    limit: usize,
-    seen: &mut HashSet<String>,
-    sources: &mut Vec<PlaylistPlaybackTrackSource>,
-) -> Result<()> {
-    let remaining = limit.saturating_sub(sources.len());
-    let music_records = load_group_music_ids_for_playback(&group.record, remaining).await?;
-    for music_record in music_records {
-        let parent_records = load_music_parent_collection_ids(&music_record).await?;
-        if parent_records.is_empty() {
-            continue;
-        }
-
-        let music = Music::get_record(music_record).await?;
-        for collection_record in parent_records {
-            let Some(collection) =
-                load_playlist_playback_collection_ref(&collection_record).await?
-            else {
-                continue;
-            };
-            append_playback_track_source(&collection, music.clone(), seen, sources);
-            if sources.len() >= limit {
+    for collection in &selection.collections {
+        let mut offset = 0usize;
+        loop {
+            let remaining = limit.saturating_sub(sources.len());
+            if remaining == 0 {
                 return Ok(());
+            }
+
+            let batch_limit = remaining.max(32);
+            let rows = load_relation_playable_track_rows(
+                "includes",
+                vec![collection.record.clone()],
+                liked_only,
+                batch_limit,
+                offset,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+
+            let row_count = rows.len();
+            let groups =
+                load_music_groups_for_playback(rows.iter().map(|row| &row.music_record)).await?;
+            for row in rows {
+                let Some(group) = groups.get(&row.music_record).cloned() else {
+                    continue;
+                };
+                let Some(music) = playable_track_music_from_relation_row(row, group) else {
+                    continue;
+                };
+                if is_music_canonical_id_excluded(&music.canonical_music_id).await? {
+                    continue;
+                }
+                append_playback_track_source(collection, music, seen, sources);
+                if sources.len() >= limit {
+                    return Ok(());
+                }
+            }
+
+            offset += row_count;
+            if row_count < batch_limit {
+                break;
             }
         }
     }
@@ -1340,56 +1362,79 @@ async fn append_group_playback_track_sources(
     Ok(())
 }
 
-async fn append_liked_collection_playback_track_sources(
-    collection: &PlaylistPlaybackCollectionRef,
+async fn append_group_playback_track_sources(
+    selection: &PlaylistPlaybackSelection,
     limit: usize,
+    liked_only: bool,
     seen: &mut HashSet<String>,
     sources: &mut Vec<PlaylistPlaybackTrackSource>,
 ) -> Result<()> {
-    for music_record in load_collection_music_ids(&collection.record).await? {
-        if is_music_record_excluded_for_playback(&music_record, Music::table_name()).await? {
-            continue;
-        }
-
-        let music = Music::get_record(music_record).await?;
-        if !music.liked {
-            continue;
-        }
-        append_playback_track_source(collection, music, seen, sources);
-        if sources.len() >= limit {
-            return Ok(());
-        }
+    if sources.len() >= limit || selection.groups.is_empty() {
+        return Ok(());
     }
 
-    Ok(())
-}
+    for group in &selection.groups {
+        let selected_parent_records = group
+            .parent_collection_records
+            .iter()
+            .collect::<HashSet<_>>();
+        let mut offset = 0usize;
 
-async fn append_liked_group_playback_track_sources(
-    group: &PlaylistPlaybackGroupRef,
-    limit: usize,
-    seen: &mut HashSet<String>,
-    sources: &mut Vec<PlaylistPlaybackTrackSource>,
-) -> Result<()> {
-    for music_record in load_relation_out_ids("grouped", &group.record, Music::table_name()).await?
-    {
-        if is_music_record_excluded_for_playback(&music_record, Music::table_name()).await? {
-            continue;
-        }
-
-        let music = Music::get_record(music_record.clone()).await?;
-        if !music.liked {
-            continue;
-        }
-
-        for collection_record in load_music_parent_collection_ids(&music_record).await? {
-            let Some(collection) =
-                load_playlist_playback_collection_ref(&collection_record).await?
-            else {
-                continue;
-            };
-            append_playback_track_source(&collection, music.clone(), seen, sources);
-            if sources.len() >= limit {
+        loop {
+            let remaining = limit.saturating_sub(sources.len());
+            if remaining == 0 {
                 return Ok(());
+            }
+
+            let batch_limit = remaining.max(32);
+            let rows = load_relation_playable_track_rows(
+                "grouped",
+                vec![group.record.clone()],
+                liked_only,
+                batch_limit,
+                offset,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+
+            let row_count = rows.len();
+            let source_collections = load_music_source_collections_for_playback(
+                rows.iter().map(|row| &row.music_record),
+            )
+            .await?;
+            for row in rows {
+                let Some(collections) = source_collections.get(&row.music_record) else {
+                    continue;
+                };
+                for collection in collections {
+                    if !selected_parent_records.contains(&collection.record) {
+                        continue;
+                    }
+                    let Some(music) =
+                        playable_track_music_from_relation_row(row.clone(), group.as_group())
+                    else {
+                        continue;
+                    };
+                    if is_music_canonical_id_excluded(&music.canonical_music_id).await? {
+                        continue;
+                    }
+                    append_playback_track_source_from_folder(
+                        &collection.folder,
+                        music,
+                        seen,
+                        sources,
+                    );
+                    if sources.len() >= limit {
+                        return Ok(());
+                    }
+                }
+            }
+
+            offset += row_count;
+            if row_count < batch_limit {
+                break;
             }
         }
     }
@@ -1400,36 +1445,49 @@ async fn append_liked_group_playback_track_sources(
 async fn append_extra_playback_track_sources(
     selection: &PlaylistPlaybackSelection,
     limit: usize,
+    liked_only: bool,
     seen: &mut HashSet<String>,
     sources: &mut Vec<PlaylistPlaybackTrackSource>,
 ) -> Result<()> {
-    for extra in &selection.extra {
-        let Some(source) = load_extra_playback_track_source(extra).await? else {
-            continue;
-        };
-        append_extra_playback_track_source(source, seen, sources);
-        if sources.len() >= limit {
-            return Ok(());
-        }
+    if sources.len() >= limit || selection.extra.is_empty() {
+        return Ok(());
     }
 
-    Ok(())
-}
+    let records = selection
+        .extra
+        .iter()
+        .map(|extra| extra.record.clone())
+        .collect::<Vec<_>>();
+    let rows = load_record_playable_track_rows(records, liked_only).await?;
+    let source_collections =
+        load_music_source_collections_for_playback(rows.iter().map(|row| &row.music_record))
+            .await?;
+    let groups = load_music_groups_for_playback(rows.iter().map(|row| &row.music_record)).await?;
+    let mut rows_by_record = rows
+        .into_iter()
+        .map(|row| (row.music_record.clone(), row))
+        .collect::<HashMap<_, _>>();
 
-async fn append_liked_extra_playback_track_sources(
-    selection: &PlaylistPlaybackSelection,
-    limit: usize,
-    seen: &mut HashSet<String>,
-    sources: &mut Vec<PlaylistPlaybackTrackSource>,
-) -> Result<()> {
     for extra in &selection.extra {
-        let Some(source) = load_extra_playback_track_source(extra).await? else {
+        let Some(row) = rows_by_record.remove(&extra.record) else {
             continue;
         };
-        if !source.music.liked {
+        if is_music_canonical_id_excluded(&row.canonical_music_id).await? {
             continue;
         }
-        append_extra_playback_track_source(source, seen, sources);
+        let Some(collection) = source_collections
+            .get(&row.music_record)
+            .and_then(|collections| collections.first())
+        else {
+            continue;
+        };
+        let Some(group) = groups.get(&row.music_record).cloned() else {
+            continue;
+        };
+        let Some(music) = playable_track_music_from_record_row(row, group) else {
+            continue;
+        };
+        append_playback_track_source_from_folder(&collection.folder, music, seen, sources);
         if sources.len() >= limit {
             return Ok(());
         }
@@ -1441,90 +1499,332 @@ async fn append_liked_extra_playback_track_sources(
 async fn load_random_collection_playback_track_source(
     collection: &PlaylistPlaybackCollectionRef,
 ) -> Result<Option<PlaylistPlaybackTrackSource>> {
-    let Some(music_record) = load_random_relation_out_id_for_playback(
-        &collection.record,
-        "includes",
-        Music::table_name(),
-    )
-    .await?
-    else {
-        return Ok(None);
-    };
+    for offset in
+        random_relation_playable_track_offsets("includes", collection.record.clone()).await?
+    {
+        let Some(row) =
+            load_relation_playable_track_row_at("includes", collection.record.clone(), offset)
+                .await?
+        else {
+            continue;
+        };
+        if is_music_canonical_id_excluded(&row.canonical_music_id).await? {
+            continue;
+        }
 
-    let music = Music::get_record(music_record).await?;
-    Ok(Some(project_playback_track_source(collection, music)))
+        let Some(group) = load_music_groups_for_playback([&row.music_record])
+            .await?
+            .remove(&row.music_record)
+        else {
+            continue;
+        };
+        let Some(music) = playable_track_music_from_relation_row(row, group) else {
+            continue;
+        };
+
+        return Ok(Some(project_playback_track_source_from_folder(
+            &collection.folder,
+            music,
+        )));
+    }
+
+    Ok(None)
 }
 
 async fn load_random_group_playback_track_source(
     group: &PlaylistPlaybackGroupRef,
 ) -> Result<Option<PlaylistPlaybackTrackSource>> {
-    let Some(music_record) =
-        load_random_relation_out_id_for_playback(&group.record, "grouped", Music::table_name())
-            .await?
-    else {
-        return Ok(None);
-    };
+    let selected_parent_records = group
+        .parent_collection_records
+        .iter()
+        .collect::<HashSet<_>>();
 
-    let parent_records = load_music_parent_collection_ids(&music_record).await?;
-    if parent_records.is_empty() {
-        return Ok(None);
+    for offset in random_relation_playable_track_offsets("grouped", group.record.clone()).await? {
+        let Some(row) =
+            load_relation_playable_track_row_at("grouped", group.record.clone(), offset).await?
+        else {
+            continue;
+        };
+        if is_music_canonical_id_excluded(&row.canonical_music_id).await? {
+            continue;
+        }
+
+        let collections = load_music_source_collections_for_playback([&row.music_record]).await?;
+        let Some(collections) = collections.get(&row.music_record) else {
+            continue;
+        };
+        let matching_collections = collections
+            .iter()
+            .filter(|collection| selected_parent_records.contains(&collection.record))
+            .collect::<Vec<_>>();
+        let Some(start_index) = random_index(matching_collections.len()) else {
+            continue;
+        };
+
+        let Some(music) = playable_track_music_from_relation_row(row, group.as_group()) else {
+            continue;
+        };
+        let collection = matching_collections[start_index];
+
+        return Ok(Some(project_playback_track_source_from_folder(
+            &collection.folder,
+            music,
+        )));
     }
 
-    let Some(parent_index) = random_index(parent_records.len()) else {
-        return Ok(None);
-    };
-    let Some(collection) =
-        load_playlist_playback_collection_ref(&parent_records[parent_index]).await?
-    else {
-        return Ok(None);
-    };
-    let music = Music::get_record(music_record).await?;
-    Ok(Some(project_playback_track_source(&collection, music)))
+    Ok(None)
 }
 
 async fn load_extra_playback_track_source(
     extra: &PlaylistPlaybackExtraRef,
 ) -> Result<Option<PlaylistPlaybackTrackSource>> {
-    if is_music_record_excluded_for_playback(&extra.record, Music::table_name()).await? {
-        return Ok(None);
-    }
-
-    let music = Music::get_record(extra.record.clone()).await?;
-    let Some(collection) = resolve_extra_playback_collection(&extra.record).await? else {
+    let mut rows = load_record_playable_track_rows(vec![extra.record.clone()], false).await?;
+    let Some(row) = rows.pop() else {
         return Ok(None);
     };
 
-    Ok(Some(project_playback_track_source(&collection, music)))
+    if is_music_canonical_id_excluded(&row.canonical_music_id).await? {
+        return Ok(None);
+    }
+
+    let collections = load_music_source_collections_for_playback([&row.music_record]).await?;
+    let Some(collection) = collections
+        .get(&row.music_record)
+        .and_then(|collections| collections.first())
+    else {
+        return Ok(None);
+    };
+
+    let Some(group) = load_music_groups_for_playback([&row.music_record])
+        .await?
+        .remove(&row.music_record)
+    else {
+        return Ok(None);
+    };
+    let Some(music) = playable_track_music_from_record_row(row, group) else {
+        return Ok(None);
+    };
+
+    Ok(Some(project_playback_track_source_from_folder(
+        &collection.folder,
+        music,
+    )))
 }
 
-async fn load_random_relation_out_id_for_playback(
-    record: &RecordId,
-    relation: &str,
-    out_table: &str,
-) -> Result<Option<RecordId>> {
-    let count = count_relation_out_ids_for_playback(record, relation, out_table).await?;
+async fn random_relation_playable_track_offsets(
+    relation: &'static str,
+    owner_record: RecordId,
+) -> Result<Vec<usize>> {
+    let count = count_relation_playable_track_rows(relation, owner_record.clone()).await?;
     if count == 0 {
-        return Ok(None);
+        return Ok(vec![]);
     }
 
     let Some(start_offset) = random_index(count) else {
-        return Ok(None);
+        return Ok(vec![]);
     };
 
-    for step in 0..count {
-        let offset = (start_offset + step) % count;
-        let Some(candidate) =
-            load_relation_out_id_for_playback_at(record, relation, out_table, offset).await?
-        else {
-            continue;
-        };
+    Ok((0..count)
+        .map(|step| (start_offset + step) % count)
+        .collect())
+}
 
-        if !is_music_record_excluded_for_playback(&candidate, out_table).await? {
-            return Ok(Some(candidate));
-        }
+async fn load_relation_playable_track_row_at(
+    relation: &'static str,
+    owner_record: RecordId,
+    offset: usize,
+) -> Result<Option<PlaylistRelationPlayableTrackView>> {
+    let mut rows =
+        load_relation_playable_track_rows(relation, vec![owner_record], false, 1, offset).await?;
+    Ok(rows.pop())
+}
+
+async fn count_relation_playable_track_rows(
+    relation: &'static str,
+    owner_record: RecordId,
+) -> Result<usize> {
+    let stmt = RawSqlStmt::new(
+        "RETURN count((
+            SELECT VALUE out
+            FROM $relation
+            WHERE in = $owner_record
+                AND record::tb(out) = $music_table
+                AND out.path IS NOT NONE
+        ));",
+    )
+    .bind("relation", Table::from(relation))
+    .bind("owner_record", owner_record)
+    .bind("music_table", Music::table_name().to_string());
+
+    match query_bound_return::<i64>(stmt).await {
+        Ok(count) => Ok(count.unwrap_or(0).max(0) as usize),
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) => Ok(0),
+            other => Err(other.into()),
+        },
+    }
+}
+
+async fn load_relation_playable_track_rows(
+    relation: &'static str,
+    owner_records: Vec<RecordId>,
+    liked_only: bool,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<PlaylistRelationPlayableTrackView>> {
+    if owner_records.is_empty() || limit == 0 {
+        return Ok(vec![]);
     }
 
-    Ok(None)
+    match PlaylistRelationPlayableTrackView::query(PlaylistRelationPlayableTrackViewParams {
+        relation,
+        owner_records,
+        liked_only,
+        limit,
+        offset,
+    })
+    .await
+    {
+        Ok(rows) => Ok(rows),
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) => Ok(vec![]),
+            other => Err(other.into()),
+        },
+    }
+}
+
+async fn load_record_playable_track_rows(
+    music_records: Vec<RecordId>,
+    liked_only: bool,
+) -> Result<Vec<PlaylistRecordPlayableTrackView>> {
+    if music_records.is_empty() {
+        return Ok(vec![]);
+    }
+
+    match PlaylistRecordPlayableTrackView::query(PlaylistRecordPlayableTrackViewParams {
+        music_records,
+        liked_only,
+    })
+    .await
+    {
+        Ok(rows) => Ok(rows),
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) => Ok(vec![]),
+            other => Err(other.into()),
+        },
+    }
+}
+
+async fn load_music_source_collections_for_playback<'a>(
+    music_records: impl IntoIterator<Item = &'a RecordId>,
+) -> Result<HashMap<RecordId, Vec<PlaylistPlaybackSourceCollectionRef>>> {
+    let records = unique_record_ids(music_records);
+    if records.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows =
+        match PlaylistMusicSourceCollectionView::query(PlaylistMusicSourceCollectionViewParams {
+            music_records: records,
+        })
+        .await
+        {
+            Ok(rows) => rows,
+            Err(error) => match classify_db_error(&error) {
+                DBError::MissingTable(_) => return Ok(HashMap::new()),
+                other => return Err(other.into()),
+            },
+        };
+
+    let mut by_music = HashMap::<RecordId, Vec<PlaylistPlaybackSourceCollectionRef>>::new();
+    for row in rows {
+        by_music
+            .entry(row.music_record)
+            .or_default()
+            .push(PlaylistPlaybackSourceCollectionRef {
+                record: row.collection_record,
+                folder: row.collection_folder,
+            });
+    }
+
+    Ok(by_music)
+}
+
+async fn load_music_groups_for_playback<'a>(
+    music_records: impl IntoIterator<Item = &'a RecordId>,
+) -> Result<HashMap<RecordId, Group>> {
+    let records = unique_record_ids(music_records);
+    if records.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows = match PlaylistMusicGroupView::query(PlaylistMusicGroupViewParams {
+        music_records: records,
+    })
+    .await
+    {
+        Ok(rows) => rows,
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) => return Ok(HashMap::new()),
+            other => return Err(other.into()),
+        },
+    };
+
+    let mut groups = HashMap::new();
+    for row in rows {
+        groups.entry(row.music_record).or_insert_with(|| Group {
+            name: row.group_name,
+            url: row.group_url,
+            folder: row.group_folder,
+        });
+    }
+
+    Ok(groups)
+}
+
+fn unique_record_ids<'a>(records: impl IntoIterator<Item = &'a RecordId>) -> Vec<RecordId> {
+    let mut seen = HashSet::new();
+    let mut unique = Vec::new();
+    for record in records {
+        if seen.insert(record.clone()) {
+            unique.push(record.clone());
+        }
+    }
+    unique
+}
+
+fn playable_track_music_from_relation_row(
+    row: PlaylistRelationPlayableTrackView,
+    group: Group,
+) -> Option<Music> {
+    Some(Music {
+        name: row.name,
+        alias: row.alias,
+        group,
+        canonical_music_id: row.canonical_music_id,
+        url: row.url,
+        path: Some(row.path?),
+        start_ms: row.start_ms,
+        end_ms: row.end_ms,
+        liked: row.liked,
+    })
+}
+
+fn playable_track_music_from_record_row(
+    row: PlaylistRecordPlayableTrackView,
+    group: Group,
+) -> Option<Music> {
+    Some(Music {
+        name: row.name,
+        alias: row.alias,
+        group,
+        canonical_music_id: row.canonical_music_id,
+        url: row.url,
+        path: Some(row.path?),
+        start_ms: row.start_ms,
+        end_ms: row.end_ms,
+        liked: row.liked,
+    })
 }
 
 fn random_index(len: usize) -> Option<usize> {
@@ -1538,6 +1838,23 @@ fn random_index(len: usize) -> Option<usize> {
 async fn load_group_parent_collection_urls(
     group: &PlaylistPlaybackGroupRef,
 ) -> Result<Vec<String>> {
+    let mut seen = HashSet::new();
+    let mut urls = Vec::new();
+
+    for record in &group.parent_collection_records {
+        if !seen.insert(record.clone()) {
+            continue;
+        }
+
+        if let Some(collection) = load_playlist_playback_collection_ref(record).await? {
+            urls.push(collection.url);
+        }
+    }
+
+    Ok(urls)
+}
+
+async fn load_group_parent_collection_records(group_record: &RecordId) -> Result<Vec<RecordId>> {
     let db = get_db()?;
     let mut result = match db
         .query(
@@ -1545,7 +1862,7 @@ async fn load_group_parent_collection_urls(
                 SELECT VALUE out FROM grouped WHERE in = $group AND record::tb(out) = $music_table
             ) AND record::tb(in) = $collection_table;",
         )
-        .bind(("group", group.record().clone()))
+        .bind(("group", group_record.clone()))
         .bind(("music_table", Music::table_name().to_string()))
         .bind(("collection_table", Collection::table_name().to_string()))
         .await
@@ -1565,29 +1882,27 @@ async fn load_group_parent_collection_urls(
 
     let records: Vec<RecordId> = result.take(0)?;
     let mut seen = HashSet::new();
-    let mut urls = Vec::new();
-
+    let mut unique_records = Vec::new();
     for record in records {
-        if !seen.insert(record.clone()) {
-            continue;
-        }
-
-        if let Some(collection) = load_playlist_playback_collection_ref(&record).await? {
-            urls.push(collection.url);
+        if seen.insert(record.clone()) {
+            unique_records.push(record);
         }
     }
 
-    Ok(urls)
-}
-
-impl PlaylistPlaybackGroupRef {
-    fn record(&self) -> &RecordId {
-        &self.record
-    }
+    Ok(unique_records)
 }
 
 fn append_playback_track_source(
     collection: &PlaylistPlaybackCollectionRef,
+    music: Music,
+    seen: &mut HashSet<String>,
+    sources: &mut Vec<PlaylistPlaybackTrackSource>,
+) {
+    append_playback_track_source_from_folder(&collection.folder, music, seen, sources);
+}
+
+fn append_playback_track_source_from_folder(
+    collection_folder: &str,
     music: Music,
     seen: &mut HashSet<String>,
     sources: &mut Vec<PlaylistPlaybackTrackSource>,
@@ -1597,146 +1912,27 @@ fn append_playback_track_source(
     }
 
     sources.push(PlaylistPlaybackTrackSource {
-        collection_folder: collection.folder.clone(),
+        collection_folder: collection_folder.to_string(),
         music,
     });
 }
 
-fn append_extra_playback_track_source(
-    source: PlaylistPlaybackTrackSource,
-    seen: &mut HashSet<String>,
-    sources: &mut Vec<PlaylistPlaybackTrackSource>,
-) {
-    if !seen.insert(source.music.canonical_music_id.clone()) {
-        return;
-    }
-
-    sources.push(source);
-}
-
-fn project_playback_track_source(
-    collection: &PlaylistPlaybackCollectionRef,
+fn project_playback_track_source_from_folder(
+    collection_folder: &str,
     music: Music,
 ) -> PlaylistPlaybackTrackSource {
     PlaylistPlaybackTrackSource {
-        collection_folder: collection.folder.clone(),
+        collection_folder: collection_folder.to_string(),
         music,
     }
-}
-
-async fn load_collection_music_ids_for_playback(
-    record: &RecordId,
-    limit: usize,
-) -> Result<Vec<RecordId>> {
-    load_relation_out_ids_for_playback("includes", record, Music::table_name(), limit).await
-}
-
-async fn load_group_music_ids_for_playback(
-    record: &RecordId,
-    limit: usize,
-) -> Result<Vec<RecordId>> {
-    load_relation_out_ids_for_playback("grouped", record, Music::table_name(), limit).await
 }
 
 async fn load_music_parent_collection_ids(record: &RecordId) -> Result<Vec<RecordId>> {
     load_relation_in_ids("includes", record, Collection::table_name()).await
 }
 
-async fn resolve_extra_playback_collection(
-    record: &RecordId,
-) -> Result<Option<PlaylistPlaybackCollectionRef>> {
-    for collection_record in load_music_parent_collection_ids(record).await? {
-        if let Some(collection) = load_playlist_playback_collection_ref(&collection_record).await? {
-            return Ok(Some(collection));
-        }
-    }
-
-    Ok(None)
-}
-
 async fn load_music_group_ids(record: &RecordId) -> Result<Vec<RecordId>> {
     load_relation_in_ids("grouped", record, Group::table_name()).await
-}
-
-async fn load_relation_out_ids_for_playback(
-    relation: &str,
-    record: &RecordId,
-    out_table: &str,
-    limit: usize,
-) -> Result<Vec<RecordId>> {
-    if limit == 0 {
-        return Ok(vec![]);
-    }
-
-    let mut accepted = Vec::with_capacity(limit);
-    let mut offset = 0usize;
-    let batch_limit = limit.max(32);
-
-    loop {
-        let rows = load_relation_out_id_rows_for_playback(
-            relation,
-            record,
-            out_table,
-            batch_limit,
-            offset,
-        )
-        .await?;
-        if rows.is_empty() {
-            return Ok(accepted);
-        }
-
-        let row_count = rows.len();
-        for row in rows {
-            if is_music_record_excluded_for_playback(&row.out, out_table).await? {
-                continue;
-            }
-
-            accepted.push(row.out);
-            if accepted.len() >= limit {
-                return Ok(accepted);
-            }
-        }
-
-        offset += row_count;
-        if row_count < batch_limit {
-            return Ok(accepted);
-        }
-    }
-}
-
-async fn load_relation_out_id_rows_for_playback(
-    relation: &str,
-    record: &RecordId,
-    out_table: &str,
-    limit: usize,
-    offset: usize,
-) -> Result<Vec<CollectionEdgeRow>> {
-    let db = get_db()?;
-    let mut result = match db
-        .query(
-            "SELECT out, position FROM $rel WHERE in = $record AND record::tb(out) = $out_table ORDER BY position ASC LIMIT $limit START $offset;",
-        )
-        .bind(("rel", Table::from(relation)))
-        .bind(("record", record.clone()))
-        .bind(("out_table", out_table.to_string()))
-        .bind(("limit", limit))
-        .bind(("offset", offset))
-        .await
-    {
-        Ok(result) => match result.check() {
-            Ok(result) => result,
-            Err(error) => match DBError::from(error) {
-                DBError::MissingTable(_) => return Ok(vec![]),
-                other => return Err(other.into()),
-            },
-        },
-        Err(error) => match classify_db_error(&error.into()) {
-            DBError::MissingTable(_) => return Ok(vec![]),
-            other => return Err(other.into()),
-        },
-    };
-
-    Ok(result.take(0)?)
 }
 
 async fn is_music_record_excluded_for_playback(record: &RecordId, out_table: &str) -> Result<bool> {
@@ -1764,72 +1960,6 @@ async fn is_music_canonical_id_excluded(canonical_music_id: &str) -> Result<bool
             other => Err(other.into()),
         },
     }
-}
-
-async fn count_relation_out_ids_for_playback(
-    record: &RecordId,
-    relation: &str,
-    out_table: &str,
-) -> Result<usize> {
-    let db = get_db()?;
-    let mut result = match db
-        .query(
-            "RETURN count((SELECT VALUE out FROM $rel WHERE in = $record AND record::tb(out) = $out_table));",
-        )
-        .bind(("rel", Table::from(relation)))
-        .bind(("record", record.clone()))
-        .bind(("out_table", out_table.to_string()))
-        .await
-    {
-        Ok(result) => match result.check() {
-            Ok(result) => result,
-            Err(error) => match DBError::from(error) {
-                DBError::MissingTable(_) => return Ok(0),
-                other => return Err(other.into()),
-            },
-        },
-        Err(error) => match classify_db_error(&error.into()) {
-            DBError::MissingTable(_) => return Ok(0),
-            other => return Err(other.into()),
-        },
-    };
-
-    let count: Option<i64> = result.take(0)?;
-    Ok(count.unwrap_or(0).max(0) as usize)
-}
-
-async fn load_relation_out_id_for_playback_at(
-    record: &RecordId,
-    relation: &str,
-    out_table: &str,
-    offset: usize,
-) -> Result<Option<RecordId>> {
-    let db = get_db()?;
-    let mut result = match db
-        .query(
-            "SELECT out, position FROM $rel WHERE in = $record AND record::tb(out) = $out_table ORDER BY position ASC LIMIT 1 START $offset;",
-        )
-        .bind(("rel", Table::from(relation)))
-        .bind(("record", record.clone()))
-        .bind(("out_table", out_table.to_string()))
-        .bind(("offset", offset))
-        .await
-    {
-        Ok(result) => match result.check() {
-            Ok(result) => result,
-            Err(error) => match DBError::from(error) {
-                DBError::MissingTable(_) => return Ok(None),
-                other => return Err(other.into()),
-            },
-        },
-        Err(error) => match classify_db_error(&error.into()) {
-            DBError::MissingTable(_) => return Ok(None),
-            other => return Err(other.into()),
-        },
-    };
-
-    let rows: Vec<CollectionEdgeRow> = result.take(0)?;
-    Ok(rows.into_iter().next().map(|row| row.out))
 }
 
 async fn load_relation_in_ids(
@@ -2546,5 +2676,7 @@ struct CollectionShellRow {
 struct GroupShellRow {
     #[serde(deserialize_with = "appdb::serde_utils::id::deserialize_record_id_or_compat_string")]
     id: RecordId,
+    name: String,
     url: String,
+    folder: String,
 }

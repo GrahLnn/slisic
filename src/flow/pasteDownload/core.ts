@@ -1,14 +1,14 @@
 import { type as arkType } from "arktype";
-import type { Collection, DownloadResourceProbe, PastedDownloadUrlResolution } from "@/src/cmd";
+import type { PastedDownloadUrlResolution } from "@/src/cmd";
 
 const downloadUrl = arkType("string.url");
 const EMPTY_CLIPBOARD_TEXT = "Empty clipboard";
 
 export type ConfigCandidateItemStatus =
   | "checking"
-  | "probing"
+  | "enqueueing"
   | "invalid_url"
-  | "probe_failed";
+  | "enqueue_failed";
 
 export interface ConfigCandidateItem {
   id: string;
@@ -17,7 +17,6 @@ export interface ConfigCandidateItem {
   displayText: string;
   status: ConfigCandidateItemStatus;
   error: string | null;
-  probe: DownloadResourceProbe | null;
 }
 
 export interface Context {
@@ -97,7 +96,6 @@ export function appendCandidateItem(context: Context, rawText: string): Context 
     displayText: toDisplayText(rawText),
     status: "checking",
     error: null,
-    probe: null,
   };
 
   return {
@@ -168,7 +166,7 @@ export function applyActiveCandidateUrlResolution(
           ...item,
           sourceUrl: url,
           displayText: url,
-          status: "probing",
+          status: "enqueueing",
           error: null,
         };
       }
@@ -180,10 +178,10 @@ export function applyActiveCandidateUrlResolution(
   });
 }
 
-export function failActiveCandidateProbe(context: Context, error: string): Context {
+export function failActiveCandidateEnqueue(context: Context, error: string): Context {
   return updateActiveCandidateItem(context, (item) => ({
     ...item,
-    status: "probe_failed",
+    status: "enqueue_failed",
     error,
   }));
 }
@@ -209,25 +207,11 @@ export function deleteCandidateItem(context: Context, id: string): Context {
 }
 
 export function candidateItemAllowsDelete(status: ConfigCandidateItemStatus) {
-  return status === "invalid_url" || status === "probe_failed";
+  return status === "invalid_url" || status === "enqueue_failed";
 }
 
 export function candidateItemIsErrored(status: ConfigCandidateItemStatus) {
   return candidateItemAllowsDelete(status);
-}
-
-export function createCollectionShellFromProbe(
-  probe: DownloadResourceProbe,
-  lastUpdated: string,
-): Collection {
-  return {
-    name: probe.title,
-    url: probe.url,
-    folder: probe.collection_folder,
-    musics: [],
-    last_updated: lastUpdated,
-    enable_updates: probe.enable_updates,
-  };
 }
 
 export function toErrorMessage(error: unknown) {

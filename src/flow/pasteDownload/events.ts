@@ -11,15 +11,9 @@ import {
   type PayloadEvt,
   type SignalEvt,
 } from "@grahlnn/fn/flow";
-import {
-  crab,
-  type DownloadResourceProbe,
-  type DownloadTask,
-  type EnqueuedCollectionDownload,
-  type PastedDownloadUrlResolution,
-} from "@/src/cmd";
+import { crab, type EnqueuedCollectionDownload, type PastedDownloadUrlResolution } from "@/src/cmd";
 
-export const ss = defineSS(ns("mainx", sst(["idle", "checking", "probing"], ["reset"])));
+export const ss = defineSS(ns("mainx", sst(["idle", "checking", "enqueueing"], ["reset"])));
 export const state = allState(ss);
 export const sig = allSignal(ss);
 
@@ -29,16 +23,6 @@ export const deps = {
 
     return result.match({
       Ok: (resolution) => resolution,
-      Err: (error) => {
-        throw new Error(error);
-      },
-    });
-  },
-  probeDownloadResource: async (url: string): Promise<DownloadResourceProbe> => {
-    const result = await crab.probeDownloadResource(url);
-
-    return result.match({
-      Ok: (probe) => probe,
       Err: (error) => {
         throw new Error(error);
       },
@@ -59,8 +43,6 @@ export const deps = {
 export const invoker = createActors({
   resolvePastedDownloadUrl: async (url: string): Promise<PastedDownloadUrlResolution> =>
     deps.resolvePastedDownloadUrl(url),
-  probeDownloadResource: async (url: string): Promise<DownloadResourceProbe> =>
-    deps.probeDownloadResource(url),
   enqueueCollectionDownload: async (url: string): Promise<EnqueuedCollectionDownload> =>
     deps.enqueueCollectionDownload(url),
 });

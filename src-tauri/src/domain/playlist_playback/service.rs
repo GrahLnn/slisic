@@ -10,7 +10,10 @@ use crate::domain::downloads::service as download_service;
 #[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
 #[cfg(not(test))]
-use crate::domain::player::event::{NowPlayingTrackChangedEvent, PlaybackExcludeCommittedEvent};
+use crate::domain::player::event::{
+    NowPlayingTrackChangedEvent, PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent,
+    PlaybackExcludeCommittedEvent,
+};
 use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
 #[cfg(not(test))]
 use crate::domain::player::service as player_service;
@@ -35,6 +38,8 @@ use std::path::{Path, PathBuf};
 #[cfg(not(test))]
 use std::sync::{Arc, Mutex};
 #[cfg(not(test))]
+use std::time::Instant;
+#[cfg(not(test))]
 use tauri::AppHandle;
 #[cfg(not(test))]
 use tauri_specta::Event;
@@ -46,7 +51,9 @@ const INITIAL_PLAYBACK_QUEUE_LIMIT: usize = 256;
 #[cfg(not(test))]
 const PLAYLIST_PLAYBACK_INITIAL_RANDOM_ATTEMPT_LIMIT: usize = 32;
 #[cfg(not(test))]
-const PLAYLIST_PLAYBACK_INITIAL_WINDOW_LIMIT: usize = 32;
+const PLAYLIST_PLAYBACK_INITIAL_SEED_PROBE_LIMIT: usize = 1;
+#[cfg(not(test))]
+const PLAYLIST_PLAYBACK_INITIAL_SEED_SCAN_LIMIT: usize = 32;
 #[cfg(not(test))]
 const PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS: u64 = 250;
 #[cfg(not(test))]
@@ -90,33 +97,212 @@ pub fn initialize_runtime(app: AppHandle) {
 }
 
 #[cfg(not(test))]
+struct PlaylistPlaybackTrace<'a> {
+    app: &'a AppHandle,
+    playlist_name: Option<&'a str>,
+    track: Option<&'a PlaybackTrack>,
+    elapsed_ms: Option<u128>,
+    candidate_count: Option<usize>,
+    queue_count: Option<usize>,
+    status: Option<&'a str>,
+    error: Option<String>,
+    details: Option<Vec<PlaybackDiagnosticTraceDetail>>,
+}
+
+#[cfg(not(test))]
+impl<'a> PlaylistPlaybackTrace<'a> {
+    fn new(app: &'a AppHandle) -> Self {
+        Self {
+            app,
+            playlist_name: None,
+            track: None,
+            elapsed_ms: None,
+            candidate_count: None,
+            queue_count: None,
+            status: None,
+            error: None,
+            details: None,
+        }
+    }
+
+    fn playlist_name(mut self, playlist_name: &'a str) -> Self {
+        self.playlist_name = Some(playlist_name);
+        self
+    }
+
+    fn track(mut self, track: &'a PlaybackTrack) -> Self {
+        self.track = Some(track);
+        self
+    }
+
+    fn elapsed(mut self, start: Instant) -> Self {
+        self.elapsed_ms = Some(start.elapsed().as_millis());
+        self
+    }
+
+    fn candidate_count(mut self, candidate_count: usize) -> Self {
+        self.candidate_count = Some(candidate_count);
+        self
+    }
+
+    fn queue_count(mut self, queue_count: usize) -> Self {
+        self.queue_count = Some(queue_count);
+        self
+    }
+
+    fn status(mut self, status: &'a str) -> Self {
+        self.status = Some(status);
+        self
+    }
+
+    fn error(mut self, error: impl ToString) -> Self {
+        self.error = Some(error.to_string());
+        self
+    }
+
+    fn details(mut self, details: Vec<PlaybackDiagnosticTraceDetail>) -> Self {
+        self.details = Some(details);
+        self
+    }
+}
+
+#[cfg(not(test))]
+fn emit_playlist_playback_trace(event: &str, trace: PlaylistPlaybackTrace<'_>) {
+    let playlist_name = trace
+        .playlist_name
+        .map(str::to_string)
+        .or_else(|| trace.track.map(|track| track.playlist_name.clone()));
+    let music_name = trace.track.map(|track| track.music_name.clone());
+    let music_url = trace.track.map(|track| track.music_url.clone());
+    let start_ms = trace.track.map(|track| track.start_ms);
+    let end_ms = trace.track.map(|track| track.end_ms);
+
+    if let Err(error) = (PlaybackDiagnosticTraceEvent {
+        event: event.to_string(),
+        playlist_name,
+        music_name,
+        music_url,
+        start_ms,
+        end_ms,
+        elapsed_ms: trace.elapsed_ms,
+        candidate_count: trace.candidate_count,
+        queue_count: trace.queue_count,
+        status: trace.status.map(str::to_string),
+        error: trace.error,
+        details: trace.details,
+    })
+    .emit(trace.app)
+    {
+        eprintln!("[playlist_playback] failed to emit diagnostic trace `{event}`: {error}");
+    }
+}
+
+#[cfg(not(test))]
+fn trace_detail(key: &str, value: impl ToString) -> PlaybackDiagnosticTraceDetail {
+    PlaybackDiagnosticTraceDetail {
+        key: key.to_string(),
+        value: value.to_string(),
+    }
+}
+
+#[cfg(not(test))]
 pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylistSession> {
+    let trace_start = Instant::now();
+    emit_playlist_playback_trace(
+        "playlist-play-backend-start",
+        PlaylistPlaybackTrace::new(app).playlist_name(&name),
+    );
+
     let mut download_changes = download_service::subscribe_download_task_changes();
     let request = player_service::claim_playback_start_request()?;
-    let material =
-        build_playlist_playback_material(app, &name, &request, &mut download_changes).await?;
+    emit_playlist_playback_trace(
+        "playlist-play-request-claimed",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(&name)
+            .elapsed(trace_start),
+    );
+
+    let material_result =
+        build_playlist_playback_material(app, &name, &request, &mut download_changes).await;
+    let material = match material_result {
+        Ok(material) => material,
+        Err(error) => {
+            emit_playlist_playback_trace(
+                "playlist-play-material-error",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(&name)
+                    .elapsed(trace_start)
+                    .error(&error),
+            );
+            return Err(error);
+        }
+    };
     let playlist_name = material.playlist_name;
-    let track_count = material.tracks.len().max(1) as u32;
+    let track_count = 1u32;
     let initial_track = material.initial_track;
     let recent_history = PlaylistPlaybackRecentHistory::from_initial_track(initial_track.clone());
-    let tracks = propose_playlist_playback_queue(PlaylistPlaybackRecommendationRequest {
-        playlist_name: playlist_name.clone(),
-        current_track: initial_track.clone(),
-        candidates: material.tracks,
-        recently_played_tracks: recent_history.snapshot(),
-    });
+    let tracks = create_initial_playlist_playback_queue(initial_track.clone());
     let shared_recent_history = Arc::new(Mutex::new(recent_history));
 
     ensure_playlist_playback_request_current(&request)?;
-    player_service::set_playback_continuation_mode(resolve_playlist_playback_continuation_mode())?;
-    let session = player_service::play_tracks_from_initial_track_for_request_with_queue_mode(
-        &request,
-        playlist_name.clone(),
-        tracks,
-        initial_track.clone(),
-        PlaybackQueueMode::Ordered,
-    )
-    .await?;
+    emit_playlist_playback_trace(
+        "playlist-play-material-ready",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(&playlist_name)
+            .track(&initial_track)
+            .elapsed(trace_start)
+            .queue_count(tracks.len()),
+    );
+    let continuation_mode = resolve_playlist_playback_continuation_mode();
+    player_service::set_playback_continuation_mode(continuation_mode)?;
+    emit_playlist_playback_trace(
+        "playlist-play-continuation-mode-set",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(&playlist_name)
+            .track(&initial_track)
+            .elapsed(trace_start)
+            .status(playlist_playback_continuation_mode_name(continuation_mode)),
+    );
+    emit_playlist_playback_trace(
+        "playlist-play-player-submit-start",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(&playlist_name)
+            .track(&initial_track)
+            .elapsed(trace_start)
+            .queue_count(tracks.len()),
+    );
+    let session_result =
+        player_service::play_tracks_from_initial_track_for_request_with_queue_mode(
+            &request,
+            playlist_name.clone(),
+            tracks,
+            initial_track.clone(),
+            PlaybackQueueMode::Ordered,
+        )
+        .await;
+    let session = match session_result {
+        Ok(session) => {
+            emit_playlist_playback_trace(
+                "playlist-play-player-submit-ok",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(&playlist_name)
+                    .track(&initial_track)
+                    .elapsed(trace_start),
+            );
+            session
+        }
+        Err(error) => {
+            emit_playlist_playback_trace(
+                "playlist-play-player-submit-error",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(&playlist_name)
+                    .track(&initial_track)
+                    .elapsed(trace_start)
+                    .error(&error),
+            );
+            return Err(error);
+        }
+    };
     spawn_playlist_track_queue_fill(
         app.clone(),
         playlist_name.clone(),
@@ -131,6 +317,14 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
         initial_track,
         download_changes,
         shared_recent_history,
+    );
+    emit_playlist_playback_trace(
+        "playlist-play-backend-ok",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(&playlist_name)
+            .elapsed(trace_start)
+            .status("started")
+            .queue_count(track_count as usize),
     );
 
     Ok(PlayPlaylistSession {
@@ -366,10 +560,17 @@ pub(crate) fn resolve_playlist_playback_continuation_mode() -> PlaybackContinuat
 }
 
 #[cfg(not(test))]
+fn playlist_playback_continuation_mode_name(mode: PlaybackContinuationMode) -> &'static str {
+    match mode {
+        PlaybackContinuationMode::Random => "random",
+        PlaybackContinuationMode::RepeatCurrent => "repeat_current",
+    }
+}
+
+#[cfg(not(test))]
 struct PlaylistPlaybackMaterial {
     playlist_name: String,
     initial_track: PlaybackTrack,
-    tracks: Vec<PlaybackTrack>,
 }
 
 #[cfg(not(test))]
@@ -393,35 +594,86 @@ async fn build_playlist_playback_material(
         download_service::DownloadTaskChangeSignal,
     >,
 ) -> Result<PlaylistPlaybackMaterial> {
+    let trace_start = Instant::now();
     let mut source = load_playlist_playback_selection(playlist_name).await?;
     let mut preparing_emitted = false;
+    let mut wait_count = 0usize;
+
+    emit_playlist_playback_trace(
+        "playlist-play-material-selection-loaded",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(&source.playlist_name)
+            .elapsed(trace_start)
+            .details(selection_trace_details(&source.selection, wait_count)),
+    );
 
     ensure_playlist_playback_request_current(request)?;
     if let Some(initial_track) = resolve_playlist_initial_track(app, &source.selection).await? {
         ensure_playlist_playback_request_current(request)?;
+        emit_playlist_playback_trace(
+            "playlist-play-material-initial-track-ok",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(&source.playlist_name)
+                .track(&initial_track)
+                .elapsed(trace_start)
+                .details(selection_trace_details(&source.selection, wait_count)),
+        );
         return Ok(PlaylistPlaybackMaterial {
             playlist_name: source.playlist_name,
             initial_track,
-            tracks: source.resolution.tracks,
         });
     }
+    emit_playlist_playback_trace(
+        "playlist-play-material-initial-track-miss",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(&source.playlist_name)
+            .elapsed(trace_start)
+            .details(selection_trace_details(&source.selection, wait_count)),
+    );
 
     loop {
         let has_relevant_active_downloads =
             playlist_selection_has_active_downloads(&source.selection).await?;
+        emit_playlist_playback_trace(
+            "playlist-play-material-active-downloads-checked",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(&source.playlist_name)
+                .elapsed(trace_start)
+                .status(if has_relevant_active_downloads {
+                    "active"
+                } else {
+                    "inactive"
+                })
+                .details(selection_trace_details(&source.selection, wait_count)),
+        );
         if !has_relevant_active_downloads {
             source = load_playlist_playback_selection(playlist_name).await?;
             if let Some(initial_track) =
                 resolve_playlist_initial_track(app, &source.selection).await?
             {
                 ensure_playlist_playback_request_current(request)?;
+                emit_playlist_playback_trace(
+                    "playlist-play-material-initial-track-ok",
+                    PlaylistPlaybackTrace::new(app)
+                        .playlist_name(&source.playlist_name)
+                        .track(&initial_track)
+                        .elapsed(trace_start)
+                        .details(selection_trace_details(&source.selection, wait_count)),
+                );
                 return Ok(PlaylistPlaybackMaterial {
                     playlist_name: source.playlist_name,
                     initial_track,
-                    tracks: source.resolution.tracks,
                 });
             }
 
+            emit_playlist_playback_trace(
+                "playlist-play-material-unplayable",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(&source.playlist_name)
+                    .elapsed(trace_start)
+                    .error(&source.resolution.failure_description)
+                    .details(selection_trace_details(&source.selection, wait_count)),
+            );
             bail!("{}", source.resolution.failure_description);
         }
 
@@ -429,21 +681,68 @@ async fn build_playlist_playback_material(
         if !preparing_emitted {
             emit_playlist_preparing(app, &source.playlist_name)?;
             preparing_emitted = true;
+            emit_playlist_playback_trace(
+                "playlist-play-material-preparing-emitted",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(&source.playlist_name)
+                    .elapsed(trace_start)
+                    .details(selection_trace_details(&source.selection, wait_count)),
+            );
         }
 
+        emit_playlist_playback_trace(
+            "playlist-play-material-wait-download-change-start",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(&source.playlist_name)
+                .elapsed(trace_start)
+                .details(selection_trace_details(&source.selection, wait_count)),
+        );
+        let wait_start = Instant::now();
         wait_for_download_task_change(download_changes).await?;
+        wait_count += 1;
+        emit_playlist_playback_trace(
+            "playlist-play-material-wait-download-change-ok",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(&source.playlist_name)
+                .elapsed(trace_start)
+                .details(vec![
+                    trace_detail("waitMs", wait_start.elapsed().as_millis()),
+                    trace_detail("waitCount", wait_count),
+                ]),
+        );
         ensure_playlist_playback_request_current(request)?;
         source = load_playlist_playback_selection(playlist_name).await?;
 
         if let Some(initial_track) = resolve_playlist_initial_track(app, &source.selection).await? {
             ensure_playlist_playback_request_current(request)?;
+            emit_playlist_playback_trace(
+                "playlist-play-material-initial-track-ok",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(&source.playlist_name)
+                    .track(&initial_track)
+                    .elapsed(trace_start)
+                    .details(selection_trace_details(&source.selection, wait_count)),
+            );
             return Ok(PlaylistPlaybackMaterial {
                 playlist_name: source.playlist_name,
                 initial_track,
-                tracks: source.resolution.tracks,
             });
         }
     }
+}
+
+#[cfg(not(test))]
+fn selection_trace_details(
+    selection: &PlaylistPlaybackSelection,
+    wait_count: usize,
+) -> Vec<PlaybackDiagnosticTraceDetail> {
+    vec![
+        trace_detail("selectedCollectionRefs", selection.collections.len()),
+        trace_detail("selectedGroupRefs", selection.groups.len()),
+        trace_detail("selectedExtraRefs", selection.extra.len()),
+        trace_detail("downloadScopes", selection.download_scopes.len()),
+        trace_detail("waitCount", wait_count),
+    ]
 }
 
 #[cfg(not(test))]
@@ -709,35 +1008,99 @@ async fn resolve_playlist_initial_track(
     app: &AppHandle,
     selection: &PlaylistPlaybackSelection,
 ) -> Result<Option<PlaybackTrack>> {
+    let trace_start = Instant::now();
+    emit_playlist_playback_trace(
+        "playlist-play-initial-resolve-start",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(&selection.playlist_name)
+            .details(selection_trace_details(selection, 0)),
+    );
     let save_root = meta_service::resolve_save_root(app).await?;
+    emit_playlist_playback_trace(
+        "playlist-play-initial-save-root-ok",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(&selection.playlist_name)
+            .elapsed(trace_start)
+            .details(vec![trace_detail(
+                "saveRoot",
+                save_root.display().to_string(),
+            )]),
+    );
 
-    let mut seen = HashSet::new();
-    for _ in 0..PLAYLIST_PLAYBACK_INITIAL_RANDOM_ATTEMPT_LIMIT {
-        let Some(source) =
-            playlist_repo::load_random_playlist_playback_track_source(selection).await?
-        else {
-            break;
-        };
-        let source_key = playlist_playback_track_source_key(&source);
-        if !seen.insert(source_key) {
-            continue;
-        }
-
-        if let Some(track) = resolve_playlist_playback_source_track(selection, source, &save_root) {
-            return Ok(Some(track));
-        }
-    }
-
-    let window_sources = playlist_repo::load_playlist_playback_track_sources(
+    let probe_load_start = Instant::now();
+    let probe_sources = playlist_repo::load_playlist_playback_track_sources(
         selection,
-        PLAYLIST_PLAYBACK_INITIAL_WINDOW_LIMIT,
+        PLAYLIST_PLAYBACK_INITIAL_SEED_PROBE_LIMIT,
     )
     .await?;
-    let window_resolution =
-        resolve_playlist_playback_source_resolution(selection, window_sources, &save_root);
-    Ok(select_random_playlist_initial_track(
-        window_resolution.tracks,
-    ))
+    let probe_resolution =
+        resolve_playlist_playback_source_resolution(selection, probe_sources, &save_root);
+    let probe_count = probe_resolution.tracks.len();
+    if let Some(track) = probe_resolution.tracks.into_iter().next() {
+        emit_playlist_playback_trace(
+            "playlist-play-initial-seed-probe-hit",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(&selection.playlist_name)
+                .track(&track)
+                .elapsed(trace_start)
+                .candidate_count(probe_count)
+                .details(vec![
+                    trace_detail("probeLoadMs", probe_load_start.elapsed().as_millis()),
+                    trace_detail("probeLimit", PLAYLIST_PLAYBACK_INITIAL_SEED_PROBE_LIMIT),
+                ]),
+        );
+        return Ok(Some(track));
+    }
+
+    emit_playlist_playback_trace(
+        "playlist-play-initial-seed-probe-miss",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(&selection.playlist_name)
+            .elapsed(trace_start)
+            .candidate_count(probe_count)
+            .details(vec![
+                trace_detail("probeLoadMs", probe_load_start.elapsed().as_millis()),
+                trace_detail("probeLimit", PLAYLIST_PLAYBACK_INITIAL_SEED_PROBE_LIMIT),
+            ]),
+    );
+
+    let scan_load_start = Instant::now();
+    let scan_sources = playlist_repo::load_playlist_playback_track_sources(
+        selection,
+        PLAYLIST_PLAYBACK_INITIAL_SEED_SCAN_LIMIT,
+    )
+    .await?;
+    let scan_resolution =
+        resolve_playlist_playback_source_resolution(selection, scan_sources, &save_root);
+    let scan_count = scan_resolution.tracks.len();
+    if let Some(track) = scan_resolution.tracks.into_iter().next() {
+        emit_playlist_playback_trace(
+            "playlist-play-initial-seed-scan-hit",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(&selection.playlist_name)
+                .track(&track)
+                .elapsed(trace_start)
+                .candidate_count(scan_count)
+                .details(vec![
+                    trace_detail("scanLoadMs", scan_load_start.elapsed().as_millis()),
+                    trace_detail("scanLimit", PLAYLIST_PLAYBACK_INITIAL_SEED_SCAN_LIMIT),
+                ]),
+        );
+        return Ok(Some(track));
+    }
+
+    emit_playlist_playback_trace(
+        "playlist-play-initial-seed-scan-miss",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(&selection.playlist_name)
+            .elapsed(trace_start)
+            .candidate_count(scan_count)
+            .details(vec![
+                trace_detail("scanLoadMs", scan_load_start.elapsed().as_millis()),
+                trace_detail("scanLimit", PLAYLIST_PLAYBACK_INITIAL_SEED_SCAN_LIMIT),
+            ]),
+    );
+    Ok(None)
 }
 
 #[cfg(not(test))]
@@ -810,15 +1173,10 @@ fn emit_playlist_preparing(app: &AppHandle, playlist_name: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(test))]
-fn propose_playlist_playback_queue(
-    request: PlaylistPlaybackRecommendationRequest,
+pub(crate) fn create_initial_playlist_playback_queue(
+    initial_track: PlaybackTrack,
 ) -> Vec<PlaybackTrack> {
-    propose_playlist_playback_queue_with_mode(
-        request,
-        PlaylistPlaybackRecommendationMode::KeepCurrent,
-        false,
-    )
+    vec![initial_track]
 }
 
 #[cfg(not(test))]
@@ -1240,29 +1598,6 @@ fn playlist_playback_track_source_key(source: &PlaylistPlaybackTrackSource) -> S
         "{}:{}:{}",
         source.music.url, source.music.start_ms, source.music.end_ms
     )
-}
-
-pub(crate) fn select_playlist_initial_track_at_index(
-    tracks: Vec<PlaybackTrack>,
-    index: usize,
-) -> Option<PlaybackTrack> {
-    let len = tracks.len();
-    if len == 0 {
-        return None;
-    }
-
-    tracks.into_iter().nth(index % len)
-}
-
-pub(crate) fn select_random_playlist_initial_track(
-    tracks: Vec<PlaybackTrack>,
-) -> Option<PlaybackTrack> {
-    if tracks.is_empty() {
-        return None;
-    }
-
-    let index = rand::rng().random_range(0..tracks.len());
-    select_playlist_initial_track_at_index(tracks, index)
 }
 
 #[cfg(test)]

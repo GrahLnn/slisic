@@ -3,7 +3,7 @@ use super::model::{
 };
 
 #[test]
-fn refresh_counts_tracks_leaf_progress() {
+fn completed_leaf_is_consumed_from_residual_task_queue() {
     let mut task = DownloadTask::new(
         "task-1",
         "https://example.com/list",
@@ -15,12 +15,55 @@ fn refresh_counts_tracks_leaf_progress() {
     first.status = DownloadLeafStatus::Completed;
     second.status = DownloadLeafStatus::Failed;
 
+    task.replace_leaf(DownloadLeaf::new("leaf-1", "https://example.com/a", 0));
     task.replace_leaf(first);
     task.replace_leaf(second);
 
-    assert_eq!(task.total_leaves, 2);
+    assert_eq!(task.total_leaves, 1);
     assert_eq!(task.completed_leaves, 1);
     assert_eq!(task.failed_leaves, 1);
+    assert_eq!(task.leafs[0].id.to_string(), "leaf-2");
+}
+
+#[test]
+fn completed_leaf_count_survives_later_residual_count_refreshes() {
+    let mut task = DownloadTask::new(
+        "task-completion-count",
+        "https://example.com/list",
+        DownloadTrigger::Manual,
+    );
+    let queued = DownloadLeaf::new("leaf-queued", "https://example.com/a", 0);
+    let mut completed = DownloadLeaf::new("leaf-completed", "https://example.com/b", 1);
+    let mut failed = DownloadLeaf::new("leaf-failed", "https://example.com/c", 2);
+
+    task.replace_leaf(queued);
+    task.replace_leaf(completed.clone());
+    completed.status = DownloadLeafStatus::Completed;
+    task.replace_leaf(completed);
+    failed.status = DownloadLeafStatus::Failed;
+    task.replace_leaf(failed);
+
+    assert_eq!(task.completed_leaves, 1);
+    assert_eq!(task.failed_leaves, 1);
+    assert_eq!(task.total_leaves, 2);
+}
+
+#[test]
+fn repeated_completed_leaf_result_does_not_increment_progress_twice() {
+    let mut task = DownloadTask::new(
+        "task-duplicate-completion",
+        "https://example.com/list",
+        DownloadTrigger::Manual,
+    );
+    let mut completed = DownloadLeaf::new("leaf-completed", "https://example.com/a", 0);
+
+    task.replace_leaf(completed.clone());
+    completed.status = DownloadLeafStatus::Completed;
+    task.replace_leaf(completed.clone());
+    task.replace_leaf(completed);
+
+    assert!(task.leafs.is_empty());
+    assert_eq!(task.completed_leaves, 1);
 }
 
 #[test]
@@ -31,16 +74,13 @@ fn mark_interrupted_only_changes_active_states() {
         DownloadTrigger::Manual,
     );
     let mut queued = DownloadLeaf::new("leaf-queued", "https://example.com/a", 0);
-    let mut completed = DownloadLeaf::new("leaf-completed", "https://example.com/b", 1);
 
     task.status = DownloadTaskStatus::Downloading;
     queued.status = DownloadLeafStatus::Downloading;
-    completed.status = DownloadLeafStatus::Completed;
-    task.leafs = vec![queued, completed];
+    task.leafs = vec![queued];
 
     task.mark_interrupted();
 
     assert_eq!(task.status, DownloadTaskStatus::Interrupted);
     assert_eq!(task.leafs[0].status, DownloadLeafStatus::Interrupted);
-    assert_eq!(task.leafs[1].status, DownloadLeafStatus::Completed);
 }

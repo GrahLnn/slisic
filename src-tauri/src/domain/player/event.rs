@@ -17,6 +17,12 @@ pub struct NowPlayingTrackChangedEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+pub struct PlaybackDiagnosticTraceDetail {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
 pub struct PlaybackDiagnosticTraceEvent {
     pub event: String,
     pub playlist_name: Option<String>,
@@ -29,6 +35,7 @@ pub struct PlaybackDiagnosticTraceEvent {
     pub queue_count: Option<usize>,
     pub status: Option<String>,
     pub error: Option<String>,
+    pub details: Option<Vec<PlaybackDiagnosticTraceDetail>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]

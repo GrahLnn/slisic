@@ -50,14 +50,12 @@ async fn ensure_db() {
 
 fn sample_task(id: &str, url: &str, status: DownloadTaskStatus) -> DownloadTask {
     let mut task = DownloadTask::new(id.to_string(), url.to_string(), DownloadTrigger::Manual);
-    let mut leaf = DownloadLeaf::new(format!("{id}-leaf"), format!("{url}/leaf"), 0);
-    leaf.status = if status == DownloadTaskStatus::Completed {
-        DownloadLeafStatus::Completed
-    } else {
-        DownloadLeafStatus::Downloading
-    };
     task.status = status;
-    task.replace_leaf(leaf);
+    if status != DownloadTaskStatus::Completed {
+        let mut leaf = DownloadLeaf::new(format!("{id}-leaf"), format!("{url}/leaf"), 0);
+        leaf.status = DownloadLeafStatus::Downloading;
+        task.replace_leaf(leaf);
+    }
     task
 }
 

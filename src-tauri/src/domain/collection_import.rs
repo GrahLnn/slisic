@@ -1,8 +1,8 @@
 #[cfg(not(test))]
 use crate::domain::downloads::model::DownloadTaskStatus;
 use crate::domain::downloads::model::{
-    CollectionSourceKind, DownloadLeaf, DownloadResourceProbe, DownloadTask, DownloadTrigger,
-    PastedDownloadUrlResolution, now_timestamp,
+    CollectionSourceKind, DownloadLeaf, DownloadTask, DownloadTrigger, PastedDownloadUrlResolution,
+    now_timestamp,
 };
 use crate::domain::downloads::naming::{
     provider_segment, sanitize_path_component, short_hash, stable_id,
@@ -12,7 +12,7 @@ use crate::domain::downloads::repo as download_repo;
 use crate::domain::downloads::service::{
     DownloadTaskChangeSignal, publish_download_task_change, try_claim_task,
 };
-use crate::domain::downloads::yt_dlp::{LeafProbe, RootProbe};
+use crate::domain::downloads::yt_dlp::LeafProbe;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::notify_audio_style_training_inputs_changed;
 use crate::domain::playlists::model::{Collection, Group, Music, canonical_music_id_for_source};
@@ -55,6 +55,15 @@ pub(crate) struct PlannedLeaf {
     pub(crate) initial_probe: Option<LeafProbe>,
     pub(crate) music_title: Option<String>,
     pub(crate) group_hint: Option<Group>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExistingPlannedLeafCompletion {
+    pub(crate) leaf_id: Id,
+    pub(crate) title: Option<String>,
+    pub(crate) relative_path: String,
+    pub(crate) duration_seconds: Option<u32>,
+    pub(crate) chapter_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -164,53 +173,6 @@ pub(crate) async fn resolve_pasted_download_url(
     }
 }
 
-pub(crate) async fn describe_download_resource(
-    root_probe: RootProbe,
-) -> Result<DownloadResourceProbe> {
-    match root_probe {
-        RootProbe::Single(leaf) => {
-            let existing = collection_repo::get_collection_by_url(&leaf.webpage_url).await?;
-            Ok(DownloadResourceProbe {
-                url: leaf.webpage_url.clone(),
-                source_kind: CollectionSourceKind::Single,
-                title: leaf.title.clone(),
-                item_count: 1,
-                collection_folder: resolve_collection_folder(
-                    &leaf.webpage_url,
-                    &leaf.title,
-                    existing.as_ref(),
-                )
-                .await?,
-                enable_updates: None,
-            })
-        }
-        RootProbe::List(list) => {
-            if list.entries.is_empty() {
-                bail!("download resource does not contain any downloadable entries");
-            }
-
-            let existing = collection_repo::get_collection_by_url(&list.webpage_url).await?;
-            Ok(DownloadResourceProbe {
-                url: list.webpage_url.clone(),
-                source_kind: CollectionSourceKind::List,
-                title: list.title.clone(),
-                item_count: list.entries.len() as u32,
-                collection_folder: resolve_collection_folder(
-                    &list.webpage_url,
-                    &list.title,
-                    existing.as_ref(),
-                )
-                .await?,
-                enable_updates: Some(
-                    existing
-                        .and_then(|collection| collection.enable_updates)
-                        .unwrap_or(false),
-                ),
-            })
-        }
-    }
-}
-
 #[cfg(not(test))]
 pub(crate) async fn resolve_existing_enqueued_collection(
     task: &DownloadTask,
@@ -266,9 +228,20 @@ impl CollectionSyncPlan {
     }
 }
 
-pub(crate) async fn load_collection_shell(plan: &CollectionSyncPlan) -> Result<Collection> {
+pub(crate) async fn load_collection_shell(
+    plan: &CollectionSyncPlan,
+    save_root: &Path,
+) -> Result<Collection> {
     let existing = collection_repo::get_collection_by_url(&plan.collection_url).await?;
-    Ok(create_collection_shell(plan, existing))
+    let mut collection = create_collection_shell(plan, existing);
+
+    if restore_download_manifest_evidence(&mut collection, save_root)? {
+        let saved = collection_repo::upsert_collection(&collection).await?;
+        notify_audio_style_inputs_changed("download_manifest_evidence_restored");
+        collection = saved;
+    }
+
+    Ok(collection)
 }
 
 pub(crate) fn apply_collection_shell_plan_to_task(
@@ -283,16 +256,16 @@ pub(crate) fn apply_collection_shell_plan_to_task(
 
 pub(crate) fn apply_collection_plan_to_task(task: &mut DownloadTask, plan: &CollectionSyncPlan) {
     apply_collection_shell_plan_to_task(task, &plan.shell_plan());
+    task.discard_completed_leafs();
     for leaf in &plan.leaves {
         if task.leafs.iter().any(|existing| existing.id == leaf.id) {
             continue;
         }
 
-        task.leafs.push(DownloadLeaf::new(
-            leaf.id.clone(),
-            leaf.url.clone(),
-            leaf.sequence,
-        ));
+        let mut residual = DownloadLeaf::new(leaf.id.clone(), leaf.url.clone(), leaf.sequence);
+        residual.title = leaf.music_title.clone();
+        residual.group = leaf.group_hint.clone().map(Into::into);
+        task.leafs.push(residual);
     }
     task.leafs.sort_by_key(|leaf| leaf.sequence);
     task.refresh_counts();
@@ -766,6 +739,13 @@ pub(crate) fn filter_new_planned_leaves(
         .collect()
 }
 
+pub(crate) fn deduplicate_planned_leaves(
+    collection_url: &str,
+    leaves: Vec<PlannedLeaf>,
+) -> Vec<PlannedLeaf> {
+    filter_new_planned_leaves(collection_url, leaves, &HashSet::new())
+}
+
 pub(crate) fn materialize_music_entries(
     probe: &LeafProbe,
     relative_path: &str,
@@ -811,6 +791,7 @@ pub(crate) fn materialize_music_entries(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn existing_leaf_identities(
     collection: Option<&Collection>,
     save_root: &Path,
@@ -836,6 +817,115 @@ pub(crate) fn existing_leaf_identities(
                 .collect::<HashSet<_>>()
         })
         .unwrap_or_default()
+}
+
+pub(crate) fn existing_planned_leaf_completions(
+    collection: &Collection,
+    plan: &CollectionSyncPlan,
+    save_root: &Path,
+) -> Vec<ExistingPlannedLeafCompletion> {
+    let mut music_by_identity = HashMap::<LeafGroupIdentity, Vec<&Music>>::new();
+    for music in &collection.musics {
+        let Some(relative_path) = music.path.as_deref().map(str::trim) else {
+            continue;
+        };
+        if relative_path.is_empty()
+            || !save_root
+                .join(&collection.folder)
+                .join(relative_path)
+                .is_file()
+        {
+            continue;
+        }
+
+        music_by_identity
+            .entry(LeafGroupIdentity::from_music(music))
+            .or_default()
+            .push(music);
+    }
+
+    plan.leaves
+        .iter()
+        .filter_map(|leaf| {
+            let identity = LeafGroupIdentity::from_plan(&plan.collection_url, leaf);
+            let musics = music_by_identity.get(&identity)?;
+            let first = musics.first()?;
+            let relative_path = first.path.as_ref()?.trim();
+            if relative_path.is_empty() {
+                return None;
+            }
+
+            let title = leaf
+                .music_title
+                .clone()
+                .or_else(|| Some(first.name.clone()))
+                .filter(|value| !value.trim().is_empty());
+            let duration_seconds = musics
+                .iter()
+                .map(|music| music.end_ms)
+                .max()
+                .map(|end_ms| end_ms / 1_000);
+
+            Some(ExistingPlannedLeafCompletion {
+                leaf_id: leaf.id.clone(),
+                title,
+                relative_path: relative_path.to_string(),
+                duration_seconds,
+                chapter_count: Some(musics.len() as u32),
+            })
+        })
+        .collect()
+}
+
+fn restore_download_manifest_evidence(
+    collection: &mut Collection,
+    save_root: &Path,
+) -> Result<bool> {
+    let collection_path = save_root.join(&collection.folder);
+    let Some(manifest) = read_collection_manifest(&collection_path)? else {
+        return Ok(false);
+    };
+    if manifest.collection.url != collection.url {
+        return Ok(false);
+    }
+
+    let manifest_paths = manifest
+        .musics
+        .iter()
+        .map(|music| normalize_manifest_relative_path(&music.path))
+        .collect::<Result<HashSet<_>>>()?;
+    let local_audio_files = collect_manifest_audio_file_paths(&collection_path, &manifest_paths)?;
+    let restored =
+        collection_from_manifest(collection.folder.clone(), manifest, &local_audio_files)?;
+    if restored.musics.is_empty() {
+        return Ok(false);
+    }
+
+    let mut existing_keys = collection
+        .musics
+        .iter()
+        .map(manifest_restored_music_key)
+        .collect::<HashSet<_>>();
+    let mut restored_any = false;
+    for music in restored.musics {
+        if existing_keys.insert(manifest_restored_music_key(&music)) {
+            collection.musics.push(music);
+            restored_any = true;
+        }
+    }
+
+    Ok(restored_any)
+}
+
+fn manifest_restored_music_key(music: &Music) -> String {
+    format!(
+        "{}\n{}\n{}\n{}\n{}",
+        music.url,
+        music.group.url,
+        music.path.as_deref().unwrap_or_default(),
+        music.start_ms,
+        music.end_ms
+    )
 }
 
 pub(crate) fn normalize_music_titles_within_collection(collection: &mut Collection) {
@@ -1850,6 +1940,27 @@ fn collect_local_audio_files(
             absolute_path: file_path,
             relative_path,
             duration_ms: probe.duration_ms,
+        });
+    }
+
+    Ok(files)
+}
+
+fn collect_manifest_audio_file_paths(
+    collection_path: &Path,
+    manifest_paths: &HashSet<String>,
+) -> Result<Vec<LocalAudioFile>> {
+    let mut files = Vec::new();
+    for file_path in local_collection_file_candidates(collection_path) {
+        let relative_path = normalize_local_relative_path(collection_path, &file_path)?;
+        if !manifest_paths.contains(&relative_path) {
+            continue;
+        }
+
+        files.push(LocalAudioFile {
+            absolute_path: file_path,
+            relative_path,
+            duration_ms: u32::MAX,
         });
     }
 

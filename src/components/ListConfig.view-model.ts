@@ -474,7 +474,7 @@ export function createListConfigArcTrackItems(args: {
       continue;
     }
 
-    if (item.status === "invalid_url" || item.status === "probe_failed") {
+    if (item.status === "invalid_url" || item.status === "enqueue_failed") {
       continue;
     }
 
@@ -500,7 +500,7 @@ export function resolveListConfigToolLabelTextClassName(item: ListConfigToolLabe
     candidate: ({ status }): string =>
       cn(
         "text-[12px] text-[#404040] dark:text-[#a3a3a3]",
-        (status === "invalid_url" || status === "probe_failed") && "line-through opacity-70",
+        (status === "invalid_url" || status === "enqueue_failed") && "line-through opacity-70",
       ),
   });
 }
@@ -515,7 +515,7 @@ export function resolveListConfigToolLabelAffordance(
   return me(item).match("kind", {
     playlist: (): ListConfigToolLabelAffordance => "playlist",
     candidate: ({ status }): ListConfigToolLabelAffordance =>
-      status === "invalid_url" || status === "probe_failed" ? "candidate-delete" : "passive",
+      status === "invalid_url" || status === "enqueue_failed" ? "candidate-delete" : "passive",
   });
 }
 
@@ -585,7 +585,7 @@ export function resolveListConfigEmptyState(
 export function countListConfigParsingCandidateItems(
   candidateItems: readonly ConfigCandidateItem[],
 ) {
-  return candidateItems.filter((item) => item.status === "checking" || item.status === "probing")
+  return candidateItems.filter((item) => item.status === "checking" || item.status === "enqueueing")
     .length;
 }
 
