@@ -163,8 +163,15 @@ function resolveCurrentMusicDelete(context: Context, deletions: readonly MusicDe
   );
 }
 
+function resolvePendingCurrentMusicEdit(context: Context) {
+  return resolveCurrentMusicEdit(context, createMusicDraftEdits(context.spectrumMusicDrafts));
+}
+
 function createSpectrumPlayReturnSurfaceContext(context: Context) {
+  const currentMusicEdit = resolvePendingCurrentMusicEdit(context);
+
   return {
+    nowPlayingTrackName: currentMusicEdit?.alias ?? context.nowPlayingTrackName,
     titleToneHandoff: context.activeLayoutId
       ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
       : null,

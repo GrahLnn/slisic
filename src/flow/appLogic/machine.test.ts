@@ -786,6 +786,156 @@ describe("appLogic machine", () => {
     });
   });
 
+  test("uses the edited spectrum title immediately for the return-to-play handoff", async () => {
+    const music = createMusic();
+    const collection = createCollection([music]);
+    const updateInputs: MusicUpdateInput[][] = [];
+    const updateGate: { release: () => void } = {
+      release: () => {
+        throw new Error("update gate was not initialized");
+      },
+    };
+    const updateReleased = new Promise<void>((resolve) => {
+      updateGate.release = resolve;
+    });
+
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+          playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
+            async () => null,
+          ),
+          loadSpectrumMusicDrafts: fromPromise<
+            SpectrumMusicDraftBootstrapResult,
+            SpectrumMusicDraftBootstrapInput
+          >(async () => ({
+            source: null,
+            drafts: [
+              {
+                kind: "persisted" as const,
+                baselineName: music.alias,
+                baselineStartMs: music.start_ms,
+                baselineEndMs: music.end_ms,
+                name: music.alias,
+                url: music.url,
+                startMs: music.start_ms,
+                endMs: music.end_ms,
+              },
+            ],
+          })),
+          updateMusics: fromPromise<MusicUpdatesResult, MusicUpdateInput[]>(async ({ input }) => {
+            updateInputs.push(input);
+            await updateReleased;
+            return {
+              results: input.map((request) => ({
+                input: request,
+                music: {
+                  ...music,
+                  alias: request.alias,
+                  start_ms: request.startMs,
+                  end_ms: request.endMs,
+                },
+              })),
+            };
+          }),
+          deleteMusics: fromPromise<MusicDeletesResult, MusicDraftDelete[]>(async () => ({
+            results: [],
+          })),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "ready") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+    actor.send(payloads["playlist.play"].load("Focus Session"));
+    actor.send(
+      payloads["player.now_playing_track.changed"].load({
+        playlist_name: "Focus Session",
+        music_name: music.alias,
+        music_url: music.url,
+        canonical_music_id: music.canonical_music_id,
+        file_path: "C:/Music/quiet-morning.m4a",
+        start_ms: music.start_ms,
+        end_ms: music.end_ms,
+        liked: false,
+      }),
+    );
+    actor.send(sig.mainx.openspectrum);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "spectrum") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+
+    actor.send(
+      spectrumMusicNameChanged.load({
+        id: "https://example.com/quiet-morning#a|0|120000",
+        name: "Track A Revised",
+      }),
+    );
+    actor.send(sig.mainx.back);
+
+    assert.equal(actor.getSnapshot().value, "spectrumUpdatingMusic");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, "Track A Revised");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackStartMs, music.start_ms);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackEndMs, music.end_ms);
+    assert.deepEqual(actor.getSnapshot().context.titleToneHandoff, {
+      layoutId: "playlist-title:Focus Session",
+      tone: "solid",
+    });
+
+    updateGate.release();
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+      }, 2000);
+      const subscription = actor.subscribe((snapshot) => {
+        if (snapshot.value === "play") {
+          clearTimeout(timeout);
+          subscription.unsubscribe();
+          resolve();
+        }
+      });
+    });
+
+    assert.deepEqual(updateInputs, [
+      [
+        {
+          id: "https://example.com/quiet-morning#a|0|120000",
+          alias: "Track A Revised",
+          endMs: music.end_ms,
+          startMs: music.start_ms,
+          targetEndMs: music.end_ms,
+          targetStartMs: music.start_ms,
+          url: music.url,
+        },
+      ],
+    ]);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, "Track A Revised");
+  });
+
   test("drops an empty pending spectrum music draft from shallow spectrum context", async () => {
     const music = createMusic();
     const collection = createCollection([music]);
