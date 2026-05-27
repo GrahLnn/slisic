@@ -93,6 +93,18 @@ describe("playItem", () => {
     assert.deepEqual(
       resolvePlaybackIconLayerBox({
         anchorBottom: 120,
+        textWidth: 24,
+        viewportWidth: 500,
+      }),
+      {
+        left: 194,
+        top: 124,
+        width: 112,
+      },
+    );
+    assert.deepEqual(
+      resolvePlaybackIconLayerBox({
+        anchorBottom: 120,
         textWidth: 720,
         viewportWidth: 500,
       }),

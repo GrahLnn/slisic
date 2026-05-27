@@ -1139,8 +1139,11 @@ fn boundary_title_noise_occurrence_has_external_anchor(
     title: &str,
     text: &str,
 ) -> bool {
-    title_noise_affix_deletion_span(kind, title, text)
-        .is_some_and(|(start, end)| start < end && (start > 0 || end < title.len()))
+    title_noise_affix_deletion_span(kind, title, text).is_some_and(|(start, end)| {
+        start < end
+            && (start > 0 || end < title.len())
+            && title_noise_affix_residue_is_valid(title, start, end)
+    })
 }
 
 fn boundary_title_noise_text_is_candidate(kind: TitleNoisePatternKind, text: &str) -> bool {
@@ -1305,7 +1308,12 @@ fn delete_title_noise_affix_occurrence(
     let mut normalized = String::new();
     normalized.push_str(&title[..start]);
     normalized.push_str(&title[end..]);
-    cleanup_title_after_noise_deletion(&normalized)
+    let normalized = cleanup_title_after_noise_deletion(&normalized);
+    if !title_noise_text_has_language_character(&normalized) {
+        return title.to_string();
+    }
+
+    normalized
 }
 
 fn remove_title_noise_fragment_occurrences(title: &str, fragment: &str) -> String {
@@ -1319,6 +1327,9 @@ fn remove_title_noise_fragment_occurrences(title: &str, fragment: &str) -> Strin
         next.push_str(&normalized[..start]);
         next.push_str(&normalized[end..]);
         let next = cleanup_title_after_noise_deletion(&next);
+        if !title_noise_text_has_language_character(&next) {
+            break;
+        }
         if next == normalized {
             break;
         }
@@ -1335,6 +1346,13 @@ fn cleanup_title_after_noise_deletion(title: &str) -> String {
         })
         .trim()
         .to_string()
+}
+
+fn title_noise_affix_residue_is_valid(title: &str, start: usize, end: usize) -> bool {
+    let mut residue = String::new();
+    residue.push_str(&title[..start]);
+    residue.push_str(&title[end..]);
+    title_noise_text_has_language_character(&cleanup_title_after_noise_deletion(&residue))
 }
 
 fn is_dangling_title_separator(character: char) -> bool {

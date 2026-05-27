@@ -77,6 +77,7 @@ type PlaybackIconLayerBox = {
 };
 
 const PLAYBACK_ICON_LAYER_VERTICAL_GAP = 4;
+const PLAYBACK_ICON_LAYER_MIN_WIDTH = 112;
 const PLAY_ITEM_HEART_ACTIVE_COLOR = "#f91880";
 
 export function resolvePlayItemColorHandoff(args: {
@@ -220,7 +221,10 @@ export function resolvePlaybackIconLayerBox(args: {
     return undefined;
   }
 
-  const width = Math.min(Math.ceil(args.textWidth), args.viewportWidth);
+  const width = Math.min(
+    Math.max(Math.ceil(args.textWidth), PLAYBACK_ICON_LAYER_MIN_WIDTH),
+    args.viewportWidth,
+  );
   return {
     left: Math.max(0, (args.viewportWidth - width) / 2),
     top: args.anchorBottom + PLAYBACK_ICON_LAYER_VERTICAL_GAP,

@@ -606,6 +606,64 @@ fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
 }
 
 #[test]
+fn normalize_music_titles_keeps_multi_part_track_title_language_core() {
+    let group = collection_group(
+        "Death Stranding 2",
+        "https://example.com/playlist/death-stranding-2",
+        "Death Stranding 2",
+    );
+    let mut collection = Collection {
+        name: "Death Stranding 2".to_string(),
+        url: "https://example.com/playlist/death-stranding-2".to_string(),
+        folder: "youtube/death-stranding-2".to_string(),
+        musics: vec![
+            Music {
+                name: "Ludvig Forssell - One Last Fight Pt.1 - Death Stranding 2- On The Beach (Original Video Game Score)".to_string(),
+                alias: "Ludvig Forssell - One Last Fight Pt.1 - Death Stranding 2- On The Beach (Original Video Game Score)".to_string(),
+                group: group.clone(),
+                url: "https://example.com/watch?v=ds2-fight-1".to_string(),
+                canonical_music_id: canonical_music_id_for_source(&"https://example.com/watch?v=ds2-fight-1".to_string(), 0, 180_000),
+                path: Some("Ludvig Forssell - One Last Fight Pt.1 - Death Stranding 2- On The Beach (Original Video Game Score).m4a".to_string()),
+                start_ms: 0,
+                end_ms: 180_000,
+                liked: false,
+            },
+            Music {
+                name: "Ludvig Forssell - One Last Fight Pt.2 - Death Stranding 2- On The Beach (Original Video Game Score)".to_string(),
+                alias: "Ludvig Forssell - One Last Fight Pt.2 - Death Stranding 2- On The Beach (Original Video Game Score)".to_string(),
+                group: group.clone(),
+                url: "https://example.com/watch?v=ds2-fight-2".to_string(),
+                canonical_music_id: canonical_music_id_for_source(&"https://example.com/watch?v=ds2-fight-2".to_string(), 0, 180_000),
+                path: Some("Ludvig Forssell - One Last Fight Pt.2 - Death Stranding 2- On The Beach (Original Video Game Score).m4a".to_string()),
+                start_ms: 0,
+                end_ms: 180_000,
+                liked: false,
+            },
+            Music {
+                name: "Ludvig Forssell - One Last Fight Pt.3 - Death Stranding 2- On The Beach (Original Video Game Score)".to_string(),
+                alias: "Ludvig Forssell - One Last Fight Pt.3 - Death Stranding 2- On The Beach (Original Video Game Score)".to_string(),
+                group,
+                url: "https://example.com/watch?v=ds2-fight-3".to_string(),
+                canonical_music_id: canonical_music_id_for_source(&"https://example.com/watch?v=ds2-fight-3".to_string(), 0, 180_000),
+                path: Some("Ludvig Forssell - One Last Fight Pt.3 - Death Stranding 2- On The Beach (Original Video Game Score).m4a".to_string()),
+                start_ms: 0,
+                end_ms: 180_000,
+                liked: false,
+            },
+        ],
+        last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    normalize_music_titles_within_collection(&mut collection);
+
+    assert_eq!(collection.musics[0].name, "One Last Fight Pt.1");
+    assert_eq!(collection.musics[1].name, "One Last Fight Pt.2");
+    assert_eq!(collection.musics[2].name, "One Last Fight Pt.3");
+    assert_eq!(collection.musics[2].alias, "One Last Fight Pt.3");
+}
+
+#[test]
 fn normalize_music_titles_does_not_compare_across_download_groups() {
     let first_group = collection_group(
         "First Playlist",
