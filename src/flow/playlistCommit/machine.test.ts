@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, test } from "node:test";
 import { Err, Ok } from "@grahlnn/fn";
 import { createActor } from "xstate";
-import type { PlayList, PlayListListView } from "@/src/cmd";
+import type { PlayListListView, PlayListWriteRequest } from "@/src/cmd";
 import { crab } from "@/src/cmd";
 import { actor as appLogicActor, resetRuntimeActor } from "../appLogic/runtime";
 import { resolvePlaylistDraftCommit } from "../appLogic/core";
@@ -98,7 +98,7 @@ describe("playlistCommit machine", () => {
   test("publishes preview before persistence and upserts the stable playlist after success", async () => {
     const gate = deferred();
     const committedPlaylist = createPlaylistSurface("New Draft");
-    const persistRequests: PlayList[] = [];
+    const persistRequests: PlayListWriteRequest[] = [];
 
     setUpsertPlaylistMock(async (previousName, playlist) => {
       assert.equal(previousName, null);

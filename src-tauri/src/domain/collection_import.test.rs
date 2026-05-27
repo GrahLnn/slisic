@@ -7,7 +7,9 @@ use super::{
 };
 use crate::domain::downloads::model::CollectionSourceKind;
 use crate::domain::downloads::model::{DownloadTaskStatus, DownloadTrigger};
-use crate::domain::playlists::model::{Collection, Group, Music, canonical_music_id_for_source};
+use crate::domain::playlists::model::{
+    Collection, CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
+};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -101,25 +103,25 @@ fn manifest_import_restores_download_identity_for_playable_files() {
     assert_eq!(restored.end_ms, 60_000);
     assert!(restored.liked);
 
-    let loose_fallback = &collection.musics[1];
-    assert_eq!(loose_fallback.name, "loose");
-    assert_eq!(loose_fallback.url, "https://example.com/playlist#loose.flac");
-    assert_eq!(loose_fallback.path.as_deref(), Some("loose.flac"));
-    assert_eq!(loose_fallback.start_ms, 0);
-    assert_eq!(loose_fallback.end_ms, 30_000);
+    let loose_local_music = &collection.musics[1];
+    assert_eq!(loose_local_music.name, "loose");
+    assert_eq!(loose_local_music.url, "https://example.com/playlist#loose.flac");
+    assert_eq!(loose_local_music.path.as_deref(), Some("loose.flac"));
+    assert_eq!(loose_local_music.start_ms, 0);
+    assert_eq!(loose_local_music.end_ms, 30_000);
 
-    let local_fallback = &collection.musics[2];
-    assert_eq!(local_fallback.name, "missing-from-manifest");
+    let missing_manifest_music = &collection.musics[2];
+    assert_eq!(missing_manifest_music.name, "missing-from-manifest");
     assert_eq!(
-        local_fallback.url,
+        missing_manifest_music.url,
         "https://example.com/playlist#missing-from-manifest.ogg"
     );
     assert_eq!(
-        local_fallback.path.as_deref(),
+        missing_manifest_music.path.as_deref(),
         Some("missing-from-manifest.ogg")
     );
-    assert_eq!(local_fallback.start_ms, 0);
-    assert_eq!(local_fallback.end_ms, 44_000);
+    assert_eq!(missing_manifest_music.start_ms, 0);
+    assert_eq!(missing_manifest_music.end_ms, 44_000);
     assert!(
         collection
             .musics
@@ -182,11 +184,21 @@ fn manifest_does_not_materialize_collection_owner_as_group() {
     let collection_owner = Group {
         name: "Collection".to_string(),
         url: "https://example.com/playlist".to_string(),
+        collection: test_collection_owner(
+            "Collection",
+            "https://example.com/playlist",
+            "youtube/collection",
+        ),
         folder: "youtube/collection".to_string(),
     };
     let nested_group = Group {
         name: "Disc 1".to_string(),
         url: "https://example.com/disc-1".to_string(),
+        collection: test_collection_owner(
+            "Collection",
+            "https://example.com/playlist",
+            "youtube/collection",
+        ),
         folder: "Disc 1".to_string(),
     };
     let collection = Collection {
@@ -226,7 +238,7 @@ fn manifest_does_not_materialize_collection_owner_as_group() {
 }
 
 #[test]
-fn import_skips_manifest_music_with_missing_nested_group() {
+fn import_ignores_manifest_music_with_missing_nested_group_and_keeps_local_file_identity() {
     let local_audio_files = vec![LocalAudioFile {
         absolute_path: PathBuf::from("C:/library/collection/nested.m4a"),
         relative_path: "nested.m4a".to_string(),
@@ -398,6 +410,7 @@ fn finalize_downloaded_leaf_commits_the_actual_downloaded_file_name_without_temp
     let group = Group {
         name: collection.name.clone(),
         url: collection.url.clone(),
+        collection: CollectionGroupOwner::from(&collection),
         folder: collection.folder.clone(),
     };
 
@@ -445,6 +458,11 @@ fn finalize_downloaded_leaf_is_idempotent_after_temp_file_was_already_committed(
             Group {
                 name: "Recovered Temp".to_string(),
                 url: "https://www.youtube.com/playlist?list=PLtemp".to_string(),
+                collection: test_collection_owner(
+                    "Recovered Temp",
+                    "https://www.youtube.com/playlist?list=PLtemp",
+                    collection_folder,
+                ),
                 folder: collection_folder.to_string(),
             },
         )],
@@ -454,6 +472,7 @@ fn finalize_downloaded_leaf_is_idempotent_after_temp_file_was_already_committed(
     let group = Group {
         name: collection.name.clone(),
         url: collection.url.clone(),
+        collection: CollectionGroupOwner::from(&collection),
         folder: collection.folder.clone(),
     };
 
@@ -546,6 +565,16 @@ fn music_with_group(name: &str, url: &str, path: &str, group: Group) -> Music {
         start_ms: 0,
         end_ms: 60_000,
         liked: false,
+    }
+}
+
+fn test_collection_owner(name: &str, url: &str, folder: &str) -> CollectionGroupOwner {
+    CollectionGroupOwner {
+        name: name.to_string(),
+        url: url.to_string(),
+        folder: folder.to_string(),
+        last_updated: "2026-05-24T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
     }
 }
 

@@ -136,6 +136,13 @@ const excludedMusic: Music = {
   group: {
     name: "Blocked Collection",
     url: "https://example.com/blocked-collection",
+    collection: {
+      name: "Blocked Collection",
+      url: "https://example.com/blocked-collection",
+      folder: "youtube/blocked-collection",
+      last_updated: "2026-04-13T00:00:00Z",
+      enable_updates: null,
+    },
     folder: "youtube/blocked-collection",
   },
   canonical_music_id: "source:https://example.com/watch?v=blocked:0:180000",
@@ -454,7 +461,7 @@ describe("ListConfig title view model", () => {
     ]);
   });
 
-  test("prefers playlist collections over groups when names overlap", () => {
+  test("keeps playlist groups explicit when names overlap with collections", () => {
     assert.deepEqual(
       createListConfigPlaylistSidebarItems({
         mode: "edit",
@@ -484,6 +491,13 @@ describe("ListConfig title view model", () => {
           name: "Disc 1",
           url: "https://example.com/quiet-morning#disc-1",
           folder: "Disc 1",
+          enableUpdates: null,
+        },
+        {
+          kind: "group",
+          name: "Quiet Morning",
+          url: "https://example.com/group/quiet-morning",
+          folder: "Quiet Morning",
           enableUpdates: null,
         },
       ],
@@ -920,6 +934,7 @@ describe("ListConfig title view model", () => {
         ],
         playlistItems: createListConfigPlaylistSidebarItems(draftWithGroup),
         candidateItems: [],
+        collectionGroupMemberships: [],
         excludeAvailability: emptyExcludeAvailability,
       }),
       [
@@ -967,9 +982,77 @@ describe("ListConfig title view model", () => {
             error: null,
           },
         ],
+        collectionGroupMemberships: [],
         excludeAvailability: emptyExcludeAvailability,
       }),
       [],
+    );
+  });
+
+  test("removes collection-covered groups from the arc-track", () => {
+    assert.deepEqual(
+      createListConfigArcTrackItems({
+        libraryItems: [
+          {
+            kind: "collection",
+            name: "Collection A",
+            url: "https://example.com/collection-a",
+            folder: "youtube/collection-a",
+          },
+          {
+            kind: "group",
+            name: "A Disc",
+            url: "https://example.com/collection-a#disc",
+            folder: "A Disc",
+          },
+          {
+            kind: "collection",
+            name: "Collection B",
+            url: "https://example.com/collection-b",
+            folder: "youtube/collection-b",
+          },
+          {
+            kind: "group",
+            name: "B Disc",
+            url: "https://example.com/collection-b#disc",
+            folder: "B Disc",
+          },
+        ],
+        playlistItems: [
+          {
+            kind: "collection",
+            name: "Collection A",
+            url: "https://example.com/collection-a",
+            folder: "youtube/collection-a",
+          },
+        ],
+        candidateItems: [],
+        collectionGroupMemberships: [
+          {
+            collection_url: "https://example.com/collection-a",
+            group_url: "https://example.com/collection-a#disc",
+          },
+          {
+            collection_url: "https://example.com/collection-b",
+            group_url: "https://example.com/collection-b#disc",
+          },
+        ],
+        excludeAvailability: emptyExcludeAvailability,
+      }),
+      [
+        {
+          kind: "collection",
+          name: "Collection B",
+          url: "https://example.com/collection-b",
+          folder: "youtube/collection-b",
+        },
+        {
+          kind: "group",
+          name: "B Disc",
+          url: "https://example.com/collection-b#disc",
+          folder: "B Disc",
+        },
+      ],
     );
   });
 
@@ -1001,6 +1084,7 @@ describe("ListConfig title view model", () => {
         ],
         playlistItems: [],
         candidateItems: [],
+        collectionGroupMemberships: [],
         excludeAvailability: {
           fully_excluded_collection_urls: [collectionUrl],
           fully_excluded_group_urls: [groupUrl],
@@ -1353,9 +1437,21 @@ describe("ListConfig title view model", () => {
           url: "https://example.com/late-night-tape",
           folder: "youtube/late-night-tape",
         },
+        {
+          kind: "group",
+          name: "Disc 1",
+          url: "https://example.com/quiet-morning#disc-1",
+          folder: "Disc 1",
+        },
       ],
       excludeItems: [],
       excludeAvailability: emptyExcludeAvailability,
+      collectionGroupMemberships: [
+        {
+          collection_url: "https://example.com/quiet-morning",
+          group_url: "https://example.com/quiet-morning#disc-1",
+        },
+      ],
       candidateItems: [],
       previousEmptyState: null,
     });
@@ -1403,6 +1499,7 @@ describe("ListConfig title view model", () => {
       ],
       excludeItems: [],
       excludeAvailability: emptyExcludeAvailability,
+      collectionGroupMemberships: [],
       candidateItems: [],
       previousEmptyState: null,
     });
@@ -1453,6 +1550,7 @@ describe("ListConfig title view model", () => {
         },
       ],
       excludeAvailability: emptyExcludeAvailability,
+      collectionGroupMemberships: [],
       candidateItems: [
         ...candidateItems,
         {

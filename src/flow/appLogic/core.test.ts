@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { PlayList, PlayListConfigView, PlayListListView } from "@/src/cmd";
+import type {
+  CollectionGroupOwner,
+  Group,
+  Music,
+  PlayList,
+  PlayListConfigView,
+  PlayListListView,
+} from "@/src/cmd";
 import {
   createDraftFromPlayListConfig,
+  createConfigLibraryFromCollections,
   createConfigSidebarItemsFromLibrary,
-  createPlayListFromDraft,
+  createPlayListWriteRequestFromDraft,
   createContextResetter,
   createInitialContext,
   includeDraftSidebarItem,
@@ -20,6 +28,7 @@ import {
   upsertPlaylistIntoPlaylists,
   upsertCollectionIntoDraft,
   upsertCollectionIntoCollections,
+  upsertCollectionIntoConfigLibrary,
 } from "./core";
 
 function createPlayListFixture(args: {
@@ -32,15 +41,29 @@ function createPlayListFixture(args: {
   };
 }
 
-function createMusicFixture(overrides: Partial<PlayList["extra"][number]> = {}) {
+const sampleCollectionOwner: CollectionGroupOwner = {
+  name: "Quiet Morning",
+  url: "https://example.com/quiet-morning",
+  folder: "youtube/quiet-morning",
+  last_updated: "2026-04-13T00:00:00Z",
+  enable_updates: null,
+};
+
+function createGroupFixture(overrides: Partial<Group> = {}): Group {
+  return {
+    name: "Disc 1",
+    url: "https://example.com/disc-1",
+    collection: sampleCollectionOwner,
+    folder: "Disc 1",
+    ...overrides,
+  };
+}
+
+function createMusicFixture(overrides: Partial<Music> = {}): Music {
   return {
     name: "Track A",
     alias: "Track A",
-    group: {
-      name: "Disc 1",
-      url: "https://example.com/disc-1",
-      folder: "Disc 1",
-    },
+    group: createGroupFixture(),
     canonical_music_id: "source:https://example.com/track-a:0:120000",
     url: "https://example.com/track-a",
     path: "Disc 1/Track A.m4a",
@@ -153,11 +176,11 @@ describe("upsertCollectionIntoCollections", () => {
         {
           name: "Opening",
           alias: "Opening",
-          group: {
+          group: createGroupFixture({
             name: "Night Drive",
             url: "https://example.com/night-drive",
             folder: "youtube/night-drive",
-          },
+          }),
           canonical_music_id: "source:https://example.com/night-drive#opening:0:120000",
           url: "https://example.com/night-drive#opening",
           path: "opening.m4a",
@@ -169,6 +192,104 @@ describe("upsertCollectionIntoCollections", () => {
     };
 
     assert.deepEqual(upsertCollectionIntoCollections([first, second], updated), [first, updated]);
+  });
+});
+
+describe("config library collection group memberships", () => {
+  test("does not infer group memberships from collection music rows", () => {
+    const collection = {
+      name: "Quiet Morning",
+      url: "https://example.com/quiet-morning",
+      folder: "youtube/quiet-morning",
+      musics: [
+        createMusicFixture({
+          group: createGroupFixture({
+            name: "Disc 1",
+            url: "https://example.com/quiet-morning#disc-1",
+            folder: "Disc 1",
+          }),
+        }),
+        createMusicFixture({
+          url: "https://example.com/track-b",
+          canonical_music_id: "source:https://example.com/track-b:0:120000",
+          group: createGroupFixture({
+            name: "Disc 1",
+            url: "https://example.com/quiet-morning#disc-1",
+            folder: "Disc 1",
+          }),
+        }),
+      ],
+      last_updated: "2026-04-13T00:00:00Z",
+      enable_updates: null,
+    };
+
+    assert.deepEqual(createConfigLibraryFromCollections([collection]), {
+      collections: [
+        {
+          name: collection.name,
+          url: collection.url,
+          folder: collection.folder,
+          last_updated: collection.last_updated,
+          enable_updates: collection.enable_updates,
+        },
+      ],
+      groups: [],
+      collection_group_memberships: [],
+      excludes: [],
+      exclude_availability: {
+        fully_excluded_collection_urls: [],
+        fully_excluded_group_urls: [],
+      },
+    });
+  });
+
+  test("drops memberships owned by a refreshed collection without minting replacements", () => {
+    const collectionUrl = "https://example.com/quiet-morning";
+    const library = {
+      collections: [],
+      groups: [],
+      collection_group_memberships: [
+        {
+          collection_url: collectionUrl,
+          group_url: "https://example.com/quiet-morning#old-disc",
+        },
+        {
+          collection_url: "https://example.com/other",
+          group_url: "https://example.com/other#disc",
+        },
+      ],
+      excludes: [],
+      exclude_availability: {
+        fully_excluded_collection_urls: [],
+        fully_excluded_group_urls: [],
+      },
+    };
+    const nextCollection = {
+      name: "Quiet Morning",
+      url: collectionUrl,
+      folder: "youtube/quiet-morning",
+      musics: [
+        createMusicFixture({
+          group: createGroupFixture({
+            name: "Disc 2",
+            url: "https://example.com/quiet-morning#disc-2",
+            folder: "Disc 2",
+          }),
+        }),
+      ],
+      last_updated: "2026-04-14T00:00:00Z",
+      enable_updates: null,
+    };
+
+    assert.deepEqual(
+      upsertCollectionIntoConfigLibrary(library, nextCollection).collection_group_memberships,
+      [
+        {
+          collection_url: "https://example.com/other",
+          group_url: "https://example.com/other#disc",
+        },
+      ],
+    );
   });
 });
 
@@ -377,7 +498,7 @@ describe("draft commit naming", () => {
     );
   });
 
-  test("materializes a playlist payload from the current draft", () => {
+  test("materializes a playlist write request from the current draft", () => {
     const draft = {
       mode: "edit" as const,
       name: "Quiet Morning",
@@ -401,20 +522,20 @@ describe("draft commit naming", () => {
       createdAt: null,
     };
 
-    assert.deepEqual(createPlayListFromDraft(draft), {
+    assert.deepEqual(createPlayListWriteRequestFromDraft(draft), {
       name: "Quiet Morning",
-      collections: draft.collections.map((collection) => ({ ...collection, musics: [] })),
+      collections: draft.collections,
       groups: draft.groups,
       extra: draft.extra,
       created_at: null,
     });
     assert.deepEqual(
-      createPlayListFromDraft(draft, {
+      createPlayListWriteRequestFromDraft(draft, {
         createdAt: "2026-04-13T00:00:00Z",
       }),
       {
         name: "Quiet Morning",
-        collections: draft.collections.map((collection) => ({ ...collection, musics: [] })),
+        collections: draft.collections,
         groups: draft.groups,
         extra: draft.extra,
         created_at: "2026-04-13T00:00:00Z",
@@ -600,6 +721,7 @@ describe("includeDraftSidebarItem", () => {
         createConfigSidebarItemsFromLibrary({
           collections: [collection],
           groups: [],
+          collection_group_memberships: [],
           excludes: [],
           exclude_availability: {
             fully_excluded_collection_urls: [],
@@ -635,11 +757,11 @@ describe("includeDraftSidebarItem", () => {
         {
           name: "Disc 1 Opening",
           alias: "Disc 1 Opening",
-          group: {
+          group: createGroupFixture({
             name: "Disc 1",
             url: "https://example.com/disc-1",
             folder: "Disc 1",
-          },
+          }),
           canonical_music_id: "source:https://example.com/disc-1#opening:0:120000",
           url: "https://example.com/disc-1#opening",
           path: "Disc 1/opening.m4a",
@@ -673,6 +795,7 @@ describe("includeDraftSidebarItem", () => {
               folder: "Disc 1",
             },
           ],
+          collection_group_memberships: [],
           excludes: [],
           exclude_availability: {
             fully_excluded_collection_urls: [],
@@ -694,6 +817,50 @@ describe("includeDraftSidebarItem", () => {
           },
         ],
       },
+    );
+  });
+
+  test("keeps same-name groups visible because membership is explicit", () => {
+    const collection = {
+      name: "Quiet Morning",
+      url: "https://example.com/quiet-morning",
+      folder: "youtube/quiet-morning",
+      last_updated: "2026-04-13T00:00:00Z",
+      enable_updates: null,
+    };
+    const sameNameGroup = {
+      name: "Quiet Morning",
+      url: "https://example.com/group/quiet-morning",
+      folder: "Quiet Morning",
+    };
+
+    assert.deepEqual(
+      createConfigSidebarItemsFromLibrary({
+        collections: [collection],
+        groups: [sameNameGroup],
+        collection_group_memberships: [],
+        excludes: [],
+        exclude_availability: {
+          fully_excluded_collection_urls: [],
+          fully_excluded_group_urls: [],
+        },
+      }),
+      [
+        {
+          kind: "collection",
+          name: "Quiet Morning",
+          url: "https://example.com/quiet-morning",
+          folder: "youtube/quiet-morning",
+          last_updated: "2026-04-13T00:00:00Z",
+          enable_updates: null,
+        },
+        {
+          kind: "group",
+          name: "Quiet Morning",
+          url: "https://example.com/group/quiet-morning",
+          folder: "Quiet Morning",
+        },
+      ],
     );
   });
 });

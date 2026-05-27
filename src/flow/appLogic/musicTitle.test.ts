@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { Collection, SpectrumMusicSourceContext } from "@/src/cmd";
+import type {
+  Collection,
+  CollectionGroupOwner,
+  Group,
+  SpectrumMusicSourceContext,
+} from "@/src/cmd";
 import {
   activateSpectrumNewMusicDraft,
   changeSpectrumMusicDraftValueRange,
@@ -22,6 +27,21 @@ import {
   hasSpectrumMusicDraftCommitOperations,
 } from "./musicTitle";
 
+const sampleCollectionOwner: CollectionGroupOwner = {
+  name: "Quiet Morning",
+  url: "https://example.com/quiet-morning",
+  folder: "youtube/quiet-morning",
+  last_updated: "2026-04-13T00:00:00Z",
+  enable_updates: null,
+};
+
+const sampleGroup: Group = {
+  name: "Quiet Morning",
+  url: "https://example.com/quiet-morning",
+  collection: sampleCollectionOwner,
+  folder: "youtube/quiet-morning",
+};
+
 const sampleCollection: Collection = {
   name: "Quiet Morning",
   url: "https://example.com/quiet-morning",
@@ -30,11 +50,7 @@ const sampleCollection: Collection = {
     {
       name: "Track A",
       alias: "Track A",
-      group: {
-        name: "Quiet Morning",
-        url: "https://example.com/quiet-morning",
-        folder: "youtube/quiet-morning",
-      },
+      group: sampleGroup,
       canonical_music_id: "source:https://example.com/quiet-morning#a:0:120000",
       url: "https://example.com/quiet-morning#a",
       path: "a.m4a",
@@ -564,6 +580,8 @@ describe("musicDraft", () => {
           end_ms: 120_000,
           liked: false,
           url: "https://example.com/quiet-morning#a#spectrum#0#120000#Track%20Draft",
+          canonical_music_id:
+            "source:https://example.com/quiet-morning#a#spectrum#0#120000#Track%20Draft:0:120000",
         },
       },
     ]);

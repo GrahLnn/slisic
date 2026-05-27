@@ -21,6 +21,19 @@ import {
   shouldShowSpectrumDraftResetAction,
 } from "./SpectrumPage.view-model";
 
+const spectrumSourceGroup = {
+  folder: "youtube/quiet-morning",
+  name: "Quiet Morning",
+  url: "https://example.com/quiet-morning",
+  collection: {
+    name: "Quiet Morning",
+    url: "https://example.com/quiet-morning",
+    folder: "youtube/quiet-morning",
+    last_updated: "2026-04-13T00:00:00Z",
+    enable_updates: null,
+  },
+};
+
 describe("SpectrumPage", () => {
   test("keeps spectrum titles at the shared hover weight without native hover switching", () => {
     assert.match(resolveMusicSpectrumTitleTextClassName(), /font-\[680\]/);
@@ -168,11 +181,7 @@ describe("SpectrumPage", () => {
           endMs: 120_000,
           sourceCollectionUrl: "https://example.com/quiet-morning",
           sourceEndMs: 120_000,
-          sourceGroup: {
-            folder: "youtube/quiet-morning",
-            name: "Quiet Morning",
-            url: "https://example.com/quiet-morning",
-          },
+          sourceGroup: spectrumSourceGroup,
           sourcePath: "C:/Music/quiet-morning.m4a",
           sourceUrl: "https://example.com/quiet-morning#a",
         },
@@ -531,11 +540,7 @@ describe("SpectrumPage", () => {
       endMs: 120_000,
       sourceCollectionUrl: "https://example.com/quiet-morning",
       sourceEndMs: 120_000,
-      sourceGroup: {
-        folder: "youtube/quiet-morning",
-        name: "Quiet Morning",
-        url: "https://example.com/quiet-morning",
-      },
+      sourceGroup: spectrumSourceGroup,
       sourcePath: "C:/Music/quiet-morning.m4a",
       sourceUrl: "https://example.com/quiet-morning#a",
     };
@@ -572,11 +577,7 @@ describe("SpectrumPage", () => {
       endMs: 120_000,
       sourceCollectionUrl: "https://example.com/quiet-morning",
       sourceEndMs: 120_000,
-      sourceGroup: {
-        folder: "youtube/quiet-morning",
-        name: "Quiet Morning",
-        url: "https://example.com/quiet-morning",
-      },
+      sourceGroup: spectrumSourceGroup,
       sourcePath: "C:/Music/quiet-morning.m4a",
       sourceUrl: "https://example.com/quiet-morning#a",
     };
@@ -633,11 +634,7 @@ describe("SpectrumPage", () => {
       endMs: 120_000,
       sourceCollectionUrl: "https://example.com/quiet-morning",
       sourceEndMs: 120_000,
-      sourceGroup: {
-        folder: "youtube/quiet-morning",
-        name: "Quiet Morning",
-        url: "https://example.com/quiet-morning",
-      },
+      sourceGroup: spectrumSourceGroup,
       sourcePath: "C:/Music/quiet-morning.m4a",
       sourceUrl: "https://example.com/quiet-morning#a",
     };

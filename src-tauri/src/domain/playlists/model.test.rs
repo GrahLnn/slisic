@@ -1,4 +1,6 @@
-use super::model::{Collection, Group, Music, PlayList, canonical_music_id_for_source};
+use super::model::{
+    Collection, CollectionGroupOwner, Group, Music, PlayList, canonical_music_id_for_source,
+};
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
 use appdb::model::meta::ModelMeta;
 use appdb::query::{RawSqlStmt, query_bound_checked, query_bound_return};
@@ -164,6 +166,21 @@ async fn insert_group_row(id: &str, group: &Group) -> RecordId {
     record.expect("group insert should return one record id")
 }
 
+async fn insert_collection_group_edge(collection: &RecordId, group: &RecordId) {
+    let db = get_db().expect("global playlist database handle should exist");
+
+    db.query(
+        "INSERT RELATION INTO $rel { in: $collection, out: $group, position: 0 } RETURN NONE;",
+    )
+    .bind(("rel", Table::from("include")))
+    .bind(("collection", collection.clone()))
+    .bind(("group", group.clone()))
+    .await
+    .expect("collection group edge insert query should succeed")
+    .check()
+    .expect("collection group edge insert response should succeed");
+}
+
 async fn insert_music_edges(source: &RecordId, targets: &[RecordId]) {
     if targets.is_empty() {
         return;
@@ -316,9 +333,11 @@ fn sample_collection(
     folder: &str,
     enable_updates: Option<bool>,
 ) -> Collection {
+    let owner = test_collection_owner(name, url, folder, enable_updates);
     let group = Group {
         name: name.to_string(),
         url: url.to_string(),
+        collection: owner,
         folder: folder.to_string(),
     };
 
@@ -364,6 +383,19 @@ fn sample_collection(
 }
 
 fn sample_playlist() -> PlayList {
+    let alpha_owner = test_collection_owner(
+        "playlist-alpha",
+        "https://example.com/playlist-alpha",
+        "youtube/playlist-alpha",
+        Some(false),
+    );
+    let beta_owner = test_collection_owner(
+        "single-beta",
+        "https://example.com/single-beta",
+        "youtube/single-beta",
+        None,
+    );
+
     PlayList {
         name: "favorites".to_string(),
         collections: vec![
@@ -384,11 +416,13 @@ fn sample_playlist() -> PlayList {
             Group {
                 name: "playlist-alpha".to_string(),
                 url: "https://example.com/playlist-alpha".to_string(),
+                collection: alpha_owner,
                 folder: "youtube/playlist-alpha".to_string(),
             },
             Group {
                 name: "single-beta".to_string(),
                 url: "https://example.com/single-beta".to_string(),
+                collection: beta_owner,
                 folder: "youtube/single-beta".to_string(),
             },
         ],
@@ -447,6 +481,21 @@ fn assert_playlist_eq(actual: &PlayList, expected: &PlayList) {
 
     for (actual_extra, expected_extra) in actual.extra.iter().zip(expected.extra.iter()) {
         assert_music_eq(actual_extra, expected_extra);
+    }
+}
+
+fn test_collection_owner(
+    name: &str,
+    url: &str,
+    folder: &str,
+    enable_updates: Option<bool>,
+) -> CollectionGroupOwner {
+    CollectionGroupOwner {
+        name: name.to_string(),
+        url: url.to_string(),
+        folder: folder.to_string(),
+        last_updated: "2026-04-12T12:00:00+00:00".to_string(),
+        enable_updates,
     }
 }
 
@@ -634,6 +683,7 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
         bootstrap_table(Collection::table_name()).await;
         bootstrap_table(PlayList::table_name()).await;
         bootstrap_relation_table("includes").await;
+        bootstrap_relation_table("include").await;
         bootstrap_relation_table("grouped").await;
 
         let playlist = sample_playlist();
@@ -657,6 +707,7 @@ fn get_and_list_hydrate_nested_playlist_relations_from_seeded_rows() {
 
             let collection_record =
                 insert_collection_row(&format!("seeded-collection-{index}"), collection).await;
+            insert_collection_group_edge(&collection_record, &group_records[index]).await;
             insert_music_edges(&collection_record, &music_records).await;
             insert_group_edges(&group_records[index], &music_records).await;
             collection_records.push(collection_record);

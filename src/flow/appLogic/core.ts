@@ -10,6 +10,7 @@ import type {
   PlayList,
   PlayListConfigView,
   PlayListListView,
+  PlayListWriteRequest,
   SpectrumMusicSourceContext,
 } from "@/src/cmd";
 
@@ -30,7 +31,7 @@ export interface ConfigDraft {
   mode: "create" | "edit";
   name: string;
   collections: ConfigDraftCollectionRef[];
-  groups: Group[];
+  groups: ConfigDraftGroupRef[];
   extra: Music[];
   createdAt: PlayList["created_at"];
 }
@@ -41,6 +42,12 @@ export interface ConfigDraftCollectionRef {
   folder: string;
   last_updated: string;
   enable_updates: Collection["enable_updates"];
+}
+
+export interface ConfigDraftGroupRef {
+  name: string;
+  url: string;
+  folder: string;
 }
 
 export interface ConfigSidebarItem {
@@ -89,7 +96,7 @@ export interface PlaylistPreview extends PlaylistUpsertResult {
 }
 
 export interface PlaylistPersistenceRequest {
-  playlist: PlayList;
+  playlist: PlayListWriteRequest;
   previousName: string | null;
 }
 
@@ -177,7 +184,7 @@ export function playlistTitleLayoutId(name: string) {
 type PlayListEditableFields = {
   name: string;
   collections: ConfigDraftCollectionRef[];
-  groups: Group[];
+  groups: ConfigDraftGroupRef[];
   extra: Music[];
 };
 
@@ -194,6 +201,7 @@ function createEmptyConfigLibrary(): ConfigLibraryView {
   return {
     collections: [],
     groups: [],
+    collection_group_memberships: [],
     excludes: [],
     exclude_availability: createEmptyExcludeAvailability(),
   };
@@ -234,15 +242,15 @@ export function normalizeDraftName(name: string) {
  * like `created_at` must be injected at commit time so edit flows preserve the
  * existing record identity while new playlists still enter with a pending fill.
  */
-export function createPlayListFromDraft(
+export function createPlayListWriteRequestFromDraft(
   draft: ConfigDraft,
   options?: {
     createdAt?: PlayList["created_at"];
   },
-): PlayList {
+): PlayListWriteRequest {
   return {
     name: draft.name,
-    collections: draft.collections.map(createCollectionShellFromDraftRef),
+    collections: [...draft.collections],
     groups: [...draft.groups],
     extra: [...draft.extra],
     created_at: options?.createdAt ?? draft.createdAt,
@@ -289,17 +297,6 @@ export function resolveDraftCommitTitle(args: {
   };
 }
 
-export function createDraftFromPlayList(playlist: PlayList): ConfigDraft {
-  return cloneDraft({
-    mode: "edit",
-    name: playlist.name,
-    collections: playlist.collections.map(createConfigDraftCollectionRefFromCollection),
-    groups: playlist.groups,
-    extra: playlist.extra,
-    createdAt: playlist.created_at,
-  });
-}
-
 function createConfigDraftCollectionRefFromCollection(
   collection: Collection,
 ): ConfigDraftCollectionRef {
@@ -324,18 +321,7 @@ function createConfigDraftCollectionRefFromSurface(
   };
 }
 
-function createCollectionShellFromDraftRef(ref: ConfigDraftCollectionRef): Collection {
-  return {
-    name: ref.name,
-    url: ref.url,
-    folder: ref.folder,
-    musics: [],
-    last_updated: ref.last_updated,
-    enable_updates: ref.enable_updates,
-  };
-}
-
-function createGroupFromSurface(surface: GroupSurfaceView): Group {
+function createGroupRefFromSurface(surface: GroupSurfaceView): ConfigDraftGroupRef {
   return {
     name: surface.name,
     url: surface.url,
@@ -348,7 +334,7 @@ export function createDraftFromPlayListConfig(playlist: PlayListConfigView): Con
     mode: "edit",
     name: playlist.name,
     collections: playlist.collections.map(createConfigDraftCollectionRefFromSurface),
-    groups: playlist.groups.map(createGroupFromSurface),
+    groups: playlist.groups.map(createGroupRefFromSurface),
     extra: playlist.extra,
     createdAt: playlist.created_at,
   });
@@ -386,7 +372,7 @@ export function resolvePlaylistDraftCommit(args: {
     ...args.draft,
     name: titleResolution.name,
   };
-  const playlist = createPlayListFromDraft(committedDraft, {
+  const playlist = createPlayListWriteRequestFromDraft(committedDraft, {
     createdAt: args.draft.mode === "edit" ? args.draft.createdAt : null,
   });
   const layoutId = playlistTitleLayoutId(playlist.name);
@@ -436,11 +422,7 @@ function appendConfigSidebarItem(
   items.push(item);
 }
 
-function normalizeConfigSidebarName(name: string) {
-  return name.trim().replace(/\s+/g, " ").toLocaleLowerCase();
-}
-
-function createConfigSidebarGroupItem(group: Group): ConfigSidebarItem {
+function createConfigSidebarGroupItem(group: ConfigDraftGroupRef): ConfigSidebarItem {
   return {
     kind: "group",
     name: group.name,
@@ -452,9 +434,6 @@ function createConfigSidebarGroupItem(group: Group): ConfigSidebarItem {
 export function createConfigSidebarItems(collections: readonly Collection[]): ConfigSidebarItem[] {
   const items: ConfigSidebarItem[] = [];
   const seenUrls = new Set<string>();
-  const collectionNames = new Set(
-    collections.map((collection) => normalizeConfigSidebarName(collection.name)),
-  );
 
   for (const collection of collections) {
     appendConfigSidebarItem(items, seenUrls, {
@@ -465,14 +444,6 @@ export function createConfigSidebarItems(collections: readonly Collection[]): Co
       last_updated: collection.last_updated,
       enable_updates: collection.enable_updates,
     });
-
-    for (const music of collection.musics) {
-      if (collectionNames.has(normalizeConfigSidebarName(music.group.name))) {
-        continue;
-      }
-
-      appendConfigSidebarItem(items, seenUrls, createConfigSidebarGroupItem(music.group));
-    }
   }
 
   return items;
@@ -483,9 +454,6 @@ export function createConfigSidebarItemsFromLibrary(
 ): ConfigSidebarItem[] {
   const items: ConfigSidebarItem[] = [];
   const seenUrls = new Set<string>();
-  const collectionNames = new Set(
-    library.collections.map((collection) => normalizeConfigSidebarName(collection.name)),
-  );
 
   for (const collection of library.collections) {
     appendConfigSidebarItem(items, seenUrls, {
@@ -499,10 +467,6 @@ export function createConfigSidebarItemsFromLibrary(
   }
 
   for (const group of library.groups) {
-    if (collectionNames.has(normalizeConfigSidebarName(group.name))) {
-      continue;
-    }
-
     appendConfigSidebarItem(items, seenUrls, createConfigSidebarGroupItem(group));
   }
 
@@ -519,17 +483,11 @@ export function createConfigLibraryFromCollections(
     last_updated: collection.last_updated,
     enable_updates: collection.enable_updates,
   }));
-  const items = createConfigSidebarItems(collections);
 
   return {
     collections: collectionSurfaces,
-    groups: items
-      .filter((item) => item.kind === "group")
-      .map((group) => ({
-        name: group.name,
-        url: group.url,
-        folder: group.folder,
-      })),
+    groups: [],
+    collection_group_memberships: [],
     excludes: [],
     exclude_availability: createEmptyExcludeAvailability(),
   };
@@ -590,6 +548,9 @@ export function upsertCollectionIntoConfigLibrary(
       nextSurface,
       ...library.collections.filter((collection) => collection.url !== nextCollection.url),
     ],
+    collection_group_memberships: library.collection_group_memberships.filter(
+      (membership) => membership.collection_url !== nextCollection.url,
+    ),
   };
 }
 

@@ -14,7 +14,9 @@ use super::service::{
 };
 use crate::domain::downloads::model::{DownloadTask, DownloadTaskStatus, DownloadTrigger};
 use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
-use crate::domain::playlists::model::{Group, Music, canonical_music_id_for_source};
+use crate::domain::playlists::model::{
+    CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
+};
 use crate::domain::playlists::repo::{
     PlaylistPlaybackCollectionRef, PlaylistPlaybackGroupRef, PlaylistPlaybackSelection,
     PlaylistPlaybackTrackSource,
@@ -49,6 +51,13 @@ fn group(name: &str, url: &str, folder: &str) -> Group {
     Group {
         name: name.to_string(),
         url: url.to_string(),
+        collection: CollectionGroupOwner {
+            name: "Playback Test Collection".to_string(),
+            url: "https://example.com/playback-test-collection".to_string(),
+            folder: "youtube/playback-test-collection".to_string(),
+            last_updated: "2026-05-27T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        },
         folder: folder.to_string(),
     }
 }

@@ -1,6 +1,6 @@
 import { me, type ME } from "@grahlnn/fn";
 import { cn } from "@/lib/utils";
-import type { Exclude, ExcludeAvailability, Music } from "@/src/cmd";
+import type { CollectionGroupMembershipView, Exclude, ExcludeAvailability, Music } from "@/src/cmd";
 import {
   createConfigSidebarItemRef,
   type CollectionTitleHandoff,
@@ -185,10 +185,6 @@ export function resolveListConfigTitleViewModel(args: {
   };
 }
 
-function normalizeListConfigSidebarName(name: string) {
-  return name.trim().replace(/\s+/g, " ").toLocaleLowerCase();
-}
-
 export function createListConfigToolLabelLayoutId(ref: ConfigSidebarItemRef) {
   return `playlist:${ref.kind}:${ref.url}`;
 }
@@ -348,9 +344,6 @@ export function createListConfigPlaylistSidebarItems(
 
   const items: ListConfigPlaylistSidebarItem[] = [];
   const seenUrls = new Set<string>();
-  const collectionNames = new Set(
-    draft.collections.map((collection) => normalizeListConfigSidebarName(collection.name)),
-  );
 
   for (const collection of draft.collections) {
     if (seenUrls.has(collection.url)) {
@@ -368,10 +361,6 @@ export function createListConfigPlaylistSidebarItems(
   }
 
   for (const group of draft.groups) {
-    if (collectionNames.has(normalizeListConfigSidebarName(group.name))) {
-      continue;
-    }
-
     if (seenUrls.has(group.url)) {
       continue;
     }
@@ -480,9 +469,13 @@ export function createListConfigArcTrackItems(args: {
   libraryItems: readonly ConfigSidebarItem[];
   playlistItems: readonly ConfigSidebarItem[];
   candidateItems: readonly ConfigCandidateItem[];
+  collectionGroupMemberships: readonly CollectionGroupMembershipView[];
   excludeAvailability: ExcludeAvailability;
 }) {
   const foregroundUrls = new Set(args.playlistItems.map((item) => item.url));
+  const foregroundCollectionUrls = new Set(
+    args.playlistItems.filter((item) => item.kind === "collection").map((item) => item.url),
+  );
   const fullyExcludedCollectionUrls = new Set(
     args.excludeAvailability.fully_excluded_collection_urls,
   );
@@ -498,7 +491,14 @@ export function createListConfigArcTrackItems(args: {
     }
 
     foregroundUrls.add(item.sourceUrl);
+    foregroundCollectionUrls.add(item.sourceUrl);
   }
+
+  const coveredGroupUrls = new Set(
+    args.collectionGroupMemberships
+      .filter((membership) => foregroundCollectionUrls.has(membership.collection_url))
+      .map((membership) => membership.group_url),
+  );
 
   return args.libraryItems.filter((item) => {
     if (foregroundUrls.has(item.url)) {
@@ -509,7 +509,7 @@ export function createListConfigArcTrackItems(args: {
       return !fullyExcludedCollectionUrls.has(item.url);
     }
 
-    return !fullyExcludedGroupUrls.has(item.url);
+    return !coveredGroupUrls.has(item.url) && !fullyExcludedGroupUrls.has(item.url);
   });
 }
 
@@ -636,6 +636,7 @@ export function resolveListConfigViewModel(args: {
   libraryItems: readonly ConfigSidebarItem[];
   excludeItems: readonly Exclude[];
   excludeAvailability: ExcludeAvailability;
+  collectionGroupMemberships: readonly CollectionGroupMembershipView[];
   candidateItems: readonly ConfigCandidateItem[];
   previousEmptyState: ListConfigEmptyState | null;
 }) {
@@ -661,6 +662,7 @@ export function resolveListConfigViewModel(args: {
         libraryItems: args.libraryItems,
         playlistItems,
         candidateItems: args.candidateItems,
+        collectionGroupMemberships: args.collectionGroupMemberships,
         excludeAvailability: args.excludeAvailability,
       });
   const isBackActionParsing = hasListConfigParsingCandidateItems(args.candidateItems);

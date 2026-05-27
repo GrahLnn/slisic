@@ -21,6 +21,81 @@ pub struct PlayList {
     pub created_at: AutoFill,
 }
 
+/// Behavior:
+///   Playlist write requests carry UI-selected library refs, not stored
+///   collection/group rows. The playlist repository owns the projection from
+///   these refs to canonical record ids and rejects missing refs explicitly.
+///
+/// Core invariants:
+///   - UI code cannot construct `Group.collection`; that evidence belongs to
+///     the persisted `Collection -> include -> Group` graph.
+///   - Cache, fallback, and draft surfaces are not allowed to materialize
+///     stable playlist storage rows.
+///   - Repeating the same request resolves to the same referenced records.
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct PlayListWriteRequest {
+    pub name: String,
+    pub collections: Vec<PlaylistCollectionRef>,
+    pub groups: Vec<PlaylistGroupRef>,
+    pub extra: Vec<Music>,
+    pub created_at: AutoFill,
+}
+
+impl PlayListWriteRequest {
+    #[cfg(test)]
+    pub(crate) fn from_playlist(playlist: &PlayList) -> Self {
+        Self {
+            name: playlist.name.clone(),
+            collections: playlist
+                .collections
+                .iter()
+                .map(PlaylistCollectionRef::from)
+                .collect(),
+            groups: playlist.groups.iter().map(PlaylistGroupRef::from).collect(),
+            extra: playlist.extra.clone(),
+            created_at: playlist.created_at.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct PlaylistCollectionRef {
+    pub name: String,
+    pub url: String,
+    pub folder: String,
+    pub last_updated: String,
+    pub enable_updates: Option<bool>,
+}
+
+impl From<&Collection> for PlaylistCollectionRef {
+    fn from(value: &Collection) -> Self {
+        Self {
+            name: value.name.clone(),
+            url: value.url.clone(),
+            folder: value.folder.clone(),
+            last_updated: value.last_updated.clone(),
+            enable_updates: value.enable_updates,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct PlaylistGroupRef {
+    pub name: String,
+    pub url: String,
+    pub folder: String,
+}
+
+impl From<&Group> for PlaylistGroupRef {
+    fn from(value: &Group) -> Self {
+        Self {
+            name: value.name.clone(),
+            url: value.url.clone(),
+            folder: value.folder.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View, Type)]
 #[view(source = PlayList)]
 pub struct PlayListListView {
@@ -47,6 +122,27 @@ pub struct Collection {
     pub musics: Vec<Music>,
     pub last_updated: String,
     pub enable_updates: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, Type)]
+pub struct CollectionGroupOwner {
+    pub name: String,
+    pub url: String,
+    pub folder: String,
+    pub last_updated: String,
+    pub enable_updates: Option<bool>,
+}
+
+impl From<&Collection> for CollectionGroupOwner {
+    fn from(value: &Collection) -> Self {
+        Self {
+            name: value.name.clone(),
+            url: value.url.clone(),
+            folder: value.folder.clone(),
+            last_updated: value.last_updated.clone(),
+            enable_updates: value.enable_updates,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View, Type)]
@@ -76,7 +172,21 @@ pub struct Group {
     pub name: String,
     #[unique]
     pub url: String,
+    #[back_relate("include")]
+    pub collection: CollectionGroupOwner,
     pub folder: String,
+}
+
+impl Group {
+    pub fn bind_collection(mut self, collection: &Collection) -> Self {
+        self.collection = CollectionGroupOwner::from(collection);
+        self
+    }
+
+    pub fn bind_collection_owner(mut self, collection: CollectionGroupOwner) -> Self {
+        self.collection = collection;
+        self
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View, Type)]
@@ -104,8 +214,15 @@ pub struct PlayListConfigView {
 pub struct ConfigLibraryView {
     pub collections: Vec<CollectionSurfaceView>,
     pub groups: Vec<GroupSurfaceView>,
+    pub collection_group_memberships: Vec<CollectionGroupMembershipView>,
     pub excludes: Vec<Exclude>,
     pub exclude_availability: ExcludeAvailability,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type, SurrealValue)]
+pub struct CollectionGroupMembershipView {
+    pub collection_url: String,
+    pub group_url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
@@ -306,7 +423,11 @@ impl ViewParams for PlaylistMusicSourceCollectionViewParams {
         SELECT
             out AS music_record,
             in AS collection_record,
+            in.name AS collection_name,
+            in.url AS collection_url,
             in.folder AS collection_folder,
+            in.last_updated AS collection_last_updated,
+            in.enable_updates AS collection_enable_updates,
             position
         FROM $relation
         WHERE out IN $music_records
@@ -318,7 +439,11 @@ impl ViewParams for PlaylistMusicSourceCollectionViewParams {
 pub struct PlaylistMusicSourceCollectionView {
     pub music_record: RecordId,
     pub collection_record: RecordId,
+    pub collection_name: String,
+    pub collection_url: String,
     pub collection_folder: String,
+    pub collection_last_updated: String,
+    pub collection_enable_updates: Option<bool>,
     pub position: i64,
 }
 
@@ -341,6 +466,7 @@ impl ViewParams for PlaylistMusicGroupViewParams {
     sql = r#"
         SELECT
             out AS music_record,
+            in AS group_record,
             in.name AS group_name,
             in.url AS group_url,
             in.folder AS group_folder,
@@ -354,6 +480,7 @@ impl ViewParams for PlaylistMusicGroupViewParams {
 )]
 pub struct PlaylistMusicGroupView {
     pub music_record: RecordId,
+    pub group_record: RecordId,
     pub group_name: String,
     pub group_url: String,
     pub group_folder: String,

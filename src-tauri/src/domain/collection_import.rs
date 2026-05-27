@@ -15,7 +15,9 @@ use crate::domain::downloads::service::{
 use crate::domain::downloads::yt_dlp::LeafProbe;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::notify_audio_style_training_inputs_changed;
-use crate::domain::playlists::model::{Collection, Group, Music, canonical_music_id_for_source};
+use crate::domain::playlists::model::{
+    Collection, CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
+};
 use crate::domain::playlists::repo as collection_repo;
 use anyhow::{Context, Result, bail};
 use appdb::Id;
@@ -103,12 +105,10 @@ pub(crate) struct CollectionShellPlan {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CollectionManifest {
-    #[serde(default = "default_manifest_version")]
     version: u32,
     collection: CollectionManifestCollection,
-    #[serde(default)]
     groups: Vec<CollectionManifestGroup>,
-    #[serde(default, rename = "music")]
+    #[serde(rename = "music")]
     musics: Vec<CollectionManifestMusic>,
 }
 
@@ -117,11 +117,8 @@ struct CollectionManifestCollection {
     name: String,
     url: String,
     folder: String,
-    #[serde(default)]
     source_kind: Option<CollectionSourceKind>,
-    #[serde(default)]
     enable_updates: Option<bool>,
-    #[serde(default)]
     last_updated: Option<String>,
 }
 
@@ -141,7 +138,6 @@ struct CollectionManifestMusic {
     group_url: String,
     start_ms: u32,
     end_ms: u32,
-    #[serde(default)]
     liked: bool,
 }
 
@@ -157,14 +153,10 @@ struct LocalAudioFile {
     duration_ms: u32,
 }
 
-fn default_manifest_version() -> u32 {
-    1
-}
-
 pub(crate) async fn resolve_pasted_download_url(
     normalized_url: String,
 ) -> Result<PastedDownloadUrlResolution> {
-    match collection_repo::find_collection_by_url(&normalized_url).await? {
+    match collection_repo::get_collection_by_url(&normalized_url).await? {
         Some(collection) => Ok(PastedDownloadUrlResolution::existing_collection(
             normalized_url,
             collection,
@@ -214,6 +206,19 @@ pub(crate) fn create_collection_shell_from_plan(
     collection.folder = plan.collection_folder.clone();
     collection.enable_updates = plan.enable_updates;
     collection
+}
+
+fn collection_group_owner(collection: &Collection) -> CollectionGroupOwner {
+    CollectionGroupOwner::from(collection)
+}
+
+fn collection_owner_group(collection: &Collection) -> Group {
+    Group {
+        name: collection.name.clone(),
+        url: collection.url.clone(),
+        collection: collection_group_owner(collection),
+        folder: collection.folder.clone(),
+    }
 }
 
 impl CollectionSyncPlan {
@@ -1623,11 +1628,7 @@ pub(crate) fn restore_single_source_musics_from_task(
         return vec![];
     }
 
-    let default_group = Group {
-        name: collection.name.clone(),
-        url: collection.url.clone(),
-        folder: collection.folder.clone(),
-    };
+    let default_group = collection_owner_group(collection);
     let mut restored = Vec::new();
     let mut seen_urls = HashSet::new();
 
@@ -1728,20 +1729,39 @@ fn collection_from_manifest(
         .iter()
         .map(|file| (file.relative_path.clone(), file))
         .collect::<BTreeMap<_, _>>();
+    let collection_shell = Collection {
+        name: manifest.collection.name.clone(),
+        url: manifest.collection.url.clone(),
+        folder: collection_folder.clone(),
+        musics: vec![],
+        last_updated: manifest
+            .collection
+            .last_updated
+            .clone()
+            .unwrap_or_else(now_timestamp),
+        enable_updates: manifest.collection.enable_updates,
+    };
+    let collection_owner = collection_owner_group(&collection_shell);
     let groups = manifest
         .groups
         .into_iter()
         .map(|group| {
-            let group = group.into_group(&manifest.collection.url, &collection_folder)?;
+            let group = group.into_group(
+                &manifest.collection.url,
+                &collection_folder,
+                &collection_shell,
+            )?;
             Ok((group.url.clone(), group))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
 
-    let collection_owner = Group {
-        name: manifest.collection.name.clone(),
-        url: manifest.collection.url.clone(),
-        folder: collection_folder.clone(),
-    };
+    let collection_name = manifest.collection.name;
+    let collection_url = manifest.collection.url;
+    let collection_last_updated = manifest
+        .collection
+        .last_updated
+        .unwrap_or_else(now_timestamp);
+    let collection_enable_updates = manifest.collection.enable_updates;
     let mut musics = Vec::new();
     let mut seen = HashSet::new();
     let mut manifest_file_paths = HashSet::new();
@@ -1766,7 +1786,7 @@ fn collection_from_manifest(
 
         let group = resolve_manifest_music_group(
             &music.group_url,
-            &manifest.collection.url,
+            &collection_url,
             &collection_owner,
             &groups,
         );
@@ -1813,8 +1833,7 @@ fn collection_from_manifest(
             continue;
         }
 
-        let music =
-            local_music_from_audio_file(&manifest.collection.url, &collection_owner, local_file);
+        let music = local_music_from_audio_file(&collection_url, &collection_owner, local_file);
         if seen.insert((
             music.url.clone(),
             music.group.url.clone(),
@@ -1827,15 +1846,12 @@ fn collection_from_manifest(
     }
 
     Ok(Collection {
-        name: manifest.collection.name,
-        url: manifest.collection.url,
-        folder: collection_folder,
+        name: collection_name,
+        url: collection_url,
+        folder: collection_folder.clone(),
         musics,
-        last_updated: manifest
-            .collection
-            .last_updated
-            .unwrap_or_else(now_timestamp),
-        enable_updates: manifest.collection.enable_updates,
+        last_updated: collection_last_updated,
+        enable_updates: collection_enable_updates,
     })
 }
 
@@ -1846,11 +1862,15 @@ fn collection_from_local_audio_files(
 ) -> Result<Collection> {
     let collection_name = local_collection_name(collection_path);
     let collection_url = local_collection_url(collection_path)?;
-    let group = Group {
+    let collection_shell = Collection {
         name: collection_name.clone(),
         url: collection_url.clone(),
         folder: collection_folder.to_string(),
+        musics: vec![],
+        last_updated: now_timestamp(),
+        enable_updates: None,
     };
+    let group = collection_owner_group(&collection_shell);
     let mut musics = Vec::new();
 
     for file in local_audio_files {
@@ -1862,7 +1882,7 @@ fn collection_from_local_audio_files(
         url: collection_url,
         folder: collection_folder.to_string(),
         musics,
-        last_updated: now_timestamp(),
+        last_updated: collection_shell.last_updated,
         enable_updates: None,
     })
 }
@@ -2229,7 +2249,12 @@ fn collection_manifest_music_file_scope(music: &CollectionManifestMusic) -> Stri
 }
 
 impl CollectionManifestGroup {
-    fn into_group(self, collection_url: &str, collection_folder: &str) -> Result<Group> {
+    fn into_group(
+        self,
+        collection_url: &str,
+        collection_folder: &str,
+        collection: &Collection,
+    ) -> Result<Group> {
         let folder = if self.url == collection_url {
             collection_folder.to_string()
         } else {
@@ -2239,6 +2264,7 @@ impl CollectionManifestGroup {
         Ok(Group {
             name: self.name,
             url: self.url,
+            collection: collection_group_owner(collection),
             folder,
         })
     }

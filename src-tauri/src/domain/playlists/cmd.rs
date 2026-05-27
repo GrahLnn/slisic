@@ -1,6 +1,6 @@
 use super::model::{
     AddExcludeResult, Collection, ConfigLibraryView, Music, PlayList, PlayListConfigView,
-    PlayListListView, RemoveExcludeResult, SpectrumMusicContext,
+    PlayListListView, PlayListWriteRequest, RemoveExcludeResult, SpectrumMusicContext,
 };
 use crate::domain::player::service::{
     PlaybackTrackIdentityUpdate, PlaybackTrackLikedUpdate, active_request_track_snapshot,
@@ -77,12 +77,8 @@ pub async fn delete_playlist(name: String) -> Result<bool, String> {
 #[specta::specta]
 pub async fn upsert_playlist(
     previous_name: Option<String>,
-    playlist: PlayList,
+    playlist: PlayListWriteRequest,
 ) -> Result<PlayListListView, String> {
-    super::repo::ensure_playlist_collection_refs_exist(&playlist.collections)
-        .await
-        .map_err(|error| error.to_string())?;
-
     super::repo::upsert_playlist_surface(&playlist, previous_name.as_deref())
         .await
         .map_err(|error| error.to_string())

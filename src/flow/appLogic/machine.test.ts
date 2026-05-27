@@ -3,7 +3,9 @@ import { describe, test } from "node:test";
 import { createActor, fromPromise } from "xstate";
 import type {
   Collection,
+  CollectionGroupOwner,
   ConfigLibraryView,
+  Group,
   Music,
   PlayList,
   PlayListListView,
@@ -33,15 +35,29 @@ const spectrumMusicNameChanged = payloads["spectrum.music_name.changed"];
 const spectrumMusicRangeChanged = payloads["spectrum.music_range.changed"];
 const spectrumPlaybackScopeChanged = payloads["spectrum.playback_scope.changed"];
 
+const sampleCollectionOwner: CollectionGroupOwner = {
+  name: "Quiet Morning",
+  url: "https://example.com/quiet-morning",
+  folder: "youtube/quiet-morning",
+  last_updated: "2026-04-13T00:00:00Z",
+  enable_updates: null,
+};
+
+function createGroup(overrides: Partial<Group> = {}): Group {
+  return {
+    name: "Quiet Morning",
+    url: "https://example.com/quiet-morning#disc-1",
+    collection: sampleCollectionOwner,
+    folder: "Disc 1",
+    ...overrides,
+  };
+}
+
 function createMusic(overrides: Partial<Music> = {}): Music {
   return {
     name: "Track A",
     alias: "Track A",
-    group: {
-      name: "Quiet Morning",
-      url: "https://example.com/quiet-morning#disc-1",
-      folder: "Disc 1",
-    },
+    group: createGroup(),
     canonical_music_id: "source:https://example.com/quiet-morning#a:0:120000",
     url: "https://example.com/quiet-morning#a",
     path: "Disc 1/Track A.m4a",
@@ -81,14 +97,6 @@ function createPlaylistSurface(playlist: PlayList): PlayListListView {
 }
 
 function createConfigLibrary(collections: readonly Collection[]): ConfigLibraryView {
-  const groups = new Map<string, Music["group"]>();
-
-  for (const collection of collections) {
-    for (const music of collection.musics) {
-      groups.set(music.group.url, music.group);
-    }
-  }
-
   return {
     collections: collections.map((collection) => ({
       name: collection.name,
@@ -97,7 +105,8 @@ function createConfigLibrary(collections: readonly Collection[]): ConfigLibraryV
       last_updated: collection.last_updated,
       enable_updates: collection.enable_updates,
     })),
-    groups: [...groups.values()],
+    groups: [],
+    collection_group_memberships: [],
     excludes: [],
     exclude_availability: {
       fully_excluded_collection_urls: [],

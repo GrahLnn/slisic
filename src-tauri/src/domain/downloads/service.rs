@@ -1,4 +1,3 @@
-#[cfg(not(test))]
 use super::model::DownloadLeafGroupContext;
 #[cfg(not(test))]
 use super::model::EnqueuedCollectionDownload;
@@ -1082,6 +1081,7 @@ async fn handle_prepared_leaf_download(
                 source_kind,
                 &prepared.probe,
                 &task_snapshot.url,
+                collection,
                 client.clone(),
                 group_catalog,
             )
@@ -1604,23 +1604,41 @@ async fn resolve_collection_plan_from_root_probe(
 
             let collection_url = list.webpage_url.clone();
             let existing = collection_import::get_collection_by_url(&collection_url).await?;
+            let collection_folder = resolve_task_collection_folder(
+                task,
+                &collection_url,
+                &list.title,
+                existing.as_ref(),
+            )
+            .await?;
+            let collection_shell = Collection {
+                name: list.title.clone(),
+                url: collection_url.clone(),
+                folder: collection_folder.clone(),
+                musics: vec![],
+                last_updated: now_timestamp(),
+                enable_updates: existing
+                    .as_ref()
+                    .and_then(|collection| collection.enable_updates)
+                    .or(Some(false)),
+            };
             let leaves = collection_import::deduplicate_planned_leaves(
                 &collection_url,
-                expand_root_entries_to_planned_leafs(&task.id, client.clone(), list.entries, None)
-                    .await?,
+                expand_root_entries_to_planned_leafs(
+                    &task.id,
+                    client.clone(),
+                    list.entries,
+                    &collection_shell,
+                    None,
+                )
+                .await?,
             );
 
             Ok(CollectionSyncPlan {
                 source_kind: CollectionSourceKind::List,
                 collection_name: list.title.clone(),
                 collection_url: collection_url.clone(),
-                collection_folder: resolve_task_collection_folder(
-                    task,
-                    &collection_url,
-                    &list.title,
-                    existing.as_ref(),
-                )
-                .await?,
+                collection_folder,
                 enable_updates: Some(
                     existing
                         .and_then(|collection| collection.enable_updates)
@@ -1690,24 +1708,56 @@ pub(crate) fn residual_collection_plan(task: &DownloadTask) -> Option<Collection
         return None;
     }
 
+    let collection_owner = residual_task_collection_owner(task)?;
+
     Some(CollectionSyncPlan {
         source_kind: task.source_kind?,
         collection_name: task.collection_name.clone()?,
         collection_url: task.collection_url.clone()?,
         collection_folder: task.collection_folder.clone()?,
         enable_updates: None,
-        leaves: task.leafs.iter().map(planned_leaf_from_residual).collect(),
+        leaves: task
+            .leafs
+            .iter()
+            .map(|leaf| planned_leaf_from_residual(leaf, &collection_owner))
+            .collect(),
     })
 }
 
-fn planned_leaf_from_residual(leaf: &DownloadLeaf) -> PlannedLeaf {
+fn residual_task_collection_owner(task: &DownloadTask) -> Option<Collection> {
+    Some(Collection {
+        name: task.collection_name.clone()?,
+        url: task.collection_url.clone()?,
+        folder: task.collection_folder.clone()?,
+        musics: vec![],
+        last_updated: now_timestamp(),
+        enable_updates: None,
+    })
+}
+
+fn planned_leaf_from_residual(leaf: &DownloadLeaf, collection: &Collection) -> PlannedLeaf {
     PlannedLeaf {
         id: leaf.id.clone(),
         url: leaf.url.clone(),
         sequence: leaf.sequence,
         initial_probe: None,
         music_title: leaf.title.clone(),
-        group_hint: leaf.group.clone().map(Into::into),
+        group_hint: leaf
+            .group
+            .clone()
+            .map(|group| group_context_into_collection_group(group, collection)),
+    }
+}
+
+fn group_context_into_collection_group(
+    group: DownloadLeafGroupContext,
+    collection: &Collection,
+) -> Group {
+    Group {
+        name: group.name,
+        url: group.url,
+        collection: collection.into(),
+        folder: group.folder,
     }
 }
 
@@ -1735,6 +1785,7 @@ pub(crate) async fn expand_root_entries_to_planned_leafs(
     task_id: &Id,
     client: Arc<dyn YtDlpClient>,
     entries: Vec<LeafReference>,
+    collection: &Collection,
     group_hint: Option<Group>,
 ) -> Result<Vec<PlannedLeaf>> {
     let mut pending = entries
@@ -1788,6 +1839,7 @@ pub(crate) async fn expand_root_entries_to_planned_leafs(
                 let nested_group = Some(Group {
                     name: list.title.clone(),
                     url: list.webpage_url.clone(),
+                    collection: collection.into(),
                     folder: sanitize_path_component(&list.title),
                 });
 
@@ -1876,6 +1928,7 @@ async fn resolve_probe_group(
     source_kind: CollectionSourceKind,
     probe: &LeafProbe,
     source_url: &str,
+    collection: &Collection,
     client: Arc<dyn YtDlpClient>,
     catalog: &mut GroupCatalog,
 ) -> Option<Group> {
@@ -1892,7 +1945,7 @@ async fn resolve_probe_group(
     }
 
     catalog.discovery_attempted = true;
-    match discover_group_catalog(source_url.to_string(), client).await {
+    match discover_group_catalog(source_url.to_string(), collection, client).await {
         Ok(groups) => catalog.extend(groups),
         Err(error) => {
             eprintln!("[downloads] group discovery failed: {error}");
@@ -1907,6 +1960,7 @@ async fn resolve_probe_group(
 #[cfg(not(test))]
 async fn discover_group_catalog(
     source_url: String,
+    collection: &Collection,
     client: Arc<dyn YtDlpClient>,
 ) -> Result<Vec<Group>> {
     let mut groups = Vec::new();
@@ -1931,6 +1985,7 @@ async fn discover_group_catalog(
                         Ok(RootProbe::List(list)) => groups.push(Group {
                             name: list.title.clone(),
                             url: list.webpage_url.clone(),
+                            collection: collection.into(),
                             folder: sanitize_path_component(&list.title),
                         }),
                         Ok(RootProbe::Single(_)) => {}
@@ -2469,11 +2524,14 @@ impl GroupCatalog {
 }
 
 fn resolve_music_group(group: Option<Group>, collection: &Collection) -> Group {
-    group.unwrap_or_else(|| Group {
-        name: collection.name.clone(),
-        url: collection.url.clone(),
-        folder: collection.folder.clone(),
-    })
+    group
+        .unwrap_or_else(|| Group {
+            name: collection.name.clone(),
+            url: collection.url.clone(),
+            collection: collection.into(),
+            folder: collection.folder.clone(),
+        })
+        .bind_collection(collection)
 }
 
 fn normalize_group_key(value: &str) -> Option<String> {

@@ -20,6 +20,13 @@ describe("titleShare", () => {
     group: {
       name: "Disc 1",
       url: "https://example.com/extra#disc-1",
+      collection: {
+        name: "Extra",
+        url: "https://example.com/extra",
+        folder: "youtube/extra",
+        last_updated: "2026-04-13T00:00:00Z",
+        enable_updates: null,
+      },
       folder: "Disc 1",
     },
     canonical_music_id: "source:https://example.com/extra:0:120000",

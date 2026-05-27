@@ -163,7 +163,7 @@ use domain::downloads::yt_dlp::CliYtDlpClient;
 use domain::meta::model::MetaInfo;
 use domain::meta::repo::save_meta_info;
 use domain::playlist_playback::service::resolve_playlist_playback_source_resolution;
-use domain::playlists::model::PlayList;
+use domain::playlists::model::{PlayList, PlayListWriteRequest, PlaylistCollectionRef};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -274,7 +274,24 @@ fn main() {
 
             created_at: AutoFill::pending(),
         };
-        domain::playlists::repo::upsert_playlist_surface(&playlist, None)
+        let playlist_request = PlayListWriteRequest {
+            name: playlist.name.clone(),
+            collections: playlist
+                .collections
+                .iter()
+                .map(|collection| PlaylistCollectionRef {
+                    name: collection.name.clone(),
+                    url: collection.url.clone(),
+                    folder: collection.folder.clone(),
+                    last_updated: collection.last_updated.clone(),
+                    enable_updates: collection.enable_updates,
+                })
+                .collect(),
+            groups: vec![],
+            extra: vec![],
+            created_at: playlist.created_at.clone(),
+        };
+        domain::playlists::repo::upsert_playlist_surface(&playlist_request, None)
             .await
             .expect("manual download chain playlist save should succeed");
         let persisted_collection = domain::playlists::repo::get_collection_by_url(url)

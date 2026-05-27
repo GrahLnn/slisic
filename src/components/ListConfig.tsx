@@ -626,6 +626,7 @@ export function ListConfig() {
       libraryItems,
       excludeItems: configLibrary.excludes,
       excludeAvailability: configLibrary.exclude_availability,
+      collectionGroupMemberships: configLibrary.collection_group_memberships,
       candidateItems,
       previousEmptyState: emptyStateRef.current,
     }),

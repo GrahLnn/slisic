@@ -168,16 +168,6 @@ impl From<Group> for DownloadLeafGroupContext {
     }
 }
 
-impl From<DownloadLeafGroupContext> for Group {
-    fn from(value: DownloadLeafGroupContext) -> Self {
-        Self {
-            name: value.name,
-            url: value.url,
-            folder: value.folder,
-        }
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum PastedDownloadUrlResolutionStatus {

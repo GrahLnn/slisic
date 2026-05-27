@@ -1,12 +1,13 @@
 use super::model::{
-    AddExcludeResult, Collection, CollectionSurfaceView, ConfigLibraryView, Exclude,
-    ExcludeAvailability, Group, GroupSurfaceView, Music, MusicSpectrumView, PlayList,
-    PlayListConfigView, PlayListListView, PlaylistMusicGroupView, PlaylistMusicGroupViewParams,
-    PlaylistMusicSourceCollectionView, PlaylistMusicSourceCollectionViewParams,
-    PlaylistRecordPlayableTrackView, PlaylistRecordPlayableTrackViewParams,
-    PlaylistRelationPlayableTrackView, PlaylistRelationPlayableTrackViewParams,
-    RemoveExcludeResult, SpectrumMusicContext, SpectrumMusicSourceContext,
-    canonical_music_id_for_source,
+    AddExcludeResult, Collection, CollectionGroupMembershipView, CollectionGroupOwner,
+    CollectionSurfaceView, ConfigLibraryView, Exclude, ExcludeAvailability, Group,
+    GroupSurfaceView, Music, MusicSpectrumView, PlayList, PlayListConfigView, PlayListListView,
+    PlayListWriteRequest, PlaylistCollectionRef, PlaylistGroupRef, PlaylistMusicGroupView,
+    PlaylistMusicGroupViewParams, PlaylistMusicSourceCollectionView,
+    PlaylistMusicSourceCollectionViewParams, PlaylistRecordPlayableTrackView,
+    PlaylistRecordPlayableTrackViewParams, PlaylistRelationPlayableTrackView,
+    PlaylistRelationPlayableTrackViewParams, RemoveExcludeResult, SpectrumMusicContext,
+    SpectrumMusicSourceContext, canonical_music_id_for_source,
 };
 use anyhow::{Result, bail};
 use appdb::connection::get_db;
@@ -19,10 +20,85 @@ use appdb::{AutoFill, Crud, Id, Order, Store};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use surrealdb::types::{RecordId, Table};
 use surrealdb_types::{SurrealValue, ToSql};
+
+tokio::task_local! {
+    static COLLECTION_WRITE_OWNER_SCOPE: RefCell<Vec<CollectionWriteOwnerScope>>;
+}
+
+#[derive(Debug, Clone)]
+struct CollectionWriteOwnerScope {
+    url: String,
+    record: RecordId,
+    owner: CollectionGroupOwner,
+}
+
+#[async_trait::async_trait]
+impl appdb::Bridge for CollectionGroupOwner {
+    async fn persist_foreign(self) -> Result<RecordId> {
+        if let Some(record) = scoped_collection_owner_record(&self.url) {
+            return Ok(record);
+        }
+
+        match find_unique_record_id_by_string_field::<Collection>("url", &self.url).await? {
+            Some(record) => Ok(record),
+            None => bail!(
+                "group owner collection `{}` must exist before binding group membership",
+                self.url
+            ),
+        }
+    }
+
+    async fn hydrate_foreign(id: RecordId) -> Result<Self> {
+        if let Some(owner) = scoped_collection_owner(&id) {
+            return Ok(owner);
+        }
+
+        let Some(row) = load_collection_shell_row(&id).await? else {
+            bail!("group owner collection record `{:?}` was not found", id);
+        };
+
+        Ok(Self {
+            name: row.name,
+            url: row.url,
+            folder: row.folder,
+            last_updated: row.last_updated,
+            enable_updates: row.enable_updates,
+        })
+    }
+}
+
+fn scoped_collection_owner_record(url: &str) -> Option<RecordId> {
+    COLLECTION_WRITE_OWNER_SCOPE
+        .try_with(|stack| {
+            stack
+                .borrow()
+                .iter()
+                .rev()
+                .find(|scope| scope.url == url)
+                .map(|scope| scope.record.clone())
+        })
+        .ok()
+        .flatten()
+}
+
+fn scoped_collection_owner(record: &RecordId) -> Option<CollectionGroupOwner> {
+    COLLECTION_WRITE_OWNER_SCOPE
+        .try_with(|stack| {
+            stack
+                .borrow()
+                .iter()
+                .rev()
+                .find(|scope| &scope.record == record)
+                .map(|scope| scope.owner.clone())
+        })
+        .ok()
+        .flatten()
+}
 
 pub async fn list_collections() -> Result<Vec<Collection>> {
     ensure_collection_graph_schema().await?;
@@ -69,14 +145,12 @@ pub async fn list_config_library() -> Result<ConfigLibraryView> {
     let collections = match CollectionSurfaceView::list().await {
         Ok(collections) => collections,
         Err(error) => match classify_db_error(&error) {
-            DBError::MissingTable(_) => vec![],
             other => return Err(other.into()),
         },
     };
     let groups = match GroupSurfaceView::list().await {
         Ok(groups) => groups,
         Err(error) => match classify_db_error(&error) {
-            DBError::MissingTable(_) => vec![],
             other => return Err(other.into()),
         },
     };
@@ -91,6 +165,7 @@ pub async fn list_config_library() -> Result<ConfigLibraryView> {
     Ok(ConfigLibraryView {
         collections,
         groups,
+        collection_group_memberships: load_collection_group_memberships().await?,
         excludes,
         exclude_availability: load_exclude_availability().await?,
     })
@@ -205,28 +280,6 @@ pub async fn get_collection_by_url(url: &str) -> Result<Option<Collection>> {
     Ok(Some(Collection::get_record(record).await?))
 }
 
-pub async fn find_collection_by_url(url: &str) -> Result<Option<Collection>> {
-    ensure_collection_graph_schema().await?;
-
-    let lookup = Collection {
-        name: String::new(),
-        url: url.to_string(),
-        folder: String::new(),
-        musics: vec![],
-        last_updated: String::new(),
-        enable_updates: None,
-    };
-    let record = match Repo::<Collection>::find_unique_id_for(&lookup).await {
-        Ok(record) => record,
-        Err(error) => match classify_db_error(&error) {
-            DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
-            other => return Err(other.into()),
-        },
-    };
-
-    Ok(Some(Collection::get_record(record).await?))
-}
-
 pub async fn get_playlist_by_name(name: &str) -> Result<Option<PlayList>> {
     ensure_collection_graph_schema().await?;
 
@@ -262,8 +315,11 @@ pub struct PlaylistPlaybackSelection {
 #[derive(Debug, Clone)]
 pub struct PlaylistPlaybackCollectionRef {
     record: RecordId,
+    name: String,
     pub url: String,
     pub folder: String,
+    last_updated: String,
+    enable_updates: Option<bool>,
 }
 
 impl PlaylistPlaybackCollectionRef {
@@ -274,8 +330,21 @@ impl PlaylistPlaybackCollectionRef {
                 Collection::table_name(),
                 format!("test-{}", stable_record_key(url)),
             ),
+            name: _name.to_string(),
             url: url.to_string(),
             folder: folder.to_string(),
+            last_updated: String::new(),
+            enable_updates: None,
+        }
+    }
+
+    fn as_group_owner(&self) -> CollectionGroupOwner {
+        CollectionGroupOwner {
+            name: self.name.clone(),
+            url: self.url.clone(),
+            folder: self.folder.clone(),
+            last_updated: self.last_updated.clone(),
+            enable_updates: self.enable_updates,
         }
     }
 }
@@ -283,6 +352,7 @@ impl PlaylistPlaybackCollectionRef {
 #[derive(Debug, Clone)]
 struct PlaylistPlaybackSourceCollectionRef {
     record: RecordId,
+    owner: CollectionGroupOwner,
     folder: String,
 }
 
@@ -290,6 +360,7 @@ impl From<&PlaylistPlaybackCollectionRef> for PlaylistPlaybackSourceCollectionRe
     fn from(value: &PlaylistPlaybackCollectionRef) -> Self {
         Self {
             record: value.record.clone(),
+            owner: value.as_group_owner(),
             folder: value.folder.clone(),
         }
     }
@@ -319,10 +390,11 @@ impl PlaylistPlaybackGroupRef {
         }
     }
 
-    fn as_group(&self) -> Group {
+    fn as_group(&self, owner: CollectionGroupOwner) -> Group {
         Group {
             name: self.name.clone(),
             url: self.url.clone(),
+            collection: owner,
             folder: self.folder.clone(),
         }
     }
@@ -534,7 +606,9 @@ pub async fn delete_playlist_by_name(name: &str) -> Result<bool> {
 
 #[cfg(test)]
 pub async fn upsert_playlist(playlist: &PlayList, previous_name: Option<&str>) -> Result<PlayList> {
-    let foreign_ids = resolve_playlist_foreign_record_ids(playlist).await?;
+    let request = PlayListWriteRequest::from_playlist(playlist);
+    let foreign_ids = resolve_playlist_foreign_record_ids(&request).await?;
+    let storage = playlist_storage_row_from_request(&request, &foreign_ids).await?;
     let existing_record = match previous_name {
         Some(name) => find_unique_record_id_by_string_field::<PlayList>("name", name).await?,
         None => None,
@@ -542,8 +616,7 @@ pub async fn upsert_playlist(playlist: &PlayList, previous_name: Option<&str>) -
     let record = existing_record
         .clone()
         .unwrap_or_else(|| playlist_record_id(&playlist.name));
-    let write = playlist
-        .clone()
+    let write = storage
         .foreign()
         .collections(foreign_ids.collections)?
         .groups(foreign_ids.groups)?
@@ -556,10 +629,11 @@ pub async fn upsert_playlist(playlist: &PlayList, previous_name: Option<&str>) -
 }
 
 pub async fn upsert_playlist_surface(
-    playlist: &PlayList,
+    playlist: &PlayListWriteRequest,
     previous_name: Option<&str>,
 ) -> Result<PlayListListView> {
     let foreign_ids = resolve_playlist_foreign_record_ids(playlist).await?;
+    let storage = playlist_storage_row_from_request(playlist, &foreign_ids).await?;
     let existing_record = match previous_name {
         Some(name) => find_unique_record_id_by_string_field::<PlayList>("name", name).await?,
         None => None,
@@ -567,8 +641,7 @@ pub async fn upsert_playlist_surface(
     let record = existing_record
         .clone()
         .unwrap_or_else(|| playlist_record_id(&playlist.name));
-    let write = playlist
-        .clone()
+    let write = storage
         .foreign()
         .collections(foreign_ids.collections)?
         .groups(foreign_ids.groups)?
@@ -622,39 +695,6 @@ pub async fn remove_extra(
 
     update_playlist_extra_record_ids(&record, &extra).await?;
     get_playlist_config_by_name(playlist_name).await
-}
-
-pub async fn ensure_playlist_collection_refs_exist(collections: &[Collection]) -> Result<()> {
-    ensure_collection_graph_schema().await?;
-
-    for collection in collections {
-        if find_unique_record_id_by_string_field::<Collection>("url", &collection.url)
-            .await?
-            .is_some()
-        {
-            continue;
-        }
-
-        let shell = Collection {
-            name: collection.name.clone(),
-            url: collection.url.clone(),
-            folder: collection.folder.clone(),
-            musics: vec![],
-            last_updated: collection.last_updated.clone(),
-            enable_updates: collection.enable_updates,
-        };
-        let record = collection_record_id(&shell.url);
-
-        match Repo::<Collection>::create_at(record, shell).await {
-            Ok(_) => {}
-            Err(error) => match classify_db_error(&error) {
-                DBError::Conflict(_) => {}
-                other => return Err(other.into()),
-            },
-        }
-    }
-
-    Ok(())
 }
 
 pub async fn set_collection_updates(url: &str, enabled: bool) -> Result<Option<Collection>> {
@@ -854,6 +894,13 @@ pub async fn load_spectrum_music_context(
             }
 
             file_music_records.push(PendingSpectrumMusicContextRecord {
+                collection: CollectionGroupOwner {
+                    name: collection.name.clone(),
+                    url: collection.url.clone(),
+                    folder: collection.folder.clone(),
+                    last_updated: collection.last_updated.clone(),
+                    enable_updates: collection.enable_updates,
+                },
                 collection_url: collection.url.clone(),
                 music: music_record,
             });
@@ -875,6 +922,7 @@ pub async fn load_spectrum_music_context(
 
 #[derive(Debug, Clone)]
 struct PendingSpectrumMusicContextRecord {
+    collection: CollectionGroupOwner,
     collection_url: String,
     music: OrderedMusicSpectrumRecord,
 }
@@ -951,11 +999,18 @@ async fn load_spectrum_music_records_with_groups(
     let mut groups_by_music = HashMap::<RecordId, Group>::new();
     for related in group_records {
         let (music_id, group) = related.into_parts();
+        let owner = records
+            .iter()
+            .find(|record| record.music.id() == &music_id)
+            .expect("group relation owner should match a pending spectrum record")
+            .collection
+            .clone();
         groups_by_music.entry(music_id).or_insert_with(|| {
             let group = group.into_value();
             Group {
                 name: group.name,
                 url: group.url,
+                collection: owner,
                 folder: group.folder,
             }
         });
@@ -1013,7 +1068,7 @@ pub async fn list_auto_update_collections() -> Result<Vec<Collection>> {
 pub async fn upsert_collection(collection: &Collection) -> Result<Collection> {
     ensure_collection_graph_schema().await?;
 
-    let collection = inherit_canonical_liked_state(collection).await?;
+    let collection = bind_collection_groups(&inherit_canonical_liked_state(collection).await?);
     let existing_record =
         find_unique_record_id_by_string_field::<Collection>("url", &collection.url).await?;
     let record = existing_record
@@ -1022,10 +1077,8 @@ pub async fn upsert_collection(collection: &Collection) -> Result<Collection> {
     let previous_music_ids = load_collection_music_ids(&record).await?;
     let previous_group_ids = load_group_ids_for_music_records(&previous_music_ids).await?;
     let previous_group_urls = load_group_urls_for_records(&previous_group_ids).await?;
-    let saved = match existing_record {
-        Some(record) => Repo::<Collection>::update_at(record, collection).await?,
-        None => Repo::<Collection>::create_at(record.clone(), collection).await?,
-    };
+    let saved =
+        persist_collection_with_owner_scope(record.clone(), collection, existing_record).await?;
     let next_music_ids = load_collection_music_ids(&record).await?;
     let next_group_ids = load_group_ids_for_music_records(&next_music_ids).await?;
     delete_orphaned_music_records(previous_music_ids, &next_music_ids).await?;
@@ -1034,6 +1087,38 @@ pub async fn upsert_collection(collection: &Collection) -> Result<Collection> {
     refresh_exclude_availability_for_owner_records(&[], &next_group_ids).await?;
     delete_exclude_availability_for_missing_group_urls(previous_group_urls).await?;
     Ok(saved)
+}
+
+async fn persist_collection_with_owner_scope(
+    record: RecordId,
+    collection: Collection,
+    existing_record: Option<RecordId>,
+) -> Result<Collection> {
+    let scope = CollectionWriteOwnerScope {
+        url: collection.url.clone(),
+        record: record.clone(),
+        owner: CollectionGroupOwner::from(&collection),
+    };
+
+    COLLECTION_WRITE_OWNER_SCOPE
+        .scope(RefCell::new(vec![scope]), async move {
+            match existing_record {
+                Some(record) => Repo::<Collection>::update_at(record, collection).await,
+                None => Repo::<Collection>::create_at(record, collection).await,
+            }
+        })
+        .await
+}
+
+fn bind_collection_groups(collection: &Collection) -> Collection {
+    let mut collection = collection.clone();
+    let owner = CollectionGroupOwner::from(&collection);
+
+    for music in &mut collection.musics {
+        music.group = music.group.clone().bind_collection_owner(owner.clone());
+    }
+
+    collection
 }
 
 async fn inherit_canonical_liked_state(collection: &Collection) -> Result<Collection> {
@@ -1094,8 +1179,29 @@ async fn ensure_collection_graph_schema() -> Result<()> {
     db.query("DEFINE TABLE IF NOT EXISTS includes TYPE RELATION SCHEMALESS;")
         .await?
         .check()?;
+    db.query("DEFINE TABLE IF NOT EXISTS include TYPE RELATION SCHEMALESS;")
+        .await?
+        .check()?;
 
     Ok(())
+}
+
+async fn load_collection_group_memberships() -> Result<Vec<CollectionGroupMembershipView>> {
+    let db = get_db()?;
+    let mut result = db
+        .query(
+            "SELECT in.url AS collection_url, out.url AS group_url
+             FROM $rel
+             WHERE record::tb(in) = $collection_table
+                 AND record::tb(out) = $group_table;",
+        )
+        .bind(("rel", Table::from("include")))
+        .bind(("collection_table", Collection::table_name().to_string()))
+        .bind(("group_table", Group::table_name().to_string()))
+        .await?
+        .check()?;
+
+    Ok(result.take(0)?)
 }
 
 async fn load_collection_music_ids(record: &RecordId) -> Result<Vec<RecordId>> {
@@ -1232,8 +1338,11 @@ async fn load_playlist_playback_collection_ref(
 
     Ok(Some(PlaylistPlaybackCollectionRef {
         record: row.id,
+        name: row.name,
         url: row.url,
         folder: row.folder,
+        last_updated: row.last_updated,
+        enable_updates: row.enable_updates,
     }))
 }
 
@@ -1412,9 +1521,10 @@ async fn append_group_playback_track_sources(
                     if !selected_parent_records.contains(&collection.record) {
                         continue;
                     }
-                    let Some(music) =
-                        playable_track_music_from_relation_row(row.clone(), group.as_group())
-                    else {
+                    let Some(music) = playable_track_music_from_relation_row(
+                        row.clone(),
+                        group.as_group(collection.owner.clone()),
+                    ) else {
                         continue;
                     };
                     if is_music_canonical_id_excluded(&music.canonical_music_id).await? {
@@ -1560,11 +1670,13 @@ async fn load_random_group_playback_track_source(
         let Some(start_index) = random_index(matching_collections.len()) else {
             continue;
         };
+        let collection = matching_collections[start_index];
 
-        let Some(music) = playable_track_music_from_relation_row(row, group.as_group()) else {
+        let Some(music) =
+            playable_track_music_from_relation_row(row, group.as_group(collection.owner.clone()))
+        else {
             continue;
         };
-        let collection = matching_collections[start_index];
 
         return Ok(Some(project_playback_track_source_from_folder(
             &collection.folder,
@@ -1742,6 +1854,13 @@ async fn load_music_source_collections_for_playback<'a>(
             .entry(row.music_record)
             .or_default()
             .push(PlaylistPlaybackSourceCollectionRef {
+                owner: CollectionGroupOwner {
+                    name: row.collection_name,
+                    url: row.collection_url,
+                    folder: row.collection_folder.clone(),
+                    last_updated: row.collection_last_updated,
+                    enable_updates: row.collection_enable_updates,
+                },
                 record: row.collection_record,
                 folder: row.collection_folder,
             });
@@ -1772,9 +1891,21 @@ async fn load_music_groups_for_playback<'a>(
 
     let mut groups = HashMap::new();
     for row in rows {
+        let parent_collections = load_group_parent_collection_records(&row.group_record).await?;
+        let Some(parent_collection) = parent_collections.first() else {
+            continue;
+        };
+        let Some(owner) = load_collection_shell_row(parent_collection)
+            .await?
+            .map(CollectionShellRow::into_group_owner)
+        else {
+            continue;
+        };
+
         groups.entry(row.music_record).or_insert_with(|| Group {
             name: row.group_name,
             url: row.group_url,
+            collection: owner,
             folder: row.group_folder,
         });
     }
@@ -1856,29 +1987,15 @@ async fn load_group_parent_collection_urls(
 
 async fn load_group_parent_collection_records(group_record: &RecordId) -> Result<Vec<RecordId>> {
     let db = get_db()?;
-    let mut result = match db
+    let mut result = db
         .query(
-            "SELECT VALUE in FROM includes WHERE out IN (
-                SELECT VALUE out FROM grouped WHERE in = $group AND record::tb(out) = $music_table
-            ) AND record::tb(in) = $collection_table;",
+            "SELECT VALUE in FROM include
+             WHERE out = $group AND record::tb(in) = $collection_table;",
         )
         .bind(("group", group_record.clone()))
-        .bind(("music_table", Music::table_name().to_string()))
         .bind(("collection_table", Collection::table_name().to_string()))
-        .await
-    {
-        Ok(result) => match result.check() {
-            Ok(result) => result,
-            Err(error) => match DBError::from(error) {
-                DBError::MissingTable(_) => return Ok(vec![]),
-                other => return Err(other.into()),
-            },
-        },
-        Err(error) => match classify_db_error(&error.into()) {
-            DBError::MissingTable(_) => return Ok(vec![]),
-            other => return Err(other.into()),
-        },
-    };
+        .await?
+        .check()?;
 
     let records: Vec<RecordId> = result.take(0)?;
     let mut seen = HashSet::new();
@@ -2143,8 +2260,6 @@ async fn delete_orphaned_music_records(
     previous_music_ids: Vec<RecordId>,
     next_music_ids: &[RecordId],
 ) -> Result<()> {
-    // appdb fallback lookup can legally reuse one Music row across multiple
-    // collections, so cleanup must wait until no includes edge points at it.
     for record in previous_music_ids {
         if next_music_ids.contains(&record) {
             continue;
@@ -2438,34 +2553,16 @@ struct PlaylistForeignRecordIds {
 /// resolves only the referenced ids; collection/group/music persistence owns
 /// their own fields and graph edges.
 async fn resolve_playlist_foreign_record_ids(
-    playlist: &PlayList,
+    playlist: &PlayListWriteRequest,
 ) -> Result<PlaylistForeignRecordIds> {
     let mut collections = Vec::with_capacity(playlist.collections.len());
     for collection in &playlist.collections {
-        let Some(record) =
-            find_unique_record_id_by_string_field::<Collection>("url", &collection.url).await?
-        else {
-            bail!(
-                "playlist `{}` references unknown collection `{}`",
-                playlist.name,
-                collection.url
-            );
-        };
-        collections.push(record);
+        collections.push(resolve_playlist_collection_ref(&playlist.name, collection).await?);
     }
 
     let mut groups = Vec::with_capacity(playlist.groups.len());
     for group in &playlist.groups {
-        let Some(record) =
-            find_unique_record_id_by_string_field::<Group>("url", &group.url).await?
-        else {
-            bail!(
-                "playlist `{}` references unknown group `{}`",
-                playlist.name,
-                group.url
-            );
-        };
-        groups.push(record);
+        groups.push(resolve_playlist_group_ref(&playlist.name, group).await?);
     }
 
     let mut extra = Vec::with_capacity(playlist.extra.len());
@@ -2481,6 +2578,62 @@ async fn resolve_playlist_foreign_record_ids(
         collections,
         groups,
         extra,
+    })
+}
+
+async fn resolve_playlist_collection_ref(
+    playlist_name: &str,
+    collection: &PlaylistCollectionRef,
+) -> Result<RecordId> {
+    let Some(record) =
+        find_unique_record_id_by_string_field::<Collection>("url", &collection.url).await?
+    else {
+        bail!(
+            "playlist `{}` references unknown collection `{}`",
+            playlist_name,
+            collection.url
+        );
+    };
+
+    Ok(record)
+}
+
+async fn resolve_playlist_group_ref(
+    playlist_name: &str,
+    group: &PlaylistGroupRef,
+) -> Result<RecordId> {
+    let Some(record) = find_unique_record_id_by_string_field::<Group>("url", &group.url).await?
+    else {
+        bail!(
+            "playlist `{}` references unknown group `{}`",
+            playlist_name,
+            group.url
+        );
+    };
+
+    Ok(record)
+}
+
+async fn playlist_storage_row_from_request(
+    playlist: &PlayListWriteRequest,
+    foreign_ids: &PlaylistForeignRecordIds,
+) -> Result<PlayList> {
+    let mut collections = Vec::with_capacity(foreign_ids.collections.len());
+    for record in &foreign_ids.collections {
+        collections.push(Collection::get_record(record.clone()).await?);
+    }
+
+    let mut groups = Vec::with_capacity(foreign_ids.groups.len());
+    for record in &foreign_ids.groups {
+        groups.push(Group::get_record(record.clone()).await?);
+    }
+
+    Ok(PlayList {
+        name: playlist.name.clone(),
+        collections,
+        groups,
+        extra: playlist.extra.clone(),
+        created_at: playlist.created_at.clone(),
     })
 }
 
@@ -2618,13 +2771,9 @@ struct StoredExcludeOwnerAvailability {
 
 #[derive(Debug, Clone, Deserialize, SurrealValue)]
 struct StoredExcludeOwnerAvailabilityRow {
-    #[serde(default)]
     owner_kind: String,
-    #[serde(default)]
     owner_url: String,
-    #[serde(default)]
     total_music_count: u32,
-    #[serde(default)]
     excluded_music_count: u32,
 }
 
@@ -2648,9 +2797,7 @@ struct MusicPlaybackIdentityRow {
 #[derive(Debug, Clone, Deserialize, SurrealValue)]
 struct PlaylistPlaybackRawRow {
     name: String,
-    #[serde(default)]
     collections: serde_json::Value,
-    #[serde(default)]
     groups: serde_json::Value,
     extra: serde_json::Value,
 }
@@ -2670,6 +2817,20 @@ struct CollectionShellRow {
     name: String,
     url: String,
     folder: String,
+    last_updated: String,
+    enable_updates: Option<bool>,
+}
+
+impl CollectionShellRow {
+    fn into_group_owner(self) -> CollectionGroupOwner {
+        CollectionGroupOwner {
+            name: self.name,
+            url: self.url,
+            folder: self.folder,
+            last_updated: self.last_updated,
+            enable_updates: self.enable_updates,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, SurrealValue)]

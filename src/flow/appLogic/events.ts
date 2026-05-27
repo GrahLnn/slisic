@@ -363,6 +363,7 @@ export const invoker = createActors({
         configLibrary: {
           collections: [],
           groups: [],
+          collection_group_memberships: [],
           excludes: [],
           exclude_availability: {
             fully_excluded_collection_urls: [],

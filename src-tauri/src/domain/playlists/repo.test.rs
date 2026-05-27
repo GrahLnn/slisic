@@ -1,12 +1,13 @@
 use super::model::{
-    Collection, CollectionSurfaceView, Exclude, Group, GroupSurfaceView, Music, PlayList,
-    PlayListConfigView, PlayListListView, canonical_music_id_for_source,
+    Collection, CollectionGroupOwner, CollectionSurfaceView, Exclude, Group, GroupSurfaceView,
+    Music, PlayList, PlayListConfigView, PlayListListView, PlayListWriteRequest,
+    canonical_music_id_for_source,
 };
 use super::repo::{
     SpectrumMusicSourceIdentity, add_exclude, create_music, delete_music, delete_playlist_by_name,
-    ensure_playlist_collection_refs_exist, get_collection_by_url, get_playlist_by_name,
-    get_playlist_config_by_name, get_playlist_playback_selection_by_name, has_collections,
-    list_collections, list_config_library, list_musics_by_file_path, list_playlists,
+    get_collection_by_url, get_playlist_by_name, get_playlist_config_by_name,
+    get_playlist_playback_selection_by_name, has_collections, list_collections,
+    list_config_library, list_musics_by_file_path, list_playlists,
     load_liked_playlist_playback_track_sources, load_playlist_playback_track_sources,
     load_random_playlist_playback_track_source, load_spectrum_music_context,
     playlist_playback_owner_attempt_order, push_extra, remove_exclude, remove_extra,
@@ -87,11 +88,13 @@ async fn bootstrap_relation_table(table: &str) {
 async fn bootstrap_collection_write_schema() {
     bootstrap_table(Music::table_name()).await;
     bootstrap_relation_table("includes").await;
+    bootstrap_relation_table("include").await;
 }
 
 async fn bootstrap_playlist_read_schema() {
     bootstrap_table(Music::table_name()).await;
     bootstrap_relation_table("includes").await;
+    bootstrap_relation_table("include").await;
     bootstrap_relation_table("grouped").await;
 }
 
@@ -106,10 +109,23 @@ fn sample_collection(url: &str, enable_updates: Option<bool>) -> Collection {
     }
 }
 
+fn collection_owner(name: &str, url: &str, folder: &str) -> CollectionGroupOwner {
+    CollectionGroupOwner {
+        name: name.to_string(),
+        url: url.to_string(),
+        folder: folder.to_string(),
+        last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    }
+}
+
 fn collection_group(name: &str, url: &str, folder: &str) -> Group {
+    let collection_url = url.split_once('#').map(|(base, _)| base).unwrap_or(url);
+
     Group {
         name: name.to_string(),
         url: url.to_string(),
+        collection: collection_owner("Test Collection", collection_url, "youtube/test"),
         folder: folder.to_string(),
     }
 }
@@ -119,6 +135,8 @@ fn music_canonical_id(url: &str, start_ms: u32, end_ms: u32) -> String {
 }
 
 fn grouped_collection(url: &str) -> Collection {
+    let owner = collection_owner("Grouped Demo", url, "youtube/grouped-demo");
+
     Collection {
         name: "Grouped Demo".to_string(),
         url: url.to_string(),
@@ -129,6 +147,7 @@ fn grouped_collection(url: &str) -> Collection {
             group: Group {
                 name: "Disc 1".to_string(),
                 url: format!("{url}#disc-1"),
+                collection: owner,
                 folder: "Disc 1".to_string(),
             },
             canonical_music_id: music_canonical_id(&format!("{url}#track"), 0, 180_000),
@@ -196,6 +215,7 @@ fn shared_music(collection_url: &str, collection_folder: &str) -> Music {
 
 fn sample_playlist(name: &str) -> PlayList {
     let collection_url = format!("https://example.com/{name}");
+    let owner = collection_owner("Repo Demo", &collection_url, &format!("youtube/{name}"));
     PlayList {
         name: name.to_string(),
         collections: vec![Collection {
@@ -208,6 +228,7 @@ fn sample_playlist(name: &str) -> PlayList {
                 group: Group {
                     name: "Disc 1".to_string(),
                     url: format!("{collection_url}#disc-1"),
+                    collection: owner.clone(),
                     folder: "Disc 1".to_string(),
                 },
                 canonical_music_id: music_canonical_id(
@@ -227,6 +248,7 @@ fn sample_playlist(name: &str) -> PlayList {
         groups: vec![Group {
             name: "Disc 1".to_string(),
             url: format!("https://example.com/{name}#disc-1"),
+            collection: owner,
             folder: "Disc 1".to_string(),
         }],
         extra: vec![],
@@ -243,6 +265,11 @@ fn sample_excluded_music() -> Music {
         group: Group {
             name: "Blocked Collection".to_string(),
             url: "https://example.com/blocked-collection".to_string(),
+            collection: collection_owner(
+                "Blocked Collection",
+                "https://example.com/blocked-collection",
+                "youtube/blocked-collection",
+            ),
             folder: "youtube/blocked-collection".to_string(),
         },
         canonical_music_id: music_canonical_id(url, 0, 180_000),
@@ -398,6 +425,7 @@ async fn insert_group_row(id: &str, group: &Group) -> RecordId {
             json!({
                 "name": group.name,
                 "url": group.url,
+                "collection": group.collection,
                 "folder": group.folder,
             }),
         ))
@@ -408,6 +436,21 @@ async fn insert_group_row(id: &str, group: &Group) -> RecordId {
 
     let record: Option<RecordId> = result.take(0).expect("group insert id should decode");
     record.expect("group insert should return one record id")
+}
+
+async fn insert_collection_group_edge(collection: &RecordId, group: &RecordId) {
+    let db = get_db().expect("global playlist repo database handle should exist");
+
+    db.query(
+        "INSERT RELATION INTO $rel { in: $collection, out: $group, position: 0 } RETURN NONE;",
+    )
+    .bind(("rel", Table::from("include")))
+    .bind(("collection", collection.clone()))
+    .bind(("group", group.clone()))
+    .await
+    .expect("collection group edge insert query should succeed")
+    .check()
+    .expect("collection group edge insert response should succeed");
 }
 
 async fn insert_music_row(id: &str, music: &Music) -> RecordId {
@@ -638,9 +681,17 @@ fn add_exclude_is_idempotent_and_remove_exclude_deletes_the_row() {
 
     run_async(async {
         ensure_db().await;
-        bootstrap_table(Music::table_name()).await;
+        bootstrap_collection_write_schema().await;
 
         let music = sample_excluded_music();
+        upsert_collection(&collection_with_musics(
+            &music.group.collection.url,
+            &music.group.collection.folder,
+            Some(false),
+            vec![music.clone()],
+        ))
+        .await
+        .expect("exclude identity collection should exist before exclude writes");
         let first = add_exclude(music.clone())
             .await
             .expect("first exclude add should succeed");
@@ -677,7 +728,7 @@ fn exclude_identity_keeps_different_segments_separate() {
 
     run_async(async {
         ensure_db().await;
-        bootstrap_table(Music::table_name()).await;
+        bootstrap_collection_write_schema().await;
 
         let first_segment = sample_excluded_music();
         let mut second_segment = first_segment.clone();
@@ -688,6 +739,14 @@ fn exclude_identity_keeps_different_segments_separate() {
             second_segment.start_ms,
             second_segment.end_ms,
         );
+        upsert_collection(&collection_with_musics(
+            &first_segment.group.collection.url,
+            &first_segment.group.collection.folder,
+            Some(false),
+            vec![first_segment.clone(), second_segment.clone()],
+        ))
+        .await
+        .expect("segmented exclude collection should exist before exclude writes");
 
         add_exclude(first_segment.clone())
             .await
@@ -1610,30 +1669,6 @@ fn load_spectrum_music_context_filters_collection_candidates_by_path_components(
 }
 
 #[test]
-fn get_collection_by_url_reads_legacy_record_ids_via_url_lookup() {
-    let _guard = acquire_db_test_lock();
-
-    run_async(async {
-        ensure_db().await;
-        bootstrap_playlist_read_schema().await;
-
-        let url = "https://example.com/legacy";
-        let legacy_record =
-            insert_collection_row("legacy-collection", &sample_collection(url, Some(false))).await;
-
-        let loaded = get_collection_by_url(url)
-            .await
-            .expect("legacy collection lookup should succeed")
-            .expect("legacy collection should exist");
-
-        assert_eq!(loaded.url, url);
-        assert_eq!(load_collection_ids_by_url(url).await, vec![legacy_record]);
-
-        reset_db();
-    });
-}
-
-#[test]
 fn collection_unique_index_rejects_duplicate_urls_before_lookup_becomes_ambiguous() {
     let _guard = acquire_db_test_lock();
 
@@ -1682,63 +1717,14 @@ fn collection_unique_index_rejects_duplicate_urls_before_lookup_becomes_ambiguou
 }
 
 #[test]
-fn upsert_collection_reuses_existing_legacy_record_id_and_removes_old_music() {
+fn upsert_collection_is_idempotent_for_repeated_canonical_collection_writes() {
     let _guard = acquire_db_test_lock();
 
     run_async(async {
         ensure_db().await;
         bootstrap_collection_write_schema().await;
 
-        let url = "https://example.com/legacy-grouped";
-        let legacy_collection = sample_collection(url, Some(false));
-        let legacy_record = insert_collection_row("legacy-grouped", &legacy_collection).await;
-        let stale_music = Music {
-            name: "Stale Track".to_string(),
-            alias: "Stale Track".to_string(),
-            group: collection_group("Demo", url, "youtube/demo"),
-            url: format!("{url}#stale"),
-            canonical_music_id: canonical_music_id_for_source(&format!("{url}#stale"), 0, 180_000),
-            path: Some("Stale Track.m4a".to_string()),
-            start_ms: 0,
-            end_ms: 90_000,
-            liked: false,
-        };
-        let stale_music_record = insert_music_row("legacy-stale-music", &stale_music).await;
-        insert_music_edges(&legacy_record, std::slice::from_ref(&stale_music_record)).await;
-
-        let saved = upsert_collection(&grouped_collection(url))
-            .await
-            .expect("grouped collection upsert should succeed");
-        let reloaded = get_collection_by_url(url)
-            .await
-            .expect("grouped collection should reload")
-            .expect("grouped collection should exist");
-
-        assert_eq!(saved.url, url);
-        assert_eq!(
-            load_collection_ids_by_url(url).await,
-            vec![legacy_record.clone()]
-        );
-        assert_eq!(load_collection_music_ids(&legacy_record).await.len(), 1);
-        assert!(
-            Music::get_record(stale_music_record).await.is_err(),
-            "stale music with no remaining parents should be deleted"
-        );
-        assert_eq!(reloaded.musics.len(), 1);
-
-        reset_db();
-    });
-}
-
-#[test]
-fn upsert_collection_reuses_music_records_via_fallback_lookup_without_explicit_ids() {
-    let _guard = acquire_db_test_lock();
-
-    run_async(async {
-        ensure_db().await;
-        bootstrap_collection_write_schema().await;
-
-        let url = "https://example.com/fallback-music";
+        let url = "https://example.com/repeated-music";
         let collection = grouped_collection(url);
         let first = upsert_collection(&collection)
             .await
@@ -1857,7 +1843,8 @@ fn upsert_collection_never_deletes_non_music_records_from_corrupted_include_edge
         let root_url = "https://example.com/root";
         let foreign_url = "https://example.com/foreign";
         let root_record =
-            insert_collection_row("legacy-root", &sample_collection(root_url, Some(false))).await;
+            insert_collection_row("corrupted-root", &sample_collection(root_url, Some(false)))
+                .await;
         let foreign_record = insert_collection_row(
             "foreign-collection",
             &sample_collection(foreign_url, Some(false)),
@@ -1900,6 +1887,7 @@ fn get_playlist_by_name_reads_related_collections_and_groups() {
             insert_music_row("repo-playlist-track", &playlist.collections[0].musics[0]).await;
         insert_music_edges(&collection_record, std::slice::from_ref(&music_record)).await;
         let group_record = insert_group_row("repo-playlist-group", &playlist.groups[0]).await;
+        insert_collection_group_edge(&collection_record, &group_record).await;
         insert_group_edges(&group_record, std::slice::from_ref(&music_record)).await;
         insert_playlist_row(
             "repo-playlist",
@@ -1990,6 +1978,7 @@ fn get_playlist_config_reads_one_level_surfaces_without_music() {
                 .await;
         let group_record =
             insert_group_row("repo-playlist-config-group", &playlist.groups[0]).await;
+        insert_collection_group_edge(&collection_record, &group_record).await;
         insert_playlist_row(
             "repo-playlist-config",
             &playlist,
@@ -2019,9 +2008,11 @@ fn list_config_library_reads_collection_and_group_surfaces() {
         bootstrap_playlist_read_schema().await;
 
         let playlist = sample_playlist("repo-config-library");
-        insert_collection_row("repo-config-library-collection", &playlist.collections[0]).await;
-        insert_group_row("repo-config-library-group", &playlist.groups[0]).await;
-        let excluded_music = sample_excluded_music();
+        let collection_record =
+            insert_collection_row("repo-config-library-collection", &playlist.collections[0]).await;
+        let group_record = insert_group_row("repo-config-library-group", &playlist.groups[0]).await;
+        insert_collection_group_edge(&collection_record, &group_record).await;
+        let excluded_music = playlist.collections[0].musics[0].clone();
         add_exclude(excluded_music.clone())
             .await
             .expect("exclude row should save before config library load");
@@ -2197,7 +2188,7 @@ fn upsert_playlist_surface_is_immediately_usable_for_playback_selection() {
             created_at: AutoFill::pending(),
         };
 
-        let saved = upsert_playlist_surface(&playlist, None)
+        let saved = upsert_playlist_surface(&PlayListWriteRequest::from_playlist(&playlist), None)
             .await
             .expect("playlist save should succeed");
         let persisted_collection = get_collection_by_url(collection_url)
@@ -2435,127 +2426,6 @@ fn push_extra_updates_only_extra_refs() {
 }
 
 #[test]
-fn ensure_playlist_collection_refs_exist_materializes_shell_before_surface_save() {
-    let _guard = acquire_db_test_lock();
-
-    run_async(async {
-        ensure_db().await;
-
-        let collection = Collection {
-            name: "Parsed Shell".to_string(),
-            url: "https://example.com/parsed-shell".to_string(),
-            folder: "youtube/parsed-shell".to_string(),
-            musics: vec![named_music(
-                "Draft Only Track",
-                collection_group(
-                    "Draft Group",
-                    "https://example.com/parsed-shell#draft",
-                    "Draft Group",
-                ),
-                "Draft Only Track.m4a",
-            )],
-            last_updated: "2026-04-12T00:00:00+00:00".to_string(),
-            enable_updates: Some(true),
-        };
-        let playlist = PlayList {
-            name: "Parsed Shell Playlist".to_string(),
-            collections: vec![collection.clone()],
-            groups: vec![],
-            extra: vec![],
-
-            created_at: AutoFill::pending(),
-        };
-
-        ensure_playlist_collection_refs_exist(&playlist.collections)
-            .await
-            .expect("collection shell should materialize before playlist save");
-        let saved = upsert_playlist_surface(&playlist, None)
-            .await
-            .expect("playlist save should accept the materialized shell");
-        let persisted_collection = get_collection_by_url(&collection.url)
-            .await
-            .expect("materialized shell should load")
-            .expect("materialized shell should exist");
-        let selection = get_playlist_playback_selection_by_name(&saved.name)
-            .await
-            .expect("playback selection lookup should succeed")
-            .expect("playback selection should exist");
-
-        assert_eq!(saved.name, playlist.name);
-        assert_eq!(persisted_collection.name, collection.name);
-        assert_eq!(persisted_collection.url, collection.url);
-        assert_eq!(persisted_collection.folder, collection.folder);
-        assert_eq!(persisted_collection.last_updated, collection.last_updated);
-        assert_eq!(
-            persisted_collection.enable_updates,
-            collection.enable_updates
-        );
-        assert!(persisted_collection.musics.is_empty());
-        assert_eq!(selection.collections.len(), 1);
-        assert_eq!(selection.collections[0].url, collection.url);
-        assert_eq!(selection.download_scopes, vec![collection.url.clone()]);
-
-        reset_db();
-    });
-}
-
-#[test]
-fn ensure_playlist_collection_refs_exist_does_not_clobber_existing_collection() {
-    let _guard = acquire_db_test_lock();
-
-    run_async(async {
-        ensure_db().await;
-
-        let collection_url = "https://example.com/existing-library";
-        let collection_folder = "youtube/existing-library";
-        let populated_collection = collection_with_musics(
-            collection_url,
-            collection_folder,
-            Some(false),
-            vec![shared_music(collection_url, collection_folder)],
-        );
-        upsert_collection(&populated_collection)
-            .await
-            .expect("existing collection should persist before shell ensure");
-
-        let draft_collection = Collection {
-            name: "Draft Existing".to_string(),
-            url: collection_url.to_string(),
-            folder: "youtube/draft-existing".to_string(),
-            musics: vec![],
-            last_updated: "2026-05-01T00:00:00+00:00".to_string(),
-            enable_updates: Some(true),
-        };
-
-        ensure_playlist_collection_refs_exist(std::slice::from_ref(&draft_collection))
-            .await
-            .expect("existing collection ref ensure should be a no-op");
-        let persisted_collection = get_collection_by_url(collection_url)
-            .await
-            .expect("existing collection should load")
-            .expect("existing collection should still exist");
-
-        assert_eq!(persisted_collection.name, populated_collection.name);
-        assert_eq!(persisted_collection.folder, populated_collection.folder);
-        assert_eq!(
-            persisted_collection.last_updated,
-            populated_collection.last_updated
-        );
-        assert_eq!(
-            persisted_collection.enable_updates,
-            populated_collection.enable_updates
-        );
-        assert_eq!(persisted_collection.musics.len(), 1);
-        assert_eq!(
-            persisted_collection.musics[0].url,
-            populated_collection.musics[0].url
-        );
-
-        reset_db();
-    });
-}
-
-#[test]
 fn upsert_playlist_rejects_unknown_collection_refs() {
     let _guard = acquire_db_test_lock();
 
@@ -2617,6 +2487,11 @@ fn upsert_playlist_rejects_unknown_group_refs() {
             groups: vec![Group {
                 name: "Missing Disc".to_string(),
                 url: "https://example.com/missing-disc".to_string(),
+                collection: collection_owner(
+                    "Missing Collection",
+                    "https://example.com/missing-collection",
+                    "youtube/missing-collection",
+                ),
                 folder: "Missing Disc".to_string(),
             }],
             extra: vec![],
@@ -2726,6 +2601,7 @@ fn playlist_playback_selection_reads_refs_without_hydrating_unselected_collectio
             insert_collection_row("playback-unselected-collection", &unselected_collection).await;
         let selected_group_record =
             insert_group_row("playback-selected-group", &selected_group).await;
+        insert_collection_group_edge(&selected_collection_record, &selected_group_record).await;
         let selected_music_record =
             insert_music_row("playback-selected-music", &selected_music).await;
         let unselected_music_record = insert_music_row(
@@ -2816,6 +2692,7 @@ fn playlist_playback_sources_skip_excluded_music() {
             insert_collection_row("excluded-source-collection", &selected_collection).await;
         let selected_group_record =
             insert_group_row("excluded-source-group", &selected_group).await;
+        insert_collection_group_edge(&selected_collection_record, &selected_group_record).await;
         let selected_music_record =
             insert_music_row("excluded-source-music", &excluded_music).await;
         let playable_music_record =
@@ -2893,6 +2770,7 @@ fn playlist_playback_sources_include_extra_music() {
             insert_collection_row("extra-playback-collection", &collection).await;
         let music_record = insert_music_row("extra-playback-music", &extra_music).await;
         let group_record = insert_group_row("extra-playback-group", &extra_music.group).await;
+        insert_collection_group_edge(&collection_record, &group_record).await;
         insert_music_edges(&collection_record, std::slice::from_ref(&music_record)).await;
         insert_group_edges(&group_record, std::slice::from_ref(&music_record)).await;
         let playlist = PlayList {
@@ -2971,6 +2849,7 @@ fn liked_playlist_playback_sources_include_liked_extra_music() {
         let liked_record = insert_music_row("liked-extra-playback-liked", &liked_extra).await;
         let unliked_record = insert_music_row("liked-extra-playback-unliked", &unliked_extra).await;
         let group_record = insert_group_row("liked-extra-playback-group", &liked_extra.group).await;
+        insert_collection_group_edge(&collection_record, &group_record).await;
         let music_records = vec![liked_record, unliked_record];
         insert_music_edges(&collection_record, &music_records).await;
         insert_group_edges(&group_record, &music_records).await;
@@ -3043,6 +2922,7 @@ fn liked_playlist_playback_sources_skip_excluded_music() {
             insert_collection_row("liked-excluded-source-collection", &selected_collection).await;
         let selected_group_record =
             insert_group_row("liked-excluded-source-group", &selected_group).await;
+        insert_collection_group_edge(&selected_collection_record, &selected_group_record).await;
         let selected_music_record =
             insert_music_row("liked-excluded-source-music", &excluded_music).await;
         let playable_music_record =
@@ -3117,6 +2997,8 @@ fn playlist_playback_sources_return_empty_when_all_music_is_excluded() {
         let selected_collection_record =
             insert_collection_row("all-excluded-collection", &selected_collection).await;
         let selected_music_record = insert_music_row("all-excluded-music", &excluded_music).await;
+        let selected_group_record = insert_group_row("all-excluded-group", &selected_group).await;
+        insert_collection_group_edge(&selected_collection_record, &selected_group_record).await;
         insert_music_edges(
             &selected_collection_record,
             std::slice::from_ref(&selected_music_record),
@@ -3184,6 +3066,7 @@ fn playlist_playback_sources_deduplicate_collection_group_and_extra_by_canonical
         let collection_record =
             insert_collection_row("canonical-playback-collection", &collection).await;
         let group_record = insert_group_row("canonical-playback-group", &group).await;
+        insert_collection_group_edge(&collection_record, &group_record).await;
         let primary_record = insert_music_row("canonical-playback-primary", &primary_music).await;
         let duplicate_record =
             insert_music_row("canonical-playback-duplicate", &duplicate_music).await;
@@ -3286,6 +3169,8 @@ fn liked_playlist_playback_sources_preserve_owner_and_position_order() {
             insert_collection_row("liked-order-second-collection", &second_collection).await;
         let first_group_record = insert_group_row("liked-order-first-group", &first_group).await;
         let second_group_record = insert_group_row("liked-order-second-group", &second_group).await;
+        insert_collection_group_edge(&first_collection_record, &first_group_record).await;
+        insert_collection_group_edge(&second_collection_record, &second_group_record).await;
         let unliked_first_record =
             insert_music_row("liked-order-unliked-first", &unliked_first).await;
         let liked_first_record = insert_music_row("liked-order-first", &liked_first).await;
@@ -3430,6 +3315,7 @@ fn extra_playlist_playback_sources_preserve_playlist_ref_order_after_filtering()
         );
         let collection_record = insert_collection_row("extra-order-collection", &collection).await;
         let group_record = insert_group_row("extra-order-group", &group).await;
+        insert_collection_group_edge(&collection_record, &group_record).await;
         let first_record = insert_music_row("extra-order-first", &first_music).await;
         let skipped_record = insert_music_row("extra-order-skipped", &skipped_music).await;
         let second_record = insert_music_row("extra-order-second", &second_music).await;
@@ -3518,6 +3404,7 @@ fn playlist_playback_selection_adds_parent_download_scope_for_group_only_refs() 
             insert_collection_row("group-only-selected-collection", &selected_collection).await;
         let selected_group_record =
             insert_group_row("group-only-selected-group", &selected_group).await;
+        insert_collection_group_edge(&selected_collection_record, &selected_group_record).await;
         let selected_music_record =
             insert_music_row("group-only-selected-music", &selected_music).await;
 
@@ -3598,6 +3485,7 @@ fn playlist_playback_sources_respect_ordered_window_limit() {
         let unselected_collection_record =
             insert_collection_row("unselected-collection", &unselected_collection).await;
         let selected_group_record = insert_group_row("selected-group", &selected_group).await;
+        insert_collection_group_edge(&selected_collection_record, &selected_group_record).await;
         let selected_music_a_record = insert_music_row("selected-a", &selected_music_a).await;
         let selected_music_b_record = insert_music_row("selected-b", &selected_music_b).await;
         let unselected_music_record = insert_music_row("unselected", &unselected_music).await;
@@ -3709,6 +3597,7 @@ fn random_playlist_playback_source_uses_selected_playlist_scope() {
             insert_collection_row("random-unselected-collection", &unselected_collection).await;
         let selected_group_record =
             insert_group_row("random-selected-group", &selected_group).await;
+        insert_collection_group_edge(&selected_collection_record, &selected_group_record).await;
         let selected_music_a_record =
             insert_music_row("random-selected-a", &selected_music_a).await;
         let selected_music_b_record =
@@ -3789,6 +3678,7 @@ fn random_playlist_playback_source_skips_music_without_downloaded_path() {
         );
         let collection_record = insert_collection_row("random-path-collection", &collection).await;
         let group_record = insert_group_row("random-path-group", &group).await;
+        insert_collection_group_edge(&collection_record, &group_record).await;
         let pending_record = insert_music_row("random-path-pending", &pending_music).await;
         let playable_record = insert_music_row("random-path-playable", &playable_music).await;
 
@@ -3860,6 +3750,7 @@ fn extra_playlist_playback_sources_skip_music_without_downloaded_path() {
         );
         let collection_record = insert_collection_row("extra-path-collection", &collection).await;
         let group_record = insert_group_row("extra-path-group", &playable_music.group).await;
+        insert_collection_group_edge(&collection_record, &group_record).await;
         let pending_record = insert_music_row("extra-path-pending", &pending_music).await;
         let playable_record = insert_music_row("extra-path-playable", &playable_music).await;
         let music_records = vec![pending_record.clone(), playable_record.clone()];

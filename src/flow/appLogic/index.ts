@@ -81,6 +81,10 @@ function formatStateValue(value: unknown) {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
+function currentPerformanceNow() {
+  return globalThis.performance?.now() ?? Date.now();
+}
+
 export function attachDebugLogger() {
   if (unsubscribeDebug !== null) {
     return;
@@ -379,7 +383,7 @@ export const action = {
   },
   playPlaylist: (playlistName: string) => {
     ensureStarted();
-    const actionStartedAt = window.performance.now();
+    const actionStartedAt = currentPerformanceNow();
     pasteDownloadAction.reset();
     const snapshot = actor.getSnapshot();
     recordRenderPerformanceTrace("playlist-play-action-start", {
@@ -397,7 +401,7 @@ export const action = {
       actor.send(sig.mainx.back);
       recordRenderPerformanceTrace("playlist-play-action-stop-current", {
         playlistName,
-        elapsedMs: window.performance.now() - actionStartedAt,
+        elapsedMs: currentPerformanceNow() - actionStartedAt,
       });
       return;
     }
@@ -405,7 +409,7 @@ export const action = {
     send(playPlaylist.load(playlistName));
     recordRenderPerformanceTrace("playlist-play-action-sent", {
       playlistName,
-      elapsedMs: window.performance.now() - actionStartedAt,
+      elapsedMs: currentPerformanceNow() - actionStartedAt,
     });
   },
   excludeCurrentMusicAndSkip: () => {

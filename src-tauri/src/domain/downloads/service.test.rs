@@ -34,7 +34,9 @@ use crate::domain::downloads::model::{
     PastedDownloadUrlResolutionStatus,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
-use crate::domain::playlists::model::{Collection, Group, Music, canonical_music_id_for_source};
+use crate::domain::playlists::model::{
+    Collection, CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
+};
 use crate::domain::playlists::repo::upsert_collection;
 use anyhow::{Result, anyhow};
 use appdb::Id;
@@ -806,12 +808,31 @@ fn collection_group(name: &str, url: &str, folder: &str) -> Group {
     Group {
         name: name.to_string(),
         url: url.to_string(),
+        collection: CollectionGroupOwner {
+            name: "Test Collection".to_string(),
+            url: "https://example.com/test-collection".to_string(),
+            folder: "youtube/test-collection".to_string(),
+            last_updated: "2026-05-27T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        },
         folder: folder.to_string(),
+    }
+}
+
+fn expansion_owner() -> Collection {
+    Collection {
+        name: "Expansion Owner".to_string(),
+        url: "https://example.com/expansion-owner".to_string(),
+        folder: "youtube/expansion-owner".to_string(),
+        musics: vec![],
+        last_updated: "2026-05-27T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
     }
 }
 
 fn planned_music_titles_from_playlist_titles(titles: &[String]) -> Vec<String> {
     run_async(async {
+        let collection = expansion_owner();
         expand_root_entries_to_planned_leafs(
             &Id::from("task-bracket-title-normalization"),
             Arc::new(FakeYtDlpClient::default()),
@@ -824,6 +845,7 @@ fn planned_music_titles_from_playlist_titles(titles: &[String]) -> Vec<String> {
                     sequence: index as u32,
                 })
                 .collect(),
+            &collection,
             Some(collection_group(
                 "Bracket Album",
                 "https://example.com/playlist/bracket-album",
@@ -1776,6 +1798,13 @@ fn materialize_music_entries_preserves_group_and_nested_relative_path() {
     let group = Group {
         name: "Compilation".to_string(),
         url: "https://example.com/group".to_string(),
+        collection: CollectionGroupOwner {
+            name: "Compilation Owner".to_string(),
+            url: "https://example.com/compilation-owner".to_string(),
+            folder: "youtube/compilation-owner".to_string(),
+            last_updated: "2026-05-27T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        },
         folder: "Compilation".to_string(),
     };
     let relative_path = Path::new(&group.folder)
@@ -2237,6 +2266,7 @@ fn expand_root_entries_to_planned_leafs_flattens_nested_playlists_into_grouped_l
             )]),
         });
 
+        let collection = expansion_owner();
         let leaves = expand_root_entries_to_planned_leafs(
             &Id::from("task-expand"),
             client,
@@ -2245,6 +2275,7 @@ fn expand_root_entries_to_planned_leafs_flattens_nested_playlists_into_grouped_l
                 title: Some("Album One".to_string()),
                 sequence: 0,
             }],
+            &collection,
             None,
         )
         .await
@@ -2291,6 +2322,7 @@ fn expand_root_entries_to_planned_leafs_flattens_nested_playlists_into_grouped_l
 #[test]
 fn expand_root_entries_to_planned_leafs_normalizes_music_titles_from_playlist_context() {
     run_async(async {
+        let collection = expansion_owner();
         let leaves = expand_root_entries_to_planned_leafs(
             &Id::from("task-galacticare"),
             Arc::new(FakeYtDlpClient::default()),
@@ -2306,6 +2338,7 @@ fn expand_root_entries_to_planned_leafs_normalizes_music_titles_from_playlist_co
                     sequence: 1,
                 },
             ],
+            &collection,
             Some(collection_group(
                 "Galacticare",
                 "https://example.com/playlist/galacticare",
@@ -2744,6 +2777,7 @@ fn expand_root_entries_to_planned_leafs_keeps_same_video_distinct_across_groups(
             ]),
         });
 
+        let collection = expansion_owner();
         let leaves = expand_root_entries_to_planned_leafs(
             &Id::from("task-shared-video"),
             client,
@@ -2759,6 +2793,7 @@ fn expand_root_entries_to_planned_leafs_keeps_same_video_distinct_across_groups(
                     sequence: 1,
                 },
             ],
+            &collection,
             None,
         )
         .await

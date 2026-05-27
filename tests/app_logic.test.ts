@@ -48,6 +48,31 @@ const draftItemRemoved = payloads["draft.item.removed"];
 const collectionUpdatesRequested = payloads["collection.updates.requested"];
 const spectrumMusicCreateStarted = payloads["spectrum.music_create_started"];
 const sampleSavePath = "C:\\Users\\admin\\Documents\\slisic";
+const sampleCollectionOwner = {
+  name: "Quiet Morning",
+  url: "https://example.com/quiet-morning",
+  folder: "youtube/quiet-morning",
+  last_updated: "2026-04-13T00:00:00Z",
+  enable_updates: null,
+};
+const sampleDiscOneGroup = {
+  name: "Disc 1",
+  url: "https://example.com/quiet-morning#disc-1",
+  collection: sampleCollectionOwner,
+  folder: "Disc 1",
+};
+const sampleCollectionGroup = {
+  name: "Quiet Morning",
+  url: "https://example.com/quiet-morning",
+  collection: sampleCollectionOwner,
+  folder: "youtube/quiet-morning",
+};
+const sampleLiveGroup = {
+  name: "Quiet Morning",
+  url: "https://example.com/groups/quiet-morning-live",
+  collection: sampleCollectionOwner,
+  folder: "Live",
+};
 
 const sampleCollection: Collection = {
   name: "Quiet Morning",
@@ -57,11 +82,7 @@ const sampleCollection: Collection = {
     {
       name: "Quiet Morning",
       alias: "Quiet Morning",
-      group: {
-        name: "Quiet Morning",
-        url: "https://example.com/quiet-morning",
-        folder: "youtube/quiet-morning",
-      },
+      group: sampleCollectionGroup,
       url: "https://example.com/quiet-morning#title",
       path: "quiet-morning.m4a",
       start_ms: 0,
@@ -72,11 +93,7 @@ const sampleCollection: Collection = {
     {
       name: "Disc 1 Opening",
       alias: "Disc 1 Opening",
-      group: {
-        name: "Disc 1",
-        url: "https://example.com/quiet-morning#disc-1",
-        folder: "Disc 1",
-      },
+      group: sampleDiscOneGroup,
       url: "https://example.com/quiet-morning#disc-1-opening",
       path: "Disc 1/opening.m4a",
       start_ms: 0,
@@ -87,11 +104,7 @@ const sampleCollection: Collection = {
     {
       name: "Quiet Morning Live",
       alias: "Quiet Morning Live",
-      group: {
-        name: "Quiet Morning",
-        url: "https://example.com/groups/quiet-morning-live",
-        folder: "Live",
-      },
+      group: sampleLiveGroup,
       url: "https://example.com/quiet-morning#live",
       path: "Live/quiet-morning-live.m4a",
       start_ms: 0,
@@ -104,7 +117,7 @@ const sampleCollection: Collection = {
   enable_updates: null,
 };
 
-const expectedConfigSidebarItems = [
+const expectedCollectionOnlySidebarItems = [
   {
     kind: "collection",
     name: sampleCollection.name,
@@ -113,24 +126,22 @@ const expectedConfigSidebarItems = [
     last_updated: sampleCollection.last_updated,
     enable_updates: sampleCollection.enable_updates,
   },
+] as const;
+
+const expectedConfigSidebarItems = [
+  ...expectedCollectionOnlySidebarItems,
   {
     kind: "group",
-    name: "Disc 1",
-    url: "https://example.com/quiet-morning#disc-1",
-    folder: "Disc 1",
+    name: sampleDiscOneGroup.name,
+    url: sampleDiscOneGroup.url,
+    folder: sampleDiscOneGroup.folder,
   },
 ] as const;
 
 const samplePlaylist: PlayList = {
   name: "Focus Session",
   collections: [sampleCollection],
-  groups: [
-    {
-      name: "Disc 1",
-      url: "https://example.com/quiet-morning#disc-1",
-      folder: "Disc 1",
-    },
-  ],
+  groups: [sampleDiscOneGroup],
   extra: [],
   created_at: "2026-04-13T00:00:00Z",
 };
@@ -159,6 +170,7 @@ function createExpectedAppLogicContext(overrides: Record<string, unknown> = {}) 
     configLibrary: {
       collections: [],
       groups: [],
+      collection_group_memberships: [],
       excludes: [],
       exclude_availability: {
         fully_excluded_collection_urls: [],
@@ -207,14 +219,18 @@ function createCollectionDraftRef(collection: Collection) {
   };
 }
 
-function createConfigLibrary(collections: readonly Collection[]): ConfigLibraryView {
-  const groups = new Map<string, Collection["musics"][number]["group"]>();
+function createGroupDraftRef(group: PlayList["groups"][number]) {
+  return {
+    name: group.name,
+    url: group.url,
+    folder: group.folder,
+  };
+}
 
-  for (const collection of collections) {
-    for (const music of collection.musics) {
-      groups.set(music.group.url, music.group);
-    }
-  }
+function createConfigLibrary(collections: readonly Collection[]): ConfigLibraryView {
+  const includesSampleCollection = collections.some(
+    (collection) => collection.url === sampleCollection.url,
+  );
 
   return {
     collections: collections.map((collection) => ({
@@ -224,7 +240,23 @@ function createConfigLibrary(collections: readonly Collection[]): ConfigLibraryV
       last_updated: collection.last_updated,
       enable_updates: collection.enable_updates,
     })),
-    groups: [...groups.values()],
+    groups: includesSampleCollection
+      ? [
+          {
+            name: sampleDiscOneGroup.name,
+            url: sampleDiscOneGroup.url,
+            folder: sampleDiscOneGroup.folder,
+          },
+        ]
+      : [],
+    collection_group_memberships: includesSampleCollection
+      ? [
+          {
+            collection_url: sampleCollection.url,
+            group_url: sampleDiscOneGroup.url,
+          },
+        ]
+      : [],
     excludes: [],
     exclude_availability: {
       fully_excluded_collection_urls: [],
@@ -450,7 +482,9 @@ afterEach(() => {
 
 describe("createConfigSidebarItems", () => {
   test("prefers collections over groups when display names overlap", () => {
-    expect(createConfigSidebarItems([sampleCollection])).toEqual(expectedConfigSidebarItems);
+    expect(createConfigSidebarItems([sampleCollection])).toEqual(
+      expectedCollectionOnlySidebarItems,
+    );
   });
 });
 
@@ -779,7 +813,7 @@ describe("appLogic machine", () => {
           last_updated: collection.last_updated,
           enable_updates: collection.enable_updates,
         })),
-        groups: samplePlaylist.groups,
+        groups: samplePlaylist.groups.map(createGroupDraftRef),
         extra: samplePlaylist.extra,
         created_at: samplePlaylist.created_at,
       }),
@@ -810,7 +844,7 @@ describe("appLogic machine", () => {
           mode: "edit",
           name: renamedPlaylist.name,
           collections: samplePlaylist.collections.map(createCollectionDraftRef),
-          groups: samplePlaylist.groups,
+          groups: samplePlaylist.groups.map(createGroupDraftRef),
           extra: samplePlaylist.extra,
           createdAt: samplePlaylist.created_at,
         },
@@ -830,7 +864,7 @@ describe("appLogic machine", () => {
         mode: "edit",
         name: renamedPlaylist.name,
         collections: samplePlaylist.collections.map(createCollectionDraftRef),
-        groups: samplePlaylist.groups,
+        groups: samplePlaylist.groups.map(createGroupDraftRef),
         extra: samplePlaylist.extra,
         createdAt: samplePlaylist.created_at,
       },
@@ -929,7 +963,7 @@ describe("appLogic machine", () => {
           last_updated: collection.last_updated,
           enable_updates: collection.enable_updates,
         })),
-        groups: samplePlaylist.groups,
+        groups: samplePlaylist.groups.map(createGroupDraftRef),
         extra: samplePlaylist.extra,
         created_at: samplePlaylist.created_at,
       });
@@ -960,7 +994,7 @@ describe("appLogic machine", () => {
       collections: samplePlaylist.collections.map((collection) => ({
         ...createCollectionDraftRef(collection),
       })),
-      groups: samplePlaylist.groups,
+      groups: samplePlaylist.groups.map(createGroupDraftRef),
       extra: samplePlaylist.extra,
       createdAt: samplePlaylist.created_at,
     });
@@ -970,7 +1004,7 @@ describe("appLogic machine", () => {
       collections: samplePlaylist.collections.map((collection) => ({
         ...createCollectionDraftRef(collection),
       })),
-      groups: samplePlaylist.groups,
+      groups: samplePlaylist.groups.map(createGroupDraftRef),
       extra: samplePlaylist.extra,
       createdAt: samplePlaylist.created_at,
     });
@@ -1075,7 +1109,7 @@ describe("appLogic machine", () => {
           last_updated: collection.last_updated,
           enable_updates: collection.enable_updates,
         })),
-        groups: samplePlaylist.groups,
+        groups: samplePlaylist.groups.map(createGroupDraftRef),
         extra: samplePlaylist.extra,
         created_at: samplePlaylist.created_at,
       }),
@@ -1104,7 +1138,7 @@ describe("appLogic machine", () => {
       mode: "edit",
       name: samplePlaylist.name,
       collections: [createCollectionDraftRef(updateEnabledCollection)],
-      groups: samplePlaylist.groups,
+      groups: samplePlaylist.groups.map(createGroupDraftRef),
       extra: samplePlaylist.extra,
       createdAt: samplePlaylist.created_at,
     });
@@ -1112,7 +1146,7 @@ describe("appLogic machine", () => {
       mode: "edit",
       name: samplePlaylist.name,
       collections: samplePlaylist.collections.map(createCollectionDraftRef),
-      groups: samplePlaylist.groups,
+      groups: samplePlaylist.groups.map(createGroupDraftRef),
       extra: samplePlaylist.extra,
       createdAt: samplePlaylist.created_at,
     });
