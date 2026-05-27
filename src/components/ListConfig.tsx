@@ -561,9 +561,7 @@ export function resolveToolLabelShakeSignal(
   duplicateShakeState: ListConfigDuplicateShakeState | null,
   item: ListConfigToolLabelItem,
 ) {
-  return item.kind === "playlist" && duplicateShakeState?.layoutId === item.id
-    ? duplicateShakeState.signal
-    : 0;
+  return duplicateShakeState?.layoutId === item.id ? duplicateShakeState.signal : 0;
 }
 
 export function resolveListConfigDuplicateShakeDecision(args: {
@@ -750,10 +748,11 @@ export function ListConfig() {
       const pasteTarget = resolveListConfigPasteTarget({
         text: clipboardText,
         playlistItems: createListConfigPasteItemsSnapshot(viewModel.toolLabelItems),
+        candidateItems,
         arcTrackItems: viewModel.arcTrackItems,
       });
 
-      if (pasteTarget?.kind === "playlist-duplicate") {
+      if (pasteTarget?.kind === "foreground-duplicate") {
         duplicateShakeSequenceRef.current += 1;
         setDuplicateShakeState({
           layoutId: pasteTarget.layoutId,

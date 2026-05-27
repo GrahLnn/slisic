@@ -153,8 +153,6 @@ describe("pasteDownload machine", () => {
     expect(actor.getSnapshot().value).toBe(ss.mainx.State.idle);
     expect(actor.getSnapshot().context).toEqual({
       items: [],
-      pendingCheckItemIds: [],
-      activeItemId: null,
       nextItemSequence: 0,
     });
   });
@@ -170,8 +168,6 @@ describe("pasteDownload machine", () => {
 
     expect(actor.getSnapshot().context).toEqual({
       items: [],
-      pendingCheckItemIds: [],
-      activeItemId: null,
       nextItemSequence: 1,
     });
   });
@@ -199,7 +195,7 @@ describe("pasteDownload machine", () => {
         context.items[0]?.status === "enqueueing",
     );
 
-    expect(actor.getSnapshot().value).toBe(ss.mainx.State.enqueueing);
+    expect(actor.getSnapshot().value).toBe(ss.mainx.State.idle);
     expect(actor.getSnapshot().context.items).toEqual([
       {
         id: "candidate:0",
@@ -253,8 +249,6 @@ describe("pasteDownload machine", () => {
           error: "Clipboard does not contain a valid URL.",
         },
       ],
-      pendingCheckItemIds: [],
-      activeItemId: null,
       nextItemSequence: 1,
     });
   });
@@ -283,8 +277,6 @@ describe("pasteDownload machine", () => {
           error: "resource is not downloadable",
         },
       ],
-      pendingCheckItemIds: [],
-      activeItemId: null,
       nextItemSequence: 1,
     });
   });
@@ -316,13 +308,11 @@ describe("pasteDownload machine", () => {
     expect(enqueueCalls).toBe(0);
     expect(actor.getSnapshot().context).toEqual({
       items: [],
-      pendingCheckItemIds: [],
-      activeItemId: null,
       nextItemSequence: 1,
     });
   });
 
-  test("prepends later pasted candidates while earlier ones are still processing", async () => {
+  test("starts each pasted candidate without waiting for earlier enqueue work", async () => {
     let releaseFirstEnqueue: (() => void) | null = null;
     const firstEnqueue = new Promise<void>((resolve) => {
       releaseFirstEnqueue = resolve;
@@ -347,19 +337,16 @@ describe("pasteDownload machine", () => {
     const actor = createActor(machine);
     actor.start();
     actor.send(pasteRequested.load(sampleResource.url));
-    await waitForState(actor, ss.mainx.State.enqueueing);
+    await waitForContext(actor, (context: { items: Array<{ id: string; status: string }> }) =>
+      context.items.some((item) => item.id === "candidate:0" && item.status === "enqueueing"),
+    );
     actor.send(pasteRequested.load(secondResource.url));
 
-    expect(enqueueCalls).toBe(1);
+    await waitForContext(actor, (context: { items: Array<{ id: string }> }) => {
+      return enqueueCalls === 2 && context.items.every((item) => item.id !== "candidate:1");
+    });
+
     expect(actor.getSnapshot().context.items).toEqual([
-      {
-        id: "candidate:1",
-        rawText: secondResource.url,
-        sourceUrl: null,
-        displayText: secondResource.url,
-        status: "checking",
-        error: null,
-      },
       {
         id: "candidate:0",
         rawText: sampleResource.url,
@@ -376,6 +363,49 @@ describe("pasteDownload machine", () => {
     });
 
     expect(actor.getSnapshot().context.items).toEqual([]);
+  });
+
+  test("keeps a single paste containing two urls invalid without backend calls", async () => {
+    let resolveCalls = 0;
+    let enqueueCalls = 0;
+    setResolvePastedDownloadUrlMock(async (url: string) => {
+      resolveCalls += 1;
+      return {
+        status: "new_url",
+        url,
+        error: null,
+        collection: null,
+      };
+    });
+    setEnqueueCollectionDownloadMock(async () => {
+      enqueueCalls += 1;
+      return {
+        task: sampleTask,
+        collection: sampleCollection,
+      };
+    });
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(pasteRequested.load("https://example.com/a https://www.youtube.com/watch?v=abc123"));
+
+    await waitForContext(
+      actor,
+      (context: { items: Array<{ status: string }> }) => context.items[0]?.status === "invalid_url",
+    );
+
+    expect(resolveCalls).toBe(0);
+    expect(enqueueCalls).toBe(0);
+    expect(actor.getSnapshot().context.items).toEqual([
+      {
+        id: "candidate:0",
+        rawText: "https://example.com/a https://www.youtube.com/watch?v=abc123",
+        sourceUrl: null,
+        displayText: "https://example.com/a https://www.youtube.com/watch?v=abc123",
+        status: "invalid_url",
+        error: "Clipboard must contain exactly one URL.",
+      },
+    ]);
   });
 
   test("deletes failed candidates by id", async () => {
@@ -395,8 +425,6 @@ describe("pasteDownload machine", () => {
 
     expect(actor.getSnapshot().context).toEqual({
       items: [],
-      pendingCheckItemIds: [],
-      activeItemId: null,
       nextItemSequence: 1,
     });
   });
@@ -418,9 +446,7 @@ describe("pasteDownload machine", () => {
 
     expect(actor.getSnapshot().context).toEqual({
       items: [],
-      pendingCheckItemIds: [],
-      activeItemId: null,
-      nextItemSequence: 0,
+      nextItemSequence: 1,
     });
   });
 });

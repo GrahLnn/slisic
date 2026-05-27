@@ -1,10 +1,14 @@
-use super::recommendation::filter_recently_played_recommendation_candidates;
+use super::recommendation::{
+    AudioStyleCandidateSelectionSource, filter_recently_played_recommendation_candidates,
+};
 use super::service::{
     PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
     PlaylistPlaybackRecommender, RandomPlaylistPlaybackRecommender,
-    create_initial_playlist_playback_queue, place_track_at_queue_start,
+    audio_style_playlist_playback_proposal_is_complete, create_short_playback_queue,
+    create_start_anchor_playback_queue, place_track_at_queue_start,
     playlist_playback_proposal_contains_next_track,
-    playlist_selection_has_relevant_active_downloads, propose_random_queue_after_exclude,
+    playlist_selection_has_relevant_active_downloads,
+    propose_playlist_playback_queue_without_audio_style_model, propose_random_queue_after_exclude,
     resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
     shuffle_playback_tracks,
 };
@@ -421,13 +425,62 @@ fn queue_start_projection_preserves_the_initial_playback_anchor() {
 }
 
 #[test]
-fn initial_playlist_playback_queue_contains_only_the_start_anchor() {
+fn start_anchor_playback_queue_contains_only_the_random_start_anchor() {
     let initial_track = playback_track("initial");
 
-    let queue = create_initial_playlist_playback_queue(initial_track.clone());
+    let queue = create_start_anchor_playback_queue(initial_track.clone());
 
     assert_eq!(queue.len(), 1);
     assert_eq!(queue[0].music_url, initial_track.music_url);
+}
+
+#[test]
+fn recommended_startup_queue_keeps_random_anchor_before_recommended_next() {
+    let initial_track = playback_track("initial");
+    let recommended_next = playback_track("recommended_next");
+    let queue = create_short_playback_queue(initial_track.clone(), vec![recommended_next.clone()]);
+
+    assert_eq!(queue.len(), 2);
+    assert_eq!(queue[0].music_url, initial_track.music_url);
+    assert_eq!(queue[1].music_url, recommended_next.music_url);
+}
+
+#[test]
+fn keep_current_queue_without_audio_style_model_does_not_randomize_next_track() {
+    let current = playback_track("current");
+    let random_candidate = playback_track("random_candidate");
+
+    let queue = propose_playlist_playback_queue_without_audio_style_model(
+        PlaylistPlaybackRecommendationRequest {
+            playlist_name: "Focus".to_string(),
+            current_track: current.clone(),
+            candidates: vec![random_candidate],
+            recently_played_tracks: vec![],
+        },
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+    );
+
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0].music_url, current.music_url);
+}
+
+#[test]
+fn exclude_current_queue_without_audio_style_model_keeps_explicit_random_recovery() {
+    let current = playback_track("current");
+    let fallback = playback_track("fallback");
+
+    let queue = propose_playlist_playback_queue_without_audio_style_model(
+        PlaylistPlaybackRecommendationRequest {
+            playlist_name: "Focus".to_string(),
+            current_track: current.clone(),
+            candidates: vec![fallback.clone()],
+            recently_played_tracks: vec![],
+        },
+        PlaylistPlaybackRecommendationMode::ExcludeCurrent,
+    );
+
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0].music_url, fallback.music_url);
 }
 
 #[test]
@@ -661,5 +714,29 @@ fn playlist_playback_keep_current_proposal_with_distinct_next_track_is_complete(
     assert!(playlist_playback_proposal_contains_next_track(
         PlaylistPlaybackRecommendationMode::KeepCurrent,
         &[current_track, next]
+    ));
+}
+
+#[test]
+fn keep_current_audio_style_random_fallback_source_is_not_a_complete_recommendation() {
+    let current_track = playback_track("current");
+    let candidate = playback_track("candidate");
+
+    assert!(!audio_style_playlist_playback_proposal_is_complete(
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+        &[current_track, candidate],
+        Some(AudioStyleCandidateSelectionSource::RandomFallback),
+    ));
+}
+
+#[test]
+fn keep_current_audio_style_source_is_a_complete_recommendation_with_distinct_next() {
+    let current_track = playback_track("current");
+    let candidate = playback_track("candidate");
+
+    assert!(audio_style_playlist_playback_proposal_is_complete(
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+        &[current_track, candidate],
+        Some(AudioStyleCandidateSelectionSource::AudioStyle),
     ));
 }

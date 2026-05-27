@@ -1,8 +1,15 @@
 import { type as arkType } from "arktype";
 import type { PastedDownloadUrlResolution } from "@/src/cmd";
 
-const downloadUrl = arkType("string.url");
+const downloadUrlText = arkType("string.url");
+const singleDownloadUrlText = arkType("string").narrow(
+  (url, ctx) => !/[\s\x00-\x1f\x7f]/.test(url) || ctx.mustBe("one complete URL in clipboard text"),
+);
+const downloadableUrl = arkType("string.url.parse").narrow((url, ctx) =>
+  url.protocol === "http:" || url.protocol === "https:" ? true : ctx.mustBe("an http or https URL"),
+);
 const EMPTY_CLIPBOARD_TEXT = "Empty clipboard";
+const SINGLE_URL_TEXT_ERROR = "Clipboard must contain exactly one URL.";
 
 export type ConfigCandidateItemStatus =
   | "checking"
@@ -21,8 +28,6 @@ export interface ConfigCandidateItem {
 
 export interface Context {
   items: ConfigCandidateItem[];
-  pendingCheckItemIds: string[];
-  activeItemId: string | null;
   nextItemSequence: number;
 }
 
@@ -36,16 +41,25 @@ export type ParsedClipboardDownloadUrl =
       error: string;
     };
 
+export type ParsedDownloadableClipboardUrl =
+  | {
+      ok: true;
+      urlText: string;
+      url: URL;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
 export function createInitialContext(): Context {
   return {
     items: [],
-    pendingCheckItemIds: [],
-    activeItemId: null,
     nextItemSequence: 0,
   };
 }
 
-export function parseClipboardDownloadUrl(text: string): ParsedClipboardDownloadUrl {
+export function parseDownloadableClipboardUrl(text: string): ParsedDownloadableClipboardUrl {
   const trimmed = text.trim();
 
   if (trimmed.length === 0) {
@@ -55,7 +69,7 @@ export function parseClipboardDownloadUrl(text: string): ParsedClipboardDownload
     };
   }
 
-  const validated = downloadUrl(trimmed);
+  const validated = downloadUrlText(trimmed);
   if (typeof validated !== "string") {
     return {
       ok: false,
@@ -63,8 +77,16 @@ export function parseClipboardDownloadUrl(text: string): ParsedClipboardDownload
     };
   }
 
-  const protocol = new URL(validated).protocol;
-  if (protocol !== "http:" && protocol !== "https:") {
+  const singleUrl = singleDownloadUrlText(validated);
+  if (typeof singleUrl !== "string") {
+    return {
+      ok: false,
+      error: SINGLE_URL_TEXT_ERROR,
+    };
+  }
+
+  const parsedUrl = downloadableUrl(singleUrl);
+  if (!(parsedUrl instanceof URL)) {
     return {
       ok: false,
       error: "Only http and https URLs can be downloaded.",
@@ -73,11 +95,35 @@ export function parseClipboardDownloadUrl(text: string): ParsedClipboardDownload
 
   return {
     ok: true,
-    url: validated,
+    urlText: singleUrl,
+    url: parsedUrl,
   };
 }
 
-function createCandidateItemId(sequence: number) {
+export function parseClipboardDownloadUrl(text: string): ParsedClipboardDownloadUrl {
+  const parsed = parseDownloadableClipboardUrl(text);
+  if (!parsed.ok) {
+    return parsed;
+  }
+
+  return {
+    ok: true,
+    url: parsed.urlText,
+  };
+}
+
+export function createInvalidPastedDownloadUrlResolution(
+  error: string,
+): PastedDownloadUrlResolution {
+  return {
+    status: "invalid_url",
+    url: null,
+    error,
+    collection: null,
+  };
+}
+
+export function createCandidateItemId(sequence: number) {
   return `candidate:${sequence}`;
 }
 
@@ -101,56 +147,42 @@ export function appendCandidateItem(context: Context, rawText: string): Context 
   return {
     ...context,
     items: [item, ...context.items],
-    pendingCheckItemIds: [...context.pendingCheckItemIds, item.id],
     nextItemSequence: context.nextItemSequence + 1,
   };
 }
 
-export function activateNextCandidateCheck(context: Context): Context {
-  const [activeItemId, ...pendingCheckItemIds] = context.pendingCheckItemIds;
-
-  if (!activeItemId) {
-    return context;
-  }
-
+export function resetCandidateItems(context: Context): Context {
   return {
     ...context,
-    activeItemId,
-    pendingCheckItemIds,
+    items: [],
   };
 }
 
-export function hasPendingCandidateToCheck(context: Context) {
-  return context.activeItemId === null && context.pendingCheckItemIds.length > 0;
+export function hasCandidateItem(context: Context, id: string) {
+  return context.items.some((item) => item.id === id);
 }
 
-export function findActiveCandidateItem(context: Context): ConfigCandidateItem | null {
-  if (!context.activeItemId) {
-    return null;
-  }
-
-  return context.items.find((item) => item.id === context.activeItemId) ?? null;
-}
-
-export function updateActiveCandidateItem(
+export function updateCandidateItem(
   context: Context,
+  id: string,
   updater: (item: ConfigCandidateItem) => ConfigCandidateItem,
 ): Context {
-  if (!context.activeItemId) {
+  if (!hasCandidateItem(context, id)) {
     return context;
   }
 
   return {
     ...context,
-    items: context.items.map((item) => (item.id === context.activeItemId ? updater(item) : item)),
+    items: context.items.map((item) => (item.id === id ? updater(item) : item)),
   };
 }
 
-export function applyActiveCandidateUrlResolution(
+export function applyCandidateUrlResolution(
   context: Context,
+  id: string,
   resolution: PastedDownloadUrlResolution,
 ): Context {
-  return updateActiveCandidateItem(context, (item) => {
+  return updateCandidateItem(context, id, (item) => {
     switch (resolution.status) {
       case "invalid_url":
         return {
@@ -178,31 +210,18 @@ export function applyActiveCandidateUrlResolution(
   });
 }
 
-export function failActiveCandidateEnqueue(context: Context, error: string): Context {
-  return updateActiveCandidateItem(context, (item) => ({
+export function failCandidateItem(context: Context, id: string, error: string): Context {
+  return updateCandidateItem(context, id, (item) => ({
     ...item,
     status: "enqueue_failed",
     error,
   }));
 }
 
-export function clearActiveCandidate(context: Context): Context {
-  return {
-    ...context,
-    activeItemId: null,
-  };
-}
-
-export function removeActiveCandidate(context: Context): Context {
-  return context.activeItemId ? deleteCandidateItem(context, context.activeItemId) : context;
-}
-
 export function deleteCandidateItem(context: Context, id: string): Context {
   return {
     ...context,
     items: context.items.filter((item) => item.id !== id),
-    pendingCheckItemIds: context.pendingCheckItemIds.filter((itemId) => itemId !== id),
-    activeItemId: context.activeItemId === id ? null : context.activeItemId,
   };
 }
 

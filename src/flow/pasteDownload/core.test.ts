@@ -1,24 +1,19 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
-  activateNextCandidateCheck,
-  applyActiveCandidateUrlResolution,
+  applyCandidateUrlResolution,
   appendCandidateItem,
   candidateItemAllowsDelete,
   candidateItemIsErrored,
   createInitialContext,
   deleteCandidateItem,
-  hasPendingCandidateToCheck,
   parseClipboardDownloadUrl,
-  removeActiveCandidate,
 } from "./core";
 
 describe("createInitialContext", () => {
   test("creates an empty paste download context", () => {
     assert.deepEqual(createInitialContext(), {
       items: [],
-      pendingCheckItemIds: [],
-      activeItemId: null,
       nextItemSequence: 0,
     });
   });
@@ -32,10 +27,24 @@ describe("parseClipboardDownloadUrl", () => {
     });
   });
 
+  test("accepts youtube handle tab urls as a single downloadable url", () => {
+    assert.deepEqual(parseClipboardDownloadUrl("https://www.youtube.com/@C418/releases"), {
+      ok: true,
+      url: "https://www.youtube.com/@C418/releases",
+    });
+  });
+
   test("rejects invalid urls", () => {
     assert.deepEqual(parseClipboardDownloadUrl("not a url"), {
       ok: false,
       error: "Clipboard does not contain a valid URL.",
+    });
+  });
+
+  test("rejects a single paste containing more than one url", () => {
+    assert.deepEqual(parseClipboardDownloadUrl("https://example.com/a https://example.com/b"), {
+      ok: false,
+      error: "Clipboard must contain exactly one URL.",
     });
   });
 
@@ -48,7 +57,7 @@ describe("parseClipboardDownloadUrl", () => {
 });
 
 describe("candidate item helpers", () => {
-  test("prepends new pasted items and queues them for url checks", () => {
+  test("prepends new pasted items as independent checking candidates", () => {
     const withFirst = appendCandidateItem(
       createInitialContext(),
       "https://example.com/watch?v=abc",
@@ -59,29 +68,12 @@ describe("candidate item helpers", () => {
     assert.equal(withSecond.items[0]?.status, "checking");
     assert.equal(withSecond.items[1]?.displayText, "https://example.com/watch?v=abc");
     assert.equal(withSecond.items[1]?.status, "checking");
-    assert.deepEqual(withSecond.pendingCheckItemIds, ["candidate:0", "candidate:1"]);
-  });
-
-  test("activates the next pending candidate check", () => {
-    const context = appendCandidateItem(
-      appendCandidateItem(createInitialContext(), "https://example.com/watch?v=abc"),
-      "https://example.com/watch?v=def",
-    );
-
-    assert.equal(hasPendingCandidateToCheck(context), true);
-
-    const next = activateNextCandidateCheck(context);
-
-    assert.equal(next.activeItemId, "candidate:0");
-    assert.deepEqual(next.pendingCheckItemIds, ["candidate:1"]);
   });
 
   test("turns a checked new url into an enqueue candidate", () => {
-    const context = activateNextCandidateCheck(
-      appendCandidateItem(createInitialContext(), "https://example.com/watch?v=abc"),
-    );
+    const context = appendCandidateItem(createInitialContext(), "https://example.com/watch?v=abc");
 
-    const next = applyActiveCandidateUrlResolution(context, {
+    const next = applyCandidateUrlResolution(context, "candidate:0", {
       status: "new_url",
       url: "https://example.com/watch?v=abc",
       error: null,
@@ -95,10 +87,7 @@ describe("candidate item helpers", () => {
 
   test("deletes a candidate item and removes it from every tracking list", () => {
     const context = {
-      ...activateNextCandidateCheck(
-        appendCandidateItem(createInitialContext(), "https://example.com/watch?v=abc"),
-      ),
-      pendingCheckItemIds: ["candidate:2"],
+      ...appendCandidateItem(createInitialContext(), "https://example.com/watch?v=abc"),
       items: [
         {
           id: "candidate:1",
@@ -122,31 +111,6 @@ describe("candidate item helpers", () => {
     assert.deepEqual(deleteCandidateItem(context, "candidate:0"), {
       ...context,
       items: [context.items[0]!],
-      pendingCheckItemIds: ["candidate:2"],
-      activeItemId: null,
-    });
-  });
-
-  test("removes the active candidate once ownership transfers away from paste state", () => {
-    const context = {
-      ...createInitialContext(),
-      activeItemId: "candidate:0",
-      items: [
-        {
-          id: "candidate:0",
-          rawText: "https://example.com/watch?v=abc",
-          sourceUrl: "https://example.com/watch?v=abc",
-          displayText: "Example",
-          status: "enqueueing" as const,
-          error: null,
-        },
-      ],
-    };
-
-    assert.deepEqual(removeActiveCandidate(context), {
-      ...context,
-      items: [],
-      activeItemId: null,
     });
   });
 

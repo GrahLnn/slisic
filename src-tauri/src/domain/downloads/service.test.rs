@@ -6,8 +6,10 @@ use super::service::{
     derive_youtube_channel_url_from_uploads_playlist, discard_materialized_planned_leaves,
     expand_root_entries_to_planned_leafs, extract_olak_playlist_ids, handle_finished_leaf_download,
     is_retryable_leaf_download_error, leaf_download_parallelism, prepare_task_enqueue,
-    residual_collection_plan, resolve_collection_plan, resolve_pasted_download_url,
-    resolve_residual_temp_downloaded_file, resolve_task_collection_folder, resume_download_task,
+    probe_root_with_limit, residual_collection_plan, resolve_collection_plan,
+    resolve_collection_plan_with_root_probe, resolve_collection_shell_plan,
+    resolve_pasted_download_url, resolve_residual_temp_downloaded_file,
+    resolve_task_collection_folder, resume_download_task, root_probe_parallelism,
     should_interrupt_unresumable_active_task_after_restart,
     should_recover_download_task_after_restart, should_reprobe_single_leaf,
     should_resume_download_task_after_restart, try_claim_enqueue_url,
@@ -21,11 +23,11 @@ use super::yt_dlp::{
 /// dependencies so `cargo test` only exercises pure download-domain contracts.
 /// Manual end-to-end download checks belong in `examples/manual_download_chain.rs`.
 use crate::domain::collection_import::{
-    CollectionShellPlan, CollectionSyncPlan, ExistingPlannedLeafCompletion, PlannedLeaf,
-    apply_collection_plan_to_task, create_collection_shell, existing_leaf_identities,
-    existing_planned_leaf_completions, filter_new_planned_leaves, load_collection_shell,
-    materialize_music_entries, normalize_music_titles_within_collection,
-    persist_downloaded_leaf_music, persist_enqueued_collection_shell, resolve_existing_leaf_file,
+    CollectionSyncPlan, ExistingPlannedLeafCompletion, PlannedLeaf, apply_collection_plan_to_task,
+    create_collection_shell, existing_leaf_identities, existing_planned_leaf_completions,
+    filter_new_planned_leaves, load_collection_shell, materialize_music_entries,
+    normalize_music_titles_within_collection, persist_downloaded_leaf_music,
+    persist_enqueued_collection_plan, resolve_existing_leaf_file,
 };
 use crate::domain::downloads::model::{
     DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
@@ -40,7 +42,7 @@ use appdb::connection::{InitDbOptions, reinit_db_with_options, reset_db};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier, LazyLock};
+use std::sync::{Arc, Barrier, LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 
@@ -151,6 +153,26 @@ fn leaf_download_retry_policy_does_not_retry_structural_failures() {
         LeafDownloadRetryPolicy::default().cooldown_after_failure(1, "leaf-a", &error),
         None
     );
+}
+
+#[test]
+fn leaf_download_retry_policy_does_not_retry_private_or_auth_required_videos() {
+    let errors = [
+        "yt-dlp command failed: ERROR: [youtube] bZBdVE0B4qc: Private video. Sign in if you've been granted access to this video. Use --cookies-from-browser or --cookies for the authentication.",
+        "yt-dlp command failed: ERROR: [youtube] abc: Sign in to confirm your age",
+        "yt-dlp download exited with status exit code: 1: members-only content",
+        "yt-dlp download exited with status exit code: 1: Video unavailable",
+    ];
+
+    for message in errors {
+        let error = anyhow!(message);
+
+        assert!(!is_retryable_leaf_download_error(&error));
+        assert_eq!(
+            LeafDownloadRetryPolicy::default().cooldown_after_failure(1, "leaf-a", &error),
+            None
+        );
+    }
 }
 
 #[test]
@@ -801,6 +823,53 @@ impl YtDlpClient for FakeYtDlpClient {
     }
 }
 
+#[derive(Debug)]
+struct CountingRootProbeClient {
+    root: RootProbe,
+    active: AtomicUsize,
+    max_active: AtomicUsize,
+    calls: Mutex<Vec<String>>,
+}
+
+impl CountingRootProbeClient {
+    fn new(root: RootProbe) -> Self {
+        Self {
+            root,
+            active: AtomicUsize::new(0),
+            max_active: AtomicUsize::new(0),
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl YtDlpClient for CountingRootProbeClient {
+    fn probe_root(&self, url: &str) -> Result<RootProbe> {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_active.fetch_max(active, Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        self.calls
+            .lock()
+            .expect("root probe calls should not poison")
+            .push(url.to_string());
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        Ok(self.root.clone())
+    }
+
+    fn probe_leaf(&self, url: &str) -> Result<LeafProbe> {
+        Err(anyhow!("unexpected counting probe_leaf call for {url}"))
+    }
+
+    fn download_leaf_audio(
+        &self,
+        url: &str,
+        _target_dir: &Path,
+        _file_stem: &str,
+        _on_progress: &mut dyn FnMut(DownloadProgress),
+    ) -> Result<DownloadedLeaf> {
+        Err(anyhow!("unexpected counting download call for {url}"))
+    }
+}
+
 fn run_async<T>(fut: impl std::future::Future<Output = T>) -> T {
     SERVICE_TEST_RT.block_on(fut)
 }
@@ -840,6 +909,25 @@ fn resolve_pasted_download_url_rejects_invalid_urls_before_lookup() {
 }
 
 #[test]
+fn resolve_pasted_download_url_rejects_multiple_urls_in_one_paste() {
+    let resolution = run_async(resolve_pasted_download_url(
+        "https://example.com/first https://example.com/second".to_string(),
+    ))
+    .expect("multi-url pasted text should resolve into a candidate error");
+
+    assert_eq!(
+        resolution.status,
+        PastedDownloadUrlResolutionStatus::InvalidUrl
+    );
+    assert_eq!(
+        resolution.error.as_deref(),
+        Some("Clipboard must contain exactly one URL.")
+    );
+    assert!(resolution.url.is_none());
+    assert!(resolution.collection.is_none());
+}
+
+#[test]
 fn resolve_pasted_download_url_returns_new_url_when_library_has_no_match() {
     let _guard = acquire_db_test_lock();
 
@@ -852,6 +940,30 @@ fn resolve_pasted_download_url_returns_new_url_when_library_has_no_match() {
 
         assert_eq!(resolution.status, PastedDownloadUrlResolutionStatus::NewUrl);
         assert_eq!(resolution.url.as_deref(), Some("https://example.com/fresh"));
+        assert!(resolution.error.is_none());
+        assert!(resolution.collection.is_none());
+
+        reset_db();
+    });
+}
+
+#[test]
+fn resolve_pasted_download_url_accepts_youtube_handle_tab_urls() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let resolution =
+            resolve_pasted_download_url("https://www.youtube.com/@C418/releases".to_string())
+                .await
+                .expect("youtube handle tab url should resolve");
+
+        assert_eq!(resolution.status, PastedDownloadUrlResolutionStatus::NewUrl);
+        assert_eq!(
+            resolution.url.as_deref(),
+            Some("https://www.youtube.com/@C418/releases")
+        );
         assert!(resolution.error.is_none());
         assert!(resolution.collection.is_none());
 
@@ -1384,6 +1496,192 @@ fn resolve_collection_plan_prefers_residual_leafs_without_root_probe() {
 
     assert_eq!(plan.leaves.len(), 1);
     assert_eq!(plan.leaves[0].id.to_string(), "leaf-residual");
+}
+
+#[test]
+fn resolve_collection_plan_rejects_empty_lists() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let url = "https://example.com/empty-list";
+        let task = DownloadTask::new("task-empty-list", url, DownloadTrigger::Manual);
+        let client = Arc::new(FakeYtDlpClient {
+            roots: HashMap::from([(
+                url.to_string(),
+                RootProbe::List(PlaylistRoot {
+                    title: "Empty List".to_string(),
+                    webpage_url: url.to_string(),
+                    extractor_key: Some("Generic".to_string()),
+                    entries: vec![],
+                }),
+            )]),
+        });
+
+        let error = resolve_collection_plan(&task, client)
+            .await
+            .expect_err("empty provider lists should not become completed collections");
+
+        assert!(
+            error
+                .to_string()
+                .contains("download resource does not contain any downloadable entries")
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn resolve_collection_shell_plan_projects_only_root_identity() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let root_url = "https://www.youtube.com/@C418/releases";
+        let nested_url = "https://www.youtube.com/playlist?list=album";
+        let task = DownloadTask::new("task-shell-plan", root_url, DownloadTrigger::Manual);
+        let client = Arc::new(FakeYtDlpClient {
+            roots: HashMap::from([
+                (
+                    root_url.to_string(),
+                    RootProbe::List(PlaylistRoot {
+                        title: "C418 - Releases".to_string(),
+                        webpage_url: root_url.to_string(),
+                        extractor_key: Some("YoutubeTab".to_string()),
+                        entries: vec![LeafReference {
+                            url: nested_url.to_string(),
+                            title: Some("Minecraft - Volume Alpha".to_string()),
+                            sequence: 0,
+                        }],
+                    }),
+                ),
+                (
+                    nested_url.to_string(),
+                    RootProbe::List(PlaylistRoot {
+                        title: "Minecraft - Volume Alpha".to_string(),
+                        webpage_url: nested_url.to_string(),
+                        extractor_key: Some("YoutubeTab".to_string()),
+                        entries: vec![LeafReference {
+                            url: "https://www.youtube.com/watch?v=alpha".to_string(),
+                            title: Some("Alpha".to_string()),
+                            sequence: 0,
+                        }],
+                    }),
+                ),
+            ]),
+        });
+
+        let (shell, root_probe) = resolve_collection_shell_plan(&task, client)
+            .await
+            .expect("root shell should resolve without nested expansion");
+
+        assert_eq!(shell.collection_name, "C418 - Releases");
+        assert_eq!(shell.collection_url, root_url);
+        assert_eq!(shell.collection_folder, "youtube/C418 - Releases");
+        assert_eq!(shell.source_kind, CollectionSourceKind::List);
+        assert!(matches!(root_probe, RootProbe::List(_)));
+
+        reset_db();
+    });
+}
+
+#[test]
+fn resolve_collection_plan_can_consume_manual_enqueue_root_probe_once() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let root_url = "https://example.com/root";
+        let nested_url = "https://example.com/album";
+        let task = DownloadTask::new("task-root-probe-carry", root_url, DownloadTrigger::Manual);
+        let carried_root = RootProbe::List(PlaylistRoot {
+            title: "Root".to_string(),
+            webpage_url: root_url.to_string(),
+            extractor_key: Some("Generic".to_string()),
+            entries: vec![LeafReference {
+                url: nested_url.to_string(),
+                title: Some("Album".to_string()),
+                sequence: 0,
+            }],
+        });
+        let client = Arc::new(FakeYtDlpClient {
+            roots: HashMap::from([(
+                nested_url.to_string(),
+                RootProbe::List(PlaylistRoot {
+                    title: "Album".to_string(),
+                    webpage_url: nested_url.to_string(),
+                    extractor_key: Some("Generic".to_string()),
+                    entries: vec![LeafReference {
+                        url: "https://www.youtube.com/watch?v=leaf".to_string(),
+                        title: Some("Leaf".to_string()),
+                        sequence: 0,
+                    }],
+                }),
+            )]),
+        });
+
+        let plan = resolve_collection_plan_with_root_probe(&task, client, Some(carried_root))
+            .await
+            .expect("carried root probe should avoid probing the root url again");
+
+        assert_eq!(plan.collection_name, "Root");
+        assert_eq!(plan.leaves.len(), 1);
+        assert_eq!(plan.leaves[0].url, "https://www.youtube.com/watch?v=leaf");
+
+        reset_db();
+    });
+}
+
+#[test]
+fn probe_root_with_limit_bounds_parallel_provider_processes() {
+    run_async(async {
+        let worker_count = root_probe_parallelism() + 3;
+        let client = Arc::new(CountingRootProbeClient::new(RootProbe::List(
+            PlaylistRoot {
+                title: "Limited Root".to_string(),
+                webpage_url: "https://example.com/limited-root".to_string(),
+                extractor_key: Some("Generic".to_string()),
+                entries: vec![LeafReference {
+                    url: "https://example.com/watch?v=limited".to_string(),
+                    title: Some("Limited Leaf".to_string()),
+                    sequence: 0,
+                }],
+            },
+        )));
+        let start = Arc::new(Barrier::new(worker_count));
+
+        let handles = (0..worker_count)
+            .map(|index| {
+                let client = Arc::clone(&client);
+                let start = Arc::clone(&start);
+                tokio::spawn(async move {
+                    start.wait();
+                    probe_root_with_limit(client, format!("https://example.com/root-{index}")).await
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            handle
+                .await
+                .expect("root probe task should join")
+                .expect("root probe should finish");
+        }
+
+        assert_eq!(
+            client
+                .calls
+                .lock()
+                .expect("root probe calls should not poison")
+                .len(),
+            worker_count
+        );
+        assert!(client.max_active.load(Ordering::SeqCst) <= root_probe_parallelism());
+    });
 }
 
 #[test]
@@ -2153,7 +2451,81 @@ fn expand_root_entries_to_planned_leafs_normalizes_zwei2_playlist_titles() {
 }
 
 #[test]
-fn expand_root_entries_to_planned_leafs_keeps_titles_when_bracket_removal_would_empty_them() {
+fn expand_root_entries_to_planned_leafs_preserves_real_tenet_bracketed_album_title() {
+    let titles = planned_music_titles_from_playlist_titles(&[
+        "TENET Official Soundtrack | RAINY NIGHT IN TALLINN - Ludwig Göransson | WaterTower"
+            .to_string(),
+        "TENET Official Soundtrack | WINDMILLS - Ludwig Göransson | WaterTower".to_string(),
+        "TENET Official Soundtrack | Full Album [Expanded Edition] - Ludwig Göransson | WaterTower"
+            .to_string(),
+        "TENET Official Soundtrack | [INVERTED] FULL ALBUM - Ludwig Göransson | WaterTower"
+            .to_string(),
+        "TENET Official Soundtrack | FULL ALBUM - Ludwig Göransson | WaterTower".to_string(),
+    ]);
+
+    assert_eq!(
+        titles,
+        vec![
+            "RAINY NIGHT IN TALLINN",
+            "WINDMILLS",
+            "Full Album [Expanded Edition]",
+            "[INVERTED] FULL ALBUM",
+            "FULL ALBUM",
+        ]
+    );
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_preserves_real_tenet_full_playlist_titles() {
+    let raw_titles = [
+        "TENET Official Soundtrack | RAINY NIGHT IN TALLINN - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | WINDMILLS - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | MEETING NEIL - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | PRIYA - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | BETRAYAL - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | FREEPORT - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | 747 - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | FROM MUMBAI TO AMALFI - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | FOILS - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | SATOR - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | TRUCKS IN PLACE - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | RED ROOM BLUE ROOM - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | INVERSION - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | RETRIEVING THE CASE - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | THE ALGORITHM - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | POSTERITY - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | THE PROTAGONIST - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | THE PLAN - Travis Scott | WaterTower",
+        "TENET Official Soundtrack | FAST CARS - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | TURNSTILE - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | Full Album [Expanded Edition] - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | [INVERTED] FULL ALBUM - Ludwig Göransson | WaterTower",
+        "TENET Official Soundtrack | FULL ALBUM - Ludwig Göransson | WaterTower",
+    ];
+    let titles = planned_music_titles_from_playlist_titles(
+        &raw_titles
+            .iter()
+            .map(|title| (*title).to_string())
+            .collect::<Vec<_>>(),
+    );
+
+    assert_eq!(titles[20], "Full Album [Expanded Edition]");
+    assert_eq!(titles[21], "[INVERTED] FULL ALBUM");
+    assert_eq!(titles[22], "FULL ALBUM");
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_preserves_half_bracket_owned_by_title_body() {
+    let titles = planned_music_titles_from_playlist_titles(&[
+        "Album [INVERTED] Track".to_string(),
+        "Album [FORWARD] Track".to_string(),
+    ]);
+
+    assert_eq!(titles, vec!["[INVERTED]", "[FORWARD]"]);
+}
+
+#[test]
+fn expand_root_entries_to_planned_leafs_preserves_bracketed_variable_title_after_common_prefix() {
     for (opening, closing) in bracket_pair_cases() {
         let titles = planned_music_titles_from_playlist_titles(&[
             format!("Album {opening}Track A{closing}"),
@@ -2163,34 +2535,47 @@ fn expand_root_entries_to_planned_leafs_keeps_titles_when_bracket_removal_would_
         assert_eq!(
             titles,
             vec![
-                format!("Album {opening}Track A{closing}"),
-                format!("Album {opening}Track B{closing}"),
+                format!("{opening}Track A{closing}"),
+                format!("{opening}Track B{closing}"),
             ]
         );
     }
 }
 
 #[test]
-fn expand_root_entries_to_planned_leafs_removes_cut_bracket_expression_as_a_unit() {
+fn expand_root_entries_to_planned_leafs_preserves_bracketed_variable_title_before_common_suffix() {
     for (opening, closing) in bracket_pair_cases() {
         let titles = planned_music_titles_from_playlist_titles(&[
             format!("{opening}Track A{closing} Album"),
             format!("{opening}Track B{closing} Album"),
         ]);
 
-        assert_eq!(titles, vec!["Album", "Album"]);
+        assert_eq!(
+            titles,
+            vec![
+                format!("{opening}Track A{closing}"),
+                format!("{opening}Track B{closing}"),
+            ]
+        );
     }
 }
 
 #[test]
-fn expand_root_entries_to_planned_leafs_removes_balanced_common_brackets_across_affixes() {
+fn expand_root_entries_to_planned_leafs_preserves_bracketed_variable_title_between_common_affixes()
+{
     for (opening, closing) in bracket_pair_cases() {
         let titles = planned_music_titles_from_playlist_titles(&[
             format!("Album {opening}Track A{closing} OST"),
             format!("Album {opening}Track B{closing} OST"),
         ]);
 
-        assert_eq!(titles, vec!["OST", "OST"]);
+        assert_eq!(
+            titles,
+            vec![
+                format!("{opening}Track A{closing}"),
+                format!("{opening}Track B{closing}"),
+            ]
+        );
     }
 }
 
@@ -2547,48 +2932,82 @@ fn apply_collection_plan_to_task_discards_completed_leaf_evidence_when_plan_is_p
 }
 
 #[test]
-fn persist_enqueued_collection_shell_does_not_require_leaf_expansion() {
+fn persist_enqueued_collection_plan_saves_residual_leaves_for_single_probe_startup() {
     let _guard = acquire_db_test_lock();
 
     run_async(async {
         ensure_db().await;
 
         let task = save_task(DownloadTask::new(
-            "task-shell",
-            "https://example.com/channel",
+            "task-plan",
+            "https://example.com/playlist",
             DownloadTrigger::Manual,
         ))
         .await
-        .expect("task should save before shell persistence");
-        let plan = CollectionShellPlan {
+        .expect("task should save before plan persistence");
+        let plan = CollectionSyncPlan {
             source_kind: CollectionSourceKind::List,
-            collection_name: "Channel Shell".to_string(),
-            collection_url: "https://example.com/channel".to_string(),
-            collection_folder: "example/channel-shell".to_string(),
+            collection_name: "Probe Once Playlist".to_string(),
+            collection_url: "https://example.com/playlist".to_string(),
+            collection_folder: "example/probe-once-playlist".to_string(),
             enable_updates: Some(false),
+            leaves: vec![
+                PlannedLeaf {
+                    id: Id::from("leaf-one"),
+                    url: "https://example.com/watch?v=one".to_string(),
+                    sequence: 0,
+                    initial_probe: None,
+                    music_title: Some("Track One".to_string()),
+                    group_hint: None,
+                },
+                PlannedLeaf {
+                    id: Id::from("leaf-two"),
+                    url: "https://example.com/watch?v=two".to_string(),
+                    sequence: 1,
+                    initial_probe: None,
+                    music_title: Some("Track Two".to_string()),
+                    group_hint: Some(collection_group(
+                        "Disc Two",
+                        "https://example.com/playlist/disc-two",
+                        "Disc Two",
+                    )),
+                },
+            ],
         };
 
-        let (saved_task, saved_collection) = persist_enqueued_collection_shell(task, &plan)
+        let (saved_task, saved_collection) = persist_enqueued_collection_plan(task, &plan)
             .await
-            .expect("enqueue shell should persist without expanded leaves");
-        let reloaded_collection =
-            crate::domain::playlists::repo::get_collection_by_url(&plan.collection_url)
-                .await
-                .expect("collection lookup should succeed")
-                .expect("collection should exist immediately after shell persistence");
+            .expect("enqueue plan should persist residual leaves");
 
         assert_eq!(
             saved_task.collection_url.as_deref(),
             Some(plan.collection_url.as_str())
         );
-        assert_eq!(saved_task.collection_name.as_deref(), Some("Channel Shell"));
+        assert_eq!(
+            saved_task.collection_name.as_deref(),
+            Some("Probe Once Playlist")
+        );
         assert_eq!(saved_task.source_kind, Some(CollectionSourceKind::List));
-        assert_eq!(saved_task.status, DownloadTaskStatus::Queued);
-        assert!(saved_task.leafs.is_empty());
-        assert_eq!(saved_task.total_leaves, 0);
+        assert_eq!(saved_task.leafs.len(), 2);
+        assert_eq!(saved_task.total_leaves, 2);
+        assert_eq!(saved_task.leafs[0].title.as_deref(), Some("Track One"));
+        assert_eq!(saved_task.leafs[1].title.as_deref(), Some("Track Two"));
+        assert_eq!(
+            saved_task.leafs[1]
+                .group
+                .as_ref()
+                .map(|group| group.name.as_str()),
+            Some("Disc Two")
+        );
         assert_eq!(saved_collection.url, plan.collection_url);
-        assert_eq!(reloaded_collection.name, plan.collection_name);
-        assert!(reloaded_collection.musics.is_empty());
+
+        let recovered_plan =
+            resolve_collection_plan(&saved_task, Arc::new(FakeYtDlpClient::default()))
+                .await
+                .expect("persisted residual leaves should eliminate a second root probe");
+        assert_eq!(recovered_plan.leaves.len(), 2);
+        assert_eq!(recovered_plan.leaves[0].id.to_string(), "leaf-one");
+        assert_eq!(recovered_plan.leaves[1].id.to_string(), "leaf-two");
 
         reset_db();
     });

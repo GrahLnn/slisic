@@ -547,6 +547,7 @@ describe("ListConfig title view model", () => {
         playlistItems: createListConfigPlaylistToolLabelItems(
           createListConfigPlaylistSidebarItems(draftWithGroup),
         ),
+        candidateItems: [],
         arcTrackItems: [
           {
             kind: "collection",
@@ -557,9 +558,86 @@ describe("ListConfig title view model", () => {
         ],
       }),
       {
-        kind: "playlist-duplicate",
+        kind: "foreground-duplicate",
         layoutId: "playlist:collection:https://example.com/quiet-morning",
       },
+    );
+  });
+
+  test("resolves pasted active candidate urls into duplicate shake targets", () => {
+    assert.deepEqual(
+      resolveListConfigPasteTarget({
+        text: "https://www.youtube.com/playlist?list=PLPfHaI9XqTnEaHTKxU63ks1QFdCXw8Cbf",
+        playlistItems: [],
+        candidateItems: [
+          {
+            id: "candidate:checking",
+            rawText: "https://www.youtube.com/playlist?list=PLPfHaI9XqTnEaHTKxU63ks1QFdCXw8Cbf",
+            sourceUrl: null,
+            displayText: "https://www.youtube.com/playlist?list=PLPfHaI9XqTnEaHTKxU63ks1QFdCXw8Cbf",
+            status: "checking",
+            error: null,
+          },
+        ],
+        arcTrackItems: [],
+      }),
+      {
+        kind: "foreground-duplicate",
+        layoutId: "candidate:checking",
+      },
+    );
+  });
+
+  test("matches equivalent pasted urls against active candidate canonical urls", () => {
+    assert.deepEqual(
+      resolveListConfigPasteTarget({
+        text: "https://www.youtube.com/watch?v=abc123&list=PLtenet",
+        playlistItems: [],
+        candidateItems: [
+          {
+            id: "candidate:playlist",
+            rawText: "https://www.youtube.com/playlist?list=PLtenet",
+            sourceUrl: "https://www.youtube.com/playlist?list=PLtenet",
+            displayText: "https://www.youtube.com/playlist?list=PLtenet",
+            status: "enqueueing",
+            error: null,
+          },
+        ],
+        arcTrackItems: [],
+      }),
+      {
+        kind: "foreground-duplicate",
+        layoutId: "playlist:collection:https://www.youtube.com/playlist?list=PLtenet",
+      },
+    );
+  });
+
+  test("does not let failed candidate urls absorb a retry paste", () => {
+    assert.equal(
+      resolveListConfigPasteTarget({
+        text: "https://www.youtube.com/playlist?list=PLretry",
+        playlistItems: [],
+        candidateItems: [
+          {
+            id: "candidate:failed",
+            rawText: "https://www.youtube.com/playlist?list=PLretry",
+            sourceUrl: "https://www.youtube.com/playlist?list=PLretry",
+            displayText: "https://www.youtube.com/playlist?list=PLretry",
+            status: "enqueue_failed",
+            error: "Private video",
+          },
+          {
+            id: "candidate:invalid",
+            rawText: "https://www.youtube.com/playlist?list=PLretry",
+            sourceUrl: null,
+            displayText: "https://www.youtube.com/playlist?list=PLretry",
+            status: "invalid_url",
+            error: "Clipboard does not contain a valid URL.",
+          },
+        ],
+        arcTrackItems: [],
+      }),
+      null,
     );
   });
 
@@ -584,6 +662,30 @@ describe("ListConfig title view model", () => {
       layoutId: "playlist:collection:https://example.com/quiet-morning",
       signal: 1,
     });
+  });
+
+  test("routes duplicate shake requests to active candidate rows", () => {
+    const candidateItem = createListConfigCandidateToolLabelItems([
+      {
+        id: "candidate:checking",
+        rawText: "https://example.com/pending",
+        sourceUrl: null,
+        displayText: "https://example.com/pending",
+        status: "checking",
+        error: null,
+      },
+    ])[0];
+
+    assert.equal(
+      resolveToolLabelShakeSignal(
+        {
+          layoutId: "candidate:checking",
+          signal: 1,
+        },
+        candidateItem,
+      ),
+      1,
+    );
   });
 
   test("discards stale duplicate shake requests seen by later-mounted rows", () => {
@@ -619,6 +721,7 @@ describe("ListConfig title view model", () => {
       resolveListConfigPasteTarget({
         text: "https://example.com/late-night-tape",
         playlistItems,
+        candidateItems: [],
         arcTrackItems: [
           {
             kind: "collection",
@@ -637,6 +740,7 @@ describe("ListConfig title view model", () => {
       resolveListConfigPasteTarget({
         text: "https://example.com/late-night-tape#disc-1",
         playlistItems,
+        candidateItems: [],
         arcTrackItems: [
           {
             kind: "group",
@@ -660,7 +764,32 @@ describe("ListConfig title view model", () => {
         playlistItems: createListConfigPlaylistToolLabelItems(
           createListConfigPlaylistSidebarItems(draftWithGroup),
         ),
+        candidateItems: [],
         arcTrackItems: [],
+      }),
+      null,
+    );
+  });
+
+  test("rejects a single paste containing multiple urls before duplicate or arc-track matching", () => {
+    const gluedUrls = "https://example.com/quiet-morning https://example.com/late-night-tape";
+
+    assert.deepEqual(resolveListConfigPastedUrlCandidates(gluedUrls), []);
+    assert.equal(
+      resolveListConfigPasteTarget({
+        text: gluedUrls,
+        playlistItems: createListConfigPlaylistToolLabelItems(
+          createListConfigPlaylistSidebarItems(draftWithGroup),
+        ),
+        candidateItems: [],
+        arcTrackItems: [
+          {
+            kind: "collection",
+            name: "Late Night Tape",
+            url: "https://example.com/late-night-tape",
+            folder: "youtube/late-night-tape",
+          },
+        ],
       }),
       null,
     );
@@ -888,7 +1017,7 @@ describe("ListConfig title view model", () => {
     );
   });
 
-  test("adds strike-through styling and delete-only tools to failed candidates", () => {
+  test("adds strike-through styling only to invalid url candidates", () => {
     assert.match(
       resolveListConfigToolLabelTextClassName({
         kind: "candidate",
@@ -899,6 +1028,16 @@ describe("ListConfig title view model", () => {
       }),
       /line-through/,
     );
+    assert.doesNotMatch(
+      resolveListConfigToolLabelTextClassName({
+        kind: "candidate",
+        id: "candidate:2",
+        candidateId: "candidate:2",
+        text: "https://www.youtube.com/@C418/releases",
+        status: "enqueue_failed",
+      }),
+      /line-through/,
+    );
     assert.equal(
       resolveListConfigToolLabelAffordance({
         kind: "candidate",
@@ -906,6 +1045,16 @@ describe("ListConfig title view model", () => {
         candidateId: "candidate:1",
         text: "not a url",
         status: "invalid_url",
+      }),
+      "candidate-delete",
+    );
+    assert.equal(
+      resolveListConfigToolLabelAffordance({
+        kind: "candidate",
+        id: "candidate:2",
+        candidateId: "candidate:2",
+        text: "https://www.youtube.com/@C418/releases",
+        status: "enqueue_failed",
       }),
       "candidate-delete",
     );

@@ -16,7 +16,11 @@ import {
   resolveTitleShareEndpointInstruction,
   type TitleShareHoverVisual,
 } from "@/src/flow/appLogic/titleShare";
-import type { ConfigCandidateItem, ConfigCandidateItemStatus } from "@/src/flow/pasteDownload/core";
+import {
+  parseDownloadableClipboardUrl,
+  type ConfigCandidateItem,
+  type ConfigCandidateItemStatus,
+} from "@/src/flow/pasteDownload/core";
 import { CREATE_COLLECTION_TITLE } from "./collectionTitle";
 
 export type ListConfigEmptyStateKind = "keep" | "show" | "hide";
@@ -89,7 +93,7 @@ export type ListConfigToolLabelItem =
 
 export type ListConfigPasteTarget =
   | {
-      kind: "playlist-duplicate";
+      kind: "foreground-duplicate";
       layoutId: string;
     }
   | {
@@ -190,11 +194,8 @@ export function createListConfigToolLabelLayoutId(ref: ConfigSidebarItemRef) {
 }
 
 function parseListConfigPastedUrl(text: string): URL | null {
-  try {
-    return new URL(text);
-  } catch {
-    return null;
-  }
+  const parsed = parseDownloadableClipboardUrl(text);
+  return parsed.ok ? parsed.url : null;
 }
 
 function isYouTubeHost(hostname: string) {
@@ -250,19 +251,13 @@ function isYouTubeWatchPlaylistItemUrl(url: URL) {
 }
 
 export function resolveListConfigPastedUrlCandidates(text: string): string[] {
-  const trimmed = text.trim();
+  const url = parseListConfigPastedUrl(text);
 
-  if (trimmed.length === 0) {
+  if (!url) {
     return [];
   }
 
-  const candidates = new Set([trimmed]);
-  const url = parseListConfigPastedUrl(trimmed);
-
-  if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) {
-    return [...candidates];
-  }
-
+  const candidates = new Set([text.trim()]);
   candidates.add(url.href);
 
   if (isYouTubeHost(url.hostname)) {
@@ -295,6 +290,7 @@ export function resolveListConfigPastedUrlCandidates(text: string): string[] {
 export function resolveListConfigPasteTarget(args: {
   text: string;
   playlistItems: readonly ListConfigPlaylistToolLabelItem[];
+  candidateItems: readonly ConfigCandidateItem[];
   arcTrackItems: readonly ConfigSidebarItem[];
 }): ListConfigPasteTarget | null {
   const candidateUrls = resolveListConfigPastedUrlCandidates(args.text);
@@ -308,8 +304,27 @@ export function resolveListConfigPasteTarget(args: {
 
   if (playlistItem) {
     return {
-      kind: "playlist-duplicate",
+      kind: "foreground-duplicate",
       layoutId: playlistItem.id,
+    };
+  }
+
+  const candidateItem = args.candidateItems.find((item) => {
+    if (item.status === "invalid_url" || item.status === "enqueue_failed") {
+      return false;
+    }
+
+    const itemUrlCandidates = [item.sourceUrl, item.rawText, item.displayText].flatMap((text) =>
+      text ? resolveListConfigPastedUrlCandidates(text) : [],
+    );
+
+    return itemUrlCandidates.some((url) => candidateUrlSet.has(url));
+  });
+
+  if (candidateItem) {
+    return {
+      kind: "foreground-duplicate",
+      layoutId: createListConfigCandidateToolLabelLayoutId(candidateItem),
     };
   }
 
@@ -391,17 +406,21 @@ export function createListConfigPlaylistToolLabelItems(
   });
 }
 
+function createListConfigCandidateToolLabelLayoutId(item: ConfigCandidateItem) {
+  return item.sourceUrl
+    ? createListConfigToolLabelLayoutId({
+        kind: "collection",
+        url: item.sourceUrl,
+      })
+    : item.id;
+}
+
 export function createListConfigCandidateToolLabelItems(
   items: readonly ConfigCandidateItem[],
 ): ListConfigCandidateToolLabelItem[] {
   return items.map((item) => ({
     kind: "candidate",
-    id: item.sourceUrl
-      ? createListConfigToolLabelLayoutId({
-          kind: "collection",
-          url: item.sourceUrl,
-        })
-      : item.id,
+    id: createListConfigCandidateToolLabelLayoutId(item),
     candidateId: item.id,
     text: item.displayText,
     status: item.status,
@@ -500,7 +519,8 @@ export function resolveListConfigToolLabelTextClassName(item: ListConfigToolLabe
     candidate: ({ status }): string =>
       cn(
         "text-[12px] text-[#404040] dark:text-[#a3a3a3]",
-        (status === "invalid_url" || status === "enqueue_failed") && "line-through opacity-70",
+        status === "invalid_url" && "line-through opacity-70",
+        status === "enqueue_failed" && "opacity-70",
       ),
   });
 }

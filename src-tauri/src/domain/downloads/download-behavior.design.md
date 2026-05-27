@@ -3,12 +3,13 @@
 ## Behavior
 
 The download system turns a user supplied collection URL into a stable playlist
-collection on disk. It probes the root URL, projects it into a complete ordered
-leaf plan, downloads each leaf into a scoped temporary artifact, commits each
-artifact into its final collection-relative path, persists collection metadata,
-and then removes the completed leaf from the resumable task record. The task row
-keeps only residual work and diagnostic counters; completed music identity is
-owned by the collection and its manifest.
+collection on disk. It probes the root URL once during enqueue, projects it into
+a complete ordered leaf plan, persists that plan as residual task work, downloads
+each leaf into a scoped temporary artifact, commits each artifact into its final
+collection-relative path, persists collection metadata, and then removes the
+completed leaf from the resumable task record. The task row keeps only residual
+work and diagnostic counters; completed music identity is owned by the
+collection and its manifest.
 
 ## Participants
 
@@ -29,6 +30,12 @@ owned by the collection and its manifest.
   a stable collection-relative path and its music metadata is persisted.
 - Completed music evidence is owned only by `Collection.musics` and the
   collection manifest. `DownloadTask.leafs` is residual work, not a history log.
+- Enqueue persists the complete residual leaf plan after a successful root
+  probe. The later task runner must consume that residual plan instead of
+  probing the same root URL again.
+- Concurrent root probes are bounded at the provider-effect boundary. Repeated
+  paste can queue distinct URLs, but it must not start an unbounded number of
+  metadata provider processes.
 - Resume must rebuild its plan from residual task leafs when they exist. It must
   not root-probe already materialized music to rediscover completed work.
 - A temporary artifact is not a stable file. It can only be consumed by the leaf
@@ -41,6 +48,9 @@ owned by the collection and its manifest.
   explicitly.
 - Download failures and post-download commit failures are leaf-local for list
   downloads. One failed leaf cannot stop the remaining leaf pipeline.
+- Provider access failures, including private videos and authentication-required
+  videos, are terminal leaf failures. They are not retried because repeating the
+  same unauthenticated request cannot change the provider's access decision.
 - Task terminal status is derived from residual failures plus consumed
   completion count. A task with unresolved non-terminal leaves cannot be marked
   `Completed`.
@@ -66,6 +76,12 @@ owned by the collection and its manifest.
 
 - Leaf identity is indexed by task, leaf URL, and group context.
 - Active worker counters match worker events.
+- Enqueued collection tasks carry enough residual leaf evidence to start
+  without a second root probe.
+- Root probe process parallelism is bounded independently from leaf download
+  parallelism.
+- Retry classification distinguishes transient download failures from
+  provider access failures.
 - Existing final files and residual temporary files are consumed through the
   same leaf completion semantics as fresh downloads.
 - Completed leafs are garbage collected from the task row after collection
@@ -92,6 +108,8 @@ owned by the collection and its manifest.
 - Owner: `downloads::service::resolve_collection_plan`.
 - Total: no.
 - Failure: probe failure, empty downloadable list, or unsupported nested depth.
+- Projection: one successful playlist root probe must provide collection title,
+  collection URL, and all leaf references needed to persist residual task work.
 
 `ResidualDownloadTask -> CollectionSyncPlan`
 
@@ -115,11 +133,18 @@ owned by the collection and its manifest.
 
 ## Transitions
 
-Queued task + root probe success -> Resolving plan:
+Queued task + root probe success -> Persist residual plan:
 
-- Writes: task collection fields and leaf queue.
+- Writes: collection shell, task collection fields, and residual leaf queue.
 - Emits: persisted task snapshot.
 - Rejection: root probe failure or empty downloadable collection.
+
+Persisted residual plan -> Resolving plan:
+
+- Guard: task has residual leaves plus collection identity fields.
+- Writes: resolving status only.
+- Emits: no provider root probe.
+- Rejection: missing residual task identity.
 
 Queued/failed/interrupted leaf + metadata success -> Prepared leaf:
 
@@ -157,6 +182,10 @@ Focused tests must cover:
 
 - Root playlist probe arguments request YouTube continuation pages.
 - 116-entry YouTube playlists are not capped at the initial 100-entry page.
+- Enqueue plan persistence saves residual leafs so task startup does not repeat
+  the root probe.
+- Empty provider lists are rejected before they can become completed
+  collections.
 - Existing final files complete leaves without redownload.
 - Completed leaves are removed from `DownloadTask.leafs`; the task row contains
   only residual work.
@@ -172,6 +201,8 @@ Focused tests must cover:
 ## Effects
 
 - `YtDlpEffect`: external process execution, owned by `yt_dlp`.
+- `RootProbeLimiterEffect`: root metadata process admission, owned by
+  `downloads::service`.
 - `FileCommitEffect`: remove, rename, and directory creation, owned by
   `collection_import`.
 - `RepoEffect`: task and collection persistence, owned by repositories.

@@ -155,6 +155,24 @@ fn playback_strategy_set_consumes_ordered_queue_after_explicit_seed() {
 }
 
 #[test]
+fn playback_strategy_set_does_not_loop_single_track_ordered_queue() {
+    let mut strategy = PlaybackStrategySet::new();
+    let tracks = vec![track("seed")];
+
+    strategy.commit_current_track(&tracks[0]);
+
+    assert!(
+        strategy
+            .next_track_with_queue_mode(
+                PlaybackContinuationMode::Random,
+                PlaybackQueueMode::Ordered,
+                &tracks,
+            )
+            .is_none()
+    );
+}
+
+#[test]
 fn playback_strategy_set_consumes_ordered_queue_after_seed_is_inserted_into_refreshed_queue() {
     let mut strategy = PlaybackStrategySet::new();
     let seed_only = vec![track("seed")];

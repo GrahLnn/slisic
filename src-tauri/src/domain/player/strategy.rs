@@ -130,7 +130,7 @@ impl PlaybackStrategySet {
             return tracks.first().cloned();
         };
 
-        tracks.get((current_index + 1) % tracks.len()).cloned()
+        tracks.get(current_index + 1).cloned()
     }
 
     #[cfg(test)]

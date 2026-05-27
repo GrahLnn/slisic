@@ -14,9 +14,9 @@ use super::yt_dlp::{
     DownloadProgress, LeafProbe, LeafReference, RootProbe, YtDlpClient, classify_root_preference,
     is_youtube_mix_playlist_id,
 };
-#[cfg(not(test))]
-use crate::domain::collection_import::CollectionShellPlan;
-use crate::domain::collection_import::{self, CollectionSyncPlan, PlannedLeaf};
+use crate::domain::collection_import::{
+    self, CollectionShellPlan, CollectionSyncPlan, PlannedLeaf,
+};
 #[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
 use crate::domain::playlists::model::{Collection, Group};
@@ -37,6 +37,7 @@ use std::thread;
 use std::time::Duration;
 #[cfg(not(test))]
 use tauri::AppHandle;
+use tokio::sync::Semaphore;
 #[cfg(not(test))]
 use tokio::sync::broadcast;
 use tokio::task;
@@ -51,6 +52,7 @@ const MAX_PARALLEL_LEAF_DOWNLOADS: usize = 8;
 const MAX_LEAF_DOWNLOAD_ATTEMPTS: usize = 3;
 const LEAF_DOWNLOAD_RETRY_BASE_DELAY_SECS: u64 = 2;
 const LEAF_DOWNLOAD_RETRY_MAX_JITTER_MILLIS: u64 = 750;
+const MAX_CONCURRENT_ROOT_PROBES: usize = 2;
 const GROUP_DISCOVERY_USER_AGENT: &str =
     concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
@@ -60,6 +62,7 @@ static DOWNLOAD_RUNTIME: OnceLock<DownloadRuntime> = OnceLock::new();
 static DOWNLOAD_TASK_CHANGES: OnceLock<broadcast::Sender<DownloadTaskChangeSignal>> =
     OnceLock::new();
 static PENDING_ENQUEUE_URLS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static ROOT_PROBE_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 #[cfg(not(test))]
 pub struct DownloadRuntime {
@@ -347,12 +350,31 @@ fn retry_cooldown_jitter(retry_key: &str, failed_attempt: usize) -> Duration {
 
 pub(crate) fn is_retryable_leaf_download_error(error: &anyhow::Error) -> bool {
     let message = format!("{error:#}");
+    if is_non_retryable_leaf_access_error(&message) {
+        return false;
+    }
+
     ![
         "failed to create ",
         "failed to spawn yt-dlp download process",
         "yt-dlp stdout pipe was not captured",
         "yt-dlp stderr pipe was not captured",
         "yt-dlp completed but final audio path could not be resolved",
+    ]
+    .iter()
+    .any(|fatal| message.contains(fatal))
+}
+
+fn is_non_retryable_leaf_access_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "private video",
+        "sign in if you've been granted access",
+        "sign in to confirm",
+        "use --cookies-from-browser or --cookies",
+        "this video is private",
+        "members-only content",
+        "video unavailable",
     ]
     .iter()
     .any(|fatal| message.contains(fatal))
@@ -417,7 +439,7 @@ pub async fn resume_download_task(task_id: String) -> Result<DownloadTask> {
     if task.status == DownloadTaskStatus::Completed {
         bail!("completed download tasks cannot be resumed");
     }
-    spawn_task(task.id.to_string())?;
+    spawn_task(task.id.to_string(), None)?;
     Ok(task)
 }
 
@@ -446,22 +468,33 @@ async fn enqueue_collection_download_with_trigger(
 ) -> Result<EnqueuedCollectionDownload> {
     let prepared = prepare_task_enqueue_outcome(url, trigger).await?;
 
-    let (task, collection) = match prepared {
+    let (task, collection, root_probe) = match prepared {
         PreparedTaskEnqueue::Existing(task) => {
             let app = runtime()?.app.clone();
             match collection_import::resolve_existing_enqueued_collection(&task).await {
-                Ok(collection) => (task, collection),
-                Err(_) => bootstrap_enqueued_collection(task, app).await?,
+                Ok(collection) => (task, collection, None),
+                Err(_) if trigger == DownloadTrigger::Manual => {
+                    bootstrap_enqueued_collection_shell(task, app).await?
+                }
+                Err(_) => {
+                    let (task, collection) = bootstrap_enqueued_collection(task, app).await?;
+                    (task, collection, None)
+                }
             }
         }
         PreparedTaskEnqueue::New(task) => {
             let app = runtime()?.app.clone();
-            bootstrap_enqueued_collection(task, app).await?
+            if trigger == DownloadTrigger::Manual {
+                bootstrap_enqueued_collection_shell(task, app).await?
+            } else {
+                let (task, collection) = bootstrap_enqueued_collection(task, app).await?;
+                (task, collection, None)
+            }
         }
     };
 
     if !task.status.is_terminal() {
-        spawn_task(task.id.to_string())?;
+        spawn_task(task.id.to_string(), root_probe)?;
     }
 
     Ok(EnqueuedCollectionDownload { task, collection })
@@ -494,7 +527,7 @@ pub(crate) async fn enqueue_collection_download_for_test(
     };
 
     if !task.status.is_terminal() {
-        run_task_with_deps(task.id.to_string(), deps).await?;
+        run_task_with_deps(task.id.to_string(), deps, None).await?;
         task = repo::get_task(&task.id.to_string()).await?;
         if let Some(collection_url) = task.collection_url.as_deref()
             && let Some(updated) = collection_import::get_collection_by_url(collection_url).await?
@@ -550,7 +583,7 @@ async fn prepare_task_enqueue_outcome(
 }
 
 #[cfg(not(test))]
-fn spawn_task(task_id: String) -> Result<()> {
+fn spawn_task(task_id: String, root_probe: Option<RootProbe>) -> Result<()> {
     let runtime = runtime()?;
     if !try_claim_task(&task_id)? {
         return Ok(());
@@ -558,7 +591,7 @@ fn spawn_task(task_id: String) -> Result<()> {
 
     let app = runtime.app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = run_task(task_id.clone(), app).await;
+        let result = run_task(task_id.clone(), app, root_probe).await;
         if let Err(error) = result {
             let _ = mark_task_failed(&task_id, error.to_string()).await;
         }
@@ -569,7 +602,7 @@ fn spawn_task(task_id: String) -> Result<()> {
 }
 
 #[cfg(test)]
-fn spawn_task(_task_id: String) -> Result<()> {
+fn spawn_task(_task_id: String, _root_probe: Option<RootProbe>) -> Result<()> {
     Ok(())
 }
 
@@ -586,32 +619,59 @@ async fn bootstrap_enqueued_collection(
 }
 
 #[cfg(not(test))]
-async fn bootstrap_enqueued_collection_with_deps(
+async fn bootstrap_enqueued_collection_shell(
     task: DownloadTask,
-    deps: DownloadExecutionDeps,
-) -> Result<(DownloadTask, Collection)> {
-    let plan = resolve_collection_shell_plan(&task, deps.client).await?;
-    collection_import::persist_enqueued_collection_shell(task, &plan).await
-}
-
-#[cfg(not(test))]
-async fn run_task(task_id: String, app: AppHandle) -> Result<()> {
+    app: AppHandle,
+) -> Result<(DownloadTask, Collection, Option<RootProbe>)> {
     let active_binary_task = ActiveBinaryTaskGuard::new(runtime()?);
     let deps = resolve_execution_deps(&app).await?;
-    let result = run_task_with_deps(task_id, deps).await;
+    let result = bootstrap_enqueued_collection_shell_with_deps(task, deps.client).await;
     drop(active_binary_task);
     result
 }
 
 #[cfg(not(test))]
-async fn run_task_with_deps(task_id: String, deps: DownloadExecutionDeps) -> Result<()> {
+async fn bootstrap_enqueued_collection_with_deps(
+    task: DownloadTask,
+    deps: DownloadExecutionDeps,
+) -> Result<(DownloadTask, Collection)> {
+    let plan = resolve_collection_plan(&task, deps.client).await?;
+    collection_import::persist_enqueued_collection_plan(task, &plan).await
+}
+
+async fn bootstrap_enqueued_collection_shell_with_deps(
+    task: DownloadTask,
+    client: Arc<dyn YtDlpClient>,
+) -> Result<(DownloadTask, Collection, Option<RootProbe>)> {
+    let (shell, root_probe) = resolve_collection_shell_plan(&task, client).await?;
+    collection_import::persist_enqueued_collection_shell_plan(task, &shell)
+        .await
+        .map(|(task, collection)| (task, collection, Some(root_probe)))
+}
+
+#[cfg(not(test))]
+async fn run_task(task_id: String, app: AppHandle, root_probe: Option<RootProbe>) -> Result<()> {
+    let active_binary_task = ActiveBinaryTaskGuard::new(runtime()?);
+    let deps = resolve_execution_deps(&app).await?;
+    let result = run_task_with_deps(task_id, deps, root_probe).await;
+    drop(active_binary_task);
+    result
+}
+
+#[cfg(not(test))]
+async fn run_task_with_deps(
+    task_id: String,
+    deps: DownloadExecutionDeps,
+    root_probe: Option<RootProbe>,
+) -> Result<()> {
     let mut task_snapshot = repo::get_task(&task_id).await?;
     task_snapshot.url = normalize_url(&task_snapshot.url)?;
     update_task_status(&mut task_snapshot, DownloadTaskStatus::Resolving, None).await?;
 
     let client = deps.client;
     let save_root = deps.save_root;
-    let plan = resolve_collection_plan(&task_snapshot, client.clone()).await?;
+    let plan =
+        resolve_collection_plan_with_root_probe(&task_snapshot, client.clone(), root_probe).await?;
     let mut collection = collection_import::load_collection_shell(&plan, &save_root).await?;
     let mut group_catalog = GroupCatalog::seed(&collection);
     collection_import::apply_collection_plan_to_task(&mut task_snapshot, &plan);
@@ -1485,13 +1545,32 @@ pub(crate) async fn resolve_collection_plan(
         return Ok(plan);
     }
 
-    let root_preference = classify_root_preference(&task.url);
-    let root_probe = {
-        let client = client.clone();
-        let url = task.url.clone();
-        run_blocking(move || client.probe_root(&url)).await?
-    };
+    let root_probe = probe_root_with_limit(client.clone(), task.url.clone()).await?;
+    resolve_collection_plan_from_root_probe(task, client, root_probe).await
+}
 
+pub(crate) async fn resolve_collection_plan_with_root_probe(
+    task: &DownloadTask,
+    client: Arc<dyn YtDlpClient>,
+    root_probe: Option<RootProbe>,
+) -> Result<CollectionSyncPlan> {
+    if let Some(plan) = residual_collection_plan(task) {
+        return Ok(plan);
+    }
+
+    let root_probe = match root_probe {
+        Some(root_probe) => root_probe,
+        None => probe_root_with_limit(client.clone(), task.url.clone()).await?,
+    };
+    resolve_collection_plan_from_root_probe(task, client, root_probe).await
+}
+
+async fn resolve_collection_plan_from_root_probe(
+    task: &DownloadTask,
+    client: Arc<dyn YtDlpClient>,
+    root_probe: RootProbe,
+) -> Result<CollectionSyncPlan> {
+    let root_preference = classify_root_preference(&task.url);
     match root_probe {
         RootProbe::Single(leaf) => {
             let collection_url = leaf.webpage_url.clone();
@@ -1519,6 +1598,10 @@ pub(crate) async fn resolve_collection_plan(
             })
         }
         RootProbe::List(list) => {
+            if list.entries.is_empty() {
+                bail!("download resource does not contain any downloadable entries");
+            }
+
             let collection_url = list.webpage_url.clone();
             let existing = collection_import::get_collection_by_url(&collection_url).await?;
             let leaves = collection_import::deduplicate_planned_leaves(
@@ -1547,6 +1630,59 @@ pub(crate) async fn resolve_collection_plan(
             })
         }
     }
+}
+
+pub(crate) async fn resolve_collection_shell_plan(
+    task: &DownloadTask,
+    client: Arc<dyn YtDlpClient>,
+) -> Result<(CollectionShellPlan, RootProbe)> {
+    let root_probe = probe_root_with_limit(client, task.url.clone()).await?;
+    let shell = match &root_probe {
+        RootProbe::Single(leaf) => {
+            let collection_url = leaf.webpage_url.clone();
+            let existing = collection_import::get_collection_by_url(&collection_url).await?;
+            CollectionShellPlan {
+                source_kind: CollectionSourceKind::Single,
+                collection_name: leaf.title.clone(),
+                collection_url: collection_url.clone(),
+                collection_folder: resolve_task_collection_folder(
+                    task,
+                    &collection_url,
+                    &leaf.title,
+                    existing.as_ref(),
+                )
+                .await?,
+                enable_updates: None,
+            }
+        }
+        RootProbe::List(list) => {
+            if list.entries.is_empty() {
+                bail!("download resource does not contain any downloadable entries");
+            }
+
+            let collection_url = list.webpage_url.clone();
+            let existing = collection_import::get_collection_by_url(&collection_url).await?;
+            CollectionShellPlan {
+                source_kind: CollectionSourceKind::List,
+                collection_name: list.title.clone(),
+                collection_url: collection_url.clone(),
+                collection_folder: resolve_task_collection_folder(
+                    task,
+                    &collection_url,
+                    &list.title,
+                    existing.as_ref(),
+                )
+                .await?,
+                enable_updates: Some(
+                    existing
+                        .and_then(|collection| collection.enable_updates)
+                        .unwrap_or(false),
+                ),
+            }
+        }
+    };
+
+    Ok((shell, root_probe))
 }
 
 pub(crate) fn residual_collection_plan(task: &DownloadTask) -> Option<CollectionSyncPlan> {
@@ -1593,61 +1729,6 @@ pub(crate) async fn resolve_task_collection_folder(
     collection_import::resolve_collection_folder(collection_url, collection_name, existing).await
 }
 
-#[cfg(not(test))]
-async fn resolve_collection_shell_plan(
-    task: &DownloadTask,
-    client: Arc<dyn YtDlpClient>,
-) -> Result<CollectionShellPlan> {
-    let root_probe = {
-        let client = client.clone();
-        let url = task.url.clone();
-        run_blocking(move || client.probe_root(&url)).await?
-    };
-
-    match root_probe {
-        RootProbe::Single(leaf) => {
-            let collection_url = leaf.webpage_url.clone();
-            let existing = collection_import::get_collection_by_url(&collection_url).await?;
-            Ok(CollectionShellPlan {
-                source_kind: CollectionSourceKind::Single,
-                collection_name: leaf.title.clone(),
-                collection_url: collection_url.clone(),
-                collection_folder: collection_import::resolve_collection_folder(
-                    &collection_url,
-                    &leaf.title,
-                    existing.as_ref(),
-                )
-                .await?,
-                enable_updates: None,
-            })
-        }
-        RootProbe::List(list) => {
-            if list.entries.is_empty() {
-                bail!("download resource does not contain any downloadable entries");
-            }
-
-            let collection_url = list.webpage_url.clone();
-            let existing = collection_import::get_collection_by_url(&collection_url).await?;
-            Ok(CollectionShellPlan {
-                source_kind: CollectionSourceKind::List,
-                collection_name: list.title.clone(),
-                collection_url: collection_url.clone(),
-                collection_folder: collection_import::resolve_collection_folder(
-                    &collection_url,
-                    &list.title,
-                    existing.as_ref(),
-                )
-                .await?,
-                enable_updates: Some(
-                    existing
-                        .and_then(|collection| collection.enable_updates)
-                        .unwrap_or(false),
-                ),
-            })
-        }
-    }
-}
-
 const MAX_NESTED_LIST_DEPTH: u8 = 4;
 
 pub(crate) async fn expand_root_entries_to_planned_leafs(
@@ -1690,11 +1771,7 @@ pub(crate) async fn expand_root_entries_to_planned_leafs(
         }
 
         let nested_url = next.entry.url.clone();
-        let nested_probe = {
-            let client = client.clone();
-            let url = nested_url.clone();
-            run_blocking(move || client.probe_root(&url)).await?
-        };
+        let nested_probe = probe_root_with_limit(client.clone(), nested_url.clone()).await?;
 
         match nested_probe {
             RootProbe::Single(leaf) => {
@@ -1832,22 +1909,35 @@ async fn discover_group_catalog(
     source_url: String,
     client: Arc<dyn YtDlpClient>,
 ) -> Result<Vec<Group>> {
-    run_blocking(move || discover_group_catalog_blocking(&source_url, client)).await
-}
-
-#[cfg(not(test))]
-fn discover_group_catalog_blocking(
-    source_url: &str,
-    client: Arc<dyn YtDlpClient>,
-) -> Result<Vec<Group>> {
-    let http = group_discovery_http_client()?;
     let mut groups = Vec::new();
     let mut errors = Vec::new();
     let mut seen_urls = BTreeSet::new();
 
-    for candidate_url in group_discovery_source_urls(source_url) {
-        match discover_groups_from_source(&http, &candidate_url, client.clone(), &mut seen_urls) {
-            Ok(found) => groups.extend(found),
+    for candidate_url in group_discovery_source_urls(&source_url) {
+        let extracted = run_blocking({
+            let candidate_url = candidate_url.clone();
+            move || discover_group_playlist_urls_from_source(&candidate_url)
+        })
+        .await;
+
+        match extracted {
+            Ok(playlist_urls) => {
+                for playlist_url in playlist_urls {
+                    if !seen_urls.insert(playlist_url.clone()) {
+                        continue;
+                    }
+
+                    match probe_root_with_limit(client.clone(), playlist_url.clone()).await {
+                        Ok(RootProbe::List(list)) => groups.push(Group {
+                            name: list.title.clone(),
+                            url: list.webpage_url.clone(),
+                            folder: sanitize_path_component(&list.title),
+                        }),
+                        Ok(RootProbe::Single(_)) => {}
+                        Err(error) => errors.push(format!("{playlist_url}: {error}")),
+                    }
+                }
+            }
             Err(error) => errors.push(format!("{candidate_url}: {error}")),
         }
     }
@@ -1860,12 +1950,8 @@ fn discover_group_catalog_blocking(
 }
 
 #[cfg(not(test))]
-fn discover_groups_from_source(
-    http: &BlockingHttpClient,
-    source_url: &str,
-    client: Arc<dyn YtDlpClient>,
-    seen_urls: &mut BTreeSet<String>,
-) -> Result<Vec<Group>> {
+fn discover_group_playlist_urls_from_source(source_url: &str) -> Result<Vec<String>> {
+    let http = group_discovery_http_client()?;
     let html = http
         .get(source_url)
         .send()
@@ -1874,25 +1960,10 @@ fn discover_groups_from_source(
         .text()
         .context("failed to read source html")?;
 
-    let mut groups = Vec::new();
-    for playlist_id in extract_olak_playlist_ids(&html) {
-        let playlist_url = format!("https://www.youtube.com/playlist?list={playlist_id}");
-        if !seen_urls.insert(playlist_url.clone()) {
-            continue;
-        }
-
-        let RootProbe::List(list) = client.probe_root(&playlist_url)? else {
-            continue;
-        };
-
-        groups.push(Group {
-            name: list.title.clone(),
-            url: list.webpage_url.clone(),
-            folder: sanitize_path_component(&list.title),
-        });
-    }
-
-    Ok(groups)
+    Ok(extract_olak_playlist_ids(&html)
+        .into_iter()
+        .map(|playlist_id| format!("https://www.youtube.com/playlist?list={playlist_id}"))
+        .collect())
 }
 
 fn group_discovery_http_client() -> Result<BlockingHttpClient> {
@@ -2060,7 +2131,7 @@ pub(crate) async fn recover_incomplete_download_tasks() -> Result<usize> {
             update_task_status(&mut task, DownloadTaskStatus::Queued, last_error).await?;
         }
 
-        spawn_task(task.id.to_string())?;
+        spawn_task(task.id.to_string(), None)?;
         recovered += 1;
     }
 
@@ -2141,6 +2212,28 @@ where
         .context("blocking download task panicked")?
 }
 
+fn root_probe_slots() -> Arc<Semaphore> {
+    Arc::clone(
+        ROOT_PROBE_SLOTS.get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_ROOT_PROBES))),
+    )
+}
+
+pub(crate) async fn probe_root_with_limit(
+    client: Arc<dyn YtDlpClient>,
+    url: String,
+) -> Result<RootProbe> {
+    let _permit = root_probe_slots()
+        .acquire_owned()
+        .await
+        .context("download root probe limiter closed")?;
+    run_blocking(move || client.probe_root(&url)).await
+}
+
+#[cfg(test)]
+pub(crate) fn root_probe_parallelism() -> usize {
+    MAX_CONCURRENT_ROOT_PROBES
+}
+
 fn task_id_for(url: &str, trigger: DownloadTrigger) -> String {
     format!(
         "{}-{}",
@@ -2187,6 +2280,12 @@ fn parse_download_url(text: &str) -> std::result::Result<String, String> {
 
     let parsed =
         Url::parse(trimmed).map_err(|_| "Clipboard does not contain a valid URL.".to_string())?;
+    if trimmed.chars().any(char::is_whitespace)
+        || trimmed.chars().any(|character| character.is_control())
+    {
+        return Err("Clipboard must contain exactly one URL.".to_string());
+    }
+
     match parsed.scheme() {
         "http" | "https" => Ok(trimmed.to_string()),
         _ => Err("Only http and https URLs can be downloaded.".to_string()),

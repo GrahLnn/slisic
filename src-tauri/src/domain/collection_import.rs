@@ -271,7 +271,20 @@ pub(crate) fn apply_collection_plan_to_task(task: &mut DownloadTask, plan: &Coll
     task.refresh_counts();
 }
 
-pub(crate) async fn persist_enqueued_collection_shell(
+pub(crate) async fn persist_enqueued_collection_plan(
+    mut task: DownloadTask,
+    plan: &CollectionSyncPlan,
+) -> Result<(DownloadTask, Collection)> {
+    let existing = collection_repo::get_collection_by_url(&plan.collection_url).await?;
+    let collection =
+        collection_repo::upsert_collection(&create_collection_shell(plan, existing)).await?;
+    apply_collection_plan_to_task(&mut task, plan);
+    task.last_error = None;
+    let task = download_repo::save_task(task).await?;
+    Ok((task, collection))
+}
+
+pub(crate) async fn persist_enqueued_collection_shell_plan(
     mut task: DownloadTask,
     plan: &CollectionShellPlan,
 ) -> Result<(DownloadTask, Collection)> {
@@ -281,7 +294,6 @@ pub(crate) async fn persist_enqueued_collection_shell(
             .await?;
     apply_collection_shell_plan_to_task(&mut task, plan);
     task.last_error = None;
-    task.refresh_counts();
     let task = download_repo::save_task(task).await?;
     Ok((task, collection))
 }
@@ -1345,11 +1357,7 @@ fn title_noise_affix_deletion_span(
             let mut end = noise.len();
             let openings = unmatched_opening_brackets(noise);
             if !openings.is_empty() {
-                if let Some(closing_end) = prefix_openings_closing_end(title, end, &openings) {
-                    end = closing_end;
-                } else {
-                    end = openings.first().map(|opening| opening.index).unwrap_or(end);
-                }
+                end = openings.first().map(|opening| opening.index).unwrap_or(end);
             }
             Some((0, end))
         }
@@ -1360,86 +1368,15 @@ fn title_noise_affix_deletion_span(
             let mut start = title.len() - noise.len();
             let closings = unmatched_closing_brackets(noise);
             if !closings.is_empty() {
-                if let Some(opening_start) = suffix_closings_opening_start(title, start, &closings)
-                {
-                    start = opening_start;
-                } else {
-                    start += closings
-                        .last()
-                        .map(|closing| closing.index + closing.character.len_utf8())
-                        .unwrap_or(0);
-                }
+                start += closings
+                    .last()
+                    .map(|closing| closing.index + closing.character.len_utf8())
+                    .unwrap_or(0);
             }
             Some((start, title.len()))
         }
         TitleNoisePatternKind::Bracketed => None,
     }
-}
-
-fn prefix_openings_closing_end(
-    title: &str,
-    search_start: usize,
-    prefix_openings: &[BracketBoundary],
-) -> Option<usize> {
-    let mut stack = prefix_openings
-        .iter()
-        .map(|opening| opening.character)
-        .collect::<Vec<_>>();
-    for (relative_index, character) in title[search_start..].char_indices() {
-        let index = search_start + relative_index;
-        if opening_bracket_pair(character).is_some() {
-            stack.push(character);
-            continue;
-        }
-
-        let Some(expected_opening) = closing_bracket_pair(character) else {
-            continue;
-        };
-        if stack
-            .last()
-            .is_some_and(|opening| *opening == expected_opening)
-        {
-            stack.pop();
-            if stack.is_empty() {
-                return Some(index + character.len_utf8());
-            }
-        }
-    }
-
-    None
-}
-
-fn suffix_closings_opening_start(
-    title: &str,
-    search_end: usize,
-    suffix_closings: &[BracketBoundary],
-) -> Option<usize> {
-    let mut stack = suffix_closings
-        .iter()
-        .rev()
-        .map(|closing| closing.character)
-        .collect::<Vec<_>>();
-    for (index, character) in title[..search_end].char_indices().rev() {
-        if closing_bracket_pair(character).is_some() {
-            stack.push(character);
-            continue;
-        }
-
-        let Some(expected_closing) = opening_bracket_pair(character) else {
-            continue;
-        };
-        if stack
-            .last()
-            .is_some_and(|closing| *closing == expected_closing)
-        {
-            stack.pop();
-            if stack.is_empty() {
-                return Some(index);
-            }
-        }
-    }
-
-    None
 }
 
 #[derive(Debug, Clone, Copy)]

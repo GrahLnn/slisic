@@ -13,9 +13,24 @@ import {
 } from "@grahlnn/fn/flow";
 import { crab, type EnqueuedCollectionDownload, type PastedDownloadUrlResolution } from "@/src/cmd";
 
-export const ss = defineSS(ns("mainx", sst(["idle", "checking", "enqueueing"], ["reset"])));
+export const ss = defineSS(ns("mainx", sst(["idle"], ["reset"])));
 export const state = allState(ss);
 export const sig = allSignal(ss);
+
+export type CandidateResolutionPayload = {
+  id: string;
+  resolution: PastedDownloadUrlResolution;
+};
+
+export type CandidateFailurePayload = {
+  id: string;
+  error: string;
+};
+
+export type CandidateEnqueuedPayload = {
+  id: string;
+  result: EnqueuedCollectionDownload;
+};
 
 export const deps = {
   resolvePastedDownloadUrl: async (url: string): Promise<PastedDownloadUrlResolution> => {
@@ -50,6 +65,9 @@ export const invoker = createActors({
 export const payloads = collect(
   ...event<string>()("paste.requested"),
   ...event<string>()("candidate.delete"),
+  ...event<CandidateResolutionPayload>()("candidate.resolve.completed"),
+  ...event<CandidateFailurePayload>()("candidate.resolve.failed", "candidate.enqueue.failed"),
+  ...event<CandidateEnqueuedPayload>()("candidate.enqueue.completed"),
 );
 
 export type MainStateT = Extract<keyof typeof ss.mainx.State, string>;
