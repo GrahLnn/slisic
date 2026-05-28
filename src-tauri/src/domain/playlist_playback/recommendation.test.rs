@@ -164,6 +164,30 @@ fn audio_style_recommender_skips_recent_non_liked_candidate() {
 }
 
 #[test]
+fn audio_style_sampler_skips_zero_weight_candidate_at_low_draw() {
+    let current = track("current");
+    let missing_embedding = track("missing_embedding");
+    let near = track("near");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (near.clone(), embedding(2)),
+    ]);
+
+    let selection = choose_next_audio_style_candidate_with_generation_for_test(
+        &current,
+        &[missing_embedding, near],
+        &recommender,
+        0.0,
+        Some(1),
+    );
+
+    assert_eq!(selection.index, 1);
+    assert_eq!(selection.source.as_str(), "audio_style");
+    assert_eq!(selection.reason, None);
+    assert!(selection.probability > 0.0);
+}
+
+#[test]
 fn recommendation_history_filter_does_not_delete_basin_candidates() {
     let played_a = track_in_basin("Kurzgesagt", "played_a");
     let played_b = track_in_basin("Kurzgesagt", "played_b");
@@ -224,7 +248,33 @@ fn audio_style_sampler_applies_continuous_attractor_basin_pressure() {
 }
 
 #[test]
-fn audio_style_sampler_keeps_liked_candidate_under_attractor_basin_pressure() {
+fn audio_style_basin_pressure_does_not_override_clear_distance_preference() {
+    let current = track_in_basin("Kurzgesagt", "current");
+    let played = (0..12)
+        .map(|index| track_in_basin("Kurzgesagt", &format!("played_{index}")))
+        .collect::<Vec<_>>();
+    let near_same_basin = track_in_basin("Kurzgesagt", "near_same_basin");
+    let far_other_basin = track_in_basin("ZWEI2", "far_other_basin");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (near_same_basin.clone(), embedding(2)),
+        (far_other_basin.clone(), embedding(128)),
+    ]);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[near_same_basin.clone(), far_other_basin.clone()],
+        &recommender,
+        &played,
+        0.70,
+    );
+
+    assert_eq!(selection.index, 0);
+    assert!(selection.probability > 0.70);
+}
+
+#[test]
+fn audio_style_sampler_keeps_liked_candidate_sampleable_under_attractor_basin_pressure() {
     let current = track_in_source_leaf("Shared Source", "Kurzgesagt", "current");
     let played_a = track_in_source_leaf("Shared Source", "Kurzgesagt", "played_a");
     let played_b = track_in_source_leaf("Shared Source", "Kurzgesagt", "played_b");
@@ -244,7 +294,7 @@ fn audio_style_sampler_keeps_liked_candidate_under_attractor_basin_pressure() {
         &[liked_same_basin.clone(), other_basin.clone()],
         &recommender,
         &[played_a, played_b, played_c],
-        0.2,
+        0.15,
     );
 
     assert_eq!(selection.index, 0);
@@ -253,9 +303,9 @@ fn audio_style_sampler_keeps_liked_candidate_under_attractor_basin_pressure() {
 }
 
 #[test]
-fn audio_style_source_basin_first_sampling_limits_large_source_count_bias() {
+fn audio_style_distance_softmin_prefers_near_tracks_over_source_balancing() {
     let current = track_in_source_leaf("Epic Mountain - Playlists", "Kurzgesagt 2024", "current");
-    let epic_tracks = (0..24)
+    let epic_tracks = (0..4)
         .map(|index| {
             track_in_source_leaf(
                 "Epic Mountain - Playlists",
@@ -279,7 +329,7 @@ fn audio_style_source_basin_first_sampling_limits_large_source_count_bias() {
         small_tracks
             .iter()
             .cloned()
-            .map(|track| (track, embedding(2))),
+            .map(|track| (track, embedding(128))),
     );
     let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
     let candidates = epic_tracks
@@ -296,12 +346,12 @@ fn audio_style_source_basin_first_sampling_limits_large_source_count_bias() {
         0.50,
     );
 
-    assert!(selection.index >= epic_tracks.len());
-    assert!(selection.probability > 0.10);
+    assert!(selection.index < epic_tracks.len());
+    assert!(selection.probability > selection.uniform_probability);
 }
 
 #[test]
-fn audio_style_source_basin_first_keeps_smooth_source_preferred() {
+fn audio_style_distance_softmin_keeps_smooth_track_preferred() {
     let current = track_in_source_leaf("Epic Mountain - Playlists", "Kurzgesagt 2024", "current");
     let smooth = track_in_source_leaf("Smooth Source", "Leaf", "smooth");
     let far = track_in_source_leaf("Far Source", "Leaf", "far");
@@ -324,20 +374,13 @@ fn audio_style_source_basin_first_keeps_smooth_source_preferred() {
 }
 
 #[test]
-fn audio_style_source_basin_pressure_can_move_out_of_repeated_large_source() {
-    let current = track_in_source_leaf("Epic Mountain - Playlists", "Kurzgesagt 2024", "current");
+fn audio_style_attractor_basin_pressure_can_move_out_of_repeated_basin() {
+    let current = track_in_basin("Kurzgesagt", "current");
     let played = (0..8)
-        .map(|index| {
-            track_in_source_leaf(
-                "Epic Mountain - Playlists",
-                &format!("Kurzgesagt {index}"),
-                &format!("played_epic_{index}"),
-            )
-        })
+        .map(|index| track_in_basin("Kurzgesagt", &format!("played_epic_{index}")))
         .collect::<Vec<_>>();
-    let epic_candidate =
-        track_in_source_leaf("Epic Mountain - Playlists", "Kurzgesagt 2025", "epic_next");
-    let other_candidate = track_in_source_leaf("ZWEI2 Original Soundtrack", "Disc 1", "zwei2_next");
+    let epic_candidate = track_in_basin("Kurzgesagt", "epic_next");
+    let other_candidate = track_in_basin("ZWEI2", "zwei2_next");
     let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
         (current.clone(), embedding(2)),
         (epic_candidate.clone(), embedding(2)),
@@ -353,25 +396,18 @@ fn audio_style_source_basin_pressure_can_move_out_of_repeated_large_source() {
     );
 
     assert_eq!(selection.index, 1);
-    assert!(selection.probability > 0.70);
+    assert!(selection.probability > 0.80);
 }
 
 #[test]
-fn audio_style_source_basin_pressure_does_not_remove_liked_tracks() {
-    let current = track_in_source_leaf("Epic Mountain - Playlists", "Kurzgesagt 2024", "current");
+fn audio_style_attractor_basin_pressure_does_not_remove_liked_tracks_from_sampling_domain() {
+    let current = track_in_basin("Kurzgesagt", "current");
     let played = (0..8)
-        .map(|index| {
-            track_in_source_leaf(
-                "Epic Mountain - Playlists",
-                &format!("Kurzgesagt {index}"),
-                &format!("played_epic_{index}"),
-            )
-        })
+        .map(|index| track_in_basin("Kurzgesagt", &format!("played_epic_{index}")))
         .collect::<Vec<_>>();
-    let mut liked_epic =
-        track_in_source_leaf("Epic Mountain - Playlists", "Kurzgesagt 2025", "liked_epic");
+    let mut liked_epic = track_in_basin("Kurzgesagt", "liked_epic");
     liked_epic.liked = true;
-    let other_candidate = track_in_source_leaf("ZWEI2 Original Soundtrack", "Disc 1", "zwei2_next");
+    let other_candidate = track_in_basin("ZWEI2", "zwei2_next");
     let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
         (current.clone(), embedding(2)),
         (liked_epic.clone(), embedding(2)),
@@ -383,7 +419,7 @@ fn audio_style_source_basin_pressure_does_not_remove_liked_tracks() {
         &[liked_epic.clone(), other_candidate.clone()],
         &recommender,
         &played,
-        0.02,
+        0.15,
     );
 
     assert_eq!(selection.index, 0);
@@ -416,6 +452,7 @@ fn audio_style_history_filter_keeps_recent_liked_candidate_in_weight_band() {
     let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
         (current.clone(), embedding(2)),
         (low.clone(), embedding(128)),
+        (liked.clone(), embedding(128)),
         (high.clone(), embedding(2)),
     ]);
     let filtered = filter_recently_played_recommendation_candidates(
@@ -423,17 +460,17 @@ fn audio_style_history_filter_keeps_recent_liked_candidate_in_weight_band() {
         std::slice::from_ref(&liked),
     );
 
-    let selected_after_low =
-        choose_next_audio_style_candidate_for_test(&current, &filtered, &recommender, 0.15);
     let selected_after_liked =
+        choose_next_audio_style_candidate_for_test(&current, &filtered, &recommender, 0.003);
+    let selected_after_near =
         choose_next_audio_style_candidate_for_test(&current, &filtered, &recommender, 0.5);
 
-    assert_eq!(selected_after_low, 1);
-    assert_eq!(selected_after_liked, 2);
+    assert_eq!(selected_after_liked, 1);
+    assert_eq!(selected_after_near, 2);
 }
 
 #[test]
-fn audio_style_recommender_keeps_liked_candidate_in_middle_weight_band() {
+fn audio_style_liked_multiplier_does_not_override_distance_distribution() {
     let current = track("current");
     let low = track("low");
     let mut liked = track("liked");
@@ -442,24 +479,25 @@ fn audio_style_recommender_keeps_liked_candidate_in_middle_weight_band() {
     let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
         (current.clone(), embedding(2)),
         (low.clone(), embedding(128)),
+        (liked.clone(), embedding(128)),
         (high.clone(), embedding(2)),
     ]);
 
-    let selected_after_low = choose_next_audio_style_candidate_for_test(
+    let selected_after_liked = choose_next_audio_style_candidate_for_test(
         &current,
         &[low.clone(), liked.clone(), high.clone()],
         &recommender,
-        0.15,
+        0.003,
     );
-    let selected_after_liked = choose_next_audio_style_candidate_for_test(
+    let selected_after_near = choose_next_audio_style_candidate_for_test(
         &current,
         &[low, liked, high],
         &recommender,
         0.5,
     );
 
-    assert_eq!(selected_after_low, 1);
-    assert_eq!(selected_after_liked, 2);
+    assert_eq!(selected_after_liked, 1);
+    assert_eq!(selected_after_near, 2);
 }
 
 #[test]
@@ -792,7 +830,7 @@ fn trained_audio_style_snapshot_keeps_liked_tail_candidate_sampleable() {
         &current,
         &[best, liked_tail, low],
         snapshot.recommender(),
-        0.96,
+        0.995,
         Some(snapshot.generation()),
     );
 
