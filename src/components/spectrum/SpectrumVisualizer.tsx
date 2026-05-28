@@ -32,13 +32,13 @@ import {
   resolveWaveformInitialViewportFrame,
   resolveWaveformPeakFromTileCache,
   resolveWaveformPlayheadCssVariables,
-  resolveWaveformPlayheadDrag,
   resolveWaveformPointerAnchorViewportX,
   resolveWaveformMaximumRenderPixelsPerSecond,
   resolveWaveformPresentationSelection,
   resolveWaveformSelectionDrag,
   resolveWaveformSelectionGeometry,
   resolveWaveformSelectionMarkerLayout,
+  resolveWaveformPlayheadDragPreview,
   resolveWaveformSessionFrame,
   resolveWaveformSessionViewportFrame,
   resolveWaveformTileLoadResultPolicy,
@@ -55,7 +55,7 @@ import {
   type WaveformCachedTile,
   type WaveformDataPlan,
   type WaveformDataPlanMode,
-  type WaveformPlayheadDragResolution,
+  type WaveformPlayheadDragInput,
   type WaveformRenderDataStore,
   type WaveformSelectionDragResolution,
   type WaveformSelectionEdge,
@@ -98,6 +98,7 @@ export {
   resolveWaveformPixelsPerSecond,
   resolveWaveformPlayheadCssVariables,
   resolveWaveformPlayheadDrag,
+  resolveWaveformPlayheadDragPreview,
   resolveWaveformPresentationSelection,
   resolveWaveformPointerAnchorViewportX,
   resolveWaveformRenderPixelsPerSecond,
@@ -1102,7 +1103,7 @@ function usePlaybackController(args: {
 }) {
   const latestArgsRef = useRef(args);
   latestArgsRef.current = args;
-  const dragPreviewRef = useRef<WaveformPlayheadDragResolution | null>(null);
+  const dragPreviewInputRef = useRef<WaveformPlayheadDragInput | null>(null);
   const snapshotRef = useRef<PlaybackSnapshot | null>(null);
   const localPlaybackSnapshotRef = useRef<PlaybackSnapshot | null>(null);
   const frameIdRef = useRef<number | null>(null);
@@ -1117,7 +1118,10 @@ function usePlaybackController(args: {
 
     const ownerWindow = host.ownerDocument.defaultView;
     const snapshot = snapshotRef.current;
-    const dragPreview = dragPreviewRef.current;
+    const dragPreview = resolveWaveformPlayheadDragPreview({
+      input: dragPreviewInputRef.current,
+      viewport: latest.viewport,
+    });
     const positionMs =
       dragPreview?.positionMs ??
       resolvePlaybackPositionMs({
@@ -1157,7 +1161,7 @@ function usePlaybackController(args: {
 
     const tick = (frameTime: number) => {
       const snapshot = snapshotRef.current;
-      if (!snapshot?.playing || snapshot.paused || dragPreviewRef.current !== null) {
+      if (!snapshot?.playing || snapshot.paused || dragPreviewInputRef.current !== null) {
         frameIdRef.current = null;
         return;
       }
@@ -1277,8 +1281,8 @@ function usePlaybackController(args: {
   }, [args.viewport, syncPlayhead]);
 
   const previewDrag = useCallback(
-    (resolution: WaveformPlayheadDragResolution | null) => {
-      dragPreviewRef.current = resolution;
+    (input: WaveformPlayheadDragInput | null) => {
+      dragPreviewInputRef.current = input;
       syncPlayhead();
     },
     [syncPlayhead],
@@ -1304,7 +1308,7 @@ function usePlaybackController(args: {
   const cancelDrag = useCallback(() => {
     const beginPromise = beginSeekPromiseRef.current;
     beginSeekPromiseRef.current = null;
-    dragPreviewRef.current = null;
+    dragPreviewInputRef.current = null;
     syncPlayhead();
     void (beginPromise ?? Promise.resolve(true))
       .then((didBegin) =>
@@ -1317,12 +1321,27 @@ function usePlaybackController(args: {
   }, [commitPlaybackStatus, syncPlayhead]);
 
   const commitDrag = useCallback(
-    async (resolution: WaveformPlayheadDragResolution) => {
+    async (input: WaveformPlayheadDragInput) => {
       const beginPromise = beginSeekPromiseRef.current;
       beginSeekPromiseRef.current = null;
+      const resolution = resolveWaveformPlayheadDragPreview({
+        input,
+        viewport: latestArgsRef.current.viewport,
+      });
+      if (!resolution) {
+        dragPreviewInputRef.current = null;
+        syncPlayhead();
+        const didBegin = beginPromise ? await beginPromise : true;
+        if (didBegin) {
+          const status = await latestArgsRef.current.playbackPort.cancelPlaybackSeek();
+          commitPlaybackStatus(status);
+        }
+        return;
+      }
+
       const didBegin = beginPromise ? await beginPromise : true;
       if (!didBegin) {
-        dragPreviewRef.current = null;
+        dragPreviewInputRef.current = null;
         syncPlayhead();
         return;
       }
@@ -1331,7 +1350,7 @@ function usePlaybackController(args: {
         resolution.positionMs,
         resolution.endMs,
       );
-      dragPreviewRef.current = null;
+      dragPreviewInputRef.current = null;
       localPlaybackSnapshotRef.current = null;
       commitPlaybackStatus(status);
     },
@@ -1908,21 +1927,26 @@ function WaveformPlayheadOverlay(args: {
   selectionRef: MutableRefObject<WaveformSelectionRange | null>;
   viewport: WaveformViewportModel;
 }) {
-  const dragRef = useRef<WaveformPlayheadDragResolution | null>(null);
+  const dragInputRef = useRef<WaveformPlayheadDragInput | null>(null);
 
-  const resolveDrag = useCallback(
+  const resolveDragInput = useCallback(
     (event: ReactPointerEvent<HTMLButtonElement>) => {
       const hostRect = event.currentTarget.parentElement?.getBoundingClientRect();
       if (!hostRect) {
         return null;
       }
 
-      return resolveWaveformPlayheadDrag({
+      const input: WaveformPlayheadDragInput = {
         hostRect,
         pointerClientX: event.clientX,
         selection: args.selectionRef.current,
+      };
+      return resolveWaveformPlayheadDragPreview({
+        input,
         viewport: args.viewport,
-      });
+      }) === null
+        ? null
+        : input;
     },
     [args.selectionRef, args.viewport],
   );
@@ -1949,42 +1973,42 @@ function WaveformPlayheadOverlay(args: {
           if (event.currentTarget.hasPointerCapture(event.pointerId)) {
             event.currentTarget.releasePointerCapture(event.pointerId);
           }
-          dragRef.current = null;
+          dragInputRef.current = null;
           args.playback.cancelDrag();
         }}
         onPointerDown={(event) => {
-          const resolution = resolveDrag(event);
-          if (!resolution) {
+          const input = resolveDragInput(event);
+          if (!input) {
             return;
           }
           event.preventDefault();
           event.currentTarget.setPointerCapture(event.pointerId);
-          dragRef.current = resolution;
-          args.playback.previewDrag(resolution);
+          dragInputRef.current = input;
+          args.playback.previewDrag(input);
           args.playback.beginDrag();
         }}
         onPointerMove={(event) => {
           if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
             return;
           }
-          const resolution = resolveDrag(event);
-          if (!resolution) {
+          const input = resolveDragInput(event);
+          if (!input) {
             return;
           }
-          dragRef.current = resolution;
-          args.playback.previewDrag(resolution);
+          dragInputRef.current = input;
+          args.playback.previewDrag(input);
         }}
         onPointerUp={(event) => {
           if (event.currentTarget.hasPointerCapture(event.pointerId)) {
             event.currentTarget.releasePointerCapture(event.pointerId);
           }
-          const resolution = dragRef.current;
-          dragRef.current = null;
-          if (!resolution) {
+          const input = dragInputRef.current;
+          dragInputRef.current = null;
+          if (!input) {
             args.playback.cancelDrag();
             return;
           }
-          void args.playback.commitDrag(resolution).catch((error) => {
+          void args.playback.commitDrag(input).catch((error) => {
             console.error("Failed to commit waveform playback seek", error);
             args.playback.cancelDrag();
           });

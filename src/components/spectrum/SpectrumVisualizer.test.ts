@@ -33,6 +33,7 @@ import {
   resolveWaveformPixelsPerSecond,
   resolveWaveformPlayheadCssVariables,
   resolveWaveformPlayheadDrag,
+  resolveWaveformPlayheadDragPreview,
   resolveWaveformPlayheadStyle,
   resolveWaveformPointerAnchorViewportX,
   resolveWaveformPresentationSelection,
@@ -944,6 +945,67 @@ describe("SpectrumVisualizer selection and playback", () => {
         viewport,
       }),
       null,
+    );
+  });
+
+  test("reprojects playhead drag previews through the current viewport", () => {
+    const baseViewport = resolveWaveformViewportModel({
+      durationMs: 120_000,
+      focusSeconds: null,
+      maximumPixelsPerSecond: 800,
+      pixelsPerSecond: 100,
+      scrollLeft: 1_800,
+      viewportWidth: 1_000,
+    });
+    const pannedViewport = resolveWaveformViewportModel({
+      durationMs: 120_000,
+      focusSeconds: null,
+      maximumPixelsPerSecond: 800,
+      pixelsPerSecond: 100,
+      scrollLeft: 2_600,
+      viewportWidth: 1_000,
+    });
+    const input = {
+      hostRect: {
+        left: 10,
+        width: 1_000,
+      },
+      pointerClientX: 610,
+      selection: {
+        end: 40,
+        start: 10,
+      },
+    };
+
+    const basePreview = resolveWaveformPlayheadDragPreview({
+      input,
+      viewport: baseViewport,
+    });
+    const pannedPreview = resolveWaveformPlayheadDragPreview({
+      input,
+      viewport: pannedViewport,
+    });
+
+    assert.deepEqual(basePreview, {
+      endMs: 40_000,
+      positionMs: 22_000,
+    });
+    assert.deepEqual(pannedPreview, {
+      endMs: 40_000,
+      positionMs: 30_000,
+    });
+    assert.deepEqual(
+      resolveWaveformPlayheadCssVariables({
+        playbackStartMs: 0,
+        pixelsPerSecond: pannedViewport.pixelsPerSecond,
+        positionMs: pannedPreview?.positionMs ?? null,
+        scrollLeft: pannedViewport.scrollLeft,
+        viewportWidth: pannedViewport.viewportWidth,
+      }),
+      {
+        opacity: "0.86",
+        x: "600px",
+      },
     );
   });
 

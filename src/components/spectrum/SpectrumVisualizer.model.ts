@@ -65,6 +65,16 @@ export type WaveformPlayheadDragResolution = {
   positionMs: number;
 };
 
+/**
+ * The active drag anchor is the pointer inside the host, not a frozen timeline position.
+ * Re-projecting this input through the current viewport keeps the playhead affine under pan.
+ */
+export type WaveformPlayheadDragInput = {
+  hostRect: Pick<DOMRect, "left" | "width">;
+  pointerClientX: number;
+  selection: WaveformSelectionRange | null;
+};
+
 export type PlaybackSnapshot = PlaybackStatusPayload & {
   received_at_ms: number;
 };
@@ -1611,6 +1621,20 @@ export function resolveWaveformPlayheadDrag(args: {
     endMs: Math.round(endSeconds * 1_000),
     positionMs: Math.round(targetSeconds * 1_000),
   };
+}
+
+export function resolveWaveformPlayheadDragPreview(args: {
+  input: WaveformPlayheadDragInput | null;
+  viewport: WaveformViewportModel;
+}): WaveformPlayheadDragResolution | null {
+  if (args.input === null) {
+    return null;
+  }
+
+  return resolveWaveformPlayheadDrag({
+    ...args.input,
+    viewport: args.viewport,
+  });
 }
 
 export function resolvePlaybackPositionMs(args: {
