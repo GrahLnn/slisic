@@ -6,6 +6,7 @@ use crate::domain::player::service::{
     PlaybackTrackIdentityUpdate, PlaybackTrackLikedUpdate, active_request_track_snapshot,
     update_current_session_track_identity, update_current_session_track_liked,
 };
+use crate::domain::playlist_playback::playable_index::{self, PlayableIndexRefreshReason};
 use crate::domain::playlist_playback::recommendation::notify_audio_style_training_inputs_changed;
 use tauri::AppHandle;
 
@@ -68,9 +69,13 @@ pub async fn get_playlist_config(name: String) -> Result<Option<PlayListConfigVi
 #[tauri::command]
 #[specta::specta]
 pub async fn delete_playlist(name: String) -> Result<bool, String> {
-    super::repo::delete_playlist_by_name(&name)
+    let deleted = super::repo::delete_playlist_by_name(&name)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if deleted {
+        playable_index::notify_playlist_deleted(&name);
+    }
+    Ok(deleted)
 }
 
 #[tauri::command]
@@ -79,17 +84,28 @@ pub async fn upsert_playlist(
     previous_name: Option<String>,
     playlist: PlayListWriteRequest,
 ) -> Result<PlayListListView, String> {
-    super::repo::upsert_playlist_surface(&playlist, previous_name.as_deref())
+    let saved = super::repo::upsert_playlist_surface(&playlist, previous_name.as_deref())
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if let Some(previous_name) = previous_name.as_deref()
+        && previous_name != saved.name
+    {
+        playable_index::notify_playlist_deleted(previous_name);
+    }
+    playable_index::notify_playlist_changed(&saved.name);
+    Ok(saved)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn push_extra(name: String, music: Music) -> Result<Option<PlayListConfigView>, String> {
-    super::repo::push_extra(&name, music)
+    let playlist = super::repo::push_extra(&name, music)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if playlist.is_some() {
+        playable_index::notify_playlist_changed(&name);
+    }
+    Ok(playlist)
 }
 
 #[tauri::command]
@@ -98,9 +114,13 @@ pub async fn remove_extra(
     name: String,
     music: Music,
 ) -> Result<Option<PlayListConfigView>, String> {
-    super::repo::remove_extra(&name, &music)
+    let playlist = super::repo::remove_extra(&name, &music)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if playlist.is_some() {
+        playable_index::notify_playlist_changed(&name);
+    }
+    Ok(playlist)
 }
 
 #[tauri::command]
@@ -131,6 +151,7 @@ pub async fn update_music(
 
     if let Some(music) = updated.as_ref() {
         notify_audio_style_training_inputs_changed("music_identity_update");
+        playable_index::notify_library_changed(PlayableIndexRefreshReason::LibraryChanged);
         update_current_session_track_identity(&PlaybackTrackIdentityUpdate {
             music_name: music.alias.clone(),
             music_url: url,
@@ -162,6 +183,7 @@ pub async fn set_current_music_liked(liked: bool) -> Result<Option<Music>, Strin
     .map_err(|error| error.to_string())?;
 
     if updated.is_some() {
+        playable_index::notify_library_changed(PlayableIndexRefreshReason::LibraryChanged);
         update_current_session_track_liked(&PlaybackTrackLikedUpdate {
             canonical_music_id: track.canonical_music_id,
             liked,
@@ -179,15 +201,20 @@ pub async fn create_music(source_collection_url: String, music: Music) -> Result
         .await
         .map_err(|error| error.to_string())?;
     notify_audio_style_training_inputs_changed("music_create");
+    playable_index::notify_library_changed(PlayableIndexRefreshReason::LibraryChanged);
     Ok(created)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn delete_music(url: String, start_ms: u32, end_ms: u32) -> Result<bool, String> {
-    super::repo::delete_music(&url, start_ms, end_ms)
+    let deleted = super::repo::delete_music(&url, start_ms, end_ms)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if deleted {
+        playable_index::notify_library_changed(PlayableIndexRefreshReason::LibraryChanged);
+    }
+    Ok(deleted)
 }
 
 #[tauri::command]
@@ -235,15 +262,21 @@ pub async fn load_spectrum_music_context(
 #[tauri::command]
 #[specta::specta]
 pub async fn add_exclude(music: Music) -> Result<AddExcludeResult, String> {
-    super::repo::add_exclude(music)
+    let result = super::repo::add_exclude(music)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    playable_index::notify_exclude_changed();
+    Ok(result)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn remove_exclude(music: Music) -> Result<RemoveExcludeResult, String> {
-    super::repo::remove_exclude(&music)
+    let result = super::repo::remove_exclude(&music)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if result.removed {
+        playable_index::notify_exclude_changed();
+    }
+    Ok(result)
 }

@@ -77,6 +77,13 @@ mod domain {
             ));
         }
 
+        pub mod playable_index {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/playlist_playback/playable_index.rs"
+            ));
+        }
+
         pub mod service {
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),

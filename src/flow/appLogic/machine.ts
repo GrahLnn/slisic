@@ -46,6 +46,7 @@ import {
   BootstrapLoadError,
   invoker,
   payloads,
+  refreshPlayableIndex,
   ss,
   type MusicDeletesResult,
   type MusicCreateResult,
@@ -670,6 +671,7 @@ export const machine = src.createMachine({
       },
     },
     [ss.mainx.State.ready]: {
+      entry: refreshPlayableIndex,
       on: {
         run: ss.mainx.State.loading,
         [playlistUpserted.evt]: [

@@ -20,6 +20,9 @@ pub async fn app_ready(window: WebviewWindow) {
     if window::should_activate_window_on_app_ready(window.label()) {
         window::activate_window(&window);
     }
+    crate::domain::playlist_playback::playable_index::request_ready_refresh_for_app(
+        window.app_handle().clone(),
+    );
     WINDOW_READY.store(true, Ordering::SeqCst);
 }
 

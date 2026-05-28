@@ -30,6 +30,11 @@ tokio::task_local! {
     static COLLECTION_WRITE_OWNER_SCOPE: RefCell<Vec<CollectionWriteOwnerScope>>;
 }
 
+const PLAYLIST_PLAYBACK_RANDOM_SINGLE_OWNER_ATTEMPT_LIMIT: usize = 16;
+const PLAYLIST_PLAYBACK_RANDOM_WINDOW_OWNER_ATTEMPT_LIMIT: usize = 96;
+const PLAYLIST_PLAYBACK_RANDOM_MIN_TRACK_PROBE_LIMIT: usize = 8;
+const PLAYLIST_PLAYBACK_RANDOM_MAX_TRACK_PROBE_LIMIT: usize = 128;
+
 #[derive(Debug, Clone)]
 struct CollectionWriteOwnerScope {
     url: String,
@@ -552,36 +557,126 @@ pub async fn load_audio_style_training_track_sources() -> Result<Vec<PlaylistPla
     Ok(sources)
 }
 
-pub async fn load_random_playlist_playback_track_source(
+/**
+ * Behavior:
+ *   Sample random playback sources from the selected playlist scope without
+ *   recursively hydrating collections or building full owner/track
+ *   permutations.
+ *
+ * Core invariants:
+ *   - The stable input domain is `PlaylistPlaybackSelection`; no fallback or
+ *     cache may widen membership outside its collection/group/extra refs.
+ *   - Collection and group owners are sampled as lightweight refs; music rows
+ *     are loaded only inside the selected owner being probed.
+ *   - `extra` is one explicit owner domain. Selecting it then samples its
+ *     music refs, so missing or pending extra records are skipped inside that
+ *     domain instead of inflating the playlist owner count.
+ *   - Randomness is live per request and never seeded or persisted.
+ *   - Sampling is bounded. A miss means this bounded probe found no playable
+ *     source; it does not manufacture a stable playable track.
+ */
+pub async fn load_random_playlist_playback_track_sources(
     selection: &PlaylistPlaybackSelection,
-) -> Result<Option<PlaylistPlaybackTrackSource>> {
-    let owner_count = selection.collections.len() + selection.groups.len() + selection.extra.len();
-    if owner_count == 0 {
-        return Ok(None);
+    limit: usize,
+) -> Result<Vec<PlaylistPlaybackTrackSource>> {
+    if limit == 0 {
+        return Ok(vec![]);
     }
 
-    for owner_index in playlist_playback_owner_attempt_order(owner_count) {
-        let source = if owner_index < selection.collections.len() {
-            load_random_collection_playback_track_source(&selection.collections[owner_index])
-                .await?
+    let owner_count = playlist_playback_random_owner_count(selection);
+    if owner_count == 0 {
+        return Ok(vec![]);
+    }
+
+    let owner_limit = playlist_playback_owner_probe_limit(owner_count, limit);
+    let owner_order = playlist_playback_owner_attempt_order(owner_count, owner_limit);
+    let owner_attempt_count = owner_order.len();
+    let mut sources = Vec::with_capacity(limit);
+    let mut seen = HashSet::new();
+
+    for (attempt_index, owner_index) in owner_order.into_iter().enumerate() {
+        if sources.len() >= limit {
+            break;
+        }
+
+        let owners_left = owner_attempt_count.saturating_sub(attempt_index).max(1);
+        let owner_source_limit = limit
+            .saturating_sub(sources.len())
+            .div_ceil(owners_left)
+            .max(1);
+
+        if owner_index < selection.collections.len() {
+            append_random_collection_playback_track_sources(
+                &selection.collections[owner_index],
+                owner_source_limit,
+                &mut seen,
+                &mut sources,
+            )
+            .await?;
         } else if owner_index < selection.collections.len() + selection.groups.len() {
             let group_index = owner_index - selection.collections.len();
-            load_random_group_playback_track_source(&selection.groups[group_index]).await?
-        } else {
-            let extra_index = owner_index - selection.collections.len() - selection.groups.len();
-            load_extra_playback_track_source(&selection.extra[extra_index]).await?
-        };
-
-        if source.is_some() {
-            return Ok(source);
+            append_random_group_playback_track_sources(
+                &selection.groups[group_index],
+                owner_source_limit,
+                &mut seen,
+                &mut sources,
+            )
+            .await?;
+        } else if !selection.extra.is_empty() {
+            append_random_extra_playback_track_sources(
+                selection,
+                owner_source_limit,
+                &mut seen,
+                &mut sources,
+            )
+            .await?;
         }
     }
 
-    Ok(None)
+    Ok(sources)
 }
 
-pub(crate) fn playlist_playback_owner_attempt_order(owner_count: usize) -> Vec<usize> {
-    let mut owners = (0..owner_count).collect::<Vec<_>>();
+fn playlist_playback_random_owner_count(selection: &PlaylistPlaybackSelection) -> usize {
+    selection.collections.len() + selection.groups.len() + usize::from(!selection.extra.is_empty())
+}
+
+fn playlist_playback_owner_probe_limit(owner_count: usize, source_limit: usize) -> usize {
+    let requested = if source_limit <= 1 {
+        PLAYLIST_PLAYBACK_RANDOM_SINGLE_OWNER_ATTEMPT_LIMIT
+    } else {
+        source_limit
+            .max(PLAYLIST_PLAYBACK_RANDOM_SINGLE_OWNER_ATTEMPT_LIMIT)
+            .min(PLAYLIST_PLAYBACK_RANDOM_WINDOW_OWNER_ATTEMPT_LIMIT)
+    };
+
+    owner_count.min(requested)
+}
+
+pub(crate) fn playlist_playback_owner_attempt_order(
+    owner_count: usize,
+    attempt_limit: usize,
+) -> Vec<usize> {
+    if owner_count == 0 || attempt_limit == 0 {
+        return vec![];
+    }
+
+    let attempt_count = owner_count.min(attempt_limit);
+    if attempt_count == owner_count {
+        let mut owners = (0..owner_count).collect::<Vec<_>>();
+        shuffle_indices(&mut owners);
+        return owners;
+    }
+
+    let mut rng = rand::rng();
+    let mut owners = Vec::with_capacity(attempt_count);
+    let mut seen = HashSet::with_capacity(attempt_count);
+    while owners.len() < attempt_count {
+        let owner = rng.random_range(0..owner_count);
+        if seen.insert(owner) {
+            owners.push(owner);
+        }
+    }
+
     shuffle_indices(&mut owners);
     owners
 }
@@ -1366,7 +1461,7 @@ async fn load_playlist_playback_group_ref(
 async fn load_group_shell_row(record: &RecordId) -> Result<Option<GroupShellRow>> {
     let db = get_db()?;
     let mut result = match db
-        .query("SELECT * FROM ONLY $record;")
+        .query("SELECT id, name, url, folder FROM ONLY $record;")
         .bind(("record", record.clone()))
         .await
     {
@@ -1390,7 +1485,7 @@ async fn load_group_shell_row(record: &RecordId) -> Result<Option<GroupShellRow>
 async fn load_collection_shell_row(record: &RecordId) -> Result<Option<CollectionShellRow>> {
     let db = get_db()?;
     let mut result = match db
-        .query("SELECT * FROM ONLY $record;")
+        .query("SELECT id, name, url, folder, last_updated, enable_updates FROM ONLY $record;")
         .bind(("record", record.clone()))
         .await
     {
@@ -1606,12 +1701,24 @@ async fn append_extra_playback_track_sources(
     Ok(())
 }
 
-async fn load_random_collection_playback_track_source(
+async fn append_random_collection_playback_track_sources(
     collection: &PlaylistPlaybackCollectionRef,
-) -> Result<Option<PlaylistPlaybackTrackSource>> {
+    limit: usize,
+    seen: &mut HashSet<String>,
+    sources: &mut Vec<PlaylistPlaybackTrackSource>,
+) -> Result<()> {
+    if limit == 0 {
+        return Ok(());
+    }
+    let target_len = sources.len().saturating_add(limit);
+
     for offset in
-        random_relation_playable_track_offsets("includes", collection.record.clone()).await?
+        random_relation_playable_track_offsets("includes", collection.record.clone(), limit).await?
     {
+        if sources.len() >= target_len {
+            return Ok(());
+        }
+
         let Some(row) =
             load_relation_playable_track_row_at("includes", collection.record.clone(), offset)
                 .await?
@@ -1632,24 +1739,35 @@ async fn load_random_collection_playback_track_source(
             continue;
         };
 
-        return Ok(Some(project_playback_track_source_from_folder(
-            &collection.folder,
-            music,
-        )));
+        append_playback_track_source(collection, music, seen, sources);
     }
 
-    Ok(None)
+    Ok(())
 }
 
-async fn load_random_group_playback_track_source(
+async fn append_random_group_playback_track_sources(
     group: &PlaylistPlaybackGroupRef,
-) -> Result<Option<PlaylistPlaybackTrackSource>> {
+    limit: usize,
+    seen: &mut HashSet<String>,
+    sources: &mut Vec<PlaylistPlaybackTrackSource>,
+) -> Result<()> {
+    if limit == 0 {
+        return Ok(());
+    }
+    let target_len = sources.len().saturating_add(limit);
+
     let selected_parent_records = group
         .parent_collection_records
         .iter()
         .collect::<HashSet<_>>();
 
-    for offset in random_relation_playable_track_offsets("grouped", group.record.clone()).await? {
+    for offset in
+        random_relation_playable_track_offsets("grouped", group.record.clone(), limit).await?
+    {
+        if sources.len() >= target_len {
+            return Ok(());
+        }
+
         let Some(row) =
             load_relation_playable_track_row_at("grouped", group.record.clone(), offset).await?
         else {
@@ -1678,13 +1796,10 @@ async fn load_random_group_playback_track_source(
             continue;
         };
 
-        return Ok(Some(project_playback_track_source_from_folder(
-            &collection.folder,
-            music,
-        )));
+        append_playback_track_source_from_folder(&collection.folder, music, seen, sources);
     }
 
-    Ok(None)
+    Ok(())
 }
 
 async fn load_extra_playback_track_source(
@@ -1723,9 +1838,42 @@ async fn load_extra_playback_track_source(
     )))
 }
 
+async fn append_random_extra_playback_track_sources(
+    selection: &PlaylistPlaybackSelection,
+    limit: usize,
+    seen: &mut HashSet<String>,
+    sources: &mut Vec<PlaylistPlaybackTrackSource>,
+) -> Result<()> {
+    if limit == 0 || selection.extra.is_empty() {
+        return Ok(());
+    }
+    let target_len = sources.len().saturating_add(limit);
+
+    let probe_limit = random_relation_playable_track_probe_limit(selection.extra.len(), limit);
+    for extra_index in playlist_playback_owner_attempt_order(selection.extra.len(), probe_limit) {
+        if sources.len() >= target_len {
+            return Ok(());
+        }
+
+        let Some(source) = load_extra_playback_track_source(&selection.extra[extra_index]).await?
+        else {
+            continue;
+        };
+        append_playback_track_source_from_folder(
+            &source.collection_folder,
+            source.music,
+            seen,
+            sources,
+        );
+    }
+
+    Ok(())
+}
+
 async fn random_relation_playable_track_offsets(
     relation: &'static str,
     owner_record: RecordId,
+    source_limit: usize,
 ) -> Result<Vec<usize>> {
     let count = count_relation_playable_track_rows(relation, owner_record.clone()).await?;
     if count == 0 {
@@ -1736,9 +1884,18 @@ async fn random_relation_playable_track_offsets(
         return Ok(vec![]);
     };
 
-    Ok((0..count)
+    let probe_limit = random_relation_playable_track_probe_limit(count, source_limit);
+    Ok((0..probe_limit)
         .map(|step| (start_offset + step) % count)
         .collect())
+}
+
+fn random_relation_playable_track_probe_limit(count: usize, source_limit: usize) -> usize {
+    count.min(
+        source_limit
+            .max(PLAYLIST_PLAYBACK_RANDOM_MIN_TRACK_PROBE_LIMIT)
+            .min(PLAYLIST_PLAYBACK_RANDOM_MAX_TRACK_PROBE_LIMIT),
+    )
 }
 
 async fn load_relation_playable_track_row_at(

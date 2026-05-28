@@ -9,7 +9,7 @@ use super::repo::{
     get_playlist_playback_selection_by_name, has_collections, list_collections,
     list_config_library, list_musics_by_file_path, list_playlists,
     load_liked_playlist_playback_track_sources, load_playlist_playback_track_sources,
-    load_random_playlist_playback_track_source, load_spectrum_music_context,
+    load_random_playlist_playback_track_sources, load_spectrum_music_context,
     playlist_playback_owner_attempt_order, push_extra, remove_exclude, remove_extra,
     set_collection_updates, set_music_liked_by_identity, update_music, upsert_collection,
     upsert_playlist, upsert_playlist_surface,
@@ -2736,9 +2736,11 @@ fn playlist_playback_sources_skip_excluded_music() {
         let sources = load_playlist_playback_track_sources(&selection, 2)
             .await
             .expect("playback sources should load");
-        let random_source = load_random_playlist_playback_track_source(&selection)
+        let random_source = load_random_playlist_playback_track_sources(&selection, 1)
             .await
             .expect("random playback source should load")
+            .into_iter()
+            .next()
             .expect("random playback source should exist");
 
         assert_eq!(sources.len(), 1);
@@ -2796,9 +2798,11 @@ fn playlist_playback_sources_include_extra_music() {
         let sources = load_playlist_playback_track_sources(&selection, 8)
             .await
             .expect("extra playback sources should load");
-        let random_source = load_random_playlist_playback_track_source(&selection)
+        let random_source = load_random_playlist_playback_track_sources(&selection, 1)
             .await
             .expect("random extra playback source should load")
+            .into_iter()
+            .next()
             .expect("random extra playback source should exist");
 
         assert_eq!(selection.collections.len(), 0);
@@ -3032,12 +3036,12 @@ fn playlist_playback_sources_return_empty_when_all_music_is_excluded() {
         let sources = load_playlist_playback_track_sources(&selection, 2)
             .await
             .expect("playback sources should load");
-        let random_source = load_random_playlist_playback_track_source(&selection)
+        let random_sources = load_random_playlist_playback_track_sources(&selection, 1)
             .await
             .expect("random playback source should load");
 
         assert!(sources.is_empty());
-        assert!(random_source.is_none());
+        assert!(random_sources.is_empty());
 
         reset_db();
     });
@@ -3276,13 +3280,13 @@ fn group_playlist_playback_sources_skip_music_without_parent_collection() {
         let sources = load_playlist_playback_track_sources(&selection, 8)
             .await
             .expect("playback sources should load");
-        let random_source = load_random_playlist_playback_track_source(&selection)
+        let random_sources = load_random_playlist_playback_track_sources(&selection, 1)
             .await
             .expect("random playback source should load");
 
         assert_eq!(selection.download_scopes, vec![group.url]);
         assert!(sources.is_empty());
-        assert!(random_source.is_none());
+        assert!(random_sources.is_empty());
 
         reset_db();
     });
@@ -3542,8 +3546,20 @@ fn playlist_playback_sources_respect_ordered_window_limit() {
 }
 
 #[test]
-fn playlist_playback_owner_attempt_order_visits_each_owner_once() {
-    let mut owners = playlist_playback_owner_attempt_order(8);
+fn playlist_playback_owner_attempt_order_respects_probe_limit() {
+    let owners = playlist_playback_owner_attempt_order(100, 8);
+    let mut sorted = owners.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+
+    assert_eq!(owners.len(), 8);
+    assert_eq!(sorted.len(), owners.len());
+    assert!(owners.iter().all(|owner| *owner < 100));
+}
+
+#[test]
+fn playlist_playback_owner_attempt_order_visits_each_owner_when_probe_covers_all() {
+    let mut owners = playlist_playback_owner_attempt_order(8, 32);
     owners.sort_unstable();
 
     assert_eq!(owners, (0..8).collect::<Vec<_>>());
@@ -3645,9 +3661,11 @@ fn random_playlist_playback_source_uses_selected_playlist_scope() {
             .await
             .expect("playback selection lookup should succeed")
             .expect("playback selection should exist");
-        let source = load_random_playlist_playback_track_source(&selection)
+        let source = load_random_playlist_playback_track_sources(&selection, 1)
             .await
             .expect("random playback source should load")
+            .into_iter()
+            .next()
             .expect("random playback source should exist");
         let selected_urls = [selected_music_a.url.as_str(), selected_music_b.url.as_str()];
 
@@ -3718,9 +3736,11 @@ fn random_playlist_playback_source_skips_music_without_downloaded_path() {
         assert_eq!(sources[0].music.url, playable_music.url);
 
         for _ in 0..8 {
-            let source = load_random_playlist_playback_track_source(&selection)
+            let source = load_random_playlist_playback_track_sources(&selection, 8)
                 .await
                 .expect("random playback source should load")
+                .into_iter()
+                .next()
                 .expect("random playback source should exist");
             assert_eq!(source.music.url, playable_music.url);
         }
@@ -3782,9 +3802,11 @@ fn extra_playlist_playback_sources_skip_music_without_downloaded_path() {
         let sources = load_playlist_playback_track_sources(&selection, 8)
             .await
             .expect("extra playback sources should load");
-        let random_source = load_random_playlist_playback_track_source(&selection)
+        let random_source = load_random_playlist_playback_track_sources(&selection, 8)
             .await
             .expect("random extra playback source should load")
+            .into_iter()
+            .next()
             .expect("random extra playback source should exist");
 
         assert_eq!(sources.len(), 1);
