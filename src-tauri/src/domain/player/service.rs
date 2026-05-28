@@ -13,6 +13,7 @@ use super::waveform::{self, TrackWaveform, TrackWaveformSummary, TrackWaveformTi
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 #[cfg(not(test))]
 use anyhow::{Context, Result, anyhow, bail};
+use ffplayr::PlaybackNormalization;
 #[cfg(not(test))]
 use ffplayr::{Playback, PlaybackRequest, PlaybackTimeRange};
 #[cfg(not(test))]
@@ -35,6 +36,7 @@ static PLAYER_RUNTIME: OnceLock<Arc<PlayerRuntime>> = OnceLock::new();
 const PLAYBACK_SESSION_STATUS_POLL_MS: u64 = 250;
 #[cfg(not(test))]
 const SPECTRUM_LOOP_SIGNAL_STATUS_POLL_MS: u64 = 16;
+pub(crate) const BACKEND_PLAYBACK_TARGET_LUFS: f32 = -18.0;
 
 #[cfg(not(test))]
 pub struct PlayerRuntime {
@@ -1106,7 +1108,10 @@ impl PlayerRuntime {
 
         let ffmpeg_path = ensure_managed_binary(&self.app, ManagedBinary::Ffmpeg)
             .map_err(|error| anyhow!(error))?;
-        let created = Playback::new(ffmpeg_path).map_err(|error| anyhow!(error))?;
+        let created = Playback::builder(ffmpeg_path)
+            .default_normalization(backend_playback_normalization())
+            .build()
+            .map_err(|error| anyhow!(error))?;
         *playback = Some(created.clone());
         Ok(created)
     }
@@ -1769,6 +1774,14 @@ async fn run_playback_session(
             })?;
         }
         wait_until_track_finishes(&runtime, &playback, generation, &track.file_path).await?;
+    }
+}
+
+pub(crate) fn backend_playback_normalization() -> PlaybackNormalization {
+    PlaybackNormalization {
+        target_lufs: BACKEND_PLAYBACK_TARGET_LUFS,
+        integrated_lufs: None,
+        true_peak_dbtp: None,
     }
 }
 

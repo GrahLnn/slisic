@@ -1,17 +1,18 @@
 use super::model::{PlaybackTrack, PlaybackTrackPayload, PlaybackTrackProjectionError};
 use super::service::{
-    ActivePlaybackRange, PlaybackRangeCompletion, PlaybackStartRequestRegistry,
-    PlaybackTrackIdentityUpdate, SpectrumPlaybackScope, are_playback_tracks_equal,
-    playback_tracks_match, resolve_active_playback_range_identity_update,
-    resolve_active_request_track_identity_update, resolve_playback_absolute_position_ms,
-    resolve_playback_range_completion, resolve_playback_request_position,
-    resolve_playback_seek_pause_after_request, resolve_playback_seek_range,
-    resolve_playback_status_track_identity, resolve_repeated_playback_range_override,
-    resolve_session_track_identity_update, resolve_spectrum_loop_playback_range,
-    resolve_spectrum_loop_signal_active_range, resolve_spectrum_loop_signal_seek_position,
-    resolve_spectrum_music_playback_range, resolve_spectrum_playback_loop_signal,
-    should_accept_spectrum_playback_signal, should_commit_spectrum_playback_scope_exit,
-    should_resume_playback_seek_cancel, should_start_spectrum_playback_session,
+    ActivePlaybackRange, BACKEND_PLAYBACK_TARGET_LUFS, PlaybackRangeCompletion,
+    PlaybackStartRequestRegistry, PlaybackTrackIdentityUpdate, SpectrumPlaybackScope,
+    are_playback_tracks_equal, backend_playback_normalization, playback_tracks_match,
+    resolve_active_playback_range_identity_update, resolve_active_request_track_identity_update,
+    resolve_playback_absolute_position_ms, resolve_playback_range_completion,
+    resolve_playback_request_position, resolve_playback_seek_pause_after_request,
+    resolve_playback_seek_range, resolve_playback_status_track_identity,
+    resolve_repeated_playback_range_override, resolve_session_track_identity_update,
+    resolve_spectrum_loop_playback_range, resolve_spectrum_loop_signal_active_range,
+    resolve_spectrum_loop_signal_seek_position, resolve_spectrum_music_playback_range,
+    resolve_spectrum_playback_loop_signal, should_accept_spectrum_playback_signal,
+    should_commit_spectrum_playback_scope_exit, should_resume_playback_seek_cancel,
+    should_start_spectrum_playback_session,
 };
 use std::path::PathBuf;
 
@@ -44,6 +45,16 @@ fn track_payload(name: &str) -> PlaybackTrackPayload {
 
 fn scope(id: u64) -> SpectrumPlaybackScope {
     SpectrumPlaybackScope { id }
+}
+
+#[test]
+fn backend_playback_normalization_targets_negative_eighteen_lufs() {
+    let normalization = backend_playback_normalization();
+
+    assert_eq!(BACKEND_PLAYBACK_TARGET_LUFS, -18.0);
+    assert_eq!(normalization.target_lufs, -18.0);
+    assert_eq!(normalization.integrated_lufs, None);
+    assert_eq!(normalization.true_peak_dbtp, None);
 }
 
 #[test]
