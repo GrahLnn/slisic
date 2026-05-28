@@ -10,7 +10,7 @@ use super::service::{
     playlist_selection_has_relevant_active_downloads,
     propose_playlist_playback_queue_without_audio_style_model, propose_random_queue_after_exclude,
     resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
-    shuffle_playback_tracks,
+    should_refresh_playlist_queue_for_anchor, shuffle_playback_tracks,
 };
 use crate::domain::downloads::model::{DownloadTask, DownloadTaskStatus, DownloadTrigger};
 use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
@@ -723,6 +723,34 @@ fn playlist_playback_keep_current_proposal_with_distinct_next_track_is_complete(
     assert!(playlist_playback_proposal_contains_next_track(
         PlaylistPlaybackRecommendationMode::KeepCurrent,
         &[current_track, next]
+    ));
+}
+
+#[test]
+fn playlist_queue_fill_retries_same_anchor_until_next_track_exists() {
+    let current = playback_track("current");
+
+    assert!(should_refresh_playlist_queue_for_anchor(
+        Some(&current),
+        &current,
+        false,
+    ));
+    assert!(!should_refresh_playlist_queue_for_anchor(
+        Some(&current),
+        &current,
+        true,
+    ));
+}
+
+#[test]
+fn playlist_queue_fill_refreshes_when_anchor_changes_even_if_queue_has_next() {
+    let current = playback_track("current");
+    let next = playback_track("next");
+
+    assert!(should_refresh_playlist_queue_for_anchor(
+        Some(&current),
+        &next,
+        true,
     ));
 }
 

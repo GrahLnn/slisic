@@ -1,12 +1,12 @@
 #[cfg(not(test))]
 use super::event::{NowPlayingTrackChangedEvent, PlaybackDiagnosticTraceEvent};
-#[cfg(not(test))]
 use super::model::PlaybackContinuationMode;
 #[cfg(not(test))]
 use super::model::PlaybackStatusPayload;
 use super::model::PlaybackTrack;
+use super::strategy::PlaybackQueueMode;
 #[cfg(not(test))]
-use super::strategy::{PlaybackQueueMode, PlaybackStrategySet};
+use super::strategy::PlaybackStrategySet;
 #[cfg(not(test))]
 use super::waveform::{self, TrackWaveform, TrackWaveformSummary, TrackWaveformTile};
 #[cfg(not(test))]
@@ -34,6 +34,8 @@ use tauri_specta::Event;
 static PLAYER_RUNTIME: OnceLock<Arc<PlayerRuntime>> = OnceLock::new();
 #[cfg(not(test))]
 const PLAYBACK_SESSION_STATUS_POLL_MS: u64 = 250;
+#[cfg(not(test))]
+const PLAYBACK_SESSION_QUEUE_WAIT_POLL_MS: u64 = 50;
 #[cfg(not(test))]
 const SPECTRUM_LOOP_SIGNAL_STATUS_POLL_MS: u64 = 16;
 pub(crate) const BACKEND_PLAYBACK_TARGET_LUFS: f32 = -18.0;
@@ -1653,13 +1655,28 @@ async fn run_playback_session(
         }
         let track = match initial_request.as_ref() {
             Some(request) => Some(request.track.clone()),
-            None => session
-                .strategy
-                .lock()
-                .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?
-                .next_track_with_queue_mode(mode, session.queue_mode, &tracks),
+            None => {
+                resolve_next_session_track(
+                    &runtime,
+                    generation,
+                    &session,
+                    mode,
+                    &tracks,
+                    trace_start,
+                )
+                .await?
+            }
         };
         let Some(track) = track else {
+            if runtime.generation.load(Ordering::SeqCst) != generation {
+                emit_player_trace(
+                    "player-run-session-generation-ended-before-track",
+                    PlayerTrace::new(&runtime.app)
+                        .playlist_name(&session.playlist_name)
+                        .elapsed(trace_start),
+                );
+                return Ok(());
+            }
             emit_player_trace(
                 "player-run-session-no-track",
                 PlayerTrace::new(&runtime.app)
@@ -1775,6 +1792,65 @@ async fn run_playback_session(
         }
         wait_until_track_finishes(&runtime, &playback, generation, &track.file_path).await?;
     }
+}
+
+#[cfg(not(test))]
+async fn resolve_next_session_track(
+    runtime: &PlayerRuntime,
+    generation: u64,
+    session: &PlaybackSession,
+    mode: PlaybackContinuationMode,
+    tracks: &[PlaybackTrack],
+    trace_start: Instant,
+) -> Result<Option<PlaybackTrack>> {
+    if !should_wait_for_ordered_queue_supply(mode, session.queue_mode) {
+        return session
+            .strategy
+            .lock()
+            .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))
+            .map(|mut strategy| {
+                strategy.next_track_with_queue_mode(mode, session.queue_mode, tracks)
+            });
+    }
+
+    let mut waiting_trace_emitted = false;
+    loop {
+        if runtime.generation.load(Ordering::SeqCst) != generation {
+            return Ok(None);
+        }
+
+        let tracks = session.tracks_snapshot()?;
+        let track = session
+            .strategy
+            .lock()
+            .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?
+            .next_track_with_queue_mode(mode, session.queue_mode, &tracks);
+        if track.is_some() {
+            return Ok(track);
+        }
+
+        if !waiting_trace_emitted {
+            emit_player_trace(
+                "player-run-session-waiting-for-ordered-queue",
+                PlayerTrace::new(&runtime.app)
+                    .playlist_name(&session.playlist_name)
+                    .elapsed(trace_start)
+                    .queue_count(tracks.len()),
+            );
+            waiting_trace_emitted = true;
+        }
+        tokio::time::sleep(Duration::from_millis(PLAYBACK_SESSION_QUEUE_WAIT_POLL_MS)).await;
+    }
+}
+
+pub(crate) fn should_wait_for_ordered_queue_supply(
+    mode: PlaybackContinuationMode,
+    queue_mode: PlaybackQueueMode,
+) -> bool {
+    matches!(
+        (mode, queue_mode),
+        (PlaybackContinuationMode::Random, PlaybackQueueMode::Ordered)
+    )
 }
 
 pub(crate) fn backend_playback_normalization() -> PlaybackNormalization {

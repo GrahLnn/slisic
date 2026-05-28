@@ -834,10 +834,12 @@ async fn fill_playlist_track_queue(
         let active_track = resolve_playlist_playback_queue_anchor(&session, &initial_track).await?;
         let recent_history_snapshot =
             observe_playlist_playback_recent_history(&recent_history, active_track.clone())?;
-        if current_anchor
-            .as_ref()
-            .is_none_or(|anchor| !are_playlist_playback_tracks_equal(anchor, &active_track))
-        {
+        let queue_has_next = current_session_queue_contains_next(&session)?;
+        if should_refresh_playlist_queue_for_anchor(
+            current_anchor.as_ref(),
+            &active_track,
+            queue_has_next,
+        ) {
             refresh_playlist_track_queue_for_anchor(
                 &app,
                 &playlist_name,
@@ -855,6 +857,29 @@ async fn fill_playlist_track_queue(
         ))
         .await;
     }
+}
+
+pub(crate) fn should_refresh_playlist_queue_for_anchor(
+    current_anchor: Option<&PlaybackTrack>,
+    active_track: &PlaybackTrack,
+    queue_has_next: bool,
+) -> bool {
+    current_anchor.is_none_or(|anchor| !are_playlist_playback_tracks_equal(anchor, active_track))
+        || !queue_has_next
+}
+
+#[cfg(not(test))]
+fn current_session_queue_contains_next(
+    session: &player_service::PlaybackSessionHandle,
+) -> Result<bool> {
+    if !player_service::is_session_current(session)? {
+        return Ok(false);
+    }
+
+    Ok(playlist_playback_proposal_contains_next_track(
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+        &player_service::current_session_tracks_snapshot()?,
+    ))
 }
 
 #[cfg(not(test))]
