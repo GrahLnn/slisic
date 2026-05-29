@@ -828,7 +828,11 @@ describe("ListConfig title view model", () => {
     );
     assert.deepEqual(
       resolveListConfigPastedUrlCandidates("https://www.youtube.com/watch?v=abc123&index=14"),
-      ["https://www.youtube.com/watch?v=abc123&index=14"],
+      ["https://www.youtube.com/watch?v=abc123&index=14", "https://www.youtube.com/watch?v=abc123"],
+    );
+    assert.deepEqual(
+      resolveListConfigPastedUrlCandidates("https://www.youtube.com/watch?v=abc123&t=3238s"),
+      ["https://www.youtube.com/watch?v=abc123&t=3238s", "https://www.youtube.com/watch?v=abc123"],
     );
     assert.deepEqual(
       resolveListConfigPastedUrlCandidates(

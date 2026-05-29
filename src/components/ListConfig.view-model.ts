@@ -269,13 +269,7 @@ export function resolveListConfigPastedUrlCandidates(text: string): string[] {
       return [...candidates];
     }
 
-    const hasNonVideoQuery = [...url.searchParams].some(
-      ([key, value]) => key !== "v" && value.trim().length > 0,
-    );
-    if (
-      directVideoId &&
-      (!hasNonVideoQuery || Boolean(playlistId && isYouTubeMixPlaylistId(playlistId)))
-    ) {
+    if (directVideoId && (!playlistId || isYouTubeMixPlaylistId(playlistId))) {
       candidates.add(`https://www.youtube.com/watch?v=${directVideoId}`);
     }
   }

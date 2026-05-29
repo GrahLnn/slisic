@@ -606,6 +606,10 @@ pub(crate) async fn get_collection_by_url(url: &str) -> Result<Option<Collection
     collection_repo::get_collection_by_url(url).await
 }
 
+pub(crate) async fn get_collection_by_name(name: &str) -> Result<Option<Collection>> {
+    collection_repo::get_collection_by_name(name).await
+}
+
 #[cfg(not(test))]
 pub(crate) async fn list_auto_update_collection_urls() -> Result<Vec<String>> {
     Ok(collection_repo::list_auto_update_collections()

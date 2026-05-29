@@ -1565,7 +1565,16 @@ async fn resolve_collection_plan_from_root_probe(
     match root_probe {
         RootProbe::Single(leaf) => {
             let collection_url = leaf.webpage_url.clone();
-            let existing = collection_import::get_collection_by_url(&collection_url).await?;
+            let existing = resolve_existing_collection_for_download_identity(
+                &collection_url,
+                &leaf.title,
+                CollectionSourceKind::Single,
+            )
+            .await?;
+            let collection_url = existing
+                .as_ref()
+                .map(|collection| collection.url.clone())
+                .unwrap_or(collection_url);
             Ok(CollectionSyncPlan {
                 source_kind: CollectionSourceKind::Single,
                 collection_name: leaf.title.clone(),
@@ -1594,7 +1603,16 @@ async fn resolve_collection_plan_from_root_probe(
             }
 
             let collection_url = list.webpage_url.clone();
-            let existing = collection_import::get_collection_by_url(&collection_url).await?;
+            let existing = resolve_existing_collection_for_download_identity(
+                &collection_url,
+                &list.title,
+                CollectionSourceKind::List,
+            )
+            .await?;
+            let collection_url = existing
+                .as_ref()
+                .map(|collection| collection.url.clone())
+                .unwrap_or(collection_url);
             let collection_folder = resolve_task_collection_folder(
                 task,
                 &collection_url,
@@ -1638,6 +1656,26 @@ async fn resolve_collection_plan_from_root_probe(
                 leaves,
             })
         }
+    }
+}
+
+async fn resolve_existing_collection_for_download_identity(
+    collection_url: &str,
+    collection_name: &str,
+    source_kind: CollectionSourceKind,
+) -> Result<Option<Collection>> {
+    if let Some(collection) = collection_import::get_collection_by_url(collection_url).await? {
+        return Ok(Some(collection));
+    }
+
+    let Some(collection) = collection_import::get_collection_by_name(collection_name).await? else {
+        return Ok(None);
+    };
+
+    if classify_root_preference(&collection.url) == source_kind {
+        Ok(Some(collection))
+    } else {
+        Ok(None)
     }
 }
 
@@ -2406,10 +2444,7 @@ fn normalize_youtube_direct_leaf_url(url: &str) -> Option<String> {
             .iter()
             .find(|(key, value)| key == "list" && !value.is_empty())
             .map(|(_, value)| value.to_string());
-        let has_non_video_query = query
-            .iter()
-            .any(|(key, value)| key != "v" && !value.is_empty());
-        if has_non_video_query
+        if playlist_id.is_some()
             && !playlist_id
                 .as_deref()
                 .is_some_and(is_youtube_mix_playlist_id)

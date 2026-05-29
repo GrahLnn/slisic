@@ -285,6 +285,17 @@ pub async fn get_collection_by_url(url: &str) -> Result<Option<Collection>> {
     Ok(Some(Collection::get_record(record).await?))
 }
 
+pub async fn get_collection_by_name(name: &str) -> Result<Option<Collection>> {
+    ensure_collection_graph_schema().await?;
+
+    let Some(record) = find_unique_record_id_by_string_field::<Collection>("name", name).await?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(Collection::get_record(record).await?))
+}
+
 pub async fn get_playlist_by_name(name: &str) -> Result<Option<PlayList>> {
     ensure_collection_graph_schema().await?;
 

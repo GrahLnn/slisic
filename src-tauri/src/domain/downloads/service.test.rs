@@ -1145,23 +1145,26 @@ fn resolve_pasted_download_url_keeps_youtube_watch_playlist_without_index_as_pla
 }
 
 #[test]
-fn resolve_pasted_download_url_keeps_youtube_watch_index_without_playlist_as_single_video() {
+fn resolve_pasted_download_url_canonicalizes_youtube_watch_context_params_as_single_video() {
     let _guard = acquire_db_test_lock();
 
     run_async(async {
         ensure_db().await;
 
-        let resolution = resolve_pasted_download_url(
-            "https://www.youtube.com/watch?v=abc123&index=14".to_string(),
-        )
-        .await
-        .expect("watch url without playlist should resolve");
+        for url in [
+            "https://www.youtube.com/watch?v=abc123&index=14",
+            "https://www.youtube.com/watch?v=abc123&t=3238s",
+        ] {
+            let resolution = resolve_pasted_download_url(url.to_string())
+                .await
+                .expect("watch url context params should resolve");
 
-        assert_eq!(resolution.status, PastedDownloadUrlResolutionStatus::NewUrl);
-        assert_eq!(
-            resolution.url.as_deref(),
-            Some("https://www.youtube.com/watch?v=abc123&index=14")
-        );
+            assert_eq!(resolution.status, PastedDownloadUrlResolutionStatus::NewUrl);
+            assert_eq!(
+                resolution.url.as_deref(),
+                Some("https://www.youtube.com/watch?v=abc123")
+            );
+        }
 
         reset_db();
     });
@@ -1725,6 +1728,45 @@ fn resolve_collection_plan_can_consume_manual_enqueue_root_probe_once() {
 }
 
 #[test]
+fn resolve_collection_plan_reuses_existing_collection_when_probe_title_already_exists() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let existing = Collection {
+            name: "Shared Video".to_string(),
+            url: "https://www.youtube.com/watch?v=canonical".to_string(),
+            folder: "youtube/Shared Video".to_string(),
+            musics: vec![],
+            last_updated: "2026-04-24T00:00:00+00:00".to_string(),
+            enable_updates: None,
+        };
+        upsert_collection(&existing)
+            .await
+            .expect("existing collection should be saved");
+
+        let alias_url = "https://example.com/shared-video-alias";
+        let task = DownloadTask::new("task-title-duplicate", alias_url, DownloadTrigger::Manual);
+        let client = Arc::new(FakeYtDlpClient::with_roots(HashMap::from([(
+            alias_url.to_string(),
+            RootProbe::Single(leaf_probe("Shared Video", alias_url, 120)),
+        )])));
+
+        let plan = resolve_collection_plan(&task, client)
+            .await
+            .expect("title duplicate should resolve through the existing collection");
+
+        assert_eq!(plan.collection_url, existing.url);
+        assert_eq!(plan.collection_folder, existing.folder);
+        assert_eq!(plan.leaves.len(), 1);
+        assert_eq!(plan.leaves[0].url, existing.url);
+
+        reset_db();
+    });
+}
+
+#[test]
 fn probe_root_with_limit_bounds_parallel_provider_processes() {
     run_async(async {
         let worker_count = root_probe_parallelism() + 3;
@@ -2172,7 +2214,7 @@ fn prepare_task_enqueue_deduplicates_equivalent_single_video_aliases() {
     run_async(async {
         ensure_db().await;
 
-        let alias = "https://www.youtube.com/watch?v=ZE5zXLOyEOQ&list=RDMMIHIRrASFLcg&index=3";
+        let alias = "https://www.youtube.com/watch?v=ZE5zXLOyEOQ&t=3238s";
         let canonical = "https://www.youtube.com/watch?v=ZE5zXLOyEOQ";
 
         let first = prepare_task_enqueue(alias.to_string(), DownloadTrigger::Manual)
