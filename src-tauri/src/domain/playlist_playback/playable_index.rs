@@ -1,6 +1,10 @@
 #[cfg(not(test))]
 use crate::domain::player::event::{PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent};
 #[cfg(not(test))]
+use crate::domain::playlist_playback::recommendation::{
+    notify_audio_style_training_inputs_changed, published_audio_style_centerless_source,
+};
+#[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
 use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlaybackTrackSource};
 use anyhow::{Result, anyhow};
@@ -10,9 +14,11 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 #[cfg(not(test))]
+use std::time::Instant;
+#[cfg(not(test))]
 use tauri_specta::Event;
 
-const PREPARED_PLAYABLE_OPTION_LIMIT: usize = 1;
+const PLAYABLE_INDEX_LOG_TARGET: &str = "playlist_playback_index";
 
 static PLAYABLE_INDEX_RUNTIME: OnceLock<Arc<PlayableIndexRuntime>> = OnceLock::new();
 
@@ -67,6 +73,8 @@ pub(crate) struct PlaylistPlayableIndexSnapshot {
 #[derive(Debug)]
 struct PlayableIndexRuntime {
     generation: AtomicU64,
+    #[cfg(not(test))]
+    next_refresh_run_id: AtomicU64,
     state: Mutex<PlayableIndexState>,
 }
 
@@ -94,8 +102,8 @@ struct PlayableIndexState {
  *   - Every committed index value is generation stamped. A late rebuild can
  *     only commit when it still owns the latest generation for that playlist
  *     or global pass.
- *   - Refresh prepares one live-random startup option for each playlist and
- *     never stores a seed or deterministic order.
+ *   - Refresh prepares one centerless audio-style startup option for each
+ *     playlist and never stores a seed or deterministic order.
  *   - A prepared startup option is consumed by playlist name and generation
  *     after a current play request accepts it. Consumption removes only that
  *     playlist snapshot and schedules replacement preparation.
@@ -147,8 +155,9 @@ pub(crate) fn notify_playlist_deleted(playlist_name: &str) {
                 .insert(playlist_name.to_string(), generation);
         }
     }
-    println!(
-        "[playlist_playback_index] playlist removed playlist=\"{}\" reason={}",
+    log::info!(
+        target: PLAYABLE_INDEX_LOG_TARGET,
+        "first_slot_playlist_removed playlist=\"{}\" reason={}",
         escape_log_value(playlist_name),
         PlayableIndexRefreshReason::PlaylistDeleted.as_str()
     );
@@ -301,6 +310,8 @@ fn runtime() -> &'static Arc<PlayableIndexRuntime> {
     PLAYABLE_INDEX_RUNTIME.get_or_init(|| {
         Arc::new(PlayableIndexRuntime {
             generation: AtomicU64::new(0),
+            #[cfg(not(test))]
+            next_refresh_run_id: AtomicU64::new(0),
             state: Mutex::new(PlayableIndexState::default()),
         })
     })
@@ -330,19 +341,34 @@ fn spawn_refresh_all(app: tauri::AppHandle, reason: PlayableIndexRefreshReason) 
 #[cfg(not(test))]
 fn spawn_refresh_all_with_app(app: Option<tauri::AppHandle>, reason: PlayableIndexRefreshReason) {
     let runtime = Arc::clone(runtime());
+    let mut skip_status = "already_active";
+    let run_id = runtime.next_refresh_run_id.fetch_add(1, Ordering::SeqCst) + 1;
     let (can_start, generation) = {
         let Ok(mut state) = runtime.state.lock() else {
-            eprintln!("[playlist_playback_index] failed to claim global refresh: lock is poisoned");
+            log::error!(
+                target: PLAYABLE_INDEX_LOG_TARGET,
+                "first_slot_global_refresh_claim_failed run_id={run_id} reason={} error=\"lock_poisoned\"",
+                reason.as_str()
+            );
             return;
         };
         if state.active_global_refresh {
             if reason.invalidates_existing_snapshots() {
                 state.playlists.clear();
+                let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
+                state.global_generation = generation;
+                state.pending_global_refresh =
+                    merge_pending_global_refresh(state.pending_global_refresh, reason);
+                (false, generation)
+            } else {
+                let generation = state.global_generation;
+                state.pending_global_refresh =
+                    merge_pending_global_refresh(state.pending_global_refresh, reason);
+                (false, generation)
             }
-            let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
-            state.global_generation = generation;
-            state.pending_global_refresh = Some(reason);
-            (false, generation)
+        } else if should_skip_global_refresh(&state, reason) {
+            skip_status = "prepared_pool_full";
+            (false, runtime.generation.load(Ordering::SeqCst))
         } else {
             let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
             if reason.invalidates_existing_snapshots() {
@@ -362,25 +388,31 @@ fn spawn_refresh_all_with_app(app: Option<tauri::AppHandle>, reason: PlayableInd
             generation,
             0,
             0,
-            "already_active",
+            skip_status,
             true,
         );
-        println!(
-            "[playlist_playback_index] global refresh skipped reason={} generation={} status=already_active",
-            reason.as_str(),
-            generation
+        log::info!(
+            target: PLAYABLE_INDEX_LOG_TARGET,
+            "first_slot_global_refresh_skipped run_id={run_id} reason={} generation={generation} status={skip_status}",
+            reason.as_str()
         );
         return;
     }
+    log::info!(
+        target: PLAYABLE_INDEX_LOG_TARGET,
+        "first_slot_global_refresh_started run_id={run_id} reason={} generation={generation}",
+        reason.as_str()
+    );
     let cleanup_runtime = Arc::clone(&runtime);
 
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = refresh_all(app, runtime, generation, reason).await {
+        if let Err(error) = refresh_all(app, runtime, run_id, generation, reason).await {
             release_global_refresh_and_spawn_pending(None, &cleanup_runtime);
-            eprintln!(
-                "[playlist_playback_index] global refresh failed reason={} generation={}: {error}",
+            log::error!(
+                target: PLAYABLE_INDEX_LOG_TARGET,
+                "first_slot_global_refresh_failed run_id={run_id} reason={} generation={generation} error=\"{}\"",
                 reason.as_str(),
-                generation
+                escape_log_value(&error.to_string())
             );
         }
     });
@@ -395,26 +427,52 @@ fn spawn_refresh_playlist(
     let runtime = Arc::clone(runtime());
     let mut claimed_generation = None;
     let mut skipped_generation = None;
+    let mut skip_status = "already_active";
+    let run_id = runtime.next_refresh_run_id.fetch_add(1, Ordering::SeqCst) + 1;
     let can_start = {
         let Ok(mut state) = runtime.state.lock() else {
-            eprintln!(
-                "[playlist_playback_index] failed to claim playlist refresh `{}`: lock is poisoned",
-                playlist_name
+            log::error!(
+                target: PLAYABLE_INDEX_LOG_TARGET,
+                "first_slot_playlist_refresh_claim_failed run_id={run_id} playlist=\"{}\" reason={} error=\"lock_poisoned\"",
+                escape_log_value(&playlist_name),
+                reason.as_str()
             );
             return;
         };
         if state.active_refreshes.contains(&playlist_name) {
             if reason.invalidates_existing_snapshots() {
                 state.playlists.remove(&playlist_name);
+                let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
+                state
+                    .playlist_generations
+                    .insert(playlist_name.clone(), generation);
+                let pending_reason = merge_pending_playlist_refresh(
+                    state.pending_refreshes.get(&playlist_name).copied(),
+                    reason,
+                );
+                state
+                    .pending_refreshes
+                    .insert(playlist_name.clone(), pending_reason);
+                skipped_generation = Some(generation);
+            } else {
+                let generation = state
+                    .playlist_generations
+                    .get(&playlist_name)
+                    .copied()
+                    .unwrap_or_else(|| runtime.generation.load(Ordering::SeqCst));
+                let pending_reason = merge_pending_playlist_refresh(
+                    state.pending_refreshes.get(&playlist_name).copied(),
+                    reason,
+                );
+                state
+                    .pending_refreshes
+                    .insert(playlist_name.clone(), pending_reason);
+                skipped_generation = Some(generation);
             }
-            let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
-            state
-                .playlist_generations
-                .insert(playlist_name.clone(), generation);
-            state
-                .pending_refreshes
-                .insert(playlist_name.clone(), reason);
-            skipped_generation = Some(generation);
+            false
+        } else if should_skip_playlist_refresh(&state, &playlist_name, reason) {
+            skip_status = "prepared_source_exists";
+            skipped_generation = Some(runtime.generation.load(Ordering::SeqCst));
             false
         } else {
             let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -440,43 +498,83 @@ fn spawn_refresh_playlist(
             generation,
             0,
             0,
-            "already_active",
+            skip_status,
             true,
         );
-        println!(
-            "[playlist_playback_index] playlist refresh skipped playlist=\"{}\" reason={} generation={} status=already_active",
+        log::info!(
+            target: PLAYABLE_INDEX_LOG_TARGET,
+            "first_slot_playlist_refresh_skipped run_id={run_id} playlist=\"{}\" reason={} generation={generation} status={skip_status}",
             escape_log_value(&playlist_name),
-            reason.as_str(),
-            generation
+            reason.as_str()
         );
         return;
     }
     let generation = claimed_generation.expect("playlist refresh claim should set generation");
+    log::info!(
+        target: PLAYABLE_INDEX_LOG_TARGET,
+        "first_slot_playlist_refresh_started run_id={run_id} playlist=\"{}\" reason={} generation={generation}",
+        escape_log_value(&playlist_name),
+        reason.as_str()
+    );
     let cleanup_runtime = Arc::clone(&runtime);
     let cleanup_playlist_name = playlist_name.clone();
 
     tauri::async_runtime::spawn(async move {
-        if let Err(error) =
-            refresh_playlist(app, runtime, playlist_name.clone(), generation, reason).await
+        if let Err(error) = refresh_playlist(
+            app,
+            runtime,
+            run_id,
+            playlist_name.clone(),
+            generation,
+            reason,
+        )
+        .await
         {
             release_playlist_refresh(&cleanup_runtime, &cleanup_playlist_name, generation);
-            eprintln!(
-                "[playlist_playback_index] playlist refresh failed playlist=\"{}\" reason={} generation={}: {error}",
+            log::error!(
+                target: PLAYABLE_INDEX_LOG_TARGET,
+                "first_slot_playlist_refresh_failed run_id={run_id} playlist=\"{}\" reason={} generation={generation} error=\"{}\"",
                 escape_log_value(&playlist_name),
                 reason.as_str(),
-                generation
+                escape_log_value(&error.to_string())
             );
         }
     });
+}
+
+fn merge_pending_global_refresh(
+    current: Option<PlayableIndexRefreshReason>,
+    next: PlayableIndexRefreshReason,
+) -> Option<PlayableIndexRefreshReason> {
+    Some(merge_pending_refresh_reason(current, next))
+}
+
+fn merge_pending_playlist_refresh(
+    current: Option<PlayableIndexRefreshReason>,
+    next: PlayableIndexRefreshReason,
+) -> PlayableIndexRefreshReason {
+    merge_pending_refresh_reason(current, next)
+}
+
+fn merge_pending_refresh_reason(
+    current: Option<PlayableIndexRefreshReason>,
+    next: PlayableIndexRefreshReason,
+) -> PlayableIndexRefreshReason {
+    match current {
+        Some(current) if current.invalidates_existing_snapshots() => current,
+        _ => next,
+    }
 }
 
 #[cfg(not(test))]
 async fn refresh_all(
     app: Option<tauri::AppHandle>,
     runtime: Arc<PlayableIndexRuntime>,
+    run_id: u64,
     generation: u64,
     reason: PlayableIndexRefreshReason,
 ) -> Result<()> {
+    let started = Instant::now();
     let mut next = HashMap::new();
     for playlist in playlist_repo::list_playlists().await? {
         let Some(selection) =
@@ -513,8 +611,11 @@ async fn refresh_all(
                 .get(&playlist_name)
                 .copied()
                 .unwrap_or(0);
-            let can_replace = reason.replaces_existing_snapshots()
-                || !state.playlists.contains_key(&playlist_name);
+            if snapshot.source.is_none() {
+                continue;
+            }
+            let can_replace =
+                can_commit_refresh_snapshot(state.playlists.get(&playlist_name), reason);
             if state.global_generation == generation
                 && latest_generation <= generation
                 && can_replace
@@ -548,14 +649,11 @@ async fn refresh_all(
     };
     let committed = committed_count == playlist_count;
 
-    println!(
-        "[playlist_playback_index] global refresh done reason={} generation={} playlists={} sources={} committed={} committed_playlists={}",
+    log::info!(
+        target: PLAYABLE_INDEX_LOG_TARGET,
+        "first_slot_global_refresh_finished run_id={run_id} reason={} generation={generation} playlists={playlist_count} prepared_sources={source_count} committed={committed} committed_playlists={committed_count} elapsed_ms={}",
         reason.as_str(),
-        generation,
-        playlist_count,
-        source_count,
-        committed,
-        committed_count
+        started.elapsed().as_millis()
     );
     emit_index_trace(
         app.as_ref(),
@@ -577,10 +675,12 @@ async fn refresh_all(
 async fn refresh_playlist(
     app: Option<tauri::AppHandle>,
     runtime: Arc<PlayableIndexRuntime>,
+    run_id: u64,
     playlist_name: String,
     generation: u64,
     reason: PlayableIndexRefreshReason,
 ) -> Result<()> {
+    let started = Instant::now();
     let snapshot =
         match playlist_repo::get_playlist_playback_selection_by_name(&playlist_name).await? {
             Some(selection) => {
@@ -609,9 +709,9 @@ async fn refresh_playlist(
             .is_some_and(|latest_generation| latest_generation == generation)
         {
             match snapshot {
-                Some(snapshot) => {
-                    let can_replace = reason.replaces_existing_snapshots()
-                        || !state.playlists.contains_key(&playlist_name);
+                Some(snapshot) if snapshot.source.is_some() => {
+                    let can_replace =
+                        can_commit_refresh_snapshot(state.playlists.get(&playlist_name), reason);
                     if can_replace {
                         state
                             .playlists
@@ -619,6 +719,7 @@ async fn refresh_playlist(
                         committed = true;
                     }
                 }
+                Some(_) => {}
                 None => {
                     state.playlists.remove(&playlist_name);
                     committed = true;
@@ -632,13 +733,12 @@ async fn refresh_playlist(
         spawn_refresh_playlist(app.clone(), playlist_name.clone(), pending_reason);
     }
 
-    println!(
-        "[playlist_playback_index] playlist refresh done playlist=\"{}\" reason={} generation={} sources={} committed={}",
+    log::info!(
+        target: PLAYABLE_INDEX_LOG_TARGET,
+        "first_slot_playlist_refresh_finished run_id={run_id} playlist=\"{}\" reason={} generation={generation} prepared_sources={source_count} committed={committed} elapsed_ms={}",
         escape_log_value(&playlist_name),
         reason.as_str(),
-        generation,
-        source_count,
-        committed
+        started.elapsed().as_millis()
     );
     emit_index_trace(
         app.as_ref(),
@@ -663,8 +763,9 @@ fn release_playlist_refresh(
 ) {
     let pending_reason = {
         let Ok(mut state) = runtime.state.lock() else {
-            eprintln!(
-                "[playlist_playback_index] failed to release playlist refresh `{}`: lock is poisoned",
+            log::error!(
+                target: PLAYABLE_INDEX_LOG_TARGET,
+                "first_slot_playlist_refresh_release_failed playlist=\"{}\" error=\"lock_poisoned\"",
                 escape_log_value(playlist_name)
             );
             return;
@@ -684,8 +785,9 @@ fn spawn_pending_global_refresh(
 ) {
     let pending_reason = {
         let Ok(mut state) = runtime.state.lock() else {
-            eprintln!(
-                "[playlist_playback_index] failed to claim pending global refresh: lock is poisoned"
+            log::error!(
+                target: PLAYABLE_INDEX_LOG_TARGET,
+                "first_slot_pending_global_refresh_claim_failed error=\"lock_poisoned\""
             );
             return;
         };
@@ -706,7 +808,10 @@ fn release_global_refresh_and_spawn_pending(
     runtime: &Arc<PlayableIndexRuntime>,
 ) {
     let Ok(mut state) = runtime.state.lock() else {
-        eprintln!("[playlist_playback_index] failed to release global refresh: lock is poisoned");
+        log::error!(
+            target: PLAYABLE_INDEX_LOG_TARGET,
+            "first_slot_global_refresh_release_failed error=\"lock_poisoned\""
+        );
         return;
     };
     state.active_global_refresh = false;
@@ -718,20 +823,235 @@ fn release_global_refresh_and_spawn_pending(
 async fn prepare_playlist_source(
     selection: &PlaylistPlaybackSelection,
 ) -> Result<Option<PlaylistPlaybackTrackSource>> {
-    prepare_random_playlist_source(selection).await
+    if let Some((source, selection_trace)) =
+        published_audio_style_centerless_source(|source| selection.contains_track_source(source))
+    {
+        log::info!(
+            target: PLAYABLE_INDEX_LOG_TARGET,
+            "first_slot_source_prepared playlist=\"{}\" source={} selection_reason={} probability={:.6} candidates={} model_generation={}",
+            escape_log_value(&selection.playlist_name),
+            selection_trace.source.as_str(),
+            selection_trace.reason.unwrap_or("none"),
+            selection_trace.probability,
+            selection_trace.candidate_count,
+            selection_trace
+                .model_generation
+                .map(|generation| generation.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        );
+        return Ok(Some(source));
+    }
+
+    notify_audio_style_training_inputs_changed("first_slot_model_unavailable");
+    log::warn!(
+        target: PLAYABLE_INDEX_LOG_TARGET,
+        "first_slot_source_unavailable playlist=\"{}\" status=model_unavailable action=request_training",
+        escape_log_value(&selection.playlist_name)
+    );
+    Ok(None)
 }
 
-#[cfg(not(test))]
-async fn prepare_random_playlist_source(
-    selection: &PlaylistPlaybackSelection,
-) -> Result<Option<PlaylistPlaybackTrackSource>> {
-    Ok(playlist_repo::load_random_playlist_playback_track_sources(
-        selection,
-        PREPARED_PLAYABLE_OPTION_LIMIT,
-    )
-    .await?
-    .into_iter()
-    .next())
+fn should_skip_global_refresh(
+    state: &PlayableIndexState,
+    reason: PlayableIndexRefreshReason,
+) -> bool {
+    if reason.invalidates_existing_snapshots() || state.active_global_refresh {
+        return false;
+    }
+    !state.playlists.is_empty()
+        && state
+            .playlists
+            .values()
+            .all(playlist_snapshot_has_prepared_source)
+}
+
+fn should_skip_playlist_refresh(
+    state: &PlayableIndexState,
+    playlist_name: &str,
+    reason: PlayableIndexRefreshReason,
+) -> bool {
+    !reason.invalidates_existing_snapshots()
+        && state
+            .playlists
+            .get(playlist_name)
+            .is_some_and(playlist_snapshot_has_prepared_source)
+}
+
+fn can_commit_refresh_snapshot(
+    current: Option<&PlaylistPlayableIndexSnapshot>,
+    reason: PlayableIndexRefreshReason,
+) -> bool {
+    reason.replaces_existing_snapshots()
+        || current.is_none_or(|snapshot| !playlist_snapshot_has_prepared_source(snapshot))
+}
+
+fn playlist_snapshot_has_prepared_source(snapshot: &PlaylistPlayableIndexSnapshot) -> bool {
+    snapshot.source.is_some()
+}
+
+#[cfg(test)]
+pub(crate) fn should_skip_global_refresh_for_test(
+    reason: PlayableIndexRefreshReason,
+) -> Result<bool> {
+    let runtime = try_runtime()?;
+    let state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    Ok(should_skip_global_refresh(&state, reason))
+}
+
+#[cfg(test)]
+pub(crate) fn should_skip_playlist_refresh_for_test(
+    playlist_name: &str,
+    reason: PlayableIndexRefreshReason,
+) -> Result<bool> {
+    let runtime = try_runtime()?;
+    let state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    Ok(should_skip_playlist_refresh(&state, playlist_name, reason))
+}
+
+#[cfg(test)]
+pub(crate) fn claim_global_refresh_for_test(reason: PlayableIndexRefreshReason) -> Result<u64> {
+    let runtime = try_runtime()?;
+    let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let mut state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    if reason.invalidates_existing_snapshots() {
+        state.playlists.clear();
+    }
+    state.global_generation = generation;
+    state.active_global_refresh = true;
+    Ok(generation)
+}
+
+#[cfg(test)]
+pub(crate) fn request_global_refresh_while_active_for_test(
+    reason: PlayableIndexRefreshReason,
+) -> Result<u64> {
+    let runtime = try_runtime()?;
+    let mut state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    if reason.invalidates_existing_snapshots() {
+        state.playlists.clear();
+        let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        state.global_generation = generation;
+        state.pending_global_refresh =
+            merge_pending_global_refresh(state.pending_global_refresh, reason);
+        Ok(generation)
+    } else {
+        let generation = state.global_generation;
+        state.pending_global_refresh =
+            merge_pending_global_refresh(state.pending_global_refresh, reason);
+        Ok(generation)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn commit_global_snapshot_for_test(
+    playlist_name: String,
+    generation: u64,
+    source: Option<PlaylistPlaybackTrackSource>,
+    reason: PlayableIndexRefreshReason,
+) -> Result<bool> {
+    let runtime = try_runtime()?;
+    let mut state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    let latest_generation = state
+        .playlist_generations
+        .get(&playlist_name)
+        .copied()
+        .unwrap_or(0);
+    let can_replace = can_commit_refresh_snapshot(state.playlists.get(&playlist_name), reason);
+    let committed =
+        state.global_generation == generation && latest_generation <= generation && can_replace;
+    if committed {
+        if let Some(source) = source {
+            state
+                .playlist_generations
+                .insert(playlist_name.clone(), generation);
+            state.playlists.insert(
+                playlist_name.clone(),
+                PlaylistPlayableIndexSnapshot {
+                    playlist_name,
+                    generation,
+                    source: Some(source),
+                },
+            );
+        }
+    }
+    state.active_global_refresh = false;
+    Ok(committed)
+}
+
+#[cfg(test)]
+pub(crate) fn claim_playlist_refresh_for_test(
+    playlist_name: &str,
+    reason: PlayableIndexRefreshReason,
+) -> Result<u64> {
+    let runtime = try_runtime()?;
+    let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let mut state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    if reason.invalidates_existing_snapshots() {
+        state.playlists.remove(playlist_name);
+    }
+    state.active_refreshes.insert(playlist_name.to_string());
+    state
+        .playlist_generations
+        .insert(playlist_name.to_string(), generation);
+    Ok(generation)
+}
+
+#[cfg(test)]
+pub(crate) fn commit_playlist_snapshot_for_test(
+    playlist_name: String,
+    generation: u64,
+    source: Option<PlaylistPlaybackTrackSource>,
+    reason: PlayableIndexRefreshReason,
+) -> Result<bool> {
+    let runtime = try_runtime()?;
+    let mut state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    let committed = state
+        .playlist_generations
+        .get(&playlist_name)
+        .copied()
+        .is_some_and(|latest_generation| latest_generation == generation);
+    if committed {
+        match source {
+            Some(source) => {
+                let can_replace =
+                    can_commit_refresh_snapshot(state.playlists.get(&playlist_name), reason);
+                if can_replace {
+                    state.playlists.insert(
+                        playlist_name.clone(),
+                        PlaylistPlayableIndexSnapshot {
+                            playlist_name: playlist_name.clone(),
+                            generation,
+                            source: Some(source),
+                        },
+                    );
+                }
+            }
+            None => {}
+        }
+    }
+    state.active_refreshes.remove(&playlist_name);
+    Ok(committed)
 }
 
 #[cfg(not(test))]
@@ -783,7 +1103,12 @@ fn emit_index_trace(
     })
     .emit(app)
     {
-        eprintln!("[playlist_playback_index] failed to emit diagnostic trace `{event}`: {error}");
+        log::error!(
+            target: PLAYABLE_INDEX_LOG_TARGET,
+            "first_slot_trace_emit_failed event=\"{}\" error=\"{}\"",
+            escape_log_value(event),
+            escape_log_value(&error.to_string())
+        );
     }
 }
 

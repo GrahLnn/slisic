@@ -14,6 +14,7 @@ pub struct PlayPlaylistSession {
 #[serde(rename_all = "snake_case")]
 pub enum PlayPlaylistSessionStatus {
     Started,
+    PendingFirstTrack,
     Superseded,
 }
 

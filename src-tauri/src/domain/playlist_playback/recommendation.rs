@@ -1,6 +1,8 @@
 #[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
 use crate::domain::player::model::PlaybackTrack;
+#[cfg(not(test))]
+use crate::domain::playlist_playback::playable_index;
 #[cfg(test)]
 use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
 use crate::domain::playlists::repo::PlaylistPlaybackTrackSource;
@@ -28,6 +30,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(test))]
 use std::sync::{Mutex, OnceLock, RwLock};
+#[cfg(not(test))]
+use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(not(test))]
 use tauri::{AppHandle, Manager};
@@ -71,6 +75,8 @@ const AUDIO_STYLE_LIKED_ROUTE_PRESSURE_SCALE: f32 = 0.30;
 const AUDIO_STYLE_COMPLETED_SNAPSHOT_FALLBACK_LIMIT: usize = 8;
 #[cfg(not(test))]
 const AUDIO_STYLE_INPUT_CHANGE_DEBOUNCE_MS: u64 = 500;
+#[cfg(not(test))]
+const AUDIO_STYLE_LOG_TARGET: &str = "playlist_audio_style";
 
 #[allow(dead_code)]
 struct AudioStyleEmbeddingVectorIndex;
@@ -312,6 +318,7 @@ struct AudioStyleRecommendationRuntime {
     completed_snapshots: RwLock<Vec<Arc<AudioStyleModelSnapshot>>>,
     training: Mutex<AudioStyleTrainingState>,
     next_generation: AtomicU64,
+    next_training_run_id: AtomicU64,
 }
 
 #[cfg(not(test))]
@@ -329,14 +336,25 @@ impl AudioStyleRecommendationRuntime {
             Ok(mut training) => {
                 if training.running {
                     training.rerun_requested = true;
+                    log::info!(
+                        target: AUDIO_STYLE_LOG_TARGET,
+                        "audio_style_training_request_coalesced reason={reason} running=true rerun_requested=true"
+                    );
                     false
                 } else {
                     training.running = true;
+                    log::info!(
+                        target: AUDIO_STYLE_LOG_TARGET,
+                        "audio_style_training_request_accepted reason={reason}"
+                    );
                     true
                 }
             }
             Err(_) => {
-                eprintln!("[playlist_playback] audio style update state is poisoned");
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_training_state_error reason={reason} error=\"lock_poisoned\""
+                );
                 false
             }
         };
@@ -354,8 +372,25 @@ impl AudioStyleRecommendationRuntime {
     async fn run_training_loop(self: Arc<Self>, initial_reason: &'static str) {
         let mut reason = initial_reason;
         loop {
+            let run_id = self.next_training_run_id.fetch_add(1, Ordering::SeqCst) + 1;
+            let started = Instant::now();
+            log::info!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_training_started run_id={run_id} reason={reason}"
+            );
             if let Err(error) = self.train_and_publish(reason).await {
-                eprintln!("[playlist_playback] audio style model update failed: {error}");
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_training_failed run_id={run_id} reason={reason} elapsed_ms={} error=\"{}\"",
+                    started.elapsed().as_millis(),
+                    escape_log_value(&error.to_string())
+                );
+            } else {
+                log::info!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_training_finished run_id={run_id} reason={reason} elapsed_ms={}",
+                    started.elapsed().as_millis()
+                );
             }
 
             let should_continue = match self.training.lock() {
@@ -369,25 +404,40 @@ impl AudioStyleRecommendationRuntime {
                     }
                 }
                 Err(_) => {
-                    eprintln!("[playlist_playback] audio style update state is poisoned");
+                    log::error!(
+                        target: AUDIO_STYLE_LOG_TARGET,
+                        "audio_style_training_state_error run_id={run_id} reason={reason} error=\"lock_poisoned\""
+                    );
                     false
                 }
             };
 
             if !should_continue {
+                log::info!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_training_idle run_id={run_id} reason={reason}"
+                );
                 return;
             }
+            log::info!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_training_rerun run_id={run_id} previous_reason={reason} next_reason=coalesced_update"
+            );
             reason = "coalesced_update";
         }
     }
 
-    async fn train_and_publish(self: &Arc<Self>, _reason: &'static str) -> Result<()> {
-        let ffmpeg_path = crate::utils::binaries::resolve_installed_managed_binary(
+    async fn train_and_publish(self: &Arc<Self>, reason: &'static str) -> Result<()> {
+        let ffmpeg_path = crate::utils::binaries::ensure_managed_binary(
             &self.app,
             crate::utils::binaries::ManagedBinary::Ffmpeg,
         )
-        .map_err(|error| anyhow!(error))?
-        .ok_or_else(|| anyhow!("ffmpeg is not installed yet"))?;
+        .map_err(|error| anyhow!(error))?;
+        log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_training_dependency_ready reason={reason} binary=ffmpeg path=\"{}\"",
+            escape_log_value(&ffmpeg_path.display().to_string())
+        );
         let cache = AudioStyleEmbeddingCache::new(
             ffmpeg_path,
             audio_style_embedding_cache_root(&self.app)?,
@@ -398,6 +448,11 @@ impl AudioStyleRecommendationRuntime {
             crate::domain::playlists::repo::load_audio_style_training_track_sources().await?;
         let resolved = resolve_audio_style_training_tracks(&save_root, sources);
         let indexed_tracks = resolved.indexed_tracks;
+        let indexed_track_count = indexed_tracks.len();
+        log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_training_inputs_ready reason={reason} indexed_tracks={indexed_track_count}"
+        );
 
         let previous_snapshot = self.snapshot();
         let generation_runtime = Arc::clone(self);
@@ -425,12 +480,21 @@ impl AudioStyleRecommendationRuntime {
     }
 
     fn publish_snapshot(&self, snapshot: AudioStyleModelSnapshot) {
+        let generation = snapshot.generation();
         match self.published_snapshot.write() {
             Ok(mut published) => {
                 *published = Some(Arc::new(snapshot));
+                log::info!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_snapshot_published stage=progressive generation={generation}"
+                );
+                playable_index::request_ready_refresh();
             }
             Err(_) => {
-                eprintln!("[playlist_playback] audio style model snapshot lock is poisoned");
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_snapshot_publish_failed stage=progressive generation={generation} error=\"lock_poisoned\""
+                );
             }
         }
     }
@@ -444,12 +508,21 @@ impl AudioStyleRecommendationRuntime {
 
     fn publish_completed_snapshot(&self, snapshot: AudioStyleModelSnapshot) {
         let snapshot = Arc::new(snapshot);
+        let generation = snapshot.generation();
         match self.published_snapshot.write() {
             Ok(mut published) => {
                 *published = Some(Arc::clone(&snapshot));
+                log::info!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_snapshot_published stage=completed generation={generation}"
+                );
+                playable_index::request_ready_refresh();
             }
             Err(_) => {
-                eprintln!("[playlist_playback] audio style model snapshot lock is poisoned");
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_snapshot_publish_failed stage=completed generation={generation} error=\"lock_poisoned\""
+                );
             }
         }
 
@@ -467,7 +540,10 @@ impl AudioStyleRecommendationRuntime {
                 }
             }
             Err(_) => {
-                eprintln!("[playlist_playback] audio style completed snapshot lock is poisoned");
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_completed_snapshot_store_failed generation={generation} error=\"lock_poisoned\""
+                );
             }
         }
     }
@@ -502,6 +578,7 @@ pub(crate) fn initialize_audio_style_recommendation_runtime(app: AppHandle) {
             completed_snapshots: RwLock::new(Vec::new()),
             training: Mutex::new(AudioStyleTrainingState::default()),
             next_generation: AtomicU64::new(0),
+            next_training_run_id: AtomicU64::new(0),
         })
     });
 
@@ -513,8 +590,9 @@ pub(crate) fn initialize_audio_style_recommendation_runtime(app: AppHandle) {
 pub(crate) fn notify_audio_style_training_inputs_changed(reason: &'static str) {
     let Some(runtime) = AUDIO_STYLE_RECOMMENDATION_RUNTIME.get() else {
         let pending_changes = AUDIO_STYLE_PENDING_INPUT_CHANGES.fetch_add(1, Ordering::SeqCst) + 1;
-        eprintln!(
-            "[playlist_playback] audio style input change queued before runtime reason={reason} pending={pending_changes}"
+        log::warn!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_training_request_queued_before_runtime reason={reason} pending={pending_changes}"
         );
         return;
     };
@@ -527,6 +605,24 @@ pub(crate) fn published_audio_style_model_snapshot() -> Option<Arc<AudioStyleMod
     AUDIO_STYLE_RECOMMENDATION_RUNTIME
         .get()
         .and_then(|runtime| runtime.snapshot())
+}
+
+#[cfg(not(test))]
+pub(crate) fn published_audio_style_centerless_source(
+    belongs_to_scope: impl Fn(&PlaylistPlaybackTrackSource) -> bool,
+) -> Option<(PlaylistPlaybackTrackSource, AudioStyleCandidateSelection)> {
+    AUDIO_STYLE_RECOMMENDATION_RUNTIME
+        .get()
+        .and_then(|runtime| runtime.snapshot())
+        .and_then(|snapshot| {
+            snapshot
+                .recommender()
+                .propose_centerless_source(belongs_to_scope)
+                .map(|(source, mut selection)| {
+                    selection.model_generation = Some(snapshot.generation());
+                    (source, selection)
+                })
+        })
 }
 
 #[cfg(not(test))]
@@ -552,7 +648,10 @@ impl AudioStyleRecommendationRuntime {
                 }
             }
             Err(_) => {
-                eprintln!("[playlist_playback] audio style update state is poisoned");
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_training_debounce_error reason={reason} error=\"lock_poisoned\""
+                );
                 false
             }
         };
@@ -573,7 +672,10 @@ impl AudioStyleRecommendationRuntime {
                     true
                 }
                 Err(_) => {
-                    eprintln!("[playlist_playback] audio style update state is poisoned");
+                    log::error!(
+                        target: AUDIO_STYLE_LOG_TARGET,
+                        "audio_style_training_debounce_release_error reason={reason} error=\"lock_poisoned\""
+                    );
                     false
                 }
             };
@@ -1192,9 +1294,11 @@ impl AudioStyleModelState {
                     latest_state = Some(state);
                 }
                 Err(error) => {
-                    eprintln!(
-                        "[playlist_playback] failed to index audio style embedding for `{}`: {error}",
-                        track.file_path.display()
+                    log::error!(
+                        target: AUDIO_STYLE_LOG_TARGET,
+                        "audio_style_embedding_index_failed path=\"{}\" error=\"{}\"",
+                        escape_log_value(&track.file_path.display().to_string()),
+                        escape_log_value(&error)
                     );
                     failed.push(format!("{}: {error}", track.file_path.display()));
                 }
@@ -3057,6 +3161,11 @@ fn audio_style_stable_crop_start(track: &PlaybackTrack, start_seconds: f64, max_
         digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
     ]);
     start_seconds + (hash % sample_span) as f64 / AUDIO_STYLE_SAMPLE_RATE as f64
+}
+
+#[cfg(not(test))]
+fn escape_log_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn decode_audio_style_interval(

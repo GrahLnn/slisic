@@ -107,7 +107,6 @@ struct PlaylistPlaybackTrace<'a> {
     playlist_name: Option<&'a str>,
     track: Option<&'a PlaybackTrack>,
     elapsed_ms: Option<u128>,
-    candidate_count: Option<usize>,
     queue_count: Option<usize>,
     status: Option<&'a str>,
     error: Option<String>,
@@ -122,7 +121,6 @@ impl<'a> PlaylistPlaybackTrace<'a> {
             playlist_name: None,
             track: None,
             elapsed_ms: None,
-            candidate_count: None,
             queue_count: None,
             status: None,
             error: None,
@@ -142,11 +140,6 @@ impl<'a> PlaylistPlaybackTrace<'a> {
 
     fn elapsed(mut self, start: Instant) -> Self {
         self.elapsed_ms = Some(start.elapsed().as_millis());
-        self
-    }
-
-    fn candidate_count(mut self, candidate_count: usize) -> Self {
-        self.candidate_count = Some(candidate_count);
         self
     }
 
@@ -190,7 +183,7 @@ fn emit_playlist_playback_trace(event: &str, trace: PlaylistPlaybackTrace<'_>) {
         start_ms,
         end_ms,
         elapsed_ms: trace.elapsed_ms,
-        candidate_count: trace.candidate_count,
+        candidate_count: None,
         queue_count: trace.queue_count,
         status: trace.status.map(str::to_string),
         error: trace.error,
@@ -230,7 +223,21 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
     let material_result =
         build_playlist_playback_material(app, &name, &request, &mut download_changes).await;
     let material = match material_result {
-        Ok(material) => material,
+        Ok(Some(material)) => material,
+        Ok(None) => {
+            emit_playlist_playback_trace(
+                "playlist-play-backend-pending-first-track",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(&name)
+                    .elapsed(trace_start)
+                    .status("pending_first_track"),
+            );
+            return Ok(PlayPlaylistSession {
+                status: PlayPlaylistSessionStatus::PendingFirstTrack,
+                playlist_name: name,
+                track_count: 0,
+            });
+        }
         Err(error) => {
             emit_playlist_playback_trace(
                 "playlist-play-material-error",
@@ -599,7 +606,51 @@ struct ResolvedPlaylistInitialTrack {
 
 pub(crate) struct PlaylistTrackResolution {
     pub(crate) tracks: Vec<PlaybackTrack>,
+    #[cfg(test)]
     pub(crate) failure_description: String,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct PlaylistTrackResolutionStats {
+    source_count: usize,
+    playable: usize,
+    missing_path: usize,
+    missing_file: usize,
+}
+
+#[cfg(not(test))]
+#[derive(Default)]
+struct PlaylistTrackResolutionStats;
+
+#[cfg(test)]
+impl PlaylistTrackResolutionStats {
+    fn observe_source(&mut self) {
+        self.source_count += 1;
+    }
+
+    fn observe_missing_path(&mut self) {
+        self.missing_path += 1;
+    }
+
+    fn observe_missing_file(&mut self) {
+        self.missing_file += 1;
+    }
+
+    fn observe_playable(&mut self) {
+        self.playable += 1;
+    }
+}
+
+#[cfg(not(test))]
+impl PlaylistTrackResolutionStats {
+    fn observe_source(&mut self) {}
+
+    fn observe_missing_path(&mut self) {}
+
+    fn observe_missing_file(&mut self) {}
+
+    fn observe_playable(&mut self) {}
 }
 
 #[cfg(not(test))]
@@ -610,54 +661,78 @@ async fn build_playlist_playback_material(
     _download_changes: &mut tokio::sync::broadcast::Receiver<
         download_service::DownloadTaskChangeSignal,
     >,
-) -> Result<PlaylistPlaybackMaterial> {
+) -> Result<Option<PlaylistPlaybackMaterial>> {
     let trace_start = Instant::now();
-    let source = load_playlist_playback_selection(playlist_name).await?;
-
-    emit_playlist_playback_trace(
-        "playlist-play-material-selection-loaded",
-        PlaylistPlaybackTrace::new(app)
-            .playlist_name(&source.playlist_name)
-            .elapsed(trace_start)
-            .details(selection_trace_details(&source.selection, 0)),
-    );
-
-    ensure_playlist_playback_request_current(request)?;
-    if let Some(initial) = resolve_playlist_initial_track(app, &source.selection).await? {
+    if let Some(initial) = resolve_prepared_playlist_initial_track(app, playlist_name).await? {
         let tracks = create_start_anchor_playback_queue(initial.track.clone());
         ensure_playlist_playback_request_current(request)?;
         emit_playlist_playback_trace(
-            "playlist-play-material-initial-track-ok",
+            "playlist-play-material-prepared-initial-track-ok",
             PlaylistPlaybackTrace::new(app)
-                .playlist_name(&source.playlist_name)
+                .playlist_name(playlist_name)
                 .track(&initial.track)
                 .elapsed(trace_start)
-                .queue_count(tracks.len())
-                .details(selection_trace_details(&source.selection, 0)),
+                .queue_count(tracks.len()),
         );
-        return Ok(PlaylistPlaybackMaterial {
-            playlist_name: source.playlist_name,
+        return Ok(Some(PlaylistPlaybackMaterial {
+            playlist_name: playlist_name.to_string(),
             initial_prepared_source: initial.prepared_source,
             initial_track: initial.track,
             tracks,
-        });
+        }));
     }
+
     emit_playlist_playback_trace(
-        "playlist-play-material-initial-track-miss",
+        "playlist-play-material-prepared-initial-track-miss",
         PlaylistPlaybackTrace::new(app)
-            .playlist_name(&source.playlist_name)
+            .playlist_name(playlist_name)
             .elapsed(trace_start)
-            .details(selection_trace_details(&source.selection, 0)),
+            .status("prepared_first_slot_missing"),
     );
+    playable_index::notify_playback_miss(playlist_name);
+    Ok(None)
+}
+
+#[cfg(not(test))]
+async fn resolve_prepared_playlist_initial_track(
+    app: &AppHandle,
+    playlist_name: &str,
+) -> Result<Option<ResolvedPlaylistInitialTrack>> {
+    let trace_start = Instant::now();
+    let Some(snapshot) = playable_index::read_playlist_source(playlist_name)? else {
+        return Ok(None);
+    };
+    let save_root = meta_service::resolve_save_root(app).await?;
+    let Some(source) = snapshot.source.clone() else {
+        return Ok(None);
+    };
+    let Some(track) =
+        resolve_playlist_playback_source_track_for_playlist(playlist_name, source, &save_root)
+    else {
+        if let Err(error) = playable_index::discard_playlist_source(&snapshot) {
+            eprintln!(
+                "[playlist_playback] failed to discard unplayable prepared first track source playlist=\"{}\" generation={}: {error}",
+                snapshot.playlist_name, snapshot.generation
+            );
+        }
+        return Ok(None);
+    };
+
     emit_playlist_playback_trace(
-        "playlist-play-material-unplayable",
+        "playlist-play-initial-prepared-hit",
         PlaylistPlaybackTrace::new(app)
-            .playlist_name(&source.playlist_name)
+            .playlist_name(playlist_name)
+            .track(&track)
             .elapsed(trace_start)
-            .error(&source.resolution.failure_description)
-            .details(selection_trace_details(&source.selection, 0)),
+            .details(vec![
+                trace_detail("indexStatus", "hit"),
+                trace_detail("indexGeneration", snapshot.generation),
+            ]),
     );
-    bail!("{}", source.resolution.failure_description)
+    Ok(Some(ResolvedPlaylistInitialTrack {
+        track,
+        prepared_source: Some(snapshot),
+    }))
 }
 
 #[cfg(not(test))]
@@ -672,20 +747,6 @@ fn consume_playlist_initial_prepared_source(
             snapshot.playlist_name, snapshot.generation
         );
     }
-}
-
-#[cfg(not(test))]
-fn selection_trace_details(
-    selection: &PlaylistPlaybackSelection,
-    wait_count: usize,
-) -> Vec<PlaybackDiagnosticTraceDetail> {
-    vec![
-        trace_detail("selectedCollectionRefs", selection.collections.len()),
-        trace_detail("selectedGroupRefs", selection.groups.len()),
-        trace_detail("selectedExtraRefs", selection.extra.len()),
-        trace_detail("downloadScopes", selection.download_scopes.len()),
-        trace_detail("waitCount", wait_count),
-    ]
 }
 
 #[cfg(not(test))]
@@ -899,6 +960,13 @@ async fn refresh_playlist_track_queue_for_anchor(
         if should_request {
             notify_audio_style_training_inputs_changed(readiness.training_reason());
         }
+        emit_playlist_playback_trace(
+            "playlist-playback-next-slot-waiting-for-model",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(playlist_name)
+                .track(&current_track)
+                .status(readiness.training_reason()),
+        );
     }
 
     let source = load_random_playlist_track_resolution_window(
@@ -908,6 +976,13 @@ async fn refresh_playlist_track_queue_for_anchor(
     )
     .await?;
     if source.resolution.tracks.is_empty() {
+        emit_playlist_playback_trace(
+            "playlist-playback-next-slot-empty-candidates",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(playlist_name)
+                .track(&current_track)
+                .status("empty_candidate_window"),
+        );
         return Ok(true);
     }
 
@@ -918,13 +993,27 @@ async fn refresh_playlist_track_queue_for_anchor(
     let tracks = propose_playlist_playback_queue_with_mode(
         PlaylistPlaybackRecommendationRequest {
             playlist_name: playlist_name.to_string(),
-            current_track,
+            current_track: current_track.clone(),
             candidates: source.resolution.tracks,
             recently_played_tracks: recently_played_tracks.to_vec(),
         },
         PlaylistPlaybackRecommendationMode::KeepCurrent,
         should_log_selection,
     );
+    if !should_commit_playlist_queue_refresh(
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+        &tracks,
+    ) {
+        emit_playlist_playback_trace(
+            "playlist-playback-next-slot-not-ready",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(playlist_name)
+                .track(&current_track)
+                .queue_count(tracks.len())
+                .status("missing_next"),
+        );
+        return Ok(true);
+    }
     player_service::update_session_tracks(session, tracks)
 }
 
@@ -1095,151 +1184,6 @@ async fn wait_for_download_task_change(
             }
         }
     }
-}
-
-#[cfg(not(test))]
-async fn load_playlist_playback_selection(
-    playlist_name: &str,
-) -> Result<PlaylistTrackResolutionSource> {
-    let selection = playlist_repo::get_playlist_playback_selection_by_name(playlist_name)
-        .await?
-        .ok_or_else(|| anyhow!("playlist `{playlist_name}` not found"))?;
-    let failure_description = describe_playlist_playback_selection_failure(&selection);
-
-    Ok(PlaylistTrackResolutionSource {
-        playlist_name: selection.playlist_name.clone(),
-        selection,
-        resolution: PlaylistTrackResolution {
-            tracks: vec![],
-            failure_description,
-        },
-    })
-}
-
-#[cfg(not(test))]
-async fn resolve_playlist_initial_track(
-    app: &AppHandle,
-    selection: &PlaylistPlaybackSelection,
-) -> Result<Option<ResolvedPlaylistInitialTrack>> {
-    let trace_start = Instant::now();
-    emit_playlist_playback_trace(
-        "playlist-play-initial-resolve-start",
-        PlaylistPlaybackTrace::new(app)
-            .playlist_name(&selection.playlist_name)
-            .details(selection_trace_details(selection, 0)),
-    );
-    let save_root = meta_service::resolve_save_root(app).await?;
-    emit_playlist_playback_trace(
-        "playlist-play-initial-save-root-ok",
-        PlaylistPlaybackTrace::new(app)
-            .playlist_name(&selection.playlist_name)
-            .elapsed(trace_start)
-            .details(vec![trace_detail(
-                "saveRoot",
-                save_root.display().to_string(),
-            )]),
-    );
-
-    let random_load_start = Instant::now();
-    let mut seen = HashSet::new();
-    let indexed_source = playable_index::read_playlist_source(&selection.playlist_name)?;
-    let (sources, index_status, index_generation, prepared_source) = match indexed_source {
-        Some(snapshot) => (
-            snapshot.source.clone().into_iter().collect::<Vec<_>>(),
-            "hit",
-            Some(snapshot.generation),
-            Some(snapshot),
-        ),
-        None => {
-            playable_index::notify_playback_miss(&selection.playlist_name);
-            (vec![], "miss", None, None)
-        }
-    };
-    let sampled_count = sources.len();
-    let mut tracks = Vec::new();
-    for source in sources {
-        let source_key = playlist_playback_track_source_key(&source);
-        if !seen.insert(source_key) {
-            continue;
-        }
-
-        let Some(track) = resolve_playlist_playback_source_track(selection, source, &save_root)
-        else {
-            continue;
-        };
-        tracks.push(track);
-    }
-
-    let playable_count = tracks.len();
-    shuffle_playback_tracks(&mut tracks);
-    if let Some(track) = tracks.into_iter().next() {
-        emit_playlist_playback_trace(
-            "playlist-play-initial-random-hit",
-            PlaylistPlaybackTrace::new(app)
-                .playlist_name(&selection.playlist_name)
-                .track(&track)
-                .elapsed(trace_start)
-                .candidate_count(playable_count)
-                .details(vec![
-                    trace_detail("randomLoadMs", random_load_start.elapsed().as_millis()),
-                    trace_detail("sampledSources", sampled_count),
-                    trace_detail("uniqueSources", seen.len()),
-                    trace_detail("indexStatus", index_status),
-                    trace_detail(
-                        "indexGeneration",
-                        index_generation
-                            .map(|generation| generation.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
-                    ),
-                ]),
-        );
-        return Ok(Some(ResolvedPlaylistInitialTrack {
-            track,
-            prepared_source,
-        }));
-    }
-
-    if let Some(snapshot) = prepared_source.as_ref() {
-        if let Err(error) = playable_index::discard_playlist_source(snapshot) {
-            eprintln!(
-                "[playlist_playback] failed to discard unplayable prepared first track source playlist=\"{}\" generation={}: {error}",
-                snapshot.playlist_name, snapshot.generation
-            );
-        }
-    } else {
-        playable_index::notify_playback_miss(&selection.playlist_name);
-    }
-    emit_playlist_playback_trace(
-        "playlist-play-initial-random-miss",
-        PlaylistPlaybackTrace::new(app)
-            .playlist_name(&selection.playlist_name)
-            .elapsed(trace_start)
-            .candidate_count(playable_count)
-            .details(vec![
-                trace_detail("randomLoadMs", random_load_start.elapsed().as_millis()),
-                trace_detail("sampledSources", sampled_count),
-                trace_detail("uniqueSources", seen.len()),
-                trace_detail("indexStatus", index_status),
-                trace_detail(
-                    "indexGeneration",
-                    index_generation
-                        .map(|generation| generation.to_string())
-                        .unwrap_or_else(|| "none".to_string()),
-                ),
-            ]),
-    );
-    Ok(None)
-}
-
-#[cfg(not(test))]
-fn describe_playlist_playback_selection_failure(selection: &PlaylistPlaybackSelection) -> String {
-    format!(
-        "playlist `{}` does not contain any playable tracks [selected_collection_refs={}, selected_group_refs={}, selected_extra_refs={}]",
-        selection.playlist_name,
-        selection.collections.len(),
-        selection.groups.len(),
-        selection.extra.len()
-    )
 }
 
 #[cfg(not(test))]
@@ -1513,6 +1457,13 @@ pub(crate) fn playlist_playback_queue_contains_next_track_after_anchor(
         .iter()
         .skip(anchor_index + 1)
         .any(|track| !are_playlist_playback_tracks_equal(track, anchor))
+}
+
+pub(crate) fn should_commit_playlist_queue_refresh(
+    mode: PlaylistPlaybackRecommendationMode,
+    tracks: &[PlaybackTrack],
+) -> bool {
+    playlist_playback_proposal_contains_next_track(mode, tracks)
 }
 
 pub(crate) fn audio_style_playlist_playback_proposal_is_complete(
@@ -1817,19 +1768,16 @@ pub(crate) fn resolve_playlist_playback_source_resolution(
 ) -> PlaylistTrackResolution {
     let mut seen = HashSet::new();
     let mut tracks = Vec::new();
-    let mut source_count = 0usize;
-    let mut playable = 0usize;
-    let mut missing_path = 0usize;
-    let mut missing_file = 0usize;
+    let mut stats = PlaylistTrackResolutionStats::default();
 
     for source in sources {
-        source_count += 1;
+        stats.observe_source();
         let Some(file_path) = resolve_source_music_file_path(save_root, &source) else {
-            missing_path += 1;
+            stats.observe_missing_path();
             continue;
         };
         if !file_path.is_file() {
-            missing_file += 1;
+            stats.observe_missing_file();
             continue;
         }
 
@@ -1838,26 +1786,30 @@ pub(crate) fn resolve_playlist_playback_source_resolution(
             continue;
         }
 
-        playable += 1;
+        stats.observe_playable();
         tracks.push(project_playlist_playback_track(
             selection, &source, file_path,
         ));
     }
 
+    #[cfg(test)]
+    let failure_description = format!(
+        "playlist `{}` does not contain any playable tracks [selected_collection_refs={}, selected_group_refs={}, selected_extra_refs={}, checked_sources={}, playable={}, missing_path={}, missing_file={}, save_root={}]",
+        selection.playlist_name,
+        selection.collections.len(),
+        selection.groups.len(),
+        selection.extra.len(),
+        stats.source_count,
+        stats.playable,
+        stats.missing_path,
+        stats.missing_file,
+        save_root.display()
+    );
+
     PlaylistTrackResolution {
         tracks,
-        failure_description: format!(
-            "playlist `{}` does not contain any playable tracks [selected_collection_refs={}, selected_group_refs={}, selected_extra_refs={}, checked_sources={}, playable={}, missing_path={}, missing_file={}, save_root={}]",
-            selection.playlist_name,
-            selection.collections.len(),
-            selection.groups.len(),
-            selection.extra.len(),
-            source_count,
-            playable,
-            missing_path,
-            missing_file,
-            save_root.display()
-        ),
+        #[cfg(test)]
+        failure_description,
     }
 }
 
@@ -1866,13 +1818,23 @@ fn resolve_playlist_playback_source_track(
     source: PlaylistPlaybackTrackSource,
     save_root: &Path,
 ) -> Option<PlaybackTrack> {
+    resolve_playlist_playback_source_track_for_playlist(&selection.playlist_name, source, save_root)
+}
+
+fn resolve_playlist_playback_source_track_for_playlist(
+    playlist_name: &str,
+    source: PlaylistPlaybackTrackSource,
+    save_root: &Path,
+) -> Option<PlaybackTrack> {
     let file_path = resolve_source_music_file_path(save_root, &source)?;
     if !file_path.is_file() {
         return None;
     }
 
-    Some(project_playlist_playback_track(
-        selection, &source, file_path,
+    Some(project_playlist_playback_track_for_playlist(
+        playlist_name,
+        &source,
+        file_path,
     ))
 }
 
@@ -1881,8 +1843,16 @@ fn project_playlist_playback_track(
     source: &PlaylistPlaybackTrackSource,
     file_path: PathBuf,
 ) -> PlaybackTrack {
+    project_playlist_playback_track_for_playlist(&selection.playlist_name, source, file_path)
+}
+
+fn project_playlist_playback_track_for_playlist(
+    playlist_name: &str,
+    source: &PlaylistPlaybackTrackSource,
+    file_path: PathBuf,
+) -> PlaybackTrack {
     PlaybackTrack {
-        playlist_name: selection.playlist_name.clone(),
+        playlist_name: playlist_name.to_string(),
         music_name: source.music.alias.clone(),
         canonical_music_id: source.music.canonical_music_id.clone(),
         music_url: source.music.url.clone(),

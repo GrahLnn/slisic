@@ -42,7 +42,7 @@ The project-level compositor is the app behavior boundary across:
 | `playlists` domain                          | collection, group, music, playlist, exclude, liked, and spectrum source facts                                    | playback queue consumption, provider probing, binary execution  |
 | `collection_import` domain                  | collection shell, local folder projection, final file paths, manifests, music materialization                    | URL task scheduling and playlist playback policy                |
 | `downloads` domain                          | URL resolution, task lifecycle, provider probing, leaf scheduling, retry and resume                              | final stable music ownership after collection commit            |
-| `playlist_playback` domain                  | playable-source preparation, first-track selection, startup next-track planning, recommendation queue planning, exclude-and-skip behavior | low-level player process control, playlist row storage          |
+| `playlist_playback` domain                  | process-lifetime first-track preparation, first-track selection, startup next-track planning, recommendation queue planning, exclude-and-skip behavior | low-level player process control, playlist row storage          |
 | `player` domain                             | active playback request, session generation, queue consumption, spectrum playback scope, seek, waveform commands | playlist membership and recommendation policy                   |
 | `utils::binaries`                           | managed binary installation and maintenance admission                                                            | library state, task semantics, playback semantics               |
 | Trace/debug owners                          | observation and diagnostic persistence                                                                           | state transitions, fallback choice, cache semantics             |
@@ -161,7 +161,7 @@ sequenceDiagram
   participant Feedback as Event Feedback
   participant View as View Model and Render Surface
 
-  Note over Index: Startup, ready, library, playlist, exclude, miss, and consumption events prepare one startup source per playlist independently of play clicks
+  Note over Index: Program startup begins first-track preparation for every playable playlist; ready, library, playlist, exclude, miss, and consumption events only refill or invalidate that independent pool
 
   User->>Surface: play, edit, paste, import, like, exclude, or open spectrum
   Surface->>Action: submit semantic intent
@@ -257,6 +257,42 @@ after mutations.
 Project invariant: preview state is not persisted state. A queued preview can
 shape UI feedback, but only command success can publish a saved playlist.
 
+### Playlist First-Track Preparation
+
+`playlist_playback::playable_index` owns the first-track preparation lifecycle.
+It starts at program startup, prepares one centerless audio-style startup source
+for every playlist that can appear as a playitem, and keeps that pool
+independent from any later click. Ready-entry, library mutation, playlist
+mutation, exclude mutation, playback miss, audio-style model publication, and
+prepared-source consumption are refresh signals for this same pool. They are
+not playback commands.
+
+Project invariant: first-track preparation is an independent backend lifecycle.
+The play button, playitem click, frontend ready state, player session, and
+recommendation loop may observe or consume prepared evidence, but they do not
+compute it. A click that finds no prepared source may report an explicit miss
+and schedule repair; it must not synchronously rebuild first-track evidence or
+block the frontend while preparing one.
+
+Project invariant: the preparation pool is per playable playlist at the
+semantic boundary. The implementation may batch, sample, or share prepared
+sources across playlists when that reduces work and remains unobservable to the
+user, but sharing is only a preparation-layer optimization. Consumption is still
+playlist-scoped and generation-stamped; consuming one playitem's prepared source
+must not consume another visible playitem's source.
+
+Project invariant: consuming a prepared source is linear. Successful player
+submission consumes the matching playlist/generation and immediately schedules
+replacement preparation for that playlist. Replacement does not wait for the
+current track to finish and does not require another ready transition.
+
+Project invariant: first-track preparation and audio-style model training must
+emit structured lifecycle logs through the application logger. Each refresh or
+training pass has a run id, owner target, reason, generation when applicable,
+start, finish, elapsed time, produced counts, commit result, and failure cause.
+Diagnostic UI events may mirror this information, but ad hoc stdout text is not
+the lifecycle record.
+
 ### Playlist Playback
 
 The UI action supplies a playlist name and app state evidence. `appLogic` moves
@@ -265,15 +301,15 @@ then consumes a playlist-scoped startup source that was prepared independently
 of the play action, resolves it into a playable first-track anchor, submits the
 single-track startup queue to `player`, and only then starts background queue
 planning for the first continuation and later continuations. The first track is
-live random startup selection. Later tracks come from the recommendation chain
-when available.
+centerless audio-style startup selection. Later tracks come from the
+recommendation chain when available.
 
-Project invariant: first-track preparation is not owned by the play button,
-playitem click, player session, or recommendation loop. Runtime startup, ready
-state, library changes, playlist changes, exclude changes, misses, and
-prepared-source consumption are the only events that may schedule first-track
-preparation. Consuming a prepared startup source immediately schedules its
-replacement; it does not wait for the current track to finish.
+Project invariant: first-track selection consumes only the already prepared
+pool. It may eliminate an unplayable prepared source and emit a miss, but it
+must not call playlist sampling, model ranking, or candidate-window
+materialization on the click path. The user-visible transition from playitem
+intent to playback acceptance must be bounded by prepared evidence consumption
+and player submission, not by first-track preparation.
 
 Project invariant: playback start composes only first-track selection and
 player submission. It must not fetch playlist candidate windows or invoke the
@@ -334,6 +370,10 @@ It is accepted only when the receiving owner has an explicit event meaning.
   activates the next queued request.
 - Playback startup claims a player request. Superseded requests return a
   superseded session instead of committing stale playback.
+- First-track preparation is a process-lifetime backend pool. Program startup
+  fills every currently playable playlist when an audio-style model can serve
+  centerless selection; ready, model publication, and invalidation events
+  refresh the pool; consumption refills the consumed playlist independently.
 - Playable-index refreshes are generation-stamped. Non-invalidating refreshes
   fill missing startup options, while library/playlist/exclude invalidations can
   replace obsolete evidence.
@@ -368,6 +408,9 @@ It is accepted only when the receiving owner has an explicit event meaning.
 - Playback fallback cannot create an implicit compatibility path that recomputes
   first-track startup inside a play click or waits at a track boundary for a
   queue that startup planning should already have supplied.
+- First-track preparation fallback can schedule repair after a miss, but the
+  repair is backend pool work. It cannot become a synchronous play-click
+  fallback or a frontend loading requirement.
 - Spectrum fallback can render missing waveform columns or hide playhead; it
   cannot construct track identity, selection, or playback status.
 - Trace fallback does not exist. Missing trace must never change behavior.

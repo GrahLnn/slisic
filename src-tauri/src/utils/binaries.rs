@@ -187,14 +187,6 @@ pub(crate) fn ensure_managed_binary(
     })
 }
 
-pub(crate) fn resolve_installed_managed_binary(
-    app: &AppHandle,
-    kind: ManagedBinary,
-) -> Result<Option<PathBuf>, String> {
-    let install_path = installed_bin_path(app, install_name_for_kind(kind))?;
-    Ok(install_path.exists().then_some(install_path))
-}
-
 fn run_maintenance_cycle(app: &AppHandle, activity: &BinaryMaintenanceActivity) {
     for kind in ManagedBinary::all() {
         if let Err(error) = maintain_binary(app, kind, activity) {

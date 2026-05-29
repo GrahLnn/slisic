@@ -4,10 +4,11 @@ use super::model::{
     canonical_music_id_for_source,
 };
 use super::repo::{
-    SpectrumMusicSourceIdentity, add_exclude, create_music, delete_music, delete_playlist_by_name,
-    get_collection_by_url, get_playlist_by_name, get_playlist_config_by_name,
-    get_playlist_playback_selection_by_name, has_collections, list_collections,
-    list_config_library, list_musics_by_file_path, list_playlists,
+    PlaylistPlaybackCollectionRef, PlaylistPlaybackGroupRef, PlaylistPlaybackSelection,
+    PlaylistPlaybackTrackSource, SpectrumMusicSourceIdentity, add_exclude, create_music,
+    delete_music, delete_playlist_by_name, get_collection_by_url, get_playlist_by_name,
+    get_playlist_config_by_name, get_playlist_playback_selection_by_name, has_collections,
+    list_collections, list_config_library, list_musics_by_file_path, list_playlists,
     load_liked_playlist_playback_track_sources, load_playlist_playback_track_sources,
     load_random_playlist_playback_track_sources, load_spectrum_music_context,
     playlist_playback_owner_attempt_order, push_extra, remove_exclude, remove_extra,
@@ -3815,4 +3816,42 @@ fn extra_playlist_playback_sources_skip_music_without_downloaded_path() {
 
         reset_db();
     });
+}
+
+#[test]
+fn playlist_playback_selection_contains_only_its_own_track_sources() {
+    let collection = PlaylistPlaybackCollectionRef::new_for_test(
+        "Selected Collection",
+        "https://example.com/selected",
+        "youtube/selected",
+    );
+    let group = collection_group("Selected Group", "https://example.com/group", "Disc 1");
+    let inside_collection = PlaylistPlaybackTrackSource {
+        collection_folder: "youtube/selected".to_string(),
+        music: named_music("A", group.clone(), "A.m4a"),
+    };
+    let inside_group = PlaylistPlaybackTrackSource {
+        collection_folder: "youtube/other".to_string(),
+        music: named_music("B", group.clone(), "B.m4a"),
+    };
+    let outside_group = collection_group("Other Group", "https://example.com/other", "Disc 1");
+    let outside = PlaylistPlaybackTrackSource {
+        collection_folder: "youtube/other".to_string(),
+        music: named_music("C", outside_group, "C.m4a"),
+    };
+    let selection = PlaylistPlaybackSelection {
+        playlist_name: "Scoped".to_string(),
+        collections: vec![collection],
+        groups: vec![PlaylistPlaybackGroupRef::new_for_test(
+            "Selected Group",
+            "https://example.com/group",
+            "Disc 1",
+        )],
+        extra: vec![],
+        download_scopes: vec![],
+    };
+
+    assert!(selection.contains_track_source(&inside_collection));
+    assert!(selection.contains_track_source(&inside_group));
+    assert!(!selection.contains_track_source(&outside));
 }

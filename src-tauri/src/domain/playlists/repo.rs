@@ -363,6 +363,10 @@ impl PlaylistPlaybackCollectionRef {
             enable_updates: self.enable_updates,
         }
     }
+
+    pub fn contains_collection_folder(&self, folder: &str) -> bool {
+        self.folder == folder
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -414,6 +418,12 @@ impl PlaylistPlaybackGroupRef {
             folder: self.folder.clone(),
         }
     }
+
+    pub fn contains_music_source(&self, source: &PlaylistPlaybackTrackSource) -> bool {
+        self.url == source.music.group.url
+            && (self.parent_collection_records.is_empty()
+                || source.collection_folder == source.music.group.collection.folder)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -429,6 +439,22 @@ impl PlaylistPlaybackExtraRef {
 
     pub fn matches_canonical_music_id(&self, canonical_music_id: &str) -> bool {
         self.record.key.to_sql() == stable_record_key(canonical_music_id)
+    }
+}
+
+impl PlaylistPlaybackSelection {
+    pub fn contains_track_source(&self, source: &PlaylistPlaybackTrackSource) -> bool {
+        self.collections
+            .iter()
+            .any(|collection| collection.contains_collection_folder(&source.collection_folder))
+            || self
+                .groups
+                .iter()
+                .any(|group| group.contains_music_source(source))
+            || self
+                .extra
+                .iter()
+                .any(|extra| extra.matches_canonical_music_id(&source.music.canonical_music_id))
     }
 }
 

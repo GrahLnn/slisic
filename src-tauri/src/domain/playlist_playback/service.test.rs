@@ -13,7 +13,7 @@ use super::service::{
     propose_audio_style_playlist_playback_queue_from_snapshots,
     propose_playlist_playback_queue_without_audio_style_model, propose_random_queue_after_exclude,
     resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
-    should_refresh_playlist_queue_for_anchor_after_startup,
+    should_commit_playlist_queue_refresh, should_refresh_playlist_queue_for_anchor_after_startup,
     should_refresh_playlist_queue_for_same_anchor, shuffle_playback_tracks,
 };
 use crate::domain::downloads::model::{DownloadTask, DownloadTaskStatus, DownloadTrigger};
@@ -852,6 +852,21 @@ fn playlist_queue_fill_keeps_unconsumed_next_when_audio_style_model_generation_c
 fn playlist_queue_refresh_for_same_anchor_only_runs_when_next_is_missing() {
     assert!(should_refresh_playlist_queue_for_same_anchor(false));
     assert!(!should_refresh_playlist_queue_for_same_anchor(true));
+}
+
+#[test]
+fn playlist_queue_refresh_commit_requires_next_track() {
+    let current = playback_track("current");
+    let next = playback_track("next");
+
+    assert!(!should_commit_playlist_queue_refresh(
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+        &[current.clone()],
+    ));
+    assert!(should_commit_playlist_queue_refresh(
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+        &[current, next],
+    ));
 }
 
 #[test]

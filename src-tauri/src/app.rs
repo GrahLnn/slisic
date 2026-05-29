@@ -1,12 +1,59 @@
 use crate::{domain, utils};
 use appdb::prelude::{InitDbOptions, init_db_with_options};
+use log::{Level, LevelFilter, Record};
+use std::fmt::Arguments;
 use tauri::Manager;
 use tauri::async_runtime::block_on;
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy, fern};
 use tauri_specta::{Builder, collect_commands, collect_events};
 use tokio::task::block_in_place;
 use utils::event;
 
 const COMMANDS_TYPESCRIPT_HEADER: &str = include_str!("commands.header.ts");
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_DIM: &str = "\x1b[2m";
+const ANSI_YELLOW: &str = "\x1b[33m";
+const ANSI_GREEN: &str = "\x1b[32m";
+const ANSI_CYAN: &str = "\x1b[36m";
+const ANSI_BLUE: &str = "\x1b[34m";
+const ANSI_MAGENTA: &str = "\x1b[35m";
+const ANSI_BOLD_RED: &str = "\x1b[1;31m";
+
+fn colorized_stdout_log_format(out: fern::FormatCallback, message: &Arguments, record: &Record) {
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    let level_color = match record.level() {
+        Level::Error => ANSI_BOLD_RED,
+        Level::Warn => ANSI_YELLOW,
+        Level::Info => ANSI_GREEN,
+        Level::Debug => ANSI_CYAN,
+        Level::Trace => ANSI_DIM,
+    };
+    let target_color = match record.target() {
+        "playlist_playback_index" => ANSI_CYAN,
+        "playlist_audio_style" => ANSI_MAGENTA,
+        target if target.starts_with("downloads") => ANSI_GREEN,
+        target if target.starts_with("playlist_playback") => ANSI_BLUE,
+        target if target.starts_with("player") => ANSI_YELLOW,
+        _ => ANSI_DIM,
+    };
+
+    out.finish(format_args!(
+        "{ANSI_DIM}{timestamp}{ANSI_RESET} {level_color}[{}]{ANSI_RESET} {target_color}[{}]{ANSI_RESET} {}",
+        record.level(),
+        record.target(),
+        message
+    ));
+}
+
+fn file_log_format(out: fern::FormatCallback, message: &Arguments, record: &Record) {
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    out.finish(format_args!(
+        "{timestamp} [{}] [{}] {}",
+        record.level(),
+        record.target(),
+        message
+    ));
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -92,6 +139,19 @@ pub fn run() {
         .expect("Failed to export typescript bindings");
 
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .timezone_strategy(TimezoneStrategy::UseLocal)
+                .rotation_strategy(RotationStrategy::KeepSome(5))
+                .max_file_size(5_000_000)
+                .level(LevelFilter::Info)
+                .clear_format()
+                .targets([
+                    Target::new(TargetKind::Stdout).format(colorized_stdout_log_format),
+                    Target::new(TargetKind::LogDir { file_name: None }).format(file_log_format),
+                ])
+                .build(),
+        )
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_fs::init())

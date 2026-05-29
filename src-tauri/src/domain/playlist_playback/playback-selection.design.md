@@ -12,7 +12,7 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   inside the selected playlist scope.
 - `playlist_playback::playable_index` owns process-lifetime playable-source
   preparation, generation-stamped refresh, invalidation, and the current
-  prepared startup option for each playlist.
+  centerless prepared startup option for each playlist.
 - `playlist_playback::service` owns first-track source elimination, next-track
   planning, startup queue composition, recent-history exclusion, and queue
   refresh.
@@ -33,19 +33,18 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - The player-submit success path consumes the current prepared option by
   playlist and generation. Consumption immediately schedules replacement
   preparation for that playlist.
-- First-track selection chooses a random playable startup anchor from the
-  playlist scope.
+- First-track selection chooses a centerless audio-style startup anchor from
+  the playlist scope.
 - Startup next-track selection is part of the post-acceptance backend queue
-  fill transaction. Once the random first-track anchor is accepted by the player
-  session, the recommendation planner must be invoked in the background.
+  fill transaction. Once the centerless first-track anchor is accepted by the
+  player session, the recommendation planner must be invoked in the background.
 - Later next-track selection is owned by the recommendation planner and uses
   the playlist-scoped candidate universe.
 - The first track is not derived from a deterministic seed, first row, first
-  collection, or fixed random seed.
-- Random source sampling is live randomness on each request; it must not persist
-  a seeded order across sessions.
-- Random source preparation must not use a fixed seed and must not become a
-  stored playback order.
+  collection, fixed random seed, or repository random fallback.
+- Centerless startup sampling uses the published audio-style model inside the
+  playlist scope. Its draw is live per prepared-source refresh and must not
+  persist a seeded order across sessions.
 - The playable index prepares at most one startup option per playlist in the
   background; it cannot define whether a source is a playlist member or whether
   a local file is actually playable.
@@ -94,10 +93,9 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 
 - Raw sources become `PlaybackTrack` only after their file path is resolved
   against the save root and the file exists.
-- Startup options are sampled from the whole playlist selection, not from a
-  deterministic prefix of one collection.
-- The first playable track is selected by random source sampling.
-- Startup queue composition is `[random first]`. It is a fast handoff from
+- Startup options are sampled by centerless audio-style selection inside the
+  whole playlist scope, not from a deterministic prefix of one collection.
+- Startup queue composition is `[centerless first]`. It is a fast handoff from
   prepared first-track evidence to `player`, not a recommendation planning
   point.
 - Existing unconsumed next-track work is linear. The same anchor keeps its
@@ -212,9 +210,9 @@ transition owner is the `playlist_playback::service` queue planning path:
 - consuming a prepared startup source deletes only that source; the replacement
   preparation commits as a separate refresh instead of being blocked by
   consumption itself;
-- bounded repo sampling belongs only to index preparation or an explicitly
-  modeled repair transition; it is not a hidden play-click compatibility path;
-- initial queue construction commits only the random first track;
+- model-backed first-slot preparation belongs only to the playable index; it is
+  not a hidden play-click compatibility path;
+- initial queue construction commits only the centerless prepared first track;
 - background next-track planning uses `propose_playlist_playback_queue_with_mode`
   immediately after player acceptance when the startup queue lacks a next track,
   and later when the active anchor changed or the queue lacks a next track;
@@ -282,8 +280,10 @@ repository offers a cheap full-playlist playable-track iterator with stable
 pagination and file-existence filtering.
 
 There is no cold-click bounded sampler exception in the playback-start path.
-During a cold startup or immediately after invalidation, an empty prepared index
-snapshot is an explicit startup miss. It schedules repair preparation, but it
+During a cold startup or immediately after invalidation, a missing prepared
+index snapshot is an explicit startup miss. Model-unavailable preparation does
+not commit an empty prepared snapshot. It schedules repair preparation, but it
 does not authorize `playlist_playback::service` to rebuild first-track startup
 inside the play action. The replacement preparation owner remains
-`playlist_playback::playable_index`.
+`playlist_playback::playable_index`, and the source of that replacement is
+centerless audio-style sampling.
