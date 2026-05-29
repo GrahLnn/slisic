@@ -1,5 +1,6 @@
 use super::recommendation::{
-    AudioStyleCandidateSelectionSource, filter_recently_played_recommendation_candidates,
+    AudioStyleCandidateSelectionSource, AudioStyleModelSnapshot,
+    filter_recently_played_recommendation_candidates,
 };
 use super::service::{
     PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
@@ -10,9 +11,11 @@ use super::service::{
     playlist_playback_proposal_contains_next_track,
     playlist_playback_queue_contains_next_track_after_anchor,
     playlist_selection_has_relevant_active_downloads,
+    propose_audio_style_playlist_playback_queue_from_snapshots,
     propose_playlist_playback_queue_without_audio_style_model, propose_random_queue_after_exclude,
     resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
-    should_refresh_playlist_queue_for_anchor, shuffle_playback_tracks,
+    should_refresh_playlist_queue_for_anchor, should_refresh_playlist_queue_for_same_anchor,
+    shuffle_playback_tracks,
 };
 use crate::domain::downloads::model::{DownloadTask, DownloadTaskStatus, DownloadTrigger};
 use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
@@ -26,6 +29,8 @@ use crate::domain::playlists::repo::{
 use appdb::Id;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const TEST_EMBEDDING_WIDTH: usize = 64 * 2 + 64 * 2 + 64 * 64;
 
 fn temp_root() -> PathBuf {
     let nanos = SystemTime::now()
@@ -47,6 +52,12 @@ fn playback_track(name: &str) -> PlaybackTrack {
         source_music: None,
         liked: false,
     }
+}
+
+fn test_embedding(active_index: usize) -> Vec<f32> {
+    let mut values = vec![0.0; TEST_EMBEDDING_WIDTH];
+    values[active_index] = 1.0;
+    values
 }
 
 fn group(name: &str, url: &str, folder: &str) -> Group {
@@ -698,6 +709,16 @@ fn random_recommender_uses_recent_history_before_selecting_next() {
 }
 
 #[test]
+fn start_anchor_queue_contains_only_the_resolved_initial_track() {
+    let current = playback_track("current");
+
+    let queue = create_start_anchor_playback_queue(current.clone());
+
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0].music_url, current.music_url);
+}
+
+#[test]
 fn playlist_playback_keep_current_proposal_without_next_track_is_not_complete() {
     let current_track = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -790,15 +811,11 @@ fn playlist_queue_fill_retries_same_anchor_until_next_track_exists() {
         Some(&current),
         &current,
         false,
-        Some(1),
-        Some(1),
     ));
     assert!(!should_refresh_playlist_queue_for_anchor(
         Some(&current),
         &current,
         true,
-        Some(1),
-        Some(1),
     ));
 }
 
@@ -811,22 +828,24 @@ fn playlist_queue_fill_refreshes_when_anchor_changes_even_if_queue_has_next() {
         Some(&current),
         &next,
         true,
-        Some(1),
-        Some(1),
     ));
 }
 
 #[test]
-fn playlist_queue_fill_refreshes_when_audio_style_model_generation_changes() {
+fn playlist_queue_fill_keeps_unconsumed_next_when_audio_style_model_generation_changes() {
     let current = playback_track("current");
 
-    assert!(should_refresh_playlist_queue_for_anchor(
+    assert!(!should_refresh_playlist_queue_for_anchor(
         Some(&current),
         &current,
         true,
-        Some(1),
-        Some(2),
     ));
+}
+
+#[test]
+fn playlist_queue_refresh_for_same_anchor_only_runs_when_next_is_missing() {
+    assert!(should_refresh_playlist_queue_for_same_anchor(false));
+    assert!(!should_refresh_playlist_queue_for_same_anchor(true));
 }
 
 #[test]
@@ -901,4 +920,52 @@ fn keep_current_audio_style_source_is_a_complete_recommendation_with_distinct_ne
         &[current_track, candidate],
         Some(AudioStyleCandidateSelectionSource::AudioStyle),
     ));
+}
+
+#[test]
+fn keep_current_audio_style_proposal_falls_back_to_older_complete_snapshot() {
+    let current = playback_track("current");
+    let unusable_next = playback_track("unusable_next");
+    let older_next = playback_track("older_next");
+    let latest = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
+        12,
+        [(current.clone(), test_embedding(2))],
+    ));
+    let older = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
+        11,
+        [
+            (current.clone(), test_embedding(2)),
+            (older_next.clone(), test_embedding(2)),
+        ],
+    ));
+
+    let proposal = propose_audio_style_playlist_playback_queue_from_snapshots(
+        PlaylistPlaybackRecommendationRequest {
+            playlist_name: "Focus".to_string(),
+            current_track: current.clone(),
+            candidates: vec![unusable_next, older_next.clone()],
+            recently_played_tracks: vec![],
+        },
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+        [latest, older],
+    )
+    .expect("older complete audio-style snapshot should still serve the queue");
+
+    assert_eq!(proposal.tracks.len(), 2);
+    assert_eq!(proposal.tracks[0].music_url, current.music_url);
+    assert_eq!(proposal.tracks[1].music_url, older_next.music_url);
+    assert_eq!(
+        proposal
+            .selection
+            .as_ref()
+            .map(|selection| selection.source),
+        Some(AudioStyleCandidateSelectionSource::AudioStyle)
+    );
+    assert_eq!(
+        proposal
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.model_generation),
+        Some(11)
+    );
 }

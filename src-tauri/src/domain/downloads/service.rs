@@ -10,12 +10,10 @@ use super::repo;
 #[cfg(not(test))]
 use super::yt_dlp::CliYtDlpClient;
 use super::yt_dlp::{
-    DownloadProgress, LeafProbe, LeafReference, RootProbe, RootShellProbe, YtDlpClient,
-    classify_root_preference, is_youtube_mix_playlist_id,
+    DownloadProgress, LeafProbe, LeafReference, RootProbe, YtDlpClient, classify_root_preference,
+    is_youtube_mix_playlist_id,
 };
-use crate::domain::collection_import::{
-    self, CollectionShellPlan, CollectionSyncPlan, PlannedLeaf,
-};
+use crate::domain::collection_import::{self, CollectionSyncPlan, PlannedLeaf};
 #[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
 use crate::domain::playlists::model::{Collection, Group};
@@ -473,7 +471,7 @@ async fn enqueue_collection_download_with_trigger(
             match collection_import::resolve_existing_enqueued_collection(&task).await {
                 Ok(collection) => (task, collection, None),
                 Err(_) if trigger == DownloadTrigger::Manual => {
-                    bootstrap_enqueued_collection_shell(task, app).await?
+                    bootstrap_enqueued_collection_provisional_shell(task)
                 }
                 Err(_) => {
                     let (task, collection) = bootstrap_enqueued_collection(task, app).await?;
@@ -484,7 +482,7 @@ async fn enqueue_collection_download_with_trigger(
         PreparedTaskEnqueue::New(task) => {
             let app = runtime()?.app.clone();
             if trigger == DownloadTrigger::Manual {
-                bootstrap_enqueued_collection_shell(task, app).await?
+                bootstrap_enqueued_collection_provisional_shell(task)
             } else {
                 let (task, collection) = bootstrap_enqueued_collection(task, app).await?;
                 (task, collection, None)
@@ -618,18 +616,6 @@ async fn bootstrap_enqueued_collection(
 }
 
 #[cfg(not(test))]
-async fn bootstrap_enqueued_collection_shell(
-    task: DownloadTask,
-    app: AppHandle,
-) -> Result<(DownloadTask, Collection, Option<RootProbe>)> {
-    let active_binary_task = ActiveBinaryTaskGuard::new(runtime()?);
-    let deps = resolve_execution_deps(&app).await?;
-    let result = bootstrap_enqueued_collection_shell_with_deps(task, deps.client).await;
-    drop(active_binary_task);
-    result
-}
-
-#[cfg(not(test))]
 async fn bootstrap_enqueued_collection_with_deps(
     task: DownloadTask,
     deps: DownloadExecutionDeps,
@@ -638,14 +624,12 @@ async fn bootstrap_enqueued_collection_with_deps(
     collection_import::persist_enqueued_collection_plan(task, &plan).await
 }
 
-async fn bootstrap_enqueued_collection_shell_with_deps(
+#[cfg(not(test))]
+fn bootstrap_enqueued_collection_provisional_shell(
     task: DownloadTask,
-    client: Arc<dyn YtDlpClient>,
-) -> Result<(DownloadTask, Collection, Option<RootProbe>)> {
-    let shell = resolve_collection_shell_plan(&task, client).await?;
-    collection_import::persist_enqueued_collection_shell_plan(task, &shell)
-        .await
-        .map(|(task, collection)| (task, collection, None))
+) -> (DownloadTask, Collection, Option<RootProbe>) {
+    let collection = provisional_collection_for_task(&task);
+    (task, collection, None)
 }
 
 #[cfg(not(test))]
@@ -1657,63 +1641,95 @@ async fn resolve_collection_plan_from_root_probe(
     }
 }
 
-pub(crate) async fn resolve_collection_shell_plan(
-    task: &DownloadTask,
-    client: Arc<dyn YtDlpClient>,
-) -> Result<CollectionShellPlan> {
-    let root_shell = probe_root_shell_with_limit(client, task.url.clone()).await?;
-    let shell = match root_shell {
-        RootShellProbe {
-            source_kind: CollectionSourceKind::Single,
-            title,
-            webpage_url,
-            ..
-        } => {
-            let collection_url = webpage_url;
-            let existing = collection_import::get_collection_by_url(&collection_url).await?;
-            CollectionShellPlan {
-                source_kind: CollectionSourceKind::Single,
-                collection_name: title.clone(),
-                collection_url: collection_url.clone(),
-                collection_folder: resolve_task_collection_folder(
-                    task,
-                    &collection_url,
-                    &title,
-                    existing.as_ref(),
-                )
-                .await?,
-                enable_updates: None,
-            }
-        }
-        RootShellProbe {
-            source_kind: CollectionSourceKind::List,
-            title,
-            webpage_url,
-            ..
-        } => {
-            let collection_url = webpage_url;
-            let existing = collection_import::get_collection_by_url(&collection_url).await?;
-            CollectionShellPlan {
-                source_kind: CollectionSourceKind::List,
-                collection_name: title.clone(),
-                collection_url: collection_url.clone(),
-                collection_folder: resolve_task_collection_folder(
-                    task,
-                    &collection_url,
-                    &title,
-                    existing.as_ref(),
-                )
-                .await?,
-                enable_updates: Some(
-                    existing
-                        .and_then(|collection| collection.enable_updates)
-                        .unwrap_or(false),
-                ),
-            }
-        }
-    };
+pub(crate) fn provisional_collection_for_task(task: &DownloadTask) -> Collection {
+    let collection_url = task.url.clone();
+    let collection_name = provisional_collection_name_for_url(&collection_url);
+    let source_kind = classify_root_preference(&collection_url);
+    let collection_folder =
+        provisional_collection_folder_for_url(&collection_url, &collection_name);
 
-    Ok(shell)
+    Collection {
+        name: collection_name,
+        url: collection_url,
+        folder: collection_folder,
+        musics: vec![],
+        last_updated: now_timestamp(),
+        enable_updates: match source_kind {
+            CollectionSourceKind::Single => None,
+            CollectionSourceKind::List => Some(false),
+        },
+    }
+}
+
+fn provisional_collection_folder_for_url(url: &str, name: &str) -> String {
+    let provider = Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()))
+        .map(|host| {
+            if host == "youtu.be" || host.ends_with("youtube.com") {
+                "youtube".to_string()
+            } else {
+                sanitize_path_component(&host.replace('.', "-"))
+            }
+        })
+        .filter(|provider| !provider.is_empty())
+        .unwrap_or_else(|| "download".to_string());
+    format!("{provider}/{}", sanitize_path_component(name))
+}
+
+fn provisional_collection_name_for_url(url: &str) -> String {
+    let Ok(parsed) = Url::parse(url) else {
+        return format!("Download {}", short_hash(url));
+    };
+    let host = parsed
+        .host_str()
+        .unwrap_or("download")
+        .trim_start_matches("www.")
+        .to_string();
+    let host_lower = host.to_ascii_lowercase();
+
+    if host_lower == "youtu.be"
+        && let Some(video_id) = parsed
+            .path_segments()
+            .and_then(|mut segments| segments.next())
+        && !video_id.trim().is_empty()
+    {
+        return format!("YouTube video {}", video_id.trim());
+    }
+
+    if host_lower.ends_with("youtube.com") {
+        let query = parsed.query_pairs().collect::<Vec<_>>();
+        if let Some((_, playlist_id)) = query
+            .iter()
+            .find(|(key, value)| key == "list" && !value.trim().is_empty())
+        {
+            return format!("YouTube playlist {}", playlist_id.trim());
+        }
+        if let Some((_, video_id)) = query
+            .iter()
+            .find(|(key, value)| key == "v" && !value.trim().is_empty())
+        {
+            return format!("YouTube video {}", video_id.trim());
+        }
+
+        let path = parsed.path().trim_matches('/').replace('/', " ");
+        if !path.trim().is_empty() {
+            return format!("YouTube {}", path.trim());
+        }
+    }
+
+    let path = parsed.path().trim_matches('/').replace('/', " ");
+    let label = if path.trim().is_empty() {
+        host
+    } else {
+        format!("{} {}", host, path.trim())
+    };
+    let label = label.trim();
+    if label.is_empty() {
+        format!("Download {}", short_hash(url))
+    } else {
+        label.to_string()
+    }
 }
 
 pub(crate) fn residual_collection_plan(task: &DownloadTask) -> Option<CollectionSyncPlan> {
@@ -2295,17 +2311,6 @@ pub(crate) async fn probe_root_with_limit(
         .await
         .context("download root probe limiter closed")?;
     run_blocking(move || client.probe_root(&url)).await
-}
-
-async fn probe_root_shell_with_limit(
-    client: Arc<dyn YtDlpClient>,
-    url: String,
-) -> Result<RootShellProbe> {
-    let _permit = root_probe_slots()
-        .acquire_owned()
-        .await
-        .context("download root shell probe limiter closed")?;
-    run_blocking(move || client.probe_root_shell(&url)).await
 }
 
 #[cfg(test)]

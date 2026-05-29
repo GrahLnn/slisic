@@ -68,6 +68,8 @@ const AUDIO_STYLE_ROUTE_STYLE_PRESSURE_STRENGTH: f32 = 1.15;
 const AUDIO_STYLE_ROUTE_STYLE_PRESSURE_CAP: f32 = 1.25;
 const AUDIO_STYLE_LIKED_ROUTE_PRESSURE_SCALE: f32 = 0.30;
 #[cfg(not(test))]
+const AUDIO_STYLE_COMPLETED_SNAPSHOT_FALLBACK_LIMIT: usize = 8;
+#[cfg(not(test))]
 const AUDIO_STYLE_INPUT_CHANGE_DEBOUNCE_MS: u64 = 500;
 
 #[allow(dead_code)]
@@ -307,6 +309,7 @@ impl PlaybackTrackKey {
 struct AudioStyleRecommendationRuntime {
     app: AppHandle,
     published_snapshot: RwLock<Option<Arc<AudioStyleModelSnapshot>>>,
+    completed_snapshots: RwLock<Vec<Arc<AudioStyleModelSnapshot>>>,
     training: Mutex<AudioStyleTrainingState>,
     next_generation: AtomicU64,
 }
@@ -378,8 +381,7 @@ impl AudioStyleRecommendationRuntime {
         }
     }
 
-    async fn train_and_publish(&self, _reason: &'static str) -> Result<()> {
-        let generation = self.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    async fn train_and_publish(self: &Arc<Self>, _reason: &'static str) -> Result<()> {
         let ffmpeg_path = crate::utils::binaries::resolve_installed_managed_binary(
             &self.app,
             crate::utils::binaries::ManagedBinary::Ffmpeg,
@@ -398,29 +400,39 @@ impl AudioStyleRecommendationRuntime {
         let indexed_tracks = resolved.indexed_tracks;
 
         let previous_snapshot = self.snapshot();
-        let snapshot = tauri::async_runtime::spawn_blocking(move || {
-            AudioStyleModelSnapshot::refresh_from_indexed_tracks(
-                generation,
+        let generation_runtime = Arc::clone(self);
+        let publish_runtime = Arc::clone(self);
+        let final_snapshot = tauri::async_runtime::spawn_blocking(move || {
+            AudioStyleModelSnapshot::refresh_from_indexed_tracks_progressively(
                 previous_snapshot.as_deref(),
                 &cache,
                 indexed_tracks,
+                || {
+                    generation_runtime
+                        .next_generation
+                        .fetch_add(1, Ordering::SeqCst)
+                        + 1
+                },
+                |snapshot| publish_runtime.publish_snapshot(snapshot),
             )
         })
         .await
         .context("audio style model update task panicked")?
         .map_err(|error| anyhow!(error.into_message()))?;
+        self.publish_completed_snapshot(final_snapshot);
 
+        Ok(())
+    }
+
+    fn publish_snapshot(&self, snapshot: AudioStyleModelSnapshot) {
         match self.published_snapshot.write() {
             Ok(mut published) => {
                 *published = Some(Arc::new(snapshot));
             }
             Err(_) => {
                 eprintln!("[playlist_playback] audio style model snapshot lock is poisoned");
-                return Ok(());
             }
         }
-
-        Ok(())
     }
 
     fn snapshot(&self) -> Option<Arc<AudioStyleModelSnapshot>> {
@@ -428,6 +440,56 @@ impl AudioStyleRecommendationRuntime {
             .read()
             .ok()
             .and_then(|snapshot| snapshot.clone())
+    }
+
+    fn publish_completed_snapshot(&self, snapshot: AudioStyleModelSnapshot) {
+        let snapshot = Arc::new(snapshot);
+        match self.published_snapshot.write() {
+            Ok(mut published) => {
+                *published = Some(Arc::clone(&snapshot));
+            }
+            Err(_) => {
+                eprintln!("[playlist_playback] audio style model snapshot lock is poisoned");
+            }
+        }
+
+        match self.completed_snapshots.write() {
+            Ok(mut completed) => {
+                if completed
+                    .last()
+                    .is_none_or(|existing| existing.generation != snapshot.generation)
+                {
+                    completed.push(snapshot);
+                }
+                if completed.len() > AUDIO_STYLE_COMPLETED_SNAPSHOT_FALLBACK_LIMIT {
+                    let excess = completed.len() - AUDIO_STYLE_COMPLETED_SNAPSHOT_FALLBACK_LIMIT;
+                    completed.drain(0..excess);
+                }
+            }
+            Err(_) => {
+                eprintln!("[playlist_playback] audio style completed snapshot lock is poisoned");
+            }
+        }
+    }
+
+    fn snapshots_for_anchor(&self, track: &PlaybackTrack) -> Vec<Arc<AudioStyleModelSnapshot>> {
+        let mut snapshots = Vec::new();
+        if let Some(snapshot) = self.snapshot() {
+            snapshots.push(snapshot);
+        }
+        if let Ok(completed) = self.completed_snapshots.read() {
+            for snapshot in completed.iter().rev() {
+                if snapshots
+                    .iter()
+                    .any(|candidate| candidate.generation == snapshot.generation)
+                {
+                    continue;
+                }
+                snapshots.push(Arc::clone(snapshot));
+            }
+        }
+
+        choose_audio_style_model_snapshots_for_anchor(track, snapshots)
     }
 }
 
@@ -437,6 +499,7 @@ pub(crate) fn initialize_audio_style_recommendation_runtime(app: AppHandle) {
         Arc::new(AudioStyleRecommendationRuntime {
             app,
             published_snapshot: RwLock::new(None),
+            completed_snapshots: RwLock::new(Vec::new()),
             training: Mutex::new(AudioStyleTrainingState::default()),
             next_generation: AtomicU64::new(0),
         })
@@ -464,6 +527,16 @@ pub(crate) fn published_audio_style_model_snapshot() -> Option<Arc<AudioStyleMod
     AUDIO_STYLE_RECOMMENDATION_RUNTIME
         .get()
         .and_then(|runtime| runtime.snapshot())
+}
+
+#[cfg(not(test))]
+pub(crate) fn published_audio_style_model_snapshots_for_anchor(
+    track: &PlaybackTrack,
+) -> Vec<Arc<AudioStyleModelSnapshot>> {
+    AUDIO_STYLE_RECOMMENDATION_RUNTIME
+        .get()
+        .map(|runtime| runtime.snapshots_for_anchor(track))
+        .unwrap_or_default()
 }
 
 #[cfg(not(test))]
@@ -1057,15 +1130,14 @@ impl AudioStyleSamplingGeometry {
 }
 
 impl AudioStyleModelState {
-    fn refresh_from(
+    fn refresh_from_with_progress(
         previous: Option<&Self>,
         cache: &AudioStyleEmbeddingCache,
         indexed_tracks: Vec<AudioStyleIndexedTrack>,
+        mut on_progress: impl FnMut(Self),
     ) -> Result<Self, AudioStyleModelUpdateFailure> {
-        let mut embeddings = AudioStyleEmbeddingMap::new();
         let mut indexed_by_key = HashMap::new();
-        let mut previous_reused = HashSet::new();
-        let mut failed = Vec::new();
+        let mut ordered_tracks = Vec::new();
         let mut seen = HashSet::new();
 
         for indexed in indexed_tracks {
@@ -1081,16 +1153,43 @@ impl AudioStyleModelState {
                     source: indexed.source,
                 },
             );
+            ordered_tracks.push((key, track));
+        }
 
-            if let Some(embedding) = previous.and_then(|state| state.embeddings.get(&key)) {
+        let previous_state = previous.cloned();
+        let mut embeddings = AudioStyleEmbeddingMap::new();
+        let mut previous_reused = HashSet::new();
+        let mut missing_tracks = Vec::new();
+        let mut failed = Vec::new();
+        let mut latest_state = None;
+
+        for (key, track) in ordered_tracks {
+            if let Some(embedding) = previous_state
+                .as_ref()
+                .and_then(|state| state.embeddings.get(&key))
+            {
                 embeddings.insert(key.clone(), Arc::clone(embedding));
                 previous_reused.insert(key);
                 continue;
             }
 
+            missing_tracks.push((key, track));
+        }
+
+        for (key, track) in missing_tracks {
+            let reused_before_insert = embeddings.keys().cloned().collect::<HashSet<_>>();
+
             match cache.embedding_for_track(&track) {
                 Ok(embedding) => {
-                    embeddings.insert(key, Arc::new(embedding));
+                    embeddings.insert(key.clone(), Arc::new(embedding));
+                    let state = Self::from_embeddings(
+                        latest_state.as_ref().or(previous_state.as_ref()),
+                        embeddings.clone(),
+                        indexed_by_key.clone(),
+                        &reused_before_insert,
+                    );
+                    on_progress(state.clone());
+                    latest_state = Some(state);
                 }
                 Err(error) => {
                     eprintln!(
@@ -1102,13 +1201,14 @@ impl AudioStyleModelState {
             }
         }
 
-        let previous_state = previous.cloned();
-        let state = Self::from_embeddings(
-            previous_state.as_ref(),
-            embeddings,
-            indexed_by_key,
-            &previous_reused,
-        );
+        let state = latest_state.unwrap_or_else(|| {
+            Self::from_embeddings(
+                previous_state.as_ref(),
+                embeddings,
+                indexed_by_key,
+                &previous_reused,
+            )
+        });
         if state.embeddings.is_empty() {
             return Err(AudioStyleModelUpdateFailure {
                 state,
@@ -1887,21 +1987,47 @@ impl AudioStyleModelSnapshot {
                 track,
             })
             .collect();
-        Self::refresh_from_indexed_tracks(generation, previous, cache, indexed_tracks)
+        let mut snapshots = Vec::new();
+        Self::refresh_from_indexed_tracks_progressively(
+            previous,
+            cache,
+            indexed_tracks,
+            || generation,
+            |snapshot| snapshots.push(snapshot),
+        )?;
+        Ok(snapshots
+            .pop()
+            .expect("audio style refresh publishes a snapshot on success"))
     }
 
-    fn refresh_from_indexed_tracks(
-        generation: u64,
+    fn refresh_from_indexed_tracks_progressively(
         previous: Option<&Self>,
         cache: &AudioStyleEmbeddingCache,
         indexed_tracks: Vec<AudioStyleIndexedTrack>,
+        mut next_generation: impl FnMut() -> u64,
+        mut publish: impl FnMut(Self),
     ) -> Result<Self, AudioStyleModelUpdateFailure> {
-        let state = Arc::new(AudioStyleModelState::refresh_from(
+        let mut published_progress = false;
+        let mut last_published = None;
+        let state = AudioStyleModelState::refresh_from_with_progress(
             previous.map(|snapshot| snapshot.state.as_ref()),
             cache,
             indexed_tracks,
-        )?);
-        Ok(Self::from_state(generation, state))
+            |state| {
+                let snapshot = Self::from_state(next_generation(), Arc::new(state));
+                published_progress = true;
+                publish(snapshot.clone());
+                last_published = Some(snapshot);
+            },
+        )?;
+
+        if !published_progress {
+            let snapshot = Self::from_state(next_generation(), Arc::new(state));
+            publish(snapshot.clone());
+            return Ok(snapshot);
+        }
+
+        Ok(last_published.expect("progressive refresh must publish when progress was reported"))
     }
 
     fn from_state(generation: u64, state: Arc<AudioStyleModelState>) -> Self {
@@ -1922,6 +2048,10 @@ impl AudioStyleModelSnapshot {
 
     pub(crate) fn recommender(&self) -> &AudioStylePlaylistPlaybackRecommender {
         &self.recommender
+    }
+
+    pub(crate) fn has_embedding_for(&self, track: &PlaybackTrack) -> bool {
+        self.recommender.has_embedding_for(track)
     }
 
     #[cfg(test)]
@@ -1950,6 +2080,44 @@ impl AudioStyleModelSnapshot {
     }
 
     #[cfg(test)]
+    pub(crate) fn refresh_progressively_for_test(
+        first_generation: u64,
+        previous: Option<&Self>,
+        cache: &AudioStyleEmbeddingCache,
+        tracks: Vec<PlaybackTrack>,
+    ) -> Result<Vec<Self>, String> {
+        let mut next_generation = first_generation;
+        let mut snapshots = Vec::new();
+        let indexed_tracks = tracks
+            .into_iter()
+            .map(|track| AudioStyleIndexedTrack {
+                source: PlaylistPlaybackTrackSource {
+                    collection_folder: String::new(),
+                    music: track
+                        .source_music
+                        .as_deref()
+                        .cloned()
+                        .unwrap_or_else(|| playback_track_source_music_from_track(&track)),
+                },
+                track,
+            })
+            .collect();
+        Self::refresh_from_indexed_tracks_progressively(
+            previous,
+            cache,
+            indexed_tracks,
+            || {
+                let generation = next_generation;
+                next_generation += 1;
+                generation
+            },
+            |snapshot| snapshots.push(snapshot),
+        )
+        .map_err(|error| error.into_message())?;
+        Ok(snapshots)
+    }
+
+    #[cfg(test)]
     pub(crate) fn embedding_arc_for_track(
         &self,
         track: &PlaybackTrack,
@@ -1959,6 +2127,18 @@ impl AudioStyleModelSnapshot {
             .get(&PlaybackTrackKey::from_track(track))
             .cloned()
     }
+}
+
+pub(crate) fn choose_audio_style_model_snapshots_for_anchor(
+    track: &PlaybackTrack,
+    snapshots: impl IntoIterator<Item = Arc<AudioStyleModelSnapshot>>,
+) -> Vec<Arc<AudioStyleModelSnapshot>> {
+    let mut snapshots = snapshots
+        .into_iter()
+        .filter(|snapshot| snapshot.has_embedding_for(track))
+        .collect::<Vec<_>>();
+    snapshots.sort_by_key(|snapshot| std::cmp::Reverse(snapshot.generation()));
+    snapshots
 }
 
 fn dedupe_tracks_excluding(

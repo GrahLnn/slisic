@@ -6,17 +6,16 @@ use super::service::{
     derive_youtube_channel_url_from_uploads_playlist, discard_materialized_planned_leaves,
     expand_root_entries_to_planned_leafs, extract_olak_playlist_ids, handle_finished_leaf_download,
     is_retryable_leaf_download_error, leaf_download_parallelism, prepare_task_enqueue,
-    probe_root_with_limit, residual_collection_plan, resolve_collection_plan,
-    resolve_collection_plan_with_root_probe, resolve_collection_shell_plan,
-    resolve_pasted_download_url, resolve_residual_temp_downloaded_file,
-    resolve_task_collection_folder, resume_download_task, root_probe_parallelism,
-    should_interrupt_unresumable_active_task_after_restart,
+    probe_root_with_limit, provisional_collection_for_task, residual_collection_plan,
+    resolve_collection_plan, resolve_collection_plan_with_root_probe, resolve_pasted_download_url,
+    resolve_residual_temp_downloaded_file, resolve_task_collection_folder, resume_download_task,
+    root_probe_parallelism, should_interrupt_unresumable_active_task_after_restart,
     should_recover_download_task_after_restart, should_reprobe_single_leaf,
     should_resume_download_task_after_restart, try_claim_enqueue_url,
 };
 use super::yt_dlp::{
     DownloadProgress, DownloadedLeaf, LeafChapter, LeafProbe, LeafReference, PlaylistRoot,
-    RootProbe, RootShellProbe, YtDlpClient,
+    RootProbe, YtDlpClient,
 };
 /// Appdb-style domain tests stay inside a local Tokio runtime and a temporary
 /// appdb instance. Keep this file free of Tauri host setup and `AppHandle`
@@ -919,28 +918,16 @@ fn leaf_probe(title: &str, url: &str, duration_seconds: u32) -> LeafProbe {
 
 #[derive(Debug, Default)]
 struct FakeYtDlpClient {
-    shells: HashMap<String, RootShellProbe>,
     roots: HashMap<String, RootProbe>,
 }
 
 impl FakeYtDlpClient {
     fn with_roots(roots: HashMap<String, RootProbe>) -> Self {
-        Self {
-            shells: HashMap::new(),
-            roots,
-        }
+        Self { roots }
     }
 }
 
 impl YtDlpClient for FakeYtDlpClient {
-    fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe> {
-        self.shells
-            .get(url)
-            .cloned()
-            .or_else(|| self.roots.get(url).map(root_shell_probe_from_root_probe))
-            .ok_or_else(|| anyhow!("missing fake root shell probe for {url}"))
-    }
-
     fn probe_root(&self, url: &str) -> Result<RootProbe> {
         self.roots
             .get(url)
@@ -960,23 +947,6 @@ impl YtDlpClient for FakeYtDlpClient {
         _on_progress: &mut dyn FnMut(DownloadProgress),
     ) -> Result<DownloadedLeaf> {
         Err(anyhow!("unexpected fake download call for {url}"))
-    }
-}
-
-fn root_shell_probe_from_root_probe(root: &RootProbe) -> RootShellProbe {
-    match root {
-        RootProbe::Single(leaf) => RootShellProbe {
-            source_kind: CollectionSourceKind::Single,
-            title: leaf.title.clone(),
-            webpage_url: leaf.webpage_url.clone(),
-            extractor_key: leaf.extractor_key.clone(),
-        },
-        RootProbe::List(list) => RootShellProbe {
-            source_kind: CollectionSourceKind::List,
-            title: list.title.clone(),
-            webpage_url: list.webpage_url.clone(),
-            extractor_key: list.extractor_key.clone(),
-        },
     }
 }
 
@@ -1000,10 +970,6 @@ impl CountingRootProbeClient {
 }
 
 impl YtDlpClient for CountingRootProbeClient {
-    fn probe_root_shell(&self, _url: &str) -> Result<RootShellProbe> {
-        Err(anyhow!("unexpected counting probe_root_shell call"))
-    }
-
     fn probe_root(&self, url: &str) -> Result<RootProbe> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(active, Ordering::SeqCst);
@@ -1693,94 +1659,23 @@ fn resolve_collection_plan_rejects_empty_lists() {
 }
 
 #[test]
-fn resolve_collection_shell_plan_projects_only_root_identity() {
-    let _guard = acquire_db_test_lock();
+fn provisional_collection_for_manual_enqueue_does_not_claim_task_identity() {
+    let task = DownloadTask::new(
+        "task-provisional",
+        "https://www.youtube.com/playlist?list=PLpending",
+        DownloadTrigger::Manual,
+    );
 
-    run_async(async {
-        ensure_db().await;
+    let collection = provisional_collection_for_task(&task);
 
-        let root_url = "https://www.youtube.com/@C418/releases";
-        let nested_url = "https://www.youtube.com/playlist?list=album";
-        let task = DownloadTask::new("task-shell-plan", root_url, DownloadTrigger::Manual);
-        let client = Arc::new(FakeYtDlpClient::with_roots(HashMap::from([
-            (
-                root_url.to_string(),
-                RootProbe::List(PlaylistRoot {
-                    title: "C418 - Releases".to_string(),
-                    webpage_url: root_url.to_string(),
-                    extractor_key: Some("YoutubeTab".to_string()),
-                    entries: vec![LeafReference {
-                        url: nested_url.to_string(),
-                        title: Some("Minecraft - Volume Alpha".to_string()),
-                        sequence: 0,
-                    }],
-                }),
-            ),
-            (
-                nested_url.to_string(),
-                RootProbe::List(PlaylistRoot {
-                    title: "Minecraft - Volume Alpha".to_string(),
-                    webpage_url: nested_url.to_string(),
-                    extractor_key: Some("YoutubeTab".to_string()),
-                    entries: vec![LeafReference {
-                        url: "https://www.youtube.com/watch?v=alpha".to_string(),
-                        title: Some("Alpha".to_string()),
-                        sequence: 0,
-                    }],
-                }),
-            ),
-        ])));
-
-        let shell = resolve_collection_shell_plan(&task, client)
-            .await
-            .expect("root shell should resolve without nested expansion");
-
-        assert_eq!(shell.collection_name, "C418 - Releases");
-        assert_eq!(shell.collection_url, root_url);
-        assert_eq!(shell.collection_folder, "youtube/C418 - Releases");
-        assert_eq!(shell.source_kind, CollectionSourceKind::List);
-
-        reset_db();
-    });
-}
-
-#[test]
-fn resolve_collection_shell_plan_accepts_entryless_playlist_shell() {
-    let _guard = acquire_db_test_lock();
-
-    run_async(async {
-        ensure_db().await;
-
-        let root_url = "https://www.youtube.com/playlist?list=PLlarge";
-        let task = DownloadTask::new(
-            "task-entryless-shell-plan",
-            root_url,
-            DownloadTrigger::Manual,
-        );
-        let client = Arc::new(FakeYtDlpClient {
-            shells: HashMap::from([(
-                root_url.to_string(),
-                RootShellProbe {
-                    source_kind: CollectionSourceKind::List,
-                    title: "Large Playlist".to_string(),
-                    webpage_url: root_url.to_string(),
-                    extractor_key: Some("YoutubeTab".to_string()),
-                },
-            )]),
-            roots: HashMap::new(),
-        });
-
-        let shell = resolve_collection_shell_plan(&task, client)
-            .await
-            .expect("playlist shell metadata should not need full entry expansion");
-
-        assert_eq!(shell.collection_name, "Large Playlist");
-        assert_eq!(shell.collection_url, root_url);
-        assert_eq!(shell.collection_folder, "youtube/Large Playlist");
-        assert_eq!(shell.source_kind, CollectionSourceKind::List);
-
-        reset_db();
-    });
+    assert_eq!(collection.url, task.url);
+    assert_eq!(collection.name, "YouTube playlist PLpending");
+    assert_eq!(collection.folder, "youtube/YouTube playlist PLpending");
+    assert_eq!(collection.enable_updates, Some(false));
+    assert!(task.collection_url.is_none());
+    assert!(task.collection_name.is_none());
+    assert!(task.collection_folder.is_none());
+    assert!(task.source_kind.is_none());
 }
 
 #[test]

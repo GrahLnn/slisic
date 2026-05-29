@@ -292,20 +292,6 @@ pub(crate) async fn persist_enqueued_collection_plan(
     Ok((task, collection))
 }
 
-pub(crate) async fn persist_enqueued_collection_shell_plan(
-    mut task: DownloadTask,
-    plan: &CollectionShellPlan,
-) -> Result<(DownloadTask, Collection)> {
-    let existing = collection_repo::get_collection_by_url(&plan.collection_url).await?;
-    let collection =
-        collection_repo::upsert_collection(&create_collection_shell_from_plan(plan, existing))
-            .await?;
-    apply_collection_shell_plan_to_task(&mut task, plan);
-    task.last_error = None;
-    let task = download_repo::save_task(task).await?;
-    Ok((task, collection))
-}
-
 pub(crate) async fn persist_empty_collection(collection: &mut Collection) -> Result<()> {
     collection.last_updated = now_timestamp();
     let saved = collection_repo::upsert_collection(collection).await?;

@@ -1,8 +1,6 @@
 #[cfg(not(test))]
 use crate::domain::player::event::{PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent};
 #[cfg(not(test))]
-use crate::domain::playlist_playback::recommendation::published_audio_style_model_snapshot;
-#[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
 use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlaybackTrackSource};
 use anyhow::{Result, anyhow};
@@ -52,6 +50,10 @@ impl PlayableIndexRefreshReason {
                 | Self::LibraryChanged
                 | Self::ExcludeChanged
         )
+    }
+
+    fn replaces_existing_snapshots(self) -> bool {
+        self.invalidates_existing_snapshots()
     }
 }
 
@@ -165,11 +167,19 @@ pub(crate) fn notify_playback_miss(playlist_name: &str) {
 }
 
 pub(crate) fn consume_playlist_source(snapshot: &PlaylistPlayableIndexSnapshot) -> Result<bool> {
-    let consumed = consume_playlist_source_snapshot(snapshot)?;
+    let consumed = remove_playlist_source_snapshot(snapshot)?;
     if consumed {
         notify_prepared_source_consumed_impl(&snapshot.playlist_name);
     }
     Ok(consumed)
+}
+
+pub(crate) fn discard_playlist_source(snapshot: &PlaylistPlayableIndexSnapshot) -> Result<bool> {
+    let discarded = remove_playlist_source_snapshot(snapshot)?;
+    if discarded {
+        notify_playback_miss_impl(&snapshot.playlist_name);
+    }
+    Ok(discarded)
 }
 
 #[cfg(not(test))]
@@ -235,7 +245,7 @@ pub(crate) fn read_playlist_source(
     }))
 }
 
-fn consume_playlist_source_snapshot(snapshot: &PlaylistPlayableIndexSnapshot) -> Result<bool> {
+fn remove_playlist_source_snapshot(snapshot: &PlaylistPlayableIndexSnapshot) -> Result<bool> {
     let runtime = try_runtime()?;
     let mut state = runtime
         .state
@@ -250,10 +260,6 @@ fn consume_playlist_source_snapshot(snapshot: &PlaylistPlayableIndexSnapshot) ->
     }
 
     state.playlists.remove(&snapshot.playlist_name);
-    let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
-    state
-        .playlist_generations
-        .insert(snapshot.playlist_name.clone(), generation);
     Ok(true)
 }
 
@@ -263,7 +269,22 @@ pub(crate) async fn refresh_playlist_now_for_test(
     source: Option<PlaylistPlaybackTrackSource>,
 ) -> Result<()> {
     let generation = next_generation()?;
-    commit_playlist_snapshot(selection.playlist_name, generation, source)
+    commit_playlist_snapshot(
+        selection.playlist_name,
+        generation,
+        source,
+        PlayableIndexRefreshReason::PlaylistChanged,
+    )
+}
+
+#[cfg(test)]
+pub(crate) async fn refresh_playlist_now_for_reason_for_test(
+    selection: PlaylistPlaybackSelection,
+    source: Option<PlaylistPlaybackTrackSource>,
+    reason: PlayableIndexRefreshReason,
+) -> Result<()> {
+    let generation = next_generation()?;
+    commit_playlist_snapshot(selection.playlist_name, generation, source, reason)
 }
 
 #[cfg(test)]
@@ -492,7 +513,12 @@ async fn refresh_all(
                 .get(&playlist_name)
                 .copied()
                 .unwrap_or(0);
-            if state.global_generation == generation && latest_generation <= generation {
+            let can_replace = reason.replaces_existing_snapshots()
+                || !state.playlists.contains_key(&playlist_name);
+            if state.global_generation == generation
+                && latest_generation <= generation
+                && can_replace
+            {
                 state
                     .playlist_generations
                     .insert(playlist_name.clone(), generation);
@@ -584,15 +610,20 @@ async fn refresh_playlist(
         {
             match snapshot {
                 Some(snapshot) => {
-                    state
-                        .playlists
-                        .insert(snapshot.playlist_name.clone(), snapshot);
+                    let can_replace = reason.replaces_existing_snapshots()
+                        || !state.playlists.contains_key(&playlist_name);
+                    if can_replace {
+                        state
+                            .playlists
+                            .insert(snapshot.playlist_name.clone(), snapshot);
+                        committed = true;
+                    }
                 }
                 None => {
                     state.playlists.remove(&playlist_name);
+                    committed = true;
                 }
             }
-            committed = true;
         }
         state.active_refreshes.remove(&playlist_name);
         state.pending_refreshes.remove(&playlist_name)
@@ -687,32 +718,7 @@ fn release_global_refresh_and_spawn_pending(
 async fn prepare_playlist_source(
     selection: &PlaylistPlaybackSelection,
 ) -> Result<Option<PlaylistPlaybackTrackSource>> {
-    if let Some(source) = prepare_audio_style_playlist_source(selection) {
-        return Ok(Some(source));
-    }
-
     prepare_random_playlist_source(selection).await
-}
-
-#[cfg(not(test))]
-fn prepare_audio_style_playlist_source(
-    selection: &PlaylistPlaybackSelection,
-) -> Option<PlaylistPlaybackTrackSource> {
-    let snapshot = published_audio_style_model_snapshot()?;
-    let (source, mut selection_trace) =
-        snapshot.recommender().propose_centerless_source(|source| {
-            playlist_playback_source_belongs_to_selection(selection, source)
-        })?;
-    selection_trace.model_generation = Some(snapshot.generation());
-    println!(
-        "[playlist_playback_index] audio style prepared source playlist=\"{}\" generation={} probability={:.6} candidates={} music=\"{}\"",
-        escape_log_value(&selection.playlist_name),
-        snapshot.generation(),
-        selection_trace.probability,
-        selection_trace.candidate_count,
-        escape_log_value(&source.music.alias)
-    );
-    Some(source)
 }
 
 #[cfg(not(test))]
@@ -726,25 +732,6 @@ async fn prepare_random_playlist_source(
     .await?
     .into_iter()
     .next())
-}
-
-#[cfg(not(test))]
-fn playlist_playback_source_belongs_to_selection(
-    selection: &PlaylistPlaybackSelection,
-    source: &PlaylistPlaybackTrackSource,
-) -> bool {
-    selection
-        .collections
-        .iter()
-        .any(|collection| collection.folder == source.collection_folder)
-        || selection
-            .groups
-            .iter()
-            .any(|group| group.url == source.music.group.url)
-        || selection
-            .extra
-            .iter()
-            .any(|extra| extra.matches_canonical_music_id(&source.music.canonical_music_id))
 }
 
 #[cfg(not(test))]
@@ -805,12 +792,16 @@ fn commit_playlist_snapshot(
     playlist_name: String,
     generation: u64,
     source: Option<PlaylistPlaybackTrackSource>,
+    reason: PlayableIndexRefreshReason,
 ) -> Result<()> {
     let runtime = try_runtime()?;
     let mut state = runtime
         .state
         .lock()
         .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    if !reason.replaces_existing_snapshots() && state.playlists.contains_key(&playlist_name) {
+        return Ok(());
+    }
     state.playlists.insert(
         playlist_name.clone(),
         PlaylistPlayableIndexSnapshot {

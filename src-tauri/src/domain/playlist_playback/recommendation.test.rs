@@ -1,6 +1,7 @@
 use super::recommendation::{
     AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST, AudioStyleEmbeddingCache, AudioStyleModelSnapshot,
     AudioStylePlaylistPlaybackRecommender, audio_style_transition_fingerprint_for_test,
+    choose_audio_style_model_snapshots_for_anchor,
     choose_centerless_audio_style_candidate_for_test, choose_next_audio_style_candidate_for_test,
     choose_next_audio_style_candidate_with_generation_for_test,
     choose_next_audio_style_candidate_with_recent_history_for_test,
@@ -859,6 +860,52 @@ fn audio_style_model_refresh_reuses_unchanged_embeddings() {
 }
 
 #[test]
+fn audio_style_model_refresh_publishes_each_new_embedding_progressively() {
+    let root = temp_cache_root("refresh_progressive");
+    std::fs::create_dir_all(&root).expect("cache test root should be created");
+    let cache = AudioStyleEmbeddingCache::new(PathBuf::from("missing-ffmpeg"), root.clone())
+        .expect("cache should be created without ffmpeg");
+    let mut current = track("current");
+    let mut added_one = track("added_one");
+    let mut added_two = track("added_two");
+    current.file_path = root.join("current.m4a");
+    added_one.file_path = root.join("added_one.m4a");
+    added_two.file_path = root.join("added_two.m4a");
+    std::fs::write(&current.file_path, b"current").expect("current test audio should exist");
+    std::fs::write(&added_one.file_path, b"added_one").expect("first test audio should exist");
+    std::fs::write(&added_two.file_path, b"added_two").expect("second test audio should exist");
+
+    let previous =
+        AudioStyleModelSnapshot::from_test_embeddings(1, [(current.clone(), embedding(2))]);
+    cache
+        .write_test_embedding_for_track(&added_one, embedding(3))
+        .expect("first new embedding should be cached");
+    cache
+        .write_test_embedding_for_track(&added_two, embedding(4))
+        .expect("second new embedding should be cached");
+
+    let snapshots = AudioStyleModelSnapshot::refresh_progressively_for_test(
+        2,
+        Some(&previous),
+        &cache,
+        vec![current.clone(), added_one.clone(), added_two.clone()],
+    )
+    .expect("refresh should publish once per newly indexed embedding");
+
+    assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots[0].generation(), 2);
+    assert_eq!(snapshots[1].generation(), 3);
+    assert!(snapshots[0].recommender().has_embedding_for(&current));
+    assert!(snapshots[0].recommender().has_embedding_for(&added_one));
+    assert!(!snapshots[0].recommender().has_embedding_for(&added_two));
+    assert!(snapshots[1].recommender().has_embedding_for(&current));
+    assert!(snapshots[1].recommender().has_embedding_for(&added_one));
+    assert!(snapshots[1].recommender().has_embedding_for(&added_two));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn audio_style_model_refresh_recenters_reused_embeddings_with_new_mean() {
     let current = track("current");
     let near = track("near");
@@ -1112,7 +1159,6 @@ fn replacing_audio_style_snapshot_does_not_mutate_old_snapshot() {
             (far.clone(), embedding(128)),
         ],
     ));
-    let mut published = old.clone();
     let new = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
         2,
         [
@@ -1121,7 +1167,7 @@ fn replacing_audio_style_snapshot_does_not_mutate_old_snapshot() {
             (far.clone(), embedding(2)),
         ],
     ));
-    published = new;
+    let published = new;
 
     let old_selection = choose_next_audio_style_candidate_with_generation_for_test(
         &current,
@@ -1142,6 +1188,80 @@ fn replacing_audio_style_snapshot_does_not_mutate_old_snapshot() {
     assert_eq!(old_selection.model_generation, Some(1));
     assert_eq!(new_selection.index, 1);
     assert_eq!(new_selection.model_generation, Some(2));
+}
+
+#[test]
+fn audio_style_snapshot_selection_uses_latest_model_that_contains_the_current_anchor() {
+    let current = track("current");
+    let old_neighbor = track("old_neighbor");
+    let new_only = track("new_only");
+    let old = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
+        10,
+        [
+            (current.clone(), embedding(2)),
+            (old_neighbor, embedding(3)),
+        ],
+    ));
+    let latest = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
+        11,
+        [(new_only, embedding(4))],
+    ));
+
+    let selected =
+        choose_audio_style_model_snapshots_for_anchor(&current, [latest.clone(), old.clone()])
+            .into_iter()
+            .next()
+            .expect("old completed model should serve while the latest model lacks the anchor");
+
+    assert_eq!(selected.generation(), old.generation());
+}
+
+#[test]
+fn audio_style_snapshot_selection_prefers_latest_model_when_it_contains_the_current_anchor() {
+    let current = track("current");
+    let old = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
+        10,
+        [(current.clone(), embedding(2))],
+    ));
+    let latest = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
+        11,
+        [(current.clone(), embedding(4))],
+    ));
+
+    let selected =
+        choose_audio_style_model_snapshots_for_anchor(&current, [old.clone(), latest.clone()])
+            .into_iter()
+            .next()
+            .expect("latest matching model should be selected");
+
+    assert_eq!(selected.generation(), latest.generation());
+}
+
+#[test]
+fn audio_style_snapshot_selection_returns_matching_models_from_latest_to_oldest() {
+    let current = track("current");
+    let ignored = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
+        12,
+        [(track("ignored"), embedding(8))],
+    ));
+    let older = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
+        10,
+        [(current.clone(), embedding(2))],
+    ));
+    let newer = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
+        11,
+        [(current.clone(), embedding(4))],
+    ));
+
+    let generations = choose_audio_style_model_snapshots_for_anchor(
+        &current,
+        [older.clone(), ignored, newer.clone()],
+    )
+    .into_iter()
+    .map(|snapshot| snapshot.generation())
+    .collect::<Vec<_>>();
+
+    assert_eq!(generations, vec![newer.generation(), older.generation()]);
 }
 
 #[test]

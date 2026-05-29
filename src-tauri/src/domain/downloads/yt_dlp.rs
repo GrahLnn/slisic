@@ -27,6 +27,7 @@ pub struct PlaylistRoot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub struct RootShellProbe {
     pub source_kind: CollectionSourceKind,
     pub title: String,
@@ -79,7 +80,6 @@ pub struct DownloadProgress {
 }
 
 pub trait YtDlpClient: Send + Sync {
-    fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe>;
     fn probe_root(&self, url: &str) -> Result<RootProbe>;
     fn probe_leaf(&self, url: &str) -> Result<LeafProbe>;
     fn download_leaf_audio(
@@ -146,16 +146,6 @@ impl CliYtDlpClient {
 }
 
 impl YtDlpClient for CliYtDlpClient {
-    fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe> {
-        match classify_root_preference(url) {
-            CollectionSourceKind::Single => self.probe_leaf(url).map(root_shell_from_leaf_probe),
-            CollectionSourceKind::List => {
-                let args = build_root_playlist_shell_probe_args(url);
-                parse_root_shell_probe(self.run_json_command(&args)?, url)
-            }
-        }
-    }
-
     fn probe_root(&self, url: &str) -> Result<RootProbe> {
         match classify_root_preference(url) {
             CollectionSourceKind::Single => self.probe_leaf(url).map(RootProbe::Single),
@@ -303,6 +293,7 @@ pub(crate) fn build_root_playlist_probe_args(url: &str) -> Vec<String> {
     args
 }
 
+#[cfg(test)]
 pub(crate) fn build_root_playlist_shell_probe_args(url: &str) -> Vec<String> {
     let mut args = build_root_playlist_base_probe_args(url);
     args.splice(3..3, ["--playlist-items".to_string(), "0".to_string()]);
@@ -372,6 +363,7 @@ pub fn looks_like_direct_leaf_url(url: &str) -> bool {
     false
 }
 
+#[cfg(test)]
 pub fn parse_root_shell_probe(value: Value, input_url: &str) -> Result<RootShellProbe> {
     let is_playlist = value
         .get("_type")
@@ -397,6 +389,7 @@ pub fn parse_root_shell_probe(value: Value, input_url: &str) -> Result<RootShell
     })
 }
 
+#[cfg(test)]
 fn root_shell_from_leaf_probe(leaf: LeafProbe) -> RootShellProbe {
     RootShellProbe {
         source_kind: CollectionSourceKind::Single,

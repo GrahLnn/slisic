@@ -23,12 +23,13 @@ use crate::domain::player::strategy::PlaybackQueueMode;
 use crate::domain::playlist_playback::playable_index;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
-    AudioStyleCandidateSelection, AudioStylePlaylistPlaybackProposal,
-    initialize_audio_style_recommendation_runtime, notify_audio_style_training_inputs_changed,
-    published_audio_style_model_snapshot,
+    AudioStyleCandidateSelection, initialize_audio_style_recommendation_runtime,
+    notify_audio_style_training_inputs_changed, published_audio_style_model_snapshot,
+    published_audio_style_model_snapshots_for_anchor,
 };
 use crate::domain::playlist_playback::recommendation::{
-    AudioStyleCandidateSelectionSource, filter_recently_played_recommendation_candidates,
+    AudioStyleCandidateSelectionSource, AudioStyleModelSnapshot,
+    AudioStylePlaylistPlaybackProposal, filter_recently_played_recommendation_candidates,
 };
 #[cfg(not(test))]
 use crate::domain::playlists::model::Music;
@@ -42,8 +43,9 @@ use std::collections::HashSet;
 #[cfg(not(test))]
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 #[cfg(not(test))]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 #[cfg(not(test))]
 use std::time::Instant;
 #[cfg(not(test))]
@@ -854,7 +856,6 @@ async fn fill_playlist_track_queue(
 ) -> Result<()> {
     let mut current_anchor: Option<PlaybackTrack> = None;
     let mut recommendation_refresh_requests = PlaylistQueueRecommendationRefreshRequests::default();
-    let mut current_model_generation: Option<u64> = None;
     loop {
         if !player_service::is_session_current(&session)? {
             return Ok(());
@@ -864,13 +865,10 @@ async fn fill_playlist_track_queue(
         let recent_history_snapshot =
             observe_playlist_playback_recent_history(&recent_history, active_track.clone())?;
         let queue_has_next = current_session_queue_contains_next(&session, &active_track)?;
-        let model_generation = current_audio_style_model_generation();
         if should_refresh_playlist_queue_for_anchor(
             current_anchor.as_ref(),
             &active_track,
             queue_has_next,
-            current_model_generation,
-            model_generation,
         ) {
             refresh_playlist_track_queue_for_anchor(
                 &app,
@@ -883,7 +881,6 @@ async fn fill_playlist_track_queue(
             )
             .await?;
             current_anchor = Some(active_track);
-            current_model_generation = model_generation;
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(
@@ -897,17 +894,13 @@ pub(crate) fn should_refresh_playlist_queue_for_anchor(
     current_anchor: Option<&PlaybackTrack>,
     active_track: &PlaybackTrack,
     queue_has_next: bool,
-    current_model_generation: Option<u64>,
-    model_generation: Option<u64>,
 ) -> bool {
     current_anchor.is_none_or(|anchor| !are_playlist_playback_tracks_equal(anchor, active_track))
-        || !queue_has_next
-        || current_model_generation != model_generation
+        || should_refresh_playlist_queue_for_same_anchor(queue_has_next)
 }
 
-#[cfg(not(test))]
-fn current_audio_style_model_generation() -> Option<u64> {
-    published_audio_style_model_snapshot().map(|snapshot| snapshot.generation())
+pub(crate) fn should_refresh_playlist_queue_for_same_anchor(queue_has_next: bool) -> bool {
+    !queue_has_next
 }
 
 #[cfg(not(test))]
@@ -954,6 +947,15 @@ async fn refresh_playlist_tracks_until_downloads_finish(
         if !source.resolution.tracks.is_empty() {
             let current_track =
                 resolve_playlist_playback_queue_anchor(&session, &initial_track).await?;
+            if !should_refresh_playlist_queue_for_same_anchor(current_session_queue_contains_next(
+                &session,
+                &current_track,
+            )?) {
+                if !has_relevant_active_downloads {
+                    return Ok(());
+                }
+                continue;
+            }
             let recent_history_snapshot =
                 observe_playlist_playback_recent_history(&recent_history, current_track.clone())?;
             let updated = refresh_playlist_track_queue_for_anchor(
@@ -995,7 +997,6 @@ async fn refresh_playlist_track_queue_for_anchor(
         if should_request {
             notify_audio_style_training_inputs_changed(readiness.training_reason());
         }
-        return Ok(player_service::is_session_current(session)?);
     }
 
     let source = load_random_playlist_track_resolution_window(
@@ -1309,7 +1310,16 @@ async fn resolve_playlist_initial_track(
         }));
     }
 
-    playable_index::notify_playback_miss(&selection.playlist_name);
+    if let Some(snapshot) = prepared_source.as_ref() {
+        if let Err(error) = playable_index::discard_playlist_source(snapshot) {
+            eprintln!(
+                "[playlist_playback] failed to discard unplayable prepared first track source playlist=\"{}\" generation={}: {error}",
+                snapshot.playlist_name, snapshot.generation
+            );
+        }
+    } else {
+        playable_index::notify_playback_miss(&selection.playlist_name);
+    }
     emit_playlist_playback_trace(
         "playlist-play-initial-random-miss",
         PlaylistPlaybackTrace::new(app)
@@ -1542,43 +1552,64 @@ fn try_propose_audio_style_playlist_playback_queue(
     request: PlaylistPlaybackRecommendationRequest,
     mode: PlaylistPlaybackRecommendationMode,
 ) -> Result<Option<AudioStylePlaylistPlaybackProposal>> {
-    let Some(snapshot) = published_audio_style_model_snapshot() else {
-        return Ok(None);
-    };
-    let recommender = snapshot.recommender();
+    let snapshots = published_audio_style_model_snapshots_for_anchor(&request.current_track);
+    Ok(propose_audio_style_playlist_playback_queue_from_snapshots(
+        request, mode, snapshots,
+    ))
+}
 
-    if recommender.has_embedding_for(&request.current_track) {
-        let mut proposal = match mode {
-            PlaylistPlaybackRecommendationMode::KeepCurrent => recommender
-                .propose_queue_with_trace_and_recent_history(
-                    request.current_track,
-                    request.candidates,
-                    &request.recently_played_tracks,
-                ),
-            PlaylistPlaybackRecommendationMode::ExcludeCurrent => recommender
-                .propose_queue_after_exclude_with_trace_and_recent_history(
-                    request.current_track,
-                    request.candidates,
-                    &request.recently_played_tracks,
-                ),
-        };
-        if let Some(selection) = proposal.selection.as_mut() {
-            selection.model_generation = Some(snapshot.generation());
+pub(crate) fn propose_audio_style_playlist_playback_queue_from_snapshots(
+    request: PlaylistPlaybackRecommendationRequest,
+    mode: PlaylistPlaybackRecommendationMode,
+    snapshots: impl IntoIterator<Item = Arc<AudioStyleModelSnapshot>>,
+) -> Option<AudioStylePlaylistPlaybackProposal> {
+    for snapshot in snapshots {
+        let proposal =
+            propose_audio_style_playlist_playback_queue_from_snapshot(&request, mode, snapshot);
+        if proposal.is_some() {
+            return proposal;
         }
-        if !audio_style_playlist_playback_proposal_is_complete(
-            mode,
-            proposal.tracks.as_slice(),
-            proposal
-                .selection
-                .as_ref()
-                .map(|selection| selection.source),
-        ) {
-            return Ok(None);
-        }
-        return Ok(Some(proposal));
     }
 
-    Ok(None)
+    None
+}
+
+fn propose_audio_style_playlist_playback_queue_from_snapshot(
+    request: &PlaylistPlaybackRecommendationRequest,
+    mode: PlaylistPlaybackRecommendationMode,
+    snapshot: Arc<AudioStyleModelSnapshot>,
+) -> Option<AudioStylePlaylistPlaybackProposal> {
+    let recommender = snapshot.recommender();
+
+    let mut proposal = match mode {
+        PlaylistPlaybackRecommendationMode::KeepCurrent => recommender
+            .propose_queue_with_trace_and_recent_history(
+                request.current_track.clone(),
+                request.candidates.clone(),
+                &request.recently_played_tracks,
+            ),
+        PlaylistPlaybackRecommendationMode::ExcludeCurrent => recommender
+            .propose_queue_after_exclude_with_trace_and_recent_history(
+                request.current_track.clone(),
+                request.candidates.clone(),
+                &request.recently_played_tracks,
+            ),
+    };
+    if let Some(selection) = proposal.selection.as_mut() {
+        selection.model_generation = Some(snapshot.generation());
+    }
+    if !audio_style_playlist_playback_proposal_is_complete(
+        mode,
+        proposal.tracks.as_slice(),
+        proposal
+            .selection
+            .as_ref()
+            .map(|selection| selection.source),
+    ) {
+        return None;
+    }
+
+    Some(proposal)
 }
 
 pub(crate) fn playlist_playback_proposal_contains_next_track(

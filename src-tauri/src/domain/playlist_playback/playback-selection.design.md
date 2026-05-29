@@ -41,8 +41,14 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - The playable index prepares at most one startup option per playlist in the
   background; it cannot define whether a source is a playlist member or whether
   a local file is actually playable.
+- Ready, startup, playback-miss, and prepared-source-consumed refreshes fill a
+  missing prepared startup option; they do not replace an unconsumed option.
 - Queue refresh may reduce latency or improve recommendation quality, but it
   must not change playlist membership.
+- Queue refresh is driven by anchor consumption or a missing next track. Model
+  generation changes, download changes, and repeated ready transitions may
+  improve future inputs, but must not replace an already prepared unconsumed
+  next track for the same anchor.
 - Cache and trace do not construct playable tracks and do not decide fallback.
 - The player consumes an explicit queue and never queries playlist membership.
 - A late queue refresh for a superseded session is discarded by the session
@@ -71,6 +77,9 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - Current prepared source lookup for first-track startup.
 - Prepared startup source consumption by playlist and generation. Consumption
   removes only that playlist snapshot and schedules replacement preparation.
+- Non-invalidating refreshes fill only absent startup options. Playlist,
+  library, and exclude invalidation may replace existing startup options because
+  membership or availability changed.
 - Invalidation signals after playlist, library, and exclude changes.
 
 `playlist_playback::service` owns:
@@ -82,9 +91,18 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - The first playable track is selected by random source sampling.
 - The startup queue is `[random first]`; first playback must not wait for
   recommendation queue planning.
-- The next queue is produced by the recommendation path. If the model is not
-  available in `KeepCurrent` mode, the queue remains `[current]`; it must not
-  manufacture a random next track.
+- Existing unconsumed next-track work is linear. The same anchor keeps its
+  current queue until the player consumes it or the queue no longer contains a
+  next track.
+- Download-completion refresh observes the same rule as periodic queue fill:
+  newly available candidates are not allowed to replace an unconsumed next track
+  for the same anchor.
+- The next queue is produced by the recommendation path as soon as playback
+  starts. Queue planning must use the newest published model that can rank the
+  current anchor; a newer in-progress model that does not cover the anchor must
+  not block a completed older model from serving the queue.
+- If no published model can rank the current anchor in `KeepCurrent` mode, the
+  queue remains `[current]`; it must not manufacture a random next track.
 - `KeepCurrent` accepts only `audio_style` selection evidence as a complete next
   recommendation; `random_fallback` evidence is treated as unavailable.
 - Random recovery is allowed only for `ExcludeCurrent`, where the current track
@@ -122,8 +140,10 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - Total: no.
 - Failure: missing snapshot is an index miss; it schedules refresh but does not
   create a fallback source.
-- Idempotence: repeated refresh of the same repo projection may replace the
-  snapshot generation, but cannot change playlist membership semantics.
+- Idempotence: repeated non-invalidating refresh of the same repo projection
+  does not replace an unconsumed snapshot. Invalidating refresh may replace the
+  snapshot because playlist membership, library availability, or exclude state
+  changed.
 - Evidence: each snapshot carries playlist name, generation, and at most one raw
   source evidence value projected by `playlists::repo`.
 
@@ -160,9 +180,13 @@ transition owner is the `playlist_playback::service` queue planning path:
 - first-track selection reads the current prepared playlist-scoped source from
   the playable index;
 - player-submit success consumes that prepared source by playlist and generation;
+- consuming a prepared startup source deletes only that source; the replacement
+  preparation commits as a separate refresh instead of being blocked by
+  consumption itself;
 - bounded repo sampling is only a warmup miss path and schedules index refresh;
 - initial queue construction commits only the random first track;
-- background next-track planning uses `propose_playlist_playback_queue_with_mode`;
+- background next-track planning uses `propose_playlist_playback_queue_with_mode`
+  only when the active anchor changed or the queue lacks a next track;
 - replay-equivalent checks are covered by sidecar Rust tests for source scope,
   queue shape, fallback, and history filtering.
 
@@ -172,6 +196,8 @@ Audio-style fallback is explicit:
 
 - In `KeepCurrent` mode, model unavailability degrades to the current anchor
   only.
+- A partially refreshed model is not allowed to starve playback queue planning
+  when a completed older model still covers the active anchor.
 - In `ExcludeCurrent` mode, it can choose randomly from the already materialized
   playlist-scoped candidate universe.
 - It cannot load additional playlist records.
@@ -195,14 +221,19 @@ recommendation policy.
 
 The playable index owns generation numbers for async refreshes. A late global or
 playlist refresh may finish, but it can only commit if its generation is still
-current. Refresh requests from startup, ready, playlist mutation, library
-mutation, exclude mutation, or playback miss are idempotent preparation signals.
-Prepared-source consumption is generation-guarded, so repeated consumption or a
-late consumption of a replaced snapshot cannot remove newer prepared evidence.
+current. Refresh requests from startup, ready, prepared-source consumption, or
+playback miss are idempotent fill signals: they do not replace an unconsumed
+prepared source. Playlist mutation, library mutation, and exclude mutation are
+invalidating signals and may replace prepared evidence. Prepared-source
+consumption is generation-guarded, so repeated consumption or a late consumption
+of a replaced snapshot cannot remove newer prepared evidence.
 
 Queue refreshes run asynchronously, but every refresh checks the session handle
-before writing. A superseded session cannot update the active queue. Late player
-results are owned by `player::service` generation checks.
+before writing. The queue-fill loop does not re-plan solely because the audio
+style model generation changed; new model output is observed when the anchor
+changes or the current queue lacks an unconsumed next track. A superseded session
+cannot update the active queue. Late player results are owned by
+`player::service` generation checks.
 
 ## Exceptions
 
