@@ -6,16 +6,15 @@ use super::service::{
     PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
     PlaylistPlaybackRecommender, PlaylistQueueRecommendationReadiness,
     PlaylistQueueRecommendationRefreshRequests, RandomPlaylistPlaybackRecommender,
-    audio_style_playlist_playback_proposal_is_complete, create_short_playback_queue,
-    create_start_anchor_playback_queue, place_track_at_queue_start,
-    playlist_playback_proposal_contains_next_track,
+    audio_style_playlist_playback_proposal_is_complete, create_start_anchor_playback_queue,
+    place_track_at_queue_start, playlist_playback_proposal_contains_next_track,
     playlist_playback_queue_contains_next_track_after_anchor,
     playlist_selection_has_relevant_active_downloads,
     propose_audio_style_playlist_playback_queue_from_snapshots,
     propose_playlist_playback_queue_without_audio_style_model, propose_random_queue_after_exclude,
     resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
-    should_refresh_playlist_queue_for_anchor, should_refresh_playlist_queue_for_same_anchor,
-    shuffle_playback_tracks,
+    should_refresh_playlist_queue_for_anchor_after_startup,
+    should_refresh_playlist_queue_for_same_anchor, shuffle_playback_tracks,
 };
 use crate::domain::downloads::model::{DownloadTask, DownloadTaskStatus, DownloadTrigger};
 use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
@@ -457,17 +456,6 @@ fn start_anchor_playback_queue_contains_only_the_random_start_anchor() {
 }
 
 #[test]
-fn recommended_startup_queue_keeps_random_anchor_before_recommended_next() {
-    let initial_track = playback_track("initial");
-    let recommended_next = playback_track("recommended_next");
-    let queue = create_short_playback_queue(initial_track.clone(), vec![recommended_next.clone()]);
-
-    assert_eq!(queue.len(), 2);
-    assert_eq!(queue[0].music_url, initial_track.music_url);
-    assert_eq!(queue[1].music_url, recommended_next.music_url);
-}
-
-#[test]
 fn keep_current_queue_without_audio_style_model_does_not_randomize_next_track() {
     let current = playback_track("current");
     let random_candidate = playback_track("random_candidate");
@@ -807,15 +795,33 @@ fn playlist_queue_next_check_accepts_distinct_track_after_anchor() {
 fn playlist_queue_fill_retries_same_anchor_until_next_track_exists() {
     let current = playback_track("current");
 
-    assert!(should_refresh_playlist_queue_for_anchor(
+    assert!(should_refresh_playlist_queue_for_anchor_after_startup(
         Some(&current),
         &current,
         false,
     ));
-    assert!(!should_refresh_playlist_queue_for_anchor(
+    assert!(!should_refresh_playlist_queue_for_anchor_after_startup(
         Some(&current),
         &current,
         true,
+    ));
+}
+
+#[test]
+fn playlist_queue_fill_does_not_replan_startup_anchor_when_startup_next_exists() {
+    let current = playback_track("current");
+
+    assert!(!should_refresh_playlist_queue_for_anchor_after_startup(
+        None, &current, true,
+    ));
+}
+
+#[test]
+fn playlist_queue_fill_repairs_startup_anchor_when_startup_next_is_missing() {
+    let current = playback_track("current");
+
+    assert!(should_refresh_playlist_queue_for_anchor_after_startup(
+        None, &current, false,
     ));
 }
 
@@ -824,7 +830,7 @@ fn playlist_queue_fill_refreshes_when_anchor_changes_even_if_queue_has_next() {
     let current = playback_track("current");
     let next = playback_track("next");
 
-    assert!(should_refresh_playlist_queue_for_anchor(
+    assert!(should_refresh_playlist_queue_for_anchor_after_startup(
         Some(&current),
         &next,
         true,
@@ -835,7 +841,7 @@ fn playlist_queue_fill_refreshes_when_anchor_changes_even_if_queue_has_next() {
 fn playlist_queue_fill_keeps_unconsumed_next_when_audio_style_model_generation_changes() {
     let current = playback_track("current");
 
-    assert!(!should_refresh_playlist_queue_for_anchor(
+    assert!(!should_refresh_playlist_queue_for_anchor_after_startup(
         Some(&current),
         &current,
         true,

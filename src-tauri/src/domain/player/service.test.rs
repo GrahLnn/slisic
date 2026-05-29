@@ -1,6 +1,4 @@
-use super::model::{
-    PlaybackContinuationMode, PlaybackTrack, PlaybackTrackPayload, PlaybackTrackProjectionError,
-};
+use super::model::{PlaybackTrack, PlaybackTrackPayload, PlaybackTrackProjectionError};
 use super::service::{
     ActivePlaybackRange, BACKEND_PLAYBACK_TARGET_LUFS, PlaybackRangeCompletion,
     PlaybackStartRequestRegistry, PlaybackTrackIdentityUpdate, SpectrumPlaybackScope,
@@ -14,9 +12,8 @@ use super::service::{
     resolve_spectrum_loop_signal_seek_position, resolve_spectrum_music_playback_range,
     resolve_spectrum_playback_loop_signal, should_accept_spectrum_playback_signal,
     should_commit_spectrum_playback_scope_exit, should_resume_playback_seek_cancel,
-    should_start_spectrum_playback_session, should_wait_for_ordered_queue_supply,
+    should_start_spectrum_playback_session,
 };
-use super::strategy::PlaybackQueueMode;
 use std::path::PathBuf;
 
 fn track(name: &str) -> PlaybackTrack {
@@ -73,26 +70,6 @@ fn playback_start_request_registry_accepts_only_the_latest_claim() {
 
     registry.cancel_pending();
     assert!(!registry.is_current(&second));
-}
-
-#[test]
-fn ordered_playlist_queue_waits_for_next_track_supply() {
-    assert!(should_wait_for_ordered_queue_supply(
-        PlaybackContinuationMode::Random,
-        PlaybackQueueMode::Ordered,
-    ));
-}
-
-#[test]
-fn random_and_repeat_paths_do_not_wait_for_queue_supply() {
-    assert!(!should_wait_for_ordered_queue_supply(
-        PlaybackContinuationMode::Random,
-        PlaybackQueueMode::Random,
-    ));
-    assert!(!should_wait_for_ordered_queue_supply(
-        PlaybackContinuationMode::RepeatCurrent,
-        PlaybackQueueMode::Ordered,
-    ));
 }
 
 #[test]

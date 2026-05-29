@@ -181,6 +181,7 @@ does not need packaging or bundle validation.
 
 The behavior design documents are part of the project contract:
 
+- `docs/project-behavior.design.md`
 - `src-tauri/src/domain/downloads/download-behavior.design.md`
 - `src-tauri/src/domain/playlist_playback/playback-selection.design.md`
 - `src/components/spectrum/SpectrumVisualizer.design.md`

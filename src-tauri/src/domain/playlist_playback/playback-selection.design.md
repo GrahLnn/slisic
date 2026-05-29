@@ -14,7 +14,8 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   preparation, generation-stamped refresh, invalidation, and the current
   prepared startup option for each playlist.
 - `playlist_playback::service` owns first-track source elimination, next-track
-  planning, recent-history exclusion, and queue refresh.
+  planning, startup queue composition, recent-history exclusion, and queue
+  refresh.
 - `playlist_playback::recommendation` owns audio-style ranking for an already
   materialized candidate universe.
 - `player::service` owns playback lifecycle, active request identity, queue
@@ -26,12 +27,19 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 
 - The playlist row is the only source of playlist membership.
 - Startup candidate preparation runs before click through the playable-source
-  index. The player-submit success path consumes the current prepared option by
-  playlist and generation; miss only schedules refresh work.
+  index. Program startup, ready, library, playlist, exclude, playback miss, and
+  prepared-source consumption are the only scheduling inputs. The play action
+  consumes prepared evidence; it does not own first-track preparation.
+- The player-submit success path consumes the current prepared option by
+  playlist and generation. Consumption immediately schedules replacement
+  preparation for that playlist.
 - First-track selection chooses a random playable startup anchor from the
   playlist scope.
-- Next-track selection is owned by the recommendation planner and uses the
-  playlist-scoped candidate universe.
+- Startup next-track selection is part of the post-acceptance backend queue
+  fill transaction. Once the random first-track anchor is accepted by the player
+  session, the recommendation planner must be invoked in the background.
+- Later next-track selection is owned by the recommendation planner and uses
+  the playlist-scoped candidate universe.
 - The first track is not derived from a deterministic seed, first row, first
   collection, or fixed random seed.
 - Random source sampling is live randomness on each request; it must not persist
@@ -43,8 +51,8 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   a local file is actually playable.
 - Ready, startup, playback-miss, and prepared-source-consumed refreshes fill a
   missing prepared startup option; they do not replace an unconsumed option.
-- Queue refresh may reduce latency or improve recommendation quality, but it
-  must not change playlist membership.
+- Queue refresh may reduce latency, fill later continuations, or improve
+  recommendation quality, but it must not change playlist membership.
 - Queue refresh is driven by anchor consumption or a missing next track. Model
   generation changes, download changes, and repeated ready transitions may
   improve future inputs, but must not replace an already prepared unconsumed
@@ -89,18 +97,20 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - Startup options are sampled from the whole playlist selection, not from a
   deterministic prefix of one collection.
 - The first playable track is selected by random source sampling.
-- The startup queue is `[random first]`; first playback must not wait for
-  recommendation queue planning.
+- Startup queue composition is `[random first]`. It is a fast handoff from
+  prepared first-track evidence to `player`, not a recommendation planning
+  point.
 - Existing unconsumed next-track work is linear. The same anchor keeps its
   current queue until the player consumes it or the queue no longer contains a
   next track.
 - Download-completion refresh observes the same rule as periodic queue fill:
   newly available candidates are not allowed to replace an unconsumed next track
   for the same anchor.
-- The next queue is produced by the recommendation path as soon as playback
-  starts. Queue planning must use the newest published model that can rank the
-  current anchor; a newer in-progress model that does not cover the anchor must
-  not block a completed older model from serving the queue.
+- The first continuation queue is produced by the recommendation path
+  immediately after playback starts. Queue planning must use the newest
+  published model that can rank the current anchor; a newer in-progress model
+  that does not cover the anchor must not block a completed older model from
+  serving the queue.
 - If no published model can rank the current anchor in `KeepCurrent` mode, the
   queue remains `[current]`; it must not manufacture a random next track.
 - `KeepCurrent` accepts only `audio_style` selection evidence as a complete next
@@ -120,6 +130,9 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - Active request track identity.
 - Ordered consumption of a prepared queue.
 - Cancellation and late result rejection.
+- Track-boundary queue exhaustion reporting. It does not wait for ordered queue
+  supply as a normal continuation path; the upstream playlist playback owner
+  must provide the continuation before the boundary is reached.
 
 ## Stable Domains
 
@@ -153,14 +166,27 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 
 - Source state: frontend app logic has a ready playlist name.
 - Command: `play_playlist(name)`.
-- Guard: playlist exists and at least one playable track can be consumed from
-  the prepared index snapshot or, during warmup, from the bounded repo sampler.
-- Writes: player session queue and active playback request.
+- Guard: playlist exists and a playable first-track anchor can be consumed from
+  the prepared index snapshot.
+- Writes: first-track startup queue and active playback request.
 - Emits: diagnostic trace, index hit/miss trace, prepared-source consumption
   signal, and now-playing events.
 - Target state: active playback session.
-- Rejection: missing playlist, no playable track, superseded request, or player
-  submit failure. Rejected startup does not consume a prepared source.
+- Rejection: missing playlist, missing prepared startup evidence, no playable
+  track, superseded request, or player submit failure. Rejected startup does not
+  consume a prepared source.
+
+`PreparedStartupSource(first) -> StartupQueue(first)`
+
+- Source state: a generation-stamped prepared startup source has resolved to a
+  playable first-track anchor.
+- Command: startup queue composition inside `play_playlist(name)`.
+- Guard: the same playback start request is still current.
+- Writes: no player state until the single-track startup queue is ready.
+- Emits: startup diagnostic trace.
+- Target state: explicit single-track startup queue.
+- Rejection: superseded request or unplayable prepared source. Rejection must
+  not become hidden candidate-window fetching inside the play action.
 
 `PlayingSession(current) -> PreparedQueue(current, next?)`
 
@@ -179,14 +205,19 @@ transition owner is the `playlist_playback::service` queue planning path:
 
 - first-track selection reads the current prepared playlist-scoped source from
   the playable index;
+- first-track selection does not call the bounded repo sampler as a normal play
+  path;
+- player-submit receives the single-track startup queue and startup track;
 - player-submit success consumes that prepared source by playlist and generation;
 - consuming a prepared startup source deletes only that source; the replacement
   preparation commits as a separate refresh instead of being blocked by
   consumption itself;
-- bounded repo sampling is only a warmup miss path and schedules index refresh;
+- bounded repo sampling belongs only to index preparation or an explicitly
+  modeled repair transition; it is not a hidden play-click compatibility path;
 - initial queue construction commits only the random first track;
 - background next-track planning uses `propose_playlist_playback_queue_with_mode`
-  only when the active anchor changed or the queue lacks a next track;
+  immediately after player acceptance when the startup queue lacks a next track,
+  and later when the active anchor changed or the queue lacks a next track;
 - replay-equivalent checks are covered by sidecar Rust tests for source scope,
   queue shape, fallback, and history filtering.
 
@@ -235,6 +266,12 @@ changes or the current queue lacks an unconsumed next track. A superseded sessio
 cannot update the active queue. Late player results are owned by
 `player::service` generation checks.
 
+The player session consumes only the queue it is given. In ordered playlist
+playback, reaching the end of the queue is a terminal observation for that
+queue, not a signal to block and wait for upstream planning. The upstream
+playlist playback owner must have supplied the first continuation from its
+background queue-planning loop before the first track can finish.
+
 ## Exceptions
 
 There is no exhaustive full-playlist model ranking on every refresh. The
@@ -244,10 +281,9 @@ exception owner is `playlist_playback::service`; it can be deleted when the
 repository offers a cheap full-playlist playable-track iterator with stable
 pagination and file-existence filtering.
 
-During a cold startup or immediately after invalidation, the first click can hit
-an empty index snapshot before background refresh finishes. In that case
-`playlist_playback::service` uses the bounded repo sampler once and schedules a
-refresh. This is a scoped warmup exception: it preserves membership semantics
-but can still cost more than a hot index hit. The owner is
-`playlist_playback::service`; it can be deleted once ready refresh completion is
-observable by the UI without blocking interaction.
+There is no cold-click bounded sampler exception in the playback-start path.
+During a cold startup or immediately after invalidation, an empty prepared index
+snapshot is an explicit startup miss. It schedules repair preparation, but it
+does not authorize `playlist_playback::service` to rebuild first-track startup
+inside the play action. The replacement preparation owner remains
+`playlist_playback::playable_index`.
