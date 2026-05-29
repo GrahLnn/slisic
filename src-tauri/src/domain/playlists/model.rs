@@ -357,6 +357,64 @@ pub struct PlaylistRelationPlayableTrackView {
 }
 
 #[derive(Debug, Clone)]
+pub struct RandomPlaylistRelationPlayableTrackViewParams {
+    pub relation: &'static str,
+    pub owner_records: Vec<RecordId>,
+    pub liked_only: bool,
+    pub limit: usize,
+}
+
+impl ViewParams for RandomPlaylistRelationPlayableTrackViewParams {
+    fn bind_view_params(self, stmt: RawSqlStmt) -> anyhow::Result<RawSqlStmt> {
+        Ok(stmt
+            .bind("relation", Table::from(self.relation))
+            .bind("owner_records", self.owner_records)
+            .bind("music_table", Music::table_name().to_string())
+            .bind("liked_only", self.liked_only)
+            .bind("limit", self.limit))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View)]
+#[view(
+    sql = r#"
+        SELECT
+            in AS owner_record,
+            out AS music_record,
+            position,
+            out.name AS name,
+            out.alias AS alias,
+            out.canonical_music_id AS canonical_music_id,
+            out.url AS url,
+            out.path AS path,
+            out.start_ms AS start_ms,
+            out.end_ms AS end_ms,
+            out.liked AS liked
+        FROM $relation
+        WHERE in IN $owner_records
+            AND record::tb(out) = $music_table
+            AND out.path IS NOT NONE
+            AND ($liked_only = false OR out.liked = true)
+        ORDER BY rand()
+        LIMIT $limit;
+    "#,
+    params = RandomPlaylistRelationPlayableTrackViewParams
+)]
+pub struct RandomPlaylistRelationPlayableTrackView {
+    pub owner_record: RecordId,
+    pub music_record: RecordId,
+    pub position: i64,
+    pub name: String,
+    pub alias: String,
+    pub canonical_music_id: String,
+    pub url: String,
+    pub path: Option<String>,
+    pub start_ms: u32,
+    pub end_ms: u32,
+    pub liked: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct PlaylistRecordPlayableTrackViewParams {
     pub music_records: Vec<RecordId>,
     pub liked_only: bool,

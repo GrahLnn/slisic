@@ -456,7 +456,7 @@ fn start_anchor_playback_queue_contains_only_the_random_start_anchor() {
 }
 
 #[test]
-fn keep_current_queue_without_audio_style_model_does_not_randomize_next_track() {
+fn keep_current_queue_without_audio_style_model_uses_playlist_scoped_random_next_track() {
     let current = playback_track("current");
     let random_candidate = playback_track("random_candidate");
 
@@ -464,14 +464,15 @@ fn keep_current_queue_without_audio_style_model_does_not_randomize_next_track() 
         PlaylistPlaybackRecommendationRequest {
             playlist_name: "Focus".to_string(),
             current_track: current.clone(),
-            candidates: vec![random_candidate],
+            candidates: vec![random_candidate.clone()],
             recently_played_tracks: vec![],
         },
         PlaylistPlaybackRecommendationMode::KeepCurrent,
     );
 
-    assert_eq!(queue.len(), 1);
+    assert_eq!(queue.len(), 2);
     assert_eq!(queue[0].music_url, current.music_url);
+    assert_eq!(queue[1].music_url, random_candidate.music_url);
 }
 
 #[test]

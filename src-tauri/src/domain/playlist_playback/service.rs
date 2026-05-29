@@ -1340,23 +1340,16 @@ fn propose_unavailable_audio_style_playlist_playback_queue(
     mode: PlaylistPlaybackRecommendationMode,
     should_log_selection: bool,
 ) -> Vec<PlaybackTrack> {
-    match mode {
-        PlaylistPlaybackRecommendationMode::KeepCurrent => {
-            propose_playlist_playback_queue_without_audio_style_model(request, mode)
-        }
-        PlaylistPlaybackRecommendationMode::ExcludeCurrent => {
-            let proposal = propose_random_playlist_playback_queue_with_trace(request, mode);
-            if should_log_selection {
-                log_playlist_playback_next_track_selection(
-                    "random",
-                    mode,
-                    proposal.tracks.as_slice(),
-                    proposal.selection,
-                );
-            }
-            proposal.tracks
-        }
+    let proposal = propose_random_playlist_playback_queue_with_trace(request, mode);
+    if should_log_selection {
+        log_playlist_playback_next_track_selection(
+            "random",
+            mode,
+            proposal.tracks.as_slice(),
+            proposal.selection,
+        );
     }
+    proposal.tracks
 }
 
 #[cfg(not(test))]
@@ -1487,7 +1480,7 @@ pub(crate) fn propose_playlist_playback_queue_without_audio_style_model(
 ) -> Vec<PlaybackTrack> {
     match mode {
         PlaylistPlaybackRecommendationMode::KeepCurrent => {
-            create_start_anchor_playback_queue(request.current_track)
+            RandomPlaylistPlaybackRecommender.propose_queue(request)
         }
         PlaylistPlaybackRecommendationMode::ExcludeCurrent => {
             RandomPlaylistPlaybackRecommender.propose_queue_after_exclude(request)
@@ -1508,14 +1501,7 @@ fn propose_random_playlist_playback_queue_with_trace(
         .filter(|candidate| !are_playlist_playback_tracks_equal(candidate, &current_track))
         .count();
     request.recently_played_tracks.clear();
-    let tracks = match mode {
-        PlaylistPlaybackRecommendationMode::KeepCurrent => {
-            RandomPlaylistPlaybackRecommender.propose_queue(request)
-        }
-        PlaylistPlaybackRecommendationMode::ExcludeCurrent => {
-            RandomPlaylistPlaybackRecommender.propose_queue_after_exclude(request)
-        }
-    };
+    let tracks = propose_playlist_playback_queue_without_audio_style_model(request, mode);
     let selection = next_track_for_recommendation_mode(mode, tracks.as_slice()).map(|track| {
         let selected_occurrences = candidates
             .iter()

@@ -75,7 +75,6 @@ const AUDIO_STYLE_LIKED_ROUTE_PRESSURE_SCALE: f32 = 0.30;
 const AUDIO_STYLE_COMPLETED_SNAPSHOT_FALLBACK_LIMIT: usize = 8;
 #[cfg(not(test))]
 const AUDIO_STYLE_INPUT_CHANGE_DEBOUNCE_MS: u64 = 500;
-#[cfg(not(test))]
 const AUDIO_STYLE_LOG_TARGET: &str = "playlist_audio_style";
 
 #[allow(dead_code)]
@@ -314,7 +313,8 @@ impl PlaybackTrackKey {
 #[cfg(not(test))]
 struct AudioStyleRecommendationRuntime {
     app: AppHandle,
-    published_snapshot: RwLock<Option<Arc<AudioStyleModelSnapshot>>>,
+    stable_snapshot: RwLock<Option<Arc<AudioStyleModelSnapshot>>>,
+    nightly_snapshot: RwLock<Option<Arc<AudioStyleModelSnapshot>>>,
     completed_snapshots: RwLock<Vec<Arc<AudioStyleModelSnapshot>>>,
     training: Mutex<AudioStyleTrainingState>,
     next_generation: AtomicU64,
@@ -428,6 +428,7 @@ impl AudioStyleRecommendationRuntime {
     }
 
     async fn train_and_publish(self: &Arc<Self>, reason: &'static str) -> Result<()> {
+        let started = Instant::now();
         let ffmpeg_path = crate::utils::binaries::ensure_managed_binary(
             &self.app,
             crate::utils::binaries::ManagedBinary::Ffmpeg,
@@ -438,25 +439,48 @@ impl AudioStyleRecommendationRuntime {
             "audio_style_training_dependency_ready reason={reason} binary=ffmpeg path=\"{}\"",
             escape_log_value(&ffmpeg_path.display().to_string())
         );
+        let cache_started = Instant::now();
         let cache = AudioStyleEmbeddingCache::new(
             ffmpeg_path,
             audio_style_embedding_cache_root(&self.app)?,
         )
         .map_err(|error| anyhow!(error))?;
+        log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_training_cache_ready reason={reason} elapsed_ms={}",
+            cache_started.elapsed().as_millis()
+        );
+        let save_root_started = Instant::now();
         let save_root = meta_service::resolve_save_root(&self.app).await?;
+        log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_training_save_root_ready reason={reason} elapsed_ms={} path=\"{}\"",
+            save_root_started.elapsed().as_millis(),
+            escape_log_value(&save_root.display().to_string())
+        );
+        let sources_started = Instant::now();
         let sources =
             crate::domain::playlists::repo::load_audio_style_training_track_sources().await?;
+        let source_count = sources.len();
+        log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_training_sources_loaded reason={reason} sources={source_count} elapsed_ms={}",
+            sources_started.elapsed().as_millis()
+        );
+        let resolve_started = Instant::now();
         let resolved = resolve_audio_style_training_tracks(&save_root, sources);
         let indexed_tracks = resolved.indexed_tracks;
         let indexed_track_count = indexed_tracks.len();
         log::info!(
             target: AUDIO_STYLE_LOG_TARGET,
-            "audio_style_training_inputs_ready reason={reason} indexed_tracks={indexed_track_count}"
+            "audio_style_training_inputs_ready reason={reason} indexed_tracks={indexed_track_count} elapsed_ms={}",
+            resolve_started.elapsed().as_millis()
         );
 
-        let previous_snapshot = self.snapshot();
+        let previous_snapshot = self.stable_snapshot();
         let generation_runtime = Arc::clone(self);
         let publish_runtime = Arc::clone(self);
+        let build_started = Instant::now();
         let final_snapshot = tauri::async_runtime::spawn_blocking(move || {
             AudioStyleModelSnapshot::refresh_from_indexed_tracks_progressively(
                 previous_snapshot.as_deref(),
@@ -468,53 +492,63 @@ impl AudioStyleRecommendationRuntime {
                         .fetch_add(1, Ordering::SeqCst)
                         + 1
                 },
-                |snapshot| publish_runtime.publish_snapshot(snapshot),
+                |snapshot| publish_runtime.publish_nightly_snapshot(snapshot),
             )
         })
         .await
         .context("audio style model update task panicked")?
         .map_err(|error| anyhow!(error.into_message()))?;
-        self.publish_completed_snapshot(final_snapshot);
+        log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_training_snapshot_built reason={reason} generation={} elapsed_ms={}",
+            final_snapshot.generation(),
+            build_started.elapsed().as_millis()
+        );
+        self.publish_stable_snapshot(final_snapshot);
+        log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_training_publish_complete reason={reason} elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
 
         Ok(())
     }
 
-    fn publish_snapshot(&self, snapshot: AudioStyleModelSnapshot) {
+    fn publish_nightly_snapshot(&self, snapshot: AudioStyleModelSnapshot) {
         let generation = snapshot.generation();
-        match self.published_snapshot.write() {
-            Ok(mut published) => {
-                *published = Some(Arc::new(snapshot));
+        match self.nightly_snapshot.write() {
+            Ok(mut nightly) => {
+                *nightly = Some(Arc::new(snapshot));
                 log::info!(
                     target: AUDIO_STYLE_LOG_TARGET,
-                    "audio_style_snapshot_published stage=progressive generation={generation}"
+                    "audio_style_snapshot_published stage=nightly generation={generation}"
                 );
-                playable_index::request_ready_refresh();
             }
             Err(_) => {
                 log::error!(
                     target: AUDIO_STYLE_LOG_TARGET,
-                    "audio_style_snapshot_publish_failed stage=progressive generation={generation} error=\"lock_poisoned\""
+                    "audio_style_snapshot_publish_failed stage=nightly generation={generation} error=\"lock_poisoned\""
                 );
             }
         }
     }
 
-    fn snapshot(&self) -> Option<Arc<AudioStyleModelSnapshot>> {
-        self.published_snapshot
+    fn stable_snapshot(&self) -> Option<Arc<AudioStyleModelSnapshot>> {
+        self.stable_snapshot
             .read()
             .ok()
             .and_then(|snapshot| snapshot.clone())
     }
 
-    fn publish_completed_snapshot(&self, snapshot: AudioStyleModelSnapshot) {
+    fn publish_stable_snapshot(&self, snapshot: AudioStyleModelSnapshot) {
         let snapshot = Arc::new(snapshot);
         let generation = snapshot.generation();
-        match self.published_snapshot.write() {
-            Ok(mut published) => {
-                *published = Some(Arc::clone(&snapshot));
+        match self.stable_snapshot.write() {
+            Ok(mut stable) => {
+                *stable = Some(Arc::clone(&snapshot));
                 log::info!(
                     target: AUDIO_STYLE_LOG_TARGET,
-                    "audio_style_snapshot_published stage=completed generation={generation}"
+                    "audio_style_snapshot_published stage=stable generation={generation}"
                 );
                 playable_index::request_ready_refresh();
             }
@@ -522,6 +556,23 @@ impl AudioStyleRecommendationRuntime {
                 log::error!(
                     target: AUDIO_STYLE_LOG_TARGET,
                     "audio_style_snapshot_publish_failed stage=completed generation={generation} error=\"lock_poisoned\""
+                );
+            }
+        }
+
+        match self.nightly_snapshot.write() {
+            Ok(mut nightly) => {
+                if nightly
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.generation <= generation)
+                {
+                    *nightly = None;
+                }
+            }
+            Err(_) => {
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_nightly_snapshot_clear_failed stable_generation={generation} error=\"lock_poisoned\""
                 );
             }
         }
@@ -550,7 +601,7 @@ impl AudioStyleRecommendationRuntime {
 
     fn snapshots_for_anchor(&self, track: &PlaybackTrack) -> Vec<Arc<AudioStyleModelSnapshot>> {
         let mut snapshots = Vec::new();
-        if let Some(snapshot) = self.snapshot() {
+        if let Some(snapshot) = self.stable_snapshot() {
             snapshots.push(snapshot);
         }
         if let Ok(completed) = self.completed_snapshots.read() {
@@ -574,7 +625,8 @@ pub(crate) fn initialize_audio_style_recommendation_runtime(app: AppHandle) {
     let runtime = AUDIO_STYLE_RECOMMENDATION_RUNTIME.get_or_init(|| {
         Arc::new(AudioStyleRecommendationRuntime {
             app,
-            published_snapshot: RwLock::new(None),
+            stable_snapshot: RwLock::new(None),
+            nightly_snapshot: RwLock::new(None),
             completed_snapshots: RwLock::new(Vec::new()),
             training: Mutex::new(AudioStyleTrainingState::default()),
             next_generation: AtomicU64::new(0),
@@ -604,25 +656,36 @@ pub(crate) fn notify_audio_style_training_inputs_changed(reason: &'static str) {
 pub(crate) fn published_audio_style_model_snapshot() -> Option<Arc<AudioStyleModelSnapshot>> {
     AUDIO_STYLE_RECOMMENDATION_RUNTIME
         .get()
-        .and_then(|runtime| runtime.snapshot())
+        .and_then(|runtime| runtime.stable_snapshot())
+}
+
+#[cfg(not(test))]
+#[derive(Debug)]
+pub(crate) enum AudioStyleCenterlessSourceStatus {
+    Ready(PlaylistPlaybackTrackSource, AudioStyleCandidateSelection),
+    ModelUnavailable,
+    NoScopedCandidate,
 }
 
 #[cfg(not(test))]
 pub(crate) fn published_audio_style_centerless_source(
     belongs_to_scope: impl Fn(&PlaylistPlaybackTrackSource) -> bool,
-) -> Option<(PlaylistPlaybackTrackSource, AudioStyleCandidateSelection)> {
-    AUDIO_STYLE_RECOMMENDATION_RUNTIME
+) -> AudioStyleCenterlessSourceStatus {
+    let Some(snapshot) = AUDIO_STYLE_RECOMMENDATION_RUNTIME
         .get()
-        .and_then(|runtime| runtime.snapshot())
-        .and_then(|snapshot| {
-            snapshot
-                .recommender()
-                .propose_centerless_source(belongs_to_scope)
-                .map(|(source, mut selection)| {
-                    selection.model_generation = Some(snapshot.generation());
-                    (source, selection)
-                })
+        .and_then(|runtime| runtime.stable_snapshot())
+    else {
+        return AudioStyleCenterlessSourceStatus::ModelUnavailable;
+    };
+
+    snapshot
+        .recommender()
+        .propose_centerless_source(belongs_to_scope)
+        .map(|(source, mut selection)| {
+            selection.model_generation = Some(snapshot.generation());
+            AudioStyleCenterlessSourceStatus::Ready(source, selection)
         })
+        .unwrap_or(AudioStyleCenterlessSourceStatus::NoScopedCandidate)
 }
 
 #[cfg(not(test))]
@@ -3163,7 +3226,6 @@ fn audio_style_stable_crop_start(track: &PlaybackTrack, start_seconds: f64, max_
     start_seconds + (hash % sample_span) as f64 / AUDIO_STYLE_SAMPLE_RATE as f64
 }
 
-#[cfg(not(test))]
 fn escape_log_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }

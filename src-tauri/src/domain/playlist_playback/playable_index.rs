@@ -2,7 +2,8 @@
 use crate::domain::player::event::{PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent};
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
-    notify_audio_style_training_inputs_changed, published_audio_style_centerless_source,
+    AudioStyleCenterlessSourceStatus, notify_audio_style_training_inputs_changed,
+    published_audio_style_centerless_source,
 };
 #[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
@@ -823,9 +824,33 @@ fn release_global_refresh_and_spawn_pending(
 async fn prepare_playlist_source(
     selection: &PlaylistPlaybackSelection,
 ) -> Result<Option<PlaylistPlaybackTrackSource>> {
-    if let Some((source, selection_trace)) =
-        published_audio_style_centerless_source(|source| selection.contains_track_source(source))
-    {
+    if let Some((source, selection_trace)) = match published_audio_style_centerless_source(
+        |source| selection.contains_track_source(source),
+    ) {
+        AudioStyleCenterlessSourceStatus::Ready(source, selection_trace) => {
+            Some((source, selection_trace))
+        }
+        AudioStyleCenterlessSourceStatus::NoScopedCandidate => None,
+        AudioStyleCenterlessSourceStatus::ModelUnavailable => {
+            notify_audio_style_training_inputs_changed("first_slot_model_unavailable");
+            let mut sources =
+                playlist_repo::load_random_playlist_playback_track_sources(selection, 1).await?;
+            let Some(source) = sources.pop() else {
+                log::warn!(
+                    target: PLAYABLE_INDEX_LOG_TARGET,
+                    "first_slot_source_unavailable playlist=\"{}\" status=random_fallback_empty action=request_training",
+                    escape_log_value(&selection.playlist_name)
+                );
+                return Ok(None);
+            };
+            log::warn!(
+                target: PLAYABLE_INDEX_LOG_TARGET,
+                "first_slot_source_prepared playlist=\"{}\" source=random_fallback selection_reason=model_unavailable probability=1.000000 candidates=1 model_generation=none",
+                escape_log_value(&selection.playlist_name)
+            );
+            return Ok(Some(source));
+        }
+    } {
         log::info!(
             target: PLAYABLE_INDEX_LOG_TARGET,
             "first_slot_source_prepared playlist=\"{}\" source={} selection_reason={} probability={:.6} candidates={} model_generation={}",
@@ -842,10 +867,9 @@ async fn prepare_playlist_source(
         return Ok(Some(source));
     }
 
-    notify_audio_style_training_inputs_changed("first_slot_model_unavailable");
     log::warn!(
         target: PLAYABLE_INDEX_LOG_TARGET,
-        "first_slot_source_unavailable playlist=\"{}\" status=model_unavailable action=request_training",
+        "first_slot_source_unavailable playlist=\"{}\" status=no_scoped_model_candidate action=none",
         escape_log_value(&selection.playlist_name)
     );
     Ok(None)

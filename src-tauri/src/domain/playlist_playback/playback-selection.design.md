@@ -33,18 +33,22 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - The player-submit success path consumes the current prepared option by
   playlist and generation. Consumption immediately schedules replacement
   preparation for that playlist.
-- First-track selection chooses a centerless audio-style startup anchor from
-  the playlist scope.
+- First-track preparation chooses a centerless audio-style startup anchor from
+  the playlist scope when a stable model exists. If no stable model exists
+  during cold start, it prepares a playlist-scoped repository random source in
+  the same backend first-slot pool.
 - Startup next-track selection is part of the post-acceptance backend queue
   fill transaction. Once the centerless first-track anchor is accepted by the
   player session, the recommendation planner must be invoked in the background.
 - Later next-track selection is owned by the recommendation planner and uses
   the playlist-scoped candidate universe.
 - The first track is not derived from a deterministic seed, first row, first
-  collection, fixed random seed, or repository random fallback.
-- Centerless startup sampling uses the published audio-style model inside the
-  playlist scope. Its draw is live per prepared-source refresh and must not
-  persist a seeded order across sessions.
+  collection, or fixed random seed.
+- Centerless startup sampling uses the stable published audio-style model
+  inside the playlist scope. Its draw is live per prepared-source refresh and
+  must not persist a seeded order across sessions. The repository random
+  projection is allowed only when no stable model exists; it is cold-start
+  preparation, not click-path fallback.
 - The playable index prepares at most one startup option per playlist in the
   background; it cannot define whether a source is a playlist member or whether
   a local file is actually playable.
@@ -109,11 +113,13 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   published model that can rank the current anchor; a newer in-progress model
   that does not cover the anchor must not block a completed older model from
   serving the queue.
-- If no published model can rank the current anchor in `KeepCurrent` mode, the
-  queue remains `[current]`; it must not manufacture a random next track.
-- `KeepCurrent` accepts only `audio_style` selection evidence as a complete next
-  recommendation; `random_fallback` evidence is treated as unavailable.
-- Random recovery is allowed only for `ExcludeCurrent`, where the current track
+- If no stable model can rank the current anchor in `KeepCurrent` mode, the
+  queue planner uses the already materialized playlist-scoped SQL random
+  candidate window to compose `[current, random_next]`.
+- `KeepCurrent` accepts only `audio_style` selection evidence as a complete
+  audio-style recommendation. Service-owned SQL random fallback is a separate
+  queue-planning degradation path, not audio-style evidence.
+- Random recovery is also allowed for `ExcludeCurrent`, where the current track
   has been explicitly removed and the system needs a replacement candidate.
 - Recent history filters non-liked tracks without deleting liked tracks.
 
@@ -121,6 +127,9 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 
 - Audio-style probabilities for an already materialized candidate window.
 - Fallback selection metadata when the model cannot rank candidates.
+- The double-buffered model lifecycle: `stable` serves playback and first-slot
+  reads; `nightly` receives progressive training output; completed `nightly`
+  snapshots replace `stable` atomically and then notify first-slot preparation.
 
 `player::service` owns:
 
@@ -150,13 +159,15 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - Owner: `playlist_playback::playable_index`.
 - Total: no.
 - Failure: missing snapshot is an index miss; it schedules refresh but does not
-  create a fallback source.
+  create a click-path fallback source.
 - Idempotence: repeated non-invalidating refresh of the same repo projection
   does not replace an unconsumed snapshot. Invalidating refresh may replace the
   snapshot because playlist membership, library availability, or exclude state
   changed.
 - Evidence: each snapshot carries playlist name, generation, and at most one raw
-  source evidence value projected by `playlists::repo`.
+  source evidence value projected by `playlists::repo`, either selected through
+  stable audio-style centerless sampling or through cold-start repository random
+  projection when stable is absent.
 
 ## Transitions
 
@@ -203,8 +214,7 @@ transition owner is the `playlist_playback::service` queue planning path:
 
 - first-track selection reads the current prepared playlist-scoped source from
   the playable index;
-- first-track selection does not call the bounded repo sampler as a normal play
-  path;
+- first-track selection does not call the bounded repo sampler on the play path;
 - player-submit receives the single-track startup queue and startup track;
 - player-submit success consumes that prepared source by playlist and generation;
 - consuming a prepared startup source deletes only that source; the replacement
@@ -216,6 +226,9 @@ transition owner is the `playlist_playback::service` queue planning path:
 - background next-track planning uses `propose_playlist_playback_queue_with_mode`
   immediately after player acceptance when the startup queue lacks a next track,
   and later when the active anchor changed or the queue lacks a next track;
+- next-track planning reads `stable` first and falls back to the same
+  playlist-scoped SQL random candidate window when `stable` is absent,
+  incomplete for the anchor, or unable to produce a distinct next track;
 - replay-equivalent checks are covered by sidecar Rust tests for source scope,
   queue shape, fallback, and history filtering.
 
@@ -223,8 +236,11 @@ transition owner is the `playlist_playback::service` queue planning path:
 
 Audio-style fallback is explicit:
 
-- In `KeepCurrent` mode, model unavailability degrades to the current anchor
-  only.
+- First-slot cold start may use repository random projection only when no stable
+  model exists, and only in the backend preparation pool.
+- In `KeepCurrent` mode, model unavailability degrades to a playlist-scoped SQL
+  random next track after the current anchor, using only the candidate window
+  already materialized by the playback queue planner.
 - A partially refreshed model is not allowed to starve playback queue planning
   when a completed older model still covers the active anchor.
 - In `ExcludeCurrent` mode, it can choose randomly from the already materialized
@@ -282,8 +298,8 @@ pagination and file-existence filtering.
 There is no cold-click bounded sampler exception in the playback-start path.
 During a cold startup or immediately after invalidation, a missing prepared
 index snapshot is an explicit startup miss. Model-unavailable preparation does
-not commit an empty prepared snapshot. It schedules repair preparation, but it
-does not authorize `playlist_playback::service` to rebuild first-track startup
-inside the play action. The replacement preparation owner remains
-`playlist_playback::playable_index`, and the source of that replacement is
-centerless audio-style sampling.
+not commit an empty prepared snapshot. It prepares a repository-random source in
+the backend first-slot pool only when no stable model exists, but it does not
+authorize `playlist_playback::service` to rebuild first-track startup inside the
+play action. The replacement preparation owner remains
+`playlist_playback::playable_index`.

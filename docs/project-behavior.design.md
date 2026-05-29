@@ -286,6 +286,15 @@ submission consumes the matching playlist/generation and immediately schedules
 replacement preparation for that playlist. Replacement does not wait for the
 current track to finish and does not require another ready transition.
 
+Project invariant: audio-style recommendation has a double-buffered service
+surface. `stable` is the only model surface that playback and first-slot
+preparation may read. `nightly` is the in-progress training candidate and is
+not a user-visible availability gate. A new model replaces `stable` only after
+the build has completed and passed snapshot construction. If no `stable` model
+exists yet, first-track preparation uses a playlist-scoped repository random
+projection as a cold-start source. That random source is prepared in the
+backend pool; it is not sampled on the click path.
+
 Project invariant: first-track preparation and audio-style model training must
 emit structured lifecycle logs through the application logger. Each refresh or
 training pass has a run id, owner target, reason, generation when applicable,
@@ -319,6 +328,14 @@ recommendation planner before `player` accepts playback. The startup queue is
 ordered queue supply is not a normal continuation strategy; if a boundary has
 no next track, the upstream background queue-planning owner failed to satisfy
 its contract.
+
+Project invariant: next-track planning reads the `stable` audio-style model
+first. If no stable model exists, the stable model cannot rank the current
+anchor, or the audio-style proposal cannot produce a distinct next track, the
+playback queue owner must use the already materialized playlist-scoped SQL
+random candidate window to compose `[current, random_next]`. This fallback is
+background queue planning only; it is not FirstSlot preparation, play-click
+work, player boundary waiting, or a wider playlist scan.
 
 Project invariant: the player consumes an explicit queue. It never queries
 playlist membership and cannot widen the candidate universe.
@@ -372,7 +389,8 @@ It is accepted only when the receiving owner has an explicit event meaning.
   superseded session instead of committing stale playback.
 - First-track preparation is a process-lifetime backend pool. Program startup
   fills every currently playable playlist when an audio-style model can serve
-  centerless selection; ready, model publication, and invalidation events
+  centerless selection, or with a playlist-scoped repository random source when
+  no stable model exists yet; ready, model publication, and invalidation events
   refresh the pool; consumption refills the consumed playlist independently.
 - Playable-index refreshes are generation-stamped. Non-invalidating refreshes
   fill missing startup options, while library/playlist/exclude invalidations can
@@ -405,6 +423,10 @@ It is accepted only when the receiving owner has an explicit event meaning.
   cannot accept non-playable files as music.
 - Playback fallback can keep the current track or pick a replacement only in
   the declared recommendation mode; it cannot load extra playlist scope.
+- Playback next-track fallback uses stable audio-style first and then
+  playlist-scoped SQL random from the existing candidate window; it cannot wait
+  for `nightly`, block playback, or discard an available random next when the
+  model is unavailable.
 - Playback fallback cannot create an implicit compatibility path that recomputes
   first-track startup inside a play click or waits at a track boundary for a
   queue that startup planning should already have supplied.

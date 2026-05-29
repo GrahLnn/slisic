@@ -6,7 +6,8 @@ use super::model::{
     PlaylistMusicGroupViewParams, PlaylistMusicSourceCollectionView,
     PlaylistMusicSourceCollectionViewParams, PlaylistRecordPlayableTrackView,
     PlaylistRecordPlayableTrackViewParams, PlaylistRelationPlayableTrackView,
-    PlaylistRelationPlayableTrackViewParams, RemoveExcludeResult, SpectrumMusicContext,
+    PlaylistRelationPlayableTrackViewParams, RandomPlaylistRelationPlayableTrackView,
+    RandomPlaylistRelationPlayableTrackViewParams, RemoveExcludeResult, SpectrumMusicContext,
     SpectrumMusicSourceContext, canonical_music_id_for_source,
 };
 use anyhow::{Result, bail};
@@ -14,7 +15,6 @@ use appdb::connection::get_db;
 use appdb::error::{DBError, classify_db_error};
 use appdb::graph;
 use appdb::model::meta::{ModelMeta, ResolveRecordId};
-use appdb::query::{RawSqlStmt, query_bound_return};
 use appdb::repository::Repo;
 use appdb::{AutoFill, Crud, Id, Order, Store};
 use rand::RngExt;
@@ -1753,30 +1753,31 @@ async fn append_random_collection_playback_track_sources(
     }
     let target_len = sources.len().saturating_add(limit);
 
-    for offset in
-        random_relation_playable_track_offsets("includes", collection.record.clone(), limit).await?
-    {
+    let rows = load_random_relation_playable_track_rows(
+        "includes",
+        vec![collection.record.clone()],
+        false,
+        random_relation_playable_track_probe_limit_for_source_limit(limit),
+    )
+    .await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let groups = load_music_groups_for_playback(rows.iter().map(|row| &row.music_record)).await?;
+
+    for row in rows {
         if sources.len() >= target_len {
             return Ok(());
         }
 
-        let Some(row) =
-            load_relation_playable_track_row_at("includes", collection.record.clone(), offset)
-                .await?
-        else {
-            continue;
-        };
         if is_music_canonical_id_excluded(&row.canonical_music_id).await? {
             continue;
         }
 
-        let Some(group) = load_music_groups_for_playback([&row.music_record])
-            .await?
-            .remove(&row.music_record)
-        else {
+        let Some(group) = groups.get(&row.music_record).cloned() else {
             continue;
         };
-        let Some(music) = playable_track_music_from_relation_row(row, group) else {
+        let Some(music) = playable_track_music_from_random_relation_row(row, group) else {
             continue;
         };
 
@@ -1802,24 +1803,30 @@ async fn append_random_group_playback_track_sources(
         .iter()
         .collect::<HashSet<_>>();
 
-    for offset in
-        random_relation_playable_track_offsets("grouped", group.record.clone(), limit).await?
-    {
+    let rows = load_random_relation_playable_track_rows(
+        "grouped",
+        vec![group.record.clone()],
+        false,
+        random_relation_playable_track_probe_limit_for_source_limit(limit),
+    )
+    .await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let source_collections =
+        load_music_source_collections_for_playback(rows.iter().map(|row| &row.music_record))
+            .await?;
+
+    for row in rows {
         if sources.len() >= target_len {
             return Ok(());
         }
 
-        let Some(row) =
-            load_relation_playable_track_row_at("grouped", group.record.clone(), offset).await?
-        else {
-            continue;
-        };
         if is_music_canonical_id_excluded(&row.canonical_music_id).await? {
             continue;
         }
 
-        let collections = load_music_source_collections_for_playback([&row.music_record]).await?;
-        let Some(collections) = collections.get(&row.music_record) else {
+        let Some(collections) = source_collections.get(&row.music_record) else {
             continue;
         };
         let matching_collections = collections
@@ -1831,9 +1838,10 @@ async fn append_random_group_playback_track_sources(
         };
         let collection = matching_collections[start_index];
 
-        let Some(music) =
-            playable_track_music_from_relation_row(row, group.as_group(collection.owner.clone()))
-        else {
+        let Some(music) = playable_track_music_from_random_relation_row(
+            row,
+            group.as_group(collection.owner.clone()),
+        ) else {
             continue;
         };
 
@@ -1890,7 +1898,11 @@ async fn append_random_extra_playback_track_sources(
     }
     let target_len = sources.len().saturating_add(limit);
 
-    let probe_limit = random_relation_playable_track_probe_limit(selection.extra.len(), limit);
+    let probe_limit = selection.extra.len().min(
+        limit
+            .max(PLAYLIST_PLAYBACK_RANDOM_MIN_TRACK_PROBE_LIMIT)
+            .min(PLAYLIST_PLAYBACK_RANDOM_MAX_TRACK_PROBE_LIMIT),
+    );
     for extra_index in playlist_playback_owner_attempt_order(selection.extra.len(), probe_limit) {
         if sources.len() >= target_len {
             return Ok(());
@@ -1911,68 +1923,10 @@ async fn append_random_extra_playback_track_sources(
     Ok(())
 }
 
-async fn random_relation_playable_track_offsets(
-    relation: &'static str,
-    owner_record: RecordId,
-    source_limit: usize,
-) -> Result<Vec<usize>> {
-    let count = count_relation_playable_track_rows(relation, owner_record.clone()).await?;
-    if count == 0 {
-        return Ok(vec![]);
-    }
-
-    let Some(start_offset) = random_index(count) else {
-        return Ok(vec![]);
-    };
-
-    let probe_limit = random_relation_playable_track_probe_limit(count, source_limit);
-    Ok((0..probe_limit)
-        .map(|step| (start_offset + step) % count)
-        .collect())
-}
-
-fn random_relation_playable_track_probe_limit(count: usize, source_limit: usize) -> usize {
-    count.min(
-        source_limit
-            .max(PLAYLIST_PLAYBACK_RANDOM_MIN_TRACK_PROBE_LIMIT)
-            .min(PLAYLIST_PLAYBACK_RANDOM_MAX_TRACK_PROBE_LIMIT),
-    )
-}
-
-async fn load_relation_playable_track_row_at(
-    relation: &'static str,
-    owner_record: RecordId,
-    offset: usize,
-) -> Result<Option<PlaylistRelationPlayableTrackView>> {
-    let mut rows =
-        load_relation_playable_track_rows(relation, vec![owner_record], false, 1, offset).await?;
-    Ok(rows.pop())
-}
-
-async fn count_relation_playable_track_rows(
-    relation: &'static str,
-    owner_record: RecordId,
-) -> Result<usize> {
-    let stmt = RawSqlStmt::new(
-        "RETURN count((
-            SELECT VALUE out
-            FROM $relation
-            WHERE in = $owner_record
-                AND record::tb(out) = $music_table
-                AND out.path IS NOT NONE
-        ));",
-    )
-    .bind("relation", Table::from(relation))
-    .bind("owner_record", owner_record)
-    .bind("music_table", Music::table_name().to_string());
-
-    match query_bound_return::<i64>(stmt).await {
-        Ok(count) => Ok(count.unwrap_or(0).max(0) as usize),
-        Err(error) => match classify_db_error(&error) {
-            DBError::MissingTable(_) => Ok(0),
-            other => Err(other.into()),
-        },
-    }
+fn random_relation_playable_track_probe_limit_for_source_limit(source_limit: usize) -> usize {
+    source_limit
+        .max(PLAYLIST_PLAYBACK_RANDOM_MIN_TRACK_PROBE_LIMIT)
+        .min(PLAYLIST_PLAYBACK_RANDOM_MAX_TRACK_PROBE_LIMIT)
 }
 
 async fn load_relation_playable_track_rows(
@@ -1993,6 +1947,34 @@ async fn load_relation_playable_track_rows(
         limit,
         offset,
     })
+    .await
+    {
+        Ok(rows) => Ok(rows),
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) => Ok(vec![]),
+            other => Err(other.into()),
+        },
+    }
+}
+
+async fn load_random_relation_playable_track_rows(
+    relation: &'static str,
+    owner_records: Vec<RecordId>,
+    liked_only: bool,
+    limit: usize,
+) -> Result<Vec<RandomPlaylistRelationPlayableTrackView>> {
+    if owner_records.is_empty() || limit == 0 {
+        return Ok(vec![]);
+    }
+
+    match RandomPlaylistRelationPlayableTrackView::query(
+        RandomPlaylistRelationPlayableTrackViewParams {
+            relation,
+            owner_records,
+            liked_only,
+            limit,
+        },
+    )
     .await
     {
         Ok(rows) => Ok(rows),
@@ -2124,6 +2106,23 @@ fn unique_record_ids<'a>(records: impl IntoIterator<Item = &'a RecordId>) -> Vec
 
 fn playable_track_music_from_relation_row(
     row: PlaylistRelationPlayableTrackView,
+    group: Group,
+) -> Option<Music> {
+    Some(Music {
+        name: row.name,
+        alias: row.alias,
+        group,
+        canonical_music_id: row.canonical_music_id,
+        url: row.url,
+        path: Some(row.path?),
+        start_ms: row.start_ms,
+        end_ms: row.end_ms,
+        liked: row.liked,
+    })
+}
+
+fn playable_track_music_from_random_relation_row(
+    row: RandomPlaylistRelationPlayableTrackView,
     group: Group,
 ) -> Option<Music> {
     Some(Music {
