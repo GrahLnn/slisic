@@ -27,6 +27,14 @@ pub struct PlaylistRoot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootShellProbe {
+    pub source_kind: CollectionSourceKind,
+    pub title: String,
+    pub webpage_url: String,
+    pub extractor_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeafReference {
     pub url: String,
     pub title: Option<String>,
@@ -71,6 +79,7 @@ pub struct DownloadProgress {
 }
 
 pub trait YtDlpClient: Send + Sync {
+    fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe>;
     fn probe_root(&self, url: &str) -> Result<RootProbe>;
     fn probe_leaf(&self, url: &str) -> Result<LeafProbe>;
     fn download_leaf_audio(
@@ -137,6 +146,16 @@ impl CliYtDlpClient {
 }
 
 impl YtDlpClient for CliYtDlpClient {
+    fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe> {
+        match classify_root_preference(url) {
+            CollectionSourceKind::Single => self.probe_leaf(url).map(root_shell_from_leaf_probe),
+            CollectionSourceKind::List => {
+                let args = build_root_playlist_shell_probe_args(url);
+                parse_root_shell_probe(self.run_json_command(&args)?, url)
+            }
+        }
+    }
+
     fn probe_root(&self, url: &str) -> Result<RootProbe> {
         match classify_root_preference(url) {
             CollectionSourceKind::Single => self.probe_leaf(url).map(RootProbe::Single),
@@ -279,11 +298,22 @@ pub(crate) fn build_leaf_audio_download_args(
 }
 
 pub(crate) fn build_root_playlist_probe_args(url: &str) -> Vec<String> {
+    let mut args = build_root_playlist_base_probe_args(url);
+    args.push("--flat-playlist".to_string());
+    args
+}
+
+pub(crate) fn build_root_playlist_shell_probe_args(url: &str) -> Vec<String> {
+    let mut args = build_root_playlist_base_probe_args(url);
+    args.splice(3..3, ["--playlist-items".to_string(), "0".to_string()]);
+    args
+}
+
+fn build_root_playlist_base_probe_args(url: &str) -> Vec<String> {
     [
         "-J",
         "--no-warnings",
         "--ignore-errors",
-        "--flat-playlist",
         "--extractor-args",
         YOUTUBE_PLAYLIST_EXTRACTOR_ARGS,
         url,
@@ -340,6 +370,40 @@ pub fn looks_like_direct_leaf_url(url: &str) -> bool {
     }
 
     false
+}
+
+pub fn parse_root_shell_probe(value: Value, input_url: &str) -> Result<RootShellProbe> {
+    let is_playlist = value
+        .get("_type")
+        .and_then(Value::as_str)
+        .map(|kind| matches!(kind, "playlist" | "multi_video"))
+        .unwrap_or_else(|| {
+            value
+                .get("entries")
+                .map(|entries| entries.is_array())
+                .unwrap_or(false)
+        });
+
+    if !is_playlist {
+        return parse_leaf_probe(value).map(root_shell_from_leaf_probe);
+    }
+
+    Ok(RootShellProbe {
+        source_kind: CollectionSourceKind::List,
+        title: read_required_string(&value, "title")?,
+        webpage_url: read_optional_string(&value, "webpage_url")
+            .unwrap_or_else(|| input_url.to_string()),
+        extractor_key: read_optional_string(&value, "extractor_key"),
+    })
+}
+
+fn root_shell_from_leaf_probe(leaf: LeafProbe) -> RootShellProbe {
+    RootShellProbe {
+        source_kind: CollectionSourceKind::Single,
+        title: leaf.title,
+        webpage_url: leaf.webpage_url,
+        extractor_key: leaf.extractor_key,
+    }
 }
 
 pub fn parse_root_probe(value: Value, input_url: &str) -> Result<RootProbe> {
@@ -610,7 +674,7 @@ pub(crate) fn resolve_downloaded_file(
     reported_path: Option<&Path>,
 ) -> Option<PathBuf> {
     reported_path
-        .filter(|path| path.is_file())
+        .filter(|path| is_committed_download_candidate(path))
         .map(Path::to_path_buf)
         .or_else(|| find_downloaded_file(target_dir, file_stem))
 }
@@ -622,6 +686,9 @@ fn find_downloaded_file(target_dir: &Path, file_stem: &str) -> Option<PathBuf> {
         if !path.is_file() {
             continue;
         }
+        if !is_committed_download_candidate(&path) {
+            continue;
+        }
 
         let stem = path.file_stem().and_then(|value| value.to_str());
         if stem == Some(file_stem) {
@@ -630,4 +697,8 @@ fn find_downloaded_file(target_dir: &Path, file_stem: &str) -> Option<PathBuf> {
     }
 
     None
+}
+
+fn is_committed_download_candidate(path: &Path) -> bool {
+    path.is_file() && path.extension().and_then(|value| value.to_str()) != Some("part")
 }

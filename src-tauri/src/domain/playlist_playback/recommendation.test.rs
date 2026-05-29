@@ -1,7 +1,7 @@
 use super::recommendation::{
     AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST, AudioStyleEmbeddingCache, AudioStyleModelSnapshot,
     AudioStylePlaylistPlaybackRecommender, audio_style_transition_fingerprint_for_test,
-    choose_next_audio_style_candidate_for_test,
+    choose_centerless_audio_style_candidate_for_test, choose_next_audio_style_candidate_for_test,
     choose_next_audio_style_candidate_with_generation_for_test,
     choose_next_audio_style_candidate_with_recent_history_for_test,
     filter_recently_played_recommendation_candidates,
@@ -155,6 +155,35 @@ fn audio_style_recommender_skips_recent_non_liked_candidate() {
     let proposed = recommender.propose_queue_with_recent_history(
         current.clone(),
         vec![played_near.clone(), fresh_far.clone()],
+        std::slice::from_ref(&played_near),
+    );
+
+    assert_eq!(proposed.len(), 2);
+    assert_eq!(proposed[0].music_url, current.music_url);
+    assert_eq!(proposed[1].music_url, fresh_far.music_url);
+}
+
+#[test]
+fn audio_style_recommender_skips_same_played_music_identity() {
+    let current = track("current");
+    let played_near = track("played_near");
+    let mut same_music_other_range = track("played_near_other_range");
+    same_music_other_range.canonical_music_id = played_near.canonical_music_id.clone();
+    same_music_other_range.music_url = "https://example.com/played_near?range=2".to_string();
+    same_music_other_range.file_path = PathBuf::from("played-near-other-range.m4a");
+    same_music_other_range.start_ms = 60_000;
+    same_music_other_range.end_ms = 120_000;
+    let fresh_far = track("fresh_far");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (played_near.clone(), embedding(2)),
+        (same_music_other_range.clone(), embedding(2)),
+        (fresh_far.clone(), embedding(128)),
+    ]);
+
+    let proposed = recommender.propose_queue_with_recent_history(
+        current.clone(),
+        vec![same_music_other_range, fresh_far.clone()],
         std::slice::from_ref(&played_near),
     );
 
@@ -400,6 +429,77 @@ fn audio_style_attractor_basin_pressure_can_move_out_of_repeated_basin() {
 }
 
 #[test]
+fn audio_style_readonly_route_pressure_moves_out_of_recent_style_macro_basin() {
+    let current = track_in_basin("Current", "current");
+    let mut embeddings = vec![(current.clone(), dense_embedding(&[(0, 1.0)]))];
+    let recent_same_style = (0..10)
+        .map(|index| track_in_basin("Cinematic", &format!("played_{index}")))
+        .collect::<Vec<_>>();
+    embeddings.extend(
+        recent_same_style
+            .iter()
+            .cloned()
+            .map(|track| (track, dense_embedding(&[(0, 0.9), (1, 0.43589)]))),
+    );
+    let same_style = track_in_basin("Fresh Cinematic", "same_style");
+    let open_style = track_in_basin("Fresh Open", "open_style");
+    embeddings.extend([
+        (
+            same_style.clone(),
+            dense_embedding(&[(0, 0.9), (1, 0.43589)]),
+        ),
+        (
+            open_style.clone(),
+            dense_embedding(&[(0, 0.9), (2, 0.43589)]),
+        ),
+    ]);
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
+
+    let without_history_same_style = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[same_style.clone(), open_style.clone()],
+        &recommender,
+        &[],
+        0.0,
+    );
+    let with_history_same_style = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[same_style.clone(), open_style.clone()],
+        &recommender,
+        &recent_same_style,
+        0.0,
+    );
+
+    assert_eq!(without_history_same_style.index, 0);
+    assert_eq!(with_history_same_style.index, 0);
+    assert!(with_history_same_style.probability < without_history_same_style.probability);
+    assert!(with_history_same_style.probability > 0.0);
+}
+
+#[test]
+fn audio_style_readonly_route_pressure_ignores_current_anchor_similarity() {
+    let current = track_in_basin("Current", "current");
+    let near = track_in_basin("Near", "near");
+    let far = track_in_basin("Far", "far");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), dense_embedding(&[(0, 1.0)])),
+        (near.clone(), dense_embedding(&[(0, 0.9), (1, 0.43589)])),
+        (far.clone(), dense_embedding(&[(2, 1.0)])),
+    ]);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[near.clone(), far.clone()],
+        &recommender,
+        std::slice::from_ref(&current),
+        0.70,
+    );
+
+    assert_eq!(selection.index, 0);
+    assert!(selection.probability > 0.85);
+}
+
+#[test]
 fn audio_style_attractor_basin_pressure_does_not_remove_liked_tracks_from_sampling_domain() {
     let current = track_in_basin("Kurzgesagt", "current");
     let played = (0..8)
@@ -420,6 +520,46 @@ fn audio_style_attractor_basin_pressure_does_not_remove_liked_tracks_from_sampli
         &recommender,
         &played,
         0.15,
+    );
+
+    assert_eq!(selection.index, 0);
+    assert!(selection.probability > 0.0);
+}
+
+#[test]
+fn audio_style_readonly_route_pressure_keeps_liked_recent_style_candidate_sampleable() {
+    let current = track_in_basin("Current", "current");
+    let recent_same_style = (0..10)
+        .map(|index| track_in_basin("Cinematic", &format!("played_{index}")))
+        .collect::<Vec<_>>();
+    let mut liked_same_style = track_in_basin("Fresh Cinematic", "liked_same_style");
+    liked_same_style.liked = true;
+    let open_style = track_in_basin("Fresh Open", "open_style");
+    let mut embeddings = vec![(current.clone(), dense_embedding(&[(0, 1.0)]))];
+    embeddings.extend(
+        recent_same_style
+            .iter()
+            .cloned()
+            .map(|track| (track, dense_embedding(&[(0, 0.9), (1, 0.43589)]))),
+    );
+    embeddings.extend([
+        (
+            liked_same_style.clone(),
+            dense_embedding(&[(0, 0.9), (1, 0.43589)]),
+        ),
+        (
+            open_style.clone(),
+            dense_embedding(&[(0, 0.9), (2, 0.43589)]),
+        ),
+    ]);
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[liked_same_style.clone(), open_style.clone()],
+        &recommender,
+        &recent_same_style,
+        0.0,
     );
 
     assert_eq!(selection.index, 0);
@@ -616,6 +756,56 @@ fn audio_style_recommender_without_trained_weights_falls_back_to_random() {
     assert_eq!(selection.source.as_str(), "random_fallback");
     assert_eq!(selection.reason, Some("untrained_model"));
     assert_eq!(selection.index, 1);
+}
+
+#[test]
+fn audio_style_centerless_initial_selection_uses_trained_geometry_without_anchor() {
+    let dense = track("dense");
+    let open = track("open");
+    let other = track("other");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (dense.clone(), dense_embedding(&[(0, 1.0)])),
+        (open.clone(), dense_embedding(&[(1, 1.0)])),
+        (other.clone(), dense_embedding(&[(1, 0.95), (2, 0.31225)])),
+    ]);
+
+    let selection = choose_centerless_audio_style_candidate_for_test(
+        &[dense.clone(), open.clone(), other.clone()],
+        &recommender,
+        0.0,
+    );
+
+    assert_eq!(selection.source.as_str(), "audio_style");
+    assert_eq!(selection.reason, Some("centerless_initial"));
+    assert!(selection.diagnostics.embedded_candidate_count >= 3);
+    assert!(selection.similarity.is_some());
+}
+
+#[test]
+fn audio_style_centerless_source_is_selected_inside_requested_scope() {
+    let outside = track("outside");
+    let inside = track("inside");
+    let source_inside = "source:inside".to_string();
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_indexed_embeddings([
+        (
+            outside.clone(),
+            dense_embedding(&[(0, 1.0)]),
+            "source:outside".to_string(),
+        ),
+        (
+            inside.clone(),
+            dense_embedding(&[(1, 1.0)]),
+            source_inside.clone(),
+        ),
+    ]);
+
+    let (source, selection) = recommender
+        .propose_centerless_source(|source| source.collection_folder == source_inside)
+        .expect("scoped centerless source should be selected");
+
+    assert_eq!(source.collection_folder, source_inside);
+    assert_eq!(selection.candidate_count, 1);
+    assert_eq!(selection.source.as_str(), "audio_style");
 }
 
 #[test]
@@ -841,6 +1031,72 @@ fn trained_audio_style_snapshot_keeps_liked_tail_candidate_sampleable() {
             .local_rank_fraction
             .is_some_and(|rank| rank >= 0.5)
     );
+}
+
+#[test]
+fn audio_style_selection_reports_embedding_and_basin_coverage() {
+    let current = track_in_basin("Current", "current");
+    let zwei = track_in_basin("ZWEI2", "zwei");
+    let tenet = track_in_basin("TENET", "tenet");
+    let death_stranding = track_in_basin("Death Stranding", "death_stranding");
+    let snapshot = AudioStyleModelSnapshot::from_test_embeddings(
+        10,
+        [
+            (current.clone(), embedding(0)),
+            (zwei.clone(), embedding(1)),
+            (death_stranding.clone(), embedding(2)),
+        ],
+    );
+
+    let selection = choose_next_audio_style_candidate_with_generation_for_test(
+        &current,
+        &[zwei, tenet, death_stranding],
+        snapshot.recommender(),
+        0.4,
+        Some(snapshot.generation()),
+    );
+
+    assert!(selection.diagnostics.anchor_embedded);
+    assert_eq!(selection.candidate_count, 3);
+    assert_eq!(selection.diagnostics.embedded_candidate_count, 2);
+    assert_eq!(selection.diagnostics.valid_similarity_count, 2);
+    assert!(selection.diagnostics.selected_basin.is_some());
+
+    let basin = selection
+        .diagnostics
+        .top_candidate_basins
+        .iter()
+        .find(|basin| basin.basin == "youtube:tenet")
+        .expect("TENET basin should be visible even without an embedding");
+    assert_eq!(basin.candidate_count, 1);
+    assert_eq!(basin.embedded_candidate_count, 0);
+}
+
+#[test]
+fn audio_style_random_fallback_reports_candidate_coverage() {
+    let current = track_in_basin("Current", "current");
+    let zwei = track_in_basin("ZWEI2", "zwei");
+    let tenet = track_in_basin("TENET", "tenet");
+    let snapshot =
+        AudioStyleModelSnapshot::from_test_embeddings(11, [(zwei.clone(), embedding(1))]);
+
+    let selection = choose_next_audio_style_candidate_with_generation_for_test(
+        &current,
+        &[zwei, tenet],
+        snapshot.recommender(),
+        0.8,
+        Some(snapshot.generation()),
+    );
+
+    assert_eq!(
+        selection.source,
+        super::recommendation::AudioStyleCandidateSelectionSource::RandomFallback
+    );
+    assert_eq!(selection.reason, Some("missing_anchor_embedding"));
+    assert!(!selection.diagnostics.anchor_embedded);
+    assert_eq!(selection.diagnostics.embedded_candidate_count, 1);
+    assert_eq!(selection.diagnostics.valid_similarity_count, 0);
+    assert!(selection.diagnostics.selected_basin.is_some());
 }
 
 #[test]

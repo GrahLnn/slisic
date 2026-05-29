@@ -10,8 +10,8 @@ use super::repo;
 #[cfg(not(test))]
 use super::yt_dlp::CliYtDlpClient;
 use super::yt_dlp::{
-    DownloadProgress, LeafProbe, LeafReference, RootProbe, YtDlpClient, classify_root_preference,
-    is_youtube_mix_playlist_id,
+    DownloadProgress, LeafProbe, LeafReference, RootProbe, RootShellProbe, YtDlpClient,
+    classify_root_preference, is_youtube_mix_playlist_id,
 };
 use crate::domain::collection_import::{
     self, CollectionShellPlan, CollectionSyncPlan, PlannedLeaf,
@@ -642,10 +642,10 @@ async fn bootstrap_enqueued_collection_shell_with_deps(
     task: DownloadTask,
     client: Arc<dyn YtDlpClient>,
 ) -> Result<(DownloadTask, Collection, Option<RootProbe>)> {
-    let (shell, root_probe) = resolve_collection_shell_plan(&task, client).await?;
+    let shell = resolve_collection_shell_plan(&task, client).await?;
     collection_import::persist_enqueued_collection_shell_plan(task, &shell)
         .await
-        .map(|(task, collection)| (task, collection, Some(root_probe)))
+        .map(|(task, collection)| (task, collection, None))
 }
 
 #[cfg(not(test))]
@@ -1285,6 +1285,9 @@ fn residual_temp_downloaded_files(target_dir: &Path, temp_file_stem: &str) -> Ve
         if !path.is_file() {
             continue;
         }
+        if !is_residual_temp_download_candidate(&path) {
+            continue;
+        }
 
         let stem = match path.file_stem().and_then(|value| value.to_str()) {
             Some(stem) => stem,
@@ -1316,6 +1319,10 @@ fn residual_temp_downloaded_files(target_dir: &Path, temp_file_stem: &str) -> Ve
     exact.sort();
     stable.sort();
     if !exact.is_empty() { exact } else { stable }
+}
+
+fn is_residual_temp_download_candidate(path: &Path) -> bool {
+    path.extension().and_then(|value| value.to_str()) != Some("part")
 }
 
 fn stable_stem_from_temp_stem(stem: &str) -> Option<&str> {
@@ -1653,41 +1660,47 @@ async fn resolve_collection_plan_from_root_probe(
 pub(crate) async fn resolve_collection_shell_plan(
     task: &DownloadTask,
     client: Arc<dyn YtDlpClient>,
-) -> Result<(CollectionShellPlan, RootProbe)> {
-    let root_probe = probe_root_with_limit(client, task.url.clone()).await?;
-    let shell = match &root_probe {
-        RootProbe::Single(leaf) => {
-            let collection_url = leaf.webpage_url.clone();
+) -> Result<CollectionShellPlan> {
+    let root_shell = probe_root_shell_with_limit(client, task.url.clone()).await?;
+    let shell = match root_shell {
+        RootShellProbe {
+            source_kind: CollectionSourceKind::Single,
+            title,
+            webpage_url,
+            ..
+        } => {
+            let collection_url = webpage_url;
             let existing = collection_import::get_collection_by_url(&collection_url).await?;
             CollectionShellPlan {
                 source_kind: CollectionSourceKind::Single,
-                collection_name: leaf.title.clone(),
+                collection_name: title.clone(),
                 collection_url: collection_url.clone(),
                 collection_folder: resolve_task_collection_folder(
                     task,
                     &collection_url,
-                    &leaf.title,
+                    &title,
                     existing.as_ref(),
                 )
                 .await?,
                 enable_updates: None,
             }
         }
-        RootProbe::List(list) => {
-            if list.entries.is_empty() {
-                bail!("download resource does not contain any downloadable entries");
-            }
-
-            let collection_url = list.webpage_url.clone();
+        RootShellProbe {
+            source_kind: CollectionSourceKind::List,
+            title,
+            webpage_url,
+            ..
+        } => {
+            let collection_url = webpage_url;
             let existing = collection_import::get_collection_by_url(&collection_url).await?;
             CollectionShellPlan {
                 source_kind: CollectionSourceKind::List,
-                collection_name: list.title.clone(),
+                collection_name: title.clone(),
                 collection_url: collection_url.clone(),
                 collection_folder: resolve_task_collection_folder(
                     task,
                     &collection_url,
-                    &list.title,
+                    &title,
                     existing.as_ref(),
                 )
                 .await?,
@@ -1700,7 +1713,7 @@ pub(crate) async fn resolve_collection_shell_plan(
         }
     };
 
-    Ok((shell, root_probe))
+    Ok(shell)
 }
 
 pub(crate) fn residual_collection_plan(task: &DownloadTask) -> Option<CollectionSyncPlan> {
@@ -2282,6 +2295,17 @@ pub(crate) async fn probe_root_with_limit(
         .await
         .context("download root probe limiter closed")?;
     run_blocking(move || client.probe_root(&url)).await
+}
+
+async fn probe_root_shell_with_limit(
+    client: Arc<dyn YtDlpClient>,
+    url: String,
+) -> Result<RootShellProbe> {
+    let _permit = root_probe_slots()
+        .acquire_owned()
+        .await
+        .context("download root shell probe limiter closed")?;
+    run_blocking(move || client.probe_root_shell(&url)).await
 }
 
 #[cfg(test)]

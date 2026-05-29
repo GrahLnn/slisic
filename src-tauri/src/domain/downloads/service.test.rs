@@ -16,7 +16,7 @@ use super::service::{
 };
 use super::yt_dlp::{
     DownloadProgress, DownloadedLeaf, LeafChapter, LeafProbe, LeafReference, PlaylistRoot,
-    RootProbe, YtDlpClient,
+    RootProbe, RootShellProbe, YtDlpClient,
 };
 /// Appdb-style domain tests stay inside a local Tokio runtime and a temporary
 /// appdb instance. Keep this file free of Tauri host setup and `AppHandle`
@@ -530,6 +530,48 @@ fn persist_downloaded_leaf_music_replaces_only_the_matching_group_copy() {
 }
 
 #[test]
+fn persist_downloaded_leaf_music_rejects_partial_download_paths() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let group = collection_group("Disc 1", "https://example.com/disc-1", "Disc 1");
+        let mut collection = Collection {
+            name: "Demo".to_string(),
+            url: "https://example.com/root".to_string(),
+            folder: "youtube/demo".to_string(),
+            musics: vec![],
+            last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        };
+        let probe = LeafProbe {
+            title: "Partial".to_string(),
+            webpage_url: "https://example.com/watch?v=partial".to_string(),
+            extractor_key: Some("Youtube".to_string()),
+            album: None,
+            duration_seconds: Some(10),
+            chapters: vec![],
+        };
+
+        let error = persist_downloaded_leaf_music(
+            &mut collection,
+            CollectionSourceKind::List,
+            &probe,
+            "Disc 1/Partial.m4a.part",
+            group,
+        )
+        .await
+        .expect_err("partial paths must not be materialized as Music");
+
+        assert!(error.to_string().contains("still incomplete"));
+        assert!(collection.musics.is_empty());
+
+        reset_db();
+    });
+}
+
+#[test]
 fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
     let group = collection_group(
         "ZWEI2 Original Soundtrack",
@@ -877,10 +919,28 @@ fn leaf_probe(title: &str, url: &str, duration_seconds: u32) -> LeafProbe {
 
 #[derive(Debug, Default)]
 struct FakeYtDlpClient {
+    shells: HashMap<String, RootShellProbe>,
     roots: HashMap<String, RootProbe>,
 }
 
+impl FakeYtDlpClient {
+    fn with_roots(roots: HashMap<String, RootProbe>) -> Self {
+        Self {
+            shells: HashMap::new(),
+            roots,
+        }
+    }
+}
+
 impl YtDlpClient for FakeYtDlpClient {
+    fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe> {
+        self.shells
+            .get(url)
+            .cloned()
+            .or_else(|| self.roots.get(url).map(root_shell_probe_from_root_probe))
+            .ok_or_else(|| anyhow!("missing fake root shell probe for {url}"))
+    }
+
     fn probe_root(&self, url: &str) -> Result<RootProbe> {
         self.roots
             .get(url)
@@ -900,6 +960,23 @@ impl YtDlpClient for FakeYtDlpClient {
         _on_progress: &mut dyn FnMut(DownloadProgress),
     ) -> Result<DownloadedLeaf> {
         Err(anyhow!("unexpected fake download call for {url}"))
+    }
+}
+
+fn root_shell_probe_from_root_probe(root: &RootProbe) -> RootShellProbe {
+    match root {
+        RootProbe::Single(leaf) => RootShellProbe {
+            source_kind: CollectionSourceKind::Single,
+            title: leaf.title.clone(),
+            webpage_url: leaf.webpage_url.clone(),
+            extractor_key: leaf.extractor_key.clone(),
+        },
+        RootProbe::List(list) => RootShellProbe {
+            source_kind: CollectionSourceKind::List,
+            title: list.title.clone(),
+            webpage_url: list.webpage_url.clone(),
+            extractor_key: list.extractor_key.clone(),
+        },
     }
 }
 
@@ -923,6 +1000,10 @@ impl CountingRootProbeClient {
 }
 
 impl YtDlpClient for CountingRootProbeClient {
+    fn probe_root_shell(&self, _url: &str) -> Result<RootShellProbe> {
+        Err(anyhow!("unexpected counting probe_root_shell call"))
+    }
+
     fn probe_root(&self, url: &str) -> Result<RootProbe> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(active, Ordering::SeqCst);
@@ -1587,17 +1668,15 @@ fn resolve_collection_plan_rejects_empty_lists() {
 
         let url = "https://example.com/empty-list";
         let task = DownloadTask::new("task-empty-list", url, DownloadTrigger::Manual);
-        let client = Arc::new(FakeYtDlpClient {
-            roots: HashMap::from([(
-                url.to_string(),
-                RootProbe::List(PlaylistRoot {
-                    title: "Empty List".to_string(),
-                    webpage_url: url.to_string(),
-                    extractor_key: Some("Generic".to_string()),
-                    entries: vec![],
-                }),
-            )]),
-        });
+        let client = Arc::new(FakeYtDlpClient::with_roots(HashMap::from([(
+            url.to_string(),
+            RootProbe::List(PlaylistRoot {
+                title: "Empty List".to_string(),
+                webpage_url: url.to_string(),
+                extractor_key: Some("Generic".to_string()),
+                entries: vec![],
+            }),
+        )])));
 
         let error = resolve_collection_plan(&task, client)
             .await
@@ -1623,38 +1702,36 @@ fn resolve_collection_shell_plan_projects_only_root_identity() {
         let root_url = "https://www.youtube.com/@C418/releases";
         let nested_url = "https://www.youtube.com/playlist?list=album";
         let task = DownloadTask::new("task-shell-plan", root_url, DownloadTrigger::Manual);
-        let client = Arc::new(FakeYtDlpClient {
-            roots: HashMap::from([
-                (
-                    root_url.to_string(),
-                    RootProbe::List(PlaylistRoot {
-                        title: "C418 - Releases".to_string(),
-                        webpage_url: root_url.to_string(),
-                        extractor_key: Some("YoutubeTab".to_string()),
-                        entries: vec![LeafReference {
-                            url: nested_url.to_string(),
-                            title: Some("Minecraft - Volume Alpha".to_string()),
-                            sequence: 0,
-                        }],
-                    }),
-                ),
-                (
-                    nested_url.to_string(),
-                    RootProbe::List(PlaylistRoot {
-                        title: "Minecraft - Volume Alpha".to_string(),
-                        webpage_url: nested_url.to_string(),
-                        extractor_key: Some("YoutubeTab".to_string()),
-                        entries: vec![LeafReference {
-                            url: "https://www.youtube.com/watch?v=alpha".to_string(),
-                            title: Some("Alpha".to_string()),
-                            sequence: 0,
-                        }],
-                    }),
-                ),
-            ]),
-        });
+        let client = Arc::new(FakeYtDlpClient::with_roots(HashMap::from([
+            (
+                root_url.to_string(),
+                RootProbe::List(PlaylistRoot {
+                    title: "C418 - Releases".to_string(),
+                    webpage_url: root_url.to_string(),
+                    extractor_key: Some("YoutubeTab".to_string()),
+                    entries: vec![LeafReference {
+                        url: nested_url.to_string(),
+                        title: Some("Minecraft - Volume Alpha".to_string()),
+                        sequence: 0,
+                    }],
+                }),
+            ),
+            (
+                nested_url.to_string(),
+                RootProbe::List(PlaylistRoot {
+                    title: "Minecraft - Volume Alpha".to_string(),
+                    webpage_url: nested_url.to_string(),
+                    extractor_key: Some("YoutubeTab".to_string()),
+                    entries: vec![LeafReference {
+                        url: "https://www.youtube.com/watch?v=alpha".to_string(),
+                        title: Some("Alpha".to_string()),
+                        sequence: 0,
+                    }],
+                }),
+            ),
+        ])));
 
-        let (shell, root_probe) = resolve_collection_shell_plan(&task, client)
+        let shell = resolve_collection_shell_plan(&task, client)
             .await
             .expect("root shell should resolve without nested expansion");
 
@@ -1662,7 +1739,45 @@ fn resolve_collection_shell_plan_projects_only_root_identity() {
         assert_eq!(shell.collection_url, root_url);
         assert_eq!(shell.collection_folder, "youtube/C418 - Releases");
         assert_eq!(shell.source_kind, CollectionSourceKind::List);
-        assert!(matches!(root_probe, RootProbe::List(_)));
+
+        reset_db();
+    });
+}
+
+#[test]
+fn resolve_collection_shell_plan_accepts_entryless_playlist_shell() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let root_url = "https://www.youtube.com/playlist?list=PLlarge";
+        let task = DownloadTask::new(
+            "task-entryless-shell-plan",
+            root_url,
+            DownloadTrigger::Manual,
+        );
+        let client = Arc::new(FakeYtDlpClient {
+            shells: HashMap::from([(
+                root_url.to_string(),
+                RootShellProbe {
+                    source_kind: CollectionSourceKind::List,
+                    title: "Large Playlist".to_string(),
+                    webpage_url: root_url.to_string(),
+                    extractor_key: Some("YoutubeTab".to_string()),
+                },
+            )]),
+            roots: HashMap::new(),
+        });
+
+        let shell = resolve_collection_shell_plan(&task, client)
+            .await
+            .expect("playlist shell metadata should not need full entry expansion");
+
+        assert_eq!(shell.collection_name, "Large Playlist");
+        assert_eq!(shell.collection_url, root_url);
+        assert_eq!(shell.collection_folder, "youtube/Large Playlist");
+        assert_eq!(shell.source_kind, CollectionSourceKind::List);
 
         reset_db();
     });
@@ -1688,21 +1803,19 @@ fn resolve_collection_plan_can_consume_manual_enqueue_root_probe_once() {
                 sequence: 0,
             }],
         });
-        let client = Arc::new(FakeYtDlpClient {
-            roots: HashMap::from([(
-                nested_url.to_string(),
-                RootProbe::List(PlaylistRoot {
-                    title: "Album".to_string(),
-                    webpage_url: nested_url.to_string(),
-                    extractor_key: Some("Generic".to_string()),
-                    entries: vec![LeafReference {
-                        url: "https://www.youtube.com/watch?v=leaf".to_string(),
-                        title: Some("Leaf".to_string()),
-                        sequence: 0,
-                    }],
-                }),
-            )]),
-        });
+        let client = Arc::new(FakeYtDlpClient::with_roots(HashMap::from([(
+            nested_url.to_string(),
+            RootProbe::List(PlaylistRoot {
+                title: "Album".to_string(),
+                webpage_url: nested_url.to_string(),
+                extractor_key: Some("Generic".to_string()),
+                entries: vec![LeafReference {
+                    url: "https://www.youtube.com/watch?v=leaf".to_string(),
+                    title: Some("Leaf".to_string()),
+                    sequence: 0,
+                }],
+            }),
+        )])));
 
         let plan = resolve_collection_plan_with_root_probe(&task, client, Some(carried_root))
             .await
@@ -1888,6 +2001,23 @@ fn residual_temp_resolution_recovers_matching_temporary_audio() {
     assert!(matches!(
         resolution,
         super::service::ResidualTempFileResolution::Ready(ref path) if path == &expected
+    ));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn residual_temp_resolution_rejects_partial_download_fragments() {
+    let root = temp_test_dir();
+    std::fs::create_dir_all(&root).expect("temp dir should be created");
+    std::fs::write(root.join("Track.__slisic_tmp__abc123.m4a.part"), b"partial")
+        .expect("partial temp file should be created");
+
+    let resolution = resolve_residual_temp_downloaded_file(&root, "Track.__slisic_tmp__abc123");
+
+    assert!(matches!(
+        resolution,
+        super::service::ResidualTempFileResolution::Missing
     ));
 
     let _ = std::fs::remove_dir_all(root);
@@ -2243,28 +2373,26 @@ fn save_task_retries_surrealdb_failed_transaction_wrappers() {
 fn expand_root_entries_to_planned_leafs_flattens_nested_playlists_into_grouped_leaves() {
     run_async(async {
         let nested_url = "https://www.youtube.com/playlist?list=PLnested";
-        let client = Arc::new(FakeYtDlpClient {
-            roots: HashMap::from([(
-                nested_url.to_string(),
-                RootProbe::List(PlaylistRoot {
-                    title: "Album One".to_string(),
-                    webpage_url: nested_url.to_string(),
-                    extractor_key: Some("YoutubeTab".to_string()),
-                    entries: vec![
-                        LeafReference {
-                            url: "https://www.youtube.com/watch?v=track1".to_string(),
-                            title: Some("Track 1".to_string()),
-                            sequence: 0,
-                        },
-                        LeafReference {
-                            url: "https://www.youtube.com/watch?v=track2".to_string(),
-                            title: Some("Track 2".to_string()),
-                            sequence: 1,
-                        },
-                    ],
-                }),
-            )]),
-        });
+        let client = Arc::new(FakeYtDlpClient::with_roots(HashMap::from([(
+            nested_url.to_string(),
+            RootProbe::List(PlaylistRoot {
+                title: "Album One".to_string(),
+                webpage_url: nested_url.to_string(),
+                extractor_key: Some("YoutubeTab".to_string()),
+                entries: vec![
+                    LeafReference {
+                        url: "https://www.youtube.com/watch?v=track1".to_string(),
+                        title: Some("Track 1".to_string()),
+                        sequence: 0,
+                    },
+                    LeafReference {
+                        url: "https://www.youtube.com/watch?v=track2".to_string(),
+                        title: Some("Track 2".to_string()),
+                        sequence: 1,
+                    },
+                ],
+            }),
+        )])));
 
         let collection = expansion_owner();
         let leaves = expand_root_entries_to_planned_leafs(
@@ -2746,36 +2874,34 @@ fn expand_root_entries_to_planned_leafs_keeps_same_video_distinct_across_groups(
         let first_url = "https://www.youtube.com/playlist?list=PLfirst";
         let second_url = "https://www.youtube.com/playlist?list=PLsecond";
         let repeated_video_url = "https://www.youtube.com/watch?v=same";
-        let client = Arc::new(FakeYtDlpClient {
-            roots: HashMap::from([
-                (
-                    first_url.to_string(),
-                    RootProbe::List(PlaylistRoot {
-                        title: "First Album".to_string(),
-                        webpage_url: first_url.to_string(),
-                        extractor_key: Some("YoutubeTab".to_string()),
-                        entries: vec![LeafReference {
-                            url: repeated_video_url.to_string(),
-                            title: Some("Shared Track".to_string()),
-                            sequence: 0,
-                        }],
-                    }),
-                ),
-                (
-                    second_url.to_string(),
-                    RootProbe::List(PlaylistRoot {
-                        title: "Second Album".to_string(),
-                        webpage_url: second_url.to_string(),
-                        extractor_key: Some("YoutubeTab".to_string()),
-                        entries: vec![LeafReference {
-                            url: repeated_video_url.to_string(),
-                            title: Some("Shared Track".to_string()),
-                            sequence: 0,
-                        }],
-                    }),
-                ),
-            ]),
-        });
+        let client = Arc::new(FakeYtDlpClient::with_roots(HashMap::from([
+            (
+                first_url.to_string(),
+                RootProbe::List(PlaylistRoot {
+                    title: "First Album".to_string(),
+                    webpage_url: first_url.to_string(),
+                    extractor_key: Some("YoutubeTab".to_string()),
+                    entries: vec![LeafReference {
+                        url: repeated_video_url.to_string(),
+                        title: Some("Shared Track".to_string()),
+                        sequence: 0,
+                    }],
+                }),
+            ),
+            (
+                second_url.to_string(),
+                RootProbe::List(PlaylistRoot {
+                    title: "Second Album".to_string(),
+                    webpage_url: second_url.to_string(),
+                    extractor_key: Some("YoutubeTab".to_string()),
+                    entries: vec![LeafReference {
+                        url: repeated_video_url.to_string(),
+                        title: Some("Shared Track".to_string()),
+                        sequence: 0,
+                    }],
+                }),
+            ),
+        ])));
 
         let collection = expansion_owner();
         let leaves = expand_root_entries_to_planned_leafs(

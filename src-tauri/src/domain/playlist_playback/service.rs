@@ -24,7 +24,8 @@ use crate::domain::playlist_playback::playable_index;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
     AudioStyleCandidateSelection, AudioStylePlaylistPlaybackProposal,
-    initialize_audio_style_recommendation_runtime, published_audio_style_model_snapshot,
+    initialize_audio_style_recommendation_runtime, notify_audio_style_training_inputs_changed,
+    published_audio_style_model_snapshot,
 };
 use crate::domain::playlist_playback::recommendation::{
     AudioStyleCandidateSelectionSource, filter_recently_played_recommendation_candidates,
@@ -38,6 +39,8 @@ use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlayback
 use anyhow::{Result, anyhow, bail};
 use rand::RngExt;
 use std::collections::HashSet;
+#[cfg(not(test))]
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 #[cfg(not(test))]
 use std::sync::{Arc, Mutex};
@@ -242,6 +245,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
     };
     let playlist_name = material.playlist_name;
     let initial_track = material.initial_track;
+    let initial_prepared_source = material.initial_prepared_source;
     let recent_history = PlaylistPlaybackRecentHistory::from_initial_track(initial_track.clone());
     let tracks = material.tracks;
     let track_count = tracks.len() as u32;
@@ -285,6 +289,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
         .await;
     let session = match session_result {
         Ok(session) => {
+            consume_playlist_initial_prepared_source(&initial_prepared_source);
             emit_playlist_playback_trace(
                 "playlist-play-player-submit-ok",
                 PlaylistPlaybackTrace::new(app)
@@ -576,6 +581,7 @@ fn playlist_playback_continuation_mode_name(mode: PlaybackContinuationMode) -> &
 struct PlaylistPlaybackMaterial {
     playlist_name: String,
     initial_track: PlaybackTrack,
+    initial_prepared_source: Option<playable_index::PlaylistPlayableIndexSnapshot>,
     tracks: Vec<PlaybackTrack>,
 }
 
@@ -584,6 +590,12 @@ struct PlaylistTrackResolutionSource {
     selection: PlaylistPlaybackSelection,
     playlist_name: String,
     resolution: PlaylistTrackResolution,
+}
+
+#[cfg(not(test))]
+struct ResolvedPlaylistInitialTrack {
+    track: PlaybackTrack,
+    prepared_source: Option<playable_index::PlaylistPlayableIndexSnapshot>,
 }
 
 pub(crate) struct PlaylistTrackResolution {
@@ -614,20 +626,21 @@ async fn build_playlist_playback_material(
     );
 
     ensure_playlist_playback_request_current(request)?;
-    if let Some(initial_track) = resolve_playlist_initial_track(app, &source.selection).await? {
-        let tracks = create_start_anchor_playback_queue(initial_track.clone());
+    if let Some(initial) = resolve_playlist_initial_track(app, &source.selection).await? {
+        let tracks = create_start_anchor_playback_queue(initial.track.clone());
         ensure_playlist_playback_request_current(request)?;
         emit_playlist_playback_trace(
             "playlist-play-material-initial-track-ok",
             PlaylistPlaybackTrace::new(app)
                 .playlist_name(&source.playlist_name)
-                .track(&initial_track)
+                .track(&initial.track)
                 .elapsed(trace_start)
                 .details(selection_trace_details(&source.selection, wait_count)),
         );
         return Ok(PlaylistPlaybackMaterial {
             playlist_name: source.playlist_name,
-            initial_track,
+            initial_prepared_source: initial.prepared_source,
+            initial_track: initial.track,
             tracks,
         });
     }
@@ -656,22 +669,21 @@ async fn build_playlist_playback_material(
         );
         if !has_relevant_active_downloads {
             source = load_playlist_playback_selection(playlist_name).await?;
-            if let Some(initial_track) =
-                resolve_playlist_initial_track(app, &source.selection).await?
-            {
-                let tracks = create_start_anchor_playback_queue(initial_track.clone());
+            if let Some(initial) = resolve_playlist_initial_track(app, &source.selection).await? {
+                let tracks = create_start_anchor_playback_queue(initial.track.clone());
                 ensure_playlist_playback_request_current(request)?;
                 emit_playlist_playback_trace(
                     "playlist-play-material-initial-track-ok",
                     PlaylistPlaybackTrace::new(app)
                         .playlist_name(&source.playlist_name)
-                        .track(&initial_track)
+                        .track(&initial.track)
                         .elapsed(trace_start)
                         .details(selection_trace_details(&source.selection, wait_count)),
                 );
                 return Ok(PlaylistPlaybackMaterial {
                     playlist_name: source.playlist_name,
-                    initial_track,
+                    initial_prepared_source: initial.prepared_source,
+                    initial_track: initial.track,
                     tracks,
                 });
             }
@@ -723,23 +735,38 @@ async fn build_playlist_playback_material(
         ensure_playlist_playback_request_current(request)?;
         source = load_playlist_playback_selection(playlist_name).await?;
 
-        if let Some(initial_track) = resolve_playlist_initial_track(app, &source.selection).await? {
-            let tracks = create_start_anchor_playback_queue(initial_track.clone());
+        if let Some(initial) = resolve_playlist_initial_track(app, &source.selection).await? {
+            let tracks = create_start_anchor_playback_queue(initial.track.clone());
             ensure_playlist_playback_request_current(request)?;
             emit_playlist_playback_trace(
                 "playlist-play-material-initial-track-ok",
                 PlaylistPlaybackTrace::new(app)
                     .playlist_name(&source.playlist_name)
-                    .track(&initial_track)
+                    .track(&initial.track)
                     .elapsed(trace_start)
                     .details(selection_trace_details(&source.selection, wait_count)),
             );
             return Ok(PlaylistPlaybackMaterial {
                 playlist_name: source.playlist_name,
-                initial_track,
+                initial_prepared_source: initial.prepared_source,
+                initial_track: initial.track,
                 tracks,
             });
         }
+    }
+}
+
+#[cfg(not(test))]
+fn consume_playlist_initial_prepared_source(
+    prepared_source: &Option<playable_index::PlaylistPlayableIndexSnapshot>,
+) {
+    if let Some(snapshot) = prepared_source
+        && let Err(error) = playable_index::consume_playlist_source(snapshot)
+    {
+        eprintln!(
+            "[playlist_playback] failed to consume prepared first track source playlist=\"{}\" generation={}: {error}",
+            snapshot.playlist_name, snapshot.generation
+        );
     }
 }
 
@@ -826,6 +853,8 @@ async fn fill_playlist_track_queue(
     recent_history: SharedPlaylistPlaybackRecentHistory,
 ) -> Result<()> {
     let mut current_anchor: Option<PlaybackTrack> = None;
+    let mut recommendation_refresh_requests = PlaylistQueueRecommendationRefreshRequests::default();
+    let mut current_model_generation: Option<u64> = None;
     loop {
         if !player_service::is_session_current(&session)? {
             return Ok(());
@@ -834,11 +863,14 @@ async fn fill_playlist_track_queue(
         let active_track = resolve_playlist_playback_queue_anchor(&session, &initial_track).await?;
         let recent_history_snapshot =
             observe_playlist_playback_recent_history(&recent_history, active_track.clone())?;
-        let queue_has_next = current_session_queue_contains_next(&session)?;
+        let queue_has_next = current_session_queue_contains_next(&session, &active_track)?;
+        let model_generation = current_audio_style_model_generation();
         if should_refresh_playlist_queue_for_anchor(
             current_anchor.as_ref(),
             &active_track,
             queue_has_next,
+            current_model_generation,
+            model_generation,
         ) {
             refresh_playlist_track_queue_for_anchor(
                 &app,
@@ -847,9 +879,11 @@ async fn fill_playlist_track_queue(
                 active_track.clone(),
                 &recent_history_snapshot,
                 true,
+                Some(&mut recommendation_refresh_requests),
             )
             .await?;
             current_anchor = Some(active_track);
+            current_model_generation = model_generation;
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(
@@ -863,22 +897,31 @@ pub(crate) fn should_refresh_playlist_queue_for_anchor(
     current_anchor: Option<&PlaybackTrack>,
     active_track: &PlaybackTrack,
     queue_has_next: bool,
+    current_model_generation: Option<u64>,
+    model_generation: Option<u64>,
 ) -> bool {
     current_anchor.is_none_or(|anchor| !are_playlist_playback_tracks_equal(anchor, active_track))
         || !queue_has_next
+        || current_model_generation != model_generation
+}
+
+#[cfg(not(test))]
+fn current_audio_style_model_generation() -> Option<u64> {
+    published_audio_style_model_snapshot().map(|snapshot| snapshot.generation())
 }
 
 #[cfg(not(test))]
 fn current_session_queue_contains_next(
     session: &player_service::PlaybackSessionHandle,
+    active_track: &PlaybackTrack,
 ) -> Result<bool> {
     if !player_service::is_session_current(session)? {
         return Ok(false);
     }
 
-    Ok(playlist_playback_proposal_contains_next_track(
-        PlaylistPlaybackRecommendationMode::KeepCurrent,
+    Ok(playlist_playback_queue_contains_next_track_after_anchor(
         &player_service::current_session_tracks_snapshot()?,
+        active_track,
     ))
 }
 
@@ -920,6 +963,7 @@ async fn refresh_playlist_tracks_until_downloads_finish(
                 current_track,
                 &recent_history_snapshot,
                 false,
+                None,
             )
             .await?;
             if !updated {
@@ -941,7 +985,19 @@ async fn refresh_playlist_track_queue_for_anchor(
     current_track: PlaybackTrack,
     recently_played_tracks: &[PlaybackTrack],
     should_log_selection: bool,
+    recommendation_refresh_requests: Option<&mut PlaylistQueueRecommendationRefreshRequests>,
 ) -> Result<bool> {
+    let readiness = audio_style_playlist_queue_readiness_for_anchor(&current_track);
+    if !readiness.is_ready() {
+        let should_request = recommendation_refresh_requests
+            .map(|requests| requests.should_request(&current_track, readiness))
+            .unwrap_or(true);
+        if should_request {
+            notify_audio_style_training_inputs_changed(readiness.training_reason());
+        }
+        return Ok(player_service::is_session_current(session)?);
+    }
+
     let source = load_random_playlist_track_resolution_window(
         app,
         playlist_name,
@@ -967,6 +1023,120 @@ async fn refresh_playlist_track_queue_for_anchor(
         should_log_selection,
     );
     player_service::update_session_tracks(session, tracks)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaylistQueueRecommendationReadinessStatus {
+    Ready,
+    ModelUnavailable,
+    MissingCurrentEmbedding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaylistQueueRecommendationReadiness {
+    status: PlaylistQueueRecommendationReadinessStatus,
+    model_generation: Option<u64>,
+}
+
+impl PlaylistQueueRecommendationReadiness {
+    pub(crate) fn ready(model_generation: u64) -> Self {
+        Self {
+            status: PlaylistQueueRecommendationReadinessStatus::Ready,
+            model_generation: Some(model_generation),
+        }
+    }
+
+    pub(crate) fn model_unavailable() -> Self {
+        Self {
+            status: PlaylistQueueRecommendationReadinessStatus::ModelUnavailable,
+            model_generation: None,
+        }
+    }
+
+    pub(crate) fn missing_current_embedding(model_generation: u64) -> Self {
+        Self {
+            status: PlaylistQueueRecommendationReadinessStatus::MissingCurrentEmbedding,
+            model_generation: Some(model_generation),
+        }
+    }
+
+    fn is_ready(self) -> bool {
+        self.status == PlaylistQueueRecommendationReadinessStatus::Ready
+    }
+
+    fn training_reason(self) -> &'static str {
+        match self.status {
+            PlaylistQueueRecommendationReadinessStatus::Ready => "playlist_playback_ready",
+            PlaylistQueueRecommendationReadinessStatus::ModelUnavailable => {
+                "playlist_playback_model_unavailable"
+            }
+            PlaylistQueueRecommendationReadinessStatus::MissingCurrentEmbedding => {
+                "playlist_playback_missing_current_embedding"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlaylistQueueRecommendationRefreshRequestKey {
+    music_url: String,
+    file_path: PathBuf,
+    start_ms: u32,
+    end_ms: u32,
+    readiness: PlaylistQueueRecommendationReadiness,
+}
+
+impl PlaylistQueueRecommendationRefreshRequestKey {
+    fn new(track: &PlaybackTrack, readiness: PlaylistQueueRecommendationReadiness) -> Self {
+        Self {
+            music_url: track.music_url.clone(),
+            file_path: track.file_path.clone(),
+            start_ms: track.start_ms,
+            end_ms: track.end_ms,
+            readiness,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PlaylistQueueRecommendationRefreshRequests {
+    last_request: Option<PlaylistQueueRecommendationRefreshRequestKey>,
+}
+
+impl PlaylistQueueRecommendationRefreshRequests {
+    pub(crate) fn should_request(
+        &mut self,
+        track: &PlaybackTrack,
+        readiness: PlaylistQueueRecommendationReadiness,
+    ) -> bool {
+        if readiness.is_ready() {
+            self.last_request = None;
+            return false;
+        }
+
+        let key = PlaylistQueueRecommendationRefreshRequestKey::new(track, readiness);
+        if self.last_request.as_ref() == Some(&key) {
+            return false;
+        }
+
+        self.last_request = Some(key);
+        true
+    }
+}
+
+#[cfg(not(test))]
+fn audio_style_playlist_queue_readiness_for_anchor(
+    current_track: &PlaybackTrack,
+) -> PlaylistQueueRecommendationReadiness {
+    let Some(snapshot) = published_audio_style_model_snapshot() else {
+        return PlaylistQueueRecommendationReadiness::model_unavailable();
+    };
+
+    if snapshot.recommender().has_embedding_for(current_track) {
+        PlaylistQueueRecommendationReadiness::ready(snapshot.generation())
+    } else {
+        PlaylistQueueRecommendationReadiness::missing_current_embedding(snapshot.generation())
+    }
 }
 
 #[cfg(not(test))]
@@ -1047,7 +1217,7 @@ async fn load_playlist_playback_selection(
 async fn resolve_playlist_initial_track(
     app: &AppHandle,
     selection: &PlaylistPlaybackSelection,
-) -> Result<Option<PlaybackTrack>> {
+) -> Result<Option<ResolvedPlaylistInitialTrack>> {
     let trace_start = Instant::now();
     emit_playlist_playback_trace(
         "playlist-play-initial-resolve-start",
@@ -1070,11 +1240,12 @@ async fn resolve_playlist_initial_track(
     let random_load_start = Instant::now();
     let mut seen = HashSet::new();
     let indexed_source = playable_index::read_playlist_source(&selection.playlist_name)?;
-    let (sources, index_status, index_generation) = match indexed_source {
+    let (sources, index_status, index_generation, prepared_source) = match indexed_source {
         Some(snapshot) => (
-            snapshot.source.into_iter().collect::<Vec<_>>(),
+            snapshot.source.clone().into_iter().collect::<Vec<_>>(),
             "hit",
             Some(snapshot.generation),
+            Some(snapshot),
         ),
         None => {
             playable_index::notify_playback_miss(&selection.playlist_name);
@@ -1085,6 +1256,7 @@ async fn resolve_playlist_initial_track(
                 )
                 .await?,
                 "miss",
+                None,
                 None,
             )
         }
@@ -1131,7 +1303,10 @@ async fn resolve_playlist_initial_track(
                     ),
                 ]),
         );
-        return Ok(Some(track));
+        return Ok(Some(ResolvedPlaylistInitialTrack {
+            track,
+            prepared_source,
+        }));
     }
 
     playable_index::notify_playback_miss(&selection.playlist_name);
@@ -1424,6 +1599,23 @@ pub(crate) fn playlist_playback_proposal_contains_next_track(
     }
 }
 
+pub(crate) fn playlist_playback_queue_contains_next_track_after_anchor(
+    tracks: &[PlaybackTrack],
+    anchor: &PlaybackTrack,
+) -> bool {
+    let Some(anchor_index) = tracks
+        .iter()
+        .position(|track| are_playlist_playback_tracks_equal(track, anchor))
+    else {
+        return false;
+    };
+
+    tracks
+        .iter()
+        .skip(anchor_index + 1)
+        .any(|track| !are_playlist_playback_tracks_equal(track, anchor))
+}
+
 pub(crate) fn audio_style_playlist_playback_proposal_is_complete(
     mode: PlaylistPlaybackRecommendationMode,
     tracks: &[PlaybackTrack],
@@ -1495,6 +1687,11 @@ fn propose_random_playlist_playback_queue_with_trace(
             draw_unit: None,
             candidate_count,
             model_generation: None,
+            anchor_embedded: false,
+            embedded_candidate_count: 0,
+            valid_similarity_count: 0,
+            selected_basin: None,
+            top_candidate_basins: "none".to_string(),
         }
     });
     PlaylistPlaybackQueueProposal { tracks, selection }
@@ -1518,6 +1715,11 @@ struct PlaylistPlaybackSelectionTrace {
     draw_unit: Option<f32>,
     candidate_count: usize,
     model_generation: Option<u64>,
+    anchor_embedded: bool,
+    embedded_candidate_count: usize,
+    valid_similarity_count: usize,
+    selected_basin: Option<String>,
+    top_candidate_basins: String,
 }
 
 #[cfg(not(test))]
@@ -1534,8 +1736,39 @@ impl From<&AudioStyleCandidateSelection> for PlaylistPlaybackSelectionTrace {
             draw_unit: Some(selection.draw_unit),
             candidate_count: selection.candidate_count,
             model_generation: selection.model_generation,
+            anchor_embedded: selection.diagnostics.anchor_embedded,
+            embedded_candidate_count: selection.diagnostics.embedded_candidate_count,
+            valid_similarity_count: selection.diagnostics.valid_similarity_count,
+            selected_basin: selection.diagnostics.selected_basin.clone(),
+            top_candidate_basins: format_audio_style_candidate_basins(
+                &selection.diagnostics.top_candidate_basins,
+            ),
         }
     }
+}
+
+#[cfg(not(test))]
+fn format_audio_style_candidate_basins(
+    basins: &[super::recommendation::AudioStyleCandidateBasinDiagnostics],
+) -> String {
+    if basins.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut text = String::new();
+    for basin in basins {
+        if !text.is_empty() {
+            text.push('|');
+        }
+        let _ = write!(
+            text,
+            "{}:{}/{}",
+            escape_log_value(&basin.basin),
+            basin.embedded_candidate_count,
+            basin.candidate_count
+        );
+    }
+    text
 }
 
 #[cfg(not(test))]
@@ -1592,9 +1825,30 @@ fn log_playlist_playback_next_track_selection(
         .and_then(|trace| trace.model_generation)
         .map(|generation| generation.to_string())
         .unwrap_or_else(|| "none".to_string());
+    let anchor_embedded = trace
+        .as_ref()
+        .map(|trace| trace.anchor_embedded.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let embedded_candidate_count = trace
+        .as_ref()
+        .map(|trace| trace.embedded_candidate_count.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let valid_similarity_count = trace
+        .as_ref()
+        .map(|trace| trace.valid_similarity_count.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let selected_basin = trace
+        .as_ref()
+        .and_then(|trace| trace.selected_basin.as_ref())
+        .map(|basin| escape_log_value(basin))
+        .unwrap_or_else(|| "none".to_string());
+    let candidate_basin_top = trace
+        .as_ref()
+        .map(|trace| trace.top_candidate_basins.as_str())
+        .unwrap_or("none");
 
     println!(
-        "[playlist_playback] next track selected source={source} requested_source={requested_source} mode={} model_generation={model_generation} probability={probability:.6} uniform_probability={uniform_probability:.6} similarity={similarity} best_similarity={best_similarity} local_rank_fraction={local_rank_fraction} draw={draw} candidates={candidate_count} reason={reason} playlist=\"{}\" music=\"{}\" url=\"{}\" range={}..{} file=\"{}\"",
+        "[playlist_playback] next track selected source={source} requested_source={requested_source} mode={} model_generation={model_generation} probability={probability:.6} uniform_probability={uniform_probability:.6} similarity={similarity} best_similarity={best_similarity} local_rank_fraction={local_rank_fraction} draw={draw} candidates={candidate_count} anchor_embedded={anchor_embedded} embedded_candidates={embedded_candidate_count} valid_similarities={valid_similarity_count} selected_basin=\"{selected_basin}\" candidate_basin_top=\"{candidate_basin_top}\" reason={reason} playlist=\"{}\" music=\"{}\" url=\"{}\" range={}..{} file=\"{}\"",
         mode.as_str(),
         escape_log_value(&next_track.playlist_name),
         escape_log_value(&next_track.music_name),

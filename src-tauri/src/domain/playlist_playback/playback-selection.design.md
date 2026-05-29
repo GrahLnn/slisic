@@ -26,8 +26,8 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 
 - The playlist row is the only source of playlist membership.
 - Startup candidate preparation runs before click through the playable-source
-  index. The click path consumes the current prepared option and schedules
-  refresh work on miss.
+  index. The player-submit success path consumes the current prepared option by
+  playlist and generation; miss only schedules refresh work.
 - First-track selection chooses a random playable startup anchor from the
   playlist scope.
 - Next-track selection is owned by the recommendation planner and uses the
@@ -49,6 +49,8 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   owner before it can modify the active queue.
 - Repeated refreshes may replace the prepared next track, but they may not create
   duplicate semantic side effects or widen scope outside the playlist.
+- Download, local-import, or recovery paths that persist playable `Music` must
+  notify the playable-source index after the database write succeeds.
 
 ## Owned Invariants
 
@@ -67,6 +69,8 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - Startup and ready-time refresh scheduling.
 - Generation-stamped snapshot commits and stale refresh rejection.
 - Current prepared source lookup for first-track startup.
+- Prepared startup source consumption by playlist and generation. Consumption
+  removes only that playlist snapshot and schedules replacement preparation.
 - Invalidation signals after playlist, library, and exclude changes.
 
 `playlist_playback::service` owns:
@@ -132,9 +136,11 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - Guard: playlist exists and at least one playable track can be consumed from
   the prepared index snapshot or, during warmup, from the bounded repo sampler.
 - Writes: player session queue and active playback request.
-- Emits: diagnostic trace, index hit/miss trace, and now-playing events.
+- Emits: diagnostic trace, index hit/miss trace, prepared-source consumption
+  signal, and now-playing events.
 - Target state: active playback session.
-- Rejection: missing playlist, no playable track, or superseded request.
+- Rejection: missing playlist, no playable track, superseded request, or player
+  submit failure. Rejected startup does not consume a prepared source.
 
 `PlayingSession(current) -> PreparedQueue(current, next?)`
 
@@ -151,8 +157,9 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 There is no separate state-machine DSL for this service yet. The single
 transition owner is the `playlist_playback::service` queue planning path:
 
-- first-track selection consumes the current prepared playlist-scoped source
-  from the playable index;
+- first-track selection reads the current prepared playlist-scoped source from
+  the playable index;
+- player-submit success consumes that prepared source by playlist and generation;
 - bounded repo sampling is only a warmup miss path and schedules index refresh;
 - initial queue construction commits only the random first track;
 - background next-track planning uses `propose_playlist_playback_queue_with_mode`;
@@ -190,6 +197,8 @@ The playable index owns generation numbers for async refreshes. A late global or
 playlist refresh may finish, but it can only commit if its generation is still
 current. Refresh requests from startup, ready, playlist mutation, library
 mutation, exclude mutation, or playback miss are idempotent preparation signals.
+Prepared-source consumption is generation-guarded, so repeated consumption or a
+late consumption of a replaced snapshot cannot remove newer prepared evidence.
 
 Queue refreshes run asynchronously, but every refresh checks the session handle
 before writing. A superseded session cannot update the active queue. Late player

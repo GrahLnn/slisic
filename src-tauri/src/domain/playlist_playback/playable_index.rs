@@ -1,6 +1,8 @@
 #[cfg(not(test))]
 use crate::domain::player::event::{PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent};
 #[cfg(not(test))]
+use crate::domain::playlist_playback::recommendation::published_audio_style_model_snapshot;
+#[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
 use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlaybackTrackSource};
 use anyhow::{Result, anyhow};
@@ -25,6 +27,7 @@ pub(crate) enum PlayableIndexRefreshReason {
     LibraryChanged,
     ExcludeChanged,
     PlaybackMiss,
+    PreparedSourceConsumed,
 }
 
 impl PlayableIndexRefreshReason {
@@ -37,6 +40,7 @@ impl PlayableIndexRefreshReason {
             Self::LibraryChanged => "library_changed",
             Self::ExcludeChanged => "exclude_changed",
             Self::PlaybackMiss => "playback_miss",
+            Self::PreparedSourceConsumed => "prepared_source_consumed",
         }
     }
 
@@ -90,6 +94,9 @@ struct PlayableIndexState {
  *     or global pass.
  *   - Refresh prepares one live-random startup option for each playlist and
  *     never stores a seed or deterministic order.
+ *   - A prepared startup option is consumed by playlist name and generation
+ *     after a current play request accepts it. Consumption removes only that
+ *     playlist snapshot and schedules replacement preparation.
  *   - Refresh can be repeated, cancelled by supersession, or raced with ready
  *     transitions without producing extra semantic side effects.
  *   - The index never validates local file existence; playback service owns
@@ -157,6 +164,14 @@ pub(crate) fn notify_playback_miss(playlist_name: &str) {
     notify_playback_miss_impl(playlist_name);
 }
 
+pub(crate) fn consume_playlist_source(snapshot: &PlaylistPlayableIndexSnapshot) -> Result<bool> {
+    let consumed = consume_playlist_source_snapshot(snapshot)?;
+    if consumed {
+        notify_prepared_source_consumed_impl(&snapshot.playlist_name);
+    }
+    Ok(consumed)
+}
+
 #[cfg(not(test))]
 fn notify_playlist_changed_impl(playlist_name: &str) {
     spawn_refresh_playlist(
@@ -189,6 +204,18 @@ fn notify_playback_miss_impl(playlist_name: &str) {
 #[cfg(test)]
 fn notify_playback_miss_impl(_playlist_name: &str) {}
 
+#[cfg(not(test))]
+fn notify_prepared_source_consumed_impl(playlist_name: &str) {
+    spawn_refresh_playlist(
+        None,
+        playlist_name.to_string(),
+        PlayableIndexRefreshReason::PreparedSourceConsumed,
+    );
+}
+
+#[cfg(test)]
+fn notify_prepared_source_consumed_impl(_playlist_name: &str) {}
+
 pub(crate) fn read_playlist_source(
     playlist_name: &str,
 ) -> Result<Option<PlaylistPlayableIndexSnapshot>> {
@@ -206,6 +233,28 @@ pub(crate) fn read_playlist_source(
         generation: snapshot.generation,
         source: snapshot.source.clone(),
     }))
+}
+
+fn consume_playlist_source_snapshot(snapshot: &PlaylistPlayableIndexSnapshot) -> Result<bool> {
+    let runtime = try_runtime()?;
+    let mut state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    let current_matches = state
+        .playlists
+        .get(&snapshot.playlist_name)
+        .is_some_and(|current| current.generation == snapshot.generation);
+    if !current_matches {
+        return Ok(false);
+    }
+
+    state.playlists.remove(&snapshot.playlist_name);
+    let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    state
+        .playlist_generations
+        .insert(snapshot.playlist_name.clone(), generation);
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -638,6 +687,38 @@ fn release_global_refresh_and_spawn_pending(
 async fn prepare_playlist_source(
     selection: &PlaylistPlaybackSelection,
 ) -> Result<Option<PlaylistPlaybackTrackSource>> {
+    if let Some(source) = prepare_audio_style_playlist_source(selection) {
+        return Ok(Some(source));
+    }
+
+    prepare_random_playlist_source(selection).await
+}
+
+#[cfg(not(test))]
+fn prepare_audio_style_playlist_source(
+    selection: &PlaylistPlaybackSelection,
+) -> Option<PlaylistPlaybackTrackSource> {
+    let snapshot = published_audio_style_model_snapshot()?;
+    let (source, mut selection_trace) =
+        snapshot.recommender().propose_centerless_source(|source| {
+            playlist_playback_source_belongs_to_selection(selection, source)
+        })?;
+    selection_trace.model_generation = Some(snapshot.generation());
+    println!(
+        "[playlist_playback_index] audio style prepared source playlist=\"{}\" generation={} probability={:.6} candidates={} music=\"{}\"",
+        escape_log_value(&selection.playlist_name),
+        snapshot.generation(),
+        selection_trace.probability,
+        selection_trace.candidate_count,
+        escape_log_value(&source.music.alias)
+    );
+    Some(source)
+}
+
+#[cfg(not(test))]
+async fn prepare_random_playlist_source(
+    selection: &PlaylistPlaybackSelection,
+) -> Result<Option<PlaylistPlaybackTrackSource>> {
     Ok(playlist_repo::load_random_playlist_playback_track_sources(
         selection,
         PREPARED_PLAYABLE_OPTION_LIMIT,
@@ -645,6 +726,25 @@ async fn prepare_playlist_source(
     .await?
     .into_iter()
     .next())
+}
+
+#[cfg(not(test))]
+fn playlist_playback_source_belongs_to_selection(
+    selection: &PlaylistPlaybackSelection,
+    source: &PlaylistPlaybackTrackSource,
+) -> bool {
+    selection
+        .collections
+        .iter()
+        .any(|collection| collection.folder == source.collection_folder)
+        || selection
+            .groups
+            .iter()
+            .any(|group| group.url == source.music.group.url)
+        || selection
+            .extra
+            .iter()
+            .any(|extra| extra.matches_canonical_music_id(&source.music.canonical_music_id))
 }
 
 #[cfg(not(test))]
@@ -714,11 +814,14 @@ fn commit_playlist_snapshot(
     state.playlists.insert(
         playlist_name.clone(),
         PlaylistPlayableIndexSnapshot {
-            playlist_name,
+            playlist_name: playlist_name.clone(),
             generation,
             source,
         },
     );
+    state
+        .playlist_generations
+        .insert(playlist_name.clone(), generation);
     Ok(())
 }
 

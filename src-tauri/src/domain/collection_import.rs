@@ -14,6 +14,8 @@ use crate::domain::downloads::service::{
 };
 use crate::domain::downloads::yt_dlp::LeafProbe;
 #[cfg(not(test))]
+use crate::domain::playlist_playback::playable_index::{self, PlayableIndexRefreshReason};
+#[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::notify_audio_style_training_inputs_changed;
 use crate::domain::playlists::model::{
     Collection, CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
@@ -243,6 +245,7 @@ pub(crate) async fn load_collection_shell(
     if restore_download_manifest_evidence(&mut collection, save_root)? {
         let saved = collection_repo::upsert_collection(&collection).await?;
         notify_audio_style_inputs_changed("download_manifest_evidence_restored");
+        notify_playlist_playback_library_changed();
         collection = saved;
     }
 
@@ -318,6 +321,7 @@ pub(crate) async fn persist_downloaded_leaf_music(
     file_name: &str,
     group: Group,
 ) -> Result<()> {
+    ensure_committable_download_file_name(file_name)?;
     let mut materialized = materialize_music_entries(probe, file_name, group);
     inherit_existing_music_aliases(&mut materialized, &collection.musics);
     if source_kind == CollectionSourceKind::Single {
@@ -337,6 +341,7 @@ pub(crate) async fn persist_downloaded_leaf_music(
     let saved = collection_repo::upsert_collection(collection).await?;
     *collection = saved;
     notify_audio_style_inputs_changed("downloaded_music_persisted");
+    notify_playlist_playback_library_changed();
     Ok(())
 }
 
@@ -374,6 +379,7 @@ pub(crate) async fn import_local_collection_folder(
     collection.last_updated = now_timestamp();
     let saved = collection_repo::upsert_collection(&collection).await?;
     notify_audio_style_inputs_changed("local_collection_imported");
+    notify_playlist_playback_library_changed();
     Ok(saved)
 }
 
@@ -660,6 +666,7 @@ pub(crate) fn finalize_downloaded_leaf(
     downloaded_path: PathBuf,
 ) -> Result<String> {
     let final_file_name = finalized_download_file_name(&downloaded_path)?;
+    ensure_committable_download_file_name(&final_file_name)?;
     let relative_path = relative_music_path(collection, &final_file_name, group);
     let final_path = save_root.join(&collection.folder).join(&relative_path);
 
@@ -672,6 +679,18 @@ pub(crate) fn finalize_downloaded_leaf(
     commit_downloaded_file(&downloaded_path, &final_path)?;
 
     Ok(relative_path)
+}
+
+fn ensure_committable_download_file_name(file_name: &str) -> Result<()> {
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if extension.eq_ignore_ascii_case("part") {
+        bail!("downloaded audio is still incomplete: {file_name}");
+    }
+
+    Ok(())
 }
 
 fn commit_downloaded_file(downloaded_path: &Path, final_path: &Path) -> Result<()> {
@@ -1611,6 +1630,7 @@ pub(crate) async fn repair_stale_single_source_collections(save_root: &Path) -> 
             collection.last_updated = now_timestamp();
             let _ = collection_repo::upsert_collection(&collection).await?;
             notify_audio_style_inputs_changed("download_recovery_music_restored");
+            notify_playlist_playback_library_changed();
             repaired += 1;
             break;
         }
@@ -1680,6 +1700,11 @@ pub(crate) fn restore_single_source_musics_from_task(
 fn notify_audio_style_inputs_changed(_reason: &'static str) {
     #[cfg(not(test))]
     notify_audio_style_training_inputs_changed(_reason);
+}
+
+fn notify_playlist_playback_library_changed() {
+    #[cfg(not(test))]
+    playable_index::notify_library_changed(PlayableIndexRefreshReason::LibraryChanged);
 }
 
 fn seconds_to_millis(seconds: u32) -> u32 {

@@ -440,6 +440,45 @@ fn finalize_downloaded_leaf_commits_the_actual_downloaded_file_name_without_temp
 }
 
 #[test]
+fn finalize_downloaded_leaf_rejects_partial_download_fragments() {
+    let save_root = unique_temp_path("download-finalize-part-root");
+    let collection_folder = "youtube/Partial Download";
+    let target_dir = save_root.join(collection_folder);
+    std::fs::create_dir_all(&target_dir).expect("download target dir should be creatable");
+    let downloaded_path = target_dir.join("Track.__slisic_tmp__abc123.m4a.part");
+    std::fs::write(&downloaded_path, b"partial").expect("partial file should exist");
+    let collection = Collection {
+        name: "Partial Download".to_string(),
+        url: "https://www.youtube.com/playlist?list=PLpartial".to_string(),
+        folder: collection_folder.to_string(),
+        musics: vec![],
+        last_updated: "2026-05-24T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+    let group = Group {
+        name: collection.name.clone(),
+        url: collection.url.clone(),
+        collection: CollectionGroupOwner::from(&collection),
+        folder: collection.folder.clone(),
+    };
+
+    let error = finalize_downloaded_leaf(
+        &collection,
+        "https://www.youtube.com/watch?v=partial",
+        &group,
+        &save_root,
+        "Track",
+        downloaded_path.clone(),
+    )
+    .expect_err("partial downloads must not enter the stable music domain");
+
+    assert!(error.to_string().contains("still incomplete"));
+    assert!(downloaded_path.is_file());
+
+    let _ = std::fs::remove_dir_all(save_root);
+}
+
+#[test]
 fn finalize_downloaded_leaf_is_idempotent_after_temp_file_was_already_committed() {
     let save_root = unique_temp_path("download-finalize-idempotent-root");
     let collection_folder = "youtube/Recovered Temp";

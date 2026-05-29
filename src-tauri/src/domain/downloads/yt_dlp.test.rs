@@ -1,8 +1,9 @@
 use super::model::CollectionSourceKind;
 use super::yt_dlp::{
     RootProbe, build_leaf_audio_download_args, build_root_playlist_probe_args,
-    classify_root_preference, looks_like_direct_leaf_url, parse_leaf_probe, parse_progress_line,
-    parse_root_probe, resolve_downloaded_file,
+    build_root_playlist_shell_probe_args, classify_root_preference, looks_like_direct_leaf_url,
+    parse_leaf_probe, parse_progress_line, parse_root_probe, parse_root_shell_probe,
+    resolve_downloaded_file,
 };
 use serde_json::json;
 
@@ -222,6 +223,10 @@ fn root_playlist_probe_args_request_youtube_continuation_pages() {
     let args = build_root_playlist_probe_args("https://www.youtube.com/playlist?list=PLPfHaI9XqTn");
 
     assert!(args.iter().any(|arg| arg == "--flat-playlist"));
+    let playlist_items = args
+        .windows(2)
+        .find_map(|window| (window[0] == "--playlist-items").then_some(window[1].as_str()));
+    assert!(playlist_items.is_none());
     let extractor_args = args
         .windows(2)
         .find_map(|window| (window[0] == "--extractor-args").then_some(window[1].as_str()))
@@ -229,6 +234,40 @@ fn root_playlist_probe_args_request_youtube_continuation_pages() {
     assert!(extractor_args.contains("youtube:"));
     assert!(extractor_args.contains("playlist_ajax=true"));
     assert!(extractor_args.contains("tab_max_pages=50"));
+}
+
+#[test]
+fn root_playlist_shell_probe_args_request_metadata_without_entries() {
+    let args =
+        build_root_playlist_shell_probe_args("https://www.youtube.com/playlist?list=PLPfHaI9XqTn");
+
+    assert!(!args.iter().any(|arg| arg == "--flat-playlist"));
+    let playlist_items = args
+        .windows(2)
+        .find_map(|window| (window[0] == "--playlist-items").then_some(window[1].as_str()))
+        .expect("shell probe should explicitly suppress playlist item expansion");
+    assert_eq!(playlist_items, "0");
+}
+
+#[test]
+fn parses_playlist_shell_probe_without_entries() {
+    let value = json!({
+        "_type": "playlist",
+        "title": "Large Playlist",
+        "webpage_url": "https://www.youtube.com/playlist?list=PLlarge",
+        "playlist_count": 312,
+        "entries": []
+    });
+
+    let parsed = parse_root_shell_probe(value, "https://www.youtube.com/playlist?list=PLlarge")
+        .expect("entryless shell metadata should parse");
+
+    assert_eq!(parsed.source_kind, CollectionSourceKind::List);
+    assert_eq!(parsed.title, "Large Playlist");
+    assert_eq!(
+        parsed.webpage_url,
+        "https://www.youtube.com/playlist?list=PLlarge"
+    );
 }
 
 #[test]
@@ -268,5 +307,29 @@ fn resolves_real_unicode_file_when_stdout_path_loses_diacritic() {
         .expect("resolver should fall back to the real unicode file");
 
     assert_eq!(resolved, real_path);
+    std::fs::remove_dir_all(&target_dir).expect("temp target dir should be removed");
+}
+
+#[test]
+fn resolve_downloaded_file_rejects_partial_download_fragments() {
+    let target_dir = std::env::temp_dir().join(format!(
+        "slisic-yt-dlp-part-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&target_dir).expect("temp target dir should be created");
+
+    let partial_path = target_dir.join("Track.__slisic_tmp__abc123.m4a.part");
+    std::fs::write(&partial_path, b"partial").expect("partial download should be written");
+
+    let resolved = resolve_downloaded_file(
+        &target_dir,
+        "Track.__slisic_tmp__abc123",
+        Some(&partial_path),
+    );
+
+    assert_eq!(resolved, None);
     std::fs::remove_dir_all(&target_dir).expect("temp target dir should be removed");
 }

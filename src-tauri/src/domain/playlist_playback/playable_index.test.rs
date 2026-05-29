@@ -1,6 +1,6 @@
 use super::playable_index::{
-    initialize_runtime_for_test, read_playlist_source, refresh_playlist_now_for_test,
-    reset_for_test,
+    consume_playlist_source, initialize_runtime_for_test, read_playlist_source,
+    refresh_playlist_now_for_test, reset_for_test,
 };
 use crate::domain::playlists::model::{
     CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
@@ -91,4 +91,70 @@ async fn playable_index_miss_is_explicit_for_unprepared_playlist() {
     let sampled = read_playlist_source("Missing").expect("index read should succeed");
 
     assert!(sampled.is_none());
+}
+
+#[tokio::test]
+async fn playable_index_consumes_only_the_matching_generation() {
+    reset_for_test();
+    initialize_runtime_for_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("first test snapshot should commit");
+    let stale = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("first snapshot should exist");
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(4)))
+        .await
+        .expect("second test snapshot should commit");
+
+    assert!(
+        !consume_playlist_source(&stale).expect("stale snapshot consumption should be safe"),
+        "stale snapshot consumption must not remove a newer prepared source"
+    );
+    let current = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("current snapshot should still exist");
+
+    assert_eq!(
+        current
+            .source
+            .expect("prepared source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=4"
+    );
+}
+
+#[tokio::test]
+async fn playable_index_consumption_removes_only_one_playlist_source() {
+    reset_for_test();
+    initialize_runtime_for_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("focus snapshot should commit");
+    refresh_playlist_now_for_test(selection("Sleep"), Some(source(7)))
+        .await
+        .expect("sleep snapshot should commit");
+    let focus = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("focus snapshot should exist");
+
+    assert!(consume_playlist_source(&focus).expect("current snapshot should be consumed"));
+
+    assert!(
+        read_playlist_source("Focus")
+            .expect("index read should succeed")
+            .is_none()
+    );
+    let sleep = read_playlist_source("Sleep")
+        .expect("index read should succeed")
+        .expect("sleep snapshot should remain");
+    assert_eq!(
+        sleep
+            .source
+            .expect("prepared source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=7"
+    );
 }

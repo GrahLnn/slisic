@@ -415,6 +415,10 @@ impl PlaylistPlaybackExtraRef {
     pub(crate) fn new_for_test(record: RecordId) -> Self {
         Self { record }
     }
+
+    pub fn matches_canonical_music_id(&self, canonical_music_id: &str) -> bool {
+        self.record.key.to_sql() == stable_record_key(canonical_music_id)
+    }
 }
 
 /**

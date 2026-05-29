@@ -22,6 +22,8 @@ FRAME_SIZE = 1024
 HOP_SIZE = 256
 LOCAL_DENSITY_TOP_K = 10
 SOFTMIN_BETA = 6.0
+SPARSE_CODE_TOP_K = 32
+SPARSE_COARSE_TOP_K = 6
 
 
 @dataclass(frozen=True)
@@ -188,6 +190,11 @@ def normalize_vector(values: np.ndarray) -> np.ndarray:
     return (values / np.float32(norm)).astype(np.float32)
 
 
+def normalize_vector_batch(values: np.ndarray) -> np.ndarray:
+    norms = np.maximum(np.linalg.norm(values, axis=1, keepdims=True), np.float32(1.0e-6))
+    return (values / norms.astype(np.float32)).astype(np.float32)
+
+
 def transition_fingerprint(samples: np.ndarray) -> np.ndarray:
     ts = terminals(samples)
     hist = np.zeros(TERMINAL_BINS, dtype=np.float32)
@@ -217,6 +224,85 @@ def embedding(samples: np.ndarray) -> np.ndarray:
     for view in views:
         merged += transition_fingerprint(view)
     return normalize_vector(merged / np.float32(len(views)))
+
+
+def multi_vector_embedding(samples: np.ndarray) -> np.ndarray:
+    return np.stack([transition_fingerprint(view) for view in embedding_views(samples)], axis=0).astype(np.float32)
+
+
+def sparse_topk_codes(vectors: np.ndarray, top_k: int) -> tuple[np.ndarray, np.ndarray]:
+    if vectors.ndim != 3:
+        raise ValueError(f"expected vectors with shape [items, views, dims], got {vectors.shape}")
+    k = max(1, min(int(top_k), vectors.shape[-1]))
+    flat = vectors.reshape(-1, vectors.shape[-1])
+    indices = np.argpartition(flat, -k, axis=1)[:, -k:]
+    values = np.take_along_axis(flat, indices, axis=1)
+    order = np.argsort(values, axis=1)[:, ::-1]
+    indices = np.take_along_axis(indices, order, axis=1)
+    values = np.take_along_axis(values, order, axis=1)
+    return indices.reshape(vectors.shape[0], vectors.shape[1], k), values.reshape(vectors.shape[0], vectors.shape[1], k)
+
+
+def sparse_item_impacts(multi_embeddings: np.ndarray, top_k: int) -> np.ndarray:
+    indices, values = sparse_topk_codes(multi_embeddings, top_k)
+    impacts = np.zeros((multi_embeddings.shape[0], multi_embeddings.shape[-1]), dtype=np.float32)
+    item_indices = np.arange(multi_embeddings.shape[0], dtype=np.int64)[:, None]
+    for view_index in range(multi_embeddings.shape[1]):
+        np.maximum.at(impacts, (item_indices, indices[:, view_index, :]), values[:, view_index, :])
+    return impacts
+
+
+def sparse_candidate_mask(
+    item_impacts: np.ndarray,
+    query_multi_embedding: np.ndarray,
+    current_index: int,
+    *,
+    top_k: int,
+    coarse_top_k: int,
+) -> tuple[np.ndarray, int]:
+    query_indices, _query_values = sparse_topk_codes(query_multi_embedding[None, :, :], top_k)
+    coarse = max(1, min(int(coarse_top_k), query_indices.shape[-1]))
+    active_dims = np.unique(query_indices[:, :, :coarse].reshape(-1))
+    if active_dims.size == 0:
+        mask = np.zeros(item_impacts.shape[0], dtype=bool)
+    else:
+        mask = np.any(item_impacts[:, active_dims] > 0.0, axis=1)
+    mask[current_index] = False
+    if not bool(np.any(mask)):
+        mask = np.ones(item_impacts.shape[0], dtype=bool)
+        mask[current_index] = False
+    return mask, int(active_dims.size)
+
+
+def sparse_reranked_distribution(
+    dense_prob: np.ndarray,
+    item_impacts: np.ndarray,
+    query_multi_embedding: np.ndarray,
+    current_index: int,
+    *,
+    top_k: int,
+    coarse_top_k: int,
+) -> tuple[np.ndarray, dict[str, float]]:
+    mask, active_dim_count = sparse_candidate_mask(
+        item_impacts,
+        query_multi_embedding,
+        current_index,
+        top_k=top_k,
+        coarse_top_k=coarse_top_k,
+    )
+    weights = np.where(mask, dense_prob, 0.0).astype(np.float32)
+    total = float(np.sum(weights))
+    if total <= 0.0 or not math.isfinite(total):
+        weights = dense_prob.copy()
+        weights[current_index] = 0.0
+        total = float(np.sum(weights))
+    candidate_count = int(np.sum(mask))
+    possible_count = max(item_impacts.shape[0] - 1, 1)
+    return weights / np.float32(max(total, 1.0e-9)), {
+        "candidate_count": float(candidate_count),
+        "candidate_fraction": float(candidate_count / possible_count),
+        "active_dim_count": float(active_dim_count),
+    }
 
 
 def centered_cosine(left: np.ndarray, right: np.ndarray, mean: np.ndarray) -> float:
@@ -405,18 +491,23 @@ def run(args: argparse.Namespace) -> dict:
         Scenario("crop_shift", crop_shift),
         Scenario("time_dropout", dropout),
     ]
-    base_embeddings = np.stack([embedding(sample) for sample in samples], axis=0)
+    base_multi_embeddings = np.stack([multi_vector_embedding(sample) for sample in samples], axis=0)
+    base_embeddings = normalize_vector_batch(np.mean(base_multi_embeddings, axis=1).astype(np.float32))
+    base_sparse_impacts = sparse_item_impacts(base_multi_embeddings, args.sparse_code_top_k)
     basins = [track.basin for track in tracks]
     current_indices = list(range(min(args.anchors, len(tracks))))
     history = list(range(min(8, len(tracks))))
 
     rows = []
+    sparse_rows = []
     scenario_embeddings: dict[str, np.ndarray] = {}
     for scenario in scenarios:
-        transformed = np.stack(
-            [embedding(scenario.transform(sample, rng)) for sample in samples],
+        transformed_multi = np.stack(
+            [multi_vector_embedding(scenario.transform(sample, rng)) for sample in samples],
             axis=0,
         )
+        transformed = normalize_vector_batch(np.mean(transformed_multi, axis=1).astype(np.float32))
+        transformed_sparse_impacts = sparse_item_impacts(transformed_multi, args.sparse_code_top_k)
         scenario_embeddings[scenario.name] = transformed
         self_cosines = np.array(
             [
@@ -431,6 +522,28 @@ def run(args: argparse.Namespace) -> dict:
             transformed_prob, _ = recommendation_distribution(transformed, basins, current_index, history)
             base_top = top_k(base_prob, args.top_k)
             transformed_top = top_k(transformed_prob, args.top_k)
+            base_sparse_prob, base_sparse_stats = sparse_reranked_distribution(
+                base_prob,
+                base_sparse_impacts,
+                base_multi_embeddings[current_index],
+                current_index,
+                top_k=args.sparse_code_top_k,
+                coarse_top_k=args.sparse_coarse_top_k,
+            )
+            transformed_sparse_prob, transformed_sparse_stats = sparse_reranked_distribution(
+                transformed_prob,
+                transformed_sparse_impacts,
+                transformed_multi[current_index],
+                current_index,
+                top_k=args.sparse_code_top_k,
+                coarse_top_k=args.sparse_coarse_top_k,
+            )
+            base_sparse_top = top_k(base_sparse_prob, args.top_k)
+            transformed_sparse_top = top_k(transformed_sparse_prob, args.top_k)
+            dense_top_set = set(base_top)
+            sparse_top_set = set(base_sparse_top)
+            transformed_dense_top_set = set(transformed_top)
+            transformed_sparse_top_set = set(transformed_sparse_top)
             rows.append(
                 {
                     "scenario": scenario.name,
@@ -446,10 +559,35 @@ def run(args: argparse.Namespace) -> dict:
                     "transformed_top1_basin": tracks[transformed_top[0]].basin,
                 }
             )
+            sparse_rows.append(
+                {
+                    "scenario": scenario.name,
+                    "anchor": tracks[current_index].path.stem,
+                    "base_candidate_fraction": base_sparse_stats["candidate_fraction"],
+                    "transformed_candidate_fraction": transformed_sparse_stats["candidate_fraction"],
+                    "base_candidate_count": base_sparse_stats["candidate_count"],
+                    "transformed_candidate_count": transformed_sparse_stats["candidate_count"],
+                    "base_active_dim_count": base_sparse_stats["active_dim_count"],
+                    "transformed_active_dim_count": transformed_sparse_stats["active_dim_count"],
+                    "base_sparse_top1_matches_dense": bool(base_sparse_top[0] == base_top[0]),
+                    "transformed_sparse_top1_matches_dense": bool(transformed_sparse_top[0] == transformed_top[0]),
+                    "base_sparse_topk_recall": len(dense_top_set.intersection(sparse_top_set)) / args.top_k,
+                    "transformed_sparse_topk_recall": len(
+                        transformed_dense_top_set.intersection(transformed_sparse_top_set)
+                    )
+                    / args.top_k,
+                    "sparse_top1_same_under_transform": bool(base_sparse_top[0] == transformed_sparse_top[0]),
+                    "sparse_topk_overlap_under_transform": len(set(base_sparse_top).intersection(transformed_sparse_top))
+                    / args.top_k,
+                    "base_sparse_top1": tracks[base_sparse_top[0]].path.stem,
+                    "transformed_sparse_top1": tracks[transformed_sparse_top[0]].path.stem,
+                }
+            )
 
     summary = []
     for scenario in scenarios:
         scenario_rows = [row for row in rows if row["scenario"] == scenario.name]
+        scenario_sparse_rows = [row for row in sparse_rows if row["scenario"] == scenario.name]
         summary.append(
             {
                 "scenario": scenario.name,
@@ -458,16 +596,56 @@ def run(args: argparse.Namespace) -> dict:
                 "top1_stability": float(np.mean([row["top1_same"] for row in scenario_rows])),
                 "top3_overlap": float(np.mean([row["top3_overlap"] for row in scenario_rows])),
                 "mean_kl": float(np.mean([row["kl"] for row in scenario_rows])),
+                "sparse_candidate_fraction": float(
+                    np.mean(
+                        [
+                            (row["base_candidate_fraction"] + row["transformed_candidate_fraction"]) * 0.5
+                            for row in scenario_sparse_rows
+                        ]
+                    )
+                ),
+                "sparse_top1_dense_agreement": float(
+                    np.mean(
+                        [
+                            row["base_sparse_top1_matches_dense"] and row["transformed_sparse_top1_matches_dense"]
+                            for row in scenario_sparse_rows
+                        ]
+                    )
+                ),
+                "sparse_top3_dense_recall": float(
+                    np.mean(
+                        [
+                            (row["base_sparse_topk_recall"] + row["transformed_sparse_topk_recall"]) * 0.5
+                            for row in scenario_sparse_rows
+                        ]
+                    )
+                ),
+                "sparse_top1_stability": float(
+                    np.mean([row["sparse_top1_same_under_transform"] for row in scenario_sparse_rows])
+                ),
+                "sparse_top3_overlap": float(
+                    np.mean([row["sparse_topk_overlap_under_transform"] for row in scenario_sparse_rows])
+                ),
             }
         )
 
     return {
-        "paper_mechanism": "dynamic multi-axis embedding robustness probe",
+        "paper_mechanism": "dynamic multi-axis embedding robustness probe plus SSR-style sparse inverted candidate recall",
         "track_count": len(tracks),
         "anchor_count": len(current_indices),
         "audio_root": str(args.audio_root),
+        "sparse_retrieval": {
+            "mechanism": (
+                "SSR-inspired sparse top-k code dimensions act as inverted-index posting keys; "
+                "the experiment only filters candidates, then reranks with the existing dense recommendation scores."
+            ),
+            "code_top_k": args.sparse_code_top_k,
+            "coarse_top_k": args.sparse_coarse_top_k,
+            "dense_score_owner": "recommendation_distribution",
+        },
         "summary": summary,
         "examples": rows[: min(len(rows), 24)],
+        "sparse_examples": sparse_rows[: min(len(sparse_rows), 24)],
     }
 
 
@@ -478,6 +656,8 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=32)
     parser.add_argument("--anchors", type=int, default=8)
     parser.add_argument("--top-k", type=int, default=3)
+    parser.add_argument("--sparse-code-top-k", type=int, default=SPARSE_CODE_TOP_K)
+    parser.add_argument("--sparse-coarse-top-k", type=int, default=SPARSE_COARSE_TOP_K)
     parser.add_argument("--seed", type=int, default=28190)
     parser.add_argument("--out", type=Path, default=Path("scratch/experiments/hteb_audio_robustness.result.json"))
     args = parser.parse_args()

@@ -3,10 +3,12 @@ use super::recommendation::{
 };
 use super::service::{
     PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
-    PlaylistPlaybackRecommender, RandomPlaylistPlaybackRecommender,
+    PlaylistPlaybackRecommender, PlaylistQueueRecommendationReadiness,
+    PlaylistQueueRecommendationRefreshRequests, RandomPlaylistPlaybackRecommender,
     audio_style_playlist_playback_proposal_is_complete, create_short_playback_queue,
     create_start_anchor_playback_queue, place_track_at_queue_start,
     playlist_playback_proposal_contains_next_track,
+    playlist_playback_queue_contains_next_track_after_anchor,
     playlist_selection_has_relevant_active_downloads,
     propose_playlist_playback_queue_without_audio_style_model, propose_random_queue_after_exclude,
     resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
@@ -606,7 +608,7 @@ fn random_recommender_keeps_current_track_ahead_of_newly_loaded_queue_window() {
 }
 
 #[test]
-fn recommendation_history_excludes_recent_non_liked_candidates() {
+fn recommendation_history_excludes_played_non_liked_music() {
     let played = playback_track("played");
     let fresh = playback_track("fresh");
 
@@ -620,7 +622,27 @@ fn recommendation_history_excludes_recent_non_liked_candidates() {
 }
 
 #[test]
-fn recommendation_history_keeps_liked_recent_candidates() {
+fn recommendation_history_excludes_same_played_music_across_track_ranges() {
+    let played = playback_track("played");
+    let mut same_music_other_range = playback_track("played_other_range");
+    same_music_other_range.canonical_music_id = played.canonical_music_id.clone();
+    same_music_other_range.music_url = "https://example.com/played?range=2".to_string();
+    same_music_other_range.file_path = PathBuf::from("played-other-range.m4a");
+    same_music_other_range.start_ms = 60_000;
+    same_music_other_range.end_ms = 120_000;
+    let fresh = playback_track("fresh");
+
+    let filtered = filter_recently_played_recommendation_candidates(
+        vec![same_music_other_range, fresh.clone()],
+        std::slice::from_ref(&played),
+    );
+
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].music_url, fresh.music_url);
+}
+
+#[test]
+fn recommendation_history_keeps_liked_played_music() {
     let mut liked = playback_track("liked");
     liked.liked = true;
     let fresh = playback_track("fresh");
@@ -727,6 +749,40 @@ fn playlist_playback_keep_current_proposal_with_distinct_next_track_is_complete(
 }
 
 #[test]
+fn playlist_queue_next_check_uses_active_anchor_not_first_track() {
+    let previous = playback_track("previous");
+    let active = playback_track("active");
+
+    assert!(!playlist_playback_queue_contains_next_track_after_anchor(
+        &[previous, active.clone()],
+        &active,
+    ));
+}
+
+#[test]
+fn playlist_queue_next_check_requires_anchor_presence() {
+    let active = playback_track("active");
+    let next = playback_track("next");
+
+    assert!(!playlist_playback_queue_contains_next_track_after_anchor(
+        &[next],
+        &active,
+    ));
+}
+
+#[test]
+fn playlist_queue_next_check_accepts_distinct_track_after_anchor() {
+    let previous = playback_track("previous");
+    let active = playback_track("active");
+    let next = playback_track("next");
+
+    assert!(playlist_playback_queue_contains_next_track_after_anchor(
+        &[previous, active.clone(), next],
+        &active,
+    ));
+}
+
+#[test]
 fn playlist_queue_fill_retries_same_anchor_until_next_track_exists() {
     let current = playback_track("current");
 
@@ -734,11 +790,15 @@ fn playlist_queue_fill_retries_same_anchor_until_next_track_exists() {
         Some(&current),
         &current,
         false,
+        Some(1),
+        Some(1),
     ));
     assert!(!should_refresh_playlist_queue_for_anchor(
         Some(&current),
         &current,
         true,
+        Some(1),
+        Some(1),
     ));
 }
 
@@ -751,6 +811,71 @@ fn playlist_queue_fill_refreshes_when_anchor_changes_even_if_queue_has_next() {
         Some(&current),
         &next,
         true,
+        Some(1),
+        Some(1),
+    ));
+}
+
+#[test]
+fn playlist_queue_fill_refreshes_when_audio_style_model_generation_changes() {
+    let current = playback_track("current");
+
+    assert!(should_refresh_playlist_queue_for_anchor(
+        Some(&current),
+        &current,
+        true,
+        Some(1),
+        Some(2),
+    ));
+}
+
+#[test]
+fn playlist_queue_recommendation_refresh_request_is_once_per_anchor_and_reason() {
+    let current = playback_track("current");
+    let mut requests = PlaylistQueueRecommendationRefreshRequests::default();
+
+    assert!(requests.should_request(
+        &current,
+        PlaylistQueueRecommendationReadiness::missing_current_embedding(1),
+    ));
+    assert!(!requests.should_request(
+        &current,
+        PlaylistQueueRecommendationReadiness::missing_current_embedding(1),
+    ));
+    assert!(requests.should_request(
+        &current,
+        PlaylistQueueRecommendationReadiness::model_unavailable(),
+    ));
+}
+
+#[test]
+fn playlist_queue_recommendation_refresh_request_retries_after_model_generation_changes() {
+    let current = playback_track("current");
+    let mut requests = PlaylistQueueRecommendationRefreshRequests::default();
+
+    assert!(requests.should_request(
+        &current,
+        PlaylistQueueRecommendationReadiness::missing_current_embedding(1),
+    ));
+    assert!(requests.should_request(
+        &current,
+        PlaylistQueueRecommendationReadiness::missing_current_embedding(2),
+    ));
+}
+
+#[test]
+fn playlist_queue_recommendation_refresh_request_resets_after_ready() {
+    let current = playback_track("current");
+    let mut requests = PlaylistQueueRecommendationRefreshRequests::default();
+
+    assert!(requests.should_request(
+        &current,
+        PlaylistQueueRecommendationReadiness::missing_current_embedding(1),
+    ));
+    assert!(!requests.should_request(&current, PlaylistQueueRecommendationReadiness::ready(1),));
+    assert!(requests.should_request(
+        &current,
+        PlaylistQueueRecommendationReadiness::missing_current_embedding(1),
     ));
 }
 
