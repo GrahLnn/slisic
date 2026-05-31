@@ -75,7 +75,11 @@ function bootstrapResultFromStartupSnapshot(snapshot: PlaylistStartupBootstrap):
 
 export interface PlayPlaylistInput {
   playlistName: string;
-  shouldStartPlayback: boolean;
+}
+
+export interface PlaylistPlaybackAccepted {
+  playlistName: string;
+  session: PlayPlaylistSession;
 }
 
 export interface MusicUpdateInput {
@@ -96,6 +100,11 @@ export interface MusicUpdatesResult {
   results: MusicUpdateResult[];
 }
 
+export interface MusicUpdatesCommitted {
+  epoch: number;
+  result: MusicUpdatesResult;
+}
+
 export interface MusicCreateInput {
   sourceCollectionUrl: string;
   music: Music;
@@ -110,8 +119,18 @@ export interface MusicCreatesResult {
   results: MusicCreateResult[];
 }
 
+export interface MusicCreatesCommitted {
+  epoch: number;
+  result: MusicCreatesResult;
+}
+
 export interface MusicDeletesResult {
   results: MusicDraftDelete[];
+}
+
+export interface MusicDeletesCommitted {
+  epoch: number;
+  result: MusicDeletesResult;
 }
 
 export interface SpectrumMusicDraftBootstrapInput {
@@ -416,9 +435,6 @@ export const ss = defineSS(
         "ready",
         "play",
         "spectrum",
-        "spectrumUpdatingMusic",
-        "spectrumCreatingMusic",
-        "spectrumDeletingMusic",
         "configLoading",
         "config",
         "configUpdatingCollectionUpdates",
@@ -466,13 +482,6 @@ export const invoker = createActors({
   },
   removeExclude,
   playPlaylist: async (input: PlayPlaylistInput): Promise<PlayPlaylistSession | null> => {
-    if (!input.shouldStartPlayback) {
-      recordRenderPerformanceTrace("playlist-play-invoke-skipped", {
-        playlistName: input.playlistName,
-      });
-      return null;
-    }
-
     const startedAt = performance.now();
     recordRenderPerformanceTrace("playlist-play-invoke-start", {
       playlistName: input.playlistName,
@@ -502,35 +511,83 @@ export const invoker = createActors({
   },
   updateMusics: async (inputs: MusicUpdateInput[]): Promise<MusicUpdatesResult> => {
     const results: MusicUpdateResult[] = [];
+    const startedAt = performance.now();
+    recordRenderPerformanceTrace("spectrum-music-update-invoke-start", {
+      count: inputs.length,
+      identities: inputs.map((input) => ({
+        url: input.url,
+        targetStartMs: input.targetStartMs,
+        targetEndMs: input.targetEndMs,
+        nextStartMs: input.startMs,
+        nextEndMs: input.endMs,
+      })),
+    });
 
-    for (const input of inputs) {
-      const result = await crab.updateMusic(
-        input.url,
-        input.targetStartMs,
-        input.targetEndMs,
-        input.alias,
-        input.startMs,
-        input.endMs,
-      );
+    try {
+      for (const input of inputs) {
+        const inputStartedAt = performance.now();
+        recordRenderPerformanceTrace("spectrum-music-update-item-start", {
+          url: input.url,
+          targetStartMs: input.targetStartMs,
+          targetEndMs: input.targetEndMs,
+          nextStartMs: input.startMs,
+          nextEndMs: input.endMs,
+        });
+        const result = await crab.updateMusic(
+          input.url,
+          input.targetStartMs,
+          input.targetEndMs,
+          input.alias,
+          input.startMs,
+          input.endMs,
+        );
 
-      const updateResult = result.match({
-        Ok: (music) => {
-          if (!music) {
-            throw new Error(`music \`${input.url}\` not found`);
-          }
+        const updateResult = result.match({
+          Ok: (music) => {
+            if (!music) {
+              throw new Error(`music \`${input.url}\` not found`);
+            }
 
-          return {
-            input,
-            music,
-          };
-        },
-        Err: (error) => {
-          throw new Error(error);
-        },
+            return {
+              input,
+              music,
+            };
+          },
+          Err: (error) => {
+            recordRenderPerformanceTrace("spectrum-music-update-item-error", {
+              url: input.url,
+              targetStartMs: input.targetStartMs,
+              targetEndMs: input.targetEndMs,
+              elapsedMs: performance.now() - inputStartedAt,
+              error,
+            });
+            throw new Error(error);
+          },
+        });
+        results.push(updateResult);
+        recordRenderPerformanceTrace("spectrum-music-update-item-done", {
+          url: input.url,
+          targetStartMs: input.targetStartMs,
+          targetEndMs: input.targetEndMs,
+          nextStartMs: updateResult.music.start_ms,
+          nextEndMs: updateResult.music.end_ms,
+          elapsedMs: performance.now() - inputStartedAt,
+        });
+      }
+    } catch (error) {
+      recordRenderPerformanceTrace("spectrum-music-update-invoke-error", {
+        count: inputs.length,
+        completed: results.length,
+        elapsedMs: performance.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
       });
-      results.push(updateResult);
+      throw error;
     }
 
+    recordRenderPerformanceTrace("spectrum-music-update-invoke-done", {
+      count: inputs.length,
+      elapsedMs: performance.now() - startedAt,
+    });
     return { results };
   },
   createMusics: async (inputs: MusicCreateInput[]): Promise<MusicCreatesResult> => {
@@ -605,6 +662,7 @@ export const invoker = createActors({
 export const payloads = collect(
   ...event<string>()("playlist.open"),
   ...event<string>()("playlist.play"),
+  ...event<PlaylistPlaybackAccepted>()("playlist.playback.accepted"),
   ...event<PlaylistUpsertResult>()("playlist.upserted"),
   ...event<string>()("playlist.deleted"),
   ...event<PlaylistPreview | null>()("playlist.preview.changed"),
@@ -617,6 +675,12 @@ export const payloads = collect(
   ...event<{ id: string }>()("spectrum.music_create_started"),
   ...event<{ id: string }>()("spectrum.music_draft.reset"),
   ...event<number | null>()("spectrum.playback_scope.changed"),
+  ...event<MusicUpdatesCommitted>()("spectrum.music_updates.committed"),
+  ...event<MusicCreatesCommitted>()("spectrum.music_creates.committed"),
+  ...event<MusicDeletesCommitted>()("spectrum.music_deletes.committed"),
+  ...event<{ epoch: number; error: string; phase: "create" | "delete" | "update" }>()(
+    "spectrum.music_commit.failed",
+  ),
   ...event<string>()("save_path.changed"),
   ...event<Collection>()("collection.upserted"),
   ...event<Collection>()("draft.collection.upserted"),

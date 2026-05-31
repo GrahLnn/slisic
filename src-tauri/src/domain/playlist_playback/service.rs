@@ -716,40 +716,48 @@ async fn resolve_prepared_playlist_initial_track(
     playlist_name: &str,
 ) -> Result<Option<ResolvedPlaylistInitialTrack>> {
     let trace_start = Instant::now();
-    let Some(snapshot) = playable_index::read_playlist_source(playlist_name)? else {
-        return Ok(None);
-    };
     let save_root = meta_service::resolve_save_root(app).await?;
-    let Some(source) = snapshot.source.clone() else {
-        return Ok(None);
-    };
-    let Some(track) =
-        resolve_playlist_playback_source_track_for_playlist(playlist_name, source, &save_root)
-    else {
-        if let Err(error) = playable_index::discard_playlist_source(&snapshot) {
-            eprintln!(
-                "[playlist_playback] failed to discard unplayable prepared first track source playlist=\"{}\" generation={}: {error}",
-                snapshot.playlist_name, snapshot.generation
-            );
-        }
-        return Ok(None);
-    };
+    loop {
+        let Some(snapshot) = playable_index::read_playlist_source(playlist_name)? else {
+            return Ok(None);
+        };
+        let Some(source) = snapshot.source.clone() else {
+            if let Err(error) = playable_index::discard_playlist_source(&snapshot) {
+                eprintln!(
+                    "[playlist_playback] failed to discard empty prepared first track source playlist=\"{}\" generation={}: {error}",
+                    snapshot.playlist_name, snapshot.generation
+                );
+            }
+            continue;
+        };
+        let Some(track) =
+            resolve_playlist_playback_source_track_for_playlist(playlist_name, source, &save_root)
+        else {
+            if let Err(error) = playable_index::discard_playlist_source(&snapshot) {
+                eprintln!(
+                    "[playlist_playback] failed to discard unplayable prepared first track source playlist=\"{}\" generation={}: {error}",
+                    snapshot.playlist_name, snapshot.generation
+                );
+            }
+            continue;
+        };
 
-    emit_playlist_playback_trace(
-        "playlist-play-initial-prepared-hit",
-        PlaylistPlaybackTrace::new(app)
-            .playlist_name(playlist_name)
-            .track(&track)
-            .elapsed(trace_start)
-            .details(vec![
-                trace_detail("indexStatus", "hit"),
-                trace_detail("indexGeneration", snapshot.generation),
-            ]),
-    );
-    Ok(Some(ResolvedPlaylistInitialTrack {
-        track,
-        prepared_source: Some(snapshot),
-    }))
+        emit_playlist_playback_trace(
+            "playlist-play-initial-prepared-hit",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(playlist_name)
+                .track(&track)
+                .elapsed(trace_start)
+                .details(vec![
+                    trace_detail("indexStatus", "hit"),
+                    trace_detail("indexGeneration", snapshot.generation),
+                ]),
+        );
+        return Ok(Some(ResolvedPlaylistInitialTrack {
+            track,
+            prepared_source: Some(snapshot),
+        }));
+    }
 }
 
 #[cfg(not(test))]
@@ -1375,10 +1383,11 @@ fn propose_audio_style_playlist_playback_queue_from_snapshot(
     snapshot: Arc<AudioStyleModelSnapshot>,
 ) -> Option<AudioStylePlaylistPlaybackProposal> {
     let recommender = snapshot.recommender();
+    let anchor_has_embedding = snapshot.has_embedding_for(&request.current_track);
 
     let mut proposal = match mode {
         PlaylistPlaybackRecommendationMode::KeepCurrent => {
-            if snapshot.has_embedding_for(&request.current_track) {
+            if anchor_has_embedding {
                 recommender.propose_queue_with_trace_and_recent_history(
                     request.current_track.clone(),
                     request.candidates.clone(),
@@ -1402,14 +1411,26 @@ fn propose_audio_style_playlist_playback_queue_from_snapshot(
     if let Some(selection) = proposal.selection.as_mut() {
         selection.model_generation = Some(snapshot.generation());
     }
-    if !audio_style_playlist_playback_proposal_is_complete(
-        mode,
-        proposal.tracks.as_slice(),
-        proposal
-            .selection
-            .as_ref()
-            .map(|selection| selection.source),
-    ) {
+    let selection_source = proposal.selection.as_ref().map(|selection| selection.source);
+    let selection_is_centerless_fallback = matches!(
+        (mode, anchor_has_embedding, selection_source),
+        (
+            PlaylistPlaybackRecommendationMode::KeepCurrent,
+            false,
+            Some(AudioStyleCandidateSelectionSource::RandomFallback)
+        )
+    );
+    let proposal_is_complete = if selection_is_centerless_fallback {
+        playlist_playback_proposal_contains_next_track(mode, proposal.tracks.as_slice())
+    } else {
+        audio_style_playlist_playback_proposal_is_complete(
+            mode,
+            proposal.tracks.as_slice(),
+            selection_source,
+        )
+    };
+    if !proposal_is_complete
+    {
         return None;
     }
 

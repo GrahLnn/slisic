@@ -5,7 +5,7 @@ use super::model::{
 use super::startup_bootstrap::PlaylistStartupBootstrapSnapshot;
 use crate::domain::player::service::{
     PlaybackTrackIdentityUpdate, PlaybackTrackLikedUpdate, active_request_track_snapshot,
-    update_current_session_track_identity, update_current_session_track_liked,
+    request_current_session_track_identity_update, update_current_session_track_liked,
 };
 use crate::domain::playlist_playback::playable_index;
 use crate::domain::playlist_playback::service as playlist_playback_service;
@@ -159,15 +159,14 @@ pub async fn update_music(
     if let Some(music) = updated.as_ref() {
         playlist_playback_service::notify_music_library_inputs_changed("music_identity_update");
         playlist_playback_service::notify_playable_library_changed();
-        update_current_session_track_identity(&PlaybackTrackIdentityUpdate {
+        request_current_session_track_identity_update(PlaybackTrackIdentityUpdate {
             music_name: music.alias.clone(),
             music_url: url,
             start_ms,
             end_ms,
             next_start_ms: music.start_ms,
             next_end_ms: music.end_ms,
-        })
-        .map_err(|error| error.to_string())?;
+        });
     }
 
     Ok(updated)

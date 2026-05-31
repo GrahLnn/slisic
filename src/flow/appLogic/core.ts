@@ -12,6 +12,7 @@ import type {
   PlayListListView,
   PlayListWriteRequest,
   SpectrumMusicSourceContext,
+  NowPlayingTrackChangedEvent,
 } from "@/src/cmd";
 
 export const CREATE_COLLECTION_LAYOUT_ID = "collection-title:create";
@@ -68,6 +69,8 @@ export interface CollectionUpdatesChange {
   url: string;
   enabled: boolean;
 }
+
+export type NowPlayingTrackEvidence = NowPlayingTrackChangedEvent;
 
 export interface ExcludeRemovedChange {
   music: Music;
@@ -158,11 +161,12 @@ export interface Context {
   nowPlayingTrackStartMs: number | null;
   nowPlayingTrackEndMs: number | null;
   nowPlayingTrackLiked: boolean | null;
+  pendingNowPlayingTrackEvidence: NowPlayingTrackEvidence | null;
   spectrumPlaybackScopeId: number | null;
   spectrumMusicDrafts: SpectrumMusicDraft[];
   spectrumMusicSourceContext: SpectrumMusicSourceContext | null;
+  spectrumMusicCommitEpoch: number;
   pendingSpectrumMusicCreateId: string | null;
-  shouldStartPlayback: boolean;
   activeLayoutId: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   pendingPlaylistName: string | null;
@@ -751,11 +755,12 @@ export function createInitialContext(): Context {
     nowPlayingTrackStartMs: null,
     nowPlayingTrackEndMs: null,
     nowPlayingTrackLiked: null,
+    pendingNowPlayingTrackEvidence: null,
     spectrumPlaybackScopeId: null,
     spectrumMusicDrafts: [],
     spectrumMusicSourceContext: null,
+    spectrumMusicCommitEpoch: 0,
     pendingSpectrumMusicCreateId: null,
-    shouldStartPlayback: false,
     activeLayoutId: null,
     titleToneHandoff: null,
     pendingPlaylistName: null,

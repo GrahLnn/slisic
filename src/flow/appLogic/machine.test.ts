@@ -9,7 +9,6 @@ import type {
   Music,
   PlayList,
   PlayListListView,
-  PlayPlaylistSession,
   SpectrumMusicSourceContext,
 } from "@/src/cmd";
 import type { ConfigDraft } from "./core";
@@ -23,7 +22,6 @@ import {
   type MusicDeletesResult,
   type MusicUpdateInput,
   type MusicUpdatesResult,
-  type PlayPlaylistInput,
   type SpectrumMusicDraftBootstrapInput,
   type SpectrumMusicDraftBootstrapResult,
 } from "./events";
@@ -170,6 +168,34 @@ function createConfigDraftFromPlaylist(playlist: PlayList): ConfigDraft {
   };
 }
 
+function waitForState(
+  actor: {
+    getSnapshot: () => { value: unknown };
+    subscribe: (
+      listener: (snapshot: { value: unknown }) => void,
+    ) => { unsubscribe: () => void };
+  },
+  expectedState: string,
+  timeoutMs = 2000,
+) {
+  if (actor.getSnapshot().value === expectedState) {
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
+    }, timeoutMs);
+    const subscription = actor.subscribe((snapshot) => {
+      if (snapshot.value === expectedState) {
+        clearTimeout(timeout);
+        subscription.unsubscribe();
+        resolve();
+      }
+    });
+  });
+}
+
 describe("appLogic machine", () => {
   test("preserves the title handoff while loading an opened playlist config", async () => {
     const collection = createCollection([createMusic()]);
@@ -190,18 +216,7 @@ describe("appLogic machine", () => {
 
     actor.start();
     actor.send(sig.mainx.run);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "ready") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
+    await waitForState(actor, "ready");
 
     actor.send(payloads["playlist.open"].load(playlist.name));
     assert.equal(actor.getSnapshot().value, "configLoading");
@@ -210,18 +225,7 @@ describe("appLogic machine", () => {
       tone: "solid",
     });
 
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "config") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
+    await waitForState(actor, "config");
 
     assert.deepEqual(actor.getSnapshot().context.titleToneHandoff, {
       layoutId: "playlist-title:Focus Session",
@@ -248,18 +252,7 @@ describe("appLogic machine", () => {
 
     actor.start();
     actor.send(sig.mainx.run);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "ready") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
+    await waitForState(actor, "ready");
 
     actor.send(payloads["playlist.open"].load(playlist.name));
     assert.equal(actor.getSnapshot().value, "configLoading");
@@ -333,7 +326,139 @@ describe("appLogic machine", () => {
     assert.equal(actor.getSnapshot().context.error, null);
   });
 
-  test("commits spectrum music deletion to persistent and in-memory music surfaces", async () => {
+  test("keeps playback intent out of the accepted play state until backend acceptance", async () => {
+    const collection = createCollection([createMusic()]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load("Focus Session"));
+    assert.equal(actor.getSnapshot().value, "ready");
+    assert.equal(actor.getSnapshot().context.playingPlaylistName, null);
+    actor.send(sig.mainx.openspectrum);
+    assert.equal(actor.getSnapshot().value, "ready");
+
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+      }),
+    );
+    assert.equal(actor.getSnapshot().value, "play");
+    assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
+  });
+
+  test("projects now playing evidence that arrives before playback is accepted", async () => {
+    const music = createMusic();
+    const collection = createCollection([music]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load("Focus Session"));
+    actor.send(
+      payloads["player.now_playing_track.changed"].load({
+        playlist_name: "Focus Session",
+        music_name: music.alias,
+        music_url: music.url,
+        canonical_music_id: music.canonical_music_id,
+        file_path: "C:/Music/quiet-morning.m4a",
+        start_ms: music.start_ms,
+        end_ms: music.end_ms,
+        liked: false,
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().value, "ready");
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, "Focus Session");
+    assert.equal(
+      actor.getSnapshot().context.pendingNowPlayingTrackEvidence?.music_url,
+      music.url,
+    );
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, null);
+
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().value, "play");
+    assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, music.alias);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackUrl, music.url);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackFilePath, "C:/Music/quiet-morning.m4a");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackStartMs, music.start_ms);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackEndMs, music.end_ms);
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, null);
+    assert.equal(actor.getSnapshot().context.pendingNowPlayingTrackEvidence, null);
+  });
+
+  test("ignores early now playing evidence for a different pending playlist", async () => {
+    const music = createMusic();
+    const collection = createCollection([music]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load("Focus Session"));
+    actor.send(
+      payloads["player.now_playing_track.changed"].load({
+        playlist_name: "Other Session",
+        music_name: music.alias,
+        music_url: music.url,
+        canonical_music_id: music.canonical_music_id,
+        file_path: "C:/Music/quiet-morning.m4a",
+        start_ms: music.start_ms,
+        end_ms: music.end_ms,
+        liked: false,
+      }),
+    );
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().value, "play");
+    assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, null);
+    assert.equal(actor.getSnapshot().context.pendingNowPlayingTrackEvidence, null);
+  });
+
+  test("applies spectrum music deletion optimistically to in-memory music surfaces", async () => {
     const deletedMusic = createMusic();
     const siblingMusic = createMusic({
       name: "Track B",
@@ -343,16 +468,12 @@ describe("appLogic machine", () => {
       end_ms: 240_000,
     });
     const collection = createCollection([deletedMusic, siblingMusic]);
-    const deletedInputs: MusicDraftDelete[][] = [];
 
     const actor = createActor(
       machine.provide({
         actors: {
           loadCollections: fromPromise<BootstrapResult>(async () =>
             createBootstrapResult([collection]),
-          ),
-          playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
-            async () => null,
           ),
           loadSpectrumMusicDrafts: fromPromise<
             SpectrumMusicDraftBootstrapResult,
@@ -385,29 +506,20 @@ describe("appLogic machine", () => {
           updateMusics: fromPromise<MusicUpdatesResult, MusicUpdateInput[]>(async () => ({
             results: [],
           })),
-          deleteMusics: fromPromise<MusicDeletesResult, MusicDraftDelete[]>(async ({ input }) => {
-            deletedInputs.push(input);
-            return { results: input };
-          }),
         },
       }),
     );
 
     actor.start();
     actor.send(sig.mainx.run);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "ready") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
-    actor.send(payloads["playlist.play"].load("Focus Session"));
+    await waitForState(actor, "ready");
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+      }),
+    );
+    await waitForState(actor, "play");
     actor.send(
       payloads["player.now_playing_track.changed"].load({
         playlist_name: "Focus Session",
@@ -421,46 +533,14 @@ describe("appLogic machine", () => {
       }),
     );
     actor.send(sig.mainx.openspectrum);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "spectrum") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
+    await waitForState(actor, "spectrum");
     actor.send(spectrumMusicDeleted.load({ id: "https://example.com/quiet-morning#a|0|120000" }));
     actor.send(sig.mainx.back);
 
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "play") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
+    await waitForState(actor, "play");
 
     const context = actor.getSnapshot().context;
 
-    assert.deepEqual(deletedInputs, [
-      [
-        {
-          id: "https://example.com/quiet-morning#a|0|120000",
-          url: "https://example.com/quiet-morning#a",
-          startMs: 0,
-          endMs: 120_000,
-        },
-      ],
-    ]);
     assert.deepEqual(
       context.collections[0]?.musics.map((music) => music.alias),
       ["Track B"],
@@ -482,9 +562,6 @@ describe("appLogic machine", () => {
         actors: {
           loadCollections: fromPromise<BootstrapResult>(async () =>
             createBootstrapResult([collection]),
-          ),
-          playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
-            async () => null,
           ),
           loadSpectrumMusicDrafts: fromPromise<
             SpectrumMusicDraftBootstrapResult,
@@ -524,19 +601,14 @@ describe("appLogic machine", () => {
 
     actor.start();
     actor.send(sig.mainx.run);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "ready") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
-    actor.send(payloads["playlist.play"].load("Focus Session"));
+    await waitForState(actor, "ready");
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+      }),
+    );
+    await waitForState(actor, "play");
     actor.send(
       payloads["player.now_playing_track.changed"].load({
         playlist_name: "Focus Session",
@@ -551,18 +623,7 @@ describe("appLogic machine", () => {
     );
     actor.send(spectrumPlaybackScopeChanged.load(42));
     actor.send(sig.mainx.openspectrum);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "spectrum") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
+    await waitForState(actor, "spectrum");
 
     assert.equal(actor.getSnapshot().context.spectrumPlaybackScopeId, 42);
 
@@ -574,25 +635,15 @@ describe("appLogic machine", () => {
       }),
     );
     actor.send(sig.mainx.back);
-    assert.equal(actor.getSnapshot().value, "spectrumUpdatingMusic");
+    assert.equal(actor.getSnapshot().value, "play");
     assert.deepEqual(actor.getSnapshot().context.titleToneHandoff, {
       layoutId: "playlist-title:Focus Session",
       tone: "solid",
     });
     assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "play") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
     assert.equal(actor.getSnapshot().context.spectrumPlaybackScopeId, 42);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackStartMs, music.start_ms);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackEndMs, 90_000);
 
     actor.send(spectrumPlaybackScopeChanged.load(null));
     assert.equal(actor.getSnapshot().context.spectrumPlaybackScopeId, null);
@@ -608,9 +659,6 @@ describe("appLogic machine", () => {
         actors: {
           loadCollections: fromPromise<BootstrapResult>(async () =>
             createBootstrapResult([collection]),
-          ),
-          playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
-            async () => null,
           ),
           loadSpectrumMusicDrafts: fromPromise<
             SpectrumMusicDraftBootstrapResult,
@@ -643,19 +691,14 @@ describe("appLogic machine", () => {
 
     actor.start();
     actor.send(sig.mainx.run);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "ready") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
-    actor.send(payloads["playlist.play"].load("Focus Session"));
+    await waitForState(actor, "ready");
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+      }),
+    );
+    await waitForState(actor, "play");
     actor.send(
       payloads["player.now_playing_track.changed"].load({
         playlist_name: "Focus Session",
@@ -669,18 +712,7 @@ describe("appLogic machine", () => {
       }),
     );
     actor.send(sig.mainx.openspectrum);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "spectrum") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
+    await waitForState(actor, "spectrum");
 
     actor.send(
       spectrumMusicRangeChanged.load({
@@ -690,18 +722,7 @@ describe("appLogic machine", () => {
       }),
     );
     actor.send(sig.mainx.back);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "play") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
+    await waitForState(actor, "play");
 
     assert.equal(updateCallCount, 0);
     assert.equal(actor.getSnapshot().context.nowPlayingTrackStartMs, music.start_ms);
@@ -718,9 +739,6 @@ describe("appLogic machine", () => {
           loadCollections: fromPromise<BootstrapResult>(async () =>
             createBootstrapResult([collection]),
           ),
-          playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
-            async () => null,
-          ),
           loadSpectrumMusicDrafts: fromPromise<
             SpectrumMusicDraftBootstrapResult,
             SpectrumMusicDraftBootstrapInput
@@ -745,19 +763,14 @@ describe("appLogic machine", () => {
 
     actor.start();
     actor.send(sig.mainx.run);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "ready") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
-    actor.send(payloads["playlist.play"].load("Focus Session"));
+    await waitForState(actor, "ready");
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+      }),
+    );
+    await waitForState(actor, "play");
     actor.send(
       payloads["player.now_playing_track.changed"].load({
         playlist_name: "Focus Session",
@@ -771,18 +784,7 @@ describe("appLogic machine", () => {
       }),
     );
     actor.send(sig.mainx.openspectrum);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "spectrum") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
+    await waitForState(actor, "spectrum");
 
     assert.equal(actor.getSnapshot().context.activeLayoutId, "playlist-title:Focus Session");
 
@@ -798,24 +800,12 @@ describe("appLogic machine", () => {
   test("uses the edited spectrum title immediately for the return-to-play handoff", async () => {
     const music = createMusic();
     const collection = createCollection([music]);
-    const updateInputs: MusicUpdateInput[][] = [];
-    const updateGate: { release: () => void } = {
-      release: () => {
-        throw new Error("update gate was not initialized");
-      },
-    };
-    const updateReleased = new Promise<void>((resolve) => {
-      updateGate.release = resolve;
-    });
 
     const actor = createActor(
       machine.provide({
         actors: {
           loadCollections: fromPromise<BootstrapResult>(async () =>
             createBootstrapResult([collection]),
-          ),
-          playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
-            async () => null,
           ),
           loadSpectrumMusicDrafts: fromPromise<
             SpectrumMusicDraftBootstrapResult,
@@ -835,43 +825,20 @@ describe("appLogic machine", () => {
               },
             ],
           })),
-          updateMusics: fromPromise<MusicUpdatesResult, MusicUpdateInput[]>(async ({ input }) => {
-            updateInputs.push(input);
-            await updateReleased;
-            return {
-              results: input.map((request) => ({
-                input: request,
-                music: {
-                  ...music,
-                  alias: request.alias,
-                  start_ms: request.startMs,
-                  end_ms: request.endMs,
-                },
-              })),
-            };
-          }),
-          deleteMusics: fromPromise<MusicDeletesResult, MusicDraftDelete[]>(async () => ({
-            results: [],
-          })),
         },
       }),
     );
 
     actor.start();
     actor.send(sig.mainx.run);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "ready") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
-    actor.send(payloads["playlist.play"].load("Focus Session"));
+    await waitForState(actor, "ready");
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+      }),
+    );
+    await waitForState(actor, "play");
     actor.send(
       payloads["player.now_playing_track.changed"].load({
         playlist_name: "Focus Session",
@@ -885,18 +852,7 @@ describe("appLogic machine", () => {
       }),
     );
     actor.send(sig.mainx.openspectrum);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "spectrum") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
+    await waitForState(actor, "spectrum");
 
     actor.send(
       spectrumMusicNameChanged.load({
@@ -906,7 +862,7 @@ describe("appLogic machine", () => {
     );
     actor.send(sig.mainx.back);
 
-    assert.equal(actor.getSnapshot().value, "spectrumUpdatingMusic");
+    assert.equal(actor.getSnapshot().value, "play");
     assert.equal(actor.getSnapshot().context.nowPlayingTrackName, "Track A Revised");
     assert.equal(actor.getSnapshot().context.nowPlayingTrackStartMs, music.start_ms);
     assert.equal(actor.getSnapshot().context.nowPlayingTrackEndMs, music.end_ms);
@@ -914,34 +870,7 @@ describe("appLogic machine", () => {
       layoutId: "playlist-title:Focus Session",
       tone: "solid",
     });
-
-    updateGate.release();
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "play") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
-
-    assert.deepEqual(updateInputs, [
-      [
-        {
-          id: "https://example.com/quiet-morning#a|0|120000",
-          alias: "Track A Revised",
-          endMs: music.end_ms,
-          startMs: music.start_ms,
-          targetEndMs: music.end_ms,
-          targetStartMs: music.start_ms,
-          url: music.url,
-        },
-      ],
-    ]);
+    assert.equal(actor.getSnapshot().context.spectrumMusicCommitEpoch, 1);
     assert.equal(actor.getSnapshot().context.nowPlayingTrackName, "Track A Revised");
   });
 
@@ -957,9 +886,6 @@ describe("appLogic machine", () => {
         actors: {
           loadCollections: fromPromise<BootstrapResult>(async () =>
             createShallowBootstrapResult([collection]),
-          ),
-          playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
-            async () => null,
           ),
           loadSpectrumMusicDrafts: fromPromise<
             SpectrumMusicDraftBootstrapResult,
@@ -986,19 +912,14 @@ describe("appLogic machine", () => {
 
     actor.start();
     actor.send(sig.mainx.run);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "ready") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
-    actor.send(payloads["playlist.play"].load("Focus Session"));
+    await waitForState(actor, "ready");
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+      }),
+    );
+    await waitForState(actor, "play");
     actor.send(
       payloads["player.now_playing_track.changed"].load({
         playlist_name: "Focus Session",
@@ -1012,18 +933,7 @@ describe("appLogic machine", () => {
       }),
     );
     actor.send(sig.mainx.openspectrum);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "spectrum") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
+    await waitForState(actor, "spectrum");
 
     actor.send(spectrumMusicCreateStarted.load({ id: `new|${music.url}` }));
     const pendingDraft = actor.getSnapshot().context.spectrumMusicDrafts.at(-1);
@@ -1036,18 +946,7 @@ describe("appLogic machine", () => {
     assert.equal(pendingDraft.sourceEndMs, music.end_ms);
     actor.send(sig.mainx.back);
 
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "play") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
+    await waitForState(actor, "play");
 
     assert.equal(createCallCount, 0);
     assert.equal(updateCallCount, 0);
@@ -1066,9 +965,6 @@ describe("appLogic machine", () => {
         actors: {
           loadCollections: fromPromise<BootstrapResult>(async () =>
             createShallowBootstrapResult([collection]),
-          ),
-          playPlaylist: fromPromise<PlayPlaylistSession | null, PlayPlaylistInput>(
-            async () => null,
           ),
           loadSpectrumMusicDrafts: fromPromise<
             SpectrumMusicDraftBootstrapResult,
@@ -1093,19 +989,14 @@ describe("appLogic machine", () => {
 
     actor.start();
     actor.send(sig.mainx.run);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "ready") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
-    actor.send(payloads["playlist.play"].load("Focus Session"));
+    await waitForState(actor, "ready");
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+      }),
+    );
+    await waitForState(actor, "play");
     actor.send(
       payloads["player.now_playing_track.changed"].load({
         playlist_name: "Focus Session",
@@ -1119,18 +1010,7 @@ describe("appLogic machine", () => {
       }),
     );
     actor.send(sig.mainx.openspectrum);
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "spectrum") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
+    await waitForState(actor, "spectrum");
 
     actor.send(spectrumMusicCreateStarted.load({ id: `new|${music.url}` }));
     actor.send(
@@ -1141,22 +1021,10 @@ describe("appLogic machine", () => {
     );
     actor.send(sig.mainx.back);
 
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`unexpected state: ${String(actor.getSnapshot().value)}`));
-      }, 2000);
-      const subscription = actor.subscribe((snapshot) => {
-        if (snapshot.value === "play") {
-          clearTimeout(timeout);
-          subscription.unsubscribe();
-          resolve();
-        }
-      });
-    });
+    await waitForState(actor, "play");
 
-    assert.equal(createInputs.length, 1);
-    assert.equal(createInputs[0]?.[0]?.sourceCollectionUrl, collection.url);
-    assert.equal(createInputs[0]?.[0]?.music.alias, "Track Draft");
+    assert.equal(createInputs.length, 0);
+    assert.equal(actor.getSnapshot().context.spectrumMusicCommitEpoch, 1);
     assert.deepEqual(actor.getSnapshot().context.collections, []);
   });
 });

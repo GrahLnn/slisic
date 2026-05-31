@@ -10,11 +10,13 @@ import {
   excludeCurrentMusicAndSkip,
   exitSpectrumPlaybackScope,
   importLocalCollection,
+  invoker,
   listenPlaybackDiagnosticTrace,
   listenPlaybackExcludeCommitted,
   listenNowPlayingTrackChanged,
   MainStateT,
   persistSavePath,
+  refreshPlayableIndex,
   removeExclude,
   setCurrentMusicLiked,
   setPlaybackContinuationMode,
@@ -35,6 +37,7 @@ import {
   nowPlayingTrackChanged,
   openPlaylist,
   playPlaylist,
+  playlistPlaybackAccepted,
   playlistDeleted,
   playlistPreviewChanged,
   playlistUpserted,
@@ -45,11 +48,21 @@ import {
   spectrumMusicDeleted,
   spectrumMusicCreateStarted,
   spectrumPlaybackScopeChanged,
+  spectrumMusicCommitFailed,
+  spectrumMusicCreatesCommitted,
+  spectrumMusicDeletesCommitted,
+  spectrumMusicUpdatesCommitted,
   spectrumMusicRangeChanged,
   spectrumMusicNameChanged,
 } from "./runtime";
 import type { Exclude, Music } from "@/src/cmd";
 import { action as pasteDownloadAction } from "../pasteDownload";
+import {
+  createMusicDraftCreates,
+  createMusicDraftDeletes,
+  createMusicDraftEdits,
+  hasSpectrumMusicDraftCommitOperations,
+} from "./musicTitle";
 import { createPlaybackContinuationModeEffectOwner } from "./playbackContinuationModeEffectOwner";
 import {
   resolveSpectrumEnterPlaybackModeEffects,
@@ -76,6 +89,8 @@ let unsubscribePlaybackExcludeCommitted: (() => void) | null = null;
 const playbackContinuationModeEffectOwner = createPlaybackContinuationModeEffectOwner({
   setPlaybackContinuationMode,
 });
+let lastPlayableIndexReadyState = false;
+let playlistPlaybackStartEpoch = 0;
 
 function formatStateValue(value: unknown) {
   return typeof value === "string" ? value : JSON.stringify(value);
@@ -83,6 +98,31 @@ function formatStateValue(value: unknown) {
 
 function currentPerformanceNow() {
   return globalThis.performance?.now() ?? Date.now();
+}
+
+function traceAppSnapshotPayload(snapshot: ActorSnapshot) {
+  return {
+    state: formatStateValue(snapshot.value),
+    spectrumPlaybackScopeId: snapshot.context.spectrumPlaybackScopeId,
+    playingPlaylistName: snapshot.context.playingPlaylistName,
+    pendingPlaylistPlaybackName: snapshot.context.pendingPlaylistPlaybackName,
+    nowPlayingTrackName: snapshot.context.nowPlayingTrackName,
+    nowPlayingTrackUrl: snapshot.context.nowPlayingTrackUrl,
+    nowPlayingTrackFilePath: snapshot.context.nowPlayingTrackFilePath,
+    nowPlayingTrackStartMs: snapshot.context.nowPlayingTrackStartMs,
+    nowPlayingTrackEndMs: snapshot.context.nowPlayingTrackEndMs,
+  };
+}
+
+function refreshPlayableIndexForReadyProjection(snapshot: ActorSnapshot) {
+  const isReady = snapshot.value === "ready";
+  if (!isReady || lastPlayableIndexReadyState) {
+    lastPlayableIndexReadyState = isReady;
+    return;
+  }
+
+  lastPlayableIndexReadyState = true;
+  refreshPlayableIndex();
 }
 
 export function attachDebugLogger() {
@@ -93,6 +133,8 @@ export function attachDebugLogger() {
   const initialSnapshot = actor.getSnapshot();
   let prevState = formatStateValue(initialSnapshot.value);
   let prevError = initialSnapshot.context.error;
+  lastPlayableIndexReadyState = initialSnapshot.value === "ready";
+  recordRenderPerformanceTrace("app-state-initial", traceAppSnapshotPayload(initialSnapshot));
 
   if (prevError) {
     console.error(`[appLogic:error] ${prevState}`, prevError);
@@ -113,6 +155,11 @@ export function attachDebugLogger() {
       console.error(`[appLogic:error] ${nextState}`, nextError);
     }
 
+    recordRenderPerformanceTrace("app-state-changed", {
+      fromState: prevState,
+      ...traceAppSnapshotPayload(snapshot),
+    });
+    refreshPlayableIndexForReadyProjection(snapshot);
     prevState = nextState;
     prevError = nextError;
   });
@@ -121,6 +168,7 @@ export function attachDebugLogger() {
 }
 
 function requestPlaybackStop() {
+  playlistPlaybackStartEpoch += 1;
   void stopPlayback()
     .then(() => undefined)
     .catch((error) => {
@@ -174,14 +222,50 @@ function requestSetCurrentPlaybackMusicLiked(liked: boolean) {
   });
 }
 
+async function startPlaylistPlaybackFromAction(playlistName: string) {
+  const epoch = ++playlistPlaybackStartEpoch;
+  const session = await invoker.playPlaylist.__src__({ playlistName });
+  if (session === null) {
+    return null;
+  }
+
+  if (epoch !== playlistPlaybackStartEpoch) {
+    recordRenderPerformanceTrace("playlist-play-action-stale-result", {
+      playlistName,
+      epoch,
+      currentEpoch: playlistPlaybackStartEpoch,
+      status: session.status,
+      trackCount: session.track_count,
+    });
+    return null;
+  }
+
+  send(playlistPlaybackAccepted.load({ playlistName, session }));
+  return session;
+}
+
 async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
   if (effect.kind === "enterSpectrumPlaybackScope") {
+    recordRenderPerformanceTrace("app-playback-mode-effect-start", {
+      effect: effect.kind,
+      ...traceAppSnapshotPayload(actor.getSnapshot()),
+    });
     const scopeId = await enterSpectrumPlaybackScope();
     send(spectrumPlaybackScopeChanged.load(scopeId));
+    recordRenderPerformanceTrace("app-playback-mode-effect-finished", {
+      effect: effect.kind,
+      scopeId,
+      ...traceAppSnapshotPayload(actor.getSnapshot()),
+    });
     return;
   }
 
   if (effect.kind === "exitSpectrumPlaybackScope") {
+    recordRenderPerformanceTrace("app-playback-mode-effect-start", {
+      effect: effect.kind,
+      requestedScopeId: effect.scopeId,
+      ...traceAppSnapshotPayload(actor.getSnapshot()),
+    });
     if (effect.scopeId !== null) {
       await exitSpectrumPlaybackScope(effect.scopeId);
     }
@@ -192,11 +276,27 @@ async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
     if (shouldCommitExit) {
       send(spectrumPlaybackScopeChanged.load(null));
     }
+    recordRenderPerformanceTrace("app-playback-mode-effect-finished", {
+      effect: effect.kind,
+      requestedScopeId: effect.scopeId,
+      committed: shouldCommitExit,
+      ...traceAppSnapshotPayload(actor.getSnapshot()),
+    });
     return;
   }
 
   if (effect.kind === "setPlaybackContinuationMode") {
+    recordRenderPerformanceTrace("app-playback-mode-effect-start", {
+      effect: effect.kind,
+      mode: effect.mode,
+      ...traceAppSnapshotPayload(actor.getSnapshot()),
+    });
     await playbackContinuationModeEffectOwner.request(effect.mode);
+    recordRenderPerformanceTrace("app-playback-mode-effect-finished", {
+      effect: effect.kind,
+      mode: effect.mode,
+      ...traceAppSnapshotPayload(actor.getSnapshot()),
+    });
   }
 }
 
@@ -230,10 +330,18 @@ function isSpectrumOpenSourceStillCurrent(source: ActorSnapshot, current: ActorS
 
 async function openSpectrumAfterPlaybackMode(sourceSnapshot: ActorSnapshot) {
   let openedScopeId: number | null = null;
+  recordRenderPerformanceTrace("spectrum-open-flow-start", traceAppSnapshotPayload(sourceSnapshot));
   for (const effect of resolveSpectrumEnterPlaybackModeEffects()) {
     if (effect.kind === "enterSpectrumPlaybackScope") {
+      recordRenderPerformanceTrace("spectrum-open-scope-enter-start", {
+        ...traceAppSnapshotPayload(actor.getSnapshot()),
+      });
       openedScopeId = await enterSpectrumPlaybackScope();
       send(spectrumPlaybackScopeChanged.load(openedScopeId));
+      recordRenderPerformanceTrace("spectrum-open-scope-entered", {
+        openedScopeId,
+        ...traceAppSnapshotPayload(actor.getSnapshot()),
+      });
       continue;
     }
 
@@ -244,6 +352,11 @@ async function openSpectrumAfterPlaybackMode(sourceSnapshot: ActorSnapshot) {
   const shouldCommit = isSpectrumOpenSourceStillCurrent(sourceSnapshot, currentSnapshot);
 
   if (!shouldCommit) {
+    recordRenderPerformanceTrace("spectrum-open-rejected-stale-source", {
+      openedScopeId,
+      source: traceAppSnapshotPayload(sourceSnapshot),
+      current: traceAppSnapshotPayload(currentSnapshot),
+    });
     if (openedScopeId !== null) {
       await applyPlaybackModeEffects(resolveSpectrumExitPlaybackModeEffects(openedScopeId));
     }
@@ -251,12 +364,21 @@ async function openSpectrumAfterPlaybackMode(sourceSnapshot: ActorSnapshot) {
   }
 
   actor.send(sig.mainx.openspectrum);
+  recordRenderPerformanceTrace("spectrum-open-committed", {
+    openedScopeId,
+    ...traceAppSnapshotPayload(actor.getSnapshot()),
+  });
 }
 
 async function restorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnapshot) {
   const effects = resolveSpectrumExitPlaybackModeEffects(snapshot.context.spectrumPlaybackScopeId);
 
+  recordRenderPerformanceTrace("spectrum-back-restore-mode-start", traceAppSnapshotPayload(snapshot));
   await applyPlaybackModeEffects(effects);
+  recordRenderPerformanceTrace("spectrum-back-restore-mode-finished", {
+    source: traceAppSnapshotPayload(snapshot),
+    current: traceAppSnapshotPayload(actor.getSnapshot()),
+  });
 }
 
 function requestExitSpectrumPlaybackScope(scopeId: number | null) {
@@ -270,6 +392,77 @@ function requestRestorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSna
   void restorePlaybackPageModeBeforeBackFromSpectrum(snapshot).catch((error) => {
     console.error("Failed to restore playback before returning from spectrum", error);
   });
+}
+
+function requestSpectrumMusicCommit(snapshot: ActorSnapshot) {
+  const epoch = snapshot.context.spectrumMusicCommitEpoch + 1;
+  const updates = createMusicDraftEdits(snapshot.context.spectrumMusicDrafts);
+  const creates = createMusicDraftCreates(snapshot.context.spectrumMusicDrafts).map((create) => ({
+    sourceCollectionUrl: create.sourceCollectionUrl,
+    music: create.music,
+  }));
+  const deletes = createMusicDraftDeletes(snapshot.context.spectrumMusicDrafts);
+
+  recordRenderPerformanceTrace("spectrum-music-commit-requested", {
+    epoch,
+    creates: creates.length,
+    deletes: deletes.length,
+    updates: updates.length,
+  });
+
+  void (async () => {
+    const fail = (phase: "create" | "delete" | "update", error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      recordRenderPerformanceTrace("spectrum-music-commit-error", {
+        epoch,
+        error: message,
+        phase,
+      });
+      send(spectrumMusicCommitFailed.load({ epoch, error: message, phase }));
+      return null;
+    };
+
+    if (updates.length > 0) {
+      const result = await invoker.updateMusics.__src__(updates).catch((error: unknown) =>
+        fail("update", error),
+      );
+      if (result === null) {
+        return;
+      }
+      send(spectrumMusicUpdatesCommitted.load({ epoch, result }));
+    }
+    if (creates.length > 0) {
+      const result = await invoker.createMusics.__src__(creates).catch((error: unknown) =>
+        fail("create", error),
+      );
+      if (result === null) {
+        return;
+      }
+      send(spectrumMusicCreatesCommitted.load({ epoch, result }));
+    }
+    if (deletes.length > 0) {
+      const result = await invoker.deleteMusics.__src__(deletes).catch((error: unknown) =>
+        fail("delete", error),
+      );
+      if (result === null) {
+        return;
+      }
+      send(spectrumMusicDeletesCommitted.load({ epoch, result }));
+    }
+
+    try {
+      recordRenderPerformanceTrace("spectrum-music-commit-finished", { epoch });
+    } catch (error) {
+      console.error("Failed to record spectrum music commit completion", error);
+    }
+  })();
+}
+
+function shouldCommitSpectrumMusicForSnapshot(snapshot: ActorSnapshot) {
+  return (
+    snapshot.value === "spectrum" &&
+    hasSpectrumMusicDraftCommitOperations(snapshot.context.spectrumMusicDrafts)
+  );
 }
 
 function shouldStopPlaybackForSnapshot(snapshot: ActorSnapshot) {
@@ -286,6 +479,14 @@ function attachNowPlayingTrackListener() {
   }
 
   void listenNowPlayingTrackChanged((payload) => {
+    recordRenderPerformanceTrace("player-now-playing-event-received", {
+      playlistName: payload.playlist_name,
+      musicName: payload.music_name,
+      musicUrl: payload.music_url,
+      startMs: payload.start_ms,
+      endMs: payload.end_ms,
+      ...traceAppSnapshotPayload(actor.getSnapshot()),
+    });
     send(nowPlayingTrackChanged.load(payload));
   })
     .then((unlisten) => {
@@ -393,10 +594,10 @@ export const action = {
       shouldToggleStop:
         snapshot.value === "play" && snapshot.context.playingPlaylistName === playlistName,
     });
-    if (shouldExitSpectrumPlaybackScopeForSnapshot(snapshot)) {
-      requestExitSpectrumPlaybackScope(snapshot.context.spectrumPlaybackScopeId);
-    }
     if (snapshot.value === "play" && snapshot.context.playingPlaylistName === playlistName) {
+      if (shouldExitSpectrumPlaybackScopeForSnapshot(snapshot)) {
+        requestExitSpectrumPlaybackScope(snapshot.context.spectrumPlaybackScopeId);
+      }
       requestPlaybackStop();
       actor.send(sig.mainx.back);
       recordRenderPerformanceTrace("playlist-play-action-stop-current", {
@@ -406,11 +607,48 @@ export const action = {
       return;
     }
 
+    if (shouldExitSpectrumPlaybackScopeForSnapshot(snapshot)) {
+      requestExitSpectrumPlaybackScope(snapshot.context.spectrumPlaybackScopeId);
+    }
+    if (snapshot.value !== "ready" && snapshot.value !== "play") {
+      recordRenderPerformanceTrace("playlist-play-action-rejected-state", {
+        playlistName,
+        elapsedMs: currentPerformanceNow() - actionStartedAt,
+        state: formatStateValue(snapshot.value),
+      });
+      return;
+    }
+
+    if (snapshot.value === "ready") {
+      const previewDraft = snapshot.context.pendingPlaylistPreview?.playlist.name === playlistName;
+      if (previewDraft) {
+        send(playPlaylist.load(playlistName));
+        recordRenderPerformanceTrace("playlist-play-action-preview-sent", {
+          playlistName,
+          elapsedMs: currentPerformanceNow() - actionStartedAt,
+        });
+        return;
+      }
+    }
+
     send(playPlaylist.load(playlistName));
-    recordRenderPerformanceTrace("playlist-play-action-sent", {
-      playlistName,
-      elapsedMs: currentPerformanceNow() - actionStartedAt,
-    });
+    void startPlaylistPlaybackFromAction(playlistName)
+      .then((session) => {
+        recordRenderPerformanceTrace("playlist-play-action-finished", {
+          playlistName,
+          elapsedMs: currentPerformanceNow() - actionStartedAt,
+          status: session?.status ?? "not_started",
+          trackCount: session?.track_count ?? 0,
+        });
+      })
+      .catch((error) => {
+        recordRenderPerformanceTrace("playlist-play-action-error", {
+          playlistName,
+          elapsedMs: currentPerformanceNow() - actionStartedAt,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        console.error("Failed to start playlist playback", error);
+      });
   },
   excludeCurrentMusicAndSkip: () => {
     ensureStarted();
@@ -445,9 +683,13 @@ export const action = {
   openSpectrum: () => {
     ensureStarted();
     const snapshot = actor.getSnapshot();
+    recordRenderPerformanceTrace("spectrum-open-action", traceAppSnapshotPayload(snapshot));
 
     if (snapshot.value !== "play") {
-      actor.send(sig.mainx.openspectrum);
+      recordRenderPerformanceTrace("spectrum-open-rejected-state", {
+        reason: "requires_play_state",
+        ...traceAppSnapshotPayload(snapshot),
+      });
       return;
     }
 
@@ -458,6 +700,10 @@ export const action = {
   back: () => {
     ensureStarted();
     const snapshot = actor.getSnapshot();
+    recordRenderPerformanceTrace("app-back-action", traceAppSnapshotPayload(snapshot));
+    if (shouldCommitSpectrumMusicForSnapshot(snapshot)) {
+      requestSpectrumMusicCommit(snapshot);
+    }
     if (shouldExitSpectrumPlaybackScopeForSnapshot(snapshot)) {
       requestRestorePlaybackPageModeBeforeBackFromSpectrum(snapshot);
     }
@@ -465,6 +711,10 @@ export const action = {
       requestPlaybackStop();
     }
     actor.send(sig.mainx.back);
+    recordRenderPerformanceTrace("app-back-sent", {
+      source: traceAppSnapshotPayload(snapshot),
+      current: traceAppSnapshotPayload(actor.getSnapshot()),
+    });
   },
   changeDraftName: (name: string) => {
     ensureStarted();
@@ -652,6 +902,8 @@ export function stop() {
   unsubscribePlaybackExcludeCommitted?.();
   unsubscribePlaybackExcludeCommitted = null;
   started = false;
+  lastPlayableIndexReadyState = false;
+  playlistPlaybackStartEpoch += 1;
   resetRuntimeActor();
 }
 

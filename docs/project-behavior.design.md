@@ -91,6 +91,46 @@ Stable values require construction evidence and elimination rules. A value being
 already normalized does not authorize arbitrary code to construct the stable
 domain directly.
 
+## Categorical Behavior Coordinates
+
+This project uses a small category-theory vocabulary as a design coordinate
+system. It is not an implementation dependency and does not authorize new
+abstraction layers by itself. It follows the local Ya source model where
+`Transition`, `Event`, `State`, `Scope`, `Stops`, and `Valid` are first-class
+behavior shapes.
+
+| Coordinate | Slisic interpretation |
+| --- | --- |
+| Object | A stable domain with owner evidence, such as `Ready`, `AcceptedPlayback`, `SpectrumScope`, `MusicDraft`, `FirstSlotPool`, or `PlayerSession`. |
+| Morphism | A total or partial behavior arrow between owned objects. A partial morphism returns an explicit rejection object instead of mutating another owner. |
+| Event | Replayable evidence that a morphism was accepted by its owner. Events are not command attempts and not diagnostic logs. |
+| State | The frontend-visible fixed point produced by accepted events. It is not a waiting room for an unresolved side effect. |
+| Scope | A linear capability, such as a spectrum playback scope or prepared first-slot credential. It must be acquired, used, and released by the owner that created it. |
+| Stops/Valid | The shape of command results. `pending_first_track`, `superseded`, stale scope, and missing identity are rejected morphisms with evidence; only `started` is valid playback evidence. |
+| Functor | A projection preserving behavior laws, such as backend playback session -> frontend `play` projection. It cannot invent accepted state from a failed command. |
+| Natural transformation | Cross-owner substitution that preserves identity coordinates, such as persisted spectrum range update -> player active identity substitution. |
+
+Composition law: every cross-domain workflow must factor as
+`classify intent -> owner morphism -> accepted event -> projection`. Shortcuts
+that project command attempts directly into state are invalid, even when they
+reduce latency locally.
+
+Effect law: app state transitions produce replayable frontend facts only.
+Backend refreshes, Tauri commands, player scope calls, persistence commits, and
+diagnostic subscriptions are interpreted by action/runtime effect owners that
+observe state or user intent. State machine `entry` actions must not call backend
+commands directly; otherwise test projection, ready projection, and backend
+lifecycle work become the same morphism.
+
+Closed paths:
+
+- A click intent is not a `play` state.
+- A backend `pending_first_track` result is not a hidden loading state.
+- A trace event is not a morphism.
+- A cache hit is not construction evidence.
+- A scope id is not reusable after exit or source mismatch.
+- Entering `ready` in the state machine is not itself a backend refresh command.
+
 ## Project-Level Interaction Sequence
 
 The first sequence below is the project-wide behavior skeleton. It intentionally
@@ -261,12 +301,12 @@ shape UI feedback, but only command success can publish a saved playlist.
 ### Playlist First-Track Preparation
 
 `playlist_playback::playable_index` owns the first-track preparation lifecycle.
-It starts at program startup, prepares one centerless audio-style startup source
-for every playlist that can appear as a playitem, and keeps that pool
-independent from any later click. Ready-entry, library mutation, playlist
-mutation, exclude mutation, playback miss, audio-style model publication, and
-prepared-source consumption are refresh signals for this same pool. They are
-not playback commands.
+It starts at program startup, prepares a small playlist-scoped pool of
+centerless startup sources for every playlist that can appear as a playitem,
+and keeps that pool independent from any later click. Ready-entry, library
+mutation, playlist mutation, exclude mutation, playback miss, audio-style model
+publication, and prepared-source consumption are refresh signals for this same
+pool. They are not playback commands.
 
 Project invariant: first-track preparation is an independent backend lifecycle.
 The play button, playitem click, frontend ready state, player session, and
@@ -283,9 +323,13 @@ playlist-scoped and generation-stamped; consuming one playitem's prepared source
 must not consume another visible playitem's source.
 
 Project invariant: consuming a prepared source is linear. Successful player
-submission consumes the matching playlist/generation and immediately schedules
-replacement preparation for that playlist. Replacement does not wait for the
-current track to finish and does not require another ready transition.
+submission consumes one matching playlist/generation/source credential from the
+pool and immediately schedules replacement preparation for that playlist.
+Consumption must not clear other prepared credentials for the same playlist.
+The pool depth absorbs stop/replay bursts while the backend refill is still
+active; replay can consume the next already prepared credential instead of
+waiting for the refill. Replacement does not wait for the current track to
+finish and does not require another ready transition.
 
 Project invariant: audio-style recommendation has a double-buffered service
 surface. `stable` is the only model surface that playback and first-slot
@@ -302,6 +346,11 @@ changed its semantic quality; it must not replace an unconsumed audio-style
 snapshot. If no `stable` model exists yet, first-track preparation uses a
 playlist-scoped repository random projection as a cold-start source. That random
 source is prepared in the backend pool; it is not sampled on the click path.
+If a `stable` model exists but cannot produce a scoped candidate for a playlist,
+that is a recommendation miss, not a playlist playback miss. First-track
+preparation must use the same playlist-scoped random fallback in that case; only
+an empty playlist-scoped fallback means the first-slot pool has no playable
+evidence for that playlist.
 
 Project invariant: the model lifecycle is owned only by the audio-style model
 runtime. Program startup starts the model loop, and stable library-input changes
@@ -364,21 +413,49 @@ the lifecycle record.
 
 ### Playlist Playback
 
-The UI action supplies a playlist name and app state evidence. `appLogic` moves
-to `play` only when the user intent should start playback. `playlist_playback`
-then consumes a playlist-scoped startup source that was prepared independently
-of the play action, resolves it into a playable first-track anchor, submits the
-single-track startup queue to `player`, and only then starts background queue
-planning for the first continuation and later continuations. The first track is
-centerless audio-style startup selection. Later tracks come from the
-recommendation chain when available.
+The UI action supplies a playlist name and app state evidence. The frontend
+action facade classifies the intent. Preview playback remains a frontend draft
+intent. Normal playback invokes the backend playback-start morphism directly.
+`playlist_playback` consumes a playlist-scoped startup source that was prepared
+independently of the play action, resolves it into a playable first-track
+anchor, submits the single-track startup queue to `player`, and only then
+returns `started`. The action facade emits `playlist.playback.accepted` only
+for that accepted result. `appLogic` moves to `play` only from that accepted
+event. The first track is centerless audio-style startup selection. Later tracks
+come from the recommendation chain when available.
+
+Project invariant: playlist start is epoch-owned by the frontend action facade.
+Only the latest outstanding normal playback start may emit
+`playlist.playback.accepted`. Stop, same-playlist toggle, app reset, or a newer
+play intent closes older async return paths. A stale `started` backend result is
+diagnostic evidence only; it cannot project `play`.
 
 Project invariant: first-track selection consumes only the already prepared
 pool. It may eliminate an unplayable prepared source and emit a miss, but it
 must not call playlist sampling, model ranking, or candidate-window
 materialization on the click path. The user-visible transition from playitem
 intent to playback acceptance must be bounded by prepared evidence consumption
-and player submission, not by first-track preparation.
+and player submission, not by first-track preparation. A miss while a refill is
+already active is still a pool-availability failure, not permission to move
+sampling into the click path.
+
+Project invariant: `play` is accepted playback, not a click-intent placeholder.
+If startup returns `pending_first_track`, `superseded`, `null`, or an error, no
+frontend playback event is emitted and `appLogic` remains in or returns to
+`ready` with no `playingPlaylistName` and no now-playing identity. The backend
+first-slot pool may continue refilling, but the frontend must stay retryable and
+must not render a play page without an accepted player session. There is no
+legal `playStarting` display state.
+
+Project invariant: accepted playback evidence and player now-playing evidence
+are independently owned events and may arrive in either order. A normal play
+intent records a pending playlist coordinate, so an early now-playing event may
+be cached as player evidence but must not project `play` by itself. When
+`playlist.playback.accepted` arrives for the same playlist, `appLogic` consumes
+that cached evidence and projects the current track surface atomically with the
+accepted `play` state. A now-playing event for a different playlist is ignored
+for that transaction. UI rendering must not depend on whether the backend event
+beat the command result by a few milliseconds.
 
 Project invariant: playback start composes only first-track selection and
 player submission. It must not fetch playlist candidate windows or invoke the
@@ -409,6 +486,41 @@ the observation is stale and no model sampling or random fallback is allowed.
 Project invariant: the player consumes an explicit queue. It never queries
 playlist membership and cannot widen the candidate universe.
 
+```mermaid
+sequenceDiagram
+  actor User
+  participant Action as Frontend action facade
+  participant App as appLogic projection
+  participant Playback as playlist_playback domain
+  participant First as first-slot pool
+  participant Player as player domain
+  participant Reco as next-slot planner
+
+  User->>Action: click playlist item
+  Action->>Action: classify ready/play/preview intent
+  alt same accepted playlist
+    Action->>Player: stop active session
+    Action->>App: back to ready
+  else preview draft
+    Action->>App: playlist.play preview intent
+  else normal playback
+    Action->>Playback: playPlaylist(name)
+    Playback->>First: consume prepared credential
+    alt credential missing or stale
+      Playback-->>Action: Stops(pending_first_track)
+      Action-->>App: no accepted event
+    else first track accepted
+      Playback->>Player: submit [first]
+      Player-->>Playback: accepted session generation
+      Playback-->>Action: Valid(started)
+      Action->>App: playlist.playback.accepted
+      App-->>User: play projection
+      Playback->>Reco: async plan [first,next]
+      Reco->>Player: refresh queue if still current
+    end
+  end
+```
+
 ### Spectrum Editing And Playback Scope
 
 Opening spectrum creates a playback scope through the player domain before the
@@ -419,6 +531,58 @@ until back/commit transitions invoke update, create, and delete commands.
 Project invariant: selection edits operate on music range evidence. Visual
 padding, waveform cache state, and canvas rendering cannot become editable
 audio range facts.
+
+Project invariant: committing a spectrum range edit is a cross-domain
+substitution, not a UI resume shortcut. The frontend draft owns editable range
+evidence until `back/check`. The app state machine owns only page state and the
+commit epoch. The playlists domain owns the persisted music identity update.
+The player domain owns substituting an accepted identity into the active
+session, active request, active playback range, and spectrum loop signal.
+
+Project invariant: `back/check` returns to `play` immediately. Persistence is a
+background epoch-owned effect. A late persistence result may patch collections
+only when its epoch still matches the current app context; it must not hold the
+app in a transaction display state, resume media by itself, or reopen spectrum.
+
+Project invariant: a paused spectrum preview is a scoped current override. If
+`check` commits a range while the primary spectrum track is paused, the spectrum
+page may issue exactly one scoped player request before sending `back`: it
+projects the paused absolute position into the committed range identity and
+starts that accepted request. After the player accepts the request, later scope
+exit only closes the scoped loop signal and restores playlist continuation mode;
+it cannot cancel the accepted playback run. This lets a paused preview at the
+new end finish through the normal player range guard and then continue through
+the playlist next-slot owner.
+
+Project invariant: player session substitution is a separate player effect.
+Persistence can request identity substitution after the playlists domain accepts
+the new music identity. That substitution synchronizes active identity/range and
+emits diagnostics, but it must not resume a paused preview merely because
+persistence completed.
+
+```mermaid
+sequenceDiagram
+  participant UI as SpectrumPage
+  participant App as appLogic state machine
+  participant Lists as playlists domain
+  participant Player as player domain
+  UI->>App: draft range/name changes
+  UI->>App: back/check
+  opt primary preview is paused
+    UI->>Player: play scoped committed identity
+    Player-->>UI: accepted current override
+  end
+  App-->>UI: play state with optimistic identity
+  App->>Player: exit spectrum scope
+  App->>Lists: async update/create/delete(epoch)
+  Lists-->>App: accepted Music(epoch)
+  Lists->>Player: async identity substitution
+  Player-->>Player: normal range guard resolves finish/next
+```
+
+Only `play` is a legal source state for opening spectrum. There are no legal
+spectrum transaction display states. Commit progress belongs to the background
+epoch effect and diagnostic trace, not to the app state space.
 
 ### Player Feedback And Exclude/Liked Updates
 
@@ -457,16 +621,20 @@ It is accepted only when the receiving owner has an explicit event meaning.
 - Playback startup claims a player request. Superseded requests return a
   superseded session instead of committing stale playback.
 - First-track preparation is a process-lifetime backend pool. Program startup
-  fills every currently playable playlist when an audio-style model can serve
-  centerless selection, or with a playlist-scoped repository random source when
-  no stable model exists yet; ready, model publication, and invalidation events
-  refresh the pool; consumption refills the consumed playlist independently.
+  fills every currently playable playlist to the target prepared depth when an
+  audio-style model can serve centerless selection, or with playlist-scoped
+  repository random sources when no stable model exists yet or when the stable
+  model has no scoped candidate for that playlist; ready, model publication,
+  and invalidation events refresh the pool; consumption removes one prepared
+  credential and refills the consumed playlist independently.
 - Playable-index refreshes are generation-stamped. Non-invalidating refreshes
   fill missing startup options, while library/playlist/exclude invalidations can
   replace obsolete evidence.
 - A prepared startup source is a linear resource. It is consumed only after
   player submission accepts the startup queue, and consumption immediately
-  schedules replacement preparation for the same playlist.
+  schedules replacement preparation for the same playlist. The prepared pool is
+  not linear as a whole: each credential is linear, so consuming one credential
+  must preserve the remaining credentials and their generation evidence.
 - Startup continuation planning is part of the playback-start transaction. It
   starts after `player` accepts the first-track startup queue. It may use the
   newest published model that can rank the resolved first-track anchor,
@@ -506,6 +674,10 @@ It is accepted only when the receiving owner has an explicit event meaning.
 - First-track preparation fallback can schedule repair after a miss, but the
   repair is backend pool work. It cannot become a synchronous play-click
   fallback or a frontend loading requirement.
+- First-track preparation fallback is playlist-scoped. `model_unavailable` and
+  `no_scoped_model_candidate` both degrade to repository random inside the
+  playlist selection; neither may widen membership, block the click, or commit
+  an empty first slot while a playable random source exists.
 - Spectrum fallback can render missing waveform columns or hide playhead; it
   cannot construct track identity, selection, or playback status.
 - Trace fallback does not exist. Missing trace must never change behavior.

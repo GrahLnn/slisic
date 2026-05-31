@@ -221,6 +221,7 @@ function resolvePlayListPageVisibleItems(args: {
   const playbackSurfaceTrackLiked = args.playbackSurface?.displayedTrackLiked ?? null;
   const playbackSurfaceTrackIsPlayable = args.playbackSurface?.displayedTrackIsPlayable ?? false;
   const isPlaybackSurfacePlaying = args.playbackSurface?.phase === "playing";
+  const playbackActionsEnabled = args.pageState === "play";
   const shouldApplyPlaybackSurface =
     args.displayLock?.kind !== "return-handoff" && isPlaybackSurfacePlaying;
   const hasPlaybackTarget =
@@ -260,6 +261,7 @@ function resolvePlayListPageVisibleItems(args: {
         titleToneHandoff: args.titleToneHandoff,
         isPlaybackTarget,
         shouldShowPlaybackIcons:
+          playbackActionsEnabled &&
           isPlaybackSurfacePlaying &&
           hasPlaybackTarget &&
           playlist.name === playbackSurfacePlaylistName &&

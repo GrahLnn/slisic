@@ -177,8 +177,6 @@ describe("PlayListPage", () => {
     assert.equal(shouldEnablePlayListPageTitleShare("ready"), true);
     assert.equal(shouldEnablePlayListPageTitleShare("play"), true);
     assert.equal(shouldEnablePlayListPageTitleShare("spectrum"), false);
-    assert.equal(shouldEnablePlayListPageTitleShare("spectrumUpdatingMusic"), false);
-    assert.equal(shouldEnablePlayListPageTitleShare("spectrumDeletingMusic"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("config"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("configLoading"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("configUpdatingCollectionUpdates"), false);

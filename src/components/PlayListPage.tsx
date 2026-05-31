@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
+import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 import type { MainStateT } from "@/src/flow/appLogic/events";
 import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import { PlayListPageItem, CreateNewPlayListItem } from "./PlayListPageItem";
@@ -47,9 +48,6 @@ export function PlayListPage({
     ready: () => "ready" as const,
     play: () => "play" as const,
     spectrum: () => "spectrum" as const,
-    spectrumUpdatingMusic: () => "spectrumUpdatingMusic" as const,
-    spectrumCreatingMusic: () => "spectrumCreatingMusic" as const,
-    spectrumDeletingMusic: () => "spectrumDeletingMusic" as const,
     configLoading: () => "configLoading" as const,
     config: () => "config" as const,
     configUpdatingCollectionUpdates: () => "configUpdatingCollectionUpdates" as const,
@@ -192,6 +190,14 @@ export function PlayListPage({
                   const sourceLayoutId =
                     itemViewModel.layoutId ?? itemViewModel.sourceLayoutId ?? null;
 
+                  recordRenderPerformanceTrace("playlist-open-spectrum-click", {
+                    playlistName: itemViewModel.playlistName,
+                    isPlaybackTarget: itemViewModel.isPlaybackTarget,
+                    shouldShowPlaybackIcons: itemViewModel.shouldShowPlaybackIcons,
+                    isPlaybackPreparing: itemViewModel.isPlaybackPreparing,
+                    sourceLayoutId,
+                    surfacePageState,
+                  });
                   if (sourceLayoutId) {
                     pageRenderFreeze.freeze({
                       ...renderData,

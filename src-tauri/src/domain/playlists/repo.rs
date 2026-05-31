@@ -923,6 +923,8 @@ pub async fn update_music(
 
     let records = find_music_record_ids_by_identity(url, start_ms, end_ms).await?;
     let mut first_updated = None;
+    let mut changed_records = Vec::with_capacity(records.len());
+    let mut previous_musics = Vec::with_capacity(records.len());
 
     for record in records {
         let mut music = Music::get_record(record.clone()).await?;
@@ -933,13 +935,15 @@ pub async fn update_music(
         music.canonical_music_id =
             canonical_music_id_for_source(&music.url, music.start_ms, music.end_ms);
         let updated = Repo::<Music>::update_at(record.clone(), music).await?;
-        refresh_exclude_availability_for_music_record(&record).await?;
-        refresh_exclude_availability_for_music_identity(&previous_music).await?;
+        changed_records.push(record);
+        previous_musics.push(previous_music);
 
         if first_updated.is_none() {
             first_updated = Some(updated);
         }
     }
+
+    spawn_music_identity_exclude_availability_refresh(changed_records, previous_musics);
 
     Ok(first_updated)
 }
@@ -2706,6 +2710,32 @@ async fn refresh_exclude_availability_for_music_identity(music: &Music) -> Resul
     }
 
     Ok(())
+}
+
+fn spawn_music_identity_exclude_availability_refresh(records: Vec<RecordId>, musics: Vec<Music>) {
+    if records.is_empty() && musics.is_empty() {
+        return;
+    }
+
+    tokio::spawn(async move {
+        for record in records {
+            if let Err(error) = refresh_exclude_availability_for_music_record(&record).await {
+                log::error!(
+                    target: "playlists",
+                    "music_identity_exclude_availability_refresh_failed record={record:?} error={error:#}",
+                );
+            }
+        }
+        for music in musics {
+            if let Err(error) = refresh_exclude_availability_for_music_identity(&music).await {
+                log::error!(
+                    target: "playlists",
+                    "previous_music_identity_exclude_availability_refresh_failed canonical_music_id={} error={error:#}",
+                    music.canonical_music_id,
+                );
+            }
+        }
+    });
 }
 
 async fn refresh_exclude_availability_for_music_record(record: &RecordId) -> Result<()> {

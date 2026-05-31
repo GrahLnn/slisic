@@ -8,7 +8,10 @@ import { useLayoutEffect, useRef, type PropsWithChildren } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useTheme } from "next-themes";
 import { Toaster } from "sileo";
-import { installRenderPerformanceTrace } from "./debug/renderPerformanceTrace";
+import {
+  installRenderPerformanceTrace,
+  recordRenderPerformanceTrace,
+} from "./debug/renderPerformanceTrace";
 import { PlayListPage } from "./components/PlayListPage";
 import { ListConfig } from "./components/ListConfig";
 import { SpectrumPage } from "./components/spectrum/SpectrumPage";
@@ -193,42 +196,6 @@ function MainWindowApp() {
       surface: "spectrum",
       children: <SpectrumPage />,
     }),
-    spectrumUpdatingMusic: () => ({
-      key: "list",
-      pageKey: "list",
-      pageState: "play",
-      scrollPositionRef: pageScrollPositionRefs.current.list,
-      sourceState: "spectrumUpdatingMusic",
-      surface: "playlist",
-      surfacePageState: "play",
-      children: (
-        <PlayListPage scrollPositionRef={playListScrollPositionRef} surfacePageState="play" />
-      ),
-    }),
-    spectrumCreatingMusic: () => ({
-      key: "list",
-      pageKey: "list",
-      pageState: "play",
-      scrollPositionRef: pageScrollPositionRefs.current.list,
-      sourceState: "spectrumCreatingMusic",
-      surface: "playlist",
-      surfacePageState: "play",
-      children: (
-        <PlayListPage scrollPositionRef={playListScrollPositionRef} surfacePageState="play" />
-      ),
-    }),
-    spectrumDeletingMusic: () => ({
-      key: "list",
-      pageKey: "list",
-      pageState: "play",
-      scrollPositionRef: pageScrollPositionRefs.current.list,
-      sourceState: "spectrumDeletingMusic",
-      surface: "playlist",
-      surfacePageState: "play",
-      children: (
-        <PlayListPage scrollPositionRef={playListScrollPositionRef} surfacePageState="play" />
-      ),
-    }),
     error: () => ({
       key: "list",
       pageKey: "list",
@@ -239,6 +206,24 @@ function MainWindowApp() {
       children: <PlayListPage scrollPositionRef={playListScrollPositionRef} />,
     }),
   });
+  const previousViewportTraceRef = useRef<string | null>(null);
+  const viewportTracePayload = {
+    key: viewport.key,
+    pageKey: viewport.pageKey,
+    pageState: viewport.pageState,
+    sourceState: viewport.sourceState,
+    surface: viewport.surface,
+    surfacePageState: "surfacePageState" in viewport ? viewport.surfacePageState : undefined,
+  };
+  const viewportTraceKey = JSON.stringify(viewportTracePayload);
+  useLayoutEffect(() => {
+    if (previousViewportTraceRef.current === viewportTraceKey) {
+      return;
+    }
+
+    previousViewportTraceRef.current = viewportTraceKey;
+    recordRenderPerformanceTrace("app-viewport-projected", viewportTracePayload);
+  }, [viewportTraceKey, viewportTracePayload]);
 
   return (
     <Base>

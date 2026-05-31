@@ -4,15 +4,15 @@ use super::service::{
     PlaybackStartRequestRegistry, PlaybackTrackIdentityUpdate, SpectrumPlaybackScope,
     are_playback_tracks_equal, backend_playback_normalization, playback_tracks_match,
     resolve_active_playback_range_identity_update, resolve_active_request_track_identity_update,
-    resolve_playback_absolute_position_ms, resolve_playback_range_completion,
-    resolve_playback_request_position, resolve_playback_seek_pause_after_request,
-    resolve_playback_seek_range, resolve_playback_status_track_identity,
-    resolve_repeated_playback_range_override, resolve_session_track_identity_update,
-    resolve_spectrum_loop_playback_range, resolve_spectrum_loop_signal_active_range,
-    resolve_spectrum_loop_signal_seek_position, resolve_spectrum_music_playback_range,
-    resolve_spectrum_playback_loop_signal, should_accept_spectrum_playback_signal,
-    should_commit_spectrum_playback_scope_exit, should_resume_playback_seek_cancel,
-    should_start_spectrum_playback_session,
+    resolve_identity_update_playback_restart_position, resolve_playback_absolute_position_ms,
+    resolve_playback_range_completion, resolve_playback_request_position,
+    resolve_playback_seek_pause_after_request, resolve_playback_seek_range,
+    resolve_playback_status_track_identity, resolve_repeated_playback_range_override,
+    resolve_session_track_identity_update, resolve_spectrum_loop_playback_range,
+    resolve_spectrum_loop_signal_active_range, resolve_spectrum_loop_signal_seek_position,
+    resolve_spectrum_music_playback_range, resolve_spectrum_playback_loop_signal,
+    should_accept_spectrum_playback_signal, should_commit_spectrum_playback_scope_exit,
+    should_resume_playback_seek_cancel,
 };
 use std::path::PathBuf;
 
@@ -368,23 +368,6 @@ fn spectrum_loop_signal_scope_is_independent_from_playback_continuation_policy()
 }
 
 #[test]
-fn spectrum_playback_session_start_requires_the_same_scope_when_one_is_captured() {
-    assert!(should_start_spectrum_playback_session(None, None));
-    assert!(should_start_spectrum_playback_session(
-        Some(scope(1)),
-        Some(scope(1)),
-    ));
-    assert!(!should_start_spectrum_playback_session(
-        None,
-        Some(scope(1)),
-    ));
-    assert!(!should_start_spectrum_playback_session(
-        Some(scope(2)),
-        Some(scope(1)),
-    ));
-}
-
-#[test]
 fn spectrum_scope_exit_only_commits_for_the_current_scope() {
     assert!(should_commit_spectrum_playback_scope_exit(
         Some(scope(1)),
@@ -559,6 +542,62 @@ fn resolve_active_playback_range_identity_update_preserves_seek_position_inside_
             start_ms: 25_000,
             end_ms: 110_750,
         }),
+    );
+}
+
+#[test]
+fn resolve_active_playback_range_identity_update_clamps_position_into_edited_region() {
+    assert_eq!(
+        resolve_active_playback_range_identity_update(
+            Some(ActivePlaybackRange {
+                start_ms: 20_000,
+                end_ms: 112_000,
+            }),
+            &PlaybackTrackIdentityUpdate {
+                music_name: "A edited".to_string(),
+                music_url: "https://example.com/a".to_string(),
+                start_ms: 8_000,
+                end_ms: 112_000,
+                next_start_ms: 45_000,
+                next_end_ms: 90_000,
+            },
+        ),
+        Some(ActivePlaybackRange {
+            start_ms: 45_000,
+            end_ms: 90_000,
+        }),
+    );
+}
+
+#[test]
+fn identity_update_playback_restart_projects_paused_position_into_committed_range() {
+    let mut current = track("a");
+    current.start_ms = 45_000;
+    current.end_ms = 90_000;
+
+    assert_eq!(
+        resolve_identity_update_playback_restart_position(20_000, &current),
+        Some(45_000),
+    );
+    assert_eq!(
+        resolve_identity_update_playback_restart_position(100_000, &current),
+        Some(89_999),
+    );
+}
+
+#[test]
+fn identity_update_playback_restart_preserves_live_position_inside_new_region() {
+    let mut current = track("a");
+    current.start_ms = 45_000;
+    current.end_ms = 90_000;
+
+    assert_eq!(
+        resolve_identity_update_playback_restart_position(60_000, &current),
+        Some(60_000),
+    );
+    assert_eq!(
+        resolve_identity_update_playback_restart_position(100_000, &current),
+        Some(89_999),
     );
 }
 
