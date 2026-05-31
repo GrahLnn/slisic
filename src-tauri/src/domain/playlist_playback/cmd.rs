@@ -14,6 +14,7 @@ pub async fn play_playlist(app: AppHandle, name: String) -> Result<PlayPlaylistS
             Ok(PlayPlaylistSession {
                 status: PlayPlaylistSessionStatus::Superseded,
                 playlist_name: name,
+                session_generation: None,
                 track_count: 0,
             })
         }

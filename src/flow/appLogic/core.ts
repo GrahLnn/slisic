@@ -162,6 +162,8 @@ export interface Context {
   nowPlayingTrackEndMs: number | null;
   nowPlayingTrackLiked: boolean | null;
   pendingNowPlayingTrackEvidence: NowPlayingTrackEvidence | null;
+  playingSessionGeneration: number | null;
+  pendingPlaylistPlaybackSessionGeneration: number | null;
   spectrumPlaybackScopeId: number | null;
   spectrumMusicDrafts: SpectrumMusicDraft[];
   spectrumMusicSourceContext: SpectrumMusicSourceContext | null;
@@ -756,6 +758,8 @@ export function createInitialContext(): Context {
     nowPlayingTrackEndMs: null,
     nowPlayingTrackLiked: null,
     pendingNowPlayingTrackEvidence: null,
+    playingSessionGeneration: null,
+    pendingPlaylistPlaybackSessionGeneration: null,
     spectrumPlaybackScopeId: null,
     spectrumMusicDrafts: [],
     spectrumMusicSourceContext: null,

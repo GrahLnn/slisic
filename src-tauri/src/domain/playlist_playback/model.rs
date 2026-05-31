@@ -7,6 +7,7 @@ use crate::domain::playlists::model::{Exclude, ExcludeAvailability};
 pub struct PlayPlaylistSession {
     pub status: PlayPlaylistSessionStatus,
     pub playlist_name: String,
+    pub session_generation: Option<u64>,
     pub track_count: u32,
 }
 

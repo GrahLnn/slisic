@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { Err, Ok } from "@grahlnn/fn";
-import { loadCollectionsFromBackend } from "./events";
-import type { ConfigLibraryView, PlaylistStartupBootstrap } from "@/src/cmd";
+import { loadCollectionsFromBackend, resolvePlaylistPlaybackStartResult } from "./events";
+import type { ConfigLibraryView, PlayPlaylistSession, PlaylistStartupBootstrap } from "@/src/cmd";
 
 function emptyConfigLibrary(): ConfigLibraryView {
   return {
@@ -73,6 +73,52 @@ describe("appLogic bootstrap events", () => {
       collections: [],
       configLibrary: emptyConfigLibrary(),
       savePath: "C:/Music",
+    });
+  });
+});
+
+describe("playlist playback start result", () => {
+  test("preserves started sessions as valid playback evidence", () => {
+    const session: PlayPlaylistSession = {
+      playlist_name: "Focus Session",
+      status: "started",
+      session_generation: 1,
+      track_count: 1,
+    };
+
+    assert.deepEqual(resolvePlaylistPlaybackStartResult(session), {
+      kind: "Valid",
+      session,
+    });
+  });
+
+  test("preserves pending first-track sessions as rejected morphism evidence", () => {
+    const session: PlayPlaylistSession = {
+      playlist_name: "Focus Session",
+      status: "pending_first_track",
+      session_generation: null,
+      track_count: 0,
+    };
+
+    assert.deepEqual(resolvePlaylistPlaybackStartResult(session), {
+      kind: "Stops",
+      reason: "pending_first_track",
+      session,
+    });
+  });
+
+  test("preserves superseded sessions as rejected morphism evidence", () => {
+    const session: PlayPlaylistSession = {
+      playlist_name: "Focus Session",
+      status: "superseded",
+      session_generation: null,
+      track_count: 0,
+    };
+
+    assert.deepEqual(resolvePlaylistPlaybackStartResult(session), {
+      kind: "Stops",
+      reason: "superseded",
+      session,
     });
   });
 });

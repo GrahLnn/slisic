@@ -6,6 +6,7 @@ use tauri_specta::Event;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
 pub struct NowPlayingTrackChangedEvent {
+    pub session_generation: u64,
     pub playlist_name: String,
     pub music_name: String,
     pub canonical_music_id: String,
@@ -43,9 +44,10 @@ pub struct PlaybackExcludeCommittedEvent {
     pub exclude: Exclude,
 }
 
-impl From<PlaybackTrackPayload> for NowPlayingTrackChangedEvent {
-    fn from(value: PlaybackTrackPayload) -> Self {
+impl NowPlayingTrackChangedEvent {
+    pub(crate) fn from_session_track(session_generation: u64, value: PlaybackTrackPayload) -> Self {
         Self {
+            session_generation,
             playlist_name: value.playlist_name,
             music_name: value.music_name,
             canonical_music_id: value.canonical_music_id,

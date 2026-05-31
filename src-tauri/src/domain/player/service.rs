@@ -136,8 +136,8 @@ impl Drop for ActiveBinaryTaskGuard {
 #[cfg(not(test))]
 #[derive(Clone)]
 pub(crate) struct PlaybackSessionHandle {
-    playlist_name: String,
-    session_generation: u64,
+    pub(crate) playlist_name: String,
+    pub(crate) session_generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -437,6 +437,7 @@ async fn play_tracks_with_initial_track(
 
     let session = PlaybackSession {
         playlist_name: playlist_name.clone(),
+        session_generation: playback_run_generation,
         tracks: shared_tracks,
         strategy: shared_strategy,
         queue_mode,
@@ -1640,6 +1641,7 @@ impl PlayerRuntime {
         Ok(SpectrumPlaybackStartPlan {
             session: PlaybackSession {
                 playlist_name: active.playlist_name.clone(),
+                session_generation: active.session_generation,
                 tracks: Arc::clone(&active.tracks),
                 strategy: Arc::clone(&active.strategy),
                 queue_mode: active.queue_mode,
@@ -1706,11 +1708,12 @@ impl PlayerRuntime {
             if next_current_track.is_some() {
                 self.clear_spectrum_playback_loop_signal()?;
             }
-            reconciled
+            reconciled.map(|track| (active.session_generation, track))
         };
 
-        if let Some(track) = reconciled {
-            NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&self.app)?;
+        if let Some((session_generation, track)) = reconciled {
+            NowPlayingTrackChangedEvent::from_session_track(session_generation, track.to_payload())
+                .emit(&self.app)?;
         }
 
         Ok(true)
@@ -1892,11 +1895,12 @@ impl PlayerRuntime {
             if let Some(track) = next_active_track.as_ref() {
                 self.set_active_request_track(track.clone())?;
             }
-            next_active_track
+            next_active_track.map(|track| (active.session_generation, track))
         };
 
-        if let Some(track) = active_update {
-            NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&self.app)?;
+        if let Some((session_generation, track)) = active_update {
+            NowPlayingTrackChangedEvent::from_session_track(session_generation, track.to_payload())
+                .emit(&self.app)?;
         }
 
         Ok(true)
@@ -1979,6 +1983,7 @@ impl PlayerRuntime {
 #[cfg(not(test))]
 struct PlaybackSession {
     playlist_name: String,
+    session_generation: u64,
     tracks: SharedPlaybackTracks,
     strategy: SharedPlaybackStrategy,
     queue_mode: PlaybackQueueMode,
@@ -2088,7 +2093,11 @@ async fn run_playback_session(
                 }),
         );
         runtime.set_active_request_track(track.clone())?;
-        NowPlayingTrackChangedEvent::from(track.to_payload()).emit(&runtime.app)?;
+        NowPlayingTrackChangedEvent::from_session_track(
+            session.session_generation,
+            track.to_payload(),
+        )
+        .emit(&runtime.app)?;
         emit_player_trace(
             "player-run-now-playing-emitted",
             PlayerTrace::new(&runtime.app)

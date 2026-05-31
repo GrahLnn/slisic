@@ -77,9 +77,29 @@ export interface PlayPlaylistInput {
   playlistName: string;
 }
 
+export type StartedPlayPlaylistSession = PlayPlaylistSession & {
+  session_generation: number;
+  status: "started";
+};
+
+export type StoppedPlayPlaylistSession = PlayPlaylistSession & {
+  status: Exclude<PlayPlaylistSession["status"], "started">;
+};
+
+export type PlaybackStartResult =
+  | {
+      kind: "Valid";
+      session: StartedPlayPlaylistSession;
+    }
+  | {
+      kind: "Stops";
+      reason: StoppedPlayPlaylistSession["status"];
+      session: StoppedPlayPlaylistSession;
+    };
+
 export interface PlaylistPlaybackAccepted {
   playlistName: string;
-  session: PlayPlaylistSession;
+  session: StartedPlayPlaylistSession;
 }
 
 export interface MusicUpdateInput {
@@ -131,6 +151,14 @@ export interface MusicDeletesResult {
 export interface MusicDeletesCommitted {
   epoch: number;
   result: MusicDeletesResult;
+}
+
+export type SpectrumMusicCommitFailurePhase = "create" | "delete" | "unexpected" | "update";
+
+export interface SpectrumMusicCommitFailure {
+  epoch: number;
+  error: string;
+  phase: SpectrumMusicCommitFailurePhase;
 }
 
 export interface SpectrumMusicDraftBootstrapInput {
@@ -238,6 +266,34 @@ export async function loadCollectionsFromBackend(
       throw new BootstrapLoadError(error, savePath);
     },
   });
+}
+
+export function resolvePlaylistPlaybackStartResult(
+  session: PlayPlaylistSession,
+): PlaybackStartResult {
+  if (session.status === "started") {
+    if (session.session_generation === null) {
+      throw new Error("started playlist playback is missing session generation");
+    }
+
+    return {
+      kind: "Valid",
+      session: {
+        ...session,
+        session_generation: session.session_generation,
+        status: "started",
+      },
+    };
+  }
+
+  return {
+    kind: "Stops",
+    reason: session.status,
+    session: {
+      ...session,
+      status: session.status,
+    },
+  };
 }
 
 export async function chooseCollectionFolder(currentSavePath: string): Promise<string | null> {
@@ -481,7 +537,7 @@ export const invoker = createActors({
     });
   },
   removeExclude,
-  playPlaylist: async (input: PlayPlaylistInput): Promise<PlayPlaylistSession | null> => {
+  playPlaylist: async (input: PlayPlaylistInput): Promise<PlaybackStartResult> => {
     const startedAt = performance.now();
     recordRenderPerformanceTrace("playlist-play-invoke-start", {
       playlistName: input.playlistName,
@@ -497,7 +553,7 @@ export const invoker = createActors({
           status: session.status,
           trackCount: session.track_count,
         });
-        return session.status === "started" ? session : null;
+        return resolvePlaylistPlaybackStartResult(session);
       },
       Err: (error) => {
         recordRenderPerformanceTrace("playlist-play-invoke-error", {
@@ -678,9 +734,7 @@ export const payloads = collect(
   ...event<MusicUpdatesCommitted>()("spectrum.music_updates.committed"),
   ...event<MusicCreatesCommitted>()("spectrum.music_creates.committed"),
   ...event<MusicDeletesCommitted>()("spectrum.music_deletes.committed"),
-  ...event<{ epoch: number; error: string; phase: "create" | "delete" | "update" }>()(
-    "spectrum.music_commit.failed",
-  ),
+  ...event<SpectrumMusicCommitFailure>()("spectrum.music_commit.failed"),
   ...event<string>()("save_path.changed"),
   ...event<Collection>()("collection.upserted"),
   ...event<Collection>()("draft.collection.upserted"),

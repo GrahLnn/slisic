@@ -7,8 +7,10 @@ import type {
   ConfigLibraryView,
   Group,
   Music,
+  NowPlayingTrackChangedEvent,
   PlayList,
   PlayListListView,
+  PlayPlaylistSession,
   SpectrumMusicSourceContext,
 } from "@/src/cmd";
 import type { ConfigDraft } from "./core";
@@ -91,6 +93,38 @@ function createPlaylistSurface(playlist: PlayList): PlayListListView {
   return {
     name: playlist.name,
     created_at: playlist.created_at,
+  };
+}
+
+function createStartedPlaybackSession(
+  sessionGeneration = 1,
+  playlistName = "Focus Session",
+): PlayPlaylistSession & { status: "started"; session_generation: number } {
+  return {
+    playlist_name: playlistName,
+    status: "started",
+    session_generation: sessionGeneration,
+    track_count: 1,
+  };
+}
+
+function createNowPlayingTrackChangedEvent(
+  music: Music,
+  sessionGeneration = 1,
+  playlistName = "Focus Session",
+  overrides: Partial<NowPlayingTrackChangedEvent> = {},
+): NowPlayingTrackChangedEvent {
+  return {
+    session_generation: sessionGeneration,
+    playlist_name: playlistName,
+    music_name: music.alias,
+    music_url: music.url,
+    canonical_music_id: music.canonical_music_id,
+    file_path: "C:/Music/quiet-morning.m4a",
+    start_ms: music.start_ms,
+    end_ms: music.end_ms,
+    liked: false,
+    ...overrides,
   };
 }
 
@@ -351,7 +385,7 @@ describe("appLogic machine", () => {
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
-        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+        session: createStartedPlaybackSession(),
       }),
     );
     assert.equal(actor.getSnapshot().value, "play");
@@ -377,16 +411,9 @@ describe("appLogic machine", () => {
 
     actor.send(payloads["playlist.play"].load("Focus Session"));
     actor.send(
-      payloads["player.now_playing_track.changed"].load({
-        playlist_name: "Focus Session",
-        music_name: music.alias,
-        music_url: music.url,
-        canonical_music_id: music.canonical_music_id,
-        file_path: "C:/Music/quiet-morning.m4a",
-        start_ms: music.start_ms,
-        end_ms: music.end_ms,
-        liked: false,
-      }),
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(music),
+      ),
     );
 
     assert.equal(actor.getSnapshot().value, "ready");
@@ -400,7 +427,7 @@ describe("appLogic machine", () => {
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
-        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+        session: createStartedPlaybackSession(),
       }),
     );
 
@@ -434,21 +461,14 @@ describe("appLogic machine", () => {
 
     actor.send(payloads["playlist.play"].load("Focus Session"));
     actor.send(
-      payloads["player.now_playing_track.changed"].load({
-        playlist_name: "Other Session",
-        music_name: music.alias,
-        music_url: music.url,
-        canonical_music_id: music.canonical_music_id,
-        file_path: "C:/Music/quiet-morning.m4a",
-        start_ms: music.start_ms,
-        end_ms: music.end_ms,
-        liked: false,
-      }),
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(music, 1, "Other Session"),
+      ),
     );
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
-        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+        session: createStartedPlaybackSession(),
       }),
     );
 
@@ -456,6 +476,82 @@ describe("appLogic machine", () => {
     assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
     assert.equal(actor.getSnapshot().context.nowPlayingTrackName, null);
     assert.equal(actor.getSnapshot().context.pendingNowPlayingTrackEvidence, null);
+  });
+
+  test("ignores stale now playing evidence from a superseded same-name playback session", async () => {
+    const firstMusic = createMusic();
+    const secondMusic = createMusic({
+      name: "Track B",
+      alias: "Track B",
+      canonical_music_id: "source:https://example.com/quiet-morning#b:0:90000",
+      url: "https://example.com/quiet-morning#b",
+      path: "Disc 1/Track B.m4a",
+      start_ms: 0,
+      end_ms: 90_000,
+    });
+    const staleMusic = createMusic({
+      name: "Track C",
+      alias: "Track C",
+      canonical_music_id: "source:https://example.com/quiet-morning#c:0:60000",
+      url: "https://example.com/quiet-morning#c",
+      path: "Disc 1/Track C.m4a",
+      start_ms: 0,
+      end_ms: 60_000,
+    });
+    const collection = createCollection([firstMusic, secondMusic, staleMusic]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load("Focus Session"));
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        session: createStartedPlaybackSession(1),
+      }),
+    );
+    actor.send(
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(firstMusic, 1),
+      ),
+    );
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, firstMusic.alias);
+    assert.equal(actor.getSnapshot().context.playingSessionGeneration, 1);
+
+    actor.send(payloads["playlist.play"].load("Focus Session"));
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        session: createStartedPlaybackSession(2),
+      }),
+    );
+    actor.send(
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(staleMusic, 1),
+      ),
+    );
+
+    assert.equal(actor.getSnapshot().context.playingSessionGeneration, 2);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, null);
+
+    actor.send(
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(secondMusic, 2),
+      ),
+    );
+
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, secondMusic.alias);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackUrl, secondMusic.url);
   });
 
   test("applies spectrum music deletion optimistically to in-memory music surfaces", async () => {
@@ -516,21 +612,16 @@ describe("appLogic machine", () => {
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
-        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+        session: createStartedPlaybackSession(),
       }),
     );
     await waitForState(actor, "play");
     actor.send(
-      payloads["player.now_playing_track.changed"].load({
-        playlist_name: "Focus Session",
-        music_name: "Track A",
-        music_url: deletedMusic.url,
-        canonical_music_id: deletedMusic.canonical_music_id,
-        file_path: "C:/Music/quiet-morning.m4a",
-        start_ms: deletedMusic.start_ms,
-        end_ms: deletedMusic.end_ms,
-        liked: false,
-      }),
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(deletedMusic, 1, "Focus Session", {
+          music_name: "Track A",
+        }),
+      ),
     );
     actor.send(sig.mainx.openspectrum);
     await waitForState(actor, "spectrum");
@@ -605,21 +696,14 @@ describe("appLogic machine", () => {
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
-        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+        session: createStartedPlaybackSession(),
       }),
     );
     await waitForState(actor, "play");
     actor.send(
-      payloads["player.now_playing_track.changed"].load({
-        playlist_name: "Focus Session",
-        music_name: music.alias,
-        music_url: music.url,
-        canonical_music_id: music.canonical_music_id,
-        file_path: "C:/Music/quiet-morning.m4a",
-        start_ms: music.start_ms,
-        end_ms: music.end_ms,
-        liked: false,
-      }),
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(music),
+      ),
     );
     actor.send(spectrumPlaybackScopeChanged.load(42));
     actor.send(sig.mainx.openspectrum);
@@ -695,21 +779,14 @@ describe("appLogic machine", () => {
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
-        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+        session: createStartedPlaybackSession(),
       }),
     );
     await waitForState(actor, "play");
     actor.send(
-      payloads["player.now_playing_track.changed"].load({
-        playlist_name: "Focus Session",
-        music_name: music.alias,
-        music_url: music.url,
-        canonical_music_id: music.canonical_music_id,
-        file_path: "C:/Music/quiet-morning.m4a",
-        start_ms: music.start_ms,
-        end_ms: music.end_ms,
-        liked: false,
-      }),
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(music),
+      ),
     );
     actor.send(sig.mainx.openspectrum);
     await waitForState(actor, "spectrum");
@@ -767,21 +844,14 @@ describe("appLogic machine", () => {
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
-        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+        session: createStartedPlaybackSession(),
       }),
     );
     await waitForState(actor, "play");
     actor.send(
-      payloads["player.now_playing_track.changed"].load({
-        playlist_name: "Focus Session",
-        music_name: music.alias,
-        music_url: music.url,
-        canonical_music_id: music.canonical_music_id,
-        file_path: "C:/Music/quiet-morning.m4a",
-        start_ms: music.start_ms,
-        end_ms: music.end_ms,
-        liked: false,
-      }),
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(music),
+      ),
     );
     actor.send(sig.mainx.openspectrum);
     await waitForState(actor, "spectrum");
@@ -835,21 +905,14 @@ describe("appLogic machine", () => {
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
-        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+        session: createStartedPlaybackSession(),
       }),
     );
     await waitForState(actor, "play");
     actor.send(
-      payloads["player.now_playing_track.changed"].load({
-        playlist_name: "Focus Session",
-        music_name: music.alias,
-        music_url: music.url,
-        canonical_music_id: music.canonical_music_id,
-        file_path: "C:/Music/quiet-morning.m4a",
-        start_ms: music.start_ms,
-        end_ms: music.end_ms,
-        liked: false,
-      }),
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(music),
+      ),
     );
     actor.send(sig.mainx.openspectrum);
     await waitForState(actor, "spectrum");
@@ -916,21 +979,14 @@ describe("appLogic machine", () => {
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
-        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+        session: createStartedPlaybackSession(),
       }),
     );
     await waitForState(actor, "play");
     actor.send(
-      payloads["player.now_playing_track.changed"].load({
-        playlist_name: "Focus Session",
-        music_name: music.alias,
-        music_url: music.url,
-        canonical_music_id: music.canonical_music_id,
-        file_path: "C:/Music/quiet-morning.m4a",
-        start_ms: music.start_ms,
-        end_ms: music.end_ms,
-        liked: false,
-      }),
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(music),
+      ),
     );
     actor.send(sig.mainx.openspectrum);
     await waitForState(actor, "spectrum");
@@ -993,21 +1049,14 @@ describe("appLogic machine", () => {
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
-        session: { playlist_name: "Focus Session", status: "started", track_count: 1 },
+        session: createStartedPlaybackSession(),
       }),
     );
     await waitForState(actor, "play");
     actor.send(
-      payloads["player.now_playing_track.changed"].load({
-        playlist_name: "Focus Session",
-        music_name: music.alias,
-        music_url: music.url,
-        canonical_music_id: music.canonical_music_id,
-        file_path: "C:/Music/quiet-morning.m4a",
-        start_ms: music.start_ms,
-        end_ms: music.end_ms,
-        liked: false,
-      }),
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(music),
+      ),
     );
     actor.send(sig.mainx.openspectrum);
     await waitForState(actor, "spectrum");

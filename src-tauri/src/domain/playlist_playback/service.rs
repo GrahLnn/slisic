@@ -249,6 +249,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
             return Ok(PlayPlaylistSession {
                 status: PlayPlaylistSessionStatus::PendingFirstTrack,
                 playlist_name: name,
+                session_generation: None,
                 track_count: 0,
             });
         }
@@ -332,6 +333,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
             return Err(error);
         }
     };
+    let session_generation = session.session_generation;
     spawn_playlist_track_queue_fill(
         app.clone(),
         playlist_name.clone(),
@@ -361,6 +363,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
     Ok(PlayPlaylistSession {
         status: PlayPlaylistSessionStatus::Started,
         playlist_name,
+        session_generation: Some(session_generation),
         track_count,
     })
 }

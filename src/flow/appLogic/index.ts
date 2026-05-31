@@ -58,11 +58,11 @@ import {
 import type { Exclude, Music } from "@/src/cmd";
 import { action as pasteDownloadAction } from "../pasteDownload";
 import {
-  createMusicDraftCreates,
-  createMusicDraftDeletes,
-  createMusicDraftEdits,
-  hasSpectrumMusicDraftCommitOperations,
-} from "./musicTitle";
+  createSpectrumMusicCommitPlan,
+  createUnexpectedSpectrumMusicCommitFailure,
+  hasSpectrumMusicCommitOperations,
+  runSpectrumMusicCommitTransaction,
+} from "./spectrumMusicCommitTransaction";
 import { createPlaybackContinuationModeEffectOwner } from "./playbackContinuationModeEffectOwner";
 import {
   resolveSpectrumEnterPlaybackModeEffects,
@@ -224,24 +224,32 @@ function requestSetCurrentPlaybackMusicLiked(liked: boolean) {
 
 async function startPlaylistPlaybackFromAction(playlistName: string) {
   const epoch = ++playlistPlaybackStartEpoch;
-  const session = await invoker.playPlaylist.__src__({ playlistName });
-  if (session === null) {
-    return null;
-  }
+  const result = await invoker.playPlaylist.__src__({ playlistName });
 
   if (epoch !== playlistPlaybackStartEpoch) {
     recordRenderPerformanceTrace("playlist-play-action-stale-result", {
       playlistName,
       epoch,
       currentEpoch: playlistPlaybackStartEpoch,
-      status: session.status,
-      trackCount: session.track_count,
+      status: result.session.status,
+      result: result.kind,
+      trackCount: result.session.track_count,
     });
-    return null;
+    return result;
   }
 
-  send(playlistPlaybackAccepted.load({ playlistName, session }));
-  return session;
+  if (result.kind === "Stops") {
+    recordRenderPerformanceTrace("playlist-play-action-stopped-result", {
+      playlistName,
+      reason: result.reason,
+      status: result.session.status,
+      trackCount: result.session.track_count,
+    });
+    return result;
+  }
+
+  send(playlistPlaybackAccepted.load({ playlistName, session: result.session }));
+  return result;
 }
 
 async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
@@ -395,73 +403,51 @@ function requestRestorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSna
 }
 
 function requestSpectrumMusicCommit(snapshot: ActorSnapshot) {
-  const epoch = snapshot.context.spectrumMusicCommitEpoch + 1;
-  const updates = createMusicDraftEdits(snapshot.context.spectrumMusicDrafts);
-  const creates = createMusicDraftCreates(snapshot.context.spectrumMusicDrafts).map((create) => ({
-    sourceCollectionUrl: create.sourceCollectionUrl,
-    music: create.music,
-  }));
-  const deletes = createMusicDraftDeletes(snapshot.context.spectrumMusicDrafts);
-
-  recordRenderPerformanceTrace("spectrum-music-commit-requested", {
-    epoch,
-    creates: creates.length,
-    deletes: deletes.length,
-    updates: updates.length,
+  const plan = createSpectrumMusicCommitPlan({
+    drafts: snapshot.context.spectrumMusicDrafts,
+    epoch: snapshot.context.spectrumMusicCommitEpoch + 1,
   });
 
-  void (async () => {
-    const fail = (phase: "create" | "delete" | "update", error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      recordRenderPerformanceTrace("spectrum-music-commit-error", {
-        epoch,
-        error: message,
-        phase,
-      });
-      send(spectrumMusicCommitFailed.load({ epoch, error: message, phase }));
-      return null;
-    };
-
-    if (updates.length > 0) {
-      const result = await invoker.updateMusics.__src__(updates).catch((error: unknown) =>
-        fail("update", error),
-      );
-      if (result === null) {
-        return;
-      }
-      send(spectrumMusicUpdatesCommitted.load({ epoch, result }));
-    }
-    if (creates.length > 0) {
-      const result = await invoker.createMusics.__src__(creates).catch((error: unknown) =>
-        fail("create", error),
-      );
-      if (result === null) {
-        return;
-      }
-      send(spectrumMusicCreatesCommitted.load({ epoch, result }));
-    }
-    if (deletes.length > 0) {
-      const result = await invoker.deleteMusics.__src__(deletes).catch((error: unknown) =>
-        fail("delete", error),
-      );
-      if (result === null) {
-        return;
-      }
-      send(spectrumMusicDeletesCommitted.load({ epoch, result }));
-    }
-
-    try {
-      recordRenderPerformanceTrace("spectrum-music-commit-finished", { epoch });
-    } catch (error) {
-      console.error("Failed to record spectrum music commit completion", error);
-    }
-  })();
+  void runSpectrumMusicCommitTransaction({
+    plan,
+    runtime: {
+      createMusics: (inputs) => invoker.createMusics.__src__(inputs),
+      deleteMusics: (inputs) => invoker.deleteMusics.__src__(inputs),
+      updateMusics: (inputs) => invoker.updateMusics.__src__(inputs),
+    },
+    sink: {
+      failed: (failure) => send(spectrumMusicCommitFailed.load(failure)),
+      created: (commit) => send(spectrumMusicCreatesCommitted.load(commit)),
+      deleted: (commit) => send(spectrumMusicDeletesCommitted.load(commit)),
+      updated: (commit) => send(spectrumMusicUpdatesCommitted.load(commit)),
+    },
+    trace: {
+      requested: (input) =>
+        recordRenderPerformanceTrace("spectrum-music-commit-requested", input),
+      failed: (failure) =>
+        recordRenderPerformanceTrace("spectrum-music-commit-error", failure),
+      finished: (input) => {
+        try {
+          recordRenderPerformanceTrace("spectrum-music-commit-finished", input);
+        } catch (error) {
+          console.error("Failed to record spectrum music commit completion", error);
+        }
+      },
+    },
+  }).catch((error) => {
+    const failure = createUnexpectedSpectrumMusicCommitFailure({
+      epoch: plan.epoch,
+      error,
+    });
+    recordRenderPerformanceTrace("spectrum-music-commit-error", failure);
+    send(spectrumMusicCommitFailed.load(failure));
+  });
 }
 
 function shouldCommitSpectrumMusicForSnapshot(snapshot: ActorSnapshot) {
   return (
     snapshot.value === "spectrum" &&
-    hasSpectrumMusicDraftCommitOperations(snapshot.context.spectrumMusicDrafts)
+    hasSpectrumMusicCommitOperations(snapshot.context.spectrumMusicDrafts)
   );
 }
 
@@ -637,8 +623,9 @@ export const action = {
         recordRenderPerformanceTrace("playlist-play-action-finished", {
           playlistName,
           elapsedMs: currentPerformanceNow() - actionStartedAt,
-          status: session?.status ?? "not_started",
-          trackCount: session?.track_count ?? 0,
+          result: session.kind,
+          status: session.session.status,
+          trackCount: session.session.track_count,
         });
       })
       .catch((error) => {
