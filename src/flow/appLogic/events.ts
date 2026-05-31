@@ -23,6 +23,7 @@ import {
   type PlaybackContinuationMode,
   type PlaybackStatusPayload,
   type PlayListListView,
+  type PlaylistStartupBootstrap,
   type PlayPlaylistSession,
   type SpectrumMusicContext,
   type SpectrumMusicSourceContext,
@@ -46,12 +47,30 @@ import { createSpectrumMusicDrafts, type MusicDraftDelete } from "./musicTitle";
 
 const DEFAULT_SAVE_FOLDER_NAME = "slisic";
 
+interface BootstrapBackend {
+  getStartupBootstrap: typeof crab.getStartupBootstrap;
+  getMetaInfo: typeof crab.getMetaInfo;
+  checkList: typeof crab.checkList;
+  listPlaylists: typeof crab.listPlaylists;
+  listConfigLibrary: typeof crab.listConfigLibrary;
+}
+
 export interface BootstrapResult {
   hasPlayList: boolean;
   playlists: PlayListListView[];
   collections: Collection[];
   configLibrary: ConfigLibraryView;
   savePath: string;
+}
+
+function bootstrapResultFromStartupSnapshot(snapshot: PlaylistStartupBootstrap): BootstrapResult {
+  return {
+    hasPlayList: snapshot.has_playlist,
+    playlists: snapshot.playlists,
+    collections: snapshot.collections,
+    configLibrary: snapshot.config_library,
+    savePath: snapshot.save_path,
+  };
 }
 
 export interface PlayPlaylistInput {
@@ -117,8 +136,8 @@ export class BootstrapLoadError extends Error {
   }
 }
 
-async function resolveBootstrapSavePath() {
-  const result = await crab.getMetaInfo();
+async function resolveBootstrapSavePath(backend: Pick<BootstrapBackend, "getMetaInfo"> = crab) {
+  const result = await backend.getMetaInfo();
 
   return result.match({
     Ok: (meta) => meta?.save_path ?? "",
@@ -139,6 +158,67 @@ export async function chooseSavePath(currentSavePath: string): Promise<string | 
   });
 
   return typeof selectedPath === "string" ? selectedPath : null;
+}
+
+export async function loadCollectionsFromBackend(
+  backend: BootstrapBackend = crab,
+): Promise<BootstrapResult> {
+  const startupBootstrap = await backend.getStartupBootstrap();
+  if (startupBootstrap.status === "Ready") {
+    return bootstrapResultFromStartupSnapshot(startupBootstrap.value);
+  }
+
+  const savePath = await resolveBootstrapSavePath(backend);
+  const result = await backend.checkList();
+  const hasPlayList = result.match({
+    Ok: (value) => value,
+    Err: (error) => {
+      throw new BootstrapLoadError(error, savePath);
+    },
+  });
+
+  if (!hasPlayList) {
+    return {
+      hasPlayList: false,
+      playlists: [],
+      collections: [],
+      configLibrary: {
+        collections: [],
+        groups: [],
+        collection_group_memberships: [],
+        excludes: [],
+        exclude_availability: {
+          fully_excluded_collection_urls: [],
+          fully_excluded_group_urls: [],
+        },
+      },
+      savePath,
+    };
+  }
+
+  const [playlists, configLibrary] = await Promise.all([
+    backend.listPlaylists(),
+    backend.listConfigLibrary(),
+  ]);
+
+  return playlists.match({
+    Ok: (playlistValues) =>
+      configLibrary.match({
+        Ok: (libraryValue) => ({
+          hasPlayList: true,
+          playlists: playlistValues,
+          collections: [],
+          configLibrary: libraryValue,
+          savePath,
+        }),
+        Err: (error) => {
+          throw new BootstrapLoadError(error, savePath);
+        },
+      }),
+    Err: (error) => {
+      throw new BootstrapLoadError(error, savePath);
+    },
+  });
 }
 
 export async function chooseCollectionFolder(currentSavePath: string): Promise<string | null> {
@@ -351,59 +431,7 @@ export const ss = defineSS(
 export const state = allState(ss);
 export const sig = allSignal(ss);
 export const invoker = createActors({
-  loadCollections: async (): Promise<BootstrapResult> => {
-    const savePath = await resolveBootstrapSavePath();
-    const result = await crab.checkList();
-    const hasPlayList = result.match({
-      Ok: (value) => value,
-      Err: (error) => {
-        throw new BootstrapLoadError(error, savePath);
-      },
-    });
-
-    if (!hasPlayList) {
-      return {
-        hasPlayList: false,
-        playlists: [],
-        collections: [],
-        configLibrary: {
-          collections: [],
-          groups: [],
-          collection_group_memberships: [],
-          excludes: [],
-          exclude_availability: {
-            fully_excluded_collection_urls: [],
-            fully_excluded_group_urls: [],
-          },
-        },
-        savePath,
-      };
-    }
-
-    const [playlists, configLibrary] = await Promise.all([
-      crab.listPlaylists(),
-      crab.listConfigLibrary(),
-    ]);
-
-    return playlists.match({
-      Ok: (playlistValues) =>
-        configLibrary.match({
-          Ok: (libraryValue) => ({
-            hasPlayList: true,
-            playlists: playlistValues,
-            collections: [],
-            configLibrary: libraryValue,
-            savePath,
-          }),
-          Err: (error) => {
-            throw new BootstrapLoadError(error, savePath);
-          },
-        }),
-      Err: (error) => {
-        throw new BootstrapLoadError(error, savePath);
-      },
-    });
-  },
+  loadCollections: async (): Promise<BootstrapResult> => loadCollectionsFromBackend(),
   loadPlaylistDraft: async (playlistName: string): Promise<ConfigDraft> => {
     const result = await crab.getPlaylistConfig(playlistName);
 

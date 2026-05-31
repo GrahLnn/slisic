@@ -2,12 +2,13 @@ use super::model::{
     AddExcludeResult, Collection, ConfigLibraryView, Music, PlayList, PlayListConfigView,
     PlayListListView, PlayListWriteRequest, RemoveExcludeResult, SpectrumMusicContext,
 };
+use super::startup_bootstrap::PlaylistStartupBootstrapSnapshot;
 use crate::domain::player::service::{
     PlaybackTrackIdentityUpdate, PlaybackTrackLikedUpdate, active_request_track_snapshot,
     update_current_session_track_identity, update_current_session_track_liked,
 };
-use crate::domain::playlist_playback::playable_index::{self, PlayableIndexRefreshReason};
-use crate::domain::playlist_playback::recommendation::notify_audio_style_training_inputs_changed;
+use crate::domain::playlist_playback::playable_index;
+use crate::domain::playlist_playback::service as playlist_playback_service;
 use tauri::AppHandle;
 
 #[tauri::command]
@@ -40,6 +41,12 @@ pub async fn list_config_library() -> Result<ConfigLibraryView, String> {
     super::repo::list_config_library()
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_startup_bootstrap() -> PlaylistStartupBootstrapSnapshot {
+    super::startup_bootstrap::snapshot()
 }
 
 #[tauri::command]
@@ -150,8 +157,8 @@ pub async fn update_music(
             .map_err(|error| error.to_string())?;
 
     if let Some(music) = updated.as_ref() {
-        notify_audio_style_training_inputs_changed("music_identity_update");
-        playable_index::notify_library_changed(PlayableIndexRefreshReason::LibraryChanged);
+        playlist_playback_service::notify_music_library_inputs_changed("music_identity_update");
+        playlist_playback_service::notify_playable_library_changed();
         update_current_session_track_identity(&PlaybackTrackIdentityUpdate {
             music_name: music.alias.clone(),
             music_url: url,
@@ -183,7 +190,7 @@ pub async fn set_current_music_liked(liked: bool) -> Result<Option<Music>, Strin
     .map_err(|error| error.to_string())?;
 
     if updated.is_some() {
-        playable_index::notify_library_changed(PlayableIndexRefreshReason::LibraryChanged);
+        playlist_playback_service::notify_playable_library_changed();
         update_current_session_track_liked(&PlaybackTrackLikedUpdate {
             canonical_music_id: track.canonical_music_id,
             liked,
@@ -200,8 +207,8 @@ pub async fn create_music(source_collection_url: String, music: Music) -> Result
     let created = super::repo::create_music(&source_collection_url, &music)
         .await
         .map_err(|error| error.to_string())?;
-    notify_audio_style_training_inputs_changed("music_create");
-    playable_index::notify_library_changed(PlayableIndexRefreshReason::LibraryChanged);
+    playlist_playback_service::notify_music_library_inputs_changed("music_create");
+    playlist_playback_service::notify_playable_library_changed();
     Ok(created)
 }
 
@@ -212,7 +219,7 @@ pub async fn delete_music(url: String, start_ms: u32, end_ms: u32) -> Result<boo
         .await
         .map_err(|error| error.to_string())?;
     if deleted {
-        playable_index::notify_library_changed(PlayableIndexRefreshReason::LibraryChanged);
+        playlist_playback_service::notify_playable_library_changed();
     }
     Ok(deleted)
 }

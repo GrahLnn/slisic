@@ -5,9 +5,9 @@ use super::recommendation::{
 use super::service::{
     PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
     PlaylistPlaybackRecommender, PlaylistQueueRecommendationReadiness,
-    PlaylistQueueRecommendationRefreshRequests, RandomPlaylistPlaybackRecommender,
-    audio_style_playlist_playback_proposal_is_complete, create_start_anchor_playback_queue,
-    place_track_at_queue_start, playlist_playback_proposal_contains_next_track,
+    RandomPlaylistPlaybackRecommender, audio_style_playlist_playback_proposal_is_complete,
+    create_start_anchor_playback_queue, place_track_at_queue_start,
+    playlist_playback_proposal_contains_next_track,
     playlist_playback_queue_contains_next_track_after_anchor,
     playlist_selection_has_relevant_active_downloads,
     propose_audio_style_playlist_playback_queue_from_snapshots,
@@ -871,53 +871,19 @@ fn playlist_queue_refresh_commit_requires_next_track() {
 }
 
 #[test]
-fn playlist_queue_recommendation_refresh_request_is_once_per_anchor_and_reason() {
-    let current = playback_track("current");
-    let mut requests = PlaylistQueueRecommendationRefreshRequests::default();
-
-    assert!(requests.should_request(
-        &current,
-        PlaylistQueueRecommendationReadiness::missing_current_embedding(1),
-    ));
-    assert!(!requests.should_request(
-        &current,
-        PlaylistQueueRecommendationReadiness::missing_current_embedding(1),
-    ));
-    assert!(requests.should_request(
-        &current,
-        PlaylistQueueRecommendationReadiness::model_unavailable(),
-    ));
-}
-
-#[test]
-fn playlist_queue_recommendation_refresh_request_retries_after_model_generation_changes() {
-    let current = playback_track("current");
-    let mut requests = PlaylistQueueRecommendationRefreshRequests::default();
-
-    assert!(requests.should_request(
-        &current,
-        PlaylistQueueRecommendationReadiness::missing_current_embedding(1),
-    ));
-    assert!(requests.should_request(
-        &current,
-        PlaylistQueueRecommendationReadiness::missing_current_embedding(2),
-    ));
-}
-
-#[test]
-fn playlist_queue_recommendation_refresh_request_resets_after_ready() {
-    let current = playback_track("current");
-    let mut requests = PlaylistQueueRecommendationRefreshRequests::default();
-
-    assert!(requests.should_request(
-        &current,
-        PlaylistQueueRecommendationReadiness::missing_current_embedding(1),
-    ));
-    assert!(!requests.should_request(&current, PlaylistQueueRecommendationReadiness::ready(1),));
-    assert!(requests.should_request(
-        &current,
-        PlaylistQueueRecommendationReadiness::missing_current_embedding(1),
-    ));
+fn playlist_queue_recommendation_readiness_reports_model_state_without_owning_training() {
+    assert_eq!(
+        PlaylistQueueRecommendationReadiness::model_unavailable().diagnostic_status(),
+        "playlist_playback_model_unavailable",
+    );
+    assert_eq!(
+        PlaylistQueueRecommendationReadiness::missing_current_embedding(7).diagnostic_status(),
+        "playlist_playback_missing_current_embedding",
+    );
+    assert_eq!(
+        PlaylistQueueRecommendationReadiness::ready(8).diagnostic_status(),
+        "playlist_playback_ready",
+    );
 }
 
 #[test]
@@ -989,5 +955,53 @@ fn keep_current_audio_style_proposal_falls_back_to_older_complete_snapshot() {
             .as_ref()
             .and_then(|selection| selection.model_generation),
         Some(11)
+    );
+}
+
+#[test]
+fn keep_current_audio_style_proposal_uses_centerless_next_when_anchor_is_missing() {
+    let current = playback_track("current");
+    let embedded_next = playback_track("embedded_next");
+    let embedded_other = playback_track("embedded_other");
+    let missing_next = playback_track("missing_next");
+    let snapshot = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
+        12,
+        [
+            (embedded_next.clone(), test_embedding(2)),
+            (embedded_other.clone(), test_embedding(3)),
+        ],
+    ));
+
+    let proposal = propose_audio_style_playlist_playback_queue_from_snapshots(
+        PlaylistPlaybackRecommendationRequest {
+            playlist_name: "Focus".to_string(),
+            current_track: current.clone(),
+            candidates: vec![missing_next, embedded_next.clone(), embedded_other],
+            recently_played_tracks: vec![],
+        },
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+        [snapshot],
+    )
+    .expect("stable model should still serve centerless next when anchor lacks embedding");
+
+    assert_eq!(proposal.tracks.len(), 2);
+    assert_eq!(proposal.tracks[0].music_url, current.music_url);
+    assert!(
+        proposal.tracks[1].music_url == embedded_next.music_url
+            || proposal.tracks[1].music_url == "https://example.com/embedded_other"
+    );
+    assert_eq!(
+        proposal
+            .selection
+            .as_ref()
+            .map(|selection| selection.source),
+        Some(AudioStyleCandidateSelectionSource::AudioStyle)
+    );
+    assert_eq!(
+        proposal
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.model_generation),
+        Some(12)
     );
 }

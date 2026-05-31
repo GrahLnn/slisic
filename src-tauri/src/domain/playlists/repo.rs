@@ -1,5 +1,6 @@
 use super::model::{
-    AddExcludeResult, Collection, CollectionGroupMembershipView, CollectionGroupOwner,
+    AddExcludeResult, AudioStyleTrainingMusicView, AudioStyleTrainingMusicViewParams,
+    AudioStyleTrainingTrackInput, Collection, CollectionGroupMembershipView, CollectionGroupOwner,
     CollectionSurfaceView, ConfigLibraryView, Exclude, ExcludeAvailability, Group,
     GroupSurfaceView, Music, MusicSpectrumView, PlayList, PlayListConfigView, PlayListListView,
     PlayListWriteRequest, PlaylistCollectionRef, PlaylistGroupRef, PlaylistMusicGroupView,
@@ -23,6 +24,7 @@ use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use surrealdb::types::{RecordId, Table};
 use surrealdb_types::{SurrealValue, ToSql};
 
@@ -34,6 +36,9 @@ const PLAYLIST_PLAYBACK_RANDOM_SINGLE_OWNER_ATTEMPT_LIMIT: usize = 16;
 const PLAYLIST_PLAYBACK_RANDOM_WINDOW_OWNER_ATTEMPT_LIMIT: usize = 96;
 const PLAYLIST_PLAYBACK_RANDOM_MIN_TRACK_PROBE_LIMIT: usize = 8;
 const PLAYLIST_PLAYBACK_RANDOM_MAX_TRACK_PROBE_LIMIT: usize = 128;
+const AUDIO_STYLE_REPO_LOG_TARGET: &str = "playlist_audio_style";
+const AUDIO_STYLE_TRAINING_SOURCE_PROGRESS_INTERVAL: usize = 256;
+const AUDIO_STYLE_TRAINING_OWNER_FOLDER_BATCH_SIZE: usize = 256;
 
 #[derive(Debug, Clone)]
 struct CollectionWriteOwnerScope {
@@ -564,38 +569,98 @@ async fn load_playlist_playback_track_sources_by_filter(
     Ok(sources)
 }
 
-pub async fn load_audio_style_training_track_sources() -> Result<Vec<PlaylistPlaybackTrackSource>> {
-    ensure_collection_graph_schema().await?;
+pub async fn load_audio_style_training_musics(
+    save_root: &Path,
+) -> Result<Vec<AudioStyleTrainingTrackInput>> {
+    let started = Instant::now();
+    log::info!(
+        target: AUDIO_STYLE_REPO_LOG_TARGET,
+        "audio_style_training_music_load_started"
+    );
 
-    let records = match Collection::list().await {
-        Ok(collections) => collections
-            .into_iter()
-            .map(|collection| collection_record_id(&collection.url))
-            .collect::<Vec<_>>(),
+    let music_load_started = Instant::now();
+    let rows = match AudioStyleTrainingMusicView::query(AudioStyleTrainingMusicViewParams {}).await
+    {
+        Ok(rows) => rows,
         Err(error) => match classify_db_error(&error) {
             DBError::MissingTable(_) => return Ok(vec![]),
             other => return Err(other.into()),
         },
     };
+    log::info!(
+        target: AUDIO_STYLE_REPO_LOG_TARGET,
+        "audio_style_training_all_music_loaded music_count={} elapsed_ms={}",
+        rows.len(),
+        music_load_started.elapsed().as_millis()
+    );
 
-    let mut sources = Vec::new();
+    let owner_folder_started = Instant::now();
+    let owner_folders =
+        load_audio_style_training_owner_folders(rows.iter().map(|row| &row.music_record)).await?;
+    log::info!(
+        target: AUDIO_STYLE_REPO_LOG_TARGET,
+        "audio_style_training_owner_folders_loaded music_count={} owner_folder_count={} elapsed_ms={}",
+        rows.len(),
+        owner_folders.len(),
+        owner_folder_started.elapsed().as_millis()
+    );
+
+    let mut training_musics = Vec::with_capacity(rows.len());
     let mut seen = HashSet::new();
-    for record in records {
-        let Some(collection) = load_playlist_playback_collection_ref(&record).await? else {
-            continue;
-        };
+    let excluded_canonical_ids = load_audio_style_training_excluded_canonical_ids().await?;
+    let mut excluded = 0usize;
+    let mut duplicates = 0usize;
+    let mut invalid_range = 0usize;
+    let mut missing_path = 0usize;
+    let music_count = rows.len();
+    for (index, row) in rows.into_iter().enumerate() {
+        if row.start_ms >= row.end_ms {
+            invalid_range += 1;
+        } else if excluded_canonical_ids.contains(&row.canonical_music_id) {
+            excluded += 1;
+        } else if !seen.insert(row.canonical_music_id.clone()) {
+            duplicates += 1;
+        } else if let Some(music) = audio_style_training_music_from_row(
+            save_root,
+            owner_folders.get(&row.music_record).map(String::as_str),
+            row,
+        ) {
+            training_musics.push(music);
+        } else {
+            missing_path += 1;
+        }
 
-        for music_record in load_collection_music_ids(&record).await? {
-            if is_music_record_excluded_for_playback(&music_record, Music::table_name()).await? {
-                continue;
-            }
-
-            let music = Music::get_record(music_record).await?;
-            append_playback_track_source(&collection, music, &mut seen, &mut sources);
+        let processed = index + 1;
+        if processed % AUDIO_STYLE_TRAINING_SOURCE_PROGRESS_INTERVAL == 0
+            || processed == music_count
+        {
+            log::info!(
+                target: AUDIO_STYLE_REPO_LOG_TARGET,
+                "audio_style_training_music_load_progress processed={} remaining={} trainable_music={} excluded={} missing_path={} invalid_range={} duplicates={} elapsed_ms={}",
+                processed,
+                music_count.saturating_sub(processed),
+                training_musics.len(),
+                excluded,
+                missing_path,
+                invalid_range,
+                duplicates,
+                started.elapsed().as_millis()
+            );
         }
     }
 
-    Ok(sources)
+    log::info!(
+        target: AUDIO_STYLE_REPO_LOG_TARGET,
+        "audio_style_training_music_load_finished music_count={} trainable_music={} excluded={} missing_path={} invalid_range={} duplicates={} elapsed_ms={}",
+        training_musics.len() + excluded + missing_path + invalid_range + duplicates,
+        training_musics.len(),
+        excluded,
+        missing_path,
+        invalid_range,
+        duplicates,
+        started.elapsed().as_millis()
+    );
+    Ok(training_musics)
 }
 
 /**
@@ -2153,6 +2218,113 @@ fn playable_track_music_from_record_row(
         end_ms: row.end_ms,
         liked: row.liked,
     })
+}
+
+async fn load_audio_style_training_owner_folders<'a>(
+    music_records: impl IntoIterator<Item = &'a RecordId>,
+) -> Result<HashMap<RecordId, String>> {
+    let records = unique_record_ids(music_records);
+    if records.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut folders = HashMap::new();
+    let started = Instant::now();
+    let total = records.len();
+    let mut processed = 0usize;
+    for chunk in records.chunks(AUDIO_STYLE_TRAINING_OWNER_FOLDER_BATCH_SIZE) {
+        let chunk_folders = load_audio_style_training_owner_folder_chunk(chunk).await?;
+        processed += chunk.len();
+        folders.extend(chunk_folders);
+
+        log::info!(
+            target: AUDIO_STYLE_REPO_LOG_TARGET,
+            "audio_style_training_owner_folder_progress processed={} remaining={} owner_folder_count={} elapsed_ms={}",
+            processed,
+            total.saturating_sub(processed),
+            folders.len(),
+            started.elapsed().as_millis()
+        );
+        tokio::task::yield_now().await;
+    }
+
+    Ok(folders)
+}
+
+async fn load_audio_style_training_owner_folder_chunk(
+    music_records: &[RecordId],
+) -> Result<HashMap<RecordId, String>> {
+    let rows =
+        match PlaylistMusicSourceCollectionView::query(PlaylistMusicSourceCollectionViewParams {
+            music_records: music_records.to_vec(),
+        })
+        .await
+        {
+            Ok(rows) => rows,
+            Err(error) => match classify_db_error(&error) {
+                DBError::MissingTable(_) => return Ok(HashMap::new()),
+                other => return Err(other.into()),
+            },
+        };
+
+    let mut folders = HashMap::new();
+    for row in rows {
+        folders
+            .entry(row.music_record)
+            .or_insert(row.collection_folder);
+    }
+
+    Ok(folders)
+}
+
+async fn load_audio_style_training_excluded_canonical_ids() -> Result<HashSet<String>> {
+    let db = get_db()?;
+    let mut result = db
+        .query("SELECT VALUE music.canonical_music_id FROM $table;")
+        .bind(("table", Table::from(StoredExclude::table_name())))
+        .await?
+        .check()?;
+
+    let ids: Vec<String> = result.take(0)?;
+    Ok(ids.into_iter().collect())
+}
+
+fn audio_style_training_music_from_row(
+    save_root: &Path,
+    owner_folder: Option<&str>,
+    row: AudioStyleTrainingMusicView,
+) -> Option<AudioStyleTrainingTrackInput> {
+    let relative_path = row.path.trim();
+    if relative_path.is_empty() {
+        return None;
+    }
+    let absolute_path = project_audio_style_training_path(save_root, owner_folder, relative_path);
+
+    Some(AudioStyleTrainingTrackInput {
+        alias: row.alias,
+        canonical_music_id: row.canonical_music_id,
+        url: row.url,
+        absolute_path: absolute_path.to_string_lossy().to_string(),
+        start_ms: row.start_ms,
+        end_ms: row.end_ms,
+        liked: row.liked,
+    })
+}
+
+fn project_audio_style_training_path(
+    save_root: &Path,
+    owner_folder: Option<&str>,
+    music_path: &str,
+) -> PathBuf {
+    let path = PathBuf::from(music_path);
+    if path.is_absolute() {
+        return path;
+    }
+
+    match owner_folder {
+        Some(folder) if !folder.trim().is_empty() => save_root.join(folder).join(path),
+        _ => save_root.join(path),
+    }
 }
 
 fn random_index(len: usize) -> Option<usize> {

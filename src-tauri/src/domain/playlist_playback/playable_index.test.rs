@@ -1,7 +1,8 @@
 use super::playable_index::{
-    PlayableIndexRefreshReason, claim_global_refresh_for_test, claim_playlist_refresh_for_test,
-    commit_global_snapshot_for_test, commit_playlist_snapshot_for_test, consume_playlist_source,
-    discard_playlist_source, initialize_runtime_for_test, read_playlist_source,
+    PlayableIndexRefreshReason, PlaylistPlayableIndexSourceKind, claim_global_refresh_for_test,
+    claim_playlist_refresh_for_test, commit_global_snapshot_for_test,
+    commit_playlist_snapshot_for_test, consume_playlist_source, discard_playlist_source,
+    initialize_runtime_for_test, mark_playlist_source_kind_for_test, read_playlist_source,
     refresh_playlist_now_for_reason_for_test, refresh_playlist_now_for_test,
     request_global_refresh_while_active_for_test, reset_for_test,
     should_skip_global_refresh_for_test, should_skip_playlist_refresh_for_test,
@@ -213,6 +214,86 @@ async fn playable_index_ready_refresh_does_not_replace_unconsumed_source() {
     )
     .await
     .expect("ready refresh should be accepted");
+
+    let current = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("prepared source should remain");
+    assert_eq!(
+        current
+            .source
+            .expect("prepared source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=3"
+    );
+}
+
+#[tokio::test]
+async fn playable_index_model_available_refresh_can_replace_random_fallback_source() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(3)),
+        PlayableIndexRefreshReason::Ready,
+    )
+    .await
+    .expect("cold start fallback snapshot should commit");
+    mark_playlist_source_kind_for_test("Focus", PlaylistPlayableIndexSourceKind::RandomFallback)
+        .expect("source kind should be updated");
+
+    assert!(
+        !should_skip_playlist_refresh_for_test(
+            "Focus",
+            PlayableIndexRefreshReason::AudioStyleModelAvailable
+        )
+        .expect("skip check should succeed")
+    );
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(4)),
+        PlayableIndexRefreshReason::AudioStyleModelAvailable,
+    )
+    .await
+    .expect("model-available refresh should be accepted");
+
+    let current = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("prepared source should exist");
+    assert_eq!(
+        current
+            .source
+            .expect("prepared source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=4"
+    );
+    assert_eq!(
+        current.source_kind,
+        Some(PlaylistPlayableIndexSourceKind::AudioStyle)
+    );
+}
+
+#[tokio::test]
+async fn playable_index_model_available_refresh_keeps_unconsumed_audio_style_source() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("audio-style snapshot should commit");
+
+    assert!(
+        should_skip_playlist_refresh_for_test(
+            "Focus",
+            PlayableIndexRefreshReason::AudioStyleModelAvailable
+        )
+        .expect("skip check should succeed")
+    );
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(4)),
+        PlayableIndexRefreshReason::AudioStyleModelAvailable,
+    )
+    .await
+    .expect("model-available refresh should be accepted");
 
     let current = read_playlist_source("Focus")
         .expect("index read should succeed")

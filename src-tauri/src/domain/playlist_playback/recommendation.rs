@@ -3,6 +3,10 @@ use crate::domain::meta::service as meta_service;
 use crate::domain::player::model::PlaybackTrack;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::playable_index;
+#[cfg(not(test))]
+use crate::domain::playlists::model::{
+    AudioStyleTrainingTrackInput, CollectionGroupOwner, Group, Music,
+};
 #[cfg(test)]
 use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
 use crate::domain::playlists::repo::PlaylistPlaybackTrackSource;
@@ -16,7 +20,7 @@ use rand::RngExt;
 use rustfft::{FftPlanner, num_complex::Complex};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs;
 use std::io::{BufReader, Read};
@@ -25,14 +29,13 @@ use std::os::windows::process::CommandExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 #[cfg(not(test))]
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 #[cfg(not(test))]
-use std::sync::{Mutex, OnceLock, RwLock};
-#[cfg(not(test))]
-use std::time::Instant;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{OnceLock, RwLock, TryLockError};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(not(test))]
 use tauri::{AppHandle, Manager};
 
@@ -75,6 +78,19 @@ const AUDIO_STYLE_LIKED_ROUTE_PRESSURE_SCALE: f32 = 0.30;
 const AUDIO_STYLE_COMPLETED_SNAPSHOT_FALLBACK_LIMIT: usize = 8;
 #[cfg(not(test))]
 const AUDIO_STYLE_INPUT_CHANGE_DEBOUNCE_MS: u64 = 500;
+#[cfg(not(test))]
+const AUDIO_STYLE_TRAINING_BASE_WORKERS: usize = 6;
+#[cfg(test)]
+const AUDIO_STYLE_TRAINING_BASE_WORKERS: usize = 1;
+#[cfg(not(test))]
+const AUDIO_STYLE_TRAINING_MAX_WORKERS: usize = 32;
+#[cfg(test)]
+const AUDIO_STYLE_TRAINING_MAX_WORKERS: usize = 1;
+#[cfg(not(test))]
+const AUDIO_STYLE_TRAINING_PROGRESS_BATCH: usize = 16;
+#[cfg(test)]
+const AUDIO_STYLE_TRAINING_PROGRESS_BATCH: usize = 1;
+const AUDIO_STYLE_TRAINING_HEARTBEAT_MS: u64 = 750;
 const AUDIO_STYLE_LOG_TARGET: &str = "playlist_audio_style";
 
 #[allow(dead_code)]
@@ -177,10 +193,31 @@ pub(crate) struct AudioStyleEmbedding {
     values: Vec<f32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioStyleEmbeddingTrainingSource {
+    CacheHit,
+    Decoded,
+}
+
+impl AudioStyleEmbeddingTrainingSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::CacheHit => "cache_hit",
+            Self::Decoded => "decoded",
+        }
+    }
+}
+
+struct AudioStyleEmbeddingTrainingResult {
+    embedding: AudioStyleEmbedding,
+    source: AudioStyleEmbeddingTrainingSource,
+}
+
 type AudioStyleEmbeddingMap = HashMap<PlaybackTrackKey, Arc<AudioStyleEmbedding>>;
 type AudioStyleCpuTensorBackend = NdArray<f32, i64>;
 type AudioStyleHardwareTensorBackend = Wgpu<f32, i64>;
 
+#[derive(Clone)]
 pub(crate) struct AudioStyleEmbeddingCache {
     cache_root: PathBuf,
     ffmpeg_path: PathBuf,
@@ -458,22 +495,24 @@ impl AudioStyleRecommendationRuntime {
             save_root_started.elapsed().as_millis(),
             escape_log_value(&save_root.display().to_string())
         );
-        let sources_started = Instant::now();
-        let sources =
-            crate::domain::playlists::repo::load_audio_style_training_track_sources().await?;
-        let source_count = sources.len();
+        let musics_started = Instant::now();
+        let musics =
+            crate::domain::playlists::repo::load_audio_style_training_musics(&save_root).await?;
+        let music_count = musics.len();
         log::info!(
             target: AUDIO_STYLE_LOG_TARGET,
-            "audio_style_training_sources_loaded reason={reason} sources={source_count} elapsed_ms={}",
-            sources_started.elapsed().as_millis()
+            "audio_style_training_music_inputs_loaded reason={reason} trainable_music={music_count} elapsed_ms={}",
+            musics_started.elapsed().as_millis()
         );
         let resolve_started = Instant::now();
-        let resolved = resolve_audio_style_training_tracks(&save_root, sources);
+        let resolved = resolve_audio_style_training_tracks(musics);
         let indexed_tracks = resolved.indexed_tracks;
         let indexed_track_count = indexed_tracks.len();
         log::info!(
             target: AUDIO_STYLE_LOG_TARGET,
-            "audio_style_training_inputs_ready reason={reason} indexed_tracks={indexed_track_count} elapsed_ms={}",
+            "audio_style_training_inputs_ready reason={reason} indexed_tracks={indexed_track_count} skipped_transient_tracks={} skipped_unavailable_tracks={} elapsed_ms={}",
+            resolved.skipped_transient_tracks,
+            resolved.skipped_unavailable_tracks,
             resolve_started.elapsed().as_millis()
         );
 
@@ -515,10 +554,11 @@ impl AudioStyleRecommendationRuntime {
     }
 
     fn publish_nightly_snapshot(&self, snapshot: AudioStyleModelSnapshot) {
+        let snapshot = Arc::new(snapshot);
         let generation = snapshot.generation();
         match self.nightly_snapshot.write() {
             Ok(mut nightly) => {
-                *nightly = Some(Arc::new(snapshot));
+                *nightly = Some(Arc::clone(&snapshot));
                 log::info!(
                     target: AUDIO_STYLE_LOG_TARGET,
                     "audio_style_snapshot_published stage=nightly generation={generation}"
@@ -531,6 +571,11 @@ impl AudioStyleRecommendationRuntime {
                 );
             }
         }
+
+        self.try_publish_stable_snapshot(
+            snapshot,
+            StableSnapshotPublicationReason::NightlyProgress,
+        );
     }
 
     fn stable_snapshot(&self) -> Option<Arc<AudioStyleModelSnapshot>> {
@@ -545,21 +590,80 @@ impl AudioStyleRecommendationRuntime {
         let generation = snapshot.generation();
         match self.stable_snapshot.write() {
             Ok(mut stable) => {
+                let stable_existed = stable.is_some();
+                if !should_replace_stable_snapshot(stable.as_deref(), snapshot.as_ref()) {
+                    return;
+                }
                 *stable = Some(Arc::clone(&snapshot));
+                let reason = StableSnapshotPublicationReason::TrainingComplete;
                 log::info!(
                     target: AUDIO_STYLE_LOG_TARGET,
-                    "audio_style_snapshot_published stage=stable generation={generation}"
+                    "audio_style_snapshot_published stage=stable reason={} generation={generation}",
+                    reason.as_str()
                 );
-                playable_index::request_ready_refresh();
+                if stable_snapshot_publication_requests_first_slot_refresh(reason, stable_existed) {
+                    playable_index::request_audio_style_model_available_refresh();
+                }
             }
             Err(_) => {
                 log::error!(
                     target: AUDIO_STYLE_LOG_TARGET,
-                    "audio_style_snapshot_publish_failed stage=completed generation={generation} error=\"lock_poisoned\""
+                    "audio_style_snapshot_publish_failed stage=stable reason=training_complete generation={generation} error=\"lock_poisoned\""
                 );
+                return;
             }
         }
 
+        self.clear_nightly_snapshot_through_generation(generation);
+        self.remember_completed_snapshot(snapshot);
+    }
+
+    fn try_publish_stable_snapshot(
+        &self,
+        snapshot: Arc<AudioStyleModelSnapshot>,
+        reason: StableSnapshotPublicationReason,
+    ) -> bool {
+        let generation = snapshot.generation();
+        match self.stable_snapshot.try_write() {
+            Ok(mut stable) => {
+                let stable_existed = stable.is_some();
+                if !should_replace_stable_snapshot(stable.as_deref(), snapshot.as_ref()) {
+                    return false;
+                }
+                *stable = Some(Arc::clone(&snapshot));
+                log::info!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_snapshot_published stage=stable reason={} generation={generation}",
+                    reason.as_str()
+                );
+                if stable_snapshot_publication_requests_first_slot_refresh(reason, stable_existed) {
+                    playable_index::request_audio_style_model_available_refresh();
+                }
+            }
+            Err(TryLockError::WouldBlock) => {
+                log::debug!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_snapshot_stable_promotion_skipped reason={} generation={generation} status=stable_busy",
+                    reason.as_str()
+                );
+                return false;
+            }
+            Err(TryLockError::Poisoned(_)) => {
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_snapshot_publish_failed stage=stable reason={} generation={generation} error=\"lock_poisoned\"",
+                    reason.as_str()
+                );
+                return false;
+            }
+        }
+
+        self.clear_nightly_snapshot_through_generation(generation);
+        self.remember_completed_snapshot(snapshot);
+        true
+    }
+
+    fn clear_nightly_snapshot_through_generation(&self, generation: u64) {
         match self.nightly_snapshot.write() {
             Ok(mut nightly) => {
                 if nightly
@@ -576,7 +680,10 @@ impl AudioStyleRecommendationRuntime {
                 );
             }
         }
+    }
 
+    fn remember_completed_snapshot(&self, snapshot: Arc<AudioStyleModelSnapshot>) {
+        let generation = snapshot.generation();
         match self.completed_snapshots.write() {
             Ok(mut completed) => {
                 if completed
@@ -639,7 +746,7 @@ pub(crate) fn initialize_audio_style_recommendation_runtime(app: AppHandle) {
 }
 
 #[cfg(not(test))]
-pub(crate) fn notify_audio_style_training_inputs_changed(reason: &'static str) {
+pub(crate) fn notify_audio_style_library_inputs_changed(reason: &'static str) {
     let Some(runtime) = AUDIO_STYLE_RECOMMENDATION_RUNTIME.get() else {
         let pending_changes = AUDIO_STYLE_PENDING_INPUT_CHANGES.fetch_add(1, Ordering::SeqCst) + 1;
         log::warn!(
@@ -793,6 +900,10 @@ impl AudioStyleTensorRuntime {
             .is_some(),
             Self::Cpu(_) => true,
         }
+    }
+
+    fn uses_hardware_backend(&self) -> bool {
+        matches!(self, Self::Hardware(_))
     }
 
     fn matrix_from_embeddings(
@@ -1341,30 +1452,115 @@ impl AudioStyleModelState {
             missing_tracks.push((key, track));
         }
 
-        for (key, track) in missing_tracks {
-            let reused_before_insert = embeddings.keys().cloned().collect::<HashSet<_>>();
+        let worker_profile = AudioStyleTrainingWorkerProfile::detect(missing_tracks.len());
+        let worker_count = worker_profile.worker_count();
+        if worker_count > 0 {
+            let embedding_started = Instant::now();
+            let missing_count = missing_tracks.len();
+            log::info!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_training_embeddings_started total_tracks={} reused_embeddings={} pending_embeddings={} workers={worker_count} cpu_parallelism={} tensor_backend={} accelerator_count={} accelerator_memory_mb={} accelerator_source={} policy=\"{}\"",
+                indexed_by_key.len(),
+                previous_reused.len(),
+                missing_count,
+                worker_profile.cpu_parallelism,
+                worker_profile.tensor_backend.as_str(),
+                worker_profile.accelerators.count,
+                worker_profile.accelerators.total_memory_mb,
+                worker_profile.accelerators.source,
+                worker_profile.policy
+            );
+            let (results, result_count) =
+                build_audio_style_embeddings_concurrently(cache, missing_tracks, worker_count);
+            let mut pending = Vec::new();
+            let mut remaining = result_count;
+            let mut completed = 0usize;
+            let mut cache_hits = 0usize;
+            let mut decoded = 0usize;
 
-            match cache.embedding_for_track(&track) {
-                Ok(embedding) => {
-                    embeddings.insert(key.clone(), Arc::new(embedding));
-                    let state = Self::from_embeddings(
+            while remaining > 0 {
+                let mut heartbeat_timed_out = false;
+                match results.recv_timeout(Duration::from_millis(AUDIO_STYLE_TRAINING_HEARTBEAT_MS))
+                {
+                    Ok(result) => {
+                        remaining -= 1;
+                        completed += 1;
+                        record_audio_style_embedding_worker_result(
+                            result,
+                            completed,
+                            remaining,
+                            result_count,
+                            &mut cache_hits,
+                            &mut decoded,
+                            &mut pending,
+                            &mut failed,
+                        );
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        heartbeat_timed_out = true;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+
+                while pending.len() < AUDIO_STYLE_TRAINING_PROGRESS_BATCH {
+                    match results.try_recv() {
+                        Ok(result) => {
+                            remaining = remaining.saturating_sub(1);
+                            completed += 1;
+                            record_audio_style_embedding_worker_result(
+                                result,
+                                completed,
+                                remaining,
+                                result_count,
+                                &mut cache_hits,
+                                &mut decoded,
+                                &mut pending,
+                                &mut failed,
+                            );
+                        }
+                        Err(mpsc::TryRecvError::Empty) | Err(mpsc::TryRecvError::Disconnected) => {
+                            break;
+                        }
+                    }
+                }
+
+                if !pending.is_empty()
+                    && (pending.len() >= AUDIO_STYLE_TRAINING_PROGRESS_BATCH
+                        || heartbeat_timed_out
+                        || remaining == 0)
+                {
+                    let state = Self::publish_embedding_progress(
                         latest_state.as_ref().or(previous_state.as_ref()),
-                        embeddings.clone(),
-                        indexed_by_key.clone(),
-                        &reused_before_insert,
+                        &mut embeddings,
+                        &indexed_by_key,
+                        pending.drain(..),
+                        &mut on_progress,
                     );
-                    on_progress(state.clone());
                     latest_state = Some(state);
                 }
-                Err(error) => {
-                    log::error!(
-                        target: AUDIO_STYLE_LOG_TARGET,
-                        "audio_style_embedding_index_failed path=\"{}\" error=\"{}\"",
-                        escape_log_value(&track.file_path.display().to_string()),
-                        escape_log_value(&error)
-                    );
-                    failed.push(format!("{}: {error}", track.file_path.display()));
-                }
+            }
+
+            log::info!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_training_embeddings_finished total={} ok={} failed={} cache_hits={} decoded={} workers={worker_count} elapsed_ms={} tracks_per_second={:.3}",
+                result_count,
+                result_count.saturating_sub(failed.len()),
+                failed.len(),
+                cache_hits,
+                decoded,
+                embedding_started.elapsed().as_millis(),
+                tracks_per_second(result_count, embedding_started.elapsed())
+            );
+
+            if !pending.is_empty() {
+                let state = Self::publish_embedding_progress(
+                    latest_state.as_ref().or(previous_state.as_ref()),
+                    &mut embeddings,
+                    &indexed_by_key,
+                    pending.drain(..),
+                    &mut on_progress,
+                );
+                latest_state = Some(state);
             }
         }
 
@@ -1392,6 +1588,27 @@ impl AudioStyleModelState {
         Ok(state)
     }
 
+    fn publish_embedding_progress(
+        previous: Option<&Self>,
+        embeddings: &mut AudioStyleEmbeddingMap,
+        indexed_by_key: &HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
+        progress: impl IntoIterator<Item = (PlaybackTrackKey, AudioStyleEmbedding)>,
+        on_progress: &mut impl FnMut(Self),
+    ) -> Self {
+        let reused_before_insert = embeddings.keys().cloned().collect::<HashSet<_>>();
+        for (key, embedding) in progress {
+            embeddings.insert(key, Arc::new(embedding));
+        }
+        let state = Self::from_embeddings(
+            previous,
+            embeddings.clone(),
+            indexed_by_key.clone(),
+            &reused_before_insert,
+        );
+        on_progress(state.clone());
+        state
+    }
+
     fn from_embeddings(
         previous: Option<&Self>,
         embeddings: AudioStyleEmbeddingMap,
@@ -1408,6 +1625,433 @@ impl AudioStyleModelState {
             neighbor_index,
         }
     }
+}
+
+struct AudioStyleEmbeddingWorkerResult {
+    key: PlaybackTrackKey,
+    file_path: PathBuf,
+    music_name: String,
+    music_url: String,
+    start_ms: u32,
+    end_ms: u32,
+    worker_id: usize,
+    elapsed_ms: u128,
+    embedding: Result<AudioStyleEmbeddingTrainingResult, String>,
+}
+
+struct AudioStyleEmbeddingWorkerSummary {
+    file_path: PathBuf,
+    music_name: String,
+    music_url: String,
+    start_ms: u32,
+    end_ms: u32,
+    worker_id: usize,
+    elapsed_ms: u128,
+}
+
+fn record_audio_style_embedding_worker_result(
+    result: AudioStyleEmbeddingWorkerResult,
+    completed: usize,
+    remaining: usize,
+    total: usize,
+    cache_hits: &mut usize,
+    decoded: &mut usize,
+    pending: &mut Vec<(PlaybackTrackKey, AudioStyleEmbedding)>,
+    failed: &mut Vec<String>,
+) {
+    let AudioStyleEmbeddingWorkerResult {
+        key,
+        file_path,
+        music_name,
+        music_url,
+        start_ms,
+        end_ms,
+        worker_id,
+        elapsed_ms,
+        embedding,
+    } = result;
+    let summary = AudioStyleEmbeddingWorkerSummary {
+        file_path,
+        music_name,
+        music_url,
+        start_ms,
+        end_ms,
+        worker_id,
+        elapsed_ms,
+    };
+
+    match embedding {
+        Ok(training_result) => {
+            let source = training_result.source;
+            match source {
+                AudioStyleEmbeddingTrainingSource::CacheHit => *cache_hits += 1,
+                AudioStyleEmbeddingTrainingSource::Decoded => *decoded += 1,
+            }
+            log_audio_style_training_leaf_finished(
+                &summary,
+                "ok",
+                Some(source),
+                completed,
+                remaining,
+                total,
+            );
+            pending.push((key, training_result.embedding));
+        }
+        Err(error) => {
+            log::error!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_embedding_index_failed worker={} music=\"{}\" url=\"{}\" range={}..{} path=\"{}\" elapsed_ms={} completed={} remaining={} total={} error=\"{}\"",
+                summary.worker_id,
+                escape_log_value(&summary.music_name),
+                escape_log_value(&summary.music_url),
+                summary.start_ms,
+                summary.end_ms,
+                escape_log_value(&summary.file_path.display().to_string()),
+                summary.elapsed_ms,
+                completed,
+                remaining,
+                total,
+                escape_log_value(&error)
+            );
+            failed.push(format!("{}: {error}", summary.file_path.display()));
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AudioStyleTrainingTensorBackend {
+    Hardware,
+    Cpu,
+}
+
+impl AudioStyleTrainingTensorBackend {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Hardware => "hardware",
+            Self::Cpu => "cpu",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct AudioStyleTrainingWorkerProfile {
+    track_count: usize,
+    cpu_parallelism: usize,
+    tensor_backend: AudioStyleTrainingTensorBackend,
+    accelerators: AudioStyleTrainingAcceleratorProfile,
+    policy: &'static str,
+}
+
+impl AudioStyleTrainingWorkerProfile {
+    fn detect(track_count: usize) -> Self {
+        let cpu_parallelism = thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(AUDIO_STYLE_TRAINING_BASE_WORKERS)
+            .max(1);
+        let tensor_backend = if AudioStyleTensorRuntime::new().uses_hardware_backend() {
+            AudioStyleTrainingTensorBackend::Hardware
+        } else {
+            AudioStyleTrainingTensorBackend::Cpu
+        };
+        let accelerators = detect_audio_style_training_accelerators(tensor_backend);
+        Self {
+            track_count,
+            cpu_parallelism,
+            tensor_backend,
+            accelerators,
+            policy: "bounded_cpu_plus_accelerator_profile",
+        }
+    }
+
+    fn worker_count(&self) -> usize {
+        audio_style_training_worker_count_for_profile(
+            self.track_count,
+            self.cpu_parallelism,
+            self.tensor_backend,
+            self.accelerators.count,
+            self.accelerators.total_memory_mb,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AudioStyleTrainingAcceleratorProfile {
+    count: usize,
+    total_memory_mb: u64,
+    source: &'static str,
+}
+
+fn audio_style_training_worker_count_for_profile(
+    track_count: usize,
+    cpu_parallelism: usize,
+    tensor_backend: AudioStyleTrainingTensorBackend,
+    accelerator_count: usize,
+    accelerator_memory_mb: u64,
+) -> usize {
+    audio_style_training_worker_count_for_profile_with_cap(
+        track_count,
+        cpu_parallelism,
+        tensor_backend,
+        accelerator_count,
+        accelerator_memory_mb,
+        AUDIO_STYLE_TRAINING_MAX_WORKERS,
+    )
+}
+
+fn audio_style_training_worker_count_for_profile_with_cap(
+    track_count: usize,
+    cpu_parallelism: usize,
+    tensor_backend: AudioStyleTrainingTensorBackend,
+    accelerator_count: usize,
+    accelerator_memory_mb: u64,
+    max_workers: usize,
+) -> usize {
+    if track_count == 0 {
+        return 0;
+    }
+
+    let cpu_parallelism = cpu_parallelism.max(1);
+    let accelerator_count = match tensor_backend {
+        AudioStyleTrainingTensorBackend::Hardware => accelerator_count.max(1),
+        AudioStyleTrainingTensorBackend::Cpu => 0,
+    };
+    let memory_units = usize::try_from(accelerator_memory_mb / 12_000).unwrap_or(usize::MAX);
+    let accelerator_bonus = accelerator_count
+        .saturating_mul(AUDIO_STYLE_TRAINING_BASE_WORKERS)
+        .saturating_add(memory_units.saturating_mul(2));
+    let dynamic_limit = cpu_parallelism.saturating_add(accelerator_bonus);
+    let limit = dynamic_limit
+        .max(AUDIO_STYLE_TRAINING_BASE_WORKERS)
+        .min(max_workers.max(1));
+    track_count.min(limit)
+}
+
+#[cfg(not(test))]
+fn detect_audio_style_training_accelerators(
+    tensor_backend: AudioStyleTrainingTensorBackend,
+) -> AudioStyleTrainingAcceleratorProfile {
+    if let Some(profile) = detect_nvidia_smi_training_accelerators() {
+        return profile;
+    }
+
+    match tensor_backend {
+        AudioStyleTrainingTensorBackend::Hardware => AudioStyleTrainingAcceleratorProfile {
+            count: 1,
+            total_memory_mb: 0,
+            source: "wgpu_default",
+        },
+        AudioStyleTrainingTensorBackend::Cpu => AudioStyleTrainingAcceleratorProfile {
+            count: 0,
+            total_memory_mb: 0,
+            source: "none",
+        },
+    }
+}
+
+#[cfg(test)]
+fn detect_audio_style_training_accelerators(
+    tensor_backend: AudioStyleTrainingTensorBackend,
+) -> AudioStyleTrainingAcceleratorProfile {
+    match tensor_backend {
+        AudioStyleTrainingTensorBackend::Hardware => AudioStyleTrainingAcceleratorProfile {
+            count: 1,
+            total_memory_mb: 0,
+            source: "test_hardware",
+        },
+        AudioStyleTrainingTensorBackend::Cpu => AudioStyleTrainingAcceleratorProfile {
+            count: 0,
+            total_memory_mb: 0,
+            source: "test_cpu",
+        },
+    }
+}
+
+#[cfg(not(test))]
+fn detect_nvidia_smi_training_accelerators() -> Option<AudioStyleTrainingAcceleratorProfile> {
+    let mut command = Command::new("nvidia-smi");
+    command.args([
+        "--query-gpu=name,memory.total",
+        "--format=csv,noheader,nounits",
+    ]);
+    command.stdin(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let profile = parse_nvidia_smi_training_accelerators(&stdout);
+    if profile.count == 0 {
+        None
+    } else {
+        Some(profile)
+    }
+}
+
+fn parse_nvidia_smi_training_accelerators(output: &str) -> AudioStyleTrainingAcceleratorProfile {
+    let mut count = 0usize;
+    let mut total_memory_mb = 0u64;
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some((_, memory)) = trimmed.rsplit_once(',') else {
+            continue;
+        };
+        let digits = memory
+            .chars()
+            .filter(|ch| ch.is_ascii_digit())
+            .collect::<String>();
+        let Ok(memory_mb) = digits.parse::<u64>() else {
+            continue;
+        };
+        count += 1;
+        total_memory_mb = total_memory_mb.saturating_add(memory_mb);
+    }
+
+    AudioStyleTrainingAcceleratorProfile {
+        count,
+        total_memory_mb,
+        source: "nvidia_smi",
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_training_worker_count_for_test(
+    track_count: usize,
+    cpu_parallelism: usize,
+    hardware_backend: bool,
+    accelerator_count: usize,
+    accelerator_memory_mb: u64,
+) -> usize {
+    audio_style_training_worker_count_for_profile_with_cap(
+        track_count,
+        cpu_parallelism,
+        if hardware_backend {
+            AudioStyleTrainingTensorBackend::Hardware
+        } else {
+            AudioStyleTrainingTensorBackend::Cpu
+        },
+        accelerator_count,
+        accelerator_memory_mb,
+        32,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn parse_nvidia_smi_training_accelerators_for_test(
+    output: &str,
+) -> (usize, u64, &'static str) {
+    let profile = parse_nvidia_smi_training_accelerators(output);
+    (profile.count, profile.total_memory_mb, profile.source)
+}
+
+fn build_audio_style_embeddings_concurrently(
+    cache: &AudioStyleEmbeddingCache,
+    missing_tracks: Vec<(PlaybackTrackKey, PlaybackTrack)>,
+    worker_count: usize,
+) -> (mpsc::Receiver<AudioStyleEmbeddingWorkerResult>, usize) {
+    let (result_tx, result_rx) = mpsc::channel();
+    let result_count = missing_tracks.len();
+    if result_count == 0 || worker_count == 0 {
+        return (result_rx, 0);
+    }
+
+    let queue = Arc::new(Mutex::new(VecDeque::from(missing_tracks)));
+    for worker_index in 0..worker_count {
+        let queue = Arc::clone(&queue);
+        let result_tx = result_tx.clone();
+        let cache = cache.clone();
+        let worker_id = worker_index + 1;
+        thread::spawn(move || {
+            loop {
+                let next = match queue.lock() {
+                    Ok(mut queue) => queue.pop_front(),
+                    Err(_) => {
+                        let _ = result_tx.send(AudioStyleEmbeddingWorkerResult {
+                            key: PlaybackTrackKey::empty_anchor(),
+                            file_path: PathBuf::new(),
+                            music_name: String::new(),
+                            music_url: String::new(),
+                            start_ms: 0,
+                            end_ms: 0,
+                            worker_id,
+                            elapsed_ms: 0,
+                            embedding: Err(
+                                "audio style training work queue lock is poisoned".to_string()
+                            ),
+                        });
+                        return;
+                    }
+                };
+                let Some((key, track)) = next else {
+                    return;
+                };
+                let started = Instant::now();
+                let file_path = track.file_path.clone();
+                let music_name = track.music_name.clone();
+                let music_url = track.music_url.clone();
+                let start_ms = track.start_ms;
+                let end_ms = track.end_ms;
+                let embedding = cache.embedding_result_for_track(&track);
+                let elapsed_ms = started.elapsed().as_millis();
+                if result_tx
+                    .send(AudioStyleEmbeddingWorkerResult {
+                        key,
+                        file_path,
+                        music_name,
+                        music_url,
+                        start_ms,
+                        end_ms,
+                        worker_id,
+                        elapsed_ms,
+                        embedding,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+    drop(result_tx);
+
+    (result_rx, result_count)
+}
+
+fn log_audio_style_training_leaf_finished(
+    result: &AudioStyleEmbeddingWorkerSummary,
+    status: &str,
+    source: Option<AudioStyleEmbeddingTrainingSource>,
+    completed: usize,
+    remaining: usize,
+    total: usize,
+) {
+    log::info!(
+        target: AUDIO_STYLE_LOG_TARGET,
+        "audio_style_embedding_index_finished worker={} status={status} source={} music=\"{}\" url=\"{}\" range={}..{} path=\"{}\" elapsed_ms={} completed={completed} remaining={remaining} total={total}",
+        result.worker_id,
+        source.map(AudioStyleEmbeddingTrainingSource::as_str).unwrap_or("none"),
+        escape_log_value(&result.music_name),
+        escape_log_value(&result.music_url),
+        result.start_ms,
+        result.end_ms,
+        escape_log_value(&result.file_path.display().to_string()),
+        result.elapsed_ms
+    );
+}
+
+fn tracks_per_second(track_count: usize, elapsed: Duration) -> f64 {
+    let seconds = elapsed.as_secs_f64();
+    if seconds <= f64::EPSILON {
+        return 0.0;
+    }
+    track_count as f64 / seconds
 }
 
 impl AudioStyleStats {
@@ -1786,26 +2430,42 @@ impl AudioStyleEmbeddingCache {
                 cache_root.display()
             )
         })?;
-        cleanup_stale_audio_style_embedding_cache(&cache_root)?;
         Ok(Self {
             cache_root,
             ffmpeg_path,
         })
     }
 
-    pub(crate) fn embedding_for_track(
+    fn embedding_result_for_track(
         &self,
         track: &PlaybackTrack,
-    ) -> Result<AudioStyleEmbedding, String> {
+    ) -> Result<AudioStyleEmbeddingTrainingResult, String> {
         let cache_key = build_audio_style_embedding_cache_key(track)?;
         let cache_path = self.cache_root.join(format!("{cache_key}.json"));
-        if let Ok(embedding) = read_cached_audio_style_embedding(&cache_path) {
-            return Ok(embedding);
+        match read_cached_audio_style_embedding_with_kind(&cache_path) {
+            Ok(embedding) => {
+                return Ok(AudioStyleEmbeddingTrainingResult {
+                    embedding,
+                    source: AudioStyleEmbeddingTrainingSource::CacheHit,
+                });
+            }
+            Err(error) if error.kind == AudioStyleEmbeddingCacheReadErrorKind::Missing => {}
+            Err(error) => {
+                log::debug!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_embedding_cache_ignored path=\"{}\" error=\"{}\"",
+                    escape_log_value(&cache_path.display().to_string()),
+                    escape_log_value(&error.message)
+                );
+            }
         }
 
         let embedding = decode_audio_style_embedding(&self.ffmpeg_path, track)?;
         write_cached_audio_style_embedding(&cache_path, &embedding)?;
-        Ok(embedding)
+        Ok(AudioStyleEmbeddingTrainingResult {
+            embedding,
+            source: AudioStyleEmbeddingTrainingSource::Decoded,
+        })
     }
 
     #[cfg(test)]
@@ -1947,7 +2607,12 @@ impl AudioStylePlaylistPlaybackRecommender {
         let scoped = self
             .indexed_tracks
             .values()
-            .filter(|indexed| belongs_to_scope(&indexed.source))
+            .filter(|indexed| {
+                belongs_to_scope(&indexed.source)
+                    && self
+                        .embeddings
+                        .contains_key(&PlaybackTrackKey::from_track(&indexed.track))
+            })
             .collect::<Vec<_>>();
         let candidates = scoped
             .iter()
@@ -1963,6 +2628,44 @@ impl AudioStylePlaylistPlaybackRecommender {
         scoped
             .get(selection.index)
             .map(|indexed| (indexed.source.clone(), selection))
+    }
+
+    pub(crate) fn propose_centerless_queue_with_trace_and_recent_history(
+        &self,
+        current_track: PlaybackTrack,
+        candidates: Vec<PlaybackTrack>,
+        recently_played_tracks: &[PlaybackTrack],
+    ) -> AudioStylePlaylistPlaybackProposal {
+        let candidates =
+            filter_recently_played_recommendation_candidates(candidates, recently_played_tracks);
+        let candidates = dedupe_tracks_excluding(candidates, Some(&current_track))
+            .into_iter()
+            .filter(|candidate| {
+                self.embeddings
+                    .contains_key(&PlaybackTrackKey::from_track(candidate))
+            })
+            .collect::<Vec<_>>();
+        let mut queue = vec![current_track];
+        let selection = if candidates.is_empty() {
+            None
+        } else {
+            let selection = select_centerless_audio_style_candidate(
+                &candidates,
+                &self.embeddings,
+                self.sampling_geometry.as_ref(),
+                self.trained,
+                rand::rng().random_range(0.0..1.0),
+            );
+            candidates.get(selection.index).cloned().map(|track| {
+                queue.push(track);
+                selection
+            })
+        };
+
+        AudioStylePlaylistPlaybackProposal {
+            tracks: queue,
+            selection,
+        }
     }
 
     #[cfg(test)]
@@ -2296,14 +2999,52 @@ impl AudioStyleModelSnapshot {
     }
 }
 
+pub(crate) fn should_replace_stable_snapshot(
+    current: Option<&AudioStyleModelSnapshot>,
+    candidate: &AudioStyleModelSnapshot,
+) -> bool {
+    current.is_none_or(|current| candidate.generation() > current.generation())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StableSnapshotPublicationReason {
+    NightlyProgress,
+    TrainingComplete,
+}
+
+impl StableSnapshotPublicationReason {
+    #[cfg(not(test))]
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NightlyProgress => "nightly_progress",
+            Self::TrainingComplete => "training_complete",
+        }
+    }
+}
+
+pub(crate) fn stable_snapshot_publication_requests_first_slot_refresh(
+    reason: StableSnapshotPublicationReason,
+    stable_existed: bool,
+) -> bool {
+    match reason {
+        StableSnapshotPublicationReason::NightlyProgress => !stable_existed,
+        StableSnapshotPublicationReason::TrainingComplete => true,
+    }
+}
+
 pub(crate) fn choose_audio_style_model_snapshots_for_anchor(
     track: &PlaybackTrack,
     snapshots: impl IntoIterator<Item = Arc<AudioStyleModelSnapshot>>,
 ) -> Vec<Arc<AudioStyleModelSnapshot>> {
-    let mut snapshots = snapshots
-        .into_iter()
+    let mut snapshots = snapshots.into_iter().collect::<Vec<_>>();
+    let anchor_matches = snapshots
+        .iter()
         .filter(|snapshot| snapshot.has_embedding_for(track))
+        .cloned()
         .collect::<Vec<_>>();
+    if !anchor_matches.is_empty() {
+        snapshots = anchor_matches;
+    }
     snapshots.sort_by_key(|snapshot| std::cmp::Reverse(snapshot.generation()));
     snapshots
 }
@@ -2890,6 +3631,20 @@ fn select_centerless_audio_style_candidate(
     };
 
     let similarities = audio_style_centerless_candidate_scores(candidates, embeddings, geometry);
+    if similarities.iter().all(Option::is_none) {
+        return random_fallback_selection_from_diagnostics(
+            candidates.len(),
+            draw_unit,
+            Some("no_embedded_candidates"),
+            audio_style_candidate_diagnostics(
+                candidates,
+                embeddings,
+                &PlaybackTrackKey::empty_anchor(),
+                &similarities,
+                Some(random_fallback_index(candidates.len(), draw_unit)),
+            ),
+        );
+    }
     let weights = audio_style_distance_softmin_weights(candidates, &similarities, &[]);
     let total = weights.iter().copied().sum::<f32>();
     if total <= 0.0 || !total.is_finite() {
@@ -3662,11 +4417,8 @@ fn build_audio_style_embedding_cache_key(track: &PlaybackTrack) -> Result<String
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn read_cached_audio_style_embedding(path: &Path) -> Result<AudioStyleEmbedding, String> {
-    read_cached_audio_style_embedding_with_kind(path).map_err(|error| error.message)
-}
-
-fn cleanup_stale_audio_style_embedding_cache(cache_root: &Path) -> Result<(), String> {
+#[cfg(test)]
+pub(crate) fn cleanup_stale_audio_style_embedding_cache(cache_root: &Path) -> Result<(), String> {
     let entries = fs::read_dir(cache_root).map_err(|error| {
         format!(
             "failed to scan audio style embedding cache `{}`: {error}",
@@ -3699,6 +4451,7 @@ fn cleanup_stale_audio_style_embedding_cache(cache_root: &Path) -> Result<(), St
     Ok(())
 }
 
+#[cfg(test)]
 fn audio_style_embedding_cache_file_is_current(path: &Path) -> Result<bool, String> {
     let bytes = fs::read(path).map_err(|error| {
         format!(
@@ -3828,56 +4581,90 @@ fn audio_style_embedding_cache_root(app: &AppHandle) -> Result<PathBuf> {
 #[cfg(not(test))]
 struct AudioStyleTrainingTrackResolution {
     indexed_tracks: Vec<AudioStyleIndexedTrack>,
+    skipped_transient_tracks: usize,
+    skipped_unavailable_tracks: usize,
 }
 
 #[cfg(not(test))]
 fn resolve_audio_style_training_tracks(
-    save_root: &Path,
-    sources: Vec<crate::domain::playlists::repo::PlaylistPlaybackTrackSource>,
+    musics: Vec<AudioStyleTrainingTrackInput>,
 ) -> AudioStyleTrainingTrackResolution {
     let mut indexed_tracks = Vec::new();
-    for source in sources {
-        if let Some(indexed) = resolve_audio_style_training_track(save_root, source) {
-            indexed_tracks.push(indexed);
+    let mut skipped_transient_tracks = 0usize;
+    let mut skipped_unavailable_tracks = 0usize;
+    for music in musics {
+        match resolve_audio_style_training_track(music) {
+            AudioStyleTrainingTrackProjection::Indexed(indexed) => indexed_tracks.push(indexed),
+            AudioStyleTrainingTrackProjection::SkippedTransient => {
+                skipped_transient_tracks += 1;
+            }
+            AudioStyleTrainingTrackProjection::SkippedUnavailable => {
+                skipped_unavailable_tracks += 1;
+            }
         }
     }
 
-    AudioStyleTrainingTrackResolution { indexed_tracks }
+    AudioStyleTrainingTrackResolution {
+        indexed_tracks,
+        skipped_transient_tracks,
+        skipped_unavailable_tracks,
+    }
 }
 
 #[cfg(not(test))]
 fn resolve_audio_style_training_track(
-    save_root: &Path,
-    source: crate::domain::playlists::repo::PlaylistPlaybackTrackSource,
-) -> Option<AudioStyleIndexedTrack> {
-    let Some(path) = source.music.path.as_deref() else {
-        return None;
-    };
-    let path = PathBuf::from(path);
-    let file_path = if path.is_absolute() {
-        path
-    } else {
-        save_root.join(&source.collection_folder).join(path)
-    };
+    music: AudioStyleTrainingTrackInput,
+) -> AudioStyleTrainingTrackProjection {
+    let file_path = PathBuf::from(music.absolute_path.trim());
+    if file_path.as_os_str().is_empty() {
+        return AudioStyleTrainingTrackProjection::SkippedUnavailable;
+    }
+    if !file_path.is_absolute() {
+        return AudioStyleTrainingTrackProjection::SkippedUnavailable;
+    }
+    if audio_style_training_path_is_transient(&file_path) {
+        return AudioStyleTrainingTrackProjection::SkippedTransient;
+    }
     if !file_path.is_file() {
-        return None;
+        return AudioStyleTrainingTrackProjection::SkippedUnavailable;
+    }
+    if audio_style_training_path_is_transient(&file_path) {
+        return AudioStyleTrainingTrackProjection::SkippedTransient;
     }
 
     let track = PlaybackTrack {
         playlist_name: "__audio_style_model__".to_string(),
-        music_name: source.music.alias.clone(),
-        canonical_music_id: source.music.canonical_music_id.clone(),
-        music_url: source.music.url.clone(),
-        file_path,
-        source_music: Some(Box::new(source.music.clone())),
-        start_ms: source.music.start_ms,
-        end_ms: source.music.end_ms,
-        liked: source.music.liked,
+        music_name: music.alias.clone(),
+        canonical_music_id: music.canonical_music_id.clone(),
+        music_url: music.url.clone(),
+        file_path: file_path.clone(),
+        source_music: None,
+        start_ms: music.start_ms,
+        end_ms: music.end_ms,
+        liked: music.liked,
     };
-    Some(AudioStyleIndexedTrack { track, source })
+    let source = PlaylistPlaybackTrackSource {
+        collection_folder: String::new(),
+        music: playback_track_source_music_from_track(&track),
+    };
+    AudioStyleTrainingTrackProjection::Indexed(AudioStyleIndexedTrack { track, source })
 }
 
-#[cfg(test)]
+#[cfg(not(test))]
+enum AudioStyleTrainingTrackProjection {
+    Indexed(AudioStyleIndexedTrack),
+    SkippedTransient,
+    SkippedUnavailable,
+}
+
+fn audio_style_training_path_is_transient(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| {
+            name.ends_with(".part") || name.contains(".__slisic_tmp__") || name.ends_with(".tmp")
+        })
+}
+
 fn playback_track_source_music_from_track(track: &PlaybackTrack) -> Music {
     Music {
         name: track.music_name.clone(),
@@ -3956,6 +4743,11 @@ pub(crate) fn choose_centerless_audio_style_candidate_for_test(
         embeddings.trained,
         draw_unit,
     )
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_training_path_is_transient_for_test(path: &Path) -> bool {
+    audio_style_training_path_is_transient(path)
 }
 
 #[cfg(test)]

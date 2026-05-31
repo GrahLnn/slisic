@@ -14,9 +14,7 @@ use crate::domain::downloads::service::{
 };
 use crate::domain::downloads::yt_dlp::LeafProbe;
 #[cfg(not(test))]
-use crate::domain::playlist_playback::playable_index::{self, PlayableIndexRefreshReason};
-#[cfg(not(test))]
-use crate::domain::playlist_playback::recommendation::notify_audio_style_training_inputs_changed;
+use crate::domain::playlist_playback::service as playlist_playback_service;
 use crate::domain::playlists::model::{
     Collection, CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
 };
@@ -1689,12 +1687,12 @@ pub(crate) fn restore_single_source_musics_from_task(
 
 fn notify_audio_style_inputs_changed(_reason: &'static str) {
     #[cfg(not(test))]
-    notify_audio_style_training_inputs_changed(_reason);
+    playlist_playback_service::notify_music_library_inputs_changed(_reason);
 }
 
 fn notify_playlist_playback_library_changed() {
     #[cfg(not(test))]
-    playable_index::notify_library_changed(PlayableIndexRefreshReason::LibraryChanged);
+    playlist_playback_service::notify_playable_library_changed();
 }
 
 fn seconds_to_millis(seconds: u32) -> u32 {

@@ -23,7 +23,7 @@ use crate::domain::playlist_playback::playable_index;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
     AudioStyleCandidateSelection, initialize_audio_style_recommendation_runtime,
-    notify_audio_style_training_inputs_changed, published_audio_style_model_snapshot,
+    notify_audio_style_library_inputs_changed, published_audio_style_model_snapshot,
     published_audio_style_model_snapshots_for_anchor,
 };
 use crate::domain::playlist_playback::recommendation::{
@@ -65,6 +65,8 @@ const PLAYLIST_PLAYBACK_LIKED_CANDIDATE_LIMIT: usize = 128;
 
 #[cfg(not(test))]
 type SharedPlaylistPlaybackRecentHistory = Arc<Mutex<PlaylistPlaybackRecentHistory>>;
+#[cfg(not(test))]
+type SharedPlaylistPlaybackQueueRefreshGate = Arc<tokio::sync::Mutex<()>>;
 
 #[cfg(not(test))]
 #[derive(Clone, Default)]
@@ -99,6 +101,18 @@ impl PlaylistPlaybackRecentHistory {
 pub fn initialize_runtime(app: AppHandle) {
     initialize_audio_style_recommendation_runtime(app.clone());
     playable_index::initialize_runtime(app);
+}
+
+#[cfg(not(test))]
+pub(crate) fn notify_music_library_inputs_changed(reason: &'static str) {
+    notify_audio_style_library_inputs_changed(reason);
+}
+
+#[cfg(not(test))]
+pub(crate) fn notify_playable_library_changed() {
+    playable_index::notify_library_changed(
+        playable_index::PlayableIndexRefreshReason::LibraryChanged,
+    );
 }
 
 #[cfg(not(test))]
@@ -256,6 +270,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
     let tracks = material.tracks;
     let track_count = tracks.len() as u32;
     let shared_recent_history = Arc::new(Mutex::new(recent_history));
+    let queue_refresh_gate = Arc::new(tokio::sync::Mutex::new(()));
 
     ensure_playlist_playback_request_current(&request)?;
     emit_playlist_playback_trace(
@@ -323,6 +338,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
         session.clone(),
         initial_track.clone(),
         Arc::clone(&shared_recent_history),
+        Arc::clone(&queue_refresh_gate),
     );
     spawn_playlist_track_refresh(
         app.clone(),
@@ -331,6 +347,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
         initial_track,
         download_changes,
         shared_recent_history,
+        queue_refresh_gate,
     );
     emit_playlist_playback_trace(
         "playlist-play-backend-ok",
@@ -767,12 +784,19 @@ fn spawn_playlist_track_queue_fill(
     session: player_service::PlaybackSessionHandle,
     initial_track: PlaybackTrack,
     recent_history: SharedPlaylistPlaybackRecentHistory,
+    queue_refresh_gate: SharedPlaylistPlaybackQueueRefreshGate,
 ) {
     let task_playlist_name = playlist_name.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(error) =
-            fill_playlist_track_queue(app, playlist_name, session, initial_track, recent_history)
-                .await
+        if let Err(error) = fill_playlist_track_queue(
+            app,
+            playlist_name,
+            session,
+            initial_track,
+            recent_history,
+            queue_refresh_gate,
+        )
+        .await
         {
             eprintln!(
                 "[playlist_playback] failed to fill playback queue for `{task_playlist_name}`: {error}"
@@ -789,6 +813,7 @@ fn spawn_playlist_track_refresh(
     initial_track: PlaybackTrack,
     download_changes: tokio::sync::broadcast::Receiver<download_service::DownloadTaskChangeSignal>,
     recent_history: SharedPlaylistPlaybackRecentHistory,
+    queue_refresh_gate: SharedPlaylistPlaybackQueueRefreshGate,
 ) {
     let task_playlist_name = playlist_name.clone();
     tauri::async_runtime::spawn(async move {
@@ -799,6 +824,7 @@ fn spawn_playlist_track_refresh(
             initial_track,
             download_changes,
             recent_history,
+            queue_refresh_gate,
         )
         .await
         {
@@ -816,9 +842,9 @@ async fn fill_playlist_track_queue(
     session: player_service::PlaybackSessionHandle,
     initial_track: PlaybackTrack,
     recent_history: SharedPlaylistPlaybackRecentHistory,
+    queue_refresh_gate: SharedPlaylistPlaybackQueueRefreshGate,
 ) -> Result<()> {
     let mut current_anchor: Option<PlaybackTrack> = None;
-    let mut recommendation_refresh_requests = PlaylistQueueRecommendationRefreshRequests::default();
     loop {
         if !player_service::is_session_current(&session)? {
             return Ok(());
@@ -833,6 +859,15 @@ async fn fill_playlist_track_queue(
             &active_track,
             queue_has_next,
         ) {
+            let _guard = queue_refresh_gate.lock().await;
+            if current_session_queue_contains_next(&session, &active_track)? {
+                current_anchor = Some(active_track);
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS,
+                ))
+                .await;
+                continue;
+            }
             refresh_playlist_track_queue_for_anchor(
                 &app,
                 &playlist_name,
@@ -840,7 +875,6 @@ async fn fill_playlist_track_queue(
                 active_track.clone(),
                 &recent_history_snapshot,
                 true,
-                Some(&mut recommendation_refresh_requests),
             )
             .await?;
             current_anchor = Some(active_track);
@@ -891,6 +925,7 @@ async fn refresh_playlist_tracks_until_downloads_finish(
         download_service::DownloadTaskChangeSignal,
     >,
     recent_history: SharedPlaylistPlaybackRecentHistory,
+    queue_refresh_gate: SharedPlaylistPlaybackQueueRefreshGate,
 ) -> Result<()> {
     loop {
         wait_for_download_task_change(&mut download_changes).await?;
@@ -921,6 +956,16 @@ async fn refresh_playlist_tracks_until_downloads_finish(
             }
             let recent_history_snapshot =
                 observe_playlist_playback_recent_history(&recent_history, current_track.clone())?;
+            let _guard = queue_refresh_gate.lock().await;
+            if !should_refresh_playlist_queue_for_same_anchor(current_session_queue_contains_next(
+                &session,
+                &current_track,
+            )?) {
+                if !has_relevant_active_downloads {
+                    return Ok(());
+                }
+                continue;
+            }
             let updated = refresh_playlist_track_queue_for_anchor(
                 &app,
                 &playlist_name,
@@ -928,7 +973,6 @@ async fn refresh_playlist_tracks_until_downloads_finish(
                 current_track,
                 &recent_history_snapshot,
                 false,
-                None,
             )
             .await?;
             if !updated {
@@ -950,22 +994,15 @@ async fn refresh_playlist_track_queue_for_anchor(
     current_track: PlaybackTrack,
     recently_played_tracks: &[PlaybackTrack],
     should_log_selection: bool,
-    recommendation_refresh_requests: Option<&mut PlaylistQueueRecommendationRefreshRequests>,
 ) -> Result<bool> {
     let readiness = audio_style_playlist_queue_readiness_for_anchor(&current_track);
     if !readiness.is_ready() {
-        let should_request = recommendation_refresh_requests
-            .map(|requests| requests.should_request(&current_track, readiness))
-            .unwrap_or(true);
-        if should_request {
-            notify_audio_style_training_inputs_changed(readiness.training_reason());
-        }
         emit_playlist_playback_trace(
             "playlist-playback-next-slot-waiting-for-model",
             PlaylistPlaybackTrace::new(app)
                 .playlist_name(playlist_name)
                 .track(&current_track)
-                .status(readiness.training_reason()),
+                .status(readiness.diagnostic_status()),
         );
     }
 
@@ -1056,7 +1093,7 @@ impl PlaylistQueueRecommendationReadiness {
         self.status == PlaylistQueueRecommendationReadinessStatus::Ready
     }
 
-    fn training_reason(self) -> &'static str {
+    pub(crate) fn diagnostic_status(self) -> &'static str {
         match self.status {
             PlaylistQueueRecommendationReadinessStatus::Ready => "playlist_playback_ready",
             PlaylistQueueRecommendationReadinessStatus::ModelUnavailable => {
@@ -1066,53 +1103,6 @@ impl PlaylistQueueRecommendationReadiness {
                 "playlist_playback_missing_current_embedding"
             }
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PlaylistQueueRecommendationRefreshRequestKey {
-    music_url: String,
-    file_path: PathBuf,
-    start_ms: u32,
-    end_ms: u32,
-    readiness: PlaylistQueueRecommendationReadiness,
-}
-
-impl PlaylistQueueRecommendationRefreshRequestKey {
-    fn new(track: &PlaybackTrack, readiness: PlaylistQueueRecommendationReadiness) -> Self {
-        Self {
-            music_url: track.music_url.clone(),
-            file_path: track.file_path.clone(),
-            start_ms: track.start_ms,
-            end_ms: track.end_ms,
-            readiness,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct PlaylistQueueRecommendationRefreshRequests {
-    last_request: Option<PlaylistQueueRecommendationRefreshRequestKey>,
-}
-
-impl PlaylistQueueRecommendationRefreshRequests {
-    pub(crate) fn should_request(
-        &mut self,
-        track: &PlaybackTrack,
-        readiness: PlaylistQueueRecommendationReadiness,
-    ) -> bool {
-        if readiness.is_ready() {
-            self.last_request = None;
-            return false;
-        }
-
-        let key = PlaylistQueueRecommendationRefreshRequestKey::new(track, readiness);
-        if self.last_request.as_ref() == Some(&key) {
-            return false;
-        }
-
-        self.last_request = Some(key);
-        true
     }
 }
 
@@ -1387,12 +1377,21 @@ fn propose_audio_style_playlist_playback_queue_from_snapshot(
     let recommender = snapshot.recommender();
 
     let mut proposal = match mode {
-        PlaylistPlaybackRecommendationMode::KeepCurrent => recommender
-            .propose_queue_with_trace_and_recent_history(
-                request.current_track.clone(),
-                request.candidates.clone(),
-                &request.recently_played_tracks,
-            ),
+        PlaylistPlaybackRecommendationMode::KeepCurrent => {
+            if snapshot.has_embedding_for(&request.current_track) {
+                recommender.propose_queue_with_trace_and_recent_history(
+                    request.current_track.clone(),
+                    request.candidates.clone(),
+                    &request.recently_played_tracks,
+                )
+            } else {
+                recommender.propose_centerless_queue_with_trace_and_recent_history(
+                    request.current_track.clone(),
+                    request.candidates.clone(),
+                    &request.recently_played_tracks,
+                )
+            }
+        }
         PlaylistPlaybackRecommendationMode::ExcludeCurrent => recommender
             .propose_queue_after_exclude_with_trace_and_recent_history(
                 request.current_track.clone(),

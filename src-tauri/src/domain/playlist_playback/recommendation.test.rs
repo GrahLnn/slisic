@@ -1,7 +1,7 @@
 use super::recommendation::{
     AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST, AudioStyleEmbeddingCache, AudioStyleModelSnapshot,
-    AudioStylePlaylistPlaybackRecommender, audio_style_transition_fingerprint_for_test,
-    choose_audio_style_model_snapshots_for_anchor,
+    AudioStylePlaylistPlaybackRecommender, audio_style_training_path_is_transient_for_test,
+    audio_style_transition_fingerprint_for_test, choose_audio_style_model_snapshots_for_anchor,
     choose_centerless_audio_style_candidate_for_test, choose_next_audio_style_candidate_for_test,
     choose_next_audio_style_candidate_with_generation_for_test,
     choose_next_audio_style_candidate_with_recent_history_for_test,
@@ -684,7 +684,7 @@ fn cached_audio_style_recommender_does_not_decode_missing_embeddings() {
 }
 
 #[test]
-fn audio_style_embedding_cache_removes_stale_versions_on_open() {
+fn audio_style_embedding_cache_open_does_not_scan_or_remove_stale_versions() {
     let root = temp_cache_root("cleanup");
     std::fs::create_dir_all(&root).expect("cache test root should be created");
     let stale_path = root.join("stale.json");
@@ -711,11 +711,45 @@ fn audio_style_embedding_cache_removes_stale_versions_on_open() {
     std::fs::write(&other_path, b"keep").expect("non-json cache sibling should be written");
 
     AudioStyleEmbeddingCache::new(PathBuf::from("missing-ffmpeg"), root.clone())
-        .expect("cache should open and clean stale embeddings");
+        .expect("cache should open without scanning stale embeddings");
+
+    assert!(stale_path.exists());
+    assert!(current_path.exists());
+    assert!(other_path.exists());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn audio_style_embedding_cache_cleanup_removes_stale_versions_when_explicitly_run() {
+    let root = temp_cache_root("explicit-cleanup");
+    std::fs::create_dir_all(&root).expect("cache test root should be created");
+    let stale_path = root.join("stale.json");
+    let current_path = root.join("current.json");
+    std::fs::write(
+        &stale_path,
+        serde_json::json!({
+            "version": "audio-style-sketch-v1",
+            "values": [0.0]
+        })
+        .to_string(),
+    )
+    .expect("stale cache should be written");
+    std::fs::write(
+        &current_path,
+        serde_json::json!({
+            "version": AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST,
+            "values": [0.0]
+        })
+        .to_string(),
+    )
+    .expect("current cache should be written");
+
+    super::recommendation::cleanup_stale_audio_style_embedding_cache(&root)
+        .expect("explicit cache cleanup should succeed");
 
     assert!(!stale_path.exists());
     assert!(current_path.exists());
-    assert!(other_path.exists());
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -783,6 +817,28 @@ fn audio_style_centerless_initial_selection_uses_trained_geometry_without_anchor
 }
 
 #[test]
+fn audio_style_centerless_initial_selection_does_not_select_unembedded_candidate() {
+    let missing = track("missing");
+    let embedded = track("embedded");
+    let embedded_other = track("embedded_other");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (embedded.clone(), dense_embedding(&[(1, 1.0)])),
+        (embedded_other.clone(), dense_embedding(&[(2, 1.0)])),
+    ]);
+
+    let selection = choose_centerless_audio_style_candidate_for_test(
+        &[missing.clone(), embedded.clone(), embedded_other.clone()],
+        &recommender,
+        0.0,
+    );
+
+    assert_eq!(selection.source.as_str(), "audio_style");
+    assert_eq!(selection.reason, Some("centerless_initial"));
+    assert_ne!(selection.index, 0);
+    assert_eq!(selection.diagnostics.embedded_candidate_count, 2);
+}
+
+#[test]
 fn audio_style_centerless_source_is_selected_inside_requested_scope() {
     let outside = track("outside");
     let inside = track("inside");
@@ -806,6 +862,36 @@ fn audio_style_centerless_source_is_selected_inside_requested_scope() {
 
     assert_eq!(source.collection_folder, source_inside);
     assert_eq!(selection.candidate_count, 1);
+    assert_eq!(selection.source.as_str(), "audio_style");
+}
+
+#[test]
+fn audio_style_centerless_source_ignores_scoped_tracks_without_embeddings() {
+    let missing = track("missing");
+    let embedded = track("embedded");
+    let embedded_other = track("embedded_other");
+    let source_inside = "source:inside".to_string();
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_indexed_embeddings([
+        (
+            embedded.clone(),
+            dense_embedding(&[(1, 1.0)]),
+            source_inside.clone(),
+        ),
+        (
+            embedded_other.clone(),
+            dense_embedding(&[(2, 1.0)]),
+            source_inside.clone(),
+        ),
+    ]);
+
+    let (source, selection) = recommender
+        .propose_centerless_source(|source| {
+            source.collection_folder == source_inside || source.music.alias == missing.music_name
+        })
+        .expect("embedded scoped centerless source should be selected");
+
+    assert_ne!(source.music.alias, missing.music_name);
+    assert_eq!(selection.candidate_count, 2);
     assert_eq!(selection.source.as_str(), "audio_style");
 }
 
@@ -903,6 +989,22 @@ fn audio_style_model_refresh_publishes_each_new_embedding_progressively() {
     assert!(snapshots[1].recommender().has_embedding_for(&added_two));
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn audio_style_training_path_rejects_transient_download_outputs() {
+    assert!(audio_style_training_path_is_transient_for_test(
+        &PathBuf::from("track.m4a.part")
+    ));
+    assert!(audio_style_training_path_is_transient_for_test(
+        &PathBuf::from("track.__slisic_tmp__abc.m4a")
+    ));
+    assert!(audio_style_training_path_is_transient_for_test(
+        &PathBuf::from("cache.tmp")
+    ));
+    assert!(!audio_style_training_path_is_transient_for_test(
+        &PathBuf::from("track.m4a")
+    ));
 }
 
 #[test]
@@ -1262,6 +1364,121 @@ fn audio_style_snapshot_selection_returns_matching_models_from_latest_to_oldest(
     .collect::<Vec<_>>();
 
     assert_eq!(generations, vec![newer.generation(), older.generation()]);
+}
+
+#[test]
+fn audio_style_snapshot_selection_keeps_latest_for_centerless_when_anchor_is_missing() {
+    let current = track("current");
+    let latest = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
+        12,
+        [(track("latest"), embedding(8))],
+    ));
+    let older = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
+        10,
+        [(track("older"), embedding(2))],
+    ));
+
+    let generations =
+        choose_audio_style_model_snapshots_for_anchor(&current, [older.clone(), latest.clone()])
+            .into_iter()
+            .map(|snapshot| snapshot.generation())
+            .collect::<Vec<_>>();
+
+    assert_eq!(generations, vec![latest.generation(), older.generation()]);
+}
+
+#[test]
+fn stable_audio_style_snapshot_replacement_accepts_only_newer_generations() {
+    let current = track("current");
+    let stable =
+        AudioStyleModelSnapshot::from_test_embeddings(10, [(current.clone(), embedding(2))]);
+    let older_candidate =
+        AudioStyleModelSnapshot::from_test_embeddings(9, [(current.clone(), embedding(3))]);
+    let same_candidate =
+        AudioStyleModelSnapshot::from_test_embeddings(10, [(current.clone(), embedding(4))]);
+    let newer_candidate =
+        AudioStyleModelSnapshot::from_test_embeddings(11, [(current, embedding(5))]);
+
+    assert!(!super::recommendation::should_replace_stable_snapshot(
+        Some(&stable),
+        &older_candidate,
+    ));
+    assert!(!super::recommendation::should_replace_stable_snapshot(
+        Some(&stable),
+        &same_candidate,
+    ));
+    assert!(super::recommendation::should_replace_stable_snapshot(
+        Some(&stable),
+        &newer_candidate,
+    ));
+    assert!(super::recommendation::should_replace_stable_snapshot(
+        None,
+        &older_candidate,
+    ));
+}
+
+#[test]
+fn stable_audio_style_snapshot_publication_refreshes_first_slot_only_on_availability_edges() {
+    use super::recommendation::{
+        StableSnapshotPublicationReason, stable_snapshot_publication_requests_first_slot_refresh,
+    };
+
+    assert!(stable_snapshot_publication_requests_first_slot_refresh(
+        StableSnapshotPublicationReason::NightlyProgress,
+        false,
+    ));
+    assert!(!stable_snapshot_publication_requests_first_slot_refresh(
+        StableSnapshotPublicationReason::NightlyProgress,
+        true,
+    ));
+    assert!(stable_snapshot_publication_requests_first_slot_refresh(
+        StableSnapshotPublicationReason::TrainingComplete,
+        false,
+    ));
+    assert!(stable_snapshot_publication_requests_first_slot_refresh(
+        StableSnapshotPublicationReason::TrainingComplete,
+        true,
+    ));
+}
+
+#[test]
+fn audio_style_training_worker_count_scales_with_hardware_profile_and_task_count() {
+    assert_eq!(
+        super::recommendation::audio_style_training_worker_count_for_test(0, 64, true, 2, 98_280),
+        0
+    );
+    assert_eq!(
+        super::recommendation::audio_style_training_worker_count_for_test(4, 64, true, 2, 98_280),
+        4
+    );
+    assert_eq!(
+        super::recommendation::audio_style_training_worker_count_for_test(64, 12, false, 0, 0),
+        12
+    );
+    let single_hardware =
+        super::recommendation::audio_style_training_worker_count_for_test(64, 12, true, 1, 0);
+    let dual_large_hardware =
+        super::recommendation::audio_style_training_worker_count_for_test(64, 12, true, 2, 98_280);
+    assert!(
+        single_hardware
+            > super::recommendation::audio_style_training_worker_count_for_test(
+                64, 12, false, 0, 0
+            )
+    );
+    assert!(dual_large_hardware > single_hardware);
+    assert!(dual_large_hardware <= 32);
+}
+
+#[test]
+fn audio_style_training_accelerator_profile_parses_nvidia_smi_output() {
+    let (count, memory_mb, source) =
+        super::recommendation::parse_nvidia_smi_training_accelerators_for_test(
+            "NVIDIA GeForce RTX 4090, 49140\nNVIDIA GeForce RTX 4090, 49140 MiB\n",
+        );
+
+    assert_eq!(count, 2);
+    assert_eq!(memory_mb, 98_280);
+    assert_eq!(source, "nvidia_smi");
 }
 
 #[test]

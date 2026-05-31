@@ -77,6 +77,7 @@ pub fn run() {
             domain::playlists::list_collections,
             domain::playlists::list_playlists,
             domain::playlists::list_config_library,
+            domain::playlists::get_startup_bootstrap,
             domain::playlists::get_collection,
             domain::playlists::get_playlist,
             domain::playlists::get_playlist_config,
@@ -192,6 +193,7 @@ pub fn run() {
 
                     utils::window::configure_existing_primary_windows(&handle);
                     domain::downloads::service::initialize_runtime(handle.clone());
+                    domain::playlists::startup_bootstrap::initialize_runtime(handle.clone());
                     domain::playlist_playback::service::initialize_runtime(handle.clone());
                     domain::player::service::initialize_runtime(handle.clone());
                     utils::binaries::spawn_binary_maintenance(

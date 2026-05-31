@@ -9,11 +9,11 @@ use super::repo::{
     delete_music, delete_playlist_by_name, get_collection_by_url, get_playlist_by_name,
     get_playlist_config_by_name, get_playlist_playback_selection_by_name, has_collections,
     list_collections, list_config_library, list_musics_by_file_path, list_playlists,
-    load_liked_playlist_playback_track_sources, load_playlist_playback_track_sources,
-    load_random_playlist_playback_track_sources, load_spectrum_music_context,
-    playlist_playback_owner_attempt_order, push_extra, remove_exclude, remove_extra,
-    set_collection_updates, set_music_liked_by_identity, update_music, upsert_collection,
-    upsert_playlist, upsert_playlist_surface,
+    load_audio_style_training_musics, load_liked_playlist_playback_track_sources,
+    load_playlist_playback_track_sources, load_random_playlist_playback_track_sources,
+    load_spectrum_music_context, playlist_playback_owner_attempt_order, push_extra, remove_exclude,
+    remove_extra, set_collection_updates, set_music_liked_by_identity, update_music,
+    upsert_collection, upsert_playlist, upsert_playlist_surface,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -1307,6 +1307,199 @@ fn create_music_rejects_missing_source_collection() {
         assert!(
             err.to_string()
                 .contains("collection `https://example.com/missing` not found")
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn audio_style_training_musics_load_from_music_rows_without_owner_edges() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let group = collection_group(
+            "Disc 1",
+            "https://example.com/audio-style-training#disc-1",
+            "Disc 1",
+        )
+        .bind_collection_owner(collection_owner(
+            "Training",
+            "https://example.com/audio-style-training",
+            "unused-owner-folder",
+        ));
+        let save_root = PathBuf::from("C:/Media");
+        let trainable_path = save_root.join("Ready.m4a");
+        let trainable_music = named_music(
+            "Audio Style Trainable",
+            group.clone(),
+            &trainable_path.to_string_lossy(),
+        );
+        let mut pending_music = named_music("Audio Style Pending", group.clone(), "Pending.m4a");
+        pending_music.path = None;
+        let mut invalid_range_music =
+            named_music("Audio Style Invalid", group.clone(), "Invalid.m4a");
+        invalid_range_music.end_ms = invalid_range_music.start_ms;
+        let mut duplicate_music =
+            named_music("Audio Style Duplicate", group.clone(), "Duplicate.m4a");
+        duplicate_music.canonical_music_id = trainable_music.canonical_music_id.clone();
+
+        insert_music_row("audio-style-trainable", &trainable_music).await;
+        insert_music_row("audio-style-pending", &pending_music).await;
+        insert_music_row("audio-style-invalid-range", &invalid_range_music).await;
+        insert_music_row("zz-audio-style-duplicate", &duplicate_music).await;
+
+        let training_musics = load_audio_style_training_musics(&save_root)
+            .await
+            .expect("audio-style training music load should succeed");
+
+        assert_eq!(
+            training_musics
+                .iter()
+                .map(|music| music.canonical_music_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![trainable_music.canonical_music_id.as_str()]
+        );
+        assert!(
+            [
+                trainable_path,
+                PathBuf::from("C:/Media").join("Duplicate.m4a")
+            ]
+            .contains(&PathBuf::from(&training_musics[0].absolute_path))
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn audio_style_training_musics_project_relative_paths_with_collection_owner_folder() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let save_root = PathBuf::from("C:/Media");
+        let collection = collection_with_musics(
+            "https://example.com/audio-style-training-owned",
+            "youtube/audio-style-training-owned",
+            Some(false),
+            vec![named_music(
+                "Audio Style Owned Relative",
+                collection_group(
+                    "Disc 1",
+                    "https://example.com/audio-style-training-owned#disc-1",
+                    "Disc 1",
+                ),
+                "Ready.m4a",
+            )],
+        );
+        let group = collection.musics[0]
+            .group
+            .clone()
+            .bind_collection_owner(CollectionGroupOwner::from(&collection));
+        let collection_record =
+            insert_collection_row("audio-style-owned-collection", &collection).await;
+        let group_record = insert_group_row("audio-style-owned-group", &group).await;
+        let music_record = insert_music_row("audio-style-owned-music", &collection.musics[0]).await;
+        insert_collection_group_edge(&collection_record, &group_record).await;
+        insert_music_edges(&collection_record, &[music_record.clone()]).await;
+        insert_group_edges(&group_record, &[music_record]).await;
+
+        let training_musics = load_audio_style_training_musics(&save_root)
+            .await
+            .expect("audio-style training music load should succeed");
+
+        assert_eq!(training_musics.len(), 1);
+        assert_eq!(
+            PathBuf::from(&training_musics[0].absolute_path),
+            save_root
+                .join("youtube/audio-style-training-owned")
+                .join("Ready.m4a")
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn audio_style_training_musics_project_relative_paths_from_collection_membership() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let save_root = PathBuf::from("C:/Media");
+        let collection = collection_with_musics(
+            "https://example.com/audio-style-training-includes",
+            "youtube/audio-style-training-includes",
+            Some(false),
+            vec![named_music(
+                "Audio Style Includes Relative",
+                collection_group(
+                    "Disc 1",
+                    "https://example.com/audio-style-training-includes#disc-1",
+                    "Disc 1",
+                ),
+                "Ready.m4a",
+            )],
+        );
+        let collection_record =
+            insert_collection_row("audio-style-includes-collection", &collection).await;
+        let music_record =
+            insert_music_row("audio-style-includes-music", &collection.musics[0]).await;
+        insert_music_edges(&collection_record, std::slice::from_ref(&music_record)).await;
+
+        let training_musics = load_audio_style_training_musics(&save_root)
+            .await
+            .expect("audio-style training music load should succeed");
+
+        assert_eq!(training_musics.len(), 1);
+        assert_eq!(
+            PathBuf::from(&training_musics[0].absolute_path),
+            save_root
+                .join("youtube/audio-style-training-includes")
+                .join("Ready.m4a")
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn audio_style_training_musics_use_meta_save_root_for_relative_paths() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let save_root = PathBuf::from("C:/Users/admin/Documents/slisic");
+        let music = named_music(
+            "Audio Style Meta Root Relative",
+            collection_group(
+                "Loose",
+                "https://example.com/audio-style-meta-root#loose",
+                "Loose",
+            ),
+            "youtube/Blue Archive OST/Ready.m4a",
+        );
+
+        insert_music_row("audio-style-meta-root-music", &music).await;
+
+        let training_musics = load_audio_style_training_musics(&save_root)
+            .await
+            .expect("audio-style training music load should succeed");
+
+        assert_eq!(training_musics.len(), 1);
+        assert_eq!(
+            PathBuf::from(&training_musics[0].absolute_path),
+            save_root.join("youtube/Blue Archive OST").join("Ready.m4a")
         );
 
         reset_db();

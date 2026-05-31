@@ -2,8 +2,7 @@
 use crate::domain::player::event::{PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent};
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
-    AudioStyleCenterlessSourceStatus, notify_audio_style_training_inputs_changed,
-    published_audio_style_centerless_source,
+    AudioStyleCenterlessSourceStatus, published_audio_style_centerless_source,
 };
 #[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
@@ -27,6 +26,7 @@ static PLAYABLE_INDEX_RUNTIME: OnceLock<Arc<PlayableIndexRuntime>> = OnceLock::n
 pub(crate) enum PlayableIndexRefreshReason {
     Startup,
     Ready,
+    AudioStyleModelAvailable,
     PlaylistChanged,
     PlaylistDeleted,
     LibraryChanged,
@@ -40,6 +40,7 @@ impl PlayableIndexRefreshReason {
         match self {
             Self::Startup => "startup",
             Self::Ready => "ready",
+            Self::AudioStyleModelAvailable => "audio_style_model_available",
             Self::PlaylistChanged => "playlist_changed",
             Self::PlaylistDeleted => "playlist_deleted",
             Self::LibraryChanged => "library_changed",
@@ -69,6 +70,19 @@ pub(crate) struct PlaylistPlayableIndexSnapshot {
     pub(crate) playlist_name: String,
     pub(crate) generation: u64,
     pub(crate) source: Option<PlaylistPlaybackTrackSource>,
+    pub(crate) source_kind: Option<PlaylistPlayableIndexSourceKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaylistPlayableIndexSourceKind {
+    AudioStyle,
+    RandomFallback,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedPlaylistSource {
+    source: PlaylistPlaybackTrackSource,
+    source_kind: PlaylistPlayableIndexSourceKind,
 }
 
 #[derive(Debug)]
@@ -128,6 +142,10 @@ pub(crate) fn request_ready_refresh() {
     request_ready_refresh_impl();
 }
 
+pub(crate) fn request_audio_style_model_available_refresh() {
+    request_audio_style_model_available_refresh_impl();
+}
+
 #[cfg(not(test))]
 pub(crate) fn request_ready_refresh_for_app(app: tauri::AppHandle) {
     spawn_refresh_all(app, PlayableIndexRefreshReason::Ready);
@@ -140,6 +158,14 @@ fn request_ready_refresh_impl() {
 
 #[cfg(test)]
 fn request_ready_refresh_impl() {}
+
+#[cfg(not(test))]
+fn request_audio_style_model_available_refresh_impl() {
+    spawn_refresh_all_without_app(PlayableIndexRefreshReason::AudioStyleModelAvailable);
+}
+
+#[cfg(test)]
+fn request_audio_style_model_available_refresh_impl() {}
 
 pub(crate) fn notify_playlist_changed(playlist_name: &str) {
     notify_playlist_changed_impl(playlist_name);
@@ -252,6 +278,7 @@ pub(crate) fn read_playlist_source(
         playlist_name: snapshot.playlist_name.clone(),
         generation: snapshot.generation,
         source: snapshot.source.clone(),
+        source_kind: snapshot.source_kind,
     }))
 }
 
@@ -583,13 +610,14 @@ async fn refresh_all(
         else {
             continue;
         };
-        let source = prepare_playlist_source(&selection).await?;
+        let prepared = prepare_playlist_source(&selection).await?;
         next.insert(
             selection.playlist_name.clone(),
             PlaylistPlayableIndexSnapshot {
                 playlist_name: selection.playlist_name,
                 generation,
-                source,
+                source: prepared.as_ref().map(|prepared| prepared.source.clone()),
+                source_kind: prepared.map(|prepared| prepared.source_kind),
             },
         );
     }
@@ -685,11 +713,12 @@ async fn refresh_playlist(
     let snapshot =
         match playlist_repo::get_playlist_playback_selection_by_name(&playlist_name).await? {
             Some(selection) => {
-                let source = prepare_playlist_source(&selection).await?;
+                let prepared = prepare_playlist_source(&selection).await?;
                 Some(PlaylistPlayableIndexSnapshot {
                     playlist_name: selection.playlist_name,
                     generation,
-                    source,
+                    source: prepared.as_ref().map(|prepared| prepared.source.clone()),
+                    source_kind: prepared.map(|prepared| prepared.source_kind),
                 })
             }
             None => None,
@@ -823,7 +852,7 @@ fn release_global_refresh_and_spawn_pending(
 #[cfg(not(test))]
 async fn prepare_playlist_source(
     selection: &PlaylistPlaybackSelection,
-) -> Result<Option<PlaylistPlaybackTrackSource>> {
+) -> Result<Option<PreparedPlaylistSource>> {
     if let Some((source, selection_trace)) = match published_audio_style_centerless_source(
         |source| selection.contains_track_source(source),
     ) {
@@ -832,13 +861,12 @@ async fn prepare_playlist_source(
         }
         AudioStyleCenterlessSourceStatus::NoScopedCandidate => None,
         AudioStyleCenterlessSourceStatus::ModelUnavailable => {
-            notify_audio_style_training_inputs_changed("first_slot_model_unavailable");
             let mut sources =
                 playlist_repo::load_random_playlist_playback_track_sources(selection, 1).await?;
             let Some(source) = sources.pop() else {
                 log::warn!(
                     target: PLAYABLE_INDEX_LOG_TARGET,
-                    "first_slot_source_unavailable playlist=\"{}\" status=random_fallback_empty action=request_training",
+                    "first_slot_source_unavailable playlist=\"{}\" status=random_fallback_empty action=none",
                     escape_log_value(&selection.playlist_name)
                 );
                 return Ok(None);
@@ -848,7 +876,10 @@ async fn prepare_playlist_source(
                 "first_slot_source_prepared playlist=\"{}\" source=random_fallback selection_reason=model_unavailable probability=1.000000 candidates=1 model_generation=none",
                 escape_log_value(&selection.playlist_name)
             );
-            return Ok(Some(source));
+            return Ok(Some(PreparedPlaylistSource {
+                source,
+                source_kind: PlaylistPlayableIndexSourceKind::RandomFallback,
+            }));
         }
     } {
         log::info!(
@@ -864,7 +895,10 @@ async fn prepare_playlist_source(
                 .map(|generation| generation.to_string())
                 .unwrap_or_else(|| "none".to_string())
         );
-        return Ok(Some(source));
+        return Ok(Some(PreparedPlaylistSource {
+            source,
+            source_kind: PlaylistPlayableIndexSourceKind::AudioStyle,
+        }));
     }
 
     log::warn!(
@@ -886,7 +920,7 @@ fn should_skip_global_refresh(
         && state
             .playlists
             .values()
-            .all(playlist_snapshot_has_prepared_source)
+            .all(|snapshot| !playlist_snapshot_needs_refresh(snapshot, reason))
 }
 
 fn should_skip_playlist_refresh(
@@ -898,7 +932,7 @@ fn should_skip_playlist_refresh(
         && state
             .playlists
             .get(playlist_name)
-            .is_some_and(playlist_snapshot_has_prepared_source)
+            .is_some_and(|snapshot| !playlist_snapshot_needs_refresh(snapshot, reason))
 }
 
 fn can_commit_refresh_snapshot(
@@ -906,11 +940,22 @@ fn can_commit_refresh_snapshot(
     reason: PlayableIndexRefreshReason,
 ) -> bool {
     reason.replaces_existing_snapshots()
-        || current.is_none_or(|snapshot| !playlist_snapshot_has_prepared_source(snapshot))
+        || current.is_none_or(|snapshot| playlist_snapshot_needs_refresh(snapshot, reason))
 }
 
 fn playlist_snapshot_has_prepared_source(snapshot: &PlaylistPlayableIndexSnapshot) -> bool {
     snapshot.source.is_some()
+}
+
+fn playlist_snapshot_needs_refresh(
+    snapshot: &PlaylistPlayableIndexSnapshot,
+    reason: PlayableIndexRefreshReason,
+) -> bool {
+    if !playlist_snapshot_has_prepared_source(snapshot) {
+        return true;
+    }
+    reason == PlayableIndexRefreshReason::AudioStyleModelAvailable
+        && snapshot.source_kind == Some(PlaylistPlayableIndexSourceKind::RandomFallback)
 }
 
 #[cfg(test)]
@@ -1009,6 +1054,7 @@ pub(crate) fn commit_global_snapshot_for_test(
                     playlist_name,
                     generation,
                     source: Some(source),
+                    source_kind: Some(PlaylistPlayableIndexSourceKind::AudioStyle),
                 },
             );
         }
@@ -1067,6 +1113,7 @@ pub(crate) fn commit_playlist_snapshot_for_test(
                             playlist_name: playlist_name.clone(),
                             generation,
                             source: Some(source),
+                            source_kind: Some(PlaylistPlayableIndexSourceKind::AudioStyle),
                         },
                     );
                 }
@@ -1076,6 +1123,24 @@ pub(crate) fn commit_playlist_snapshot_for_test(
     }
     state.active_refreshes.remove(&playlist_name);
     Ok(committed)
+}
+
+#[cfg(test)]
+pub(crate) fn mark_playlist_source_kind_for_test(
+    playlist_name: &str,
+    source_kind: PlaylistPlayableIndexSourceKind,
+) -> Result<()> {
+    let runtime = try_runtime()?;
+    let mut state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    let snapshot = state
+        .playlists
+        .get_mut(playlist_name)
+        .ok_or_else(|| anyhow!("playlist source does not exist"))?;
+    snapshot.source_kind = Some(source_kind);
+    Ok(())
 }
 
 #[cfg(not(test))]
@@ -1148,7 +1213,7 @@ fn commit_playlist_snapshot(
         .state
         .lock()
         .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
-    if !reason.replaces_existing_snapshots() && state.playlists.contains_key(&playlist_name) {
+    if !can_commit_refresh_snapshot(state.playlists.get(&playlist_name), reason) {
         return Ok(());
     }
     state.playlists.insert(
@@ -1156,6 +1221,9 @@ fn commit_playlist_snapshot(
         PlaylistPlayableIndexSnapshot {
             playlist_name: playlist_name.clone(),
             generation,
+            source_kind: source
+                .as_ref()
+                .map(|_| PlaylistPlayableIndexSourceKind::AudioStyle),
             source,
         },
     );
