@@ -80,6 +80,7 @@ The project-level compositor is the app behavior boundary across:
 | playlist draft -> playlist write request               | config view model / `playlistCommit` request owner | no    | commit remains failed and preview is retained or cleared by queue rules |
 | raw URL -> collection download plan                    | `downloads::service` and `collection_import`       | no    | enqueue/resolve error                                                   |
 | local folder -> collection shell / imported collection | `collection_import`                                | no    | task failure and collection shell cleanup by frontend candidate owner   |
+| meta save root, owner folder, music path -> local audio path | `playlists::repo` / training input view            | no    | no completed path or projected file unavailable                         |
 | collection, group, music rows -> playlist selection    | `playlists::repo`                                  | no    | missing playlist or empty selection                                     |
 | raw playlist source -> playable track                  | `playlist_playback::service`                       | no    | missing path, missing file, duplicate, excluded source                  |
 | playback payload -> `PlaybackTrack`                    | `player::model`                                    | no    | command returns invalid payload error                                   |
@@ -289,11 +290,70 @@ current track to finish and does not require another ready transition.
 Project invariant: audio-style recommendation has a double-buffered service
 surface. `stable` is the only model surface that playback and first-slot
 preparation may read. `nightly` is the in-progress training candidate and is
-not a user-visible availability gate. A new model replaces `stable` only after
-the build has completed and passed snapshot construction. If no `stable` model
-exists yet, first-track preparation uses a playlist-scoped repository random
-projection as a cold-start source. That random source is prepared in the
-backend pool; it is not sampled on the click path.
+not a user-visible availability gate. Each completed nightly snapshot may
+replace `stable` immediately when the stable surface is not being read, and the
+final training snapshot must replace `stable` when it completes. Progressive
+promotion only wakes first-track preparation when `stable` changes from absent
+to present; later generation improvements do not refresh an already full
+first-track pool. A prepared first-track snapshot must record whether it came
+from audio-style or cold-start random fallback. The model-available refresh may
+replace an unconsumed random fallback snapshot because model availability
+changed its semantic quality; it must not replace an unconsumed audio-style
+snapshot. If no `stable` model exists yet, first-track preparation uses a
+playlist-scoped repository random projection as a cold-start source. That random
+source is prepared in the backend pool; it is not sampled on the click path.
+
+Project invariant: the model lifecycle is owned only by the audio-style model
+runtime. Program startup starts the model loop, and stable library-input changes
+enqueue debounced retraining. First-track preparation and playback queue
+planning only read the published `stable` surface and may emit diagnostic
+readiness status before falling back; they must not request, schedule,
+coalesce, or debounce model training. Library mutation owners publish
+library-input change evidence to the playlist-playback composition boundary;
+they must not import the recommendation runtime or call a training API directly.
+
+Project invariant: audio-style training is concurrent leaf work with one model
+publication owner. Training input is the set of `Music` rows that have
+`path=Some(...)` and a valid range; `path=None` means the music has no completed
+local media and is not a training input. Training does not traverse playlist,
+collection, group, or playback-source graphs to discover media. Its repository
+view projects each trainable `Music` row into a flat training input that already
+contains an absolute path and only the fields needed for embedding identity,
+range, and liked state. The root coordinate for that absolute path is
+`MetaInfo.save_path`, falling back to the default `Documents/slisic` root created
+by the meta service. If `Music.path` is already absolute, the view preserves it.
+If `Music.path` is relative and collection ownership evidence exists, the view
+projects `MetaInfo.save_path / collection.folder / Music.path`. If ownership
+evidence is absent, the view projects `MetaInfo.save_path / Music.path`; missing
+owner evidence must never exclude the music from training eligibility. `group`,
+owner, and collection folder evidence are path-projection evidence, not
+model-training state, and they must not be used as a training eligibility gate.
+Training input loading must not hold a single long-running database query while
+the app is becoming interactive. The repository loads the flat music input first
+and then loads owner-folder projection evidence in bounded chunks with scheduler
+yield points, so startup first-track preparation and other foreground reads keep
+their own database progress path.
+The model runtime then rejects provider `.part`, Slisic temporary stems, cache
+temp files, and any other transient download residue. Worker threads may
+decode/cache different tracks concurrently. Worker count is a training-runtime
+policy derived from pending track count, available CPU parallelism, tensor
+backend availability, and a bounded cap; it is not a fixed business constant and
+it does not belong to playback or first-slot owners. A heartbeat folds completed
+leaf embeddings into `nightly` snapshots. Only that heartbeat/finalization owner
+can publish model generations, promote `stable`, or report leaf failures. A
+failed decode is leaf-local evidence, not a failed training run while at least
+one embedding can serve the model. Opening the embedding cache is not a cache
+maintenance pass: training startup may read individual cache entries lazily, but
+whole-directory cache garbage collection is an explicit maintenance action and
+must not block model availability at program startup.
+
+Project invariant: embedding availability is a model/cache status, not a
+library fact. `Music` owns source identity, range, liked state, grouping, URL,
+and completed media path. It must not store a generic `has_embedding` flag,
+because embedding availability depends on the audio-style fingerprint version,
+cache key, decode result, and current model publication. If the UI needs to
+show embedding status, the audio-style owner should expose a derived status
+view keyed by music identity, path, range, and embedding version.
 
 Project invariant: first-track preparation and audio-style model training must
 emit structured lifecycle logs through the application logger. Each refresh or
@@ -330,12 +390,21 @@ no next track, the upstream background queue-planning owner failed to satisfy
 its contract.
 
 Project invariant: next-track planning reads the `stable` audio-style model
-first. If no stable model exists, the stable model cannot rank the current
-anchor, or the audio-style proposal cannot produce a distinct next track, the
-playback queue owner must use the already materialized playlist-scoped SQL
-random candidate window to compose `[current, random_next]`. This fallback is
-background queue planning only; it is not FirstSlot preparation, play-click
-work, player boundary waiting, or a wider playlist scan.
+first. If `stable` exists but the current anchor has no embedding, the playback
+queue owner still stays inside audio-style semantics by using centerless
+selection over embedded candidates in the already materialized playlist-scoped
+candidate window. SQL random is allowed only when there is no stable model or
+the stable audio-style surface cannot produce any distinct embedded next track.
+This fallback is background queue planning only; it is not FirstSlot
+preparation, play-click work, player boundary waiting, or a wider playlist
+scan.
+
+Project invariant: next-track queue refresh is linear per active session. The
+periodic queue-fill path and download-change refresh path may both observe the
+same missing-next condition, but they must pass through the same refresh gate
+before sampling. After entering the gate, the owner rechecks whether the active
+queue already contains an unconsumed next track for the same anchor. If it does,
+the observation is stale and no model sampling or random fallback is allowed.
 
 Project invariant: the player consumes an explicit queue. It never queries
 playlist membership and cannot widen the candidate universe.
@@ -402,8 +471,10 @@ It is accepted only when the receiving owner has an explicit event meaning.
   starts after `player` accepts the first-track startup queue. It may use the
   newest published model that can rank the resolved first-track anchor,
   including an older published model when a newer in-progress model cannot
-  serve that anchor. It must not block the play action and must not defer the
-  first continuation until track completion.
+  serve that anchor. When a stable model exists but cannot rank the anchor, it
+  uses centerless audio-style selection over embedded playlist candidates
+  before considering SQL random. It must not block the play action and must not
+  defer the first continuation until track completion.
 - Spectrum playback scope ids are linear handles. Enter must publish the scope
   before spectrum opens; exit commits only if the current scope still matches.
 - Waveform tile and playback polling results belong to normalized file/scope
@@ -423,9 +494,11 @@ It is accepted only when the receiving owner has an explicit event meaning.
   cannot accept non-playable files as music.
 - Playback fallback can keep the current track or pick a replacement only in
   the declared recommendation mode; it cannot load extra playlist scope.
-- Playback next-track fallback uses stable audio-style first and then
-  playlist-scoped SQL random from the existing candidate window; it cannot wait
-  for `nightly`, block playback, or discard an available random next when the
+- Playback next-track fallback uses stable audio-style first, including
+  centerless audio-style when the anchor lacks an embedding, and then
+  playlist-scoped SQL random from the existing candidate window only when no
+  stable audio-style path can produce a distinct next track. It cannot wait for
+  `nightly`, block playback, or discard an available fallback next when the
   model is unavailable.
 - Playback fallback cannot create an implicit compatibility path that recomputes
   first-track startup inside a play click or waits at a track boundary for a

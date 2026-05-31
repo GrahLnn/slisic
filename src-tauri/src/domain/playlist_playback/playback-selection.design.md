@@ -37,6 +37,10 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   the playlist scope when a stable model exists. If no stable model exists
   during cold start, it prepares a playlist-scoped repository random source in
   the same backend first-slot pool.
+- Prepared first-slot snapshots carry source kind evidence. A later
+  audio-style-model-available refresh may replace an unconsumed
+  `random_fallback` snapshot, but it must not replace an unconsumed
+  `audio_style` snapshot.
 - Startup next-track selection is part of the post-acceptance backend queue
   fill transaction. Once the centerless first-track anchor is accepted by the
   player session, the recommendation planner must be invoked in the background.
@@ -91,6 +95,9 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - Non-invalidating refreshes fill only absent startup options. Playlist,
   library, and exclude invalidation may replace existing startup options because
   membership or availability changed.
+- Model-available refresh is a quality-upgrade signal, not a generic ready
+  signal. It is allowed to replace only cold-start random fallback snapshots and
+  must keep unconsumed audio-style snapshots.
 - Invalidation signals after playlist, library, and exclude changes.
 
 `playlist_playback::service` owns:
@@ -113,9 +120,14 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   published model that can rank the current anchor; a newer in-progress model
   that does not cover the anchor must not block a completed older model from
   serving the queue.
-- If no stable model can rank the current anchor in `KeepCurrent` mode, the
-  queue planner uses the already materialized playlist-scoped SQL random
-  candidate window to compose `[current, random_next]`.
+- If `stable` exists but cannot rank the current anchor in `KeepCurrent` mode,
+  the queue planner uses centerless audio-style selection over embedded
+  candidates from the already materialized playlist-scoped candidate window to
+  compose `[current, audio_style_next]`.
+- If no stable model exists, or stable audio-style selection cannot produce a
+  distinct embedded next track, the queue planner uses the already materialized
+  playlist-scoped SQL random candidate window to compose `[current,
+  random_next]`.
 - `KeepCurrent` accepts only `audio_style` selection evidence as a complete
   audio-style recommendation. Service-owned SQL random fallback is a separate
   queue-planning degradation path, not audio-style evidence.
@@ -128,8 +140,35 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - Audio-style probabilities for an already materialized candidate window.
 - Fallback selection metadata when the model cannot rank candidates.
 - The double-buffered model lifecycle: `stable` serves playback and first-slot
-  reads; `nightly` receives progressive training output; completed `nightly`
-  snapshots replace `stable` atomically and then notify first-slot preparation.
+  reads; `nightly` receives progressive training output; each complete nightly
+  snapshot may atomically replace `stable` when the stable surface is idle; the
+  first successful progressive promotion wakes first-slot preparation because
+  model availability changed; later progressive promotions do not wake an
+  already full first-slot pool; the final training snapshot must replace
+  `stable` when training completes and may notify first-slot preparation.
+- The model lifecycle is independent from playback behavior. Startup and stable
+  library-input changes are the only training schedulers. First-slot
+  preparation and next-track planning can observe model readiness and emit
+  diagnostics, but they cannot request or debounce training.
+- Training input is a flat model-runtime projection over completed `Music`
+  rows. The repository view returns an absolute media path plus embedding
+  identity/range fields; group, collection, owner, and playback-source scope are
+  not training fields and cannot decide whether a track is trainable.
+- Training leaf decoding is concurrent and bounded. Workers produce only
+  embedding results or leaf-local failures. A heartbeat owner collects completed
+  worker results, publishes `nightly` progress snapshots, and promotes `stable`
+  through the same double-buffer rule. Transient download files such as `.part`,
+  Slisic temporary stems, and cache `.tmp` files are outside the stable media
+  input domain and must not enter decoding.
+- Training worker count is a model-runtime scheduling decision based on pending
+  track count, available CPU parallelism, tensor backend availability, and a
+  bounded cap. Playback, first-slot preparation, and playlist repositories do
+  not own that number, and no user-facing behavior may depend on a fixed worker
+  count.
+- Cache opening is not cache maintenance. The embedding cache may lazily ignore
+  and rebuild stale or invalid per-track entries when that track is requested,
+  but whole-cache cleanup is an explicit maintenance action and cannot sit on
+  the training startup hot path.
 
 `player::service` owns:
 
@@ -227,8 +266,12 @@ transition owner is the `playlist_playback::service` queue planning path:
   immediately after player acceptance when the startup queue lacks a next track,
   and later when the active anchor changed or the queue lacks a next track;
 - next-track planning reads `stable` first and falls back to the same
-  playlist-scoped SQL random candidate window when `stable` is absent,
-  incomplete for the anchor, or unable to produce a distinct next track;
+  playlist-scoped centerless audio-style candidate window when `stable` exists
+  but lacks the anchor embedding; SQL random is used only when `stable` is
+  absent or stable audio-style cannot produce a distinct next track;
+- queue refresh from periodic fill and download-change events is gated per
+  session, and rechecks the active queue after entering the gate so an
+  unconsumed next track cannot be replaced by duplicate sampling;
 - replay-equivalent checks are covered by sidecar Rust tests for source scope,
   queue shape, fallback, and history filtering.
 
@@ -238,9 +281,16 @@ Audio-style fallback is explicit:
 
 - First-slot cold start may use repository random projection only when no stable
   model exists, and only in the backend preparation pool.
-- In `KeepCurrent` mode, model unavailability degrades to a playlist-scoped SQL
-  random next track after the current anchor, using only the candidate window
-  already materialized by the playback queue planner.
+- A cold-start random fallback first slot remains replaceable by the first
+  stable model-available event until it is consumed. Once replaced by
+  audio-style, ordinary ready/model progress events cannot churn it before
+  consumption.
+- In `KeepCurrent` mode, a stable model with a missing anchor embedding degrades
+  to centerless audio-style next-track selection over embedded candidates from
+  the candidate window already materialized by the playback queue planner.
+- In `KeepCurrent` mode, complete model unavailability degrades to a
+  playlist-scoped SQL random next track after the current anchor, using only the
+  candidate window already materialized by the playback queue planner.
 - A partially refreshed model is not allowed to starve playback queue planning
   when a completed older model still covers the active anchor.
 - In `ExcludeCurrent` mode, it can choose randomly from the already materialized
