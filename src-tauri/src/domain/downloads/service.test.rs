@@ -2,12 +2,12 @@ use super::model::CollectionSourceKind;
 use super::naming::{provider_segment, sanitize_path_component};
 use super::repo::{list_tasks, save_task};
 use super::service::{
-    CompletedLeafDownload, LeafDownloadRetryPolicy, LeafDownloadWindow,
-    derive_youtube_channel_url_from_uploads_playlist, discard_materialized_planned_leaves,
-    expand_root_entries_to_planned_leafs, extract_olak_playlist_ids, handle_finished_leaf_download,
-    is_retryable_leaf_download_error, leaf_download_parallelism, prepare_task_enqueue,
-    probe_root_with_limit, provisional_collection_for_task, residual_collection_plan,
-    resolve_collection_plan, resolve_collection_plan_with_root_probe, resolve_pasted_download_url,
+    CompletedLeafDownload, LeafDownloadRetryPolicy, LeafDownloadWindow, LeafPipelineStage,
+    discard_materialized_planned_leaves, expand_root_entries_to_planned_leafs,
+    handle_finished_leaf_download, is_retryable_leaf_download_error, leaf_download_parallelism,
+    leaf_pipeline_has_work, leaf_pipeline_next_stage, prepare_task_enqueue, probe_root_with_limit,
+    provisional_collection_for_task, residual_collection_plan, resolve_collection_plan,
+    resolve_collection_plan_with_root_probe, resolve_pasted_download_url,
     resolve_residual_temp_downloaded_file, resolve_task_collection_folder, resume_download_task,
     root_probe_parallelism, should_interrupt_unresumable_active_task_after_restart,
     should_recover_download_task_after_restart, should_reprobe_single_leaf,
@@ -127,6 +127,24 @@ fn leaf_download_window_keeps_single_downloads_serial() {
     window.record_success();
     window.record_failure();
     assert_eq!(window.current_limit(), 1);
+}
+
+#[test]
+fn leaf_pipeline_work_includes_ready_finalizations() {
+    assert!(!leaf_pipeline_has_work(0, 0, 0, 0, 0));
+    assert!(leaf_pipeline_has_work(0, 0, 0, 0, 1));
+}
+
+#[test]
+fn leaf_pipeline_prioritizes_ready_finalizations_before_new_work() {
+    assert_eq!(
+        leaf_pipeline_next_stage(4, 0, 4, 1, 4),
+        LeafPipelineStage::Finalize
+    );
+    assert_eq!(
+        leaf_pipeline_next_stage(4, 0, 4, 0, 4),
+        LeafPipelineStage::Download
+    );
 }
 
 #[test]
@@ -2104,39 +2122,6 @@ fn resolve_task_collection_folder_keeps_existing_task_download_folder_after_url_
     assert_eq!(
         folder,
         "youtube/TENET Official Soundtrack - WaterTower Music"
-    );
-}
-
-#[test]
-fn derives_channel_url_from_uploads_playlist_id() {
-    let derived = derive_youtube_channel_url_from_uploads_playlist(
-        "https://www.youtube.com/playlist?list=UUyp_JApwUNqb9v595vPRvhg",
-    );
-
-    assert_eq!(
-        derived.as_deref(),
-        Some("https://www.youtube.com/channel/UCyp_JApwUNqb9v595vPRvhg")
-    );
-}
-
-#[test]
-fn extracts_unique_olak_playlist_ids_from_html() {
-    let html = r#"
-        <script>
-            var a = "OLAK5uy_testAlpha-123";
-            var b = "OLAK5uy_testBeta_456";
-            var c = "OLAK5uy_testAlpha-123";
-        </script>
-    "#;
-
-    let ids = extract_olak_playlist_ids(html);
-
-    assert_eq!(
-        ids,
-        BTreeSet::from([
-            "OLAK5uy_testAlpha-123".to_string(),
-            "OLAK5uy_testBeta_456".to_string(),
-        ])
     );
 }
 

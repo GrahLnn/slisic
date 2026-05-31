@@ -48,6 +48,10 @@ collection and its manifest.
   explicitly.
 - Download failures and post-download commit failures are leaf-local for list
   downloads. One failed leaf cannot stop the remaining leaf pipeline.
+- Leaf preparation, leaf download, and leaf finalization are separate pipeline
+  stages. A completed download enters the finalization-ready queue and must be
+  committed before new prepare-side enrichment work can run. Download slots are
+  released by download completion, not by later metadata enrichment.
 - Provider access failures, including private videos and authentication-required
   videos, are terminal leaf failures. They are not retried because repeating the
   same unauthenticated request cannot change the provider's access decision.
@@ -88,6 +92,9 @@ collection and its manifest.
   persistence succeeds.
 - Residual leafs carry the group context needed to resume without re-expanding a
   root playlist.
+- Group context is plan-time or collection-catalog evidence. The leaf hot path
+  may reuse known group evidence, but it must not perform provider discovery to
+  improve grouping while downloads or finalizations are waiting.
 - Unresolved leaves are terminally rejected before task status is finalized.
 
 `LeafDownloadWindow` owns:
@@ -157,18 +164,40 @@ Prepared leaf + fresh download success -> Commit leaf:
 - Writes: stable file, music entries, manifest, and removes residual leaf.
 - Emits: task change signal.
 - Rejection: leaf-local failed download or failed commit.
+- Scheduling: download completion is queued for finalization immediately and
+  drains before prepare-stage enrichment or additional worker launch.
 
 Prepared leaf + existing final file -> Commit existing file:
 
 - Writes: music entries, manifest, and removes residual leaf.
 - Emits: task change signal.
 - Rejection: metadata persistence failure.
+- Scheduling: existing-file evidence enters the same finalization-ready queue
+  as fresh and recovered downloads. Preparation must not commit collection or
+  manifest state directly.
 
 Prepared leaf + unambiguous temp residue -> Commit recovered temp:
 
 - Writes: stable file, music entries, manifest, and removes residual leaf.
 - Emits: task change signal.
 - Rejection: ambiguous residue or failed commit.
+- Scheduling: recovered temp evidence enters the finalization-ready queue and
+  follows the same commit path as fresh downloads.
+
+```mermaid
+flowchart LR
+    Pending["Pending prepare"] --> Prepared["Prepared leaf evidence"]
+    Prepared --> Existing["Existing final file evidence"]
+    Prepared --> ReadyDownload["Ready download queue"]
+    Prepared --> Temp["Recovered temp evidence"]
+    ReadyDownload --> Downloading["Active yt-dlp download"]
+    Downloading --> Downloaded["Downloaded temp evidence"]
+    Existing --> Finalize["Finalization-ready queue"]
+    Temp --> Finalize
+    Downloaded --> Finalize
+    Finalize --> Commit["Commit leaf file, music, manifest, task"]
+    Commit --> ResidualRemoved["Residual leaf removed"]
+```
 
 Pipeline drained -> Terminal task:
 

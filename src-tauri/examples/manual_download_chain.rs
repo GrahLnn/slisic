@@ -123,6 +123,13 @@ mod domain {
     }
 
     pub mod playlist_playback {
+        pub mod playable_index {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/playlist_playback/playable_index.rs"
+            ));
+        }
+
         pub mod model {
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),

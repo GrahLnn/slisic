@@ -21,10 +21,10 @@ use crate::domain::playlists::model::{Collection, Group};
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary, managed_bin_dir};
 use anyhow::{Context, Result, anyhow, bail};
 use appdb::Id;
-use reqwest::{Url, blocking::Client as BlockingHttpClient};
+use reqwest::Url;
 #[cfg(not(test))]
 use std::collections::VecDeque;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 #[cfg(not(test))]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -50,9 +50,6 @@ const MAX_LEAF_DOWNLOAD_ATTEMPTS: usize = 3;
 const LEAF_DOWNLOAD_RETRY_BASE_DELAY_SECS: u64 = 2;
 const LEAF_DOWNLOAD_RETRY_MAX_JITTER_MILLIS: u64 = 750;
 const MAX_CONCURRENT_ROOT_PROBES: usize = 2;
-const GROUP_DISCOVERY_USER_AGENT: &str =
-    concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
-
 #[cfg(not(test))]
 static DOWNLOAD_RUNTIME: OnceLock<DownloadRuntime> = OnceLock::new();
 #[cfg(not(test))]
@@ -116,7 +113,6 @@ struct ExpandedLeafCandidate {
 struct GroupCatalog {
     groups: HashMap<String, Group>,
     ambiguous: HashSet<String>,
-    discovery_attempted: bool,
 }
 
 #[derive(Clone)]
@@ -186,11 +182,74 @@ pub(crate) struct FailedLeafDownload {
 type LeafDownloadOutcome = std::result::Result<CompletedLeafDownload, FailedLeafDownload>;
 
 #[cfg(not(test))]
+#[derive(Debug)]
+enum LeafFinalization {
+    Downloaded(LeafDownloadOutcome),
+    ExistingFile(ExistingLeafCompletion),
+}
+
+#[cfg(not(test))]
+#[derive(Debug)]
+struct ExistingLeafCompletion {
+    leaf: DownloadLeaf,
+    music_probe: LeafProbe,
+    group: Group,
+    relative_path: String,
+}
+
+pub(crate) fn leaf_pipeline_has_work(
+    active_prepares: usize,
+    active_downloads: usize,
+    pending_prepares: usize,
+    ready_downloads: usize,
+    ready_finalizations: usize,
+) -> bool {
+    active_prepares > 0
+        || active_downloads > 0
+        || pending_prepares > 0
+        || ready_downloads > 0
+        || ready_finalizations > 0
+}
+
+#[cfg(test)]
+pub(crate) fn leaf_pipeline_next_stage(
+    active_prepares: usize,
+    active_downloads: usize,
+    ready_downloads: usize,
+    ready_finalizations: usize,
+    download_limit: usize,
+) -> LeafPipelineStage {
+    if ready_finalizations > 0 {
+        return LeafPipelineStage::Finalize;
+    }
+
+    if ready_downloads > 0 && active_downloads < download_limit {
+        return LeafPipelineStage::Download;
+    }
+
+    if active_prepares > 0 || active_downloads > 0 {
+        return LeafPipelineStage::WaitForWorker;
+    }
+
+    LeafPipelineStage::Prepare
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LeafPipelineStage {
+    Finalize,
+    Download,
+    Prepare,
+    WaitForWorker,
+}
+
+#[cfg(not(test))]
 #[derive(Debug, Default)]
 struct LeafPipelineState {
     workers: JoinSet<LeafPipelineEvent>,
     pending_prepares: VecDeque<PlannedLeaf>,
     ready_downloads: VecDeque<PreparedLeafDownload>,
+    ready_finalizations: VecDeque<LeafFinalization>,
     active_prepares: usize,
     active_downloads: usize,
     prepare_parallelism: usize,
@@ -205,6 +264,7 @@ impl LeafPipelineState {
             workers: JoinSet::new(),
             pending_prepares: VecDeque::from(leaves),
             ready_downloads: VecDeque::new(),
+            ready_finalizations: VecDeque::new(),
             active_prepares: 0,
             active_downloads: 0,
             prepare_parallelism,
@@ -213,10 +273,13 @@ impl LeafPipelineState {
     }
 
     fn has_work(&self) -> bool {
-        self.active_prepares > 0
-            || self.active_downloads > 0
-            || !self.pending_prepares.is_empty()
-            || !self.ready_downloads.is_empty()
+        leaf_pipeline_has_work(
+            self.active_prepares,
+            self.active_downloads,
+            self.pending_prepares.len(),
+            self.ready_downloads.len(),
+            self.ready_finalizations.len(),
+        )
     }
 }
 
@@ -689,6 +752,7 @@ async fn run_task_with_deps(
     fill_leaf_pipeline(
         &mut pipeline,
         &mut task_snapshot,
+        &mut collection,
         client.clone(),
         plan.source_kind,
         &save_root,
@@ -696,6 +760,14 @@ async fn run_task_with_deps(
     .await?;
 
     while pipeline.has_work() {
+        drain_ready_leaf_finalizations(
+            &mut pipeline,
+            &mut task_snapshot,
+            &mut collection,
+            plan.source_kind,
+            &save_root,
+        )
+        .await?;
         handle_leaf_pipeline_event(
             &mut pipeline,
             &mut task_snapshot,
@@ -709,6 +781,7 @@ async fn run_task_with_deps(
         fill_leaf_pipeline(
             &mut pipeline,
             &mut task_snapshot,
+            &mut collection,
             client.clone(),
             plan.source_kind,
             &save_root,
@@ -789,10 +862,13 @@ async fn mark_unresolved_leaves_failed(task_snapshot: &mut DownloadTask) -> Resu
 async fn fill_leaf_pipeline(
     pipeline: &mut LeafPipelineState,
     task_snapshot: &mut DownloadTask,
+    collection: &mut Collection,
     client: Arc<dyn YtDlpClient>,
     source_kind: CollectionSourceKind,
     save_root: &Path,
 ) -> Result<()> {
+    drain_ready_leaf_finalizations(pipeline, task_snapshot, collection, source_kind, save_root)
+        .await?;
     spawn_ready_leaf_downloads(
         pipeline,
         task_snapshot,
@@ -967,6 +1043,17 @@ async fn handle_leaf_pipeline_event(
     source_kind: CollectionSourceKind,
     save_root: &Path,
 ) -> Result<()> {
+    if !pipeline.ready_finalizations.is_empty() {
+        return drain_ready_leaf_finalizations(
+            pipeline,
+            task_snapshot,
+            collection,
+            source_kind,
+            save_root,
+        )
+        .await;
+    }
+
     if pipeline.active_prepares == 0 && pipeline.active_downloads == 0 {
         return Ok(());
     }
@@ -1010,16 +1097,55 @@ async fn handle_leaf_pipeline_event(
                     pipeline.download_window.record_failure();
                 }
             }
-            handle_finished_leaf_download(
+            pipeline
+                .ready_finalizations
+                .push_back(LeafFinalization::Downloaded(outcome));
+            drain_ready_leaf_finalizations(
+                pipeline,
                 task_snapshot,
                 collection,
                 source_kind,
                 save_root,
-                outcome,
             )
             .await
         }
     }
+}
+
+#[cfg(not(test))]
+async fn drain_ready_leaf_finalizations(
+    pipeline: &mut LeafPipelineState,
+    task_snapshot: &mut DownloadTask,
+    collection: &mut Collection,
+    source_kind: CollectionSourceKind,
+    save_root: &Path,
+) -> Result<()> {
+    while let Some(outcome) = pipeline.ready_finalizations.pop_front() {
+        match outcome {
+            LeafFinalization::Downloaded(outcome) => {
+                handle_finished_leaf_download(
+                    task_snapshot,
+                    collection,
+                    source_kind,
+                    save_root,
+                    outcome,
+                )
+                .await?;
+            }
+            LeafFinalization::ExistingFile(completion) => {
+                handle_existing_leaf_completion(
+                    task_snapshot,
+                    collection,
+                    source_kind,
+                    save_root,
+                    completion,
+                )
+                .await?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(not(test))]
@@ -1028,7 +1154,7 @@ async fn handle_prepared_leaf_download(
     task_snapshot: &mut DownloadTask,
     collection: &mut Collection,
     group_catalog: &mut GroupCatalog,
-    client: Arc<dyn YtDlpClient>,
+    _client: Arc<dyn YtDlpClient>,
     source_kind: CollectionSourceKind,
     save_root: &Path,
     outcome: LeafPreparationOutcome,
@@ -1058,20 +1184,10 @@ async fn handle_prepared_leaf_download(
         pipeline.active_downloads
     );
 
-    let group = match prepared.group.clone() {
-        Some(group) => Some(group),
-        None => {
-            resolve_probe_group(
-                source_kind,
-                &prepared.probe,
-                &task_snapshot.url,
-                collection,
-                client.clone(),
-                group_catalog,
-            )
-            .await
-        }
-    };
+    let group = prepared
+        .group
+        .clone()
+        .or_else(|| group_catalog.resolve(&prepared.probe));
 
     let mut leaf_snapshot = prepared.leaf;
     leaf_snapshot.title = Some(prepared.probe.title.clone());
@@ -1093,24 +1209,14 @@ async fn handle_prepared_leaf_download(
             "[downloads] leaf {} reusing existing file {}",
             leaf_snapshot.id, relative_path
         );
-        collection_import::persist_downloaded_leaf_music(
-            collection,
-            source_kind,
-            &prepared.music_probe,
-            &relative_path,
-            music_group,
-        )
-        .await?;
-        write_collection_manifest_after_download(save_root, collection, source_kind)?;
-        leaf_snapshot.file_name = Some(relative_path.clone());
-        leaf_snapshot.relative_path = Some(relative_path);
-        leaf_snapshot.status = DownloadLeafStatus::Completed;
-        leaf_snapshot.last_error = None;
-        leaf_snapshot.touch();
-        task_snapshot.replace_leaf(leaf_snapshot);
-        let saved = repo::save_task(task_snapshot.clone()).await?;
-        publish_download_task_change(&saved);
-        *task_snapshot = saved;
+        pipeline
+            .ready_finalizations
+            .push_back(LeafFinalization::ExistingFile(ExistingLeafCompletion {
+                leaf: leaf_snapshot,
+                music_probe: prepared.music_probe,
+                group: music_group,
+                relative_path,
+            }));
         return Ok(());
     }
 
@@ -1121,12 +1227,9 @@ async fn handle_prepared_leaf_download(
                 leaf_snapshot.id,
                 downloaded_path.display()
             );
-            handle_finished_leaf_download(
-                task_snapshot,
-                collection,
-                source_kind,
-                save_root,
-                Ok(CompletedLeafDownload {
+            pipeline
+                .ready_finalizations
+                .push_back(LeafFinalization::Downloaded(Ok(CompletedLeafDownload {
                     leaf: leaf_snapshot,
                     probe: prepared.probe,
                     music_probe: prepared.music_probe,
@@ -1136,9 +1239,7 @@ async fn handle_prepared_leaf_download(
                     },
                     progress: DownloadProgress::default(),
                     retry_failures: 0,
-                }),
-            )
-            .await?;
+                })));
             return Ok(());
         }
         ResidualTempFileResolution::Ambiguous(candidates) => {
@@ -1389,6 +1490,63 @@ async fn handle_finished_leaf_download(
     publish_download_task_change(&saved);
     *task_snapshot = saved;
     eprintln!("[downloads] leaf {} completed file={}", leaf_id, file_name);
+    Ok(())
+}
+
+#[cfg(not(test))]
+async fn handle_existing_leaf_completion(
+    task_snapshot: &mut DownloadTask,
+    collection: &mut Collection,
+    source_kind: CollectionSourceKind,
+    save_root: &Path,
+    completion: ExistingLeafCompletion,
+) -> Result<()> {
+    let mut leaf_snapshot = completion.leaf;
+    let relative_path = completion.relative_path;
+    let leaf_id = leaf_snapshot.id.to_string();
+    let leaf_url = completion.music_probe.webpage_url.clone();
+
+    let persist_result = async {
+        collection_import::persist_downloaded_leaf_music(
+            collection,
+            source_kind,
+            &completion.music_probe,
+            &relative_path,
+            completion.group,
+        )
+        .await?;
+        write_collection_manifest_after_download(save_root, collection, source_kind)?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    if let Err(error) = persist_result {
+        let error = error.to_string();
+        eprintln!(
+            "[downloads] leaf {} existing file persist failed relative_path={} error={}",
+            leaf_snapshot.id, relative_path, error
+        );
+        mark_leaf_failed(task_snapshot, leaf_snapshot, error).await?;
+        if source_kind == CollectionSourceKind::Single {
+            let last_error = task_snapshot.last_error.clone();
+            update_task_status(task_snapshot, DownloadTaskStatus::Failed, last_error).await?;
+        }
+        return Ok(());
+    }
+
+    leaf_snapshot.file_name = Some(relative_path.clone());
+    leaf_snapshot.relative_path = Some(relative_path.clone());
+    leaf_snapshot.status = DownloadLeafStatus::Completed;
+    leaf_snapshot.last_error = None;
+    leaf_snapshot.touch();
+    task_snapshot.replace_leaf(leaf_snapshot);
+    let saved = repo::save_task(task_snapshot.clone()).await?;
+    publish_download_task_change(&saved);
+    *task_snapshot = saved;
+    eprintln!(
+        "[downloads] leaf {} completed existing file={} url={}",
+        leaf_id, relative_path, leaf_url
+    );
     Ok(())
 }
 
@@ -1990,123 +2148,6 @@ fn temporary_download_stem(file_stem: &str, task_id: &Id, leaf_id: &Id) -> Strin
     )
 }
 
-#[cfg(not(test))]
-async fn resolve_probe_group(
-    source_kind: CollectionSourceKind,
-    probe: &LeafProbe,
-    source_url: &str,
-    collection: &Collection,
-    client: Arc<dyn YtDlpClient>,
-    catalog: &mut GroupCatalog,
-) -> Option<Group> {
-    if source_kind != CollectionSourceKind::List {
-        return None;
-    }
-
-    if let Some(group) = catalog.resolve(probe) {
-        return Some(group);
-    }
-
-    if probe.album.is_none() || catalog.discovery_attempted {
-        return None;
-    }
-
-    catalog.discovery_attempted = true;
-    match discover_group_catalog(source_url.to_string(), collection, client).await {
-        Ok(groups) => catalog.extend(groups),
-        Err(error) => {
-            eprintln!("[downloads] group discovery failed: {error}");
-        }
-    }
-
-    catalog.resolve(probe)
-}
-
-/// Group data is leaf-level enrichment: root collection shape stays flat, and
-/// album metadata only adds a parent folder when a real playlist URL is known.
-#[cfg(not(test))]
-async fn discover_group_catalog(
-    source_url: String,
-    collection: &Collection,
-    client: Arc<dyn YtDlpClient>,
-) -> Result<Vec<Group>> {
-    let mut groups = Vec::new();
-    let mut errors = Vec::new();
-    let mut seen_urls = BTreeSet::new();
-
-    for candidate_url in group_discovery_source_urls(&source_url) {
-        let extracted = run_blocking({
-            let candidate_url = candidate_url.clone();
-            move || discover_group_playlist_urls_from_source(&candidate_url)
-        })
-        .await;
-
-        match extracted {
-            Ok(playlist_urls) => {
-                for playlist_url in playlist_urls {
-                    if !seen_urls.insert(playlist_url.clone()) {
-                        continue;
-                    }
-
-                    match probe_root_with_limit(client.clone(), playlist_url.clone()).await {
-                        Ok(RootProbe::List(list)) => groups.push(Group {
-                            name: list.title.clone(),
-                            url: list.webpage_url.clone(),
-                            collection: collection.into(),
-                            folder: sanitize_path_component(&list.title),
-                        }),
-                        Ok(RootProbe::Single(_)) => {}
-                        Err(error) => errors.push(format!("{playlist_url}: {error}")),
-                    }
-                }
-            }
-            Err(error) => errors.push(format!("{candidate_url}: {error}")),
-        }
-    }
-
-    if !groups.is_empty() || errors.is_empty() {
-        return Ok(groups);
-    }
-
-    bail!("{}", errors.join("; "))
-}
-
-#[cfg(not(test))]
-fn discover_group_playlist_urls_from_source(source_url: &str) -> Result<Vec<String>> {
-    let http = group_discovery_http_client()?;
-    let html = http
-        .get(source_url)
-        .send()
-        .and_then(|response| response.error_for_status())
-        .context("failed to fetch source html")?
-        .text()
-        .context("failed to read source html")?;
-
-    Ok(extract_olak_playlist_ids(&html)
-        .into_iter()
-        .map(|playlist_id| format!("https://www.youtube.com/playlist?list={playlist_id}"))
-        .collect())
-}
-
-fn group_discovery_http_client() -> Result<BlockingHttpClient> {
-    BlockingHttpClient::builder()
-        .user_agent(GROUP_DISCOVERY_USER_AGENT)
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .context("failed to build group discovery http client")
-}
-
-fn group_discovery_source_urls(source_url: &str) -> Vec<String> {
-    let mut urls = vec![source_url.to_string()];
-    if let Some(channel_url) = derive_youtube_channel_url_from_uploads_playlist(source_url)
-        && !urls.contains(&channel_url)
-    {
-        urls.push(channel_url);
-    }
-    urls
-}
-
 async fn update_task_status(
     task: &mut DownloadTask,
     status: DownloadTaskStatus,
@@ -2605,52 +2646,6 @@ fn normalize_group_key(value: &str) -> Option<String> {
     } else {
         Some(normalized.to_lowercase())
     }
-}
-
-pub(crate) fn derive_youtube_channel_url_from_uploads_playlist(url: &str) -> Option<String> {
-    let parsed = Url::parse(url).ok()?;
-    let host = parsed.host_str()?.to_ascii_lowercase();
-    if !host.ends_with("youtube.com") {
-        return None;
-    }
-
-    let list_id = parsed
-        .query_pairs()
-        .find(|(key, value)| key == "list" && value.starts_with("UU"))
-        .map(|(_, value)| value.to_string())?;
-    Some(format!(
-        "https://www.youtube.com/channel/UC{}",
-        &list_id[2..]
-    ))
-}
-
-pub(crate) fn extract_olak_playlist_ids(html: &str) -> BTreeSet<String> {
-    const PREFIX: &[u8] = b"OLAK5uy_";
-
-    let bytes = html.as_bytes();
-    let mut ids = BTreeSet::new();
-    let mut index = 0_usize;
-    while index + PREFIX.len() <= bytes.len() {
-        if &bytes[index..index + PREFIX.len()] != PREFIX {
-            index += 1;
-            continue;
-        }
-
-        let mut end = index + PREFIX.len();
-        while end < bytes.len() {
-            let byte = bytes[end];
-            if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' {
-                end += 1;
-            } else {
-                break;
-            }
-        }
-
-        ids.insert(html[index..end].to_string());
-        index = end;
-    }
-
-    ids
 }
 
 pub(crate) struct PendingEnqueueUrlGuard {
