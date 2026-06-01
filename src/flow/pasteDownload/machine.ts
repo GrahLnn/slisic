@@ -2,11 +2,15 @@ import { assign } from "xstate";
 import { draftCollectionUpserted, send as sendAppLogic } from "../appLogic/runtime";
 import {
   appendCandidateItem,
+  acceptCandidateDownloadTask,
+  applyDownloadTaskChangeSignal,
   applyCandidateUrlResolution,
   createCandidateItemId,
   createInvalidPastedDownloadUrlResolution,
   createInitialContext,
   deleteCandidateItem,
+  deleteCandidateItemByTaskId,
+  failCandidateTask,
   failCandidateItem,
   hasCandidateItem,
   parseClipboardDownloadUrl,
@@ -22,6 +26,9 @@ const candidateResolveCompleted = payloads["candidate.resolve.completed"];
 const candidateResolveFailed = payloads["candidate.resolve.failed"];
 const candidateEnqueueCompleted = payloads["candidate.enqueue.completed"];
 const candidateEnqueueFailed = payloads["candidate.enqueue.failed"];
+const downloadTaskChanged = payloads["download.task.changed"];
+const candidateTaskCollectionLoaded = payloads["candidate.task.collection.loaded"];
+const candidateTaskCollectionFailed = payloads["candidate.task.collection.failed"];
 
 export const machine = src.createMachine({
   initial: ss.mainx.State.idle,
@@ -113,12 +120,75 @@ export const machine = src.createMachine({
     [candidateEnqueueCompleted.evt]: {
       actions: [
         ({ context, event }) => {
-          if (hasCandidateItem(context, event.output.id)) {
+          if (hasCandidateItem(context, event.output.id) && event.output.result.collection) {
             sendAppLogic(draftCollectionUpserted.load(event.output.result.collection));
           }
         },
-        assign(({ context, event }) => deleteCandidateItem(context, event.output.id)),
+        assign(({ context, event }) =>
+          event.output.result.collection
+            ? deleteCandidateItem(context, event.output.id)
+            : acceptCandidateDownloadTask(context, event.output.id, event.output.result.task),
+        ),
       ],
+    },
+    [downloadTaskChanged.evt]: {
+      actions: [
+        ({ context, event, self }) => {
+          if (
+            !event.output.collection_url ||
+            (event.output.status !== "completed" &&
+              event.output.status !== "completed_with_errors") ||
+            !context.items.some((item) => item.taskId === event.output.task_id)
+          ) {
+            return;
+          }
+
+          void deps
+            .getCollection(event.output.collection_url)
+            .then((collection) => {
+              if (collection) {
+                self.send(
+                  candidateTaskCollectionLoaded.load({
+                    taskId: event.output.task_id,
+                    collection,
+                  }),
+                );
+                return;
+              }
+
+              self.send(
+                candidateTaskCollectionFailed.load({
+                  taskId: event.output.task_id,
+                  error: "Download finished but the collection could not be loaded.",
+                }),
+              );
+            })
+            .catch((error) => {
+              self.send(
+                candidateTaskCollectionFailed.load({
+                  taskId: event.output.task_id,
+                  error: toErrorMessage(error),
+                }),
+              );
+            });
+        },
+        assign(({ context, event }) => applyDownloadTaskChangeSignal(context, event.output)),
+      ],
+    },
+    [candidateTaskCollectionLoaded.evt]: {
+      actions: [
+        ({ context, event }) => {
+          if (context.items.some((item) => item.taskId === event.output.taskId)) {
+            sendAppLogic(draftCollectionUpserted.load(event.output.collection));
+          }
+        },
+        assign(({ context, event }) => deleteCandidateItemByTaskId(context, event.output.taskId)),
+      ],
+    },
+    [candidateTaskCollectionFailed.evt]: {
+      actions: assign(({ context, event }) =>
+        failCandidateTask(context, event.output.taskId, event.output.error),
+      ),
     },
     [candidateEnqueueFailed.evt]: {
       actions: assign(({ context, event }) =>

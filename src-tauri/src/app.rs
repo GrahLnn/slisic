@@ -128,7 +128,8 @@ pub fn run() {
             utils::hardware_wheel::HardwareHorizontalWheelEvent,
             domain::player::event::NowPlayingTrackChangedEvent,
             domain::player::event::PlaybackExcludeCommittedEvent,
-            domain::player::event::PlaybackDiagnosticTraceEvent
+            domain::player::event::PlaybackDiagnosticTraceEvent,
+            domain::downloads::service::DownloadTaskChangeSignal
         ]);
 
     #[cfg(debug_assertions)]

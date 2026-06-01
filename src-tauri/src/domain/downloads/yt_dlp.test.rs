@@ -127,10 +127,35 @@ fn parses_leaf_probe_with_chapters() {
 
     assert_eq!(parsed.title, "Leaf Title");
     assert_eq!(parsed.album.as_deref(), Some("Album Title"));
+    assert_eq!(parsed.duration_ms, Some(301_200));
     assert_eq!(parsed.duration_seconds, Some(302));
     assert_eq!(parsed.chapters.len(), 2);
     assert_eq!(parsed.chapters[0].title, "Intro");
     assert_eq!(parsed.chapters[0].end_ms, 12_400);
+}
+
+#[test]
+fn parses_selected_audio_duration_as_millisecond_boundary_evidence() {
+    let value = json!({
+        "title": "481772",
+        "webpage_url": "https://www.youtube.com/watch?v=oFg0ABdknrQ",
+        "extractor_key": "Youtube",
+        "duration": 257,
+        "requested_downloads": [
+            {
+                "format_id": "140",
+                "ext": "m4a",
+                "acodec": "mp4a.40.2",
+                "vcodec": "none",
+                "url": "https://rr1---sn.example/videoplayback?mime=audio%2Fmp4&dur=257.499&itag=140"
+            }
+        ]
+    });
+
+    let parsed = parse_leaf_probe(value).expect("leaf probe should parse");
+
+    assert_eq!(parsed.duration_ms, Some(257_499));
+    assert_eq!(parsed.duration_seconds, Some(258));
 }
 
 #[test]
@@ -151,6 +176,7 @@ fn collapses_single_full_duration_chapter_into_plain_leaf() {
 
     let parsed = parse_leaf_probe(value).expect("leaf probe should parse");
 
+    assert_eq!(parsed.duration_ms, Some(245_000));
     assert_eq!(parsed.duration_seconds, Some(245));
     assert!(
         parsed.chapters.is_empty(),

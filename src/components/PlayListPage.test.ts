@@ -401,7 +401,41 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "none");
   });
 
-  test("projects a ready pending playback request as preparing instead of a stuck title press", () => {
+  test("keeps a starting pending playback request on the playlist title", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "ready",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [
+        createPlayListFixture({ name: "Night Drive" }),
+        createPlayListFixture({ name: "Quiet Morning" }),
+      ],
+      pendingPlaylistPlaybackRequest: {
+        error: null,
+        phase: "starting",
+        playlistName: "Quiet Morning",
+        reason: null,
+        requestId: 1,
+      },
+      playingPlaylistName: null,
+      titleToneHandoff: null,
+      pressedLayoutId: "playlist-title:Quiet Morning",
+      playbackSurface: null,
+      titleReturnSurface: null,
+    });
+
+    assert.equal(viewModel.shouldLockScroll, true);
+    assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[1]?.text, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[1]?.isPlaybackTarget, true);
+    assert.equal(viewModel.itemViewModels[1]?.isPlaybackPreparing, false);
+    assert.equal(viewModel.itemViewModels[1]?.shouldShowPlaybackIcons, false);
+    assert.equal(viewModel.itemViewModels[1]?.commitGesture, "disabled");
+    assert.equal(viewModel.itemViewModels[1]?.titleHoverVisual, "retain");
+    assert.equal(viewModel.itemViewModels[0]?.isHiddenInPlay, true);
+  });
+
+  test("projects pending first-track playback as preparing instead of a stuck title press", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "ready",
       activeLayoutId: null,

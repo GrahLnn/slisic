@@ -96,6 +96,7 @@ describe("candidate item helpers", () => {
           displayText: "https://example.com/watch?v=def",
           status: "enqueueing" as const,
           error: null,
+          taskId: null,
         },
         {
           id: "candidate:0",
@@ -104,6 +105,7 @@ describe("candidate item helpers", () => {
           displayText: "https://example.com/watch?v=abc",
           status: "enqueueing" as const,
           error: null,
+          taskId: null,
         },
       ],
     };
@@ -119,7 +121,9 @@ describe("candidate item helpers", () => {
     assert.equal(candidateItemAllowsDelete("enqueue_failed"), true);
     assert.equal(candidateItemAllowsDelete("checking"), false);
     assert.equal(candidateItemAllowsDelete("enqueueing"), false);
+    assert.equal(candidateItemAllowsDelete("preparing"), false);
     assert.equal(candidateItemIsErrored("enqueue_failed"), true);
     assert.equal(candidateItemIsErrored("enqueueing"), false);
+    assert.equal(candidateItemIsErrored("preparing"), false);
   });
 });

@@ -2,7 +2,7 @@ use super::model::CollectionSourceKind;
 use anyhow::{Context, Result, bail};
 use reqwest::Url;
 use serde_json::Value;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,7 @@ const YOUTUBE_PLAYLIST_EXTRACTOR_ARGS: &str = "youtube:playlist_ajax=true;tab_ma
 const PYTHON_UTF8_ENV_VAR: &str = "PYTHONUTF8";
 const PYTHON_IO_ENCODING_ENV_VAR: &str = "PYTHONIOENCODING";
 const UTF8_ENCODING_VALUE: &str = "utf-8";
+const LOCAL_AUDIO_PROBE_SAMPLE_RATE: u32 = 48_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistRoot {
@@ -27,7 +28,6 @@ pub struct PlaylistRoot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(test)]
 pub struct RootShellProbe {
     pub source_kind: CollectionSourceKind,
     pub title: String,
@@ -48,6 +48,7 @@ pub struct LeafProbe {
     pub webpage_url: String,
     pub extractor_key: Option<String>,
     pub album: Option<String>,
+    pub duration_ms: Option<u32>,
     pub duration_seconds: Option<u32>,
     pub chapters: Vec<LeafChapter>,
 }
@@ -68,6 +69,7 @@ pub enum RootProbe {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadedLeaf {
     pub absolute_path: PathBuf,
+    pub duration_ms: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -80,6 +82,7 @@ pub struct DownloadProgress {
 }
 
 pub trait YtDlpClient: Send + Sync {
+    fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe>;
     fn probe_root(&self, url: &str) -> Result<RootProbe>;
     fn probe_leaf(&self, url: &str) -> Result<LeafProbe>;
     fn download_leaf_audio(
@@ -146,6 +149,16 @@ impl CliYtDlpClient {
 }
 
 impl YtDlpClient for CliYtDlpClient {
+    fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe> {
+        match classify_root_preference(url) {
+            CollectionSourceKind::Single => self.probe_leaf(url).map(root_shell_from_leaf_probe),
+            CollectionSourceKind::List => {
+                let args = build_root_playlist_shell_probe_args(url);
+                parse_root_shell_probe(self.run_json_command(&args)?, url)
+            }
+        }
+    }
+
     fn probe_root(&self, url: &str) -> Result<RootProbe> {
         match classify_root_preference(url) {
             CollectionSourceKind::Single => self.probe_leaf(url).map(RootProbe::Single),
@@ -159,6 +172,8 @@ impl YtDlpClient for CliYtDlpClient {
     fn probe_leaf(&self, url: &str) -> Result<LeafProbe> {
         let mut args = self.common_probe_args();
         args.push("--no-playlist".to_string());
+        args.push("--format".to_string());
+        args.push(AUDIO_ONLY_FORMAT_SELECTOR.to_string());
         args.push(url.to_string());
         parse_leaf_probe(self.run_json_command(&args)?)
     }
@@ -242,13 +257,33 @@ impl YtDlpClient for CliYtDlpClient {
         let absolute_path =
             resolve_downloaded_file(target_dir, file_stem, final_path.as_deref())
                 .context("yt-dlp completed but final audio path could not be resolved")?;
+        let duration_ms = probe_downloaded_audio_duration_ms(&self.ffmpeg_path(), &absolute_path)
+            .with_context(|| {
+            format!(
+                "failed to read downloaded audio duration from {}",
+                absolute_path.display()
+            )
+        })?;
         eprintln!(
             "[downloads:yt-dlp] resolved audio url={} path={}",
             url,
             absolute_path.display()
         );
 
-        Ok(DownloadedLeaf { absolute_path })
+        Ok(DownloadedLeaf {
+            absolute_path,
+            duration_ms,
+        })
+    }
+}
+
+impl CliYtDlpClient {
+    fn ffmpeg_path(&self) -> PathBuf {
+        self.ffmpeg_dir.join(if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        })
     }
 }
 
@@ -293,7 +328,6 @@ pub(crate) fn build_root_playlist_probe_args(url: &str) -> Vec<String> {
     args
 }
 
-#[cfg(test)]
 pub(crate) fn build_root_playlist_shell_probe_args(url: &str) -> Vec<String> {
     let mut args = build_root_playlist_base_probe_args(url);
     args.splice(3..3, ["--playlist-items".to_string(), "0".to_string()]);
@@ -363,7 +397,6 @@ pub fn looks_like_direct_leaf_url(url: &str) -> bool {
     false
 }
 
-#[cfg(test)]
 pub fn parse_root_shell_probe(value: Value, input_url: &str) -> Result<RootShellProbe> {
     let is_playlist = value
         .get("_type")
@@ -389,7 +422,6 @@ pub fn parse_root_shell_probe(value: Value, input_url: &str) -> Result<RootShell
     })
 }
 
-#[cfg(test)]
 fn root_shell_from_leaf_probe(leaf: LeafProbe) -> RootShellProbe {
     RootShellProbe {
         source_kind: CollectionSourceKind::Single,
@@ -475,10 +507,12 @@ pub fn parse_leaf_probe(value: Value) -> Result<LeafProbe> {
         .context("yt-dlp metadata is missing webpage_url")?;
     let extractor_key = read_optional_string(&value, "extractor_key");
     let album = read_optional_string(&value, "album");
-    let duration_seconds = value
-        .get("duration")
-        .and_then(parse_number_like)
-        .map(|value| value.ceil() as u32);
+    let raw_duration = value.get("duration").and_then(parse_number_like);
+    let duration_ms =
+        selected_audio_duration_ms(&value).or_else(|| raw_duration.map(seconds_to_millis));
+    let duration_seconds = duration_ms
+        .map(|duration_ms| duration_ms.div_ceil(1_000))
+        .or_else(|| raw_duration.map(|value| value.ceil() as u32));
     let chapters = value
         .get("chapters")
         .and_then(Value::as_array)
@@ -489,13 +523,14 @@ pub fn parse_leaf_probe(value: Value) -> Result<LeafProbe> {
                 .collect::<Vec<LeafChapter>>()
         })
         .unwrap_or_default();
-    let chapters = normalize_chapters(&title, duration_seconds, chapters);
+    let chapters = normalize_chapters(&title, duration_ms, chapters);
 
     Ok(LeafProbe {
         title,
         webpage_url,
         extractor_key,
         album,
+        duration_ms,
         duration_seconds,
         chapters,
     })
@@ -540,7 +575,7 @@ fn parse_chapter(value: &Value) -> Option<LeafChapter> {
 
 fn normalize_chapters(
     video_title: &str,
-    duration_seconds: Option<u32>,
+    duration_ms: Option<u32>,
     mut chapters: Vec<LeafChapter>,
 ) -> Vec<LeafChapter> {
     if chapters.len() != 1 {
@@ -548,21 +583,182 @@ fn normalize_chapters(
     }
 
     let chapter = chapters.pop().expect("single chapter should exist");
-    let covers_full_duration = duration_seconds.is_some_and(|duration| {
-        chapter.start_ms == 0 && chapter.end_ms >= duration.saturating_sub(1).saturating_mul(1_000)
+    let covers_full_duration = duration_ms.is_some_and(|duration| {
+        chapter.start_ms == 0 && chapter.end_ms >= duration.saturating_sub(1_000)
     });
     let repeats_video_title = chapter
         .title
         .trim()
         .eq_ignore_ascii_case(video_title.trim());
 
-    if covers_full_duration
-        || duration_seconds.is_none() && repeats_video_title && chapter.start_ms == 0
+    if covers_full_duration || duration_ms.is_none() && repeats_video_title && chapter.start_ms == 0
     {
         return vec![];
     }
 
     vec![chapter]
+}
+
+fn selected_audio_duration_ms(value: &Value) -> Option<u32> {
+    selected_audio_format_values(value)
+        .into_iter()
+        .filter_map(format_duration_ms)
+        .max()
+}
+
+fn selected_audio_format_values(value: &Value) -> Vec<&Value> {
+    let mut formats = Vec::new();
+
+    if let Some(downloads) = value.get("requested_downloads").and_then(Value::as_array) {
+        for download in downloads {
+            if let Some(requested_formats) =
+                download.get("requested_formats").and_then(Value::as_array)
+            {
+                formats.extend(requested_formats);
+            }
+            formats.push(download);
+        }
+    }
+
+    if let Some(requested_formats) = value.get("requested_formats").and_then(Value::as_array) {
+        formats.extend(requested_formats);
+    }
+
+    formats.push(value);
+    formats
+        .into_iter()
+        .filter(|format| is_audio_only_format(format))
+        .collect()
+}
+
+fn is_audio_only_format(value: &Value) -> bool {
+    let acodec = read_optional_string(value, "acodec");
+    let vcodec = read_optional_string(value, "vcodec");
+    acodec
+        .as_deref()
+        .is_some_and(|codec| !codec.eq_ignore_ascii_case("none"))
+        && vcodec
+            .as_deref()
+            .map(|codec| codec.eq_ignore_ascii_case("none"))
+            .unwrap_or(true)
+}
+
+fn format_duration_ms(value: &Value) -> Option<u32> {
+    value
+        .get("duration")
+        .and_then(parse_number_like)
+        .map(seconds_to_millis)
+        .or_else(|| duration_ms_from_media_url(value))
+}
+
+fn duration_ms_from_media_url(value: &Value) -> Option<u32> {
+    let url = read_optional_string(value, "url")?;
+    Url::parse(&url)
+        .ok()?
+        .query_pairs()
+        .find(|(key, value)| key == "dur" && !value.is_empty())
+        .and_then(|(_, value)| value.parse::<f64>().ok())
+        .map(seconds_to_millis)
+}
+
+pub(crate) fn probe_downloaded_audio_duration_ms(
+    ffmpeg_path: &Path,
+    file_path: &Path,
+) -> Result<Option<u32>> {
+    let mut command = Command::new(ffmpeg_path);
+    command
+        .arg("-hide_banner")
+        .arg("-nostdin")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-i")
+        .arg(file_path)
+        .arg("-map")
+        .arg("0:a:0")
+        .arg("-vn")
+        .arg("-sn")
+        .arg("-dn")
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg(LOCAL_AUDIO_PROBE_SAMPLE_RATE.to_string())
+        .arg("-f")
+        .arg("f32le")
+        .arg("-c:a")
+        .arg("pcm_f32le")
+        .arg("pipe:1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("failed to run ffmpeg at {}", ffmpeg_path.display()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("ffmpeg downloaded audio probe stdout pipe is missing")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("ffmpeg downloaded audio probe stderr pipe is missing")?;
+    let stderr_handle = thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut message = String::new();
+        let _ = reader.read_to_string(&mut message);
+        message
+    });
+
+    let decoded_bytes = read_audio_probe_output(stdout)?;
+    let status = child
+        .wait()
+        .context("failed to wait for ffmpeg downloaded audio probe")?;
+    let _stderr_message = stderr_handle.join().unwrap_or_default();
+    if !status.success() {
+        return Ok(None);
+    }
+
+    Ok(Some(duration_ms_from_f32le_bytes(
+        decoded_bytes,
+        LOCAL_AUDIO_PROBE_SAMPLE_RATE,
+    )))
+}
+
+fn read_audio_probe_output(stdout: std::process::ChildStdout) -> Result<u64> {
+    let mut reader = BufReader::new(stdout);
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut decoded_bytes = 0_u64;
+
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .context("failed to read ffmpeg downloaded audio probe output")?;
+        if read == 0 {
+            break;
+        }
+        decoded_bytes = decoded_bytes.saturating_add(read as u64);
+    }
+
+    Ok(decoded_bytes)
+}
+
+fn duration_ms_from_f32le_bytes(decoded_bytes: u64, sample_rate: u32) -> u32 {
+    if sample_rate == 0 {
+        return 0;
+    }
+
+    let frame_count = decoded_bytes / 4;
+    let sample_rate = sample_rate as u64;
+    let duration_ms = frame_count
+        .saturating_mul(1_000)
+        .saturating_add(sample_rate / 2)
+        / sample_rate;
+    duration_ms.min(u32::MAX as u64) as u32
 }
 
 fn resolve_leaf_reference_url(entry: &Value, input_url: &str, entry_type: &str) -> Option<String> {

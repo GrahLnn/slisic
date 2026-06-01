@@ -277,6 +277,47 @@ pub(crate) fn apply_collection_plan_to_task(task: &mut DownloadTask, plan: &Coll
     task.refresh_counts();
 }
 
+pub(crate) async fn persist_download_collection_shell_from_task(
+    task: &DownloadTask,
+) -> Result<Option<Collection>> {
+    let Some(source_kind) = task.source_kind else {
+        return Ok(None);
+    };
+    let Some(collection_name) = task.collection_name.as_ref() else {
+        return Ok(None);
+    };
+    let Some(collection_url) = task.collection_url.as_ref() else {
+        return Ok(None);
+    };
+    let Some(collection_folder) = task.collection_folder.as_ref() else {
+        return Ok(None);
+    };
+
+    let existing = collection_repo::get_collection_by_url(collection_url).await?;
+    let enable_updates = match source_kind {
+        CollectionSourceKind::Single => None,
+        CollectionSourceKind::List => Some(
+            existing
+                .as_ref()
+                .and_then(|collection| collection.enable_updates)
+                .unwrap_or(false),
+        ),
+    };
+    let collection = collection_repo::upsert_collection(&create_collection_shell_from_plan(
+        &CollectionShellPlan {
+            source_kind,
+            collection_name: collection_name.clone(),
+            collection_url: collection_url.clone(),
+            collection_folder: collection_folder.clone(),
+            enable_updates,
+        },
+        existing,
+    ))
+    .await?;
+
+    Ok(Some(collection))
+}
+
 pub(crate) async fn persist_enqueued_collection_plan(
     mut task: DownloadTask,
     plan: &CollectionSyncPlan,
@@ -784,12 +825,12 @@ pub(crate) fn materialize_music_entries(
             canonical_music_id: canonical_music_id_for_source(
                 &probe.webpage_url,
                 0,
-                seconds_to_millis(probe.duration_seconds.unwrap_or(0)),
+                probe_duration_ms(probe),
             ),
             url: probe.webpage_url.clone(),
             path: Some(relative_path.to_string()),
             start_ms: 0,
-            end_ms: seconds_to_millis(probe.duration_seconds.unwrap_or(0)),
+            end_ms: probe_duration_ms(probe),
             liked: false,
         }];
     }
@@ -1748,15 +1789,11 @@ pub(crate) fn restore_single_source_musics_from_task(
             name: name.clone(),
             alias: name,
             group: default_group.clone(),
-            canonical_music_id: canonical_music_id_for_source(
-                &leaf.url,
-                0,
-                seconds_to_millis(leaf.duration_seconds.unwrap_or(0)),
-            ),
+            canonical_music_id: canonical_music_id_for_source(&leaf.url, 0, leaf_duration_ms(leaf)),
             url: leaf.url.clone(),
             path: Some(relative_path.to_string()),
             start_ms: 0,
-            end_ms: seconds_to_millis(leaf.duration_seconds.unwrap_or(0)),
+            end_ms: leaf_duration_ms(leaf),
             liked: false,
         });
     }
@@ -1776,6 +1813,17 @@ fn notify_playlist_playback_library_changed() {
 
 fn seconds_to_millis(seconds: u32) -> u32 {
     seconds.saturating_mul(1_000)
+}
+
+fn probe_duration_ms(probe: &LeafProbe) -> u32 {
+    probe
+        .duration_ms
+        .unwrap_or_else(|| seconds_to_millis(probe.duration_seconds.unwrap_or(0)))
+}
+
+fn leaf_duration_ms(leaf: &DownloadLeaf) -> u32 {
+    leaf.duration_ms
+        .unwrap_or_else(|| seconds_to_millis(leaf.duration_seconds.unwrap_or(0)))
 }
 
 fn collection_folder_from_local_path(save_root: &Path, collection_path: &Path) -> Result<String> {

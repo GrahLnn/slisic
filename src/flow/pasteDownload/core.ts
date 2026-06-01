@@ -1,5 +1,5 @@
 import { type as arkType } from "arktype";
-import type { PastedDownloadUrlResolution } from "@/src/cmd";
+import type { DownloadTask, DownloadTaskChangeSignal, PastedDownloadUrlResolution } from "@/src/cmd";
 
 const downloadUrlText = arkType("string.url");
 const singleDownloadUrlText = arkType("string").narrow(
@@ -10,10 +10,12 @@ const downloadableUrl = arkType("string.url.parse").narrow((url, ctx) =>
 );
 const EMPTY_CLIPBOARD_TEXT = "Empty clipboard";
 const SINGLE_URL_TEXT_ERROR = "Clipboard must contain exactly one URL.";
+const DOWNLOAD_TASK_FAILED_ERROR = "Download task failed before the collection was ready.";
 
 export type ConfigCandidateItemStatus =
   | "checking"
   | "enqueueing"
+  | "preparing"
   | "invalid_url"
   | "enqueue_failed";
 
@@ -24,6 +26,7 @@ export interface ConfigCandidateItem {
   displayText: string;
   status: ConfigCandidateItemStatus;
   error: string | null;
+  taskId: string | null;
 }
 
 export interface Context {
@@ -142,6 +145,7 @@ export function appendCandidateItem(context: Context, rawText: string): Context 
     displayText: toDisplayText(rawText),
     status: "checking",
     error: null,
+    taskId: null,
   };
 
   return {
@@ -191,6 +195,7 @@ export function applyCandidateUrlResolution(
           displayText: toDisplayText(item.rawText),
           status: "invalid_url",
           error: resolution.error ?? "Clipboard does not contain a valid URL.",
+          taskId: null,
         };
       case "new_url": {
         const url = resolution.url ?? item.rawText.trim();
@@ -200,6 +205,7 @@ export function applyCandidateUrlResolution(
           displayText: url,
           status: "enqueueing",
           error: null,
+          taskId: null,
         };
       }
       case "existing_collection":
@@ -216,6 +222,75 @@ export function failCandidateItem(context: Context, id: string, error: string): 
     status: "enqueue_failed",
     error,
   }));
+}
+
+function downloadTaskIdText(task: DownloadTask) {
+  return task.id.String ?? String(task.id.Number);
+}
+
+export function acceptCandidateDownloadTask(
+  context: Context,
+  id: string,
+  task: DownloadTask,
+): Context {
+  return updateCandidateItem(context, id, (item) => ({
+    ...item,
+    sourceUrl: task.url,
+    displayText: task.collection_name ?? item.displayText,
+    status: "preparing",
+    error: null,
+    taskId: downloadTaskIdText(task),
+  }));
+}
+
+export function applyDownloadTaskChangeSignal(
+  context: Context,
+  signal: DownloadTaskChangeSignal,
+): Context {
+  const status = signal.status;
+
+  if (status === "failed" || status === "cancelled" || status === "interrupted") {
+    return {
+      ...context,
+      items: context.items.map((item) =>
+        item.taskId === signal.task_id
+          ? {
+              ...item,
+              status: "enqueue_failed",
+              error: signal.last_error ?? DOWNLOAD_TASK_FAILED_ERROR,
+            }
+          : item,
+      ),
+    };
+  }
+
+  if (status === "completed" || status === "completed_with_errors") {
+    return context;
+  }
+
+  return context;
+}
+
+export function deleteCandidateItemByTaskId(context: Context, taskId: string): Context {
+  return {
+    ...context,
+    items: context.items.filter((item) => item.taskId !== taskId),
+  };
+}
+
+export function failCandidateTask(context: Context, taskId: string, error: string): Context {
+  return {
+    ...context,
+    items: context.items.map((item) =>
+      item.taskId === taskId
+        ? {
+            ...item,
+            status: "enqueue_failed",
+            error,
+          }
+        : item,
+    ),
+  };
 }
 
 export function deleteCandidateItem(context: Context, id: string): Context {

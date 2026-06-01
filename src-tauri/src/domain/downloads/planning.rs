@@ -10,7 +10,7 @@ use super::model::{
 };
 use super::naming::{sanitize_path_component, stable_id};
 use super::yt_dlp::{
-    LeafProbe, LeafReference, RootProbe, YtDlpClient, classify_root_preference,
+    LeafProbe, LeafReference, RootProbe, RootShellProbe, YtDlpClient, classify_root_preference,
     is_youtube_mix_playlist_id,
 };
 use crate::domain::collection_import::{self, CollectionSyncPlan, PlannedLeaf};
@@ -414,6 +414,17 @@ pub(crate) async fn probe_root_with_limit(
         .await
         .context("download root probe limiter closed")?;
     run_blocking(move || client.probe_root(&url)).await
+}
+
+pub(crate) async fn probe_root_shell_with_limit(
+    client: Arc<dyn YtDlpClient>,
+    url: String,
+) -> Result<RootShellProbe> {
+    let _permit = root_probe_slots()
+        .acquire_owned()
+        .await
+        .context("download root probe limiter closed")?;
+    run_blocking(move || client.probe_root_shell(&url)).await
 }
 
 #[cfg(test)]

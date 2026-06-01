@@ -1,15 +1,11 @@
 #[cfg(not(test))]
-use super::model::EnqueuedCollectionDownload;
+use super::model::DownloadLeafGroupContext;
 use super::model::{
     CollectionSourceKind, DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus,
-    DownloadTrigger, PastedDownloadUrlResolution,
+    DownloadTrigger, EnqueuedCollectionDownload, PastedDownloadUrlResolution,
 };
-#[cfg(not(test))]
-use super::model::DownloadLeafGroupContext;
 use super::naming::{sanitize_path_component, short_hash};
-use super::planning::{
-    normalize_url, parse_download_url, task_id_for,
-};
+use super::planning::{normalize_url, parse_download_url, probe_root_shell_with_limit, task_id_for};
 #[cfg(not(test))]
 use super::planning::{resolve_collection_plan, resolve_collection_plan_with_root_probe};
 use super::repo;
@@ -28,6 +24,10 @@ use anyhow::{Context, Result, anyhow, bail};
 #[cfg(not(test))]
 use appdb::Id;
 #[cfg(not(test))]
+use serde::{Deserialize, Serialize};
+#[cfg(not(test))]
+use specta::Type;
+#[cfg(not(test))]
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -39,6 +39,8 @@ use std::thread;
 use std::time::Duration;
 #[cfg(not(test))]
 use tauri::AppHandle;
+#[cfg(not(test))]
+use tauri_specta::Event;
 #[cfg(not(test))]
 use tokio::sync::broadcast;
 use tokio::task;
@@ -105,6 +107,12 @@ struct GroupCatalog {
 struct DownloadExecutionDeps {
     client: Arc<dyn YtDlpClient>,
     save_root: PathBuf,
+}
+
+#[cfg(not(test))]
+#[derive(Clone)]
+struct DownloadEnqueueDeps {
+    client: Arc<dyn YtDlpClient>,
 }
 
 #[cfg(not(test))]
@@ -436,11 +444,13 @@ enum LeafPipelineEvent {
 }
 
 #[cfg(not(test))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
 pub(crate) struct DownloadTaskChangeSignal {
     pub(crate) task_id: String,
     pub(crate) task_url: String,
     pub(crate) collection_url: Option<String>,
+    pub(crate) status: DownloadTaskStatus,
+    pub(crate) last_error: Option<String>,
 }
 
 #[cfg(not(test))]
@@ -512,28 +522,24 @@ async fn enqueue_collection_download_with_trigger(
     url: String,
     trigger: DownloadTrigger,
 ) -> Result<EnqueuedCollectionDownload> {
-    let prepared = prepare_task_enqueue_outcome(url, trigger).await?;
-
-    let (task, collection, root_probe) = match prepared {
+    let deps = resolve_enqueue_deps(&runtime()?.app).await?;
+    let (task, collection) = match prepare_task_enqueue_outcome(url, trigger).await? {
         PreparedTaskEnqueue::Existing(task) => {
-            let app = runtime()?.app.clone();
-            match collection_import::resolve_existing_enqueued_collection(&task).await {
-                Ok(collection) => (task, collection, None),
-                Err(_) => {
-                    let (task, collection) = bootstrap_enqueued_collection(task, app).await?;
-                    (task, collection, None)
-                }
-            }
+            let task = attach_root_shell_to_task(task, deps.client.clone()).await?;
+            let collection =
+                collection_import::persist_download_collection_shell_from_task(&task).await?;
+            (task, collection)
         }
         PreparedTaskEnqueue::New(task) => {
-            let app = runtime()?.app.clone();
-            let (task, collection) = bootstrap_enqueued_collection(task, app).await?;
-            (task, collection, None)
+            let task = attach_root_shell_to_task(task, deps.client.clone()).await?;
+            let collection =
+                collection_import::persist_download_collection_shell_from_task(&task).await?;
+            (task, collection)
         }
     };
 
     if !task.status.is_terminal() {
-        spawn_task(task.id.to_string(), root_probe)?;
+        spawn_task(task.id.to_string(), None)?;
     }
 
     Ok(EnqueuedCollectionDownload { task, collection })
@@ -575,7 +581,10 @@ pub(crate) async fn enqueue_collection_download_for_test(
         }
     }
 
-    Ok(EnqueuedCollectionDownload { task, collection })
+    Ok(EnqueuedCollectionDownload {
+        task,
+        collection: Some(collection),
+    })
 }
 
 /// Batch imports can enqueue many URLs in parallel, so duplicate suppression
@@ -589,6 +598,31 @@ pub(crate) async fn prepare_task_enqueue(
     Ok(match prepare_task_enqueue_outcome(url, trigger).await? {
         PreparedTaskEnqueue::Existing(task) | PreparedTaskEnqueue::New(task) => task,
     })
+}
+
+#[cfg(test)]
+pub(crate) async fn accept_collection_download_for_test(
+    url: String,
+    trigger: DownloadTrigger,
+) -> Result<EnqueuedCollectionDownload> {
+    let task = prepare_task_enqueue(url, trigger).await?;
+    let collection = collection_import::persist_download_collection_shell_from_task(&task).await?;
+    Ok(EnqueuedCollectionDownload {
+        task,
+        collection,
+    })
+}
+
+#[cfg(test)]
+pub(crate) async fn accept_collection_download_with_root_shell_for_test(
+    url: String,
+    trigger: DownloadTrigger,
+    client: Arc<dyn YtDlpClient>,
+) -> Result<EnqueuedCollectionDownload> {
+    let task = prepare_task_enqueue(url, trigger).await?;
+    let task = attach_root_shell_to_task(task, client).await?;
+    let collection = collection_import::persist_download_collection_shell_from_task(&task).await?;
+    Ok(EnqueuedCollectionDownload { task, collection })
 }
 
 async fn prepare_task_enqueue_outcome(
@@ -621,6 +655,55 @@ async fn prepare_task_enqueue_outcome(
     }
 }
 
+pub(crate) async fn attach_root_shell_to_task(
+    mut task: DownloadTask,
+    client: Arc<dyn YtDlpClient>,
+) -> Result<DownloadTask> {
+    if task.collection_url.is_some() && task.collection_name.is_some() && task.source_kind.is_some()
+    {
+        return Ok(task);
+    }
+
+    let shell = probe_root_shell_with_limit(client, task.url.clone()).await?;
+    let existing = collection_import::get_collection_by_url(&shell.webpage_url).await?;
+    let collection_url = existing
+        .as_ref()
+        .map(|collection| collection.url.clone())
+        .unwrap_or(shell.webpage_url);
+    let collection_folder = resolve_enqueue_collection_folder(
+        &task,
+        &collection_url,
+        &shell.title,
+        existing.as_ref(),
+    )
+    .await?;
+
+    task.collection_url = Some(collection_url);
+    task.collection_name = Some(shell.title);
+    task.collection_folder = Some(collection_folder);
+    task.source_kind = Some(shell.source_kind);
+    task.last_error = None;
+    repo::save_task(task).await
+}
+
+async fn resolve_enqueue_collection_folder(
+    task: &DownloadTask,
+    collection_url: &str,
+    collection_name: &str,
+    existing: Option<&Collection>,
+) -> Result<String> {
+    if let Some(folder) = task
+        .collection_folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|folder| !folder.is_empty())
+    {
+        return Ok(folder.to_string());
+    }
+
+    collection_import::resolve_collection_folder(collection_url, collection_name, existing).await
+}
+
 #[cfg(not(test))]
 fn spawn_task(task_id: String, root_probe: Option<RootProbe>) -> Result<()> {
     let runtime = runtime()?;
@@ -643,18 +726,6 @@ fn spawn_task(task_id: String, root_probe: Option<RootProbe>) -> Result<()> {
 #[cfg(test)]
 fn spawn_task(_task_id: String, _root_probe: Option<RootProbe>) -> Result<()> {
     Ok(())
-}
-
-#[cfg(not(test))]
-async fn bootstrap_enqueued_collection(
-    task: DownloadTask,
-    app: AppHandle,
-) -> Result<(DownloadTask, Collection)> {
-    let active_binary_task = ActiveBinaryTaskGuard::new(runtime()?);
-    let deps = resolve_execution_deps(&app).await?;
-    let result = bootstrap_enqueued_collection_with_deps(task, deps).await;
-    drop(active_binary_task);
-    result
 }
 
 #[cfg(not(test))]
@@ -1162,6 +1233,7 @@ async fn handle_prepared_leaf_download(
 
     let mut leaf_snapshot = prepared.leaf;
     leaf_snapshot.title = Some(prepared.probe.title.clone());
+    leaf_snapshot.duration_ms = prepared.probe.duration_ms;
     leaf_snapshot.duration_seconds = prepared.probe.duration_seconds;
     leaf_snapshot.chapter_count = Some(prepared.probe.chapters.len() as u32);
     let file_stem = sanitize_path_component(&prepared.probe.title);
@@ -1207,6 +1279,7 @@ async fn handle_prepared_leaf_download(
                     group,
                     downloaded: super::yt_dlp::DownloadedLeaf {
                         absolute_path: downloaded_path,
+                        duration_ms: None,
                     },
                     progress: DownloadProgress::default(),
                     retry_failures: 0,
@@ -1419,12 +1492,18 @@ async fn handle_finished_leaf_download(
     let mut leaf_snapshot = completed.leaf;
     let file_stem = sanitize_path_component(&completed.probe.title);
     let music_group = resolve_music_group(completed.group, collection);
-    let downloaded_path = completed.downloaded.absolute_path;
+    let mut music_probe = completed.music_probe;
+    let downloaded = completed.downloaded;
+    let downloaded_path = downloaded.absolute_path;
+    if let Some(duration_ms) = downloaded.duration_ms {
+        music_probe.duration_ms = Some(duration_ms);
+        music_probe.duration_seconds = Some(duration_ms.div_ceil(1_000));
+    }
     let file_name = match persist_completed_leaf_download(
         collection,
         source_kind,
         &completed.probe.webpage_url,
-        &completed.music_probe,
+        &music_probe,
         &music_group,
         save_root,
         &file_stem,
@@ -1540,15 +1619,22 @@ async fn handle_finished_leaf_download_for_test(
     let mut leaf_snapshot = completed.leaf;
     let file_stem = sanitize_path_component(&completed.probe.title);
     let music_group = resolve_music_group(completed.group, collection);
+    let mut music_probe = completed.music_probe;
+    let downloaded = completed.downloaded;
+    let downloaded_path = downloaded.absolute_path;
+    if let Some(duration_ms) = downloaded.duration_ms {
+        music_probe.duration_ms = Some(duration_ms);
+        music_probe.duration_seconds = Some(duration_ms.div_ceil(1_000));
+    }
     let file_name = match persist_completed_leaf_download(
         collection,
         source_kind,
         &completed.probe.webpage_url,
-        &completed.music_probe,
+        &music_probe,
         &music_group,
         save_root,
         &file_stem,
-        completed.downloaded.absolute_path,
+        downloaded_path,
     )
     .await
     {
@@ -1737,11 +1823,17 @@ fn download_task_change_sender() -> &'static broadcast::Sender<DownloadTaskChang
 
 #[cfg(not(test))]
 pub(crate) fn publish_download_task_change(task: &DownloadTask) {
-    let _ = download_task_change_sender().send(DownloadTaskChangeSignal {
+    let signal = DownloadTaskChangeSignal {
         task_id: task.id.to_string(),
         task_url: task.url.clone(),
         collection_url: task.collection_url.clone(),
-    });
+        status: task.status,
+        last_error: task.last_error.clone(),
+    };
+    if let Ok(runtime) = runtime() {
+        let _ = signal.emit(&runtime.app);
+    }
+    let _ = download_task_change_sender().send(signal);
 }
 
 #[cfg(test)]
@@ -1880,6 +1972,13 @@ async fn resolve_execution_deps(app: &AppHandle) -> Result<DownloadExecutionDeps
     Ok(DownloadExecutionDeps {
         client: build_client(app)?,
         save_root: resolve_save_root(app).await?,
+    })
+}
+
+#[cfg(not(test))]
+async fn resolve_enqueue_deps(app: &AppHandle) -> Result<DownloadEnqueueDeps> {
+    Ok(DownloadEnqueueDeps {
+        client: build_client(app)?,
     })
 }
 

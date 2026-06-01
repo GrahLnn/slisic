@@ -55,6 +55,8 @@ use tauri_specta::Event;
 #[cfg(not(test))]
 const INITIAL_PLAYBACK_QUEUE_LIMIT: usize = 256;
 #[cfg(not(test))]
+const INITIAL_PLAYBACK_FALLBACK_MAX_SOURCE_LIMIT: usize = 8192;
+#[cfg(not(test))]
 const PLAYLIST_PLAYBACK_IMMEDIATE_RECOVERY_SOURCE_LIMIT: usize = 16;
 #[cfg(not(test))]
 const PLAYLIST_PLAYBACK_RANDOM_WINDOW_LIMIT: usize = 96;
@@ -614,6 +616,7 @@ struct PlaylistTrackResolutionSource {
     selection: PlaylistPlaybackSelection,
     playlist_name: String,
     resolution: PlaylistTrackResolution,
+    source_count: usize,
 }
 
 #[cfg(not(test))]
@@ -700,15 +703,46 @@ async fn build_playlist_playback_material(
         }));
     }
 
+    let source = load_initial_playlist_track_resolution(app, playlist_name).await?;
+    if let Some(initial_track) = source.resolution.tracks.into_iter().next() {
+        let tracks = create_start_anchor_playback_queue(initial_track.clone());
+        ensure_playlist_playback_request_current(request)?;
+        emit_playlist_playback_trace(
+            "playlist-play-material-immediate-track-ok",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(playlist_name)
+                .track(&initial_track)
+                .elapsed(trace_start)
+                .queue_count(tracks.len())
+                .status("prepared_first_slot_recovered"),
+        );
+        return Ok(Some(PlaylistPlaybackMaterial {
+            playlist_name: playlist_name.to_string(),
+            initial_prepared_source: None,
+            initial_track,
+            tracks,
+        }));
+    }
+
+    let has_relevant_active_downloads =
+        playlist_selection_has_active_downloads(&source.selection).await?;
     emit_playlist_playback_trace(
         "playlist-play-material-prepared-initial-track-miss",
         PlaylistPlaybackTrace::new(app)
             .playlist_name(playlist_name)
             .elapsed(trace_start)
-            .status("prepared_first_slot_missing"),
+            .status(if has_relevant_active_downloads {
+                "pending_first_track"
+            } else {
+                "no_playable_track"
+            }),
     );
     playable_index::notify_playback_miss(playlist_name);
-    Ok(None)
+    if has_relevant_active_downloads {
+        Ok(None)
+    } else {
+        bail!("playlist `{playlist_name}` has no playable tracks")
+    }
 }
 
 #[cfg(not(test))]
@@ -1214,14 +1248,35 @@ async fn load_random_playlist_track_resolution_window(
         PLAYLIST_PLAYBACK_LIKED_CANDIDATE_LIMIT,
     )
     .await?;
+    let source_count = sources.len();
     let sources = merge_playlist_playback_track_sources(sources, liked_sources);
     let resolution = resolve_playlist_playback_source_resolution(&selection, sources, &save_root);
 
     Ok(PlaylistTrackResolutionSource {
         playlist_name: selection.playlist_name.clone(),
         selection,
+        source_count,
         resolution,
     })
+}
+
+#[cfg(not(test))]
+async fn load_initial_playlist_track_resolution(
+    app: &AppHandle,
+    playlist_name: &str,
+) -> Result<PlaylistTrackResolutionSource> {
+    let mut limit = INITIAL_PLAYBACK_QUEUE_LIMIT;
+    loop {
+        let source = load_playlist_track_resolution_window(app, playlist_name, limit).await?;
+        if !source.resolution.tracks.is_empty()
+            || source.source_count < limit
+            || limit >= INITIAL_PLAYBACK_FALLBACK_MAX_SOURCE_LIMIT
+        {
+            return Ok(source);
+        }
+
+        limit = (limit * 2).min(INITIAL_PLAYBACK_FALLBACK_MAX_SOURCE_LIMIT);
+    }
 }
 
 #[cfg(not(test))]
@@ -1240,12 +1295,14 @@ async fn load_playlist_track_resolution_window(
         PLAYLIST_PLAYBACK_LIKED_CANDIDATE_LIMIT,
     )
     .await?;
+    let source_count = sources.len();
     let sources = merge_playlist_playback_track_sources(sources, liked_sources);
     let resolution = resolve_playlist_playback_source_resolution(&selection, sources, &save_root);
 
     Ok(PlaylistTrackResolutionSource {
         playlist_name: selection.playlist_name.clone(),
         selection,
+        source_count,
         resolution,
     })
 }

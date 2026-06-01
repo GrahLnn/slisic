@@ -74,6 +74,14 @@ function bootstrapResultFromStartupSnapshot(snapshot: PlaylistStartupBootstrap):
   };
 }
 
+function hasUsableStartupBootstrapSnapshot(snapshot: PlaylistStartupBootstrap) {
+  if (!snapshot.has_playlist) {
+    return false;
+  }
+
+  return snapshot.playlists.length > 0 || snapshot.config_library.collections.length > 0;
+}
+
 export interface PlayPlaylistInput {
   playlistName: string;
 }
@@ -229,7 +237,10 @@ export async function loadCollectionsFromBackend(
   backend: BootstrapBackend = crab,
 ): Promise<BootstrapResult> {
   const startupBootstrap = await backend.getStartupBootstrap();
-  if (startupBootstrap.status === "Ready") {
+  if (
+    startupBootstrap.status === "Ready" &&
+    hasUsableStartupBootstrapSnapshot(startupBootstrap.value)
+  ) {
     return bootstrapResultFromStartupSnapshot(startupBootstrap.value);
   }
 

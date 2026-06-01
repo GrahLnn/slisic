@@ -119,6 +119,7 @@ const candidateItems: ConfigCandidateItem[] = [
     displayText: "Quiet Morning",
     status: "enqueueing",
     error: null,
+    taskId: null,
   },
   {
     id: "candidate:1",
@@ -127,6 +128,7 @@ const candidateItems: ConfigCandidateItem[] = [
     displayText: "not a url",
     status: "invalid_url",
     error: "Clipboard does not contain a valid URL.",
+    taskId: null,
   },
 ];
 
@@ -591,6 +593,7 @@ describe("ListConfig title view model", () => {
             displayText: "https://www.youtube.com/playlist?list=PLPfHaI9XqTnEaHTKxU63ks1QFdCXw8Cbf",
             status: "checking",
             error: null,
+            taskId: null,
           },
         ],
         arcTrackItems: [],
@@ -615,6 +618,7 @@ describe("ListConfig title view model", () => {
             displayText: "https://www.youtube.com/playlist?list=PLtenet",
             status: "enqueueing",
             error: null,
+            taskId: null,
           },
         ],
         arcTrackItems: [],
@@ -623,6 +627,28 @@ describe("ListConfig title view model", () => {
         kind: "foreground-duplicate",
         layoutId: "playlist:collection:https://www.youtube.com/playlist?list=PLtenet",
       },
+    );
+  });
+
+  test("keeps distinct pasted urls available for concurrent candidate parsing", () => {
+    assert.equal(
+      resolveListConfigPasteTarget({
+        text: "https://www.youtube.com/playlist?list=PLsecond",
+        playlistItems: [],
+        candidateItems: [
+          {
+            id: "candidate:first",
+            rawText: "https://www.youtube.com/playlist?list=PLfirst",
+            sourceUrl: "https://www.youtube.com/playlist?list=PLfirst",
+            displayText: "https://www.youtube.com/playlist?list=PLfirst",
+            status: "enqueueing",
+            error: null,
+            taskId: null,
+          },
+        ],
+        arcTrackItems: [],
+      }),
+      null,
     );
   });
 
@@ -639,6 +665,7 @@ describe("ListConfig title view model", () => {
             displayText: "https://www.youtube.com/playlist?list=PLretry",
             status: "enqueue_failed",
             error: "Private video",
+            taskId: null,
           },
           {
             id: "candidate:invalid",
@@ -647,6 +674,7 @@ describe("ListConfig title view model", () => {
             displayText: "https://www.youtube.com/playlist?list=PLretry",
             status: "invalid_url",
             error: "Clipboard does not contain a valid URL.",
+            taskId: null,
           },
         ],
         arcTrackItems: [],
@@ -687,6 +715,7 @@ describe("ListConfig title view model", () => {
         displayText: "https://example.com/pending",
         status: "checking",
         error: null,
+        taskId: null,
       },
     ])[0];
 
@@ -984,6 +1013,7 @@ describe("ListConfig title view model", () => {
             displayText: "Night Walk",
             status: "enqueueing",
             error: null,
+            taskId: null,
           },
         ],
         collectionGroupMemberships: [],
@@ -1350,6 +1380,7 @@ describe("ListConfig title view model", () => {
             displayText: "Quiet Morning",
             status: "enqueueing",
             error: null,
+            taskId: null,
           },
         ],
       }),
@@ -1409,6 +1440,22 @@ describe("ListConfig title view model", () => {
           candidateItemCount: 0,
         }),
         me(false),
+      ).match({
+        true: () => true,
+        false: () => false,
+      }),
+      false,
+    );
+  });
+
+  test("hides the retained empty-state hint when candidates arrive before draft reloads", () => {
+    assert.equal(
+      resolveListConfigEmptyState(
+        shouldShowListConfigEmptyState({
+          draft: null,
+          candidateItemCount: 1,
+        }),
+        me(true),
       ).match({
         true: () => true,
         false: () => false,
@@ -1479,6 +1526,50 @@ describe("ListConfig title view model", () => {
     ]);
   });
 
+  test("treats accepted root-shell collection evidence as a committable draft change", () => {
+    const rootShellDraft: ConfigDraft = {
+      ...createDraft,
+      collections: [
+        {
+          name: "[Official] TUNIC (Original Soundtrack) - Full Album / Lifeformed × Janice Kwan",
+          url: "https://www.youtube.com/watch?v=nnvjKf_mRYM",
+          folder: "youtube/tunic-soundtrack",
+          last_updated: "2026-04-17T00:00:00Z",
+          enable_updates: null,
+        },
+      ],
+    };
+    const viewModel = resolveListConfigViewModel({
+      activeLayoutId: "collection-title:create",
+      draft: rootShellDraft,
+      draftBaseline: createDraft,
+      pendingPlaylistName: null,
+      titleToneHandoff: null,
+      isPresent: true,
+      libraryItems: [],
+      excludeItems: [],
+      excludeAvailability: emptyExcludeAvailability,
+      collectionGroupMemberships: [],
+      candidateItems: [
+        {
+          id: "candidate:0",
+          rawText: "https://www.youtube.com/watch?v=nnvjKf_mRYM&t=3238s",
+          sourceUrl: "https://www.youtube.com/watch?v=nnvjKf_mRYM&t=3238s",
+          displayText:
+            "[Official] TUNIC (Original Soundtrack) - Full Album / Lifeformed × Janice Kwan",
+          status: "preparing",
+          error: null,
+          taskId: "task-1",
+        },
+      ],
+      previousEmptyState: null,
+    });
+
+    assert.equal(viewModel.hasDraftChanges, true);
+    assert.equal(viewModel.isBackActionParsing, false);
+    assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, false);
+  });
+
   test("defers arc-track rendering while an existing playlist draft is still loading", () => {
     const viewModel = resolveListConfigViewModel({
       activeLayoutId: "playlist-title:Focus Session",
@@ -1525,6 +1616,7 @@ describe("ListConfig title view model", () => {
           displayText: "https://example.com/pending",
           status: "checking",
           error: null,
+          taskId: null,
         },
         {
           id: "candidate:enqueueing",
@@ -1533,6 +1625,7 @@ describe("ListConfig title view model", () => {
           displayText: "https://example.com/live",
           status: "enqueueing",
           error: null,
+          taskId: null,
         },
       ]),
       3,
@@ -1564,6 +1657,7 @@ describe("ListConfig title view model", () => {
           displayText: "https://example.com/live",
           status: "enqueueing",
           error: null,
+          taskId: null,
         },
       ],
       previousEmptyState: null,

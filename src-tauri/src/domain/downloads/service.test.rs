@@ -8,7 +8,8 @@ use super::planning::{
 use super::repo::{list_tasks, save_task};
 use super::service::{
     CompletedLeafDownload, LeafDownloadRetryPolicy, LeafDownloadWindow, LeafPipelineStage,
-    discard_materialized_planned_leaves, handle_finished_leaf_download,
+    accept_collection_download_for_test, accept_collection_download_with_root_shell_for_test,
+    attach_root_shell_to_task, discard_materialized_planned_leaves, handle_finished_leaf_download,
     is_retryable_leaf_download_error, leaf_download_parallelism, leaf_pipeline_has_work,
     leaf_pipeline_next_stage, prepare_task_enqueue, resolve_pasted_download_url,
     resolve_residual_temp_downloaded_file, resume_download_task,
@@ -18,7 +19,7 @@ use super::service::{
 };
 use super::yt_dlp::{
     DownloadProgress, DownloadedLeaf, LeafChapter, LeafProbe, LeafReference, PlaylistRoot,
-    RootProbe, YtDlpClient,
+    RootProbe, RootShellProbe, YtDlpClient,
 };
 /// Appdb-style domain tests stay inside a local Tokio runtime and a temporary
 /// appdb instance. Keep this file free of Tauri host setup and `AppHandle`
@@ -28,8 +29,8 @@ use crate::domain::collection_import::{
     CollectionSyncPlan, ExistingPlannedLeafCompletion, PlannedLeaf, apply_collection_plan_to_task,
     create_collection_shell, existing_leaf_identities, existing_planned_leaf_completions,
     filter_new_planned_leaves, load_collection_shell, materialize_music_entries,
-    normalize_music_titles_within_collection, persist_downloaded_leaf_music,
-    persist_enqueued_collection_plan, resolve_existing_leaf_file,
+    normalize_music_titles_within_collection, persist_download_collection_shell_from_task,
+    persist_downloaded_leaf_music, persist_enqueued_collection_plan, resolve_existing_leaf_file,
 };
 use crate::domain::downloads::model::{
     DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
@@ -328,6 +329,7 @@ fn list_download_marks_finalize_failures_on_leaf_without_aborting_task() {
                 group: Some(collection_owner.clone()),
                 downloaded: DownloadedLeaf {
                     absolute_path: downloaded_path,
+                    duration_ms: None,
                 },
                 progress: DownloadProgress::default(),
                 retry_failures: 0,
@@ -360,6 +362,7 @@ fn list_download_marks_finalize_failures_on_leaf_without_aborting_task() {
                 group: Some(collection_owner),
                 downloaded: DownloadedLeaf {
                     absolute_path: downloaded_path,
+                    duration_ms: None,
                 },
                 progress: DownloadProgress::default(),
                 retry_failures: 0,
@@ -388,6 +391,7 @@ fn materialize_music_entries_expands_chapters_without_splitting_files() {
         webpage_url: "https://example.com/video".to_string(),
         extractor_key: Some("Youtube".to_string()),
         album: None,
+        duration_ms: Some(180_000),
         duration_seconds: Some(180),
         chapters: vec![
             LeafChapter {
@@ -434,6 +438,7 @@ fn materialize_music_entries_falls_back_to_single_full_track_when_no_chapters_ex
         webpage_url: "https://example.com/video".to_string(),
         extractor_key: Some("Youtube".to_string()),
         album: None,
+        duration_ms: Some(245_500),
         duration_seconds: Some(245),
         chapters: vec![],
     };
@@ -450,7 +455,111 @@ fn materialize_music_entries_falls_back_to_single_full_track_when_no_chapters_ex
     assert_eq!(musics[0].url, "https://example.com/video");
     assert_eq!(musics[0].path.as_deref(), Some("single-track.m4a"));
     assert_eq!(musics[0].start_ms, 0);
-    assert_eq!(musics[0].end_ms, 245_000);
+    assert_eq!(musics[0].end_ms, 245_500);
+}
+
+#[test]
+fn materialize_music_entries_uses_precise_full_track_duration_evidence() {
+    let probe = LeafProbe {
+        title: "481772".to_string(),
+        webpage_url: "https://www.youtube.com/watch?v=oFg0ABdknrQ".to_string(),
+        extractor_key: Some("Youtube".to_string()),
+        album: None,
+        duration_ms: Some(257_499),
+        duration_seconds: Some(257),
+        chapters: vec![],
+    };
+
+    let group = collection_group(
+        "C418 - Releases",
+        "https://example.com/c418-releases",
+        "youtube/C418 - Releases",
+    );
+    let musics = materialize_music_entries(&probe, "148/481772.m4a", group);
+
+    assert_eq!(musics.len(), 1);
+    assert_eq!(musics[0].end_ms, 257_499);
+    assert_eq!(
+        musics[0].canonical_music_id,
+        canonical_music_id_for_source("https://www.youtube.com/watch?v=oFg0ABdknrQ", 0, 257_499)
+    );
+}
+
+#[test]
+fn completed_leaf_download_duration_evidence_overrides_probe_metadata() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let save_root = temp_test_dir();
+        let mut collection = Collection {
+            name: "C418 - Releases".to_string(),
+            url: "https://example.com/c418-releases".to_string(),
+            folder: "youtube/C418 - Releases".to_string(),
+            musics: vec![],
+            last_updated: "2026-05-31T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        };
+        let collection_owner = collection_group(
+            "C418 - Releases",
+            "https://example.com/c418-releases",
+            "youtube/C418 - Releases",
+        );
+        let mut task = DownloadTask::new(
+            "task-duration-evidence",
+            "https://www.youtube.com/watch?v=oFg0ABdknrQ",
+            DownloadTrigger::Manual,
+        );
+        let leaf = DownloadLeaf::new(
+            "leaf-duration-evidence",
+            "https://www.youtube.com/watch?v=oFg0ABdknrQ",
+            0,
+        );
+        task.replace_leaf(leaf.clone());
+        let mut task = save_task(task).await.expect("task should save");
+
+        let target_dir = save_root.join(&collection.folder);
+        std::fs::create_dir_all(&target_dir).expect("target dir should be created");
+        let downloaded_path = target_dir.join("481772.__slisic_tmp__duration.m4a");
+        std::fs::write(&downloaded_path, b"audio").expect("temp file should exist");
+        let probe = LeafProbe {
+            title: "481772".to_string(),
+            webpage_url: "https://www.youtube.com/watch?v=oFg0ABdknrQ".to_string(),
+            extractor_key: Some("Youtube".to_string()),
+            album: None,
+            duration_ms: Some(257_000),
+            duration_seconds: Some(257),
+            chapters: vec![],
+        };
+
+        handle_finished_leaf_download(
+            &mut task,
+            &mut collection,
+            CollectionSourceKind::Single,
+            &save_root,
+            Ok(CompletedLeafDownload {
+                leaf,
+                probe: probe.clone(),
+                music_probe: probe,
+                group: Some(collection_owner),
+                downloaded: DownloadedLeaf {
+                    absolute_path: downloaded_path,
+                    duration_ms: Some(257_499),
+                },
+                progress: DownloadProgress::default(),
+                retry_failures: 0,
+            }),
+        )
+        .await
+        .expect("downloaded duration evidence should persist");
+
+        assert_eq!(collection.musics.len(), 1);
+        assert_eq!(collection.musics[0].end_ms, 257_499);
+
+        reset_db();
+        let _ = std::fs::remove_dir_all(save_root);
+    });
 }
 
 #[test]
@@ -507,6 +616,7 @@ fn persist_downloaded_leaf_music_replaces_only_the_matching_group_copy() {
             webpage_url: "https://example.com/watch?v=same".to_string(),
             extractor_key: Some("Youtube".to_string()),
             album: None,
+            duration_ms: Some(10_000),
             duration_seconds: Some(10),
             chapters: vec![],
         };
@@ -570,6 +680,7 @@ fn persist_downloaded_leaf_music_rejects_partial_download_paths() {
             webpage_url: "https://example.com/watch?v=partial".to_string(),
             extractor_key: Some("Youtube".to_string()),
             album: None,
+            duration_ms: Some(10_000),
             duration_seconds: Some(10),
             chapters: vec![],
         };
@@ -932,6 +1043,7 @@ fn leaf_probe(title: &str, url: &str, duration_seconds: u32) -> LeafProbe {
         webpage_url: url.to_string(),
         extractor_key: Some("Youtube".to_string()),
         album: None,
+        duration_ms: Some(duration_seconds.saturating_mul(1_000)),
         duration_seconds: Some(duration_seconds),
         chapters: vec![],
     }
@@ -940,15 +1052,33 @@ fn leaf_probe(title: &str, url: &str, duration_seconds: u32) -> LeafProbe {
 #[derive(Debug, Default)]
 struct FakeYtDlpClient {
     roots: HashMap<String, RootProbe>,
+    shells: HashMap<String, RootShellProbe>,
 }
 
 impl FakeYtDlpClient {
     fn with_roots(roots: HashMap<String, RootProbe>) -> Self {
-        Self { roots }
+        Self {
+            roots,
+            shells: HashMap::new(),
+        }
+    }
+
+    fn with_shells(shells: HashMap<String, RootShellProbe>) -> Self {
+        Self {
+            roots: HashMap::new(),
+            shells,
+        }
     }
 }
 
 impl YtDlpClient for FakeYtDlpClient {
+    fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe> {
+        self.shells
+            .get(url)
+            .cloned()
+            .ok_or_else(|| anyhow!("missing fake root shell probe for {url}"))
+    }
+
     fn probe_root(&self, url: &str) -> Result<RootProbe> {
         self.roots
             .get(url)
@@ -991,6 +1121,10 @@ impl CountingRootProbeClient {
 }
 
 impl YtDlpClient for CountingRootProbeClient {
+    fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe> {
+        Err(anyhow!("unexpected counting probe_root_shell call for {url}"))
+    }
+
     fn probe_root(&self, url: &str) -> Result<RootProbe> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(active, Ordering::SeqCst);
@@ -1700,6 +1834,7 @@ fn collection_plan_for_youtube_watch_url_uses_probe_title_not_url_fallback_ident
                 webpage_url: url.to_string(),
                 extractor_key: Some("Youtube".to_string()),
                 album: None,
+                duration_ms: Some(7_200_000),
                 duration_seconds: Some(7_200),
                 chapters: vec![],
             }),
@@ -1881,6 +2016,7 @@ fn materialize_music_entries_preserves_group_and_nested_relative_path() {
         webpage_url: "https://example.com/video".to_string(),
         extractor_key: Some("Youtube".to_string()),
         album: None,
+        duration_ms: Some(180_000),
         duration_seconds: Some(180),
         chapters: vec![LeafChapter {
             title: "Intro".to_string(),
@@ -2061,6 +2197,7 @@ fn residual_temp_file_completion_moves_file_and_persists_music_once() {
                 group: Some(collection_owner),
                 downloaded: DownloadedLeaf {
                     absolute_path: downloaded_path.clone(),
+                    duration_ms: None,
                 },
                 progress: DownloadProgress::default(),
                 retry_failures: 0,
@@ -2274,6 +2411,174 @@ fn prepare_task_enqueue_accepts_many_distinct_urls_concurrently() {
         let tasks = list_tasks().await.expect("task listing should succeed");
         assert_eq!(ids.len(), urls.len());
         assert_eq!(tasks.len(), urls.len());
+
+        reset_db();
+    });
+}
+
+#[test]
+fn accept_collection_download_returns_task_evidence_without_collection_probe() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let accepted = accept_collection_download_for_test(
+            "https://www.youtube.com/playlist?list=PLeqAWggBv41bmmAvAdBT18V6cZ90frMXP".to_string(),
+            DownloadTrigger::Manual,
+        )
+        .await
+        .expect("new playlist url should be accepted as a task");
+        let tasks = list_tasks().await.expect("task listing should succeed");
+
+        assert!(accepted.collection.is_none());
+        assert_eq!(accepted.task.status, DownloadTaskStatus::Queued);
+        assert_eq!(accepted.task.collection_url, None);
+        assert_eq!(accepted.task.total_leaves, 0);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, accepted.task.id);
+        assert_eq!(tasks[0].collection_url, None);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn persist_download_collection_shell_from_task_accepts_root_title_evidence() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let url = "https://www.youtube.com/watch?v=nnvjKf_mRYM";
+        let mut task = DownloadTask::new("task-shell-persist", url, DownloadTrigger::Manual);
+        task.collection_url = Some(url.to_string());
+        task.collection_name = Some(
+            "[Official] TUNIC (Original Soundtrack) - Full Album / Lifeformed × Janice Kwan"
+                .to_string(),
+        );
+        task.collection_folder = Some("youtube/tunic-soundtrack".to_string());
+        task.source_kind = Some(CollectionSourceKind::Single);
+
+        let collection = persist_download_collection_shell_from_task(&task)
+            .await
+            .expect("root title evidence should persist as a shell")
+            .expect("complete root title evidence should create a collection shell");
+        let loaded = crate::domain::collection_import::get_collection_by_url(url)
+            .await
+            .expect("collection lookup should succeed")
+            .expect("persisted shell should be addressable by url");
+
+        assert_eq!(
+            collection.name,
+            "[Official] TUNIC (Original Soundtrack) - Full Album / Lifeformed × Janice Kwan"
+        );
+        assert_eq!(collection.url, url);
+        assert_eq!(collection.folder, "youtube/tunic-soundtrack");
+        assert_eq!(collection.enable_updates, None);
+        assert!(collection.musics.is_empty());
+        assert_eq!(loaded.url, collection.url);
+        assert_eq!(loaded.name, collection.name);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn accepted_root_shell_download_returns_collection_evidence_for_draft_commit() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let url = "https://www.youtube.com/watch?v=nnvjKf_mRYM";
+        let client = Arc::new(FakeYtDlpClient::with_shells(HashMap::from([(
+            url.to_string(),
+            RootShellProbe {
+                source_kind: CollectionSourceKind::Single,
+                title:
+                    "[Official] TUNIC (Original Soundtrack) - Full Album / Lifeformed × Janice Kwan"
+                        .to_string(),
+                webpage_url: url.to_string(),
+                extractor_key: Some("Youtube".to_string()),
+            },
+        )])));
+
+        let accepted =
+            accept_collection_download_with_root_shell_for_test(
+                url.to_string(),
+                DownloadTrigger::Manual,
+                client,
+            )
+            .await
+            .expect("accepted root shell should return collection evidence");
+        let collection = accepted
+            .collection
+            .expect("root shell evidence should be a committable collection shell");
+
+        assert_eq!(accepted.task.collection_url.as_deref(), Some(url));
+        assert_eq!(
+            accepted.task.collection_name.as_deref(),
+            Some("[Official] TUNIC (Original Soundtrack) - Full Album / Lifeformed × Janice Kwan")
+        );
+        assert_eq!(
+            collection.name,
+            "[Official] TUNIC (Original Soundtrack) - Full Album / Lifeformed × Janice Kwan"
+        );
+        assert_eq!(collection.url, url);
+        assert!(collection.musics.is_empty());
+
+        reset_db();
+    });
+}
+
+#[test]
+fn attach_root_shell_to_task_publishes_title_without_expanding_playlist_entries() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let url = "https://www.youtube.com/@Epicmountainmusic/playlists";
+        let task = save_task(DownloadTask::new("task-shell", url, DownloadTrigger::Manual))
+            .await
+            .expect("task should save before shell attachment");
+        let client = Arc::new(FakeYtDlpClient::with_shells(HashMap::from([(
+            url.to_string(),
+            RootShellProbe {
+                source_kind: CollectionSourceKind::List,
+                title: "Epic Mountain Music - Playlists".to_string(),
+                webpage_url: url.to_string(),
+                extractor_key: Some("YoutubeTab".to_string()),
+            },
+        )])));
+
+        let attached = attach_root_shell_to_task(task, client)
+            .await
+            .expect("root shell should attach to task");
+        let tasks = list_tasks().await.expect("task listing should succeed");
+        let collection = crate::domain::collection_import::get_collection_by_url(url)
+            .await
+            .expect("collection lookup should succeed");
+
+        assert_eq!(
+            attached.collection_name.as_deref(),
+            Some("Epic Mountain Music - Playlists")
+        );
+        assert_eq!(attached.collection_url.as_deref(), Some(url));
+        assert_eq!(attached.source_kind, Some(CollectionSourceKind::List));
+        assert_eq!(attached.status, DownloadTaskStatus::Queued);
+        assert_eq!(attached.total_leaves, 0);
+        assert!(attached.leafs.is_empty());
+        assert_eq!(
+            tasks[0].collection_name.as_deref(),
+            Some("Epic Mountain Music - Playlists")
+        );
+        assert!(tasks[0].leafs.is_empty());
+        assert!(
+            collection.is_none(),
+            "root shell evidence belongs to the task, not a fake collection"
+        );
 
         reset_db();
     });

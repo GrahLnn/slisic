@@ -66,6 +66,8 @@ const secondTask: DownloadTask = {
 
 const pasteRequested = payloads["paste.requested"];
 const candidateDelete = payloads["candidate.delete"];
+const downloadTaskChanged = payloads["download.task.changed"];
+const candidateTaskCollectionLoaded = payloads["candidate.task.collection.loaded"];
 
 function setResolvePastedDownloadUrlMock(mock: typeof deps.resolvePastedDownloadUrl) {
   deps.resolvePastedDownloadUrl = mock;
@@ -132,6 +134,7 @@ beforeEach(() => {
     status: "new_url",
     url: url.trim(),
     error: null,
+    taskId: null,
     collection: null,
   }));
   setEnqueueCollectionDownloadMock(async () => ({
@@ -204,6 +207,7 @@ describe("pasteDownload machine", () => {
         displayText: sampleResource.url,
         status: "enqueueing",
         error: null,
+        taskId: null,
       },
     ]);
 
@@ -215,12 +219,112 @@ describe("pasteDownload machine", () => {
     expect(actor.getSnapshot().context.items).toEqual([]);
   });
 
+  test("keeps an accepted task visible as preparing until collection evidence arrives", async () => {
+    setEnqueueCollectionDownloadMock(async () => ({
+      task: {
+        ...sampleTask,
+      },
+      collection: null,
+    }));
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(pasteRequested.load(sampleResource.url));
+
+    await waitForContext(
+      actor,
+      (context: { items: Array<{ status: string }> }) =>
+        context.items[0]?.status === "preparing",
+    );
+
+    expect(actor.getSnapshot().context.items).toEqual([
+      {
+        id: "candidate:0",
+        rawText: sampleResource.url,
+        sourceUrl: sampleResource.url,
+        displayText: sampleResource.title,
+        status: "preparing",
+        error: null,
+        taskId: "task-1",
+      },
+    ]);
+  });
+
+  test("keeps accepted task visible by url when root title evidence is unavailable", async () => {
+    setEnqueueCollectionDownloadMock(async () => ({
+      task: {
+        ...sampleTask,
+        collection_url: null,
+        collection_name: null,
+        collection_folder: null,
+        source_kind: null,
+      },
+      collection: null,
+    }));
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(pasteRequested.load(sampleResource.url));
+
+    await waitForContext(
+      actor,
+      (context: { items: Array<{ status: string }> }) =>
+        context.items[0]?.status === "preparing",
+    );
+
+    expect(actor.getSnapshot().context.items[0]?.displayText).toBe(sampleResource.url);
+  });
+
+  test("removes a preparing task only after completed collection evidence is loaded", async () => {
+    setEnqueueCollectionDownloadMock(async () => ({
+      task: {
+        ...sampleTask,
+        collection_url: null,
+        collection_name: null,
+        collection_folder: null,
+        source_kind: null,
+      },
+      collection: null,
+    }));
+
+    const actor = createActor(machine);
+    actor.start();
+    actor.send(pasteRequested.load(sampleResource.url));
+    await waitForContext(
+      actor,
+      (context: { items: Array<{ status: string }> }) =>
+        context.items[0]?.status === "preparing",
+    );
+
+    actor.send(
+      downloadTaskChanged.load({
+        task_id: "task-1",
+        task_url: sampleResource.url,
+        collection_url: sampleResource.url,
+        status: "completed",
+        last_error: null,
+      }),
+    );
+
+    expect(actor.getSnapshot().context.items).toHaveLength(1);
+
+    actor.send(
+      candidateTaskCollectionLoaded.load({
+        taskId: "task-1",
+        collection: sampleCollection,
+      }),
+    );
+
+    expect(actor.getSnapshot().context.items).toEqual([]);
+  });
+
   test("keeps invalid pasted text as a delete-only candidate without enqueueing", async () => {
     let enqueueCalls = 0;
     setResolvePastedDownloadUrlMock(async () => ({
       status: "invalid_url",
       url: null,
       error: "Clipboard does not contain a valid URL.",
+      taskId: null,
       collection: null,
     }));
     setEnqueueCollectionDownloadMock(async () => {
@@ -247,6 +351,7 @@ describe("pasteDownload machine", () => {
           displayText: "not a url",
           status: "invalid_url",
           error: "Clipboard does not contain a valid URL.",
+          taskId: null,
         },
       ],
       nextItemSequence: 1,
@@ -275,6 +380,7 @@ describe("pasteDownload machine", () => {
           displayText: "https://www.youtube.com/watch?v=abc123",
           status: "enqueue_failed",
           error: "resource is not downloadable",
+          taskId: null,
         },
       ],
       nextItemSequence: 1,
@@ -287,6 +393,7 @@ describe("pasteDownload machine", () => {
       status: "existing_collection",
       url: sampleCollection.url,
       error: null,
+      taskId: null,
       collection: sampleCollection,
     }));
     setEnqueueCollectionDownloadMock(async () => {
@@ -354,6 +461,7 @@ describe("pasteDownload machine", () => {
         displayText: sampleResource.url,
         status: "enqueueing",
         error: null,
+        taskId: null,
       },
     ]);
 
@@ -374,6 +482,7 @@ describe("pasteDownload machine", () => {
         status: "new_url",
         url,
         error: null,
+        taskId: null,
         collection: null,
       };
     });
@@ -404,6 +513,7 @@ describe("pasteDownload machine", () => {
         displayText: "https://example.com/a https://www.youtube.com/watch?v=abc123",
         status: "invalid_url",
         error: "Clipboard must contain exactly one URL.",
+        taskId: null,
       },
     ]);
   });
@@ -413,6 +523,7 @@ describe("pasteDownload machine", () => {
       status: "invalid_url",
       url: null,
       error: "Clipboard does not contain a valid URL.",
+      taskId: null,
       collection: null,
     }));
 
@@ -434,6 +545,7 @@ describe("pasteDownload machine", () => {
       status: "invalid_url",
       url: null,
       error: "Clipboard does not contain a valid URL.",
+      taskId: null,
       collection: null,
     }));
 

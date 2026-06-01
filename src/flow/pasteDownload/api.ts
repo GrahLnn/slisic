@@ -4,12 +4,13 @@ import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { createSender } from "@grahlnn/fn/flow";
 import { me } from "@grahlnn/fn";
 import { machine } from "./machine";
-import { payloads, sig, type MainStateT } from "./events";
+import { listenDownloadTaskChanged, payloads, sig, type MainStateT } from "./events";
 
 export const actor = createActor(machine);
 const send = createSender(actor);
 const pasteRequested = payloads["paste.requested"];
 const candidateDelete = payloads["candidate.delete"];
+const downloadTaskChanged = payloads["download.task.changed"];
 
 type ActorSnapshot = ReturnType<(typeof actor)["getSnapshot"]>;
 
@@ -20,6 +21,7 @@ const selectMainState = me.select(
 const selectContext = me.select((shot: { context: ActorSnapshot["context"] }) => shot.context);
 
 let started = false;
+let unsubscribeDownloadTaskChanged: (() => void) | null = null;
 
 export function ensureStarted() {
   if (started) {
@@ -27,6 +29,7 @@ export function ensureStarted() {
   }
 
   actor.start();
+  attachDownloadTaskChangeListener();
   started = true;
 }
 
@@ -36,7 +39,25 @@ export function stop() {
   }
 
   actor.stop();
+  unsubscribeDownloadTaskChanged?.();
+  unsubscribeDownloadTaskChanged = null;
   started = false;
+}
+
+function attachDownloadTaskChangeListener() {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+    return;
+  }
+
+  void listenDownloadTaskChanged((payload) => {
+    send(downloadTaskChanged.load(payload));
+  })
+    .then((unlisten) => {
+      unsubscribeDownloadTaskChanged = unlisten;
+    })
+    .catch((error) => {
+      console.error("Failed to subscribe to download task changes", error);
+    });
 }
 
 function requestPasteDownload(text: string) {

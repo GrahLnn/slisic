@@ -472,6 +472,102 @@ describe("appLogic machine", () => {
     });
   });
 
+  test("keeps pending first-track playback alive when playlist upsert evidence arrives", async () => {
+    const collection = createCollection([createMusic()]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.stopped"].load({
+        error: null,
+        playlistName: "Focus Session",
+        reason: "pending_first_track",
+        requestId: 1,
+        session: createStoppedPlaybackSession("pending_first_track"),
+      }),
+    );
+    actor.send(
+      payloads["playlist.upserted"].load({
+        playlist: createPlaylistSurface(createPlaylist(collection)),
+        previousName: null,
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().value, "ready");
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, "Focus Session");
+    assert.deepEqual(actor.getSnapshot().context.pendingPlaylistPlaybackRequest, {
+      error: null,
+      phase: "preparing",
+      playlistName: "Focus Session",
+      reason: "pending_first_track",
+      requestId: 1,
+    });
+  });
+
+  test("accepts playback after pending first-track and playlist upsert evidence", async () => {
+    const music = createMusic();
+    const collection = createCollection([music]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.stopped"].load({
+        error: null,
+        playlistName: "Focus Session",
+        reason: "pending_first_track",
+        requestId: 1,
+        session: createStoppedPlaybackSession("pending_first_track"),
+      }),
+    );
+    actor.send(
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(music, 7),
+      ),
+    );
+    actor.send(
+      payloads["playlist.upserted"].load({
+        playlist: createPlaylistSurface(createPlaylist(collection)),
+        previousName: null,
+      }),
+    );
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 1,
+        session: createStartedPlaybackSession(7),
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().value, "play");
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, null);
+    assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, music.alias);
+  });
+
   test("closes stopped playback intent when the backend supersedes it", async () => {
     const collection = createCollection([createMusic()]);
     const actor = createActor(

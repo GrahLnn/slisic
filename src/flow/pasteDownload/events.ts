@@ -11,7 +11,13 @@ import {
   type PayloadEvt,
   type SignalEvt,
 } from "@grahlnn/fn/flow";
-import { crab, type EnqueuedCollectionDownload, type PastedDownloadUrlResolution } from "@/src/cmd";
+import {
+  crab,
+  type Collection,
+  type DownloadTaskChangeSignal,
+  type EnqueuedCollectionDownload,
+  type PastedDownloadUrlResolution,
+} from "@/src/cmd";
 
 export const ss = defineSS(ns("mainx", sst(["idle"], ["reset"])));
 export const state = allState(ss);
@@ -31,6 +37,22 @@ export type CandidateEnqueuedPayload = {
   id: string;
   result: EnqueuedCollectionDownload;
 };
+
+export type CandidateTaskCollectionPayload = {
+  taskId: string;
+  collection: Collection;
+};
+
+export type CandidateTaskFailurePayload = {
+  taskId: string;
+  error: string;
+};
+
+export async function listenDownloadTaskChanged(
+  handler: (payload: DownloadTaskChangeSignal) => void,
+): Promise<() => void> {
+  return crab.evt("downloadTaskChangeSignal")(handler);
+}
 
 export const deps = {
   resolvePastedDownloadUrl: async (url: string): Promise<PastedDownloadUrlResolution> => {
@@ -53,6 +75,16 @@ export const deps = {
       },
     });
   },
+  getCollection: async (url: string): Promise<Collection | null> => {
+    const result = await crab.getCollection(url);
+
+    return result.match({
+      Ok: (collection) => collection,
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+  },
 };
 
 export const invoker = createActors({
@@ -68,6 +100,9 @@ export const payloads = collect(
   ...event<CandidateResolutionPayload>()("candidate.resolve.completed"),
   ...event<CandidateFailurePayload>()("candidate.resolve.failed", "candidate.enqueue.failed"),
   ...event<CandidateEnqueuedPayload>()("candidate.enqueue.completed"),
+  ...event<DownloadTaskChangeSignal>()("download.task.changed"),
+  ...event<CandidateTaskCollectionPayload>()("candidate.task.collection.loaded"),
+  ...event<CandidateTaskFailurePayload>()("candidate.task.collection.failed"),
 );
 
 export type MainStateT = Extract<keyof typeof ss.mainx.State, string>;

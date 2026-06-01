@@ -624,6 +624,11 @@ function createPlaylistUpsertedContext(
   context: Context,
   event: { output: { playlist: Context["playlists"][number]; previousName: string | null } },
 ) {
+  const matchesPendingPreview =
+    context.pendingPlaylistPreview &&
+    (context.pendingPlaylistPreview.playlist.name === event.output.playlist.name ||
+      context.pendingPlaylistPreview.previousName === event.output.previousName);
+
   return {
     hasPlayList: true,
     playlists: upsertPlaylistIntoPlaylists(
@@ -631,15 +636,7 @@ function createPlaylistUpsertedContext(
       event.output.playlist,
       event.output.previousName,
     ),
-    pendingPlaylistPreview: null,
-    pendingPlaylistPlaybackName:
-      context.pendingPlaylistPlaybackName === event.output.playlist.name
-        ? null
-        : context.pendingPlaylistPlaybackName,
-    pendingPlaylistPlaybackRequest:
-      context.pendingPlaylistPlaybackName === event.output.playlist.name
-        ? null
-        : context.pendingPlaylistPlaybackRequest,
+    pendingPlaylistPreview: matchesPendingPreview ? null : context.pendingPlaylistPreview,
   };
 }
 

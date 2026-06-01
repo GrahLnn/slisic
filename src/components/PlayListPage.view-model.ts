@@ -99,6 +99,12 @@ function resolvePendingPlaybackPlaylistName(args: {
     : null;
 }
 
+function shouldShowPendingPlaybackPreparation(
+  request: PlaylistPlaybackRequestEvidence | null,
+): boolean {
+  return request?.phase === "preparing" && request.reason === "pending_first_track";
+}
+
 export interface PlayListPageViewModel {
   visiblePlaylists: PlayListListView[];
   visibleLayoutIds: string[];
@@ -274,13 +280,16 @@ function resolvePlayListPageVisibleItems(args: {
       const isPlaybackTarget = hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName;
       const isPendingPlaybackTarget =
         !isPlaybackTarget && playlist.name === pendingPlaybackPlaylistName;
+      const isPendingPlaybackPreparing =
+        isPendingPlaybackTarget &&
+        shouldShowPendingPlaybackPreparation(args.pendingPlaylistPlaybackRequest);
 
       return createPlayListPageItemViewModel({
         playlist,
         text:
           hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName
             ? playbackSurfaceTrackName || playlist.name
-            : isPendingPlaybackTarget
+            : isPendingPlaybackPreparing
               ? "Preparing..."
               : playlist.name,
         titleShareEnabled: args.titleShareEnabled,
@@ -301,7 +310,7 @@ function resolvePlayListPageVisibleItems(args: {
           playlist.name === playbackSurfacePlaylistName &&
           playbackSurfaceTrackLiked === true,
         isPlaybackPreparing:
-          isPendingPlaybackTarget ||
+          isPendingPlaybackPreparing ||
           (isPlaybackSurfacePlaying &&
             hasPlaybackTarget &&
             playlist.name === playbackSurfacePlaylistName &&
@@ -319,7 +328,7 @@ function resolvePlayListPageVisibleItems(args: {
           sourceEnabled: !isPlaybackTarget && !isPendingPlaybackTarget,
         }),
         playbackIconWidthText:
-          isPendingPlaybackTarget
+          isPendingPlaybackPreparing
             ? "Preparing..."
             : (isPlaybackSurfacePlaying &&
                 playlist.name === playbackSurfacePlaylistName &&

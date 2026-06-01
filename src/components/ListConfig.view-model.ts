@@ -568,12 +568,12 @@ export function shouldShowListConfigEmptyState(args: {
   draft: ConfigDraft | null;
   candidateItemCount: number;
 }): ListConfigEmptyStateSignal {
-  if (!args.draft) {
-    return me<ListConfigEmptyStateKind>("keep");
-  }
-
   if (args.candidateItemCount > 0) {
     return me<ListConfigEmptyStateKind>("hide");
+  }
+
+  if (!args.draft) {
+    return me<ListConfigEmptyStateKind>("keep");
   }
 
   return me<ListConfigEmptyStateKind>(

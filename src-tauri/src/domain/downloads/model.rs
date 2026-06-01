@@ -216,7 +216,7 @@ impl PastedDownloadUrlResolution {
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct EnqueuedCollectionDownload {
     pub task: DownloadTask,
-    pub collection: Collection,
+    pub collection: Option<Collection>,
 }
 
 impl DownloadTask {
@@ -312,6 +312,7 @@ pub struct DownloadLeaf {
     pub file_name: Option<String>,
     pub relative_path: Option<String>,
     pub group: Option<DownloadLeafGroupContext>,
+    pub duration_ms: Option<u32>,
     pub duration_seconds: Option<u32>,
     pub chapter_count: Option<u32>,
     pub downloaded_bytes: Option<u64>,
@@ -335,6 +336,7 @@ impl DownloadLeaf {
             file_name: None,
             relative_path: None,
             group: None,
+            duration_ms: None,
             duration_seconds: None,
             chapter_count: None,
             downloaded_bytes: None,
