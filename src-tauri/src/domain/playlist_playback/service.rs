@@ -379,13 +379,6 @@ pub async fn exclude_current_music_and_skip(
         return Ok(ExcludeCurrentMusicAndSkipResult::MissingMusic);
     };
     let excluded_music = project_excluded_current_music(&track, music);
-    PlaybackExcludeCommittedEvent {
-        exclude: crate::domain::playlists::model::Exclude {
-            music: excluded_music.clone(),
-            created_at: appdb::AutoFill::pending(),
-        },
-    }
-    .emit(app)?;
     let immediate_action = prepare_current_session_after_exclude(app, &track).await?;
     match immediate_action {
         ExcludeCurrentImmediatePlaybackAction::Skip => {
@@ -397,6 +390,11 @@ pub async fn exclude_current_music_and_skip(
     }
 
     let exclude_result = playlist_repo::add_exclude(excluded_music).await?;
+    PlaybackExcludeCommittedEvent {
+        exclude: exclude_result.exclude.clone(),
+        exclude_availability: exclude_result.exclude_availability.clone(),
+    }
+    .emit(app)?;
     playable_index::notify_exclude_changed();
     let outcome = refresh_current_session_after_exclude(app, &track).await?;
     if let ExcludeCurrentMusicAndSkipOutcome::DeletedPlaylist { .. } = outcome
@@ -1855,7 +1853,7 @@ fn project_playlist_playback_track(
     project_playlist_playback_track_for_playlist(&selection.playlist_name, source, file_path)
 }
 
-fn project_playlist_playback_track_for_playlist(
+pub(crate) fn project_playlist_playback_track_for_playlist(
     playlist_name: &str,
     source: &PlaylistPlaybackTrackSource,
     file_path: PathBuf,
@@ -1909,7 +1907,7 @@ fn are_playlist_playback_tracks_equal(left: &PlaybackTrack, right: &PlaybackTrac
         && left.end_ms == right.end_ms
 }
 
-fn resolve_source_music_file_path(
+pub(crate) fn resolve_source_music_file_path(
     save_root: &Path,
     source: &PlaylistPlaybackTrackSource,
 ) -> Option<PathBuf> {

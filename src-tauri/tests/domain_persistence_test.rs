@@ -47,6 +47,20 @@ mod domain {
             ));
         }
 
+        pub mod track_identity_substitution {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/player/track_identity_substitution.rs"
+            ));
+        }
+
+        mod track_identity_substitution_test {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/player/track_identity_substitution.test.rs"
+            ));
+        }
+
         pub mod service {
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -54,7 +68,7 @@ mod domain {
             ));
         }
 
-        mod model_test {
+        mod service_test {
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/domain/player/service.test.rs"

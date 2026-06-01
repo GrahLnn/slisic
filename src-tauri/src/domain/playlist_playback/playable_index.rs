@@ -1,9 +1,15 @@
 #[cfg(not(test))]
+use crate::domain::meta::service as meta_service;
+#[cfg(not(test))]
 use crate::domain::player::event::{PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent};
 #[cfg(not(test))]
+use crate::domain::player::model::PlaybackTrack;
+#[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
-    AudioStyleCenterlessSourceStatus, published_audio_style_centerless_source,
+    AudioStyleCenterlessSourceStatus, published_audio_style_centerless_source_from_candidates,
 };
+#[cfg(not(test))]
+use crate::domain::playlist_playback::service as playlist_playback_service;
 #[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
 use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlaybackTrackSource};
@@ -20,6 +26,8 @@ use tauri_specta::Event;
 
 const PLAYABLE_INDEX_LOG_TARGET: &str = "playlist_playback_index";
 const FIRST_SLOT_PREPARED_POOL_TARGET: usize = 2;
+#[cfg(not(test))]
+const FIRST_SLOT_AUDIO_STYLE_CANDIDATE_PROBE_LIMIT: usize = 96;
 
 static PLAYABLE_INDEX_RUNTIME: OnceLock<Arc<PlayableIndexRuntime>> = OnceLock::new();
 
@@ -108,6 +116,8 @@ struct PlayableIndexRuntime {
     next_credential_id: AtomicU64,
     #[cfg(not(test))]
     next_refresh_run_id: AtomicU64,
+    #[cfg(not(test))]
+    app: Mutex<Option<tauri::AppHandle>>,
     state: Mutex<PlayableIndexState>,
 }
 
@@ -142,12 +152,13 @@ struct PlayableIndexState {
  *     only that credential and schedules replacement preparation.
  *   - Refresh can be repeated, cancelled by supersession, or raced with ready
  *     transitions without producing extra semantic side effects.
- *   - The index never validates local file existence; playback service owns
- *     source elimination into `PlaybackTrack`.
+ *   - The index never defines file-path semantics; audio-style preparation
+ *     asks playback service to eliminate current candidates into
+ *     `PlaybackTrack` and treats failed elimination as an explicit miss.
  */
 #[cfg(not(test))]
 pub(crate) fn initialize_runtime(app: tauri::AppHandle) {
-    runtime();
+    register_runtime_app(app.clone());
     spawn_refresh_all(app, PlayableIndexRefreshReason::Startup);
 }
 
@@ -372,9 +383,41 @@ fn runtime() -> &'static Arc<PlayableIndexRuntime> {
             next_credential_id: AtomicU64::new(0),
             #[cfg(not(test))]
             next_refresh_run_id: AtomicU64::new(0),
+            #[cfg(not(test))]
+            app: Mutex::new(None),
             state: Mutex::new(PlayableIndexState::default()),
         })
     })
+}
+
+#[cfg(not(test))]
+fn register_runtime_app(app: tauri::AppHandle) {
+    let runtime = runtime();
+    match runtime.app.lock() {
+        Ok(mut registered_app) => {
+            *registered_app = Some(app);
+        }
+        Err(_) => {
+            log::error!(
+                target: PLAYABLE_INDEX_LOG_TARGET,
+                "first_slot_runtime_app_register_failed error=\"lock_poisoned\""
+            );
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn registered_runtime_app(runtime: &PlayableIndexRuntime) -> Option<tauri::AppHandle> {
+    match runtime.app.lock() {
+        Ok(app) => app.clone(),
+        Err(_) => {
+            log::error!(
+                target: PLAYABLE_INDEX_LOG_TARGET,
+                "first_slot_runtime_app_read_failed error=\"lock_poisoned\""
+            );
+            None
+        }
+    }
 }
 
 fn next_credential_id(runtime: &PlayableIndexRuntime) -> u64 {
@@ -474,7 +517,8 @@ fn next_generation() -> Result<u64> {
 
 #[cfg(not(test))]
 fn spawn_refresh_all_without_app(reason: PlayableIndexRefreshReason) {
-    spawn_refresh_all_with_app(None, reason);
+    let app = registered_runtime_app(runtime().as_ref());
+    spawn_refresh_all_with_app(app, reason);
 }
 
 #[cfg(not(test))]
@@ -485,6 +529,9 @@ fn spawn_refresh_all(app: tauri::AppHandle, reason: PlayableIndexRefreshReason) 
 #[cfg(not(test))]
 fn spawn_refresh_all_with_app(app: Option<tauri::AppHandle>, reason: PlayableIndexRefreshReason) {
     let runtime = Arc::clone(runtime());
+    if let Some(app) = app.clone() {
+        register_runtime_app(app);
+    }
     let mut skip_status = "already_active";
     let run_id = runtime.next_refresh_run_id.fetch_add(1, Ordering::SeqCst) + 1;
     let (can_start, generation) = {
@@ -550,8 +597,8 @@ fn spawn_refresh_all_with_app(app: Option<tauri::AppHandle>, reason: PlayableInd
     let cleanup_runtime = Arc::clone(&runtime);
 
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = refresh_all(app, runtime, run_id, generation, reason).await {
-            release_global_refresh_and_spawn_pending(None, &cleanup_runtime);
+        if let Err(error) = refresh_all(app.clone(), runtime, run_id, generation, reason).await {
+            release_global_refresh_and_spawn_pending(app, &cleanup_runtime);
             log::error!(
                 target: PLAYABLE_INDEX_LOG_TARGET,
                 "first_slot_global_refresh_failed run_id={run_id} reason={} generation={generation} error=\"{}\"",
@@ -569,6 +616,7 @@ fn spawn_refresh_playlist(
     reason: PlayableIndexRefreshReason,
 ) {
     let runtime = Arc::clone(runtime());
+    let app = app.or_else(|| registered_runtime_app(runtime.as_ref()));
     let mut claimed_generation = None;
     let mut skipped_generation = None;
     let mut skip_status = "already_active";
@@ -665,7 +713,7 @@ fn spawn_refresh_playlist(
 
     tauri::async_runtime::spawn(async move {
         if let Err(error) = refresh_playlist(
-            app,
+            app.clone(),
             runtime,
             run_id,
             playlist_name.clone(),
@@ -674,7 +722,7 @@ fn spawn_refresh_playlist(
         )
         .await
         {
-            release_playlist_refresh(&cleanup_runtime, &cleanup_playlist_name, generation);
+            release_playlist_refresh(app, &cleanup_runtime, &cleanup_playlist_name, generation);
             log::error!(
                 target: PLAYABLE_INDEX_LOG_TARGET,
                 "first_slot_playlist_refresh_failed run_id={run_id} playlist=\"{}\" reason={} generation={generation} error=\"{}\"",
@@ -719,6 +767,11 @@ async fn refresh_all(
     reason: PlayableIndexRefreshReason,
 ) -> Result<()> {
     let started = Instant::now();
+    let app_handle = app.as_ref().ok_or_else(|| {
+        anyhow!(
+            "playlist playable index refresh requires app handle for playback source projection"
+        )
+    })?;
     let mut next = HashMap::new();
     for playlist in playlist_repo::list_playlists().await? {
         let Some(selection) =
@@ -727,7 +780,8 @@ async fn refresh_all(
             continue;
         };
         let prepared_sources =
-            prepare_playlist_sources(&selection, FIRST_SLOT_PREPARED_POOL_TARGET).await?;
+            prepare_playlist_sources(app_handle, &selection, FIRST_SLOT_PREPARED_POOL_TARGET)
+                .await?;
         next.insert(selection.playlist_name, prepared_sources);
     }
 
@@ -824,10 +878,16 @@ async fn refresh_playlist(
     reason: PlayableIndexRefreshReason,
 ) -> Result<()> {
     let started = Instant::now();
+    let app_handle = app.as_ref().ok_or_else(|| {
+        anyhow!(
+            "playlist playable index refresh requires app handle for playback source projection"
+        )
+    })?;
     let prepared_sources =
         match playlist_repo::get_playlist_playback_selection_by_name(&playlist_name).await? {
             Some(selection) => {
-                prepare_playlist_sources(&selection, FIRST_SLOT_PREPARED_POOL_TARGET).await?
+                prepare_playlist_sources(app_handle, &selection, FIRST_SLOT_PREPARED_POOL_TARGET)
+                    .await?
             }
             None => Vec::new(),
         };
@@ -891,6 +951,7 @@ async fn refresh_playlist(
 
 #[cfg(not(test))]
 fn release_playlist_refresh(
+    app: Option<tauri::AppHandle>,
     runtime: &Arc<PlayableIndexRuntime>,
     playlist_name: &str,
     _generation: u64,
@@ -908,7 +969,7 @@ fn release_playlist_refresh(
         state.pending_refreshes.remove(playlist_name)
     };
     if let Some(pending_reason) = pending_reason {
-        spawn_refresh_playlist(None, playlist_name.to_string(), pending_reason);
+        spawn_refresh_playlist(app, playlist_name.to_string(), pending_reason);
     }
 }
 
@@ -955,10 +1016,11 @@ fn release_global_refresh_and_spawn_pending(
 
 #[cfg(not(test))]
 async fn prepare_playlist_source(
+    app: &tauri::AppHandle,
     selection: &PlaylistPlaybackSelection,
 ) -> Result<Option<PreparedPlaylistSource>> {
-    match published_audio_style_centerless_source(|source| selection.contains_track_source(source))
-    {
+    let candidates = prepare_audio_style_candidate_tracks(app, selection).await?;
+    match published_audio_style_centerless_source_from_candidates(candidates) {
         AudioStyleCenterlessSourceStatus::Ready(source, selection_trace) => {
             log::info!(
                 target: PLAYABLE_INDEX_LOG_TARGET,
@@ -988,7 +1050,41 @@ async fn prepare_playlist_source(
 }
 
 #[cfg(not(test))]
+async fn prepare_audio_style_candidate_tracks(
+    app: &tauri::AppHandle,
+    selection: &PlaylistPlaybackSelection,
+) -> Result<Vec<(PlaylistPlaybackTrackSource, PlaybackTrack)>> {
+    let save_root = meta_service::resolve_save_root(app).await?;
+    let sources = playlist_repo::load_random_playlist_playback_track_sources(
+        selection,
+        FIRST_SLOT_AUDIO_STYLE_CANDIDATE_PROBE_LIMIT,
+    )
+    .await?;
+    let mut candidates = Vec::with_capacity(sources.len());
+
+    for source in sources {
+        let Some(file_path) =
+            playlist_playback_service::resolve_source_music_file_path(&save_root, &source)
+        else {
+            continue;
+        };
+        if !file_path.is_file() {
+            continue;
+        }
+        let track = playlist_playback_service::project_playlist_playback_track_for_playlist(
+            &selection.playlist_name,
+            &source,
+            file_path,
+        );
+        candidates.push((source, track));
+    }
+
+    Ok(candidates)
+}
+
+#[cfg(not(test))]
 async fn prepare_playlist_sources(
+    app: &tauri::AppHandle,
     selection: &PlaylistPlaybackSelection,
     target_count: usize,
 ) -> Result<Vec<PreparedPlaylistSource>> {
@@ -996,7 +1092,7 @@ async fn prepare_playlist_sources(
     let mut seen = HashSet::new();
 
     for _ in 0..target_count {
-        let Some(prepared) = prepare_playlist_source(selection).await? else {
+        let Some(prepared) = prepare_playlist_source(app, selection).await? else {
             break;
         };
         if !seen.insert(playlist_source_key(&prepared.source)) {

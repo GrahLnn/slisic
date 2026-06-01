@@ -4,9 +4,10 @@ use super::model::{
 };
 use super::startup_bootstrap::PlaylistStartupBootstrapSnapshot;
 use crate::domain::player::service::{
-    PlaybackTrackIdentityUpdate, PlaybackTrackLikedUpdate, active_request_track_snapshot,
+    PlaybackTrackLikedUpdate, active_request_track_snapshot,
     request_current_session_track_identity_update, update_current_session_track_liked,
 };
+use crate::domain::player::track_identity_substitution::PlaybackTrackIdentityUpdate;
 use crate::domain::playlist_playback::playable_index;
 use crate::domain::playlist_playback::service as playlist_playback_service;
 use tauri::AppHandle;
