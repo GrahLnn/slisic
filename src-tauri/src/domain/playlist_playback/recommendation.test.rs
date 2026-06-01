@@ -1061,8 +1061,8 @@ fn audio_style_model_refresh_reuses_unchanged_embeddings() {
 }
 
 #[test]
-fn audio_style_model_refresh_publishes_each_new_embedding_progressively() {
-    let root = temp_cache_root("refresh_progressive");
+fn audio_style_model_refresh_reuses_cached_embeddings_without_progressive_training() {
+    let root = temp_cache_root("refresh_cached_no_progress");
     std::fs::create_dir_all(&root).expect("cache test root should be created");
     let cache = AudioStyleEmbeddingCache::new(PathBuf::from("missing-ffmpeg"), root.clone())
         .expect("cache should be created without ffmpeg");
@@ -1091,17 +1091,55 @@ fn audio_style_model_refresh_publishes_each_new_embedding_progressively() {
         &cache,
         vec![current.clone(), added_one.clone(), added_two.clone()],
     )
-    .expect("refresh should publish once per newly indexed embedding");
+    .expect("refresh should reuse cache-backed embeddings without training progress");
 
-    assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots.len(), 1);
     assert_eq!(snapshots[0].generation(), 2);
-    assert_eq!(snapshots[1].generation(), 3);
     assert!(snapshots[0].recommender().has_embedding_for(&current));
     assert!(snapshots[0].recommender().has_embedding_for(&added_one));
-    assert!(!snapshots[0].recommender().has_embedding_for(&added_two));
-    assert!(snapshots[1].recommender().has_embedding_for(&current));
-    assert!(snapshots[1].recommender().has_embedding_for(&added_one));
-    assert!(snapshots[1].recommender().has_embedding_for(&added_two));
+    assert!(snapshots[0].recommender().has_embedding_for(&added_two));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn audio_style_model_refresh_uses_cache_evidence_without_previous_snapshot() {
+    let root = temp_cache_root("refresh_cache_no_previous");
+    std::fs::create_dir_all(&root).expect("cache test root should be created");
+    let cache = AudioStyleEmbeddingCache::new(PathBuf::from("missing-ffmpeg"), root.clone())
+        .expect("cache should be created without ffmpeg");
+    let mut first = track("first");
+    let mut second = track("second");
+    let mut third = track("third");
+    first.file_path = root.join("first.m4a");
+    second.file_path = root.join("second.m4a");
+    third.file_path = root.join("third.m4a");
+    std::fs::write(&first.file_path, b"first").expect("first test audio should exist");
+    std::fs::write(&second.file_path, b"second").expect("second test audio should exist");
+    std::fs::write(&third.file_path, b"third").expect("third test audio should exist");
+    cache
+        .write_test_embedding_for_track(&first, embedding(2))
+        .expect("first embedding should be cached");
+    cache
+        .write_test_embedding_for_track(&second, embedding(3))
+        .expect("second embedding should be cached");
+    cache
+        .write_test_embedding_for_track(&third, embedding(4))
+        .expect("third embedding should be cached");
+
+    let snapshots = AudioStyleModelSnapshot::refresh_progressively_for_test(
+        2,
+        None,
+        &cache,
+        vec![first.clone(), second.clone(), third.clone()],
+    )
+    .expect("refresh should restore cache evidence without requiring model evidence");
+
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].generation(), 2);
+    assert!(snapshots[0].recommender().has_embedding_for(&first));
+    assert!(snapshots[0].recommender().has_embedding_for(&second));
+    assert!(snapshots[0].recommender().has_embedding_for(&third));
 
     let _ = std::fs::remove_dir_all(root);
 }

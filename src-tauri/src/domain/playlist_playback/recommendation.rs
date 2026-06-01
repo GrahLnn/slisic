@@ -2063,6 +2063,7 @@ impl AudioStyleModelState {
         let previous_state = previous.cloned();
         let mut embeddings = AudioStyleEmbeddingMap::new();
         let mut previous_reused = HashSet::new();
+        let mut cache_reused = 0usize;
         let mut missing_tracks = Vec::new();
         let mut failed = Vec::new();
         let mut latest_state = None;
@@ -2077,19 +2078,47 @@ impl AudioStyleModelState {
                 continue;
             }
 
-            missing_tracks.push((key, track));
+            match cache.cached_embedding_for_track(&track) {
+                Ok(Some(embedding)) => {
+                    embeddings.insert(key, Arc::new(embedding));
+                    cache_reused += 1;
+                }
+                Ok(None) => missing_tracks.push((key, track)),
+                Err(error) => {
+                    log::debug!(
+                        target: AUDIO_STYLE_LOG_TARGET,
+                        "audio_style_embedding_cache_evidence_ignored music=\"{}\" url=\"{}\" range={}..{} path=\"{}\" error=\"{}\"",
+                        escape_log_value(&track.music_name),
+                        escape_log_value(&track.music_url),
+                        track.start_ms,
+                        track.end_ms,
+                        escape_log_value(&track.file_path.display().to_string()),
+                        escape_log_value(&error)
+                    );
+                    missing_tracks.push((key, track));
+                }
+            }
         }
 
         let worker_profile = AudioStyleTrainingWorkerProfile::detect(missing_tracks.len());
         let worker_count = worker_profile.worker_count();
+        if worker_count > 0 && cache_reused > 0 {
+            latest_state = Some(Self::from_embeddings(
+                previous_state.as_ref(),
+                embeddings.clone(),
+                indexed_by_key.clone(),
+                &previous_reused,
+            ));
+        }
         if worker_count > 0 {
             let embedding_started = Instant::now();
             let missing_count = missing_tracks.len();
             log::info!(
                 target: AUDIO_STYLE_LOG_TARGET,
-                "audio_style_training_embeddings_started total_tracks={} reused_embeddings={} pending_embeddings={} workers={worker_count} decode_workers={} decode_prefetch_workers={} cpu_parallelism={} tensor_backend={} tensor_device_count={} tensor_device_source={} policy=\"{}\"",
+                "audio_style_training_embeddings_started total_tracks={} reused_embeddings={} cache_reused_embeddings={} pending_embeddings={} workers={worker_count} decode_workers={} decode_prefetch_workers={} cpu_parallelism={} tensor_backend={} tensor_device_count={} tensor_device_source={} policy=\"{}\"",
                 indexed_by_key.len(),
-                previous_reused.len(),
+                embeddings.len(),
+                cache_reused,
                 missing_count,
                 worker_profile.decode_worker_count,
                 worker_profile.decode_prefetch_worker_count,
@@ -2191,6 +2220,14 @@ impl AudioStyleModelState {
                 );
                 latest_state = Some(state);
             }
+        } else if !indexed_by_key.is_empty() {
+            log::info!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_training_embeddings_skipped total_tracks={} reused_embeddings={} cache_reused_embeddings={} pending_embeddings=0 reason=all_embeddings_reused",
+                indexed_by_key.len(),
+                embeddings.len(),
+                cache_reused
+            );
         }
 
         let state = latest_state.unwrap_or_else(|| {
@@ -3046,8 +3083,7 @@ impl AudioStyleEmbeddingCache {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn cached_embedding_for_track(
+    fn cached_embedding_for_track(
         &self,
         track: &PlaybackTrack,
     ) -> Result<Option<AudioStyleEmbedding>, String> {
