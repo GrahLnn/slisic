@@ -1037,6 +1037,7 @@ fn normalize_music_title_batch_with_evidence(
         }
     }
 
+    repair_normalized_titles_from_source_evidence(&mut normalized, &evidence);
     normalized
 }
 
@@ -1128,7 +1129,10 @@ fn boundary_title_noise_text_candidates(kind: TitleNoisePatternKind, title: &str
         TitleNoisePatternKind::Prefix => {
             for (end, _) in title.char_indices().skip(1) {
                 let text = &title[..end];
-                if boundary_title_noise_text_is_candidate(kind, text) {
+                if title_noise_affix_span_is_semantic_boundary(title, 0, end)
+                    && (boundary_title_noise_text_is_candidate(kind, text)
+                        || prefix_before_opening_bracket_is_candidate(title, end))
+                {
                     candidates.push(text);
                 }
             }
@@ -1136,7 +1140,9 @@ fn boundary_title_noise_text_candidates(kind: TitleNoisePatternKind, title: &str
         TitleNoisePatternKind::Suffix => {
             for (start, _) in title.char_indices().skip(1) {
                 let text = &title[start..];
-                if boundary_title_noise_text_is_candidate(kind, text) {
+                if title_noise_affix_span_is_semantic_boundary(title, start, title.len())
+                    && boundary_title_noise_text_is_candidate(kind, text)
+                {
                     candidates.push(text);
                 }
             }
@@ -1181,6 +1187,14 @@ fn boundary_title_noise_text_is_candidate(kind: TitleNoisePatternKind, text: &st
     }
 }
 
+fn prefix_before_opening_bracket_is_candidate(title: &str, end: usize) -> bool {
+    title[end..]
+        .chars()
+        .next()
+        .is_some_and(|character| opening_bracket_pair(character).is_some())
+        && title_noise_text_has_language_character(&title[..end])
+}
+
 fn repeated_bracketed_title_noise_patterns(
     evidence: &[TitleNoiseEvidence],
 ) -> Vec<TitleNoisePattern> {
@@ -1220,6 +1234,51 @@ fn bracketed_title_noise_text_is_candidate(text: &str) -> bool {
 
 fn title_noise_text_has_language_character(text: &str) -> bool {
     text.chars().any(char::is_alphabetic)
+}
+
+fn repair_normalized_titles_from_source_evidence(
+    normalized: &mut [String],
+    evidence: &[TitleNoiseEvidence],
+) {
+    let mut evidence_by_source = vec![Vec::<&str>::new(); normalized.len()];
+    for evidence in evidence {
+        if let Some(source_evidence) = evidence_by_source.get_mut(evidence.source_index) {
+            source_evidence.push(evidence.title.as_str());
+        }
+    }
+
+    for (source_index, title) in normalized.iter_mut().enumerate() {
+        let current_damage = title_bracket_damage_score(title);
+        if current_damage == 0 {
+            continue;
+        }
+        let Some(repaired) = evidence_by_source
+            .get(source_index)
+            .and_then(|source_evidence| best_source_evidence_title_repair(title, source_evidence))
+        else {
+            continue;
+        };
+        *title = repaired;
+    }
+}
+
+fn best_source_evidence_title_repair(current: &str, source_evidence: &[&str]) -> Option<String> {
+    let current_damage = title_bracket_damage_score(current);
+    source_evidence
+        .iter()
+        .map(|candidate| cleanup_title_after_noise_deletion(candidate))
+        .filter(|candidate| {
+            candidate != current
+                && title_noise_text_has_language_character(candidate)
+                && title_bracket_damage_score(candidate) < current_damage
+        })
+        .max_by_key(|candidate| {
+            (
+                current_damage - title_bracket_damage_score(candidate),
+                title_word_count(candidate),
+                candidate.chars().count(),
+            )
+        })
 }
 
 fn balanced_bracket_spans(title: &str) -> Vec<(usize, usize)> {
@@ -1324,6 +1383,9 @@ fn delete_title_noise_affix_occurrence(
     if !title_noise_text_has_language_character(&normalized) {
         return title.to_string();
     }
+    if title_bracket_damage_score(&normalized) > title_bracket_damage_score(title) {
+        return title.to_string();
+    }
 
     normalized
 }
@@ -1364,7 +1426,20 @@ fn title_noise_affix_residue_is_valid(title: &str, start: usize, end: usize) -> 
     let mut residue = String::new();
     residue.push_str(&title[..start]);
     residue.push_str(&title[end..]);
-    title_noise_text_has_language_character(&cleanup_title_after_noise_deletion(&residue))
+    let residue = cleanup_title_after_noise_deletion(&residue);
+    title_noise_text_has_language_character(&residue)
+        && title_bracket_damage_score(&residue) <= title_bracket_damage_score(title)
+}
+
+fn title_noise_affix_span_is_semantic_boundary(title: &str, start: usize, end: usize) -> bool {
+    (start == 0 || title_text_boundary_is_semantic(title, start))
+        && (end == title.len() || title_text_boundary_is_semantic(title, end))
+}
+
+fn title_text_boundary_is_semantic(title: &str, index: usize) -> bool {
+    let previous = title[..index].chars().next_back();
+    let next = title[index..].chars().next();
+    !previous.is_some_and(char::is_alphanumeric) || !next.is_some_and(char::is_alphanumeric)
 }
 
 fn is_dangling_title_separator(character: char) -> bool {
@@ -1459,6 +1534,10 @@ fn unmatched_closing_brackets(suffix: &str) -> Vec<BracketBoundary> {
         closings.push(BracketBoundary { character, index });
     }
     closings
+}
+
+fn title_bracket_damage_score(title: &str) -> usize {
+    unmatched_opening_brackets(title).len() + unmatched_closing_brackets(title).len()
 }
 
 fn opening_bracket_pair(character: char) -> Option<char> {

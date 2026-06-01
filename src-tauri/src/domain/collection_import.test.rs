@@ -3,7 +3,7 @@ use super::{
     CollectionManifestMusic, LocalAudioFile, collection_folder_from_local_path,
     collection_from_manifest, duration_ms_from_f32le_bytes, finalize_downloaded_leaf,
     merge_collection_manifest, manifest_from_collection, normalize_manifest_relative_path,
-    project_local_collection_shell,
+    normalize_music_titles_within_collection, project_local_collection_shell,
 };
 use crate::domain::downloads::model::CollectionSourceKind;
 use crate::domain::downloads::model::{DownloadTaskStatus, DownloadTrigger};
@@ -390,6 +390,148 @@ fn local_import_task_uses_collection_url_as_active_playback_scope() {
 }
 
 #[test]
+fn normalize_music_titles_restores_bracketed_title_from_downloaded_file_name_evidence() {
+    let group = collection_group(
+        "TENET Official Soundtrack",
+        "https://www.youtube.com/playlist?list=PLtenet",
+        "TENET Official Soundtrack - WaterTower Music",
+    );
+    let mut collection = Collection {
+        name: "TENET Official Soundtrack".to_string(),
+        url: "https://www.youtube.com/playlist?list=PLtenet".to_string(),
+        folder: "youtube/TENET Official Soundtrack - WaterTower Music".to_string(),
+        musics: vec![
+            music_with_group(
+                "FAST CARS - Ludwig Göransson",
+                "https://www.youtube.com/watch?v=fast-cars",
+                "TENET Official Soundtrack - FAST CARS - Ludwig Göransson - WaterTower.m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "TURNSTILE - Ludwig Göransson",
+                "https://www.youtube.com/watch?v=turnstile",
+                "TENET Official Soundtrack - TURNSTILE - Ludwig Göransson - WaterTower.m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "INVERTED] FULL ALBUM - Ludwig Göransson",
+                "https://www.youtube.com/watch?v=inverted",
+                "TENET Official Soundtrack - [INVERTED] FULL ALBUM - Ludwig Göransson - WaterTower.m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "FULL ALBUM - Ludwig Göransson",
+                "https://www.youtube.com/watch?v=full-album",
+                "TENET Official Soundtrack - FULL ALBUM - Ludwig Göransson - WaterTower.m4a",
+                group,
+            ),
+        ],
+        last_updated: "2026-05-24T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    normalize_music_titles_within_collection(&mut collection);
+
+    assert_eq!(collection.musics[2].name, "[INVERTED] FULL ALBUM");
+    assert_eq!(collection.musics[2].alias, "[INVERTED] FULL ALBUM");
+}
+
+#[test]
+fn normalize_music_titles_deletes_separator_suffix_as_one_semantic_block() {
+    let group = collection_group(
+        "Death Stranding 2",
+        "https://www.youtube.com/playlist?list=PLdeath-stranding-2",
+        "Death Stranding 2- On the Beach – All Official Soundtracks",
+    );
+    let mut collection = Collection {
+        name: "Death Stranding 2".to_string(),
+        url: "https://www.youtube.com/playlist?list=PLdeath-stranding-2".to_string(),
+        folder: "youtube/Death Stranding 2- On the Beach – All Official Soundtracks".to_string(),
+        musics: vec![
+            music_with_group(
+                "Should We Have Connected? | Death",
+                "https://www.youtube.com/watch?v=connected",
+                "Should We Have Connected- - Death Stranding 2- On The Beach (Original Video Game Score).m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "DHV Magellan Integrate! | Death",
+                "https://www.youtube.com/watch?v=magellan",
+                "DHV Magellan Integrate! - Death Stranding 2- On The Beach (Original Video Game Score).m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "Over The Dunes",
+                "https://www.youtube.com/watch?v=dunes",
+                "Ludvig Forssell - Over The Dunes - Death Stranding 2- On The Beach (Original Video Game Score).m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "We Should Not Have Connected",
+                "https://www.youtube.com/watch?v=not-connected",
+                "We Should Not Have Connected - Death Stranding 2- On The Beach (Original Video Game Score).m4a",
+                group,
+            ),
+        ],
+        last_updated: "2026-05-24T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    normalize_music_titles_within_collection(&mut collection);
+
+    assert_eq!(collection.musics[0].name, "Should We Have Connected?");
+    assert_eq!(collection.musics[1].name, "DHV Magellan Integrate!");
+}
+
+#[test]
+fn normalize_music_titles_never_projects_complete_suffix_to_partial_suffix() {
+    let group = collection_group(
+        "Death Stranding 2",
+        "https://www.youtube.com/playlist?list=PLdeath-stranding-2",
+        "Death Stranding 2- On the Beach – All Official Soundtracks",
+    );
+    let mut collection = Collection {
+        name: "Death Stranding 2".to_string(),
+        url: "https://www.youtube.com/playlist?list=PLdeath-stranding-2".to_string(),
+        folder: "youtube/Death Stranding 2- On the Beach – All Official Soundtracks".to_string(),
+        musics: vec![
+            music_with_group(
+                "Should We Have Connected? | Death Stranding 2 On The Beach Original Video Game Score",
+                "https://www.youtube.com/watch?v=connected",
+                "Should We Have Connected- - Death Stranding 2- On The Beach (Original Video Game Score).m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "DHV Magellan Integrate! | Death Stranding 2 On The Beach Original Video Game Score",
+                "https://www.youtube.com/watch?v=magellan",
+                "DHV Magellan Integrate! - Death Stranding 2- On The Beach (Original Video Game Score).m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "We Should Not Have Connected | Death Stranding 2 On The Beach Original Video Game Score",
+                "https://www.youtube.com/watch?v=not-connected",
+                "We Should Not Have Connected - Death Stranding 2- On The Beach (Original Video Game Score).m4a",
+                group,
+            ),
+        ],
+        last_updated: "2026-05-24T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    normalize_music_titles_within_collection(&mut collection);
+
+    assert_eq!(collection.musics[0].name, "Should We Have Connected?");
+    assert_eq!(collection.musics[1].name, "DHV Magellan Integrate!");
+    assert_eq!(collection.musics[2].name, "We Should Not Have Connected");
+    assert!(
+        collection
+            .musics
+            .iter()
+            .all(|music| !music.name.ends_with(" | Death"))
+    );
+}
+
+#[test]
 fn finalize_downloaded_leaf_commits_the_actual_downloaded_file_name_without_temp_marker() {
     let save_root = unique_temp_path("download-finalize-root");
     let collection_folder = "youtube/TENET Official Soundtrack - WaterTower Music";
@@ -590,6 +732,19 @@ fn manifest_music_with_group(
         start_ms,
         end_ms,
         liked: false,
+    }
+}
+
+fn collection_group(name: &str, url: &str, folder: &str) -> Group {
+    Group {
+        name: name.to_string(),
+        url: url.to_string(),
+        collection: test_collection_owner(
+            "Collection",
+            "https://example.com/playlist",
+            "youtube/collection",
+        ),
+        folder: folder.to_string(),
     }
 }
 
