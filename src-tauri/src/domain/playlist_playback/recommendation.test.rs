@@ -6,8 +6,12 @@ use super::recommendation::{
     choose_next_audio_style_candidate_with_generation_for_test,
     choose_next_audio_style_candidate_with_recent_history_for_test,
     filter_recently_played_recommendation_candidates,
+    read_cached_audio_style_model_evidence_for_test,
+    write_cached_audio_style_model_evidence_for_test,
 };
 use crate::domain::player::model::PlaybackTrack;
+use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
+use crate::domain::playlists::repo::PlaylistPlaybackTrackSource;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -45,6 +49,37 @@ fn track_in_playlist(playlist_name: &str, name: &str) -> PlaybackTrack {
     PlaybackTrack {
         playlist_name: playlist_name.to_string(),
         ..track(name)
+    }
+}
+
+fn source_from_track(
+    collection_folder: &str,
+    track: &PlaybackTrack,
+) -> PlaylistPlaybackTrackSource {
+    PlaylistPlaybackTrackSource {
+        collection_folder: collection_folder.to_string(),
+        music: Music {
+            name: track.music_name.clone(),
+            alias: track.music_name.clone(),
+            group: Group {
+                name: String::new(),
+                url: String::new(),
+                collection: CollectionGroupOwner {
+                    name: String::new(),
+                    url: String::new(),
+                    folder: collection_folder.to_string(),
+                    last_updated: String::new(),
+                    enable_updates: None,
+                },
+                folder: String::new(),
+            },
+            canonical_music_id: track.canonical_music_id.clone(),
+            url: track.music_url.clone(),
+            path: Some(track.file_path.to_string_lossy().to_string()),
+            start_ms: track.start_ms,
+            end_ms: track.end_ms,
+            liked: track.liked,
+        },
     }
 }
 
@@ -896,6 +931,86 @@ fn audio_style_centerless_source_ignores_scoped_tracks_without_embeddings() {
 }
 
 #[test]
+fn restored_audio_style_model_evidence_does_not_restore_indexed_sources() {
+    let root = temp_cache_root("model-evidence-no-source");
+    std::fs::create_dir_all(&root).expect("cache test root should be created");
+    let path = root.join("stable.json");
+    let old_source = "source:old".to_string();
+    let old_track = track("old");
+    let snapshot = AudioStyleModelSnapshot::from_test_indexed_embeddings(
+        11,
+        [(
+            old_track.clone(),
+            dense_embedding(&[(1, 1.0)]),
+            old_source.clone(),
+        )],
+    );
+    let (before_source, _) = snapshot
+        .recommender()
+        .propose_centerless_source(|source| source.collection_folder == old_source)
+        .expect("indexed setup should produce an old source before persistence");
+    assert_eq!(before_source.collection_folder, old_source);
+
+    write_cached_audio_style_model_evidence_for_test(&path, &snapshot)
+        .expect("model evidence should be written");
+    let restored = read_cached_audio_style_model_evidence_for_test(&path)
+        .expect("model evidence should be restored");
+
+    assert_eq!(restored.generation(), 11);
+    assert!(restored.recommender().has_embedding_for(&old_track));
+    assert!(
+        restored
+            .recommender()
+            .propose_centerless_source(|_| true)
+            .is_none(),
+        "restored model evidence must not manufacture playlist sources"
+    );
+}
+
+#[test]
+fn restored_audio_style_model_evidence_ranks_current_candidate_tracks() {
+    let root = temp_cache_root("model-evidence-candidates");
+    std::fs::create_dir_all(&root).expect("cache test root should be created");
+    let path = root.join("stable.json");
+    let current_candidate = track("current_candidate");
+    let other_candidate = track("other_candidate");
+    let missing_candidate = track("missing_candidate");
+    let snapshot = AudioStyleModelSnapshot::from_test_embeddings(
+        12,
+        [
+            (current_candidate.clone(), dense_embedding(&[(2, 1.0)])),
+            (other_candidate.clone(), dense_embedding(&[(3, 1.0)])),
+        ],
+    );
+    write_cached_audio_style_model_evidence_for_test(&path, &snapshot)
+        .expect("model evidence should be written");
+    let restored = read_cached_audio_style_model_evidence_for_test(&path)
+        .expect("model evidence should be restored");
+
+    let (source, selection) = restored
+        .recommender()
+        .propose_centerless_source_from_tracks(vec![
+            (
+                source_from_track("current", &current_candidate),
+                current_candidate.clone(),
+            ),
+            (
+                source_from_track("other", &other_candidate),
+                other_candidate,
+            ),
+            (
+                source_from_track("missing", &missing_candidate),
+                missing_candidate,
+            ),
+        ])
+        .expect("restored evidence should rank embedded current candidates");
+
+    assert_ne!(source.collection_folder, "missing");
+    assert_eq!(selection.candidate_count, 2);
+    assert_eq!(selection.diagnostics.embedded_candidate_count, 2);
+}
+
+#[test]
 fn audio_style_model_refresh_reuses_unchanged_embeddings() {
     let root = temp_cache_root("refresh_reuse");
     std::fs::create_dir_all(&root).expect("cache test root should be created");
@@ -1439,46 +1554,123 @@ fn stable_audio_style_snapshot_publication_refreshes_first_slot_only_on_availabi
         StableSnapshotPublicationReason::TrainingComplete,
         true,
     ));
+    assert!(stable_snapshot_publication_requests_first_slot_refresh(
+        StableSnapshotPublicationReason::StartupEvidence,
+        false,
+    ));
+    assert!(!stable_snapshot_publication_requests_first_slot_refresh(
+        StableSnapshotPublicationReason::StartupEvidence,
+        true,
+    ));
+}
+
+#[test]
+fn audio_style_startup_skips_training_when_model_evidence_restores_without_input_changes() {
+    use super::recommendation::{
+        AudioStyleStartupTrainingDecision, audio_style_startup_training_decision,
+    };
+
+    assert_eq!(
+        audio_style_startup_training_decision(true, 0),
+        AudioStyleStartupTrainingDecision::SkipRestoredEvidence
+    );
+    assert_eq!(
+        audio_style_startup_training_decision(false, 0),
+        AudioStyleStartupTrainingDecision::TrainInitialModel
+    );
+    assert_eq!(
+        audio_style_startup_training_decision(true, 2),
+        AudioStyleStartupTrainingDecision::TrainPendingInputChanges
+    );
+    assert_eq!(
+        audio_style_startup_training_decision(false, 2),
+        AudioStyleStartupTrainingDecision::TrainPendingInputChanges
+    );
 }
 
 #[test]
 fn audio_style_training_worker_count_scales_with_hardware_profile_and_task_count() {
     assert_eq!(
-        super::recommendation::audio_style_training_worker_count_for_test(0, 64, true, 2, 98_280),
+        super::recommendation::audio_style_training_worker_count_for_test(0, 64, true, 2),
         0
     );
     assert_eq!(
-        super::recommendation::audio_style_training_worker_count_for_test(4, 64, true, 2, 98_280),
+        super::recommendation::audio_style_training_worker_count_for_test(4, 64, true, 2),
         4
     );
     assert_eq!(
-        super::recommendation::audio_style_training_worker_count_for_test(64, 12, false, 0, 0),
+        super::recommendation::audio_style_training_worker_count_for_test(64, 12, false, 0),
+        12
+    );
+    assert_eq!(
+        super::recommendation::audio_style_training_worker_count_for_test(64, 12, true, 0),
         12
     );
     let single_hardware =
-        super::recommendation::audio_style_training_worker_count_for_test(64, 12, true, 1, 0);
+        super::recommendation::audio_style_training_worker_count_for_test(64, 12, true, 1);
     let dual_large_hardware =
-        super::recommendation::audio_style_training_worker_count_for_test(64, 12, true, 2, 98_280);
+        super::recommendation::audio_style_training_worker_count_for_test(64, 12, true, 2);
     assert!(
         single_hardware
-            > super::recommendation::audio_style_training_worker_count_for_test(
-                64, 12, false, 0, 0
-            )
+            > super::recommendation::audio_style_training_worker_count_for_test(64, 12, false, 0)
     );
     assert!(dual_large_hardware > single_hardware);
-    assert!(dual_large_hardware <= 32);
+    assert_eq!(
+        super::recommendation::audio_style_training_worker_count_for_test(20, 64, true, 2),
+        20
+    );
 }
 
 #[test]
-fn audio_style_training_accelerator_profile_parses_nvidia_smi_output() {
-    let (count, memory_mb, source) =
-        super::recommendation::parse_nvidia_smi_training_accelerators_for_test(
-            "NVIDIA GeForce RTX 4090, 49140\nNVIDIA GeForce RTX 4090, 49140 MiB\n",
-        );
+fn audio_style_tensor_row_chunks_cover_rows_once_across_devices() {
+    assert!(super::recommendation::audio_style_tensor_row_chunks_for_test(0, 2).is_empty());
+    assert!(super::recommendation::audio_style_tensor_row_chunks_for_test(4, 0).is_empty());
+    assert_eq!(
+        super::recommendation::audio_style_tensor_row_chunks_for_test(5, 2),
+        vec![(0, 3), (3, 5)]
+    );
+    assert_eq!(
+        super::recommendation::audio_style_tensor_row_chunks_for_test(2, 4),
+        vec![(0, 1), (1, 2)]
+    );
+}
 
-    assert_eq!(count, 2);
-    assert_eq!(memory_mb, 98_280);
-    assert_eq!(source, "nvidia_smi");
+#[test]
+fn audio_style_tensor_runtime_profile_owns_actual_tensor_devices() {
+    let (backend, device_count, source) =
+        super::recommendation::audio_style_tensor_runtime_profile_for_test(2);
+
+    assert_eq!(backend, "hardware");
+    assert_eq!(device_count, 2);
+    assert_eq!(source, "test_discrete_gpu");
+
+    let (backend, device_count, source) =
+        super::recommendation::audio_style_tensor_runtime_profile_for_test(0);
+    assert_eq!(backend, "cpu");
+    assert_eq!(device_count, 0);
+    assert_eq!(source, "test_cpu");
+}
+
+#[test]
+fn audio_style_wgpu_device_override_parser_accepts_portable_device_kinds() {
+    assert_eq!(
+        super::recommendation::parse_audio_style_wgpu_device_for_test("DiscreteGpu(2)").as_deref(),
+        Some("DiscreteGpu(2)")
+    );
+    assert_eq!(
+        super::recommendation::parse_audio_style_wgpu_device_for_test("IntegratedGpu(1)")
+            .as_deref(),
+        Some("IntegratedGpu(1)")
+    );
+    assert_eq!(
+        super::recommendation::parse_audio_style_wgpu_device_for_test("VirtualGpu(0)").as_deref(),
+        Some("VirtualGpu(0)")
+    );
+    assert_eq!(
+        super::recommendation::parse_audio_style_wgpu_device_for_test("Cpu").as_deref(),
+        Some("Cpu")
+    );
+    assert!(super::recommendation::parse_audio_style_wgpu_device_for_test("RTX4090").is_none());
 }
 
 #[test]

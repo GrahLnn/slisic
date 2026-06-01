@@ -74,6 +74,7 @@ toml = "1.1.2"
 burn-tensor = { version = "0.21.0", default-features = false, features = ["std"] }
 burn-ndarray = { version = "0.21.0", default-features = false, features = ["std"] }
 burn-wgpu = { version = "0.21.0", default-features = false, features = ["std", "webgpu"] }
+cubecl = { version = "0.10.0", default-features = false, features = ["std", "webgpu"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"

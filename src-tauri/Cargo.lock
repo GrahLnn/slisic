@@ -20,6 +20,7 @@ dependencies = [
  "burn-tensor",
  "burn-wgpu",
  "chrono",
+ "cubecl",
  "ffplayr",
  "hex",
  "inventory",
