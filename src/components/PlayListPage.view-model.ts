@@ -2,6 +2,7 @@ import type { PlayListListView } from "@/src/cmd";
 import type {
   CollectionTitleHandoff,
   CollectionTitleTone,
+  PlaylistPlaybackRequestEvidence,
   PlaylistPreview,
 } from "@/src/flow/appLogic/core";
 import {
@@ -48,6 +49,7 @@ export interface PlayListPageRenderData {
   hasPlayList: boolean | null;
   playlists: PlayListListView[];
   pendingPlaylistPreview?: PlaylistPreview | null;
+  pendingPlaylistPlaybackRequest?: PlaylistPlaybackRequestEvidence | null;
   playingPlaylistName: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   pressedLayoutId: string | null;
@@ -77,6 +79,25 @@ export interface PlayListPageItemViewModel {
 }
 
 type PlayListPageDisplayLock = PlayListTitleHandoffDisplayLock;
+
+function resolvePendingPlaybackPlaylistName(args: {
+  pageState: MainStateT;
+  pendingPlaylistPlaybackRequest?: PlaylistPlaybackRequestEvidence | null;
+  visiblePlaylists: readonly PlayListListView[];
+}) {
+  const request = args.pendingPlaylistPlaybackRequest ?? null;
+  if (
+    (args.pageState !== "ready" && args.pageState !== "play") ||
+    request === null ||
+    request.phase === "failed"
+  ) {
+    return null;
+  }
+
+  return args.visiblePlaylists.some((playlist) => playlist.name === request.playlistName)
+    ? request.playlistName
+    : null;
+}
 
 export interface PlayListPageViewModel {
   visiblePlaylists: PlayListListView[];
@@ -207,6 +228,7 @@ function resolvePlayListPageVisibleItems(args: {
   visiblePlaylists: readonly PlayListListView[];
   pageState: MainStateT;
   playingPlaylistName: string | null;
+  pendingPlaylistPlaybackRequest: PlaylistPlaybackRequestEvidence | null;
   playbackSurface: PlayListPlaybackSurfaceSnapshot | null;
   displayLock: PlayListPageDisplayLock | null;
   titleShareEnabled: boolean;
@@ -232,6 +254,7 @@ function resolvePlayListPageVisibleItems(args: {
   const hasDisplayLockTarget =
     !!displayLockPlaylistName &&
     args.visiblePlaylists.some((playlist) => playlist.name === displayLockPlaylistName);
+  const pendingPlaybackPlaylistName = resolvePendingPlaybackPlaylistName(args);
   const shouldStartHiddenItemsInPlay = args.displayLock?.kind === "return-handoff";
   const openingPlaybackTitleHandoffTargetName =
     args.pageState === "play" &&
@@ -249,50 +272,59 @@ function resolvePlayListPageVisibleItems(args: {
     (() => {
       const itemLayoutId = playlistTitleLayoutId(playlist.name);
       const isPlaybackTarget = hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName;
+      const isPendingPlaybackTarget =
+        !isPlaybackTarget && playlist.name === pendingPlaybackPlaylistName;
 
       return createPlayListPageItemViewModel({
         playlist,
         text:
           hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName
             ? playbackSurfaceTrackName || playlist.name
-            : playlist.name,
+            : isPendingPlaybackTarget
+              ? "Preparing..."
+              : playlist.name,
         titleShareEnabled: args.titleShareEnabled,
         transition: args.transition,
         titleToneHandoff: args.titleToneHandoff,
-        isPlaybackTarget,
+        isPlaybackTarget: isPlaybackTarget || isPendingPlaybackTarget,
         shouldShowPlaybackIcons:
-          playbackActionsEnabled &&
-          isPlaybackSurfacePlaying &&
-          hasPlaybackTarget &&
-          playlist.name === playbackSurfacePlaylistName &&
-          !!playbackSurfaceTrackName,
+          isPendingPlaybackTarget
+            ? false
+            : playbackActionsEnabled &&
+              isPlaybackSurfacePlaying &&
+              hasPlaybackTarget &&
+              playlist.name === playbackSurfacePlaylistName &&
+              !!playbackSurfaceTrackName,
         isCurrentMusicLiked:
           isPlaybackSurfacePlaying &&
           hasPlaybackTarget &&
           playlist.name === playbackSurfacePlaylistName &&
           playbackSurfaceTrackLiked === true,
         isPlaybackPreparing:
-          isPlaybackSurfacePlaying &&
-          hasPlaybackTarget &&
-          playlist.name === playbackSurfacePlaylistName &&
-          !!playbackSurfaceTrackName &&
-          !playbackSurfaceTrackIsPlayable,
+          isPendingPlaybackTarget ||
+          (isPlaybackSurfacePlaying &&
+            hasPlaybackTarget &&
+            playlist.name === playbackSurfacePlaylistName &&
+            !!playbackSurfaceTrackName &&
+            !playbackSurfaceTrackIsPlayable),
         isPlaybackTitleHandoffTarget: playlist.name === playbackTitleHandoffTargetName,
         titleHandoffInstruction: resolvePlayListTitleHandoffInstruction({
           plan: args.titleHandoffPlan,
           endpointKind: resolvePlayListTitleHandoffEndpointKind({
             plan: args.titleHandoffPlan,
             layoutId: itemLayoutId,
-            sourceEnabled: !isPlaybackTarget,
+            sourceEnabled: !isPlaybackTarget && !isPendingPlaybackTarget,
           }),
           layoutId: itemLayoutId,
-          sourceEnabled: !isPlaybackTarget,
+          sourceEnabled: !isPlaybackTarget && !isPendingPlaybackTarget,
         }),
         playbackIconWidthText:
-          (isPlaybackSurfacePlaying &&
-            playlist.name === playbackSurfacePlaylistName &&
-            playbackSurfaceTrackName) ||
-          undefined,
+          isPendingPlaybackTarget
+            ? "Preparing..."
+            : (isPlaybackSurfacePlaying &&
+                playlist.name === playbackSurfacePlaylistName &&
+                playbackSurfaceTrackName) ||
+              undefined,
         isHiddenInPlay: hasDisplayLockTarget && playlist.name !== displayLockPlaylistName,
         shouldStartHiddenInPlay:
           shouldStartHiddenItemsInPlay && playlist.name !== displayLockPlaylistName,
@@ -376,12 +408,18 @@ export function resolvePlayListPageViewModel(
     pressedLayoutId: renderData.pressedLayoutId,
   });
   const committedLayoutId = transition.committedLayoutId;
+  const pendingPlaybackPlaylistName = resolvePendingPlaybackPlaylistName({
+    pageState: renderData.pageState,
+    pendingPlaylistPlaybackRequest: renderData.pendingPlaylistPlaybackRequest,
+    visiblePlaylists,
+  });
   const titleHandoffPlan = resolvePlayListTitleHandoffPlan({
     pageState: renderData.pageState,
     endpoints: visiblePlaylists.map((playlist) => ({
       layoutId: playlistTitleLayoutId(playlist.name),
       playlistName: playlist.name,
     })),
+    pendingPlaybackPlaylistName,
     playingPlaylistName: renderData.playingPlaylistName,
     titleToneHandoff: renderData.titleToneHandoff,
     transition,
@@ -392,11 +430,15 @@ export function resolvePlayListPageViewModel(
   const shouldLockScroll = displayLock !== null;
   const playbackTargetKey = displayLock?.playlistName ?? null;
   const shouldAnimateSlotPosition = !shouldLockScroll;
-  const itemCommitGesture = renderData.pageState === "ready" ? "secondary-only" : "disabled";
+  const itemCommitGesture =
+    renderData.pageState === "ready" && pendingPlaybackPlaylistName === null
+      ? "secondary-only"
+      : "disabled";
   const itemViewModels = resolvePlayListPageVisibleItems({
     visiblePlaylists,
     pageState: renderData.pageState,
     playingPlaylistName: renderData.playingPlaylistName,
+    pendingPlaylistPlaybackRequest: renderData.pendingPlaylistPlaybackRequest ?? null,
     playbackSurface: renderData.playbackSurface,
     displayLock,
     titleShareEnabled,

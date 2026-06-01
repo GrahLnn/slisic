@@ -545,7 +545,6 @@ fn spawn_refresh_all_with_app(app: Option<tauri::AppHandle>, reason: PlayableInd
         };
         if state.active_global_refresh {
             if reason.invalidates_existing_snapshots() {
-                state.playlists.clear();
                 let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
                 state.global_generation = generation;
                 state.pending_global_refresh =
@@ -562,9 +561,6 @@ fn spawn_refresh_all_with_app(app: Option<tauri::AppHandle>, reason: PlayableInd
             (false, runtime.generation.load(Ordering::SeqCst))
         } else {
             let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
-            if reason.invalidates_existing_snapshots() {
-                state.playlists.clear();
-            }
             state.global_generation = generation;
             state.active_global_refresh = true;
             (true, generation)
@@ -633,7 +629,6 @@ fn spawn_refresh_playlist(
         };
         if state.active_refreshes.contains(&playlist_name) {
             if reason.invalidates_existing_snapshots() {
-                state.playlists.remove(&playlist_name);
                 let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
                 state
                     .playlist_generations
@@ -668,9 +663,6 @@ fn spawn_refresh_playlist(
             false
         } else {
             let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
-            if reason.invalidates_existing_snapshots() {
-                state.playlists.remove(&playlist_name);
-            }
             state.active_refreshes.insert(playlist_name.clone());
             state
                 .playlist_generations
@@ -1188,16 +1180,13 @@ pub(crate) fn should_skip_playlist_refresh_for_test(
 }
 
 #[cfg(test)]
-pub(crate) fn claim_global_refresh_for_test(reason: PlayableIndexRefreshReason) -> Result<u64> {
+pub(crate) fn claim_global_refresh_for_test(_reason: PlayableIndexRefreshReason) -> Result<u64> {
     let runtime = try_runtime()?;
     let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
     let mut state = runtime
         .state
         .lock()
         .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
-    if reason.invalidates_existing_snapshots() {
-        state.playlists.clear();
-    }
     state.global_generation = generation;
     state.active_global_refresh = true;
     Ok(generation)
@@ -1213,7 +1202,6 @@ pub(crate) fn request_global_refresh_while_active_for_test(
         .lock()
         .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
     if reason.invalidates_existing_snapshots() {
-        state.playlists.clear();
         let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
         state.global_generation = generation;
         state.pending_global_refresh =
@@ -1277,7 +1265,7 @@ pub(crate) fn commit_global_snapshot_for_test(
 #[cfg(test)]
 pub(crate) fn claim_playlist_refresh_for_test(
     playlist_name: &str,
-    reason: PlayableIndexRefreshReason,
+    _reason: PlayableIndexRefreshReason,
 ) -> Result<u64> {
     let runtime = try_runtime()?;
     let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1285,9 +1273,6 @@ pub(crate) fn claim_playlist_refresh_for_test(
         .state
         .lock()
         .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
-    if reason.invalidates_existing_snapshots() {
-        state.playlists.remove(playlist_name);
-    }
     state.active_refreshes.insert(playlist_name.to_string());
     state
         .playlist_generations

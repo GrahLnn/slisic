@@ -40,6 +40,56 @@ export interface SpectrumEditProjectionResult {
   nowPlaying: SpectrumEditNowPlayingProjection;
 }
 
+export type SpectrumEditCommitPhase = "create" | "delete" | "update";
+
+export interface SpectrumEditCommitFrame {
+  acceptedEvidence: Partial<Record<SpectrumEditCommitPhase, SpectrumEditProjectionEvidence>>;
+  baseline: SpectrumEditProjectionInput;
+  epoch: number;
+  optimisticEvidence: Required<SpectrumEditProjectionEvidence>;
+  pendingPhases: SpectrumEditCommitPhase[];
+}
+
+export type SpectrumEditCommitStopsReason = "stale-epoch" | "closed-frame" | "unexpected-phase";
+
+export type SpectrumEditCommitRejectReason = "unexpected-evidence";
+
+export type SpectrumEditCommitNegativePhase = SpectrumEditCommitPhase | "unexpected";
+
+export type SpectrumEditCommitNegativeEvidence =
+  | {
+      epoch: number;
+      kind: "Reject";
+      phase: SpectrumEditCommitNegativePhase;
+      reason: SpectrumEditCommitRejectReason;
+    }
+  | {
+      epoch: number;
+      kind: "Stops";
+      phase: SpectrumEditCommitNegativePhase;
+      reason: SpectrumEditCommitStopsReason;
+    };
+
+export type SpectrumEditCommitReflection =
+  | {
+      frame: SpectrumEditCommitFrame | null;
+      kind: "accepted";
+      projection: SpectrumEditProjectionResult;
+    }
+  | {
+      epoch: number;
+      kind: "Stops";
+      phase: SpectrumEditCommitPhase;
+      reason: SpectrumEditCommitStopsReason;
+    }
+  | {
+      epoch: number;
+      frame: SpectrumEditCommitFrame;
+      kind: "Reject";
+      phase: SpectrumEditCommitPhase;
+      reason: SpectrumEditCommitRejectReason;
+    };
+
 function findCurrentMusicEdit(
   nowPlaying: SpectrumEditNowPlayingInput,
   edits: readonly MusicEdit[],
@@ -96,6 +146,45 @@ export function createSpectrumEditDraftEvidence(
     musicCreates: createMusicDraftCreates(drafts),
     musicDeletes: createMusicDraftDeletes(drafts),
     musicEdits: createMusicDraftEdits(drafts),
+  };
+}
+
+function normalizeSpectrumEditProjectionEvidence(
+  evidence: SpectrumEditProjectionEvidence,
+): Required<SpectrumEditProjectionEvidence> {
+  return {
+    musicCreates: [...(evidence.musicCreates ?? [])],
+    musicDeletes: [...(evidence.musicDeletes ?? [])],
+    musicEdits: [...(evidence.musicEdits ?? [])],
+  };
+}
+
+function createPendingSpectrumEditCommitPhases(
+  evidence: Required<SpectrumEditProjectionEvidence>,
+): SpectrumEditCommitPhase[] {
+  return [
+    ...(evidence.musicEdits.length > 0 ? (["update"] as const) : []),
+    ...(evidence.musicCreates.length > 0 ? (["create"] as const) : []),
+    ...(evidence.musicDeletes.length > 0 ? (["delete"] as const) : []),
+  ];
+}
+
+export function createSpectrumEditCommitFrame(args: {
+  baseline: SpectrumEditProjectionInput;
+  epoch: number;
+  optimisticEvidence: SpectrumEditProjectionEvidence;
+}): SpectrumEditCommitFrame {
+  const optimisticEvidence = normalizeSpectrumEditProjectionEvidence(args.optimisticEvidence);
+
+  return {
+    acceptedEvidence: {},
+    baseline: {
+      collections: [...args.baseline.collections],
+      nowPlaying: { ...args.baseline.nowPlaying },
+    },
+    epoch: args.epoch,
+    optimisticEvidence,
+    pendingPhases: createPendingSpectrumEditCommitPhases(optimisticEvidence),
   };
 }
 
@@ -173,8 +262,7 @@ export function projectSpectrumEditTransaction(
   return {
     collections,
     nowPlaying: {
-      name:
-        currentMusicDelete !== null ? null : (currentMusicEdit?.alias ?? input.nowPlaying.name),
+      name: currentMusicDelete !== null ? null : (currentMusicEdit?.alias ?? input.nowPlaying.name),
       url: currentMusicDelete !== null ? null : input.nowPlaying.url,
       filePath: currentMusicDelete !== null ? null : input.nowPlaying.filePath,
       startMs:
@@ -185,5 +273,99 @@ export function projectSpectrumEditTransaction(
         currentMusicDelete !== null ? null : (currentMusicEdit?.endMs ?? input.nowPlaying.endMs),
       liked: currentMusicDelete !== null ? null : input.nowPlaying.liked,
     },
+  };
+}
+
+function composeAcceptedSpectrumEditEvidence(
+  evidenceByPhase: SpectrumEditCommitFrame["acceptedEvidence"],
+): SpectrumEditProjectionEvidence {
+  return {
+    musicEdits: evidenceByPhase.update?.musicEdits ?? [],
+    musicCreates: evidenceByPhase.create?.musicCreates ?? [],
+    musicDeletes: evidenceByPhase.delete?.musicDeletes ?? [],
+  };
+}
+
+function hasExpectedSpectrumEditEvidence(
+  phase: SpectrumEditCommitPhase,
+  evidence: Required<SpectrumEditProjectionEvidence>,
+) {
+  switch (phase) {
+    case "update":
+      return evidence.musicEdits.length > 0;
+    case "create":
+      return evidence.musicCreates.length > 0;
+    case "delete":
+      return evidence.musicDeletes.length > 0;
+  }
+}
+
+export function reflectSpectrumEditCommitEvidence(
+  frame: SpectrumEditCommitFrame | null,
+  accepted: {
+    epoch: number;
+    evidence: SpectrumEditProjectionEvidence;
+    phase: SpectrumEditCommitPhase;
+  },
+): SpectrumEditCommitReflection {
+  if (!frame) {
+    return {
+      epoch: accepted.epoch,
+      kind: "Stops",
+      phase: accepted.phase,
+      reason: "closed-frame",
+    };
+  }
+
+  if (accepted.epoch !== frame.epoch) {
+    return {
+      epoch: accepted.epoch,
+      kind: "Stops",
+      phase: accepted.phase,
+      reason: "stale-epoch",
+    };
+  }
+
+  if (!frame.pendingPhases.includes(accepted.phase)) {
+    return {
+      epoch: accepted.epoch,
+      kind: "Stops",
+      phase: accepted.phase,
+      reason: "unexpected-phase",
+    };
+  }
+
+  const acceptedEvidence = normalizeSpectrumEditProjectionEvidence(accepted.evidence);
+  if (!hasExpectedSpectrumEditEvidence(accepted.phase, acceptedEvidence)) {
+    return {
+      epoch: accepted.epoch,
+      frame,
+      kind: "Reject",
+      phase: accepted.phase,
+      reason: "unexpected-evidence",
+    };
+  }
+
+  const nextAcceptedEvidence = {
+    ...frame.acceptedEvidence,
+    [accepted.phase]: acceptedEvidence,
+  };
+  const pendingPhases = frame.pendingPhases.filter((phase) => phase !== accepted.phase);
+  const nextFrame =
+    pendingPhases.length > 0
+      ? {
+          ...frame,
+          acceptedEvidence: nextAcceptedEvidence,
+          pendingPhases,
+        }
+      : null;
+
+  return {
+    frame: nextFrame,
+    kind: "accepted",
+    projection: projectSpectrumEditTransaction(
+      frame.baseline,
+      composeAcceptedSpectrumEditEvidence(nextAcceptedEvidence),
+    ),
   };
 }

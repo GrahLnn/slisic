@@ -718,6 +718,10 @@ async fn resolve_prepared_playlist_initial_track(
 ) -> Result<Option<ResolvedPlaylistInitialTrack>> {
     let trace_start = Instant::now();
     let save_root = meta_service::resolve_save_root(app).await?;
+    let Some(selection) = playlist_repo::get_playlist_playback_selection_by_name(playlist_name).await?
+    else {
+        return Ok(None);
+    };
     loop {
         let Some(snapshot) = playable_index::read_playlist_source(playlist_name)? else {
             return Ok(None);
@@ -731,6 +735,15 @@ async fn resolve_prepared_playlist_initial_track(
             }
             continue;
         };
+        if !selection.contains_track_source(&source) {
+            if let Err(error) = playable_index::discard_playlist_source(&snapshot) {
+                eprintln!(
+                    "[playlist_playback] failed to discard out-of-scope prepared first track source playlist=\"{}\" generation={}: {error}",
+                    snapshot.playlist_name, snapshot.generation
+                );
+            }
+            continue;
+        }
         let Some(track) =
             resolve_playlist_playback_source_track_for_playlist(playlist_name, source, &save_root)
         else {

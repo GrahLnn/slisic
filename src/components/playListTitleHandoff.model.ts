@@ -127,6 +127,7 @@ function createPlayEndpoint(endpoint: PlayListTitleEndpoint | null): TitleShareE
 export function resolvePlayListTitleHandoffPlan(args: {
   pageState: MainStateT;
   endpoints: readonly PlayListTitleEndpoint[];
+  pendingPlaybackPlaylistName?: string | null;
   playingPlaylistName: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   transition: TitleSharePageTransition;
@@ -135,6 +136,10 @@ export function resolvePlayListTitleHandoffPlan(args: {
 }): PlayListTitleHandoffPlan {
   const returnEndpoint = findEndpointByLayoutId(args.endpoints, args.titleToneHandoff?.layoutId);
   const playbackEndpoint = findEndpointByName(args.endpoints, args.playbackSurface?.playlistName);
+  const pendingPlaybackEndpoint = findEndpointByName(
+    args.endpoints,
+    args.pendingPlaybackPlaylistName,
+  );
   const openingEndpoint = findEndpointByName(args.endpoints, args.playingPlaylistName);
   const readyReturnEndpoint =
     args.pageState === "ready"
@@ -151,6 +156,11 @@ export function resolvePlayListTitleHandoffPlan(args: {
     displayLock = {
       kind: "return-handoff",
       playlistName: returnEndpoint.playlistName,
+    };
+  } else if (pendingPlaybackEndpoint) {
+    displayLock = {
+      kind: "opening-playback",
+      playlistName: pendingPlaybackEndpoint.playlistName,
     };
   } else if (args.pageState === "play" && args.playbackSurface === null && openingEndpoint) {
     displayLock = {
@@ -198,11 +208,21 @@ export function resolvePlayListTitleHandoffPlan(args: {
     };
   }
 
-  if (displayLock?.kind === "opening-playback" && openingEndpoint) {
+  if (displayLock?.kind === "opening-playback" && (pendingPlaybackEndpoint || openingEndpoint)) {
+    const endpoint = pendingPlaybackEndpoint ?? openingEndpoint;
+    if (!endpoint) {
+      return {
+        displayLock,
+        arrow: null,
+        sourceLayoutId: args.transition.committedLayoutId,
+        targetLayoutId: null,
+        targetRetainLease: "timed",
+      };
+    }
     const arrow = createTitleShareArrow({
       kind: "list-to-play",
-      source: createListEndpoint(openingEndpoint),
-      target: createPlayEndpoint(openingEndpoint),
+      source: createListEndpoint(endpoint),
+      target: createPlayEndpoint(endpoint),
       targetRetainLease: "timed",
     });
 
@@ -210,7 +230,7 @@ export function resolvePlayListTitleHandoffPlan(args: {
       displayLock,
       arrow,
       sourceLayoutId: args.transition.committedLayoutId,
-      targetLayoutId: openingEndpoint.layoutId,
+      targetLayoutId: endpoint.layoutId,
       targetRetainLease: "timed",
     };
   }

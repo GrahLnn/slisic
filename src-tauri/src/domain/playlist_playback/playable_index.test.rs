@@ -501,6 +501,97 @@ async fn playable_index_unavailable_model_does_not_commit_empty_playlist_snapsho
 }
 
 #[tokio::test]
+async fn playable_index_invalidating_global_claim_preserves_current_source_until_commit() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("first test snapshot should commit");
+
+    let generation = claim_global_refresh_for_test(PlayableIndexRefreshReason::LibraryChanged)
+        .expect("library refresh should claim generation");
+
+    let current = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("prepared source must remain while refresh is active");
+    assert_eq!(
+        current
+            .source
+            .expect("prepared source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=3"
+    );
+
+    assert!(
+        commit_global_snapshot_for_test(
+            "Focus".to_string(),
+            generation,
+            Some(source(4)),
+            PlayableIndexRefreshReason::LibraryChanged,
+        )
+        .expect("global snapshot commit should be checked"),
+        "invalidating global refresh should still commit its replacement",
+    );
+    let replacement = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("replacement source should exist");
+    assert_eq!(
+        replacement
+            .source
+            .expect("replacement source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=4"
+    );
+}
+
+#[tokio::test]
+async fn playable_index_invalidating_playlist_claim_preserves_current_source_until_commit() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("first test snapshot should commit");
+
+    let generation =
+        claim_playlist_refresh_for_test("Focus", PlayableIndexRefreshReason::PlaylistChanged)
+            .expect("playlist refresh should claim generation");
+
+    let current = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("prepared source must remain while refresh is active");
+    assert_eq!(
+        current
+            .source
+            .expect("prepared source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=3"
+    );
+
+    assert!(
+        commit_playlist_snapshot_for_test(
+            "Focus".to_string(),
+            generation,
+            Some(source(4)),
+            PlayableIndexRefreshReason::PlaylistChanged,
+        )
+        .expect("playlist snapshot commit should be checked"),
+        "invalidating playlist refresh should still commit its replacement",
+    );
+    let replacement = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("replacement source should exist");
+    assert_eq!(
+        replacement
+            .source
+            .expect("replacement source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=4"
+    );
+}
+
+#[tokio::test]
 async fn playable_index_ready_refresh_does_not_supersede_active_global_fill() {
     let _guard = setup_playable_index_test();
     let generation = claim_global_refresh_for_test(PlayableIndexRefreshReason::Startup)

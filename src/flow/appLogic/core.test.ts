@@ -88,19 +88,28 @@ describe("createInitialContext", () => {
 describe("createContextResetter", () => {
   test("rebuilds the full context from defaults and the kept fields", () => {
     const reset = createContextResetter(createInitialContext);
-    const next = reset({
-      collections: [
-        {
-          name: "Focus Session",
-          url: "https://example.com/focus-session",
-          folder: "youtube/focus-session",
-          musics: [],
-          last_updated: "2026-04-13T00:00:00Z",
-          enable_updates: null,
-        },
-      ],
-      savePath: "D:\\MediaLibrary",
-    });
+    const next = reset(
+      {
+        collections: [
+          {
+            name: "Focus Session",
+            url: "https://example.com/focus-session",
+            folder: "youtube/focus-session",
+            musics: [],
+            last_updated: "2026-04-13T00:00:00Z",
+            enable_updates: null,
+          },
+        ],
+        savePath: "D:\\MediaLibrary",
+      },
+      {
+        owner: "appLogic",
+        reason: "test resetter lifecycle contract",
+        chart: { kind: "closed", target: null },
+        lease: { kind: "closed", target: null },
+        transaction: { kind: "closed", target: null },
+      },
+    );
 
     assert.deepEqual(next, {
       ...createInitialContext(),
@@ -115,13 +124,29 @@ describe("createContextResetter", () => {
         },
       ],
       savePath: "D:\\MediaLibrary",
+      lastContextResetLifecycle: {
+        owner: "appLogic",
+        reason: "test resetter lifecycle contract",
+        chart: { kind: "closed", target: null },
+        lease: { kind: "closed", target: null },
+        transaction: { kind: "closed", target: null },
+      },
     });
   });
 
   test("uses fresh default arrays when omitted fields are reset", () => {
-    const next = resetContextWith({
-      savePath: "D:\\MediaLibrary",
-    });
+    const next = resetContextWith(
+      {
+        savePath: "D:\\MediaLibrary",
+      },
+      {
+        owner: "appLogic",
+        reason: "test omitted reset fields",
+        chart: { kind: "closed", target: null },
+        lease: { kind: "closed", target: null },
+        transaction: { kind: "closed", target: null },
+      },
+    );
     const defaults = createInitialContext();
 
     assert.deepEqual(next.playlists, []);

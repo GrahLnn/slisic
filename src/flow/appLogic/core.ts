@@ -2,7 +2,7 @@ import type {
   Collection,
   CollectionSurfaceView,
   ConfigLibraryView,
-  Exclude,
+  Exclude as PlaylistExclude,
   ExcludeAvailability,
   Group,
   GroupSurfaceView,
@@ -10,10 +10,15 @@ import type {
   PlayList,
   PlayListConfigView,
   PlayListListView,
+  PlayPlaylistSession,
   PlayListWriteRequest,
   SpectrumMusicSourceContext,
   NowPlayingTrackChangedEvent,
 } from "@/src/cmd";
+import type {
+  SpectrumEditCommitFrame,
+  SpectrumEditCommitNegativeEvidence,
+} from "./spectrumEditTransaction";
 
 export const CREATE_COLLECTION_LAYOUT_ID = "collection-title:create";
 
@@ -71,6 +76,19 @@ export interface CollectionUpdatesChange {
 }
 
 export type NowPlayingTrackEvidence = NowPlayingTrackChangedEvent;
+export type PlaylistPlaybackRequestPhase = "failed" | "preparing" | "starting";
+export type PlaylistPlaybackStopReason =
+  | Exclude<PlayPlaylistSession["status"], "started">
+  | "error"
+  | "stale";
+
+export interface PlaylistPlaybackRequestEvidence {
+  error: string | null;
+  phase: PlaylistPlaybackRequestPhase;
+  playlistName: string;
+  reason: PlaylistPlaybackStopReason | null;
+  requestId: number;
+}
 
 export interface ExcludeRemovedChange {
   music: Music;
@@ -78,7 +96,7 @@ export interface ExcludeRemovedChange {
 }
 
 export interface ExcludeAddedChange {
-  exclude: Exclude;
+  exclude: PlaylistExclude;
   excludeAvailability: ExcludeAvailability;
 }
 
@@ -147,13 +165,32 @@ export interface PendingCreateSpectrumMusicDraft extends SpectrumMusicDraftBase 
 
 export type SpectrumMusicDraft = PersistedSpectrumMusicDraft | PendingCreateSpectrumMusicDraft;
 
-export interface Context {
+export type ContextResetLifecycleAction =
+  | { kind: "closed"; target: string | null }
+  | { kind: "none" }
+  | { kind: "opened"; target: string | null }
+  | { kind: "preserved"; target: string | null };
+
+export interface ContextResetLifecycle {
+  chart: ContextResetLifecycleAction;
+  lease: ContextResetLifecycleAction;
+  owner: "appLogic";
+  reason: string;
+  transaction: ContextResetLifecycleAction;
+}
+
+export interface ShapeProjectionContext {
   hasPlayList: boolean | null;
   playlists: PlayListListView[];
   pendingPlaylistPreview: PlaylistPreview | null;
   collections: Collection[];
   configLibrary: ConfigLibraryView;
   savePath: string;
+  draftBaseline: ConfigDraft | null;
+  draft: ConfigDraft | null;
+}
+
+export interface RuntimeCapabilityContext {
   playingPlaylistName: string | null;
   nowPlayingTrackName: string | null;
   nowPlayingTrackUrl: string | null;
@@ -161,23 +198,50 @@ export interface Context {
   nowPlayingTrackStartMs: number | null;
   nowPlayingTrackEndMs: number | null;
   nowPlayingTrackLiked: boolean | null;
-  pendingNowPlayingTrackEvidence: NowPlayingTrackEvidence | null;
   playingSessionGeneration: number | null;
   pendingPlaylistPlaybackSessionGeneration: number | null;
   spectrumPlaybackScopeId: number | null;
+}
+
+export interface ExperienceChartContext {
   spectrumMusicDrafts: SpectrumMusicDraft[];
   spectrumMusicSourceContext: SpectrumMusicSourceContext | null;
-  spectrumMusicCommitEpoch: number;
   pendingSpectrumMusicCreateId: string | null;
   activeLayoutId: string | null;
-  titleToneHandoff: CollectionTitleHandoff | null;
+}
+
+export interface TransactionEpochContext {
+  spectrumMusicCommitFrame: SpectrumEditCommitFrame | null;
+  spectrumMusicCommitEpoch: number;
+  spectrumMusicCommitNegativeEvidence: SpectrumEditCommitNegativeEvidence | null;
   pendingPlaylistName: string | null;
   pendingPlaylistPlaybackName: string | null;
+  pendingPlaylistPlaybackRequest: PlaylistPlaybackRequestEvidence | null;
   pendingCollectionUpdatesChange: CollectionUpdatesChange | null;
-  draftBaseline: ConfigDraft | null;
-  draft: ConfigDraft | null;
+}
+
+export interface PresentationLeaseContext {
+  titleToneHandoff: CollectionTitleHandoff | null;
+}
+
+export interface PendingEvidenceContext {
+  pendingNowPlayingTrackEvidence: NowPlayingTrackEvidence | null;
   error: string | null;
 }
+
+export interface JournalContext {
+  lastContextResetLifecycle: ContextResetLifecycle | null;
+}
+
+export interface Context
+  extends
+    ShapeProjectionContext,
+    RuntimeCapabilityContext,
+    ExperienceChartContext,
+    TransactionEpochContext,
+    PresentationLeaseContext,
+    PendingEvidenceContext,
+    JournalContext {}
 
 export function collectionTitleLayoutId(url: string) {
   return `collection-title:${url}`;
@@ -763,26 +827,44 @@ export function createInitialContext(): Context {
     spectrumPlaybackScopeId: null,
     spectrumMusicDrafts: [],
     spectrumMusicSourceContext: null,
+    spectrumMusicCommitFrame: null,
     spectrumMusicCommitEpoch: 0,
+    spectrumMusicCommitNegativeEvidence: null,
     pendingSpectrumMusicCreateId: null,
     activeLayoutId: null,
     titleToneHandoff: null,
     pendingPlaylistName: null,
     pendingPlaylistPlaybackName: null,
+    pendingPlaylistPlaybackRequest: null,
     pendingCollectionUpdatesChange: null,
     draftBaseline: null,
     draft: null,
     error: null,
+    lastContextResetLifecycle: null,
   };
 }
 
-export function createContextResetter<TContext>(createInitial: () => TContext) {
+function hasContextResetJournal(
+  context: object,
+): context is { lastContextResetLifecycle: ContextResetLifecycle | null } {
+  return "lastContextResetLifecycle" in context;
+}
+
+export function createContextResetter<TContext extends object>(createInitial: () => TContext) {
   return function resetContextWith<const K extends keyof TContext>(
     kept: Pick<TContext, K>,
+    lifecycle: ContextResetLifecycle,
   ): TContext {
+    const initial = createInitial();
+
     return {
-      ...createInitial(),
+      ...initial,
       ...kept,
+      ...(hasContextResetJournal(initial)
+        ? {
+            lastContextResetLifecycle: lifecycle,
+          }
+        : {}),
     };
   };
 }

@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { Collection, CollectionGroupOwner, Group, Music } from "@/src/cmd";
 import {
+  createSpectrumEditCommitFrame,
   createSpectrumEditDraftEvidence,
   projectSpectrumEditTransaction,
+  reflectSpectrumEditCommitEvidence,
 } from "./spectrumEditTransaction";
 import type { PersistedSpectrumMusicDraft } from "./core";
 
@@ -217,5 +219,73 @@ describe("spectrum edit transaction", () => {
         endMs: 240_000,
       },
     ]);
+  });
+
+  test("reflects accepted update evidence against the commit baseline", () => {
+    const currentMusic = createMusic();
+    const baseline = {
+      collections: [createCollection([currentMusic])],
+      nowPlaying: {
+        name: currentMusic.alias,
+        url: currentMusic.url,
+        filePath: currentMusic.path,
+        startMs: currentMusic.start_ms,
+        endMs: currentMusic.end_ms,
+        liked: currentMusic.liked,
+      },
+    };
+    const frame = createSpectrumEditCommitFrame({
+      baseline,
+      epoch: 3,
+      optimisticEvidence: {
+        musicEdits: [
+          {
+            alias: "Track A Draft",
+            url: currentMusic.url,
+            targetStartMs: currentMusic.start_ms,
+            targetEndMs: currentMusic.end_ms,
+            startMs: 8_000,
+            endMs: 112_000,
+          },
+        ],
+      },
+    });
+
+    const reflection = reflectSpectrumEditCommitEvidence(frame, {
+      epoch: 3,
+      phase: "update",
+      evidence: {
+        musicEdits: [
+          {
+            alias: "Track A Accepted",
+            url: currentMusic.url,
+            targetStartMs: currentMusic.start_ms,
+            targetEndMs: currentMusic.end_ms,
+            startMs: 10_000,
+            endMs: 110_000,
+          },
+        ],
+      },
+    });
+
+    assert.equal(reflection.kind, "accepted");
+    if (reflection.kind !== "accepted") {
+      throw new Error("expected accepted spectrum edit reflection");
+    }
+    assert.deepEqual(reflection.projection.collections[0]?.musics[0], {
+      ...currentMusic,
+      alias: "Track A Accepted",
+      start_ms: 10_000,
+      end_ms: 110_000,
+    });
+    assert.deepEqual(reflection.projection.nowPlaying, {
+      name: "Track A Accepted",
+      url: currentMusic.url,
+      filePath: currentMusic.path,
+      startMs: 10_000,
+      endMs: 110_000,
+      liked: false,
+    });
+    assert.equal(reflection.frame, null);
   });
 });

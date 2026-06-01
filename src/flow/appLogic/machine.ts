@@ -19,7 +19,9 @@ import {
   upsertCollectionIntoDraft,
   upsertCollectionIntoCollections,
   type Context,
+  type ContextResetLifecycle,
   type NowPlayingTrackEvidence,
+  type PlaylistPlaybackRequestEvidence,
 } from "./core";
 import {
   createSpectrumCurrentMusicDraft,
@@ -32,14 +34,19 @@ import {
   resetSpectrumMusicDraft,
 } from "./musicTitle";
 import {
+  createSpectrumEditCommitFrame,
   createSpectrumEditDraftEvidence,
   createSpectrumEditCreateEvidence,
   createSpectrumEditDeleteEvidence,
   createSpectrumEditUpdateEvidence,
   hasSpectrumEditDraftCommitOperations,
   projectSpectrumEditTransaction,
+  reflectSpectrumEditCommitEvidence,
+  type SpectrumEditCommitNegativeEvidence,
   type SpectrumEditProjectionEvidence,
   type SpectrumEditNowPlayingInput,
+  type SpectrumEditCommitPhase,
+  type SpectrumEditProjectionResult,
 } from "./spectrumEditTransaction";
 import { resolveConfigBackTitleSharePlan, resolveTitleShareToneFromDraft } from "./titleShare";
 import {
@@ -48,6 +55,7 @@ import {
   payloads,
   ss,
   type SpectrumMusicDraftBootstrapInput,
+  type PlaylistPlaybackStopped,
 } from "./events";
 import { src } from "./src";
 
@@ -57,6 +65,25 @@ function toErrorMessage(error: unknown) {
 
 function resolveSavePathFromLoadingError(error: unknown, fallback: string) {
   return error instanceof BootstrapLoadError ? error.savePath : fallback;
+}
+
+function resetLifecycleAction(
+  kind: ContextResetLifecycle["chart"]["kind"],
+  target: string | null = null,
+): ContextResetLifecycle["chart"] {
+  return kind === "none" ? { kind } : { kind, target };
+}
+
+function resetLifecycle(args: {
+  chart: ContextResetLifecycle["chart"];
+  lease: ContextResetLifecycle["lease"];
+  reason: string;
+  transaction: ContextResetLifecycle["transaction"];
+}): ContextResetLifecycle {
+  return {
+    owner: "appLogic",
+    ...args,
+  };
 }
 
 function hasSpectrumMusicUpdate(context: Context) {
@@ -95,50 +122,129 @@ function createNextSpectrumMusicCommitEpoch(context: Context) {
   return context.spectrumMusicCommitEpoch + 1;
 }
 
+function createSpectrumEditProjectionInput(context: Context) {
+  return {
+    collections: context.collections,
+    nowPlaying: createSpectrumEditNowPlayingInput(context),
+  };
+}
+
 function createSpectrumPlayReturnContext(
   context: Context,
   args: SpectrumEditProjectionEvidence & {
     spectrumMusicCommitEpoch?: number;
+    spectrumMusicCommitFrame?: Context["spectrumMusicCommitFrame"];
   } = {},
 ) {
   const projection = projectSpectrumEditTransaction(
-    {
-      collections: context.collections,
-      nowPlaying: createSpectrumEditNowPlayingInput(context),
-    },
+    createSpectrumEditProjectionInput(context),
     args,
   );
 
-  return resetContextWith({
-    hasPlayList: context.hasPlayList,
-    playlists: context.playlists,
-    pendingPlaylistPreview: context.pendingPlaylistPreview,
+  return resetContextWith(
+    {
+      hasPlayList: context.hasPlayList,
+      playlists: context.playlists,
+      pendingPlaylistPreview: context.pendingPlaylistPreview,
+      collections: projection.collections,
+      configLibrary: context.configLibrary,
+      savePath: context.savePath,
+      playingPlaylistName: context.playingPlaylistName,
+      playingSessionGeneration: context.playingSessionGeneration,
+      nowPlayingTrackName: projection.nowPlaying.name,
+      nowPlayingTrackUrl: projection.nowPlaying.url,
+      nowPlayingTrackFilePath: projection.nowPlaying.filePath,
+      nowPlayingTrackStartMs: projection.nowPlaying.startMs,
+      nowPlayingTrackEndMs: projection.nowPlaying.endMs,
+      nowPlayingTrackLiked: projection.nowPlaying.liked,
+      spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
+      spectrumMusicSourceContext: null,
+      spectrumMusicCommitFrame: args.spectrumMusicCommitFrame ?? null,
+      spectrumMusicCommitEpoch: args.spectrumMusicCommitEpoch ?? context.spectrumMusicCommitEpoch,
+      titleToneHandoff: createSpectrumPlayReturnSurfaceContext(context, projection.nowPlaying)
+        .titleToneHandoff,
+    },
+    resetLifecycle({
+      reason: "close spectrum chart and return to playback shape",
+      chart: resetLifecycleAction("closed", "spectrum"),
+      lease: context.activeLayoutId
+        ? resetLifecycleAction("opened", context.activeLayoutId)
+        : resetLifecycleAction("closed", null),
+      transaction: args.spectrumMusicCommitFrame
+        ? resetLifecycleAction("preserved", "spectrum-music-commit")
+        : resetLifecycleAction("closed", "spectrum-music-commit"),
+    }),
+  );
+}
+
+function createSpectrumOptimisticPlayReturnContext(context: Context) {
+  const baseline = createSpectrumEditProjectionInput(context);
+  const optimisticEvidence = createSpectrumEditDraftEvidence(context.spectrumMusicDrafts);
+  const epoch = createNextSpectrumMusicCommitEpoch(context);
+
+  return createSpectrumPlayReturnContext(context, {
+    ...optimisticEvidence,
+    spectrumMusicCommitEpoch: epoch,
+    spectrumMusicCommitFrame: createSpectrumEditCommitFrame({
+      baseline,
+      epoch,
+      optimisticEvidence,
+    }),
+  });
+}
+
+function createSpectrumReflectionContextPatch(
+  context: Context,
+  projection: SpectrumEditProjectionResult,
+  frame: Context["spectrumMusicCommitFrame"],
+): Partial<Context> {
+  return {
     collections: projection.collections,
-    configLibrary: context.configLibrary,
-    savePath: context.savePath,
-    playingPlaylistName: context.playingPlaylistName,
-    playingSessionGeneration: context.playingSessionGeneration,
     nowPlayingTrackName: projection.nowPlaying.name,
     nowPlayingTrackUrl: projection.nowPlaying.url,
     nowPlayingTrackFilePath: projection.nowPlaying.filePath,
     nowPlayingTrackStartMs: projection.nowPlaying.startMs,
     nowPlayingTrackEndMs: projection.nowPlaying.endMs,
     nowPlayingTrackLiked: projection.nowPlaying.liked,
-    spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
-    spectrumMusicSourceContext: null,
-    spectrumMusicCommitEpoch: args.spectrumMusicCommitEpoch ?? context.spectrumMusicCommitEpoch,
-    titleToneHandoff: createSpectrumPlayReturnSurfaceContext(
-      context,
-      projection.nowPlaying,
-    ).titleToneHandoff,
-  });
+    spectrumMusicCommitFrame: frame,
+    spectrumMusicCommitNegativeEvidence: null,
+    titleToneHandoff: createSpectrumPlayReturnSurfaceContext(context, projection.nowPlaying)
+      .titleToneHandoff,
+  };
 }
 
-function createSpectrumOptimisticPlayReturnContext(context: Context) {
-  return createSpectrumPlayReturnContext(context, {
-    ...createSpectrumEditDraftEvidence(context.spectrumMusicDrafts),
-    spectrumMusicCommitEpoch: createNextSpectrumMusicCommitEpoch(context),
-  });
+function createSpectrumAcceptedEvidenceContext(
+  context: Context,
+  accepted: {
+    epoch: number;
+    evidence: SpectrumEditProjectionEvidence;
+    phase: SpectrumEditCommitPhase;
+  },
+): Partial<Context> {
+  const reflection = reflectSpectrumEditCommitEvidence(context.spectrumMusicCommitFrame, accepted);
+
+  if (reflection.kind !== "accepted") {
+    const negativeEvidence: SpectrumEditCommitNegativeEvidence =
+      reflection.kind === "Reject"
+        ? {
+            epoch: reflection.epoch,
+            kind: reflection.kind,
+            phase: reflection.phase,
+            reason: reflection.reason,
+          }
+        : {
+            epoch: reflection.epoch,
+            kind: reflection.kind,
+            phase: reflection.phase,
+            reason: reflection.reason,
+          };
+
+    return {
+      spectrumMusicCommitNegativeEvidence: negativeEvidence,
+    };
+  }
+
+  return createSpectrumReflectionContextPatch(context, reflection.projection, reflection.frame);
 }
 
 function createCurrentSpectrumMusicDrafts(context: Context) {
@@ -236,50 +342,68 @@ function createSpectrumMusicDraftBootstrapInput(
 }
 
 function createOpenSpectrumContext(context: Context) {
-  return resetContextWith({
-    hasPlayList: context.hasPlayList,
-    playlists: context.playlists,
-    pendingPlaylistPreview: context.pendingPlaylistPreview,
-    collections: context.collections,
-    configLibrary: context.configLibrary,
-    savePath: context.savePath,
-    playingPlaylistName: context.playingPlaylistName,
-    playingSessionGeneration: context.playingSessionGeneration,
-    nowPlayingTrackName: context.nowPlayingTrackName,
-    nowPlayingTrackUrl: context.nowPlayingTrackUrl,
-    nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-    nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
-    nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
-    nowPlayingTrackLiked: context.nowPlayingTrackLiked,
-    spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
-    spectrumMusicDrafts: createCurrentSpectrumMusicDrafts(context),
-    spectrumMusicSourceContext: null,
-    activeLayoutId: context.playingPlaylistName
-      ? playlistTitleLayoutId(context.playingPlaylistName)
-      : null,
-  });
+  return resetContextWith(
+    {
+      hasPlayList: context.hasPlayList,
+      playlists: context.playlists,
+      pendingPlaylistPreview: context.pendingPlaylistPreview,
+      collections: context.collections,
+      configLibrary: context.configLibrary,
+      savePath: context.savePath,
+      playingPlaylistName: context.playingPlaylistName,
+      playingSessionGeneration: context.playingSessionGeneration,
+      nowPlayingTrackName: context.nowPlayingTrackName,
+      nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+      nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
+      nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+      nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+      nowPlayingTrackLiked: context.nowPlayingTrackLiked,
+      spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
+      spectrumMusicDrafts: createCurrentSpectrumMusicDrafts(context),
+      spectrumMusicSourceContext: null,
+      activeLayoutId: context.playingPlaylistName
+        ? playlistTitleLayoutId(context.playingPlaylistName)
+        : null,
+    },
+    resetLifecycle({
+      reason: "open spectrum chart from playback shape",
+      chart: resetLifecycleAction("opened", "spectrum"),
+      lease: context.playingPlaylistName
+        ? resetLifecycleAction("opened", playlistTitleLayoutId(context.playingPlaylistName))
+        : resetLifecycleAction("none"),
+      transaction: resetLifecycleAction("closed", "spectrum-music-commit"),
+    }),
+  );
 }
 
 function createOpenSpectrumErrorContext(context: Context) {
-  return resetContextWith({
-    hasPlayList: context.hasPlayList,
-    playlists: context.playlists,
-    pendingPlaylistPreview: context.pendingPlaylistPreview,
-    collections: context.collections,
-    configLibrary: context.configLibrary,
-    savePath: context.savePath,
-    playingPlaylistName: context.playingPlaylistName,
-    playingSessionGeneration: context.playingSessionGeneration,
-    nowPlayingTrackName: context.nowPlayingTrackName,
-    nowPlayingTrackUrl: context.nowPlayingTrackUrl,
-    nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-    nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
-    nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
-    spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
-    spectrumMusicDrafts: [],
-    spectrumMusicSourceContext: null,
-    error: "missing spectrum music identity for music loading",
-  });
+  return resetContextWith(
+    {
+      hasPlayList: context.hasPlayList,
+      playlists: context.playlists,
+      pendingPlaylistPreview: context.pendingPlaylistPreview,
+      collections: context.collections,
+      configLibrary: context.configLibrary,
+      savePath: context.savePath,
+      playingPlaylistName: context.playingPlaylistName,
+      playingSessionGeneration: context.playingSessionGeneration,
+      nowPlayingTrackName: context.nowPlayingTrackName,
+      nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+      nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
+      nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+      nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+      spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
+      spectrumMusicDrafts: [],
+      spectrumMusicSourceContext: null,
+      error: "missing spectrum music identity for music loading",
+    },
+    resetLifecycle({
+      reason: "reject opening spectrum without music identity",
+      chart: resetLifecycleAction("closed", "spectrum"),
+      lease: resetLifecycleAction("closed", null),
+      transaction: resetLifecycleAction("closed", "spectrum-music-commit"),
+    }),
+  );
 }
 
 function resolvePendingPlaylistPreviewDraft(context: Context, playlistName: string) {
@@ -346,39 +470,154 @@ function createPlayReadyContext(context: Context, playlistName: string) {
         spectrumMusicDrafts: [],
       };
 
-  return resetContextWith({
-    hasPlayList: context.hasPlayList,
-    playlists: context.playlists,
-    pendingPlaylistPreview: context.pendingPlaylistPreview,
-    collections: context.collections,
-    configLibrary: context.configLibrary,
-    savePath: context.savePath,
-    playingPlaylistName: playlistName,
-    playingSessionGeneration: context.pendingPlaylistPlaybackSessionGeneration,
-    ...nowPlayingTrackPatch,
-    pendingPlaylistPlaybackName: null,
-    pendingPlaylistPlaybackSessionGeneration: null,
-    pendingNowPlayingTrackEvidence: null,
-  });
+  return resetContextWith(
+    {
+      hasPlayList: context.hasPlayList,
+      playlists: context.playlists,
+      pendingPlaylistPreview: context.pendingPlaylistPreview,
+      collections: context.collections,
+      configLibrary: context.configLibrary,
+      savePath: context.savePath,
+      playingPlaylistName: playlistName,
+      playingSessionGeneration: context.pendingPlaylistPlaybackSessionGeneration,
+      ...nowPlayingTrackPatch,
+      pendingPlaylistPlaybackName: null,
+      pendingPlaylistPlaybackSessionGeneration: null,
+      pendingPlaylistPlaybackRequest: null,
+      pendingNowPlayingTrackEvidence: null,
+    },
+    resetLifecycle({
+      reason: "accept playlist playback and close pending playback evidence",
+      chart: resetLifecycleAction("closed", "playlist-playback-pending"),
+      lease: resetLifecycleAction("closed", null),
+      transaction: resetLifecycleAction("closed", "playlist-playback-start"),
+    }),
+  );
 }
 
-function createPendingPreviewPlaybackContext(context: Context, playlistName: string) {
-  return resetContextWith({
-    hasPlayList: context.hasPlayList,
-    playlists: context.playlists,
-    pendingPlaylistPreview: context.pendingPlaylistPreview,
-    collections: context.collections,
-    configLibrary: context.configLibrary,
-    savePath: context.savePath,
-    pendingPlaylistPlaybackName: playlistName,
+function createPlaylistPlaybackRequestEvidence(input: {
+  playlistName: string;
+  requestId: number;
+}): PlaylistPlaybackRequestEvidence {
+  return {
+    error: null,
+    phase: "starting",
+    playlistName: input.playlistName,
+    reason: null,
+    requestId: input.requestId,
+  };
+}
+
+function createPendingPlaylistPlaybackPatch(input: {
+  playlistName: string;
+  requestId: number;
+}): Pick<
+  Context,
+  | "pendingNowPlayingTrackEvidence"
+  | "pendingPlaylistPlaybackName"
+  | "pendingPlaylistPlaybackRequest"
+  | "pendingPlaylistPlaybackSessionGeneration"
+> {
+  return {
+    pendingPlaylistPlaybackName: input.playlistName,
     pendingPlaylistPlaybackSessionGeneration: null,
-    playingPlaylistName: null,
-    playingSessionGeneration: null,
-    nowPlayingTrackName: null,
-    nowPlayingTrackLiked: null,
-    activeLayoutId: playlistTitleLayoutId(playlistName),
-    titleToneHandoff: createCollectionTitleHandoff(playlistTitleLayoutId(playlistName), "solid"),
-  });
+    pendingPlaylistPlaybackRequest: createPlaylistPlaybackRequestEvidence(input),
+    pendingNowPlayingTrackEvidence: null,
+  };
+}
+
+function createPendingPlaylistPlaybackContext(
+  context: Context,
+  input: { playlistName: string; requestId: number },
+) {
+  const activeLayoutId = playlistTitleLayoutId(input.playlistName);
+
+  return resetContextWith(
+    {
+      hasPlayList: context.hasPlayList,
+      playlists: context.playlists,
+      pendingPlaylistPreview: context.pendingPlaylistPreview,
+      collections: context.collections,
+      configLibrary: context.configLibrary,
+      savePath: context.savePath,
+      ...createPendingPlaylistPlaybackPatch(input),
+      playingPlaylistName: null,
+      playingSessionGeneration: null,
+      nowPlayingTrackName: null,
+      nowPlayingTrackUrl: null,
+      nowPlayingTrackFilePath: null,
+      nowPlayingTrackStartMs: null,
+      nowPlayingTrackEndMs: null,
+      nowPlayingTrackLiked: null,
+      activeLayoutId,
+      titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
+    },
+    resetLifecycle({
+      reason: "open playlist title lease while pending playback starts",
+      chart: resetLifecycleAction("opened", "playlist-preview-playback"),
+      lease: resetLifecycleAction("opened", activeLayoutId),
+      transaction: resetLifecycleAction("opened", "playlist-playback-start"),
+    }),
+  );
+}
+
+function createPendingPlaylistPlaybackDuringPlayPatch(input: {
+  playlistName: string;
+  requestId: number;
+}): Partial<Context> {
+  return createPendingPlaylistPlaybackPatch(input);
+}
+
+function isCurrentPlaylistPlaybackRequest(
+  context: Context,
+  input: { playlistName: string; requestId: number },
+) {
+  return (
+    context.pendingPlaylistPlaybackRequest?.playlistName === input.playlistName &&
+    context.pendingPlaylistPlaybackRequest.requestId === input.requestId
+  );
+}
+
+function createPlaylistPlaybackStoppedPatch(
+  context: Context,
+  event: { output: PlaylistPlaybackStopped },
+): Partial<Context> {
+  const current = context.pendingPlaylistPlaybackRequest;
+  if (
+    !current ||
+    current.playlistName !== event.output.playlistName ||
+    current.requestId !== event.output.requestId
+  ) {
+    return {};
+  }
+
+  if (event.output.reason === "pending_first_track") {
+    return {
+      pendingPlaylistPlaybackName: event.output.playlistName,
+      pendingPlaylistPlaybackSessionGeneration: null,
+      pendingPlaylistPlaybackRequest: {
+        error: null,
+        phase: "preparing",
+        playlistName: event.output.playlistName,
+        reason: event.output.reason,
+        requestId: event.output.requestId,
+      },
+      pendingNowPlayingTrackEvidence: null,
+    };
+  }
+
+  return {
+    pendingPlaylistPlaybackName: null,
+    pendingPlaylistPlaybackSessionGeneration: null,
+    pendingPlaylistPlaybackRequest: {
+      error: event.output.error,
+      phase: "failed",
+      playlistName: event.output.playlistName,
+      reason: event.output.reason,
+      requestId: event.output.requestId,
+    },
+    pendingNowPlayingTrackEvidence: null,
+  };
 }
 
 function createPlaylistUpsertedContext(
@@ -397,6 +636,10 @@ function createPlaylistUpsertedContext(
       context.pendingPlaylistPlaybackName === event.output.playlist.name
         ? null
         : context.pendingPlaylistPlaybackName,
+    pendingPlaylistPlaybackRequest:
+      context.pendingPlaylistPlaybackName === event.output.playlist.name
+        ? null
+        : context.pendingPlaylistPlaybackRequest,
   };
 }
 
@@ -408,45 +651,62 @@ function createPendingPreviewConfigContext(context: Context, playlistName: strin
     return null;
   }
 
-  return resetContextWith({
-    hasPlayList: context.hasPlayList,
-    playlists: context.playlists,
-    pendingPlaylistPreview: context.pendingPlaylistPreview,
-    collections: context.collections,
-    configLibrary: context.configLibrary,
-    savePath: context.savePath,
-    playingPlaylistName: null,
-    nowPlayingTrackName: null,
-    nowPlayingTrackLiked: null,
-    activeLayoutId,
-    titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
-    draftBaseline: cloneDraft(draft),
-    draft,
-  });
+  return resetContextWith(
+    {
+      hasPlayList: context.hasPlayList,
+      playlists: context.playlists,
+      pendingPlaylistPreview: context.pendingPlaylistPreview,
+      collections: context.collections,
+      configLibrary: context.configLibrary,
+      savePath: context.savePath,
+      playingPlaylistName: null,
+      nowPlayingTrackName: null,
+      nowPlayingTrackLiked: null,
+      activeLayoutId,
+      titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
+      draftBaseline: cloneDraft(draft),
+      draft,
+    },
+    resetLifecycle({
+      reason: "open config chart from playlist preview",
+      chart: resetLifecycleAction("opened", "playlist-config"),
+      lease: resetLifecycleAction("opened", activeLayoutId),
+      transaction: resetLifecycleAction("closed", "playlist-draft-load"),
+    }),
+  );
 }
 
 function createConfigLoadingContext(context: Context, playlistName: string) {
   const activeLayoutId = playlistTitleLayoutId(playlistName);
 
-  return resetContextWith({
-    hasPlayList: context.hasPlayList,
-    playlists: context.playlists,
-    pendingPlaylistPreview: context.pendingPlaylistPreview,
-    collections: context.collections,
-    configLibrary: context.configLibrary,
-    savePath: context.savePath,
-    playingPlaylistName: null,
-    nowPlayingTrackName: null,
-    nowPlayingTrackLiked: null,
-    activeLayoutId,
-    titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
-    pendingPlaylistName: playlistName,
-  });
+  return resetContextWith(
+    {
+      hasPlayList: context.hasPlayList,
+      playlists: context.playlists,
+      pendingPlaylistPreview: context.pendingPlaylistPreview,
+      collections: context.collections,
+      configLibrary: context.configLibrary,
+      savePath: context.savePath,
+      playingPlaylistName: null,
+      nowPlayingTrackName: null,
+      nowPlayingTrackLiked: null,
+      activeLayoutId,
+      titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
+      pendingPlaylistName: playlistName,
+    },
+    resetLifecycle({
+      reason: "open config loading chart for playlist draft",
+      chart: resetLifecycleAction("opened", "playlist-config-loading"),
+      lease: resetLifecycleAction("opened", activeLayoutId),
+      transaction: resetLifecycleAction("opened", "playlist-draft-load"),
+    }),
+  );
 }
 
 const openPlaylist = payloads["playlist.open"];
 const playPlaylist = payloads["playlist.play"];
 const playlistPlaybackAccepted = payloads["playlist.playback.accepted"];
+const playlistPlaybackStopped = payloads["playlist.playback.stopped"];
 const playlistUpserted = payloads["playlist.upserted"];
 const playlistDeleted = payloads["playlist.deleted"];
 const playlistPreviewChanged = payloads["playlist.preview.changed"];
@@ -515,6 +775,10 @@ export const machine = src.createMachine({
             context.pendingPlaylistPlaybackName === event.output
               ? null
               : context.pendingPlaylistPlaybackSessionGeneration,
+          pendingPlaylistPlaybackRequest:
+            context.pendingPlaylistPlaybackName === event.output
+              ? null
+              : context.pendingPlaylistPlaybackRequest,
         };
       }),
     },
@@ -522,6 +786,9 @@ export const machine = src.createMachine({
       actions: assign({
         pendingPlaylistPreview: ({ event }) => event.output,
       }),
+    },
+    [playlistPlaybackStopped.evt]: {
+      actions: assign(({ context, event }) => createPlaylistPlaybackStoppedPatch(context, event)),
     },
     [draftCollectionUpserted.evt]: {
       actions: assign(({ context, event }) => {
@@ -601,50 +868,44 @@ export const machine = src.createMachine({
     },
     [spectrumMusicUpdatesCommitted.evt]: {
       actions: assign(({ context, event }) => {
-        if (event.output.epoch !== context.spectrumMusicCommitEpoch) {
-          return {};
-        }
-
-        return {
-          collections: createSpectrumPlayReturnContext(
-            context,
-            createSpectrumEditUpdateEvidence(event.output.result),
-          ).collections,
-        };
+        return createSpectrumAcceptedEvidenceContext(context, {
+          epoch: event.output.epoch,
+          phase: "update",
+          evidence: createSpectrumEditUpdateEvidence(event.output.result),
+        });
       }),
     },
     [spectrumMusicCreatesCommitted.evt]: {
       actions: assign(({ context, event }) => {
-        if (event.output.epoch !== context.spectrumMusicCommitEpoch) {
-          return {};
-        }
-
-        return {
-          collections: createSpectrumPlayReturnContext(
-            context,
-            createSpectrumEditCreateEvidence(event.output.result),
-          ).collections,
-        };
+        return createSpectrumAcceptedEvidenceContext(context, {
+          epoch: event.output.epoch,
+          phase: "create",
+          evidence: createSpectrumEditCreateEvidence(event.output.result),
+        });
       }),
     },
     [spectrumMusicDeletesCommitted.evt]: {
       actions: assign(({ context, event }) => {
-        if (event.output.epoch !== context.spectrumMusicCommitEpoch) {
-          return {};
-        }
-
-        return {
-          collections: createSpectrumPlayReturnContext(
-            context,
-            createSpectrumEditDeleteEvidence(event.output.result),
-          ).collections,
-        };
+        return createSpectrumAcceptedEvidenceContext(context, {
+          epoch: event.output.epoch,
+          phase: "delete",
+          evidence: createSpectrumEditDeleteEvidence(event.output.result),
+        });
       }),
     },
     [spectrumMusicCommitFailed.evt]: {
       actions: assign(({ context, event }) =>
         event.output.epoch === context.spectrumMusicCommitEpoch
-          ? { error: event.output.error }
+          ? {
+              error: event.output.error,
+              spectrumMusicCommitFrame: null,
+              spectrumMusicCommitNegativeEvidence: {
+                epoch: event.output.epoch,
+                kind: "Reject",
+                phase: event.output.phase,
+                reason: "unexpected-evidence",
+              },
+            }
           : {},
       ),
     },
@@ -662,25 +923,41 @@ export const machine = src.createMachine({
         onDone: {
           target: ss.mainx.State.ready,
           actions: assign(({ event }) =>
-            resetContextWith({
-              hasPlayList: event.output.hasPlayList,
-              playlists: event.output.playlists,
-              pendingPlaylistPreview: null,
-              collections: event.output.collections,
-              configLibrary: event.output.configLibrary,
-              savePath: event.output.savePath,
-              playingPlaylistName: null,
-              nowPlayingTrackName: null,
-            }),
+            resetContextWith(
+              {
+                hasPlayList: event.output.hasPlayList,
+                playlists: event.output.playlists,
+                pendingPlaylistPreview: null,
+                collections: event.output.collections,
+                configLibrary: event.output.configLibrary,
+                savePath: event.output.savePath,
+                playingPlaylistName: null,
+                nowPlayingTrackName: null,
+              },
+              resetLifecycle({
+                reason: "replace app shape from bootstrap evidence",
+                chart: resetLifecycleAction("closed", null),
+                lease: resetLifecycleAction("closed", null),
+                transaction: resetLifecycleAction("closed", null),
+              }),
+            ),
           ),
         },
         onError: {
           target: ss.mainx.State.error,
           actions: assign(({ context, event }) =>
-            resetContextWith({
-              savePath: resolveSavePathFromLoadingError(event.error, context.savePath),
-              error: toErrorMessage(event.error),
-            }),
+            resetContextWith(
+              {
+                savePath: resolveSavePathFromLoadingError(event.error, context.savePath),
+                error: toErrorMessage(event.error),
+              },
+              resetLifecycle({
+                reason: "enter bootstrap error state",
+                chart: resetLifecycleAction("closed", null),
+                lease: resetLifecycleAction("closed", null),
+                transaction: resetLifecycleAction("closed", null),
+              }),
+            ),
           ),
         },
       },
@@ -694,38 +971,50 @@ export const machine = src.createMachine({
         opencreate: {
           target: ss.mainx.State.config,
           actions: assign(({ context }) =>
-            resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              pendingPlaylistPreview: context.pendingPlaylistPreview,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: null,
-              nowPlayingTrackName: null,
-              activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
-              titleToneHandoff: createCollectionTitleHandoff(CREATE_COLLECTION_LAYOUT_ID, "solid"),
-              draftBaseline: createDraft(),
-              draft: createDraft(),
-            }),
+            resetContextWith(
+              {
+                hasPlayList: context.hasPlayList,
+                playlists: context.playlists,
+                pendingPlaylistPreview: context.pendingPlaylistPreview,
+                collections: context.collections,
+                configLibrary: context.configLibrary,
+                savePath: context.savePath,
+                playingPlaylistName: null,
+                nowPlayingTrackName: null,
+                activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
+                titleToneHandoff: createCollectionTitleHandoff(
+                  CREATE_COLLECTION_LAYOUT_ID,
+                  "solid",
+                ),
+                draftBaseline: createDraft(),
+                draft: createDraft(),
+              },
+              resetLifecycle({
+                reason: "open create playlist config chart",
+                chart: resetLifecycleAction("opened", "playlist-config"),
+                lease: resetLifecycleAction("opened", CREATE_COLLECTION_LAYOUT_ID),
+                transaction: resetLifecycleAction("closed", "playlist-draft-load"),
+              }),
+            ),
           ),
         },
         [playPlaylist.evt]: [
           {
             guard: ({ context, event }) =>
-              resolvePendingPlaylistPreviewDraft(context, event.output) !== null,
+              resolvePendingPlaylistPreviewDraft(context, event.output.playlistName) !== null,
             actions: assign(({ context, event }) =>
-              createPendingPreviewPlaybackContext(context, event.output),
+              createPendingPlaylistPlaybackContext(context, event.output),
             ),
           },
           {
-            actions: assign(({ event }) => ({
-              pendingPlaylistPlaybackName: event.output,
-            })),
+            actions: assign(({ context, event }) =>
+              createPendingPlaylistPlaybackContext(context, event.output),
+            ),
           },
         ],
         [playlistPlaybackAccepted.evt]: {
           target: ss.mainx.State.play,
+          guard: ({ context, event }) => isCurrentPlaylistPlaybackRequest(context, event.output),
           actions: assign(({ context, event }) =>
             createPlayReadyContext(
               {
@@ -762,54 +1051,73 @@ export const machine = src.createMachine({
         back: {
           target: ss.mainx.State.ready,
           actions: assign(({ context }) =>
-            resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              pendingPlaylistPreview: context.pendingPlaylistPreview,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: null,
-              nowPlayingTrackName: null,
-            }),
+            resetContextWith(
+              {
+                hasPlayList: context.hasPlayList,
+                playlists: context.playlists,
+                pendingPlaylistPreview: context.pendingPlaylistPreview,
+                collections: context.collections,
+                configLibrary: context.configLibrary,
+                savePath: context.savePath,
+                playingPlaylistName: null,
+                nowPlayingTrackName: null,
+              },
+              resetLifecycle({
+                reason: "leave playback and close runtime chart",
+                chart: resetLifecycleAction("closed", "playback"),
+                lease: resetLifecycleAction("closed", null),
+                transaction: resetLifecycleAction("closed", null),
+              }),
+            ),
           ),
         },
         opencreate: {
           target: ss.mainx.State.config,
           actions: assign(({ context }) =>
-            resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              pendingPlaylistPreview: context.pendingPlaylistPreview,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: null,
-              nowPlayingTrackName: null,
-              activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
-              titleToneHandoff: createCollectionTitleHandoff(CREATE_COLLECTION_LAYOUT_ID, "solid"),
-              draftBaseline: createDraft(),
-              draft: createDraft(),
-            }),
+            resetContextWith(
+              {
+                hasPlayList: context.hasPlayList,
+                playlists: context.playlists,
+                pendingPlaylistPreview: context.pendingPlaylistPreview,
+                collections: context.collections,
+                configLibrary: context.configLibrary,
+                savePath: context.savePath,
+                playingPlaylistName: null,
+                nowPlayingTrackName: null,
+                activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
+                titleToneHandoff: createCollectionTitleHandoff(
+                  CREATE_COLLECTION_LAYOUT_ID,
+                  "solid",
+                ),
+                draftBaseline: createDraft(),
+                draft: createDraft(),
+              },
+              resetLifecycle({
+                reason: "open create playlist config chart from playback",
+                chart: resetLifecycleAction("opened", "playlist-config"),
+                lease: resetLifecycleAction("opened", CREATE_COLLECTION_LAYOUT_ID),
+                transaction: resetLifecycleAction("closed", "playlist-draft-load"),
+              }),
+            ),
           ),
         },
         [playPlaylist.evt]: [
           {
             guard: ({ context, event }) =>
-              resolvePendingPlaylistPreviewDraft(context, event.output) !== null,
-            target: ss.mainx.State.ready,
+              resolvePendingPlaylistPreviewDraft(context, event.output.playlistName) !== null,
             actions: assign(({ context, event }) =>
-              createPendingPreviewPlaybackContext(context, event.output),
+              createPendingPlaylistPlaybackDuringPlayPatch(event.output),
             ),
           },
           {
-            actions: assign(({ event }) => ({
-              pendingPlaylistPlaybackName: event.output,
-            })),
+            actions: assign(({ event }) =>
+              createPendingPlaylistPlaybackDuringPlayPatch(event.output),
+            ),
           },
         ],
         [playlistPlaybackAccepted.evt]: {
           reenter: true,
+          guard: ({ context, event }) => isCurrentPlaylistPlaybackRequest(context, event.output),
           actions: assign(({ context, event }) =>
             createPlayReadyContext(
               {
@@ -871,25 +1179,33 @@ export const machine = src.createMachine({
         onError: {
           target: ss.mainx.State.error,
           actions: assign(({ context, event }) =>
-            resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              pendingPlaylistPreview: context.pendingPlaylistPreview,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: context.playingPlaylistName,
-              playingSessionGeneration: context.playingSessionGeneration,
-              nowPlayingTrackName: context.nowPlayingTrackName,
-              nowPlayingTrackUrl: context.nowPlayingTrackUrl,
-              nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-              nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
-              nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
-              spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
-              spectrumMusicDrafts: context.spectrumMusicDrafts,
-              spectrumMusicSourceContext: context.spectrumMusicSourceContext,
-              error: toErrorMessage(event.error),
-            }),
+            resetContextWith(
+              {
+                hasPlayList: context.hasPlayList,
+                playlists: context.playlists,
+                pendingPlaylistPreview: context.pendingPlaylistPreview,
+                collections: context.collections,
+                configLibrary: context.configLibrary,
+                savePath: context.savePath,
+                playingPlaylistName: context.playingPlaylistName,
+                playingSessionGeneration: context.playingSessionGeneration,
+                nowPlayingTrackName: context.nowPlayingTrackName,
+                nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+                nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
+                nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+                nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+                spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
+                spectrumMusicDrafts: context.spectrumMusicDrafts,
+                spectrumMusicSourceContext: context.spectrumMusicSourceContext,
+                error: toErrorMessage(event.error),
+              },
+              resetLifecycle({
+                reason: "stop spectrum chart on draft load failure",
+                chart: resetLifecycleAction("closed", "spectrum"),
+                lease: resetLifecycleAction("closed", context.activeLayoutId),
+                transaction: resetLifecycleAction("closed", "spectrum-music-draft-load"),
+              }),
+            ),
           ),
         },
       },
@@ -964,38 +1280,58 @@ export const machine = src.createMachine({
         onDone: {
           target: ss.mainx.State.config,
           actions: assign(({ context, event }) =>
-            resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              pendingPlaylistPreview: context.pendingPlaylistPreview,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: null,
-              nowPlayingTrackName: null,
-              activeLayoutId: context.activeLayoutId,
-              titleToneHandoff: context.titleToneHandoff,
-              draftBaseline: cloneDraft(event.output),
-              draft: event.output,
-            }),
+            resetContextWith(
+              {
+                hasPlayList: context.hasPlayList,
+                playlists: context.playlists,
+                pendingPlaylistPreview: context.pendingPlaylistPreview,
+                collections: context.collections,
+                configLibrary: context.configLibrary,
+                savePath: context.savePath,
+                playingPlaylistName: null,
+                nowPlayingTrackName: null,
+                activeLayoutId: context.activeLayoutId,
+                titleToneHandoff: context.titleToneHandoff,
+                draftBaseline: cloneDraft(event.output),
+                draft: event.output,
+              },
+              resetLifecycle({
+                reason: "accept playlist draft load into config chart",
+                chart: resetLifecycleAction("opened", "playlist-config"),
+                lease: context.activeLayoutId
+                  ? resetLifecycleAction("preserved", context.activeLayoutId)
+                  : resetLifecycleAction("closed", null),
+                transaction: resetLifecycleAction("closed", "playlist-draft-load"),
+              }),
+            ),
           ),
         },
         onError: {
           target: ss.mainx.State.error,
           actions: assign(({ context, event }) =>
-            resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              pendingPlaylistPreview: context.pendingPlaylistPreview,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: null,
-              nowPlayingTrackName: null,
-              activeLayoutId: context.activeLayoutId,
-              titleToneHandoff: context.titleToneHandoff,
-              error: toErrorMessage(event.error),
-            }),
+            resetContextWith(
+              {
+                hasPlayList: context.hasPlayList,
+                playlists: context.playlists,
+                pendingPlaylistPreview: context.pendingPlaylistPreview,
+                collections: context.collections,
+                configLibrary: context.configLibrary,
+                savePath: context.savePath,
+                playingPlaylistName: null,
+                nowPlayingTrackName: null,
+                activeLayoutId: context.activeLayoutId,
+                titleToneHandoff: context.titleToneHandoff,
+                error: toErrorMessage(event.error),
+              },
+              resetLifecycle({
+                reason: "close config loading transaction on playlist draft load failure",
+                chart: resetLifecycleAction("closed", "playlist-config-loading"),
+                lease: context.activeLayoutId
+                  ? resetLifecycleAction("preserved", context.activeLayoutId)
+                  : resetLifecycleAction("closed", null),
+                transaction: resetLifecycleAction("closed", "playlist-draft-load"),
+              }),
+            ),
           ),
         },
       },
@@ -1004,19 +1340,29 @@ export const machine = src.createMachine({
         back: {
           target: ss.mainx.State.ready,
           actions: assign(({ context }) =>
-            resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              pendingPlaylistPreview: context.pendingPlaylistPreview,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: null,
-              nowPlayingTrackName: null,
-              titleToneHandoff: context.activeLayoutId
-                ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
-                : context.titleToneHandoff,
-            }),
+            resetContextWith(
+              {
+                hasPlayList: context.hasPlayList,
+                playlists: context.playlists,
+                pendingPlaylistPreview: context.pendingPlaylistPreview,
+                collections: context.collections,
+                configLibrary: context.configLibrary,
+                savePath: context.savePath,
+                playingPlaylistName: null,
+                nowPlayingTrackName: null,
+                titleToneHandoff: context.activeLayoutId
+                  ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
+                  : context.titleToneHandoff,
+              },
+              resetLifecycle({
+                reason: "leave config loading before draft load completes",
+                chart: resetLifecycleAction("closed", "playlist-config-loading"),
+                lease: context.activeLayoutId
+                  ? resetLifecycleAction("opened", context.activeLayoutId)
+                  : resetLifecycleAction("closed", null),
+                transaction: resetLifecycleAction("closed", "playlist-draft-load"),
+              }),
+            ),
           ),
         },
       },
@@ -1033,38 +1379,56 @@ export const machine = src.createMachine({
               draftBaseline: context.draftBaseline,
             });
 
-            return resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              pendingPlaylistPreview: context.pendingPlaylistPreview,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: null,
-              nowPlayingTrackName: null,
-              titleToneHandoff: backPlan.titleToneHandoff,
-            });
+            return resetContextWith(
+              {
+                hasPlayList: context.hasPlayList,
+                playlists: context.playlists,
+                pendingPlaylistPreview: context.pendingPlaylistPreview,
+                collections: context.collections,
+                configLibrary: context.configLibrary,
+                savePath: context.savePath,
+                playingPlaylistName: null,
+                nowPlayingTrackName: null,
+                titleToneHandoff: backPlan.titleToneHandoff,
+              },
+              resetLifecycle({
+                reason: "close config chart and return to app shape",
+                chart: resetLifecycleAction("closed", "playlist-config"),
+                lease: backPlan.titleToneHandoff
+                  ? resetLifecycleAction("opened", backPlan.titleToneHandoff.layoutId)
+                  : resetLifecycleAction("closed", null),
+                transaction: resetLifecycleAction("closed", "playlist-draft"),
+              }),
+            );
           }),
         },
         opencreate: {
           actions: assign(({ context }) =>
-            resetContextWith({
-              hasPlayList: context.hasPlayList,
-              playlists: context.playlists,
-              pendingPlaylistPreview: context.pendingPlaylistPreview,
-              collections: context.collections,
-              configLibrary: context.configLibrary,
-              savePath: context.savePath,
-              playingPlaylistName: null,
-              nowPlayingTrackName: null,
-              activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
-              titleToneHandoff: createCollectionTitleHandoff(
-                CREATE_COLLECTION_LAYOUT_ID,
-                resolveTitleShareToneFromDraft(context.draft),
-              ),
-              draftBaseline: createDraft(),
-              draft: createDraft(),
-            }),
+            resetContextWith(
+              {
+                hasPlayList: context.hasPlayList,
+                playlists: context.playlists,
+                pendingPlaylistPreview: context.pendingPlaylistPreview,
+                collections: context.collections,
+                configLibrary: context.configLibrary,
+                savePath: context.savePath,
+                playingPlaylistName: null,
+                nowPlayingTrackName: null,
+                activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
+                titleToneHandoff: createCollectionTitleHandoff(
+                  CREATE_COLLECTION_LAYOUT_ID,
+                  resolveTitleShareToneFromDraft(context.draft),
+                ),
+                draftBaseline: createDraft(),
+                draft: createDraft(),
+              },
+              resetLifecycle({
+                reason: "replace config chart with create playlist chart",
+                chart: resetLifecycleAction("opened", "playlist-config"),
+                lease: resetLifecycleAction("opened", CREATE_COLLECTION_LAYOUT_ID),
+                transaction: resetLifecycleAction("closed", "playlist-draft"),
+              }),
+            ),
           ),
         },
         [openPlaylist.evt]: [

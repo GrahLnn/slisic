@@ -9,6 +9,7 @@ export let send = createSender(actor);
 export const openPlaylist = payloads["playlist.open"];
 export const playPlaylist = payloads["playlist.play"];
 export const playlistPlaybackAccepted = payloads["playlist.playback.accepted"];
+export const playlistPlaybackStopped = payloads["playlist.playback.stopped"];
 export const playlistUpserted = payloads["playlist.upserted"];
 export const playlistDeleted = payloads["playlist.deleted"];
 export const playlistPreviewChanged = payloads["playlist.preview.changed"];

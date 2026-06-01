@@ -38,6 +38,7 @@ import {
   openPlaylist,
   playPlaylist,
   playlistPlaybackAccepted,
+  playlistPlaybackStopped,
   playlistDeleted,
   playlistPreviewChanged,
   playlistUpserted,
@@ -98,6 +99,8 @@ const playbackContinuationModeEffectOwner = createPlaybackContinuationModeEffect
 });
 let lastPlayableIndexReadyState = false;
 let playlistPlaybackStartEpoch = 0;
+const PLAYLIST_PLAYBACK_PENDING_RETRY_INITIAL_DELAY_MS = 500;
+const PLAYLIST_PLAYBACK_PENDING_RETRY_MAX_DELAY_MS = 5_000;
 
 function formatStateValue(value: unknown) {
   return typeof value === "string" ? value : JSON.stringify(value);
@@ -259,33 +262,152 @@ function requestSetCurrentPlaybackMusicLiked(liked: boolean) {
   });
 }
 
-async function startPlaylistPlaybackFromAction(playlistName: string) {
-  const epoch = ++playlistPlaybackStartEpoch;
+function toPlaylistPlaybackErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function sendPlaylistPlaybackErrorStop(args: {
+  error: unknown;
+  playlistName: string;
+  requestId: number;
+}) {
+  send(
+    playlistPlaybackStopped.load({
+      error: toPlaylistPlaybackErrorMessage(args.error),
+      playlistName: args.playlistName,
+      reason: "error",
+      requestId: args.requestId,
+      session: null,
+    }),
+  );
+}
+
+function isCurrentPlaylistPlaybackRequest(playlistName: string, requestId: number) {
+  const snapshot = actor.getSnapshot();
+  const request = snapshot.context.pendingPlaylistPlaybackRequest;
+  return (
+    request?.playlistName === playlistName &&
+    request.requestId === requestId &&
+    request.phase !== "failed"
+  );
+}
+
+function schedulePlaylistPlaybackPendingRetry(args: {
+  actionStartedAt: number;
+  attempt: number;
+  playlistName: string;
+  requestId: number;
+}) {
+  const delayMs = Math.min(
+    PLAYLIST_PLAYBACK_PENDING_RETRY_INITIAL_DELAY_MS * 2 ** Math.min(args.attempt, 4),
+    PLAYLIST_PLAYBACK_PENDING_RETRY_MAX_DELAY_MS,
+  );
+
+  globalThis.setTimeout(() => {
+    if (!isCurrentPlaylistPlaybackRequest(args.playlistName, args.requestId)) {
+      recordRenderPerformanceTrace("playlist-play-action-pending-retry-cancelled", {
+        playlistName: args.playlistName,
+        requestId: args.requestId,
+        attempt: args.attempt + 1,
+        elapsedMs: currentPerformanceNow() - args.actionStartedAt,
+      });
+      return;
+    }
+
+    void startPlaylistPlaybackFromAction({
+      actionStartedAt: args.actionStartedAt,
+      attempt: args.attempt + 1,
+      playlistName: args.playlistName,
+      requestId: args.requestId,
+    }).catch((error) => {
+      sendPlaylistPlaybackErrorStop({
+        error,
+        playlistName: args.playlistName,
+        requestId: args.requestId,
+      });
+      recordRenderPerformanceTrace("playlist-play-action-pending-retry-error", {
+        playlistName: args.playlistName,
+        requestId: args.requestId,
+        attempt: args.attempt + 1,
+        elapsedMs: currentPerformanceNow() - args.actionStartedAt,
+        error: toPlaylistPlaybackErrorMessage(error),
+      });
+      console.error("Failed to retry pending playlist playback", error);
+    });
+  }, delayMs);
+}
+
+async function startPlaylistPlaybackFromAction(args: {
+  actionStartedAt: number;
+  attempt?: number;
+  playlistName: string;
+  requestId: number;
+}) {
+  const attempt = args.attempt ?? 0;
+  const { playlistName, requestId } = args;
+
+  recordRenderPerformanceTrace("playlist-play-action-backend-start", {
+    playlistName,
+    requestId,
+    attempt,
+    elapsedMs: currentPerformanceNow() - args.actionStartedAt,
+  });
+
   const result = await invoker.playPlaylist.__src__({ playlistName });
 
-  if (epoch !== playlistPlaybackStartEpoch) {
+  if (requestId !== playlistPlaybackStartEpoch) {
     recordRenderPerformanceTrace("playlist-play-action-stale-result", {
       playlistName,
-      epoch,
+      requestId,
       currentEpoch: playlistPlaybackStartEpoch,
+      attempt,
       status: result.session.status,
       result: result.kind,
       trackCount: result.session.track_count,
     });
+    send(
+      playlistPlaybackStopped.load({
+        error: "stale playlist playback result",
+        playlistName,
+        reason: "stale",
+        requestId,
+        session: null,
+      }),
+    );
     return result;
   }
 
   if (result.kind === "Stops") {
+    send(
+      playlistPlaybackStopped.load({
+        error: null,
+        playlistName,
+        reason: result.reason,
+        requestId,
+        session: result.session,
+      }),
+    );
     recordRenderPerformanceTrace("playlist-play-action-stopped-result", {
       playlistName,
+      requestId,
+      attempt,
       reason: result.reason,
       status: result.session.status,
       trackCount: result.session.track_count,
     });
+    if (result.reason === "pending_first_track") {
+      refreshPlayableIndex();
+      schedulePlaylistPlaybackPendingRetry({
+        actionStartedAt: args.actionStartedAt,
+        attempt,
+        playlistName,
+        requestId,
+      });
+    }
     return result;
   }
 
-  send(playlistPlaybackAccepted.load({ playlistName, session: result.session }));
+  send(playlistPlaybackAccepted.load({ playlistName, requestId, session: result.session }));
   return result;
 }
 
@@ -630,23 +752,17 @@ export const action = {
       return;
     }
 
-    if (snapshot.value === "ready") {
-      const previewDraft = snapshot.context.pendingPlaylistPreview?.playlist.name === playlistName;
-      if (previewDraft) {
-        send(playPlaylist.load(playlistName));
-        recordRenderPerformanceTrace("playlist-play-action-preview-sent", {
-          playlistName,
-          elapsedMs: currentPerformanceNow() - actionStartedAt,
-        });
-        return;
-      }
-    }
-
-    send(playPlaylist.load(playlistName));
-    void startPlaylistPlaybackFromAction(playlistName)
+    const requestId = ++playlistPlaybackStartEpoch;
+    send(playPlaylist.load({ playlistName, requestId }));
+    void startPlaylistPlaybackFromAction({
+      actionStartedAt,
+      playlistName,
+      requestId,
+    })
       .then((session) => {
         recordRenderPerformanceTrace("playlist-play-action-finished", {
           playlistName,
+          requestId,
           elapsedMs: currentPerformanceNow() - actionStartedAt,
           result: session.kind,
           status: session.session.status,
@@ -654,10 +770,13 @@ export const action = {
         });
       })
       .catch((error) => {
+        const errorMessage = toPlaylistPlaybackErrorMessage(error);
+        sendPlaylistPlaybackErrorStop({ error, playlistName, requestId });
         recordRenderPerformanceTrace("playlist-play-action-error", {
           playlistName,
+          requestId,
           elapsedMs: currentPerformanceNow() - actionStartedAt,
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage,
         });
         console.error("Failed to start playlist playback", error);
       });

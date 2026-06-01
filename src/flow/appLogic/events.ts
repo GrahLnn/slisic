@@ -39,6 +39,7 @@ import {
   type ConfigDraft,
   type ExcludeAddedChange,
   type ExcludeRemovedChange,
+  type PlaylistPlaybackStopReason,
   type PlaylistPreview,
   type PlaylistUpsertResult,
   type SpectrumMusicDraft,
@@ -99,8 +100,25 @@ export type PlaybackStartResult =
 
 export interface PlaylistPlaybackAccepted {
   playlistName: string;
+  requestId: number;
   session: StartedPlayPlaylistSession;
 }
+
+export type PlaylistPlaybackStopped =
+  | {
+      error: null;
+      playlistName: string;
+      reason: StoppedPlayPlaylistSession["status"];
+      requestId: number;
+      session: StoppedPlayPlaylistSession;
+    }
+  | {
+      error: string;
+      playlistName: string;
+      reason: Extract<PlaylistPlaybackStopReason, "error" | "stale">;
+      requestId: number;
+      session: null;
+    };
 
 export interface MusicUpdateInput {
   alias: string;
@@ -717,8 +735,9 @@ export const invoker = createActors({
 });
 export const payloads = collect(
   ...event<string>()("playlist.open"),
-  ...event<string>()("playlist.play"),
+  ...event<{ playlistName: string; requestId: number }>()("playlist.play"),
   ...event<PlaylistPlaybackAccepted>()("playlist.playback.accepted"),
+  ...event<PlaylistPlaybackStopped>()("playlist.playback.stopped"),
   ...event<PlaylistUpsertResult>()("playlist.upserted"),
   ...event<string>()("playlist.deleted"),
   ...event<PlaylistPreview | null>()("playlist.preview.changed"),

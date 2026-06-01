@@ -108,6 +108,18 @@ function createStartedPlaybackSession(
   };
 }
 
+function createStoppedPlaybackSession(
+  status: Exclude<PlayPlaylistSession["status"], "started">,
+  playlistName = "Focus Session",
+): PlayPlaylistSession & { status: Exclude<PlayPlaylistSession["status"], "started"> } {
+  return {
+    playlist_name: playlistName,
+    status,
+    session_generation: null,
+    track_count: 0,
+  };
+}
+
 function createNowPlayingTrackChangedEvent(
   music: Music,
   sessionGeneration = 1,
@@ -205,9 +217,7 @@ function createConfigDraftFromPlaylist(playlist: PlayList): ConfigDraft {
 function waitForState(
   actor: {
     getSnapshot: () => { value: unknown };
-    subscribe: (
-      listener: (snapshot: { value: unknown }) => void,
-    ) => { unsubscribe: () => void };
+    subscribe: (listener: (snapshot: { value: unknown }) => void) => { unsubscribe: () => void };
   },
   expectedState: string,
   timeoutMs = 2000,
@@ -376,7 +386,7 @@ describe("appLogic machine", () => {
     actor.send(sig.mainx.run);
     await waitForState(actor, "ready");
 
-    actor.send(payloads["playlist.play"].load("Focus Session"));
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
     assert.equal(actor.getSnapshot().value, "ready");
     assert.equal(actor.getSnapshot().context.playingPlaylistName, null);
     actor.send(sig.mainx.openspectrum);
@@ -385,11 +395,119 @@ describe("appLogic machine", () => {
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
+        requestId: 1,
         session: createStartedPlaybackSession(),
       }),
     );
     assert.equal(actor.getSnapshot().value, "play");
     assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
+  });
+
+  test("rejects accepted playback evidence that does not own the pending request", async () => {
+    const collection = createCollection([createMusic()]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 2,
+        session: createStartedPlaybackSession(),
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().value, "ready");
+    assert.equal(actor.getSnapshot().context.playingPlaylistName, null);
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, "Focus Session");
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackRequest?.requestId, 1);
+  });
+
+  test("keeps pending first-track playback as preparing evidence", async () => {
+    const collection = createCollection([createMusic()]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.stopped"].load({
+        error: null,
+        playlistName: "Focus Session",
+        reason: "pending_first_track",
+        requestId: 1,
+        session: createStoppedPlaybackSession("pending_first_track"),
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().value, "ready");
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, "Focus Session");
+    assert.deepEqual(actor.getSnapshot().context.pendingPlaylistPlaybackRequest, {
+      error: null,
+      phase: "preparing",
+      playlistName: "Focus Session",
+      reason: "pending_first_track",
+      requestId: 1,
+    });
+  });
+
+  test("closes stopped playback intent when the backend supersedes it", async () => {
+    const collection = createCollection([createMusic()]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.stopped"].load({
+        error: null,
+        playlistName: "Focus Session",
+        reason: "superseded",
+        requestId: 1,
+        session: createStoppedPlaybackSession("superseded"),
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().value, "ready");
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, null);
+    assert.deepEqual(actor.getSnapshot().context.pendingPlaylistPlaybackRequest, {
+      error: null,
+      phase: "failed",
+      playlistName: "Focus Session",
+      reason: "superseded",
+      requestId: 1,
+    });
   });
 
   test("projects now playing evidence that arrives before playback is accepted", async () => {
@@ -409,24 +527,20 @@ describe("appLogic machine", () => {
     actor.send(sig.mainx.run);
     await waitForState(actor, "ready");
 
-    actor.send(payloads["playlist.play"].load("Focus Session"));
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
     actor.send(
-      payloads["player.now_playing_track.changed"].load(
-        createNowPlayingTrackChangedEvent(music),
-      ),
+      payloads["player.now_playing_track.changed"].load(createNowPlayingTrackChangedEvent(music)),
     );
 
     assert.equal(actor.getSnapshot().value, "ready");
     assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, "Focus Session");
-    assert.equal(
-      actor.getSnapshot().context.pendingNowPlayingTrackEvidence?.music_url,
-      music.url,
-    );
+    assert.equal(actor.getSnapshot().context.pendingNowPlayingTrackEvidence?.music_url, music.url);
     assert.equal(actor.getSnapshot().context.nowPlayingTrackName, null);
 
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
+        requestId: 1,
         session: createStartedPlaybackSession(),
       }),
     );
@@ -459,7 +573,7 @@ describe("appLogic machine", () => {
     actor.send(sig.mainx.run);
     await waitForState(actor, "ready");
 
-    actor.send(payloads["playlist.play"].load("Focus Session"));
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
     actor.send(
       payloads["player.now_playing_track.changed"].load(
         createNowPlayingTrackChangedEvent(music, 1, "Other Session"),
@@ -468,6 +582,7 @@ describe("appLogic machine", () => {
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
+        requestId: 1,
         session: createStartedPlaybackSession(),
       }),
     );
@@ -513,10 +628,11 @@ describe("appLogic machine", () => {
     actor.send(sig.mainx.run);
     await waitForState(actor, "ready");
 
-    actor.send(payloads["playlist.play"].load("Focus Session"));
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
+        requestId: 1,
         session: createStartedPlaybackSession(1),
       }),
     );
@@ -528,10 +644,11 @@ describe("appLogic machine", () => {
     assert.equal(actor.getSnapshot().context.nowPlayingTrackName, firstMusic.alias);
     assert.equal(actor.getSnapshot().context.playingSessionGeneration, 1);
 
-    actor.send(payloads["playlist.play"].load("Focus Session"));
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 2 }));
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
+        requestId: 2,
         session: createStartedPlaybackSession(2),
       }),
     );
@@ -609,9 +726,11 @@ describe("appLogic machine", () => {
     actor.start();
     actor.send(sig.mainx.run);
     await waitForState(actor, "ready");
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
+        requestId: 1,
         session: createStartedPlaybackSession(),
       }),
     );
@@ -693,17 +812,17 @@ describe("appLogic machine", () => {
     actor.start();
     actor.send(sig.mainx.run);
     await waitForState(actor, "ready");
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
+        requestId: 1,
         session: createStartedPlaybackSession(),
       }),
     );
     await waitForState(actor, "play");
     actor.send(
-      payloads["player.now_playing_track.changed"].load(
-        createNowPlayingTrackChangedEvent(music),
-      ),
+      payloads["player.now_playing_track.changed"].load(createNowPlayingTrackChangedEvent(music)),
     );
     actor.send(spectrumPlaybackScopeChanged.load(42));
     actor.send(sig.mainx.openspectrum);
@@ -776,17 +895,17 @@ describe("appLogic machine", () => {
     actor.start();
     actor.send(sig.mainx.run);
     await waitForState(actor, "ready");
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
+        requestId: 1,
         session: createStartedPlaybackSession(),
       }),
     );
     await waitForState(actor, "play");
     actor.send(
-      payloads["player.now_playing_track.changed"].load(
-        createNowPlayingTrackChangedEvent(music),
-      ),
+      payloads["player.now_playing_track.changed"].load(createNowPlayingTrackChangedEvent(music)),
     );
     actor.send(sig.mainx.openspectrum);
     await waitForState(actor, "spectrum");
@@ -841,17 +960,17 @@ describe("appLogic machine", () => {
     actor.start();
     actor.send(sig.mainx.run);
     await waitForState(actor, "ready");
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
+        requestId: 1,
         session: createStartedPlaybackSession(),
       }),
     );
     await waitForState(actor, "play");
     actor.send(
-      payloads["player.now_playing_track.changed"].load(
-        createNowPlayingTrackChangedEvent(music),
-      ),
+      payloads["player.now_playing_track.changed"].load(createNowPlayingTrackChangedEvent(music)),
     );
     actor.send(sig.mainx.openspectrum);
     await waitForState(actor, "spectrum");
@@ -861,6 +980,13 @@ describe("appLogic machine", () => {
     actor.send(sig.mainx.back);
 
     assert.equal(actor.getSnapshot().value, "play");
+    assert.deepEqual(actor.getSnapshot().context.lastContextResetLifecycle, {
+      owner: "appLogic",
+      reason: "close spectrum chart and return to playback shape",
+      chart: { kind: "closed", target: "spectrum" },
+      lease: { kind: "opened", target: "playlist-title:Focus Session" },
+      transaction: { kind: "closed", target: "spectrum-music-commit" },
+    });
     assert.deepEqual(actor.getSnapshot().context.titleToneHandoff, {
       layoutId: "playlist-title:Focus Session",
       tone: "solid",
@@ -902,17 +1028,17 @@ describe("appLogic machine", () => {
     actor.start();
     actor.send(sig.mainx.run);
     await waitForState(actor, "ready");
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
+        requestId: 1,
         session: createStartedPlaybackSession(),
       }),
     );
     await waitForState(actor, "play");
     actor.send(
-      payloads["player.now_playing_track.changed"].load(
-        createNowPlayingTrackChangedEvent(music),
-      ),
+      payloads["player.now_playing_track.changed"].load(createNowPlayingTrackChangedEvent(music)),
     );
     actor.send(sig.mainx.openspectrum);
     await waitForState(actor, "spectrum");
@@ -935,6 +1061,249 @@ describe("appLogic machine", () => {
     });
     assert.equal(actor.getSnapshot().context.spectrumMusicCommitEpoch, 1);
     assert.equal(actor.getSnapshot().context.nowPlayingTrackName, "Track A Revised");
+  });
+
+  test("does not apply accepted spectrum evidence after its commit frame closes", async () => {
+    const music = createMusic();
+    const collection = createCollection([music]);
+
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+          loadSpectrumMusicDrafts: fromPromise<
+            SpectrumMusicDraftBootstrapResult,
+            SpectrumMusicDraftBootstrapInput
+          >(async () => ({
+            source: null,
+            drafts: [
+              {
+                kind: "persisted" as const,
+                baselineName: music.alias,
+                baselineStartMs: music.start_ms,
+                baselineEndMs: music.end_ms,
+                name: music.alias,
+                url: music.url,
+                startMs: music.start_ms,
+                endMs: music.end_ms,
+              },
+            ],
+          })),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 1,
+        session: createStartedPlaybackSession(),
+      }),
+    );
+    await waitForState(actor, "play");
+    actor.send(
+      payloads["player.now_playing_track.changed"].load(createNowPlayingTrackChangedEvent(music)),
+    );
+    actor.send(sig.mainx.openspectrum);
+    await waitForState(actor, "spectrum");
+
+    actor.send(
+      spectrumMusicNameChanged.load({
+        id: "https://example.com/quiet-morning#a|0|120000",
+        name: "Track A Draft",
+      }),
+    );
+    actor.send(sig.mainx.back);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, "Track A Draft");
+    assert.equal(actor.getSnapshot().context.spectrumMusicCommitEpoch, 1);
+    assert.notEqual(actor.getSnapshot().context.spectrumMusicCommitFrame, null);
+
+    actor.send(
+      payloads["spectrum.music_updates.committed"].load({
+        epoch: 1,
+        result: {
+          results: [
+            {
+              input: {
+                alias: "Track A Accepted",
+                url: music.url,
+                targetStartMs: music.start_ms,
+                targetEndMs: music.end_ms,
+                startMs: 8_000,
+                endMs: 112_000,
+              },
+              music: {
+                ...music,
+                alias: "Track A Accepted",
+                start_ms: 8_000,
+                end_ms: 112_000,
+              },
+            },
+          ],
+        },
+      }),
+    );
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, "Track A Accepted");
+    assert.equal(actor.getSnapshot().context.spectrumMusicCommitFrame, null);
+    assert.equal(actor.getSnapshot().context.spectrumMusicCommitNegativeEvidence, null);
+
+    actor.send(
+      payloads["spectrum.music_updates.committed"].load({
+        epoch: 1,
+        result: {
+          results: [
+            {
+              input: {
+                alias: "Late Pollution",
+                url: music.url,
+                targetStartMs: music.start_ms,
+                targetEndMs: music.end_ms,
+                startMs: 16_000,
+                endMs: 100_000,
+              },
+              music: {
+                ...music,
+                alias: "Late Pollution",
+                start_ms: 16_000,
+                end_ms: 100_000,
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, "Track A Accepted");
+    assert.deepEqual(actor.getSnapshot().context.spectrumMusicCommitNegativeEvidence, {
+      epoch: 1,
+      kind: "Stops",
+      phase: "update",
+      reason: "closed-frame",
+    });
+    assert.deepEqual(
+      actor.getSnapshot().context.collections[0]?.musics.map((item) => item.alias),
+      ["Track A Accepted"],
+    );
+  });
+
+  test("closes the spectrum commit frame after same-epoch commit failure", async () => {
+    const music = createMusic();
+    const collection = createCollection([music]);
+
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+          loadSpectrumMusicDrafts: fromPromise<
+            SpectrumMusicDraftBootstrapResult,
+            SpectrumMusicDraftBootstrapInput
+          >(async () => ({
+            source: null,
+            drafts: [
+              {
+                kind: "persisted" as const,
+                baselineName: music.alias,
+                baselineStartMs: music.start_ms,
+                baselineEndMs: music.end_ms,
+                name: music.alias,
+                url: music.url,
+                startMs: music.start_ms,
+                endMs: music.end_ms,
+              },
+            ],
+          })),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 1,
+        session: createStartedPlaybackSession(),
+      }),
+    );
+    await waitForState(actor, "play");
+    actor.send(
+      payloads["player.now_playing_track.changed"].load(createNowPlayingTrackChangedEvent(music)),
+    );
+    actor.send(sig.mainx.openspectrum);
+    await waitForState(actor, "spectrum");
+
+    actor.send(
+      spectrumMusicNameChanged.load({
+        id: "https://example.com/quiet-morning#a|0|120000",
+        name: "Track A Draft",
+      }),
+    );
+    actor.send(sig.mainx.back);
+    assert.notEqual(actor.getSnapshot().context.spectrumMusicCommitFrame, null);
+
+    actor.send(
+      payloads["spectrum.music_commit.failed"].load({
+        epoch: 1,
+        error: "update failed",
+        phase: "update",
+      }),
+    );
+    assert.equal(actor.getSnapshot().context.error, "update failed");
+    assert.equal(actor.getSnapshot().context.spectrumMusicCommitFrame, null);
+    assert.deepEqual(actor.getSnapshot().context.spectrumMusicCommitNegativeEvidence, {
+      epoch: 1,
+      kind: "Reject",
+      phase: "update",
+      reason: "unexpected-evidence",
+    });
+
+    actor.send(
+      payloads["spectrum.music_updates.committed"].load({
+        epoch: 1,
+        result: {
+          results: [
+            {
+              input: {
+                alias: "Late Pollution",
+                url: music.url,
+                targetStartMs: music.start_ms,
+                targetEndMs: music.end_ms,
+                startMs: 8_000,
+                endMs: 112_000,
+              },
+              music: {
+                ...music,
+                alias: "Late Pollution",
+                start_ms: 8_000,
+                end_ms: 112_000,
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, "Track A Draft");
+    assert.deepEqual(actor.getSnapshot().context.spectrumMusicCommitNegativeEvidence, {
+      epoch: 1,
+      kind: "Stops",
+      phase: "update",
+      reason: "closed-frame",
+    });
+    assert.deepEqual(
+      actor.getSnapshot().context.collections[0]?.musics.map((item) => item.alias),
+      ["Track A Draft"],
+    );
   });
 
   test("drops an empty pending spectrum music draft from shallow spectrum context", async () => {
@@ -976,17 +1345,17 @@ describe("appLogic machine", () => {
     actor.start();
     actor.send(sig.mainx.run);
     await waitForState(actor, "ready");
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
+        requestId: 1,
         session: createStartedPlaybackSession(),
       }),
     );
     await waitForState(actor, "play");
     actor.send(
-      payloads["player.now_playing_track.changed"].load(
-        createNowPlayingTrackChangedEvent(music),
-      ),
+      payloads["player.now_playing_track.changed"].load(createNowPlayingTrackChangedEvent(music)),
     );
     actor.send(sig.mainx.openspectrum);
     await waitForState(actor, "spectrum");
@@ -1046,17 +1415,17 @@ describe("appLogic machine", () => {
     actor.start();
     actor.send(sig.mainx.run);
     await waitForState(actor, "ready");
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
     actor.send(
       payloads["playlist.playback.accepted"].load({
         playlistName: "Focus Session",
+        requestId: 1,
         session: createStartedPlaybackSession(),
       }),
     );
     await waitForState(actor, "play");
     actor.send(
-      payloads["player.now_playing_track.changed"].load(
-        createNowPlayingTrackChangedEvent(music),
-      ),
+      payloads["player.now_playing_track.changed"].load(createNowPlayingTrackChangedEvent(music)),
     );
     actor.send(sig.mainx.openspectrum);
     await waitForState(actor, "spectrum");
