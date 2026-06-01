@@ -1,5 +1,5 @@
 use super::model::PlaybackTrackPayload;
-use crate::domain::playlists::model::Exclude;
+use crate::domain::playlists::model::{Exclude, ExcludeAvailability};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri_specta::Event;
@@ -42,6 +42,7 @@ pub struct PlaybackDiagnosticTraceEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
 pub struct PlaybackExcludeCommittedEvent {
     pub exclude: Exclude,
+    pub exclude_availability: ExcludeAvailability,
 }
 
 impl NowPlayingTrackChangedEvent {

@@ -2,6 +2,7 @@
 use super::event::{
     NowPlayingTrackChangedEvent, PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent,
 };
+pub(crate) use super::model::ActivePlaybackRange;
 #[cfg(not(test))]
 use super::model::PlaybackContinuationMode;
 #[cfg(not(test))]
@@ -11,6 +12,12 @@ use super::model::PlaybackTrack;
 use super::strategy::PlaybackQueueMode;
 #[cfg(not(test))]
 use super::strategy::PlaybackStrategySet;
+use super::track_identity_substitution::PlaybackTrackIdentityUpdate;
+#[cfg(not(test))]
+use super::track_identity_substitution::{
+    plan_track_identity_substitution, resolve_active_request_track_identity_update,
+    resolve_identity_update_playback_restart_position,
+};
 #[cfg(not(test))]
 use super::waveform::{self, TrackWaveform, TrackWaveformSummary, TrackWaveformTile};
 #[cfg(not(test))]
@@ -98,12 +105,6 @@ impl std::error::Error for PlaybackStartRequestSuperseded {}
 #[cfg(not(test))]
 pub(crate) fn is_playback_start_request_superseded(error: &anyhow::Error) -> bool {
     error.is::<PlaybackStartRequestSuperseded>()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ActivePlaybackRange {
-    pub(crate) start_ms: u32,
-    pub(crate) end_ms: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -526,16 +527,6 @@ pub(crate) fn current_session_tracks_snapshot() -> Result<Vec<PlaybackTrack>> {
 #[cfg(not(test))]
 pub(crate) fn active_request_track_snapshot() -> Result<Option<PlaybackTrack>> {
     runtime()?.active_request_track_snapshot()
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct PlaybackTrackIdentityUpdate {
-    pub(crate) music_name: String,
-    pub(crate) music_url: String,
-    pub(crate) start_ms: u32,
-    pub(crate) end_ms: u32,
-    pub(crate) next_start_ms: u32,
-    pub(crate) next_end_ms: u32,
 }
 
 #[cfg(not(test))]
@@ -1674,38 +1665,36 @@ impl PlayerRuntime {
                 .tracks
                 .write()
                 .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))?;
-            let Some(next_tracks) = resolve_session_track_identity_update(&current_tracks, update)
-            else {
+            let active_request_track = self.active_request_track_snapshot()?;
+            let active_playback_range = self.active_playback_range_snapshot()?;
+            let Some(substitution) = plan_track_identity_substitution(
+                &current_tracks,
+                active_request_track.as_ref(),
+                active_playback_range,
+                update,
+            ) else {
                 return Ok(false);
             };
 
-            let previous_tracks = current_tracks.clone();
-            let next_current_track = resolve_active_request_track_identity_update(
-                self.active_request_track_snapshot()?.as_ref(),
-                update,
-            );
-            let active_playback_range = self.active_playback_range_snapshot()?;
-            let next_active_playback_range =
-                resolve_active_playback_range_identity_update(active_playback_range, update);
             let reconciled = {
                 let mut strategy = active
                     .strategy
                     .lock()
                     .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?;
                 strategy.reconcile_current_track_identity(
-                    &previous_tracks,
-                    &next_tracks,
-                    next_current_track.as_ref(),
+                    &substitution.previous_tracks,
+                    &substitution.next_tracks,
+                    substitution.next_active_request_track.as_ref(),
                 )
             };
-            *current_tracks = next_tracks;
+            *current_tracks = substitution.next_tracks;
             if let Some(track) = reconciled.as_ref() {
                 self.set_active_request_track(track.clone())?;
             }
-            if next_current_track.is_some() && active_playback_range.is_some() {
-                self.set_active_playback_range(next_active_playback_range)?;
+            if substitution.should_sync_active_playback_range {
+                self.set_active_playback_range(substitution.next_active_playback_range)?;
             }
-            if next_current_track.is_some() {
+            if substitution.should_clear_spectrum_playback_loop_signal {
                 self.clear_spectrum_playback_loop_signal()?;
             }
             reconciled.map(|track| (active.session_generation, track))
@@ -2285,35 +2274,6 @@ pub(crate) fn are_playback_tracks_equal(left: &PlaybackTrack, right: &PlaybackTr
         && left.end_ms == right.end_ms
 }
 
-pub(crate) fn resolve_session_track_identity_update(
-    tracks: &[PlaybackTrack],
-    update: &PlaybackTrackIdentityUpdate,
-) -> Option<Vec<PlaybackTrack>> {
-    let mut changed = false;
-    let next_tracks = tracks
-        .iter()
-        .map(|track| {
-            if track.music_url != update.music_url
-                || track.start_ms != update.start_ms
-                || track.end_ms != update.end_ms
-            {
-                return track.clone();
-            }
-
-            let mut next = track.clone();
-            next.music_name = update.music_name.clone();
-            next.start_ms = update.next_start_ms;
-            next.end_ms = update.next_end_ms;
-            sync_playback_track_source_music(&mut next);
-            changed = changed
-                || !playback_tracks_match(std::slice::from_ref(track), std::slice::from_ref(&next));
-            next
-        })
-        .collect::<Vec<_>>();
-
-    changed.then_some(next_tracks)
-}
-
 pub(crate) fn resolve_playback_status_track_identity(
     status_path: Option<&str>,
     active_request_track: Option<&PlaybackTrack>,
@@ -2322,27 +2282,6 @@ pub(crate) fn resolve_playback_status_track_identity(
     let status_path = status_path?;
 
     (std::path::Path::new(status_path) == track.file_path).then(|| track.clone())
-}
-
-pub(crate) fn resolve_active_request_track_identity_update(
-    active_request_track: Option<&PlaybackTrack>,
-    update: &PlaybackTrackIdentityUpdate,
-) -> Option<PlaybackTrack> {
-    let track = active_request_track?;
-
-    if track.music_url != update.music_url
-        || track.start_ms != update.start_ms
-        || track.end_ms != update.end_ms
-    {
-        return None;
-    }
-
-    let mut next = track.clone();
-    next.music_name = update.music_name.clone();
-    next.start_ms = update.next_start_ms;
-    next.end_ms = update.next_end_ms;
-    sync_playback_track_source_music(&mut next);
-    Some(next)
 }
 
 pub(crate) fn resolve_session_track_liked_update(
@@ -2394,38 +2333,6 @@ fn sync_playback_track_source_music(track: &mut PlaybackTrack) {
     music.start_ms = track.start_ms;
     music.end_ms = track.end_ms;
     music.liked = track.liked;
-}
-
-pub(crate) fn resolve_active_playback_range_identity_update(
-    active_range: Option<ActivePlaybackRange>,
-    update: &PlaybackTrackIdentityUpdate,
-) -> Option<ActivePlaybackRange> {
-    let range = active_range?;
-    if update.next_start_ms >= update.next_end_ms {
-        return None;
-    }
-
-    if range.start_ms == update.start_ms && range.end_ms == update.end_ms {
-        return Some(ActivePlaybackRange {
-            start_ms: update.next_start_ms,
-            end_ms: update.next_end_ms,
-        });
-    }
-
-    Some(ActivePlaybackRange {
-        start_ms: range
-            .start_ms
-            .clamp(update.next_start_ms, update.next_end_ms.saturating_sub(1)),
-        end_ms: update.next_end_ms,
-    })
-}
-
-pub(crate) fn resolve_identity_update_playback_restart_position(
-    current_position_ms: u32,
-    next_track: &PlaybackTrack,
-) -> Option<u32> {
-    resolve_spectrum_music_playback_range(next_track, Some(current_position_ms))
-        .map(resolve_playback_request_position)
 }
 
 #[cfg(not(test))]

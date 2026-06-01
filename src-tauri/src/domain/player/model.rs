@@ -66,6 +66,12 @@ pub struct PlaybackStatusPayload {
     pub playback_end_ms: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActivePlaybackRange {
+    pub(crate) start_ms: u32,
+    pub(crate) end_ms: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct PlaybackTrack {
     pub playlist_name: String,
