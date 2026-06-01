@@ -70,6 +70,13 @@ mod domain {
             ));
         }
 
+        pub mod planning {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/downloads/planning.rs"
+            ));
+        }
+
         pub mod service {
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),

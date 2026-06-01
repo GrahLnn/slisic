@@ -1,17 +1,20 @@
 use super::model::CollectionSourceKind;
 use super::naming::{provider_segment, sanitize_path_component};
+use super::planning::{
+    expand_root_entries_to_planned_leafs, probe_root_with_limit, residual_collection_plan,
+    resolve_collection_plan, resolve_collection_plan_with_root_probe,
+    resolve_task_collection_folder, root_probe_parallelism, should_reprobe_single_leaf,
+};
 use super::repo::{list_tasks, save_task};
 use super::service::{
     CompletedLeafDownload, LeafDownloadRetryPolicy, LeafDownloadWindow, LeafPipelineStage,
-    discard_materialized_planned_leaves, expand_root_entries_to_planned_leafs,
-    handle_finished_leaf_download, is_retryable_leaf_download_error, leaf_download_parallelism,
-    leaf_pipeline_has_work, leaf_pipeline_next_stage, prepare_task_enqueue, probe_root_with_limit,
-    provisional_collection_for_task, residual_collection_plan, resolve_collection_plan,
-    resolve_collection_plan_with_root_probe, resolve_pasted_download_url,
-    resolve_residual_temp_downloaded_file, resolve_task_collection_folder, resume_download_task,
-    root_probe_parallelism, should_interrupt_unresumable_active_task_after_restart,
-    should_recover_download_task_after_restart, should_reprobe_single_leaf,
-    should_resume_download_task_after_restart, try_claim_enqueue_url,
+    discard_materialized_planned_leaves, handle_finished_leaf_download,
+    is_retryable_leaf_download_error, leaf_download_parallelism, leaf_pipeline_has_work,
+    leaf_pipeline_next_stage, prepare_task_enqueue, resolve_pasted_download_url,
+    resolve_residual_temp_downloaded_file, resume_download_task,
+    should_interrupt_unresumable_active_task_after_restart,
+    should_recover_download_task_after_restart, should_resume_download_task_after_restart,
+    try_claim_enqueue_url,
 };
 use super::yt_dlp::{
     DownloadProgress, DownloadedLeaf, LeafChapter, LeafProbe, LeafReference, PlaylistRoot,
@@ -1680,23 +1683,45 @@ fn resolve_collection_plan_rejects_empty_lists() {
 }
 
 #[test]
-fn provisional_collection_for_manual_enqueue_does_not_claim_task_identity() {
-    let task = DownloadTask::new(
-        "task-provisional",
-        "https://www.youtube.com/playlist?list=PLpending",
-        DownloadTrigger::Manual,
-    );
+fn collection_plan_for_youtube_watch_url_uses_probe_title_not_url_fallback_identity() {
+    let _guard = acquire_db_test_lock();
 
-    let collection = provisional_collection_for_task(&task);
+    run_async(async {
+        ensure_db().await;
 
-    assert_eq!(collection.url, task.url);
-    assert_eq!(collection.name, "YouTube playlist PLpending");
-    assert_eq!(collection.folder, "youtube/YouTube playlist PLpending");
-    assert_eq!(collection.enable_updates, Some(false));
-    assert!(task.collection_url.is_none());
-    assert!(task.collection_name.is_none());
-    assert!(task.collection_folder.is_none());
-    assert!(task.source_kind.is_none());
+        let url = "https://www.youtube.com/watch?v=nnvjKf_mRYM";
+        let task = DownloadTask::new("task-youtube-title", url, DownloadTrigger::Manual);
+        let client = Arc::new(FakeYtDlpClient::with_roots(HashMap::from([(
+            url.to_string(),
+            RootProbe::Single(LeafProbe {
+                title:
+                    "[Official] TUNIC (Original Soundtrack) - Full Album / Lifeformed × Janice Kwan"
+                        .to_string(),
+                webpage_url: url.to_string(),
+                extractor_key: Some("Youtube".to_string()),
+                album: None,
+                duration_seconds: Some(7_200),
+                chapters: vec![],
+            }),
+        )])));
+
+        let plan = resolve_collection_plan(&task, client)
+            .await
+            .expect("probe title should define the collection identity");
+
+        assert_eq!(
+            plan.collection_name,
+            "[Official] TUNIC (Original Soundtrack) - Full Album / Lifeformed × Janice Kwan"
+        );
+        assert_eq!(
+            plan.collection_folder,
+            "youtube/[Official] TUNIC (Original Soundtrack) - Full Album - Lifeformed × Janice Kwan"
+        );
+        assert_ne!(plan.collection_name, "YouTube video nnvjKf_mRYM");
+        assert_ne!(plan.collection_folder, "youtube/YouTube video nnvjKf_mRYM");
+
+        reset_db();
+    });
 }
 
 #[test]

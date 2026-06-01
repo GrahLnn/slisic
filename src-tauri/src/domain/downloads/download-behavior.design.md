@@ -16,6 +16,8 @@ collection and its manifest.
 - `yt_dlp`: owns external probing and audio artifact creation.
 - `collection_import`: owns collection identity, final file paths, music rows,
   manifests, and file moves from temporary to stable paths.
+- `downloads::planning`: owns URL normalization, root probe admission,
+  collection plan projection, residual task plan projection, and leaf identity.
 - `downloads::service`: owns task lifecycle, leaf scheduling, retry policy,
   recovery decisions, and terminal task status.
 - `LeafPipelineState`: owns worker composition, ready queues, active counters,
@@ -106,13 +108,13 @@ collection and its manifest.
 
 `RawUrl -> NormalizedUrl`
 
-- Owner: `downloads::service::normalize_url`.
+- Owner: `downloads::planning::normalize_url`.
 - Total: no.
 - Failure: explicit URL parse or unsupported-scheme error.
 
 `RootProbe -> CollectionSyncPlan`
 
-- Owner: `downloads::service::resolve_collection_plan`.
+- Owner: `downloads::planning::resolve_collection_plan`.
 - Total: no.
 - Failure: probe failure, empty downloadable list, or unsupported nested depth.
 - Projection: one successful playlist root probe must provide collection title,
@@ -120,7 +122,7 @@ collection and its manifest.
 
 `ResidualDownloadTask -> CollectionSyncPlan`
 
-- Owner: `downloads::service::residual_collection_plan`.
+- Owner: `downloads::planning::residual_collection_plan`.
 - Total: no.
 - Failure: missing collection identity or collection folder on a residual task.
 - Eliminates: root probe and manifest-to-completed-leaf reconstruction during
