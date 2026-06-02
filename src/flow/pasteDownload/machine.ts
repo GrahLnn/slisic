@@ -3,6 +3,7 @@ import { draftCollectionUpserted, send as sendAppLogic } from "../appLogic/runti
 import {
   appendCandidateItem,
   acceptCandidateDownloadTask,
+  acceptCandidateRootTitleEvidence,
   applyDownloadTaskChangeSignal,
   applyCandidateUrlResolution,
   createCandidateItemId,
@@ -27,6 +28,8 @@ const candidateResolveCompleted = payloads["candidate.resolve.completed"];
 const candidateResolveFailed = payloads["candidate.resolve.failed"];
 const candidateEnqueueCompleted = payloads["candidate.enqueue.completed"];
 const candidateEnqueueFailed = payloads["candidate.enqueue.failed"];
+const candidateTitleCompleted = payloads["candidate.title.completed"];
+const candidateTitleFailed = payloads["candidate.title.failed"];
 const downloadTaskChanged = payloads["download.task.changed"];
 const candidateTaskCollectionLoaded = payloads["candidate.task.collection.loaded"];
 const candidateTaskCollectionFailed = payloads["candidate.task.collection.failed"];
@@ -98,6 +101,20 @@ export const machine = src.createMachine({
           }
 
           void deps
+            .probeDownloadRootTitle(item.sourceUrl)
+            .then((evidence) => {
+              self.send(candidateTitleCompleted.load({ id: event.output.id, evidence }));
+            })
+            .catch((error) => {
+              self.send(
+                candidateTitleFailed.load({
+                  id: event.output.id,
+                  error: toErrorMessage(error),
+                }),
+              );
+            });
+
+          void deps
             .enqueueCollectionDownload(item.sourceUrl)
             .then((result) => {
               self.send(candidateEnqueueCompleted.load({ id: event.output.id, result }));
@@ -118,6 +135,23 @@ export const machine = src.createMachine({
         failCandidateItem(context, event.output.id, event.output.error),
       ),
     },
+    [candidateTitleCompleted.evt]: {
+      actions: [
+        ({ context, event }) => {
+          if (!hasCandidateItem(context, event.output.id)) {
+            return;
+          }
+
+          sendAppLogic(
+            draftCollectionUpserted.load(event.output.evidence.collection),
+          );
+        },
+        assign(({ context, event }) =>
+          acceptCandidateRootTitleEvidence(context, event.output.id, event.output.evidence),
+        ),
+      ],
+    },
+    [candidateTitleFailed.evt]: {},
     [candidateEnqueueCompleted.evt]: {
       actions: [
         ({ context, event }) => {
@@ -137,6 +171,8 @@ export const machine = src.createMachine({
         ({ context, event, self }) => {
           if (
             !event.output.collection_url ||
+            (event.output.status !== "completed" &&
+              event.output.status !== "completed_with_errors") ||
             !context.items.some((item) => item.taskId === event.output.task_id)
           ) {
             return;

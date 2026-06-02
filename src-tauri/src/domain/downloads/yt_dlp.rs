@@ -28,7 +28,6 @@ pub struct PlaylistRoot {
     pub entries: Vec<LeafReference>,
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootShellProbe {
     pub source_kind: CollectionSourceKind,
@@ -84,7 +83,6 @@ pub struct DownloadProgress {
 }
 
 pub trait YtDlpClient: Send + Sync {
-    #[cfg(test)]
     fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe>;
     fn probe_root(&self, url: &str) -> Result<RootProbe>;
     fn probe_leaf(&self, url: &str) -> Result<LeafProbe>;
@@ -152,7 +150,6 @@ impl CliYtDlpClient {
 }
 
 impl YtDlpClient for CliYtDlpClient {
-    #[cfg(test)]
     fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe> {
         match classify_root_preference(url) {
             CollectionSourceKind::Single => self.probe_leaf(url).map(root_shell_from_leaf_probe),
@@ -263,17 +260,17 @@ impl YtDlpClient for CliYtDlpClient {
                 .context("yt-dlp completed but final audio path could not be resolved")?;
         let duration_ms = probe_downloaded_audio_duration_ms(&self.ffmpeg_path(), &absolute_path)
             .with_context(|| {
-            format!(
-                "failed to read downloaded audio duration from {}",
-                absolute_path.display()
-            )
-        })?
-        .with_context(|| {
-            format!(
-                "downloaded audio file has no playable audio stream: {}",
-                absolute_path.display()
-            )
-        })?;
+                format!(
+                    "failed to read downloaded audio duration from {}",
+                    absolute_path.display()
+                )
+            })?
+            .with_context(|| {
+                format!(
+                    "downloaded audio file has no playable audio stream: {}",
+                    absolute_path.display()
+                )
+            })?;
         eprintln!(
             "[downloads:yt-dlp] resolved audio url={} path={}",
             url,
@@ -338,7 +335,6 @@ pub(crate) fn build_root_playlist_probe_args(url: &str) -> Vec<String> {
     args
 }
 
-#[cfg(test)]
 pub(crate) fn build_root_playlist_shell_probe_args(url: &str) -> Vec<String> {
     let mut args = build_root_playlist_base_probe_args(url);
     args.splice(3..3, ["--playlist-items".to_string(), "0".to_string()]);
@@ -408,7 +404,6 @@ pub fn looks_like_direct_leaf_url(url: &str) -> bool {
     false
 }
 
-#[cfg(test)]
 pub fn parse_root_shell_probe(value: Value, input_url: &str) -> Result<RootShellProbe> {
     let is_playlist = value
         .get("_type")
@@ -434,7 +429,6 @@ pub fn parse_root_shell_probe(value: Value, input_url: &str) -> Result<RootShell
     })
 }
 
-#[cfg(test)]
 fn root_shell_from_leaf_probe(leaf: LeafProbe) -> RootShellProbe {
     RootShellProbe {
         source_kind: CollectionSourceKind::Single,

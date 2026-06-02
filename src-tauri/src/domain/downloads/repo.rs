@@ -4,8 +4,8 @@ use appdb::Crud;
 use appdb::connection::get_db;
 use appdb::error::{DBError, classify_db_error};
 use appdb::model::meta::ModelMeta;
-use surrealdb::types::{RecordId, Table};
 use std::time::Duration;
+use surrealdb::types::{RecordId, Table};
 
 const SAVE_TASK_RETRY_ATTEMPTS: usize = 6;
 

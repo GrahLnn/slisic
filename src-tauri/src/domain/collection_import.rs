@@ -309,6 +309,16 @@ pub(crate) async fn persist_download_collection_shell_from_task(
     Ok(Some(collection))
 }
 
+pub(crate) async fn persist_prepared_collection_shell(
+    plan: CollectionShellPlan,
+) -> Result<Collection> {
+    let existing = collection_repo::get_collection_by_url(&plan.collection_url).await?;
+    Ok(
+        collection_repo::upsert_collection(&create_collection_shell_from_plan(&plan, existing))
+            .await?,
+    )
+}
+
 pub(crate) async fn persist_enqueued_collection_plan(
     mut task: DownloadTask,
     plan: &CollectionSyncPlan,

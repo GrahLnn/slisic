@@ -3,8 +3,8 @@ use anyhow::Result;
 use appdb::error::{DBError, classify_db_error};
 use appdb::model::meta::ModelMeta;
 use appdb::repository::Repo;
-use surrealdb::types::RecordId;
 use std::time::Duration;
+use surrealdb::types::RecordId;
 
 const META_INFO_RECORD_KEY: &str = "singleton";
 const ENSURE_META_INFO_RETRY_ATTEMPTS: usize = 6;

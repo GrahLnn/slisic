@@ -1,4 +1,7 @@
-use super::model::{DownloadTask, EnqueuedCollectionDownload, PastedDownloadUrlResolution};
+use super::model::{
+    DownloadRootTitleEvidence, DownloadTask, EnqueuedCollectionDownload,
+    PastedDownloadUrlResolution,
+};
 
 #[tauri::command]
 #[specta::specta]
@@ -16,6 +19,14 @@ pub async fn resolve_pasted_download_url(
     url: String,
 ) -> Result<PastedDownloadUrlResolution, String> {
     super::service::resolve_pasted_download_url(url)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn probe_download_root_title(url: String) -> Result<DownloadRootTitleEvidence, String> {
+    super::service::probe_download_root_title(url)
         .await
         .map_err(|error| error.to_string())
 }

@@ -10,10 +10,10 @@ use super::service::{
     CompletedLeafDownload, LeafDownloadRetryPolicy, LeafDownloadWindow, LeafPipelineStage,
     accept_collection_download_for_test, accept_collection_download_with_root_shell_for_test,
     apply_completed_audio_duration_evidence, attach_root_shell_to_task,
-    discard_materialized_planned_leaves, handle_finished_leaf_download, is_retryable_leaf_download_error,
-    leaf_download_parallelism, leaf_pipeline_has_work, leaf_pipeline_next_stage,
-    prepare_task_enqueue, resolve_pasted_download_url, resolve_residual_temp_downloaded_file,
-    resume_download_task,
+    discard_materialized_planned_leaves, handle_finished_leaf_download,
+    is_retryable_leaf_download_error, leaf_download_parallelism, leaf_pipeline_has_work,
+    leaf_pipeline_next_stage, prepare_task_enqueue, probe_download_root_title_with_client,
+    resolve_pasted_download_url, resolve_residual_temp_downloaded_file, resume_download_task,
     should_interrupt_unresumable_active_task_after_restart,
     should_recover_download_task_after_restart, should_resume_download_task_after_restart,
     try_claim_enqueue_url,
@@ -1141,7 +1141,9 @@ impl CountingRootProbeClient {
 
 impl YtDlpClient for CountingRootProbeClient {
     fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe> {
-        Err(anyhow!("unexpected counting probe_root_shell call for {url}"))
+        Err(anyhow!(
+            "unexpected counting probe_root_shell call for {url}"
+        ))
     }
 
     fn probe_root(&self, url: &str) -> Result<RootProbe> {
@@ -2523,14 +2525,13 @@ fn accepted_root_shell_download_returns_collection_evidence_for_draft_commit() {
             },
         )])));
 
-        let accepted =
-            accept_collection_download_with_root_shell_for_test(
-                url.to_string(),
-                DownloadTrigger::Manual,
-                client,
-            )
-            .await
-            .expect("accepted root shell should return collection evidence");
+        let accepted = accept_collection_download_with_root_shell_for_test(
+            url.to_string(),
+            DownloadTrigger::Manual,
+            client,
+        )
+        .await
+        .expect("accepted root shell should return collection evidence");
         let collection = accepted
             .collection
             .expect("root shell evidence should be a committable collection shell");
@@ -2552,6 +2553,139 @@ fn accepted_root_shell_download_returns_collection_evidence_for_draft_commit() {
 }
 
 #[test]
+fn probe_download_root_title_returns_prepared_collection_shell_evidence() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let url = "https://www.youtube.com/playlist?list=PLtitle";
+        let client = Arc::new(FakeYtDlpClient::with_shells(HashMap::from([(
+            url.to_string(),
+            RootShellProbe {
+                source_kind: CollectionSourceKind::List,
+                title: "Root Title Only".to_string(),
+                webpage_url: url.to_string(),
+                extractor_key: Some("YoutubeTab".to_string()),
+            },
+        )])));
+
+        let evidence = probe_download_root_title_with_client(url.to_string(), client)
+            .await
+            .expect("root title evidence should resolve");
+        let tasks = list_tasks().await.expect("task listing should succeed");
+        let collection = crate::domain::collection_import::get_collection_by_url(url)
+            .await
+            .expect("collection lookup should succeed")
+            .expect("title evidence should prepare a committable collection shell");
+
+        assert_eq!(evidence.url, url);
+        assert_eq!(evidence.title, "Root Title Only");
+        assert_eq!(evidence.folder, "youtube/root-title-only");
+        assert_eq!(evidence.enable_updates, Some(false));
+        assert_eq!(evidence.source_kind, CollectionSourceKind::List);
+        assert!(tasks.is_empty());
+        assert_eq!(evidence.collection.url, url);
+        assert_eq!(evidence.collection.name, "Root Title Only");
+        assert_eq!(evidence.collection.folder, "youtube/root-title-only");
+        assert_eq!(evidence.collection.enable_updates, Some(false));
+        assert!(evidence.collection.musics.is_empty());
+        assert_eq!(collection.url, evidence.collection.url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn probe_download_root_title_attaches_scope_to_existing_active_task() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let url = "https://www.youtube.com/playlist?list=PLtitle";
+        let accepted = prepare_task_enqueue(url.to_string(), DownloadTrigger::Manual)
+            .await
+            .expect("download task should be accepted before title evidence");
+        assert_eq!(accepted.collection_url, None);
+
+        let client = Arc::new(FakeYtDlpClient::with_shells(HashMap::from([(
+            url.to_string(),
+            RootShellProbe {
+                source_kind: CollectionSourceKind::List,
+                title: "Root Title Only".to_string(),
+                webpage_url: url.to_string(),
+                extractor_key: Some("YoutubeTab".to_string()),
+            },
+        )])));
+
+        probe_download_root_title_with_client(url.to_string(), client)
+            .await
+            .expect("root title evidence should resolve");
+
+        let tasks = list_tasks().await.expect("task listing should succeed");
+        let task = tasks
+            .iter()
+            .find(|task| task.id == accepted.id)
+            .expect("original task should remain active");
+        assert_eq!(task.collection_url.as_deref(), Some(url));
+        assert_eq!(task.collection_name.as_deref(), Some("Root Title Only"));
+        assert_eq!(
+            task.collection_folder.as_deref(),
+            Some("youtube/root-title-only")
+        );
+        assert_eq!(task.source_kind, Some(CollectionSourceKind::List));
+        assert_eq!(task.status, DownloadTaskStatus::Queued);
+        assert!(task.leafs.is_empty());
+
+        reset_db();
+    });
+}
+
+#[test]
+fn prepare_task_enqueue_uses_prepared_shell_as_pending_playback_scope() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let url = "https://www.youtube.com/playlist?list=PLtitle";
+        let client = Arc::new(FakeYtDlpClient::with_shells(HashMap::from([(
+            url.to_string(),
+            RootShellProbe {
+                source_kind: CollectionSourceKind::List,
+                title: "Root Title Only".to_string(),
+                webpage_url: url.to_string(),
+                extractor_key: Some("YoutubeTab".to_string()),
+            },
+        )])));
+
+        probe_download_root_title_with_client(url.to_string(), client)
+            .await
+            .expect("root title evidence should prepare the collection shell");
+
+        let task = prepare_task_enqueue(url.to_string(), DownloadTrigger::Manual)
+            .await
+            .expect("download task should reuse prepared shell scope");
+        let tasks = list_tasks().await.expect("task listing should succeed");
+
+        assert_eq!(task.collection_url.as_deref(), Some(url));
+        assert_eq!(task.collection_name.as_deref(), Some("Root Title Only"));
+        assert_eq!(
+            task.collection_folder.as_deref(),
+            Some("youtube/root-title-only")
+        );
+        assert_eq!(task.source_kind, Some(CollectionSourceKind::List));
+        assert_eq!(task.status, DownloadTaskStatus::Queued);
+        assert!(task.leafs.is_empty());
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].collection_url.as_deref(), Some(url));
+
+        reset_db();
+    });
+}
+
+#[test]
 fn attach_root_shell_to_task_publishes_title_without_expanding_playlist_entries() {
     let _guard = acquire_db_test_lock();
 
@@ -2559,9 +2693,13 @@ fn attach_root_shell_to_task_publishes_title_without_expanding_playlist_entries(
         ensure_db().await;
 
         let url = "https://www.youtube.com/@Epicmountainmusic/playlists";
-        let task = save_task(DownloadTask::new("task-shell", url, DownloadTrigger::Manual))
-            .await
-            .expect("task should save before shell attachment");
+        let task = save_task(DownloadTask::new(
+            "task-shell",
+            url,
+            DownloadTrigger::Manual,
+        ))
+        .await
+        .expect("task should save before shell attachment");
         let client = Arc::new(FakeYtDlpClient::with_shells(HashMap::from([(
             url.to_string(),
             RootShellProbe {

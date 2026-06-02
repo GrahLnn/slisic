@@ -1,5 +1,10 @@
 import { type as arkType } from "arktype";
-import type { DownloadTask, DownloadTaskChangeSignal, PastedDownloadUrlResolution } from "@/src/cmd";
+import type {
+  DownloadRootTitleEvidence,
+  DownloadTask,
+  DownloadTaskChangeSignal,
+  PastedDownloadUrlResolution,
+} from "@/src/cmd";
 
 const downloadUrlText = arkType("string.url");
 const singleDownloadUrlText = arkType("string").narrow(
@@ -235,11 +240,24 @@ export function acceptCandidateDownloadTask(
 ): Context {
   return updateCandidateItem(context, id, (item) => ({
     ...item,
-    sourceUrl: task.url,
+    sourceUrl: task.collection_url ?? item.sourceUrl ?? task.url,
     displayText: task.collection_name ?? item.displayText,
     status: "preparing",
     error: null,
     taskId: downloadTaskIdText(task),
+  }));
+}
+
+export function acceptCandidateRootTitleEvidence(
+  context: Context,
+  id: string,
+  evidence: DownloadRootTitleEvidence,
+): Context {
+  return updateCandidateItem(context, id, (item) => ({
+    ...item,
+    sourceUrl: evidence.url,
+    displayText: evidence.title,
+    error: null,
   }));
 }
 

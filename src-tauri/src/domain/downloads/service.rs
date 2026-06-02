@@ -1,11 +1,11 @@
 #[cfg(not(test))]
 use super::model::DownloadLeafGroupContext;
 use super::model::{
-    CollectionSourceKind, DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus,
-    DownloadTrigger, EnqueuedCollectionDownload, PastedDownloadUrlResolution,
+    CollectionSourceKind, DownloadLeaf, DownloadLeafStatus, DownloadRootTitleEvidence,
+    DownloadTask, DownloadTaskStatus, DownloadTrigger, EnqueuedCollectionDownload,
+    PastedDownloadUrlResolution,
 };
 use super::naming::{sanitize_path_component, short_hash};
-#[cfg(test)]
 use super::planning::probe_root_shell_with_limit;
 use super::planning::{normalize_url, parse_download_url, task_id_for};
 #[cfg(not(test))]
@@ -15,8 +15,11 @@ use super::repo;
 use super::yt_dlp::CliYtDlpClient;
 #[cfg(not(test))]
 use super::yt_dlp::probe_downloaded_audio_duration_ms;
-use super::yt_dlp::{DownloadProgress, LeafProbe, RootProbe, YtDlpClient};
+use super::yt_dlp::{
+    DownloadProgress, LeafProbe, RootProbe, YtDlpClient, classify_root_preference,
+};
 use crate::domain::collection_import;
+use crate::domain::collection_import::CollectionShellPlan;
 #[cfg(not(test))]
 use crate::domain::collection_import::{CollectionSyncPlan, PlannedLeaf};
 #[cfg(not(test))]
@@ -523,6 +526,52 @@ pub async fn resolve_pasted_download_url(url: String) -> Result<PastedDownloadUr
     collection_import::resolve_pasted_download_url(normalized_url).await
 }
 
+pub async fn probe_download_root_title(url: String) -> Result<DownloadRootTitleEvidence> {
+    let parsed_url = parse_download_url(&url).map_err(anyhow::Error::msg)?;
+    let normalized_url = normalize_url(&parsed_url)?;
+    probe_download_root_title_with_client(normalized_url, resolve_title_probe_client()?).await
+}
+
+pub(crate) async fn probe_download_root_title_with_client(
+    url: String,
+    client: Arc<dyn YtDlpClient>,
+) -> Result<DownloadRootTitleEvidence> {
+    let requested_url = url.clone();
+    let shell = probe_root_shell_with_limit(client, url).await?;
+    let existing = collection_import::get_collection_by_url(&shell.webpage_url).await?;
+    let folder = collection_import::resolve_collection_folder(
+        &shell.webpage_url,
+        &shell.title,
+        existing.as_ref(),
+    )
+    .await?;
+    let enable_updates = existing
+        .as_ref()
+        .and_then(|collection| collection.enable_updates)
+        .or_else(|| (shell.source_kind == CollectionSourceKind::List).then_some(false));
+    let plan = CollectionShellPlan {
+        source_kind: shell.source_kind,
+        collection_name: shell.title.clone(),
+        collection_url: shell.webpage_url.clone(),
+        collection_folder: folder.clone(),
+        enable_updates,
+    };
+    let collection = collection_import::persist_prepared_collection_shell(plan.clone()).await?;
+    attach_prepared_collection_shell_to_active_task(&requested_url, &plan).await?;
+    if requested_url != plan.collection_url {
+        attach_prepared_collection_shell_to_active_task(&plan.collection_url, &plan).await?;
+    }
+
+    Ok(DownloadRootTitleEvidence {
+        url: shell.webpage_url,
+        title: shell.title,
+        folder,
+        enable_updates,
+        source_kind: shell.source_kind,
+        collection,
+    })
+}
+
 #[cfg(not(test))]
 async fn enqueue_collection_download_with_trigger(
     url: String,
@@ -634,7 +683,9 @@ async fn prepare_task_enqueue_outcome(
 
     loop {
         if let Some(existing) = repo::find_latest_active_task_for_url(&normalized_url).await? {
-            return Ok(PreparedTaskEnqueue::Existing(existing));
+            return Ok(PreparedTaskEnqueue::Existing(
+                attach_existing_collection_shell_to_task(existing).await?,
+            ));
         }
 
         let Some(_claim) = try_claim_enqueue_url(&normalized_url)? else {
@@ -643,17 +694,87 @@ async fn prepare_task_enqueue_outcome(
         };
 
         if let Some(existing) = repo::find_latest_active_task_for_url(&normalized_url).await? {
-            return Ok(PreparedTaskEnqueue::Existing(existing));
+            return Ok(PreparedTaskEnqueue::Existing(
+                attach_existing_collection_shell_to_task(existing).await?,
+            ));
         }
 
-        return repo::save_task(DownloadTask::new(
+        let mut task = DownloadTask::new(
             task_id_for(&normalized_url, trigger),
-            normalized_url,
+            normalized_url.clone(),
             trigger,
-        ))
-        .await
-        .map(PreparedTaskEnqueue::New);
+        );
+        apply_existing_collection_shell_to_task(&mut task).await?;
+
+        return repo::save_task(task).await.map(PreparedTaskEnqueue::New);
     }
+}
+
+async fn attach_existing_collection_shell_to_task(mut task: DownloadTask) -> Result<DownloadTask> {
+    if !apply_existing_collection_shell_to_task(&mut task).await? {
+        return Ok(task);
+    }
+
+    task.touch();
+    let saved = repo::save_task(task).await?;
+    publish_download_task_change(&saved);
+    Ok(saved)
+}
+
+async fn apply_existing_collection_shell_to_task(task: &mut DownloadTask) -> Result<bool> {
+    if task.collection_url.is_some()
+        && task.collection_name.is_some()
+        && task.collection_folder.is_some()
+        && task.source_kind.is_some()
+    {
+        return Ok(false);
+    }
+
+    let Some(plan) = prepared_collection_shell_plan_for_url(&task.url).await? else {
+        return Ok(false);
+    };
+
+    collection_import::apply_collection_shell_plan_to_task(task, &plan);
+    task.last_error = None;
+    Ok(true)
+}
+
+async fn prepared_collection_shell_plan_for_url(url: &str) -> Result<Option<CollectionShellPlan>> {
+    let Some(collection) = collection_import::get_collection_by_url(url).await? else {
+        return Ok(None);
+    };
+
+    Ok(Some(CollectionShellPlan {
+        source_kind: classify_root_preference(&collection.url),
+        collection_name: collection.name,
+        collection_url: collection.url,
+        collection_folder: collection.folder,
+        enable_updates: collection.enable_updates,
+    }))
+}
+
+async fn attach_prepared_collection_shell_to_active_task(
+    task_url: &str,
+    plan: &CollectionShellPlan,
+) -> Result<()> {
+    let Some(mut task) = repo::find_latest_active_task_for_url(task_url).await? else {
+        return Ok(());
+    };
+
+    if task.collection_url.as_deref() == Some(plan.collection_url.as_str())
+        && task.collection_name.as_deref() == Some(plan.collection_name.as_str())
+        && task.collection_folder.as_deref() == Some(plan.collection_folder.as_str())
+        && task.source_kind == Some(plan.source_kind)
+    {
+        return Ok(());
+    }
+
+    collection_import::apply_collection_shell_plan_to_task(&mut task, plan);
+    task.last_error = None;
+    task.touch();
+    let saved = repo::save_task(task).await?;
+    publish_download_task_change(&saved);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2038,6 +2159,24 @@ fn runtime() -> Result<&'static DownloadRuntime> {
     DOWNLOAD_RUNTIME
         .get()
         .context("download runtime has not been initialized")
+}
+
+#[cfg(not(test))]
+fn resolve_title_probe_client() -> Result<Arc<dyn YtDlpClient>> {
+    let app = &runtime()?.app;
+    let ytdlp_path =
+        ensure_managed_binary(app, ManagedBinary::YtDlp).map_err(|error| anyhow!(error))?;
+    let ffmpeg_dir = ytdlp_path
+        .parent()
+        .map(Path::to_path_buf)
+        .context("managed yt-dlp path has no parent directory")?;
+
+    Ok(Arc::new(CliYtDlpClient::new(ytdlp_path, ffmpeg_dir)))
+}
+
+#[cfg(test)]
+fn resolve_title_probe_client() -> Result<Arc<dyn YtDlpClient>> {
+    bail!("test callers must inject a root title probe client")
 }
 
 #[cfg(not(test))]

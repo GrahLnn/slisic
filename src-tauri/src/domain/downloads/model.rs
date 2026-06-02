@@ -219,6 +219,16 @@ impl PastedDownloadUrlResolution {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct DownloadRootTitleEvidence {
+    pub url: String,
+    pub title: String,
+    pub folder: String,
+    pub enable_updates: Option<bool>,
+    pub source_kind: CollectionSourceKind,
+    pub collection: Collection,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct EnqueuedCollectionDownload {
     pub task: DownloadTask,
     pub collection: Option<Collection>,

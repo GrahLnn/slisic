@@ -9,12 +9,11 @@ use super::model::{
     now_timestamp,
 };
 use super::naming::{sanitize_path_component, stable_id};
+use super::yt_dlp::RootShellProbe;
 use super::yt_dlp::{
     LeafProbe, LeafReference, RootProbe, YtDlpClient, classify_root_preference,
     is_youtube_mix_playlist_id,
 };
-#[cfg(test)]
-use super::yt_dlp::RootShellProbe;
 use crate::domain::collection_import::{self, CollectionSyncPlan, PlannedLeaf};
 use crate::domain::playlists::model::{Collection, Group};
 use anyhow::{Context, Result, bail};
@@ -26,9 +25,11 @@ use tokio::sync::Semaphore;
 use tokio::task;
 
 const MAX_CONCURRENT_ROOT_PROBES: usize = 2;
+const MAX_CONCURRENT_ROOT_SHELL_PROBES: usize = 4;
 const MAX_NESTED_LIST_DEPTH: u8 = 4;
 
 static ROOT_PROBE_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+static ROOT_SHELL_PROBE_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 pub(crate) async fn resolve_collection_plan(
     task: &DownloadTask,
@@ -418,15 +419,14 @@ pub(crate) async fn probe_root_with_limit(
     run_blocking(move || client.probe_root(&url)).await
 }
 
-#[cfg(test)]
 pub(crate) async fn probe_root_shell_with_limit(
     client: Arc<dyn YtDlpClient>,
     url: String,
 ) -> Result<RootShellProbe> {
-    let _permit = root_probe_slots()
+    let _permit = root_shell_probe_slots()
         .acquire_owned()
         .await
-        .context("download root probe limiter closed")?;
+        .context("download root shell probe limiter closed")?;
     run_blocking(move || client.probe_root_shell(&url)).await
 }
 
@@ -438,6 +438,13 @@ pub(crate) fn root_probe_parallelism() -> usize {
 fn root_probe_slots() -> Arc<Semaphore> {
     Arc::clone(
         ROOT_PROBE_SLOTS.get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_ROOT_PROBES))),
+    )
+}
+
+fn root_shell_probe_slots() -> Arc<Semaphore> {
+    Arc::clone(
+        ROOT_SHELL_PROBE_SLOTS
+            .get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_ROOT_SHELL_PROBES))),
     )
 }
 

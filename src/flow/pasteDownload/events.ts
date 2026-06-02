@@ -14,6 +14,7 @@ import {
 import {
   crab,
   type Collection,
+  type DownloadRootTitleEvidence,
   type DownloadTaskChangeSignal,
   type EnqueuedCollectionDownload,
   type PastedDownloadUrlResolution,
@@ -36,6 +37,11 @@ export type CandidateFailurePayload = {
 export type CandidateEnqueuedPayload = {
   id: string;
   result: EnqueuedCollectionDownload;
+};
+
+export type CandidateTitlePayload = {
+  id: string;
+  evidence: DownloadRootTitleEvidence;
 };
 
 export type CandidateTaskCollectionPayload = {
@@ -75,6 +81,16 @@ export const deps = {
       },
     });
   },
+  probeDownloadRootTitle: async (url: string): Promise<DownloadRootTitleEvidence> => {
+    const result = await crab.probeDownloadRootTitle(url);
+
+    return result.match({
+      Ok: (evidence) => evidence,
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+  },
   getCollection: async (url: string): Promise<Collection | null> => {
     const result = await crab.getCollection(url);
 
@@ -92,6 +108,8 @@ export const invoker = createActors({
     deps.resolvePastedDownloadUrl(url),
   enqueueCollectionDownload: async (url: string): Promise<EnqueuedCollectionDownload> =>
     deps.enqueueCollectionDownload(url),
+  probeDownloadRootTitle: async (url: string): Promise<DownloadRootTitleEvidence> =>
+    deps.probeDownloadRootTitle(url),
 });
 
 export const payloads = collect(
@@ -100,6 +118,8 @@ export const payloads = collect(
   ...event<CandidateResolutionPayload>()("candidate.resolve.completed"),
   ...event<CandidateFailurePayload>()("candidate.resolve.failed", "candidate.enqueue.failed"),
   ...event<CandidateEnqueuedPayload>()("candidate.enqueue.completed"),
+  ...event<CandidateTitlePayload>()("candidate.title.completed"),
+  ...event<CandidateFailurePayload>()("candidate.title.failed"),
   ...event<DownloadTaskChangeSignal>()("download.task.changed"),
   ...event<CandidateTaskCollectionPayload>()("candidate.task.collection.loaded"),
   ...event<CandidateTaskFailurePayload>()("candidate.task.collection.failed"),

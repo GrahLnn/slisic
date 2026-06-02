@@ -4,6 +4,7 @@ import {
   applyCandidateUrlResolution,
   applyDownloadTaskChangeSignal,
   appendCandidateItem,
+  acceptCandidateRootTitleEvidence,
   candidateItemAllowsDelete,
   candidateItemIsErrored,
   acceptCandidateDownloadTask,
@@ -132,6 +133,40 @@ describe("candidate item helpers", () => {
     assert.equal(next.items[0]?.sourceUrl, "https://example.com/root");
     assert.equal(next.items[0]?.displayText, "Slow Playlist");
     assert.equal(next.items[0]?.status, "preparing");
+  });
+
+  test("reflects root title evidence without needing task evidence", () => {
+    const context = applyCandidateUrlResolution(
+      appendCandidateItem(createInitialContext(), "https://example.com/list"),
+      "candidate:0",
+      {
+        status: "new_url",
+        url: "https://example.com/list",
+        error: null,
+        collection: null,
+      },
+    );
+
+    const next = acceptCandidateRootTitleEvidence(context, "candidate:0", {
+      url: "https://example.com/root",
+      title: "Slow Playlist",
+      folder: "youtube/slow-playlist",
+      enable_updates: false,
+      source_kind: "list",
+      collection: {
+        name: "Slow Playlist",
+        url: "https://example.com/root",
+        folder: "youtube/slow-playlist",
+        musics: [],
+        last_updated: "2026-06-02T00:00:00Z",
+        enable_updates: false,
+      },
+    });
+
+    assert.equal(next.items[0]?.sourceUrl, "https://example.com/root");
+    assert.equal(next.items[0]?.displayText, "Slow Playlist");
+    assert.equal(next.items[0]?.status, "enqueueing");
+    assert.equal(next.items[0]?.taskId, null);
   });
 
   test("keeps active download tasks visible even when shell collection evidence exists", () => {
