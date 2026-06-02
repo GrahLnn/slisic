@@ -2061,7 +2061,7 @@ async fn run_playback_session(
                 .await?
             }
         };
-        let Some(mut track) = track else {
+        let Some(track) = track else {
             if runtime.playback_run_generation.load(Ordering::SeqCst) != generation {
                 emit_player_trace(
                     "player-run-session-generation-ended-before-track",
@@ -2093,8 +2093,6 @@ async fn run_playback_session(
                     "strategy"
                 }),
         );
-        track = ensure_playback_track_loudness(runtime.as_ref(), track).await?;
-        replace_session_track_loudness(&session.tracks, &track)?;
         runtime.set_active_request_track(track.clone())?;
         NowPlayingTrackChangedEvent::from_session_track(
             session.session_generation,
@@ -2122,6 +2120,12 @@ async fn run_playback_session(
                 end_ms: track.end_ms,
             });
         let request = playback_request_for_track_range(&track, active_range);
+        request_playback_track_loudness_measurement(
+            Arc::clone(&runtime),
+            session.session_generation,
+            Arc::clone(&session.tracks),
+            track.clone(),
+        );
         emit_player_trace(
             "player-run-play-request-start",
             PlayerTrace::new(&runtime.app)
@@ -2257,12 +2261,45 @@ async fn resolve_next_session_track(
 }
 
 #[cfg(not(test))]
-async fn ensure_playback_track_loudness(
-    runtime: &PlayerRuntime,
-    mut track: PlaybackTrack,
-) -> Result<PlaybackTrack> {
+fn request_playback_track_loudness_measurement(
+    runtime: Arc<PlayerRuntime>,
+    session_generation: u64,
+    tracks: SharedPlaybackTracks,
+    track: PlaybackTrack,
+) {
     if track.loudness != 0.0 {
-        return Ok(track);
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) =
+            measure_and_commit_playback_track_loudness(runtime, session_generation, tracks, track)
+                .await
+        {
+            log::error!(target: "player", "player_loudness_measurement_failed error={error:#}");
+        }
+    });
+}
+
+#[cfg(not(test))]
+async fn measure_and_commit_playback_track_loudness(
+    runtime: Arc<PlayerRuntime>,
+    session_generation: u64,
+    tracks: SharedPlaybackTracks,
+    mut track: PlaybackTrack,
+) -> Result<()> {
+    let session = PlaybackSessionHandle {
+        playlist_name: track.playlist_name.clone(),
+        session_generation,
+    };
+    if !runtime.is_session_current(&session)? {
+        emit_player_trace(
+            "player-run-loudness-measurement-skipped",
+            PlayerTrace::new(&runtime.app)
+                .track(Some(&track))
+                .status("stale_session"),
+        );
+        return Ok(());
     }
 
     emit_player_trace(
@@ -2285,13 +2322,36 @@ async fn ensure_playback_track_loudness(
         .map(|music| music.loudness)
         .unwrap_or(analysis.integrated_lufs);
     sync_playback_track_source_music(&mut track);
+
+    if !runtime.is_session_current(&session)? {
+        emit_player_trace(
+            "player-run-loudness-measurement-skipped",
+            PlayerTrace::new(&runtime.app)
+                .track(Some(&track))
+                .status("stale_session_after_measurement"),
+        );
+        return Ok(());
+    }
+
     emit_player_trace(
         "player-run-loudness-measurement-ok",
         PlayerTrace::new(&runtime.app)
             .track(Some(&track))
             .details(vec![trace_detail("loudness", track.loudness)]),
     );
-    Ok(track)
+
+    replace_session_track_loudness(&tracks, &track)?;
+    let active_track = runtime.active_request_track_snapshot()?;
+    if active_track
+        .as_ref()
+        .is_some_and(|active| are_playback_tracks_equal(active, &track))
+    {
+        runtime.set_active_request_track(track.clone())?;
+        NowPlayingTrackChangedEvent::from_session_track(session_generation, track.to_payload())
+            .emit(&runtime.app)?;
+    }
+
+    Ok(())
 }
 
 #[cfg(not(test))]
@@ -2466,15 +2526,21 @@ fn playback_request_for_track_range(
         &track.file_path,
         resolve_playback_request_position(range),
     );
-    if track.loudness != 0.0 {
-        request = request.with_normalization(PlaybackNormalization {
-            target_lufs: BACKEND_PLAYBACK_TARGET_LUFS,
-            integrated_lufs: Some(track.loudness),
-            true_peak_dbtp: None,
-        });
+    if let Some(normalization) = playback_normalization_for_track_loudness(track.loudness) {
+        request = request.with_normalization(normalization);
     }
 
     request
+}
+
+pub(crate) fn playback_normalization_for_track_loudness(
+    loudness: f32,
+) -> Option<PlaybackNormalization> {
+    (loudness != 0.0).then_some(PlaybackNormalization {
+        target_lufs: BACKEND_PLAYBACK_TARGET_LUFS,
+        integrated_lufs: Some(loudness),
+        true_peak_dbtp: None,
+    })
 }
 
 pub(crate) fn resolve_playback_seek_range(
