@@ -16,7 +16,9 @@ use super::service::{
     should_commit_playlist_queue_refresh, should_refresh_playlist_queue_for_anchor_after_startup,
     should_refresh_playlist_queue_for_same_anchor, shuffle_playback_tracks,
 };
-use crate::domain::downloads::model::{DownloadTask, DownloadTaskStatus, DownloadTrigger};
+use crate::domain::downloads::model::{
+    DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
+};
 use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
 use crate::domain::playlists::model::{
     CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
@@ -245,6 +247,24 @@ fn playlist_selection_active_downloads_match_explicit_parent_download_scope() {
 
     assert!(playlist_selection_has_relevant_active_downloads(
         &selection, &tasks
+    ));
+}
+
+#[test]
+fn playlist_selection_waits_for_active_leaf_after_root_task_resolves() {
+    let selection = playback_selection("Focus", "https://example.com/album", None);
+    let mut task = download_task(
+        "https://example.com/album",
+        Some("https://example.com/album"),
+        DownloadTaskStatus::Completed,
+    );
+    let mut leaf = DownloadLeaf::new("leaf-a", "https://example.com/watch?v=a", 0);
+    leaf.status = DownloadLeafStatus::Downloading;
+    task.leafs.push(leaf);
+
+    assert!(playlist_selection_has_relevant_active_downloads(
+        &selection,
+        &[task]
     ));
 }
 

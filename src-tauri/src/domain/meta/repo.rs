@@ -4,8 +4,10 @@ use appdb::error::{DBError, classify_db_error};
 use appdb::model::meta::ModelMeta;
 use appdb::repository::Repo;
 use surrealdb::types::RecordId;
+use std::time::Duration;
 
 const META_INFO_RECORD_KEY: &str = "singleton";
+const ENSURE_META_INFO_RETRY_ATTEMPTS: usize = 6;
 
 pub async fn get_meta_info() -> Result<Option<MetaInfo>> {
     match Repo::<MetaInfo>::get_record(meta_info_record_id()).await {
@@ -32,6 +34,26 @@ pub fn resolve_meta_info(meta: Option<MetaInfo>, default_save_path: String) -> M
 }
 
 pub async fn ensure_meta_info(default_save_path: String) -> Result<MetaInfo> {
+    let mut backoff = Duration::from_millis(5);
+
+    for attempt in 0..ENSURE_META_INFO_RETRY_ATTEMPTS {
+        match try_ensure_meta_info(default_save_path.clone()).await {
+            Ok(meta) => return Ok(meta),
+            Err(error)
+                if is_retryable_transaction_conflict(&error)
+                    && attempt + 1 < ENSURE_META_INFO_RETRY_ATTEMPTS =>
+            {
+                tokio::time::sleep(backoff).await;
+                backoff = backoff.saturating_mul(2);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    unreachable!("ensure meta retry loop should always return or error")
+}
+
+async fn try_ensure_meta_info(default_save_path: String) -> Result<MetaInfo> {
     let current = get_meta_info().await?;
     let resolved = resolve_meta_info(current.clone(), default_save_path);
     let current_save_path = current.as_ref().and_then(|meta| meta.save_path.as_ref());
@@ -42,6 +64,13 @@ pub async fn ensure_meta_info(default_save_path: String) -> Result<MetaInfo> {
     }
 
     save_meta_info(resolved).await
+}
+
+pub(crate) fn is_retryable_transaction_conflict(error: &anyhow::Error) -> bool {
+    let text = error.to_string();
+    text.contains("Transaction conflict")
+        || text.contains("write conflict")
+        || text.contains("failed transaction")
 }
 
 fn meta_info_record_id() -> RecordId {

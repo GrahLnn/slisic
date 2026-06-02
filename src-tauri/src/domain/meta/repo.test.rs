@@ -1,5 +1,8 @@
 use super::model::MetaInfo;
-use super::repo::{ensure_meta_info, get_meta_info, resolve_meta_info, save_meta_info};
+use super::repo::{
+    ensure_meta_info, get_meta_info, is_retryable_transaction_conflict, resolve_meta_info,
+    save_meta_info,
+};
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, reinit_db_with_options, reset_db};
 use std::path::PathBuf;
@@ -125,4 +128,19 @@ fn ensure_meta_info_persists_the_default_save_path_when_missing() {
 
         reset_db();
     });
+}
+
+#[test]
+fn retryable_transaction_conflicts_are_classified_for_startup_meta_resolution() {
+    let failed_transaction = anyhow::anyhow!(
+        "SurrealDB error: The query was not executed due to a failed transaction"
+    );
+    let write_conflict = anyhow::anyhow!(
+        "Transaction conflict: Transaction write conflict. This transaction can be retried"
+    );
+    let ordinary_error = anyhow::anyhow!("save path should always be configured");
+
+    assert!(is_retryable_transaction_conflict(&failed_transaction));
+    assert!(is_retryable_transaction_conflict(&write_conflict));
+    assert!(!is_retryable_transaction_conflict(&ordinary_error));
 }

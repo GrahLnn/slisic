@@ -1828,7 +1828,9 @@ pub(crate) fn playlist_selection_has_relevant_active_downloads(
 
     download_tasks
         .iter()
-        .filter(|task| task.status.is_active())
+        .filter(|task| {
+            task.status.is_active() || task.leafs.iter().any(|leaf| leaf.status.is_active())
+        })
         .any(|task| {
             task.collection_url
                 .as_deref()
