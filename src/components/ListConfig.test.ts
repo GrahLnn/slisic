@@ -1567,8 +1567,8 @@ describe("ListConfig title view model", () => {
     });
 
     assert.equal(viewModel.hasDraftChanges, true);
-    assert.equal(viewModel.isBackActionParsing, true);
-    assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, true);
+    assert.equal(viewModel.isBackActionParsing, false);
+    assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, false);
   });
 
   test("defers arc-track rendering while an existing playlist draft is still loading", () => {
@@ -1632,7 +1632,7 @@ describe("ListConfig title view model", () => {
           id: "candidate:preparing",
           rawText: "https://example.com/preparing",
           sourceUrl: "https://example.com/preparing",
-          displayText: "Preparing Collection",
+          displayText: "https://example.com/preparing",
           status: "preparing",
           error: null,
           taskId: "task-preparing",
@@ -1678,5 +1678,65 @@ describe("ListConfig title view model", () => {
     assert.equal(viewModel.interactionFlags.isTitleInteractionDisabled, false);
     assert.equal(viewModel.interactionFlags.isToolListInteractionDisabled, false);
     assert.equal(viewModel.excludeToolLabelItems[0]?.text, "Blocked Alias");
+  });
+
+  test("releases the back parsing matrix once preparing candidates have title evidence", () => {
+    const viewModel = resolveListConfigViewModel({
+      activeLayoutId: "playlist-title:Focus Session",
+      draft: draftWithGroup,
+      draftBaseline: draftWithGroup,
+      pendingPlaylistName: null,
+      titleToneHandoff: null,
+      isPresent: true,
+      libraryItems: librarySidebarItems,
+      excludeItems: [],
+      excludeAvailability: emptyExcludeAvailability,
+      collectionGroupMemberships: [],
+      candidateItems: [
+        {
+          id: "candidate:preparing",
+          rawText: "https://example.com/preparing",
+          sourceUrl: "https://example.com/preparing",
+          displayText: "Preparing Collection",
+          status: "preparing",
+          error: null,
+          taskId: "task-preparing",
+        },
+      ],
+      previousEmptyState: null,
+    });
+
+    assert.equal(viewModel.isBackActionParsing, false);
+    assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, false);
+  });
+
+  test("keeps the back parsing matrix while preparing candidates still display canonical urls", () => {
+    const viewModel = resolveListConfigViewModel({
+      activeLayoutId: "playlist-title:Focus Session",
+      draft: draftWithGroup,
+      draftBaseline: draftWithGroup,
+      pendingPlaylistName: null,
+      titleToneHandoff: null,
+      isPresent: true,
+      libraryItems: librarySidebarItems,
+      excludeItems: [],
+      excludeAvailability: emptyExcludeAvailability,
+      collectionGroupMemberships: [],
+      candidateItems: [
+        {
+          id: "candidate:preparing",
+          rawText: "https://www.youtube.com/watch?v=nnvjKf_mRYM&t=3238s",
+          sourceUrl: "https://www.youtube.com/watch?v=nnvjKf_mRYM",
+          displayText: "https://www.youtube.com/watch?v=nnvjKf_mRYM",
+          status: "preparing",
+          error: null,
+          taskId: "task-preparing",
+        },
+      ],
+      previousEmptyState: null,
+    });
+
+    assert.equal(viewModel.isBackActionParsing, true);
+    assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, true);
   });
 });

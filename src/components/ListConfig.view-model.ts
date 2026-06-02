@@ -599,15 +599,28 @@ export function resolveListConfigEmptyState(
 export function countListConfigParsingCandidateItems(
   candidateItems: readonly ConfigCandidateItem[],
 ) {
-  return candidateItems.filter((item) => listConfigCandidateItemIsParsing(item.status)).length;
+  return candidateItems.filter(listConfigCandidateItemIsParsing).length;
 }
 
 export function hasListConfigParsingCandidateItems(candidateItems: readonly ConfigCandidateItem[]) {
   return countListConfigParsingCandidateItems(candidateItems) > 0;
 }
 
-function listConfigCandidateItemIsParsing(status: ConfigCandidateItem["status"]) {
-  return status === "checking" || status === "enqueueing" || status === "preparing";
+function listConfigCandidateItemIsParsing(item: ConfigCandidateItem) {
+  if (item.status === "checking" || item.status === "enqueueing") {
+    return true;
+  }
+
+  return item.status === "preparing" && listConfigCandidateItemStillShowsUrl(item);
+}
+
+function listConfigCandidateItemStillShowsUrl(item: ConfigCandidateItem) {
+  const displayText = item.displayText.trim();
+  if (displayText.length === 0) {
+    return true;
+  }
+
+  return resolveListConfigPastedUrlCandidates(displayText).length > 0;
 }
 
 export function resolveListConfigInteractionFlags(args: {
