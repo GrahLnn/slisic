@@ -58,6 +58,10 @@ fn file_log_format(out: fern::FormatCallback, message: &Arguments, record: &Reco
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = Builder::new()
+        // Tauri invokes currently cross the frontend boundary as JSON numbers.
+        // Domain owners keep their Rust integer semantics; this only preserves
+        // the legacy TypeScript binding shape after Specta tightened exports.
+        .dangerously_cast_bigints_to_number()
         .commands(collect_commands![
             utils::file::exists,
             utils::core::app_ready,
