@@ -752,7 +752,8 @@ async fn resolve_prepared_playlist_initial_track(
 ) -> Result<Option<ResolvedPlaylistInitialTrack>> {
     let trace_start = Instant::now();
     let save_root = meta_service::resolve_save_root(app).await?;
-    let Some(selection) = playlist_repo::get_playlist_playback_selection_by_name(playlist_name).await?
+    let Some(selection) =
+        playlist_repo::get_playlist_playback_selection_by_name(playlist_name).await?
     else {
         return Ok(None);
     };
@@ -1482,7 +1483,10 @@ fn propose_audio_style_playlist_playback_queue_from_snapshot(
     if let Some(selection) = proposal.selection.as_mut() {
         selection.model_generation = Some(snapshot.generation());
     }
-    let selection_source = proposal.selection.as_ref().map(|selection| selection.source);
+    let selection_source = proposal
+        .selection
+        .as_ref()
+        .map(|selection| selection.source);
     let selection_is_centerless_fallback = matches!(
         (mode, anchor_has_embedding, selection_source),
         (
@@ -1500,8 +1504,7 @@ fn propose_audio_style_playlist_playback_queue_from_snapshot(
             selection_source,
         )
     };
-    if !proposal_is_complete
-    {
+    if !proposal_is_complete {
         return None;
     }
 
@@ -1940,6 +1943,7 @@ pub(crate) fn project_playlist_playback_track_for_playlist(
         start_ms: source.music.start_ms,
         end_ms: source.music.end_ms,
         liked: source.music.liked,
+        loudness: source.music.loudness,
     }
 }
 

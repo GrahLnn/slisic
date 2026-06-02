@@ -823,6 +823,7 @@ pub(crate) fn materialize_music_entries(
             start_ms: 0,
             end_ms: probe_duration_ms(probe),
             liked: false,
+            loudness: 0.0,
         }];
     }
 
@@ -843,6 +844,7 @@ pub(crate) fn materialize_music_entries(
             start_ms: chapter.start_ms,
             end_ms: chapter.end_ms,
             liked: false,
+            loudness: 0.0,
         })
         .collect()
 }
@@ -1786,6 +1788,7 @@ pub(crate) fn restore_single_source_musics_from_task(
             start_ms: 0,
             end_ms: leaf_duration_ms(leaf),
             liked: false,
+            loudness: 0.0,
         });
     }
 
@@ -1956,6 +1959,7 @@ fn collection_from_manifest(
             start_ms: music.start_ms,
             end_ms: music.end_ms,
             liked: music.liked,
+            loudness: 0.0,
         });
     }
 
@@ -2139,6 +2143,7 @@ fn local_music_from_audio_file(
         start_ms: 0,
         end_ms: file.duration_ms,
         liked: false,
+        loudness: 0.0,
     }
 }
 

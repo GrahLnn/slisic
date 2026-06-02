@@ -255,6 +255,7 @@ pub struct Music {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
+    pub loudness: f32,
 }
 
 #[async_trait::async_trait]
@@ -277,6 +278,7 @@ pub struct MusicSpectrumView {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
+    pub loudness: f32,
 }
 
 impl MusicSpectrumView {
@@ -291,6 +293,7 @@ impl MusicSpectrumView {
             start_ms: self.start_ms,
             end_ms: self.end_ms,
             liked: self.liked,
+            loudness: self.loudness,
         }
     }
 }
@@ -330,7 +333,8 @@ impl ViewParams for PlaylistRelationPlayableTrackViewParams {
             out.path AS path,
             out.start_ms AS start_ms,
             out.end_ms AS end_ms,
-            out.liked AS liked
+            out.liked AS liked,
+            out.loudness AS loudness
         FROM $relation
         WHERE in IN $owner_records
             AND record::tb(out) = $music_table
@@ -354,6 +358,7 @@ pub struct PlaylistRelationPlayableTrackView {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
+    pub loudness: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -389,7 +394,8 @@ impl ViewParams for RandomPlaylistRelationPlayableTrackViewParams {
             out.path AS path,
             out.start_ms AS start_ms,
             out.end_ms AS end_ms,
-            out.liked AS liked
+            out.liked AS liked,
+            out.loudness AS loudness
         FROM $relation
         WHERE in IN $owner_records
             AND record::tb(out) = $music_table
@@ -412,6 +418,7 @@ pub struct RandomPlaylistRelationPlayableTrackView {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
+    pub loudness: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -441,7 +448,8 @@ impl ViewParams for PlaylistRecordPlayableTrackViewParams {
             path,
             start_ms,
             end_ms,
-            liked
+            liked,
+            loudness
         FROM $music_table
         WHERE id IN $music_records
             AND path IS NOT NONE
@@ -459,6 +467,7 @@ pub struct PlaylistRecordPlayableTrackView {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
+    pub loudness: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -481,7 +490,8 @@ impl ViewParams for AudioStyleTrainingMusicViewParams {
             path,
             start_ms,
             end_ms,
-            liked
+            liked,
+            loudness
         FROM $music_table
         WHERE path IS NOT NONE
             AND path != '';
@@ -497,9 +507,10 @@ pub struct AudioStyleTrainingMusicView {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
+    pub loudness: f32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AudioStyleTrainingTrackInput {
     pub alias: String,
     pub canonical_music_id: String,
@@ -508,6 +519,7 @@ pub struct AudioStyleTrainingTrackInput {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
+    pub loudness: f32,
 }
 
 #[derive(Debug, Clone)]

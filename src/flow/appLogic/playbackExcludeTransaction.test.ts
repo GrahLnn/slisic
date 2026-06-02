@@ -41,6 +41,7 @@ const sampleExclude: Exclude = {
     end_ms: 120_000,
     group: sampleGroup,
     liked: false,
+    loudness: 0,
     name: "Track A",
     path: "focus/a.m4a",
     start_ms: 0,

@@ -5464,6 +5464,7 @@ fn resolve_audio_style_training_track(
         start_ms: music.start_ms,
         end_ms: music.end_ms,
         liked: music.liked,
+        loudness: music.loudness,
     };
     let source = PlaylistPlaybackTrackSource {
         collection_folder: String::new(),
@@ -5509,6 +5510,7 @@ fn playback_track_source_music_from_track(track: &PlaybackTrack) -> Music {
         start_ms: track.start_ms,
         end_ms: track.end_ms,
         liked: track.liked,
+        loudness: track.loudness,
     }
 }
 

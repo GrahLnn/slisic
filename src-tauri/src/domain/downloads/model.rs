@@ -89,6 +89,7 @@ impl_string_surreal_enum!(DownloadLeafStatus {
     Probing => "probing",
     Downloading => "downloading",
     Persisting => "persisting",
+    MeasuringLoudness => "measuring_loudness",
     Completed => "completed",
     Failed => "failed",
     Cancelled => "cancelled",
@@ -126,7 +127,11 @@ impl DownloadLeafStatus {
     pub fn is_active(self) -> bool {
         matches!(
             self,
-            Self::Queued | Self::Probing | Self::Downloading | Self::Persisting
+            Self::Queued
+                | Self::Probing
+                | Self::Downloading
+                | Self::Persisting
+                | Self::MeasuringLoudness
         )
     }
 }

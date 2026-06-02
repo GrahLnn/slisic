@@ -21,6 +21,8 @@ use super::track_identity_substitution::{
 #[cfg(not(test))]
 use super::waveform::{self, TrackWaveform, TrackWaveformSummary, TrackWaveformTile};
 #[cfg(not(test))]
+use crate::domain::playlists::repo as playlists_repo;
+#[cfg(not(test))]
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 #[cfg(not(test))]
 use anyhow::{Context, Result, anyhow, bail};
@@ -29,6 +31,8 @@ use ffplayr::PlaybackNormalization;
 use ffplayr::{Playback, PlaybackRequest, PlaybackTimeRange};
 #[cfg(not(test))]
 use std::path::Path;
+#[cfg(not(test))]
+use std::path::PathBuf;
 #[cfg(not(test))]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,6 +44,8 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 #[cfg(not(test))]
 use tauri_specta::Event;
+#[cfg(not(test))]
+use tokio::task;
 
 #[cfg(not(test))]
 static PLAYER_RUNTIME: OnceLock<Arc<PlayerRuntime>> = OnceLock::new();
@@ -382,8 +388,10 @@ async fn play_tracks_with_initial_track(
         return Err(PlaybackStartRequestSuperseded.into());
     }
 
-    let playback_run_generation =
-        runtime.playback_run_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let playback_run_generation = runtime
+        .playback_run_generation
+        .fetch_add(1, Ordering::SeqCst)
+        + 1;
 
     emit_player_trace(
         "player-session-stop-start",
@@ -409,7 +417,9 @@ async fn play_tracks_with_initial_track(
         );
     }
     if !runtime.is_playback_start_request_current(&start_request) {
-        runtime.playback_run_generation.fetch_add(1, Ordering::SeqCst);
+        runtime
+            .playback_run_generation
+            .fetch_add(1, Ordering::SeqCst);
         emit_player_trace(
             "player-session-superseded-after-stop",
             PlayerTrace::new(&runtime.app)
@@ -656,8 +666,10 @@ pub async fn play_track_in_current_session(
         );
         bail!("spectrum playback signal is not active");
     }
-    let playback_run_generation =
-        runtime.playback_run_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let playback_run_generation = runtime
+        .playback_run_generation
+        .fetch_add(1, Ordering::SeqCst)
+        + 1;
     runtime.set_temporary_playback_pause(false)?;
     runtime.clear_spectrum_playback_loop_signal()?;
     let default_loop_signal = resolve_spectrum_playback_loop_signal(
@@ -743,7 +755,9 @@ pub(crate) fn is_playback_start_request_current(
 pub async fn stop_playback() -> Result<bool> {
     let runtime = runtime()?;
     runtime.cancel_pending_playback_start_requests();
-    runtime.playback_run_generation.fetch_add(1, Ordering::SeqCst);
+    runtime
+        .playback_run_generation
+        .fetch_add(1, Ordering::SeqCst);
     runtime.clear_active_session()?;
     runtime.set_temporary_playback_pause(false)?;
     runtime.clear_spectrum_playback_loop_signal()?;
@@ -1808,10 +1822,8 @@ impl PlayerRuntime {
                     ),
                 ]),
         );
-        let target_start_ms = resolve_identity_update_playback_restart_position(
-            current_position_ms,
-            &next_track,
-        );
+        let target_start_ms =
+            resolve_identity_update_playback_restart_position(current_position_ms, &next_track);
         let Some(target_start_ms) = target_start_ms else {
             emit_player_trace(
                 "player-track-identity-playback-effect-skipped",
@@ -2049,7 +2061,7 @@ async fn run_playback_session(
                 .await?
             }
         };
-        let Some(track) = track else {
+        let Some(mut track) = track else {
             if runtime.playback_run_generation.load(Ordering::SeqCst) != generation {
                 emit_player_trace(
                     "player-run-session-generation-ended-before-track",
@@ -2081,6 +2093,8 @@ async fn run_playback_session(
                     "strategy"
                 }),
         );
+        track = ensure_playback_track_loudness(runtime.as_ref(), track).await?;
+        replace_session_track_loudness(&session.tracks, &track)?;
         runtime.set_active_request_track(track.clone())?;
         NowPlayingTrackChangedEvent::from_session_track(
             session.session_generation,
@@ -2107,10 +2121,7 @@ async fn run_playback_session(
                 start_ms: track.start_ms,
                 end_ms: track.end_ms,
             });
-        let request = playback_request_for_path_position(
-            &track.file_path,
-            resolve_playback_request_position(active_range),
-        );
+        let request = playback_request_for_track_range(&track, active_range);
         emit_player_trace(
             "player-run-play-request-start",
             PlayerTrace::new(&runtime.app)
@@ -2245,6 +2256,101 @@ async fn resolve_next_session_track(
     Ok(track)
 }
 
+#[cfg(not(test))]
+async fn ensure_playback_track_loudness(
+    runtime: &PlayerRuntime,
+    mut track: PlaybackTrack,
+) -> Result<PlaybackTrack> {
+    if track.loudness != 0.0 {
+        return Ok(track);
+    }
+
+    emit_player_trace(
+        "player-run-loudness-measurement-start",
+        PlayerTrace::new(&runtime.app).track(Some(&track)),
+    );
+    let ffmpeg_path = ensure_managed_binary(&runtime.app, ManagedBinary::Ffmpeg)
+        .map_err(|error| anyhow!(error))?;
+    let analysis = measure_track_loudness(ffmpeg_path, &track).await?;
+    let updated = playlists_repo::set_music_loudness_by_identity(
+        &track.music_url,
+        track.start_ms,
+        track.end_ms,
+        analysis.integrated_lufs,
+    )
+    .await?;
+
+    track.loudness = updated
+        .as_ref()
+        .map(|music| music.loudness)
+        .unwrap_or(analysis.integrated_lufs);
+    sync_playback_track_source_music(&mut track);
+    emit_player_trace(
+        "player-run-loudness-measurement-ok",
+        PlayerTrace::new(&runtime.app)
+            .track(Some(&track))
+            .details(vec![trace_detail("loudness", track.loudness)]),
+    );
+    Ok(track)
+}
+
+#[cfg(not(test))]
+async fn measure_track_loudness(
+    ffmpeg_path: PathBuf,
+    track: &PlaybackTrack,
+) -> Result<ffplayr::AudioLoudnessAnalysis> {
+    let path = track.file_path.clone();
+    let start_ms = track.start_ms;
+    let end_ms = track.end_ms;
+    if start_ms >= end_ms {
+        bail!("cannot measure loudness for invalid playback range {start_ms}..{end_ms}");
+    }
+
+    task::spawn_blocking(move || {
+        ffplayr::analyze_loudness_with_binary(
+            &ffmpeg_path,
+            ffplayr::AudioLoudnessAnalysisRequest {
+                path,
+                time_range: Some(ffplayr::PlaybackTimeRange {
+                    start_ms,
+                    duration_ms: Some(end_ms.saturating_sub(start_ms)),
+                }),
+            },
+        )
+        .map_err(anyhow::Error::msg)
+    })
+    .await
+    .context("playback loudness worker panicked")?
+}
+
+#[cfg(not(test))]
+fn replace_session_track_loudness(
+    tracks: &SharedPlaybackTracks,
+    measured: &PlaybackTrack,
+) -> Result<()> {
+    let mut tracks = tracks
+        .write()
+        .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))?;
+    let mut changed = false;
+    for track in tracks.iter_mut() {
+        if are_playback_tracks_equal(track, measured) && track.loudness != measured.loudness {
+            track.loudness = measured.loudness;
+            sync_playback_track_source_music(track);
+            changed = true;
+        }
+    }
+
+    if !changed
+        && tracks
+            .iter()
+            .any(|track| are_playback_tracks_equal(track, measured))
+    {
+        return Ok(());
+    }
+
+    Ok(())
+}
+
 pub(crate) fn backend_playback_normalization() -> PlaybackNormalization {
     PlaybackNormalization {
         target_lufs: BACKEND_PLAYBACK_TARGET_LUFS,
@@ -2263,6 +2369,7 @@ pub(crate) fn playback_tracks_match(left: &[PlaybackTrack], right: &[PlaybackTra
                 && left.start_ms == right.start_ms
                 && left.end_ms == right.end_ms
                 && left.liked == right.liked
+                && left.loudness == right.loudness
         })
 }
 
@@ -2333,6 +2440,7 @@ fn sync_playback_track_source_music(track: &mut PlaybackTrack) {
     music.start_ms = track.start_ms;
     music.end_ms = track.end_ms;
     music.liked = track.liked;
+    music.loudness = track.loudness;
 }
 
 #[cfg(not(test))]
@@ -2343,6 +2451,26 @@ fn playback_request_for_path_position(path: &Path, position_ms: u32) -> Playback
         return request.with_time_range(PlaybackTimeRange {
             start_ms: position_ms,
             duration_ms: None,
+        });
+    }
+
+    request
+}
+
+#[cfg(not(test))]
+fn playback_request_for_track_range(
+    track: &PlaybackTrack,
+    range: ActivePlaybackRange,
+) -> PlaybackRequest {
+    let mut request = playback_request_for_path_position(
+        &track.file_path,
+        resolve_playback_request_position(range),
+    );
+    if track.loudness != 0.0 {
+        request = request.with_normalization(PlaybackNormalization {
+            target_lufs: BACKEND_PLAYBACK_TARGET_LUFS,
+            integrated_lufs: Some(track.loudness),
+            true_peak_dbtp: None,
         });
     }
 

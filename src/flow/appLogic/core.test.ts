@@ -70,6 +70,7 @@ function createMusicFixture(overrides: Partial<Music> = {}): Music {
     start_ms: 0,
     end_ms: 120_000,
     liked: false,
+    loudness: 0,
     ...overrides,
   };
 }
@@ -212,6 +213,7 @@ describe("upsertCollectionIntoCollections", () => {
           start_ms: 0,
           end_ms: 120_000,
           liked: false,
+          loudness: 0,
         },
       ],
     };
@@ -793,6 +795,7 @@ describe("includeDraftSidebarItem", () => {
           start_ms: 0,
           end_ms: 120_000,
           liked: false,
+          loudness: 0,
         },
       ],
       last_updated: "2026-04-13T00:00:00Z",

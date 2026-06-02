@@ -21,6 +21,7 @@ pub struct PlaybackTrackPayload {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
+    pub loudness: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -83,6 +84,7 @@ pub struct PlaybackTrack {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
+    pub loudness: f32,
 }
 
 impl PlaybackTrack {
@@ -115,6 +117,7 @@ impl PlaybackTrack {
             start_ms: payload.start_ms,
             end_ms: payload.end_ms,
             liked: payload.liked,
+            loudness: payload.loudness,
         })
     }
 
@@ -128,6 +131,7 @@ impl PlaybackTrack {
             start_ms: self.start_ms,
             end_ms: self.end_ms,
             liked: self.liked,
+            loudness: self.loudness,
         }
     }
 }

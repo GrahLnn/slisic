@@ -226,6 +226,34 @@ pub async fn set_music_liked_by_identity(
     Ok(first_updated)
 }
 
+pub async fn set_music_loudness_by_identity(
+    url: &str,
+    start_ms: u32,
+    end_ms: u32,
+    loudness: f32,
+) -> Result<Option<Music>> {
+    ensure_collection_graph_schema().await?;
+    if !loudness.is_finite() || loudness == 0.0 {
+        bail!("music loudness evidence must be a finite non-zero LUFS value");
+    }
+
+    let canonical_music_id = canonical_music_id_for_source(url, start_ms, end_ms);
+    let records = find_music_record_ids_by_canonical_id(&canonical_music_id).await?;
+    let mut first_updated = None;
+
+    for record in records {
+        let mut music = Music::get_record(record.clone()).await?;
+        music.loudness = loudness;
+        let updated = Repo::<Music>::update_at(record, music).await?;
+
+        if first_updated.is_none() {
+            first_updated = Some(updated);
+        }
+    }
+
+    Ok(first_updated)
+}
+
 pub async fn is_music_identity_excluded_for_playback(
     url: &str,
     start_ms: u32,
@@ -2187,6 +2215,7 @@ fn playable_track_music_from_relation_row(
         start_ms: row.start_ms,
         end_ms: row.end_ms,
         liked: row.liked,
+        loudness: row.loudness,
     })
 }
 
@@ -2204,6 +2233,7 @@ fn playable_track_music_from_random_relation_row(
         start_ms: row.start_ms,
         end_ms: row.end_ms,
         liked: row.liked,
+        loudness: row.loudness,
     })
 }
 
@@ -2221,6 +2251,7 @@ fn playable_track_music_from_record_row(
         start_ms: row.start_ms,
         end_ms: row.end_ms,
         liked: row.liked,
+        loudness: row.loudness,
     })
 }
 
@@ -2312,6 +2343,7 @@ fn audio_style_training_music_from_row(
         start_ms: row.start_ms,
         end_ms: row.end_ms,
         liked: row.liked,
+        loudness: row.loudness,
     })
 }
 

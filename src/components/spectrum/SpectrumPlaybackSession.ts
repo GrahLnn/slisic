@@ -62,6 +62,7 @@ export function createSpectrumPlaybackTrackPayload(
     end_ms: identity.endMs,
     file_path: identity.filePath,
     liked,
+    loudness: 0,
     music_name: musicName,
     music_url: identity.url,
     playlist_name: identity.playlistName,

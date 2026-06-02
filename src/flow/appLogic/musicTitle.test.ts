@@ -57,6 +57,7 @@ const sampleCollection: Collection = {
       start_ms: 0,
       end_ms: 120_000,
       liked: false,
+      loudness: 0,
     },
   ],
   last_updated: "2026-04-13T00:00:00Z",
