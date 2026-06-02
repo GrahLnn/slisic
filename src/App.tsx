@@ -53,10 +53,12 @@ function PageViewport({
   pageKey,
   pageState,
   scrollPositionRef,
+  scrollLocked = false,
 }: PropsWithChildren<{
   pageKey: string;
   pageState: string;
   scrollPositionRef: ScrollPositionRef;
+  scrollLocked?: boolean;
 }>) {
   const viewportRef = useRef<HTMLElement | null>(null);
 
@@ -80,7 +82,9 @@ function PageViewport({
       data-page-state={pageState}
       className={cn(
         "absolute inset-0 pt-8",
-        pageState === "play" ? "overflow-hidden" : "overflow-y-auto overscroll-y-contain",
+        scrollLocked || pageState === "play"
+          ? "overflow-hidden"
+          : "overflow-y-auto overscroll-y-contain",
         "hide-scrollbar",
       )}
       onScroll={(event) => {
@@ -233,6 +237,7 @@ function MainWindowApp() {
           pageKey={viewport.pageKey}
           pageState={viewport.pageState}
           scrollPositionRef={viewport.scrollPositionRef}
+          scrollLocked={viewport.surface === "config"}
         >
           {viewport.children}
         </PageViewport>

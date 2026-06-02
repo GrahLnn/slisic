@@ -10,6 +10,13 @@ import { cn } from "@/lib/utils";
 import { AnimatePresence, motion } from "motion/react";
 import { createPortal } from "react-dom";
 import { Torph } from "@grahlnn/comps";
+import {
+  closedToolLabelHoverLease,
+  resolveToolLabelHoverLeaseFromPointerProbe,
+  resolveToolLabelOverlayVisibility,
+  type ToolLabelHoverLease,
+  type ToolLabelPointerPosition,
+} from "./toolLabelHoverLease";
 
 export function MaskR() {
   return (
@@ -70,19 +77,19 @@ const TOOL_LABEL_OVERLAY_CLASS_NAME =
 const TOOL_LABEL_PLAIN_TEXT_CLASS_NAME = "inline-block leading-[18px]";
 type ToolLabelAnchor = "left" | "right";
 type ToolLabelTextRenderMode = "torph" | "plain";
-type ToolLabelPointerPosition = {
-  clientX: number;
-  clientY: number;
-};
 
 type ToolLabelPointerTracker = {
   position: ToolLabelPointerPosition | null;
   refCount: number;
+  syncSubscribers: Set<() => void>;
   updatePosition: (event: PointerEvent) => void;
+  updatePositionFromWheel: (event: WheelEvent) => void;
   clearPosition: () => void;
+  requestSync: () => void;
 };
 
 const toolLabelPointerTrackers = new WeakMap<Document, ToolLabelPointerTracker>();
+const TOOL_LABEL_POINTER_WHEEL_CAPTURE = true;
 
 export function resolveToolLabelPlainTextClassName() {
   return TOOL_LABEL_PLAIN_TEXT_CLASS_NAME;
@@ -95,14 +102,27 @@ function retainToolLabelPointerTracker(ownerDocument: Document) {
     tracker = {
       position: null,
       refCount: 0,
+      syncSubscribers: new Set(),
       updatePosition: (event) => {
         tracker!.position = {
           clientX: event.clientX,
           clientY: event.clientY,
         };
       },
+      updatePositionFromWheel: (event) => {
+        tracker!.position = {
+          clientX: event.clientX,
+          clientY: event.clientY,
+        };
+        tracker!.requestSync();
+      },
       clearPosition: () => {
         tracker!.position = null;
+      },
+      requestSync: () => {
+        tracker!.syncSubscribers.forEach((subscriber) => {
+          subscriber();
+        });
       },
     };
     toolLabelPointerTrackers.set(ownerDocument, tracker);
@@ -111,6 +131,10 @@ function retainToolLabelPointerTracker(ownerDocument: Document) {
     });
     ownerDocument.addEventListener("pointermove", tracker.updatePosition, {
       passive: true,
+    });
+    ownerDocument.addEventListener("wheel", tracker.updatePositionFromWheel, {
+      passive: true,
+      capture: TOOL_LABEL_POINTER_WHEEL_CAPTURE,
     });
     ownerDocument.addEventListener("pointerleave", tracker.clearPosition, {
       passive: true,
@@ -135,6 +159,11 @@ function retainToolLabelPointerTracker(ownerDocument: Document) {
 
     ownerDocument.removeEventListener("pointerdown", currentTracker.updatePosition);
     ownerDocument.removeEventListener("pointermove", currentTracker.updatePosition);
+    ownerDocument.removeEventListener(
+      "wheel",
+      currentTracker.updatePositionFromWheel,
+      TOOL_LABEL_POINTER_WHEEL_CAPTURE,
+    );
     ownerDocument.removeEventListener("pointerleave", currentTracker.clearPosition);
     ownerDocument.defaultView?.removeEventListener("blur", currentTracker.clearPosition);
     toolLabelPointerTrackers.delete(ownerDocument);
@@ -143,6 +172,20 @@ function retainToolLabelPointerTracker(ownerDocument: Document) {
 
 function readToolLabelPointerPosition(ownerDocument: Document | null) {
   return ownerDocument ? (toolLabelPointerTrackers.get(ownerDocument)?.position ?? null) : null;
+}
+
+function subscribeToolLabelPointerSync(ownerDocument: Document | null, subscriber: () => void) {
+  const tracker = ownerDocument ? toolLabelPointerTrackers.get(ownerDocument) : null;
+
+  if (!tracker) {
+    return () => {};
+  }
+
+  tracker.syncSubscribers.add(subscriber);
+
+  return () => {
+    tracker.syncSubscribers.delete(subscriber);
+  };
 }
 
 function ToolLabelTextSurface({
@@ -164,55 +207,6 @@ function ToolLabelTextSurface({
   }
 
   return <Torph text={text} />;
-}
-
-export function resolveToolLabelOverlayVisibility(args: {
-  isHovered: boolean;
-  hasTool: boolean;
-  interactionDisabled: boolean;
-}) {
-  return args.isHovered && args.hasTool && !args.interactionDisabled;
-}
-
-function isPointInsideRect(point: ToolLabelPointerPosition, rect: DOMRect | DOMRectReadOnly) {
-  return (
-    point.clientX >= rect.left &&
-    point.clientX <= rect.right &&
-    point.clientY >= rect.top &&
-    point.clientY <= rect.bottom
-  );
-}
-
-/**
- * Layout changes can move a label underneath a stationary pointer without
- * producing another enter event. Re-probe against geometry instead of relying
- * on `:hover`, otherwise overlays stay stale until the mouse moves again.
- */
-export function resolveToolLabelHoverFromPointerProbe(args: {
-  interactionDisabled: boolean;
-  hasTool: boolean;
-  pointerPosition: ToolLabelPointerPosition | null;
-  hoverTarget: HTMLElement | null;
-  overlay: HTMLElement | null;
-}) {
-  if (args.interactionDisabled || !args.hasTool || !args.pointerPosition || !args.hoverTarget) {
-    return false;
-  }
-
-  const hoverTarget = args.hoverTarget;
-  const overlay = args.overlay;
-  const { clientX, clientY } = args.pointerPosition;
-  const hitElements = hoverTarget.ownerDocument.elementsFromPoint(clientX, clientY);
-
-  if (overlay && hitElements.some((element) => element === overlay || overlay.contains(element))) {
-    return true;
-  }
-
-  if (hitElements.some((element) => element === hoverTarget || hoverTarget.contains(element))) {
-    return true;
-  }
-
-  return isPointInsideRect(args.pointerPosition, hoverTarget.getBoundingClientRect());
 }
 
 function ToolLabelOverlayBody({ tool }: { tool: React.ReactNode }) {
@@ -241,81 +235,14 @@ function collectScrollContainers(anchor: HTMLElement | null) {
   return containers;
 }
 
-function canScrollContainer(container: HTMLElement, deltaX: number, deltaY: number) {
-  const canScrollVertically = deltaY !== 0 && container.scrollHeight > container.clientHeight;
-  const canScrollHorizontally = deltaX !== 0 && container.scrollWidth > container.clientWidth;
+function collectHoverSyncScrollTargets(anchor: HTMLElement | null) {
+  const containers = collectScrollContainers(anchor);
+  const ownerWindow = anchor?.ownerDocument.defaultView;
 
-  return canScrollVertically || canScrollHorizontally;
-}
-
-function findScrollableAncestor(element: HTMLElement | null, deltaX: number, deltaY: number) {
-  let current = element;
-
-  while (current) {
-    if (isScrollableContainer(current) && canScrollContainer(current, deltaX, deltaY)) {
-      return current;
-    }
-
-    current = current.parentElement;
-  }
-
-  return null;
-}
-
-function findUnderlyingScrollContainer(
-  anchor: HTMLElement | null,
-  overlay: HTMLElement | null,
-  clientX: number,
-  clientY: number,
-  deltaX: number,
-  deltaY: number,
-) {
-  const doc = anchor?.ownerDocument;
-
-  if (!doc) {
-    return null;
-  }
-
-  return doc
-    .elementsFromPoint(clientX, clientY)
-    .filter(
-      (element): element is HTMLElement =>
-        element instanceof HTMLElement && !anchor?.contains(element) && !overlay?.contains(element),
-    )
-    .map((element) => findScrollableAncestor(element, deltaX, deltaY))
-    .find((container): container is HTMLElement => !!container);
-}
-
-function forwardWheelToScrollContainer(
-  anchor: HTMLElement | null,
-  overlay: HTMLElement | null,
-  clientX: number,
-  clientY: number,
-  deltaX: number,
-  deltaY: number,
-) {
-  if (!anchor) {
-    return;
-  }
-
-  const scrollContainer =
-    findUnderlyingScrollContainer(anchor, overlay, clientX, clientY, deltaX, deltaY) ??
-    collectScrollContainers(anchor).find((container) =>
-      canScrollContainer(container, deltaX, deltaY),
-    );
-
-  if (scrollContainer) {
-    scrollContainer.scrollBy({
-      left: deltaX,
-      top: deltaY,
-    });
-    return;
-  }
-
-  anchor.ownerDocument.defaultView?.scrollBy({
-    left: deltaX,
-    top: deltaY,
-  });
+  return {
+    containers,
+    ownerWindow: ownerWindow ?? null,
+  };
 }
 
 function toOverlayStyle(
@@ -364,7 +291,6 @@ function ToolLabelPortalOverlay({
   overlayRef,
   onMouseEnter,
   onMouseLeave,
-  onWheelCapture,
   tool,
   toolAnchor,
 }: {
@@ -372,7 +298,6 @@ function ToolLabelPortalOverlay({
   overlayRef: React.RefObject<HTMLDivElement | null>;
   onMouseEnter: () => void;
   onMouseLeave: (event: React.MouseEvent<HTMLDivElement>) => void;
-  onWheelCapture: (event: React.WheelEvent<HTMLDivElement>) => void;
   tool: React.ReactNode;
   toolAnchor: ToolLabelAnchor;
 }) {
@@ -442,8 +367,7 @@ function ToolLabelPortalOverlay({
       ref={overlayRef}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
-      onWheelCapture={onWheelCapture}
-      className={cn("fixed", TOOL_LABEL_OVERLAY_CLASS_NAME)}
+      className={cn("pointer-events-none fixed", TOOL_LABEL_OVERLAY_CLASS_NAME)}
       style={toOverlayStyle(anchorRect, toolAnchor, viewportWidth)}
     >
       <ToolLabelOverlayBody tool={tool} />
@@ -482,7 +406,7 @@ export function ToolLabel({
   toolAnchor?: ToolLabelAnchor;
   textRenderMode?: ToolLabelTextRenderMode;
 } & ComponentProps<"div">) {
-  const [isHovered, setIsHovered] = useState(false);
+  const [hoverLease, setHoverLease] = useState<ToolLabelHoverLease>(closedToolLabelHoverLease);
   const [isLayoutAnimating, setIsLayoutAnimating] = useState(false);
   const resolvedTextClassName = textClassName ?? "";
   const rootRef = useRef<HTMLDivElement>(null);
@@ -493,7 +417,7 @@ export function ToolLabel({
   const effectiveInteractionDisabled = interactionDisabled || isLayoutAnimating;
   const previousEffectiveInteractionDisabledRef = useRef(effectiveInteractionDisabled);
   const isOverlayVisible = resolveToolLabelOverlayVisibility({
-    isHovered,
+    lease: hoverLease,
     hasTool,
     interactionDisabled: effectiveInteractionDisabled,
   });
@@ -517,17 +441,15 @@ export function ToolLabel({
   const syncHoverStateFromPointer = useCallback(() => {
     const root = rootRef.current;
     const hoverTarget = hoverMode === "group" ? root?.closest(".group") : root;
-    const shouldShowHover =
-      hoverTarget instanceof HTMLElement &&
-      resolveToolLabelHoverFromPointerProbe({
-        interactionDisabled: effectiveInteractionDisabled,
-        hasTool,
-        pointerPosition: readToolLabelPointerPosition(root?.ownerDocument ?? null),
-        hoverTarget,
-        overlay: overlayRef.current,
-      });
+    const nextLease = resolveToolLabelHoverLeaseFromPointerProbe({
+      interactionDisabled: effectiveInteractionDisabled,
+      hasTool,
+      pointerPosition: readToolLabelPointerPosition(root?.ownerDocument ?? null),
+      hoverTarget: hoverTarget instanceof HTMLElement ? hoverTarget : null,
+      overlay: overlayRef.current,
+    });
 
-    setIsHovered(shouldShowHover);
+    setHoverLease(nextLease);
   }, [effectiveInteractionDisabled, hasTool, hoverMode]);
 
   const scheduleHoverSync = useCallback(() => {
@@ -548,10 +470,17 @@ export function ToolLabel({
 
   function openOverlay() {
     if (effectiveInteractionDisabled || !tool) {
+      setHoverLease({
+        kind: "closed",
+        reason: effectiveInteractionDisabled ? "disabled" : "missing-tool",
+      });
       return;
     }
 
-    setIsHovered(true);
+    setHoverLease({
+      kind: "open",
+      source: "target",
+    });
   }
 
   function closeOverlay(nextTarget: EventTarget | null) {
@@ -562,42 +491,29 @@ export function ToolLabel({
       return;
     }
 
-    setIsHovered(false);
+    setHoverLease({
+      kind: "closed",
+      reason: "outside",
+    });
   }
-
-  function handlePortalOverlayWheel(event: React.WheelEvent<HTMLDivElement>) {
-    if (effectiveInteractionDisabled) {
-      return;
-    }
-
-    event.preventDefault();
-    forwardWheelToScrollContainer(
-      rootRef.current,
-      overlayRef.current,
-      event.clientX,
-      event.clientY,
-      event.deltaX,
-      event.deltaY,
-    );
-  }
-
-  useLayoutEffect(() => {
-    if (!isHovered || !tool) {
-      return;
-    }
-  }, [isHovered, tool, text]);
 
   useLayoutEffect(() => {
     if (effectiveInteractionDisabled) {
       clearPendingHoverSync();
-      setIsHovered(false);
+      setHoverLease({
+        kind: "closed",
+        reason: "disabled",
+      });
     }
   }, [clearPendingHoverSync, effectiveInteractionDisabled]);
 
   useLayoutEffect(() => {
     if (!hasTool) {
       clearPendingHoverSync();
-      setIsHovered(false);
+      setHoverLease({
+        kind: "closed",
+        reason: "missing-tool",
+      });
       return;
     }
 
@@ -620,7 +536,10 @@ export function ToolLabel({
     }
 
     clearPendingHoverSync();
-    setIsHovered(false);
+    setHoverLease({
+      kind: "closed",
+      reason: "dismissed",
+    });
   }, [clearPendingHoverSync, dismissHoverSignal]);
 
   useLayoutEffect(() => {
@@ -636,8 +555,37 @@ export function ToolLabel({
       return;
     }
 
-    return retainToolLabelPointerTracker(ownerDocument);
-  }, []);
+    const releasePointerTracker = retainToolLabelPointerTracker(ownerDocument);
+    const unsubscribePointerSync = subscribeToolLabelPointerSync(ownerDocument, scheduleHoverSync);
+
+    return () => {
+      unsubscribePointerSync();
+      releasePointerTracker();
+    };
+  }, [scheduleHoverSync]);
+
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    const { containers, ownerWindow } = collectHoverSyncScrollTargets(root);
+
+    if (!root || (!ownerWindow && containers.length === 0)) {
+      return;
+    }
+
+    containers.forEach((container) => {
+      container.addEventListener("scroll", scheduleHoverSync, { passive: true });
+    });
+    ownerWindow?.addEventListener("scroll", scheduleHoverSync, { passive: true });
+    ownerWindow?.addEventListener("resize", scheduleHoverSync);
+
+    return () => {
+      containers.forEach((container) => {
+        container.removeEventListener("scroll", scheduleHoverSync);
+      });
+      ownerWindow?.removeEventListener("scroll", scheduleHoverSync);
+      ownerWindow?.removeEventListener("resize", scheduleHoverSync);
+    };
+  }, [scheduleHoverSync]);
 
   useLayoutEffect(() => {
     if (hoverMode !== "group") {
@@ -653,10 +601,17 @@ export function ToolLabel({
 
     const handleEnter = () => {
       if (effectiveInteractionDisabled || !tool) {
+        setHoverLease({
+          kind: "closed",
+          reason: effectiveInteractionDisabled ? "disabled" : "missing-tool",
+        });
         return;
       }
 
-      setIsHovered(true);
+      setHoverLease({
+        kind: "open",
+        source: "target",
+      });
     };
 
     const handleLeave = (event: MouseEvent) => {
@@ -669,7 +624,10 @@ export function ToolLabel({
         return;
       }
 
-      setIsHovered(false);
+      setHoverLease({
+        kind: "closed",
+        reason: "outside",
+      });
     };
 
     group.addEventListener("mouseenter", handleEnter);
@@ -709,7 +667,10 @@ export function ToolLabel({
           onLayoutAnimationStart={() => {
             clearPendingHoverSync();
             setIsLayoutAnimating(true);
-            setIsHovered(false);
+            setHoverLease({
+              kind: "closed",
+              reason: "layout",
+            });
           }}
           onLayoutAnimationComplete={() => {
             setIsLayoutAnimating(false);
@@ -727,7 +688,6 @@ export function ToolLabel({
                 overlayRef={overlayRef}
                 onMouseEnter={openOverlay}
                 onMouseLeave={(event) => closeOverlay(event.relatedTarget)}
-                onWheelCapture={handlePortalOverlayWheel}
                 tool={tool}
                 toolAnchor={toolAnchor}
               />

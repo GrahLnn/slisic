@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from "motion/react";
+import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { ComponentProps } from "react";
 
@@ -10,7 +10,7 @@ export function CoverTool({ text, onClick }: ComponentProps<"div"> & { text: str
         "bg-[#f9f9f9] dark:bg-[#383838]",
         "[corner-shape:squircle_squircle_squircle_squircle]",
         "rounded-[25px] border border-[#d4d4d4] px-1 py-1.5 shadow",
-        "dark:border-[#4a4a4a] cursor-pointer whitespace-nowrap",
+        "dark:border-[#4a4a4a] pointer-events-auto cursor-pointer whitespace-nowrap",
       )}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}

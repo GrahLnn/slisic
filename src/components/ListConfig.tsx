@@ -883,11 +883,11 @@ export function ListConfig() {
     <div
       data-page-state="config"
       className={cn(
-        "relative flex flex-col w-160 mx-auto mt-24",
+        "relative flex h-full min-h-0 w-160 flex-col box-border mx-auto pt-24",
         !isPresent && "pointer-events-none",
       )}
     >
-      <div className={cn("relative z-20 flex flex-col")}>
+      <div className={cn("relative z-20 flex shrink-0 flex-col")}>
         <motion.div {...contentFadeProps}>
           <button
             type="button"
@@ -985,139 +985,147 @@ export function ListConfig() {
         </motion.div>
       </div>
 
-      <div className="relative z-10 overflow-visible flex flex-col gap-8">
-        <div className="relative overflow-visible">
-          {viewModel.emptyState.match({
-            true: () => (
-              <motion.div {...contentFadeProps} className="pointer-events-none">
-                <p
+      <div className="relative z-10 -mx-4 min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 hide-scrollbar">
+        <div className="mb-32 flex flex-col gap-8">
+          <div className="relative overflow-visible">
+            {viewModel.emptyState.match({
+              true: () => (
+                <motion.div {...contentFadeProps} className="pointer-events-none">
+                  <p
+                    className={cn(
+                      "max-w-xl cursor-default select-none whitespace-pre-line text-pretty text-sm leading-6",
+                      "text-[#525252] dark:text-[#a3a3a3]",
+                    )}
+                  >
+                    {LIST_CONFIG_EMPTY_STATE_TEXT}
+                  </p>
+                </motion.div>
+              ),
+              false: () => (
+                <motion.div
+                  {...contentFadeProps}
                   className={cn(
-                    "max-w-xl cursor-default select-none whitespace-pre-line text-pretty text-sm leading-6",
-                    "text-[#525252] dark:text-[#a3a3a3]",
+                    "flex flex-col",
+                    viewModel.interactionFlags.isToolListInteractionDisabled &&
+                      "pointer-events-none",
                   )}
                 >
-                  {LIST_CONFIG_EMPTY_STATE_TEXT}
-                </p>
-              </motion.div>
-            ),
-            false: () => (
-              <motion.div
-                {...contentFadeProps}
+                  <AnimatePresence initial={false}>
+                    {viewModel.toolLabelItems.map((item) => (
+                      <ListConfigToolLabelRow
+                        key={item.id}
+                        item={item}
+                        activeGhostLayoutId={activeGhostLayoutId}
+                        activeGhostTargetOwnerId={activeGhostTargetOwnerId}
+                        dismissHoverSignal={dismissHoverSignal}
+                        duplicateShakeSignal={resolveToolLabelShakeSignal(
+                          duplicateShakeState,
+                          item,
+                        )}
+                        interactionDisabled={
+                          viewModel.interactionFlags.isToolListInteractionDisabled
+                        }
+                        registerGhostNode={registerGhostNode}
+                        onDuplicateShakeConsumed={handleDuplicateShakeConsumed}
+                        onRemoveDraftItem={({ layoutId, ref, sourceNode }) => {
+                          popInsertionPlannerRef.current?.({
+                            layoutId,
+                            sourceNode,
+                          });
+                          startGhostTransition({
+                            layoutId,
+                            sourceNode,
+                            targetOwnerId: LIST_CONFIG_GHOST_NODE_OWNER.arcTrack,
+                          });
+                          appLogicAction.removeDraftItem(ref);
+                        }}
+                        onDeleteCandidateItem={(id) => {
+                          pasteDownloadAction.delete(id);
+                        }}
+                      />
+                    ))}
+                  </AnimatePresence>
+                </motion.div>
+              ),
+            })}
+          </div>
+          {viewModel.extraToolLabelItems.length > 0 ? (
+            <motion.div
+              {...contentFadeProps}
+              animate={isPresent ? contentFadeProps.animate : contentFadeProps.exit}
+              className="flex flex-col overflow-visible"
+            >
+              <AnimatePresence initial={false}>
+                {visibleExtraToolLabelItems.length > 0 ? (
+                  <motion.div
+                    {...contentFadeProps}
+                    className="cursor-default select-none text-sm text-[#525252] dark:text-[#d4d4d4]"
+                  >
+                    Extra
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+              <div
                 className={cn(
-                  "flex flex-col",
+                  "flex flex-col overflow-visible",
                   viewModel.interactionFlags.isToolListInteractionDisabled && "pointer-events-none",
                 )}
               >
                 <AnimatePresence initial={false}>
-                  {viewModel.toolLabelItems.map((item) => (
-                    <ListConfigToolLabelRow
+                  {viewModel.extraToolLabelItems.map((item) => (
+                    <ListConfigExtraToolLabelRow
                       key={item.id}
                       item={item}
-                      activeGhostLayoutId={activeGhostLayoutId}
-                      activeGhostTargetOwnerId={activeGhostTargetOwnerId}
                       dismissHoverSignal={dismissHoverSignal}
-                      duplicateShakeSignal={resolveToolLabelShakeSignal(duplicateShakeState, item)}
                       interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
-                      registerGhostNode={registerGhostNode}
-                      onDuplicateShakeConsumed={handleDuplicateShakeConsumed}
-                      onRemoveDraftItem={({ layoutId, ref, sourceNode }) => {
-                        popInsertionPlannerRef.current?.({
-                          layoutId,
-                          sourceNode,
-                        });
-                        startGhostTransition({
-                          layoutId,
-                          sourceNode,
-                          targetOwnerId: LIST_CONFIG_GHOST_NODE_OWNER.arcTrack,
-                        });
-                        appLogicAction.removeDraftItem(ref);
-                      }}
-                      onDeleteCandidateItem={(id) => {
-                        pasteDownloadAction.delete(id);
-                      }}
+                      isRemoving={removingExtraItemIds.has(item.id)}
+                      onRemoveExtraItem={handleRemoveExtraItem}
+                      onRemoveExtraItemStart={markExtraItemRemoving}
                     />
                   ))}
                 </AnimatePresence>
-              </motion.div>
-            ),
-          })}
+              </div>
+            </motion.div>
+          ) : null}
+          {viewModel.excludeToolLabelItems.length > 0 ? (
+            <motion.div
+              {...contentFadeProps}
+              animate={isPresent ? contentFadeProps.animate : contentFadeProps.exit}
+              className="flex flex-col overflow-visible"
+            >
+              <AnimatePresence initial={false}>
+                {visibleExcludeToolLabelItems.length > 0 ? (
+                  <motion.div
+                    {...contentFadeProps}
+                    className="cursor-default select-none text-sm text-[#525252] dark:text-[#d4d4d4]"
+                  >
+                    Exclude
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+              <div
+                className={cn(
+                  "flex flex-col overflow-visible",
+                  viewModel.interactionFlags.isToolListInteractionDisabled && "pointer-events-none",
+                )}
+              >
+                <AnimatePresence initial={false}>
+                  {viewModel.excludeToolLabelItems.map((item) => (
+                    <ListConfigExcludeToolLabelRow
+                      key={item.id}
+                      item={item}
+                      dismissHoverSignal={dismissHoverSignal}
+                      interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
+                      isRemoving={removingExcludeItemIds.has(item.id)}
+                      onRemoveExcludeItem={handleRemoveExcludeItem}
+                      onRemoveExcludeItemStart={markExcludeItemRemoving}
+                    />
+                  ))}
+                </AnimatePresence>
+              </div>
+            </motion.div>
+          ) : null}
         </div>
-        {viewModel.extraToolLabelItems.length > 0 ? (
-          <motion.div
-            {...contentFadeProps}
-            animate={isPresent ? contentFadeProps.animate : contentFadeProps.exit}
-            className="flex flex-col overflow-visible"
-          >
-            <AnimatePresence initial={false}>
-              {visibleExtraToolLabelItems.length > 0 ? (
-                <motion.div
-                  {...contentFadeProps}
-                  className="cursor-default select-none text-sm text-[#525252] dark:text-[#d4d4d4]"
-                >
-                  Extra
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
-            <div
-              className={cn(
-                "flex flex-col overflow-visible",
-                viewModel.interactionFlags.isToolListInteractionDisabled && "pointer-events-none",
-              )}
-            >
-              <AnimatePresence initial={false}>
-                {viewModel.extraToolLabelItems.map((item) => (
-                  <ListConfigExtraToolLabelRow
-                    key={item.id}
-                    item={item}
-                    dismissHoverSignal={dismissHoverSignal}
-                    interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
-                    isRemoving={removingExtraItemIds.has(item.id)}
-                    onRemoveExtraItem={handleRemoveExtraItem}
-                    onRemoveExtraItemStart={markExtraItemRemoving}
-                  />
-                ))}
-              </AnimatePresence>
-            </div>
-          </motion.div>
-        ) : null}
-        {viewModel.excludeToolLabelItems.length > 0 ? (
-          <motion.div
-            {...contentFadeProps}
-            animate={isPresent ? contentFadeProps.animate : contentFadeProps.exit}
-            className="flex flex-col overflow-visible"
-          >
-            <AnimatePresence initial={false}>
-              {visibleExcludeToolLabelItems.length > 0 ? (
-                <motion.div
-                  {...contentFadeProps}
-                  className="cursor-default select-none text-sm text-[#525252] dark:text-[#d4d4d4]"
-                >
-                  Exclude
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
-            <div
-              className={cn(
-                "flex flex-col overflow-visible",
-                viewModel.interactionFlags.isToolListInteractionDisabled && "pointer-events-none",
-              )}
-            >
-              <AnimatePresence initial={false}>
-                {viewModel.excludeToolLabelItems.map((item) => (
-                  <ListConfigExcludeToolLabelRow
-                    key={item.id}
-                    item={item}
-                    dismissHoverSignal={dismissHoverSignal}
-                    interactionDisabled={viewModel.interactionFlags.isToolListInteractionDisabled}
-                    isRemoving={removingExcludeItemIds.has(item.id)}
-                    onRemoveExcludeItem={handleRemoveExcludeItem}
-                    onRemoveExcludeItemStart={markExcludeItemRemoving}
-                  />
-                ))}
-              </AnimatePresence>
-            </div>
-          </motion.div>
-        ) : null}
       </div>
       {viewModel.interactionFlags.shouldRenderArcTrack && (
         <ArcTrackList
