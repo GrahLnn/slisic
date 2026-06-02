@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
+use crate::domain::player::model::PlaybackTrackPayload;
 use crate::domain::playlists::model::{Exclude, ExcludeAvailability};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -9,6 +10,7 @@ pub struct PlayPlaylistSession {
     pub playlist_name: String,
     pub session_generation: Option<u64>,
     pub track_count: u32,
+    pub initial_track: Option<PlaybackTrackPayload>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]

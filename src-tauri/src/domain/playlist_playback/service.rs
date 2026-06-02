@@ -253,6 +253,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
                 playlist_name: name,
                 session_generation: None,
                 track_count: 0,
+                initial_track: None,
             });
         }
         Err(error) => {
@@ -336,6 +337,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
         }
     };
     let session_generation = session.session_generation;
+    let initial_track_payload = initial_track.to_payload();
     spawn_playlist_track_queue_fill(
         app.clone(),
         playlist_name.clone(),
@@ -367,6 +369,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
         playlist_name,
         session_generation: Some(session_generation),
         track_count,
+        initial_track: Some(initial_track_payload),
     })
 }
 
@@ -703,7 +706,9 @@ async fn build_playlist_playback_material(
         }));
     }
 
-    let source = load_initial_playlist_track_resolution(app, playlist_name).await?;
+    let source =
+        load_playlist_track_resolution_window(app, playlist_name, INITIAL_PLAYBACK_QUEUE_LIMIT)
+            .await?;
     if let Some(initial_track) = source.resolution.tracks.into_iter().next() {
         let tracks = create_start_anchor_playback_queue(initial_track.clone());
         ensure_playlist_playback_request_current(request)?;
@@ -726,6 +731,31 @@ async fn build_playlist_playback_material(
 
     let has_relevant_active_downloads =
         playlist_selection_has_active_downloads(&source.selection).await?;
+    if initial_playback_miss_action(has_relevant_active_downloads)
+        == InitialPlaybackMissAction::ScanFallback
+    {
+        let source = load_initial_playlist_track_resolution(app, playlist_name).await?;
+        if let Some(initial_track) = source.resolution.tracks.into_iter().next() {
+            let tracks = create_start_anchor_playback_queue(initial_track.clone());
+            ensure_playlist_playback_request_current(request)?;
+            emit_playlist_playback_trace(
+                "playlist-play-material-immediate-track-ok",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(playlist_name)
+                    .track(&initial_track)
+                    .elapsed(trace_start)
+                    .queue_count(tracks.len())
+                    .status("prepared_first_slot_recovered"),
+            );
+            return Ok(Some(PlaylistPlaybackMaterial {
+                playlist_name: playlist_name.to_string(),
+                initial_prepared_source: None,
+                initial_track,
+                tracks,
+            }));
+        }
+    }
+
     emit_playlist_playback_trace(
         "playlist-play-material-prepared-initial-track-miss",
         PlaylistPlaybackTrace::new(app)
@@ -1841,6 +1871,22 @@ pub(crate) fn playlist_selection_has_relevant_active_downloads(
                 .chain(std::iter::once(task.url.as_str()))
                 .any(|url| selected_urls.contains(url))
         })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InitialPlaybackMissAction {
+    PendingFirstTrack,
+    ScanFallback,
+}
+
+pub(crate) fn initial_playback_miss_action(
+    has_relevant_active_downloads: bool,
+) -> InitialPlaybackMissAction {
+    if has_relevant_active_downloads {
+        InitialPlaybackMissAction::PendingFirstTrack
+    } else {
+        InitialPlaybackMissAction::ScanFallback
+    }
 }
 
 pub(crate) fn resolve_playlist_playback_source_resolution(

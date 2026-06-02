@@ -133,6 +133,7 @@ describe("playlist playback start result", () => {
       status: "started",
       session_generation: 1,
       track_count: 1,
+      initial_track: null,
     };
 
     assert.deepEqual(resolvePlaylistPlaybackStartResult(session), {
@@ -147,6 +148,7 @@ describe("playlist playback start result", () => {
       status: "pending_first_track",
       session_generation: null,
       track_count: 0,
+      initial_track: null,
     };
 
     assert.deepEqual(resolvePlaylistPlaybackStartResult(session), {
@@ -162,6 +164,7 @@ describe("playlist playback start result", () => {
       status: "superseded",
       session_generation: null,
       track_count: 0,
+      initial_track: null,
     };
 
     assert.deepEqual(resolvePlaylistPlaybackStartResult(session), {

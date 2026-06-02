@@ -17,6 +17,7 @@ import {
   type ConfigLibraryView,
   type ExcludeCurrentMusicAndSkipResult,
   type Music,
+  type DownloadTaskChangeSignal,
   type NowPlayingTrackChangedEvent,
   type PlaybackExcludeCommittedEvent,
   type PlaybackDiagnosticTraceEvent,
@@ -496,6 +497,12 @@ export async function listenNowPlayingTrackChanged(
   handler: (payload: NowPlayingTrackChangedEvent) => void,
 ): Promise<() => void> {
   return crab.evt("nowPlayingTrackChangedEvent")(handler);
+}
+
+export async function listenDownloadTaskChanged(
+  handler: (payload: DownloadTaskChangeSignal) => void,
+): Promise<() => void> {
+  return crab.evt("downloadTaskChangeSignal")(handler);
 }
 
 export async function listenPlaybackDiagnosticTrace(

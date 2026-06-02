@@ -11,6 +11,7 @@ import type {
   PlayListConfigView,
   PlayListListView,
   PlayPlaylistSession,
+  PlaybackTrackPayload,
   PlayListWriteRequest,
   SpectrumMusicSourceContext,
   NowPlayingTrackChangedEvent,
@@ -76,6 +77,9 @@ export interface CollectionUpdatesChange {
 }
 
 export type NowPlayingTrackEvidence = NowPlayingTrackChangedEvent;
+export type InitialPlaybackTrackEvidence = PlaybackTrackPayload & {
+  session_generation: number;
+};
 export type PlaylistPlaybackRequestPhase = "failed" | "preparing" | "starting";
 export type PlaylistPlaybackStopReason =
   | Exclude<PlayPlaylistSession["status"], "started">

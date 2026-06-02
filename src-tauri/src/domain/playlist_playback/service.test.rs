@@ -3,10 +3,11 @@ use super::recommendation::{
     filter_recently_played_recommendation_candidates,
 };
 use super::service::{
-    PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
-    PlaylistPlaybackRecommender, PlaylistQueueRecommendationReadiness,
-    RandomPlaylistPlaybackRecommender, audio_style_playlist_playback_proposal_is_complete,
-    create_start_anchor_playback_queue, place_track_at_queue_start,
+    InitialPlaybackMissAction, PlaylistPlaybackRecommendationMode,
+    PlaylistPlaybackRecommendationRequest, PlaylistPlaybackRecommender,
+    PlaylistQueueRecommendationReadiness, RandomPlaylistPlaybackRecommender,
+    audio_style_playlist_playback_proposal_is_complete, create_start_anchor_playback_queue,
+    initial_playback_miss_action, place_track_at_queue_start,
     playlist_playback_proposal_contains_next_track,
     playlist_playback_queue_contains_next_track_after_anchor,
     playlist_selection_has_relevant_active_downloads,
@@ -220,6 +221,18 @@ fn playlist_selection_active_downloads_match_collection_and_group_domains() {
     assert!(playlist_selection_has_relevant_active_downloads(
         &selection, &tasks
     ));
+}
+
+#[test]
+fn initial_playback_miss_waits_when_relevant_downloads_are_active() {
+    assert_eq!(
+        initial_playback_miss_action(true),
+        InitialPlaybackMissAction::PendingFirstTrack
+    );
+    assert_eq!(
+        initial_playback_miss_action(false),
+        InitialPlaybackMissAction::ScanFallback
+    );
 }
 
 #[test]

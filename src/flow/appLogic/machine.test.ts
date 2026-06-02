@@ -106,6 +106,7 @@ function createStartedPlaybackSession(
     status: "started",
     session_generation: sessionGeneration,
     track_count: 1,
+    initial_track: null,
   };
 }
 
@@ -118,6 +119,7 @@ function createStoppedPlaybackSession(
     status,
     session_generation: null,
     track_count: 0,
+    initial_track: null,
   };
 }
 
@@ -242,6 +244,30 @@ function waitForState(
 }
 
 describe("appLogic machine", () => {
+  test("accepts root title collection shells as dirty draft evidence in create config", async () => {
+    const shell = createCollection([]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () => createBootstrapResult([])),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(sig.mainx.opencreate);
+    assert.equal(actor.getSnapshot().value, "config");
+
+    actor.send(payloads["draft.collection.upserted"].load(shell));
+
+    const { draft, draftBaseline } = actor.getSnapshot().context;
+    assert.equal(draft?.collections[0]?.url, shell.url);
+    assert.deepEqual(draftBaseline?.collections, []);
+  });
+
   test("preserves the title handoff while loading an opened playlist config", async () => {
     const collection = createCollection([createMusic()]);
     const playlist = createPlaylist(collection);
@@ -567,6 +593,61 @@ describe("appLogic machine", () => {
     assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, null);
     assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
     assert.equal(actor.getSnapshot().context.nowPlayingTrackName, music.alias);
+  });
+
+  test("projects accepted initial track immediately after pending first-track", async () => {
+    const music = createMusic();
+    const collection = createCollection([music]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.stopped"].load({
+        error: null,
+        playlistName: "Focus Session",
+        reason: "pending_first_track",
+        requestId: 1,
+        session: createStoppedPlaybackSession("pending_first_track"),
+      }),
+    );
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 1,
+        session: {
+          ...createStartedPlaybackSession(7),
+          initial_track: {
+            playlist_name: "Focus Session",
+            music_name: music.alias,
+            canonical_music_id: music.canonical_music_id,
+            music_url: music.url,
+            file_path: "C:/Music/quiet-morning.m4a",
+            start_ms: music.start_ms,
+            end_ms: music.end_ms,
+            liked: music.liked,
+            loudness: music.loudness,
+          },
+        },
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().value, "play");
+    assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, music.alias);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackUrl, music.url);
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, null);
   });
 
   test("closes stopped playback intent when the backend supersedes it", async () => {

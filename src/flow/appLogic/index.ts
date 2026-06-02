@@ -11,6 +11,7 @@ import {
   exitSpectrumPlaybackScope,
   importLocalCollection,
   invoker,
+  listenDownloadTaskChanged,
   listenPlaybackDiagnosticTrace,
   listenPlaybackExcludeCommitted,
   listenNowPlayingTrackChanged,
@@ -92,6 +93,7 @@ const selectContext = me.select((shot: { context: ActorSnapshot["context"] }) =>
 let started = false;
 let unsubscribeDebug: (() => void) | null = null;
 let unsubscribeNowPlayingTrackChanged: (() => void) | null = null;
+let unsubscribeDownloadTaskChanged: (() => void) | null = null;
 let unsubscribePlaybackDiagnosticTrace: (() => void) | null = null;
 let unsubscribePlaybackExcludeCommitted: (() => void) | null = null;
 const playbackContinuationModeEffectOwner = createPlaybackContinuationModeEffectOwner({
@@ -99,8 +101,13 @@ const playbackContinuationModeEffectOwner = createPlaybackContinuationModeEffect
 });
 let lastPlayableIndexReadyState = false;
 let playlistPlaybackStartEpoch = 0;
-const PLAYLIST_PLAYBACK_PENDING_RETRY_INITIAL_DELAY_MS = 500;
-const PLAYLIST_PLAYBACK_PENDING_RETRY_MAX_DELAY_MS = 5_000;
+let pendingPlaybackWakeup: {
+  actionStartedAt: number;
+  inFlight: boolean;
+  playlistName: string;
+  requestId: number;
+  requested: boolean;
+} | null = null;
 
 function formatStateValue(value: unknown) {
   return typeof value === "string" ? value : JSON.stringify(value);
@@ -292,64 +299,135 @@ function isCurrentPlaylistPlaybackRequest(playlistName: string, requestId: numbe
   );
 }
 
-function schedulePlaylistPlaybackPendingRetry(args: {
+function closePendingPlaybackWakeup(playlistName: string, requestId: number) {
+  if (
+    pendingPlaybackWakeup?.playlistName === playlistName &&
+    pendingPlaybackWakeup.requestId === requestId
+  ) {
+    pendingPlaybackWakeup = null;
+  }
+}
+
+function schedulePlaylistPlaybackPendingWakeup(args: {
   actionStartedAt: number;
-  attempt: number;
   playlistName: string;
   requestId: number;
 }) {
-  const delayMs = Math.min(
-    PLAYLIST_PLAYBACK_PENDING_RETRY_INITIAL_DELAY_MS * 2 ** Math.min(args.attempt, 4),
-    PLAYLIST_PLAYBACK_PENDING_RETRY_MAX_DELAY_MS,
-  );
-
-  globalThis.setTimeout(() => {
-    if (!isCurrentPlaylistPlaybackRequest(args.playlistName, args.requestId)) {
-      recordRenderPerformanceTrace("playlist-play-action-pending-retry-cancelled", {
-        playlistName: args.playlistName,
-        requestId: args.requestId,
-        attempt: args.attempt + 1,
-        elapsedMs: currentPerformanceNow() - args.actionStartedAt,
-      });
-      return;
-    }
-
-    void startPlaylistPlaybackFromAction({
-      actionStartedAt: args.actionStartedAt,
-      attempt: args.attempt + 1,
+  if (!isCurrentPlaylistPlaybackRequest(args.playlistName, args.requestId)) {
+    closePendingPlaybackWakeup(args.playlistName, args.requestId);
+    recordRenderPerformanceTrace("playlist-play-action-pending-wakeup-cancelled", {
       playlistName: args.playlistName,
       requestId: args.requestId,
-    }).catch((error) => {
+      elapsedMs: currentPerformanceNow() - args.actionStartedAt,
+    });
+    return;
+  }
+
+  if (
+    pendingPlaybackWakeup?.playlistName !== args.playlistName ||
+    pendingPlaybackWakeup.requestId !== args.requestId
+  ) {
+    pendingPlaybackWakeup = {
+      ...args,
+      inFlight: false,
+      requested: false,
+    };
+  }
+
+  const wakeup = pendingPlaybackWakeup;
+  wakeup.requested = true;
+
+  if (wakeup.inFlight) {
+    recordRenderPerformanceTrace("playlist-play-action-pending-wakeup-coalesced", {
+      playlistName: wakeup.playlistName,
+      requestId: wakeup.requestId,
+      elapsedMs: currentPerformanceNow() - wakeup.actionStartedAt,
+    });
+    return;
+  }
+
+  wakeup.inFlight = true;
+  void (async () => {
+    while (wakeup.requested) {
+      wakeup.requested = false;
+      if (!isCurrentPlaylistPlaybackRequest(wakeup.playlistName, wakeup.requestId)) {
+        closePendingPlaybackWakeup(wakeup.playlistName, wakeup.requestId);
+        recordRenderPerformanceTrace("playlist-play-action-pending-wakeup-cancelled", {
+          playlistName: wakeup.playlistName,
+          requestId: wakeup.requestId,
+          elapsedMs: currentPerformanceNow() - wakeup.actionStartedAt,
+        });
+        return;
+      }
+
+      await startPlaylistPlaybackFromAction({
+        actionStartedAt: wakeup.actionStartedAt,
+        playlistName: wakeup.playlistName,
+        requestId: wakeup.requestId,
+        trigger: "download_task_changed",
+      });
+    }
+
+    if (
+      pendingPlaybackWakeup?.playlistName === wakeup.playlistName &&
+      pendingPlaybackWakeup.requestId === wakeup.requestId
+    ) {
+      pendingPlaybackWakeup.inFlight = false;
+    }
+  })().catch((error) => {
+    if (isCurrentPlaylistPlaybackRequest(args.playlistName, args.requestId)) {
       sendPlaylistPlaybackErrorStop({
         error,
         playlistName: args.playlistName,
         requestId: args.requestId,
       });
-      recordRenderPerformanceTrace("playlist-play-action-pending-retry-error", {
-        playlistName: args.playlistName,
-        requestId: args.requestId,
-        attempt: args.attempt + 1,
-        elapsedMs: currentPerformanceNow() - args.actionStartedAt,
-        error: toPlaylistPlaybackErrorMessage(error),
-      });
-      console.error("Failed to retry pending playlist playback", error);
+    }
+    closePendingPlaybackWakeup(args.playlistName, args.requestId);
+    recordRenderPerformanceTrace("playlist-play-action-pending-wakeup-error", {
+      playlistName: args.playlistName,
+      requestId: args.requestId,
+      elapsedMs: currentPerformanceNow() - args.actionStartedAt,
+      error: toPlaylistPlaybackErrorMessage(error),
     });
-  }, delayMs);
+    console.error("Failed to wake pending playlist playback", error);
+  });
+}
+
+function requestPendingPlaylistPlaybackWakeupFromDownloadTaskChange() {
+  const request = actor.getSnapshot().context.pendingPlaylistPlaybackRequest;
+  if (request?.phase !== "preparing" || request.reason !== "pending_first_track") {
+    return;
+  }
+
+  schedulePlaylistPlaybackPendingWakeup({
+    actionStartedAt: pendingPlaybackWakeup?.actionStartedAt ?? currentPerformanceNow(),
+    playlistName: request.playlistName,
+    requestId: request.requestId,
+  });
 }
 
 async function startPlaylistPlaybackFromAction(args: {
   actionStartedAt: number;
-  attempt?: number;
   playlistName: string;
   requestId: number;
+  trigger?: "download_task_changed" | "user";
 }) {
-  const attempt = args.attempt ?? 0;
   const { playlistName, requestId } = args;
+
+  if (!isCurrentPlaylistPlaybackRequest(playlistName, requestId)) {
+    recordRenderPerformanceTrace("playlist-play-action-backend-skipped-stale-request", {
+      playlistName,
+      requestId,
+      trigger: args.trigger ?? "user",
+      elapsedMs: currentPerformanceNow() - args.actionStartedAt,
+    });
+    return null;
+  }
 
   recordRenderPerformanceTrace("playlist-play-action-backend-start", {
     playlistName,
     requestId,
-    attempt,
+    trigger: args.trigger ?? "user",
     elapsedMs: currentPerformanceNow() - args.actionStartedAt,
   });
 
@@ -360,7 +438,7 @@ async function startPlaylistPlaybackFromAction(args: {
       playlistName,
       requestId,
       currentEpoch: playlistPlaybackStartEpoch,
-      attempt,
+      trigger: args.trigger ?? "user",
       status: result.session.status,
       result: result.kind,
       trackCount: result.session.track_count,
@@ -374,6 +452,7 @@ async function startPlaylistPlaybackFromAction(args: {
         session: null,
       }),
     );
+    closePendingPlaybackWakeup(playlistName, requestId);
     return result;
   }
 
@@ -390,23 +469,32 @@ async function startPlaylistPlaybackFromAction(args: {
     recordRenderPerformanceTrace("playlist-play-action-stopped-result", {
       playlistName,
       requestId,
-      attempt,
+      trigger: args.trigger ?? "user",
       reason: result.reason,
       status: result.session.status,
       trackCount: result.session.track_count,
     });
     if (result.reason === "pending_first_track") {
       refreshPlayableIndex();
-      schedulePlaylistPlaybackPendingRetry({
-        actionStartedAt: args.actionStartedAt,
-        attempt,
-        playlistName,
-        requestId,
-      });
+      if (
+        pendingPlaybackWakeup?.playlistName !== playlistName ||
+        pendingPlaybackWakeup.requestId !== requestId
+      ) {
+        pendingPlaybackWakeup = {
+          actionStartedAt: args.actionStartedAt,
+          inFlight: false,
+          playlistName,
+          requestId,
+          requested: false,
+        };
+      }
+    } else {
+      closePendingPlaybackWakeup(playlistName, requestId);
     }
     return result;
   }
 
+  closePendingPlaybackWakeup(playlistName, requestId);
   send(playlistPlaybackAccepted.load({ playlistName, requestId, session: result.session }));
   return result;
 }
@@ -625,6 +713,30 @@ function attachNowPlayingTrackListener() {
     });
 }
 
+function attachDownloadTaskChangeListener() {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+    return;
+  }
+
+  void listenDownloadTaskChanged((payload) => {
+    recordRenderPerformanceTrace("download-task-change-event-received", {
+      taskId: payload.task_id,
+      taskUrl: payload.task_url,
+      collectionUrl: payload.collection_url,
+      collectionName: payload.collection_name,
+      status: payload.status,
+      ...traceAppSnapshotPayload(actor.getSnapshot()),
+    });
+    requestPendingPlaylistPlaybackWakeupFromDownloadTaskChange();
+  })
+    .then((unlisten) => {
+      unsubscribeDownloadTaskChanged = unlisten;
+    })
+    .catch((error) => {
+      console.error("Failed to subscribe to download task changes", error);
+    });
+}
+
 function attachPlaybackDiagnosticTraceListener() {
   if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
     return;
@@ -760,6 +872,15 @@ export const action = {
       requestId,
     })
       .then((session) => {
+        if (!session) {
+          recordRenderPerformanceTrace("playlist-play-action-finished-stale", {
+            playlistName,
+            requestId,
+            elapsedMs: currentPerformanceNow() - actionStartedAt,
+          });
+          return;
+        }
+
         recordRenderPerformanceTrace("playlist-play-action-finished", {
           playlistName,
           requestId,
@@ -1013,6 +1134,7 @@ export function ensureStarted() {
   actor.start();
   attachDebugLogger();
   attachNowPlayingTrackListener();
+  attachDownloadTaskChangeListener();
   attachPlaybackDiagnosticTraceListener();
   attachPlaybackExcludeCommittedListener();
   started = true;
@@ -1028,6 +1150,8 @@ export function stop() {
   unsubscribeDebug = null;
   unsubscribeNowPlayingTrackChanged?.();
   unsubscribeNowPlayingTrackChanged = null;
+  unsubscribeDownloadTaskChanged?.();
+  unsubscribeDownloadTaskChanged = null;
   unsubscribePlaybackDiagnosticTrace?.();
   unsubscribePlaybackDiagnosticTrace = null;
   unsubscribePlaybackExcludeCommitted?.();
@@ -1035,6 +1159,7 @@ export function stop() {
   started = false;
   lastPlayableIndexReadyState = false;
   playlistPlaybackStartEpoch += 1;
+  pendingPlaybackWakeup = null;
   resetRuntimeActor();
 }
 

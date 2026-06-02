@@ -20,9 +20,11 @@ import {
   upsertCollectionIntoCollections,
   type Context,
   type ContextResetLifecycle,
+  type InitialPlaybackTrackEvidence,
   type NowPlayingTrackEvidence,
   type PlaylistPlaybackRequestEvidence,
 } from "./core";
+import type { PlaybackTrackPayload } from "@/src/cmd";
 import {
   createSpectrumCurrentMusicDraft,
   activateSpectrumNewMusicDraft,
@@ -449,15 +451,44 @@ function createNowPlayingTrackPatch(
   };
 }
 
-function createPlayReadyContext(context: Context, playlistName: string) {
+function createInitialPlaybackTrackEvidence(
+  context: Context,
+  playlistName: string,
+  event: { output: { session: { initial_track: PlaybackTrackPayload | null } } },
+): InitialPlaybackTrackEvidence | null {
+  const track = event.output.session.initial_track;
+  if (
+    !track ||
+    track.playlist_name !== playlistName ||
+    context.pendingPlaylistPlaybackSessionGeneration === null
+  ) {
+    return null;
+  }
+
+  return {
+    ...track,
+    session_generation: context.pendingPlaylistPlaybackSessionGeneration,
+  };
+}
+
+function createPlayReadyContext(
+  context: Context,
+  playlistName: string,
+  event?: { output: { session: { initial_track: PlaybackTrackPayload | null } } },
+) {
   const pendingEvidence =
     context.pendingNowPlayingTrackEvidence?.playlist_name === playlistName &&
     context.pendingNowPlayingTrackEvidence.session_generation ===
       context.pendingPlaylistPlaybackSessionGeneration
       ? context.pendingNowPlayingTrackEvidence
       : null;
+  const initialTrackEvidence = event
+    ? createInitialPlaybackTrackEvidence(context, playlistName, event)
+    : null;
   const nowPlayingTrackPatch = pendingEvidence
     ? createNowPlayingTrackPatch(context, pendingEvidence)
+    : initialTrackEvidence
+      ? createNowPlayingTrackPatch(context, initialTrackEvidence)
     : {
         nowPlayingTrackName: null,
         nowPlayingTrackUrl: null,
@@ -1019,6 +1050,7 @@ export const machine = src.createMachine({
                 pendingPlaylistPlaybackSessionGeneration: event.output.session.session_generation,
               },
               event.output.playlistName,
+              event,
             ),
           ),
         },
@@ -1122,6 +1154,7 @@ export const machine = src.createMachine({
                 pendingPlaylistPlaybackSessionGeneration: event.output.session.session_generation,
               },
               event.output.playlistName,
+              event,
             ),
           ),
         },

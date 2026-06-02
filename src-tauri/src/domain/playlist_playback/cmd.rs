@@ -16,6 +16,7 @@ pub async fn play_playlist(app: AppHandle, name: String) -> Result<PlayPlaylistS
                 playlist_name: name,
                 session_generation: None,
                 track_count: 0,
+                initial_track: None,
             })
         }
         Err(error) => Err(error.to_string()),
