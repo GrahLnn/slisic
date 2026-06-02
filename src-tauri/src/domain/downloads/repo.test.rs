@@ -138,6 +138,52 @@ fn find_latest_active_task_for_url_ignores_terminal_tasks() {
 }
 
 #[test]
+fn find_latest_active_task_for_url_uses_narrow_latest_active_lookup() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let mut older = sample_task(
+            "task-active-older",
+            "https://example.com/list",
+            DownloadTaskStatus::Resolving,
+        );
+        older.updated_at = "2026-06-02T00:00:01Z".to_string();
+        save_task(older)
+            .await
+            .expect("older active task should save");
+
+        let mut newer = sample_task(
+            "task-active-newer",
+            "https://example.com/list",
+            DownloadTaskStatus::Downloading,
+        );
+        newer.updated_at = "2026-06-02T00:00:02Z".to_string();
+        let newer = save_task(newer)
+            .await
+            .expect("newer active task should save");
+
+        save_task(sample_task(
+            "task-other-url",
+            "https://example.com/other",
+            DownloadTaskStatus::Downloading,
+        ))
+        .await
+        .expect("other active task should save");
+
+        let found = find_latest_active_task_for_url("https://example.com/list")
+            .await
+            .expect("active task lookup should succeed")
+            .expect("active task should be found");
+
+        assert_eq!(found.id, newer.id);
+
+        reset_db();
+    });
+}
+
+#[test]
 fn mark_interrupted_tasks_is_noop_when_task_table_is_missing() {
     let _guard = acquire_db_test_lock();
 

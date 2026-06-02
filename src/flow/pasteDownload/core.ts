@@ -264,11 +264,18 @@ export function applyDownloadTaskChangeSignal(
     };
   }
 
-  if (status === "completed" || status === "completed_with_errors") {
-    return context;
-  }
-
-  return context;
+  return {
+    ...context,
+    items: context.items.map((item) =>
+      item.taskId === signal.task_id
+        ? {
+            ...item,
+            sourceUrl: signal.collection_url ?? item.sourceUrl,
+            displayText: signal.collection_name ?? item.displayText,
+          }
+        : item,
+    ),
+  };
 }
 
 export function deleteCandidateItemByTaskId(context: Context, taskId: string): Context {

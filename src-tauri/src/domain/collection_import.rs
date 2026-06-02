@@ -12,7 +12,7 @@ use crate::domain::downloads::repo as download_repo;
 use crate::domain::downloads::service::{
     DownloadTaskChangeSignal, publish_download_task_change, try_claim_task,
 };
-use crate::domain::downloads::yt_dlp::LeafProbe;
+use crate::domain::downloads::yt_dlp::{LeafProbe, probe_downloaded_audio_duration_ms};
 #[cfg(not(test))]
 use crate::domain::playlist_playback::service as playlist_playback_service;
 use crate::domain::playlists::model::{
@@ -23,20 +23,11 @@ use anyhow::{Context, Result, bail};
 use appdb::Id;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::io::{BufReader, Read};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
 #[cfg(not(test))]
 use tokio::sync::broadcast;
 use walkdir::WalkDir;
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const COLLECTION_MANIFEST_FILE_NAME: &str = ".slisic.collection.toml";
-const LOCAL_AUDIO_PROBE_SAMPLE_RATE: u32 = 48_000;
 const TEMP_DOWNLOAD_MARKER: &str = ".__slisic_tmp__";
 
 #[derive(Debug, Clone)]
@@ -2102,99 +2093,8 @@ fn local_collection_file_candidates(collection_path: &Path) -> Vec<PathBuf> {
 }
 
 fn probe_local_audio_file(ffmpeg_path: &Path, file_path: &Path) -> Result<Option<LocalAudioProbe>> {
-    let mut command = Command::new(ffmpeg_path);
-    command
-        .arg("-hide_banner")
-        .arg("-nostdin")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-i")
-        .arg(file_path)
-        .arg("-map")
-        .arg("0:a:0")
-        .arg("-vn")
-        .arg("-sn")
-        .arg("-dn")
-        .arg("-ac")
-        .arg("1")
-        .arg("-ar")
-        .arg(LOCAL_AUDIO_PROBE_SAMPLE_RATE.to_string())
-        .arg("-f")
-        .arg("f32le")
-        .arg("-c:a")
-        .arg("pcm_f32le")
-        .arg("pipe:1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    #[cfg(windows)]
-    {
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("failed to run ffmpeg at {}", ffmpeg_path.display()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("ffmpeg local audio probe stdout pipe is missing")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("ffmpeg local audio probe stderr pipe is missing")?;
-    let stderr_reader = std::thread::spawn(move || {
-        let mut reader = BufReader::new(stderr);
-        let mut message = String::new();
-        let _ = reader.read_to_string(&mut message);
-        message
-    });
-
-    let decoded_bytes = read_local_audio_probe_output(stdout)?;
-    let status = child
-        .wait()
-        .context("failed to wait for ffmpeg local audio probe")?;
-    let _stderr_message = stderr_reader.join().unwrap_or_default();
-    if !status.success() {
-        return Ok(None);
-    }
-
-    Ok(Some(LocalAudioProbe {
-        duration_ms: duration_ms_from_f32le_bytes(decoded_bytes, LOCAL_AUDIO_PROBE_SAMPLE_RATE),
-    }))
-}
-
-fn read_local_audio_probe_output(stdout: std::process::ChildStdout) -> Result<u64> {
-    let mut reader = BufReader::new(stdout);
-    let mut buffer = [0_u8; 64 * 1024];
-    let mut decoded_bytes = 0_u64;
-
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .context("failed to read ffmpeg local audio probe output")?;
-        if read == 0 {
-            break;
-        }
-        decoded_bytes = decoded_bytes.saturating_add(read as u64);
-    }
-
-    Ok(decoded_bytes)
-}
-
-fn duration_ms_from_f32le_bytes(decoded_bytes: u64, sample_rate: u32) -> u32 {
-    if sample_rate == 0 {
-        return 0;
-    }
-
-    let frame_count = decoded_bytes / 4;
-    let sample_rate = sample_rate as u64;
-    let duration_ms = frame_count
-        .saturating_mul(1_000)
-        .saturating_add(sample_rate / 2)
-        / sample_rate;
-    duration_ms.min(u32::MAX as u64) as u32
+    Ok(probe_downloaded_audio_duration_ms(ffmpeg_path, file_path)?
+        .map(|duration_ms| LocalAudioProbe { duration_ms }))
 }
 
 fn local_collection_url(collection_path: &Path) -> Result<String> {

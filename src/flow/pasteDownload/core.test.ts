@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   applyCandidateUrlResolution,
+  applyDownloadTaskChangeSignal,
   appendCandidateItem,
   candidateItemAllowsDelete,
   candidateItemIsErrored,
+  acceptCandidateDownloadTask,
   createInitialContext,
   deleteCandidateItem,
   parseClipboardDownloadUrl,
@@ -83,6 +85,52 @@ describe("candidate item helpers", () => {
     assert.equal(next.items[0]?.sourceUrl, "https://example.com/watch?v=abc");
     assert.equal(next.items[0]?.displayText, "https://example.com/watch?v=abc");
     assert.equal(next.items[0]?.status, "enqueueing");
+  });
+
+  test("uses non-terminal task shell evidence to update candidate display", () => {
+    const context = acceptCandidateDownloadTask(
+      applyCandidateUrlResolution(
+        appendCandidateItem(createInitialContext(), "https://example.com/list"),
+        "candidate:0",
+        {
+          status: "new_url",
+          url: "https://example.com/list",
+          error: null,
+          collection: null,
+        },
+      ),
+      "candidate:0",
+      {
+        id: { String: "task:list" },
+        url: "https://example.com/list",
+        collection_url: null,
+        collection_name: null,
+        collection_folder: null,
+        source_kind: null,
+        trigger: "manual",
+        status: "queued",
+        leafs: [],
+        total_leaves: 0,
+        completed_leaves: 0,
+        failed_leaves: 0,
+        last_error: null,
+        created_at: "2026-06-02T00:00:00Z",
+        updated_at: "2026-06-02T00:00:00Z",
+      },
+    );
+
+    const next = applyDownloadTaskChangeSignal(context, {
+      task_id: "task:list",
+      task_url: "https://example.com/list",
+      collection_url: "https://example.com/root",
+      collection_name: "Slow Playlist",
+      status: "resolving",
+      last_error: null,
+    });
+
+    assert.equal(next.items[0]?.sourceUrl, "https://example.com/root");
+    assert.equal(next.items[0]?.displayText, "Slow Playlist");
+    assert.equal(next.items[0]?.status, "preparing");
   });
 
   test("deletes a candidate item and removes it from every tracking list", () => {

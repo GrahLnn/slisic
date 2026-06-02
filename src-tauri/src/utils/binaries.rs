@@ -165,10 +165,6 @@ pub fn spawn_binary_maintenance(app: AppHandle, activity: BinaryMaintenanceActiv
     }
 }
 
-pub(crate) fn managed_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    app_bin_dir(app)
-}
-
 pub(crate) fn ensure_managed_binary(
     app: &AppHandle,
     kind: ManagedBinary,

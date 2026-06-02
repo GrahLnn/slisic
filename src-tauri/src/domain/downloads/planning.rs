@@ -10,9 +10,11 @@ use super::model::{
 };
 use super::naming::{sanitize_path_component, stable_id};
 use super::yt_dlp::{
-    LeafProbe, LeafReference, RootProbe, RootShellProbe, YtDlpClient, classify_root_preference,
+    LeafProbe, LeafReference, RootProbe, YtDlpClient, classify_root_preference,
     is_youtube_mix_playlist_id,
 };
+#[cfg(test)]
+use super::yt_dlp::RootShellProbe;
 use crate::domain::collection_import::{self, CollectionSyncPlan, PlannedLeaf};
 use crate::domain::playlists::model::{Collection, Group};
 use anyhow::{Context, Result, bail};
@@ -416,6 +418,7 @@ pub(crate) async fn probe_root_with_limit(
     run_blocking(move || client.probe_root(&url)).await
 }
 
+#[cfg(test)]
 pub(crate) async fn probe_root_shell_with_limit(
     client: Arc<dyn YtDlpClient>,
     url: String,

@@ -1,8 +1,8 @@
 use super::{
     CollectionManifest, CollectionManifestCollection, CollectionManifestGroup,
     CollectionManifestMusic, LocalAudioFile, collection_folder_from_local_path,
-    collection_from_manifest, duration_ms_from_f32le_bytes, finalize_downloaded_leaf,
-    merge_collection_manifest, manifest_from_collection, normalize_manifest_relative_path,
+    collection_from_manifest, finalize_downloaded_leaf, merge_collection_manifest,
+    manifest_from_collection, normalize_manifest_relative_path,
     normalize_music_titles_within_collection, project_local_collection_shell,
 };
 use crate::domain::downloads::model::CollectionSourceKind;
@@ -677,12 +677,6 @@ fn finalize_downloaded_leaf_is_idempotent_after_temp_file_was_already_committed(
 fn manifest_relative_paths_cannot_escape_collection_folder() {
     assert!(normalize_manifest_relative_path("../escape.m4a").is_err());
     assert!(normalize_manifest_relative_path("Disc 1/track.m4a").is_ok());
-}
-
-#[test]
-fn decoded_f32le_byte_count_maps_to_duration_ms() {
-    assert_eq!(duration_ms_from_f32le_bytes(48_000 * 4 * 2, 48_000), 2_000);
-    assert_eq!(duration_ms_from_f32le_bytes(24_000 * 4, 48_000), 500);
 }
 
 fn manifest_collection() -> CollectionManifestCollection {

@@ -207,6 +207,7 @@ fn main() {
         let save_root = temp_test_dir("manual_download_chain_save");
         let bin_dir = installed_bin_dir();
         let ytdlp_path = bin_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" });
+        let ffmpeg_path = bin_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
 
         reinit_db_with_options(
             db_root,
@@ -223,6 +224,11 @@ fn main() {
             "manual download chain requires yt-dlp at {}",
             ytdlp_path.display()
         );
+        assert!(
+            ffmpeg_path.is_file(),
+            "manual download chain requires ffmpeg at {}",
+            ffmpeg_path.display()
+        );
 
         save_meta_info(MetaInfo {
             save_path: Some(save_root.to_string_lossy().to_string()),
@@ -233,6 +239,7 @@ fn main() {
         let enqueued = enqueue_collection_download_for_test(
             url.to_string(),
             Arc::new(CliYtDlpClient::new(ytdlp_path, bin_dir)),
+            ffmpeg_path,
             save_root.clone(),
         )
         .await

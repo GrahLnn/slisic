@@ -5,12 +5,16 @@ use super::model::{
     DownloadTrigger, EnqueuedCollectionDownload, PastedDownloadUrlResolution,
 };
 use super::naming::{sanitize_path_component, short_hash};
-use super::planning::{normalize_url, parse_download_url, probe_root_shell_with_limit, task_id_for};
+#[cfg(test)]
+use super::planning::probe_root_shell_with_limit;
+use super::planning::{normalize_url, parse_download_url, task_id_for};
 #[cfg(not(test))]
 use super::planning::{resolve_collection_plan, resolve_collection_plan_with_root_probe};
 use super::repo;
 #[cfg(not(test))]
 use super::yt_dlp::CliYtDlpClient;
+#[cfg(not(test))]
+use super::yt_dlp::probe_downloaded_audio_duration_ms;
 use super::yt_dlp::{DownloadProgress, LeafProbe, RootProbe, YtDlpClient};
 use crate::domain::collection_import;
 #[cfg(not(test))]
@@ -19,7 +23,7 @@ use crate::domain::collection_import::{CollectionSyncPlan, PlannedLeaf};
 use crate::domain::meta::service as meta_service;
 use crate::domain::playlists::model::{Collection, Group};
 #[cfg(not(test))]
-use crate::utils::binaries::{ManagedBinary, ensure_managed_binary, managed_bin_dir};
+use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 use anyhow::{Context, Result, anyhow, bail};
 #[cfg(not(test))]
 use appdb::Id;
@@ -106,13 +110,9 @@ struct GroupCatalog {
 #[derive(Clone)]
 struct DownloadExecutionDeps {
     client: Arc<dyn YtDlpClient>,
+    #[cfg(not(test))]
+    ffmpeg_path: PathBuf,
     save_root: PathBuf,
-}
-
-#[cfg(not(test))]
-#[derive(Clone)]
-struct DownloadEnqueueDeps {
-    client: Arc<dyn YtDlpClient>,
 }
 
 #[cfg(not(test))]
@@ -189,6 +189,7 @@ struct ExistingLeafCompletion {
     music_probe: LeafProbe,
     group: Group,
     relative_path: String,
+    absolute_path: PathBuf,
 }
 
 pub(crate) fn leaf_pipeline_has_work(
@@ -449,6 +450,7 @@ pub(crate) struct DownloadTaskChangeSignal {
     pub(crate) task_id: String,
     pub(crate) task_url: String,
     pub(crate) collection_url: Option<String>,
+    pub(crate) collection_name: Option<String>,
     pub(crate) status: DownloadTaskStatus,
     pub(crate) last_error: Option<String>,
 }
@@ -522,20 +524,13 @@ async fn enqueue_collection_download_with_trigger(
     url: String,
     trigger: DownloadTrigger,
 ) -> Result<EnqueuedCollectionDownload> {
-    let deps = resolve_enqueue_deps(&runtime()?.app).await?;
     let (task, collection) = match prepare_task_enqueue_outcome(url, trigger).await? {
         PreparedTaskEnqueue::Existing(task) => {
-            let task = attach_root_shell_to_task(task, deps.client.clone()).await?;
-            let collection =
-                collection_import::persist_download_collection_shell_from_task(&task).await?;
+            let collection = collection_import::persist_download_collection_shell_from_task(&task)
+                .await?;
             (task, collection)
         }
-        PreparedTaskEnqueue::New(task) => {
-            let task = attach_root_shell_to_task(task, deps.client.clone()).await?;
-            let collection =
-                collection_import::persist_download_collection_shell_from_task(&task).await?;
-            (task, collection)
-        }
+        PreparedTaskEnqueue::New(task) => (task, None),
     };
 
     if !task.status.is_terminal() {
@@ -550,13 +545,18 @@ async fn enqueue_collection_download_with_trigger(
 pub(crate) async fn enqueue_collection_download_for_test(
     url: String,
     client: Arc<dyn YtDlpClient>,
+    ffmpeg_path: PathBuf,
     save_root: PathBuf,
 ) -> Result<EnqueuedCollectionDownload> {
     // This helper is reserved for manual chain verification outside `cargo test`.
     // Domain tests should follow the appdb pattern with fake dependencies and
     // temporary appdb state instead of pulling Tauri-hosted execution paths into
     // the Rust test harness.
-    let deps = DownloadExecutionDeps { client, save_root };
+    let deps = DownloadExecutionDeps {
+        client,
+        ffmpeg_path,
+        save_root,
+    };
     let prepared = prepare_task_enqueue_outcome(url, DownloadTrigger::Manual).await?;
 
     let (mut task, mut collection) = match prepared {
@@ -655,6 +655,7 @@ async fn prepare_task_enqueue_outcome(
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn attach_root_shell_to_task(
     mut task: DownloadTask,
     client: Arc<dyn YtDlpClient>,
@@ -686,6 +687,7 @@ pub(crate) async fn attach_root_shell_to_task(
     repo::save_task(task).await
 }
 
+#[cfg(test)]
 async fn resolve_enqueue_collection_folder(
     task: &DownloadTask,
     collection_url: &str,
@@ -761,13 +763,20 @@ async fn run_task_with_deps(
     let plan =
         resolve_collection_plan_with_root_probe(&task_snapshot, client.clone(), root_probe).await?;
     let mut collection = collection_import::load_collection_shell(&plan, &save_root).await?;
-    let mut group_catalog = GroupCatalog::seed(&collection);
     collection_import::apply_collection_plan_to_task(&mut task_snapshot, &plan);
     discard_materialized_planned_leaves(
         &mut task_snapshot,
         collection_import::existing_planned_leaf_completions(&collection, &plan, &save_root),
     );
-    repo::save_task(task_snapshot.clone()).await?;
+    task_snapshot = repo::save_task(task_snapshot.clone()).await?;
+    let shell = collection_import::persist_download_collection_shell_from_task(&task_snapshot)
+        .await?
+        .context("download task shell evidence did not produce a collection")?;
+    publish_download_task_change(&task_snapshot);
+    if collection.musics.is_empty() {
+        collection = shell;
+    }
+    let mut group_catalog = GroupCatalog::seed(&collection);
 
     if task_snapshot.leafs.is_empty() {
         collection_import::persist_empty_collection(&mut collection).await?;
@@ -798,6 +807,7 @@ async fn run_task_with_deps(
         client.clone(),
         plan.source_kind,
         &save_root,
+        &deps.ffmpeg_path,
     )
     .await?;
 
@@ -808,6 +818,7 @@ async fn run_task_with_deps(
             &mut collection,
             plan.source_kind,
             &save_root,
+            &deps.ffmpeg_path,
         )
         .await?;
         handle_leaf_pipeline_event(
@@ -818,6 +829,7 @@ async fn run_task_with_deps(
             client.clone(),
             plan.source_kind,
             &save_root,
+            &deps.ffmpeg_path,
         )
         .await?;
         fill_leaf_pipeline(
@@ -827,6 +839,7 @@ async fn run_task_with_deps(
             client.clone(),
             plan.source_kind,
             &save_root,
+            &deps.ffmpeg_path,
         )
         .await?;
     }
@@ -908,9 +921,17 @@ async fn fill_leaf_pipeline(
     client: Arc<dyn YtDlpClient>,
     source_kind: CollectionSourceKind,
     save_root: &Path,
+    ffmpeg_path: &Path,
 ) -> Result<()> {
-    drain_ready_leaf_finalizations(pipeline, task_snapshot, collection, source_kind, save_root)
-        .await?;
+    drain_ready_leaf_finalizations(
+        pipeline,
+        task_snapshot,
+        collection,
+        source_kind,
+        save_root,
+        ffmpeg_path,
+    )
+    .await?;
     spawn_ready_leaf_downloads(
         pipeline,
         task_snapshot,
@@ -1084,6 +1105,7 @@ async fn handle_leaf_pipeline_event(
     client: Arc<dyn YtDlpClient>,
     source_kind: CollectionSourceKind,
     save_root: &Path,
+    ffmpeg_path: &Path,
 ) -> Result<()> {
     if !pipeline.ready_finalizations.is_empty() {
         return drain_ready_leaf_finalizations(
@@ -1092,6 +1114,7 @@ async fn handle_leaf_pipeline_event(
             collection,
             source_kind,
             save_root,
+            ffmpeg_path,
         )
         .await;
     }
@@ -1118,6 +1141,7 @@ async fn handle_leaf_pipeline_event(
                 client,
                 source_kind,
                 save_root,
+                ffmpeg_path,
                 outcome,
             )
             .await
@@ -1148,6 +1172,7 @@ async fn handle_leaf_pipeline_event(
                 collection,
                 source_kind,
                 save_root,
+                ffmpeg_path,
             )
             .await
         }
@@ -1161,6 +1186,7 @@ async fn drain_ready_leaf_finalizations(
     collection: &mut Collection,
     source_kind: CollectionSourceKind,
     save_root: &Path,
+    ffmpeg_path: &Path,
 ) -> Result<()> {
     while let Some(outcome) = pipeline.ready_finalizations.pop_front() {
         match outcome {
@@ -1180,6 +1206,7 @@ async fn drain_ready_leaf_finalizations(
                     collection,
                     source_kind,
                     save_root,
+                    ffmpeg_path,
                     completion,
                 )
                 .await?;
@@ -1199,6 +1226,7 @@ async fn handle_prepared_leaf_download(
     _client: Arc<dyn YtDlpClient>,
     source_kind: CollectionSourceKind,
     save_root: &Path,
+    ffmpeg_path: &Path,
     outcome: LeafPreparationOutcome,
 ) -> Result<()> {
     let prepared = match outcome {
@@ -1248,6 +1276,7 @@ async fn handle_prepared_leaf_download(
         save_root,
         &file_stem,
     ) {
+        let absolute_path = target_dir.join(&relative_path);
         eprintln!(
             "[downloads] leaf {} reusing existing file {}",
             leaf_snapshot.id, relative_path
@@ -1259,12 +1288,16 @@ async fn handle_prepared_leaf_download(
                 music_probe: prepared.music_probe,
                 group: music_group,
                 relative_path,
+                absolute_path,
             }));
         return Ok(());
     }
 
     match resolve_residual_temp_downloaded_file(&target_dir, &temp_file_stem) {
         ResidualTempFileResolution::Ready(downloaded_path) => {
+            let duration_ms =
+                completed_local_audio_duration_ms(ffmpeg_path.to_path_buf(), downloaded_path.clone())
+                    .await?;
             eprintln!(
                 "[downloads] leaf {} found existing temp file {}",
                 leaf_snapshot.id,
@@ -1279,7 +1312,7 @@ async fn handle_prepared_leaf_download(
                     group,
                     downloaded: super::yt_dlp::DownloadedLeaf {
                         absolute_path: downloaded_path,
-                        duration_ms: None,
+                        duration_ms: Some(duration_ms),
                     },
                     progress: DownloadProgress::default(),
                     retry_failures: 0,
@@ -1496,8 +1529,9 @@ async fn handle_finished_leaf_download(
     let downloaded = completed.downloaded;
     let downloaded_path = downloaded.absolute_path;
     if let Some(duration_ms) = downloaded.duration_ms {
-        music_probe.duration_ms = Some(duration_ms);
-        music_probe.duration_seconds = Some(duration_ms.div_ceil(1_000));
+        apply_completed_audio_duration_evidence(&mut music_probe, duration_ms);
+        leaf_snapshot.duration_ms = music_probe.duration_ms;
+        leaf_snapshot.duration_seconds = music_probe.duration_seconds;
     }
     let file_name = match persist_completed_leaf_download(
         collection,
@@ -1549,18 +1583,26 @@ async fn handle_existing_leaf_completion(
     collection: &mut Collection,
     source_kind: CollectionSourceKind,
     save_root: &Path,
+    ffmpeg_path: &Path,
     completion: ExistingLeafCompletion,
 ) -> Result<()> {
     let mut leaf_snapshot = completion.leaf;
     let relative_path = completion.relative_path;
     let leaf_id = leaf_snapshot.id.to_string();
     let leaf_url = completion.music_probe.webpage_url.clone();
+    let mut music_probe = completion.music_probe;
+    let duration_ms =
+        completed_local_audio_duration_ms(ffmpeg_path.to_path_buf(), completion.absolute_path)
+            .await?;
+    apply_completed_audio_duration_evidence(&mut music_probe, duration_ms);
+    leaf_snapshot.duration_ms = music_probe.duration_ms;
+    leaf_snapshot.duration_seconds = music_probe.duration_seconds;
 
     let persist_result = async {
         collection_import::persist_downloaded_leaf_music(
             collection,
             source_kind,
-            &completion.music_probe,
+            &music_probe,
             &relative_path,
             completion.group,
         )
@@ -1623,8 +1665,9 @@ async fn handle_finished_leaf_download_for_test(
     let downloaded = completed.downloaded;
     let downloaded_path = downloaded.absolute_path;
     if let Some(duration_ms) = downloaded.duration_ms {
-        music_probe.duration_ms = Some(duration_ms);
-        music_probe.duration_seconds = Some(duration_ms.div_ceil(1_000));
+        apply_completed_audio_duration_evidence(&mut music_probe, duration_ms);
+        leaf_snapshot.duration_ms = music_probe.duration_ms;
+        leaf_snapshot.duration_seconds = music_probe.duration_seconds;
     }
     let file_name = match persist_completed_leaf_download(
         collection,
@@ -1827,6 +1870,7 @@ pub(crate) fn publish_download_task_change(task: &DownloadTask) {
         task_id: task.id.to_string(),
         task_url: task.url.clone(),
         collection_url: task.collection_url.clone(),
+        collection_name: task.collection_name.clone(),
         status: task.status,
         last_error: task.last_error.clone(),
     };
@@ -1951,13 +1995,32 @@ async fn run_auto_update_cycle() -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn apply_completed_audio_duration_evidence(probe: &mut LeafProbe, duration_ms: u32) {
+    probe.duration_ms = Some(duration_ms);
+    probe.duration_seconds = Some(duration_ms.div_ceil(1_000));
+}
+
 #[cfg(not(test))]
-fn build_client(app: &AppHandle) -> Result<Arc<dyn YtDlpClient>> {
+async fn completed_local_audio_duration_ms(ffmpeg_path: PathBuf, file_path: PathBuf) -> Result<u32> {
+    run_blocking(move || {
+        probe_downloaded_audio_duration_ms(&ffmpeg_path, &file_path)?.with_context(|| {
+            format!(
+                "local audio file has no playable audio stream: {}",
+                file_path.display()
+            )
+        })
+    })
+    .await
+}
+
+#[cfg(not(test))]
+fn build_client(app: &AppHandle, ffmpeg_path: &Path) -> Result<Arc<dyn YtDlpClient>> {
     let ytdlp_path =
         ensure_managed_binary(app, ManagedBinary::YtDlp).map_err(|error| anyhow!(error))?;
-    let _ffmpeg_path =
-        ensure_managed_binary(app, ManagedBinary::Ffmpeg).map_err(|error| anyhow!(error))?;
-    let ffmpeg_dir = managed_bin_dir(app).map_err(|error| anyhow!(error))?;
+    let ffmpeg_dir = ffmpeg_path
+        .parent()
+        .map(Path::to_path_buf)
+        .context("managed ffmpeg binary path is missing a parent directory")?;
 
     Ok(Arc::new(CliYtDlpClient::new(ytdlp_path, ffmpeg_dir)))
 }
@@ -1969,16 +2032,13 @@ async fn resolve_save_root(app: &AppHandle) -> Result<PathBuf> {
 
 #[cfg(not(test))]
 async fn resolve_execution_deps(app: &AppHandle) -> Result<DownloadExecutionDeps> {
+    let ffmpeg_path =
+        ensure_managed_binary(app, ManagedBinary::Ffmpeg).map_err(|error| anyhow!(error))?;
+    let client = build_client(app, &ffmpeg_path)?;
     Ok(DownloadExecutionDeps {
-        client: build_client(app)?,
+        client,
+        ffmpeg_path,
         save_root: resolve_save_root(app).await?,
-    })
-}
-
-#[cfg(not(test))]
-async fn resolve_enqueue_deps(app: &AppHandle) -> Result<DownloadEnqueueDeps> {
-    Ok(DownloadEnqueueDeps {
-        client: build_client(app)?,
     })
 }
 

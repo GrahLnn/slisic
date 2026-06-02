@@ -136,8 +136,6 @@ export const machine = src.createMachine({
         ({ context, event, self }) => {
           if (
             !event.output.collection_url ||
-            (event.output.status !== "completed" &&
-              event.output.status !== "completed_with_errors") ||
             !context.items.some((item) => item.taskId === event.output.task_id)
           ) {
             return;

@@ -9,10 +9,11 @@ use super::repo::{list_tasks, save_task};
 use super::service::{
     CompletedLeafDownload, LeafDownloadRetryPolicy, LeafDownloadWindow, LeafPipelineStage,
     accept_collection_download_for_test, accept_collection_download_with_root_shell_for_test,
-    attach_root_shell_to_task, discard_materialized_planned_leaves, handle_finished_leaf_download,
-    is_retryable_leaf_download_error, leaf_download_parallelism, leaf_pipeline_has_work,
-    leaf_pipeline_next_stage, prepare_task_enqueue, resolve_pasted_download_url,
-    resolve_residual_temp_downloaded_file, resume_download_task,
+    apply_completed_audio_duration_evidence, attach_root_shell_to_task,
+    discard_materialized_planned_leaves, handle_finished_leaf_download, is_retryable_leaf_download_error,
+    leaf_download_parallelism, leaf_pipeline_has_work, leaf_pipeline_next_stage,
+    prepare_task_enqueue, resolve_pasted_download_url, resolve_residual_temp_downloaded_file,
+    resume_download_task,
     should_interrupt_unresumable_active_task_after_restart,
     should_recover_download_task_after_restart, should_resume_download_task_after_restart,
     try_claim_enqueue_url,
@@ -560,6 +561,24 @@ fn completed_leaf_download_duration_evidence_overrides_probe_metadata() {
         reset_db();
         let _ = std::fs::remove_dir_all(save_root);
     });
+}
+
+#[test]
+fn completed_audio_duration_evidence_replaces_integer_metadata_boundary() {
+    let mut probe = LeafProbe {
+        title: "481772".to_string(),
+        webpage_url: "https://www.youtube.com/watch?v=oFg0ABdknrQ".to_string(),
+        extractor_key: Some("Youtube".to_string()),
+        album: None,
+        duration_ms: Some(257_000),
+        duration_seconds: Some(257),
+        chapters: vec![],
+    };
+
+    apply_completed_audio_duration_evidence(&mut probe, 257_520);
+
+    assert_eq!(probe.duration_ms, Some(257_520));
+    assert_eq!(probe.duration_seconds, Some(258));
 }
 
 #[test]

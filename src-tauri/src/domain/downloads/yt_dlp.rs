@@ -17,7 +17,8 @@ const YOUTUBE_PLAYLIST_EXTRACTOR_ARGS: &str = "youtube:playlist_ajax=true;tab_ma
 const PYTHON_UTF8_ENV_VAR: &str = "PYTHONUTF8";
 const PYTHON_IO_ENCODING_ENV_VAR: &str = "PYTHONIOENCODING";
 const UTF8_ENCODING_VALUE: &str = "utf-8";
-const LOCAL_AUDIO_PROBE_SAMPLE_RATE: u32 = 48_000;
+pub(crate) const LOCAL_AUDIO_PROBE_SAMPLE_RATE: u32 = 48_000;
+const LOCAL_AUDIO_PROBE_RESAMPLE_FILTER_SIZE: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistRoot {
@@ -27,6 +28,7 @@ pub struct PlaylistRoot {
     pub entries: Vec<LeafReference>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootShellProbe {
     pub source_kind: CollectionSourceKind,
@@ -82,6 +84,7 @@ pub struct DownloadProgress {
 }
 
 pub trait YtDlpClient: Send + Sync {
+    #[cfg(test)]
     fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe>;
     fn probe_root(&self, url: &str) -> Result<RootProbe>;
     fn probe_leaf(&self, url: &str) -> Result<LeafProbe>;
@@ -149,6 +152,7 @@ impl CliYtDlpClient {
 }
 
 impl YtDlpClient for CliYtDlpClient {
+    #[cfg(test)]
     fn probe_root_shell(&self, url: &str) -> Result<RootShellProbe> {
         match classify_root_preference(url) {
             CollectionSourceKind::Single => self.probe_leaf(url).map(root_shell_from_leaf_probe),
@@ -263,6 +267,12 @@ impl YtDlpClient for CliYtDlpClient {
                 "failed to read downloaded audio duration from {}",
                 absolute_path.display()
             )
+        })?
+        .with_context(|| {
+            format!(
+                "downloaded audio file has no playable audio stream: {}",
+                absolute_path.display()
+            )
         })?;
         eprintln!(
             "[downloads:yt-dlp] resolved audio url={} path={}",
@@ -272,7 +282,7 @@ impl YtDlpClient for CliYtDlpClient {
 
         Ok(DownloadedLeaf {
             absolute_path,
-            duration_ms,
+            duration_ms: Some(duration_ms),
         })
     }
 }
@@ -328,6 +338,7 @@ pub(crate) fn build_root_playlist_probe_args(url: &str) -> Vec<String> {
     args
 }
 
+#[cfg(test)]
 pub(crate) fn build_root_playlist_shell_probe_args(url: &str) -> Vec<String> {
     let mut args = build_root_playlist_base_probe_args(url);
     args.splice(3..3, ["--playlist-items".to_string(), "0".to_string()]);
@@ -397,6 +408,7 @@ pub fn looks_like_direct_leaf_url(url: &str) -> bool {
     false
 }
 
+#[cfg(test)]
 pub fn parse_root_shell_probe(value: Value, input_url: &str) -> Result<RootShellProbe> {
     let is_playlist = value
         .get("_type")
@@ -422,6 +434,7 @@ pub fn parse_root_shell_probe(value: Value, input_url: &str) -> Result<RootShell
     })
 }
 
+#[cfg(test)]
 fn root_shell_from_leaf_probe(leaf: LeafProbe) -> RootShellProbe {
     RootShellProbe {
         source_kind: CollectionSourceKind::Single,
@@ -671,6 +684,8 @@ pub(crate) fn probe_downloaded_audio_duration_ms(
         .arg("-nostdin")
         .arg("-loglevel")
         .arg("error")
+        .arg("-threads")
+        .arg("0")
         .arg("-i")
         .arg(file_path)
         .arg("-map")
@@ -682,6 +697,11 @@ pub(crate) fn probe_downloaded_audio_duration_ms(
         .arg("1")
         .arg("-ar")
         .arg(LOCAL_AUDIO_PROBE_SAMPLE_RATE.to_string())
+        .arg("-filter:a")
+        .arg(format!(
+            "aresample={}:filter_size={}:phase_shift=0:linear_interp=1",
+            LOCAL_AUDIO_PROBE_SAMPLE_RATE, LOCAL_AUDIO_PROBE_RESAMPLE_FILTER_SIZE
+        ))
         .arg("-f")
         .arg("f32le")
         .arg("-c:a")
@@ -747,17 +767,14 @@ fn read_audio_probe_output(stdout: std::process::ChildStdout) -> Result<u64> {
     Ok(decoded_bytes)
 }
 
-fn duration_ms_from_f32le_bytes(decoded_bytes: u64, sample_rate: u32) -> u32 {
+pub(crate) fn duration_ms_from_f32le_bytes(decoded_bytes: u64, sample_rate: u32) -> u32 {
     if sample_rate == 0 {
         return 0;
     }
 
     let frame_count = decoded_bytes / 4;
     let sample_rate = sample_rate as u64;
-    let duration_ms = frame_count
-        .saturating_mul(1_000)
-        .saturating_add(sample_rate / 2)
-        / sample_rate;
+    let duration_ms = frame_count.saturating_mul(1_000) / sample_rate;
     duration_ms.min(u32::MAX as u64) as u32
 }
 
