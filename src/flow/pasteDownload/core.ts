@@ -243,6 +243,16 @@ export function acceptCandidateDownloadTask(
   }));
 }
 
+export function downloadTaskIsTerminal(status: DownloadTask["status"]) {
+  return (
+    status === "completed" ||
+    status === "completed_with_errors" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "interrupted"
+  );
+}
+
 export function applyDownloadTaskChangeSignal(
   context: Context,
   signal: DownloadTaskChangeSignal,

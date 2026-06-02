@@ -9,6 +9,7 @@ import {
   acceptCandidateDownloadTask,
   createInitialContext,
   deleteCandidateItem,
+  downloadTaskIsTerminal,
   parseClipboardDownloadUrl,
 } from "./core";
 
@@ -131,6 +132,32 @@ describe("candidate item helpers", () => {
     assert.equal(next.items[0]?.sourceUrl, "https://example.com/root");
     assert.equal(next.items[0]?.displayText, "Slow Playlist");
     assert.equal(next.items[0]?.status, "preparing");
+  });
+
+  test("keeps active download tasks visible even when shell collection evidence exists", () => {
+    const context = appendCandidateItem(createInitialContext(), "https://example.com/list");
+    const next = acceptCandidateDownloadTask(context, "candidate:0", {
+      id: { String: "task:list" },
+      url: "https://example.com/list",
+      collection_url: "https://example.com/root",
+      collection_name: "Slow Playlist",
+      collection_folder: "youtube/slow-playlist",
+      source_kind: "list",
+      trigger: "manual",
+      status: "resolving",
+      leafs: [],
+      total_leaves: 0,
+      completed_leaves: 0,
+      failed_leaves: 0,
+      last_error: null,
+      created_at: "2026-06-02T00:00:00Z",
+      updated_at: "2026-06-02T00:00:00Z",
+    });
+
+    assert.equal(downloadTaskIsTerminal("resolving"), false);
+    assert.equal(next.items[0]?.taskId, "task:list");
+    assert.equal(next.items[0]?.status, "preparing");
+    assert.equal(next.items[0]?.displayText, "Slow Playlist");
   });
 
   test("deletes a candidate item and removes it from every tracking list", () => {

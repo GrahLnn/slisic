@@ -13,6 +13,7 @@ import {
   failCandidateTask,
   failCandidateItem,
   hasCandidateItem,
+  downloadTaskIsTerminal,
   parseClipboardDownloadUrl,
   resetCandidateItems,
   toErrorMessage,
@@ -125,7 +126,7 @@ export const machine = src.createMachine({
           }
         },
         assign(({ context, event }) =>
-          event.output.result.collection
+          event.output.result.collection && downloadTaskIsTerminal(event.output.result.task.status)
             ? deleteCandidateItem(context, event.output.id)
             : acceptCandidateDownloadTask(context, event.output.id, event.output.result.task),
         ),
