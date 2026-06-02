@@ -1,7 +1,7 @@
-use super::model::{ActivePlaybackRange, PlaybackTrack};
+use super::model::PlaybackTrack;
 use super::track_identity_substitution::{
     PlaybackTrackIdentityUpdate, plan_track_identity_substitution,
-    resolve_active_playback_range_identity_update, resolve_active_request_track_identity_update,
+    resolve_active_request_track_identity_update,
     resolve_identity_update_playback_restart_position, resolve_session_track_identity_update,
 };
 use std::path::PathBuf;
@@ -17,6 +17,7 @@ fn track(name: &str) -> PlaybackTrack {
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     }
 }
 
@@ -84,10 +85,6 @@ fn substitution_plan_declares_active_side_effects_only_for_the_active_identity()
     let plan = plan_track_identity_substitution(
         &[active.clone(), inactive],
         Some(&active),
-        Some(ActivePlaybackRange {
-            start_ms: 25_000,
-            end_ms: 112_000,
-        }),
         &identity_update(),
     )
     .expect("active session track should produce a substitution plan");
@@ -100,14 +97,6 @@ fn substitution_plan_declares_active_side_effects_only_for_the_active_identity()
             .map(|track| track.start_ms),
         Some(9_250),
     );
-    assert_eq!(
-        plan.next_active_playback_range,
-        Some(ActivePlaybackRange {
-            start_ms: 25_000,
-            end_ms: 110_750,
-        }),
-    );
-    assert!(plan.should_sync_active_playback_range);
     assert!(plan.should_clear_spectrum_playback_loop_signal);
 }
 
@@ -121,40 +110,12 @@ fn substitution_plan_keeps_active_runtime_coordinate_when_updated_track_is_not_a
     let plan = plan_track_identity_substitution(
         &[updated, active.clone()],
         Some(&active),
-        Some(ActivePlaybackRange {
-            start_ms: 25_000,
-            end_ms: 112_000,
-        }),
         &identity_update(),
     )
     .expect("session track update should still produce a substitution plan");
 
     assert!(plan.next_active_request_track.is_none());
-    assert!(!plan.should_sync_active_playback_range);
     assert!(!plan.should_clear_spectrum_playback_loop_signal);
-}
-
-#[test]
-fn active_playback_range_substitution_rejects_invalid_next_range() {
-    let update = PlaybackTrackIdentityUpdate {
-        music_name: "A edited".to_string(),
-        music_url: "https://example.com/a".to_string(),
-        start_ms: 8_000,
-        end_ms: 112_000,
-        next_start_ms: 110_750,
-        next_end_ms: 110_750,
-    };
-
-    assert_eq!(
-        resolve_active_playback_range_identity_update(
-            Some(ActivePlaybackRange {
-                start_ms: 25_000,
-                end_ms: 112_000,
-            }),
-            &update,
-        ),
-        None,
-    );
 }
 
 #[test]

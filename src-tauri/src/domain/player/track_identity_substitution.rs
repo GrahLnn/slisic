@@ -1,4 +1,4 @@
-use super::model::{ActivePlaybackRange, PlaybackTrack};
+use super::model::PlaybackTrack;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PlaybackTrackIdentityUpdate {
@@ -15,31 +15,23 @@ pub(crate) struct TrackIdentitySubstitutionPlan {
     pub(crate) previous_tracks: Vec<PlaybackTrack>,
     pub(crate) next_tracks: Vec<PlaybackTrack>,
     pub(crate) next_active_request_track: Option<PlaybackTrack>,
-    pub(crate) next_active_playback_range: Option<ActivePlaybackRange>,
-    pub(crate) should_sync_active_playback_range: bool,
     pub(crate) should_clear_spectrum_playback_loop_signal: bool,
 }
 
 pub(crate) fn plan_track_identity_substitution(
     tracks: &[PlaybackTrack],
     active_request_track: Option<&PlaybackTrack>,
-    active_playback_range: Option<ActivePlaybackRange>,
     update: &PlaybackTrackIdentityUpdate,
 ) -> Option<TrackIdentitySubstitutionPlan> {
     let next_tracks = resolve_session_track_identity_update(tracks, update)?;
     let next_active_request_track =
         resolve_active_request_track_identity_update(active_request_track, update);
-    let next_active_playback_range =
-        resolve_active_playback_range_identity_update(active_playback_range, update);
     let active_request_track_changed = next_active_request_track.is_some();
 
     Some(TrackIdentitySubstitutionPlan {
         previous_tracks: tracks.to_vec(),
         next_tracks,
         next_active_request_track,
-        next_active_playback_range,
-        should_sync_active_playback_range: active_request_track_changed
-            && active_playback_range.is_some(),
         should_clear_spectrum_playback_loop_signal: active_request_track_changed,
     })
 }
@@ -91,30 +83,6 @@ pub(crate) fn resolve_active_request_track_identity_update(
     next.end_ms = update.next_end_ms;
     sync_playback_track_source_music(&mut next);
     Some(next)
-}
-
-pub(crate) fn resolve_active_playback_range_identity_update(
-    active_range: Option<ActivePlaybackRange>,
-    update: &PlaybackTrackIdentityUpdate,
-) -> Option<ActivePlaybackRange> {
-    let range = active_range?;
-    if update.next_start_ms >= update.next_end_ms {
-        return None;
-    }
-
-    if range.start_ms == update.start_ms && range.end_ms == update.end_ms {
-        return Some(ActivePlaybackRange {
-            start_ms: update.next_start_ms,
-            end_ms: update.next_end_ms,
-        });
-    }
-
-    Some(ActivePlaybackRange {
-        start_ms: range
-            .start_ms
-            .clamp(update.next_start_ms, update.next_end_ms.saturating_sub(1)),
-        end_ms: update.next_end_ms,
-    })
 }
 
 pub(crate) fn resolve_identity_update_playback_restart_position(

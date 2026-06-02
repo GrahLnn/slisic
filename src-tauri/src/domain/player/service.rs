@@ -1680,11 +1680,9 @@ impl PlayerRuntime {
                 .write()
                 .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))?;
             let active_request_track = self.active_request_track_snapshot()?;
-            let active_playback_range = self.active_playback_range_snapshot()?;
             let Some(substitution) = plan_track_identity_substitution(
                 &current_tracks,
                 active_request_track.as_ref(),
-                active_playback_range,
                 update,
             ) else {
                 return Ok(false);
@@ -1704,9 +1702,6 @@ impl PlayerRuntime {
             *current_tracks = substitution.next_tracks;
             if let Some(track) = reconciled.as_ref() {
                 self.set_active_request_track(track.clone())?;
-            }
-            if substitution.should_sync_active_playback_range {
-                self.set_active_playback_range(substitution.next_active_playback_range)?;
             }
             if substitution.should_clear_spectrum_playback_loop_signal {
                 self.clear_spectrum_playback_loop_signal()?;
@@ -1822,6 +1817,23 @@ impl PlayerRuntime {
                     ),
                 ]),
         );
+        if status.playing && !status.paused {
+            let next_range =
+                resolve_running_identity_update_playback_range(active_range, &next_track);
+            self.set_active_playback_range(next_range)?;
+            emit_player_trace(
+                "player-track-identity-playback-effect-applied",
+                PlayerTrace::new(&self.app)
+                    .track(Some(&next_track))
+                    .status("running_end_gate_synchronized")
+                    .details(vec![
+                        trace_detail("currentPositionMs", current_position_ms),
+                        trace_detail("activeRange", trace_range(next_range)),
+                    ]),
+            );
+            return Ok(());
+        }
+
         let target_start_ms =
             resolve_identity_update_playback_restart_position(current_position_ms, &next_track);
         let Some(target_start_ms) = target_start_ms else {
@@ -1840,23 +1852,11 @@ impl PlayerRuntime {
             end_ms: next_track.end_ms,
         };
         self.set_active_playback_range(Some(next_range))?;
-        if status.playing && !status.paused {
-            let request =
-                playback_request_for_path_position(&next_track.file_path, next_range.start_ms);
-            playback.play_request(request).await.map_err(|error| {
-                anyhow!("failed to apply active track identity substitution: {error}")
-            })?;
-            self.set_temporary_playback_pause(false)?;
-        }
         emit_player_trace(
             "player-track-identity-playback-effect-applied",
             PlayerTrace::new(&self.app)
                 .track(Some(&next_track))
-                .status(if status.playing && !status.paused {
-                    "playback_restarted"
-                } else {
-                    "range_synchronized"
-                })
+                .status("paused_range_synchronized")
                 .details(vec![
                     trace_detail("requestPositionMs", next_range.start_ms),
                     trace_detail("activeRange", trace_range(Some(next_range))),
@@ -2558,6 +2558,16 @@ pub(crate) fn resolve_playback_seek_range(
 
 pub(crate) fn resolve_playback_request_position(range: ActivePlaybackRange) -> u32 {
     range.start_ms
+}
+
+pub(crate) fn resolve_running_identity_update_playback_range(
+    active_range: Option<ActivePlaybackRange>,
+    next_track: &PlaybackTrack,
+) -> Option<ActivePlaybackRange> {
+    active_range.map(|range| ActivePlaybackRange {
+        start_ms: range.start_ms,
+        end_ms: next_track.end_ms,
+    })
 }
 
 pub(crate) fn resolve_playback_absolute_position_ms(
