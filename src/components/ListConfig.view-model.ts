@@ -599,12 +599,15 @@ export function resolveListConfigEmptyState(
 export function countListConfigParsingCandidateItems(
   candidateItems: readonly ConfigCandidateItem[],
 ) {
-  return candidateItems.filter((item) => item.status === "checking" || item.status === "enqueueing")
-    .length;
+  return candidateItems.filter((item) => listConfigCandidateItemIsParsing(item.status)).length;
 }
 
 export function hasListConfigParsingCandidateItems(candidateItems: readonly ConfigCandidateItem[]) {
   return countListConfigParsingCandidateItems(candidateItems) > 0;
+}
+
+function listConfigCandidateItemIsParsing(status: ConfigCandidateItem["status"]) {
+  return status === "checking" || status === "enqueueing" || status === "preparing";
 }
 
 export function resolveListConfigInteractionFlags(args: {

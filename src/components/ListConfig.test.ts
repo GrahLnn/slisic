@@ -1567,8 +1567,8 @@ describe("ListConfig title view model", () => {
     });
 
     assert.equal(viewModel.hasDraftChanges, true);
-    assert.equal(viewModel.isBackActionParsing, false);
-    assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, false);
+    assert.equal(viewModel.isBackActionParsing, true);
+    assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, true);
   });
 
   test("defers arc-track rendering while an existing playlist draft is still loading", () => {
@@ -1628,8 +1628,17 @@ describe("ListConfig title view model", () => {
           error: null,
           taskId: null,
         },
+        {
+          id: "candidate:preparing",
+          rawText: "https://example.com/preparing",
+          sourceUrl: "https://example.com/preparing",
+          displayText: "Preparing Collection",
+          status: "preparing",
+          error: null,
+          taskId: "task-preparing",
+        },
       ]),
-      3,
+      4,
     );
     assert.equal(hasListConfigParsingCandidateItems(candidateItems), true);
 
