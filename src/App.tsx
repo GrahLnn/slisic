@@ -28,13 +28,6 @@ import {
 import { PageViewportScrollElementProvider } from "./components/pageViewportScroll";
 
 const enabledRenderPerformanceTraceProbes = [
-  "app-logic-state",
-  "app-viewport",
-  "list-config-check",
-  "playback-diagnostics",
-  "playlist-page",
-  "playlist-playback",
-  "trace-lifecycle",
 ] satisfies RenderPerformanceTraceProbe[];
 
 installRenderPerformanceTrace({

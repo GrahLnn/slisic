@@ -401,7 +401,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "none");
   });
 
-  test("projects a ready starting playback request as immediate preparation", () => {
+  test("keeps a ready starting playback request on the playlist title", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "ready",
       activeLayoutId: null,
@@ -426,11 +426,11 @@ describe("PlayListPage", () => {
 
     assert.equal(viewModel.shouldLockScroll, true);
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
-    assert.equal(viewModel.itemViewModels[1]?.text, "Preparing...");
+    assert.equal(viewModel.itemViewModels[1]?.text, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[1]?.isPlaybackTarget, true);
-    assert.equal(viewModel.itemViewModels[1]?.isPlaybackPreparing, true);
+    assert.equal(viewModel.itemViewModels[1]?.isPlaybackPreparing, false);
     assert.equal(viewModel.itemViewModels[1]?.shouldShowPlaybackIcons, false);
-    assert.equal(viewModel.itemViewModels[1]?.playbackIconWidthText, "Preparing...");
+    assert.equal(viewModel.itemViewModels[1]?.playbackIconWidthText, undefined);
     assert.equal(viewModel.itemViewModels[1]?.commitGesture, "disabled");
     assert.equal(viewModel.itemViewModels[1]?.titleHoverVisual, "retain");
     assert.equal(viewModel.itemViewModels[0]?.isHiddenInPlay, true);
@@ -570,7 +570,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Preparing...");
   });
 
-  test("projects starting play-state playback as preparing until the first track arrives", () => {
+  test("keeps starting play-state playback on the playlist title until track evidence arrives", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "play",
       activeLayoutId: null,
@@ -598,10 +598,10 @@ describe("PlayListPage", () => {
 
     assert.equal(viewModel.shouldLockScroll, true);
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
-    assert.equal(viewModel.itemViewModels[0]?.text, "Preparing...");
-    assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, true);
+    assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, false);
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
-    assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Preparing...");
+    assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, undefined);
   });
 
   test("keeps pending first-track text above a playlist-title playback placeholder", () => {

@@ -102,7 +102,7 @@ function resolvePendingPlaybackPlaylistName(args: {
 function shouldShowPendingPlaybackPreparation(args: {
   request: PlaylistPlaybackRequestEvidence | null;
 }): boolean {
-  return args.request !== null && args.request.phase !== "failed";
+  return args.request !== null && args.request.phase === "preparing";
 }
 
 function isPlaybackSurfaceTrackText(args: {
