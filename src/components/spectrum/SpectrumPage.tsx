@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
-import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
+import { recordTrace } from "@/src/debug/renderPerformanceTrace";
 import { collectionTitleLayoutTransition } from "../collectionTitle";
 import type { EditableTitleHandle } from "../EditableTitle";
 import type { MusicSpectrumSelection } from "./MusicSpectrumEditor";
@@ -375,7 +375,7 @@ export function SpectrumPage() {
   ) {
     const editor = renderData.editorViewModels.find((candidate) => candidate.id === id) ?? null;
     if (!editor) {
-      recordRenderPerformanceTrace("spectrum-selection-commit-skipped", {
+      recordTrace("spectrum-selection-commit-skipped", {
         id,
         reason: "missing_editor",
         spectrumPlaybackScopeId,
@@ -384,7 +384,7 @@ export function SpectrumPage() {
     }
 
     const nextRange = resolveSpectrumMusicRangeChange(range);
-    recordRenderPerformanceTrace("spectrum-selection-commit-start", {
+    recordTrace("spectrum-selection-commit-start", {
       id,
       spectrumPlaybackScopeId,
       editorTitle: editor.titleValue,
@@ -398,7 +398,7 @@ export function SpectrumPage() {
     });
 
     if (!editor.playbackIdentity) {
-      recordRenderPerformanceTrace("spectrum-selection-loop-signal-skipped", {
+      recordTrace("spectrum-selection-loop-signal-skipped", {
         id,
         reason: "missing_playback_identity",
         spectrumPlaybackScopeId,
@@ -414,7 +414,7 @@ export function SpectrumPage() {
         startMs: nextRange.startMs,
       })
       .then((status) => {
-        recordRenderPerformanceTrace("spectrum-selection-loop-signal-finished", {
+        recordTrace("spectrum-selection-loop-signal-finished", {
           id,
           spectrumPlaybackScopeId,
           statusPath: status?.path ?? null,
@@ -430,7 +430,7 @@ export function SpectrumPage() {
         commitPlaybackStatus?.(status);
       })
       .catch((error) => {
-        recordRenderPerformanceTrace("spectrum-selection-loop-signal-error", {
+        recordTrace("spectrum-selection-loop-signal-error", {
           id,
           spectrumPlaybackScopeId,
           error: error instanceof Error ? error.message : String(error),
@@ -451,7 +451,7 @@ export function SpectrumPage() {
 
   async function handleBackAction() {
     if (isBackActionLocked) {
-      recordRenderPerformanceTrace("spectrum-back-action-skipped", {
+      recordTrace("spectrum-back-action-skipped", {
         reason: "locked",
         spectrumPlaybackScopeId,
         visualState: renderData.backActionVisualState.kind,
@@ -459,7 +459,7 @@ export function SpectrumPage() {
       return;
     }
 
-    recordRenderPerformanceTrace("spectrum-back-action-start", {
+    recordTrace("spectrum-back-action-start", {
       spectrumPlaybackScopeId,
       visualState: renderData.backActionVisualState.kind,
       primaryIdentity: traceSpectrumIdentity(primaryPlaybackIdentity),
@@ -474,7 +474,7 @@ export function SpectrumPage() {
 
     const sendBackSignal = () => {
       if (pageExitStartedRef.current) {
-        recordRenderPerformanceTrace("spectrum-back-send-skipped", {
+        recordTrace("spectrum-back-send-skipped", {
           reason: "already_started",
           spectrumPlaybackScopeId,
         });
@@ -482,7 +482,7 @@ export function SpectrumPage() {
       }
 
       pageExitStartedRef.current = true;
-      recordRenderPerformanceTrace("spectrum-back-send", {
+      recordTrace("spectrum-back-send", {
         spectrumPlaybackScopeId,
         visualState: renderData.backActionVisualState.kind,
       });
@@ -537,7 +537,7 @@ export function SpectrumPage() {
       await waitForTitleShareSourceReady();
       sendBackSignal();
     } catch (error) {
-      recordRenderPerformanceTrace("spectrum-back-action-error", {
+      recordTrace("spectrum-back-action-error", {
         spectrumPlaybackScopeId,
         visualState: renderData.backActionVisualState.kind,
         error: error instanceof Error ? error.message : String(error),
@@ -550,7 +550,7 @@ export function SpectrumPage() {
 
   async function handleRestorePrimarySpectrumMusicPlayback() {
     if (isNowPlayingSpectrumMusicDeleteRequested()) {
-      recordRenderPerformanceTrace("spectrum-primary-restore-skipped", {
+      recordTrace("spectrum-primary-restore-skipped", {
         reason: "delete_requested",
         spectrumPlaybackScopeId,
       });
@@ -559,7 +559,7 @@ export function SpectrumPage() {
 
     const primaryEditor = resolvePrimarySpectrumEditor(renderData.editorViewModels);
     if (!primaryEditor || primaryEditor.playbackIdentity === null) {
-      recordRenderPerformanceTrace("spectrum-primary-restore-skipped", {
+      recordTrace("spectrum-primary-restore-skipped", {
         reason: "missing_primary_identity",
         spectrumPlaybackScopeId,
       });
@@ -569,7 +569,7 @@ export function SpectrumPage() {
     const identity = primaryEditor.playbackIdentity;
     const committedIdentity = resolveSpectrumEditorCommittedPlaybackIdentity(primaryEditor);
     if (committedIdentity === null) {
-      recordRenderPerformanceTrace("spectrum-primary-restore-skipped", {
+      recordTrace("spectrum-primary-restore-skipped", {
         reason: "invalid_committed_identity",
         spectrumPlaybackScopeId,
         primaryIdentity: traceSpectrumIdentity(identity),
@@ -583,7 +583,7 @@ export function SpectrumPage() {
       currentIdentity === null ||
       !areSpectrumPlaybackIdentitiesEqual(currentIdentity, identity)
     ) {
-      recordRenderPerformanceTrace("spectrum-primary-restore-skipped", {
+      recordTrace("spectrum-primary-restore-skipped", {
         reason: "status_not_paused_primary",
         spectrumPlaybackScopeId,
         currentIdentity: traceSpectrumIdentity(currentIdentity),
@@ -607,7 +607,7 @@ export function SpectrumPage() {
       musicName: primaryEditor.titleValue,
       positionMs,
     });
-    recordRenderPerformanceTrace("spectrum-primary-restore-played", {
+    recordTrace("spectrum-primary-restore-played", {
       spectrumPlaybackScopeId,
       identity: traceSpectrumIdentity(identity),
       committedIdentity: traceSpectrumIdentity(committedIdentity),

@@ -12,7 +12,7 @@ import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { me } from "@grahlnn/fn";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
-import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
+import { recordTrace } from "@/src/debug/renderPerformanceTrace";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { action as playlistCommitAction } from "@/src/flow/playlistCommit";
 import { action as pasteDownloadAction, hook as pasteDownloadHook } from "@/src/flow/pasteDownload";
@@ -812,7 +812,7 @@ export function ListConfig() {
   async function handleBackAction() {
     const actionStartedAt = currentPerformanceNow();
     const traceBackAction = (event: string, payload: Record<string, unknown> = {}) => {
-      recordRenderPerformanceTrace(event, {
+      recordTrace(event, {
         candidateCount: candidateItems.length,
         candidateStatuses: summarizeListConfigCandidateStatuses(candidateItems),
         draftMode: draft?.mode ?? null,

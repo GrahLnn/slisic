@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import { useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
-import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
+import { recordTrace } from "@/src/debug/renderPerformanceTrace";
 import type { MainStateT } from "@/src/flow/appLogic/events";
 import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import { PlayListPageItem, CreateNewPlayListItem } from "./PlayListPageItem";
@@ -138,7 +138,7 @@ export function PlayListPage({
   const playbackTargetItem = viewModel.playbackTargetKey
     ? viewModel.itemViewModels.find((item) => item.playlistName === viewModel.playbackTargetKey)
     : null;
-  recordRenderPerformanceTrace("playlist-page-projection", {
+  recordTrace("playlist-page-projection", {
     pageState: renderData.pageState,
     isFrozen: pageRenderFreeze.isFrozen,
     livePageState: livePageStateValue,
@@ -227,7 +227,7 @@ export function PlayListPage({
                   const sourceLayoutId =
                     itemViewModel.layoutId ?? itemViewModel.sourceLayoutId ?? null;
 
-                  recordRenderPerformanceTrace("playlist-open-spectrum-click", {
+                  recordTrace("playlist-open-spectrum-click", {
                     playlistName: itemViewModel.playlistName,
                     isPlaybackTarget: itemViewModel.isPlaybackTarget,
                     shouldShowPlaybackIcons: itemViewModel.shouldShowPlaybackIcons,

@@ -10,7 +10,8 @@ import { useTheme } from "next-themes";
 import { Toaster } from "sileo";
 import {
   installRenderPerformanceTrace,
-  recordRenderPerformanceTrace,
+  recordTrace,
+  type RenderPerformanceTraceProbe,
 } from "./debug/renderPerformanceTrace";
 import { PlayListPage } from "./components/PlayListPage";
 import { ListConfig } from "./components/ListConfig";
@@ -26,7 +27,19 @@ import {
 } from "./components/scrollPosition";
 import { PageViewportScrollElementProvider } from "./components/pageViewportScroll";
 
-installRenderPerformanceTrace();
+const enabledRenderPerformanceTraceProbes = [
+  "app-logic-state",
+  "app-viewport",
+  "list-config-check",
+  "playback-diagnostics",
+  "playlist-page",
+  "playlist-playback",
+  "trace-lifecycle",
+] satisfies RenderPerformanceTraceProbe[];
+
+installRenderPerformanceTrace({
+  enabledProbes: enabledRenderPerformanceTraceProbes,
+});
 
 type PageScrollKey = "list" | "config" | "spectrum";
 
@@ -226,7 +239,7 @@ function MainWindowApp() {
     }
 
     previousViewportTraceRef.current = viewportTraceKey;
-    recordRenderPerformanceTrace("app-viewport-projected", viewportTracePayload);
+    recordTrace("app-viewport-projected", viewportTracePayload);
   }, [viewportTraceKey, viewportTracePayload]);
 
   return (

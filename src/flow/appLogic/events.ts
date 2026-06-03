@@ -29,7 +29,7 @@ import {
   type SpectrumMusicContext,
   type SpectrumMusicSourceContext,
 } from "@/src/cmd";
-import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
+import { recordTrace } from "@/src/debug/renderPerformanceTrace";
 import { documentDir, join } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -575,7 +575,7 @@ export const invoker = createActors({
   removeExclude,
   playPlaylist: async (input: PlayPlaylistInput): Promise<PlaybackStartResult> => {
     const startedAt = performance.now();
-    recordRenderPerformanceTrace("playlist-play-invoke-start", {
+    recordTrace("playlist-play-invoke-start", {
       api: "crab.playPlaylist",
       playlistName: input.playlistName,
     });
@@ -584,7 +584,7 @@ export const invoker = createActors({
 
     return result.match({
       Ok: (session) => {
-        recordRenderPerformanceTrace("playlist-play-invoke-ok", {
+        recordTrace("playlist-play-invoke-ok", {
           playlistName: input.playlistName,
           elapsedMs,
           status: session.status,
@@ -593,7 +593,7 @@ export const invoker = createActors({
         return resolvePlaylistPlaybackStartResult(session);
       },
       Err: (error) => {
-        recordRenderPerformanceTrace("playlist-play-invoke-error", {
+        recordTrace("playlist-play-invoke-error", {
           playlistName: input.playlistName,
           elapsedMs,
           error,
@@ -605,7 +605,7 @@ export const invoker = createActors({
   updateMusics: async (inputs: MusicUpdateInput[]): Promise<MusicUpdatesResult> => {
     const results: MusicUpdateResult[] = [];
     const startedAt = performance.now();
-    recordRenderPerformanceTrace("spectrum-music-update-invoke-start", {
+    recordTrace("spectrum-music-update-invoke-start", {
       count: inputs.length,
       identities: inputs.map((input) => ({
         url: input.url,
@@ -619,7 +619,7 @@ export const invoker = createActors({
     try {
       for (const input of inputs) {
         const inputStartedAt = performance.now();
-        recordRenderPerformanceTrace("spectrum-music-update-item-start", {
+        recordTrace("spectrum-music-update-item-start", {
           url: input.url,
           targetStartMs: input.targetStartMs,
           targetEndMs: input.targetEndMs,
@@ -647,7 +647,7 @@ export const invoker = createActors({
             };
           },
           Err: (error) => {
-            recordRenderPerformanceTrace("spectrum-music-update-item-error", {
+            recordTrace("spectrum-music-update-item-error", {
               url: input.url,
               targetStartMs: input.targetStartMs,
               targetEndMs: input.targetEndMs,
@@ -658,7 +658,7 @@ export const invoker = createActors({
           },
         });
         results.push(updateResult);
-        recordRenderPerformanceTrace("spectrum-music-update-item-done", {
+        recordTrace("spectrum-music-update-item-done", {
           url: input.url,
           targetStartMs: input.targetStartMs,
           targetEndMs: input.targetEndMs,
@@ -668,7 +668,7 @@ export const invoker = createActors({
         });
       }
     } catch (error) {
-      recordRenderPerformanceTrace("spectrum-music-update-invoke-error", {
+      recordTrace("spectrum-music-update-invoke-error", {
         count: inputs.length,
         completed: results.length,
         elapsedMs: performance.now() - startedAt,
@@ -677,7 +677,7 @@ export const invoker = createActors({
       throw error;
     }
 
-    recordRenderPerformanceTrace("spectrum-music-update-invoke-done", {
+    recordTrace("spectrum-music-update-invoke-done", {
       count: inputs.length,
       elapsedMs: performance.now() - startedAt,
     });

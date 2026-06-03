@@ -79,7 +79,7 @@ import {
   shouldCommitSpectrumPlaybackScopeExit,
   type PlaybackModeEffect,
 } from "./playbackMode";
-import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
+import { recordTrace } from "@/src/debug/renderPerformanceTrace";
 import {
   classifyPendingPlaylistPlaybackWakeupError,
   createPlaylistPlaybackPendingWakeupOwner,
@@ -172,7 +172,7 @@ export function attachDebugLogger() {
   let prevError = initialSnapshot.context.error;
   let prevPlayingPlaylistName = initialSnapshot.context.playingPlaylistName;
   lastPlayableIndexReadyState = initialSnapshot.value === "ready";
-  recordRenderPerformanceTrace("app-state-initial", traceAppSnapshotPayload(initialSnapshot));
+  recordTrace("app-state-initial", traceAppSnapshotPayload(initialSnapshot));
 
   if (prevError) {
     console.error(`[appLogic:error] ${prevState}`, prevError);
@@ -193,7 +193,7 @@ export function attachDebugLogger() {
       console.error(`[appLogic:error] ${nextState}`, nextError);
     }
 
-    recordRenderPerformanceTrace("app-state-changed", {
+    recordTrace("app-state-changed", {
       fromState: prevState,
       ...traceAppSnapshotPayload(snapshot),
     });
@@ -249,14 +249,14 @@ async function excludeCurrentMusicAndSkipFromPlayback(snapshot: ActorSnapshot) {
     },
     trace: {
       started: (source) =>
-        recordRenderPerformanceTrace("playback-exclude-skip-start", { ...source }),
+        recordTrace("playback-exclude-skip-start", { ...source }),
       rejected: ({ reason, source }) =>
-        recordRenderPerformanceTrace("playback-exclude-skip-rejected", {
+        recordTrace("playback-exclude-skip-rejected", {
           reason,
           source,
         }),
       committed: ({ current, result, source }) =>
-        recordRenderPerformanceTrace("playback-exclude-skip-committed", {
+        recordTrace("playback-exclude-skip-committed", {
           current,
           source,
           result,
@@ -417,7 +417,7 @@ async function startPlaylistPlaybackFromAction(args: {
   const { playlistName, requestId } = args;
 
   if (!isCurrentPlaylistPlaybackRequest(playlistName, requestId)) {
-    recordRenderPerformanceTrace("playlist-play-action-backend-skipped-stale-request", {
+    recordTrace("playlist-play-action-backend-skipped-stale-request", {
       playlistName,
       requestId,
       trigger: args.trigger ?? "user",
@@ -426,7 +426,7 @@ async function startPlaylistPlaybackFromAction(args: {
     return null;
   }
 
-  recordRenderPerformanceTrace("playlist-play-action-backend-start", {
+  recordTrace("playlist-play-action-backend-start", {
     api: "crab.playPlaylist",
     frontendInvoker: "invoker.playPlaylist.__src__",
     playlistName,
@@ -438,7 +438,7 @@ async function startPlaylistPlaybackFromAction(args: {
   const result = await invoker.playPlaylist.__src__({ playlistName });
 
   if (requestId !== playlistPlaybackStartEpoch) {
-    recordRenderPerformanceTrace("playlist-play-action-stale-result", {
+    recordTrace("playlist-play-action-stale-result", {
       playlistName,
       requestId,
       currentEpoch: playlistPlaybackStartEpoch,
@@ -470,7 +470,7 @@ async function startPlaylistPlaybackFromAction(args: {
         session: result.session,
       }),
     );
-    recordRenderPerformanceTrace("playlist-play-action-stopped-result", {
+    recordTrace("playlist-play-action-stopped-result", {
       playlistName,
       requestId,
       trigger: args.trigger ?? "user",
@@ -498,13 +498,13 @@ async function startPlaylistPlaybackFromAction(args: {
 
 async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
   if (effect.kind === "enterSpectrumPlaybackScope") {
-    recordRenderPerformanceTrace("app-playback-mode-effect-start", {
+    recordTrace("app-playback-mode-effect-start", {
       effect: effect.kind,
       ...traceAppSnapshotPayload(actor.getSnapshot()),
     });
     const scopeId = await enterSpectrumPlaybackScope();
     send(spectrumPlaybackScopeChanged.load(scopeId));
-    recordRenderPerformanceTrace("app-playback-mode-effect-finished", {
+    recordTrace("app-playback-mode-effect-finished", {
       effect: effect.kind,
       scopeId,
       ...traceAppSnapshotPayload(actor.getSnapshot()),
@@ -513,7 +513,7 @@ async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
   }
 
   if (effect.kind === "exitSpectrumPlaybackScope") {
-    recordRenderPerformanceTrace("app-playback-mode-effect-start", {
+    recordTrace("app-playback-mode-effect-start", {
       effect: effect.kind,
       requestedScopeId: effect.scopeId,
       ...traceAppSnapshotPayload(actor.getSnapshot()),
@@ -528,7 +528,7 @@ async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
     if (shouldCommitExit) {
       send(spectrumPlaybackScopeChanged.load(null));
     }
-    recordRenderPerformanceTrace("app-playback-mode-effect-finished", {
+    recordTrace("app-playback-mode-effect-finished", {
       effect: effect.kind,
       requestedScopeId: effect.scopeId,
       committed: shouldCommitExit,
@@ -538,13 +538,13 @@ async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
   }
 
   if (effect.kind === "setPlaybackContinuationMode") {
-    recordRenderPerformanceTrace("app-playback-mode-effect-start", {
+    recordTrace("app-playback-mode-effect-start", {
       effect: effect.kind,
       mode: effect.mode,
       ...traceAppSnapshotPayload(actor.getSnapshot()),
     });
     await playbackContinuationModeEffectOwner.request(effect.mode);
-    recordRenderPerformanceTrace("app-playback-mode-effect-finished", {
+    recordTrace("app-playback-mode-effect-finished", {
       effect: effect.kind,
       mode: effect.mode,
       ...traceAppSnapshotPayload(actor.getSnapshot()),
@@ -581,22 +581,22 @@ async function openSpectrumAfterPlaybackMode(sourceSnapshot: ActorSnapshot) {
       scopeChanged: (scopeId) => send(spectrumPlaybackScopeChanged.load(scopeId)),
     },
     trace: {
-      started: (source) => recordRenderPerformanceTrace("spectrum-open-flow-start", { ...source }),
+      started: (source) => recordTrace("spectrum-open-flow-start", { ...source }),
       scopeEnterStarted: (current) =>
-        recordRenderPerformanceTrace("spectrum-open-scope-enter-start", { ...current }),
+        recordTrace("spectrum-open-scope-enter-start", { ...current }),
       scopeEntered: ({ openedScopeId, current }) =>
-        recordRenderPerformanceTrace("spectrum-open-scope-entered", {
+        recordTrace("spectrum-open-scope-entered", {
           openedScopeId,
           ...current,
         }),
       rejectedStaleSource: ({ openedScopeId, source, current }) =>
-        recordRenderPerformanceTrace("spectrum-open-rejected-stale-source", {
+        recordTrace("spectrum-open-rejected-stale-source", {
           openedScopeId,
           source,
           current,
         }),
       committed: ({ openedScopeId, current }) =>
-        recordRenderPerformanceTrace("spectrum-open-committed", {
+        recordTrace("spectrum-open-committed", {
           openedScopeId,
           ...current,
         }),
@@ -607,12 +607,12 @@ async function openSpectrumAfterPlaybackMode(sourceSnapshot: ActorSnapshot) {
 async function restorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnapshot) {
   const effects = resolveSpectrumExitPlaybackModeEffects(snapshot.context.spectrumPlaybackScopeId);
 
-  recordRenderPerformanceTrace(
+  recordTrace(
     "spectrum-back-restore-mode-start",
     traceAppSnapshotPayload(snapshot),
   );
   await applyPlaybackModeEffects(effects);
-  recordRenderPerformanceTrace("spectrum-back-restore-mode-finished", {
+  recordTrace("spectrum-back-restore-mode-finished", {
     source: traceAppSnapshotPayload(snapshot),
     current: traceAppSnapshotPayload(actor.getSnapshot()),
   });
@@ -651,11 +651,11 @@ function requestSpectrumMusicCommit(snapshot: ActorSnapshot) {
       updated: (commit) => send(spectrumMusicUpdatesCommitted.load(commit)),
     },
     trace: {
-      requested: (input) => recordRenderPerformanceTrace("spectrum-music-commit-requested", input),
-      failed: (failure) => recordRenderPerformanceTrace("spectrum-music-commit-error", failure),
+      requested: (input) => recordTrace("spectrum-music-commit-requested", input),
+      failed: (failure) => recordTrace("spectrum-music-commit-error", failure),
       finished: (input) => {
         try {
-          recordRenderPerformanceTrace("spectrum-music-commit-finished", input);
+          recordTrace("spectrum-music-commit-finished", input);
         } catch (error) {
           console.error("Failed to record spectrum music commit completion", error);
         }
@@ -666,7 +666,7 @@ function requestSpectrumMusicCommit(snapshot: ActorSnapshot) {
       epoch: plan.epoch,
       error,
     });
-    recordRenderPerformanceTrace("spectrum-music-commit-error", failure);
+    recordTrace("spectrum-music-commit-error", failure);
     send(spectrumMusicCommitFailed.load(failure));
   });
 }
@@ -692,7 +692,7 @@ function attachNowPlayingTrackListener() {
   }
 
   void listenNowPlayingTrackChanged((payload) => {
-    recordRenderPerformanceTrace("player-now-playing-event-received", {
+    recordTrace("player-now-playing-event-received", {
       playlistName: payload.playlist_name,
       musicName: payload.music_name,
       musicUrl: payload.music_url,
@@ -716,7 +716,7 @@ function attachDownloadTaskChangeListener() {
   }
 
   void listenDownloadTaskChanged((payload) => {
-    recordRenderPerformanceTrace("download-task-change-event-received", {
+    recordTrace("download-task-change-event-received", {
       taskId: payload.task_id,
       taskUrl: payload.task_url,
       collectionUrl: payload.collection_url,
@@ -740,7 +740,7 @@ function attachPlaybackDiagnosticTraceListener() {
   }
 
   void listenPlaybackDiagnosticTrace((payload) => {
-    recordRenderPerformanceTrace(payload.event, {
+    recordTrace(payload.event, {
       playlistName: payload.playlist_name,
       musicName: payload.music_name,
       musicUrl: payload.music_url,
@@ -838,7 +838,7 @@ export const action = {
     const actionStartedAt = currentPerformanceNow();
     pasteDownloadAction.reset();
     const snapshot = actor.getSnapshot();
-    recordRenderPerformanceTrace("playlist-play-action-start", {
+    recordTrace("playlist-play-action-start", {
       api: "appLogicAction.playPlaylist",
       playlistName,
       state: formatStateValue(snapshot.value),
@@ -857,7 +857,7 @@ export const action = {
       }
       requestPlaybackStop();
       actor.send(sig.mainx.back);
-      recordRenderPerformanceTrace("playlist-play-action-stop-current", {
+      recordTrace("playlist-play-action-stop-current", {
         playlistName,
         elapsedMs: currentPerformanceNow() - actionStartedAt,
       });
@@ -868,7 +868,7 @@ export const action = {
       requestExitSpectrumPlaybackScope(snapshot.context.spectrumPlaybackScopeId);
     }
     if (snapshot.value !== "ready" && snapshot.value !== "play") {
-      recordRenderPerformanceTrace("playlist-play-action-rejected-state", {
+      recordTrace("playlist-play-action-rejected-state", {
         playlistName,
         elapsedMs: currentPerformanceNow() - actionStartedAt,
         state: formatStateValue(snapshot.value),
@@ -879,7 +879,7 @@ export const action = {
     const requestId = ++playlistPlaybackStartEpoch;
     send(playPlaylist.load({ playlistName, requestId }));
     if (isPendingPlaylistPreviewPlaybackTarget(actor.getSnapshot(), playlistName)) {
-      recordRenderPerformanceTrace("playlist-play-action-deferred-pending-preview", {
+      recordTrace("playlist-play-action-deferred-pending-preview", {
         api: "appLogicAction.playPlaylist",
         playlistName,
         requestId,
@@ -894,7 +894,7 @@ export const action = {
     })
       .then((session) => {
         if (!session) {
-          recordRenderPerformanceTrace("playlist-play-action-finished-stale", {
+          recordTrace("playlist-play-action-finished-stale", {
             playlistName,
             requestId,
             elapsedMs: currentPerformanceNow() - actionStartedAt,
@@ -902,7 +902,7 @@ export const action = {
           return;
         }
 
-        recordRenderPerformanceTrace("playlist-play-action-finished", {
+        recordTrace("playlist-play-action-finished", {
           playlistName,
           requestId,
           elapsedMs: currentPerformanceNow() - actionStartedAt,
@@ -914,7 +914,7 @@ export const action = {
       .catch((error) => {
         const errorMessage = toPlaylistPlaybackErrorMessage(error);
         sendPlaylistPlaybackErrorStop({ error, playlistName, requestId });
-        recordRenderPerformanceTrace("playlist-play-action-error", {
+        recordTrace("playlist-play-action-error", {
           playlistName,
           requestId,
           elapsedMs: currentPerformanceNow() - actionStartedAt,
@@ -956,10 +956,10 @@ export const action = {
   openSpectrum: () => {
     ensureStarted();
     const snapshot = actor.getSnapshot();
-    recordRenderPerformanceTrace("spectrum-open-action", traceAppSnapshotPayload(snapshot));
+    recordTrace("spectrum-open-action", traceAppSnapshotPayload(snapshot));
 
     if (snapshot.value !== "play") {
-      recordRenderPerformanceTrace("spectrum-open-rejected-state", {
+      recordTrace("spectrum-open-rejected-state", {
         reason: "requires_play_state",
         ...traceAppSnapshotPayload(snapshot),
       });
@@ -973,7 +973,7 @@ export const action = {
   back: () => {
     ensureStarted();
     const snapshot = actor.getSnapshot();
-    recordRenderPerformanceTrace("app-back-action", traceAppSnapshotPayload(snapshot));
+    recordTrace("app-back-action", traceAppSnapshotPayload(snapshot));
     if (shouldCommitSpectrumMusicForSnapshot(snapshot)) {
       requestSpectrumMusicCommit(snapshot);
     }
@@ -984,7 +984,7 @@ export const action = {
       requestPlaybackStop();
     }
     actor.send(sig.mainx.back);
-    recordRenderPerformanceTrace("app-back-sent", {
+    recordTrace("app-back-sent", {
       source: traceAppSnapshotPayload(snapshot),
       current: traceAppSnapshotPayload(actor.getSnapshot()),
     });
