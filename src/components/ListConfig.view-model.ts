@@ -27,6 +27,13 @@ export type ListConfigEmptyStateKind = "keep" | "show" | "hide";
 export type ListConfigEmptyStateSignal = ME<ListConfigEmptyStateKind>;
 export type ListConfigEmptyState = ME<boolean>;
 export type ListConfigToolLabelAffordance = "playlist" | "candidate-delete" | "passive";
+export type ListConfigCandidateParsingReason = "checking-url" | "enqueueing-task";
+
+export interface ListConfigCandidateParsingSignal {
+  candidateIds: string[];
+  count: number;
+  reasons: ListConfigCandidateParsingReason[];
+}
 
 export interface ListConfigTitleSnapshot {
   layoutId: string;
@@ -599,28 +606,61 @@ export function resolveListConfigEmptyState(
 export function countListConfigParsingCandidateItems(
   candidateItems: readonly ConfigCandidateItem[],
 ) {
-  return candidateItems.filter(listConfigCandidateItemIsParsing).length;
+  return resolveListConfigCandidateParsingSignal(candidateItems).count;
 }
 
 export function hasListConfigParsingCandidateItems(candidateItems: readonly ConfigCandidateItem[]) {
   return countListConfigParsingCandidateItems(candidateItems) > 0;
 }
 
-function listConfigCandidateItemIsParsing(item: ConfigCandidateItem) {
-  if (item.status === "checking" || item.status === "enqueueing") {
-    return true;
+export function resolveListConfigCandidateParsingSignal(
+  candidateItems: readonly ConfigCandidateItem[],
+): ListConfigCandidateParsingSignal {
+  const candidateIds: string[] = [];
+  const reasons = new Set<ListConfigCandidateParsingReason>();
+
+  for (const item of candidateItems) {
+    const reason = resolveListConfigCandidateParsingReason(item);
+    if (!reason) {
+      continue;
+    }
+
+    candidateIds.push(item.id);
+    reasons.add(reason);
   }
 
-  return item.status === "preparing" && listConfigCandidateItemStillShowsUrl(item);
+  return {
+    candidateIds,
+    count: candidateIds.length,
+    reasons: [...reasons],
+  };
+}
+
+function resolveListConfigCandidateParsingReason(
+  item: ConfigCandidateItem,
+): ListConfigCandidateParsingReason | null {
+  if (item.status === "checking" || item.status === "enqueueing") {
+    return item.status === "checking" ? "checking-url" : "enqueueing-task";
+  }
+
+  if (item.status === "preparing" && listConfigCandidateItemStillShowsUrl(item)) {
+    return "checking-url";
+  }
+
+  return null;
 }
 
 function listConfigCandidateItemStillShowsUrl(item: ConfigCandidateItem) {
-  const displayText = item.displayText.trim();
-  if (displayText.length === 0) {
-    return true;
+  const displayUrlCandidates = new Set(resolveListConfigPastedUrlCandidates(item.displayText));
+  if (displayUrlCandidates.size === 0) {
+    return false;
   }
 
-  return resolveListConfigPastedUrlCandidates(displayText).length > 0;
+  const unresolvedUrlCandidates = [item.sourceUrl, item.rawText].flatMap((text) =>
+    text ? resolveListConfigPastedUrlCandidates(text) : [],
+  );
+
+  return unresolvedUrlCandidates.some((url) => displayUrlCandidates.has(url));
 }
 
 export function resolveListConfigInteractionFlags(args: {
@@ -629,7 +669,7 @@ export function resolveListConfigInteractionFlags(args: {
   isBackActionProcessing: boolean;
 }): ListConfigInteractionFlags {
   return {
-    isBackActionInteractionLocked: args.isPresent && args.isBackActionProcessing,
+    isBackActionInteractionLocked: false,
     isTitleInteractionDisabled: !args.isPresent,
     isToolListInteractionDisabled: !args.isPresent,
     shouldRenderArcTrack: args.arcTrackItemCount > 0,

@@ -21,6 +21,7 @@ use appdb::Id;
 use reqwest::Url;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 use tokio::sync::Semaphore;
 use tokio::task;
 
@@ -30,6 +31,16 @@ const MAX_NESTED_LIST_DEPTH: u8 = 4;
 
 static ROOT_PROBE_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static ROOT_SHELL_PROBE_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+pub(crate) enum RootShellProbeTraceEvent {
+    WaitStart,
+    SlotAcquired { elapsed_ms: u128 },
+    Done { elapsed_ms: u128 },
+    Error { elapsed_ms: u128, error: String },
+}
+
+pub(crate) type RootShellProbeTraceSink = Arc<dyn Fn(RootShellProbeTraceEvent) + Send + Sync>;
 
 pub(crate) async fn resolve_collection_plan(
     task: &DownloadTask,
@@ -162,7 +173,7 @@ async fn resolve_collection_plan_from_root_probe(
     }
 }
 
-async fn resolve_existing_collection_for_download_identity(
+pub(crate) async fn resolve_existing_collection_for_download_identity(
     collection_url: &str,
     collection_name: &str,
     source_kind: CollectionSourceKind,
@@ -422,12 +433,43 @@ pub(crate) async fn probe_root_with_limit(
 pub(crate) async fn probe_root_shell_with_limit(
     client: Arc<dyn YtDlpClient>,
     url: String,
+    trace: Option<RootShellProbeTraceSink>,
 ) -> Result<RootShellProbe> {
+    let wait_start = Instant::now();
+    if let Some(trace) = trace.as_ref() {
+        trace(RootShellProbeTraceEvent::WaitStart);
+    }
+
     let _permit = root_shell_probe_slots()
         .acquire_owned()
         .await
         .context("download root shell probe limiter closed")?;
-    run_blocking(move || client.probe_root_shell(&url)).await
+    if let Some(trace) = trace.as_ref() {
+        trace(RootShellProbeTraceEvent::SlotAcquired {
+            elapsed_ms: wait_start.elapsed().as_millis(),
+        });
+    }
+
+    let probe_start = Instant::now();
+    match run_blocking(move || client.probe_root_shell(&url)).await {
+        Ok(shell) => {
+            if let Some(trace) = trace.as_ref() {
+                trace(RootShellProbeTraceEvent::Done {
+                    elapsed_ms: probe_start.elapsed().as_millis(),
+                });
+            }
+            Ok(shell)
+        }
+        Err(error) => {
+            if let Some(trace) = trace.as_ref() {
+                trace(RootShellProbeTraceEvent::Error {
+                    elapsed_ms: probe_start.elapsed().as_millis(),
+                    error: error.to_string(),
+                });
+            }
+            Err(error)
+        }
+    }
 }
 
 #[cfg(test)]

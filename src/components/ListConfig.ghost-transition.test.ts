@@ -137,4 +137,35 @@ describe("ListConfig ghost transition registry", () => {
       false,
     );
   });
+
+  test("reports a change when the same owner replaces its node before playback starts", () => {
+    const registry = new Map<string, Map<string, HTMLDivElement>>();
+    const previousNode = { dataset: { instance: "previous" } } as unknown as HTMLDivElement;
+    const nextNode = { dataset: { instance: "next" } } as unknown as HTMLDivElement;
+
+    registerGhostNodeOwner({
+      registry,
+      layoutId: "playlist:collection:https://example.com/d",
+      ownerId: "arc-track",
+      node: previousNode,
+    });
+
+    assert.equal(
+      registerGhostNodeOwner({
+        registry,
+        layoutId: "playlist:collection:https://example.com/d",
+        ownerId: "arc-track",
+        node: nextNode,
+      }),
+      true,
+    );
+    assert.equal(
+      resolveRegisteredGhostNode({
+        registry,
+        layoutId: "playlist:collection:https://example.com/d",
+        ownerId: "arc-track",
+      }),
+      nextNode,
+    );
+  });
 });

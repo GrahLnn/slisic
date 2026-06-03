@@ -137,6 +137,286 @@ describe("pasteDownload machine", () => {
     }
   });
 
+  test("admits later pasted urls while an earlier url is still resolving", async () => {
+    const originalResolve = deps.resolvePastedDownloadUrl;
+    const originalTitle = deps.probeDownloadRootTitle;
+    const originalEnqueue = deps.enqueueCollectionDownload;
+    const firstResolve =
+      createDeferred<Awaited<ReturnType<typeof deps.resolvePastedDownloadUrl>>>();
+    const secondResolve =
+      createDeferred<Awaited<ReturnType<typeof deps.resolvePastedDownloadUrl>>>();
+    const calls: string[] = [];
+
+    deps.resolvePastedDownloadUrl = (url) => {
+      calls.push(`resolve:${url}`);
+      if (url.endsWith("/slow")) {
+        return firstResolve.promise;
+      }
+      if (url.endsWith("/fast")) {
+        return secondResolve.promise;
+      }
+      throw new Error(`unexpected url: ${url}`);
+    };
+    deps.probeDownloadRootTitle = (url) => {
+      calls.push(`title:${url}`);
+      return Promise.resolve({
+        ...rootTitleEvidence(),
+        url,
+        title: url.endsWith("/fast") ? "Fast Playlist" : "Slow Playlist",
+        collection: {
+          ...shellCollection,
+          name: url.endsWith("/fast") ? "Fast Playlist" : "Slow Playlist",
+          url,
+        },
+      });
+    };
+    deps.enqueueCollectionDownload = (url) => {
+      calls.push(`enqueue:${url}`);
+      return Promise.resolve({
+        ...activeDownloadResult(),
+        collection: null,
+        task: {
+          ...activeDownloadResult().task,
+          url,
+          id: { String: url.endsWith("/fast") ? "task:fast" : "task:slow" },
+          collection_url: null,
+          collection_name: null,
+          collection_folder: null,
+        },
+      });
+    };
+
+    const actor = createActor(machine);
+    actor.start();
+
+    try {
+      actor.send(pasteRequested.load("https://example.com/slow"));
+      actor.send(pasteRequested.load("https://example.com/fast"));
+      await flushMicrotasks();
+
+      assert.deepEqual(calls, [
+        "resolve:https://example.com/slow",
+        "resolve:https://example.com/fast",
+      ]);
+      assert.equal(actor.getSnapshot().context.items.length, 2);
+      assert.equal(actor.getSnapshot().context.items[0]?.displayText, "https://example.com/fast");
+      assert.equal(actor.getSnapshot().context.items[1]?.displayText, "https://example.com/slow");
+
+      secondResolve.resolve({
+        status: "new_url",
+        url: "https://example.com/fast",
+        error: null,
+        collection: null,
+      });
+      await flushMicrotasks();
+
+      assert.deepEqual(calls, [
+        "resolve:https://example.com/slow",
+        "resolve:https://example.com/fast",
+        "title:https://example.com/fast",
+        "enqueue:https://example.com/fast",
+      ]);
+      assert.equal(actor.getSnapshot().context.items[0]?.displayText, "Fast Playlist");
+      assert.equal(actor.getSnapshot().context.items[0]?.status, "preparing");
+      assert.equal(actor.getSnapshot().context.items[1]?.status, "checking");
+
+      firstResolve.resolve({
+        status: "new_url",
+        url: "https://example.com/slow",
+        error: null,
+        collection: null,
+      });
+      await flushMicrotasks();
+
+      assert.deepEqual(calls, [
+        "resolve:https://example.com/slow",
+        "resolve:https://example.com/fast",
+        "title:https://example.com/fast",
+        "enqueue:https://example.com/fast",
+        "title:https://example.com/slow",
+        "enqueue:https://example.com/slow",
+      ]);
+      assert.equal(actor.getSnapshot().context.items[0]?.displayText, "Fast Playlist");
+      assert.equal(actor.getSnapshot().context.items[1]?.displayText, "Slow Playlist");
+    } finally {
+      actor.stop();
+      deps.resolvePastedDownloadUrl = originalResolve;
+      deps.probeDownloadRootTitle = originalTitle;
+      deps.enqueueCollectionDownload = originalEnqueue;
+    }
+  });
+
+  test("starts later title probes while an earlier title probe is still running", async () => {
+    const originalResolve = deps.resolvePastedDownloadUrl;
+    const originalTitle = deps.probeDownloadRootTitle;
+    const originalEnqueue = deps.enqueueCollectionDownload;
+    const firstTitle = createDeferred<DownloadRootTitleEvidence>();
+    const secondTitle = createDeferred<DownloadRootTitleEvidence>();
+    const calls: string[] = [];
+
+    deps.resolvePastedDownloadUrl = async (url) => {
+      calls.push(`resolve:${url}`);
+      return {
+        status: "new_url",
+        url,
+        error: null,
+        collection: null,
+      };
+    };
+    deps.probeDownloadRootTitle = (url) => {
+      calls.push(`title:${url}`);
+      if (url.endsWith("/slow-title")) {
+        return firstTitle.promise;
+      }
+      if (url.endsWith("/fast-title")) {
+        return secondTitle.promise;
+      }
+      throw new Error(`unexpected title url: ${url}`);
+    };
+    deps.enqueueCollectionDownload = (url) => {
+      calls.push(`enqueue:${url}`);
+      return Promise.resolve({
+        ...activeDownloadResult(),
+        collection: null,
+        task: {
+          ...activeDownloadResult().task,
+          id: { String: url.endsWith("/fast-title") ? "task:fast-title" : "task:slow-title" },
+          url,
+          collection_url: null,
+          collection_name: null,
+          collection_folder: null,
+        },
+      });
+    };
+
+    const actor = createActor(machine);
+    actor.start();
+
+    try {
+      actor.send(pasteRequested.load("https://example.com/slow-title"));
+      actor.send(pasteRequested.load("https://example.com/fast-title"));
+      await flushMicrotasks();
+
+      assert.deepEqual(calls, [
+        "resolve:https://example.com/slow-title",
+        "resolve:https://example.com/fast-title",
+        "title:https://example.com/slow-title",
+        "enqueue:https://example.com/slow-title",
+        "title:https://example.com/fast-title",
+        "enqueue:https://example.com/fast-title",
+      ]);
+
+      secondTitle.resolve({
+        ...rootTitleEvidence(),
+        url: "https://example.com/fast-title",
+        title: "Fast Title",
+        collection: {
+          ...shellCollection,
+          name: "Fast Title",
+          url: "https://example.com/fast-title",
+        },
+      });
+      await flushMicrotasks();
+
+      assert.equal(actor.getSnapshot().context.items[0]?.displayText, "Fast Title");
+      assert.equal(
+        actor.getSnapshot().context.items[1]?.displayText,
+        "https://example.com/slow-title",
+      );
+
+      firstTitle.resolve({
+        ...rootTitleEvidence(),
+        url: "https://example.com/slow-title",
+        title: "Slow Title",
+        collection: {
+          ...shellCollection,
+          name: "Slow Title",
+          url: "https://example.com/slow-title",
+        },
+      });
+      await flushMicrotasks();
+
+      assert.equal(actor.getSnapshot().context.items[0]?.displayText, "Fast Title");
+      assert.equal(actor.getSnapshot().context.items[1]?.displayText, "Slow Title");
+    } finally {
+      actor.stop();
+      deps.resolvePastedDownloadUrl = originalResolve;
+      deps.probeDownloadRootTitle = originalTitle;
+      deps.enqueueCollectionDownload = originalEnqueue;
+    }
+  });
+
+  test("does not let an old actor title probe hold queue capacity for a new actor", async () => {
+    const originalResolve = deps.resolvePastedDownloadUrl;
+    const originalTitle = deps.probeDownloadRootTitle;
+    const originalEnqueue = deps.enqueueCollectionDownload;
+    const oldTitle = createDeferred<DownloadRootTitleEvidence>();
+    const newTitle = createDeferred<DownloadRootTitleEvidence>();
+    const calls: string[] = [];
+
+    deps.resolvePastedDownloadUrl = async (url) => {
+      calls.push(`resolve:${url}`);
+      return {
+        status: "new_url",
+        url,
+        error: null,
+        collection: null,
+      };
+    };
+    deps.probeDownloadRootTitle = (url) => {
+      calls.push(`title:${url}`);
+      if (url.endsWith("/old")) {
+        return oldTitle.promise;
+      }
+      if (url.endsWith("/new")) {
+        return newTitle.promise;
+      }
+      throw new Error(`unexpected title url: ${url}`);
+    };
+    deps.enqueueCollectionDownload = (url) => {
+      calls.push(`enqueue:${url}`);
+      return Promise.resolve({
+        ...activeDownloadResult(),
+        collection: null,
+        task: {
+          ...activeDownloadResult().task,
+          id: { String: url.endsWith("/new") ? "task:new" : "task:old" },
+          url,
+          collection_url: null,
+          collection_name: null,
+          collection_folder: null,
+        },
+      });
+    };
+
+    const oldActor = createActor(machine);
+    const newActor = createActor(machine);
+    oldActor.start();
+    newActor.start();
+
+    try {
+      oldActor.send(pasteRequested.load("https://example.com/old"));
+      await flushMicrotasks();
+      newActor.send(pasteRequested.load("https://example.com/new"));
+      await flushMicrotasks();
+
+      assert.deepEqual(calls, [
+        "resolve:https://example.com/old",
+        "title:https://example.com/old",
+        "enqueue:https://example.com/old",
+        "resolve:https://example.com/new",
+        "title:https://example.com/new",
+        "enqueue:https://example.com/new",
+      ]);
+    } finally {
+      oldActor.stop();
+      newActor.stop();
+      deps.resolvePastedDownloadUrl = originalResolve;
+      deps.probeDownloadRootTitle = originalTitle;
+      deps.enqueueCollectionDownload = originalEnqueue;
+    }
+  });
+
   test("keeps an active download candidate after shell collection evidence arrives", () => {
     const actor = createActor(machine);
     actor.start();

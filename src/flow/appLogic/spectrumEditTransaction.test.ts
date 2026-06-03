@@ -289,4 +289,137 @@ describe("spectrum edit transaction", () => {
     });
     assert.equal(reflection.frame, null);
   });
+
+  test("closes accepted evidence when the spectrum commit frame is gone", () => {
+    const reflection = reflectSpectrumEditCommitEvidence(null, {
+      epoch: 8,
+      phase: "update",
+      evidence: {
+        musicEdits: [
+          {
+            alias: "Late Track",
+            url: "https://example.com/quiet-morning#a",
+            targetStartMs: 0,
+            targetEndMs: 120_000,
+            startMs: 10_000,
+            endMs: 110_000,
+          },
+        ],
+      },
+    });
+
+    assert.deepEqual(reflection, {
+      epoch: 8,
+      kind: "Stops",
+      phase: "update",
+      reason: "closed-frame",
+    });
+  });
+
+  test("closes accepted evidence from a stale spectrum commit epoch", () => {
+    const currentMusic = createMusic();
+    const frame = createSpectrumEditCommitFrame({
+      baseline: {
+        collections: [createCollection([currentMusic])],
+        nowPlaying: {
+          name: currentMusic.alias,
+          url: currentMusic.url,
+          filePath: currentMusic.path,
+          startMs: currentMusic.start_ms,
+          endMs: currentMusic.end_ms,
+          liked: currentMusic.liked,
+        },
+      },
+      epoch: 7,
+      optimisticEvidence: {
+        musicEdits: [
+          {
+            alias: "Track A Draft",
+            url: currentMusic.url,
+            targetStartMs: currentMusic.start_ms,
+            targetEndMs: currentMusic.end_ms,
+            startMs: 8_000,
+            endMs: 112_000,
+          },
+        ],
+      },
+    });
+
+    const reflection = reflectSpectrumEditCommitEvidence(frame, {
+      epoch: 6,
+      phase: "update",
+      evidence: {
+        musicEdits: [
+          {
+            alias: "Track A Accepted",
+            url: currentMusic.url,
+            targetStartMs: currentMusic.start_ms,
+            targetEndMs: currentMusic.end_ms,
+            startMs: 10_000,
+            endMs: 110_000,
+          },
+        ],
+      },
+    });
+
+    assert.deepEqual(reflection, {
+      epoch: 6,
+      kind: "Stops",
+      phase: "update",
+      reason: "stale-epoch",
+    });
+  });
+
+  test("rejects accepted update evidence whose target is missing from the commit baseline", () => {
+    const currentMusic = createMusic();
+    const frame = createSpectrumEditCommitFrame({
+      baseline: {
+        collections: [createCollection([currentMusic])],
+        nowPlaying: {
+          name: currentMusic.alias,
+          url: currentMusic.url,
+          filePath: currentMusic.path,
+          startMs: currentMusic.start_ms,
+          endMs: currentMusic.end_ms,
+          liked: currentMusic.liked,
+        },
+      },
+      epoch: 7,
+      optimisticEvidence: {
+        musicEdits: [
+          {
+            alias: "Track A Draft",
+            url: currentMusic.url,
+            targetStartMs: currentMusic.start_ms,
+            targetEndMs: currentMusic.end_ms,
+            startMs: 8_000,
+            endMs: 112_000,
+          },
+        ],
+      },
+    });
+
+    const reflection = reflectSpectrumEditCommitEvidence(frame, {
+      epoch: 7,
+      phase: "update",
+      evidence: {
+        musicEdits: [
+          {
+            alias: "Track A Accepted",
+            url: currentMusic.url,
+            targetStartMs: 60_000,
+            targetEndMs: 90_000,
+            startMs: 10_000,
+            endMs: 110_000,
+          },
+        ],
+      },
+    });
+
+    assert.equal(reflection.kind, "Reject");
+    if (reflection.kind !== "Reject") {
+      throw new Error("expected missing baseline target to reject");
+    }
+    assert.equal(reflection.reason, "unexpected-evidence");
+  });
 });

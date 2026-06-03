@@ -454,6 +454,19 @@ async fn insert_collection_group_edge(collection: &RecordId, group: &RecordId) {
     .expect("collection group edge insert response should succeed");
 }
 
+async fn insert_raw_include_edge(source: &RecordId, target: &RecordId) {
+    let db = get_db().expect("global playlist repo database handle should exist");
+
+    db.query("INSERT RELATION INTO $rel { in: $source, out: $target, position: 0 } RETURN NONE;")
+        .bind(("rel", Table::from("include")))
+        .bind(("source", source.clone()))
+        .bind(("target", target.clone()))
+        .await
+        .expect("raw include edge insert query should succeed")
+        .check()
+        .expect("raw include edge insert response should succeed");
+}
+
 async fn insert_music_row(id: &str, music: &Music) -> RecordId {
     let db = get_db().expect("global playlist repo database handle should exist");
     let mut result = db
@@ -941,6 +954,45 @@ fn list_config_library_does_not_rebuild_missing_exclude_availability() {
                 .fully_excluded_group_urls
                 .contains(&group.url)
         );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn list_config_library_ignores_invalid_collection_group_membership_edges() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let collection_url = "https://example.com/membership-owner";
+        let group = collection_group("Disc 1", &format!("{collection_url}#disc-1"), "Disc 1");
+        let music = named_music("Membership Source", group.clone(), "Disc 1/A.m4a");
+        let collection = collection_with_musics(
+            collection_url,
+            "youtube/membership-owner",
+            Some(false),
+            vec![music.clone()],
+        );
+        let collection_record =
+            insert_collection_row("membership-owner-collection", &collection).await;
+        let group_record = insert_group_row("membership-owner-group", &group).await;
+        let music_record = insert_music_row("membership-owner-music", &music).await;
+        insert_collection_group_edge(&collection_record, &group_record).await;
+        insert_raw_include_edge(&music_record, &group_record).await;
+
+        let library = list_config_library()
+            .await
+            .expect("invalid include edge should not break config library loading");
+
+        assert_eq!(library.collection_group_memberships.len(), 1);
+        assert_eq!(
+            library.collection_group_memberships[0].collection_url,
+            collection_url
+        );
+        assert_eq!(library.collection_group_memberships[0].group_url, group.url);
 
         reset_db();
     });

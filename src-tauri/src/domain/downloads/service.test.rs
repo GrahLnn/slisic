@@ -2570,7 +2570,7 @@ fn probe_download_root_title_returns_prepared_collection_shell_evidence() {
             },
         )])));
 
-        let evidence = probe_download_root_title_with_client(url.to_string(), client)
+        let evidence = probe_download_root_title_with_client(url.to_string(), client, None)
             .await
             .expect("root title evidence should resolve");
         let tasks = list_tasks().await.expect("task listing should succeed");
@@ -2591,6 +2591,59 @@ fn probe_download_root_title_returns_prepared_collection_shell_evidence() {
         assert_eq!(evidence.collection.enable_updates, Some(false));
         assert!(evidence.collection.musics.is_empty());
         assert_eq!(collection.url, evidence.collection.url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn probe_download_root_title_reuses_existing_collection_when_probe_title_already_exists() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let existing = Collection {
+            name: "Shared Root".to_string(),
+            url: "https://www.youtube.com/playlist?list=PLcanonical".to_string(),
+            folder: "youtube/shared-root".to_string(),
+            musics: vec![],
+            last_updated: "2026-04-24T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        };
+        upsert_collection(&existing)
+            .await
+            .expect("existing collection should be saved");
+
+        let alias_url = "https://www.youtube.com/playlist?list=PLalias";
+        let client = Arc::new(FakeYtDlpClient::with_shells(HashMap::from([(
+            alias_url.to_string(),
+            RootShellProbe {
+                source_kind: CollectionSourceKind::List,
+                title: existing.name.clone(),
+                webpage_url: alias_url.to_string(),
+                extractor_key: Some("YoutubeTab".to_string()),
+            },
+        )])));
+
+        let evidence = probe_download_root_title_with_client(alias_url.to_string(), client, None)
+            .await
+            .expect("root title evidence should reuse existing collection identity");
+        let canonical = crate::domain::collection_import::get_collection_by_url(&existing.url)
+            .await
+            .expect("canonical collection lookup should succeed")
+            .expect("canonical collection should remain persisted");
+        let alias = crate::domain::collection_import::get_collection_by_url(alias_url)
+            .await
+            .expect("alias collection lookup should succeed");
+
+        assert_eq!(evidence.url, existing.url);
+        assert_eq!(evidence.title, existing.name);
+        assert_eq!(evidence.folder, existing.folder);
+        assert_eq!(evidence.collection.url, existing.url);
+        assert_eq!(evidence.collection.folder, existing.folder);
+        assert_eq!(canonical.url, existing.url);
+        assert!(alias.is_none());
 
         reset_db();
     });
@@ -2619,7 +2672,7 @@ fn probe_download_root_title_attaches_scope_to_existing_active_task() {
             },
         )])));
 
-        probe_download_root_title_with_client(url.to_string(), client)
+        probe_download_root_title_with_client(url.to_string(), client, None)
             .await
             .expect("root title evidence should resolve");
 
@@ -2660,7 +2713,7 @@ fn prepare_task_enqueue_uses_prepared_shell_as_pending_playback_scope() {
             },
         )])));
 
-        probe_download_root_title_with_client(url.to_string(), client)
+        probe_download_root_title_with_client(url.to_string(), client, None)
             .await
             .expect("root title evidence should prepare the collection shell");
 

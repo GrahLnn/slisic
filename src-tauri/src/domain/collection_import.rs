@@ -672,19 +672,7 @@ pub(crate) async fn resolve_collection_folder(
     let base_name = sanitize_path_component(collection_name);
     let candidate_text = format!("{prefix}/{base_name}");
 
-    let collections = collection_repo::list_collections().await?;
-    if collections
-        .iter()
-        .all(|collection| collection.folder != candidate_text || collection.url == collection_url)
-    {
-        return Ok(candidate_text);
-    }
-
-    Ok(format!(
-        "{prefix}/{}__{}",
-        base_name,
-        short_hash(collection_url)
-    ))
+    Ok(candidate_text)
 }
 
 pub(crate) fn finalize_downloaded_leaf(

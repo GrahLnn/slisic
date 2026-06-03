@@ -73,7 +73,7 @@ export function syncPlaybackSurfaceState(args: {
   nowPlayingTrack: { liked: boolean | null; name: string; url: string } | null;
 }) {
   const displayedTrackName = args.nowPlayingTrack?.name ?? null;
-  const displayedTrackLiked = args.nowPlayingTrack?.liked ?? null;
+  const displayedTrackLiked = args.nowPlayingTrack?.liked === true ? true : null;
   const displayedTrackIsPlayable = !!args.nowPlayingTrack?.url;
 
   if (args.machinePlaybackTarget !== null) {

@@ -99,10 +99,17 @@ function resolvePendingPlaybackPlaylistName(args: {
     : null;
 }
 
-function shouldShowPendingPlaybackPreparation(
-  request: PlaylistPlaybackRequestEvidence | null,
-): boolean {
-  return request?.phase === "preparing" && request.reason === "pending_first_track";
+function shouldShowPendingPlaybackPreparation(args: {
+  request: PlaylistPlaybackRequestEvidence | null;
+}): boolean {
+  return args.request !== null && args.request.phase !== "failed";
+}
+
+function isPlaybackSurfaceTrackText(args: {
+  playlistName: string;
+  trackName: string | undefined;
+}) {
+  return args.trackName !== undefined && args.trackName !== args.playlistName;
 }
 
 export interface PlayListPageViewModel {
@@ -278,32 +285,39 @@ function resolvePlayListPageVisibleItems(args: {
     (() => {
       const itemLayoutId = playlistTitleLayoutId(playlist.name);
       const isPlaybackTarget = hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName;
-      const isPendingPlaybackTarget =
-        !isPlaybackTarget && playlist.name === pendingPlaybackPlaylistName;
+      const isPendingPlaybackTarget = playlist.name === pendingPlaybackPlaylistName;
+      const hasPlaybackSurfaceTrackText =
+        hasPlaybackTarget &&
+        playlist.name === playbackSurfacePlaylistName &&
+        isPlaybackSurfaceTrackText({
+          playlistName: playlist.name,
+          trackName: playbackSurfaceTrackName,
+        });
       const isPendingPlaybackPreparing =
         isPendingPlaybackTarget &&
-        shouldShowPendingPlaybackPreparation(args.pendingPlaylistPlaybackRequest);
+        shouldShowPendingPlaybackPreparation({
+          request: args.pendingPlaylistPlaybackRequest,
+        }) &&
+        !hasPlaybackSurfaceTrackText;
 
       return createPlayListPageItemViewModel({
         playlist,
-        text:
-          hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName
+        text: isPendingPlaybackPreparing
+          ? "Preparing..."
+          : hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName
             ? playbackSurfaceTrackName || playlist.name
-            : isPendingPlaybackPreparing
-              ? "Preparing..."
-              : playlist.name,
+            : playlist.name,
         titleShareEnabled: args.titleShareEnabled,
         transition: args.transition,
         titleToneHandoff: args.titleToneHandoff,
         isPlaybackTarget: isPlaybackTarget || isPendingPlaybackTarget,
-        shouldShowPlaybackIcons:
-          isPendingPlaybackTarget
-            ? false
-            : playbackActionsEnabled &&
-              isPlaybackSurfacePlaying &&
-              hasPlaybackTarget &&
-              playlist.name === playbackSurfacePlaylistName &&
-              !!playbackSurfaceTrackName,
+        shouldShowPlaybackIcons: isPendingPlaybackPreparing
+          ? false
+          : playbackActionsEnabled &&
+            isPlaybackSurfacePlaying &&
+            hasPlaybackTarget &&
+            playlist.name === playbackSurfacePlaylistName &&
+            !!playbackSurfaceTrackName,
         isCurrentMusicLiked:
           isPlaybackSurfacePlaying &&
           hasPlaybackTarget &&
@@ -327,13 +341,12 @@ function resolvePlayListPageVisibleItems(args: {
           layoutId: itemLayoutId,
           sourceEnabled: !isPlaybackTarget && !isPendingPlaybackTarget,
         }),
-        playbackIconWidthText:
-          isPendingPlaybackPreparing
-            ? "Preparing..."
-            : (isPlaybackSurfacePlaying &&
-                playlist.name === playbackSurfacePlaylistName &&
-                playbackSurfaceTrackName) ||
-              undefined,
+        playbackIconWidthText: isPendingPlaybackPreparing
+          ? "Preparing..."
+          : (isPlaybackSurfacePlaying &&
+              playlist.name === playbackSurfacePlaylistName &&
+              playbackSurfaceTrackName) ||
+            undefined,
         isHiddenInPlay: hasDisplayLockTarget && playlist.name !== displayLockPlaylistName,
         shouldStartHiddenInPlay:
           shouldStartHiddenItemsInPlay && playlist.name !== displayLockPlaylistName,

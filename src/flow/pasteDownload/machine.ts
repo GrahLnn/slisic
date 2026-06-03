@@ -21,6 +21,11 @@ import {
 } from "./core";
 import { deps, payloads, ss } from "./events";
 import { src } from "./src";
+import {
+  createTitleProbeQueue,
+  resolveDefaultTitleProbeConcurrency,
+  type TitleProbeQueue,
+} from "./titleProbeQueue";
 
 const pasteRequested = payloads["paste.requested"];
 const candidateDelete = payloads["candidate.delete"];
@@ -33,6 +38,23 @@ const candidateTitleFailed = payloads["candidate.title.failed"];
 const downloadTaskChanged = payloads["download.task.changed"];
 const candidateTaskCollectionLoaded = payloads["candidate.task.collection.loaded"];
 const candidateTaskCollectionFailed = payloads["candidate.task.collection.failed"];
+
+const titleProbeQueues = new WeakMap<object, TitleProbeQueue>();
+
+function titleProbeQueueFor(actor: object) {
+  let queue = titleProbeQueues.get(actor);
+  if (queue) {
+    return queue;
+  }
+
+  queue = createTitleProbeQueue({
+    concurrency: resolveDefaultTitleProbeConcurrency,
+    probe: (url) => deps.probeDownloadRootTitle(url),
+    toErrorMessage,
+  });
+  titleProbeQueues.set(actor, queue);
+  return queue;
+}
 
 export const machine = src.createMachine({
   initial: ss.mainx.State.idle,
@@ -71,7 +93,10 @@ export const machine = src.createMachine({
       ],
     },
     [candidateDelete.evt]: {
-      actions: assign(({ context, event }) => deleteCandidateItem(context, event.output)),
+      actions: [
+        ({ event, self }) => titleProbeQueueFor(self).cancel(event.output),
+        assign(({ context, event }) => deleteCandidateItem(context, event.output)),
+      ],
     },
     [candidateResolveCompleted.evt]: {
       actions: [
@@ -100,19 +125,18 @@ export const machine = src.createMachine({
             return;
           }
 
-          void deps
-            .probeDownloadRootTitle(item.sourceUrl)
-            .then((evidence) => {
-              self.send(candidateTitleCompleted.load({ id: event.output.id, evidence }));
-            })
-            .catch((error) => {
-              self.send(
-                candidateTitleFailed.load({
-                  id: event.output.id,
-                  error: toErrorMessage(error),
-                }),
-              );
-            });
+          titleProbeQueueFor(self).enqueue({
+            id: event.output.id,
+            url: item.sourceUrl,
+            sink: {
+              completed: ({ id, evidence }) => {
+                self.send(candidateTitleCompleted.load({ id, evidence }));
+              },
+              failed: ({ id, error }) => {
+                self.send(candidateTitleFailed.load({ id, error }));
+              },
+            },
+          });
 
           void deps
             .enqueueCollectionDownload(item.sourceUrl)
@@ -142,9 +166,7 @@ export const machine = src.createMachine({
             return;
           }
 
-          sendAppLogic(
-            draftCollectionUpserted.load(event.output.evidence.collection),
-          );
+          sendAppLogic(draftCollectionUpserted.load(event.output.evidence.collection));
         },
         assign(({ context, event }) =>
           acceptCandidateRootTitleEvidence(context, event.output.id, event.output.evidence),
@@ -232,7 +254,10 @@ export const machine = src.createMachine({
     },
     reset: {
       target: `.${ss.mainx.State.idle}`,
-      actions: assign(({ context }) => resetCandidateItems(context)),
+      actions: [
+        ({ self }) => titleProbeQueueFor(self).reset(),
+        assign(({ context }) => resetCandidateItems(context)),
+      ],
     },
   },
   states: {

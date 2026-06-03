@@ -135,6 +135,41 @@ export function PlayListPage({
   });
   const renderData = pageRenderFreeze.renderValue;
   const viewModel = resolvePlayListPageViewModel(renderData);
+  const playbackTargetItem = viewModel.playbackTargetKey
+    ? viewModel.itemViewModels.find((item) => item.playlistName === viewModel.playbackTargetKey)
+    : null;
+  recordRenderPerformanceTrace("playlist-page-projection", {
+    pageState: renderData.pageState,
+    isFrozen: pageRenderFreeze.isFrozen,
+    livePageState: livePageStateValue,
+    surfacePageState: surfacePageState ?? null,
+    playingPlaylistName: renderData.playingPlaylistName,
+    nowPlayingTrackName,
+    nowPlayingTrackUrl,
+    pendingPlaylistPlaybackPhase: renderData.pendingPlaylistPlaybackRequest?.phase ?? null,
+    pendingPlaylistPlaybackReason: renderData.pendingPlaylistPlaybackRequest?.reason ?? null,
+    pendingPlaylistPlaybackName:
+      renderData.pendingPlaylistPlaybackRequest?.playlistName ?? null,
+    pendingPlaylistPlaybackRequestId:
+      renderData.pendingPlaylistPlaybackRequest?.requestId ?? null,
+    playbackSurfacePhase: renderData.playbackSurface?.phase ?? null,
+    playbackSurfacePlaylistName: renderData.playbackSurface?.playlistName ?? null,
+    playbackSurfaceTrackName: renderData.playbackSurface?.displayedTrackName ?? null,
+    playbackSurfaceTrackIsPlayable:
+      renderData.playbackSurface?.displayedTrackIsPlayable ?? null,
+    playbackTargetKey: viewModel.playbackTargetKey,
+    playbackTargetText: playbackTargetItem?.text ?? null,
+    playbackTargetIsPreparing: playbackTargetItem?.isPlaybackPreparing ?? null,
+    playbackTargetIsPlaybackTarget: playbackTargetItem?.isPlaybackTarget ?? null,
+    playbackTargetShowsIcons: playbackTargetItem?.shouldShowPlaybackIcons ?? null,
+    playbackTargetTitleHoverVisual: playbackTargetItem?.titleHoverVisual ?? null,
+    itemTexts: viewModel.itemViewModels.map((item) => ({
+      isPlaybackPreparing: item.isPlaybackPreparing,
+      isPlaybackTarget: item.isPlaybackTarget,
+      playlistName: item.playlistName,
+      text: item.text,
+    })),
+  });
 
   return (
     <div

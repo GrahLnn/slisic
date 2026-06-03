@@ -401,7 +401,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "none");
   });
 
-  test("keeps a starting pending playback request on the playlist title", () => {
+  test("projects a ready starting playback request as immediate preparation", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "ready",
       activeLayoutId: null,
@@ -426,10 +426,11 @@ describe("PlayListPage", () => {
 
     assert.equal(viewModel.shouldLockScroll, true);
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
-    assert.equal(viewModel.itemViewModels[1]?.text, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[1]?.text, "Preparing...");
     assert.equal(viewModel.itemViewModels[1]?.isPlaybackTarget, true);
-    assert.equal(viewModel.itemViewModels[1]?.isPlaybackPreparing, false);
+    assert.equal(viewModel.itemViewModels[1]?.isPlaybackPreparing, true);
     assert.equal(viewModel.itemViewModels[1]?.shouldShowPlaybackIcons, false);
+    assert.equal(viewModel.itemViewModels[1]?.playbackIconWidthText, "Preparing...");
     assert.equal(viewModel.itemViewModels[1]?.commitGesture, "disabled");
     assert.equal(viewModel.itemViewModels[1]?.titleHoverVisual, "retain");
     assert.equal(viewModel.itemViewModels[0]?.isHiddenInPlay, true);
@@ -532,6 +533,145 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Preparing...");
     assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, true);
     assert.equal(viewModel.shouldLockScroll, true);
+  });
+
+  test("keeps pending first-track text above an empty playback surface", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "play",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [createPlayListFixture({ name: "Quiet Morning" })],
+      pendingPlaylistPlaybackRequest: {
+        error: null,
+        phase: "preparing",
+        playlistName: "Quiet Morning",
+        reason: "pending_first_track",
+        requestId: 1,
+      },
+      playingPlaylistName: "Quiet Morning",
+      titleToneHandoff: null,
+      pressedLayoutId: null,
+      playbackSurface: {
+        phase: "playing",
+        playlistName: "Quiet Morning",
+        displayedTrackName: null,
+        displayedTrackLiked: null,
+        displayedTrackIsPlayable: false,
+      },
+      titleReturnSurface: null,
+    });
+
+    assert.equal(viewModel.shouldLockScroll, true);
+    assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[0]?.text, "Preparing...");
+    assert.equal(viewModel.itemViewModels[0]?.isPlaybackTarget, true);
+    assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, true);
+    assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
+    assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Preparing...");
+  });
+
+  test("projects starting play-state playback as preparing until the first track arrives", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "play",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [createPlayListFixture({ name: "Quiet Morning" })],
+      pendingPlaylistPlaybackRequest: {
+        error: null,
+        phase: "starting",
+        playlistName: "Quiet Morning",
+        reason: null,
+        requestId: 1,
+      },
+      playingPlaylistName: "Quiet Morning",
+      titleToneHandoff: null,
+      pressedLayoutId: null,
+      playbackSurface: {
+        phase: "playing",
+        playlistName: "Quiet Morning",
+        displayedTrackName: null,
+        displayedTrackLiked: null,
+        displayedTrackIsPlayable: false,
+      },
+      titleReturnSurface: null,
+    });
+
+    assert.equal(viewModel.shouldLockScroll, true);
+    assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[0]?.text, "Preparing...");
+    assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, true);
+    assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
+    assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Preparing...");
+  });
+
+  test("keeps pending first-track text above a playlist-title playback placeholder", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "play",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [createPlayListFixture({ name: "Quiet Morning" })],
+      pendingPlaylistPlaybackRequest: {
+        error: null,
+        phase: "preparing",
+        playlistName: "Quiet Morning",
+        reason: "pending_first_track",
+        requestId: 1,
+      },
+      playingPlaylistName: "Quiet Morning",
+      titleToneHandoff: null,
+      pressedLayoutId: null,
+      playbackSurface: {
+        phase: "playing",
+        playlistName: "Quiet Morning",
+        displayedTrackName: "Quiet Morning",
+        displayedTrackLiked: null,
+        displayedTrackIsPlayable: false,
+      },
+      titleReturnSurface: null,
+    });
+
+    assert.equal(viewModel.shouldLockScroll, true);
+    assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[0]?.text, "Preparing...");
+    assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, true);
+    assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
+    assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Preparing...");
+  });
+
+  test("lets playback track evidence replace pending first-track preparation text", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "play",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [createPlayListFixture({ name: "Quiet Morning" })],
+      pendingPlaylistPlaybackRequest: {
+        error: null,
+        phase: "preparing",
+        playlistName: "Quiet Morning",
+        reason: "pending_first_track",
+        requestId: 1,
+      },
+      playingPlaylistName: "Quiet Morning",
+      titleToneHandoff: null,
+      pressedLayoutId: null,
+      playbackSurface: {
+        phase: "playing",
+        playlistName: "Quiet Morning",
+        displayedTrackName: "Track A",
+        displayedTrackLiked: true,
+        displayedTrackIsPlayable: true,
+      },
+      titleReturnSurface: null,
+    });
+
+    assert.equal(viewModel.shouldLockScroll, true);
+    assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[0]?.text, "Track A");
+    assert.equal(viewModel.itemViewModels[0]?.isPlaybackTarget, true);
+    assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, false);
+    assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, true);
+    assert.equal(viewModel.itemViewModels[0]?.isCurrentMusicLiked, true);
+    assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Track A");
   });
 
   test("keeps the playback target title shareable when opening spectrum", () => {

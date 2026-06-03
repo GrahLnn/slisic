@@ -2,7 +2,16 @@ import { createSender } from "@grahlnn/fn/flow";
 import { createActor } from "xstate";
 import { machine } from "./machine";
 import { payloads, sig } from "./events";
-import type { PlaylistCommitRequest } from "./core";
+import {
+  createPlaylistCommitSubmission,
+  type PlaylistCommitRequest,
+  type PlaylistUpsertResult,
+} from "./core";
+import {
+  createPlaylistCommitCompletion,
+  rejectAllPlaylistCommitCompletions,
+  resetPlaylistCommitCompletions,
+} from "./completion";
 
 export let actor = createActor(machine);
 let send = createSender(actor);
@@ -25,10 +34,12 @@ export function stop() {
   }
 
   actor.stop();
+  rejectAllPlaylistCommitCompletions(new Error("playlist commit actor stopped"));
   started = false;
 }
 
 export function resetRuntimeActor() {
+  resetPlaylistCommitCompletions(new Error("playlist commit runtime reset"));
   actor = createActor(machine);
   send = createSender(actor);
   started = false;
@@ -37,10 +48,18 @@ export function resetRuntimeActor() {
 export const action = {
   commit: (request: PlaylistCommitRequest) => {
     ensureStarted();
-    send(commitRequested.load(request));
+    const completion = new Promise<PlaylistUpsertResult>((resolve, reject) => {
+      const completionId = createPlaylistCommitCompletion({
+        reject,
+        resolve,
+      });
+      send(commitRequested.load(createPlaylistCommitSubmission(request, completionId)));
+    });
+    return completion;
   },
   reset: () => {
     ensureStarted();
+    rejectAllPlaylistCommitCompletions(new Error("playlist commit reset"));
     actor.send(sig.mainx.reset);
   },
 };

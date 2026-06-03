@@ -300,6 +300,46 @@ function hasExpectedSpectrumEditEvidence(
   }
 }
 
+function baselineContainsMusicEditTarget(
+  baseline: SpectrumEditProjectionInput,
+  edit: MusicEdit,
+) {
+  return baseline.collections.some((collection) =>
+    collection.musics.some(
+      (music) =>
+        music.url === edit.url &&
+        music.start_ms === edit.targetStartMs &&
+        music.end_ms === edit.targetEndMs,
+    ),
+  );
+}
+
+function baselineContainsMusicDeleteTarget(
+  baseline: SpectrumEditProjectionInput,
+  deletion: MusicDelete,
+) {
+  return baseline.collections.some((collection) =>
+    collection.musics.some(
+      (music) =>
+        music.url === deletion.url &&
+        music.start_ms === deletion.startMs &&
+        music.end_ms === deletion.endMs,
+    ),
+  );
+}
+
+function evidenceTargetsBaseline(
+  baseline: SpectrumEditProjectionInput,
+  evidence: Required<SpectrumEditProjectionEvidence>,
+) {
+  return (
+    evidence.musicEdits.every((edit) => baselineContainsMusicEditTarget(baseline, edit)) &&
+    evidence.musicDeletes.every((deletion) =>
+      baselineContainsMusicDeleteTarget(baseline, deletion),
+    )
+  );
+}
+
 export function reflectSpectrumEditCommitEvidence(
   frame: SpectrumEditCommitFrame | null,
   accepted: {
@@ -337,6 +377,16 @@ export function reflectSpectrumEditCommitEvidence(
 
   const acceptedEvidence = normalizeSpectrumEditProjectionEvidence(accepted.evidence);
   if (!hasExpectedSpectrumEditEvidence(accepted.phase, acceptedEvidence)) {
+    return {
+      epoch: accepted.epoch,
+      frame,
+      kind: "Reject",
+      phase: accepted.phase,
+      reason: "unexpected-evidence",
+    };
+  }
+
+  if (!evidenceTargetsBaseline(frame.baseline, acceptedEvidence)) {
     return {
       epoch: accepted.epoch,
       frame,

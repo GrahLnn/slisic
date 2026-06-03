@@ -6,7 +6,10 @@ use super::model::{
     PastedDownloadUrlResolution,
 };
 use super::naming::{sanitize_path_component, short_hash};
-use super::planning::probe_root_shell_with_limit;
+#[cfg(not(test))]
+use super::planning::RootShellProbeTraceEvent;
+use super::planning::resolve_existing_collection_for_download_identity;
+use super::planning::{RootShellProbeTraceSink, probe_root_shell_with_limit};
 use super::planning::{normalize_url, parse_download_url, task_id_for};
 #[cfg(not(test))]
 use super::planning::{resolve_collection_plan, resolve_collection_plan_with_root_probe};
@@ -24,6 +27,8 @@ use crate::domain::collection_import::CollectionShellPlan;
 use crate::domain::collection_import::{CollectionSyncPlan, PlannedLeaf};
 #[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
+#[cfg(not(test))]
+use crate::domain::player::event::{PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent};
 use crate::domain::playlists::model::{Collection, Group};
 #[cfg(not(test))]
 use crate::domain::playlists::repo as playlists_repo;
@@ -45,7 +50,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(not(test))]
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 #[cfg(not(test))]
 use tauri::AppHandle;
 #[cfg(not(test))]
@@ -529,47 +534,306 @@ pub async fn resolve_pasted_download_url(url: String) -> Result<PastedDownloadUr
 pub async fn probe_download_root_title(url: String) -> Result<DownloadRootTitleEvidence> {
     let parsed_url = parse_download_url(&url).map_err(anyhow::Error::msg)?;
     let normalized_url = normalize_url(&parsed_url)?;
-    probe_download_root_title_with_client(normalized_url, resolve_title_probe_client()?).await
+    let trace = download_root_shell_probe_trace_sink(normalized_url.clone());
+    probe_download_root_title_with_client(normalized_url, resolve_title_probe_client()?, trace)
+        .await
+}
+
+#[cfg(not(test))]
+fn download_root_shell_probe_trace_sink(url: String) -> Option<RootShellProbeTraceSink> {
+    let app = runtime().ok()?.app.clone();
+
+    Some(Arc::new(move |event| {
+        let (event_name, elapsed_ms, status, error) = match event {
+            RootShellProbeTraceEvent::WaitStart => (
+                "download-root-shell-probe-wait-start",
+                None,
+                Some("waiting"),
+                None,
+            ),
+            RootShellProbeTraceEvent::SlotAcquired { elapsed_ms } => (
+                "download-root-shell-probe-slot-acquired",
+                Some(elapsed_ms),
+                Some("probing"),
+                None,
+            ),
+            RootShellProbeTraceEvent::Done { elapsed_ms } => (
+                "download-root-shell-probe-done",
+                Some(elapsed_ms),
+                Some("done"),
+                None,
+            ),
+            RootShellProbeTraceEvent::Error { elapsed_ms, error } => (
+                "download-root-shell-probe-error",
+                Some(elapsed_ms),
+                Some("error"),
+                Some(error),
+            ),
+        };
+
+        if let Err(error) = (PlaybackDiagnosticTraceEvent {
+            event: event_name.to_string(),
+            playlist_name: None,
+            music_name: None,
+            music_url: None,
+            start_ms: None,
+            end_ms: None,
+            elapsed_ms,
+            candidate_count: None,
+            queue_count: None,
+            status: status.map(str::to_string),
+            error,
+            details: Some(vec![PlaybackDiagnosticTraceDetail {
+                key: "url".to_string(),
+                value: url.clone(),
+            }]),
+        })
+        .emit(&app)
+        {
+            eprintln!("[downloads] failed to emit root shell probe trace `{event_name}`: {error}");
+        }
+    }))
+}
+
+#[cfg(test)]
+fn download_root_shell_probe_trace_sink(_url: String) -> Option<RootShellProbeTraceSink> {
+    None
+}
+
+#[cfg(not(test))]
+fn emit_download_root_title_stage_trace(
+    url: &str,
+    stage: &str,
+    status: &str,
+    elapsed_ms: u128,
+    error: Option<String>,
+) {
+    let Some(app) = runtime().ok().map(|runtime| runtime.app.clone()) else {
+        return;
+    };
+
+    if let Err(emit_error) = (PlaybackDiagnosticTraceEvent {
+        event: "download-root-title-stage".to_string(),
+        playlist_name: None,
+        music_name: None,
+        music_url: None,
+        start_ms: None,
+        end_ms: None,
+        elapsed_ms: Some(elapsed_ms),
+        candidate_count: None,
+        queue_count: None,
+        status: Some(status.to_string()),
+        error,
+        details: Some(vec![
+            PlaybackDiagnosticTraceDetail {
+                key: "stage".to_string(),
+                value: stage.to_string(),
+            },
+            PlaybackDiagnosticTraceDetail {
+                key: "url".to_string(),
+                value: url.to_string(),
+            },
+        ]),
+    })
+    .emit(&app)
+    {
+        eprintln!("[downloads] failed to emit root title stage trace `{stage}`: {emit_error}");
+    }
+}
+
+#[cfg(test)]
+fn emit_download_root_title_stage_trace(
+    _url: &str,
+    _stage: &str,
+    _status: &str,
+    _elapsed_ms: u128,
+    _error: Option<String>,
+) {
 }
 
 pub(crate) async fn probe_download_root_title_with_client(
     url: String,
     client: Arc<dyn YtDlpClient>,
+    trace: Option<RootShellProbeTraceSink>,
 ) -> Result<DownloadRootTitleEvidence> {
     let requested_url = url.clone();
-    let shell = probe_root_shell_with_limit(client, url).await?;
-    let existing = collection_import::get_collection_by_url(&shell.webpage_url).await?;
-    let folder = collection_import::resolve_collection_folder(
+    let command_start = Instant::now();
+    emit_download_root_title_stage_trace(&requested_url, "command", "start", 0, None);
+
+    let shell = probe_root_shell_with_limit(client, url, trace).await?;
+
+    let existing_lookup_start = Instant::now();
+    emit_download_root_title_stage_trace(&shell.webpage_url, "existing_lookup", "start", 0, None);
+    let existing = match resolve_existing_collection_for_download_identity(
+        &shell.webpage_url,
+        &shell.title,
+        shell.source_kind,
+    )
+    .await
+    {
+        Ok(existing) => {
+            emit_download_root_title_stage_trace(
+                &shell.webpage_url,
+                "existing_lookup",
+                "done",
+                existing_lookup_start.elapsed().as_millis(),
+                None,
+            );
+            existing
+        }
+        Err(error) => {
+            emit_download_root_title_stage_trace(
+                &shell.webpage_url,
+                "existing_lookup",
+                "error",
+                existing_lookup_start.elapsed().as_millis(),
+                Some(error.to_string()),
+            );
+            return Err(error);
+        }
+    };
+
+    let folder_resolve_start = Instant::now();
+    emit_download_root_title_stage_trace(&shell.webpage_url, "folder_resolve", "start", 0, None);
+    let folder = match collection_import::resolve_collection_folder(
         &shell.webpage_url,
         &shell.title,
         existing.as_ref(),
     )
-    .await?;
+    .await
+    {
+        Ok(folder) => {
+            emit_download_root_title_stage_trace(
+                &shell.webpage_url,
+                "folder_resolve",
+                "done",
+                folder_resolve_start.elapsed().as_millis(),
+                None,
+            );
+            folder
+        }
+        Err(error) => {
+            emit_download_root_title_stage_trace(
+                &shell.webpage_url,
+                "folder_resolve",
+                "error",
+                folder_resolve_start.elapsed().as_millis(),
+                Some(error.to_string()),
+            );
+            return Err(error);
+        }
+    };
+
     let enable_updates = existing
         .as_ref()
         .and_then(|collection| collection.enable_updates)
         .or_else(|| (shell.source_kind == CollectionSourceKind::List).then_some(false));
+    let collection_url = existing
+        .as_ref()
+        .map(|collection| collection.url.clone())
+        .unwrap_or_else(|| shell.webpage_url.clone());
     let plan = CollectionShellPlan {
         source_kind: shell.source_kind,
         collection_name: shell.title.clone(),
-        collection_url: shell.webpage_url.clone(),
+        collection_url,
         collection_folder: folder.clone(),
         enable_updates,
     };
-    let collection = collection_import::persist_prepared_collection_shell(plan.clone()).await?;
-    attach_prepared_collection_shell_to_active_task(&requested_url, &plan).await?;
+
+    let persist_shell_start = Instant::now();
+    emit_download_root_title_stage_trace(&plan.collection_url, "persist_shell", "start", 0, None);
+    let collection = match collection_import::persist_prepared_collection_shell(plan.clone()).await
+    {
+        Ok(collection) => {
+            emit_download_root_title_stage_trace(
+                &plan.collection_url,
+                "persist_shell",
+                "done",
+                persist_shell_start.elapsed().as_millis(),
+                None,
+            );
+            collection
+        }
+        Err(error) => {
+            emit_download_root_title_stage_trace(
+                &plan.collection_url,
+                "persist_shell",
+                "error",
+                persist_shell_start.elapsed().as_millis(),
+                Some(error.to_string()),
+            );
+            return Err(error);
+        }
+    };
+
+    let requested_attach_start = Instant::now();
+    emit_download_root_title_stage_trace(&requested_url, "attach_requested_task", "start", 0, None);
+    if let Err(error) = attach_prepared_collection_shell_to_active_task(&requested_url, &plan).await
+    {
+        emit_download_root_title_stage_trace(
+            &requested_url,
+            "attach_requested_task",
+            "error",
+            requested_attach_start.elapsed().as_millis(),
+            Some(error.to_string()),
+        );
+        return Err(error);
+    }
+    emit_download_root_title_stage_trace(
+        &requested_url,
+        "attach_requested_task",
+        "done",
+        requested_attach_start.elapsed().as_millis(),
+        None,
+    );
+
     if requested_url != plan.collection_url {
-        attach_prepared_collection_shell_to_active_task(&plan.collection_url, &plan).await?;
+        let canonical_attach_start = Instant::now();
+        emit_download_root_title_stage_trace(
+            &plan.collection_url,
+            "attach_canonical_task",
+            "start",
+            0,
+            None,
+        );
+        if let Err(error) =
+            attach_prepared_collection_shell_to_active_task(&plan.collection_url, &plan).await
+        {
+            emit_download_root_title_stage_trace(
+                &plan.collection_url,
+                "attach_canonical_task",
+                "error",
+                canonical_attach_start.elapsed().as_millis(),
+                Some(error.to_string()),
+            );
+            return Err(error);
+        }
+        emit_download_root_title_stage_trace(
+            &plan.collection_url,
+            "attach_canonical_task",
+            "done",
+            canonical_attach_start.elapsed().as_millis(),
+            None,
+        );
     }
 
-    Ok(DownloadRootTitleEvidence {
-        url: shell.webpage_url,
+    let evidence = DownloadRootTitleEvidence {
+        url: plan.collection_url.clone(),
         title: shell.title,
         folder,
         enable_updates,
         source_kind: shell.source_kind,
         collection,
-    })
+    };
+    emit_download_root_title_stage_trace(
+        &evidence.url,
+        "command",
+        "done",
+        command_start.elapsed().as_millis(),
+        None,
+    );
+
+    Ok(evidence)
 }
 
 #[cfg(not(test))]
@@ -787,7 +1051,7 @@ pub(crate) async fn attach_root_shell_to_task(
         return Ok(task);
     }
 
-    let shell = probe_root_shell_with_limit(client, task.url.clone()).await?;
+    let shell = probe_root_shell_with_limit(client, task.url.clone(), None).await?;
     let existing = collection_import::get_collection_by_url(&shell.webpage_url).await?;
     let collection_url = existing
         .as_ref()

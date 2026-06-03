@@ -145,26 +145,37 @@ function createSpectrumPlayReturnContext(
 
   return resetContextWith(
     {
-      hasPlayList: context.hasPlayList,
-      playlists: context.playlists,
-      pendingPlaylistPreview: context.pendingPlaylistPreview,
-      collections: projection.collections,
-      configLibrary: context.configLibrary,
-      savePath: context.savePath,
-      playingPlaylistName: context.playingPlaylistName,
-      playingSessionGeneration: context.playingSessionGeneration,
-      nowPlayingTrackName: projection.nowPlaying.name,
-      nowPlayingTrackUrl: projection.nowPlaying.url,
-      nowPlayingTrackFilePath: projection.nowPlaying.filePath,
-      nowPlayingTrackStartMs: projection.nowPlaying.startMs,
-      nowPlayingTrackEndMs: projection.nowPlaying.endMs,
-      nowPlayingTrackLiked: projection.nowPlaying.liked,
-      spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
-      spectrumMusicSourceContext: null,
-      spectrumMusicCommitFrame: args.spectrumMusicCommitFrame ?? null,
-      spectrumMusicCommitEpoch: args.spectrumMusicCommitEpoch ?? context.spectrumMusicCommitEpoch,
-      titleToneHandoff: createSpectrumPlayReturnSurfaceContext(context, projection.nowPlaying)
-        .titleToneHandoff,
+      shape: {
+        hasPlayList: context.hasPlayList,
+        playlists: context.playlists,
+        pendingPlaylistPreview: context.pendingPlaylistPreview,
+        collections: projection.collections,
+        configLibrary: context.configLibrary,
+        savePath: context.savePath,
+      },
+      runtime: {
+        playingPlaylistName: context.playingPlaylistName,
+        playingSessionGeneration: context.playingSessionGeneration,
+        nowPlayingTrackName: projection.nowPlaying.name,
+        nowPlayingTrackUrl: projection.nowPlaying.url,
+        nowPlayingTrackFilePath: projection.nowPlaying.filePath,
+        nowPlayingTrackStartMs: projection.nowPlaying.startMs,
+        nowPlayingTrackEndMs: projection.nowPlaying.endMs,
+        nowPlayingTrackLiked: projection.nowPlaying.liked,
+        spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
+      },
+      chart: {
+        spectrumMusicSourceContext: null,
+      },
+      lease: {
+        titleToneHandoff: createSpectrumPlayReturnSurfaceContext(context, projection.nowPlaying)
+          .titleToneHandoff,
+      },
+      transaction: {
+        spectrumMusicCommitFrame: args.spectrumMusicCommitFrame ?? null,
+        spectrumMusicCommitEpoch:
+          args.spectrumMusicCommitEpoch ?? context.spectrumMusicCommitEpoch,
+      },
     },
     resetLifecycle({
       reason: "close spectrum chart and return to playback shape",
@@ -346,26 +357,32 @@ function createSpectrumMusicDraftBootstrapInput(
 function createOpenSpectrumContext(context: Context) {
   return resetContextWith(
     {
-      hasPlayList: context.hasPlayList,
-      playlists: context.playlists,
-      pendingPlaylistPreview: context.pendingPlaylistPreview,
-      collections: context.collections,
-      configLibrary: context.configLibrary,
-      savePath: context.savePath,
-      playingPlaylistName: context.playingPlaylistName,
-      playingSessionGeneration: context.playingSessionGeneration,
-      nowPlayingTrackName: context.nowPlayingTrackName,
-      nowPlayingTrackUrl: context.nowPlayingTrackUrl,
-      nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-      nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
-      nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
-      nowPlayingTrackLiked: context.nowPlayingTrackLiked,
-      spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
-      spectrumMusicDrafts: createCurrentSpectrumMusicDrafts(context),
-      spectrumMusicSourceContext: null,
-      activeLayoutId: context.playingPlaylistName
-        ? playlistTitleLayoutId(context.playingPlaylistName)
-        : null,
+      shape: {
+        hasPlayList: context.hasPlayList,
+        playlists: context.playlists,
+        pendingPlaylistPreview: context.pendingPlaylistPreview,
+        collections: context.collections,
+        configLibrary: context.configLibrary,
+        savePath: context.savePath,
+      },
+      runtime: {
+        playingPlaylistName: context.playingPlaylistName,
+        playingSessionGeneration: context.playingSessionGeneration,
+        nowPlayingTrackName: context.nowPlayingTrackName,
+        nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+        nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
+        nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+        nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+        nowPlayingTrackLiked: context.nowPlayingTrackLiked,
+        spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
+      },
+      chart: {
+        spectrumMusicDrafts: createCurrentSpectrumMusicDrafts(context),
+        spectrumMusicSourceContext: null,
+        activeLayoutId: context.playingPlaylistName
+          ? playlistTitleLayoutId(context.playingPlaylistName)
+          : null,
+      },
     },
     resetLifecycle({
       reason: "open spectrum chart from playback shape",
@@ -381,23 +398,31 @@ function createOpenSpectrumContext(context: Context) {
 function createOpenSpectrumErrorContext(context: Context) {
   return resetContextWith(
     {
-      hasPlayList: context.hasPlayList,
-      playlists: context.playlists,
-      pendingPlaylistPreview: context.pendingPlaylistPreview,
-      collections: context.collections,
-      configLibrary: context.configLibrary,
-      savePath: context.savePath,
-      playingPlaylistName: context.playingPlaylistName,
-      playingSessionGeneration: context.playingSessionGeneration,
-      nowPlayingTrackName: context.nowPlayingTrackName,
-      nowPlayingTrackUrl: context.nowPlayingTrackUrl,
-      nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-      nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
-      nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
-      spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
-      spectrumMusicDrafts: [],
-      spectrumMusicSourceContext: null,
-      error: "missing spectrum music identity for music loading",
+      shape: {
+        hasPlayList: context.hasPlayList,
+        playlists: context.playlists,
+        pendingPlaylistPreview: context.pendingPlaylistPreview,
+        collections: context.collections,
+        configLibrary: context.configLibrary,
+        savePath: context.savePath,
+      },
+      runtime: {
+        playingPlaylistName: context.playingPlaylistName,
+        playingSessionGeneration: context.playingSessionGeneration,
+        nowPlayingTrackName: context.nowPlayingTrackName,
+        nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+        nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
+        nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+        nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+        spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
+      },
+      chart: {
+        spectrumMusicDrafts: [],
+        spectrumMusicSourceContext: null,
+      },
+      pending: {
+        error: "missing spectrum music identity for music loading",
+      },
     },
     resetLifecycle({
       reason: "reject opening spectrum without music identity",
@@ -503,19 +528,27 @@ function createPlayReadyContext(
 
   return resetContextWith(
     {
-      hasPlayList: context.hasPlayList,
-      playlists: context.playlists,
-      pendingPlaylistPreview: context.pendingPlaylistPreview,
-      collections: context.collections,
-      configLibrary: context.configLibrary,
-      savePath: context.savePath,
-      playingPlaylistName: playlistName,
-      playingSessionGeneration: context.pendingPlaylistPlaybackSessionGeneration,
-      ...nowPlayingTrackPatch,
-      pendingPlaylistPlaybackName: null,
-      pendingPlaylistPlaybackSessionGeneration: null,
-      pendingPlaylistPlaybackRequest: null,
-      pendingNowPlayingTrackEvidence: null,
+      shape: {
+        hasPlayList: context.hasPlayList,
+        playlists: context.playlists,
+        pendingPlaylistPreview: context.pendingPlaylistPreview,
+        collections: context.collections,
+        configLibrary: context.configLibrary,
+        savePath: context.savePath,
+      },
+      runtime: {
+        playingPlaylistName: playlistName,
+        playingSessionGeneration: context.pendingPlaylistPlaybackSessionGeneration,
+        ...nowPlayingTrackPatch,
+        pendingPlaylistPlaybackSessionGeneration: null,
+      },
+      transaction: {
+        pendingPlaylistPlaybackName: null,
+        pendingPlaylistPlaybackRequest: null,
+      },
+      pending: {
+        pendingNowPlayingTrackEvidence: null,
+      },
     },
     resetLifecycle({
       reason: "accept playlist playback and close pending playback evidence",
@@ -565,23 +598,38 @@ function createPendingPlaylistPlaybackContext(
 
   return resetContextWith(
     {
-      hasPlayList: context.hasPlayList,
-      playlists: context.playlists,
-      pendingPlaylistPreview: context.pendingPlaylistPreview,
-      collections: context.collections,
-      configLibrary: context.configLibrary,
-      savePath: context.savePath,
-      ...createPendingPlaylistPlaybackPatch(input),
-      playingPlaylistName: null,
-      playingSessionGeneration: null,
-      nowPlayingTrackName: null,
-      nowPlayingTrackUrl: null,
-      nowPlayingTrackFilePath: null,
-      nowPlayingTrackStartMs: null,
-      nowPlayingTrackEndMs: null,
-      nowPlayingTrackLiked: null,
-      activeLayoutId,
-      titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
+      shape: {
+        hasPlayList: context.hasPlayList,
+        playlists: context.playlists,
+        pendingPlaylistPreview: context.pendingPlaylistPreview,
+        collections: context.collections,
+        configLibrary: context.configLibrary,
+        savePath: context.savePath,
+      },
+      runtime: {
+        playingPlaylistName: null,
+        playingSessionGeneration: null,
+        nowPlayingTrackName: null,
+        nowPlayingTrackUrl: null,
+        nowPlayingTrackFilePath: null,
+        nowPlayingTrackStartMs: null,
+        nowPlayingTrackEndMs: null,
+        nowPlayingTrackLiked: null,
+        pendingPlaylistPlaybackSessionGeneration: null,
+      },
+      transaction: {
+        pendingPlaylistPlaybackName: input.playlistName,
+        pendingPlaylistPlaybackRequest: createPlaylistPlaybackRequestEvidence(input),
+      },
+      pending: {
+        pendingNowPlayingTrackEvidence: null,
+      },
+      chart: {
+        activeLayoutId,
+      },
+      lease: {
+        titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
+      },
     },
     resetLifecycle({
       reason: "open playlist title lease while pending playback starts",
@@ -659,6 +707,10 @@ function createPlaylistUpsertedContext(
     context.pendingPlaylistPreview &&
     (context.pendingPlaylistPreview.playlist.name === event.output.playlist.name ||
       context.pendingPlaylistPreview.previousName === event.output.previousName);
+  const shouldStartPendingPlayback =
+    context.pendingPlaylistPlaybackName === event.output.playlist.name &&
+    context.pendingPlaylistPlaybackRequest?.phase === "starting" &&
+    matchesPendingPreview;
 
   return {
     hasPlayList: true,
@@ -668,6 +720,24 @@ function createPlaylistUpsertedContext(
       event.output.previousName,
     ),
     pendingPlaylistPreview: matchesPendingPreview ? null : context.pendingPlaylistPreview,
+    pendingPlaylistPlaybackName: shouldStartPendingPlayback
+      ? null
+      : context.pendingPlaylistPlaybackName,
+    pendingPlaylistPlaybackRequest: context.pendingPlaylistPlaybackRequest,
+    ...(shouldStartPendingPlayback
+      ? {
+          playingPlaylistName: event.output.playlist.name,
+          playingSessionGeneration: null,
+          nowPlayingTrackName: null,
+          nowPlayingTrackUrl: null,
+          nowPlayingTrackFilePath: null,
+          nowPlayingTrackStartMs: null,
+          nowPlayingTrackEndMs: null,
+          nowPlayingTrackLiked: null,
+          pendingPlaylistPlaybackSessionGeneration: null,
+          pendingNowPlayingTrackEvidence: null,
+        }
+      : {}),
   };
 }
 
@@ -681,19 +751,27 @@ function createPendingPreviewConfigContext(context: Context, playlistName: strin
 
   return resetContextWith(
     {
-      hasPlayList: context.hasPlayList,
-      playlists: context.playlists,
-      pendingPlaylistPreview: context.pendingPlaylistPreview,
-      collections: context.collections,
-      configLibrary: context.configLibrary,
-      savePath: context.savePath,
-      playingPlaylistName: null,
-      nowPlayingTrackName: null,
-      nowPlayingTrackLiked: null,
-      activeLayoutId,
-      titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
-      draftBaseline: cloneDraft(draft),
-      draft,
+      shape: {
+        hasPlayList: context.hasPlayList,
+        playlists: context.playlists,
+        pendingPlaylistPreview: context.pendingPlaylistPreview,
+        collections: context.collections,
+        configLibrary: context.configLibrary,
+        savePath: context.savePath,
+        draftBaseline: cloneDraft(draft),
+        draft,
+      },
+      runtime: {
+        playingPlaylistName: null,
+        nowPlayingTrackName: null,
+        nowPlayingTrackLiked: null,
+      },
+      chart: {
+        activeLayoutId,
+      },
+      lease: {
+        titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
+      },
     },
     resetLifecycle({
       reason: "open config chart from playlist preview",
@@ -709,18 +787,28 @@ function createConfigLoadingContext(context: Context, playlistName: string) {
 
   return resetContextWith(
     {
-      hasPlayList: context.hasPlayList,
-      playlists: context.playlists,
-      pendingPlaylistPreview: context.pendingPlaylistPreview,
-      collections: context.collections,
-      configLibrary: context.configLibrary,
-      savePath: context.savePath,
-      playingPlaylistName: null,
-      nowPlayingTrackName: null,
-      nowPlayingTrackLiked: null,
-      activeLayoutId,
-      titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
-      pendingPlaylistName: playlistName,
+      shape: {
+        hasPlayList: context.hasPlayList,
+        playlists: context.playlists,
+        pendingPlaylistPreview: context.pendingPlaylistPreview,
+        collections: context.collections,
+        configLibrary: context.configLibrary,
+        savePath: context.savePath,
+      },
+      runtime: {
+        playingPlaylistName: null,
+        nowPlayingTrackName: null,
+        nowPlayingTrackLiked: null,
+      },
+      chart: {
+        activeLayoutId,
+      },
+      lease: {
+        titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
+      },
+      transaction: {
+        pendingPlaylistName: playlistName,
+      },
     },
     resetLifecycle({
       reason: "open config loading chart for playlist draft",
@@ -953,14 +1041,18 @@ export const machine = src.createMachine({
           actions: assign(({ event }) =>
             resetContextWith(
               {
-                hasPlayList: event.output.hasPlayList,
-                playlists: event.output.playlists,
-                pendingPlaylistPreview: null,
-                collections: event.output.collections,
-                configLibrary: event.output.configLibrary,
-                savePath: event.output.savePath,
-                playingPlaylistName: null,
-                nowPlayingTrackName: null,
+                shape: {
+                  hasPlayList: event.output.hasPlayList,
+                  playlists: event.output.playlists,
+                  pendingPlaylistPreview: null,
+                  collections: event.output.collections,
+                  configLibrary: event.output.configLibrary,
+                  savePath: event.output.savePath,
+                },
+                runtime: {
+                  playingPlaylistName: null,
+                  nowPlayingTrackName: null,
+                },
               },
               resetLifecycle({
                 reason: "replace app shape from bootstrap evidence",
@@ -976,8 +1068,12 @@ export const machine = src.createMachine({
           actions: assign(({ context, event }) =>
             resetContextWith(
               {
-                savePath: resolveSavePathFromLoadingError(event.error, context.savePath),
-                error: toErrorMessage(event.error),
+                shape: {
+                  savePath: resolveSavePathFromLoadingError(event.error, context.savePath),
+                },
+                pending: {
+                  error: toErrorMessage(event.error),
+                },
               },
               resetLifecycle({
                 reason: "enter bootstrap error state",
@@ -993,29 +1089,49 @@ export const machine = src.createMachine({
     [ss.mainx.State.ready]: {
       on: {
         run: ss.mainx.State.loading,
-        [playlistUpserted.evt]: {
-          actions: assign(({ context, event }) => createPlaylistUpsertedContext(context, event)),
-        },
+        [playlistUpserted.evt]: [
+          {
+            guard: ({ context, event }) =>
+              context.pendingPlaylistPlaybackName === event.output.playlist.name &&
+              context.pendingPlaylistPlaybackRequest?.phase === "starting" &&
+              !!context.pendingPlaylistPreview &&
+              (context.pendingPlaylistPreview.playlist.name === event.output.playlist.name ||
+                context.pendingPlaylistPreview.previousName === event.output.previousName),
+            target: ss.mainx.State.play,
+            actions: assign(({ context, event }) => createPlaylistUpsertedContext(context, event)),
+          },
+          {
+            actions: assign(({ context, event }) => createPlaylistUpsertedContext(context, event)),
+          },
+        ],
         opencreate: {
           target: ss.mainx.State.config,
           actions: assign(({ context }) =>
             resetContextWith(
               {
-                hasPlayList: context.hasPlayList,
-                playlists: context.playlists,
-                pendingPlaylistPreview: context.pendingPlaylistPreview,
-                collections: context.collections,
-                configLibrary: context.configLibrary,
-                savePath: context.savePath,
-                playingPlaylistName: null,
-                nowPlayingTrackName: null,
-                activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
-                titleToneHandoff: createCollectionTitleHandoff(
-                  CREATE_COLLECTION_LAYOUT_ID,
-                  "solid",
-                ),
-                draftBaseline: createDraft(),
-                draft: createDraft(),
+                shape: {
+                  hasPlayList: context.hasPlayList,
+                  playlists: context.playlists,
+                  pendingPlaylistPreview: context.pendingPlaylistPreview,
+                  collections: context.collections,
+                  configLibrary: context.configLibrary,
+                  savePath: context.savePath,
+                  draftBaseline: createDraft(),
+                  draft: createDraft(),
+                },
+                runtime: {
+                  playingPlaylistName: null,
+                  nowPlayingTrackName: null,
+                },
+                chart: {
+                  activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
+                },
+                lease: {
+                  titleToneHandoff: createCollectionTitleHandoff(
+                    CREATE_COLLECTION_LAYOUT_ID,
+                    "solid",
+                  ),
+                },
               },
               resetLifecycle({
                 reason: "open create playlist config chart",
@@ -1082,14 +1198,18 @@ export const machine = src.createMachine({
           actions: assign(({ context }) =>
             resetContextWith(
               {
-                hasPlayList: context.hasPlayList,
-                playlists: context.playlists,
-                pendingPlaylistPreview: context.pendingPlaylistPreview,
-                collections: context.collections,
-                configLibrary: context.configLibrary,
-                savePath: context.savePath,
-                playingPlaylistName: null,
-                nowPlayingTrackName: null,
+                shape: {
+                  hasPlayList: context.hasPlayList,
+                  playlists: context.playlists,
+                  pendingPlaylistPreview: context.pendingPlaylistPreview,
+                  collections: context.collections,
+                  configLibrary: context.configLibrary,
+                  savePath: context.savePath,
+                },
+                runtime: {
+                  playingPlaylistName: null,
+                  nowPlayingTrackName: null,
+                },
               },
               resetLifecycle({
                 reason: "leave playback and close runtime chart",
@@ -1105,21 +1225,29 @@ export const machine = src.createMachine({
           actions: assign(({ context }) =>
             resetContextWith(
               {
-                hasPlayList: context.hasPlayList,
-                playlists: context.playlists,
-                pendingPlaylistPreview: context.pendingPlaylistPreview,
-                collections: context.collections,
-                configLibrary: context.configLibrary,
-                savePath: context.savePath,
-                playingPlaylistName: null,
-                nowPlayingTrackName: null,
-                activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
-                titleToneHandoff: createCollectionTitleHandoff(
-                  CREATE_COLLECTION_LAYOUT_ID,
-                  "solid",
-                ),
-                draftBaseline: createDraft(),
-                draft: createDraft(),
+                shape: {
+                  hasPlayList: context.hasPlayList,
+                  playlists: context.playlists,
+                  pendingPlaylistPreview: context.pendingPlaylistPreview,
+                  collections: context.collections,
+                  configLibrary: context.configLibrary,
+                  savePath: context.savePath,
+                  draftBaseline: createDraft(),
+                  draft: createDraft(),
+                },
+                runtime: {
+                  playingPlaylistName: null,
+                  nowPlayingTrackName: null,
+                },
+                chart: {
+                  activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
+                },
+                lease: {
+                  titleToneHandoff: createCollectionTitleHandoff(
+                    CREATE_COLLECTION_LAYOUT_ID,
+                    "solid",
+                  ),
+                },
               },
               resetLifecycle({
                 reason: "open create playlist config chart from playback",
@@ -1211,23 +1339,31 @@ export const machine = src.createMachine({
           actions: assign(({ context, event }) =>
             resetContextWith(
               {
-                hasPlayList: context.hasPlayList,
-                playlists: context.playlists,
-                pendingPlaylistPreview: context.pendingPlaylistPreview,
-                collections: context.collections,
-                configLibrary: context.configLibrary,
-                savePath: context.savePath,
-                playingPlaylistName: context.playingPlaylistName,
-                playingSessionGeneration: context.playingSessionGeneration,
-                nowPlayingTrackName: context.nowPlayingTrackName,
-                nowPlayingTrackUrl: context.nowPlayingTrackUrl,
-                nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
-                nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
-                nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
-                spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
-                spectrumMusicDrafts: context.spectrumMusicDrafts,
-                spectrumMusicSourceContext: context.spectrumMusicSourceContext,
-                error: toErrorMessage(event.error),
+                shape: {
+                  hasPlayList: context.hasPlayList,
+                  playlists: context.playlists,
+                  pendingPlaylistPreview: context.pendingPlaylistPreview,
+                  collections: context.collections,
+                  configLibrary: context.configLibrary,
+                  savePath: context.savePath,
+                },
+                runtime: {
+                  playingPlaylistName: context.playingPlaylistName,
+                  playingSessionGeneration: context.playingSessionGeneration,
+                  nowPlayingTrackName: context.nowPlayingTrackName,
+                  nowPlayingTrackUrl: context.nowPlayingTrackUrl,
+                  nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
+                  nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
+                  nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+                  spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
+                },
+                chart: {
+                  spectrumMusicDrafts: context.spectrumMusicDrafts,
+                  spectrumMusicSourceContext: context.spectrumMusicSourceContext,
+                },
+                pending: {
+                  error: toErrorMessage(event.error),
+                },
               },
               resetLifecycle({
                 reason: "stop spectrum chart on draft load failure",
@@ -1312,18 +1448,26 @@ export const machine = src.createMachine({
           actions: assign(({ context, event }) =>
             resetContextWith(
               {
-                hasPlayList: context.hasPlayList,
-                playlists: context.playlists,
-                pendingPlaylistPreview: context.pendingPlaylistPreview,
-                collections: context.collections,
-                configLibrary: context.configLibrary,
-                savePath: context.savePath,
-                playingPlaylistName: null,
-                nowPlayingTrackName: null,
-                activeLayoutId: context.activeLayoutId,
-                titleToneHandoff: context.titleToneHandoff,
-                draftBaseline: cloneDraft(event.output),
-                draft: event.output,
+                shape: {
+                  hasPlayList: context.hasPlayList,
+                  playlists: context.playlists,
+                  pendingPlaylistPreview: context.pendingPlaylistPreview,
+                  collections: context.collections,
+                  configLibrary: context.configLibrary,
+                  savePath: context.savePath,
+                  draftBaseline: cloneDraft(event.output),
+                  draft: event.output,
+                },
+                runtime: {
+                  playingPlaylistName: null,
+                  nowPlayingTrackName: null,
+                },
+                chart: {
+                  activeLayoutId: context.activeLayoutId,
+                },
+                lease: {
+                  titleToneHandoff: context.titleToneHandoff,
+                },
               },
               resetLifecycle({
                 reason: "accept playlist draft load into config chart",
@@ -1341,17 +1485,27 @@ export const machine = src.createMachine({
           actions: assign(({ context, event }) =>
             resetContextWith(
               {
-                hasPlayList: context.hasPlayList,
-                playlists: context.playlists,
-                pendingPlaylistPreview: context.pendingPlaylistPreview,
-                collections: context.collections,
-                configLibrary: context.configLibrary,
-                savePath: context.savePath,
-                playingPlaylistName: null,
-                nowPlayingTrackName: null,
-                activeLayoutId: context.activeLayoutId,
-                titleToneHandoff: context.titleToneHandoff,
-                error: toErrorMessage(event.error),
+                shape: {
+                  hasPlayList: context.hasPlayList,
+                  playlists: context.playlists,
+                  pendingPlaylistPreview: context.pendingPlaylistPreview,
+                  collections: context.collections,
+                  configLibrary: context.configLibrary,
+                  savePath: context.savePath,
+                },
+                runtime: {
+                  playingPlaylistName: null,
+                  nowPlayingTrackName: null,
+                },
+                chart: {
+                  activeLayoutId: context.activeLayoutId,
+                },
+                lease: {
+                  titleToneHandoff: context.titleToneHandoff,
+                },
+                pending: {
+                  error: toErrorMessage(event.error),
+                },
               },
               resetLifecycle({
                 reason: "close config loading transaction on playlist draft load failure",
@@ -1372,17 +1526,23 @@ export const machine = src.createMachine({
           actions: assign(({ context }) =>
             resetContextWith(
               {
-                hasPlayList: context.hasPlayList,
-                playlists: context.playlists,
-                pendingPlaylistPreview: context.pendingPlaylistPreview,
-                collections: context.collections,
-                configLibrary: context.configLibrary,
-                savePath: context.savePath,
-                playingPlaylistName: null,
-                nowPlayingTrackName: null,
-                titleToneHandoff: context.activeLayoutId
-                  ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
-                  : context.titleToneHandoff,
+                shape: {
+                  hasPlayList: context.hasPlayList,
+                  playlists: context.playlists,
+                  pendingPlaylistPreview: context.pendingPlaylistPreview,
+                  collections: context.collections,
+                  configLibrary: context.configLibrary,
+                  savePath: context.savePath,
+                },
+                runtime: {
+                  playingPlaylistName: null,
+                  nowPlayingTrackName: null,
+                },
+                lease: {
+                  titleToneHandoff: context.activeLayoutId
+                    ? createCollectionTitleHandoff(context.activeLayoutId, "solid")
+                    : context.titleToneHandoff,
+                },
               },
               resetLifecycle({
                 reason: "leave config loading before draft load completes",
@@ -1411,15 +1571,21 @@ export const machine = src.createMachine({
 
             return resetContextWith(
               {
-                hasPlayList: context.hasPlayList,
-                playlists: context.playlists,
-                pendingPlaylistPreview: context.pendingPlaylistPreview,
-                collections: context.collections,
-                configLibrary: context.configLibrary,
-                savePath: context.savePath,
-                playingPlaylistName: null,
-                nowPlayingTrackName: null,
-                titleToneHandoff: backPlan.titleToneHandoff,
+                shape: {
+                  hasPlayList: context.hasPlayList,
+                  playlists: context.playlists,
+                  pendingPlaylistPreview: context.pendingPlaylistPreview,
+                  collections: context.collections,
+                  configLibrary: context.configLibrary,
+                  savePath: context.savePath,
+                },
+                runtime: {
+                  playingPlaylistName: null,
+                  nowPlayingTrackName: null,
+                },
+                lease: {
+                  titleToneHandoff: backPlan.titleToneHandoff,
+                },
               },
               resetLifecycle({
                 reason: "close config chart and return to app shape",
@@ -1436,21 +1602,29 @@ export const machine = src.createMachine({
           actions: assign(({ context }) =>
             resetContextWith(
               {
-                hasPlayList: context.hasPlayList,
-                playlists: context.playlists,
-                pendingPlaylistPreview: context.pendingPlaylistPreview,
-                collections: context.collections,
-                configLibrary: context.configLibrary,
-                savePath: context.savePath,
-                playingPlaylistName: null,
-                nowPlayingTrackName: null,
-                activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
-                titleToneHandoff: createCollectionTitleHandoff(
-                  CREATE_COLLECTION_LAYOUT_ID,
-                  resolveTitleShareToneFromDraft(context.draft),
-                ),
-                draftBaseline: createDraft(),
-                draft: createDraft(),
+                shape: {
+                  hasPlayList: context.hasPlayList,
+                  playlists: context.playlists,
+                  pendingPlaylistPreview: context.pendingPlaylistPreview,
+                  collections: context.collections,
+                  configLibrary: context.configLibrary,
+                  savePath: context.savePath,
+                  draftBaseline: createDraft(),
+                  draft: createDraft(),
+                },
+                runtime: {
+                  playingPlaylistName: null,
+                  nowPlayingTrackName: null,
+                },
+                chart: {
+                  activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
+                },
+                lease: {
+                  titleToneHandoff: createCollectionTitleHandoff(
+                    CREATE_COLLECTION_LAYOUT_ID,
+                    resolveTitleShareToneFromDraft(context.draft),
+                  ),
+                },
               },
               resetLifecycle({
                 reason: "replace config chart with create playlist chart",

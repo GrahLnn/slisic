@@ -247,6 +247,17 @@ export interface Context
     PendingEvidenceContext,
     JournalContext {}
 
+export interface ContextResetPatch<TContext extends Context = Context> {
+  chart?: Partial<ExperienceChartContext>;
+  journal?: Partial<JournalContext>;
+  lease?: Partial<PresentationLeaseContext>;
+  pending?: Partial<PendingEvidenceContext>;
+  runtime?: Partial<RuntimeCapabilityContext>;
+  shape?: Partial<ShapeProjectionContext>;
+  transaction?: Partial<TransactionEpochContext>;
+  unsafe?: Partial<TContext>;
+}
+
 export function collectionTitleLayoutId(url: string) {
   return `collection-title:${url}`;
 }
@@ -855,15 +866,35 @@ function hasContextResetJournal(
 }
 
 export function createContextResetter<TContext extends object>(createInitial: () => TContext) {
-  return function resetContextWith<const K extends keyof TContext>(
-    kept: Pick<TContext, K>,
+  return function resetContextWith(
+    patch: TContext extends Context ? ContextResetPatch<TContext & Context> : Partial<TContext>,
     lifecycle: ContextResetLifecycle,
   ): TContext {
     const initial = createInitial();
+    const groupedPatch =
+      "shape" in patch ||
+      "runtime" in patch ||
+      "chart" in patch ||
+      "lease" in patch ||
+      "transaction" in patch ||
+      "pending" in patch ||
+      "journal" in patch ||
+      "unsafe" in patch
+        ? {
+            ...("shape" in patch ? patch.shape : {}),
+            ...("runtime" in patch ? patch.runtime : {}),
+            ...("chart" in patch ? patch.chart : {}),
+            ...("lease" in patch ? patch.lease : {}),
+            ...("transaction" in patch ? patch.transaction : {}),
+            ...("pending" in patch ? patch.pending : {}),
+            ...("journal" in patch ? patch.journal : {}),
+            ...("unsafe" in patch ? patch.unsafe : {}),
+          }
+        : patch;
 
     return {
       ...initial,
-      ...kept,
+      ...groupedPatch,
       ...(hasContextResetJournal(initial)
         ? {
             lastContextResetLifecycle: lifecycle,

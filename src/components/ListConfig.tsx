@@ -12,6 +12,7 @@ import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { me } from "@grahlnn/fn";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
+import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { action as playlistCommitAction } from "@/src/flow/playlistCommit";
 import { action as pasteDownloadAction, hook as pasteDownloadHook } from "@/src/flow/pasteDownload";
@@ -76,6 +77,48 @@ const duplicateToolLabelShakeTransition = {
   duration: 0.46,
   ease: [0.16, 1, 0.3, 1],
 } as const;
+
+function waitForNextFrame() {
+  return new Promise<void>((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
+export async function waitForListConfigTitleShareSourceReady() {
+  await waitForNextFrame();
+  await waitForNextFrame();
+}
+
+export function resolveListConfigCheckReturnPlan(args: {
+  hasDraftChanges: boolean;
+  hasDraft: boolean;
+}) {
+  return args.hasDraftChanges && args.hasDraft
+    ? ({
+        awaitPersistenceBeforeBack: false,
+        awaitTitleCommitBeforeBack: true,
+        stabilizeTitleShareSourceBeforeBack: true,
+      } as const)
+    : ({
+        awaitPersistenceBeforeBack: false,
+        awaitTitleCommitBeforeBack: false,
+        stabilizeTitleShareSourceBeforeBack: false,
+      } as const);
+}
+
+function currentPerformanceNow() {
+  return typeof performance === "undefined" ? Date.now() : performance.now();
+}
+
+function summarizeListConfigCandidateStatuses(
+  candidateItems: readonly { status: string }[],
+) {
+  const counts: Record<string, number> = {};
+  for (const item of candidateItems) {
+    counts[item.status] = (counts[item.status] ?? 0) + 1;
+  }
+  return counts;
+}
 
 export type ListConfigDuplicateShakeState = {
   layoutId: string;
@@ -236,12 +279,6 @@ type ListConfigExtraToolLabelRowProps = {
   onRemoveExtraItem: (item: ListConfigExtraToolLabelItem) => Promise<boolean>;
   onRemoveExtraItemStart: (item: ListConfigExtraToolLabelItem) => void;
 };
-
-function waitForNextFrame() {
-  return new Promise<void>((resolve) => {
-    requestAnimationFrame(() => resolve());
-  });
-}
 
 export function shouldHideListConfigToolLabelRowContent(args: {
   activeGhostLayoutId: string | null;
@@ -476,11 +513,6 @@ function ListConfigExtraToolLabelRow({
   );
 }
 
-async function waitForTitleShareSourceReady() {
-  await waitForNextFrame();
-  await waitForNextFrame();
-}
-
 function createFrozenListConfigRenderData(args: {
   renderData: ListConfigRenderData;
   titleValue?: string;
@@ -646,8 +678,7 @@ export function ListConfig() {
     isImporting: isImportPending,
     isParsing: viewModel.isBackActionParsing,
   });
-  const isBackActionLocked =
-    isBackNavigationPending || viewModel.interactionFlags.isBackActionInteractionLocked;
+  const isBackActionLocked = isBackNavigationPending;
   const [duplicateShakeState, setDuplicateShakeState] =
     useState<ListConfigDuplicateShakeState | null>(null);
   const duplicateShakeSequenceRef = useRef(0);
@@ -779,37 +810,87 @@ export function ListConfig() {
   }
 
   async function handleBackAction() {
+    const actionStartedAt = currentPerformanceNow();
+    const traceBackAction = (event: string, payload: Record<string, unknown> = {}) => {
+      recordRenderPerformanceTrace(event, {
+        candidateCount: candidateItems.length,
+        candidateStatuses: summarizeListConfigCandidateStatuses(candidateItems),
+        draftMode: draft?.mode ?? null,
+        elapsedMs: currentPerformanceNow() - actionStartedAt,
+        hasDraftChanges: viewModel.hasDraftChanges,
+        isBackActionLocked,
+        isBackActionParsing: viewModel.isBackActionParsing,
+        playlistItemCount: viewModel.playlistItems.length,
+        toolLabelItemCount: viewModel.toolLabelItems.length,
+        ...payload,
+      });
+    };
+
+    traceBackAction("list-config-check-clicked");
     if (isBackActionLocked) {
+      traceBackAction("list-config-check-rejected-locked");
       return;
     }
 
     try {
       setIsBackNavigationPending(true);
+      traceBackAction("list-config-check-navigation-pending-set");
+      const returnPlan = resolveListConfigCheckReturnPlan({
+        hasDraft: !!draft,
+        hasDraftChanges: viewModel.hasDraftChanges,
+      });
+      traceBackAction("list-config-check-return-plan", returnPlan);
+
       if (!viewModel.hasDraftChanges || !draft) {
+        traceBackAction("list-config-check-clean-freeze-start");
         pageRenderFreeze.freeze(
           createFrozenListConfigRenderData({
             renderData: liveRenderData,
             titleHoverVisual: "retain",
           }),
         );
+        traceBackAction("list-config-check-clean-freeze-done");
         pasteDownloadAction.reset();
+        traceBackAction("list-config-check-clean-reset-done");
         appLogicAction.back();
+        traceBackAction("list-config-check-clean-back-sent");
         return;
       }
 
+      traceBackAction("list-config-check-resolve-commit-start");
       const commit = resolvePlaylistDraftCommit({
         draft,
         draftBaseline,
         playlists: resolvePlaylistsWithPreview(playlists, pendingPlaylistPreview),
       });
+      traceBackAction("list-config-check-resolve-commit-done", {
+        resolvedTitle: commit.titleResolution.name,
+        titleResolutionKind: commit.titleResolution.kind,
+      });
 
-      playlistCommitAction.commit(commit);
-
+      traceBackAction("list-config-check-commit-dispatch-start", {
+        resolvedTitle: commit.titleResolution.name,
+        titleResolutionKind: commit.titleResolution.kind,
+      });
+      const commitResult = playlistCommitAction.commit(commit);
+      void commitResult.catch((error) => {
+        traceBackAction("list-config-check-background-commit-error", {
+          error: error instanceof Error ? error.message : String(error),
+          resolvedTitle: commit.titleResolution.name,
+        });
+      });
+      traceBackAction("list-config-check-commit-dispatch-done");
+      traceBackAction("list-config-check-title-commit-start", {
+        animateTyping: commit.titleResolution.kind !== "keep",
+        resolvedTitle: commit.titleResolution.name,
+      });
       await editableTitleRef.current?.commitResolvedValue({
         value: commit.titleResolution.name,
         animateTyping: commit.titleResolution.kind !== "keep",
       });
+      traceBackAction("list-config-check-title-commit-done");
 
+      traceBackAction("list-config-check-freeze-start");
       flushSync(() => {
         appLogicAction.changeDraftName(commit.titleResolution.name);
         pageRenderFreeze.freeze(
@@ -821,10 +902,18 @@ export function ListConfig() {
           }),
         );
       });
-      await waitForTitleShareSourceReady();
+      traceBackAction("list-config-check-freeze-done");
+      traceBackAction("list-config-check-title-source-wait-start");
+      await waitForListConfigTitleShareSourceReady();
+      traceBackAction("list-config-check-title-source-wait-done");
       pasteDownloadAction.reset();
+      traceBackAction("list-config-check-reset-done");
       appLogicAction.back();
+      traceBackAction("list-config-check-back-sent");
     } catch (error) {
+      traceBackAction("list-config-check-error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       console.error("Failed to complete the config back transition", error);
       setIsBackNavigationPending(false);
     }

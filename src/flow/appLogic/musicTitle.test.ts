@@ -580,6 +580,7 @@ describe("musicDraft", () => {
           start_ms: 0,
           end_ms: 120_000,
           liked: false,
+          loudness: 0,
           url: "https://example.com/quiet-morning#a#spectrum#0#120000#Track%20Draft",
           canonical_music_id:
             "source:https://example.com/quiet-morning#a#spectrum#0#120000#Track%20Draft:0:120000",

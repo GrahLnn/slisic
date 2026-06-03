@@ -543,6 +543,60 @@ describe("appLogic machine", () => {
     });
   });
 
+  test("starts playback from pending preview only after playlist upsert evidence arrives", async () => {
+    const collection = createCollection([createMusic()]);
+    const playlist = createPlaylist(collection);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () => createBootstrapResult([])),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(
+      payloads["playlist.preview.changed"].load({
+        draft: createConfigDraftFromPlaylist(playlist),
+        playlist: createPlaylistSurface(playlist),
+        previousName: null,
+      }),
+    );
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+
+    assert.equal(actor.getSnapshot().value, "ready");
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, "Focus Session");
+    assert.deepEqual(actor.getSnapshot().context.pendingPlaylistPlaybackRequest, {
+      error: null,
+      phase: "starting",
+      playlistName: "Focus Session",
+      reason: null,
+      requestId: 1,
+    });
+
+    actor.send(
+      payloads["playlist.upserted"].load({
+        playlist: createPlaylistSurface(playlist),
+        previousName: null,
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().value, "play");
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPreview, null);
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, null);
+    assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
+    assert.deepEqual(actor.getSnapshot().context.pendingPlaylistPlaybackRequest, {
+      error: null,
+      phase: "starting",
+      playlistName: "Focus Session",
+      reason: null,
+      requestId: 1,
+    });
+  });
+
   test("accepts playback after pending first-track and playlist upsert evidence", async () => {
     const music = createMusic();
     const collection = createCollection([music]);

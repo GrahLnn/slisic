@@ -576,6 +576,7 @@ export const invoker = createActors({
   playPlaylist: async (input: PlayPlaylistInput): Promise<PlaybackStartResult> => {
     const startedAt = performance.now();
     recordRenderPerformanceTrace("playlist-play-invoke-start", {
+      api: "crab.playPlaylist",
       playlistName: input.playlistName,
     });
     const result = await crab.playPlaylist(input.playlistName);

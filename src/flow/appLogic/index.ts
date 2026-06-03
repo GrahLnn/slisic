@@ -80,6 +80,13 @@ import {
   type PlaybackModeEffect,
 } from "./playbackMode";
 import { recordRenderPerformanceTrace } from "@/src/debug/renderPerformanceTrace";
+import {
+  classifyPendingPlaylistPlaybackWakeupError,
+  createPlaylistPlaybackPendingWakeupOwner,
+  resolvePlaylistPlaybackPendingWakeupFromRequest,
+  shouldWakePendingPlaylistPlaybackFromPlayableIndexCommit,
+  type PlaylistPlayableIndexCommittedSignal,
+} from "./playlistPlaybackPendingWakeup";
 
 export { actor } from "./runtime";
 
@@ -101,13 +108,6 @@ const playbackContinuationModeEffectOwner = createPlaybackContinuationModeEffect
 });
 let lastPlayableIndexReadyState = false;
 let playlistPlaybackStartEpoch = 0;
-let pendingPlaybackWakeup: {
-  actionStartedAt: number;
-  inFlight: boolean;
-  playlistName: string;
-  requestId: number;
-  requested: boolean;
-} | null = null;
 
 function formatStateValue(value: unknown) {
   return typeof value === "string" ? value : JSON.stringify(value);
@@ -170,6 +170,7 @@ export function attachDebugLogger() {
   const initialSnapshot = actor.getSnapshot();
   let prevState = formatStateValue(initialSnapshot.value);
   let prevError = initialSnapshot.context.error;
+  let prevPlayingPlaylistName = initialSnapshot.context.playingPlaylistName;
   lastPlayableIndexReadyState = initialSnapshot.value === "ready";
   recordRenderPerformanceTrace("app-state-initial", traceAppSnapshotPayload(initialSnapshot));
 
@@ -197,6 +198,27 @@ export function attachDebugLogger() {
       ...traceAppSnapshotPayload(snapshot),
     });
     refreshPlayableIndexForReadyProjection(snapshot);
+    if (
+      nextState === "play" &&
+      prevState !== "play" &&
+      snapshot.context.playingPlaylistName &&
+      snapshot.context.playingPlaylistName !== prevPlayingPlaylistName
+    ) {
+      const request = snapshot.context.pendingPlaylistPlaybackRequest;
+      const requestId = request?.playlistName === snapshot.context.playingPlaylistName
+        ? request.requestId
+        : playlistPlaybackStartEpoch;
+      const actionStartedAt =
+        pendingPlaybackWakeupOwner.getActionStartedAt() ?? currentPerformanceNow();
+
+      void startPlaylistPlaybackFromAction({
+        actionStartedAt,
+        playlistName: snapshot.context.playingPlaylistName,
+        requestId,
+        trigger: "playlist_upserted",
+      });
+    }
+    prevPlayingPlaylistName = snapshot.context.playingPlaylistName;
     prevState = nextState;
     prevError = nextError;
   });
@@ -299,110 +321,90 @@ function isCurrentPlaylistPlaybackRequest(playlistName: string, requestId: numbe
   );
 }
 
-function closePendingPlaybackWakeup(playlistName: string, requestId: number) {
-  if (
-    pendingPlaybackWakeup?.playlistName === playlistName &&
-    pendingPlaybackWakeup.requestId === requestId
-  ) {
-    pendingPlaybackWakeup = null;
-  }
+function isPendingPlaylistPreviewPlaybackTarget(snapshot: ActorSnapshot, playlistName: string) {
+  return snapshot.context.pendingPlaylistPreview?.playlist.name === playlistName;
 }
 
-function schedulePlaylistPlaybackPendingWakeup(args: {
-  actionStartedAt: number;
-  playlistName: string;
-  requestId: number;
-}) {
-  if (!isCurrentPlaylistPlaybackRequest(args.playlistName, args.requestId)) {
-    closePendingPlaybackWakeup(args.playlistName, args.requestId);
-    recordRenderPerformanceTrace("playlist-play-action-pending-wakeup-cancelled", {
-      playlistName: args.playlistName,
-      requestId: args.requestId,
-      elapsedMs: currentPerformanceNow() - args.actionStartedAt,
-    });
-    return;
-  }
-
-  if (
-    pendingPlaybackWakeup?.playlistName !== args.playlistName ||
-    pendingPlaybackWakeup.requestId !== args.requestId
-  ) {
-    pendingPlaybackWakeup = {
-      ...args,
-      inFlight: false,
-      requested: false,
-    };
-  }
-
-  const wakeup = pendingPlaybackWakeup;
-  wakeup.requested = true;
-
-  if (wakeup.inFlight) {
-    recordRenderPerformanceTrace("playlist-play-action-pending-wakeup-coalesced", {
-      playlistName: wakeup.playlistName,
-      requestId: wakeup.requestId,
-      elapsedMs: currentPerformanceNow() - wakeup.actionStartedAt,
-    });
-    return;
-  }
-
-  wakeup.inFlight = true;
-  void (async () => {
-    while (wakeup.requested) {
-      wakeup.requested = false;
-      if (!isCurrentPlaylistPlaybackRequest(wakeup.playlistName, wakeup.requestId)) {
-        closePendingPlaybackWakeup(wakeup.playlistName, wakeup.requestId);
-        recordRenderPerformanceTrace("playlist-play-action-pending-wakeup-cancelled", {
-          playlistName: wakeup.playlistName,
-          requestId: wakeup.requestId,
-          elapsedMs: currentPerformanceNow() - wakeup.actionStartedAt,
-        });
-        return;
-      }
-
-      await startPlaylistPlaybackFromAction({
-        actionStartedAt: wakeup.actionStartedAt,
-        playlistName: wakeup.playlistName,
-        requestId: wakeup.requestId,
-        trigger: "download_task_changed",
-      });
-    }
-
-    if (
-      pendingPlaybackWakeup?.playlistName === wakeup.playlistName &&
-      pendingPlaybackWakeup.requestId === wakeup.requestId
-    ) {
-      pendingPlaybackWakeup.inFlight = false;
-    }
-  })().catch((error) => {
-    if (isCurrentPlaylistPlaybackRequest(args.playlistName, args.requestId)) {
-      sendPlaylistPlaybackErrorStop({
-        error,
-        playlistName: args.playlistName,
-        requestId: args.requestId,
-      });
-    }
-    closePendingPlaybackWakeup(args.playlistName, args.requestId);
-    recordRenderPerformanceTrace("playlist-play-action-pending-wakeup-error", {
-      playlistName: args.playlistName,
-      requestId: args.requestId,
-      elapsedMs: currentPerformanceNow() - args.actionStartedAt,
-      error: toPlaylistPlaybackErrorMessage(error),
-    });
-    console.error("Failed to wake pending playlist playback", error);
-  });
-}
+const pendingPlaybackWakeupOwner = createPlaylistPlaybackPendingWakeupOwner({
+  currentTimeMs: currentPerformanceNow,
+  formatError: toPlaylistPlaybackErrorMessage,
+  isCurrentRequest: isCurrentPlaylistPlaybackRequest,
+  reportError: (error) => console.error("Failed to wake pending playlist playback", error),
+  sendErrorStop: (error, playlistName, requestId) =>
+    sendPlaylistPlaybackErrorStop({
+      error,
+      playlistName,
+      requestId,
+    }),
+  shouldKeepPendingAfterError: classifyPendingPlaylistPlaybackWakeupError,
+  startPlayback: startPlaylistPlaybackFromAction,
+});
 
 function requestPendingPlaylistPlaybackWakeupFromDownloadTaskChange() {
   const request = actor.getSnapshot().context.pendingPlaylistPlaybackRequest;
-  if (request?.phase !== "preparing" || request.reason !== "pending_first_track") {
+  const decision = resolvePlaylistPlaybackPendingWakeupFromRequest({
+    actionStartedAt: pendingPlaybackWakeupOwner.getActionStartedAt() ?? currentPerformanceNow(),
+    request,
+  });
+  if (decision.kind === "stop") {
     return;
   }
 
-  schedulePlaylistPlaybackPendingWakeup({
-    actionStartedAt: pendingPlaybackWakeup?.actionStartedAt ?? currentPerformanceNow(),
-    playlistName: request.playlistName,
-    requestId: request.requestId,
+  pendingPlaybackWakeupOwner.schedule(decision.request);
+}
+
+function playbackTraceDetailValue(
+  details: readonly { key: string; value: string }[] | null,
+  key: string,
+) {
+  return details?.find((detail) => detail.key === key)?.value ?? null;
+}
+
+function createPlayableIndexCommittedSignalFromTrace(args: {
+  candidateCount: number | null;
+  details: readonly { key: string; value: string }[] | null;
+  event: string;
+  playlistName: string | null;
+}): PlaylistPlayableIndexCommittedSignal | null {
+  const candidateCount = args.candidateCount ?? 0;
+  if (
+    args.event !== "playlist-playable-index-refresh-ok" ||
+    playbackTraceDetailValue(args.details, "committed") !== "true" ||
+    candidateCount <= 0 ||
+    args.playlistName === null
+  ) {
+    return null;
+  }
+
+  return {
+    candidateCount,
+    playlistName: args.playlistName,
+  };
+}
+
+function requestPendingPlaylistPlaybackWakeupFromPlayableIndexCommit(
+  signal: PlaylistPlayableIndexCommittedSignal,
+) {
+  const request = actor.getSnapshot().context.pendingPlaylistPlaybackRequest;
+  const shouldWake = shouldWakePendingPlaylistPlaybackFromPlayableIndexCommit({
+    pendingRequest: request,
+    signal,
+  });
+  if (!shouldWake || !request) {
+    return;
+  }
+
+  const decision = resolvePlaylistPlaybackPendingWakeupFromRequest({
+    actionStartedAt: pendingPlaybackWakeupOwner.getActionStartedAt() ?? currentPerformanceNow(),
+    request,
+  });
+  if (decision.kind === "stop") {
+    return;
+  }
+
+  pendingPlaybackWakeupOwner.schedule({
+    ...decision.request,
+    trigger: "playable_index_committed",
   });
 }
 
@@ -410,7 +412,7 @@ async function startPlaylistPlaybackFromAction(args: {
   actionStartedAt: number;
   playlistName: string;
   requestId: number;
-  trigger?: "download_task_changed" | "user";
+  trigger?: "download_task_changed" | "playable_index_committed" | "playlist_upserted" | "user";
 }) {
   const { playlistName, requestId } = args;
 
@@ -425,6 +427,8 @@ async function startPlaylistPlaybackFromAction(args: {
   }
 
   recordRenderPerformanceTrace("playlist-play-action-backend-start", {
+    api: "crab.playPlaylist",
+    frontendInvoker: "invoker.playPlaylist.__src__",
     playlistName,
     requestId,
     trigger: args.trigger ?? "user",
@@ -452,7 +456,7 @@ async function startPlaylistPlaybackFromAction(args: {
         session: null,
       }),
     );
-    closePendingPlaybackWakeup(playlistName, requestId);
+    pendingPlaybackWakeupOwner.close(playlistName, requestId);
     return result;
   }
 
@@ -476,25 +480,18 @@ async function startPlaylistPlaybackFromAction(args: {
     });
     if (result.reason === "pending_first_track") {
       refreshPlayableIndex();
-      if (
-        pendingPlaybackWakeup?.playlistName !== playlistName ||
-        pendingPlaybackWakeup.requestId !== requestId
-      ) {
-        pendingPlaybackWakeup = {
-          actionStartedAt: args.actionStartedAt,
-          inFlight: false,
-          playlistName,
-          requestId,
-          requested: false,
-        };
-      }
+      pendingPlaybackWakeupOwner.rememberPending({
+        actionStartedAt: args.actionStartedAt,
+        playlistName,
+        requestId,
+      });
     } else {
-      closePendingPlaybackWakeup(playlistName, requestId);
+      pendingPlaybackWakeupOwner.close(playlistName, requestId);
     }
     return result;
   }
 
-  closePendingPlaybackWakeup(playlistName, requestId);
+  pendingPlaybackWakeupOwner.close(playlistName, requestId);
   send(playlistPlaybackAccepted.load({ playlistName, requestId, session: result.session }));
   return result;
 }
@@ -756,6 +753,15 @@ function attachPlaybackDiagnosticTraceListener() {
       error: payload.error,
       details: payload.details,
     });
+    const playableIndexCommittedSignal = createPlayableIndexCommittedSignalFromTrace({
+      candidateCount: payload.candidate_count,
+      details: payload.details,
+      event: payload.event,
+      playlistName: payload.playlist_name,
+    });
+    if (playableIndexCommittedSignal) {
+      requestPendingPlaylistPlaybackWakeupFromPlayableIndexCommit(playableIndexCommittedSignal);
+    }
   })
     .then((unlisten) => {
       unsubscribePlaybackDiagnosticTrace = unlisten;
@@ -833,9 +839,15 @@ export const action = {
     pasteDownloadAction.reset();
     const snapshot = actor.getSnapshot();
     recordRenderPerformanceTrace("playlist-play-action-start", {
+      api: "appLogicAction.playPlaylist",
       playlistName,
       state: formatStateValue(snapshot.value),
       playingPlaylistName: snapshot.context.playingPlaylistName,
+      pendingPlaylistPreviewName: snapshot.context.pendingPlaylistPreview?.playlist.name ?? null,
+      pendingPlaylistPlaybackPhase:
+        snapshot.context.pendingPlaylistPlaybackRequest?.phase ?? null,
+      pendingPlaylistPlaybackName:
+        snapshot.context.pendingPlaylistPlaybackRequest?.playlistName ?? null,
       shouldToggleStop:
         snapshot.value === "play" && snapshot.context.playingPlaylistName === playlistName,
     });
@@ -866,6 +878,15 @@ export const action = {
 
     const requestId = ++playlistPlaybackStartEpoch;
     send(playPlaylist.load({ playlistName, requestId }));
+    if (isPendingPlaylistPreviewPlaybackTarget(actor.getSnapshot(), playlistName)) {
+      recordRenderPerformanceTrace("playlist-play-action-deferred-pending-preview", {
+        api: "appLogicAction.playPlaylist",
+        playlistName,
+        requestId,
+        elapsedMs: currentPerformanceNow() - actionStartedAt,
+      });
+      return;
+    }
     void startPlaylistPlaybackFromAction({
       actionStartedAt,
       playlistName,
@@ -1159,7 +1180,7 @@ export function stop() {
   started = false;
   lastPlayableIndexReadyState = false;
   playlistPlaybackStartEpoch += 1;
-  pendingPlaybackWakeup = null;
+  pendingPlaybackWakeupOwner.reset();
   resetRuntimeActor();
 }
 

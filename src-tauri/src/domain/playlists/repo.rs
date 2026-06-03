@@ -1426,7 +1426,9 @@ async fn load_collection_group_memberships() -> Result<Vec<CollectionGroupMember
             "SELECT in.url AS collection_url, out.url AS group_url
              FROM $rel
              WHERE record::tb(in) = $collection_table
-                 AND record::tb(out) = $group_table;",
+                 AND record::tb(out) = $group_table
+                 AND in.url IS NOT NONE
+                 AND out.url IS NOT NONE;",
         )
         .bind(("rel", Table::from("include")))
         .bind(("collection_table", Collection::table_name().to_string()))

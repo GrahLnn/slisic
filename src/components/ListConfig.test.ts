@@ -12,6 +12,7 @@ import type { ConfigCandidateItem } from "@/src/flow/pasteDownload/core";
 import {
   LIST_CONFIG_EMPTY_STATE_TEXT,
   consumeListConfigDuplicateShakeState,
+  resolveListConfigCheckReturnPlan,
   resolveListConfigDuplicateShakeDecision,
   resolveToolLabelShakeSignal,
   shouldHideListConfigToolLabelRowContent,
@@ -35,6 +36,7 @@ import {
   resolveListConfigCollectionUpdatesToolText,
   resolveListConfigPasteTarget,
   resolveListConfigPastedUrlCandidates,
+  resolveListConfigCandidateParsingSignal,
   resolveListConfigToolLabelAffordance,
   resolveListConfigToolLabelItems,
   resolveListConfigToolLabelTextClassName,
@@ -162,6 +164,34 @@ const emptyExcludeAvailability = {
 };
 
 describe("ListConfig title view model", () => {
+  test("does not wait for playlist persistence before returning from a dirty check action", () => {
+    assert.deepEqual(
+      resolveListConfigCheckReturnPlan({
+        hasDraft: true,
+        hasDraftChanges: true,
+      }),
+      {
+        awaitPersistenceBeforeBack: false,
+        awaitTitleCommitBeforeBack: true,
+        stabilizeTitleShareSourceBeforeBack: true,
+      },
+    );
+  });
+
+  test("returns clean check actions without title or persistence waits", () => {
+    assert.deepEqual(
+      resolveListConfigCheckReturnPlan({
+        hasDraft: true,
+        hasDraftChanges: false,
+      }),
+      {
+        awaitPersistenceBeforeBack: false,
+        awaitTitleCommitBeforeBack: false,
+        stabilizeTitleShareSourceBeforeBack: false,
+      },
+    );
+  });
+
   test("hides the left row content only while a playlist item is leaving toward the arc track", () => {
     assert.equal(
       shouldHideListConfigToolLabelRowContent({
@@ -361,7 +391,7 @@ describe("ListConfig title view model", () => {
         isBackActionProcessing: true,
       }),
       {
-        isBackActionInteractionLocked: true,
+        isBackActionInteractionLocked: false,
         isTitleInteractionDisabled: false,
         isToolListInteractionDisabled: false,
         shouldRenderArcTrack: true,
@@ -1606,10 +1636,9 @@ describe("ListConfig title view model", () => {
     assert.equal(viewModel.shouldShowEmptyState, false);
   });
 
-  test("marks the back action as parsing while candidate checks or probes still exist", () => {
-    assert.equal(
-      countListConfigParsingCandidateItems([
-        ...candidateItems,
+  test("marks the back action as parsing only while paste admission is unresolved", () => {
+    assert.deepEqual(
+      resolveListConfigCandidateParsingSignal([
         {
           id: "candidate:checking",
           rawText: "https://example.com/pending",
@@ -1628,18 +1657,47 @@ describe("ListConfig title view model", () => {
           error: null,
           taskId: null,
         },
-        {
-          id: "candidate:preparing",
-          rawText: "https://example.com/preparing",
-          sourceUrl: "https://example.com/preparing",
-          displayText: "https://example.com/preparing",
-          status: "preparing",
-          error: null,
-          taskId: "task-preparing",
-        },
       ]),
-      4,
+      {
+        candidateIds: ["candidate:checking", "candidate:enqueueing"],
+        count: 2,
+        reasons: ["checking-url", "enqueueing-task"],
+      },
     );
+    const unresolvedPreparingSignal = resolveListConfigCandidateParsingSignal([
+      ...candidateItems,
+      {
+        id: "candidate:checking",
+        rawText: "https://example.com/pending",
+        sourceUrl: null,
+        displayText: "https://example.com/pending",
+        status: "checking",
+        error: null,
+        taskId: null,
+      },
+      {
+        id: "candidate:enqueueing",
+        rawText: "https://example.com/live",
+        sourceUrl: "https://example.com/live",
+        displayText: "https://example.com/live",
+        status: "enqueueing",
+        error: null,
+        taskId: null,
+      },
+      {
+        id: "candidate:preparing",
+        rawText: "https://example.com/preparing",
+        sourceUrl: "https://example.com/preparing",
+        displayText: "https://example.com/preparing",
+        status: "preparing",
+        error: null,
+        taskId: "task-preparing",
+      },
+    ]);
+
+    assert.equal(unresolvedPreparingSignal.count, 4);
+    assert.equal(unresolvedPreparingSignal.candidateIds.includes("candidate:preparing"), true);
+    assert.deepEqual(unresolvedPreparingSignal.reasons, ["enqueueing-task", "checking-url"]);
     assert.equal(hasListConfigParsingCandidateItems(candidateItems), true);
 
     const viewModel = resolveListConfigViewModel({
@@ -1674,7 +1732,7 @@ describe("ListConfig title view model", () => {
     });
 
     assert.equal(viewModel.isBackActionParsing, true);
-    assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, true);
+    assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, false);
     assert.equal(viewModel.interactionFlags.isTitleInteractionDisabled, false);
     assert.equal(viewModel.interactionFlags.isToolListInteractionDisabled, false);
     assert.equal(viewModel.excludeToolLabelItems[0]?.text, "Blocked Alias");
@@ -1710,7 +1768,7 @@ describe("ListConfig title view model", () => {
     assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, false);
   });
 
-  test("keeps the back parsing matrix while preparing candidates still display canonical urls", () => {
+  test("keeps the back parsing matrix while task admission still shows unresolved url evidence", () => {
     const viewModel = resolveListConfigViewModel({
       activeLayoutId: "playlist-title:Focus Session",
       draft: draftWithGroup,
@@ -1737,6 +1795,6 @@ describe("ListConfig title view model", () => {
     });
 
     assert.equal(viewModel.isBackActionParsing, true);
-    assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, true);
+    assert.equal(viewModel.interactionFlags.isBackActionInteractionLocked, false);
   });
 });

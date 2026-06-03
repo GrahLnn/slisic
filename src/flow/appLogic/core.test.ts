@@ -91,17 +91,19 @@ describe("createContextResetter", () => {
     const reset = createContextResetter(createInitialContext);
     const next = reset(
       {
-        collections: [
-          {
-            name: "Focus Session",
-            url: "https://example.com/focus-session",
-            folder: "youtube/focus-session",
-            musics: [],
-            last_updated: "2026-04-13T00:00:00Z",
-            enable_updates: null,
-          },
-        ],
-        savePath: "D:\\MediaLibrary",
+        shape: {
+          collections: [
+            {
+              name: "Focus Session",
+              url: "https://example.com/focus-session",
+              folder: "youtube/focus-session",
+              musics: [],
+              last_updated: "2026-04-13T00:00:00Z",
+              enable_updates: null,
+            },
+          ],
+          savePath: "D:\\MediaLibrary",
+        },
       },
       {
         owner: "appLogic",
@@ -138,7 +140,9 @@ describe("createContextResetter", () => {
   test("uses fresh default arrays when omitted fields are reset", () => {
     const next = resetContextWith(
       {
-        savePath: "D:\\MediaLibrary",
+        shape: {
+          savePath: "D:\\MediaLibrary",
+        },
       },
       {
         owner: "appLogic",
@@ -154,6 +158,81 @@ describe("createContextResetter", () => {
     assert.deepEqual(next.collections, []);
     assert.notEqual(next.playlists, defaults.playlists);
     assert.notEqual(next.collections, defaults.collections);
+  });
+
+  test("resets chart lease and transaction fields unless their owner patches preserve them", () => {
+    const next = resetContextWith(
+      {
+        shape: {
+          savePath: "D:\\MediaLibrary",
+        },
+        runtime: {
+          playingPlaylistName: "Quiet Morning",
+        },
+      },
+      {
+        owner: "appLogic",
+        reason: "test owner-scoped reset",
+        chart: { kind: "closed", target: "playlist-config" },
+        lease: { kind: "closed", target: "playlist-title:Quiet Morning" },
+        transaction: { kind: "closed", target: "playlist-draft" },
+      },
+    );
+
+    assert.equal(next.savePath, "D:\\MediaLibrary");
+    assert.equal(next.playingPlaylistName, "Quiet Morning");
+    assert.equal(next.activeLayoutId, null);
+    assert.equal(next.titleToneHandoff, null);
+    assert.equal(next.pendingPlaylistName, null);
+    assert.equal(next.draft, null);
+  });
+
+  test("preserves only the owner coordinates named by the reset patch", () => {
+    const leaseOnly = resetContextWith(
+      {
+        lease: {
+          titleToneHandoff: {
+            layoutId: "playlist-title:Quiet Morning",
+            tone: "solid",
+          },
+        },
+      },
+      {
+        owner: "appLogic",
+        reason: "test lease-only reset owner",
+        chart: { kind: "closed", target: "playlist-config" },
+        lease: { kind: "preserved", target: "playlist-title:Quiet Morning" },
+        transaction: { kind: "closed", target: "playlist-draft" },
+      },
+    );
+
+    assert.deepEqual(leaseOnly.titleToneHandoff, {
+      layoutId: "playlist-title:Quiet Morning",
+      tone: "solid",
+    });
+    assert.equal(leaseOnly.activeLayoutId, null);
+    assert.equal(leaseOnly.pendingPlaylistName, null);
+    assert.equal(leaseOnly.draft, null);
+
+    const transactionOnly = resetContextWith(
+      {
+        transaction: {
+          pendingPlaylistName: "Quiet Morning",
+        },
+      },
+      {
+        owner: "appLogic",
+        reason: "test transaction-only reset owner",
+        chart: { kind: "closed", target: "playlist-config" },
+        lease: { kind: "closed", target: "playlist-title:Quiet Morning" },
+        transaction: { kind: "preserved", target: "playlist-draft-load" },
+      },
+    );
+
+    assert.equal(transactionOnly.pendingPlaylistName, "Quiet Morning");
+    assert.equal(transactionOnly.titleToneHandoff, null);
+    assert.equal(transactionOnly.activeLayoutId, null);
+    assert.equal(transactionOnly.draft, null);
   });
 });
 

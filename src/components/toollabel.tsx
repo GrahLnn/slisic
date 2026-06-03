@@ -15,8 +15,19 @@ import {
   resolveToolLabelHoverLeaseFromPointerProbe,
   resolveToolLabelOverlayVisibility,
   type ToolLabelHoverLease,
-  type ToolLabelPointerPosition,
 } from "./toolLabelHoverLease";
+import {
+  collectHoverSyncScrollTargets,
+  collectScrollContainers,
+  sameRect,
+  toOverlayStyle,
+  type ToolLabelAnchor,
+} from "./toolLabelOverlayGeometry";
+import {
+  readToolLabelPointerPosition,
+  retainToolLabelPointerTracker,
+  subscribeToolLabelPointerSync,
+} from "./toolLabelPointerTracker";
 
 export function MaskR() {
   return (
@@ -75,117 +86,10 @@ export function MaskMiddle() {
 const TOOL_LABEL_OVERLAY_CLASS_NAME =
   "z-200 inline-flex cursor-default items-center overflow-visible";
 const TOOL_LABEL_PLAIN_TEXT_CLASS_NAME = "inline-block leading-[18px]";
-type ToolLabelAnchor = "left" | "right";
 type ToolLabelTextRenderMode = "torph" | "plain";
-
-type ToolLabelPointerTracker = {
-  position: ToolLabelPointerPosition | null;
-  refCount: number;
-  syncSubscribers: Set<() => void>;
-  updatePosition: (event: PointerEvent) => void;
-  updatePositionFromWheel: (event: WheelEvent) => void;
-  clearPosition: () => void;
-  requestSync: () => void;
-};
-
-const toolLabelPointerTrackers = new WeakMap<Document, ToolLabelPointerTracker>();
-const TOOL_LABEL_POINTER_WHEEL_CAPTURE = true;
 
 export function resolveToolLabelPlainTextClassName() {
   return TOOL_LABEL_PLAIN_TEXT_CLASS_NAME;
-}
-
-function retainToolLabelPointerTracker(ownerDocument: Document) {
-  let tracker = toolLabelPointerTrackers.get(ownerDocument);
-
-  if (!tracker) {
-    tracker = {
-      position: null,
-      refCount: 0,
-      syncSubscribers: new Set(),
-      updatePosition: (event) => {
-        tracker!.position = {
-          clientX: event.clientX,
-          clientY: event.clientY,
-        };
-      },
-      updatePositionFromWheel: (event) => {
-        tracker!.position = {
-          clientX: event.clientX,
-          clientY: event.clientY,
-        };
-        tracker!.requestSync();
-      },
-      clearPosition: () => {
-        tracker!.position = null;
-      },
-      requestSync: () => {
-        tracker!.syncSubscribers.forEach((subscriber) => {
-          subscriber();
-        });
-      },
-    };
-    toolLabelPointerTrackers.set(ownerDocument, tracker);
-    ownerDocument.addEventListener("pointerdown", tracker.updatePosition, {
-      passive: true,
-    });
-    ownerDocument.addEventListener("pointermove", tracker.updatePosition, {
-      passive: true,
-    });
-    ownerDocument.addEventListener("wheel", tracker.updatePositionFromWheel, {
-      passive: true,
-      capture: TOOL_LABEL_POINTER_WHEEL_CAPTURE,
-    });
-    ownerDocument.addEventListener("pointerleave", tracker.clearPosition, {
-      passive: true,
-    });
-    ownerDocument.defaultView?.addEventListener("blur", tracker.clearPosition);
-  }
-
-  tracker.refCount += 1;
-
-  return () => {
-    const currentTracker = toolLabelPointerTrackers.get(ownerDocument);
-
-    if (!currentTracker) {
-      return;
-    }
-
-    currentTracker.refCount -= 1;
-
-    if (currentTracker.refCount > 0) {
-      return;
-    }
-
-    ownerDocument.removeEventListener("pointerdown", currentTracker.updatePosition);
-    ownerDocument.removeEventListener("pointermove", currentTracker.updatePosition);
-    ownerDocument.removeEventListener(
-      "wheel",
-      currentTracker.updatePositionFromWheel,
-      TOOL_LABEL_POINTER_WHEEL_CAPTURE,
-    );
-    ownerDocument.removeEventListener("pointerleave", currentTracker.clearPosition);
-    ownerDocument.defaultView?.removeEventListener("blur", currentTracker.clearPosition);
-    toolLabelPointerTrackers.delete(ownerDocument);
-  };
-}
-
-function readToolLabelPointerPosition(ownerDocument: Document | null) {
-  return ownerDocument ? (toolLabelPointerTrackers.get(ownerDocument)?.position ?? null) : null;
-}
-
-function subscribeToolLabelPointerSync(ownerDocument: Document | null, subscriber: () => void) {
-  const tracker = ownerDocument ? toolLabelPointerTrackers.get(ownerDocument) : null;
-
-  if (!tracker) {
-    return () => {};
-  }
-
-  tracker.syncSubscribers.add(subscriber);
-
-  return () => {
-    tracker.syncSubscribers.delete(subscriber);
-  };
 }
 
 function ToolLabelTextSurface({
@@ -211,64 +115,6 @@ function ToolLabelTextSurface({
 
 function ToolLabelOverlayBody({ tool }: { tool: React.ReactNode }) {
   return <div className="inline-flex h-full min-w-full items-center overflow-visible">{tool}</div>;
-}
-
-function isScrollableContainer(element: HTMLElement) {
-  const { overflow, overflowX, overflowY } = window.getComputedStyle(element);
-  const overflowValue = `${overflow} ${overflowX} ${overflowY}`;
-
-  return /(auto|scroll|overlay)/.test(overflowValue);
-}
-
-function collectScrollContainers(anchor: HTMLElement | null) {
-  const containers: HTMLElement[] = [];
-  let current = anchor?.parentElement ?? null;
-
-  while (current) {
-    if (isScrollableContainer(current)) {
-      containers.push(current);
-    }
-
-    current = current.parentElement;
-  }
-
-  return containers;
-}
-
-function collectHoverSyncScrollTargets(anchor: HTMLElement | null) {
-  const containers = collectScrollContainers(anchor);
-  const ownerWindow = anchor?.ownerDocument.defaultView;
-
-  return {
-    containers,
-    ownerWindow: ownerWindow ?? null,
-  };
-}
-
-function toOverlayStyle(
-  rect: DOMRectReadOnly,
-  anchor: ToolLabelAnchor,
-  viewportWidth: number,
-): CSSProperties {
-  return anchor === "right"
-    ? {
-        top: rect.top,
-        right: viewportWidth - rect.right,
-        height: rect.height,
-        minWidth: rect.width,
-      }
-    : {
-        top: rect.top,
-        left: rect.left,
-        height: rect.height,
-        minWidth: rect.width,
-      };
-}
-
-function sameRect(a: DOMRectReadOnly | null, b: DOMRectReadOnly) {
-  return (
-    !!a && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height
-  );
 }
 
 /**

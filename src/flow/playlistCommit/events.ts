@@ -12,7 +12,7 @@ import {
   type SignalEvt,
 } from "@grahlnn/fn/flow";
 import { crab } from "@/src/cmd";
-import type { PlaylistCommitRequest, PlaylistUpsertResult } from "./core";
+import type { PlaylistCommitRequest, PlaylistCommitSubmission, PlaylistUpsertResult } from "./core";
 
 export const ss = defineSS(ns("mainx", sst(["idle", "submitting"], ["reset"])));
 export const state = allState(ss);
@@ -35,7 +35,7 @@ export const invoker = createActors({
     });
   },
 });
-export const payloads = collect(...event<PlaylistCommitRequest>()("playlist.commit.requested"));
+export const payloads = collect(...event<PlaylistCommitSubmission>()("playlist.commit.requested"));
 
 export type MainStateT = Extract<keyof typeof ss.mainx.State, string>;
 export type Events =
