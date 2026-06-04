@@ -436,7 +436,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.isHiddenInPlay, true);
   });
 
-  test("projects pending first-track playback as preparing instead of a stuck title press", () => {
+  test("keeps missing first-slot playback on the playlist title without inventing preparing text", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "ready",
       activeLayoutId: null,
@@ -462,9 +462,9 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.shouldLockScroll, true);
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
     assert.equal(viewModel.shouldShowCreateItem, false);
-    assert.equal(viewModel.itemViewModels[1]?.text, "Preparing...");
+    assert.equal(viewModel.itemViewModels[1]?.text, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[1]?.isPlaybackTarget, true);
-    assert.equal(viewModel.itemViewModels[1]?.isPlaybackPreparing, true);
+    assert.equal(viewModel.itemViewModels[1]?.isPlaybackPreparing, false);
     assert.equal(viewModel.itemViewModels[1]?.shouldShowPlaybackIcons, false);
     assert.equal(viewModel.itemViewModels[1]?.commitGesture, "disabled");
     assert.equal(viewModel.itemViewModels[1]?.titleHoverVisual, "retain");
@@ -535,7 +535,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.shouldLockScroll, true);
   });
 
-  test("keeps pending first-track text above an empty playback surface", () => {
+  test("keeps an empty playback surface on the playlist title without pending-first text", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "play",
       activeLayoutId: null,
@@ -563,11 +563,11 @@ describe("PlayListPage", () => {
 
     assert.equal(viewModel.shouldLockScroll, true);
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
-    assert.equal(viewModel.itemViewModels[0]?.text, "Preparing...");
+    assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
     assert.equal(viewModel.itemViewModels[0]?.isPlaybackTarget, true);
-    assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, true);
+    assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, false);
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
-    assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Preparing...");
+    assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, undefined);
   });
 
   test("keeps starting play-state playback on the playlist title until track evidence arrives", () => {
@@ -604,7 +604,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, undefined);
   });
 
-  test("keeps pending first-track text above a playlist-title playback placeholder", () => {
+  test("keeps a playlist-title playback placeholder outside preparing status", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "play",
       activeLayoutId: null,
@@ -632,10 +632,10 @@ describe("PlayListPage", () => {
 
     assert.equal(viewModel.shouldLockScroll, true);
     assert.equal(viewModel.playbackTargetKey, "Quiet Morning");
-    assert.equal(viewModel.itemViewModels[0]?.text, "Preparing...");
-    assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, true);
+    assert.equal(viewModel.itemViewModels[0]?.text, "Quiet Morning");
+    assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, false);
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
-    assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, "Preparing...");
+    assert.equal(viewModel.itemViewModels[0]?.playbackIconWidthText, undefined);
   });
 
   test("lets playback track evidence replace pending first-track preparation text", () => {

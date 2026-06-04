@@ -99,12 +99,6 @@ function resolvePendingPlaybackPlaylistName(args: {
     : null;
 }
 
-function shouldShowPendingPlaybackPreparation(args: {
-  request: PlaylistPlaybackRequestEvidence | null;
-}): boolean {
-  return args.request !== null && args.request.phase === "preparing";
-}
-
 function isPlaybackSurfaceTrackText(args: {
   playlistName: string;
   trackName: string | undefined;
@@ -293,43 +287,32 @@ function resolvePlayListPageVisibleItems(args: {
           playlistName: playlist.name,
           trackName: playbackSurfaceTrackName,
         });
-      const isPendingPlaybackPreparing =
-        isPendingPlaybackTarget &&
-        shouldShowPendingPlaybackPreparation({
-          request: args.pendingPlaylistPlaybackRequest,
-        }) &&
-        !hasPlaybackSurfaceTrackText;
-
       return createPlayListPageItemViewModel({
         playlist,
-        text: isPendingPlaybackPreparing
-          ? "Preparing..."
-          : hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName
+        text: hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName
             ? playbackSurfaceTrackName || playlist.name
             : playlist.name,
         titleShareEnabled: args.titleShareEnabled,
         transition: args.transition,
         titleToneHandoff: args.titleToneHandoff,
         isPlaybackTarget: isPlaybackTarget || isPendingPlaybackTarget,
-        shouldShowPlaybackIcons: isPendingPlaybackPreparing
-          ? false
-          : playbackActionsEnabled &&
+        shouldShowPlaybackIcons:
+          playbackActionsEnabled &&
             isPlaybackSurfacePlaying &&
             hasPlaybackTarget &&
             playlist.name === playbackSurfacePlaylistName &&
-            !!playbackSurfaceTrackName,
+            hasPlaybackSurfaceTrackText,
         isCurrentMusicLiked:
           isPlaybackSurfacePlaying &&
           hasPlaybackTarget &&
           playlist.name === playbackSurfacePlaylistName &&
           playbackSurfaceTrackLiked === true,
         isPlaybackPreparing:
-          isPendingPlaybackPreparing ||
-          (isPlaybackSurfacePlaying &&
-            hasPlaybackTarget &&
-            playlist.name === playbackSurfacePlaylistName &&
-            !!playbackSurfaceTrackName &&
-            !playbackSurfaceTrackIsPlayable),
+          isPlaybackSurfacePlaying &&
+          hasPlaybackTarget &&
+          playlist.name === playbackSurfacePlaylistName &&
+          hasPlaybackSurfaceTrackText &&
+          !playbackSurfaceTrackIsPlayable,
         isPlaybackTitleHandoffTarget: playlist.name === playbackTitleHandoffTargetName,
         titleHandoffInstruction: resolvePlayListTitleHandoffInstruction({
           plan: args.titleHandoffPlan,
@@ -341,10 +324,10 @@ function resolvePlayListPageVisibleItems(args: {
           layoutId: itemLayoutId,
           sourceEnabled: !isPlaybackTarget && !isPendingPlaybackTarget,
         }),
-        playbackIconWidthText: isPendingPlaybackPreparing
-          ? "Preparing..."
-          : (isPlaybackSurfacePlaying &&
+        playbackIconWidthText:
+          (isPlaybackSurfacePlaying &&
               playlist.name === playbackSurfacePlaylistName &&
+              hasPlaybackSurfaceTrackText &&
               playbackSurfaceTrackName) ||
             undefined,
         isHiddenInPlay: hasDisplayLockTarget && playlist.name !== displayLockPlaylistName,

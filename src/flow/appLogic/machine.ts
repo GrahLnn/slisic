@@ -672,15 +672,9 @@ function createPlaylistPlaybackStoppedPatch(
 
   if (event.output.reason === "pending_first_track") {
     return {
-      pendingPlaylistPlaybackName: event.output.playlistName,
+      pendingPlaylistPlaybackName: null,
       pendingPlaylistPlaybackSessionGeneration: null,
-      pendingPlaylistPlaybackRequest: {
-        error: null,
-        phase: "preparing",
-        playlistName: event.output.playlistName,
-        reason: event.output.reason,
-        requestId: event.output.requestId,
-      },
+      pendingPlaylistPlaybackRequest: null,
       pendingNowPlayingTrackEvidence: null,
     };
   }
@@ -707,10 +701,6 @@ function createPlaylistUpsertedContext(
     context.pendingPlaylistPreview &&
     (context.pendingPlaylistPreview.playlist.name === event.output.playlist.name ||
       context.pendingPlaylistPreview.previousName === event.output.previousName);
-  const shouldStartPendingPlayback =
-    context.pendingPlaylistPlaybackName === event.output.playlist.name &&
-    context.pendingPlaylistPlaybackRequest?.phase === "starting" &&
-    matchesPendingPreview;
 
   return {
     hasPlayList: true,
@@ -720,24 +710,8 @@ function createPlaylistUpsertedContext(
       event.output.previousName,
     ),
     pendingPlaylistPreview: matchesPendingPreview ? null : context.pendingPlaylistPreview,
-    pendingPlaylistPlaybackName: shouldStartPendingPlayback
-      ? null
-      : context.pendingPlaylistPlaybackName,
+    pendingPlaylistPlaybackName: context.pendingPlaylistPlaybackName,
     pendingPlaylistPlaybackRequest: context.pendingPlaylistPlaybackRequest,
-    ...(shouldStartPendingPlayback
-      ? {
-          playingPlaylistName: event.output.playlist.name,
-          playingSessionGeneration: null,
-          nowPlayingTrackName: null,
-          nowPlayingTrackUrl: null,
-          nowPlayingTrackFilePath: null,
-          nowPlayingTrackStartMs: null,
-          nowPlayingTrackEndMs: null,
-          nowPlayingTrackLiked: null,
-          pendingPlaylistPlaybackSessionGeneration: null,
-          pendingNowPlayingTrackEvidence: null,
-        }
-      : {}),
   };
 }
 
@@ -1089,21 +1063,9 @@ export const machine = src.createMachine({
     [ss.mainx.State.ready]: {
       on: {
         run: ss.mainx.State.loading,
-        [playlistUpserted.evt]: [
-          {
-            guard: ({ context, event }) =>
-              context.pendingPlaylistPlaybackName === event.output.playlist.name &&
-              context.pendingPlaylistPlaybackRequest?.phase === "starting" &&
-              !!context.pendingPlaylistPreview &&
-              (context.pendingPlaylistPreview.playlist.name === event.output.playlist.name ||
-                context.pendingPlaylistPreview.previousName === event.output.previousName),
-            target: ss.mainx.State.play,
-            actions: assign(({ context, event }) => createPlaylistUpsertedContext(context, event)),
-          },
-          {
-            actions: assign(({ context, event }) => createPlaylistUpsertedContext(context, event)),
-          },
-        ],
+        [playlistUpserted.evt]: {
+          actions: assign(({ context, event }) => createPlaylistUpsertedContext(context, event)),
+        },
         opencreate: {
           target: ss.mainx.State.config,
           actions: assign(({ context }) =>
