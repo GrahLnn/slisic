@@ -3,11 +3,10 @@ use super::recommendation::{
     filter_recently_played_recommendation_candidates,
 };
 use super::service::{
-    InitialPlaybackMissAction, PlaylistPlaybackRecommendationMode,
-    PlaylistPlaybackRecommendationRequest, PlaylistPlaybackRecommender,
-    PlaylistQueueRecommendationReadiness, RandomPlaylistPlaybackRecommender,
-    audio_style_playlist_playback_proposal_is_complete, create_start_anchor_playback_queue,
-    initial_playback_miss_action, place_track_at_queue_start,
+    PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
+    PlaylistPlaybackRecommender, PlaylistQueueRecommendationReadiness,
+    RandomPlaylistPlaybackRecommender, audio_style_playlist_playback_proposal_is_complete,
+    create_start_anchor_playback_queue, place_track_at_queue_start,
     playlist_playback_proposal_contains_next_track,
     playlist_playback_queue_contains_next_track_after_anchor,
     playlist_selection_has_relevant_active_downloads,
@@ -53,6 +52,7 @@ fn playback_track(name: &str) -> PlaybackTrack {
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     }
 }
 
@@ -88,6 +88,7 @@ fn music(name: &str, url: &str, path: &str, group: Group) -> Music {
         start_ms: 0,
         end_ms: 180_000,
         liked: false,
+        loudness: 0.0,
     }
 }
 
@@ -102,6 +103,7 @@ fn music_with_alias(name: &str, alias: &str, url: &str, path: &str, group: Group
         start_ms: 0,
         end_ms: 180_000,
         liked: false,
+        loudness: 0.0,
     }
 }
 
@@ -221,18 +223,6 @@ fn playlist_selection_active_downloads_match_collection_and_group_domains() {
     assert!(playlist_selection_has_relevant_active_downloads(
         &selection, &tasks
     ));
-}
-
-#[test]
-fn initial_playback_miss_waits_when_relevant_downloads_are_active() {
-    assert_eq!(
-        initial_playback_miss_action(true),
-        InitialPlaybackMissAction::PendingFirstTrack
-    );
-    assert_eq!(
-        initial_playback_miss_action(false),
-        InitialPlaybackMissAction::ScanFallback
-    );
 }
 
 #[test]
@@ -368,6 +358,7 @@ fn random_recommender_shuffle_preserves_candidate_identity_set() {
             end_ms: index * 1_000 + 500,
             source_music: None,
             liked: false,
+            loudness: 0.0,
         })
         .collect::<Vec<_>>();
     let mut before = tracks
@@ -412,6 +403,7 @@ fn random_recommender_keeps_current_track_at_the_queue_start() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -423,6 +415,7 @@ fn random_recommender_keeps_current_track_at_the_queue_start() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     };
 
     let proposed =
@@ -455,6 +448,7 @@ fn queue_start_projection_preserves_the_initial_playback_anchor() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -466,6 +460,7 @@ fn queue_start_projection_preserves_the_initial_playback_anchor() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     };
 
     let reordered =
@@ -539,6 +534,7 @@ fn random_recommender_after_exclude_does_not_reinsert_current_track() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -550,6 +546,7 @@ fn random_recommender_after_exclude_does_not_reinsert_current_track() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     };
 
     let proposed = RandomPlaylistPlaybackRecommender.propose_queue_after_exclude(
@@ -582,6 +579,7 @@ fn random_queue_after_exclude_filters_current_track_before_selecting_next() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -593,6 +591,7 @@ fn random_queue_after_exclude_filters_current_track_before_selecting_next() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     };
     let mut candidates = vec![current.clone(), next.clone(), current.clone()];
 
@@ -615,6 +614,7 @@ fn random_recommender_keeps_current_track_ahead_of_newly_loaded_queue_window() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -626,6 +626,7 @@ fn random_recommender_keeps_current_track_ahead_of_newly_loaded_queue_window() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     };
 
     let proposed =
@@ -752,6 +753,7 @@ fn playlist_playback_keep_current_proposal_without_next_track_is_not_complete() 
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     };
 
     assert!(!playlist_playback_proposal_contains_next_track(
@@ -772,6 +774,7 @@ fn playlist_playback_keep_current_proposal_with_distinct_next_track_is_complete(
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -783,6 +786,7 @@ fn playlist_playback_keep_current_proposal_with_distinct_next_track_is_complete(
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     };
 
     assert!(playlist_playback_proposal_contains_next_track(

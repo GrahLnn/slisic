@@ -28,6 +28,7 @@ fn track(name: &str) -> PlaybackTrack {
         end_ms: 60_000,
         source_music: None,
         liked: false,
+        loudness: 0.0,
     }
 }
 
@@ -79,6 +80,7 @@ fn source_from_track(
             start_ms: track.start_ms,
             end_ms: track.end_ms,
             liked: track.liked,
+            loudness: 0.0,
         },
     }
 }

@@ -609,6 +609,7 @@ fn persist_downloaded_leaf_music_replaces_only_the_matching_group_copy() {
                     start_ms: 0,
                     end_ms: 10_000,
                     liked: false,
+                    loudness: 0.0,
                 },
                 Music {
                     name: "Original Second".to_string(),
@@ -624,6 +625,7 @@ fn persist_downloaded_leaf_music_replaces_only_the_matching_group_copy() {
                     start_ms: 0,
                     end_ms: 10_000,
                     liked: false,
+                    loudness: 0.0,
                 },
             ],
             last_updated: "2026-04-12T00:00:00+00:00".to_string(),
@@ -748,6 +750,7 @@ fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
                 start_ms: 0,
                 end_ms: 79_000,
                 liked: false,
+                loudness: 0.0,
             },
             Music {
                 name: "ZWEI2 - Zahar's Ambition".to_string(),
@@ -759,6 +762,7 @@ fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
                 start_ms: 0,
                 end_ms: 152_000,
                 liked: false,
+                loudness: 0.0,
             },
             Music {
                 name: "Ludvig Forssell - A Heartfelt Apology | Death Stranding 2 On The Beach Original Video Game Score".to_string(),
@@ -770,6 +774,7 @@ fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
                 start_ms: 0,
                 end_ms: 213_000,
                 liked: false,
+                loudness: 0.0,
             },
             Music {
                 name: "Ludvig Forssell - Drawbridge | Death Stranding 2 On The Beach Original Video Game Score".to_string(),
@@ -781,6 +786,7 @@ fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
                 start_ms: 0,
                 end_ms: 180_000,
                 liked: false,
+                loudness: 0.0,
             },
         ],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
@@ -821,6 +827,7 @@ fn normalize_music_titles_keeps_multi_part_track_title_language_core() {
                 start_ms: 0,
                 end_ms: 180_000,
                 liked: false,
+                loudness: 0.0,
             },
             Music {
                 name: "Ludvig Forssell - One Last Fight Pt.2 - Death Stranding 2- On The Beach (Original Video Game Score)".to_string(),
@@ -832,6 +839,7 @@ fn normalize_music_titles_keeps_multi_part_track_title_language_core() {
                 start_ms: 0,
                 end_ms: 180_000,
                 liked: false,
+                loudness: 0.0,
             },
             Music {
                 name: "Ludvig Forssell - One Last Fight Pt.3 - Death Stranding 2- On The Beach (Original Video Game Score)".to_string(),
@@ -843,6 +851,7 @@ fn normalize_music_titles_keeps_multi_part_track_title_language_core() {
                 start_ms: 0,
                 end_ms: 180_000,
                 liked: false,
+                loudness: 0.0,
             },
         ],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
@@ -888,6 +897,7 @@ fn normalize_music_titles_does_not_compare_across_download_groups() {
                 start_ms: 0,
                 end_ms: 120_000,
                 liked: false,
+                loudness: 0.0,
             },
             Music {
                 name: "Album - Beta".to_string(),
@@ -903,6 +913,7 @@ fn normalize_music_titles_does_not_compare_across_download_groups() {
                 start_ms: 0,
                 end_ms: 120_000,
                 liked: false,
+                loudness: 0.0,
             },
         ],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
@@ -941,6 +952,7 @@ fn normalize_music_titles_uses_file_name_evidence_without_renaming_paths() {
                 start_ms: 0,
                 end_ms: 137_000,
                 liked: false,
+                loudness: 0.0,
             },
             Music {
                 name: "ZWEI2 - Help Alwen −Rushing in Version−".to_string(),
@@ -956,6 +968,7 @@ fn normalize_music_titles_uses_file_name_evidence_without_renaming_paths() {
                 start_ms: 0,
                 end_ms: 136_000,
                 liked: false,
+                loudness: 0.0,
             },
         ],
         last_updated: "2026-05-26T00:00:00+00:00".to_string(),
@@ -1438,6 +1451,7 @@ fn existing_leaf_identities_only_count_entries_with_present_files() {
                 start_ms: 0,
                 end_ms: 60_000,
                 liked: false,
+                loudness: 0.0,
             },
             Music {
                 name: "Missing".to_string(),
@@ -1453,6 +1467,7 @@ fn existing_leaf_identities_only_count_entries_with_present_files() {
                 start_ms: 0,
                 end_ms: 60_000,
                 liked: false,
+                loudness: 0.0,
             },
         ],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
@@ -1523,6 +1538,7 @@ fn existing_leaf_identities_keep_same_video_distinct_across_playlist_groups() {
             start_ms: 0,
             end_ms: 60_000,
             liked: false,
+            loudness: 0.0,
         }],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
         enable_updates: Some(false),
@@ -1633,6 +1649,7 @@ fn existing_planned_leaf_completions_match_manifest_identity_with_group_context(
             start_ms: 0,
             end_ms: 120_000,
             liked: false,
+            loudness: 0.0,
         }],
         last_updated: "2026-05-27T00:00:00+00:00".to_string(),
         enable_updates: Some(false),
@@ -2581,13 +2598,13 @@ fn probe_download_root_title_returns_prepared_collection_shell_evidence() {
 
         assert_eq!(evidence.url, url);
         assert_eq!(evidence.title, "Root Title Only");
-        assert_eq!(evidence.folder, "youtube/root-title-only");
+        assert_eq!(evidence.folder, "youtube/Root Title Only");
         assert_eq!(evidence.enable_updates, Some(false));
         assert_eq!(evidence.source_kind, CollectionSourceKind::List);
         assert!(tasks.is_empty());
         assert_eq!(evidence.collection.url, url);
         assert_eq!(evidence.collection.name, "Root Title Only");
-        assert_eq!(evidence.collection.folder, "youtube/root-title-only");
+        assert_eq!(evidence.collection.folder, "youtube/Root Title Only");
         assert_eq!(evidence.collection.enable_updates, Some(false));
         assert!(evidence.collection.musics.is_empty());
         assert_eq!(collection.url, evidence.collection.url);
@@ -2685,7 +2702,7 @@ fn probe_download_root_title_attaches_scope_to_existing_active_task() {
         assert_eq!(task.collection_name.as_deref(), Some("Root Title Only"));
         assert_eq!(
             task.collection_folder.as_deref(),
-            Some("youtube/root-title-only")
+            Some("youtube/Root Title Only")
         );
         assert_eq!(task.source_kind, Some(CollectionSourceKind::List));
         assert_eq!(task.status, DownloadTaskStatus::Queued);
@@ -2726,7 +2743,7 @@ fn prepare_task_enqueue_uses_prepared_shell_as_pending_playback_scope() {
         assert_eq!(task.collection_name.as_deref(), Some("Root Title Only"));
         assert_eq!(
             task.collection_folder.as_deref(),
-            Some("youtube/root-title-only")
+            Some("youtube/Root Title Only")
         );
         assert_eq!(task.source_kind, Some(CollectionSourceKind::List));
         assert_eq!(task.status, DownloadTaskStatus::Queued);
@@ -3421,6 +3438,7 @@ fn create_collection_shell_reuses_existing_music_and_updates_collection_metadata
             start_ms: 0,
             end_ms: 120_000,
             liked: false,
+            loudness: 0.0,
         }],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
         enable_updates: Some(false),

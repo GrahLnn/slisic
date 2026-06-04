@@ -53,6 +53,7 @@ fn music(index: usize) -> Music {
         start_ms: 0,
         end_ms: 180_000,
         liked: false,
+        loudness: 0.0,
     }
 }
 

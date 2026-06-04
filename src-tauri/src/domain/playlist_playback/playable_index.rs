@@ -40,7 +40,6 @@ pub(crate) enum PlayableIndexRefreshReason {
     PlaylistDeleted,
     LibraryChanged,
     ExcludeChanged,
-    PlaybackMiss,
     PreparedSourceConsumed,
 }
 
@@ -54,7 +53,6 @@ impl PlayableIndexRefreshReason {
             Self::PlaylistDeleted => "playlist_deleted",
             Self::LibraryChanged => "library_changed",
             Self::ExcludeChanged => "exclude_changed",
-            Self::PlaybackMiss => "playback_miss",
             Self::PreparedSourceConsumed => "prepared_source_consumed",
         }
     }
@@ -227,10 +225,6 @@ pub(crate) fn notify_exclude_changed() {
     notify_library_changed_impl(PlayableIndexRefreshReason::ExcludeChanged);
 }
 
-pub(crate) fn notify_playback_miss(playlist_name: &str) {
-    notify_playback_miss_impl(playlist_name);
-}
-
 pub(crate) fn consume_playlist_source(snapshot: &PlaylistPlayableIndexSnapshot) -> Result<bool> {
     let consumed = remove_playlist_source_snapshot(snapshot)?;
     if consumed {
@@ -242,7 +236,7 @@ pub(crate) fn consume_playlist_source(snapshot: &PlaylistPlayableIndexSnapshot) 
 pub(crate) fn discard_playlist_source(snapshot: &PlaylistPlayableIndexSnapshot) -> Result<bool> {
     let discarded = remove_playlist_source_snapshot(snapshot)?;
     if discarded {
-        notify_playback_miss_impl(&snapshot.playlist_name);
+        notify_prepared_source_consumed_impl(&snapshot.playlist_name);
     }
     Ok(discarded)
 }
@@ -266,18 +260,6 @@ fn notify_library_changed_impl(reason: PlayableIndexRefreshReason) {
 
 #[cfg(test)]
 fn notify_library_changed_impl(_reason: PlayableIndexRefreshReason) {}
-
-#[cfg(not(test))]
-fn notify_playback_miss_impl(playlist_name: &str) {
-    spawn_refresh_playlist(
-        None,
-        playlist_name.to_string(),
-        PlayableIndexRefreshReason::PlaybackMiss,
-    );
-}
-
-#[cfg(test)]
-fn notify_playback_miss_impl(_playlist_name: &str) {}
 
 #[cfg(not(test))]
 fn notify_prepared_source_consumed_impl(playlist_name: &str) {

@@ -71,6 +71,7 @@ const MAX_PARALLEL_LOUDNESS_MEASUREMENTS: usize = 4;
 const MAX_LEAF_DOWNLOAD_ATTEMPTS: usize = 3;
 const LEAF_DOWNLOAD_RETRY_BASE_DELAY_SECS: u64 = 2;
 const LEAF_DOWNLOAD_RETRY_MAX_JITTER_MILLIS: u64 = 750;
+const PREPARE_TASK_ENQUEUE_RETRY_ATTEMPTS: usize = 6;
 #[cfg(not(test))]
 static DOWNLOAD_RUNTIME: OnceLock<DownloadRuntime> = OnceLock::new();
 #[cfg(not(test))]
@@ -944,28 +945,50 @@ async fn prepare_task_enqueue_outcome(
     trigger: DownloadTrigger,
 ) -> Result<PreparedTaskEnqueue> {
     let normalized_url = normalize_url(&url)?;
+    let mut backoff = Duration::from_millis(5);
 
+    for attempt in 0..PREPARE_TASK_ENQUEUE_RETRY_ATTEMPTS {
+        match prepare_task_enqueue_once(&normalized_url, trigger).await {
+            Ok(prepared) => return Ok(prepared),
+            Err(error)
+                if repo::is_retryable_transaction_conflict(&error)
+                    && attempt + 1 < PREPARE_TASK_ENQUEUE_RETRY_ATTEMPTS =>
+            {
+                tokio::time::sleep(backoff).await;
+                backoff = backoff.saturating_mul(2);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    unreachable!("prepare task enqueue retry loop should always return or error")
+}
+
+async fn prepare_task_enqueue_once(
+    normalized_url: &str,
+    trigger: DownloadTrigger,
+) -> Result<PreparedTaskEnqueue> {
     loop {
-        if let Some(existing) = repo::find_latest_active_task_for_url(&normalized_url).await? {
+        if let Some(existing) = repo::find_latest_active_task_for_url(normalized_url).await? {
             return Ok(PreparedTaskEnqueue::Existing(
                 attach_existing_collection_shell_to_task(existing).await?,
             ));
         }
 
-        let Some(_claim) = try_claim_enqueue_url(&normalized_url)? else {
+        let Some(_claim) = try_claim_enqueue_url(normalized_url)? else {
             task::yield_now().await;
             continue;
         };
 
-        if let Some(existing) = repo::find_latest_active_task_for_url(&normalized_url).await? {
+        if let Some(existing) = repo::find_latest_active_task_for_url(normalized_url).await? {
             return Ok(PreparedTaskEnqueue::Existing(
                 attach_existing_collection_shell_to_task(existing).await?,
             ));
         }
 
         let mut task = DownloadTask::new(
-            task_id_for(&normalized_url, trigger),
-            normalized_url.clone(),
+            task_id_for(normalized_url, trigger),
+            normalized_url.to_string(),
             trigger,
         );
         apply_existing_collection_shell_to_task(&mut task).await?;

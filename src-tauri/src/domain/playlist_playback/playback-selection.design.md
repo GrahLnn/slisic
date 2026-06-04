@@ -27,9 +27,10 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 
 - The playlist row is the only source of playlist membership.
 - Startup candidate preparation runs before click through the playable-source
-  index. Program startup, ready, library, playlist, exclude, playback miss, and
-  prepared-source consumption are the only scheduling inputs. The play action
-  consumes prepared evidence; it does not own first-track preparation.
+  index. Program startup, ready, library, playlist, exclude, and
+  prepared-source consumption are the scheduling inputs. The play action
+  consumes prepared evidence; it does not own first-track preparation, and a
+  prepared first-slot miss is not a scheduler.
 - The player-submit success path consumes the current prepared option by
   playlist and generation. Consumption immediately schedules replacement
   preparation for that playlist.
@@ -56,8 +57,8 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - The playable index prepares at most one startup option per playlist in the
   background; it cannot define whether a source is a playlist member or whether
   a local file is actually playable.
-- Ready, startup, playback-miss, and prepared-source-consumed refreshes fill a
-  missing prepared startup option; they do not replace an unconsumed option.
+- Ready, startup, and prepared-source-consumed refreshes fill a missing
+  prepared startup option; they do not replace an unconsumed option.
 - Queue refresh may reduce latency, fill later continuations, or improve
   recommendation quality, but it must not change playlist membership.
 - Queue refresh is driven by anchor consumption or a missing next track. Model
@@ -316,12 +317,14 @@ recommendation policy.
 
 The playable index owns generation numbers for async refreshes. A late global or
 playlist refresh may finish, but it can only commit if its generation is still
-current. Refresh requests from startup, ready, prepared-source consumption, or
-playback miss are idempotent fill signals: they do not replace an unconsumed
-prepared source. Playlist mutation, library mutation, and exclude mutation are
-invalidating signals and may replace prepared evidence. Prepared-source
-consumption is generation-guarded, so repeated consumption or a late consumption
-of a replaced snapshot cannot remove newer prepared evidence.
+current. Refresh requests from startup, ready, or prepared-source consumption are
+idempotent fill signals: they do not replace an unconsumed prepared source. A
+play action that observes a missing prepared snapshot does not schedule
+first-slot preparation; it only reports the miss. Playlist mutation, library
+mutation, and exclude mutation are invalidating signals and may replace prepared
+evidence. Prepared-source consumption is generation-guarded, so repeated
+consumption or a late consumption of a replaced snapshot cannot remove newer
+prepared evidence.
 
 Queue refreshes run asynchronously, but every refresh checks the session handle
 before writing. The queue-fill loop does not re-plan solely because the audio

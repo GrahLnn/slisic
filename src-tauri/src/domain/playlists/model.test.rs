@@ -360,6 +360,7 @@ fn sample_collection(
                 start_ms: 0,
                 end_ms: 42_000,
                 liked: false,
+                loudness: 0.0,
             },
             Music {
                 name: format!("{name} outro"),
@@ -375,6 +376,7 @@ fn sample_collection(
                 start_ms: 42_000,
                 end_ms: 84_000,
                 liked: false,
+                loudness: 0.0,
             },
         ],
         last_updated: "2026-04-12T12:00:00+00:00".to_string(),
