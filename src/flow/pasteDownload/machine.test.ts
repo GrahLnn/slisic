@@ -3,7 +3,7 @@ import { describe, test } from "node:test";
 import { createActor } from "xstate";
 import type { Collection, DownloadRootTitleEvidence, EnqueuedCollectionDownload } from "@/src/cmd";
 import { machine } from "./machine";
-import { deps, payloads } from "./events";
+import { deps, payloads, sig } from "./events";
 
 const pasteRequested = payloads["paste.requested"];
 const candidateEnqueueCompleted = payloads["candidate.enqueue.completed"];
@@ -127,7 +127,7 @@ describe("pasteDownload machine", () => {
 
       const item = actor.getSnapshot().context.items[0];
       assert.equal(item?.displayText, shellCollection.name);
-      assert.equal(item?.status, "preparing");
+      assert.equal(item?.status, "task_active");
       assert.equal(item?.taskId, "task:list");
     } finally {
       actor.stop();
@@ -217,7 +217,7 @@ describe("pasteDownload machine", () => {
         "enqueue:https://example.com/fast",
       ]);
       assert.equal(actor.getSnapshot().context.items[0]?.displayText, "Fast Playlist");
-      assert.equal(actor.getSnapshot().context.items[0]?.status, "preparing");
+      assert.equal(actor.getSnapshot().context.items[0]?.status, "task_active");
       assert.equal(actor.getSnapshot().context.items[1]?.status, "checking");
 
       firstResolve.resolve({
@@ -417,6 +417,53 @@ describe("pasteDownload machine", () => {
     }
   });
 
+  test("drops late url resolution after reset closes candidate scopes", async () => {
+    const originalResolve = deps.resolvePastedDownloadUrl;
+    const originalTitle = deps.probeDownloadRootTitle;
+    const originalEnqueue = deps.enqueueCollectionDownload;
+    const resolve = createDeferred<Awaited<ReturnType<typeof deps.resolvePastedDownloadUrl>>>();
+    const calls: string[] = [];
+
+    deps.resolvePastedDownloadUrl = (url) => {
+      calls.push(`resolve:${url}`);
+      return resolve.promise;
+    };
+    deps.probeDownloadRootTitle = (url) => {
+      calls.push(`title:${url}`);
+      return Promise.resolve(rootTitleEvidence());
+    };
+    deps.enqueueCollectionDownload = (url) => {
+      calls.push(`enqueue:${url}`);
+      return Promise.resolve(activeDownloadResult());
+    };
+
+    const actor = createActor(machine);
+    actor.start();
+
+    try {
+      actor.send(pasteRequested.load("https://example.com/old"));
+      await flushMicrotasks();
+      assert.deepEqual(calls, ["resolve:https://example.com/old"]);
+
+      actor.send(sig.mainx.reset);
+      resolve.resolve({
+        status: "new_url",
+        url: "https://example.com/old",
+        error: null,
+        collection: null,
+      });
+      await flushMicrotasks();
+
+      assert.deepEqual(calls, ["resolve:https://example.com/old"]);
+      assert.deepEqual(actor.getSnapshot().context.items, []);
+    } finally {
+      actor.stop();
+      deps.resolvePastedDownloadUrl = originalResolve;
+      deps.probeDownloadRootTitle = originalTitle;
+      deps.enqueueCollectionDownload = originalEnqueue;
+    }
+  });
+
   test("keeps an active download candidate after shell collection evidence arrives", () => {
     const actor = createActor(machine);
     actor.start();
@@ -431,7 +478,7 @@ describe("pasteDownload machine", () => {
 
     const item = actor.getSnapshot().context.items[0];
     assert.equal(item?.id, "candidate:0");
-    assert.equal(item?.status, "preparing");
+    assert.equal(item?.status, "task_active");
     assert.equal(item?.taskId, "task:list");
 
     actor.stop();
@@ -470,7 +517,7 @@ describe("pasteDownload machine", () => {
 
     const item = actor.getSnapshot().context.items[0];
     assert.equal(item?.id, "candidate:0");
-    assert.equal(item?.status, "preparing");
+    assert.equal(item?.status, "task_active");
     assert.equal(item?.taskId, "task:list");
     assert.equal(item?.displayText, "Slow Playlist");
     assert.equal(item?.sourceUrl, shellCollection.url);
@@ -508,7 +555,7 @@ describe("pasteDownload machine", () => {
     const item = actor.getSnapshot().context.items[0];
     assert.equal(item?.sourceUrl, shellCollection.url);
     assert.equal(item?.displayText, shellCollection.name);
-    assert.equal(item?.status, "preparing");
+    assert.equal(item?.status, "task_active");
     assert.equal(item?.taskId, "task:list");
 
     actor.stop();
@@ -544,7 +591,7 @@ describe("pasteDownload machine", () => {
     const item = actor.getSnapshot().context.items[0];
     assert.equal(item?.sourceUrl, shellCollection.url);
     assert.equal(item?.displayText, shellCollection.name);
-    assert.equal(item?.status, "preparing");
+    assert.equal(item?.status, "task_active");
     assert.equal(item?.taskId, "task:list");
 
     actor.stop();
@@ -574,7 +621,7 @@ describe("pasteDownload machine", () => {
 
     const item = actor.getSnapshot().context.items[0];
     assert.equal(item?.displayText, "https://example.com/list");
-    assert.equal(item?.status, "preparing");
+    assert.equal(item?.status, "task_active");
     assert.equal(item?.taskId, "task:list");
     assert.equal(item?.error, null);
 

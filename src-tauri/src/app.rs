@@ -101,7 +101,6 @@ pub fn run() {
             domain::collection_import::create_local_collection_shell,
             domain::collection_import::import_local_collection,
             domain::playlist_playback::play_playlist,
-            domain::playlist_playback::refresh_playable_index,
             domain::playlist_playback::exclude_current_music_and_skip,
             domain::player::set_playback_continuation_mode,
             domain::player::enter_spectrum_playback_scope,

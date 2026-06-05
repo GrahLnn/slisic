@@ -20,7 +20,7 @@ const DOWNLOAD_TASK_FAILED_ERROR = "Download task failed before the collection w
 export type ConfigCandidateItemStatus =
   | "checking"
   | "enqueueing"
-  | "preparing"
+  | "task_active"
   | "invalid_url"
   | "enqueue_failed";
 
@@ -242,7 +242,7 @@ export function acceptCandidateDownloadTask(
     ...item,
     sourceUrl: task.collection_url ?? item.sourceUrl ?? task.url,
     displayText: task.collection_name ?? item.displayText,
-    status: "preparing",
+    status: "task_active",
     error: null,
     taskId: downloadTaskIdText(task),
   }));

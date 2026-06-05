@@ -162,7 +162,7 @@ fn grouped_collection(url: &str) -> Collection {
             start_ms: 0,
             end_ms: 180_000,
             liked: false,
-loudness: 0.0,
+            loudness: 0.0,
         }],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
         enable_updates: Some(false),
@@ -181,7 +181,7 @@ fn named_music(name: &str, group: Group, path: &str) -> Music {
         start_ms: 0,
         end_ms: 180_000,
         liked: false,
-loudness: 0.0,
+        loudness: 0.0,
     }
 }
 
@@ -213,7 +213,7 @@ fn shared_music(collection_url: &str, collection_folder: &str) -> Music {
         start_ms: 0,
         end_ms: 180_000,
         liked: false,
-loudness: 0.0,
+        loudness: 0.0,
     }
 }
 
@@ -245,7 +245,7 @@ fn sample_playlist(name: &str) -> PlayList {
                 start_ms: 0,
                 end_ms: 180_000,
                 liked: false,
-loudness: 0.0,
+                loudness: 0.0,
             }],
             last_updated: "2026-04-12T00:00:00+00:00".to_string(),
             enable_updates: Some(false),
@@ -283,7 +283,7 @@ fn sample_excluded_music() -> Music {
         start_ms: 0,
         end_ms: 180_000,
         liked: false,
-loudness: 0.0,
+        loudness: 0.0,
     }
 }
 
@@ -1111,7 +1111,7 @@ fn upsert_collection_bootstraps_collection_graph_schema_on_clean_db() {
                 start_ms: 0,
                 end_ms: 316_000,
                 liked: false,
-loudness: 0.0,
+                loudness: 0.0,
             }],
         );
 
@@ -1238,7 +1238,7 @@ fn canonical_music_identity_shares_liked_state_across_future_occurrences() {
             start_ms: 0,
             end_ms: 180_000,
             liked: false,
-loudness: 0.0,
+            loudness: 0.0,
         };
         let second_music = Music {
             name: "Shared Canonical Copy".to_string(),
@@ -1250,7 +1250,7 @@ loudness: 0.0,
             start_ms: 0,
             end_ms: 180_000,
             liked: false,
-loudness: 0.0,
+            loudness: 0.0,
         };
 
         upsert_collection(&collection_with_musics(
@@ -1307,7 +1307,7 @@ fn create_music_appends_to_the_source_collection_once() {
             start_ms: 0,
             end_ms: 180_000,
             liked: false,
-loudness: 0.0,
+            loudness: 0.0,
         };
 
         let first = create_music(&collection.url, &created_music)
@@ -1360,7 +1360,7 @@ fn create_music_rejects_missing_source_collection() {
                 start_ms: 0,
                 end_ms: 180_000,
                 liked: false,
-loudness: 0.0,
+                loudness: 0.0,
             },
         )
         .await
@@ -1601,7 +1601,7 @@ fn delete_music_removes_only_the_matching_music_identity() {
                     start_ms: 0,
                     end_ms: 120_000,
                     liked: false,
-loudness: 0.0,
+                    loudness: 0.0,
                 },
                 Music {
                     name: "Track B".to_string(),
@@ -1621,7 +1621,7 @@ loudness: 0.0,
                     start_ms: 120_000,
                     end_ms: 240_000,
                     liked: false,
-loudness: 0.0,
+                    loudness: 0.0,
                 },
             ],
         );
@@ -1687,7 +1687,7 @@ fn list_musics_by_file_path_reads_matching_database_music_records() {
                     start_ms: 0,
                     end_ms: 120_000,
                     liked: false,
-loudness: 0.0,
+                    loudness: 0.0,
                 },
                 Music {
                     name: "Track B".to_string(),
@@ -1707,7 +1707,7 @@ loudness: 0.0,
                     start_ms: 120_000,
                     end_ms: 240_000,
                     liked: false,
-loudness: 0.0,
+                    loudness: 0.0,
                 },
                 Music {
                     name: "Other".to_string(),
@@ -1727,7 +1727,7 @@ loudness: 0.0,
                     start_ms: 0,
                     end_ms: 60_000,
                     liked: false,
-loudness: 0.0,
+                    loudness: 0.0,
                 },
             ],
         );
@@ -1783,7 +1783,7 @@ fn load_spectrum_music_context_carries_source_owner_evidence_without_playlist_hy
                     start_ms: 0,
                     end_ms: 120_000,
                     liked: false,
-loudness: 0.0,
+                    loudness: 0.0,
                 },
                 Music {
                     name: "Track A Tail".to_string(),
@@ -1799,7 +1799,7 @@ loudness: 0.0,
                     start_ms: 120_000,
                     end_ms: 240_000,
                     liked: false,
-loudness: 0.0,
+                    loudness: 0.0,
                 },
                 Music {
                     name: "Track B".to_string(),
@@ -1815,7 +1815,7 @@ loudness: 0.0,
                     start_ms: 0,
                     end_ms: 60_000,
                     liked: false,
-loudness: 0.0,
+                    loudness: 0.0,
                 },
             ],
         );
@@ -1887,7 +1887,7 @@ fn load_spectrum_music_context_filters_collection_candidates_by_path_components(
                 start_ms: 0,
                 end_ms: 120_000,
                 liked: false,
-loudness: 0.0,
+                loudness: 0.0,
             }],
         );
         let neighbor = collection_with_musics(
@@ -1912,7 +1912,7 @@ loudness: 0.0,
                 start_ms: 0,
                 end_ms: 120_000,
                 liked: false,
-loudness: 0.0,
+                loudness: 0.0,
             }],
         );
         let _ = upsert_collection(&collection)
@@ -2833,7 +2833,7 @@ fn playlist_playback_selection_reads_refs_without_hydrating_unselected_collectio
             start_ms: 0,
             end_ms: 60_000,
             liked: false,
-loudness: 0.0,
+            loudness: 0.0,
         };
         let selected_collection = collection_with_musics(
             "https://example.com/selected",
@@ -2859,7 +2859,7 @@ loudness: 0.0,
                 start_ms: 0,
                 end_ms: 60_000,
                 liked: false,
-loudness: 0.0,
+                loudness: 0.0,
             }],
         );
 
@@ -3665,7 +3665,7 @@ fn playlist_playback_selection_adds_parent_download_scope_for_group_only_refs() 
             start_ms: 0,
             end_ms: 60_000,
             liked: false,
-loudness: 0.0,
+            loudness: 0.0,
         };
         let selected_collection = collection_with_musics(
             "https://example.com/group-only",

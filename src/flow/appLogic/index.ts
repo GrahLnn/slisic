@@ -17,7 +17,6 @@ import {
   listenNowPlayingTrackChanged,
   MainStateT,
   persistSavePath,
-  refreshPlayableIndex,
   removeExclude,
   setCurrentMusicLiked,
   setPlaybackContinuationMode,
@@ -102,7 +101,6 @@ let unsubscribePlaybackExcludeCommitted: (() => void) | null = null;
 const playbackContinuationModeEffectOwner = createPlaybackContinuationModeEffectOwner({
   setPlaybackContinuationMode,
 });
-let lastPlayableIndexReadyState = false;
 let playlistPlaybackStartEpoch = 0;
 
 function formatStateValue(value: unknown) {
@@ -147,17 +145,6 @@ function createSpectrumOpenProjection(snapshot: ActorSnapshot): SpectrumOpenProj
   };
 }
 
-function refreshPlayableIndexForReadyProjection(snapshot: ActorSnapshot) {
-  const isReady = snapshot.value === "ready";
-  if (!isReady || lastPlayableIndexReadyState) {
-    lastPlayableIndexReadyState = isReady;
-    return;
-  }
-
-  lastPlayableIndexReadyState = true;
-  refreshPlayableIndex();
-}
-
 export function attachDebugLogger() {
   if (unsubscribeDebug !== null) {
     return;
@@ -166,7 +153,6 @@ export function attachDebugLogger() {
   const initialSnapshot = actor.getSnapshot();
   let prevState = formatStateValue(initialSnapshot.value);
   let prevError = initialSnapshot.context.error;
-  lastPlayableIndexReadyState = initialSnapshot.value === "ready";
   recordTrace("app-state-initial", traceAppSnapshotPayload(initialSnapshot));
 
   if (prevError) {
@@ -192,7 +178,6 @@ export function attachDebugLogger() {
       fromState: prevState,
       ...traceAppSnapshotPayload(snapshot),
     });
-    refreshPlayableIndexForReadyProjection(snapshot);
     prevState = nextState;
     prevError = nextError;
   });
@@ -1075,7 +1060,6 @@ export function stop() {
   unsubscribePlaybackExcludeCommitted?.();
   unsubscribePlaybackExcludeCommitted = null;
   started = false;
-  lastPlayableIndexReadyState = false;
   playlistPlaybackStartEpoch += 1;
   resetRuntimeActor();
 }

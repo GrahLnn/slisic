@@ -1,10 +1,10 @@
 use super::playable_index::{
-    PlayableIndexRefreshReason, PlaylistPlayableIndexSourceKind, claim_global_refresh_for_test,
-    claim_playlist_refresh_for_test, commit_global_snapshot_for_test,
-    commit_playlist_snapshot_for_test, consume_playlist_source, discard_playlist_source,
-    initialize_runtime_for_test, mark_playlist_source_kind_for_test, read_playlist_source,
-    refresh_playlist_now_for_reason_for_test, refresh_playlist_now_for_test,
-    request_global_refresh_while_active_for_test, reset_for_test,
+    PlayableIndexRefreshReason, PlaylistPlayableIndexSourceKind, cache_file_json_for_test,
+    claim_global_refresh_for_test, claim_playlist_refresh_for_test,
+    commit_global_snapshot_for_test, commit_playlist_snapshot_for_test, consume_playlist_source,
+    discard_playlist_source, initialize_runtime_for_test, mark_playlist_source_kind_for_test,
+    read_playlist_source, refresh_playlist_now_for_reason_for_test, refresh_playlist_now_for_test,
+    request_global_refresh_while_active_for_test, reset_for_test, restore_cache_file_json_for_test,
     should_skip_global_refresh_for_test, should_skip_playlist_refresh_for_test,
 };
 use crate::domain::playlists::model::{
@@ -149,10 +149,17 @@ async fn playable_index_consumption_removes_only_one_playlist_source_credential(
     refresh_playlist_now_for_reason_for_test(
         selection("Focus"),
         Some(source(4)),
-        PlayableIndexRefreshReason::PreparedSourceConsumed,
+        PlayableIndexRefreshReason::SlotVacancy,
     )
     .await
     .expect("focus spare snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(5)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("focus second spare snapshot should commit");
     refresh_playlist_now_for_test(selection("Sleep"), Some(source(7)))
         .await
         .expect("sleep snapshot should commit");
@@ -195,7 +202,7 @@ async fn playable_index_consumption_allows_replacement_to_commit() {
     refresh_playlist_now_for_reason_for_test(
         selection("Focus"),
         Some(source(4)),
-        PlayableIndexRefreshReason::PreparedSourceConsumed,
+        PlayableIndexRefreshReason::SlotVacancy,
     )
     .await
     .expect("second test snapshot should commit");
@@ -207,7 +214,7 @@ async fn playable_index_consumption_allows_replacement_to_commit() {
     refresh_playlist_now_for_reason_for_test(
         selection("Focus"),
         Some(source(5)),
-        PlayableIndexRefreshReason::PreparedSourceConsumed,
+        PlayableIndexRefreshReason::SlotVacancy,
     )
     .await
     .expect("replacement snapshot should commit");
@@ -234,10 +241,17 @@ async fn playable_index_consumes_spare_source_during_active_refill_window() {
     refresh_playlist_now_for_reason_for_test(
         selection("Focus"),
         Some(source(4)),
-        PlayableIndexRefreshReason::PreparedSourceConsumed,
+        PlayableIndexRefreshReason::SlotVacancy,
     )
     .await
     .expect("second test snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(5)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("third test snapshot should commit");
     let first = read_playlist_source("Focus")
         .expect("index read should succeed")
         .expect("first snapshot should exist");
@@ -256,11 +270,17 @@ async fn playable_index_consumes_spare_source_during_active_refill_window() {
         "https://example.com/watch?v=4"
     );
     assert!(consume_playlist_source(&second).expect("spare source should be consumed"));
-    assert!(
-        read_playlist_source("Focus")
-            .expect("index read should succeed")
-            .is_none(),
-        "only exhausting every prepared credential should create a first-slot miss"
+    let third = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("second spare snapshot should remain");
+    assert_eq!(
+        third
+            .source
+            .as_ref()
+            .expect("second spare source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=5"
     );
 }
 
@@ -273,7 +293,7 @@ async fn playable_index_discard_exposes_spare_source_during_active_refill_window
     refresh_playlist_now_for_reason_for_test(
         selection("Focus"),
         Some(source(4)),
-        PlayableIndexRefreshReason::PreparedSourceConsumed,
+        PlayableIndexRefreshReason::SlotVacancy,
     )
     .await
     .expect("second test snapshot should commit");
@@ -298,7 +318,7 @@ async fn playable_index_discard_exposes_spare_source_during_active_refill_window
 }
 
 #[tokio::test]
-async fn playable_index_ready_refresh_does_not_replace_unconsumed_source() {
+async fn playable_index_slot_vacancy_fill_does_not_replace_unconsumed_source() {
     let _guard = setup_playable_index_test();
     refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
         .await
@@ -307,10 +327,10 @@ async fn playable_index_ready_refresh_does_not_replace_unconsumed_source() {
     refresh_playlist_now_for_reason_for_test(
         selection("Focus"),
         Some(source(4)),
-        PlayableIndexRefreshReason::Ready,
+        PlayableIndexRefreshReason::SlotVacancy,
     )
     .await
-    .expect("ready refresh should be accepted");
+    .expect("slot-vacancy fill should be accepted");
 
     let current = read_playlist_source("Focus")
         .expect("index read should succeed")
@@ -331,7 +351,7 @@ async fn playable_index_model_available_refresh_can_replace_random_fallback_sour
     refresh_playlist_now_for_reason_for_test(
         selection("Focus"),
         Some(source(3)),
-        PlayableIndexRefreshReason::Ready,
+        PlayableIndexRefreshReason::Startup,
     )
     .await
     .expect("cold start fallback snapshot should commit");
@@ -371,6 +391,78 @@ async fn playable_index_model_available_refresh_can_replace_random_fallback_sour
 }
 
 #[tokio::test]
+async fn playable_index_model_available_refresh_replaces_only_random_fallback_sources() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("audio-style snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(4)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("second audio-style snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(5)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("third audio-style snapshot should commit");
+    mark_playlist_source_kind_for_test("Focus", PlaylistPlayableIndexSourceKind::RandomFallback)
+        .expect("source kind should be updated");
+    let first = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("first snapshot should exist");
+    assert!(consume_playlist_source(&first).expect("random fallback source should be consumed"));
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(6)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("audio-style spare should commit");
+
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(7)),
+        PlayableIndexRefreshReason::AudioStyleModelAvailable,
+    )
+    .await
+    .expect("model-available refresh should fill random fallback slot");
+
+    let current = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("audio-style source should remain first");
+    assert_eq!(
+        current
+            .source
+            .as_ref()
+            .expect("prepared source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=6"
+    );
+    assert_eq!(
+        current.source_kind,
+        Some(PlaylistPlayableIndexSourceKind::AudioStyle)
+    );
+    assert!(consume_playlist_source(&current).expect("audio-style source should be consumed"));
+    let replacement = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("model replacement should exist");
+    assert_eq!(
+        replacement
+            .source
+            .expect("replacement source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=7"
+    );
+}
+
+#[tokio::test]
 async fn playable_index_model_available_refresh_keeps_unconsumed_audio_style_source() {
     let _guard = setup_playable_index_test();
     refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
@@ -379,10 +471,17 @@ async fn playable_index_model_available_refresh_keeps_unconsumed_audio_style_sou
     refresh_playlist_now_for_reason_for_test(
         selection("Focus"),
         Some(source(4)),
-        PlayableIndexRefreshReason::PreparedSourceConsumed,
+        PlayableIndexRefreshReason::SlotVacancy,
     )
     .await
     .expect("second audio-style snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(5)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("third audio-style snapshot should commit");
 
     assert!(
         should_skip_playlist_refresh_for_test(
@@ -413,7 +512,7 @@ async fn playable_index_model_available_refresh_keeps_unconsumed_audio_style_sou
 }
 
 #[tokio::test]
-async fn playable_index_ready_refresh_skips_when_prepared_pool_is_full() {
+async fn playable_index_slot_vacancy_fill_skips_when_prepared_pool_is_full() {
     let _guard = setup_playable_index_test();
     refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
         .await
@@ -421,50 +520,158 @@ async fn playable_index_ready_refresh_skips_when_prepared_pool_is_full() {
     refresh_playlist_now_for_reason_for_test(
         selection("Focus"),
         Some(source(4)),
-        PlayableIndexRefreshReason::PreparedSourceConsumed,
+        PlayableIndexRefreshReason::SlotVacancy,
     )
     .await
     .expect("second test snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(5)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("third test snapshot should commit");
 
     assert!(
-        should_skip_global_refresh_for_test(PlayableIndexRefreshReason::Ready)
+        should_skip_global_refresh_for_test(PlayableIndexRefreshReason::SlotVacancy)
             .expect("skip check should succeed")
     );
     assert!(
-        should_skip_playlist_refresh_for_test("Focus", PlayableIndexRefreshReason::Ready)
+        should_skip_playlist_refresh_for_test("Focus", PlayableIndexRefreshReason::SlotVacancy)
             .expect("skip check should succeed")
     );
 }
 
 #[tokio::test]
-async fn playable_index_ready_refresh_does_not_skip_missing_prepared_source() {
+async fn playable_index_slot_vacancy_fill_does_not_skip_missing_prepared_source() {
     let _guard = setup_playable_index_test();
     refresh_playlist_now_for_test(selection("Focus"), None)
         .await
         .expect("empty test snapshot should commit");
 
     assert!(
-        !should_skip_global_refresh_for_test(PlayableIndexRefreshReason::Ready)
+        !should_skip_global_refresh_for_test(PlayableIndexRefreshReason::SlotVacancy)
             .expect("skip check should succeed")
     );
     assert!(
-        !should_skip_playlist_refresh_for_test("Focus", PlayableIndexRefreshReason::Ready)
+        !should_skip_playlist_refresh_for_test("Focus", PlayableIndexRefreshReason::SlotVacancy)
             .expect("skip check should succeed")
+    );
+}
+
+#[tokio::test]
+async fn playable_index_cache_round_trip_restores_three_first_slot_credentials() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("first test snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(4)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("second test snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(5)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("third test snapshot should commit");
+    let payload = cache_file_json_for_test().expect("cache payload should encode");
+
+    reset_for_test();
+    initialize_runtime_for_test();
+    restore_cache_file_json_for_test(&payload).expect("cache payload should restore");
+
+    let first = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("first restored source should exist");
+    assert_eq!(
+        first
+            .source
+            .as_ref()
+            .expect("first restored source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=3"
+    );
+    assert!(consume_playlist_source(&first).expect("first restored source should be consumed"));
+    let second = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("second restored source should exist");
+    assert_eq!(
+        second
+            .source
+            .as_ref()
+            .expect("second restored source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=4"
+    );
+    assert!(consume_playlist_source(&second).expect("second restored source should be consumed"));
+    let third = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("third restored source should exist");
+    assert_eq!(
+        third
+            .source
+            .as_ref()
+            .expect("third restored source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=5"
+    );
+}
+
+#[tokio::test]
+async fn playable_index_cache_restore_preserves_source_kind_without_serializing_linear_identity() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("first test snapshot should commit");
+    mark_playlist_source_kind_for_test("Focus", PlaylistPlayableIndexSourceKind::RandomFallback)
+        .expect("source kind should be updated");
+    let payload = cache_file_json_for_test().expect("cache payload should encode");
+    assert!(
+        !payload.contains("credential_id"),
+        "cache must not serialize linear credential id"
+    );
+    assert!(
+        !payload.contains("generation"),
+        "cache must not serialize process-lifetime generation"
+    );
+
+    reset_for_test();
+    initialize_runtime_for_test();
+    restore_cache_file_json_for_test(&payload).expect("cache payload should restore");
+
+    let restored = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("restored source should exist");
+    assert_eq!(
+        restored.source_kind,
+        Some(PlaylistPlayableIndexSourceKind::RandomFallback)
+    );
+    assert!(
+        consume_playlist_source(&restored).expect("restored credential should be consumable"),
+        "restored credential should receive a process-local linear identity"
     );
 }
 
 #[tokio::test]
 async fn playable_index_unavailable_model_does_not_commit_empty_global_snapshot() {
     let _guard = setup_playable_index_test();
-    let generation = claim_global_refresh_for_test(PlayableIndexRefreshReason::Ready)
-        .expect("ready refresh should claim generation");
+    let generation = claim_global_refresh_for_test(PlayableIndexRefreshReason::Startup)
+        .expect("startup refresh should claim generation");
 
     assert!(
         commit_global_snapshot_for_test(
             "Focus".to_string(),
             generation,
             None,
-            PlayableIndexRefreshReason::Ready,
+            PlayableIndexRefreshReason::Startup,
         )
         .expect("global snapshot commit should be checked"),
         "the active generation is still current even when no source was prepared",
@@ -480,7 +687,7 @@ async fn playable_index_unavailable_model_does_not_commit_empty_global_snapshot(
 #[tokio::test]
 async fn playable_index_unavailable_model_does_not_commit_empty_playlist_snapshot() {
     let _guard = setup_playable_index_test();
-    let generation = claim_playlist_refresh_for_test("Focus", PlayableIndexRefreshReason::Ready)
+    let generation = claim_playlist_refresh_for_test("Focus", PlayableIndexRefreshReason::Startup)
         .expect("playlist refresh should claim generation");
 
     assert!(
@@ -488,7 +695,7 @@ async fn playable_index_unavailable_model_does_not_commit_empty_playlist_snapsho
             "Focus".to_string(),
             generation,
             None,
-            PlayableIndexRefreshReason::Ready,
+            PlayableIndexRefreshReason::Startup,
         )
         .expect("playlist snapshot commit should be checked"),
         "the active generation is still current even when no source was prepared",
@@ -593,18 +800,18 @@ async fn playable_index_invalidating_playlist_claim_preserves_current_source_unt
 }
 
 #[tokio::test]
-async fn playable_index_ready_refresh_does_not_supersede_active_global_fill() {
+async fn playable_index_slot_vacancy_fill_does_not_supersede_active_global_fill() {
     let _guard = setup_playable_index_test();
     let generation = claim_global_refresh_for_test(PlayableIndexRefreshReason::Startup)
         .expect("startup refresh should claim generation");
 
     let skipped_generation =
-        request_global_refresh_while_active_for_test(PlayableIndexRefreshReason::Ready)
-            .expect("ready refresh should be coalesced");
+        request_global_refresh_while_active_for_test(PlayableIndexRefreshReason::SlotVacancy)
+            .expect("slot-vacancy fill should be coalesced");
 
     assert_eq!(
         skipped_generation, generation,
-        "ready refresh must not age out an active first-slot fill"
+        "slot-vacancy fill must not age out an active first-slot fill"
     );
     assert!(
         commit_global_snapshot_for_test(
@@ -614,7 +821,7 @@ async fn playable_index_ready_refresh_does_not_supersede_active_global_fill() {
             PlayableIndexRefreshReason::Startup,
         )
         .expect("global snapshot commit should be checked"),
-        "active global fill should still commit after a coalesced ready refresh",
+        "active global fill should still commit after a coalesced slot-vacancy fill",
     );
     let current = read_playlist_source("Focus")
         .expect("index read should succeed")
@@ -630,7 +837,7 @@ async fn playable_index_ready_refresh_does_not_supersede_active_global_fill() {
 }
 
 #[tokio::test]
-async fn playable_index_ready_refresh_fills_empty_source_after_consumption() {
+async fn playable_index_slot_vacancy_fill_refills_after_consumption() {
     let _guard = setup_playable_index_test();
     refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
         .await
@@ -638,10 +845,17 @@ async fn playable_index_ready_refresh_fills_empty_source_after_consumption() {
     refresh_playlist_now_for_reason_for_test(
         selection("Focus"),
         Some(source(4)),
-        PlayableIndexRefreshReason::PreparedSourceConsumed,
+        PlayableIndexRefreshReason::SlotVacancy,
     )
     .await
     .expect("second test snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(5)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("third test snapshot should commit");
     let consumed = read_playlist_source("Focus")
         .expect("index read should succeed")
         .expect("first snapshot should exist");
@@ -649,11 +863,11 @@ async fn playable_index_ready_refresh_fills_empty_source_after_consumption() {
 
     refresh_playlist_now_for_reason_for_test(
         selection("Focus"),
-        Some(source(5)),
-        PlayableIndexRefreshReason::Ready,
+        Some(source(6)),
+        PlayableIndexRefreshReason::SlotVacancy,
     )
     .await
-    .expect("ready refresh should fill empty cache");
+    .expect("slot-vacancy fill should refill one missing slot");
 
     let current = read_playlist_source("Focus")
         .expect("index read should succeed")
@@ -669,7 +883,7 @@ async fn playable_index_ready_refresh_fills_empty_source_after_consumption() {
 }
 
 #[tokio::test]
-async fn playable_index_discard_allows_ready_refresh_to_replace_unplayable_source() {
+async fn playable_index_discard_allows_slot_vacancy_fill_to_replace_unplayable_source() {
     let _guard = setup_playable_index_test();
     refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
         .await
@@ -682,10 +896,10 @@ async fn playable_index_discard_allows_ready_refresh_to_replace_unplayable_sourc
     refresh_playlist_now_for_reason_for_test(
         selection("Focus"),
         Some(source(4)),
-        PlayableIndexRefreshReason::Ready,
+        PlayableIndexRefreshReason::SlotVacancy,
     )
     .await
-    .expect("ready refresh should fill after discard");
+    .expect("slot-vacancy fill should fill after discard");
 
     let current = read_playlist_source("Focus")
         .expect("index read should succeed")

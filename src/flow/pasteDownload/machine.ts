@@ -20,6 +20,11 @@ import {
   toErrorMessage,
 } from "./core";
 import { deps, payloads, ss } from "./events";
+import {
+  createFastUrlResolveQueue,
+  resolveDefaultFastUrlResolveConcurrency,
+  type FastUrlResolveQueue,
+} from "./fastUrlResolveQueue";
 import { src } from "./src";
 import {
   createTitleProbeQueue,
@@ -39,7 +44,23 @@ const downloadTaskChanged = payloads["download.task.changed"];
 const candidateTaskCollectionLoaded = payloads["candidate.task.collection.loaded"];
 const candidateTaskCollectionFailed = payloads["candidate.task.collection.failed"];
 
+const fastUrlResolveQueues = new WeakMap<object, FastUrlResolveQueue>();
 const titleProbeQueues = new WeakMap<object, TitleProbeQueue>();
+
+function fastUrlResolveQueueFor(actor: object) {
+  let queue = fastUrlResolveQueues.get(actor);
+  if (queue) {
+    return queue;
+  }
+
+  queue = createFastUrlResolveQueue({
+    concurrency: resolveDefaultFastUrlResolveConcurrency,
+    resolve: (url) => deps.resolvePastedDownloadUrl(url),
+    toErrorMessage,
+  });
+  fastUrlResolveQueues.set(actor, queue);
+  return queue;
+}
 
 function titleProbeQueueFor(actor: object) {
   let queue = titleProbeQueues.get(actor);
@@ -76,24 +97,24 @@ export const machine = src.createMachine({
             return;
           }
 
-          void deps
-            .resolvePastedDownloadUrl(parsed.url)
-            .then((resolution) => {
-              self.send(candidateResolveCompleted.load({ id, resolution }));
-            })
-            .catch((error) => {
-              self.send(
-                candidateResolveFailed.load({
-                  id,
-                  error: toErrorMessage(error),
-                }),
-              );
-            });
+          fastUrlResolveQueueFor(self).enqueue({
+            id,
+            url: parsed.url,
+            sink: {
+              completed: ({ id, resolution }) => {
+                self.send(candidateResolveCompleted.load({ id, resolution }));
+              },
+              failed: ({ id, error }) => {
+                self.send(candidateResolveFailed.load({ id, error }));
+              },
+            },
+          });
         },
       ],
     },
     [candidateDelete.evt]: {
       actions: [
+        ({ event, self }) => fastUrlResolveQueueFor(self).cancel(event.output),
         ({ event, self }) => titleProbeQueueFor(self).cancel(event.output),
         assign(({ context, event }) => deleteCandidateItem(context, event.output)),
       ],
@@ -255,6 +276,7 @@ export const machine = src.createMachine({
     reset: {
       target: `.${ss.mainx.State.idle}`,
       actions: [
+        ({ self }) => fastUrlResolveQueueFor(self).reset(),
         ({ self }) => titleProbeQueueFor(self).reset(),
         assign(({ context }) => resetCandidateItems(context)),
       ],

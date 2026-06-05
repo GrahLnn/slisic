@@ -35,7 +35,7 @@ collection and its manifest.
 - Enqueue persists the complete residual leaf plan after a successful root
   probe. The later task runner must consume that residual plan instead of
   probing the same root URL again.
-- Concurrent root probes are bounded at the provider-effect boundary. Repeated
+- Concurrent root probes are bounded at the provider command boundary. Repeated
   paste can queue distinct URLs, but it must not start an unbounded number of
   metadata provider processes.
 - Resume must rebuild its plan from residual task leafs when they exist. It must
@@ -62,6 +62,10 @@ collection and its manifest.
   `Completed`.
 - Cache, existing files, and temporary residue are acceleration or recovery
   evidence only. They do not define playlist membership.
+- `DownloadTaskChangeSignal` is task wake evidence only. It cannot become
+  playable-track evidence, first-slot cargo, or playback state.
+- Playable library wake is emitted only after `CollectionImport` has persisted
+  music rows or restored manifest music rows.
 
 ## Owned Invariants
 
@@ -74,9 +78,15 @@ collection and its manifest.
 `collection_import` owns:
 
 - Final relative paths stay inside the collection folder.
+- Collection folder naming is resolved from collection identity and existing
+  collection evidence, not from UI state and not from download page state.
+- Directory creation happens only while committing a final file or writing the
+  collection manifest.
 - The temporary marker is removed during finalization.
 - File replacement is scoped to the target leaf URL and group.
 - Manifest writes reflect persisted collection state.
+- Persisted music rows are the only completed music evidence passed to playback
+  and model lifecycles.
 
 `downloads::service` owns:
 
@@ -140,7 +150,65 @@ collection and its manifest.
 - Total: no.
 - Failure: no file, partial artifact, or multiple matching temporary files.
 
+`ExistingFinalFile -> ExistingLeafCompletion`
+
+- Owner: `collection_import::resolve_existing_leaf_file`.
+- Total: no.
+- Failure: no matching stable file for the prepared leaf title and group.
+- Projection: existing file evidence still needs `persist_downloaded_leaf_music`
+  and manifest write before the leaf can be consumed as completed.
+
+`LeafCompletion -> PersistedMusicRows`
+
+- Owner: `collection_import::persist_downloaded_leaf_music`.
+- Total: no.
+- Failure: invalid committed file name or repository write failure.
+- Emits: audio-style input wake and playable-library wake.
+
 ## Transitions
+
+### Task Runtime
+
+```ts
+DownloadTaskRuntime =
+  | ["idle"]
+  | ["admitting", url: NormalizedUrl, trigger: DownloadTrigger]
+  | ["queued", task: DownloadTask]
+  | ["resolvingPlan", task: DownloadTask]
+  | ["shellPersisted", task: DownloadTask, plan: CollectionSyncPlan, collection: Collection]
+  | ["materializedLeafDiscard", task: DownloadTask, collection: Collection]
+  | ["leafPipeline", task: DownloadTask, collection: Collection, pipeline: LeafPipelineState]
+  | ["terminalizing", task: DownloadTask]
+  | ["completed", task: DownloadTask]
+  | ["completedWithErrors", task: DownloadTask]
+  | ["failed", task: DownloadTask, reason: String]
+  | ["interrupted", task: DownloadTask];
+```
+
+Idle + enqueue command -> Admitting:
+
+- Reads: normalized URL and active task index.
+- Writes: no collection rows and no playable rows.
+- Rejection: invalid URL or repository conflict after bounded retries.
+
+Admitting + active task exists -> Queued existing task:
+
+- Writes: task shell fields only if a prepared collection shell already exists.
+- Emits: task change only when shell fields are newly attached.
+- Rejection: none. Existing active task remains the owner of residual work.
+
+Admitting + no active task -> Queued new task:
+
+- Writes: new task row, optionally with already prepared collection shell cargo.
+- Emits: persisted task snapshot.
+- Rejection: enqueue URL claim conflict retries inside the runtime owner.
+
+Queued task + residual task plan exists -> Resolving plan:
+
+- Guard: task has collection URL, name, folder, source kind, and residual leafs.
+- Writes: resolving status.
+- Emits: no root provider probe.
+- Rejection: missing residual task identity.
 
 Queued task + root probe success -> Persist residual plan:
 
@@ -148,18 +216,79 @@ Queued task + root probe success -> Persist residual plan:
 - Emits: persisted task snapshot.
 - Rejection: root probe failure or empty downloadable collection.
 
-Persisted residual plan -> Resolving plan:
+Resolving plan + collection shell loaded -> Materialized leaf discard:
 
-- Guard: task has residual leaves plus collection identity fields.
-- Writes: resolving status only.
-- Emits: no provider root probe.
-- Rejection: missing residual task identity.
+- Reads: collection shell, manifest-restored rows, planned leafs, and save root.
+- Writes: residual task leafs and completed counter only for leaves whose
+  collection row and stable file both already exist.
+- Emits: persisted task snapshot.
+- Rejection: incomplete existing evidence stays residual. It is not guessed.
+
+Materialized leaf discard + no residual leafs -> Terminalizing:
+
+- Writes: empty collection timestamp if needed, then terminal task status.
+- Emits: task terminal change.
+- Rejection: none.
+
+Materialized leaf discard + residual leafs remain -> Leaf pipeline:
+
+- Writes: pipeline state only.
+- Emits: no playback or first-slot cargo.
+- Rejection: none.
+
+### Leaf Pipeline
+
+```ts
+LeafPipelineWork =
+  | ["pendingPrepare", leaf: PlannedLeaf]
+  | ["probingLeaf", leaf: DownloadLeaf]
+  | ["prepared", leaf: DownloadLeaf, probe: LeafProbe]
+  | ["existingFinalFileDetected", leaf: DownloadLeaf, relativePath: String]
+  | ["residualTempDetected", leaf: DownloadLeaf, tempPath: Path]
+  | ["readyDownload", leaf: DownloadLeaf]
+  | ["downloadingTemp", leaf: DownloadLeaf]
+  | ["readyFinalizeDownloaded", leaf: DownloadLeaf, tempPath: Path]
+  | ["readyFinalizeExisting", leaf: DownloadLeaf, relativePath: String]
+  | ["finalizingLeaf", leaf: DownloadLeaf]
+  | ["measuringLoudness", leaf: DownloadLeaf]
+  | ["completed", leaf: DownloadLeaf]
+  | ["failed", leaf: DownloadLeaf, reason: String];
+```
+
+The pipeline fill order is fixed:
+
+1. Drain ready finalizations.
+2. Spawn ready downloads up to `LeafDownloadWindow`.
+3. Spawn leaf preparations up to prepare parallelism.
+
+This order keeps final file and music-row commits ahead of new prepare-side
+enrichment work. It also prevents download completion from waiting behind
+metadata probing.
 
 Queued/failed/interrupted leaf + metadata success -> Prepared leaf:
 
 - Writes: title, duration, chapter count.
 - Emits: ready download entry or recovered completion.
 - Rejection: leaf-local failed preparation.
+
+Prepared leaf + existing final file -> Ready finalize existing file:
+
+- Reads: stable file path under the collection folder.
+- Writes: finalization-ready queue entry only.
+- Emits: no collection rows yet.
+- Rejection: no stable file keeps the leaf on the fresh download path.
+
+Prepared leaf + unambiguous temp residue -> Ready finalize downloaded temp:
+
+- Reads: scoped temporary artifact matching task id and leaf id.
+- Writes: finalization-ready queue entry only.
+- Rejection: ambiguous residue becomes explicit leaf failure.
+
+Prepared leaf + no existing file and no residual temp -> Ready download:
+
+- Writes: ready download queue entry.
+- Emits: no collection rows and no task completion.
+- Rejection: none.
 
 Prepared leaf + fresh download success -> Commit leaf:
 
@@ -169,7 +298,7 @@ Prepared leaf + fresh download success -> Commit leaf:
 - Scheduling: download completion is queued for finalization immediately and
   drains before prepare-stage enrichment or additional worker launch.
 
-Prepared leaf + existing final file -> Commit existing file:
+Ready finalize existing file -> Commit existing file:
 
 - Writes: music entries, manifest, and removes residual leaf.
 - Emits: task change signal.
@@ -178,13 +307,21 @@ Prepared leaf + existing final file -> Commit existing file:
   as fresh and recovered downloads. Preparation must not commit collection or
   manifest state directly.
 
-Prepared leaf + unambiguous temp residue -> Commit recovered temp:
+Ready finalize downloaded temp -> Commit recovered temp:
 
 - Writes: stable file, music entries, manifest, and removes residual leaf.
 - Emits: task change signal.
 - Rejection: ambiguous residue or failed commit.
 - Scheduling: recovered temp evidence enters the finalization-ready queue and
   follows the same commit path as fresh downloads.
+
+Commit leaf -> Loudness measurement:
+
+- Reads: persisted music rows for the committed relative path.
+- Writes: loudness values for matching music identities only.
+- Emits: task change after measuring state and after completion.
+- Rejection: measurement failure is leaf-local failure. Playback is not allowed
+  to wait on this state.
 
 ```mermaid
 flowchart LR
@@ -198,7 +335,8 @@ flowchart LR
     Temp --> Finalize
     Downloaded --> Finalize
     Finalize --> Commit["Commit leaf file, music, manifest, task"]
-    Commit --> ResidualRemoved["Residual leaf removed"]
+    Commit --> Loudness["Measure loudness for matching rows"]
+    Loudness --> ResidualRemoved["Residual leaf removed"]
 ```
 
 Pipeline drained -> Terminal task:
@@ -206,6 +344,74 @@ Pipeline drained -> Terminal task:
 - Guard: no active workers, no ready downloads, no pending preparations.
 - Writes: failed status for unresolved leaves, then task terminal status.
 - Rejection: any unresolved leaf becomes explicit failed evidence.
+
+### Collection Import Commit
+
+```ts
+CollectionImportCommit =
+  | ["shellLoaded", collection: Collection]
+  | ["manifestRestored", collection: Collection]
+  | ["folderReady", collection: Collection]
+  | ["finalFileCommitted", relativePath: String]
+  | ["musicRowsPersisted", collection: Collection]
+  | ["manifestWritten", collection: Collection]
+  | ["libraryWakeEmitted", collection: Collection]
+  | ["failed", reason: String];
+```
+
+Downloaded temp -> Folder ready:
+
+- Owner: `collection_import::finalize_downloaded_leaf`.
+- Writes: collection directory only if the final path parent is missing.
+- Rejection: invalid final path or failed directory creation.
+
+Folder ready -> Final file committed:
+
+- Owner: `collection_import::finalize_downloaded_leaf`.
+- Writes: final collection-relative file path and removes the temp marker.
+- Rejection: failed remove, rename, copy, or path containment check.
+
+Existing final file -> Music rows persisted:
+
+- Owner: `collection_import::persist_downloaded_leaf_music`.
+- Writes: collection music rows using the existing stable relative path.
+- Rejection: existing file without a collection row is not completed music.
+
+Final file committed -> Music rows persisted:
+
+- Owner: `collection_import::persist_downloaded_leaf_music`.
+- Writes: materialized music rows and normalized titles.
+- Emits: audio-style input wake and playable-library wake.
+
+Music rows persisted -> Manifest written:
+
+- Owner: `collection_import::write_collection_manifest`.
+- Writes: manifest file, creating the collection root if needed.
+- Rejection: manifest serialization or file write failure.
+
+Manifest written -> Download task completion update:
+
+- Owner: `downloads::service`.
+- Writes: leaf file fields, measuring/completed status, and residual leaf
+  removal.
+- Emits: task change signal.
+
+### Playback And FirstSlot Transfer
+
+Download and import do not send playable tracks to waiting playback directly.
+The legal transfer is:
+
+```text
+CollectionImport.persistedMusicRows
+  -> notify_playable_library_changed()
+  -> PlayableIndex LibraryChanged wake
+  -> FirstSlot/queue owners refresh their own slots
+  -> PlaybackStart or PlayerSession reads their owner cargo
+```
+
+`DownloadTaskChangeSignal` can wake app projection or playlist queue repair, but
+it cannot create a `FirstSlot` credential, choose a track, or move the UI into
+play/preparing state by itself.
 
 ## Checker Coverage
 
@@ -229,15 +435,20 @@ Focused tests must cover:
   complete.
 - Terminal task status cannot be `Completed` when unresolved leaves remain.
 
-## Effects
+## Command Owners And Event Outputs
 
-- `YtDlpEffect`: external process execution, owned by `yt_dlp`.
-- `RootProbeLimiterEffect`: root metadata process admission, owned by
-  `downloads::service`.
-- `FileCommitEffect`: remove, rename, and directory creation, owned by
-  `collection_import`.
-- `RepoEffect`: task and collection persistence, owned by repositories.
-- `TraceEffect`: logs only. Removing trace must not change behavior.
+| Command or event | Owner | Output | Closed path |
+| --- | --- | --- | --- |
+| root probe command | `downloads::service` through bounded root probe admission | `CollectionSyncPlan` | UI or paste candidate starts provider root probes directly |
+| leaf prepare command | `LeafPipelineState` through `downloads::service` | prepared leaf evidence or failed leaf evidence | prepare stage writes collection rows |
+| leaf audio download command | `LeafPipelineState` through `yt_dlp` | temporary artifact or failed leaf evidence | download stage writes final collection files |
+| existing file check | `collection_import` | existing final-file evidence | existing file becomes playable without persisted music rows |
+| final file commit | `collection_import` | stable relative path | download runtime creates folders or final files directly |
+| music row persist | `collection_import` | canonical collection music rows | task leafs or UI rows become music truth |
+| manifest write | `collection_import` | collection manifest file | manifest state is inferred from task status |
+| task change publish | `downloads::service` | task wake signal | task wake creates playback state |
+| playable library wake | `collection_import` through `playlist_playback::service` | playable index refresh demand | download task change bypasses canonical music rows |
+| trace record | trace lifecycle | diagnostic row only | trace event drives any transition |
 
 ## Exceptions
 

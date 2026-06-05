@@ -25,12 +25,6 @@ pub async fn play_playlist(app: AppHandle, name: String) -> Result<PlayPlaylistS
 
 #[tauri::command]
 #[specta::specta]
-pub async fn refresh_playable_index() {
-    super::playable_index::request_ready_refresh();
-}
-
-#[tauri::command]
-#[specta::specta]
 pub async fn exclude_current_music_and_skip(
     app: AppHandle,
 ) -> Result<ExcludeCurrentMusicAndSkipResult, String> {

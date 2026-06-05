@@ -643,7 +643,7 @@ function resolveListConfigCandidateParsingReason(
     return item.status === "checking" ? "checking-url" : "enqueueing-task";
   }
 
-  if (item.status === "preparing" && listConfigCandidateItemStillShowsUrl(item)) {
+  if (item.status === "task_active" && listConfigCandidateItemStillShowsUrl(item)) {
     return "checking-url";
   }
 

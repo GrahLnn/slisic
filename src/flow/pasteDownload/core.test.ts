@@ -132,7 +132,7 @@ describe("candidate item helpers", () => {
 
     assert.equal(next.items[0]?.sourceUrl, "https://example.com/root");
     assert.equal(next.items[0]?.displayText, "Slow Playlist");
-    assert.equal(next.items[0]?.status, "preparing");
+    assert.equal(next.items[0]?.status, "task_active");
   });
 
   test("reflects root title evidence without needing task evidence", () => {
@@ -191,7 +191,7 @@ describe("candidate item helpers", () => {
 
     assert.equal(downloadTaskIsTerminal("resolving"), false);
     assert.equal(next.items[0]?.taskId, "task:list");
-    assert.equal(next.items[0]?.status, "preparing");
+    assert.equal(next.items[0]?.status, "task_active");
     assert.equal(next.items[0]?.displayText, "Slow Playlist");
   });
 
@@ -231,9 +231,9 @@ describe("candidate item helpers", () => {
     assert.equal(candidateItemAllowsDelete("enqueue_failed"), true);
     assert.equal(candidateItemAllowsDelete("checking"), false);
     assert.equal(candidateItemAllowsDelete("enqueueing"), false);
-    assert.equal(candidateItemAllowsDelete("preparing"), false);
+    assert.equal(candidateItemAllowsDelete("task_active"), false);
     assert.equal(candidateItemIsErrored("enqueue_failed"), true);
     assert.equal(candidateItemIsErrored("enqueueing"), false);
-    assert.equal(candidateItemIsErrored("preparing"), false);
+    assert.equal(candidateItemIsErrored("task_active"), false);
   });
 });

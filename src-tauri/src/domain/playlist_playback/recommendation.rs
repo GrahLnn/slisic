@@ -826,7 +826,15 @@ pub(crate) fn initialize_audio_style_recommendation_runtime(app: AppHandle) {
     });
 
     let pending_input_changes = AUDIO_STYLE_PENDING_INPUT_CHANGES.swap(0, Ordering::SeqCst);
-    let restored_evidence = runtime.restore_model_evidence_on_startup();
+    runtime.spawn_startup_lifecycle(pending_input_changes);
+}
+
+#[cfg(not(test))]
+fn apply_audio_style_startup_training_decision(
+    runtime: &Arc<AudioStyleRecommendationRuntime>,
+    restored_evidence: bool,
+    pending_input_changes: u64,
+) {
     match audio_style_startup_training_decision(restored_evidence, pending_input_changes) {
         AudioStyleStartupTrainingDecision::SkipRestoredEvidence => {
             log::info!(
@@ -903,7 +911,19 @@ pub(crate) fn published_audio_style_model_snapshots_for_anchor(
 
 #[cfg(not(test))]
 impl AudioStyleRecommendationRuntime {
-    fn restore_model_evidence_on_startup(&self) -> bool {
+    fn spawn_startup_lifecycle(self: &Arc<Self>, pending_input_changes: u64) {
+        let runtime = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            let restored_evidence = runtime.restore_model_evidence_on_startup().await;
+            apply_audio_style_startup_training_decision(
+                &runtime,
+                restored_evidence,
+                pending_input_changes,
+            );
+        });
+    }
+
+    async fn restore_model_evidence_on_startup(self: &Arc<Self>) -> bool {
         let started = Instant::now();
         let cache_path = match audio_style_model_evidence_cache_path(&self.app) {
             Ok(cache_path) => cache_path,
@@ -916,14 +936,27 @@ impl AudioStyleRecommendationRuntime {
                 return false;
             }
         };
-        let snapshot = match read_cached_audio_style_model_evidence(&cache_path) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
+        let restore_result = tauri::async_runtime::spawn_blocking(move || {
+            read_cached_audio_style_model_evidence(&cache_path)
+        })
+        .await;
+        let snapshot = match restore_result {
+            Ok(Ok(snapshot)) => snapshot,
+            Ok(Err(error)) => {
                 log::info!(
                     target: AUDIO_STYLE_LOG_TARGET,
                     "audio_style_model_evidence_restore_miss reason=startup elapsed_ms={} error=\"{}\"",
                     started.elapsed().as_millis(),
                     escape_log_value(&error)
+                );
+                return false;
+            }
+            Err(error) => {
+                log::warn!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_model_evidence_restore_task_failed reason=startup elapsed_ms={} error=\"{}\"",
+                    started.elapsed().as_millis(),
+                    escape_log_value(&error.to_string())
                 );
                 return false;
             }

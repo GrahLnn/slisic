@@ -465,12 +465,6 @@ export async function removeExclude(change: ExcludeRemovedChange): Promise<Exclu
   });
 }
 
-export function refreshPlayableIndex(): void {
-  void crab.refreshPlayableIndex().catch((error) => {
-    console.error("Failed to refresh playable index", error);
-  });
-}
-
 export async function enterSpectrumPlaybackScope(): Promise<number> {
   const result = await crab.enterSpectrumPlaybackScope();
 

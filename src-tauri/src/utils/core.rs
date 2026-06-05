@@ -20,9 +20,6 @@ pub async fn app_ready(window: WebviewWindow) {
     if window::should_activate_window_on_app_ready(window.label()) {
         window::activate_window(&window);
     }
-    crate::domain::playlist_playback::playable_index::request_ready_refresh_for_app(
-        window.app_handle().clone(),
-    );
     WINDOW_READY.store(true, Ordering::SeqCst);
 }
 
@@ -45,7 +42,10 @@ pub async fn reset_dev_database_and_restart(app: AppHandle) -> Result<(), String
             .app_local_data_dir()
             .map_err(|error| error.to_string())?;
         let db_path = local_data_dir.join(APP_DB_FILE_NAME);
+        let first_slot_cache_path = local_data_dir
+            .join(crate::domain::playlist_playback::playable_index::FIRST_SLOT_CACHE_FILE_NAME);
         remove_db_artifacts(&db_path)?;
+        remove_optional_file(&first_slot_cache_path)?;
         schedule_dev_reset_trigger()?;
         app.exit(0);
         Ok(())
@@ -82,6 +82,14 @@ fn remove_db_artifacts(db_path: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn remove_optional_file(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("failed to remove `{}`: {error}", path.display())),
+    }
 }
 
 fn schedule_dev_reset_trigger() -> Result<(), String> {

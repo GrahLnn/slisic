@@ -7,10 +7,10 @@ call graph, not a module index, and not a global composition shortcut. It record
 independent lifecycles that must stay understandable on their own, then records
 how those lifecycles exchange evidence.
 
-The old project behavior document collapsed lifecycles, transfers, effects, and
-render optimizations into one global composition story. That made the system
-look smaller on paper while making important UI and backend lifetimes easier to
-erase. The replacement rule is:
+The old project behavior document collapsed lifecycles, transfers, commands,
+events, and render optimizations into one global composition story. That made
+the system look smaller on paper while making important UI and backend
+lifetimes easier to erase. The replacement rule is:
 
 1. Model each lifecycle as its own timeline.
 2. Model evidence transfer between lifecycles separately.
@@ -50,8 +50,8 @@ crashed(input: String, reason: String) =
 Slisic uses the same shape:
 
 - `Action` lists accepted inputs.
-- A state function lists legal next actions and effect callbacks.
-- Effect callbacks are named explicitly.
+- A state function lists legal next actions and accepted event callbacks.
+- Command and event callbacks are named explicitly.
 - A state does not call another lifecycle's hidden implementation.
 - A transfer line names the evidence being consumed.
 - A rejection keeps the state legal and retryable.
@@ -68,16 +68,21 @@ through evidence, but they do not become one lifecycle.
 | `PlaylistInteractionResponse` | playlist page view model and title handoff models | app projection, click overlay, playback surface, Torph stages | immediate title lock, visible target, icons, preparing flag, restore release |
 | `PlaybackSurface` | playlist page view model and local render model | accepted app state plus player now-playing events plus Torph stages | visible playlist title, track title, preparing text, icons, restore motion |
 | `PlaylistDraftCommit` | list config, appLogic, playlist persistence commands | config check/back, draft changes, commit result | immediate return, title handoff, background playlist upsert evidence |
-| `PasteDownloadCandidate` | `pasteDownload` machine plus list config candidate projection | paste, URL resolution, title probe, enqueue, task signals, delete/reset | candidate item state and collection shell evidence |
+| `FastUrlResolveQueue` | `pasteDownload` fast URL resolve queue | queued URL admission, cancel/reset, URL resolution completion | candidate-scoped URL resolution evidence |
+| `PasteDownloadCandidate` | `pasteDownload` machine plus list config candidate projection | paste, URL resolution evidence, title probe, enqueue, task signals, delete/reset | candidate item state and collection shell evidence |
 | `AudioStyleModelRuntime` | `playlist_playback::recommendation` | library/download/import changes, embedding decode, training publication | stable model snapshot and completed snapshot history |
 | `DownloadTaskRuntime` | `downloads::service` | enqueue, resolve, probing, downloading, persisting, terminal status | task status, leaf status, task change signal |
 | `CollectionImport` | `collection_import` | shell creation, collection planning, local import, downloaded leaf finalization | collection shell, music rows, collection manifest |
-| `FirstSlot` | `playlist_playback::playable_index` | startup, ready, model publication, playlist/library/exclude invalidation, prepared-source consumption | prepared first-track credentials per playlist |
+| `FirstSlot` | `playlist_playback::playable_index` | runtime startup, local cache restore, slot vacancy, model publication, playlist/library/exclude invalidation | prepared first-track credentials per playlist |
 | `PlaybackStart` | `playlist_playback::service` | one backend `playPlaylist(name)` request | `started`, `pending_first_track`, `superseded`, or error |
 | `PlayerSession` | `player::service` | accepted playback session generation and track boundaries | now-playing events, queue consumption, stop, pause, resume |
 | `NextTrack` | `playlist_playback::service` and recommendation runtime | player acceptance and queue repair signals | refreshed explicit player queue |
 | `LoudnessEvidence` | downloads, player, playlists repository | completed file or active playback track without loudness | persisted non-zero LUFS evidence and current-session normalization |
 | `SpectrumScope` | player domain and spectrum page | open spectrum, scoped playback, close scope | spectrum page, scoped preview, or returned play state |
+| `SpectrumMusicCommitTransaction` | spectrum edit transaction runner | check, ordered repository phases, epoch callbacks | accepted create/update/delete evidence or negative evidence for current epoch |
+| `PlaybackExcludeTransaction` | exclude current music transaction runner | exclude command, backend result, current projection check | playlist/exclude projection updates and optional play back-out |
+| `ContextResetLifecycle` | `appLogic` context resetter | state transition reset with grouped patch | explicit chart/lease/transaction close/open/preserve journal |
+| `Updater` | updater machine | startup wake, update check, download/install prompt, retry timer | update ready notification or delayed retry |
 | `TraceLifecycle` | trace registry and enabled probes | install, enable probes, record, clear, save | optional JSONL diagnostic evidence |
 
 The rest of this document expands the lifecycles that currently carry the
@@ -91,7 +96,7 @@ Project-level lifecycles are expanded here when they cross at least one of
 these boundaries:
 
 - user-visible page timing;
-- backend effect ownership;
+- backend command ownership;
 - async result identity;
 - process-lifetime cargo slots;
 - collection, playlist, player, model, download, or trace ownership.
@@ -102,12 +107,9 @@ single and their transfers are already represented here:
 | Local lifecycle | Current home | Project-level treatment |
 | --- | --- | --- |
 | `SpectrumVisualizer` | `src/components/spectrum/SpectrumVisualizer.design.md` | local viewport/tile/canvas/selection/playhead lifecycle; project document only tracks spectrum scope transfers |
-| `SpectrumMusicCommitTransaction` | `src/flow/appLogic/spectrumMusicCommitTransaction.ts` tests and spectrum page tests | represented as `spectrum music commit` transfer; expand later if title/range commit starts affecting playback/session authority |
-| `PlaybackExcludeTransaction` | `src/flow/appLogic/playbackExcludeTransaction.ts` tests | represented through player/session and playlist mutation transfer; expand later if exclude recovery starts owning playback continuation |
-| `PlaybackContinuationModeEffectOwner` | `src/flow/appLogic/playbackContinuationModeEffectOwner.ts` and playback mode tests | local backend mode effect owner for spectrum entry/exit |
-| `Updater` | `src/flow/updater/machine.ts` | isolated idle/check/ok/err retry loop; no current project-level cargo consumer |
+| `PlaybackContinuationModeEffectOwner` | `src/flow/appLogic/playbackContinuationModeEffectOwner.ts` and playback mode tests | local backend mode command owner for spectrum entry/exit |
 | title handoff/return models | `src/components/playListTitle*.model.ts` tests and page view-model tests | folded into `PlaylistInteractionResponse` because their observable job is UI timing |
-| context reset lifecycle | `src/flow/appLogic/core.ts` and machine tests | implementation guard for preserving owner coordinates during app state reset |
+| window focus/maximized and topbar visibility | `src/flow/windowFocus.ts`, `src/flow/windowMaximized.ts`, `src/flow/barVisible.ts` | local UI chrome projection only; must not become app, playback, download, or model state |
 
 If any local lifecycle starts deciding another owner's state, or if another
 owner starts waiting on it, it must be promoted into this document with its own
@@ -173,8 +175,9 @@ UserClick lane:
 
 FirstSlot lane:
   startup
-    -> fill prepared credentials for playlists
-    -> ready/model/library/exclude/consumed signals refill or invalidate
+    -> restore local first-slot cargo if present
+    -> fill or validate prepared credentials for playlists
+    -> model/library/exclude/playlist/slot-vacancy signals refill or invalidate
     -> click reads credential
     -> player acceptance consumes credential
     -> consumption schedules same-playlist replacement
@@ -252,7 +255,7 @@ that the producer is "done", or mutate the producer's state for convenience.
 | `read` | copy stable evidence without taking it | no | slot key and evidence generation when available |
 | `consume` | spend a linear credential through owner validation | only owner mutates | credential id plus generation |
 | `project` | derive UI/app output from accepted evidence | no producer mutation | accepted request/session identity |
-| `command` | ask an effect owner to act | owner may reject | request, generation, scope, or transaction id |
+| `command` | ask a command owner to act | owner may reject | request, generation, scope, or transaction id |
 
 `wake` is not ownership. `read` is not consumption. `project` is not truth
 creation. A `command` enters the target owner and may be refused without forcing
@@ -264,6 +267,7 @@ the caller into an illegal state.
 | --- | --- | --- | --- | --- |
 | `AudioStyleModelRuntime` | `stableModelSnapshot(modelGeneration)` plus completed snapshot history | `FirstSlot`, `NextTrack` | read snapshot for centerless or anchored proposal | click path, player boundary, or UI trains the model, waits for model completion, or turns model absence into `Preparing...` |
 | `DownloadTaskRuntime` | `DownloadTaskChangeSignal(taskId, url, collectionUrl, status)` and persisted task rows | app projection, playlist queue repair, first-slot refresh triggers | observe status and wake affected owners | config/check/ready declares a task complete, clears active tasks, or replaces task state because the visible page changed |
+| `FastUrlResolveQueue` | candidate-scoped URL resolution result | `PasteDownloadCandidate` | accept latest still-open resolution evidence | candidate row state, check/back, or download task runtime runs URL resolution directly or accepts late closed-scope results |
 | `PasteDownloadCandidate` | candidate item state plus root title and enqueue/task evidence | list config view, app draft collection upsert | project candidate rows and pass collection shell evidence to draft | check/back/reset declares active download completion, title probe becomes collection truth, or candidate rows own backend task status |
 | `CollectionImport` | collection shell, collection manifest, persisted music rows | playlists repo, config library projection, download task runtime | read canonical collection/music rows after import owner commits | playlist config invents collection rows, infers group membership, or treats pasted URL parsing as downloaded music evidence |
 | playlist repository | playlist playback selection and collection membership | `FirstSlot`, `PlaybackStart`, `NextTrack`, `PlayerSession` identity substitution | read scoped membership and canonical music rows | player or frontend scans the whole library to choose first/next or widens fallback outside playlist membership |
@@ -584,7 +588,7 @@ base state plus overlay state.
 
 | Transfer | Direction | Rule |
 | --- | --- | --- |
-| click intent -> backend play request | out | request id must be attached before the effect starts |
+| click intent -> backend play request | out | request id must be attached before the command starts |
 | backend started -> accepted play | in | only current request can enter `play` |
 | backend stopped/error -> close pending intent | in | ready-source closes to `ready`; play-source closes overlay and preserves current `play` base |
 | same playlist click -> stop current | out | explicit stop path, not a replacement request |
@@ -978,12 +982,19 @@ stateDiagram-v2
 
 `FirstSlot` is a process-lifetime backend lifecycle. Its rank is the same as
 the program's main app behavior: it starts at runtime initialization and keeps
-running through startup, ready projections, model publication, playlist/library
-changes, exclude changes, and prepared-source consumption.
+running through local cargo restore, startup validation, model publication,
+playlist/library changes, exclude changes, and slot-vacancy repair.
 
 It does not wait for a click. It does not belong to frontend state. It does not
 render preparing. It does not own the player session. It does not own next-track
-planning.
+planning. Ready projection is not a FirstSlot clock.
+
+Runtime initialization only registers the owner and schedules this lifecycle.
+Local cargo restore and startup validation/fill run in the background and must
+not delay window creation or app startup projection. A late cache restore is
+accepted only while the runtime is still a blank startup state; once any real
+refresh, invalidation, credential, or generation exists, cache cargo is skipped
+rather than replayed into an advanced lifecycle.
 
 ### Participants
 
@@ -1000,13 +1011,13 @@ planning.
 ```ts
 Action =
   | ["startup"]
-  | ["ready"]
+  | ["cacheRestored", cargo: FirstSlotCache]
   | ["audioStyleModelAvailable"]
   | ["playlistChanged", playlistName: String]
   | ["playlistDeleted", playlistName: String]
   | ["libraryChanged"]
   | ["excludeChanged"]
-  | ["preparedSourceConsumed", playlistName: String]
+  | ["slotVacancy", playlistName: String]
   | ["refresh.finished", generation: Number, prepared: PreparedPool]
   | ["read", playlistName: String]
   | ["consume", credential: FirstCredential]
@@ -1017,12 +1028,10 @@ runtime() =
 
 pool(slots: Map<PlaylistName, FirstCredential[]>, generation: Number, active, pending) =
   next().is(
+    | ["cacheRestored", cargo] =>
+        pool(restoreCargoWithFreshGenerationAndCredentialIds(cargo), nextGeneration(), active, pending)
     | ["startup"] =>
-        refreshingAll(reason = "startup", generation = nextGeneration())
-    | ["ready"] =>
-        slotsFull(slots)
-          ? pool(slots, generation, active, pending)
-          : refreshingAll(reason = "ready", generation = nextGeneration())
+        refreshingAll(reason = "startup", generation = nextGeneration(), replace = false)
     | ["audioStyleModelAvailable"] =>
         refreshingMissingOrRandomFallback(reason = "audio_style_model_available")
     | ["playlistChanged", playlistName] =>
@@ -1033,22 +1042,22 @@ pool(slots: Map<PlaylistName, FirstCredential[]>, generation: Number, active, pe
         refreshingAll(reason = "library_changed", replace = true)
     | ["excludeChanged"] =>
         refreshingAll(reason = "exclude_changed", replace = true)
-    | ["preparedSourceConsumed", playlistName] =>
-        refreshingPlaylist(playlistName, reason = "prepared_source_consumed", replace = false)
+    | ["slotVacancy", playlistName] =>
+        refreshingPlaylist(playlistName, reason = "slot_vacancy", replace = false)
     | ["read", playlistName] =>
         provideFirstUnconsumedCredential(slots[playlistName])
     | ["consume", credential] =>
         credentialStillCurrent(slots, credential)
           ? refreshingPlaylist(
               credential.playlistName,
-              reason = "prepared_source_consumed",
+              reason = "slot_vacancy",
               replace = false,
               base = removeCredential(slots, credential)
             )
           : pool(slots, generation, active, pending)
     | ["discard", credential] =>
         credentialStillCurrent(slots, credential)
-          ? refreshingPlaylist(credential.playlistName, reason = "prepared_source_consumed", replace = false)
+          ? refreshingPlaylist(credential.playlistName, reason = "slot_vacancy", replace = false)
           : pool(slots, generation, active, pending)
   );
 
@@ -1076,10 +1085,27 @@ FirstCredential = {
 `generation` protects whole-refresh ownership. `credentialId` protects
 per-source linear consumption. A stale consume cannot remove a newer credential.
 
+### Local Cargo Cache
+
+`first-slot-cache.json` is a small FirstSlot-owned cargo journal beside the app
+database. It stores playlist names, source payloads, and source kind only. On
+startup the owner restores those payloads with fresh generation and credential
+ids, then runs startup validation/fill on its own clock.
+
+The cache is not semantic truth:
+
+- cache hit cannot create playlist membership;
+- cache hit cannot bypass PlaybackStart file and membership elimination;
+- cache miss cannot create `Preparing...`;
+- stale cache cargo may be discarded by PlaybackStart and repaired by FirstSlot;
+- dev database reset removes the cache file with the database artifacts.
+
 ### Preparation Rules
 
-- Startup begins a global refresh.
-- Ready refresh fills missing credentials and does not replace a full pool.
+- Startup restores local cargo first, then begins a global validation/fill pass.
+- Startup scheduling is non-blocking: the app runtime starts FirstSlot work but
+  does not wait for cache restore, repository validation, or model selection
+  before showing the window.
 - Audio-style model availability can replace random fallback evidence when
   better model evidence becomes available.
 - Playlist, library, and exclude changes invalidate affected existing
@@ -1088,6 +1114,8 @@ per-source linear consumption. A stale consume cannot remove a newer credential.
   for the same playlist.
 - The pool target is small and bounded. It exists to provide immediate first
   evidence, not to cache whole playlists.
+- Each playlist keeps three prepared credentials so quick ready->play cycles do
+  not wait for model selection after the first consumption.
 
 ### Selection Rules
 
@@ -1967,7 +1995,8 @@ stateDiagram-v2
 `PasteDownloadCandidate` is the frontend config candidate lifecycle for pasted
 download URLs. It owns candidate rows, clipboard URL validation, root-title
 evidence display, enqueue/task evidence display, delete/reset, and transfer of
-collection shell evidence into the draft.
+collection shell evidence into the draft. The candidate sends normalized URLs
+to `FastUrlResolveQueue`; it does not own the queue's liveness.
 
 It does not own backend task progress, collection import finalization, playlist
 commit, check/back return, or playlist playback readiness. A candidate can stay
@@ -1981,7 +2010,7 @@ PasteDownloadCandidate =
   | ["empty"]
   | ["checking", id: CandidateId, rawText: String]
   | ["enqueueing", id: CandidateId, sourceUrl: String, displayText: String]
-  | ["preparing", id: CandidateId, taskId: String, sourceUrl: String, displayText: String]
+  | ["taskActive", id: CandidateId, taskId: String, sourceUrl: String, displayText: String]
   | ["invalidUrl", id: CandidateId, error: String]
   | ["enqueueFailed", id: CandidateId, error: String]
   | ["released", id: CandidateId, reason: ReleaseReason];
@@ -1995,6 +2024,8 @@ ReleaseReason =
 
 `displayText` is local presentation cargo. It may use root-title shell evidence
 or task shell evidence, but it is not a collection row and not music evidence.
+`taskActive` means only that `DownloadTaskRuntime` accepted a non-terminal task.
+It is not draft preparation and not playback `Preparing...`.
 
 ### Transition
 
@@ -2020,7 +2051,7 @@ empty() =
   );
 
 checking(id: CandidateId, rawText: String) =
-  resolvePastedDownloadUrl(rawText);
+  sendFastUrlResolve(id, rawText);
   next().is(
     | ["url.resolved", id, ["invalid_url", error]] =>
         invalidUrl(id, error)
@@ -2048,7 +2079,12 @@ enqueueing(id: CandidateId, sourceUrl: String, displayText: String) =
         if collectionShell != null then sendDraftCollectionShell(collectionShell);
         task.isTerminal()
           ? released(id, "terminal_task_collection_loaded")
-          : preparing(id, task.id, task.collectionUrl ?? sourceUrl, task.collectionName ?? displayText)
+          : taskActive(
+              id,
+              task.id,
+              task.collectionUrl ?? sourceUrl,
+              task.collectionName ?? displayText
+            )
     | ["enqueue.failed", id, error] =>
         enqueueFailed(id, error)
     | ["delete", id] =>
@@ -2057,15 +2093,15 @@ enqueueing(id: CandidateId, sourceUrl: String, displayText: String) =
         released(id, "reset")
   );
 
-preparing(id: CandidateId, taskId: String, sourceUrl: String, displayText: String) =
+taskActive(id: CandidateId, taskId: String, sourceUrl: String, displayText: String) =
   next().is(
     | ["rootTitle.resolved", id, title, collectionShell] =>
         sendDraftCollectionShell(collectionShell);
-        preparing(id, taskId, sourceUrl, title)
+        taskActive(id, taskId, sourceUrl, title)
     | ["task.changed", taskId, signal] =>
         signal.isFailed()
           ? enqueueFailed(id, signal.error)
-          : preparing(
+          : taskActive(
               id,
               taskId,
               signal.collectionUrl ?? sourceUrl,
@@ -2083,29 +2119,56 @@ preparing(id: CandidateId, taskId: String, sourceUrl: String, displayText: Strin
   );
 ```
 
+`FastUrlResolveQueue` owns only liveness for initial URL resolution:
+
+```ts
+FastUrlResolveQueue =
+  | ["idle"]
+  | ["queued", id: CandidateId, url: NormalizedUrl]
+  | ["running", id: CandidateId, url: NormalizedUrl]
+  | ["closed", id: CandidateId, reason: "completed" | "failed" | "cancelled" | "reset"];
+
+queued/running(id, url) =
+  next().is(
+    | ["resolve.completed", id, resolution] =>
+        sendCandidateUrlResolution(id, resolution);
+        closed(id, "completed")
+    | ["resolve.failed", id, error] =>
+        sendCandidateUrlFailure(id, error);
+        closed(id, "failed")
+    | ["cancel", id] =>
+        closed(id, "cancelled")
+    | ["reset"] =>
+        closed(id, "reset")
+  );
+```
+
+Closed queue scopes discard late resolve completions. They do not mark a
+candidate as failed and do not mutate draft or download state.
+
 ### State Motion
 
 ```mermaid
 stateDiagram-v2
   [*] --> Empty
-  Empty --> Checking: paste
+  Empty --> Checking: paste / visible URL row and fast resolve demand
   Checking --> InvalidUrl: invalid url
   Checking --> Released: existing collection shell
-  Checking --> Enqueueing: new url / start title probe and enqueue
+  Checking --> Enqueueing: new url / start title probe and enqueue as sibling commands
   Checking --> EnqueueFailed: resolve failed
 
   Enqueueing --> Enqueueing: root title shell updates display
-  Enqueueing --> Preparing: enqueue accepted non-terminal task
+  Enqueueing --> TaskActive: enqueue accepted non-terminal task
   Enqueueing --> Released: enqueue accepted terminal collection
   Enqueueing --> EnqueueFailed: enqueue failed
 
-  Preparing --> Preparing: root title or non-terminal task signal
-  Preparing --> Released: terminal task collection loaded
-  Preparing --> EnqueueFailed: task failed or collection load failed
+  TaskActive --> TaskActive: root title or non-terminal task signal
+  TaskActive --> Released: terminal task collection loaded
+  TaskActive --> EnqueueFailed: task failed or collection load failed
 
   Checking --> Released: delete/reset
   Enqueueing --> Released: delete/reset
-  Preparing --> Released: delete/reset
+  TaskActive --> Released: delete/reset
   InvalidUrl --> Released: delete/reset
   EnqueueFailed --> Released: delete/reset
 ```
@@ -2128,11 +2191,14 @@ stateDiagram-v2
 `DownloadTaskRuntime` owns task and leaf progress for remote downloads,
 auto-update, and local import task signals. It owns enqueue admission,
 transaction-conflict retry, root probe scheduling, residual leaf work, leaf
-download/finalization, terminal task status, and task change signals.
+download/finalization scheduling, terminal task status, and task change
+signals.
 
 It does not own playlist config page state, first-track selection, playback
-session state, or collection folder naming. Folder and music rows are
-`CollectionImport` cargo.
+session state, collection folder naming, final file paths, music rows, manifest
+truth, or playable-library truth. Folder, file, music, and manifest evidence are
+`CollectionImport` cargo. The task runtime can only consume that cargo through
+explicit leaf-completion commands.
 
 ### Owned State
 
@@ -2141,9 +2207,11 @@ DownloadTaskRuntime =
   | ["idle"]
   | ["admitting", url: NormalizedUrl, trigger: DownloadTrigger]
   | ["queued", task: DownloadTask]
-  | ["resolving", task: DownloadTask]
-  | ["downloading", task: DownloadTask, activeLeafs: LeafSet]
-  | ["persisting", task: DownloadTask, finalizingLeafs: LeafSet]
+  | ["resolvingPlan", task: DownloadTask]
+  | ["shellPersisted", task: DownloadTask, collection: Collection]
+  | ["discardingMaterializedLeaves", task: DownloadTask, collection: Collection]
+  | ["leafPipeline", task: DownloadTask, collection: Collection, pipeline: LeafPipelineState]
+  | ["terminalizing", task: DownloadTask]
   | ["completed", task: DownloadTask]
   | ["completedWithErrors", task: DownloadTask]
   | ["failed", task: DownloadTask, reason: String]
@@ -2152,14 +2220,22 @@ DownloadTaskRuntime =
 DownloadLeaf =
   | ["queued"]
   | ["probing"]
-  | ["downloading"]
-  | ["persisting"]
+  | ["prepared"]
+  | ["existingFinalFileDetected"]
+  | ["residualTempDetected"]
+  | ["readyDownload"]
+  | ["downloadingTemp"]
+  | ["readyFinalize"]
+  | ["finalizing"]
   | ["measuringLoudness"]
   | ["completed"]
   | ["failed", reason: String]
-  | ["cancelled"]
   | ["interrupted"];
 ```
+
+`DownloadTask.leafs` is residual work only. Removing a leaf from the task means
+the runtime consumed `CollectionImport` completion evidence. It does not mean
+the task invented music evidence.
 
 ### Transition
 
@@ -2169,11 +2245,18 @@ Action =
   | ["activeTask.exists", task: DownloadTask]
   | ["preparedShell.exists", shell: CollectionShell]
   | ["task.saved", task: DownloadTask]
+  | ["residualPlan.exists", plan: CollectionSyncPlan]
   | ["rootProbe.ok", plan: CollectionSyncPlan]
   | ["rootProbe.error", reason: String]
-  | ["leaf.prepared", leaf: Leaf]
-  | ["leaf.downloaded", leaf: Leaf, tempFile: Path]
-  | ["leaf.finalized", leaf: Leaf]
+  | ["collectionShell.loaded", collection: Collection]
+  | ["materializedLeaves.discarded", task: DownloadTask]
+  | ["leaf.prepared", leaf: Leaf, probe: LeafProbe]
+  | ["leaf.existingFinalFile", leaf: Leaf, relativePath: String]
+  | ["leaf.residualTemp", leaf: Leaf, tempPath: Path]
+  | ["leaf.readyDownload", leaf: Leaf]
+  | ["leaf.downloadedTemp", leaf: Leaf, tempFile: Path]
+  | ["leaf.importCommitted", leaf: Leaf, relativePath: String]
+  | ["leaf.loudnessMeasured", leaf: Leaf]
   | ["leaf.failed", leaf: Leaf, reason: String]
   | ["pipeline.drained"]
   | ["process.interrupted"];
@@ -2197,43 +2280,76 @@ admitting(url: NormalizedUrl, trigger: DownloadTrigger) =
 
 queued(task: DownloadTask) =
   next().is(
+    | ["residualPlan.exists", plan] =>
+        resolvingPlan(task, plan)
     | ["rootProbe.ok", plan] =>
-        resolving(persistResidualPlan(task, plan))
+        resolvingPlan(persistResidualPlan(task, plan), plan)
     | ["rootProbe.error", reason] =>
         failed(task, reason)
     | ["process.interrupted"] =>
         interrupted(task)
   );
 
-resolving(task: DownloadTask) =
-  prepareResidualLeafs(task);
+resolvingPlan(task: DownloadTask, plan: CollectionSyncPlan) =
   next().is(
-    | ["leaf.prepared", leaf] =>
-        downloading(markLeafReady(task, leaf), activeLeafs = [leaf])
-    | ["leaf.failed", leaf, reason] =>
-        resolving(markLeafFailed(task, leaf, reason))
-    | ["pipeline.drained"] =>
-        terminalFromResidualLeafs(task)
-  );
-
-downloading(task: DownloadTask, activeLeafs: LeafSet) =
-  next().is(
-    | ["leaf.downloaded", leaf, tempFile] =>
-        persisting(markLeafPersisting(task, leaf), finalizingLeafs = [leaf])
-    | ["leaf.failed", leaf, reason] =>
-        resolving(markLeafFailed(task, leaf, reason))
+    | ["collectionShell.loaded", collection] =>
+        shellPersisted(persistTaskShell(task, plan), collection)
     | ["process.interrupted"] =>
         interrupted(task)
   );
 
-persisting(task: DownloadTask, finalizingLeafs: LeafSet) =
+shellPersisted(task: DownloadTask, collection: Collection) =
   next().is(
-    | ["leaf.finalized", leaf] =>
-        resolving(removeResidualLeaf(task, leaf))
+    | ["materializedLeaves.discarded", task] =>
+        task.leafs.isEmpty()
+          ? terminalizing(task)
+          : leafPipeline(task, collection, makeLeafPipeline(task))
+  );
+
+leafPipeline(task: DownloadTask, collection: Collection, pipeline: LeafPipelineState) =
+  drainReadyFinalizationsBeforeNewWork();
+  spawnReadyDownloadsBeforeNewPreparation();
+  spawnLeafPreparations();
+  next().is(
+    | ["leaf.prepared", leaf, probe] =>
+        classifyPreparedLeaf(leaf, probe)
+    | ["leaf.existingFinalFile", leaf, relativePath] =>
+        enqueueExistingFinalization(leaf, relativePath)
+    | ["leaf.residualTemp", leaf, tempPath] =>
+        enqueueDownloadedFinalization(leaf, tempPath)
+    | ["leaf.readyDownload", leaf] =>
+        enqueueDownload(leaf)
+    | ["leaf.downloadedTemp", leaf, tempFile] =>
+        enqueueDownloadedFinalization(leaf, tempFile)
+    | ["leaf.importCommitted", leaf, relativePath] =>
+        measuringLoudness(markLeafMeasuring(task, leaf, relativePath))
+    | ["leaf.loudnessMeasured", leaf] =>
+        leafPipeline(removeResidualLeaf(task, leaf), collection, pipeline)
     | ["leaf.failed", leaf, reason] =>
-        resolving(markLeafFailed(task, leaf, reason))
+        leafPipeline(markLeafFailed(task, leaf, reason), collection, pipeline)
+    | ["pipeline.drained"] =>
+        terminalizing(markUnresolvedLeavesFailed(task))
+    | ["process.interrupted"] =>
+        interrupted(task)
+  );
+
+terminalizing(task: DownloadTask) =
+  next().is(
+    | ["pipeline.drained"] =>
+        terminalStatusFrom(completedLeafCount(task), failedLeafCount(task))
   );
 ```
+
+`classifyPreparedLeaf` is not a hidden fallback. It has exactly three legal
+outputs: existing final file evidence, unambiguous residual temp evidence, or
+fresh download demand. Ambiguous temp residue is explicit failed leaf evidence.
+
+Existing final file has two different meanings:
+
+| Evidence | Meaning | Owner | Result |
+| --- | --- | --- | --- |
+| collection row plus stable file | already materialized leaf | `CollectionImport` and `DownloadTaskRuntime` | residual leaf can be discarded before pipeline |
+| stable file without current row completion | reusable audio file | `CollectionImport` | must still persist music row and manifest before completion |
 
 ### State Motion
 
@@ -2242,19 +2358,25 @@ stateDiagram-v2
   [*] --> Idle
   Idle --> Admitting: enqueue(url)
   Admitting --> Queued: task saved or active task reused
-  Queued --> Resolving: rootProbe.ok / residual plan
+  Queued --> ResolvingPlan: residual plan or rootProbe.ok
   Queued --> Failed: rootProbe.error
-  Resolving --> Downloading: leaf.prepared
-  Resolving --> Resolving: leaf.failed
-  Downloading --> Persisting: leaf.downloaded
-  Downloading --> Resolving: leaf.failed
-  Persisting --> Resolving: leaf.finalized removes residual leaf
-  Persisting --> Resolving: leaf failed
-  Resolving --> Completed: pipeline drained no failures
-  Resolving --> CompletedWithErrors: pipeline drained with failed leafs
-  Resolving --> Failed: no committed leaves and terminal failures
+  ResolvingPlan --> ShellPersisted: collection shell loaded
+  ShellPersisted --> DiscardingMaterializedLeaves: persist task shell
+  DiscardingMaterializedLeaves --> Terminalizing: no residual leaves
+  DiscardingMaterializedLeaves --> LeafPipeline: residual leaves remain
+
+  LeafPipeline --> LeafPipeline: prepare leaf
+  LeafPipeline --> LeafPipeline: existing final file -> import commit
+  LeafPipeline --> LeafPipeline: residual temp -> import commit
+  LeafPipeline --> LeafPipeline: fresh download -> temp artifact
+  LeafPipeline --> LeafPipeline: commit music/manifest -> measure loudness -> remove residual
+  LeafPipeline --> LeafPipeline: leaf failed
+  LeafPipeline --> Terminalizing: pipeline drained
+  Terminalizing --> Completed: no failed leaves
+  Terminalizing --> CompletedWithErrors: completed > 0 and failed leaves
+  Terminalizing --> Failed: no committed leaves and terminal failures
   Queued --> Interrupted: process interrupted
-  Downloading --> Interrupted: process interrupted
+  LeafPipeline --> Interrupted: process interrupted
 ```
 
 ### DownloadTaskRuntime Must Not
@@ -2263,6 +2385,9 @@ stateDiagram-v2
 - use UI trace as state;
 - let pasted URL parsing create playable music;
 - own collection folder naming;
+- create collection directories or final audio paths directly;
+- treat an existing file as playlist membership without collection row evidence;
+- send playable tracks, first-slot credentials, or `Preparing...`;
 - block config return while residual task work continues;
 - ask playback to retry download admission.
 
@@ -2273,7 +2398,9 @@ stateDiagram-v2
 `CollectionImport` owns canonical collection identity after shell evidence is
 accepted: collection URL, title, folder, manifest, final file moves, group rows,
 music rows, and local import materialization. It is the only owner allowed to
-turn committed files into stable music evidence.
+turn committed files into stable music evidence. It also owns folder creation
+as part of final file commit and manifest write. Folder creation is not a
+separate download-runtime concern.
 
 ### Owned State
 
@@ -2281,10 +2408,14 @@ turn committed files into stable music evidence.
 CollectionImport =
   | ["empty"]
   | ["shellPrepared", shell: CollectionShell]
-  | ["planning", shell: CollectionShell]
-  | ["materializing", plan: CollectionSyncPlan]
+  | ["folderResolved", shell: CollectionShell, folder: String]
+  | ["planAccepted", plan: CollectionSyncPlan]
   | ["manifestRestoring", collection: Collection]
-  | ["committingLeaf", collection: Collection, leaf: LeafCompletion]
+  | ["folderEnsuring", collection: Collection, leaf: LeafCompletion]
+  | ["finalFileCommitting", collection: Collection, leaf: LeafCompletion]
+  | ["musicRowsPersisting", collection: Collection, leaf: LeafCompletion, relativePath: String]
+  | ["manifestWriting", collection: Collection]
+  | ["libraryWakeEmitting", collection: Collection]
   | ["importingLocal", shell: CollectionShell]
   | ["committed", collection: Collection]
   | ["failed", shell: CollectionShell | null, reason: String];
@@ -2297,10 +2428,17 @@ Action =
   | ["rootShell.accepted", shell: CollectionShell]
   | ["collectionPlan.accepted", plan: CollectionSyncPlan]
   | ["localShell.accepted", shell: CollectionShell]
+  | ["folder.resolved", folder: String]
+  | ["shell.persisted", collection: Collection]
   | ["manifest.found", collection: Collection]
+  | ["manifest.restored", collection: Collection]
   | ["leafCompletion.accepted", leaf: LeafCompletion]
+  | ["existingFinalFile.found", relativePath: String]
+  | ["folder.ready"]
   | ["fileCommit.ok", relativePath: String]
   | ["musicRows.persisted", collection: Collection]
+  | ["manifest.written", collection: Collection]
+  | ["libraryWake.emitted", collection: Collection]
   | ["error", reason: String];
 
 empty() =
@@ -2312,36 +2450,78 @@ empty() =
   );
 
 shellPrepared(shell: CollectionShell) =
-  persistCollectionShell(shell);
-  committed(collectionFromShell(shell));
-
-planning(shell: CollectionShell) =
   next().is(
-    | ["collectionPlan.accepted", plan] =>
-        materializing(plan)
+    | ["folder.resolved", folder] =>
+        folderResolved(shell, folder)
     | ["error", reason] =>
         failed(shell, reason)
   );
 
-materializing(plan: CollectionSyncPlan) =
+folderResolved(shell: CollectionShell, folder: String) =
+  persistCollectionShell(shell, folder);
+  next().is(
+    | ["shell.persisted", collection] =>
+        committed(collection)
+    | ["error", reason] =>
+        failed(shell, reason)
+  );
+
+planAccepted(plan: CollectionSyncPlan) =
   loadOrCreateCollection(plan);
   next().is(
     | ["manifest.found", collection] =>
         manifestRestoring(collection)
     | ["leafCompletion.accepted", leaf] =>
-        committingLeaf(collectionFromPlan(plan), leaf)
+        folderEnsuring(collectionFromPlan(plan), leaf)
+    | ["error", reason] =>
+        failed(null, reason)
   );
 
-committingLeaf(collection: Collection, leaf: LeafCompletion) =
-  finalizeDownloadedLeaf(collection, leaf);
+manifestRestoring(collection: Collection) =
+  restoreManifestEvidence(collection);
   next().is(
-    | ["fileCommit.ok", relativePath] =>
-        persistMusicRows(collection, leaf, relativePath)
-    | ["musicRows.persisted", collection] =>
-        committed(collection)
+    | ["manifest.restored", collection] =>
+        libraryWakeEmitting(collection)
+  );
+
+folderEnsuring(collection: Collection, leaf: LeafCompletion) =
+  next().is(
+    | ["existingFinalFile.found", relativePath] =>
+        musicRowsPersisting(collection, leaf, relativePath)
+    | ["folder.ready"] =>
+        finalFileCommitting(collection, leaf)
     | ["error", reason] =>
         failed(collectionShell(collection), reason)
   );
+
+finalFileCommitting(collection: Collection, leaf: LeafCompletion) =
+  next().is(
+    | ["fileCommit.ok", relativePath] =>
+        musicRowsPersisting(collection, leaf, relativePath)
+    | ["error", reason] =>
+        failed(collectionShell(collection), reason)
+  );
+
+musicRowsPersisting(collection: Collection, leaf: LeafCompletion, relativePath: String) =
+  next().is(
+    | ["musicRows.persisted", collection] =>
+        manifestWriting(collection)
+    | ["error", reason] =>
+        failed(collectionShell(collection), reason)
+  );
+
+manifestWriting(collection: Collection) =
+  next().is(
+    | ["manifest.written", collection] =>
+        libraryWakeEmitting(collection)
+    | ["error", reason] =>
+        failed(collectionShell(collection), reason)
+  );
+
+libraryWakeEmitting(collection: Collection) =
+  notifyAudioStyleInputsChanged();
+  notifyPlayableLibraryChanged();
+  committed(collection);
 ```
 
 ### State Motion
@@ -2350,19 +2530,37 @@ committingLeaf(collection: Collection, leaf: LeafCompletion) =
 stateDiagram-v2
   [*] --> Empty
   Empty --> ShellPrepared: root shell accepted
-  ShellPrepared --> Committed: shell persisted
+  ShellPrepared --> FolderResolved: resolve collection folder
+  FolderResolved --> Committed: shell persisted
   Empty --> ImportingLocal: local shell accepted
   ImportingLocal --> Committed: local audio rows persisted
   ImportingLocal --> Failed: error
-  ShellPrepared --> Planning: full collection plan requested
-  Planning --> Materializing: plan accepted
-  Materializing --> ManifestRestoring: manifest found
-  ManifestRestoring --> Committed: restored rows persisted
-  Materializing --> CommittingLeaf: leaf completion accepted
-  CommittingLeaf --> Committed: file and music rows persisted
-  Planning --> Failed: error
-  CommittingLeaf --> Failed: error
+
+  Empty --> PlanAccepted: collection plan accepted
+  PlanAccepted --> ManifestRestoring: manifest found
+  ManifestRestoring --> LibraryWakeEmitting: restored rows persisted
+  PlanAccepted --> FolderEnsuring: leaf completion accepted
+  FolderEnsuring --> MusicRowsPersisting: existing final file
+  FolderEnsuring --> FinalFileCommitting: folder ready
+  FinalFileCommitting --> MusicRowsPersisting: final file committed
+  MusicRowsPersisting --> ManifestWriting: music rows persisted
+  ManifestWriting --> LibraryWakeEmitting: manifest written
+  LibraryWakeEmitting --> Committed: wakes sent
+
+  ShellPrepared --> Failed: error
+  PlanAccepted --> Failed: error
+  FolderEnsuring --> Failed: error
+  FinalFileCommitting --> Failed: error
+  MusicRowsPersisting --> Failed: error
+  ManifestWriting --> Failed: error
 ```
+
+### Playback Wake Contract
+
+`CollectionImport` does not push tracks to playback. Its only playable transfer
+is `notify_playable_library_changed()` after canonical rows are available.
+`FirstSlot`, `NextTrack`, and playlist queue repair then read their own cargo
+from the playable index or playlist repository.
 
 ### CollectionImport Must Not
 
@@ -2371,7 +2569,8 @@ stateDiagram-v2
 - retry provider downloads;
 - expose partial temp files as music;
 - let download task page state rename or complete a collection;
-- create a second folder authority in downloads or UI.
+- create a second folder authority in downloads or UI;
+- let a task change signal substitute for playable-library wake.
 
 ## Lifecycle: AudioStyleModelRuntime
 
@@ -2380,6 +2579,10 @@ stateDiagram-v2
 `AudioStyleModelRuntime` owns audio-style embedding cache, training runs,
 stable snapshot publication, completed snapshot history, and model availability
 signals. It is independent from clicks, player boundaries, and UI rendering.
+Runtime initialization only schedules cached-evidence restore. Reading cached
+evidence, deserializing it, publishing a restored stable snapshot, and deciding
+whether to train are background lifecycle work and must not delay window
+creation or app startup projection.
 
 ### Owned State
 
@@ -2730,6 +2933,349 @@ error(attempt: Number, reason: String) =
 - infer playable first credentials;
 - hide startup failure by entering `ready` with partial mandatory snapshot data.
 
+## Lifecycle: ContextResetLifecycle
+
+### Boundary
+
+`ContextResetLifecycle` is an `appLogic` reset journal. It records which
+presentation chart, layout lease, and transaction epoch are closed, opened, or
+preserved when the app state shape changes. It exists so reset operations cannot
+silently erase UI timing paths.
+
+It does not own the target lifecycles. It does not close player sessions,
+downloads, FirstSlot, model training, or repository transactions. It only
+materializes a grouped context patch from the initial context and writes the
+reset journal.
+
+### Owned State
+
+```ts
+ContextResetLifecycle =
+  | ["idle", last: ResetJournal | null]
+  | ["resetting", reason: String, chart: ResetAction, lease: ResetAction, transaction: ResetAction]
+  | ["recorded", last: ResetJournal];
+
+ResetAction =
+  | ["closed", target: String | null]
+  | ["opened", target: String | null]
+  | ["preserved", target: String | null]
+  | ["none"];
+```
+
+### Transition
+
+```ts
+Action =
+  | ["reset.requested", reason: String, groupedPatch: ContextResetPatch, actions: ResetActions]
+  | ["reset.applied", context: Context];
+
+idle(last) =
+  next().is(
+    | ["reset.requested", reason, groupedPatch, actions] =>
+        resetting(reason, actions.chart, actions.lease, actions.transaction)
+  );
+
+resetting(reason, chart, lease, transaction) =
+  applyInitialContextPlusGroupedPatch();
+  next().is(
+    | ["reset.applied", context] =>
+        recorded({
+          owner: "appLogic",
+          reason,
+          chart,
+          lease,
+          transaction
+        })
+  );
+
+recorded(last) =
+  idle(last);
+```
+
+### State Motion
+
+```mermaid
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Resetting: reset.requested(grouped patch, actions)
+  Resetting --> Recorded: reset.applied
+  Recorded --> Idle: journal visible in context
+```
+
+### ContextResetLifecycle Must Not
+
+- infer a chart, lease, or transaction action from unrelated field changes;
+- close a lifecycle that was marked `preserved`;
+- preserve a transaction without explicit frame/epoch evidence;
+- mutate backend owners or consume linear resources;
+- hide a visible UI transition by resetting fields through `unsafe`.
+
+## Lifecycle: SpectrumMusicCommitTransaction
+
+### Boundary
+
+`SpectrumMusicCommitTransaction` owns one ordered commit attempt for spectrum
+music draft changes. It maps drafts to update/create/delete commands, sends
+repository commands in that order, and tags every callback with the originating
+epoch.
+
+It does not own spectrum page draft editing, playback queue repair, player
+sessions, or playlist membership. Its output is repository evidence plus a
+current-epoch success/failure signal.
+
+### Owned State
+
+```ts
+SpectrumMusicCommitTransaction =
+  | ["idle"]
+  | ["planned", epoch: Number, updates: Update[], creates: Create[], deletes: Delete[]]
+  | ["updating", epoch: Number]
+  | ["creating", epoch: Number]
+  | ["deleting", epoch: Number]
+  | ["finished", epoch: Number]
+  | ["failed", epoch: Number, phase: "update" | "create" | "delete" | "unexpected", error: String];
+```
+
+### Transition
+
+```ts
+Action =
+  | ["check", drafts: SpectrumMusicDraft[], epoch: Number]
+  | ["phase.ok", phase: CommitPhase, epoch: Number, result: RepositoryResult]
+  | ["phase.error", phase: CommitPhase, epoch: Number, error: String];
+
+idle() =
+  next().is(
+    | ["check", drafts, epoch] =>
+        hasOperations(drafts)
+          ? planned(epoch, updates(drafts), creates(drafts), deletes(drafts))
+          : finished(epoch)
+  );
+
+planned(epoch, updates, creates, deletes) =
+  updates.any()
+    ? updating(epoch)
+    : creates.any()
+      ? creating(epoch)
+      : deletes.any()
+        ? deleting(epoch)
+        : finished(epoch);
+
+updating(epoch) =
+  updateMusics();
+  next().is(
+    | ["phase.ok", "update", epoch, result] => creatingOrDeletingOrFinished(epoch)
+    | ["phase.error", "update", epoch, error] => failed(epoch, "update", error)
+  );
+
+creating(epoch) =
+  createMusics();
+  next().is(
+    | ["phase.ok", "create", epoch, result] => deletingOrFinished(epoch)
+    | ["phase.error", "create", epoch, error] => failed(epoch, "create", error)
+  );
+
+deleting(epoch) =
+  deleteMusics();
+  next().is(
+    | ["phase.ok", "delete", epoch, result] => finished(epoch)
+    | ["phase.error", "delete", epoch, error] => failed(epoch, "delete", error)
+  );
+```
+
+### State Motion
+
+```mermaid
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Planned: check with operations
+  Idle --> Finished: check without operations
+  Planned --> Updating: updates exist
+  Planned --> Creating: no updates, creates exist
+  Planned --> Deleting: only deletes exist
+  Planned --> Finished: no operations
+  Updating --> Creating: update ok and creates exist
+  Updating --> Deleting: update ok and only deletes exist
+  Updating --> Finished: update ok and no later phases
+  Updating --> Failed: update error
+  Creating --> Deleting: create ok and deletes exist
+  Creating --> Finished: create ok and no deletes
+  Creating --> Failed: create error
+  Deleting --> Finished: delete ok
+  Deleting --> Failed: delete error
+```
+
+### SpectrumMusicCommitTransaction Must Not
+
+- apply a callback whose epoch is not current;
+- reorder create/update/delete phases;
+- mutate player queues or FirstSlot after a repository commit;
+- let successful earlier phases hide a later phase failure;
+- interpret trace callbacks as repository evidence.
+
+## Lifecycle: PlaybackExcludeTransaction
+
+### Boundary
+
+`PlaybackExcludeTransaction` owns one "exclude current music and skip" command.
+It captures the source projection, asks the backend owner to exclude and skip,
+then projects the backend result against the current projection to decide which
+frontend app projections to update.
+
+It does not own backend exclude persistence, playlist playback continuation, or
+player stop. It may request `backOutOfPlay` only when the deleted playlist is
+still the same active play target in both source and current projections.
+
+### Owned State
+
+```ts
+PlaybackExcludeTransaction =
+  | ["idle"]
+  | ["running", source: PlaybackProjection]
+  | ["rejected", source: PlaybackProjection, reason: "missing_music" | "no_active_track"]
+  | ["committed", source: PlaybackProjection, current: PlaybackProjection, result: ExcludeResult];
+```
+
+### Transition
+
+```ts
+Action =
+  | ["exclude.requested", source: PlaybackProjection]
+  | ["backend.result", result: ExcludeCurrentMusicAndSkipResult]
+  | ["projection.current", current: PlaybackProjection];
+
+idle() =
+  next().is(
+    | ["exclude.requested", source] =>
+        running(source)
+  );
+
+running(source) =
+  excludeCurrentMusicAndSkip();
+  next().is(
+    | ["backend.result", result] =>
+        result.status in ["missing_music", "no_active_track"]
+          ? rejected(source, result.status)
+          : committed(
+              source,
+              getCurrentProjection(),
+              projectExcludeResult(source, getCurrentProjection(), result)
+            )
+  );
+
+committed(source, current, result) =
+  emitExcludeAdded(result.exclude);
+  if result.playlistDeleted then emitPlaylistDeleted(result.playlistDeleted);
+  if result.shouldBackOutOfPlay then emitBackOutOfPlay();
+```
+
+### State Motion
+
+```mermaid
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Running: exclude.requested(source)
+  Running --> Rejected: missing_music or no_active_track
+  Running --> Committed: skipped or deleted_playlist
+  Committed --> Idle: projections emitted
+  Rejected --> Idle: rejection visible
+```
+
+### PlaybackExcludeTransaction Must Not
+
+- back out of play if source and current projections no longer match;
+- delete a playlist from app projection without backend deleted-playlist
+  evidence;
+- treat `skipped` as playlist deletion;
+- repair FirstSlot or NextTrack directly;
+- keep running after the backend result by waiting for player confirmation.
+
+## Lifecycle: Updater
+
+### Boundary
+
+`Updater` owns the optional application update check. It starts after bootstrap
+startup, checks for an update, downloads it if available, shows an install
+prompt, and retries failed checks after a long timer.
+
+It does not own app readiness, downloads, model startup, playlist import, or
+window display time. Update work must never be a startup gate.
+
+### Owned State
+
+```ts
+Updater =
+  | ["idle"]
+  | ["checking"]
+  | ["upToDate"]
+  | ["downloaded", version: String]
+  | ["failed", retryAt: Time];
+```
+
+### Transition
+
+```ts
+Action =
+  | ["run"]
+  | ["check.ok", result: "up_to_date" | { available: String }]
+  | ["check.error", reason: String]
+  | ["retry.timer"]
+  | ["install.clicked"];
+
+idle() =
+  next().is(
+    | ["run"] =>
+        checking()
+  );
+
+checking() =
+  checkUpdate();
+  next().is(
+    | ["check.ok", "up_to_date"] =>
+        upToDate()
+    | ["check.ok", { available: version }] =>
+        downloaded(version)
+    | ["check.error", reason] =>
+        failed(now() + oneHour)
+  );
+
+downloaded(version) =
+  showRestartPrompt(version);
+  next().is(
+    | ["install.clicked"] =>
+        installAndRelaunch()
+  );
+
+failed(retryAt) =
+  next().is(
+    | ["retry.timer"] =>
+        checking()
+  );
+```
+
+### State Motion
+
+```mermaid
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Checking: run
+  Checking --> UpToDate: no update
+  Checking --> Downloaded: update downloaded
+  Checking --> Failed: check/download error
+  Failed --> Checking: one-hour retry
+  Downloaded --> Downloaded: prompt visible
+  Downloaded --> [*]: install clicked and relaunch
+  UpToDate --> [*]
+```
+
+### Updater Must Not
+
+- block `AppBootstrap` readiness or window creation;
+- reuse `DownloadTaskRuntime`;
+- write playlist, collection, model, player, or FirstSlot state;
+- retry aggressively enough to contend with user-visible startup work;
+- install or relaunch without explicit prompt action.
+
 ## Lifecycle: TraceLifecycle
 
 ### Boundary
@@ -2840,8 +3386,9 @@ state. The access kind is part of the transfer contract.
 | --- | --- | --- | --- | --- | --- |
 | startup snapshot | `command` | app runtime | `AppBootstrap` | `run`, startup bootstrap result, save path | startup may enter `ready` or `error`; it does not complete background lifecycles |
 | startup app projection | `project` | `AppBootstrap` | `appLogic` | playlists, config library, save path | replaces app shape only after mandatory snapshot evidence is accepted |
-| startup playable wake | `wake` | `appLogic ready projection` | `FirstSlot` | current playlist names and library generation | fills missing prepared sources outside click path |
-| startup model wake | `wake` | `appLogic ready projection` | `AudioStyleModelRuntime` | library snapshot | model owner restores or trains on its own clock |
+| first-slot startup | `command` | app runtime | `FirstSlot` | app local data path and repository access | schedules local cargo restore plus validation/fill; app startup does not wait for either |
+| first-slot cargo restore | `read` | `FirstSlot` | `FirstSlot` | `first-slot-cache.json` beside the database | acceleration only; restored cargo gets fresh generation and credential ids only in blank startup state |
+| startup model wake | `command` | app runtime | `AudioStyleModelRuntime` | app cache path and library repository access | schedules cached evidence restore/training decision; app startup does not wait for model work |
 | click intent | `command` | `PlayListPage` | `PlaylistItemClick` | playlist name | opens pending request only in `ready` or `play` |
 | pending title response | `project` | `PlaylistItemClick` | `PlaylistInteractionResponse` | playlist name, request id | same-turn title lock only; never preparing text |
 | backend start | `command` | `PlaylistItemClick` | `PlaybackStart` | playlist name, request id | request id closes stale callbacks |
@@ -2859,7 +3406,9 @@ state. The access kind is part of the transfer contract.
 | config check/back | `command` | list config | `PlaylistDraftCommit` | draft, baseline, title handoff | returns to `ready` immediately; persistence continues as background evidence |
 | playlist upsert command | `command` | `PlaylistDraftCommit` | playlist repository | `PlaylistWriteRequest` | repo may accept or reject; UI return is not blocked |
 | playlist upsert accepted | `project` | playlist repository | `PlaylistDraftCommit`, `appLogic`, `FirstSlot` | playlist name, previous name, canonical playlist | app projection updates lists; FirstSlot wakes affected playlist |
-| paste text | `command` | list config paste action | `PasteDownloadCandidate` | raw clipboard text | creates a candidate row and starts URL resolution |
+| paste text | `command` | list config paste action | `PasteDownloadCandidate` | raw clipboard text | creates a visible candidate row immediately |
+| fast URL resolve demand | `command` | `PasteDownloadCandidate` | `FastUrlResolveQueue` | candidate id and normalized URL | queue owner controls concurrency, cancel/reset, and late result discard |
+| fast URL resolve result | `project` | `FastUrlResolveQueue` | `PasteDownloadCandidate` | latest still-open URL resolution | invalid/existing/new URL evidence only; not collection truth and not music evidence |
 | candidate root title | `project` | `PasteDownloadCandidate` | list config and `appLogic` draft | display title and collection shell | shell can update draft/display; it is not downloaded music evidence |
 | candidate enqueue | `command` | `PasteDownloadCandidate` | `DownloadTaskRuntime` | source URL | backend task owner accepts/rejects enqueue independently from config return |
 | candidate task signal | `wake` | `DownloadTaskRuntime` | `PasteDownloadCandidate` | task id, status, collection shell fields | candidate may update display or load terminal collection; it cannot set task terminal state |
@@ -2878,7 +3427,13 @@ state. The access kind is part of the transfer contract.
 | spectrum scope | `consume` | `PlayerSession` | `SpectrumScope` | scope id | linear handle, exits only if still current |
 | spectrum preview | `command` | `SpectrumScope` | `PlayerSession` | scope id, preview track, position/range | scoped player command may reject stale or missing scope |
 | spectrum return | `project` | `SpectrumScope` | `appLogic` and `PlaybackSurface` | source session, return target, scope exit result | check/back restores play page shape without owning playlist stop |
-| spectrum music commit | `command` | spectrum page edit transaction | playlists/collection music repository | changed draft titles/ranges | edits are scoped by track identity and do not mutate playback queue |
+| context reset journal | `project` | `ContextResetLifecycle` | `appLogic` | chart/lease/transaction actions plus reason | records open/close/preserve decisions; does not execute backend owner state changes |
+| spectrum music commit | `command` | `SpectrumMusicCommitTransaction` | playlists/collection music repository | changed draft titles/ranges plus epoch | edits are scoped by track identity and do not mutate playback queue |
+| spectrum music commit callback | `project` | playlists/collection music repository | `SpectrumMusicCommitTransaction` and `appLogic` | phase result or failure with epoch | accepted only for current epoch; failure is negative evidence, not playback state |
+| playback exclude command | `command` | `PlaybackExcludeTransaction` | backend playback/exclude owner | current source projection | backend decides exclude/skip result; transaction only projects returned evidence |
+| playback exclude projection | `project` | `PlaybackExcludeTransaction` | `appLogic` | exclude change, optional deleted playlist, optional backOutOfPlay | back-out is legal only when source and current play projection still match |
+| updater check | `command` | app bootstrap side wake | `Updater` | run signal | scheduled after bootstrap; never app readiness evidence |
+| updater prompt | `project` | `Updater` | notification UI | downloaded version and restart action | prompt is user action evidence only; no lifecycle waits on it |
 | trace enablement | `command` | app startup declaration | `TraceLifecycle` | enabled probe list | empty declaration leaves trace installed but silent |
 | trace record | `project` | any instrumented owner | `TraceLifecycle` | event name and payload | recorded only when event is registered and probe is enabled |
 | trace save | `command` | human/debug action | `TraceLifecycle` | save request | writes JSONL evidence; no lifecycle consumes it as behavior |
@@ -2897,6 +3452,12 @@ These paths are intentionally illegal:
   preparing first evidence.
 - `pending_first_track` -> `play`.
 - Trace event -> state transition.
+- Context reset journal -> backend owner mutation.
+- Spectrum music commit callback with stale epoch -> app projection update.
+- Playback exclude deleted playlist -> back out of play without matching source
+  and current projection.
+- Updater check/download -> app readiness gate.
+- Window focus/maximized/topbar visibility -> business lifecycle transition.
 - FirstSlot miss -> synchronous click-path refill.
 - Player boundary -> playlist membership scan.
 - Player boundary -> recommendation model call.
@@ -2919,17 +3480,22 @@ These paths are intentionally illegal:
   model completion before returning to `ready`.
 - PlaylistDraftCommit -> clear or release paste candidates only because check or
   back was clicked.
+- FastUrlResolveQueue -> draft collection, backend download task, or persisted
+  music evidence.
+- FastUrlResolveQueue -> commit late results after candidate cancel/reset.
 - PasteDownloadCandidate -> backend task terminal status.
 - PasteDownloadCandidate -> root title shell becomes persisted music evidence.
 - PasteDownloadCandidate -> active candidate removed by non-terminal collection
   shell evidence.
+- PasteDownloadCandidate `taskActive` -> block `PlaylistDraftCommit` check/back
+  return only because a backend download is still active.
 - DownloadTaskRuntime -> collection folder naming or canonical music row
   authority.
 - CollectionImport -> decide first-slot/playback readiness.
 - SpectrumScope -> open from pending click or ready list without accepted
   playback identity.
-- SpectrumScope -> check/back stops playlist playback as a side effect of scope
-  exit.
+- SpectrumScope -> check/back stops playlist playback as a scope-exit
+  consequence.
 - TraceLifecycle -> enable a probe by first record call.
 - TraceLifecycle -> readiness, wait, fallback, or state transition source.
 
@@ -2979,7 +3545,7 @@ The following tests and seams anchor this document:
     authority;
   - active download candidates stay visible after shell collection evidence.
 - `src/flow/pasteDownload/machine.test.ts`
-  - title probing and enqueue are sibling effects;
+  - title probing and enqueue are sibling commands;
   - later pasted URLs are admitted while earlier URLs are still resolving;
   - active candidates survive non-terminal task signals with collection shell
     evidence.
@@ -2987,7 +3553,7 @@ The following tests and seams anchor this document:
   - trace events resolve through the registry;
   - only enabled probes record entries.
 - `src/flow/appLogic/playbackMode.test.ts`
-  - spectrum open/exit uses dedicated backend scope effects;
+  - spectrum open/exit uses dedicated backend scope commands;
   - spectrum back is scope exit, not playlist stop.
 - `src/flow/appLogic/spectrumOpenTransaction.test.ts`
   - spectrum open commits only after entering a dedicated playback scope;
@@ -3007,7 +3573,8 @@ The following tests and seams anchor this document:
 - `src-tauri/src/domain/playlist_playback/playable_index.test.rs`
   - reads prepared source without rebuilding;
   - stale consumption cannot remove newer prepared source;
-  - ready refresh fills missing source and skips full pool;
+  - slot-vacancy refresh fills missing source and skips a full three-source pool;
+  - cache restore gives cargo fresh linear credential identity;
   - consumption schedules replacement without broad invalidation.
 - `src-tauri/src/domain/playlist_playback/service.test.rs`
   - startup and queue repair use explicit anchors;
@@ -3035,7 +3602,7 @@ Future design documents should follow the same split:
 ```text
 lifecycle timeline first
 evidence transfer second
-effects third
+command outputs third
 render timing called out explicitly
 closed paths listed as behavior, not preferences
 ```

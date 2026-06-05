@@ -1588,7 +1588,7 @@ describe("ListConfig title view model", () => {
           sourceUrl: "https://www.youtube.com/watch?v=nnvjKf_mRYM&t=3238s",
           displayText:
             "[Official] TUNIC (Original Soundtrack) - Full Album / Lifeformed × Janice Kwan",
-          status: "preparing",
+          status: "task_active",
           error: null,
           taskId: "task-1",
         },
@@ -1664,7 +1664,7 @@ describe("ListConfig title view model", () => {
         reasons: ["checking-url", "enqueueing-task"],
       },
     );
-    const unresolvedPreparingSignal = resolveListConfigCandidateParsingSignal([
+    const unresolvedTaskActiveSignal = resolveListConfigCandidateParsingSignal([
       ...candidateItems,
       {
         id: "candidate:checking",
@@ -1685,19 +1685,19 @@ describe("ListConfig title view model", () => {
         taskId: null,
       },
       {
-        id: "candidate:preparing",
-        rawText: "https://example.com/preparing",
-        sourceUrl: "https://example.com/preparing",
-        displayText: "https://example.com/preparing",
-        status: "preparing",
+        id: "candidate:task-active",
+        rawText: "https://example.com/task-active",
+        sourceUrl: "https://example.com/task-active",
+        displayText: "https://example.com/task-active",
+        status: "task_active",
         error: null,
-        taskId: "task-preparing",
+        taskId: "task-active",
       },
     ]);
 
-    assert.equal(unresolvedPreparingSignal.count, 4);
-    assert.equal(unresolvedPreparingSignal.candidateIds.includes("candidate:preparing"), true);
-    assert.deepEqual(unresolvedPreparingSignal.reasons, ["enqueueing-task", "checking-url"]);
+    assert.equal(unresolvedTaskActiveSignal.count, 4);
+    assert.equal(unresolvedTaskActiveSignal.candidateIds.includes("candidate:task-active"), true);
+    assert.deepEqual(unresolvedTaskActiveSignal.reasons, ["enqueueing-task", "checking-url"]);
     assert.equal(hasListConfigParsingCandidateItems(candidateItems), true);
 
     const viewModel = resolveListConfigViewModel({
@@ -1738,7 +1738,7 @@ describe("ListConfig title view model", () => {
     assert.equal(viewModel.excludeToolLabelItems[0]?.text, "Blocked Alias");
   });
 
-  test("releases the back parsing matrix once preparing candidates have title evidence", () => {
+  test("releases the back parsing matrix once active task candidates have title evidence", () => {
     const viewModel = resolveListConfigViewModel({
       activeLayoutId: "playlist-title:Focus Session",
       draft: draftWithGroup,
@@ -1752,13 +1752,13 @@ describe("ListConfig title view model", () => {
       collectionGroupMemberships: [],
       candidateItems: [
         {
-          id: "candidate:preparing",
-          rawText: "https://example.com/preparing",
-          sourceUrl: "https://example.com/preparing",
-          displayText: "Preparing Collection",
-          status: "preparing",
+          id: "candidate:task-active",
+          rawText: "https://example.com/task-active",
+          sourceUrl: "https://example.com/task-active",
+          displayText: "Active Task Collection",
+          status: "task_active",
           error: null,
-          taskId: "task-preparing",
+          taskId: "task-active",
         },
       ],
       previousEmptyState: null,
@@ -1782,13 +1782,13 @@ describe("ListConfig title view model", () => {
       collectionGroupMemberships: [],
       candidateItems: [
         {
-          id: "candidate:preparing",
+          id: "candidate:task-active",
           rawText: "https://www.youtube.com/watch?v=nnvjKf_mRYM&t=3238s",
           sourceUrl: "https://www.youtube.com/watch?v=nnvjKf_mRYM",
           displayText: "https://www.youtube.com/watch?v=nnvjKf_mRYM",
-          status: "preparing",
+          status: "task_active",
           error: null,
-          taskId: "task-preparing",
+          taskId: "task-active",
         },
       ],
       previousEmptyState: null,

@@ -1,40 +1,42 @@
-import type { DownloadRootTitleEvidence } from "@/src/cmd";
+import type { PastedDownloadUrlResolution } from "@/src/cmd";
 import {
   createCandidateEffectQueue,
   type CandidateEffectQueue,
   type CandidateEffectQueueRuntime,
 } from "./candidateEffectQueue";
 
-export interface TitleProbeDemand {
+export interface FastUrlResolveDemand {
   id: string;
+  sink: FastUrlResolveQueueSink;
   url: string;
-  sink: TitleProbeQueueSink;
 }
 
-export interface TitleProbeQueueSink {
-  completed(input: { evidence: DownloadRootTitleEvidence; id: string }): void;
+export interface FastUrlResolveQueueSink {
+  completed(input: { id: string; resolution: PastedDownloadUrlResolution }): void;
   failed(input: { error: string; id: string }): void;
 }
 
-export interface TitleProbeQueueRuntime {
+export interface FastUrlResolveQueueRuntime {
   concurrency(): number;
-  probe(url: string): Promise<DownloadRootTitleEvidence>;
+  resolve(url: string): Promise<PastedDownloadUrlResolution>;
   started?(input: { activeCount: number; id: string; queuedCount: number; url: string }): void;
   toErrorMessage(error: unknown): string;
 }
 
-export interface TitleProbeQueue {
+export interface FastUrlResolveQueue {
   cancel(id: string): void;
-  enqueue(demand: TitleProbeDemand): void;
+  enqueue(demand: FastUrlResolveDemand): void;
   reset(): void;
 }
 
-export function resolveDefaultTitleProbeConcurrency() {
-  return 4;
+export function resolveDefaultFastUrlResolveConcurrency() {
+  return 8;
 }
 
-export function createTitleProbeQueue(runtime: TitleProbeQueueRuntime): TitleProbeQueue {
-  const queue: CandidateEffectQueue<DownloadRootTitleEvidence> = createCandidateEffectQueue(
+export function createFastUrlResolveQueue(
+  runtime: FastUrlResolveQueueRuntime,
+): FastUrlResolveQueue {
+  const queue: CandidateEffectQueue<PastedDownloadUrlResolution> = createCandidateEffectQueue(
     toCandidateEffectRuntime(runtime),
   );
 
@@ -48,7 +50,7 @@ export function createTitleProbeQueue(runtime: TitleProbeQueueRuntime): TitlePro
           completed: ({ id, output }) =>
             demand.sink.completed({
               id,
-              evidence: output,
+              resolution: output,
             }),
           failed: demand.sink.failed,
         },
@@ -58,11 +60,11 @@ export function createTitleProbeQueue(runtime: TitleProbeQueueRuntime): TitlePro
 }
 
 function toCandidateEffectRuntime(
-  runtime: TitleProbeQueueRuntime,
-): CandidateEffectQueueRuntime<DownloadRootTitleEvidence> {
+  runtime: FastUrlResolveQueueRuntime,
+): CandidateEffectQueueRuntime<PastedDownloadUrlResolution> {
   return {
     concurrency: runtime.concurrency,
-    run: runtime.probe,
+    run: runtime.resolve,
     started: runtime.started
       ? ({ activeCount, id, input, queuedCount }) =>
           runtime.started?.({
