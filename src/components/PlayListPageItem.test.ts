@@ -4,6 +4,7 @@ import { collectionTitleTextRetainHoverClassName } from "./collectionTitle";
 import {
   resolvePlayListPageItemCommittedText,
   resolvePlayListPageItemRequestedTitleHoverVisual,
+  resolvePlayListPageItemTitleHoverLockRequestedVisual,
   resolvePlayListPageItemTitleHoverLock,
   resolvePlayListPageItemTitleFrameClassName,
   resolvePlayListPageItemTitleRetainKey,
@@ -228,11 +229,19 @@ describe("PlayListPageItem", () => {
       }),
       "none",
     );
+    assert.equal(
+      resolvePlayListPageItemTitleHoverLockRequestedVisual({
+        titleHoverVisual: "retain",
+      }),
+      "retain",
+    );
     assert.deepEqual(
       resolvePlayListPageItemTitleHoverLock({
         previousLocked: false,
         retainedVisual: "none",
-        requestedVisual: "retain",
+        requestedVisual: resolvePlayListPageItemTitleHoverLockRequestedVisual({
+          titleHoverVisual: "retain",
+        }),
         torphStage: "animate",
       }),
       {

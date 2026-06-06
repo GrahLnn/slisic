@@ -51,6 +51,12 @@ export function resolvePlayListPageItemRequestedTitleHoverVisual(
   return viewModel.titleHoverRetainLease === "stage-only" ? "none" : viewModel.titleHoverVisual;
 }
 
+export function resolvePlayListPageItemTitleHoverLockRequestedVisual(
+  viewModel: Pick<PlayListPageItemViewModel, "titleHoverVisual">,
+) {
+  return viewModel.titleHoverVisual;
+}
+
 export function resolvePlayListPageItemTitleHoverLock(args: {
   previousLocked: boolean;
   retainedVisual: "hold" | "none" | "retain";
@@ -140,17 +146,20 @@ export function PlayListPageItem({
     torphStage,
     textChanged,
   });
-  const requestedTitleHoverVisual = resolvePlayListPageItemRequestedTitleHoverVisual(viewModel);
+  const retainedTitleHoverRequestVisual =
+    resolvePlayListPageItemRequestedTitleHoverVisual(viewModel);
+  const requestedTitleHoverVisual =
+    resolvePlayListPageItemTitleHoverLockRequestedVisual(viewModel);
   const titleHoverLockedBeforeRender = titleHoverLockedUntilIdleRef.current;
   const retainedTitleHoverVisual = useCollectionTitleRetainedHoverVisual(
-    requestedTitleHoverVisual,
+    retainedTitleHoverRequestVisual,
     resolvePlayListPageItemTitleRetainKey(viewModel),
     resolvePlayListPageItemTitleRetainRequestKey(viewModel),
   );
   const titleHoverLock = resolvePlayListPageItemTitleHoverLock({
     previousLocked: titleHoverLockedBeforeRender,
     retainedVisual: retainedTitleHoverVisual,
-    requestedVisual: viewModel.titleHoverVisual,
+    requestedVisual: requestedTitleHoverVisual,
     torphStage,
   });
   titleHoverLockedUntilIdleRef.current = titleHoverLock.locked;
@@ -173,6 +182,7 @@ export function PlayListPageItem({
     isHiddenInPlay: viewModel.isHiddenInPlay,
     shouldStartHiddenInPlay: viewModel.shouldStartHiddenInPlay,
     titleHoverVisual,
+    retainedTitleHoverRequestVisual,
     requestedTitleHoverVisual,
     retainedTitleHoverVisual,
     torphStage,

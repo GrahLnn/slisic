@@ -8,11 +8,7 @@ import { useLayoutEffect, useRef, type PropsWithChildren } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useTheme } from "next-themes";
 import { Toaster } from "sileo";
-import {
-  installTrace,
-  recordTrace,
-  type TraceProbe,
-} from "./debug/trace";
+import { installTrace, recordTrace, type TraceProbe } from "./debug/trace";
 import { PlayListPage } from "./components/PlayListPage";
 import { ListConfig } from "./components/ListConfig";
 import { SpectrumPage } from "./components/spectrum/SpectrumPage";
@@ -29,6 +25,7 @@ import { PageViewportScrollElementProvider } from "./components/pageViewportScro
 
 const enabledTraceProbes = [
   "config-title-check-flow",
+  "title-handoff-flow",
 ] satisfies TraceProbe[];
 
 installTrace({

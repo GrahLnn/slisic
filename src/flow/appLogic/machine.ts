@@ -1546,6 +1546,17 @@ export const machine = src.createMachine({
               draft: context.draft,
               draftBaseline: context.draftBaseline,
             });
+            recordTrace("app-title-handoff-back-projected", {
+              activeLayoutId: context.activeLayoutId,
+              backPlanHandoffLayoutId: backPlan.titleToneHandoff?.layoutId ?? null,
+              backPlanHandoffTone: backPlan.titleToneHandoff?.tone ?? null,
+              backPlanReturnLayoutId: backPlan.returnLayoutId,
+              backPlanSourceLayoutId: backPlan.sourceLayoutId,
+              draftBaselineName: context.draftBaseline?.name ?? null,
+              draftName: context.draft?.name ?? null,
+              hasDraftChanges: backPlan.hasDraftChanges,
+              pendingPreviewName: context.pendingPlaylistPreview?.playlist.name ?? null,
+            });
 
             return resetContextWith(
               {
@@ -1561,6 +1572,9 @@ export const machine = src.createMachine({
                   playingPlaylistName: null,
                   nowPlayingTrackName: null,
                 },
+                chart: {
+                  activeLayoutId: backPlan.sourceLayoutId,
+                },
                 lease: {
                   titleToneHandoff: backPlan.titleToneHandoff,
                 },
@@ -1568,10 +1582,10 @@ export const machine = src.createMachine({
               resetLifecycle({
                 reason: "close config chart and return to app shape",
                 chart: resetLifecycleAction("closed", "playlist-config"),
-                lease: backPlan.titleToneHandoff
-                  ? resetLifecycleAction("opened", backPlan.titleToneHandoff.layoutId)
-                  : resetLifecycleAction("closed", null),
                 transaction: resetLifecycleAction("closed", "playlist-draft"),
+                lease: backPlan.sourceLayoutId
+                  ? resetLifecycleAction("opened", backPlan.sourceLayoutId)
+                  : resetLifecycleAction("closed", null),
               }),
             );
           }),

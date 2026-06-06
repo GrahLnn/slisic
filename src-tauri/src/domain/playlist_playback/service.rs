@@ -62,6 +62,8 @@ const PLAYLIST_PLAYBACK_RANDOM_WINDOW_LIMIT: usize = 96;
 const PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS: u64 = 250;
 #[cfg(not(test))]
 const PLAYLIST_PLAYBACK_LIKED_CANDIDATE_LIMIT: usize = 128;
+#[cfg(not(test))]
+const PLAYLIST_PLAYBACK_LOG_TARGET: &str = "playlist_playback";
 
 #[cfg(not(test))]
 type SharedPlaylistPlaybackRecentHistory = Arc<Mutex<PlaylistPlaybackRecentHistory>>;
@@ -1877,15 +1879,13 @@ fn log_playlist_playback_next_track_selection(
         .map(|trace| trace.top_candidate_basins.as_str())
         .unwrap_or("none");
 
-    println!(
-        "[playlist_playback] next track selected source={source} requested_source={requested_source} mode={} model_generation={model_generation} probability={probability:.6} uniform_probability={uniform_probability:.6} similarity={similarity} best_similarity={best_similarity} local_rank_fraction={local_rank_fraction} draw={draw} candidates={candidate_count} anchor_embedded={anchor_embedded} embedded_candidates={embedded_candidate_count} valid_similarities={valid_similarity_count} selected_basin=\"{selected_basin}\" candidate_basin_top=\"{candidate_basin_top}\" reason={reason} playlist=\"{}\" music=\"{}\" url=\"{}\" range={}..{} file=\"{}\"",
+    log::info!(
+        target: PLAYLIST_PLAYBACK_LOG_TARGET,
+        "next track selected source={source} requested_source={requested_source} mode={} model_generation={model_generation} probability={probability:.6} uniform_probability={uniform_probability:.6} similarity={similarity} best_similarity={best_similarity} local_rank_fraction={local_rank_fraction} draw={draw} candidates={candidate_count} anchor_embedded={anchor_embedded} embedded_candidates={embedded_candidate_count} valid_similarities={valid_similarity_count} selected_basin=\"{selected_basin}\" candidate_basin_top=\"{candidate_basin_top}\" reason={reason} playlist=\"{}\" title=\"{}\" loudness={:.3}",
         mode.as_str(),
         escape_log_value(&next_track.playlist_name),
         escape_log_value(&next_track.music_name),
-        escape_log_value(&next_track.music_url),
-        next_track.start_ms,
-        next_track.end_ms,
-        escape_log_value(&next_track.file_path.display().to_string()),
+        next_track.loudness,
     );
 }
 

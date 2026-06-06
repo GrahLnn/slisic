@@ -149,6 +149,27 @@ pub async fn list_playlists() -> Result<Vec<PlayListListView>> {
     }
 }
 
+pub async fn claim_generated_playlist_name(seed_names: &[String]) -> Result<String> {
+    let mut index = 1;
+
+    loop {
+        let candidate = format!("PlayList {index}");
+        if seed_names.iter().any(|name| name == &candidate) {
+            index += 1;
+            continue;
+        }
+
+        if find_unique_record_id_by_string_field::<PlayList>("name", &candidate)
+            .await?
+            .is_none()
+        {
+            return Ok(candidate);
+        }
+
+        index += 1;
+    }
+}
+
 pub async fn list_config_library() -> Result<ConfigLibraryView> {
     ensure_collection_graph_schema().await?;
 
@@ -848,9 +869,10 @@ pub async fn upsert_playlist(playlist: &PlayList, previous_name: Option<&str>) -
         Some(name) => find_unique_record_id_by_string_field::<PlayList>("name", name).await?,
         None => None,
     };
-    let record = existing_record
-        .clone()
-        .unwrap_or_else(|| playlist_record_id(&playlist.name));
+    let record = match existing_record.clone() {
+        Some(record) => record,
+        None => resolve_playlist_create_record_id(&playlist.name).await?,
+    };
     let write = storage
         .foreign()
         .collections(foreign_ids.collections)?
@@ -879,9 +901,10 @@ pub async fn upsert_playlist_surface(
     };
     let playback_selection_changed =
         playlist_playback_foreign_refs_changed(previous_playback_row.as_ref(), &foreign_ids);
-    let record = existing_record
-        .clone()
-        .unwrap_or_else(|| playlist_record_id(&playlist.name));
+    let record = match existing_record.clone() {
+        Some(record) => record,
+        None => resolve_playlist_create_record_id(&playlist.name).await?,
+    };
     let write = storage
         .foreign()
         .collections(foreign_ids.collections)?
@@ -904,6 +927,39 @@ pub async fn upsert_playlist_surface(
         playlist,
         playback_selection_changed,
     })
+}
+
+async fn resolve_playlist_create_record_id(name: &str) -> Result<RecordId> {
+    if find_unique_record_id_by_string_field::<PlayList>("name", name)
+        .await?
+        .is_some()
+    {
+        bail!("playlist `{name}` already exists");
+    }
+
+    let preferred = playlist_record_id(name);
+    if !playlist_record_exists(&preferred).await? {
+        return Ok(preferred);
+    }
+
+    let mut slot = 2;
+    loop {
+        let candidate = playlist_create_record_id_for_slot(name, slot);
+        if !playlist_record_exists(&candidate).await? {
+            return Ok(candidate);
+        }
+        slot += 1;
+    }
+}
+
+async fn playlist_record_exists(record: &RecordId) -> Result<bool> {
+    match Repo::<PlayList>::exists_record(record.clone()).await {
+        Ok(exists) => Ok(exists),
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) | DBError::NotFound => Ok(false),
+            other => Err(other.into()),
+        },
+    }
 }
 
 fn playlist_surface_storage_row_from_request(playlist: &PlayListWriteRequest) -> PlayList {
@@ -3159,6 +3215,13 @@ fn group_record_id(url: &str) -> RecordId {
 
 fn playlist_record_id(name: &str) -> RecordId {
     RecordId::new(PlayList::table_name(), stable_record_key(name))
+}
+
+fn playlist_create_record_id_for_slot(name: &str, slot: usize) -> RecordId {
+    RecordId::new(
+        PlayList::table_name(),
+        stable_record_key(&format!("{name}#{slot}")),
+    )
 }
 
 fn exclude_record_id(music: &Music) -> Id {

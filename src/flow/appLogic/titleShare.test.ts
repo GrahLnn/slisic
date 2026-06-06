@@ -435,6 +435,7 @@ describe("titleShare", () => {
     });
 
     assert.equal(plan.hasDraftChanges, true);
+    assert.equal(plan.sourceLayoutId, "playlist-title:Quiet Morning");
     assert.equal(plan.returnLayoutId, "playlist-title:Quiet Morning");
     assert.deepEqual(plan.titleToneHandoff, {
       layoutId: "playlist-title:Quiet Morning",
@@ -464,6 +465,7 @@ describe("titleShare", () => {
     });
 
     assert.equal(plan.hasDraftChanges, false);
+    assert.equal(plan.sourceLayoutId, "playlist-title:Quiet Morning");
     assert.equal(plan.returnLayoutId, "playlist-title:Quiet Morning");
     assert.deepEqual(plan.titleToneHandoff, {
       layoutId: "playlist-title:Quiet Morning",

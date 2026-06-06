@@ -352,6 +352,38 @@ describe("appLogic machine", () => {
     });
   });
 
+  test("returns committed create draft titles with a config-to-list source lease", async () => {
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () => createBootstrapResult([])),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(sig.mainx.opencreate);
+    actor.send(payloads["draft.name.changed"].load("PlayList 1"));
+    actor.send(sig.mainx.back);
+
+    assert.equal(actor.getSnapshot().value, "ready");
+    assert.equal(actor.getSnapshot().context.activeLayoutId, "playlist-title:PlayList 1");
+    assert.deepEqual(actor.getSnapshot().context.titleToneHandoff, {
+      layoutId: "playlist-title:PlayList 1",
+      tone: "solid",
+    });
+    assert.deepEqual(actor.getSnapshot().context.lastContextResetLifecycle, {
+      owner: "appLogic",
+      reason: "close config chart and return to app shape",
+      chart: { kind: "closed", target: "playlist-config" },
+      lease: { kind: "opened", target: "playlist-title:PlayList 1" },
+      transaction: { kind: "closed", target: "playlist-draft" },
+    });
+  });
+
   test("automatically retries loading after entering the error state", async () => {
     let loadAttempt = 0;
     const states: string[] = [];

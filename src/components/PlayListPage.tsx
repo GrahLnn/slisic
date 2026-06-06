@@ -156,6 +156,7 @@ export function PlayListPage({
     playingPlaylistName,
     titleToneHandoff,
     pressedLayoutId: pressedTitleLayoutId,
+    ...(pressedTitleLayoutId !== null ? { titleSourceEnabled: true } : {}),
     playbackSurface: playbackSurface.playbackSurfaceSnapshot,
     titleReturnSurface: titleReturnSurface.titleReturnSurfaceSnapshot,
   };
@@ -169,6 +170,26 @@ export function PlayListPage({
     ? viewModel.itemViewModels.find((item) => item.playlistName === viewModel.playbackTargetKey)
     : null;
   const stablePlaylistNames = new Set(renderData.playlists.map((playlist) => playlist.name));
+  const titleHandoffTargetItem =
+    viewModel.titleHandoffPlan.targetLayoutId || viewModel.titleHandoffPlan.sourceLayoutId
+      ? viewModel.itemViewModels.find(
+          (item) =>
+            item.layoutId === viewModel.titleHandoffPlan.targetLayoutId ||
+            item.sourceLayoutId === viewModel.titleHandoffPlan.targetLayoutId ||
+            item.layoutId === viewModel.titleHandoffPlan.sourceLayoutId ||
+            item.sourceLayoutId === viewModel.titleHandoffPlan.sourceLayoutId,
+        )
+      : null;
+  const createTitleHandoffTracePayload = (item: typeof viewModel.createItemViewModel) => ({
+    handoffTone: item.handoffTone,
+    layoutId: item.layoutId ?? null,
+    playlistName: item.playlistName,
+    sourceLayoutId: item.sourceLayoutId ?? null,
+    suppressFade: item.suppressFade,
+    text: item.text,
+    titleHoverRetainLease: item.titleHoverRetainLease,
+    titleHoverVisual: item.titleHoverVisual,
+  });
   recordTrace("playlist-page-projection", {
     pageState: renderData.pageState,
     isFrozen: pageRenderFreeze.isFrozen,
@@ -198,6 +219,36 @@ export function PlayListPage({
       playlistName: item.playlistName,
       text: item.text,
     })),
+  });
+  recordTrace("title-handoff-ready-projection", {
+    activeLayoutId: renderData.activeLayoutId,
+    createItem: createTitleHandoffTracePayload(viewModel.createItemViewModel),
+    isFrozen: pageRenderFreeze.isFrozen,
+    pageState: renderData.pageState,
+    pendingPlaylistPreviewName: renderData.pendingPlaylistPreview?.playlist.name ?? null,
+    pressedLayoutId: renderData.pressedLayoutId,
+    targetItem: titleHandoffTargetItem
+      ? createTitleHandoffTracePayload(titleHandoffTargetItem)
+      : null,
+    titleHandoffPlan: {
+      arrowKind: viewModel.titleHandoffPlan.arrow?.kind ?? null,
+      arrowSourceKind: viewModel.titleHandoffPlan.arrow?.source?.kind ?? null,
+      arrowSourceLayoutId: viewModel.titleHandoffPlan.arrow?.source?.layoutId ?? null,
+      arrowTargetKind: viewModel.titleHandoffPlan.arrow?.target?.kind ?? null,
+      arrowTargetLayoutId: viewModel.titleHandoffPlan.arrow?.target?.layoutId ?? null,
+      displayLockKind: viewModel.titleHandoffPlan.displayLock?.kind ?? null,
+      displayLockPlaylistName: viewModel.titleHandoffPlan.displayLock?.playlistName ?? null,
+      sourceLayoutId: viewModel.titleHandoffPlan.sourceLayoutId,
+      targetLayoutId: viewModel.titleHandoffPlan.targetLayoutId,
+      targetRetainLease: viewModel.titleHandoffPlan.targetRetainLease,
+    },
+    titleToneHandoffLayoutId: renderData.titleToneHandoff?.layoutId ?? null,
+    titleToneHandoffTone: renderData.titleToneHandoff?.tone ?? null,
+    transition: {
+      committedLayoutId: viewModel.transition.committedLayoutId,
+      outgoingSourceLayoutId: viewModel.transition.outgoingSourceLayoutId,
+      returnTargetLayoutId: viewModel.transition.returnTargetLayoutId,
+    },
   });
 
   return (
@@ -310,6 +361,7 @@ export function PlayListPage({
                     pageRenderFreeze.freeze({
                       ...renderData,
                       pressedLayoutId: sourceLayoutId,
+                      titleSourceEnabled: true,
                     });
                   }
 

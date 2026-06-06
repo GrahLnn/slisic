@@ -38,6 +38,14 @@ pub async fn list_playlists() -> Result<Vec<PlayListListView>, String> {
 
 #[tauri::command]
 #[specta::specta]
+pub async fn claim_generated_playlist_name(seed_names: Vec<String>) -> Result<String, String> {
+    super::repo::claim_generated_playlist_name(&seed_names)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn list_config_library() -> Result<ConfigLibraryView, String> {
     super::repo::list_config_library()
         .await

@@ -361,6 +361,7 @@ export function resolveNextGeneratedPlaylistName(playlists: readonly PlayListLis
 export function resolveDraftCommitTitle(args: {
   draft: ConfigDraft;
   draftBaseline: ConfigDraft | null;
+  generatedNameClaim?: string | null;
   playlists: readonly PlayListListView[];
 }): DraftCommitTitleResolution {
   const currentName = normalizeDraftName(args.draft.name);
@@ -383,7 +384,8 @@ export function resolveDraftCommitTitle(args: {
 
   return {
     kind: "generate",
-    name: resolveNextGeneratedPlaylistName(args.playlists),
+    name: normalizeDraftName(args.generatedNameClaim ?? "") ||
+      resolveNextGeneratedPlaylistName(args.playlists),
   };
 }
 
@@ -445,8 +447,9 @@ export function createCollectionTitleHandoff(
  *   Project an edited config draft into a single playlist commit transaction.
  *
  * Invariants:
- *   - The generated playlist title is derived from the caller-provided visible
- *     playlist surfaces, so pending previews reserve their displayed names.
+ *   - The generated playlist title may consume a repository-owned name claim.
+ *     Visible playlist surfaces are only a local seed, not proof of repository
+ *     name availability.
  *   - The returned layout id, committed draft, and persistence request share
  *     the same normalized playlist identity.
  *   - New playlist records keep `created_at` pending so persistence remains the
@@ -455,6 +458,7 @@ export function createCollectionTitleHandoff(
 export function resolvePlaylistDraftCommit(args: {
   draft: ConfigDraft;
   draftBaseline: ConfigDraft | null;
+  generatedNameClaim?: string | null;
   playlists: readonly PlayListListView[];
 }): PlaylistDraftCommit {
   const titleResolution = resolveDraftCommitTitle(args);

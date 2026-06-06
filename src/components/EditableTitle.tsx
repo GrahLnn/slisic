@@ -10,6 +10,7 @@ import {
   type ComponentProps,
   type CSSProperties,
 } from "react";
+import { flushSync } from "react-dom";
 import { motion, useAnimationControls } from "motion/react";
 import type { CollectionTitleTone } from "@/src/flow/appLogic/core";
 import {
@@ -33,9 +34,12 @@ export const editableTitleNewSymbolOpacityClassName = cn(
   "group-hover/editable-title:opacity-80",
 );
 
+export type EditableTitleChangeSource = "user" | "programmatic";
+export type EditableTitleVisualCommitMode = "static" | "auto-write";
+
 type EditableTitleProps = {
   value: string;
-  onChange: (value: string) => void;
+  onChange: (value: string, source?: EditableTitleChangeSource) => void;
   placeholder?: string;
   autoFocus?: boolean;
   interactionDisabled?: boolean;
@@ -365,9 +369,21 @@ export interface EditableTitleHandle {
   commitResolvedValue(args: {
     value: string;
     animateTyping: boolean;
+    changeSource?: EditableTitleChangeSource;
     waitForVisualCommit?: boolean;
   }): Promise<void>;
   blur(): Promise<void>;
+}
+
+export function resolveEditableTitleVisualCommitMode(args: {
+  animateTyping: boolean;
+  waitForVisualCommit: boolean;
+}): EditableTitleVisualCommitMode {
+  if (!args.animateTyping) {
+    return "static";
+  }
+
+  return "auto-write";
 }
 
 /**
@@ -399,20 +415,23 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
     }: EditableTitleProps,
     ref,
   ) {
+    const [visualValueOverride, setVisualValueOverride] = useState<string | null>(null);
+    const visibleValue = visualValueOverride ?? value;
     const usesMetricAnchor = resolveEditableTitleUsesMetricAnchor({
       customCursorEnabled,
       isNewTitle,
-      value,
+      value: visibleValue,
     });
     const displayText = resolveEditableTitleDisplayText({
       isNewTitle,
       placeholder,
       usesMetricAnchor,
-      value,
+      value: visibleValue,
     });
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const titleRootRef = useRef<HTMLDivElement>(null);
     const autoWriteRunRef = useRef(0);
+    const programmaticBlurSourceRef = useRef<EditableTitleChangeSource | null>(null);
     const pointerFocusPendingRef = useRef(false);
     const cursorOpacityControls = useAnimationControls();
     const [cursorIndex, setCursorIndex] = useState(value.length);
@@ -426,7 +445,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
     const [cursorBlinkEpoch, setCursorBlinkEpoch] = useState(0);
     const [isFocused, setIsFocused] = useState(false);
     const [isAutoWriting, setIsAutoWriting] = useState(false);
-    const targetTone: CollectionTitleTone = value.length === 0 ? "muted" : "solid";
+    const targetTone: CollectionTitleTone = visibleValue.length === 0 ? "muted" : "solid";
     const targetColor = useCollectionTitleColor(targetTone);
     const customCursorColor = useCollectionTitleColor(resolveEditableTitleCustomCursorTone());
     const handoffColor = useCollectionTitleColor(handoffTone ?? targetTone);
@@ -448,7 +467,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
       inputReadOnly,
       isFocused,
       isNewTitle,
-      value,
+      value: visibleValue,
     });
     const cursorShouldBlink = resolveEditableTitleCursorShouldBlink({
       cursorVisible,
@@ -580,7 +599,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
       }
 
       syncCursorPoint();
-    }, [customCursorEnabled, cursorIndex, isNewTitle, syncCursorPoint, value]);
+    }, [customCursorEnabled, cursorIndex, isNewTitle, syncCursorPoint, visibleValue]);
 
     useLayoutEffect(() => {
       if (!customCursorEnabled || isNewTitle) {
@@ -618,56 +637,84 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
             waitForVisualCommit,
           });
 
+          const commitValue = (nextValue: string) => {
+            onChange(nextValue, args.changeSource ?? "programmatic");
+          };
           if (!node) {
-            onChange(args.value);
+            commitValue(args.value);
             recordEditableTitleTrace(traceId, "commit-resolved-value-no-node", {
               nextValue: args.value,
             });
             return;
           }
 
-          if (!waitForVisualCommit) {
-            onChange(args.value);
+          const blurProgrammatically = async () => {
+            programmaticBlurSourceRef.current = args.changeSource ?? "programmatic";
             node.blur();
-            recordEditableTitleTrace(traceId, "commit-resolved-value-skip-wait", {
-              activeElementIsInput: node.ownerDocument.activeElement === node,
-              nextValue: args.value,
-            });
-            return;
-          }
+            await waitForNextFrame();
+            programmaticBlurSourceRef.current = null;
+          };
 
-          if (!args.animateTyping) {
-            onChange(args.value);
+          const visualCommitMode = resolveEditableTitleVisualCommitMode({
+            animateTyping: args.animateTyping,
+            waitForVisualCommit,
+          });
+
+          const commitByAutoWriting = async () => {
+            setIsAutoWriting(true);
+            setVisualValueOverride("");
             node.focus();
+            node.setSelectionRange(0, 0);
+            commitValue(args.value);
             await waitForNextFrame();
-            node.blur();
-            await waitForNextFrame();
-            recordEditableTitleTrace(traceId, "commit-resolved-value-static-done", {
-              nextValue: args.value,
-            });
-            return;
-          }
 
-          setIsAutoWriting(true);
-          node.focus();
-          node.setSelectionRange(0, 0);
-          onChange("");
-          await waitForNextFrame();
+            for (let index = 0; index < args.value.length; index += 1) {
+              if (autoWriteRunRef.current !== runId) {
+                break;
+              }
 
-          for (let index = 0; index < args.value.length; index += 1) {
-            if (autoWriteRunRef.current !== runId) {
-              break;
+              setVisualValueOverride(args.value.slice(0, index + 1));
+              await wait(22);
             }
 
-            onChange(args.value.slice(0, index + 1));
-            await wait(22);
+            await blurProgrammatically();
+            if (autoWriteRunRef.current === runId) {
+              recordEditableTitleTrace(traceId, "autowrite-layout-host-restore-start", {
+                nextValue: args.value,
+                waitForVisualCommit,
+              });
+              flushSync(() => {
+                setVisualValueOverride(null);
+                setIsAutoWriting(false);
+              });
+              if (waitForVisualCommit) {
+                await waitForNextFrame();
+              }
+              recordEditableTitleTrace(traceId, "autowrite-layout-host-restore-done", {
+                nextValue: args.value,
+                waitForVisualCommit,
+              });
+            }
+          };
+
+          if (visualCommitMode === "static") {
+            commitValue(args.value);
+            node.focus();
+            if (waitForVisualCommit) {
+              await waitForNextFrame();
+            }
+            await blurProgrammatically();
+            if (waitForVisualCommit) {
+              await waitForNextFrame();
+            }
+            recordEditableTitleTrace(traceId, "commit-resolved-value-static-done", {
+              nextValue: args.value,
+              waitForVisualCommit,
+            });
+            return;
           }
 
-          node.blur();
-          await waitForNextFrame();
-          if (autoWriteRunRef.current === runId) {
-            setIsAutoWriting(false);
-          }
+          await commitByAutoWriting();
           recordEditableTitleTrace(traceId, "commit-resolved-value-autowrite-done", {
             completed: autoWriteRunRef.current === runId,
             nextValue: args.value,
@@ -801,7 +848,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
             spellCheck={false}
             readOnly={inputReadOnly}
             tabIndex={inputReadOnly ? -1 : undefined}
-            value={value}
+            value={visibleValue}
             onChange={(event) => {
               resetCursorBlinkCycle();
               commitInputCursor(event.target);
@@ -809,16 +856,18 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
                 nextValue: event.target.value,
                 previousValue: value,
               });
-              onChange(event.target.value);
+              onChange(event.target.value, "user");
             }}
             onBlur={(event) => {
               const nextValue = event.target.value.trim();
+              const source = programmaticBlurSourceRef.current ?? "user";
               recordEditableTitleTrace(traceId, "input-blur", {
                 nextValue,
                 previousValue: value,
                 rawValue: event.target.value,
+                source,
               });
-              onChange(nextValue);
+              onChange(nextValue, source);
             }}
             onFocus={(event) => {
               setIsFocused(true);

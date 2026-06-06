@@ -26,6 +26,7 @@ export type TraceProbe =
   | "playlist-page"
   | "playlist-playback"
   | "spectrum-flow"
+  | "title-handoff-flow"
   | "trace-lifecycle";
 
 type TraceApi = {
@@ -75,8 +76,10 @@ export const traceRegistry = [
   { eventPrefix: "app-playback-mode-effect-", probe: "playback-mode-effect" },
   { eventPrefix: "app-draft-name-", probe: "config-title-check-flow" },
   { eventPrefix: "app-playlist-upsert-", probe: "config-title-check-flow" },
+  { eventPrefix: "app-title-handoff-", probe: "title-handoff-flow" },
   { eventPrefix: "config-title-", probe: "config-title-check-flow" },
   { eventPrefix: "editable-title-", probe: "config-title-check-flow" },
+  { eventPrefix: "title-handoff-", probe: "title-handoff-flow" },
   { eventPrefix: "playlist-page-", probe: "playlist-page" },
   { event: "playlist-open-spectrum-click", probe: "playlist-page" },
   { eventPrefix: "list-config-check-", probe: "list-config-check" },

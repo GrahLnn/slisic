@@ -29,6 +29,7 @@ import {
   resolveEditableTitleCursorPointFromPretextPrefixLayout,
   resolveEditableTitleCustomCursorBarStyle,
   resolveEditableTitleCustomCursorBoxStyle,
+  resolveEditableTitleVisualCommitMode,
 } from "./EditableTitle";
 
 describe("resolveEditableTitleDisplayValue", () => {
@@ -88,6 +89,30 @@ describe("resolveEditableTitleDisplayValue", () => {
 });
 
 describe("EditableTitle input state", () => {
+  test("always awaits typewriter commits because they are the visible title transition", () => {
+    assert.equal(
+      resolveEditableTitleVisualCommitMode({
+        animateTyping: true,
+        waitForVisualCommit: false,
+      }),
+      "auto-write",
+    );
+    assert.equal(
+      resolveEditableTitleVisualCommitMode({
+        animateTyping: true,
+        waitForVisualCommit: true,
+      }),
+      "auto-write",
+    );
+    assert.equal(
+      resolveEditableTitleVisualCommitMode({
+        animateTyping: false,
+        waitForVisualCommit: false,
+      }),
+      "static",
+    );
+  });
+
   test("keeps new-title activation out of native text editing until the caller clears it", () => {
     assert.equal(
       resolveEditableTitleInputReadOnly({

@@ -183,6 +183,62 @@ describe("PlayListPage", () => {
     );
   });
 
+  test("routes committed create-draft title handoff through the config source", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "ready",
+      activeLayoutId: "playlist-title:Focus Session",
+      hasPlayList: true,
+      playlists: [createPlayListFixture({ name: "Quiet Morning" })],
+      pendingPlaylistPreview: {
+        playlist: createPlayListFixture({
+          name: "Focus Session",
+          created_at: null,
+        }),
+        previousName: null,
+        draft: {
+          mode: "create",
+          name: "Focus Session",
+          collections: [],
+          groups: [],
+          extra: [],
+          createdAt: null,
+        },
+      },
+      playingPlaylistName: null,
+      titleSourceEnabled: true,
+      titleToneHandoff: {
+        layoutId: "playlist-title:Focus Session",
+        tone: "solid",
+      },
+      pressedLayoutId: null,
+      playbackSurface: null,
+      titleReturnSurface: {
+        layoutId: "playlist-title:Focus Session",
+      },
+    });
+
+    const pendingItem = viewModel.itemViewModels.find((item) => item.key === "Focus Session");
+
+    assert.deepEqual(viewModel.titleHandoffPlan.arrow, {
+      kind: "config-to-list",
+      source: {
+        kind: "config",
+        layoutId: "playlist-title:Focus Session",
+      },
+      target: {
+        kind: "list",
+        layoutId: "playlist-title:Focus Session",
+      },
+      targetRetainLease: "stage-only",
+    });
+    assert.equal(viewModel.titleHandoffPlan.sourceLayoutId, "playlist-title:Focus Session");
+    assert.equal(viewModel.transition.committedLayoutId, "playlist-title:Focus Session");
+    assert.equal(pendingItem?.layoutId, "playlist-title:Focus Session");
+    assert.equal(pendingItem?.handoffTone, "solid");
+    assert.equal(viewModel.createItemViewModel.handoffTone, null);
+    assert.equal(viewModel.createItemViewModel.titleHoverVisual, "none");
+  });
+
   test("enables title share only after the playlist page is ready to hand off titles", () => {
     assert.equal(shouldEnablePlayListPageTitleShare("idle"), false);
     assert.equal(shouldEnablePlayListPageTitleShare("loading"), false);
@@ -401,6 +457,7 @@ describe("PlayListPage", () => {
       ],
 
       playingPlaylistName: null,
+      titleSourceEnabled: true,
       titleToneHandoff: null,
       pressedLayoutId: "playlist-title:Quiet Morning",
       playbackSurface: null,
@@ -430,6 +487,7 @@ describe("PlayListPage", () => {
         requestId: 1,
       },
       playingPlaylistName: null,
+      titleSourceEnabled: true,
       titleToneHandoff: null,
       pressedLayoutId: "playlist-title:Quiet Morning",
       playbackSurface: null,
@@ -738,6 +796,7 @@ describe("PlayListPage", () => {
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
 
       playingPlaylistName: "Quiet Morning",
+      titleSourceEnabled: true,
       titleToneHandoff: null,
       pressedLayoutId: "playlist-title:Quiet Morning",
       playbackSurface: createPlaybackSurfaceFixture({
@@ -755,6 +814,7 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.itemViewModels[0]?.text, "Track A");
     assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, true);
     assert.equal(viewModel.itemViewModels[0]?.titleHoverVisual, "none");
+    assert.equal(viewModel.titleHandoffPlan.sourceLayoutId, "playlist-title:Quiet Morning");
   });
 
   test("locks the list while returning from spectrum before playback surface restores", () => {
@@ -826,7 +886,7 @@ describe("PlayListPage", () => {
   test("does not retain ready return hover after the title return surface is consumed", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "ready",
-      activeLayoutId: null,
+      activeLayoutId: "playlist-title:Quiet Morning",
       hasPlayList: true,
       playlists: [
         createPlayListFixture({ name: "Night Drive" }),
@@ -843,9 +903,11 @@ describe("PlayListPage", () => {
       titleReturnSurface: null,
     });
 
-    assert.equal(viewModel.transition.returnTargetLayoutId, "playlist-title:Quiet Morning");
-    assert.equal(viewModel.itemViewModels[1]?.handoffTone, "solid");
+    assert.equal(viewModel.transition.committedLayoutId, "playlist-title:Quiet Morning");
+    assert.equal(viewModel.transition.returnTargetLayoutId, null);
+    assert.equal(viewModel.itemViewModels[1]?.handoffTone, null);
     assert.equal(viewModel.itemViewModels[1]?.titleHoverVisual, "none");
+    assert.equal(viewModel.itemViewModels[1]?.titleHoverRetainLease, "timed");
   });
 
   test("uses the return handoff target before the playback surface restores", () => {

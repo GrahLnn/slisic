@@ -351,12 +351,14 @@ export function resolveConfigBackTitleSharePlan(args: {
   draftBaseline: ConfigDraft | null;
 }) {
   const hasDraftChanges = hasConfigDraftChanges(args.draft, args.draftBaseline);
+  let sourceLayoutId = args.activeLayoutId;
   let returnLayoutId = args.activeLayoutId;
 
   if (args.activeLayoutId && args.draft && args.draftBaseline && hasDraftChanges) {
     const normalizedName = normalizeDraftName(args.draft.name);
 
     if (normalizedName.length > 0) {
+      sourceLayoutId = playlistTitleLayoutId(normalizedName);
       returnLayoutId = playlistTitleLayoutId(normalizedName);
     }
   }
@@ -364,6 +366,7 @@ export function resolveConfigBackTitleSharePlan(args: {
   return {
     hasDraftChanges,
     returnLayoutId,
+    sourceLayoutId,
     titleToneHandoff: returnLayoutId
       ? createCollectionTitleHandoff(returnLayoutId, resolveTitleShareToneFromDraft(args.draft))
       : null,

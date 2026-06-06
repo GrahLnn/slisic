@@ -129,6 +129,7 @@ export function resolvePlayListTitleHandoffPlan(args: {
   endpoints: readonly PlayListTitleEndpoint[];
   pendingPlaybackPlaylistName?: string | null;
   playingPlaylistName: string | null;
+  sourceEnabled?: boolean;
   titleToneHandoff: CollectionTitleHandoff | null;
   transition: TitleSharePageTransition;
   playbackSurface: PlayListPlaybackSurfaceSnapshot | null;
@@ -145,6 +146,8 @@ export function resolvePlayListTitleHandoffPlan(args: {
     args.pageState === "ready"
       ? findEndpointByLayoutId(args.endpoints, args.titleReturnSurface?.layoutId)
       : null;
+  const fallbackSourceLayoutId =
+    args.sourceEnabled === false ? null : args.transition.committedLayoutId;
 
   let displayLock: PlayListTitleHandoffDisplayLock | null = null;
   if (
@@ -214,7 +217,7 @@ export function resolvePlayListTitleHandoffPlan(args: {
       return {
         displayLock,
         arrow: null,
-        sourceLayoutId: args.transition.committedLayoutId,
+        sourceLayoutId: fallbackSourceLayoutId,
         targetLayoutId: null,
         targetRetainLease: "timed",
       };
@@ -266,7 +269,7 @@ export function resolvePlayListTitleHandoffPlan(args: {
   return {
     displayLock,
     arrow: null,
-    sourceLayoutId: args.transition.committedLayoutId,
+    sourceLayoutId: fallbackSourceLayoutId,
     targetLayoutId: null,
     targetRetainLease: "timed",
   };

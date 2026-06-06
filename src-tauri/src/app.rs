@@ -80,6 +80,7 @@ pub fn run() {
             domain::playlists::check_list,
             domain::playlists::list_collections,
             domain::playlists::list_playlists,
+            domain::playlists::claim_generated_playlist_name,
             domain::playlists::list_config_library,
             domain::playlists::get_startup_bootstrap,
             domain::playlists::get_collection,

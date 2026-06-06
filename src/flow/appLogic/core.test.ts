@@ -594,6 +594,35 @@ describe("draft commit naming", () => {
     );
   });
 
+  test("uses repository-owned generated title claims over visible playlist seeds", () => {
+    assert.deepEqual(
+      resolveDraftCommitTitle({
+        draft: {
+          mode: "create",
+          name: "",
+          collections: [],
+          groups: [],
+          extra: [],
+          createdAt: null,
+        },
+        draftBaseline: {
+          mode: "create",
+          name: "",
+          collections: [],
+          groups: [],
+          extra: [],
+          createdAt: null,
+        },
+        generatedNameClaim: "PlayList 2",
+        playlists: [],
+      }),
+      {
+        kind: "generate",
+        name: "PlayList 2",
+      },
+    );
+  });
+
   test("finds the first available generated playlist name", () => {
     assert.equal(
       resolveNextGeneratedPlaylistName([
@@ -661,6 +690,7 @@ describe("draft commit naming", () => {
     const commit = resolvePlaylistDraftCommit({
       draft,
       draftBaseline: draft,
+      generatedNameClaim: "PlayList 4",
       playlists: [
         createPlayListFixture({ name: "PlayList 1" }),
         createPlayListFixture({ name: "PlayList 2" }),
@@ -669,11 +699,11 @@ describe("draft commit naming", () => {
 
     assert.deepEqual(commit.titleResolution, {
       kind: "generate",
-      name: "PlayList 3",
+      name: "PlayList 4",
     });
     assert.equal(commit.request.previousName, null);
     assert.deepEqual(commit.request.playlist, {
-      name: "PlayList 3",
+      name: "PlayList 4",
       collections: [],
       groups: [],
       extra: [],
@@ -681,22 +711,22 @@ describe("draft commit naming", () => {
     });
     assert.deepEqual(commit.preview, {
       playlist: {
-        name: "PlayList 3",
+        name: "PlayList 4",
         created_at: null,
       },
       previousName: null,
       draft: {
         mode: "create",
-        name: "PlayList 3",
+        name: "PlayList 4",
         collections: [],
         groups: [],
         extra: [],
         createdAt: null,
       },
     });
-    assert.equal(commit.layoutId, "playlist-title:PlayList 3");
+    assert.equal(commit.layoutId, "playlist-title:PlayList 4");
     assert.deepEqual(commit.titleToneHandoff, {
-      layoutId: "playlist-title:PlayList 3",
+      layoutId: "playlist-title:PlayList 4",
       tone: "solid",
     });
   });

@@ -189,7 +189,47 @@ describe("playListTitleHandoff model", () => {
     });
   });
 
-  test("scopes ready return handoff to consumed layout evidence", () => {
+  test("routes ready config return handoff from return surface evidence", () => {
+    const plan = resolvePlayListTitleHandoffPlan({
+      pageState: "ready",
+      endpoints: [quietMorningEndpoint],
+      playingPlaylistName: null,
+      titleToneHandoff: {
+        layoutId: "playlist-title:Quiet Morning",
+        tone: "solid",
+      },
+      transition: {
+        outgoingSourceLayoutId: "playlist-title:Quiet Morning",
+        returnTargetLayoutId: null,
+        committedLayoutId: "playlist-title:Quiet Morning",
+      },
+      playbackSurface: null,
+      titleReturnSurface: {
+        layoutId: "playlist-title:Quiet Morning",
+      },
+    });
+
+    assert.deepEqual(plan, {
+      displayLock: null,
+      arrow: {
+        kind: "config-to-list",
+        source: {
+          kind: "config",
+          layoutId: "playlist-title:Quiet Morning",
+        },
+        target: {
+          kind: "list",
+          layoutId: "playlist-title:Quiet Morning",
+        },
+        targetRetainLease: "stage-only",
+      },
+      sourceLayoutId: "playlist-title:Quiet Morning",
+      targetLayoutId: "playlist-title:Quiet Morning",
+      targetRetainLease: "stage-only",
+    });
+  });
+
+  test("keeps consumed ready return handoff scoped to return surface evidence", () => {
     const plan = resolvePlayListTitleHandoffPlan({
       pageState: "ready",
       endpoints: [quietMorningEndpoint],
@@ -224,5 +264,66 @@ describe("playListTitleHandoff model", () => {
       targetLayoutId: "playlist-title:Quiet Morning",
       targetRetainLease: "stage-only",
     });
+  });
+
+  test("does not manufacture ready return handoff without return surface evidence", () => {
+    const plan = resolvePlayListTitleHandoffPlan({
+      pageState: "ready",
+      endpoints: [quietMorningEndpoint],
+      playingPlaylistName: null,
+      sourceEnabled: false,
+      titleToneHandoff: {
+        layoutId: "playlist-title:Quiet Morning",
+        tone: "solid",
+      },
+      transition: {
+        outgoingSourceLayoutId: "playlist-title:Quiet Morning",
+        returnTargetLayoutId: null,
+        committedLayoutId: "playlist-title:Quiet Morning",
+      },
+      playbackSurface: null,
+      titleReturnSurface: null,
+    });
+
+    assert.deepEqual(plan, {
+      displayLock: null,
+      arrow: null,
+      sourceLayoutId: null,
+      targetLayoutId: null,
+      targetRetainLease: "timed",
+    });
+  });
+
+  test("keeps an explicit ready source handoff for config exit snapshots", () => {
+    const plan = resolvePlayListTitleHandoffPlan({
+      pageState: "ready",
+      endpoints: [quietMorningEndpoint],
+      playingPlaylistName: null,
+      sourceEnabled: true,
+      titleToneHandoff: {
+        layoutId: "playlist-title:Quiet Morning",
+        tone: "solid",
+      },
+      transition: {
+        outgoingSourceLayoutId: "playlist-title:Quiet Morning",
+        returnTargetLayoutId: null,
+        committedLayoutId: "playlist-title:Quiet Morning",
+      },
+      playbackSurface: null,
+      titleReturnSurface: null,
+    });
+
+    assert.deepEqual(
+      resolvePlayListTitleHandoffInstruction({
+        plan,
+        endpointKind: "list",
+        layoutId: "playlist-title:Quiet Morning",
+        sourceEnabled: true,
+      }),
+      {
+        titleHoverVisual: "hold",
+        titleHoverRetainLease: "timed",
+      },
+    );
   });
 });

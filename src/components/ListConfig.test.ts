@@ -18,7 +18,10 @@ import {
   resolveListConfigDraftWithTitleInput,
   resolveListConfigDuplicateShakeDecision,
   resolveListConfigTitleInputSlotFromRender,
-  resolveListConfigTitleInputSlotUserChange,
+  resolveListConfigTitleInputSlotChange,
+  shouldAwaitListConfigVisibleTitleCommit,
+  shouldAnimateListConfigResolvedTitle,
+  resolveListConfigCommitFreezeTitleLayoutId,
   resolveToolLabelShakeSignal,
   shouldHideListConfigToolLabelRowContent,
   type ListConfigDuplicateShakeState,
@@ -178,7 +181,7 @@ describe("ListConfig title view model", () => {
       {
         awaitPersistenceBeforeBack: false,
         awaitTitleCommitBeforeBack: false,
-        stabilizeTitleShareSourceBeforeBack: false,
+        stabilizeTitleShareSourceBeforeBack: true,
       },
     );
   });
@@ -217,8 +220,9 @@ describe("ListConfig title view model", () => {
       layoutId: "collection-title:create",
       value: "",
     });
-    const editedSlot = resolveListConfigTitleInputSlotUserChange({
+    const editedSlot = resolveListConfigTitleInputSlotChange({
       current: initialSlot,
+      source: "user",
       value: "Human Title",
     });
 
@@ -239,8 +243,126 @@ describe("ListConfig title view model", () => {
       {
         layoutId: "playlist-title:Quiet Morning",
         userEdited: false,
+        source: "render",
         value: "Quiet Morning",
       },
+    );
+  });
+
+  test("does not mark programmatic title writes as user edits", () => {
+    const initialSlot = createListConfigTitleInputSlot({
+      layoutId: "collection-title:create",
+      value: "",
+    });
+
+    assert.deepEqual(
+      resolveListConfigTitleInputSlotChange({
+        current: initialSlot,
+        source: "programmatic",
+        value: "PlayList 1",
+      }),
+      {
+        layoutId: "collection-title:create",
+        source: "programmatic",
+        userEdited: false,
+        value: "PlayList 1",
+      },
+    );
+  });
+
+  test("keeps typewriter animation for automatic titles without animating human titles", () => {
+    const renderedSlot = createListConfigTitleInputSlot({
+      layoutId: "collection-title:create",
+      value: "",
+    });
+    const programmaticSlot = resolveListConfigTitleInputSlotChange({
+      current: renderedSlot,
+      source: "programmatic",
+      value: "Resolved Album",
+    });
+    const humanSlot = resolveListConfigTitleInputSlotChange({
+      current: renderedSlot,
+      source: "user",
+      value: "Human Album",
+    });
+
+    assert.equal(
+      shouldAnimateListConfigResolvedTitle({
+        inputSlot: renderedSlot,
+        titleResolution: { kind: "generate", name: "PlayList 1" },
+      }),
+      true,
+    );
+    assert.equal(
+      shouldAnimateListConfigResolvedTitle({
+        inputSlot: programmaticSlot,
+        titleResolution: { kind: "keep", name: "Resolved Album" },
+      }),
+      true,
+    );
+    assert.equal(
+      shouldAnimateListConfigResolvedTitle({
+        inputSlot: humanSlot,
+        titleResolution: { kind: "keep", name: "Human Album" },
+      }),
+      false,
+    );
+  });
+
+  test("awaits visible title commits whenever a typewriter animation is active", () => {
+    assert.equal(
+      shouldAwaitListConfigVisibleTitleCommit({
+        animateTyping: true,
+        awaitTitleCommitBeforeBack: false,
+      }),
+      true,
+    );
+    assert.equal(
+      shouldAwaitListConfigVisibleTitleCommit({
+        animateTyping: false,
+        awaitTitleCommitBeforeBack: false,
+      }),
+      false,
+    );
+  });
+
+  test("moves generated typewriter titles onto the committed playlist path", () => {
+    const renderedSlot = createListConfigTitleInputSlot({
+      layoutId: "collection-title:create",
+      value: "",
+    });
+
+    assert.equal(
+      resolveListConfigCommitFreezeTitleLayoutId({
+        animateTyping: true,
+        currentLayoutId: "collection-title:create",
+        inputSlot: renderedSlot,
+        resolvedLayoutId: "playlist-title:PlayList 1",
+        titleResolution: { kind: "generate", name: "PlayList 1" },
+      }),
+      "playlist-title:PlayList 1",
+    );
+  });
+
+  test("moves a human-authored title onto the committed playlist path", () => {
+    const humanSlot = resolveListConfigTitleInputSlotChange({
+      current: createListConfigTitleInputSlot({
+        layoutId: "collection-title:create",
+        value: "",
+      }),
+      source: "user",
+      value: "Human Album",
+    });
+
+    assert.equal(
+      resolveListConfigCommitFreezeTitleLayoutId({
+        animateTyping: false,
+        currentLayoutId: "collection-title:create",
+        inputSlot: humanSlot,
+        resolvedLayoutId: "playlist-title:Human Album",
+        titleResolution: { kind: "keep", name: "Human Album" },
+      }),
+      "playlist-title:Human Album",
     );
   });
 
@@ -323,6 +445,24 @@ describe("ListConfig title view model", () => {
       {
         layoutId: "collection-title:create",
         value: "",
+        placeholder: "Create a List",
+      },
+    );
+  });
+
+  test("keeps a named create draft on the config source path until check commits it", () => {
+    assert.deepEqual(
+      createListConfigTitleSnapshot({
+        activeLayoutId: "collection-title:create",
+        draft: {
+          ...createDraft,
+          name: "Focus Session",
+        },
+        draftBaseline: createDraft,
+      }),
+      {
+        layoutId: "collection-title:create",
+        value: "Focus Session",
         placeholder: "Create a List",
       },
     );

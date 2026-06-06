@@ -68,6 +68,7 @@ through evidence, but they do not become one lifecycle.
 | `PlaylistInteractionResponse`    | playlist page view model and title handoff models             | app projection, click overlay, playback surface, Torph stages                                                | immediate title lock, visible target, icons, preparing flag, restore release  |
 | `PlaybackSurface`                | playlist page view model and local render model               | accepted app state plus player now-playing events plus Torph stages                                          | visible playlist title, track title, preparing text, icons, restore motion    |
 | `PlaylistDraftCommit`            | list config, appLogic, playlist persistence commands          | config check/back, draft changes, commit result                                                              | immediate return, title handoff, background playlist upsert evidence          |
+| `RepositoryNameIndex`            | playlist repository                                           | playlist create, rename, delete, name claim, unique-index rejection                                          | accepted playlist name claim or duplicate-name rejection                      |
 | `OptimisticPlaylistProjection`   | playlist commit runtime plus appLogic ready projection        | dirty check preview, playlist upsert acceptance or failure, user target demand while commit is pending        | visible playlist item plus stable-target gate evidence                        |
 | `FastUrlResolveQueue`            | `pasteDownload` fast URL resolve queue                        | queued URL admission, cancel/reset, URL resolution completion                                                | candidate-scoped URL resolution evidence                                      |
 | `PasteDownloadCandidate`         | `pasteDownload` machine plus list config candidate projection | paste, URL resolution evidence, title probe, enqueue, task signals, delete/reset                             | candidate item state and collection shell evidence                            |
@@ -214,12 +215,13 @@ DownloadTaskRuntime lane:
 
 OptimisticPlaylistProjection lane:
   dirty config check
-    -> publish visible playlist preview immediately
-    -> submit playlist upsert in background
+    -> request RepositoryNameIndex claim for generated create titles
+    -> publish visible playlist preview immediately only for the claimed name
+    -> submit playlist upsert in background with accepted or explicitly rejected claim evidence
     -> config-open target may wait for stable draft evidence
     -> play-click target may wait for stable playlist evidence
     -> upsert accepted clears preview and wakes waiting consumers
-    -> upsert failed closes preview and rejects waiting consumers
+    -> upsert/name-claim failed closes preview and rejects waiting consumers
 
 PlayerSession lane:
   accepted startup [first]
@@ -296,6 +298,7 @@ the caller into an illegal state.
 | `FastUrlResolveQueue`         | candidate-scoped URL resolution result                                                    | `PasteDownloadCandidate`                                                         | accept latest still-open resolution evidence                                 | candidate row state, check/back, or download task runtime runs URL resolution directly or accepts late closed-scope results           |
 | `PasteDownloadCandidate`      | candidate item state plus root title and enqueue/task evidence                            | list config view, app draft collection upsert                                    | project candidate rows and pass collection shell evidence to draft           | check/back/reset declares active download completion, title probe becomes collection truth, or candidate rows own backend task status |
 | `CollectionImport`            | collection shell, collection manifest, persisted music rows                               | playlists repo, config library projection, download task runtime                 | read canonical collection/music rows after import owner commits              | playlist config invents collection rows, infers group membership, or treats pasted URL parsing as downloaded music evidence           |
+| `RepositoryNameIndex`         | playlist name availability and accepted name claims                                       | `PlaylistDraftCommit`, playlist repository                                      | claim generated/create/rename names before stable write                      | UI visible list absence proves name availability, or record-id allocation bypasses duplicate name rejection                          |
 | playlist repository           | playlist playback selection and collection membership                                     | `FirstSlot`, `PlaybackStart`, `NextTrack`, `PlayerSession` identity substitution | read scoped membership and canonical music rows                              | player or frontend scans the whole library to choose first/next or widens fallback outside playlist membership                        |
 | `OptimisticPlaylistProjection` | pending playlist preview plus stable-target waiters keyed by transaction/name             | ready list, config open, playlist item click                                     | display preview and wait for accepted upsert before entering stable owners   | preview becomes config baseline, preview item is disabled, or click calls backend playback before playlist upsert is accepted         |
 | `FirstSlot`                   | prepared first credential pool keyed by playlist, generation, credential id               | `PlaybackStart`                                                                  | read one credential, discard invalid credential, consume accepted credential | click path refills synchronously, frontend consumes credentials, player reads first slot, or miss becomes `Preparing...`              |
@@ -2042,6 +2045,12 @@ commit request construction, immediate return to the playlist page, title
 handoff, and acceptance of later playlist upsert evidence. It does not own
 download progress or collection import terminal state.
 
+The return is immediate relative to persistence, download, import, and playlist
+hydration. Title handoff still owns a short source-sampling boundary: after the
+config title source is frozen onto the committed playlist layout id, the page
+waits for the Motion source frame before sending `back`. This boundary is visual
+path evidence, not repository work and not a fallback.
+
 ### Owned State
 
 ```ts
@@ -2099,6 +2108,8 @@ editing(draft: ConfigDraft, baseline: ConfigDraft | null) =
 dispatchingCommit(request: PlaylistWriteRequest, preview: PlaylistPreview) =
   publishOptimisticPlaylistProjection(preview);
   sendCommitInBackground(request);
+  freezeConfigTitleSource(preview.titleLayoutId);
+  waitForTitleSourceSamplingFrame();
   returnToReadyImmediately(preview);
   returnedPendingCommit(request);
 
@@ -2159,12 +2170,154 @@ stateDiagram-v2
 - mark download/import tasks complete;
 - infer collection membership from draft projection;
 - block the title return animation on persistence;
+- delete the title source sampling boundary while keeping a config-to-list
+  handoff claim;
 - overwrite a user-edited draft title with default, root-title, or collection
   title evidence;
 - make its optimistic preview a stable config baseline;
+- derive a generated create title from ready-page visible playlists alone;
+- treat absence from the visible ready list as repository name availability;
 - disable the preview item to avoid proving stable ownership;
 - call playback start while the target playlist is still only a preview;
 - treat root-title parsing as downloaded music evidence.
+
+## Lifecycle: RepositoryNameIndex
+
+### Boundary
+
+`RepositoryNameIndex` is the repository-owned lifecycle for playlist name
+availability. It owns the stable fact that a playlist name is free, occupied, or
+being substituted by a rename. Ready-page projection, optimistic preview, config
+draft text, and title handoff may display or propose names, but they do not own
+name availability.
+
+This lifecycle exists because a playlist name can be invisible in the ready
+projection while still occupied in the database unique index. A generated create
+title is therefore a repository claim, not a UI list scan.
+
+### Owned State
+
+```ts
+RepositoryNameIndex =
+  | ["indexed", names: Set<PlaylistName>]
+  | ["claiming", request: NameClaimRequest]
+  | ["accepted", claim: NameClaim]
+  | ["rejected", request: NameClaimRequest, reason: DuplicateName | IndexError];
+
+NameClaimRequest =
+  | ["createGenerated", visibleSeed: PlaylistNameSet, requestedName: PlaylistName]
+  | ["createUser", requestedName: PlaylistName]
+  | ["rename", previousName: PlaylistName, requestedName: PlaylistName];
+
+NameClaim =
+  | ["create", name: PlaylistName]
+  | ["rename", previousName: PlaylistName, name: PlaylistName];
+```
+
+The `visibleSeed` may help choose the first candidate, but it is not the stable
+index. The repository must either accept the claim or reject it. If the seed is
+stale, the claim fails and the caller must choose a new name or surface the
+duplicate as negative evidence.
+
+### Transition
+
+```ts
+indexed(names) =
+  next().is(
+    | ["claim.createGenerated", seed] =>
+        claiming(["createGenerated", seed, nextCandidate(seed)])
+    | ["claim.createUser", name] =>
+        claiming(["createUser", normalize(name)])
+    | ["claim.rename", previousName, name] =>
+        claiming(["rename", previousName, normalize(name)])
+    | ["playlist.upsert.accepted", claim] =>
+        indexed(applyClaim(names, claim))
+    | ["playlist.deleted", name] =>
+        indexed(names.delete(name))
+  );
+
+claiming(request) =
+  repository.tryClaim(request).is(
+    | ["accepted", claim] =>
+        accepted(claim)
+    | ["duplicate", occupiedName] =>
+        rejected(request, ["duplicate", occupiedName])
+    | ["error", reason] =>
+        rejected(request, reason)
+  );
+```
+
+### Trace Evidence From 2026-06-06
+
+The trace at
+`C:\Users\admin\Downloads\trace.2026-06-06T14-16-34.937Z.1780755394937.jsonl`
+shows the current illegal substitution:
+
+```text
+config-title-commit-resolved:
+  draftMode=create
+  draftName=""
+  previousName=null
+  requestPlaylistName="PlayList 1"
+  titleResolutionKind=generate
+
+config-title-playlist-commit-invoke-error:
+  Database index play_list_name_unique already contains 'PlayList 1'
+
+title-handoff-ready-projection:
+  pendingPlaylistPreviewName=null
+  targetItem=null
+  titleToneHandoffLayoutId="playlist-title:PlayList 1"
+```
+
+The UI had no visible `PlayList 1`, but the repository unique index still owned
+that name. Therefore the bug is not a missing ready-list item. The bug is that
+`PlaylistDraftCommit` generated a repository write name from the ready projection
+instead of consuming repository name-index evidence.
+
+### RepositoryNameIndex Must Not
+
+- use ready-page visibility as name availability;
+- let optimistic preview create stable repository truth;
+- let title handoff keep a failed name alive as a stable target;
+- allow create-by-generated-title to bypass duplicate-name rejection;
+- resolve name collisions by changing record ids while keeping the same unique
+  name;
+- require full playlist hydration just to answer name availability.
+
+### Current Implementation Violation
+
+As of the trace above, `src/flow/appLogic/core.ts` still lets
+`resolveDraftCommitTitle` call `resolveNextGeneratedPlaylistName(args.playlists)`.
+That makes the ready projection the seed and the proof. The seed is useful for
+human-friendly numbering, but it is not proof that the repository unique index
+will accept the name.
+
+`src-tauri/src/domain/playlists/repo.rs` also contains a partial repair that can
+allocate a different record id when the preferred id is already occupied. That
+only solves record-id reuse. It does not release or bypass the unique playlist
+name index. If the repository says `PlayList 1` is already occupied, accepting a
+second `PlayList 1` under a different record id is illegal.
+
+The correct code shape is:
+
+```text
+create draft with empty title
+  -> check
+  -> request generated-name claim from RepositoryNameIndex
+  -> accepted(name)
+       publish preview(name)
+       submit playlist upsert(name)
+       return ready immediately with title handoff
+  -> rejected(duplicate)
+       keep config state legal or choose next repository-owned candidate
+       never publish a stable ready target for the rejected name
+```
+
+The claim may be implemented as an atomic repository create/update that returns
+accepted/rejected evidence, or as a narrow repository name allocator followed by
+the write in the same owner boundary. It must not be implemented by hydrating all
+playlist data into the frontend or by scanning the visible ready list.
 
 ## Lifecycle: OptimisticPlaylistProjection
 
@@ -3779,8 +3932,10 @@ state. The access kind is part of the transfer contract.
 | playback surface close         | `project` | `appLogic play exit`                    | `PlaybackSurface` and `PlaylistInteractionResponse`   | playlist name, return target                                      | restore is released only by Torph return evidence                                                      |
 | config open                    | `command` | playlist page/app action                | `PlaylistDraftCommit`                                 | create/edit intent and stable baseline                            | enters draft editing only from create intent or repository baseline; preview opens use stable gate      |
 | config check/back              | `command` | list config                             | `PlaylistDraftCommit`                                 | draft, baseline, title handoff                                    | returns to `ready` immediately; persistence continues as background evidence                           |
-| playlist upsert command        | `command` | `PlaylistDraftCommit`                   | playlist repository                                   | `PlaylistWriteRequest`                                            | repo may accept or reject; UI return is not blocked                                                    |
+| generated title claim          | `command` | `PlaylistDraftCommit`                   | `RepositoryNameIndex`                                 | draft title seed and requested generated name                     | repository name index accepts or rejects; ready visibility is not availability evidence                 |
+| playlist upsert command        | `command` | `PlaylistDraftCommit`                   | playlist repository                                   | `PlaylistWriteRequest` plus accepted name claim                   | repo may accept or reject; UI return is not blocked                                                    |
 | playlist upsert accepted       | `project` | playlist repository                     | `PlaylistDraftCommit`, `appLogic`, `FirstSlot`        | playlist name, previous name, canonical playlist, playback-ref change evidence | app projection updates lists; FirstSlot renames cargo on coordinate substitution and refreshes only when selected playback refs changed |
+| playlist upsert rejected       | `project` | playlist repository                     | `PlaylistDraftCommit`, `OptimisticPlaylistProjection` | rejected name claim or repository error                           | clears the preview/return target for that rejected request; it must not become a stable ready item      |
 | paste text                     | `command` | list config paste action                | `PasteDownloadCandidate`                              | raw clipboard text                                                | creates a visible candidate row immediately                                                            |
 | fast URL resolve demand        | `command` | `PasteDownloadCandidate`                | `FastUrlResolveQueue`                                 | candidate id and normalized URL                                   | queue owner controls concurrency, cancel/reset, and late result discard                                |
 | fast URL resolve result        | `project` | `FastUrlResolveQueue`                   | `PasteDownloadCandidate`                              | latest still-open URL resolution                                  | invalid/existing/new URL evidence only; not collection truth and not music evidence                    |
@@ -3831,6 +3986,10 @@ These paths are intentionally illegal:
 - Optimistic preview click -> disabled item or swallowed primary gesture.
 - Optimistic preview config open -> edit baseline built from preview draft.
 - Stable-target waiting -> playback failure surface or `Preparing...`.
+- Generated create title -> ready visible list scan -> assumed repository name
+  availability.
+- Duplicate playlist name -> allocate a different record id -> accepted same
+  unique name.
 - `pending_first_track` -> `play`.
 - Trace event -> state transition.
 - Context reset journal -> backend owner mutation.

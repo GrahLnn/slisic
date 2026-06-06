@@ -12,6 +12,7 @@ import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { me } from "@grahlnn/fn";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
+import { crab } from "@/src/cmd";
 import { recordTrace } from "@/src/debug/trace";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { action as playlistCommitAction } from "@/src/flow/playlistCommit";
@@ -22,6 +23,7 @@ import {
   createConfigSidebarItemsFromLibrary,
   resolvePlaylistDraftCommit,
   resolvePlaylistsWithPreview,
+  type DraftCommitTitleResolution,
   type ConfigDraft,
   type ConfigSidebarItemRef,
 } from "@/src/flow/appLogic/core";
@@ -41,7 +43,11 @@ import {
   type ArcTrackPushTransitionSource,
 } from "./ArcTrackList";
 import { CoverTool } from "./coverTool";
-import { EditableTitle, type EditableTitleHandle } from "./EditableTitle";
+import {
+  EditableTitle,
+  type EditableTitleChangeSource,
+  type EditableTitleHandle,
+} from "./EditableTitle";
 import { useListConfigGhostTransition } from "./ListConfig.ghost-transition";
 import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import {
@@ -99,13 +105,13 @@ export function resolveListConfigCheckReturnPlan(args: {
     ? ({
         awaitPersistenceBeforeBack: false,
         awaitTitleCommitBeforeBack: false,
-        stabilizeTitleShareSourceBeforeBack: false,
+        stabilizeTitleShareSourceBeforeBack: true,
       } as const)
     : ({
         awaitPersistenceBeforeBack: false,
         awaitTitleCommitBeforeBack: false,
         stabilizeTitleShareSourceBeforeBack: false,
-    } as const);
+      } as const);
 }
 
 export function resolveListConfigDraftWithTitleInput(args: {
@@ -124,6 +130,7 @@ export function resolveListConfigDraftWithTitleInput(args: {
 
 export interface ListConfigTitleInputSlot {
   layoutId: string | null;
+  source: EditableTitleChangeSource | "render";
   userEdited: boolean;
   value: string;
 }
@@ -134,6 +141,7 @@ export function createListConfigTitleInputSlot(args: {
 }): ListConfigTitleInputSlot {
   return {
     layoutId: args.layoutId ?? null,
+    source: "render",
     userEdited: false,
     value: args.value,
   };
@@ -159,23 +167,58 @@ export function resolveListConfigTitleInputSlotFromRender(args: {
 
   return {
     ...args.current,
+    source: "render",
     value: args.renderedValue,
   };
 }
 
-export function resolveListConfigTitleInputSlotUserChange(args: {
+export function resolveListConfigTitleInputSlotChange(args: {
   current: ListConfigTitleInputSlot;
+  source: EditableTitleChangeSource;
   value: string;
 }): ListConfigTitleInputSlot {
-  if (args.current.value === args.value) {
+  if (args.current.value === args.value && args.current.source === args.source) {
     return args.current;
   }
 
   return {
     ...args.current,
-    userEdited: true,
+    source: args.source,
+    userEdited: args.source === "user" ? true : args.current.userEdited,
     value: args.value,
   };
+}
+
+export function shouldAnimateListConfigResolvedTitle(args: {
+  inputSlot: ListConfigTitleInputSlot;
+  titleResolution: DraftCommitTitleResolution;
+}) {
+  if (args.titleResolution.kind !== "keep") {
+    return true;
+  }
+
+  return args.inputSlot.source === "programmatic" && !args.inputSlot.userEdited;
+}
+
+export function shouldAwaitListConfigVisibleTitleCommit(args: {
+  animateTyping: boolean;
+  awaitTitleCommitBeforeBack: boolean;
+}) {
+  return args.animateTyping || args.awaitTitleCommitBeforeBack;
+}
+
+export function resolveListConfigCommitFreezeTitleLayoutId(args: {
+  animateTyping: boolean;
+  currentLayoutId: string | undefined;
+  inputSlot: ListConfigTitleInputSlot;
+  resolvedLayoutId: string;
+  titleResolution: DraftCommitTitleResolution;
+}) {
+  if (args.animateTyping || (args.titleResolution.kind === "keep" && args.inputSlot.userEdited)) {
+    return args.resolvedLayoutId;
+  }
+
+  return args.currentLayoutId ?? args.resolvedLayoutId;
 }
 
 function currentPerformanceNow() {
@@ -188,6 +231,18 @@ function summarizeListConfigCandidateStatuses(candidateItems: readonly { status:
     counts[item.status] = (counts[item.status] ?? 0) + 1;
   }
   return counts;
+}
+
+function shouldClaimGeneratedPlaylistName(args: {
+  draftMode: ConfigDraft["mode"];
+  draftName: string;
+  titleResolution: DraftCommitTitleResolution;
+}) {
+  return (
+    args.draftMode === "create" &&
+    args.draftName.length === 0 &&
+    args.titleResolution.kind === "generate"
+  );
 }
 
 function createListConfigTitleTracePayload(args: {
@@ -206,6 +261,7 @@ function createListConfigTitleTracePayload(args: {
     draftName: args.draft?.name ?? null,
     hasDraftChanges: args.hasDraftChanges,
     inputSlotLayoutId: args.inputSlot.layoutId,
+    inputSlotSource: args.inputSlot.source,
     inputSlotUserEdited: args.inputSlot.userEdited,
     inputSlotValue: args.inputSlot.value,
     pendingPlaylistName: args.pendingPlaylistName,
@@ -776,9 +832,11 @@ export function ListConfig() {
   if (titleInputSlotRef.current !== previousTitleInputSlot) {
     recordTrace("config-title-slot-render-sync", {
       currentLayoutId: previousTitleInputSlot.layoutId,
+      currentSource: previousTitleInputSlot.source,
       currentUserEdited: previousTitleInputSlot.userEdited,
       currentValue: previousTitleInputSlot.value,
       nextLayoutId: titleInputSlotRef.current.layoutId,
+      nextSource: titleInputSlotRef.current.source,
       nextUserEdited: titleInputSlotRef.current.userEdited,
       nextValue: titleInputSlotRef.current.value,
       pendingPlaylistName,
@@ -876,24 +934,31 @@ export function ListConfig() {
     });
     return true;
   }, []);
-  const handleTitleChange = useCallback((value: string) => {
-    const previousSlot = titleInputSlotRef.current;
-    titleInputSlotRef.current = resolveListConfigTitleInputSlotUserChange({
-      current: titleInputSlotRef.current,
-      value,
-    });
-    recordTrace("config-title-input-change", {
-      previousLayoutId: previousSlot.layoutId,
-      previousUserEdited: previousSlot.userEdited,
-      previousValue: previousSlot.value,
-      nextLayoutId: titleInputSlotRef.current.layoutId,
-      nextUserEdited: titleInputSlotRef.current.userEdited,
-      nextValue: titleInputSlotRef.current.value,
-      renderedLayoutId: viewModel.title.layoutId ?? null,
-      renderedValue: viewModel.title.value,
-    });
-    appLogicAction.changeDraftName(value);
-  }, []);
+  const handleTitleChange = useCallback(
+    (value: string, source: EditableTitleChangeSource = "user") => {
+      const previousSlot = titleInputSlotRef.current;
+      titleInputSlotRef.current = resolveListConfigTitleInputSlotChange({
+        current: titleInputSlotRef.current,
+        source,
+        value,
+      });
+      recordTrace("config-title-input-change", {
+        previousLayoutId: previousSlot.layoutId,
+        previousSource: previousSlot.source,
+        previousUserEdited: previousSlot.userEdited,
+        previousValue: previousSlot.value,
+        nextLayoutId: titleInputSlotRef.current.layoutId,
+        nextSource: titleInputSlotRef.current.source,
+        nextUserEdited: titleInputSlotRef.current.userEdited,
+        nextValue: titleInputSlotRef.current.value,
+        renderedLayoutId: viewModel.title.layoutId ?? null,
+        renderedValue: viewModel.title.value,
+        source,
+      });
+      appLogicAction.changeDraftName(value);
+    },
+    [],
+  );
 
   async function handleChangeSavePath() {
     await appLogicAction.chooseSavePath(renderedSavePath);
@@ -1030,11 +1095,45 @@ export function ListConfig() {
       }
 
       traceBackAction("list-config-check-resolve-commit-start");
-      const commit = resolvePlaylistDraftCommit({
+      const visiblePlaylistsForCommit = resolvePlaylistsWithPreview(playlists, pendingPlaylistPreview);
+      const localCommit = resolvePlaylistDraftCommit({
         draft: draftForCheck,
         draftBaseline,
-        playlists: resolvePlaylistsWithPreview(playlists, pendingPlaylistPreview),
+        playlists: visiblePlaylistsForCommit,
       });
+      let generatedNameClaim: string | null = null;
+      if (
+        shouldClaimGeneratedPlaylistName({
+          draftMode: draftForCheck.mode,
+          draftName: draftForCheck.name,
+          titleResolution: localCommit.titleResolution,
+        })
+      ) {
+        traceTitleCheck("config-title-generated-name-claim-start", {
+          localGeneratedTitle: localCommit.titleResolution.name,
+        });
+        const claimResult = await crab.claimGeneratedPlaylistName(
+          visiblePlaylistsForCommit.map((playlist) => playlist.name),
+        );
+        generatedNameClaim = claimResult.match({
+          Ok: (name) => name,
+          Err: (error) => {
+            throw new Error(error);
+          },
+        });
+        traceTitleCheck("config-title-generated-name-claim-done", {
+          claimedTitle: generatedNameClaim,
+          localGeneratedTitle: localCommit.titleResolution.name,
+        });
+      }
+      const commit = generatedNameClaim
+        ? resolvePlaylistDraftCommit({
+            draft: draftForCheck,
+            draftBaseline,
+            generatedNameClaim,
+            playlists: visiblePlaylistsForCommit,
+          })
+        : localCommit;
       traceTitleCheck("config-title-commit-resolved", {
         committedDraftName: commit.draft.name,
         previousName: commit.request.previousName,
@@ -1074,27 +1173,63 @@ export function ListConfig() {
         });
       });
       traceBackAction("list-config-check-commit-dispatch-done");
+      const animateResolvedTitle = shouldAnimateListConfigResolvedTitle({
+        inputSlot: titleInputSlotRef.current,
+        titleResolution: commit.titleResolution,
+      });
+      const awaitVisibleTitleCommit = shouldAwaitListConfigVisibleTitleCommit({
+        animateTyping: animateResolvedTitle,
+        awaitTitleCommitBeforeBack: returnPlan.awaitTitleCommitBeforeBack,
+      });
       traceBackAction("list-config-check-title-commit-start", {
-        animateTyping: commit.titleResolution.kind !== "keep",
+        animateTyping: animateResolvedTitle,
+        awaitVisibleTitleCommit,
         resolvedTitle: commit.titleResolution.name,
       });
       traceTitleCheck("config-title-visible-commit-start", {
-        animateTyping: commit.titleResolution.kind !== "keep",
+        animateTyping: animateResolvedTitle,
+        awaitVisibleTitleCommit,
+        inputSlotSource: titleInputSlotRef.current.source,
+        inputSlotUserEdited: titleInputSlotRef.current.userEdited,
         resolvedTitle: commit.titleResolution.name,
         waitForVisualCommit: returnPlan.awaitTitleCommitBeforeBack,
       });
       await editableTitleRef.current?.commitResolvedValue({
         value: commit.titleResolution.name,
-        animateTyping: commit.titleResolution.kind !== "keep",
-        waitForVisualCommit: returnPlan.awaitTitleCommitBeforeBack,
+        animateTyping: animateResolvedTitle,
+        changeSource: "programmatic",
+        waitForVisualCommit: awaitVisibleTitleCommit,
       });
       traceTitleCheck("config-title-visible-commit-done", {
         resolvedTitle: commit.titleResolution.name,
       });
       traceBackAction("list-config-check-title-commit-done");
 
+      const freezeTitleLayoutId = resolveListConfigCommitFreezeTitleLayoutId({
+        animateTyping: animateResolvedTitle,
+        currentLayoutId: viewModel.title.layoutId,
+        inputSlot: titleInputSlotRef.current,
+        resolvedLayoutId: commit.layoutId,
+        titleResolution: commit.titleResolution,
+      });
+      recordTrace("title-handoff-config-freeze", {
+        ...titleTracePayload,
+        currentTitleLayoutId: viewModel.title.layoutId ?? null,
+        currentTitleValue,
+        draftForCheckName: draftForCheck?.name ?? null,
+        draftMode: draft?.mode ?? null,
+        draftName: draft?.name ?? null,
+        freezeTitleLayoutId,
+        inputSlotLayoutId: titleInputSlotRef.current.layoutId ?? null,
+        inputSlotSource: titleInputSlotRef.current.source,
+        inputSlotUserEdited: titleInputSlotRef.current.userEdited,
+        inputSlotValue: titleInputSlotRef.current.value,
+        resolvedLayoutId: commit.layoutId,
+        resolvedTitle: commit.titleResolution.name,
+        titleResolutionKind: commit.titleResolution.kind,
+      });
       traceTitleCheck("config-title-freeze-start", {
-        freezeLayoutId: commit.layoutId,
+        freezeLayoutId: freezeTitleLayoutId,
         freezeTitleValue: commit.request.playlist.name,
       });
       traceBackAction("list-config-check-freeze-start");
@@ -1104,13 +1239,13 @@ export function ListConfig() {
           createFrozenListConfigRenderData({
             renderData: liveRenderData,
             titleValue: commit.request.playlist.name,
-            titleLayoutId: commit.layoutId,
+            titleLayoutId: freezeTitleLayoutId,
             titleHoverVisual: "retain",
           }),
         );
       });
       traceTitleCheck("config-title-freeze-done", {
-        freezeLayoutId: commit.layoutId,
+        freezeLayoutId: freezeTitleLayoutId,
         freezeTitleValue: commit.request.playlist.name,
       });
       traceBackAction("list-config-check-freeze-done");

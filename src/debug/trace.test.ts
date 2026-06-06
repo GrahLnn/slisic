@@ -50,6 +50,14 @@ describe("trace registry", () => {
       resolveTraceProbe("config-title-playlist-commit-submit-done"),
       "config-title-check-flow",
     );
+    assert.equal(
+      resolveTraceProbe("title-handoff-config-freeze"),
+      "title-handoff-flow",
+    );
+    assert.equal(
+      resolveTraceProbe("app-title-handoff-back-projected"),
+      "title-handoff-flow",
+    );
     assert.equal(resolveTraceProbe("unknown-debug-event"), null);
   });
 
@@ -128,6 +136,39 @@ describe("trace registry", () => {
       shouldRecordTraceEvent({
         enabled,
         event: "playlist-item-click",
+      }),
+      false,
+    );
+  });
+
+  test("keeps title handoff diagnosis separate from playback probes", () => {
+    const enabled = new Set<TraceProbe>(["title-handoff-flow"]);
+
+    assert.equal(
+      shouldRecordTraceEvent({
+        enabled,
+        event: "title-handoff-ready-projection",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldRecordTraceEvent({
+        enabled,
+        event: "app-title-handoff-back-projected",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldRecordTraceEvent({
+        enabled,
+        event: "playlist-play-action-start",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldRecordTraceEvent({
+        enabled,
+        event: "config-title-check-clicked",
       }),
       false,
     );

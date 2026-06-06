@@ -5,10 +5,11 @@ use super::model::{
 };
 use super::repo::{
     PlaylistPlaybackCollectionRef, PlaylistPlaybackGroupRef, PlaylistPlaybackSelection,
-    PlaylistPlaybackTrackSource, SpectrumMusicSourceIdentity, add_exclude, create_music,
-    delete_music, delete_playlist_by_name, get_collection_by_url, get_playlist_by_name,
-    get_playlist_config_by_name, get_playlist_playback_selection_by_name, has_collections,
-    list_collections, list_config_library, list_musics_by_file_path, list_playlists,
+    PlaylistPlaybackTrackSource, SpectrumMusicSourceIdentity, add_exclude,
+    claim_generated_playlist_name, create_music, delete_music, delete_playlist_by_name,
+    get_collection_by_url, get_playlist_by_name, get_playlist_config_by_name,
+    get_playlist_playback_selection_by_name, has_collections, list_collections,
+    list_config_library, list_musics_by_file_path, list_playlists,
     load_audio_style_training_musics, load_liked_playlist_playback_track_sources,
     load_playlist_playback_track_sources, load_random_playlist_playback_track_sources,
     load_spectrum_music_context, playlist_playback_owner_attempt_order, push_extra, remove_exclude,
@@ -2559,6 +2560,152 @@ fn upsert_playlist_surface_rename_is_immediately_usable_for_playback_selection()
         assert_eq!(selection.collections[0].url, populated_collection.url);
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].music.url, populated_collection.musics[0].url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn upsert_playlist_surface_releases_previous_title_for_later_create() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let original = PlayList {
+            name: "PlayList 1".to_string(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![],
+            created_at: AutoFill::pending(),
+        };
+        let renamed = PlayList {
+            name: "PlayList".to_string(),
+            ..original.clone()
+        };
+        let replacement = PlayList {
+            name: original.name.clone(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![],
+            created_at: AutoFill::pending(),
+        };
+
+        upsert_playlist_surface(&PlayListWriteRequest::from_playlist(&original), None)
+            .await
+            .expect("original playlist create should succeed");
+        upsert_playlist_surface(
+            &PlayListWriteRequest::from_playlist(&renamed),
+            Some(&original.name),
+        )
+        .await
+        .expect("rename should release the old title");
+        let created_replacement =
+            upsert_playlist_surface(&PlayListWriteRequest::from_playlist(&replacement), None)
+                .await
+                .expect("released title should be available for a new playlist");
+        let playlists = list_playlists()
+            .await
+            .expect("playlist listing should succeed after title reuse");
+
+        assert_eq!(created_replacement.playlist.name, replacement.name);
+        assert_eq!(playlists.len(), 2);
+        assert!(
+            playlists
+                .iter()
+                .any(|playlist| playlist.name == renamed.name)
+        );
+        assert!(
+            playlists
+                .iter()
+                .any(|playlist| playlist.name == replacement.name)
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn upsert_playlist_surface_rejects_create_when_title_is_still_occupied() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let existing = PlayList {
+            name: "PlayList 1".to_string(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![],
+            created_at: AutoFill::pending(),
+        };
+        let duplicate = PlayList {
+            name: existing.name.clone(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![],
+            created_at: AutoFill::pending(),
+        };
+
+        upsert_playlist_surface(&PlayListWriteRequest::from_playlist(&existing), None)
+            .await
+            .expect("existing playlist create should succeed");
+        let error = upsert_playlist_surface(&PlayListWriteRequest::from_playlist(&duplicate), None)
+            .await
+            .expect_err("duplicate create must be rejected by repository name index");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("already exists") || message.contains("play_list_name_unique"),
+            "duplicate create should fail on name ownership, got: {message}"
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn claim_generated_playlist_name_uses_repository_name_index_not_visible_seed() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let occupied = PlayList {
+            name: "PlayList 1".to_string(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![],
+            created_at: AutoFill::pending(),
+        };
+
+        upsert_playlist_surface(&PlayListWriteRequest::from_playlist(&occupied), None)
+            .await
+            .expect("occupied playlist create should succeed");
+
+        let claimed = claim_generated_playlist_name(&[])
+            .await
+            .expect("repository name claim should succeed");
+
+        assert_eq!(claimed, "PlayList 2");
+
+        reset_db();
+    });
+}
+
+#[test]
+fn claim_generated_playlist_name_respects_visible_seed_names() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let claimed =
+            claim_generated_playlist_name(&["PlayList 1".to_string(), "PlayList 3".to_string()])
+                .await
+                .expect("repository name claim should use visible seed names");
+
+        assert_eq!(claimed, "PlayList 2");
 
         reset_db();
     });

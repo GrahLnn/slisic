@@ -53,6 +53,7 @@ export interface PlayListPageRenderData {
   playingPlaylistName: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   pressedLayoutId: string | null;
+  titleSourceEnabled?: boolean;
   playbackSurface: PlayListPlaybackSurfaceSnapshot | null;
   titleReturnSurface: PlayListTitleReturnSurfaceSnapshot | null;
 }
@@ -118,6 +119,7 @@ export interface PlayListPageViewModel {
   shouldRenderCreateItem: boolean;
   shouldShowCreateItem: boolean;
   createItemViewModel: PlayListPageItemViewModel;
+  titleHandoffPlan: PlayListTitleHandoffPlan;
 }
 
 export function shouldCommitPlayListPageItem(args: {
@@ -192,6 +194,7 @@ function createPlayListPageItemViewModel(args: {
   isPlaybackPreparing: boolean;
   isHiddenInPlay: boolean;
   isPlaybackTitleHandoffTarget: boolean;
+  titleHandoffPlan: PlayListTitleHandoffPlan;
   titleHandoffInstruction: PlayListTitleHandoffInstruction;
   shouldStartHiddenInPlay: boolean;
   shouldAnimateSlotPosition: boolean;
@@ -211,7 +214,8 @@ function createPlayListPageItemViewModel(args: {
     sourceLayoutId: args.titleShareEnabled ? itemLayoutId : undefined,
     handoffTone:
       (shouldShareTitleLayout &&
-        args.transition.returnTargetLayoutId === itemLayoutId &&
+        (args.transition.returnTargetLayoutId === itemLayoutId ||
+          args.titleHandoffPlan.targetLayoutId === itemLayoutId) &&
         args.titleToneHandoff?.tone) ||
       null,
     suppressFade:
@@ -314,6 +318,7 @@ function resolvePlayListPageVisibleItems(args: {
           hasPlaybackSurfaceTrackText &&
           !playbackSurfaceTrackIsPlayable,
         isPlaybackTitleHandoffTarget: playlist.name === playbackTitleHandoffTargetName,
+        titleHandoffPlan: args.titleHandoffPlan,
         titleHandoffInstruction: resolvePlayListTitleHandoffInstruction({
           plan: args.titleHandoffPlan,
           endpointKind: resolvePlayListTitleHandoffEndpointKind({
@@ -382,6 +387,7 @@ function createConfigExitRenderDataByLayoutId(
     activeLayoutId: layoutId,
     titleToneHandoff: createCollectionTitleHandoff(layoutId, "solid"),
     pressedLayoutId: null,
+    titleSourceEnabled: true,
     titleReturnSurface: null,
   };
 }
@@ -426,6 +432,7 @@ export function resolvePlayListPageViewModel(
     })),
     pendingPlaybackPlaylistName,
     playingPlaylistName: renderData.playingPlaylistName,
+    sourceEnabled: renderData.titleSourceEnabled === true,
     titleToneHandoff: renderData.titleToneHandoff,
     transition,
     playbackSurface: renderData.playbackSurface,
@@ -472,6 +479,7 @@ export function resolvePlayListPageViewModel(
     itemViewModels,
     shouldRenderCreateItem: true,
     shouldShowCreateItem: !shouldLockScroll,
+    titleHandoffPlan,
     createItemViewModel: {
       key: "create",
       text: "Create a List",
