@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import { me } from "@grahlnn/fn";
 import {
   createConfigSidebarItemRef,
+  resolvePlaylistDraftCommit,
   resolveSavedPath,
   type ConfigDraft,
 } from "@/src/flow/appLogic/core";
@@ -12,8 +13,12 @@ import type { ConfigCandidateItem } from "@/src/flow/pasteDownload/core";
 import {
   LIST_CONFIG_EMPTY_STATE_TEXT,
   consumeListConfigDuplicateShakeState,
+  createListConfigTitleInputSlot,
   resolveListConfigCheckReturnPlan,
+  resolveListConfigDraftWithTitleInput,
   resolveListConfigDuplicateShakeDecision,
+  resolveListConfigTitleInputSlotFromRender,
+  resolveListConfigTitleInputSlotUserChange,
   resolveToolLabelShakeSignal,
   shouldHideListConfigToolLabelRowContent,
   type ListConfigDuplicateShakeState,
@@ -172,8 +177,8 @@ describe("ListConfig title view model", () => {
       }),
       {
         awaitPersistenceBeforeBack: false,
-        awaitTitleCommitBeforeBack: true,
-        stabilizeTitleShareSourceBeforeBack: true,
+        awaitTitleCommitBeforeBack: false,
+        stabilizeTitleShareSourceBeforeBack: false,
       },
     );
   });
@@ -190,6 +195,80 @@ describe("ListConfig title view model", () => {
         stabilizeTitleShareSourceBeforeBack: false,
       },
     );
+  });
+
+  test("uses the latest edited title as check input even when the rendered draft is stale", () => {
+    assert.deepEqual(
+      resolveListConfigDraftWithTitleInput({
+        draft: createDraft,
+        titleValue: "Human Title",
+      }),
+      {
+        ...createDraft,
+        name: "Human Title",
+      },
+    );
+
+    assert.equal(resolveListConfigDraftWithTitleInput({ draft: null, titleValue: "Human" }), null);
+  });
+
+  test("keeps user-edited title input across stale same-endpoint renders", () => {
+    const initialSlot = createListConfigTitleInputSlot({
+      layoutId: "collection-title:create",
+      value: "",
+    });
+    const editedSlot = resolveListConfigTitleInputSlotUserChange({
+      current: initialSlot,
+      value: "Human Title",
+    });
+
+    assert.deepEqual(
+      resolveListConfigTitleInputSlotFromRender({
+        current: editedSlot,
+        renderedLayoutId: "collection-title:create",
+        renderedValue: "",
+      }),
+      editedSlot,
+    );
+    assert.deepEqual(
+      resolveListConfigTitleInputSlotFromRender({
+        current: editedSlot,
+        renderedLayoutId: "playlist-title:Quiet Morning",
+        renderedValue: "Quiet Morning",
+      }),
+      {
+        layoutId: "playlist-title:Quiet Morning",
+        userEdited: false,
+        value: "Quiet Morning",
+      },
+    );
+  });
+
+  test("commits the latest edited title instead of generating a default title", () => {
+    const draftForCheck = resolveListConfigDraftWithTitleInput({
+      draft: createDraft,
+      titleValue: "Human Title",
+    });
+    assert.ok(draftForCheck);
+
+    const commit = resolvePlaylistDraftCommit({
+      draft: draftForCheck,
+      draftBaseline: createDraft,
+      playlists: [
+        {
+          name: "PlayList 1",
+          created_at: "2026-04-13T00:00:00Z",
+        },
+        {
+          name: "PlayList 2",
+          created_at: "2026-04-13T00:00:00Z",
+        },
+      ],
+    });
+
+    assert.equal(commit.titleResolution.kind, "keep");
+    assert.equal(commit.request.playlist.name, "Human Title");
+    assert.notEqual(commit.request.playlist.name, "PlayList 3");
   });
 
   test("hides the left row content only while a playlist item is leaving toward the arc track", () => {

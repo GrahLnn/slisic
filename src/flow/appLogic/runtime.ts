@@ -34,6 +34,7 @@ export const collectionUpdatesRequested = payloads["collection.updates.requested
 export const excludeAdded = payloads["exclude.added"];
 export const excludeRemoved = payloads["exclude.removed"];
 export const nowPlayingTrackChanged = payloads["player.now_playing_track.changed"];
+export const playbackSurfaceStatusChanged = payloads["player.playback_surface_status.changed"];
 
 export function resetRuntimeActor() {
   actor = createActor(machine);

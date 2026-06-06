@@ -239,17 +239,42 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
     let material = match material_result {
         Ok(Some(material)) => material,
         Ok(None) => {
+            ensure_playlist_playback_request_current(&request)?;
             emit_playlist_playback_trace(
-                "playlist-play-backend-pending-first-track",
+                "playlist-play-backend-empty-session-start",
                 PlaylistPlaybackTrace::new(app)
                     .playlist_name(&name)
                     .elapsed(trace_start)
-                    .status("pending_first_track"),
+                    .status("waiting_first_slot"),
+            );
+            let continuation_mode = resolve_playlist_playback_continuation_mode();
+            player_service::set_playback_continuation_mode(continuation_mode)?;
+            let session = player_service::start_empty_session_for_request_with_queue_mode(
+                &request,
+                name.clone(),
+                PlaybackQueueMode::Ordered,
+            )
+            .await?;
+            let session_generation = session.session_generation;
+            spawn_playlist_initial_track_wait(
+                app.clone(),
+                name.clone(),
+                session,
+                request,
+                download_changes,
+            );
+            emit_playlist_playback_trace(
+                "playlist-play-backend-ok",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(&name)
+                    .elapsed(trace_start)
+                    .status("started_waiting_first_slot")
+                    .queue_count(0),
             );
             return Ok(PlayPlaylistSession {
-                status: PlayPlaylistSessionStatus::PendingFirstTrack,
+                status: PlayPlaylistSessionStatus::Started,
                 playlist_name: name,
-                session_generation: None,
+                session_generation: Some(session_generation),
                 track_count: 0,
                 initial_track: None,
             });
@@ -719,45 +744,56 @@ async fn resolve_prepared_playlist_initial_track(
     playlist_name: &str,
 ) -> Result<Option<ResolvedPlaylistInitialTrack>> {
     let trace_start = Instant::now();
-    let save_root = meta_service::resolve_save_root(app).await?;
-    let Some(selection) =
-        playlist_repo::get_playlist_playback_selection_by_name(playlist_name).await?
-    else {
-        return Ok(None);
-    };
     loop {
         let Some(snapshot) = playable_index::read_playlist_source(playlist_name)? else {
+            emit_playlist_playback_trace(
+                "playlist-play-initial-prepared-miss",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(playlist_name)
+                    .elapsed(trace_start)
+                    .status("first_slot_empty"),
+            );
             return Ok(None);
         };
-        let Some(source) = snapshot.source.clone() else {
+        let Some(track) = snapshot.track.clone() else {
+            emit_playlist_playback_trace(
+                "playlist-play-initial-prepared-discard",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(playlist_name)
+                    .elapsed(trace_start)
+                    .status("empty_track")
+                    .details(vec![trace_detail("indexGeneration", snapshot.generation)]),
+            );
             if let Err(error) = playable_index::discard_playlist_source(&snapshot) {
                 eprintln!(
-                    "[playlist_playback] failed to discard empty prepared first track source playlist=\"{}\" generation={}: {error}",
+                    "[playlist_playback] failed to discard empty prepared first track playlist=\"{}\" generation={}: {error}",
                     snapshot.playlist_name, snapshot.generation
                 );
             }
             continue;
         };
-        if !selection.contains_track_source(&source) {
+        if !track.file_path.is_file() {
+            emit_playlist_playback_trace(
+                "playlist-play-initial-prepared-discard",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(playlist_name)
+                    .elapsed(trace_start)
+                    .status("unplayable")
+                    .details(vec![
+                        trace_detail("indexGeneration", snapshot.generation),
+                        trace_detail("musicUrl", &track.music_url),
+                        trace_detail("musicName", &track.music_name),
+                        trace_detail("path", track.file_path.display()),
+                    ]),
+            );
             if let Err(error) = playable_index::discard_playlist_source(&snapshot) {
                 eprintln!(
-                    "[playlist_playback] failed to discard out-of-scope prepared first track source playlist=\"{}\" generation={}: {error}",
+                    "[playlist_playback] failed to discard unplayable prepared first track playlist=\"{}\" generation={}: {error}",
                     snapshot.playlist_name, snapshot.generation
                 );
             }
             continue;
         }
-        let Some(track) =
-            resolve_playlist_playback_source_track_for_playlist(playlist_name, source, &save_root)
-        else {
-            if let Err(error) = playable_index::discard_playlist_source(&snapshot) {
-                eprintln!(
-                    "[playlist_playback] failed to discard unplayable prepared first track source playlist=\"{}\" generation={}: {error}",
-                    snapshot.playlist_name, snapshot.generation
-                );
-            }
-            continue;
-        };
 
         emit_playlist_playback_trace(
             "playlist-play-initial-prepared-hit",
@@ -858,6 +894,125 @@ fn spawn_playlist_track_refresh(
             );
         }
     });
+}
+
+#[cfg(not(test))]
+fn spawn_playlist_initial_track_wait(
+    app: AppHandle,
+    playlist_name: String,
+    session: player_service::PlaybackSessionHandle,
+    request: player_service::PlaybackStartRequestHandle,
+    download_changes: tokio::sync::broadcast::Receiver<download_service::DownloadTaskChangeSignal>,
+) {
+    let task_playlist_name = playlist_name.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = wait_for_playlist_initial_track_and_start_queue(
+            app,
+            playlist_name,
+            session,
+            request,
+            download_changes,
+        )
+        .await
+        {
+            if player_service::is_playback_start_request_superseded(&error) {
+                return;
+            }
+            eprintln!(
+                "[playlist_playback] failed to start playback after first-slot arrival for `{task_playlist_name}`: {error}"
+            );
+        }
+    });
+}
+
+#[cfg(not(test))]
+async fn wait_for_playlist_initial_track_and_start_queue(
+    app: AppHandle,
+    playlist_name: String,
+    session: player_service::PlaybackSessionHandle,
+    request: player_service::PlaybackStartRequestHandle,
+    download_changes: tokio::sync::broadcast::Receiver<download_service::DownloadTaskChangeSignal>,
+) -> Result<()> {
+    let trace_start = Instant::now();
+    emit_playlist_playback_trace(
+        "playlist-play-backend-waiting-first-slot",
+        PlaylistPlaybackTrace::new(&app)
+            .playlist_name(&playlist_name)
+            .elapsed(trace_start)
+            .status("waiting_first_slot"),
+    );
+    let initial = wait_for_prepared_playlist_initial_track(&app, &playlist_name, &request).await?;
+    ensure_playlist_playback_request_current(&request)?;
+    if !player_service::is_session_current(&session)? {
+        return Err(player_service::PlaybackStartRequestSuperseded.into());
+    }
+
+    let tracks = create_start_anchor_playback_queue(initial.track.clone());
+    if !player_service::update_session_tracks(&session, tracks.clone())? {
+        return Err(player_service::PlaybackStartRequestSuperseded.into());
+    }
+    consume_playlist_initial_prepared_source(&initial.prepared_source);
+    emit_playlist_playback_trace(
+        "playlist-play-backend-first-slot-session-update",
+        PlaylistPlaybackTrace::new(&app)
+            .playlist_name(&playlist_name)
+            .track(&initial.track)
+            .elapsed(trace_start)
+            .queue_count(tracks.len())
+            .status("updated"),
+    );
+
+    let recent_history = Arc::new(Mutex::new(
+        PlaylistPlaybackRecentHistory::from_initial_track(initial.track.clone()),
+    ));
+    let queue_refresh_gate = Arc::new(tokio::sync::Mutex::new(()));
+    spawn_playlist_track_queue_fill(
+        app.clone(),
+        playlist_name.clone(),
+        session.clone(),
+        initial.track.clone(),
+        Arc::clone(&recent_history),
+        Arc::clone(&queue_refresh_gate),
+    );
+    spawn_playlist_track_refresh(
+        app,
+        playlist_name,
+        session,
+        initial.track,
+        download_changes,
+        recent_history,
+        queue_refresh_gate,
+    );
+    Ok(())
+}
+
+#[cfg(not(test))]
+async fn wait_for_prepared_playlist_initial_track(
+    app: &AppHandle,
+    playlist_name: &str,
+    request: &player_service::PlaybackStartRequestHandle,
+) -> Result<ResolvedPlaylistInitialTrack> {
+    let trace_start = Instant::now();
+    let mut index_revision = playable_index::subscribe_index_revision()?;
+    playable_index::request_playlist_slot_refill(playlist_name);
+
+    loop {
+        ensure_playlist_playback_request_current(request)?;
+        if let Some(initial) = resolve_prepared_playlist_initial_track(app, playlist_name).await? {
+            return Ok(initial);
+        }
+        emit_playlist_playback_trace(
+            "playlist-play-backend-first-slot-wait",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(playlist_name)
+                .elapsed(trace_start)
+                .status("waiting_revision"),
+        );
+        index_revision
+            .changed()
+            .await
+            .map_err(|_| anyhow!("playlist first-slot revision channel closed"))?;
+    }
 }
 
 #[cfg(not(test))]
@@ -1076,7 +1231,7 @@ async fn refresh_playlist_track_queue_for_anchor(
         );
         return Ok(true);
     }
-    player_service::update_session_tracks(session, tracks)
+    player_service::update_session_tracks_for_anchor(session, &current_track, tracks)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

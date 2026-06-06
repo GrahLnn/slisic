@@ -14,6 +14,7 @@ import {
   listenDownloadTaskChanged,
   listenPlaybackDiagnosticTrace,
   listenPlaybackExcludeCommitted,
+  listenPlaybackSurfaceStatusChanged,
   listenNowPlayingTrackChanged,
   MainStateT,
   persistSavePath,
@@ -36,6 +37,7 @@ import {
   excludeRemoved,
   nowPlayingTrackChanged,
   openPlaylist,
+  playbackSurfaceStatusChanged,
   playPlaylist,
   playlistPlaybackAccepted,
   playlistPlaybackStopped,
@@ -78,14 +80,10 @@ import {
   shouldCommitSpectrumPlaybackScopeExit,
   type PlaybackModeEffect,
 } from "./playbackMode";
-import { recordTrace } from "@/src/debug/renderPerformanceTrace";
+import { recordTrace } from "@/src/debug/trace";
 export { actor } from "./runtime";
 
 type ActorSnapshot = ReturnType<(typeof actor)["getSnapshot"]>;
-interface PlaylistPlayableIndexCommittedSignal {
-  candidateCount: number;
-  playlistName: string;
-}
 const selectMainState = me.select(
   (shot: { value: unknown }) => shot.value as MainStateT,
   me.eq.strict<MainStateT>(),
@@ -98,10 +96,23 @@ let unsubscribeNowPlayingTrackChanged: (() => void) | null = null;
 let unsubscribeDownloadTaskChanged: (() => void) | null = null;
 let unsubscribePlaybackDiagnosticTrace: (() => void) | null = null;
 let unsubscribePlaybackExcludeCommitted: (() => void) | null = null;
+let unsubscribePlaybackSurfaceStatusChanged: (() => void) | null = null;
 const playbackContinuationModeEffectOwner = createPlaybackContinuationModeEffectOwner({
   setPlaybackContinuationMode,
 });
 let playlistPlaybackStartEpoch = 0;
+
+type StablePlaylistTarget = {
+  kind: "stable";
+  playlistName: string;
+};
+
+type StablePlaylistTargetResolution =
+  | StablePlaylistTarget
+  | {
+      kind: "closed";
+      reason: "preview_cleared" | "superseded";
+    };
 
 function formatStateValue(value: unknown) {
   return typeof value === "string" ? value : JSON.stringify(value);
@@ -116,13 +127,41 @@ function traceAppSnapshotPayload(snapshot: ActorSnapshot) {
     state: formatStateValue(snapshot.value),
     spectrumPlaybackScopeId: snapshot.context.spectrumPlaybackScopeId,
     playingPlaylistName: snapshot.context.playingPlaylistName,
+    playingSessionGeneration: snapshot.context.playingSessionGeneration,
+    playbackSurfaceStatus: snapshot.context.playbackSurfaceStatus,
     pendingPlaylistPlaybackName: snapshot.context.pendingPlaylistPlaybackName,
+    pendingPlaylistPlaybackSessionGeneration:
+      snapshot.context.pendingPlaylistPlaybackSessionGeneration,
+    pendingPlaylistPlaybackPhase: snapshot.context.pendingPlaylistPlaybackRequest?.phase ?? null,
+    pendingPlaylistPlaybackReason: snapshot.context.pendingPlaylistPlaybackRequest?.reason ?? null,
+    pendingPlaylistPlaybackRequestId:
+      snapshot.context.pendingPlaylistPlaybackRequest?.requestId ?? null,
     nowPlayingTrackName: snapshot.context.nowPlayingTrackName,
     nowPlayingTrackUrl: snapshot.context.nowPlayingTrackUrl,
     nowPlayingTrackFilePath: snapshot.context.nowPlayingTrackFilePath,
     nowPlayingTrackStartMs: snapshot.context.nowPlayingTrackStartMs,
     nowPlayingTrackEndMs: snapshot.context.nowPlayingTrackEndMs,
   };
+}
+
+function playbackContextTraceKey(snapshot: ActorSnapshot) {
+  return JSON.stringify({
+    state: snapshot.value,
+    playingPlaylistName: snapshot.context.playingPlaylistName,
+    playingSessionGeneration: snapshot.context.playingSessionGeneration,
+    playbackSurfaceStatus: snapshot.context.playbackSurfaceStatus,
+    pendingPlaylistPlaybackName: snapshot.context.pendingPlaylistPlaybackName,
+    pendingPlaylistPlaybackSessionGeneration:
+      snapshot.context.pendingPlaylistPlaybackSessionGeneration,
+    pendingPlaylistPlaybackPhase: snapshot.context.pendingPlaylistPlaybackRequest?.phase ?? null,
+    pendingPlaylistPlaybackReason: snapshot.context.pendingPlaylistPlaybackRequest?.reason ?? null,
+    pendingPlaylistPlaybackRequestId:
+      snapshot.context.pendingPlaylistPlaybackRequest?.requestId ?? null,
+    nowPlayingTrackName: snapshot.context.nowPlayingTrackName,
+    nowPlayingTrackUrl: snapshot.context.nowPlayingTrackUrl,
+    nowPlayingTrackStartMs: snapshot.context.nowPlayingTrackStartMs,
+    nowPlayingTrackEndMs: snapshot.context.nowPlayingTrackEndMs,
+  });
 }
 
 interface SpectrumOpenProjection extends SpectrumOpenSourceIdentity {
@@ -153,6 +192,7 @@ export function attachDebugLogger() {
   const initialSnapshot = actor.getSnapshot();
   let prevState = formatStateValue(initialSnapshot.value);
   let prevError = initialSnapshot.context.error;
+  let prevPlaybackContextTraceKey = playbackContextTraceKey(initialSnapshot);
   recordTrace("app-state-initial", traceAppSnapshotPayload(initialSnapshot));
 
   if (prevError) {
@@ -166,6 +206,14 @@ export function attachDebugLogger() {
       if (nextError && nextError !== prevError) {
         console.error(`[appLogic:error] ${nextState}`, nextError);
       }
+      const nextPlaybackContextTraceKey = playbackContextTraceKey(snapshot);
+      if (nextPlaybackContextTraceKey !== prevPlaybackContextTraceKey) {
+        recordTrace("app-state-playback-context-changed", {
+          fromState: prevState,
+          ...traceAppSnapshotPayload(snapshot),
+        });
+        prevPlaybackContextTraceKey = nextPlaybackContextTraceKey;
+      }
       prevError = nextError;
       return;
     }
@@ -178,6 +226,7 @@ export function attachDebugLogger() {
       fromState: prevState,
       ...traceAppSnapshotPayload(snapshot),
     });
+    prevPlaybackContextTraceKey = playbackContextTraceKey(snapshot);
     prevState = nextState;
     prevError = nextError;
   });
@@ -207,8 +256,7 @@ async function excludeCurrentMusicAndSkipFromPlayback(snapshot: ActorSnapshot) {
       playlistDeleted: (playlistName) => send(playlistDeleted.load(playlistName)),
     },
     trace: {
-      started: (source) =>
-        recordTrace("playback-exclude-skip-start", { ...source }),
+      started: (source) => recordTrace("playback-exclude-skip-start", { ...source }),
       rejected: ({ reason, source }) =>
         recordTrace("playback-exclude-skip-rejected", {
           reason,
@@ -270,6 +318,199 @@ function sendPlaylistPlaybackErrorStop(args: {
   );
 }
 
+function findStablePlaylistTarget(
+  snapshot: ActorSnapshot,
+  playlistName: string,
+): StablePlaylistTarget | null {
+  const stablePlaylist = snapshot.context.playlists.find(
+    (playlist) => playlist.name === playlistName,
+  );
+  const pendingPreview = snapshot.context.pendingPlaylistPreview;
+
+  if (!pendingPreview) {
+    return stablePlaylist ? { kind: "stable", playlistName } : null;
+  }
+
+  const matchesPendingPreview =
+    pendingPreview.playlist.name === playlistName || pendingPreview.previousName === playlistName;
+
+  if (!matchesPendingPreview) {
+    return stablePlaylist ? { kind: "stable", playlistName } : null;
+  }
+
+  return null;
+}
+
+function shouldWaitForStablePlaylistTarget(snapshot: ActorSnapshot, playlistName: string) {
+  const pendingPreview = snapshot.context.pendingPlaylistPreview;
+
+  return (
+    pendingPreview !== null &&
+    (pendingPreview.playlist.name === playlistName || pendingPreview.previousName === playlistName)
+  );
+}
+
+function waitForStablePlaylistTarget(args: {
+  actionStartedAt: number;
+  playlistName: string;
+  requestId?: number;
+  source: "config" | "playback";
+}): Promise<StablePlaylistTargetResolution> {
+  const initialSnapshot = actor.getSnapshot();
+  const initialStableTarget = findStablePlaylistTarget(initialSnapshot, args.playlistName);
+  if (initialStableTarget) {
+    recordTrace("playlist-stable-target-ready", {
+      elapsedMs: currentPerformanceNow() - args.actionStartedAt,
+      playlistName: args.playlistName,
+      requestId: args.requestId ?? null,
+      source: args.source,
+      stablePlaylistName: initialStableTarget.playlistName,
+    });
+    return Promise.resolve(initialStableTarget);
+  }
+
+  if (!shouldWaitForStablePlaylistTarget(initialSnapshot, args.playlistName)) {
+    recordTrace("playlist-stable-target-missing", {
+      elapsedMs: currentPerformanceNow() - args.actionStartedAt,
+      playlistName: args.playlistName,
+      requestId: args.requestId ?? null,
+      source: args.source,
+      ...traceAppSnapshotPayload(initialSnapshot),
+    });
+    return Promise.resolve({ kind: "closed", reason: "preview_cleared" });
+  }
+
+  recordTrace("playlist-stable-target-wait-start", {
+    elapsedMs: currentPerformanceNow() - args.actionStartedAt,
+    pendingPreviewName: initialSnapshot.context.pendingPlaylistPreview?.playlist.name ?? null,
+    pendingPreviewPreviousName: initialSnapshot.context.pendingPlaylistPreview?.previousName ?? null,
+    playlistName: args.playlistName,
+    requestId: args.requestId ?? null,
+    source: args.source,
+    ...traceAppSnapshotPayload(initialSnapshot),
+  });
+
+  return new Promise((resolve) => {
+    const subscription = actor.subscribe((snapshot) => {
+      if (
+        args.requestId !== undefined &&
+        !isCurrentPlaylistPlaybackRequest(args.playlistName, args.requestId)
+      ) {
+        recordTrace("playlist-stable-target-wait-closed", {
+          elapsedMs: currentPerformanceNow() - args.actionStartedAt,
+          playlistName: args.playlistName,
+          reason: "superseded",
+          requestId: args.requestId,
+          source: args.source,
+          ...traceAppSnapshotPayload(actor.getSnapshot()),
+        });
+        subscription.unsubscribe();
+        resolve({ kind: "closed", reason: "superseded" });
+        return;
+      }
+
+      const stableTarget = findStablePlaylistTarget(snapshot, args.playlistName);
+      if (stableTarget) {
+        recordTrace("playlist-stable-target-wait-ready", {
+          elapsedMs: currentPerformanceNow() - args.actionStartedAt,
+          playlistName: args.playlistName,
+          requestId: args.requestId ?? null,
+          source: args.source,
+          stablePlaylistName: stableTarget.playlistName,
+          ...traceAppSnapshotPayload(snapshot),
+        });
+        subscription.unsubscribe();
+        resolve(stableTarget);
+        return;
+      }
+
+      if (!shouldWaitForStablePlaylistTarget(snapshot, args.playlistName)) {
+        recordTrace("playlist-stable-target-wait-closed", {
+          elapsedMs: currentPerformanceNow() - args.actionStartedAt,
+          playlistName: args.playlistName,
+          reason: "preview_cleared",
+          requestId: args.requestId ?? null,
+          source: args.source,
+          ...traceAppSnapshotPayload(snapshot),
+        });
+        subscription.unsubscribe();
+        resolve({ kind: "closed", reason: "preview_cleared" });
+      }
+    });
+  });
+}
+
+function openPlaylistAfterStableTarget(args: {
+  actionStartedAt: number;
+  playlistName: string;
+}) {
+  const stableTarget = findStablePlaylistTarget(actor.getSnapshot(), args.playlistName);
+  if (stableTarget) {
+    send(openPlaylist.load(stableTarget.playlistName));
+    return;
+  }
+
+  void waitForStablePlaylistTarget({
+    actionStartedAt: args.actionStartedAt,
+    playlistName: args.playlistName,
+    source: "config",
+  }).then((target) => {
+    if (target.kind !== "stable") {
+      return;
+    }
+
+    send(openPlaylist.load(target.playlistName));
+  });
+}
+
+function startPlaylistPlaybackAfterStableTarget(args: {
+  actionStartedAt: number;
+  playlistName: string;
+  requestId: number;
+}) {
+  const stableTarget = findStablePlaylistTarget(actor.getSnapshot(), args.playlistName);
+  const playbackStart =
+    stableTarget !== null
+      ? startPlaylistPlaybackFromAction({
+          actionStartedAt: args.actionStartedAt,
+          playlistName: stableTarget.playlistName,
+          requestId: args.requestId,
+        })
+      : waitForStablePlaylistTarget({
+          actionStartedAt: args.actionStartedAt,
+          playlistName: args.playlistName,
+          requestId: args.requestId,
+          source: "playback",
+        }).then((target) => {
+          if (target.kind !== "stable") {
+            if (
+              target.reason === "preview_cleared" &&
+              isCurrentPlaylistPlaybackRequest(args.playlistName, args.requestId)
+            ) {
+              send(
+                playlistPlaybackStopped.load({
+                  error: "playlist preview closed before stable playback target",
+                playlistName: args.playlistName,
+                  reason: "unstable_target",
+                requestId: args.requestId,
+                session: null,
+              }),
+              );
+            }
+
+            return null;
+          }
+
+          return startPlaylistPlaybackFromAction({
+            actionStartedAt: args.actionStartedAt,
+            playlistName: target.playlistName,
+            requestId: args.requestId,
+          });
+        });
+
+  return playbackStart;
+}
+
 function isCurrentPlaylistPlaybackRequest(playlistName: string, requestId: number) {
   const snapshot = actor.getSnapshot();
   const request = snapshot.context.pendingPlaylistPlaybackRequest;
@@ -278,35 +519,6 @@ function isCurrentPlaylistPlaybackRequest(playlistName: string, requestId: numbe
     request.requestId === requestId &&
     request.phase !== "failed"
   );
-}
-
-function playbackTraceDetailValue(
-  details: readonly { key: string; value: string }[] | null,
-  key: string,
-) {
-  return details?.find((detail) => detail.key === key)?.value ?? null;
-}
-
-function createPlayableIndexCommittedSignalFromTrace(args: {
-  candidateCount: number | null;
-  details: readonly { key: string; value: string }[] | null;
-  event: string;
-  playlistName: string | null;
-}): PlaylistPlayableIndexCommittedSignal | null {
-  const candidateCount = args.candidateCount ?? 0;
-  if (
-    args.event !== "playlist-playable-index-refresh-ok" ||
-    playbackTraceDetailValue(args.details, "committed") !== "true" ||
-    candidateCount <= 0 ||
-    args.playlistName === null
-  ) {
-    return null;
-  }
-
-  return {
-    candidateCount,
-    playlistName: args.playlistName,
-  };
 }
 
 async function startPlaylistPlaybackFromAction(args: {
@@ -496,10 +708,7 @@ async function openSpectrumAfterPlaybackMode(sourceSnapshot: ActorSnapshot) {
 async function restorePlaybackPageModeBeforeBackFromSpectrum(snapshot: ActorSnapshot) {
   const effects = resolveSpectrumExitPlaybackModeEffects(snapshot.context.spectrumPlaybackScopeId);
 
-  recordTrace(
-    "spectrum-back-restore-mode-start",
-    traceAppSnapshotPayload(snapshot),
-  );
+  recordTrace("spectrum-back-restore-mode-start", traceAppSnapshotPayload(snapshot));
   await applyPlaybackModeEffects(effects);
   recordTrace("spectrum-back-restore-mode-finished", {
     source: traceAppSnapshotPayload(snapshot),
@@ -599,6 +808,28 @@ function attachNowPlayingTrackListener() {
     });
 }
 
+function attachPlaybackSurfaceStatusListener() {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+    return;
+  }
+
+  void listenPlaybackSurfaceStatusChanged((payload) => {
+    recordTrace("player-playback-surface-status-event-received", {
+      playlistName: payload.playlist_name,
+      sessionGeneration: payload.session_generation,
+      status: payload.status,
+      ...traceAppSnapshotPayload(actor.getSnapshot()),
+    });
+    send(playbackSurfaceStatusChanged.load(payload));
+  })
+    .then((unlisten) => {
+      unsubscribePlaybackSurfaceStatusChanged = unlisten;
+    })
+    .catch((error) => {
+      console.error("Failed to subscribe to playback surface status changes", error);
+    });
+}
+
 function attachDownloadTaskChangeListener() {
   if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
     return;
@@ -641,18 +872,6 @@ function attachPlaybackDiagnosticTraceListener() {
       error: payload.error,
       details: payload.details,
     });
-    const playableIndexCommittedSignal = createPlayableIndexCommittedSignalFromTrace({
-      candidateCount: payload.candidate_count,
-      details: payload.details,
-      event: payload.event,
-      playlistName: payload.playlist_name,
-    });
-    if (playableIndexCommittedSignal) {
-      recordTrace("playlist-playable-index-first-slot-committed", {
-        candidateCount: playableIndexCommittedSignal.candidateCount,
-        playlistName: playableIndexCommittedSignal.playlistName,
-      });
-    }
   })
     .then((unlisten) => {
       unsubscribePlaybackDiagnosticTrace = unlisten;
@@ -698,6 +917,7 @@ export const action = {
   openCreate: (playlistName?: string) => {
     ensureStarted();
     pasteDownloadAction.reset();
+    const actionStartedAt = currentPerformanceNow();
     const snapshot = actor.getSnapshot();
     if (shouldExitSpectrumPlaybackScopeForSnapshot(snapshot)) {
       requestExitSpectrumPlaybackScope(snapshot.context.spectrumPlaybackScopeId);
@@ -706,7 +926,10 @@ export const action = {
       requestPlaybackStop();
     }
     if (playlistName) {
-      send(openPlaylist.load(playlistName));
+      openPlaylistAfterStableTarget({
+        actionStartedAt,
+        playlistName,
+      });
       return;
     }
 
@@ -715,6 +938,7 @@ export const action = {
   openPlaylist: (playlistName: string) => {
     ensureStarted();
     pasteDownloadAction.reset();
+    const actionStartedAt = currentPerformanceNow();
     const snapshot = actor.getSnapshot();
     if (shouldExitSpectrumPlaybackScopeForSnapshot(snapshot)) {
       requestExitSpectrumPlaybackScope(snapshot.context.spectrumPlaybackScopeId);
@@ -722,7 +946,10 @@ export const action = {
     if (shouldStopPlaybackForSnapshot(snapshot)) {
       requestPlaybackStop();
     }
-    send(openPlaylist.load(playlistName));
+    openPlaylistAfterStableTarget({
+      actionStartedAt,
+      playlistName,
+    });
   },
   playPlaylist: (playlistName: string) => {
     ensureStarted();
@@ -735,8 +962,7 @@ export const action = {
       state: formatStateValue(snapshot.value),
       playingPlaylistName: snapshot.context.playingPlaylistName,
       pendingPlaylistPreviewName: snapshot.context.pendingPlaylistPreview?.playlist.name ?? null,
-      pendingPlaylistPlaybackPhase:
-        snapshot.context.pendingPlaylistPlaybackRequest?.phase ?? null,
+      pendingPlaylistPlaybackPhase: snapshot.context.pendingPlaylistPlaybackRequest?.phase ?? null,
       pendingPlaylistPlaybackName:
         snapshot.context.pendingPlaylistPlaybackRequest?.playlistName ?? null,
       shouldToggleStop:
@@ -769,7 +995,13 @@ export const action = {
 
     const requestId = ++playlistPlaybackStartEpoch;
     send(playPlaylist.load({ playlistName, requestId }));
-    void startPlaylistPlaybackFromAction({
+    recordTrace("playlist-play-action-request-sent", {
+      playlistName,
+      requestId,
+      elapsedMs: currentPerformanceNow() - actionStartedAt,
+      ...traceAppSnapshotPayload(actor.getSnapshot()),
+    });
+    void startPlaylistPlaybackAfterStableTarget({
       actionStartedAt,
       playlistName,
       requestId,
@@ -873,7 +1105,21 @@ export const action = {
   },
   changeDraftName: (name: string) => {
     ensureStarted();
+    const before = actor.getSnapshot();
+    recordTrace("app-draft-name-change-requested", {
+      nextName: name,
+      state: formatStateValue(before.value),
+      previousDraftName: before.context.draft?.name ?? null,
+      draftBaselineName: before.context.draftBaseline?.name ?? null,
+    });
     send(draftNameChanged.load(name));
+    const after = actor.getSnapshot();
+    recordTrace("app-draft-name-change-applied", {
+      nextName: name,
+      state: formatStateValue(after.value),
+      draftName: after.context.draft?.name ?? null,
+      draftBaselineName: after.context.draftBaseline?.name ?? null,
+    });
   },
   changeSpectrumMusicName: (input: { id: string; name: string }) => {
     ensureStarted();
@@ -962,7 +1208,17 @@ export const action = {
   },
   upsertPlaylist: (payload: PlaylistUpsertResult) => {
     ensureStarted();
+    recordTrace("app-playlist-upsert-action-requested", {
+      previousName: payload.previousName,
+      playlistName: payload.playlist.name,
+      state: formatStateValue(actor.getSnapshot().value),
+    });
     send(playlistUpserted.load(payload));
+    recordTrace("app-playlist-upsert-action-applied", {
+      previousName: payload.previousName,
+      playlistName: payload.playlist.name,
+      ...traceAppSnapshotPayload(actor.getSnapshot()),
+    });
   },
   deletePlaylist: async (playlistName: string) => {
     ensureStarted();
@@ -1037,6 +1293,7 @@ export function ensureStarted() {
   actor.start();
   attachDebugLogger();
   attachNowPlayingTrackListener();
+  attachPlaybackSurfaceStatusListener();
   attachDownloadTaskChangeListener();
   attachPlaybackDiagnosticTraceListener();
   attachPlaybackExcludeCommittedListener();
@@ -1053,6 +1310,8 @@ export function stop() {
   unsubscribeDebug = null;
   unsubscribeNowPlayingTrackChanged?.();
   unsubscribeNowPlayingTrackChanged = null;
+  unsubscribePlaybackSurfaceStatusChanged?.();
+  unsubscribePlaybackSurfaceStatusChanged = null;
   unsubscribeDownloadTaskChanged?.();
   unsubscribeDownloadTaskChanged = null;
   unsubscribePlaybackDiagnosticTrace?.();

@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
-import { recordTrace } from "@/src/debug/renderPerformanceTrace";
+import { recordTrace } from "@/src/debug/trace";
 import { collectionTitleLayoutTransition } from "../collectionTitle";
 import type { EditableTitleHandle } from "../EditableTitle";
 import type { MusicSpectrumSelection } from "./MusicSpectrumEditor";

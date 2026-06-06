@@ -15,6 +15,7 @@ import type {
   PlayListWriteRequest,
   SpectrumMusicSourceContext,
   NowPlayingTrackChangedEvent,
+  PlaybackSurfaceStatusChangedEvent,
 } from "@/src/cmd";
 import type {
   SpectrumEditCommitFrame,
@@ -77,14 +78,16 @@ export interface CollectionUpdatesChange {
 }
 
 export type NowPlayingTrackEvidence = NowPlayingTrackChangedEvent;
+export type PlaybackSurfaceStatusEvidence = PlaybackSurfaceStatusChangedEvent;
 export type InitialPlaybackTrackEvidence = PlaybackTrackPayload & {
   session_generation: number;
 };
-export type PlaylistPlaybackRequestPhase = "failed" | "preparing" | "starting";
+export type PlaylistPlaybackRequestPhase = "failed" | "starting";
 export type PlaylistPlaybackStopReason =
   | Exclude<PlayPlaylistSession["status"], "started">
   | "error"
-  | "stale";
+  | "stale"
+  | "unstable_target";
 
 export interface PlaylistPlaybackRequestEvidence {
   error: string | null;
@@ -202,6 +205,7 @@ export interface RuntimeCapabilityContext {
   nowPlayingTrackStartMs: number | null;
   nowPlayingTrackEndMs: number | null;
   nowPlayingTrackLiked: boolean | null;
+  playbackSurfaceStatus: PlaybackSurfaceStatusEvidence["status"] | null;
   playingSessionGeneration: number | null;
   pendingPlaylistPlaybackSessionGeneration: number | null;
   spectrumPlaybackScopeId: number | null;
@@ -230,6 +234,7 @@ export interface PresentationLeaseContext {
 
 export interface PendingEvidenceContext {
   pendingNowPlayingTrackEvidence: NowPlayingTrackEvidence | null;
+  pendingPlaybackSurfaceStatusEvidence: PlaybackSurfaceStatusEvidence | null;
   error: string | null;
 }
 
@@ -836,6 +841,7 @@ export function createInitialContext(): Context {
     nowPlayingTrackStartMs: null,
     nowPlayingTrackEndMs: null,
     nowPlayingTrackLiked: null,
+    playbackSurfaceStatus: null,
     pendingNowPlayingTrackEvidence: null,
     playingSessionGeneration: null,
     pendingPlaylistPlaybackSessionGeneration: null,
@@ -855,6 +861,7 @@ export function createInitialContext(): Context {
     draftBaseline: null,
     draft: null,
     error: null,
+    pendingPlaybackSurfaceStatusEvidence: null,
     lastContextResetLifecycle: null,
   };
 }

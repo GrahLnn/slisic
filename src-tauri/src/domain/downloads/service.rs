@@ -2043,6 +2043,7 @@ async fn handle_existing_leaf_completion(
         )
         .await?;
         write_collection_manifest_after_download(save_root, collection, source_kind)?;
+        collection_import::notify_downloaded_leaf_collection_committed();
         Ok::<_, anyhow::Error>(())
     }
     .await;
@@ -2207,6 +2208,7 @@ async fn persist_completed_leaf_download(
     .with_context(|| format!("failed to persist downloaded music for {leaf_url}"))?;
     write_collection_manifest_after_download(save_root, collection, source_kind)
         .with_context(|| format!("failed to write collection manifest for {leaf_url}"))?;
+    collection_import::notify_downloaded_leaf_collection_committed();
     eprintln!(
         "[downloads] manifest updated collection_folder={} relative_path={}",
         collection.folder, file_name

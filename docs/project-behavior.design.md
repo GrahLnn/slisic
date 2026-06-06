@@ -61,29 +61,30 @@ Slisic uses the same shape:
 The following lifecycles have independent clocks. They may observe each other
 through evidence, but they do not become one lifecycle.
 
-| Lifecycle | Owner | Clock | Stable Output |
-| --- | --- | --- | --- |
-| `AppBootstrap` | bootstrap loader plus `appLogic` | app run, retry, startup data acceptance | `loading`, `ready`, or `error` with stable app snapshot |
-| `PlaylistItemClick` | frontend action facade plus `appLogic` | user click and backend playback result | `ready`, `play`, or retained current accepted play base |
-| `PlaylistInteractionResponse` | playlist page view model and title handoff models | app projection, click overlay, playback surface, Torph stages | immediate title lock, visible target, icons, preparing flag, restore release |
-| `PlaybackSurface` | playlist page view model and local render model | accepted app state plus player now-playing events plus Torph stages | visible playlist title, track title, preparing text, icons, restore motion |
-| `PlaylistDraftCommit` | list config, appLogic, playlist persistence commands | config check/back, draft changes, commit result | immediate return, title handoff, background playlist upsert evidence |
-| `FastUrlResolveQueue` | `pasteDownload` fast URL resolve queue | queued URL admission, cancel/reset, URL resolution completion | candidate-scoped URL resolution evidence |
-| `PasteDownloadCandidate` | `pasteDownload` machine plus list config candidate projection | paste, URL resolution evidence, title probe, enqueue, task signals, delete/reset | candidate item state and collection shell evidence |
-| `AudioStyleModelRuntime` | `playlist_playback::recommendation` | library/download/import changes, embedding decode, training publication | stable model snapshot and completed snapshot history |
-| `DownloadTaskRuntime` | `downloads::service` | enqueue, resolve, probing, downloading, persisting, terminal status | task status, leaf status, task change signal |
-| `CollectionImport` | `collection_import` | shell creation, collection planning, local import, downloaded leaf finalization | collection shell, music rows, collection manifest |
-| `FirstSlot` | `playlist_playback::playable_index` | runtime startup, local cache restore, slot vacancy, model publication, playlist/library/exclude invalidation | prepared first-track credentials per playlist |
-| `PlaybackStart` | `playlist_playback::service` | one backend `playPlaylist(name)` request | `started`, `pending_first_track`, `superseded`, or error |
-| `PlayerSession` | `player::service` | accepted playback session generation and track boundaries | now-playing events, queue consumption, stop, pause, resume |
-| `NextTrack` | `playlist_playback::service` and recommendation runtime | player acceptance and queue repair signals | refreshed explicit player queue |
-| `LoudnessEvidence` | downloads, player, playlists repository | completed file or active playback track without loudness | persisted non-zero LUFS evidence and current-session normalization |
-| `SpectrumScope` | player domain and spectrum page | open spectrum, scoped playback, close scope | spectrum page, scoped preview, or returned play state |
-| `SpectrumMusicCommitTransaction` | spectrum edit transaction runner | check, ordered repository phases, epoch callbacks | accepted create/update/delete evidence or negative evidence for current epoch |
-| `PlaybackExcludeTransaction` | exclude current music transaction runner | exclude command, backend result, current projection check | playlist/exclude projection updates and optional play back-out |
-| `ContextResetLifecycle` | `appLogic` context resetter | state transition reset with grouped patch | explicit chart/lease/transaction close/open/preserve journal |
-| `Updater` | updater machine | startup wake, update check, download/install prompt, retry timer | update ready notification or delayed retry |
-| `TraceLifecycle` | trace registry and enabled probes | install, enable probes, record, clear, save | optional JSONL diagnostic evidence |
+| Lifecycle                        | Owner                                                         | Clock                                                                                                        | Stable Output                                                                 |
+| -------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| `AppBootstrap`                   | bootstrap loader plus `appLogic`                              | app run, retry, startup data acceptance                                                                      | `loading`, `ready`, or `error` with stable app snapshot                       |
+| `PlaylistItemClick`              | frontend action facade plus `appLogic`                        | user click and backend playback result                                                                       | `ready`, `play`, or retained current accepted play base                       |
+| `PlaylistInteractionResponse`    | playlist page view model and title handoff models             | app projection, click overlay, playback surface, Torph stages                                                | immediate title lock, visible target, icons, preparing flag, restore release  |
+| `PlaybackSurface`                | playlist page view model and local render model               | accepted app state plus player now-playing events plus Torph stages                                          | visible playlist title, track title, preparing text, icons, restore motion    |
+| `PlaylistDraftCommit`            | list config, appLogic, playlist persistence commands          | config check/back, draft changes, commit result                                                              | immediate return, title handoff, background playlist upsert evidence          |
+| `OptimisticPlaylistProjection`   | playlist commit runtime plus appLogic ready projection        | dirty check preview, playlist upsert acceptance or failure, user target demand while commit is pending        | visible playlist item plus stable-target gate evidence                        |
+| `FastUrlResolveQueue`            | `pasteDownload` fast URL resolve queue                        | queued URL admission, cancel/reset, URL resolution completion                                                | candidate-scoped URL resolution evidence                                      |
+| `PasteDownloadCandidate`         | `pasteDownload` machine plus list config candidate projection | paste, URL resolution evidence, title probe, enqueue, task signals, delete/reset                             | candidate item state and collection shell evidence                            |
+| `AudioStyleModelRuntime`         | `playlist_playback::recommendation`                           | library/download/import changes, embedding decode, training publication                                      | stable model snapshot and completed snapshot history                          |
+| `DownloadTaskRuntime`            | `downloads::service`                                          | enqueue, resolve, probing, downloading, persisting, terminal status                                          | task status, leaf status, task change signal                                  |
+| `CollectionImport`               | `collection_import`                                           | shell creation, collection planning, local import, downloaded leaf finalization                              | collection shell, music rows, collection manifest                             |
+| `FirstSlot`                      | `playlist_playback::playable_index`                           | runtime startup, local cache restore, slot vacancy, model publication, playlist/library/exclude invalidation | prepared first-track credentials per playlist                                 |
+| `PlaybackStart`                  | `playlist_playback::service`                                  | one stable backend `playPlaylist(name)` request                                                              | `started`, `pending_first_track`, `superseded`, or error                      |
+| `PlayerSession`                  | `player::service`                                             | accepted playback session generation and track boundaries                                                    | now-playing events, queue consumption, stop, pause, resume                    |
+| `NextTrack`                      | `playlist_playback::service` and recommendation runtime       | player acceptance and queue repair signals                                                                   | refreshed explicit player queue                                               |
+| `LoudnessEvidence`               | downloads, player, playlists repository                       | completed file or active playback track without loudness                                                     | persisted non-zero LUFS evidence and current-session normalization            |
+| `SpectrumScope`                  | player domain and spectrum page                               | open spectrum, scoped playback, close scope                                                                  | spectrum page, scoped preview, or returned play state                         |
+| `SpectrumMusicCommitTransaction` | spectrum edit transaction runner                              | check, ordered repository phases, epoch callbacks                                                            | accepted create/update/delete evidence or negative evidence for current epoch |
+| `PlaybackExcludeTransaction`     | exclude current music transaction runner                      | exclude command, backend result, current projection check                                                    | playlist/exclude projection updates and optional play back-out                |
+| `ContextResetLifecycle`          | `appLogic` context resetter                                   | state transition reset with grouped patch                                                                    | explicit chart/lease/transaction close/open/preserve journal                  |
+| `Updater`                        | updater machine                                               | startup wake, update check, download/install prompt, retry timer                                             | update ready notification or delayed retry                                    |
+| `TraceLifecycle`                 | trace registry and enabled probes                             | install, enable probes, record, clear, save                                                                  | optional JSONL diagnostic evidence                                            |
 
 The rest of this document expands the lifecycles that currently carry the
 highest boundary risk. Some lifecycles already have deeper module-local design
@@ -104,12 +105,12 @@ these boundaries:
 Local lifecycles stay in their module documents or tests when their owner is
 single and their transfers are already represented here:
 
-| Local lifecycle | Current home | Project-level treatment |
-| --- | --- | --- |
-| `SpectrumVisualizer` | `src/components/spectrum/SpectrumVisualizer.design.md` | local viewport/tile/canvas/selection/playhead lifecycle; project document only tracks spectrum scope transfers |
-| `PlaybackContinuationModeEffectOwner` | `src/flow/appLogic/playbackContinuationModeEffectOwner.ts` and playback mode tests | local backend mode command owner for spectrum entry/exit |
-| title handoff/return models | `src/components/playListTitle*.model.ts` tests and page view-model tests | folded into `PlaylistInteractionResponse` because their observable job is UI timing |
-| window focus/maximized and topbar visibility | `src/flow/windowFocus.ts`, `src/flow/windowMaximized.ts`, `src/flow/barVisible.ts` | local UI chrome projection only; must not become app, playback, download, or model state |
+| Local lifecycle                              | Current home                                                                       | Project-level treatment                                                                                        |
+| -------------------------------------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `SpectrumVisualizer`                         | `src/components/spectrum/SpectrumVisualizer.design.md`                             | local viewport/tile/canvas/selection/playhead lifecycle; project document only tracks spectrum scope transfers |
+| `PlaybackContinuationModeEffectOwner`        | `src/flow/appLogic/playbackContinuationModeEffectOwner.ts` and playback mode tests | local backend mode command owner for spectrum entry/exit                                                       |
+| title handoff/return models                  | `src/components/playListTitle*.model.ts` tests and page view-model tests           | folded into `PlaylistInteractionResponse` because their observable job is UI timing                            |
+| window focus/maximized and topbar visibility | `src/flow/windowFocus.ts`, `src/flow/windowMaximized.ts`, `src/flow/barVisible.ts` | local UI chrome projection only; must not become app, playback, download, or model state                       |
 
 If any local lifecycle starts deciding another owner's state, or if another
 owner starts waiting on it, it must be promoted into this document with its own
@@ -132,12 +133,18 @@ stateDiagram-v2
   error --> loading: run
 
   ready --> ready: paste / import / commit accepted
-  ready --> config: open create or edit
-  ready --> readyPendingPlaybackTitle: click playlist item
+  ready --> config: open create or stable edit
+  ready --> configLoading: open optimistic preview / wait stable draft
+  ready --> readyPendingPlaybackTitle: click stable playlist item
+  ready --> readyPendingStableTarget: click optimistic preview / pending title only
 
   config --> ready: check accepted immediately
   config --> ready: back / cancel
-  config --> readyPendingPlaybackTitle: preview play click
+  config --> readyPendingStableTarget: preview play click / wait stable target
+
+  readyPendingStableTarget --> readyPendingPlaybackTitle: stable target accepted / backend start issued
+  readyPendingStableTarget --> ready: stable target rejected or superseded
+  readyPendingStableTarget --> readyPendingStableTarget: stale stable-target result
 
   readyPendingPlaybackTitle --> play: backend started(requestId, sessionGeneration)
   readyPendingPlaybackTitle --> ready: pending_first_track(requestId)
@@ -150,8 +157,13 @@ stateDiagram-v2
   play --> play: queue repaired with [current,next]
   play --> ready: click same accepted playlist
   play --> ready: back
-  play --> playPendingReplacement: click different playlist
+  play --> playPendingReplacement: click different stable playlist
+  play --> playPendingStableTarget: click optimistic preview / retain current play
   play --> spectrum: open spectrum with accepted scope
+
+  playPendingStableTarget --> playPendingReplacement: stable target accepted / backend start issued
+  playPendingStableTarget --> play: stable target rejected or superseded
+  playPendingStableTarget --> playPendingStableTarget: stale stable-target result
 
   playPendingReplacement --> play: backend started(new requestId, sessionGeneration)
   playPendingReplacement --> play: pending_first_track(new requestId)
@@ -169,16 +181,21 @@ The same motion as lifecycle lanes:
 UserClick lane:
   click(name)
     -> open pending request id
-    -> call backend playPlaylist(name)
+    -> open PendingTitle response in the same turn
+    -> if target is stable, call backend playPlaylist(name)
+    -> if target is optimistic preview, register stable-target waiter
+    -> stable-target accepted calls backend playPlaylist(stableName)
+    -> stable-target rejected closes the pending title
     -> wait for started | stopped | error
     -> emit accepted playback only for current request id
+    -> never projects stable-target waiting as Preparing
 
 FirstSlot lane:
   startup
     -> restore local first-slot cargo if present
     -> fill or validate prepared credentials for playlists
     -> model/library/exclude/playlist/slot-vacancy signals refill or invalidate
-    -> click reads credential
+    -> PlaybackStart reads credential after a stable backend request exists
     -> player acceptance consumes credential
     -> consumption schedules same-playlist replacement
 
@@ -194,6 +211,15 @@ DownloadTaskRuntime lane:
     -> publish task change signals
     -> collection/music rows appear only through import/download owners
     -> ready/config/check only project current evidence
+
+OptimisticPlaylistProjection lane:
+  dirty config check
+    -> publish visible playlist preview immediately
+    -> submit playlist upsert in background
+    -> config-open target may wait for stable draft evidence
+    -> play-click target may wait for stable playlist evidence
+    -> upsert accepted clears preview and wakes waiting consumers
+    -> upsert failed closes preview and rejects waiting consumers
 
 PlayerSession lane:
   accepted startup [first]
@@ -249,13 +275,13 @@ that the producer is "done", or mutate the producer's state for convenience.
 
 ### Access Kinds
 
-| Access | Meaning | May mutate owner state? | Required identity |
-| --- | --- | --- | --- |
-| `wake` | tell an owner that new evidence may exist | owner decides later | reason plus affected scope |
-| `read` | copy stable evidence without taking it | no | slot key and evidence generation when available |
-| `consume` | spend a linear credential through owner validation | only owner mutates | credential id plus generation |
-| `project` | derive UI/app output from accepted evidence | no producer mutation | accepted request/session identity |
-| `command` | ask a command owner to act | owner may reject | request, generation, scope, or transaction id |
+| Access    | Meaning                                            | May mutate owner state? | Required identity                               |
+| --------- | -------------------------------------------------- | ----------------------- | ----------------------------------------------- |
+| `wake`    | tell an owner that new evidence may exist          | owner decides later     | reason plus affected scope                      |
+| `read`    | copy stable evidence without taking it             | no                      | slot key and evidence generation when available |
+| `consume` | spend a linear credential through owner validation | only owner mutates      | credential id plus generation                   |
+| `project` | derive UI/app output from accepted evidence        | no producer mutation    | accepted request/session identity               |
+| `command` | ask a command owner to act                         | owner may reject        | request, generation, scope, or transaction id   |
 
 `wake` is not ownership. `read` is not consumption. `project` is not truth
 creation. A `command` enters the target owner and may be refused without forcing
@@ -263,21 +289,22 @@ the caller into an illegal state.
 
 ### Authority Review Table
 
-| Owner lifecycle | Cargo slot | Consumers | Consumer power | Forbidden takeover |
-| --- | --- | --- | --- | --- |
-| `AudioStyleModelRuntime` | `stableModelSnapshot(modelGeneration)` plus completed snapshot history | `FirstSlot`, `NextTrack` | read snapshot for centerless or anchored proposal | click path, player boundary, or UI trains the model, waits for model completion, or turns model absence into `Preparing...` |
-| `DownloadTaskRuntime` | `DownloadTaskChangeSignal(taskId, url, collectionUrl, status)` and persisted task rows | app projection, playlist queue repair, first-slot refresh triggers | observe status and wake affected owners | config/check/ready declares a task complete, clears active tasks, or replaces task state because the visible page changed |
-| `FastUrlResolveQueue` | candidate-scoped URL resolution result | `PasteDownloadCandidate` | accept latest still-open resolution evidence | candidate row state, check/back, or download task runtime runs URL resolution directly or accepts late closed-scope results |
-| `PasteDownloadCandidate` | candidate item state plus root title and enqueue/task evidence | list config view, app draft collection upsert | project candidate rows and pass collection shell evidence to draft | check/back/reset declares active download completion, title probe becomes collection truth, or candidate rows own backend task status |
-| `CollectionImport` | collection shell, collection manifest, persisted music rows | playlists repo, config library projection, download task runtime | read canonical collection/music rows after import owner commits | playlist config invents collection rows, infers group membership, or treats pasted URL parsing as downloaded music evidence |
-| playlist repository | playlist playback selection and collection membership | `FirstSlot`, `PlaybackStart`, `NextTrack`, `PlayerSession` identity substitution | read scoped membership and canonical music rows | player or frontend scans the whole library to choose first/next or widens fallback outside playlist membership |
-| `FirstSlot` | prepared first credential pool keyed by playlist, generation, credential id | `PlaybackStart` | read one credential, discard invalid credential, consume accepted credential | click path refills synchronously, frontend consumes credentials, player reads first slot, or miss becomes `Preparing...` |
-| `PlaybackStart` | accepted result: `started`, `pending_first_track`, `superseded`, error | `PlaylistItemClick`, `appLogic` | close matching request or enter accepted play | frontend manufactures track/preparing evidence or keeps pending overlay after matching closure |
-| `NextTrack` | explicit queue proposal for current session generation and anchor | `PlayerSession` | replace session queue only when still current and missing distinct next | player calls recommendation model, model publication replaces existing next, or stale attempt commits |
-| `PlayerSession` | active session generation, active track, active range, now-playing event, playback status | `appLogic`, `PlaybackSurface`, `SpectrumScope`, `LoudnessEvidence` | project play state, surface text, spectrum scope, loudness update | UI chooses tracks, playback mutates click overlay, or now-playing from stale generation creates current play |
-| `LoudnessEvidence` | finite non-zero LUFS for a track identity | `PlayerSession`, playlists repo | normalize playback and refresh now-playing for same identity | missing loudness blocks playback or measured LUFS applies to another file/range |
-| `PlaylistInteractionResponse` | display lock, focused title, visible text, icon/preparing projection | rendered playlist page | preserve immediate human response | backend trace or task status owns visual timing, or app state deletes title handoff details |
-| trace registry | diagnostic trace lines | humans and tests during diagnosis | observe timing after enabling trace | trace event becomes a state transition, wait state, or source of truth |
+| Owner lifecycle               | Cargo slot                                                                                | Consumers                                                                        | Consumer power                                                               | Forbidden takeover                                                                                                                    |
+| ----------------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `AudioStyleModelRuntime`      | `stableModelSnapshot(modelGeneration)` plus completed snapshot history                    | `FirstSlot`, `NextTrack`                                                         | read snapshot for centerless or anchored proposal                            | click path, player boundary, or UI trains the model, waits for model completion, or turns model absence into `Preparing...`           |
+| `DownloadTaskRuntime`         | `DownloadTaskChangeSignal(taskId, url, collectionUrl, status)` and persisted task rows    | app projection, playlist queue repair, first-slot refresh triggers               | observe status and wake affected owners                                      | config/check/ready declares a task complete, clears active tasks, or replaces task state because the visible page changed             |
+| `FastUrlResolveQueue`         | candidate-scoped URL resolution result                                                    | `PasteDownloadCandidate`                                                         | accept latest still-open resolution evidence                                 | candidate row state, check/back, or download task runtime runs URL resolution directly or accepts late closed-scope results           |
+| `PasteDownloadCandidate`      | candidate item state plus root title and enqueue/task evidence                            | list config view, app draft collection upsert                                    | project candidate rows and pass collection shell evidence to draft           | check/back/reset declares active download completion, title probe becomes collection truth, or candidate rows own backend task status |
+| `CollectionImport`            | collection shell, collection manifest, persisted music rows                               | playlists repo, config library projection, download task runtime                 | read canonical collection/music rows after import owner commits              | playlist config invents collection rows, infers group membership, or treats pasted URL parsing as downloaded music evidence           |
+| playlist repository           | playlist playback selection and collection membership                                     | `FirstSlot`, `PlaybackStart`, `NextTrack`, `PlayerSession` identity substitution | read scoped membership and canonical music rows                              | player or frontend scans the whole library to choose first/next or widens fallback outside playlist membership                        |
+| `OptimisticPlaylistProjection` | pending playlist preview plus stable-target waiters keyed by transaction/name             | ready list, config open, playlist item click                                     | display preview and wait for accepted upsert before entering stable owners   | preview becomes config baseline, preview item is disabled, or click calls backend playback before playlist upsert is accepted         |
+| `FirstSlot`                   | prepared first credential pool keyed by playlist, generation, credential id               | `PlaybackStart`                                                                  | read one credential, discard invalid credential, consume accepted credential | click path refills synchronously, frontend consumes credentials, player reads first slot, or miss becomes `Preparing...`              |
+| `PlaybackStart`               | accepted result: `started`, `pending_first_track`, `superseded`, error                    | `PlaylistItemClick`, `appLogic`                                                  | close matching request or enter accepted play                                | frontend manufactures track/preparing evidence or keeps pending overlay after matching closure                                        |
+| `NextTrack`                   | explicit queue proposal for current session generation and anchor                         | `PlayerSession`                                                                  | replace session queue only when still current and missing distinct next      | player calls recommendation model, model publication replaces existing next, or stale attempt commits                                 |
+| `PlayerSession`               | active session generation, active track, active range, now-playing event, playback status | `appLogic`, `PlaybackSurface`, `SpectrumScope`, `LoudnessEvidence`               | project play state, surface text, spectrum scope, loudness update            | UI chooses tracks, playback mutates click overlay, or now-playing from stale generation creates current play                          |
+| `LoudnessEvidence`            | finite non-zero LUFS for a track identity                                                 | `PlayerSession`, playlists repo                                                  | normalize playback and refresh now-playing for same identity                 | missing loudness blocks playback or measured LUFS applies to another file/range                                                       |
+| `PlaylistInteractionResponse` | display lock, focused title, visible text, icon/preparing projection                      | rendered playlist page                                                           | preserve immediate human response                                            | backend trace or task status owns visual timing, or app state deletes title handoff details                                           |
+| trace registry                | diagnostic trace lines                                                                    | humans and tests during diagnosis                                                | observe timing after enabling trace                                          | trace event becomes a state transition, wait state, or source of truth                                                                |
 
 ### Boundary Smells
 
@@ -324,11 +351,11 @@ other owners, but it may not allocate their state or invent their evidence.
 
 ### Participants
 
-| Participant | Owns |
-| --- | --- |
-| `PlayListPage` | dispatches the click and preserves per-item render refs |
-| `appLogic.action.playPlaylist` | classifies current page state, creates request id, starts backend command |
-| `appLogic.machine` | stores pending playback request evidence and accepted play projection |
+| Participant                    | Owns                                                                      |
+| ------------------------------ | ------------------------------------------------------------------------- |
+| `PlayListPage`                 | dispatches the click and preserves per-item render refs                   |
+| `appLogic.action.playPlaylist` | classifies current page state, creates request id, gates stable target, starts stable backend command |
+| `appLogic.machine`             | stores pending playback request evidence and accepted play projection     |
 
 No backend, player, first-slot, next-track, loudness, spectrum, or view-model
 module is a participant of this lifecycle. They appear only as external evidence
@@ -339,12 +366,6 @@ sources or transfer targets.
 ```ts
 ClickIntent = {
   source: "ready" | "play";
-  playlistName: String;
-  requestId: Number;
-};
-
-PendingPlaybackRequest = {
-  phase: "starting";
   playlistName: String;
   requestId: Number;
 };
@@ -370,6 +391,7 @@ Base =
 
 Overlay =
   | ["none"]
+  | ["waitingStableTarget", intent: ClickIntent]
   | ["pendingFromReady", intent: ClickIntent]
   | ["pendingReplacement", intent: ClickIntent]
   | ["failed", evidence: FailedPlaybackEvidence];
@@ -380,6 +402,12 @@ projection. A pending click is not a new base page state. A replacement click
 does not snapshot the prior accepted playback; the current `play` base keeps
 evolving while the pending overlay exists.
 
+`waitingStableTarget` is intentionally still a click overlay. It exists only
+because the user has clicked a visible optimistic preview before repository
+acceptance has produced a stable playlist coordinate. It may lock the target
+title, but it has not entered `PlaybackStart`, has not touched `FirstSlot`, and
+has no right to project `Preparing...`.
+
 `requestId` is the linear token for the overlay. `sessionGeneration` is the
 linear token for accepted playback. Backend callbacks, initial track evidence,
 and pending now-playing evidence can be consumed only while they match the
@@ -387,18 +415,22 @@ current pending request or accepted session.
 
 ### External Evidence
 
-| Evidence | Source owner | Meaning inside `PlaylistItemClick` |
-| --- | --- | --- |
-| `backend.started` | `playlist_playback::service` and `player::service` | request accepted by backend/player and may enter `play` |
-| `backend.stopped` | `playlist_playback::service` | request closed without accepted playback |
-| `backend.error` | `playlist_playback::service` | request failed and should close overlay while preserving current accepted play when one exists |
-| `stale` | request identity guard | callback belongs to a closed or superseded request and must be ignored by current state |
+| Evidence          | Source owner                                       | Meaning inside `PlaylistItemClick`                                                             |
+| ----------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `stable.target`   | `OptimisticPlaylistProjection`                     | preview target has been accepted by the playlist repository and backend start may now run      |
+| `stable.rejected` | `OptimisticPlaylistProjection`                     | preview target will not become stable; close matching overlay without entering playback        |
+| `backend.started` | `PlaybackStart` and `PlayerSession`                | request accepted by backend/player and may enter `play`                                        |
+| `backend.stopped` | `PlaybackStart`                                    | request closed without accepted playback                                                       |
+| `backend.error`   | `PlaybackStart`                                    | request failed and should close overlay while preserving current accepted play when one exists |
+| `stale`           | request identity guard                             | callback belongs to a closed or superseded request and must be ignored by current state        |
 
 ### Transition
 
 ```ts
 Action =
   | ["click", playlistName: String]
+  | ["stable.target", requestId: Number, playlistName: String]
+  | ["stable.rejected", requestId: Number, reason: String]
   | ["backend.started", requestId: Number, session: StartedSession]
   | ["backend.stopped", requestId: Number, reason: StopReason]
   | ["backend.error", requestId: Number, reason: String]
@@ -409,6 +441,10 @@ state(base: Base, overlay: Overlay) =
   next().is(
     | ["click", playlistName] =>
         click(base, overlay, playlistName)
+    | ["stable.target", requestId, playlistName] =>
+        startBackendIfCurrentStable(base, overlay, requestId, playlistName)
+    | ["stable.rejected", requestId, reason] =>
+        closeStableWaitIfCurrent(base, overlay, requestId, reason)
     | ["backend.started", requestId, session] =>
         acceptIfCurrent(base, overlay, requestId, session)
     | ["backend.stopped", requestId, reason] =>
@@ -437,12 +473,36 @@ click(["play", current], overlay, playlistName) =
   );
 
 openPendingFromReady(intent: ClickIntent, replacing: Overlay) =
-  backendPlay(intent);
-  ["pendingFromReady", intent];
+  targetIsStable(intent.playlistName)
+    ? backendPlay(intent); ["pendingFromReady", intent]
+    : waitStableTarget(intent); ["waitingStableTarget", intent];
 
 openPendingReplacement(intent: ClickIntent, replacing: Overlay) =
-  backendPlay(intent);
-  ["pendingReplacement", intent];
+  targetIsStable(intent.playlistName)
+    ? backendPlay(intent); ["pendingReplacement", intent]
+    : waitStableTarget(intent); ["waitingStableTarget", intent];
+
+startBackendIfCurrentStable(["ready"], ["waitingStableTarget", intent], intent.requestId, playlistName) =
+  let stableIntent = replaceTargetName(intent, playlistName);
+  backendPlay(stableIntent);
+  state(["ready"], ["pendingFromReady", stableIntent]);
+
+startBackendIfCurrentStable(["play", current], ["waitingStableTarget", intent], intent.requestId, playlistName) =
+  let stableIntent = replaceTargetName(intent, playlistName);
+  backendPlay(stableIntent);
+  state(["play", current], ["pendingReplacement", stableIntent]);
+
+startBackendIfCurrentStable(base, overlay, requestId, playlistName) =
+  state(base, overlay);
+
+closeStableWaitIfCurrent(["ready"], ["waitingStableTarget", intent], intent.requestId, reason) =
+  state(["ready"], ["none"]);
+
+closeStableWaitIfCurrent(["play", current], ["waitingStableTarget", intent], intent.requestId, reason) =
+  state(["play", current], ["none"]);
+
+closeStableWaitIfCurrent(base, overlay, requestId, reason) =
+  state(base, overlay);
 
 acceptIfCurrent(base, ["pendingFromReady", intent], intent.requestId, session) =
   state(acceptAsPlay(intent, session), ["none"]);
@@ -457,6 +517,12 @@ closeIfCurrent(["ready"], ["pendingFromReady", intent], intent.requestId, "pendi
   state(["ready"], ["none"]);
 
 closeIfCurrent(["play", current], ["pendingReplacement", intent], intent.requestId, "pending_first_track") =
+  state(["play", current], ["none"]);
+
+closeIfCurrent(["ready"], ["pendingFromReady", intent], intent.requestId, "superseded") =
+  state(["ready"], ["none"]);
+
+closeIfCurrent(["play", current], ["pendingReplacement", intent], intent.requestId, "superseded") =
   state(["play", current], ["none"]);
 
 closeIfCurrent(base, overlay, requestId, "stale") =
@@ -483,13 +549,16 @@ evolveAcceptedPlay(base, overlay, nextCurrent) =
   state(base, overlay);
 ```
 
-The same transition, reduced to the two source cases:
+The same transition, reduced to the two source cases while preserving the
+stable-target gate:
 
 ```ts
 ready(overlay) =
   next().is(
     | ["click", playlistName] =>
-        ready(pendingFromReady(newIntent("ready", playlistName), replacing = overlay))
+        targetIsStable(playlistName)
+          ? ready(pendingFromReady(newIntent("ready", playlistName), replacing = overlay))
+          : ready(waitingStableTarget(newIntent("ready", playlistName), replacing = overlay))
   );
 
 play(current: AcceptedPlayback, overlay) =
@@ -497,7 +566,9 @@ play(current: AcceptedPlayback, overlay) =
     | ["click", current.playlistName] =>
         stopCurrentThenReady(current, closing = overlay)
     | ["click", playlistName] =>
-        play(current, pendingReplacement(newIntent("play", playlistName), replacing = overlay))
+        targetIsStable(playlistName)
+          ? play(current, pendingReplacement(newIntent("play", playlistName), replacing = overlay))
+          : play(current, waitingStableTarget(newIntent("play", playlistName), replacing = overlay))
     | ["play.evolved", nextCurrent] =>
         evolveAcceptedPlay(["play", current], overlay, nextCurrent)
   );
@@ -512,6 +583,8 @@ path.
 ```ts
 ["ready"] + pendingFromReady + pending_first_track => ["ready"] + none
 ["play", current] + pendingReplacement + pending_first_track => ["play", current] + none
+["ready"] + pendingFromReady + superseded => ["ready"] + none
+["play", current] + pendingReplacement + superseded => ["play", current] + none
 
 base + overlay + stale => base + overlay
 ```
@@ -563,6 +636,10 @@ Rules:
 stateDiagram-v2
   [*] --> Ready
   Ready --> "Ready + PendingFromReady": click playlist
+  Ready --> "Ready + WaitingStableTarget": click optimistic preview
+  "Ready + WaitingStableTarget" --> "Ready + PendingFromReady": stable target accepted
+  "Ready + WaitingStableTarget" --> Ready: stable target rejected
+  "Ready + WaitingStableTarget" --> "Ready + WaitingStableTarget": stale callback ignored
   "Ready + PendingFromReady" --> "Ready + PendingFromReady": click replacement
   "Ready + PendingFromReady" --> Play: backend.started current request
   "Ready + PendingFromReady" --> Ready: pending_first_track current request
@@ -571,6 +648,10 @@ stateDiagram-v2
 
   Play --> Ready: click same accepted playlist
   Play --> "Play + PendingReplacement": click different playlist
+  Play --> "Play + WaitingStableTarget": click optimistic preview
+  "Play + WaitingStableTarget" --> "Play + PendingReplacement": stable target accepted
+  "Play + WaitingStableTarget" --> Play: stable target rejected
+  "Play + WaitingStableTarget" --> "Play + WaitingStableTarget": stale callback ignored
   "Play + PendingReplacement" --> "Play + PendingReplacement": play evolves / click replacement
   "Play + PendingReplacement" --> Play: backend.started replaces accepted session
   "Play + PendingReplacement" --> Play: pending_first_track current request closes overlay
@@ -586,13 +667,15 @@ base state plus overlay state.
 
 ### Transfers Out And Observed Evidence
 
-| Transfer | Direction | Rule |
-| --- | --- | --- |
-| click intent -> backend play request | out | request id must be attached before the command starts |
-| backend started -> accepted play | in | only current request can enter `play` |
-| backend stopped/error -> close pending intent | in | ready-source closes to `ready`; play-source closes overlay and preserves current `play` base |
-| same playlist click -> stop current | out | explicit stop path, not a replacement request |
-| pending now-playing evidence -> accepted play | observed | consumed only when playlist and session generation match current request |
+| Transfer                                      | Direction | Rule                                                                                         |
+| --------------------------------------------- | --------- | -------------------------------------------------------------------------------------------- |
+| click intent -> pending title response        | out       | request id is allocated in the click turn, before stable-target or backend evidence exists   |
+| click optimistic target -> stable-target gate | out       | preview name registers a waiter; backend playback is not called until upsert is accepted     |
+| stable-target accepted -> backend play request | in/out    | current waiter is converted into a stable backend command with the same request id           |
+| backend started -> accepted play              | in        | only current request can enter `play`                                                        |
+| backend stopped/error -> close pending intent | in        | ready-source closes to `ready`; play-source closes overlay and preserves current `play` base |
+| same playlist click -> stop current           | out       | explicit stop path, not a replacement request                                                |
+| pending now-playing evidence -> accepted play | observed  | consumed only when playlist and session generation match current request                     |
 
 ### Does Not Own
 
@@ -616,6 +699,10 @@ base state plus overlay state.
   an already accepted session with the same generation.
 - No `pending_first_track` result may create `play`.
 - No pending click may create `Preparing...`.
+- No `waitingStableTarget` overlay may call `PlaybackStart`, read `FirstSlot`,
+  or become `Preparing...` before stable-target acceptance.
+- No optimistic preview may be treated as stable playlist membership or config
+  baseline by the click lifecycle.
 - No replacement click may destroy the current accepted playback unless the new
   request is accepted or the same accepted playlist is explicitly stopped.
 - No replacement click may restore a captured old `play` snapshot; retained play
@@ -632,10 +719,17 @@ flowing, and correctly owned.
 
 ```text
 User clicks playlist item
-  -> Frontend emits PlayPlaylistSignal(playlistName, requestId)
-  -> Frontend opens PendingTitle overlay only
-  -> Backend PlaybackStart receives PlayPlaylistSignal
-  -> Backend reads FirstSlot(playlistName)
+  -> Frontend allocates requestId
+  -> Frontend opens PendingTitle overlay in the same turn
+  -> If target is a stable playlist:
+       emit PlayPlaylistSignal(stablePlaylistName, requestId)
+  -> If target is an optimistic preview:
+       register StableTargetWaiter(previewName, requestId)
+       wait for playlist upsert accepted/rejected
+       accepted: emit PlayPlaylistSignal(stablePlaylistName, same requestId)
+       rejected: close PendingTitle; no PlaybackStart; no Preparing
+  -> Backend PlaybackStart receives only a stable PlayPlaylistSignal
+  -> Backend reads FirstSlot(stablePlaylistName)
      -> none: return pending_first_track
      -> hit: submit first credential to PlayerSession
   -> PlayerSession accepts or rejects the submitted first track
@@ -657,9 +751,13 @@ generation. It does not mean the low-level player has already completed
 `play_request.ok`. This distinction preserves immediate UI response without
 letting the click path manufacture track or preparing evidence.
 
-The frontend side of this path has only two powers:
+The frontend side of this path has only four powers:
 
-- emit `PlayPlaylistSignal(playlistName, requestId)`;
+- emit same-turn `PendingTitle(playlistName, requestId)`;
+- register a stable-target waiter when the visible item is an optimistic
+  preview;
+- emit `PlayPlaylistSignal(stablePlaylistName, requestId)` only after stable
+  target evidence exists;
 - project accepted evidence into immediate UI response.
 
 It must not:
@@ -669,6 +767,7 @@ It must not:
 - choose the first track;
 - choose or repair next track;
 - decide `Preparing...`;
+- turn stable-target waiting into playback waiting;
 - wait for first-slot refill before showing a response;
 - treat trace events as behavior;
 - keep a pending overlay after matching request closure.
@@ -717,12 +816,12 @@ failed to appear in the expected turn.
 
 ### Participants
 
-| Participant | Owns |
-| --- | --- |
-| `PlayListPage.view-model` | visible item text, playback target, icon visibility, preparing flag, commit gesture, scroll lock |
-| `playListTitleHandoff.model` | display lock kind, title share arrow, target retain lease |
-| `playListPlaybackSurface.model` | accepted playback title, track text, non-playable preparing text, restore phase |
-| Torph transition stages | evidence that a visual return has started and can be released |
+| Participant                     | Owns                                                                                             |
+| ------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `PlayListPage.view-model`       | visible item text, playback target, icon visibility, preparing flag, commit gesture, scroll lock |
+| `playListTitleHandoff.model`    | display lock kind, title share arrow, target retain lease                                        |
+| `playListPlaybackSurface.model` | accepted playback title, track text, non-playable preparing text, restore phase                  |
+| Torph transition stages         | evidence that a visual return has started and can be released                                    |
 
 It does not own click legality, backend playback start, first-slot preparation,
 player queue, loudness, or spectrum scope. It only consumes their accepted
@@ -754,7 +853,7 @@ ResponseOutput = {
   shouldLockScroll: Boolean;
   shouldShowPlaybackIcons: Boolean;
   isPlaybackPreparing: Boolean;
-  commitGesture: "secondary-only" | "primary-and-secondary" | "disabled";
+  commitGesture: "secondary-only" | "primary-and-secondary";
 };
 ```
 
@@ -768,6 +867,13 @@ playback. It includes the accepted playlist, request id, and player session
 generation. The response lifecycle does not consume raw player events.
 `CloseReason` includes `pending_first_track`, `error`, `superseded`, and
 `stale`; all of them close only the matching overlay.
+
+`commitGesture` is never a substitute for ownership proof. Stable playlist
+items use `primary-and-secondary`: primary click sends playback intent and
+secondary click opens config. Optimistic preview items use `secondary-only` for
+the config commit gesture while primary click is still delivered through the
+explicit playback intent path. A preview item must not use a disabled gesture
+to hide the missing stable-target gate.
 
 ### Transition
 
@@ -966,15 +1072,18 @@ stateDiagram-v2
 
 ### Response Audit Table
 
-| User-visible moment | Required evidence | Expected response |
-| --- | --- | --- |
-| user clicks playlist from ready | `click.pending(name, requestId)` | same-turn `PendingTitle(name)`, `opening-playback` lock, title text, no icons |
-| backend has no first slot | current `click.closed(name, requestId, pending_first_track)` | matching pending title closes; no preparing text |
-| backend accepts play | current `surface.acceptedTitle(name, acceptedTargetId)` | `AcceptedTitle(name)` before track evidence |
-| accepted surface reports playable track | current `surface.track(target, name, track)` | track text and icons replace title |
-| accepted surface reports non-playable preparing | current `surface.nonPlayableStatus(target, name, "Preparing...")` | `Preparing...`, icons visible, preparing flag true |
-| playback stops after track text | `surface.closed(name)` then Torph stages | return handoff holds until motion starts, then releases |
-| stale backend callback arrives | stale request id | no visible response change |
+| User-visible moment                             | Required evidence                                                 | Expected response                                                             |
+| ----------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| user clicks stable playlist from ready          | `click.pending(name, requestId)`                                  | same-turn `PendingTitle(name)`, `opening-playback` lock, title text, no icons |
+| backend has no first slot                       | current `click.closed(name, requestId, pending_first_track)`      | matching pending title closes; no preparing text                              |
+| current request is superseded                   | current `click.closed(name, requestId, superseded)`               | matching pending title closes; no playback failure surface                    |
+| preview click waits for stable target           | current `click.pending(name, requestId)` plus stable-target waiter | same pending title remains; no icons; no preparing text                       |
+| preview upsert rejected                         | current `stable.rejected(name, requestId, reason)`                | matching pending title closes; no playback failure surface                    |
+| backend accepts play                            | current `surface.acceptedTitle(name, acceptedTargetId)`           | `AcceptedTitle(name)` before track evidence                                   |
+| accepted surface reports playable track         | current `surface.track(target, name, track)`                      | track text and icons replace title                                            |
+| accepted surface reports non-playable preparing | current `surface.nonPlayableStatus(target, name, "Preparing...")` | `Preparing...`, icons visible, preparing flag true                            |
+| playback stops after track text                 | `surface.closed(name)` then Torph stages                          | return handoff holds until motion starts, then releases                       |
+| stale backend callback arrives                  | stale request id                                                  | no visible response change                                                    |
 
 ## Lifecycle: FirstSlot
 
@@ -998,13 +1107,13 @@ rather than replayed into an advanced lifecycle.
 
 ### Participants
 
-| Participant | Owns |
-| --- | --- |
+| Participant                         | Owns                                                                                |
+| ----------------------------------- | ----------------------------------------------------------------------------------- |
 | `playlist_playback::playable_index` | prepared first credentials, generation, credential id, active and pending refreshes |
-| `playlists::repo` | playlist-scoped membership and playable source projection |
-| audio-style recommendation runtime | stable model and centerless first-source selection |
-| `playlist_playback::service` | elimination from prepared source to playable track |
-| `player::service` | final player acceptance before prepared credential consumption |
+| `playlists::repo`                   | playlist-scoped membership and playable source projection                           |
+| audio-style recommendation runtime  | stable model and centerless first-source selection                                  |
+| `playlist_playback::service`        | elimination from prepared source to playable track                                  |
+| `player::service`                   | final player acceptance before prepared credential consumption                      |
 
 ### Transition
 
@@ -1014,6 +1123,7 @@ Action =
   | ["cacheRestored", cargo: FirstSlotCache]
   | ["audioStyleModelAvailable"]
   | ["playlistChanged", playlistName: String]
+  | ["playlistRenamed", previousName: String, nextName: String]
   | ["playlistDeleted", playlistName: String]
   | ["libraryChanged"]
   | ["excludeChanged"]
@@ -1036,6 +1146,8 @@ pool(slots: Map<PlaylistName, FirstCredential[]>, generation: Number, active, pe
         refreshingMissingOrRandomFallback(reason = "audio_style_model_available")
     | ["playlistChanged", playlistName] =>
         refreshingPlaylist(playlistName, reason = "playlist_changed", replace = true)
+    | ["playlistRenamed", previousName, nextName] =>
+        pool(renameSlot(slots, previousName, nextName), nextGeneration(), active, pending)
     | ["playlistDeleted", playlistName] =>
         pool(remove(slots, playlistName), nextGeneration(), active, pending)
     | ["libraryChanged"] =>
@@ -1108,14 +1220,25 @@ The cache is not semantic truth:
   before showing the window.
 - Audio-style model availability can replace random fallback evidence when
   better model evidence becomes available.
+- Playlist rename is a coordinate substitution. It moves the prepared credential
+  pool from the previous playlist key to the next playlist key and rewrites
+  credential track playlist names, but it does not invalidate playable cargo by
+  itself.
 - Playlist, library, and exclude changes invalidate affected existing
   credentials.
+- A playlist upsert that changes selected collection/group/extra record refs
+  emits `playlistChanged` after any rename substitution. Pure title rename does
+  not.
 - Prepared-source consumption removes one credential and schedules replacement
   for the same playlist.
 - The pool target is small and bounded. It exists to provide immediate first
   evidence, not to cache whole playlists.
 - Each playlist keeps three prepared credentials so quick ready->play cycles do
   not wait for model selection after the first consumption.
+- Global refresh scans all playlists, but each playlist commits its prepared
+  cargo as soon as that playlist finishes preparing. A slow playlist cannot
+  delay another playlist's first-slot cargo. Stale playlist cleanup remains a
+  final global step.
 
 ### Selection Rules
 
@@ -1189,13 +1312,13 @@ player boundary consumption.
 
 ### Participants
 
-| Participant | Owns |
-| --- | --- |
-| `playlist_playback::service` | queue fill loop, refresh gate, playlist-scoped candidate windows, commit decision |
-| audio-style recommendation runtime | stable and completed model snapshots, anchored and centerless proposals |
-| `playlists::repo` | playlist membership and random candidate windows |
-| `player::service` | current session generation, active anchor evidence, explicit queue replacement |
-| `PlaybackStrategySet` | consumption of the explicit queue after the active track |
+| Participant                        | Owns                                                                              |
+| ---------------------------------- | --------------------------------------------------------------------------------- |
+| `playlist_playback::service`       | queue fill loop, refresh gate, playlist-scoped candidate windows, commit decision |
+| audio-style recommendation runtime | stable and completed model snapshots, anchored and centerless proposals           |
+| `playlists::repo`                  | playlist membership and random candidate windows                                  |
+| `player::service`                  | current session generation, active anchor evidence, explicit queue replacement    |
+| `PlaybackStrategySet`              | consumption of the explicit queue after the active track                          |
 
 ### Owned State
 
@@ -1366,7 +1489,7 @@ continuation.
 Rules:
 
 - Normal playlist start submits `[first]` only. It does not compute `[first,
-  next]` on the click path.
+next]` on the click path.
 - `NextTrack` may start immediately after session acceptance, but its result is
   asynchronous evidence for the player queue and is not awaited by the click
   result.
@@ -1467,13 +1590,13 @@ and generation.
 
 ### Participants
 
-| Participant | Owns |
-| --- | --- |
-| `player::service` | active playback process, active track, active range, session generation |
-| `PlaybackTrack` | playlist name, canonical music id, file path, URL, start/end range, liked, loudness |
-| `ffplayr::Playback` | low-level play, pause, resume, seek, stop, status |
-| `PlaybackStatusPayload` | current path, paused/playing, position, active track range projection |
-| `LoudnessEvidence` | finite LUFS measurement and persisted replacement evidence |
+| Participant             | Owns                                                                                |
+| ----------------------- | ----------------------------------------------------------------------------------- |
+| `player::service`       | active playback process, active track, active range, session generation             |
+| `PlaybackTrack`         | playlist name, canonical music id, file path, URL, start/end range, liked, loudness |
+| `ffplayr::Playback`     | low-level play, pause, resume, seek, stop, status                                   |
+| `PlaybackStatusPayload` | current path, paused/playing, position, active track range projection               |
+| `LoudnessEvidence`      | finite LUFS measurement and persisted replacement evidence                          |
 
 ### Owned State
 
@@ -1614,20 +1737,18 @@ TrackIdentity = playlistName + musicUrl + filePath + startMs + endMs
 Natural transformations preserve that identity while changing evidence or
 projection:
 
-| Transformation | Source evidence | Target projection | Law |
-| --- | --- | --- | --- |
-| liked update | playlist liked change | active track and queued tracks with same canonical id | preserves file/range identity |
-| loudness update | finite LUFS measurement | active track, session queue, persisted music row, now-playing payload | preserves file/range identity |
-| active range update | seek or spectrum loop signal | playback request start/end and status payload | preserves active track identity |
-| normalization projection | non-zero loudness | playback request with target `-18.0` LUFS | only applies when loudness evidence exists |
+| Transformation           | Source evidence              | Target projection                                                     | Law                                        |
+| ------------------------ | ---------------------------- | --------------------------------------------------------------------- | ------------------------------------------ |
+| liked update             | playlist liked change        | active track and queued tracks with same canonical id                 | preserves file/range identity              |
+| loudness update          | finite LUFS measurement      | active track, session queue, persisted music row, now-playing payload | preserves file/range identity              |
+| active range update      | seek or spectrum loop signal | playback request start/end and status payload                         | preserves active track identity            |
+| normalization projection | non-zero loudness            | playback request with target `-18.0` LUFS                             | only applies when loudness evidence exists |
 
 The loudness law is:
 
 ```ts
 normalization(track) =
-  track.loudness == 0.0
-    ? none
-    : target(targetLufs = -18.0, integratedLufs = track.loudness);
+  track.loudness == 0.0 ? none : target((targetLufs = -18.0), (integratedLufs = track.loudness));
 ```
 
 Missing loudness does not block playback. It starts a side measurement. When
@@ -1695,10 +1816,16 @@ stateDiagram-v2
 
 ### Boundary
 
-`PlaybackStart` is one backend `playPlaylist(name)` request. It is the only
-place where a click request may be eliminated into a player start command. It
-owns request-scoped backend admission, first credential read/discard/consume,
-and the returned `PlayPlaylistSession` status.
+`PlaybackStart` is one backend `playPlaylist(name)` request after the target is
+already a stable playlist coordinate. It is the only place where a stable click
+request may be eliminated into a player start command. It owns request-scoped
+backend admission, first credential read/discard/consume, and the returned
+`PlayPlaylistSession` status.
+
+An optimistic preview target is not an input to this lifecycle. It must be held
+by `OptimisticPlaylistProjection` until playlist upsert evidence accepts the
+stable target. This prevents a pending preview from turning into an empty
+player session, a fake first-slot miss, or a permanent `Preparing...` surface.
 
 It does not own first-slot preparation, UI title handoff, player session
 internals, next-track repair, model training, or download waiting. A missing
@@ -1735,7 +1862,9 @@ Action =
 idle() =
   next().is(
     | ["playPlaylist", playlistName] =>
-        claimed(claimPlaybackStartRequest(), playlistName)
+        isStablePlaylistCoordinate(playlistName)
+          ? claimed(claimPlaybackStartRequest(), playlistName)
+          : failedWithoutStarting("unstable_target")
   );
 
 claimed(request: RequestHandle, playlistName: String) =
@@ -1793,6 +1922,7 @@ stateDiagram-v2
 
 ### PlaybackStart Must Not
 
+- accept an optimistic preview target;
 - synchronously refill `FirstSlot`;
 - scan playlist membership to invent a first track;
 - return `started` without player acceptance;
@@ -1805,9 +1935,9 @@ stateDiagram-v2
 ### Boundary
 
 `PlaybackSurface` is the visible play surface after the app has accepted
-playback. It owns the visible playlist title, track text, non-playable
-`Preparing...` text, icons, liked affordance, and restore release. It is not the
-click lifecycle and it is not the player.
+playback. It owns the visible playlist title, track text, player-owned
+`Preparing...` status projection, icons, liked affordance, and restore release.
+It is not the click lifecycle and it is not the player.
 
 ### Owned State
 
@@ -1826,7 +1956,7 @@ PlaybackSurface =
 Action =
   | ["machine.play", playlistName: String]
   | ["nowPlaying.track", playlistName: String, trackName: String, liked: Boolean | null]
-  | ["nowPlaying.nonPlayable", playlistName: String, text: "Preparing..."]
+  | ["player.surfaceStatus", playlistName: String, status: "preparing"]
   | ["machine.leftPlay", playlistName: String]
   | ["torph.stage", playlistName: String, stage: "idle" | "prepare" | "animate"];
 
@@ -1840,7 +1970,7 @@ acceptedTitle(playlistName: String) =
   next().is(
     | ["nowPlaying.track", playlistName, trackName, liked] =>
         track(playlistName, trackName, liked)
-    | ["nowPlaying.nonPlayable", playlistName, "Preparing..."] =>
+    | ["player.surfaceStatus", playlistName, "preparing"] =>
         preparing(playlistName)
     | ["machine.leftPlay", playlistName] =>
         inactive()
@@ -1850,7 +1980,7 @@ track(playlistName: String, trackName: String, liked: Boolean | null) =
   next().is(
     | ["nowPlaying.track", playlistName, nextTrackName, nextLiked] =>
         track(playlistName, nextTrackName, nextLiked)
-    | ["nowPlaying.nonPlayable", playlistName, "Preparing..."] =>
+    | ["player.surfaceStatus", playlistName, "preparing"] =>
         preparing(playlistName)
     | ["machine.leftPlay", playlistName] =>
         restoring(playlistName, transitionStarted = false)
@@ -1882,10 +2012,10 @@ stateDiagram-v2
   [*] --> Inactive
   Inactive --> AcceptedTitle: machine.play
   AcceptedTitle --> Track: nowPlaying.track
-  AcceptedTitle --> Preparing: nowPlaying.nonPlayable(Preparing)
+  AcceptedTitle --> Preparing: player.surfaceStatus(preparing)
   AcceptedTitle --> Inactive: machine.leftPlay before track
   Track --> Track: nowPlaying.track
-  Track --> Preparing: nowPlaying.nonPlayable(Preparing)
+  Track --> Preparing: player.surfaceStatus(preparing)
   Preparing --> Track: nowPlaying.track
   Track --> Restoring: machine.leftPlay
   Preparing --> Restoring: machine.leftPlay
@@ -1897,6 +2027,7 @@ stateDiagram-v2
 ### PlaybackSurface Must Not
 
 - interpret a pending click as `Preparing...`;
+- derive `Preparing...` from empty now-playing track fields;
 - enter `track` from stale now-playing evidence;
 - release restore before Torph proves a visual return has started;
 - choose a playback track;
@@ -1919,10 +2050,20 @@ PlaylistDraftCommit =
   | ["editing", draft: ConfigDraft, baseline: ConfigDraft | null]
   | ["returningClean", titleHandoff: TitleHandoff | null]
   | ["dispatchingCommit", request: PlaylistWriteRequest, preview: PlaylistPreview]
-  | ["returnedPendingCommit", request: PlaylistWriteRequest, preview: PlaylistPreview]
+  | ["returnedPendingCommit", request: PlaylistWriteRequest]
   | ["committed", playlistName: String]
   | ["failed", request: PlaylistWriteRequest, reason: String];
+
+DraftTitle =
+  | ["empty", userTouched: false]
+  | ["autoFilled", title: String, userTouched: false]
+  | ["userEdited", title: String, userTouched: true];
 ```
+
+`DraftTitle` is owned by the config draft lifecycle. Backend title probes,
+collection root-title evidence, and default playlist names may propose a title,
+but they do not own the field after the user edits it. This keeps the config
+page from turning an async default into a hidden write lock.
 
 ### Transition
 
@@ -1932,6 +2073,8 @@ Action =
   | ["openEdit", playlistName: String]
   | ["draft.loaded", draft: ConfigDraft]
   | ["draft.changed", draft: ConfigDraft]
+  | ["title.defaultSuggested", title: String]
+  | ["title.userChanged", title: String]
   | ["check"]
   | ["back"]
   | ["commit.accepted", playlist: Playlist]
@@ -1941,6 +2084,10 @@ editing(draft: ConfigDraft, baseline: ConfigDraft | null) =
   next().is(
     | ["draft.changed", nextDraft] =>
         editing(nextDraft, baseline)
+    | ["title.defaultSuggested", title] =>
+        editing(applyDefaultTitleOnlyIfUntouched(draft, title), baseline)
+    | ["title.userChanged", title] =>
+        editing(applyUserTitle(draft, title), baseline)
     | ["check"] =>
         hasDraftChanges(draft, baseline)
           ? dispatchingCommit(resolveCommitRequest(draft, baseline), preview(draft))
@@ -1950,11 +2097,12 @@ editing(draft: ConfigDraft, baseline: ConfigDraft | null) =
   );
 
 dispatchingCommit(request: PlaylistWriteRequest, preview: PlaylistPreview) =
+  publishOptimisticPlaylistProjection(preview);
   sendCommitInBackground(request);
   returnToReadyImmediately(preview);
-  returnedPendingCommit(request, preview);
+  returnedPendingCommit(request);
 
-returnedPendingCommit(request: PlaylistWriteRequest, preview: PlaylistPreview) =
+returnedPendingCommit(request: PlaylistWriteRequest) =
   next().is(
     | ["commit.accepted", playlist] =>
         committed(playlist.name)
@@ -1962,6 +2110,31 @@ returnedPendingCommit(request: PlaylistWriteRequest, preview: PlaylistPreview) =
         failed(request, reason)
   );
 ```
+
+### Draft Title Rules
+
+```ts
+applyDefaultTitleOnlyIfUntouched(draft: ConfigDraft, title: String) =
+  draft.title.isEmpty() && draft.title.userTouched == false
+    ? draft.withTitle(["autoFilled", title, false])
+    : draft;
+
+applyUserTitle(draft: ConfigDraft, title: String) =
+  draft.withTitle(["userEdited", title, true]);
+```
+
+Rules:
+
+- a new draft may receive a default title only while the title is empty and
+  untouched;
+- opening an existing stable playlist uses repository title as baseline, not an
+  auto-fill proposal;
+- root-title or collection-title evidence may fill an empty untouched create
+  draft, but it must not overwrite `userEdited`;
+- commit uses the current draft title, including a user edit after an
+  auto-fill;
+- config open from an optimistic preview waits for repository acceptance before
+  loading this baseline.
 
 ### State Motion
 
@@ -1986,7 +2159,161 @@ stateDiagram-v2
 - mark download/import tasks complete;
 - infer collection membership from draft projection;
 - block the title return animation on persistence;
+- overwrite a user-edited draft title with default, root-title, or collection
+  title evidence;
+- make its optimistic preview a stable config baseline;
+- disable the preview item to avoid proving stable ownership;
+- call playback start while the target playlist is still only a preview;
 - treat root-title parsing as downloaded music evidence.
+
+## Lifecycle: OptimisticPlaylistProjection
+
+### Boundary
+
+`OptimisticPlaylistProjection` is the short-lived bridge between a dirty config
+check and the repository evidence that accepts or rejects the playlist write.
+It owns only the preview surface and stable-target waiters. It does not own
+draft editing, persistence, first-slot preparation, playback start, player
+session, or preparing text.
+
+This lifecycle exists because check/back must feel immediate while later user
+actions may still target the just-previewed playlist. The preview is visible
+and clickable, but it is not yet a stable playlist coordinate. Consumers that
+need stable repository evidence must wait at this boundary rather than
+inventing stable state from the preview or disabling the user gesture.
+
+### Owned State
+
+```ts
+OptimisticPlaylistProjection =
+  | ["empty"]
+  | ["previewing", preview: PlaylistPreview, waiters: StableTargetWaiter[]]
+  | ["accepted", evidence: PlaylistUpsertResult]
+  | ["failed", preview: PlaylistPreview, reason: String];
+
+StableTargetWaiter =
+  | ["configOpen", targetName: String, requestId: Number]
+  | ["playClick", targetName: String, requestId: Number];
+
+StableTargetEvidence =
+  | ["stable", targetName: String, previousName: String | null]
+  | ["rejected", targetName: String, reason: String]
+  | ["stale", requestId: Number];
+```
+
+`PlaylistPreview` is cargo for ready projection and title handoff. It may reserve
+the visible name and may make the item appear in the list. It is not a
+`ConfigDraft` baseline, not playlist repository truth, and not playback
+membership evidence.
+
+`StableTargetWaiter` is a linear request. A waiter can be resolved only by the
+matching playlist upsert evidence or by explicit rejection. Late resolution for
+an already superseded waiter is stale evidence.
+
+### Transition
+
+```ts
+Action =
+  | ["preview.published", preview: PlaylistPreview]
+  | ["config.open", targetName: String, requestId: Number]
+  | ["play.click", targetName: String, requestId: Number]
+  | ["upsert.accepted", evidence: PlaylistUpsertResult]
+  | ["upsert.failed", reason: String]
+  | ["waiter.superseded", requestId: Number]
+  | ["stable.consumed"];
+
+empty() =
+  next().is(
+    | ["preview.published", preview] =>
+        previewing(preview, [])
+  );
+
+previewing(preview: PlaylistPreview, waiters: StableTargetWaiter[]) =
+  next().is(
+    | ["config.open", targetName, requestId] =>
+        matchesPreview(preview, targetName)
+          ? previewing(preview, append(waiters, ["configOpen", targetName, requestId]))
+          : rejectWaiter(["configOpen", targetName, requestId], "not_preview_target")
+    | ["play.click", targetName, requestId] =>
+        matchesPreview(preview, targetName)
+          ? previewing(preview, append(waiters, ["playClick", targetName, requestId]))
+          : rejectWaiter(["playClick", targetName, requestId], "not_preview_target")
+    | ["upsert.accepted", evidence] =>
+        resolveWaiters(waiters, evidence);
+        accepted(evidence)
+    | ["upsert.failed", reason] =>
+        rejectWaiters(waiters, reason);
+        failed(preview, reason)
+    | ["waiter.superseded", requestId] =>
+        previewing(preview, removeWaiter(waiters, requestId))
+  );
+
+accepted(evidence: PlaylistUpsertResult) =
+  publishStableProjection(evidence);
+  empty();
+
+failed(preview: PlaylistPreview, reason: String) =
+  clearPreview(preview);
+  empty();
+```
+
+### State Motion
+
+```mermaid
+stateDiagram-v2
+  [*] --> Empty
+  Empty --> Previewing: dirty check publishes preview
+  Previewing --> Previewing: config open waits stable draft
+  Previewing --> Previewing: play click waits stable playlist
+  Previewing --> Accepted: playlist upsert accepted
+  Previewing --> Failed: playlist upsert failed
+  Previewing --> Previewing: waiter superseded
+  Accepted --> Empty: stable evidence projected
+  Failed --> Empty: preview cleared and waiters rejected
+```
+
+### Consumer Rules
+
+Config open against a preview:
+
+```text
+right click preview
+  -> register configOpen waiter
+  -> keep transition target and title handoff
+  -> upsert accepted
+  -> load stable draft by accepted playlist name
+  -> enter config with draftBaseline from repository evidence
+```
+
+Playlist play against a preview:
+
+```text
+left click preview
+  -> emit pending title response immediately
+  -> register playClick waiter
+  -> upsert accepted
+  -> start PlaybackStart with stable playlist name
+  -> backend started: enter play
+  -> backend pending_first_track/error: close pending title
+```
+
+The wait is a stable-target gate, not a playback state. While the gate is open:
+
+- config must not show an edit page built from preview draft;
+- playback must not call backend `playPlaylist` before the playlist upsert is
+  accepted;
+- UI may keep the target title focused as pending response;
+- `Preparing...` must not appear, because there is no accepted player session
+  and no player-owned surface status yet.
+
+### OptimisticPlaylistProjection Must Not
+
+- make preview draft the `draftBaseline`;
+- disable preview item interaction to avoid the stable-target problem;
+- treat preview list presence as playlist repository truth;
+- call `PlaybackStart` before the matching upsert evidence is accepted;
+- manufacture `pending_first_track`, `Preparing...`, or track evidence;
+- survive commit failure without rejecting or clearing its waiters.
 
 ## Lifecycle: PasteDownloadCandidate
 
@@ -2184,6 +2511,47 @@ stateDiagram-v2
 - keep the config check visual in processing after the candidate has been
   admitted to backend task ownership.
 
+## Lifecycle: CandidateEffectQueue
+
+### Boundary
+
+`CandidateEffectQueue` is the frontend effect owner for candidate-scoped async
+work such as fast URL resolve and root-title probing. It owns bounded
+concurrency, replacement by candidate id, cancel/reset, abort handles for active
+effects, and late-result rejection.
+
+It does not own draft construction, backend download admission, collection
+truth, or persisted music evidence.
+
+### Cancellation Rule
+
+Cancel and reset are semantic operations:
+
+```text
+cancel(candidateId)
+  -> invalidate latest token for candidateId
+  -> abort active effect signal if one exists
+  -> remove queued/active logical capacity
+  -> reject late completed/failed callbacks
+
+reset()
+  -> invalidate every token
+  -> abort every active effect signal
+  -> clear queued logical work
+  -> reject late completed/failed callbacks
+```
+
+The abort signal closes the queue-owned frontend effect. It does not cancel a
+download task that was already admitted by `DownloadTaskRuntime`; that task owns
+its own lifecycle and terminal state.
+
+### CandidateEffectQueue Must Not
+
+- commit late results after candidate cancel/reset;
+- block a later paste batch on an old active promise;
+- cancel backend download tasks;
+- produce collection rows or music evidence.
+
 ## Lifecycle: DownloadTaskRuntime
 
 ### Boundary
@@ -2346,10 +2714,10 @@ fresh download demand. Ambiguous temp residue is explicit failed leaf evidence.
 
 Existing final file has two different meanings:
 
-| Evidence | Meaning | Owner | Result |
-| --- | --- | --- | --- |
-| collection row plus stable file | already materialized leaf | `CollectionImport` and `DownloadTaskRuntime` | residual leaf can be discarded before pipeline |
-| stable file without current row completion | reusable audio file | `CollectionImport` | must still persist music row and manifest before completion |
+| Evidence                                   | Meaning                   | Owner                                        | Result                                                      |
+| ------------------------------------------ | ------------------------- | -------------------------------------------- | ----------------------------------------------------------- |
+| collection row plus stable file            | already materialized leaf | `CollectionImport` and `DownloadTaskRuntime` | residual leaf can be discarded before pipeline              |
+| stable file without current row completion | reusable audio file       | `CollectionImport`                           | must still persist music row and manifest before completion |
 
 ### State Motion
 
@@ -2558,9 +2926,11 @@ stateDiagram-v2
 ### Playback Wake Contract
 
 `CollectionImport` does not push tracks to playback. Its only playable transfer
-is `notify_playable_library_changed()` after canonical rows are available.
-`FirstSlot`, `NextTrack`, and playlist queue repair then read their own cargo
-from the playable index or playlist repository.
+is `notify_playable_library_changed()` after canonical music rows and the
+collection manifest are both committed. Downloaded-leaf music row persistence is
+not enough to wake playable consumers by itself. `FirstSlot`, `NextTrack`, and
+playlist queue repair then read their own cargo from the playable index or
+playlist repository.
 
 ### CollectionImport Must Not
 
@@ -3382,61 +3752,67 @@ stateDiagram-v2
 Transfers are how lifecycles pass evidence. They are separate from lifecycle
 state. The access kind is part of the transfer contract.
 
-| Transfer | Access | Source owner | Target | Cargo or signal | Rule |
-| --- | --- | --- | --- | --- | --- |
-| startup snapshot | `command` | app runtime | `AppBootstrap` | `run`, startup bootstrap result, save path | startup may enter `ready` or `error`; it does not complete background lifecycles |
-| startup app projection | `project` | `AppBootstrap` | `appLogic` | playlists, config library, save path | replaces app shape only after mandatory snapshot evidence is accepted |
-| first-slot startup | `command` | app runtime | `FirstSlot` | app local data path and repository access | schedules local cargo restore plus validation/fill; app startup does not wait for either |
-| first-slot cargo restore | `read` | `FirstSlot` | `FirstSlot` | `first-slot-cache.json` beside the database | acceleration only; restored cargo gets fresh generation and credential ids only in blank startup state |
-| startup model wake | `command` | app runtime | `AudioStyleModelRuntime` | app cache path and library repository access | schedules cached evidence restore/training decision; app startup does not wait for model work |
-| click intent | `command` | `PlayListPage` | `PlaylistItemClick` | playlist name | opens pending request only in `ready` or `play` |
-| pending title response | `project` | `PlaylistItemClick` | `PlaylistInteractionResponse` | playlist name, request id | same-turn title lock only; never preparing text |
-| backend start | `command` | `PlaylistItemClick` | `PlaybackStart` | playlist name, request id | request id closes stale callbacks |
-| first credential read | `read` | `FirstSlot` | `PlaybackStart` | generation, credential id, source | read is not refill and not consumption |
-| first credential discard | `consume` | `PlaybackStart` | `FirstSlot` | invalid credential id plus generation | owner removes matching stale credential and schedules repair |
-| first credential consume | `consume` | `PlaybackStart` | `FirstSlot` | accepted credential id plus generation | only after player acceptance |
-| player acceptance | `command` | `PlaybackStart` | `PlayerSession` | `[first]`, request handle, queue mode | player may accept, reject, or supersede; it does not choose first |
-| accepted playback | `project` | `PlaybackStart` | `appLogic` | playlist name, request id, session | enters `play` only if request still current |
-| request closure | `project` | `PlaybackStart` | `PlaylistItemClick` and `PlaylistInteractionResponse` | `pending_first_track`, `superseded`, error, request id | closes matching overlay; does not enter play and does not show preparing |
-| playback accepted title | `project` | `appLogic play projection` | `PlaybackSurface` and `PlaylistInteractionResponse` | accepted playlist, request id, session generation | shows playlist title before track evidence |
-| playback surface track | `project` | `PlayerSession` | `PlaybackSurface` and `PlaylistInteractionResponse` | track identity, title, liked, session generation | track text/icons replace title only for current accepted target |
-| playback surface non-playable | `project` | `PlayerSession` | `PlaybackSurface` and `PlaylistInteractionResponse` | non-playable now-playing status text | `Preparing...` is legal only inside accepted play surface |
-| playback surface close | `project` | `appLogic play exit` | `PlaybackSurface` and `PlaylistInteractionResponse` | playlist name, return target | restore is released only by Torph return evidence |
-| config open | `command` | playlist page/app action | `PlaylistDraftCommit` | create/edit intent and baseline | enters draft editing without touching downloads/imports |
-| config check/back | `command` | list config | `PlaylistDraftCommit` | draft, baseline, title handoff | returns to `ready` immediately; persistence continues as background evidence |
-| playlist upsert command | `command` | `PlaylistDraftCommit` | playlist repository | `PlaylistWriteRequest` | repo may accept or reject; UI return is not blocked |
-| playlist upsert accepted | `project` | playlist repository | `PlaylistDraftCommit`, `appLogic`, `FirstSlot` | playlist name, previous name, canonical playlist | app projection updates lists; FirstSlot wakes affected playlist |
-| paste text | `command` | list config paste action | `PasteDownloadCandidate` | raw clipboard text | creates a visible candidate row immediately |
-| fast URL resolve demand | `command` | `PasteDownloadCandidate` | `FastUrlResolveQueue` | candidate id and normalized URL | queue owner controls concurrency, cancel/reset, and late result discard |
-| fast URL resolve result | `project` | `FastUrlResolveQueue` | `PasteDownloadCandidate` | latest still-open URL resolution | invalid/existing/new URL evidence only; not collection truth and not music evidence |
-| candidate root title | `project` | `PasteDownloadCandidate` | list config and `appLogic` draft | display title and collection shell | shell can update draft/display; it is not downloaded music evidence |
-| candidate enqueue | `command` | `PasteDownloadCandidate` | `DownloadTaskRuntime` | source URL | backend task owner accepts/rejects enqueue independently from config return |
-| candidate task signal | `wake` | `DownloadTaskRuntime` | `PasteDownloadCandidate` | task id, status, collection shell fields | candidate may update display or load terminal collection; it cannot set task terminal state |
-| candidate terminal collection | `read` | `CollectionImport` | `PasteDownloadCandidate` and `appLogic` draft | collection rows after task terminal collection load | candidate releases only after import owner can supply collection evidence |
-| model publication | `wake` | `AudioStyleModelRuntime` | `FirstSlot` and `NextTrack` | model generation | FirstSlot may replace random fallback; NextTrack retries only missing-next attempts |
-| audio-style snapshot read | `read` | `AudioStyleModelRuntime` | `FirstSlot` and `NextTrack` | stable snapshot and generation | missing model is fallback evidence, not a wait state |
-| download enqueue plan | `command` | `PasteDownloadCandidate` or auto-update | `DownloadTaskRuntime` | normalized URL and trigger | task owner probes, persists residual plan, and emits task snapshots |
-| download task change | `wake` | `DownloadTaskRuntime` | app projection, `FirstSlot`, `NextTrack` | task id, task url, collection url, status | observers may refresh their own slots; they cannot declare the task terminal |
-| leaf finalization | `command` | `DownloadTaskRuntime` | `CollectionImport` | temp artifact, leaf URL, group context, collection shell | only import owner writes stable file, music rows, manifest |
-| collection import commit | `read` | `CollectionImport` | playlists repo and config projection | collection shell, music rows, manifest | consumers read canonical rows only after the import owner commits |
-| now-playing | `project` | `PlayerSession` | `appLogic` and `PlaybackSurface` | session generation, track payload | can update track surface, liked, loudness |
-| next repair request | `wake` | `PlayerSession` | `NextTrack` | session generation, playlist name, active anchor, queue snapshot | starts or replaces one repair attempt only when distinct next is missing |
-| next queue | `command` | `NextTrack` | `PlayerSession` | explicit queue | player consumes queue only; recommendation policy stays outside player |
-| loudness | `project` | `LoudnessEvidence` | playlists repo and player session | finite non-zero LUFS | updates same identity; does not block playback |
-| spectrum open | `command` | playlist page/app action | `SpectrumScope` | accepted playback source identity | opens only from accepted play and allocates a backend scope id |
-| spectrum scope | `consume` | `PlayerSession` | `SpectrumScope` | scope id | linear handle, exits only if still current |
-| spectrum preview | `command` | `SpectrumScope` | `PlayerSession` | scope id, preview track, position/range | scoped player command may reject stale or missing scope |
-| spectrum return | `project` | `SpectrumScope` | `appLogic` and `PlaybackSurface` | source session, return target, scope exit result | check/back restores play page shape without owning playlist stop |
-| context reset journal | `project` | `ContextResetLifecycle` | `appLogic` | chart/lease/transaction actions plus reason | records open/close/preserve decisions; does not execute backend owner state changes |
-| spectrum music commit | `command` | `SpectrumMusicCommitTransaction` | playlists/collection music repository | changed draft titles/ranges plus epoch | edits are scoped by track identity and do not mutate playback queue |
-| spectrum music commit callback | `project` | playlists/collection music repository | `SpectrumMusicCommitTransaction` and `appLogic` | phase result or failure with epoch | accepted only for current epoch; failure is negative evidence, not playback state |
-| playback exclude command | `command` | `PlaybackExcludeTransaction` | backend playback/exclude owner | current source projection | backend decides exclude/skip result; transaction only projects returned evidence |
-| playback exclude projection | `project` | `PlaybackExcludeTransaction` | `appLogic` | exclude change, optional deleted playlist, optional backOutOfPlay | back-out is legal only when source and current play projection still match |
-| updater check | `command` | app bootstrap side wake | `Updater` | run signal | scheduled after bootstrap; never app readiness evidence |
-| updater prompt | `project` | `Updater` | notification UI | downloaded version and restart action | prompt is user action evidence only; no lifecycle waits on it |
-| trace enablement | `command` | app startup declaration | `TraceLifecycle` | enabled probe list | empty declaration leaves trace installed but silent |
-| trace record | `project` | any instrumented owner | `TraceLifecycle` | event name and payload | recorded only when event is registered and probe is enabled |
-| trace save | `command` | human/debug action | `TraceLifecycle` | save request | writes JSONL evidence; no lifecycle consumes it as behavior |
+| Transfer                       | Access    | Source owner                            | Target                                                | Cargo or signal                                                   | Rule                                                                                                   |
+| ------------------------------ | --------- | --------------------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| startup snapshot               | `command` | app runtime                             | `AppBootstrap`                                        | `run`, startup bootstrap result, save path                        | startup may enter `ready` or `error`; it does not complete background lifecycles                       |
+| startup app projection         | `project` | `AppBootstrap`                          | `appLogic`                                            | playlists, config library, save path                              | replaces app shape only after mandatory snapshot evidence is accepted                                  |
+| first-slot startup             | `command` | app runtime                             | `FirstSlot`                                           | app local data path and repository access                         | schedules local cargo restore plus validation/fill; app startup does not wait for either               |
+| first-slot cargo restore       | `read`    | `FirstSlot`                             | `FirstSlot`                                           | `first-slot-cache.json` beside the database                       | acceleration only; restored cargo gets fresh generation and credential ids only in blank startup state |
+| startup model wake             | `command` | app runtime                             | `AudioStyleModelRuntime`                              | app cache path and library repository access                      | schedules cached evidence restore/training decision; app startup does not wait for model work          |
+| click intent                   | `command` | `PlayListPage`                          | `PlaylistItemClick`                                   | playlist name                                                     | opens pending request only in `ready` or `play`                                                        |
+| pending title response         | `project` | `PlaylistItemClick`                     | `PlaylistInteractionResponse`                         | playlist name, request id                                         | same-turn title lock only; never preparing text                                                        |
+| preview published              | `project` | `PlaylistDraftCommit`                   | `OptimisticPlaylistProjection` and ready projection   | playlist preview, transaction id, visible name                    | preview appears immediately; it is not config baseline or playback membership                          |
+| stable config target gate      | `command` | playlist page/app action                | `OptimisticPlaylistProjection`                        | preview name, request id                                          | waits for accepted upsert before loading stable draft; does not build draft from preview               |
+| stable playback target gate    | `command` | `PlaylistItemClick`                     | `OptimisticPlaylistProjection`                        | preview name, request id                                          | waits for accepted upsert before backend start; keeps only pending title response                      |
+| stable target accepted         | `project` | `OptimisticPlaylistProjection`          | `PlaylistItemClick` or config open continuation       | stable playlist name, previous name, request id                   | play waiter emits backend start; config waiter loads repository draft                                  |
+| stable target rejected         | `project` | `OptimisticPlaylistProjection`          | `PlaylistItemClick` or config open continuation       | request id and reason                                             | closes matching waiter; does not become playback failure or preparing                                  |
+| backend start                  | `command` | `PlaylistItemClick`                     | `PlaybackStart`                                       | stable playlist name, request id                                  | only stable targets enter backend; request id closes stale callbacks                                   |
+| first credential read          | `read`    | `FirstSlot`                             | `PlaybackStart`                                       | generation, credential id, source                                 | read is not refill and not consumption                                                                 |
+| first credential discard       | `consume` | `PlaybackStart`                         | `FirstSlot`                                           | invalid credential id plus generation                             | owner removes matching stale credential and schedules repair                                           |
+| first credential consume       | `consume` | `PlaybackStart`                         | `FirstSlot`                                           | accepted credential id plus generation                            | only after player acceptance                                                                           |
+| player acceptance              | `command` | `PlaybackStart`                         | `PlayerSession`                                       | `[first]`, request handle, queue mode                             | player may accept, reject, or supersede; it does not choose first                                      |
+| accepted playback              | `project` | `PlaybackStart`                         | `appLogic`                                            | playlist name, request id, session                                | enters `play` only if request still current                                                            |
+| request closure                | `project` | `PlaybackStart`                         | `PlaylistItemClick` and `PlaylistInteractionResponse` | `pending_first_track`, `superseded`, error, request id            | closes matching overlay; does not enter play and does not show preparing                               |
+| playback accepted title        | `project` | `appLogic play projection`              | `PlaybackSurface` and `PlaylistInteractionResponse`   | accepted playlist, request id, session generation                 | shows playlist title before track evidence                                                             |
+| playback surface track         | `project` | `PlayerSession`                         | `PlaybackSurface` and `PlaylistInteractionResponse`   | track identity, title, liked, session generation                  | track text/icons replace title only for current accepted target                                        |
+| playback surface preparing     | `project` | `PlayerSession`                         | `PlaybackSurface` and `PlaylistInteractionResponse`   | session generation plus `preparing` surface status                | `Preparing...` is legal only after accepted play, queue exhaustion, and player-owned wait evidence     |
+| playback surface close         | `project` | `appLogic play exit`                    | `PlaybackSurface` and `PlaylistInteractionResponse`   | playlist name, return target                                      | restore is released only by Torph return evidence                                                      |
+| config open                    | `command` | playlist page/app action                | `PlaylistDraftCommit`                                 | create/edit intent and stable baseline                            | enters draft editing only from create intent or repository baseline; preview opens use stable gate      |
+| config check/back              | `command` | list config                             | `PlaylistDraftCommit`                                 | draft, baseline, title handoff                                    | returns to `ready` immediately; persistence continues as background evidence                           |
+| playlist upsert command        | `command` | `PlaylistDraftCommit`                   | playlist repository                                   | `PlaylistWriteRequest`                                            | repo may accept or reject; UI return is not blocked                                                    |
+| playlist upsert accepted       | `project` | playlist repository                     | `PlaylistDraftCommit`, `appLogic`, `FirstSlot`        | playlist name, previous name, canonical playlist, playback-ref change evidence | app projection updates lists; FirstSlot renames cargo on coordinate substitution and refreshes only when selected playback refs changed |
+| paste text                     | `command` | list config paste action                | `PasteDownloadCandidate`                              | raw clipboard text                                                | creates a visible candidate row immediately                                                            |
+| fast URL resolve demand        | `command` | `PasteDownloadCandidate`                | `FastUrlResolveQueue`                                 | candidate id and normalized URL                                   | queue owner controls concurrency, cancel/reset, and late result discard                                |
+| fast URL resolve result        | `project` | `FastUrlResolveQueue`                   | `PasteDownloadCandidate`                              | latest still-open URL resolution                                  | invalid/existing/new URL evidence only; not collection truth and not music evidence                    |
+| candidate root title           | `project` | `PasteDownloadCandidate`                | list config and `appLogic` draft                      | display title and collection shell                                | shell can update draft/display; it is not downloaded music evidence                                    |
+| candidate enqueue              | `command` | `PasteDownloadCandidate`                | `DownloadTaskRuntime`                                 | source URL                                                        | backend task owner accepts/rejects enqueue independently from config return                            |
+| candidate task signal          | `wake`    | `DownloadTaskRuntime`                   | `PasteDownloadCandidate`                              | task id, status, collection shell fields                          | candidate may update display or load terminal collection; it cannot set task terminal state            |
+| candidate terminal collection  | `read`    | `CollectionImport`                      | `PasteDownloadCandidate` and `appLogic` draft         | collection rows after task terminal collection load               | candidate releases only after import owner can supply collection evidence                              |
+| model publication              | `wake`    | `AudioStyleModelRuntime`                | `FirstSlot` and `NextTrack`                           | model generation                                                  | FirstSlot may replace random fallback; NextTrack retries only missing-next attempts                    |
+| audio-style snapshot read      | `read`    | `AudioStyleModelRuntime`                | `FirstSlot` and `NextTrack`                           | stable snapshot and generation                                    | missing model is fallback evidence, not a wait state                                                   |
+| download enqueue plan          | `command` | `PasteDownloadCandidate` or auto-update | `DownloadTaskRuntime`                                 | normalized URL and trigger                                        | task owner probes, persists residual plan, and emits task snapshots                                    |
+| download task change           | `wake`    | `DownloadTaskRuntime`                   | app projection, `FirstSlot`, `NextTrack`              | task id, task url, collection url, status                         | observers may refresh their own slots; they cannot declare the task terminal                           |
+| leaf finalization              | `command` | `DownloadTaskRuntime`                   | `CollectionImport`                                    | temp artifact, leaf URL, group context, collection shell          | only import owner writes stable file, music rows, manifest                                             |
+| collection import commit       | `read`    | `CollectionImport`                      | playlists repo and config projection                  | collection shell, music rows, manifest                            | consumers read canonical rows only after the import owner commits rows and manifest                    |
+| downloaded leaf wake           | `wake`    | `CollectionImport`                      | `FirstSlot`, `NextTrack`, audio-style model inputs    | committed music rows plus manifest                                | emitted only after downloaded-leaf manifest write succeeds                                             |
+| now-playing                    | `project` | `PlayerSession`                         | `appLogic` and `PlaybackSurface`                      | session generation, track payload                                 | can update track surface, liked, loudness, and clears preparing status                                 |
+| next repair request            | `wake`    | `PlayerSession`                         | `NextTrack`                                           | session generation, playlist name, active anchor, queue snapshot  | starts or replaces one repair attempt only when distinct next is missing                               |
+| next queue                     | `command` | `NextTrack`                             | `PlayerSession`                                       | explicit queue                                                    | player consumes queue only; recommendation policy stays outside player                                 |
+| loudness                       | `project` | `LoudnessEvidence`                      | playlists repo and player session                     | finite non-zero LUFS                                              | updates same identity; does not block playback                                                         |
+| spectrum open                  | `command` | playlist page/app action                | `SpectrumScope`                                       | accepted playback source identity                                 | opens only from accepted play and allocates a backend scope id                                         |
+| spectrum scope                 | `consume` | `PlayerSession`                         | `SpectrumScope`                                       | scope id                                                          | linear handle, exits only if still current                                                             |
+| spectrum preview               | `command` | `SpectrumScope`                         | `PlayerSession`                                       | scope id, preview track, position/range                           | scoped player command may reject stale or missing scope                                                |
+| spectrum return                | `project` | `SpectrumScope`                         | `appLogic` and `PlaybackSurface`                      | source session, return target, scope exit result                  | check/back restores play page shape without owning playlist stop                                       |
+| context reset journal          | `project` | `ContextResetLifecycle`                 | `appLogic`                                            | chart/lease/transaction actions plus reason                       | records open/close/preserve decisions; does not execute backend owner state changes                    |
+| spectrum music commit          | `command` | `SpectrumMusicCommitTransaction`        | playlists/collection music repository                 | changed draft titles/ranges plus epoch                            | edits are scoped by track identity and do not mutate playback queue                                    |
+| spectrum music commit callback | `project` | playlists/collection music repository   | `SpectrumMusicCommitTransaction` and `appLogic`       | phase result or failure with epoch                                | accepted only for current epoch; failure is negative evidence, not playback state                      |
+| playback exclude command       | `command` | `PlaybackExcludeTransaction`            | backend playback/exclude owner                        | current source projection                                         | backend decides exclude/skip result; transaction only projects returned evidence                       |
+| playback exclude projection    | `project` | `PlaybackExcludeTransaction`            | `appLogic`                                            | exclude change, optional deleted playlist, optional backOutOfPlay | back-out is legal only when source and current play projection still match                             |
+| updater check                  | `command` | app bootstrap side wake                 | `Updater`                                             | run signal                                                        | scheduled after bootstrap; never app readiness evidence                                                |
+| updater prompt                 | `project` | `Updater`                               | notification UI                                       | downloaded version and restart action                             | prompt is user action evidence only; no lifecycle waits on it                                          |
+| trace enablement               | `command` | app startup declaration                 | `TraceLifecycle`                                      | enabled probe list                                                | empty declaration leaves trace installed but silent                                                    |
+| trace record                   | `project` | any instrumented owner                  | `TraceLifecycle`                                      | event name and payload                                            | recorded only when event is registered and probe is enabled                                            |
+| trace save                     | `command` | human/debug action                      | `TraceLifecycle`                                      | save request                                                      | writes JSONL evidence; no lifecycle consumes it as behavior                                            |
 
 No transfer is allowed to silently allocate another lifecycle's state. If a
 transfer cannot produce required evidence, it returns rejection evidence and the
@@ -3450,6 +3826,11 @@ These paths are intentionally illegal:
 - Click playlist item -> frontend scans all musics -> first track.
 - Click playlist item -> frontend shows `Preparing...` while backend is still
   preparing first evidence.
+- Optimistic preview click -> backend `playPlaylist` before playlist upsert is
+  accepted.
+- Optimistic preview click -> disabled item or swallowed primary gesture.
+- Optimistic preview config open -> edit baseline built from preview draft.
+- Stable-target waiting -> playback failure surface or `Preparing...`.
 - `pending_first_track` -> `play`.
 - Trace event -> state transition.
 - Context reset journal -> backend owner mutation.
@@ -3483,6 +3864,8 @@ These paths are intentionally illegal:
 - FastUrlResolveQueue -> draft collection, backend download task, or persisted
   music evidence.
 - FastUrlResolveQueue -> commit late results after candidate cancel/reset.
+- CandidateEffectQueue cancel/reset -> backend task cancellation.
+- CandidateEffectQueue reset -> later paste batch waits for old active promise.
 - PasteDownloadCandidate -> backend task terminal status.
 - PasteDownloadCandidate -> root title shell becomes persisted music evidence.
 - PasteDownloadCandidate -> active candidate removed by non-terminal collection
@@ -3492,6 +3875,8 @@ These paths are intentionally illegal:
 - DownloadTaskRuntime -> collection folder naming or canonical music row
   authority.
 - CollectionImport -> decide first-slot/playback readiness.
+- CollectionImport -> wake playable consumers before downloaded-leaf manifest is
+  written.
 - SpectrumScope -> open from pending click or ready list without accepted
   playback identity.
 - SpectrumScope -> check/back stops playlist playback as a scope-exit
@@ -3549,7 +3934,11 @@ The following tests and seams anchor this document:
   - later pasted URLs are admitted while earlier URLs are still resolving;
   - active candidates survive non-terminal task signals with collection shell
     evidence.
-- `src/debug/renderPerformanceTrace.test.ts`
+- `src/flow/pasteDownload/candidateEffectQueue.test.ts`
+  - cancel/reset abort active candidate effects;
+  - reset releases queue capacity without waiting for old active promises;
+  - cancelled candidate scopes reject late result commits.
+- `src/debug/trace.test.ts`
   - trace events resolve through the registry;
   - only enabled probes record entries.
 - `src/flow/appLogic/playbackMode.test.ts`
@@ -3619,7 +4008,7 @@ closed paths listed as behavior, not preferences
 - `src/flow/appLogic/playbackExcludeTransaction.ts`
 - `src/flow/pasteDownload/machine.ts`
 - `src/flow/pasteDownload/core.ts`
-- `src/debug/renderPerformanceTrace.ts`
+- `src/debug/trace.ts`
 - `src/components/ListConfig.back-action.ts`
 - `src/components/PlayListPage.view-model.ts`
 - `src/components/playListPlaybackSurface.model.ts`

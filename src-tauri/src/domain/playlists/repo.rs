@@ -833,6 +833,12 @@ pub async fn delete_playlist_by_name(name: &str) -> Result<bool> {
     Ok(true)
 }
 
+#[derive(Debug, Clone)]
+pub struct PlaylistSurfaceUpsertResult {
+    pub playlist: PlayListListView,
+    pub playback_selection_changed: bool,
+}
+
 #[cfg(test)]
 pub async fn upsert_playlist(playlist: &PlayList, previous_name: Option<&str>) -> Result<PlayList> {
     let request = PlayListWriteRequest::from_playlist(playlist);
@@ -860,13 +866,19 @@ pub async fn upsert_playlist(playlist: &PlayList, previous_name: Option<&str>) -
 pub async fn upsert_playlist_surface(
     playlist: &PlayListWriteRequest,
     previous_name: Option<&str>,
-) -> Result<PlayListListView> {
+) -> Result<PlaylistSurfaceUpsertResult> {
     let foreign_ids = resolve_playlist_foreign_record_ids(playlist).await?;
-    let storage = playlist_storage_row_from_request(playlist, &foreign_ids).await?;
+    let storage = playlist_surface_storage_row_from_request(playlist);
     let existing_record = match previous_name {
         Some(name) => find_unique_record_id_by_string_field::<PlayList>("name", name).await?,
         None => None,
     };
+    let previous_playback_row = match existing_record.as_ref() {
+        Some(record) => load_playlist_playback_row_by_record(record).await?,
+        None => None,
+    };
+    let playback_selection_changed =
+        playlist_playback_foreign_refs_changed(previous_playback_row.as_ref(), &foreign_ids);
     let record = existing_record
         .clone()
         .unwrap_or_else(|| playlist_record_id(&playlist.name));
@@ -876,13 +888,31 @@ pub async fn upsert_playlist_surface(
         .groups(foreign_ids.groups)?
         .extra(foreign_ids.extra)?;
 
-    match existing_record {
-        Some(record) => Ok(write
-            .update_at_returning::<PlayListListView>(record)
-            .await?),
-        None => Ok(write
-            .create_at_returning::<PlayListListView>(record)
-            .await?),
+    let playlist = match existing_record {
+        Some(record) => {
+            write
+                .update_at_returning::<PlayListListView>(record)
+                .await?
+        }
+        None => {
+            write
+                .create_at_returning::<PlayListListView>(record)
+                .await?
+        }
+    };
+    Ok(PlaylistSurfaceUpsertResult {
+        playlist,
+        playback_selection_changed,
+    })
+}
+
+fn playlist_surface_storage_row_from_request(playlist: &PlayListWriteRequest) -> PlayList {
+    PlayList {
+        name: playlist.name.clone(),
+        collections: Vec::new(),
+        groups: Vec::new(),
+        extra: Vec::new(),
+        created_at: playlist.created_at.clone(),
     }
 }
 
@@ -1500,6 +1530,32 @@ async fn load_playlist_playback_row_by_name(name: &str) -> Result<Option<Playlis
     }
 }
 
+async fn load_playlist_playback_row_by_record(
+    record: &RecordId,
+) -> Result<Option<PlaylistPlaybackRow>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query("SELECT name, collections, groups, extra FROM ONLY $record;")
+        .bind(("record", record.clone()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
+            other => return Err(other.into()),
+        },
+    };
+
+    let row: Option<PlaylistPlaybackRawRow> = result.take(0)?;
+    row.map(project_playlist_playback_raw_row).transpose()
+}
+
 fn project_playlist_playback_raw_row(row: PlaylistPlaybackRawRow) -> Result<PlaylistPlaybackRow> {
     Ok(PlaylistPlaybackRow {
         name: row.name,
@@ -1507,6 +1563,19 @@ fn project_playlist_playback_raw_row(row: PlaylistPlaybackRawRow) -> Result<Play
         groups: project_record_refs(row.groups)?,
         extra: project_required_record_refs(row.extra, "extra")?,
     })
+}
+
+fn playlist_playback_foreign_refs_changed(
+    previous: Option<&PlaylistPlaybackRow>,
+    next: &PlaylistForeignRecordIds,
+) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+
+    previous.collections != next.collections
+        || previous.groups != next.groups
+        || previous.extra != next.extra
 }
 
 fn project_record_refs(values: serde_json::Value) -> Result<Vec<RecordId>> {

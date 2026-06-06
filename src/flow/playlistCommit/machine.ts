@@ -18,6 +18,7 @@ import {
 import { rejectPlaylistCommitCompletion, resolvePlaylistCommitCompletion } from "./completion";
 import { invoker, payloads, ss } from "./events";
 import { src } from "./src";
+import { recordTrace } from "@/src/debug/trace";
 
 const commitRequested = payloads["playlist.commit.requested"];
 
@@ -32,7 +33,16 @@ export const machine = src.createMachine({
   context: createInitialContext(),
   on: {
     [commitRequested.evt]: {
-      actions: assign(({ context, event }) => enqueueCommit(context, event.output)),
+      actions: assign(({ context, event }) => {
+        recordTrace("config-title-playlist-commit-enqueued", {
+          previousName: event.output.request.request.previousName,
+          queueLengthBefore: context.queue.length,
+          requestPlaylistName: event.output.request.request.playlist.name,
+          titleResolutionKind: event.output.request.titleResolution.kind,
+          titleResolutionName: event.output.request.titleResolution.name,
+        });
+        return enqueueCommit(context, event.output);
+      }),
     },
     reset: {
       target: `.${ss.mainx.State.idle}`,
@@ -61,6 +71,10 @@ export const machine = src.createMachine({
           target: ss.mainx.State.submitting,
           actions: [
             ({ context }) => {
+              recordTrace("config-title-playlist-commit-preview-sent", {
+                previewName: resolveQueuedPreview(context)?.playlist.name ?? null,
+                queueLength: context.queue.length,
+              });
               sendAppLogic(playlistPreviewChanged.load(resolveQueuedPreview(context)));
             },
             assign(({ context }) => activateNextCommit(context)),
@@ -77,6 +91,13 @@ export const machine = src.createMachine({
             throw new Error("missing playlist commit request");
           }
 
+          recordTrace("config-title-playlist-commit-submit-start", {
+            frameId: context.activeFrame.id,
+            previousName: context.activeFrame.request.request.previousName,
+            requestPlaylistName: context.activeFrame.request.request.playlist.name,
+            titleResolutionKind: context.activeFrame.request.titleResolution.kind,
+            titleResolutionName: context.activeFrame.request.titleResolution.name,
+          });
           return context.activeFrame.request;
         },
         onDone: {
@@ -84,6 +105,13 @@ export const machine = src.createMachine({
           actions: [
             ({ context, event }) => {
               const reflection = reflectPlaylistCommitEvidence(context.activeFrame, event.output);
+              recordTrace("config-title-playlist-commit-submit-done", {
+                evidencePreviousName: event.output.previousName,
+                evidencePlaylistName: event.output.playlist.name,
+                frameId: context.activeFrame?.id ?? null,
+                reflectionKind: reflection.kind,
+                requestPlaylistName: context.activeFrame?.request.request.playlist.name ?? null,
+              });
               if (reflection.kind !== "accepted") {
                 console.error("Rejected playlist commit evidence", reflection);
                 rejectPlaylistCommitCompletion(

@@ -6,6 +6,7 @@ import {
   resolvePlayListTitleHandoffPlan,
   type PlayListTitleEndpoint,
 } from "./playListTitleHandoff.model";
+import type { PlayListPlaybackSurfaceSnapshot } from "./playListPlaybackSurface.model";
 
 const quietMorningEndpoint: PlayListTitleEndpoint = {
   layoutId: "playlist-title:Quiet Morning",
@@ -16,6 +17,17 @@ const nightDriveEndpoint: PlayListTitleEndpoint = {
   layoutId: "playlist-title:Night Drive",
   playlistName: "Night Drive",
 };
+
+function createPlaybackSurfaceFixture(
+  input: Omit<PlayListPlaybackSurfaceSnapshot, "sessionGeneration"> & {
+    sessionGeneration?: number;
+  },
+): PlayListPlaybackSurfaceSnapshot {
+  return {
+    sessionGeneration: 1,
+    ...input,
+  };
+}
 
 describe("playListTitleHandoff model", () => {
   test("models list-to-play as a timed source and target path", () => {
@@ -155,13 +167,13 @@ describe("playListTitleHandoff model", () => {
         returnTargetLayoutId: "playlist-title:Quiet Morning",
         committedLayoutId: null,
       },
-      playbackSurface: {
+      playbackSurface: createPlaybackSurfaceFixture({
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Track A",
         displayedTrackLiked: null,
         displayedTrackIsPlayable: true,
-      },
+      }),
       titleReturnSurface: null,
     });
 

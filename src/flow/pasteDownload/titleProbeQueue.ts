@@ -18,7 +18,7 @@ export interface TitleProbeQueueSink {
 
 export interface TitleProbeQueueRuntime {
   concurrency(): number;
-  probe(url: string): Promise<DownloadRootTitleEvidence>;
+  probe(url: string, options?: { signal: AbortSignal }): Promise<DownloadRootTitleEvidence>;
   started?(input: { activeCount: number; id: string; queuedCount: number; url: string }): void;
   toErrorMessage(error: unknown): string;
 }

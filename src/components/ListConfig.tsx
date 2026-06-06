@@ -12,7 +12,7 @@ import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { me } from "@grahlnn/fn";
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
-import { recordTrace } from "@/src/debug/renderPerformanceTrace";
+import { recordTrace } from "@/src/debug/trace";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
 import { action as playlistCommitAction } from "@/src/flow/playlistCommit";
 import { action as pasteDownloadAction, hook as pasteDownloadHook } from "@/src/flow/pasteDownload";
@@ -22,8 +22,10 @@ import {
   createConfigSidebarItemsFromLibrary,
   resolvePlaylistDraftCommit,
   resolvePlaylistsWithPreview,
+  type ConfigDraft,
   type ConfigSidebarItemRef,
 } from "@/src/flow/appLogic/core";
+import { hasConfigDraftChanges } from "@/src/flow/appLogic/titleShare";
 import {
   collectionTitleLayoutTransition,
   collectionTitleTextHoverClassName,
@@ -96,28 +98,121 @@ export function resolveListConfigCheckReturnPlan(args: {
   return args.hasDraftChanges && args.hasDraft
     ? ({
         awaitPersistenceBeforeBack: false,
-        awaitTitleCommitBeforeBack: true,
-        stabilizeTitleShareSourceBeforeBack: true,
+        awaitTitleCommitBeforeBack: false,
+        stabilizeTitleShareSourceBeforeBack: false,
       } as const)
     : ({
         awaitPersistenceBeforeBack: false,
         awaitTitleCommitBeforeBack: false,
         stabilizeTitleShareSourceBeforeBack: false,
-      } as const);
+    } as const);
+}
+
+export function resolveListConfigDraftWithTitleInput(args: {
+  draft: ConfigDraft | null;
+  titleValue: string;
+}): ConfigDraft | null {
+  if (!args.draft) {
+    return null;
+  }
+
+  return {
+    ...args.draft,
+    name: args.titleValue,
+  };
+}
+
+export interface ListConfigTitleInputSlot {
+  layoutId: string | null;
+  userEdited: boolean;
+  value: string;
+}
+
+export function createListConfigTitleInputSlot(args: {
+  layoutId?: string | null;
+  value: string;
+}): ListConfigTitleInputSlot {
+  return {
+    layoutId: args.layoutId ?? null,
+    userEdited: false,
+    value: args.value,
+  };
+}
+
+export function resolveListConfigTitleInputSlotFromRender(args: {
+  current: ListConfigTitleInputSlot;
+  renderedLayoutId?: string | null;
+  renderedValue: string;
+}): ListConfigTitleInputSlot {
+  const renderedLayoutId = args.renderedLayoutId ?? null;
+
+  if (args.current.layoutId !== renderedLayoutId) {
+    return createListConfigTitleInputSlot({
+      layoutId: renderedLayoutId,
+      value: args.renderedValue,
+    });
+  }
+
+  if (args.current.userEdited) {
+    return args.current;
+  }
+
+  return {
+    ...args.current,
+    value: args.renderedValue,
+  };
+}
+
+export function resolveListConfigTitleInputSlotUserChange(args: {
+  current: ListConfigTitleInputSlot;
+  value: string;
+}): ListConfigTitleInputSlot {
+  if (args.current.value === args.value) {
+    return args.current;
+  }
+
+  return {
+    ...args.current,
+    userEdited: true,
+    value: args.value,
+  };
 }
 
 function currentPerformanceNow() {
   return typeof performance === "undefined" ? Date.now() : performance.now();
 }
 
-function summarizeListConfigCandidateStatuses(
-  candidateItems: readonly { status: string }[],
-) {
+function summarizeListConfigCandidateStatuses(candidateItems: readonly { status: string }[]) {
   const counts: Record<string, number> = {};
   for (const item of candidateItems) {
     counts[item.status] = (counts[item.status] ?? 0) + 1;
   }
   return counts;
+}
+
+function createListConfigTitleTracePayload(args: {
+  draft: ConfigDraft | null;
+  draftBaseline: ConfigDraft | null;
+  hasDraftChanges: boolean;
+  inputSlot: ListConfigTitleInputSlot;
+  pendingPlaylistName: string | null;
+  renderedLayoutId?: string | null;
+  renderedTitleValue: string;
+  renderHasDraftChanges: boolean;
+}) {
+  return {
+    draftBaselineName: args.draftBaseline?.name ?? null,
+    draftMode: args.draft?.mode ?? null,
+    draftName: args.draft?.name ?? null,
+    hasDraftChanges: args.hasDraftChanges,
+    inputSlotLayoutId: args.inputSlot.layoutId,
+    inputSlotUserEdited: args.inputSlot.userEdited,
+    inputSlotValue: args.inputSlot.value,
+    pendingPlaylistName: args.pendingPlaylistName,
+    renderedLayoutId: args.renderedLayoutId ?? null,
+    renderedTitleValue: args.renderedTitleValue,
+    renderHasDraftChanges: args.renderHasDraftChanges,
+  };
 }
 
 export type ListConfigDuplicateShakeState = {
@@ -666,6 +761,31 @@ export function ListConfig() {
   const pageRenderFreeze = usePageRenderFreeze(liveRenderData);
   const renderData = pageRenderFreeze.renderValue;
   const { savePath: renderedSavePath, viewModel } = renderData;
+  const titleInputSlotRef = useRef(
+    createListConfigTitleInputSlot({
+      layoutId: viewModel.title.layoutId,
+      value: viewModel.title.value,
+    }),
+  );
+  const previousTitleInputSlot = titleInputSlotRef.current;
+  titleInputSlotRef.current = resolveListConfigTitleInputSlotFromRender({
+    current: titleInputSlotRef.current,
+    renderedLayoutId: viewModel.title.layoutId,
+    renderedValue: viewModel.title.value,
+  });
+  if (titleInputSlotRef.current !== previousTitleInputSlot) {
+    recordTrace("config-title-slot-render-sync", {
+      currentLayoutId: previousTitleInputSlot.layoutId,
+      currentUserEdited: previousTitleInputSlot.userEdited,
+      currentValue: previousTitleInputSlot.value,
+      nextLayoutId: titleInputSlotRef.current.layoutId,
+      nextUserEdited: titleInputSlotRef.current.userEdited,
+      nextValue: titleInputSlotRef.current.value,
+      pendingPlaylistName,
+      renderedLayoutId: viewModel.title.layoutId ?? null,
+      renderedValue: viewModel.title.value,
+    });
+  }
   const visibleExcludeToolLabelItems = viewModel.excludeToolLabelItems.filter(
     (item) => !removingExcludeItemIds.has(item.id),
   );
@@ -756,6 +876,24 @@ export function ListConfig() {
     });
     return true;
   }, []);
+  const handleTitleChange = useCallback((value: string) => {
+    const previousSlot = titleInputSlotRef.current;
+    titleInputSlotRef.current = resolveListConfigTitleInputSlotUserChange({
+      current: titleInputSlotRef.current,
+      value,
+    });
+    recordTrace("config-title-input-change", {
+      previousLayoutId: previousSlot.layoutId,
+      previousUserEdited: previousSlot.userEdited,
+      previousValue: previousSlot.value,
+      nextLayoutId: titleInputSlotRef.current.layoutId,
+      nextUserEdited: titleInputSlotRef.current.userEdited,
+      nextValue: titleInputSlotRef.current.value,
+      renderedLayoutId: viewModel.title.layoutId ?? null,
+      renderedValue: viewModel.title.value,
+    });
+    appLogicAction.changeDraftName(value);
+  }, []);
 
   async function handleChangeSavePath() {
     await appLogicAction.chooseSavePath(renderedSavePath);
@@ -811,13 +949,33 @@ export function ListConfig() {
 
   async function handleBackAction() {
     const actionStartedAt = currentPerformanceNow();
+    const currentTitleValue = titleInputSlotRef.current.value;
+    const draftForCheck = resolveListConfigDraftWithTitleInput({
+      draft,
+      titleValue: currentTitleValue,
+    });
+    const hasDraftChangesForCheck = hasConfigDraftChanges(draftForCheck, draftBaseline);
+    const titleTracePayload = createListConfigTitleTracePayload({
+      draft,
+      draftBaseline,
+      hasDraftChanges: hasDraftChangesForCheck,
+      inputSlot: titleInputSlotRef.current,
+      pendingPlaylistName,
+      renderedLayoutId: viewModel.title.layoutId,
+      renderedTitleValue: viewModel.title.value,
+      renderHasDraftChanges: viewModel.hasDraftChanges,
+    });
     const traceBackAction = (event: string, payload: Record<string, unknown> = {}) => {
       recordTrace(event, {
         candidateCount: candidateItems.length,
         candidateStatuses: summarizeListConfigCandidateStatuses(candidateItems),
         draftMode: draft?.mode ?? null,
+        draftName: draft?.name ?? null,
         elapsedMs: currentPerformanceNow() - actionStartedAt,
-        hasDraftChanges: viewModel.hasDraftChanges,
+        hasDraftChanges: hasDraftChangesForCheck,
+        latestTitleValue: currentTitleValue,
+        renderedTitleValue: viewModel.title.value,
+        renderHasDraftChanges: viewModel.hasDraftChanges,
         isBackActionLocked,
         isBackActionParsing: viewModel.isBackActionParsing,
         playlistItemCount: viewModel.playlistItems.length,
@@ -825,9 +983,21 @@ export function ListConfig() {
         ...payload,
       });
     };
+    const traceTitleCheck = (event: string, payload: Record<string, unknown> = {}) => {
+      recordTrace(event, {
+        ...titleTracePayload,
+        candidateCount: candidateItems.length,
+        candidateStatuses: summarizeListConfigCandidateStatuses(candidateItems),
+        draftForCheckName: draftForCheck?.name ?? null,
+        elapsedMs: currentPerformanceNow() - actionStartedAt,
+        ...payload,
+      });
+    };
 
+    traceTitleCheck("config-title-check-clicked");
     traceBackAction("list-config-check-clicked");
     if (isBackActionLocked) {
+      traceTitleCheck("config-title-check-rejected-locked");
       traceBackAction("list-config-check-rejected-locked");
       return;
     }
@@ -836,12 +1006,14 @@ export function ListConfig() {
       setIsBackNavigationPending(true);
       traceBackAction("list-config-check-navigation-pending-set");
       const returnPlan = resolveListConfigCheckReturnPlan({
-        hasDraft: !!draft,
-        hasDraftChanges: viewModel.hasDraftChanges,
+        hasDraft: !!draftForCheck,
+        hasDraftChanges: hasDraftChangesForCheck,
       });
+      traceTitleCheck("config-title-check-return-plan", returnPlan);
       traceBackAction("list-config-check-return-plan", returnPlan);
 
-      if (!viewModel.hasDraftChanges || !draft) {
+      if (!hasDraftChangesForCheck || !draftForCheck) {
+        traceTitleCheck("config-title-check-clean-return");
         traceBackAction("list-config-check-clean-freeze-start");
         pageRenderFreeze.freeze(
           createFrozenListConfigRenderData({
@@ -859,9 +1031,16 @@ export function ListConfig() {
 
       traceBackAction("list-config-check-resolve-commit-start");
       const commit = resolvePlaylistDraftCommit({
-        draft,
+        draft: draftForCheck,
         draftBaseline,
         playlists: resolvePlaylistsWithPreview(playlists, pendingPlaylistPreview),
+      });
+      traceTitleCheck("config-title-commit-resolved", {
+        committedDraftName: commit.draft.name,
+        previousName: commit.request.previousName,
+        requestPlaylistName: commit.request.playlist.name,
+        resolvedTitle: commit.titleResolution.name,
+        titleResolutionKind: commit.titleResolution.kind,
       });
       traceBackAction("list-config-check-resolve-commit-done", {
         resolvedTitle: commit.titleResolution.name,
@@ -873,6 +1052,21 @@ export function ListConfig() {
         titleResolutionKind: commit.titleResolution.kind,
       });
       const commitResult = playlistCommitAction.commit(commit);
+      void commitResult.then(
+        (result) => {
+          traceTitleCheck("config-title-background-commit-ok", {
+            previousName: result.previousName,
+            resultPlaylistName: result.playlist.name,
+            resolvedTitle: commit.titleResolution.name,
+          });
+        },
+        (error) => {
+          traceTitleCheck("config-title-background-commit-error", {
+            error: error instanceof Error ? error.message : String(error),
+            resolvedTitle: commit.titleResolution.name,
+          });
+        },
+      );
       void commitResult.catch((error) => {
         traceBackAction("list-config-check-background-commit-error", {
           error: error instanceof Error ? error.message : String(error),
@@ -884,12 +1078,25 @@ export function ListConfig() {
         animateTyping: commit.titleResolution.kind !== "keep",
         resolvedTitle: commit.titleResolution.name,
       });
+      traceTitleCheck("config-title-visible-commit-start", {
+        animateTyping: commit.titleResolution.kind !== "keep",
+        resolvedTitle: commit.titleResolution.name,
+        waitForVisualCommit: returnPlan.awaitTitleCommitBeforeBack,
+      });
       await editableTitleRef.current?.commitResolvedValue({
         value: commit.titleResolution.name,
         animateTyping: commit.titleResolution.kind !== "keep",
+        waitForVisualCommit: returnPlan.awaitTitleCommitBeforeBack,
+      });
+      traceTitleCheck("config-title-visible-commit-done", {
+        resolvedTitle: commit.titleResolution.name,
       });
       traceBackAction("list-config-check-title-commit-done");
 
+      traceTitleCheck("config-title-freeze-start", {
+        freezeLayoutId: commit.layoutId,
+        freezeTitleValue: commit.request.playlist.name,
+      });
       traceBackAction("list-config-check-freeze-start");
       flushSync(() => {
         appLogicAction.changeDraftName(commit.titleResolution.name);
@@ -902,15 +1109,25 @@ export function ListConfig() {
           }),
         );
       });
+      traceTitleCheck("config-title-freeze-done", {
+        freezeLayoutId: commit.layoutId,
+        freezeTitleValue: commit.request.playlist.name,
+      });
       traceBackAction("list-config-check-freeze-done");
-      traceBackAction("list-config-check-title-source-wait-start");
-      await waitForListConfigTitleShareSourceReady();
-      traceBackAction("list-config-check-title-source-wait-done");
+      if (returnPlan.stabilizeTitleShareSourceBeforeBack) {
+        traceBackAction("list-config-check-title-source-wait-start");
+        await waitForListConfigTitleShareSourceReady();
+        traceBackAction("list-config-check-title-source-wait-done");
+      }
       pasteDownloadAction.reset();
       traceBackAction("list-config-check-reset-done");
       appLogicAction.back();
+      traceTitleCheck("config-title-check-back-sent");
       traceBackAction("list-config-check-back-sent");
     } catch (error) {
+      traceTitleCheck("config-title-check-error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       traceBackAction("list-config-check-error", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -1015,8 +1232,9 @@ export function ListConfig() {
             style={{ fontFamily: "var(--font-noto-sans)" }}
             titleNativeHoverEnabled={viewModel.title.titleNativeHoverEnabled}
             titleHoverVisual={viewModel.title.titleHoverVisual}
+            traceId="list-config-title"
             value={viewModel.title.value}
-            onChange={appLogicAction.changeDraftName}
+            onChange={handleTitleChange}
           />
           {draft?.mode === "edit" ? (
             <button

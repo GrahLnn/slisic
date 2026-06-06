@@ -989,7 +989,7 @@ fn restored_audio_style_model_evidence_ranks_current_candidate_tracks() {
     let restored = read_cached_audio_style_model_evidence_for_test(&path)
         .expect("model evidence should be restored");
 
-    let (source, selection) = restored
+    let (source, selected_track, selection) = restored
         .recommender()
         .propose_centerless_source_from_tracks(vec![
             (
@@ -1002,12 +1002,13 @@ fn restored_audio_style_model_evidence_ranks_current_candidate_tracks() {
             ),
             (
                 source_from_track("missing", &missing_candidate),
-                missing_candidate,
+                missing_candidate.clone(),
             ),
         ])
         .expect("restored evidence should rank embedded current candidates");
 
     assert_ne!(source.collection_folder, "missing");
+    assert_ne!(selected_track.music_url, missing_candidate.music_url);
     assert_eq!(selection.candidate_count, 2);
     assert_eq!(selection.diagnostics.embedded_candidate_count, 2);
 }

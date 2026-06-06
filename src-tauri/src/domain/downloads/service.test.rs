@@ -2996,6 +2996,30 @@ fn expand_root_entries_to_planned_leafs_keeps_terminal_punctuation_after_prefix_
 }
 
 #[test]
+fn expand_root_entries_to_planned_leafs_keeps_word_apostrophe_title_core() {
+    let titles = planned_music_titles_from_playlist_titles(&[
+        "Terraria OST - Journey's Beginning [Extended]".to_string(),
+        "Journey's End OST- Space Day (Console Space)".to_string(),
+        "Terraria OST - Old One's Army [Extended]".to_string(),
+        "Terraria OST - Sandstorm [Extended]".to_string(),
+        "Terraria Journey's End OST- Slime Rain".to_string(),
+        "Terraria Journey's End OST- Queen Slime".to_string(),
+    ]);
+
+    assert_eq!(
+        titles,
+        vec![
+            "Journey's Beginning",
+            "Journey's End OST- Space Day (Console Space)",
+            "Old One's Army",
+            "Sandstorm",
+            "Slime Rain",
+            "Queen Slime",
+        ]
+    );
+}
+
+#[test]
 fn expand_root_entries_to_planned_leafs_removes_language_prefix_noise_by_evidence_only() {
     let titles = planned_music_titles_from_playlist_titles(&[
         "Album - ...And Then".to_string(),

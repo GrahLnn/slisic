@@ -22,6 +22,7 @@ import {
   type ContextResetLifecycle,
   type InitialPlaybackTrackEvidence,
   type NowPlayingTrackEvidence,
+  type PlaybackSurfaceStatusEvidence,
   type PlaylistPlaybackRequestEvidence,
 } from "./core";
 import type { PlaybackTrackPayload } from "@/src/cmd";
@@ -60,6 +61,7 @@ import {
   type PlaylistPlaybackStopped,
 } from "./events";
 import { src } from "./src";
+import { recordTrace } from "@/src/debug/trace";
 
 function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -162,6 +164,7 @@ function createSpectrumPlayReturnContext(
         nowPlayingTrackStartMs: projection.nowPlaying.startMs,
         nowPlayingTrackEndMs: projection.nowPlaying.endMs,
         nowPlayingTrackLiked: projection.nowPlaying.liked,
+        playbackSurfaceStatus: null,
         spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
       },
       chart: {
@@ -173,8 +176,7 @@ function createSpectrumPlayReturnContext(
       },
       transaction: {
         spectrumMusicCommitFrame: args.spectrumMusicCommitFrame ?? null,
-        spectrumMusicCommitEpoch:
-          args.spectrumMusicCommitEpoch ?? context.spectrumMusicCommitEpoch,
+        spectrumMusicCommitEpoch: args.spectrumMusicCommitEpoch ?? context.spectrumMusicCommitEpoch,
       },
     },
     resetLifecycle({
@@ -374,6 +376,7 @@ function createOpenSpectrumContext(context: Context) {
         nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
         nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
         nowPlayingTrackLiked: context.nowPlayingTrackLiked,
+        playbackSurfaceStatus: context.playbackSurfaceStatus,
         spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
       },
       chart: {
@@ -414,6 +417,8 @@ function createOpenSpectrumErrorContext(context: Context) {
         nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
         nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
         nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+        nowPlayingTrackLiked: context.nowPlayingTrackLiked,
+        playbackSurfaceStatus: context.playbackSurfaceStatus,
         spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
       },
       chart: {
@@ -433,14 +438,6 @@ function createOpenSpectrumErrorContext(context: Context) {
   );
 }
 
-function resolvePendingPlaylistPreviewDraft(context: Context, playlistName: string) {
-  if (context.pendingPlaylistPreview?.playlist.name !== playlistName) {
-    return null;
-  }
-
-  return context.pendingPlaylistPreview.draft;
-}
-
 function createNowPlayingTrackPatch(
   context: Context,
   evidence: NowPlayingTrackEvidence,
@@ -452,6 +449,7 @@ function createNowPlayingTrackPatch(
   | "nowPlayingTrackStartMs"
   | "nowPlayingTrackEndMs"
   | "nowPlayingTrackLiked"
+  | "playbackSurfaceStatus"
   | "pendingSpectrumMusicCreateId"
   | "spectrumMusicSourceContext"
   | "spectrumMusicDrafts"
@@ -463,6 +461,7 @@ function createNowPlayingTrackPatch(
     nowPlayingTrackStartMs: evidence.start_ms,
     nowPlayingTrackEndMs: evidence.end_ms,
     nowPlayingTrackLiked: evidence.liked,
+    playbackSurfaceStatus: null,
     pendingSpectrumMusicCreateId:
       context.nowPlayingTrackFilePath === evidence.file_path
         ? context.pendingSpectrumMusicCreateId
@@ -510,21 +509,28 @@ function createPlayReadyContext(
   const initialTrackEvidence = event
     ? createInitialPlaybackTrackEvidence(context, playlistName, event)
     : null;
+  const pendingSurfaceStatus =
+    context.pendingPlaybackSurfaceStatusEvidence?.playlist_name === playlistName &&
+    context.pendingPlaybackSurfaceStatusEvidence.session_generation ===
+      context.pendingPlaylistPlaybackSessionGeneration
+      ? context.pendingPlaybackSurfaceStatusEvidence.status
+      : null;
   const nowPlayingTrackPatch = pendingEvidence
     ? createNowPlayingTrackPatch(context, pendingEvidence)
     : initialTrackEvidence
       ? createNowPlayingTrackPatch(context, initialTrackEvidence)
-    : {
-        nowPlayingTrackName: null,
-        nowPlayingTrackUrl: null,
-        nowPlayingTrackFilePath: null,
-        nowPlayingTrackStartMs: null,
-        nowPlayingTrackEndMs: null,
-        nowPlayingTrackLiked: null,
-        pendingSpectrumMusicCreateId: null,
-        spectrumMusicSourceContext: null,
-        spectrumMusicDrafts: [],
-      };
+      : {
+          nowPlayingTrackName: null,
+          nowPlayingTrackUrl: null,
+          nowPlayingTrackFilePath: null,
+          nowPlayingTrackStartMs: null,
+          nowPlayingTrackEndMs: null,
+          nowPlayingTrackLiked: null,
+          playbackSurfaceStatus: pendingSurfaceStatus,
+          pendingSpectrumMusicCreateId: null,
+          spectrumMusicSourceContext: null,
+          spectrumMusicDrafts: [],
+        };
 
   return resetContextWith(
     {
@@ -548,6 +554,7 @@ function createPlayReadyContext(
       },
       pending: {
         pendingNowPlayingTrackEvidence: null,
+        pendingPlaybackSurfaceStatusEvidence: null,
       },
     },
     resetLifecycle({
@@ -581,12 +588,14 @@ function createPendingPlaylistPlaybackPatch(input: {
   | "pendingPlaylistPlaybackName"
   | "pendingPlaylistPlaybackRequest"
   | "pendingPlaylistPlaybackSessionGeneration"
+  | "pendingPlaybackSurfaceStatusEvidence"
 > {
   return {
     pendingPlaylistPlaybackName: input.playlistName,
     pendingPlaylistPlaybackSessionGeneration: null,
     pendingPlaylistPlaybackRequest: createPlaylistPlaybackRequestEvidence(input),
     pendingNowPlayingTrackEvidence: null,
+    pendingPlaybackSurfaceStatusEvidence: null,
   };
 }
 
@@ -623,6 +632,7 @@ function createPendingPlaylistPlaybackContext(
       },
       pending: {
         pendingNowPlayingTrackEvidence: null,
+        pendingPlaybackSurfaceStatusEvidence: null,
       },
       chart: {
         activeLayoutId,
@@ -670,12 +680,16 @@ function createPlaylistPlaybackStoppedPatch(
     return {};
   }
 
-  if (event.output.reason === "pending_first_track") {
+  if (
+    event.output.reason === "pending_first_track" ||
+    event.output.reason === "unstable_target"
+  ) {
     return {
       pendingPlaylistPlaybackName: null,
       pendingPlaylistPlaybackSessionGeneration: null,
       pendingPlaylistPlaybackRequest: null,
       pendingNowPlayingTrackEvidence: null,
+      pendingPlaybackSurfaceStatusEvidence: null,
     };
   }
 
@@ -690,7 +704,19 @@ function createPlaylistPlaybackStoppedPatch(
       requestId: event.output.requestId,
     },
     pendingNowPlayingTrackEvidence: null,
+    pendingPlaybackSurfaceStatusEvidence: null,
   };
+}
+
+function matchesPendingPlaybackSurfaceStatusEvidence(
+  context: Context,
+  evidence: PlaybackSurfaceStatusEvidence,
+) {
+  return (
+    context.pendingPlaylistPlaybackName === evidence.playlist_name &&
+    (context.pendingPlaylistPlaybackSessionGeneration === null ||
+      context.pendingPlaylistPlaybackSessionGeneration === evidence.session_generation)
+  );
 }
 
 function createPlaylistUpsertedContext(
@@ -713,47 +739,6 @@ function createPlaylistUpsertedContext(
     pendingPlaylistPlaybackName: context.pendingPlaylistPlaybackName,
     pendingPlaylistPlaybackRequest: context.pendingPlaylistPlaybackRequest,
   };
-}
-
-function createPendingPreviewConfigContext(context: Context, playlistName: string) {
-  const draft = resolvePendingPlaylistPreviewDraft(context, playlistName);
-  const activeLayoutId = playlistTitleLayoutId(playlistName);
-
-  if (!draft) {
-    return null;
-  }
-
-  return resetContextWith(
-    {
-      shape: {
-        hasPlayList: context.hasPlayList,
-        playlists: context.playlists,
-        pendingPlaylistPreview: context.pendingPlaylistPreview,
-        collections: context.collections,
-        configLibrary: context.configLibrary,
-        savePath: context.savePath,
-        draftBaseline: cloneDraft(draft),
-        draft,
-      },
-      runtime: {
-        playingPlaylistName: null,
-        nowPlayingTrackName: null,
-        nowPlayingTrackLiked: null,
-      },
-      chart: {
-        activeLayoutId,
-      },
-      lease: {
-        titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
-      },
-    },
-    resetLifecycle({
-      reason: "open config chart from playlist preview",
-      chart: resetLifecycleAction("opened", "playlist-config"),
-      lease: resetLifecycleAction("opened", activeLayoutId),
-      transaction: resetLifecycleAction("closed", "playlist-draft-load"),
-    }),
-  );
 }
 
 function createConfigLoadingContext(context: Context, playlistName: string) {
@@ -821,6 +806,7 @@ const collectionUpdatesRequested = payloads["collection.updates.requested"];
 const excludeAdded = payloads["exclude.added"];
 const excludeRemoved = payloads["exclude.removed"];
 const nowPlayingTrackChanged = payloads["player.now_playing_track.changed"];
+const playbackSurfaceStatusChanged = payloads["player.playback_surface_status.changed"];
 
 export const machine = src.createMachine({
   initial: ss.mainx.State.idle,
@@ -842,7 +828,28 @@ export const machine = src.createMachine({
       }),
     },
     [playlistUpserted.evt]: {
-      actions: assign(({ context, event }) => createPlaylistUpsertedContext(context, event)),
+      actions: [
+        ({ context, event }) => {
+          recordTrace("app-playlist-upsert-event-received", {
+            currentDraftName: context.draft?.name ?? null,
+            currentPendingPreviewName: context.pendingPlaylistPreview?.playlist.name ?? null,
+            previousName: event.output.previousName,
+            playlistName: event.output.playlist.name,
+          });
+        },
+        assign(({ context, event }) => {
+          const nextContext = createPlaylistUpsertedContext(context, event);
+          recordTrace("app-playlist-upsert-context-projected", {
+            hasPlayList: nextContext.hasPlayList,
+            currentDraftName: context.draft?.name ?? null,
+            nextPendingPreviewName: nextContext.pendingPlaylistPreview?.playlist.name ?? null,
+            previousName: event.output.previousName,
+            playlistName: event.output.playlist.name,
+            playlistNames: nextContext.playlists.map((playlist) => playlist.name),
+          });
+          return nextContext;
+        }),
+      ],
     },
     [playlistDeleted.evt]: {
       actions: assign(({ context, event }) => {
@@ -869,6 +876,10 @@ export const machine = src.createMachine({
             context.pendingPlaylistPlaybackName === event.output
               ? null
               : context.pendingPlaylistPlaybackRequest,
+          pendingPlaybackSurfaceStatusEvidence:
+            context.pendingPlaylistPlaybackName === event.output
+              ? null
+              : context.pendingPlaybackSurfaceStatusEvidence,
         };
       }),
     },
@@ -943,11 +954,43 @@ export const machine = src.createMachine({
           return {
             ...createNowPlayingTrackPatch(context, event.output),
             pendingNowPlayingTrackEvidence: event.output,
+            pendingPlaybackSurfaceStatusEvidence: null,
           };
         }
 
         return {
           pendingNowPlayingTrackEvidence: event.output,
+        };
+      }),
+    },
+    [playbackSurfaceStatusChanged.evt]: {
+      actions: assign(({ context, event }) => {
+        const matchesAcceptedPlayback =
+          context.playingPlaylistName === event.output.playlist_name &&
+          context.playingSessionGeneration === event.output.session_generation;
+
+        if (!matchesAcceptedPlayback) {
+          if (matchesPendingPlaybackSurfaceStatusEvidence(context, event.output)) {
+            return {
+              pendingPlaybackSurfaceStatusEvidence: event.output,
+            };
+          }
+
+          return {};
+        }
+
+        return {
+          nowPlayingTrackName: null,
+          nowPlayingTrackUrl: null,
+          nowPlayingTrackFilePath: null,
+          nowPlayingTrackStartMs: null,
+          nowPlayingTrackEndMs: null,
+          nowPlayingTrackLiked: null,
+          playbackSurfaceStatus: event.output.status,
+          pendingSpectrumMusicCreateId: null,
+          spectrumMusicSourceContext: null,
+          spectrumMusicDrafts: [],
+          pendingPlaybackSurfaceStatusEvidence: null,
         };
       }),
     },
@@ -1064,7 +1107,18 @@ export const machine = src.createMachine({
       on: {
         run: ss.mainx.State.loading,
         [playlistUpserted.evt]: {
-          actions: assign(({ context, event }) => createPlaylistUpsertedContext(context, event)),
+          actions: assign(({ context, event }) => {
+            const nextContext = createPlaylistUpsertedContext(context, event);
+            recordTrace("app-playlist-upsert-ready-projected", {
+              currentDraftName: context.draft?.name ?? null,
+              currentPendingPreviewName: context.pendingPlaylistPreview?.playlist.name ?? null,
+              nextPendingPreviewName: nextContext.pendingPlaylistPreview?.playlist.name ?? null,
+              previousName: event.output.previousName,
+              playlistName: event.output.playlist.name,
+              playlistNames: nextContext.playlists.map((playlist) => playlist.name),
+            });
+            return nextContext;
+          }),
         },
         opencreate: {
           target: ss.mainx.State.config,
@@ -1104,20 +1158,11 @@ export const machine = src.createMachine({
             ),
           ),
         },
-        [playPlaylist.evt]: [
-          {
-            guard: ({ context, event }) =>
-              resolvePendingPlaylistPreviewDraft(context, event.output.playlistName) !== null,
-            actions: assign(({ context, event }) =>
-              createPendingPlaylistPlaybackContext(context, event.output),
-            ),
-          },
-          {
-            actions: assign(({ context, event }) =>
-              createPendingPlaylistPlaybackContext(context, event.output),
-            ),
-          },
-        ],
+        [playPlaylist.evt]: {
+          actions: assign(({ context, event }) =>
+            createPendingPlaylistPlaybackContext(context, event.output),
+          ),
+        },
         [playlistPlaybackAccepted.evt]: {
           target: ss.mainx.State.play,
           guard: ({ context, event }) => isCurrentPlaylistPlaybackRequest(context, event.output),
@@ -1133,16 +1178,6 @@ export const machine = src.createMachine({
           ),
         },
         [openPlaylist.evt]: [
-          {
-            guard: ({ context, event }) =>
-              resolvePendingPlaylistPreviewDraft(context, event.output) !== null,
-            target: ss.mainx.State.config,
-            actions: assign(
-              ({ context, event }) =>
-                createPendingPreviewConfigContext(context, event.output) ??
-                createConfigLoadingContext(context, event.output),
-            ),
-          },
           {
             target: ss.mainx.State.configLoading,
             actions: assign(({ context, event }) =>
@@ -1220,20 +1255,9 @@ export const machine = src.createMachine({
             ),
           ),
         },
-        [playPlaylist.evt]: [
-          {
-            guard: ({ context, event }) =>
-              resolvePendingPlaylistPreviewDraft(context, event.output.playlistName) !== null,
-            actions: assign(({ context, event }) =>
-              createPendingPlaylistPlaybackDuringPlayPatch(event.output),
-            ),
-          },
-          {
-            actions: assign(({ event }) =>
-              createPendingPlaylistPlaybackDuringPlayPatch(event.output),
-            ),
-          },
-        ],
+        [playPlaylist.evt]: {
+          actions: assign(({ event }) => createPendingPlaylistPlaybackDuringPlayPatch(event.output)),
+        },
         [playlistPlaybackAccepted.evt]: {
           reenter: true,
           guard: ({ context, event }) => isCurrentPlaylistPlaybackRequest(context, event.output),
@@ -1249,16 +1273,6 @@ export const machine = src.createMachine({
           ),
         },
         [openPlaylist.evt]: [
-          {
-            guard: ({ context, event }) =>
-              resolvePendingPlaylistPreviewDraft(context, event.output) !== null,
-            target: ss.mainx.State.config,
-            actions: assign(
-              ({ context, event }) =>
-                createPendingPreviewConfigContext(context, event.output) ??
-                createConfigLoadingContext(context, event.output),
-            ),
-          },
           {
             target: ss.mainx.State.configLoading,
             actions: assign(({ context, event }) =>
@@ -1317,6 +1331,8 @@ export const machine = src.createMachine({
                   nowPlayingTrackFilePath: context.nowPlayingTrackFilePath,
                   nowPlayingTrackStartMs: context.nowPlayingTrackStartMs,
                   nowPlayingTrackEndMs: context.nowPlayingTrackEndMs,
+                  nowPlayingTrackLiked: context.nowPlayingTrackLiked,
+                  playbackSurfaceStatus: context.playbackSurfaceStatus,
                   spectrumPlaybackScopeId: context.spectrumPlaybackScopeId,
                 },
                 chart: {
@@ -1599,24 +1615,6 @@ export const machine = src.createMachine({
         },
         [openPlaylist.evt]: [
           {
-            guard: ({ context, event }) =>
-              resolvePendingPlaylistPreviewDraft(context, event.output) !== null,
-            target: ss.mainx.State.config,
-            actions: assign(({ context, event }) => {
-              const nextContext = createPendingPreviewConfigContext(context, event.output);
-
-              return nextContext
-                ? {
-                    ...nextContext,
-                    titleToneHandoff: createCollectionTitleHandoff(
-                      playlistTitleLayoutId(event.output),
-                      resolveTitleShareToneFromDraft(context.draft),
-                    ),
-                  }
-                : createConfigLoadingContext(context, event.output);
-            }),
-          },
-          {
             target: ss.mainx.State.configLoading,
             actions: assign(({ context, event }) => ({
               ...createConfigLoadingContext(context, event.output),
@@ -1628,14 +1626,22 @@ export const machine = src.createMachine({
           },
         ],
         [draftNameChanged.evt]: {
-          actions: assign({
-            draft: ({ context, event }) =>
-              context.draft
-                ? {
-                    ...context.draft,
-                    name: event.output,
-                  }
-                : null,
+          actions: assign(({ context, event }) => {
+            const nextDraft = context.draft
+              ? {
+                  ...context.draft,
+                  name: event.output,
+                }
+              : null;
+            recordTrace("app-draft-name-event-reduced", {
+              draftBaselineName: context.draftBaseline?.name ?? null,
+              nextDraftName: nextDraft?.name ?? null,
+              previousDraftName: context.draft?.name ?? null,
+              requestedName: event.output,
+            });
+            return {
+              draft: nextDraft,
+            };
           }),
         },
         [collectionUpdatesRequested.evt]: {

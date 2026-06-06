@@ -9,10 +9,10 @@ import { AnimatePresence, motion } from "motion/react";
 import { useTheme } from "next-themes";
 import { Toaster } from "sileo";
 import {
-  installRenderPerformanceTrace,
+  installTrace,
   recordTrace,
-  type RenderPerformanceTraceProbe,
-} from "./debug/renderPerformanceTrace";
+  type TraceProbe,
+} from "./debug/trace";
 import { PlayListPage } from "./components/PlayListPage";
 import { ListConfig } from "./components/ListConfig";
 import { SpectrumPage } from "./components/spectrum/SpectrumPage";
@@ -27,11 +27,12 @@ import {
 } from "./components/scrollPosition";
 import { PageViewportScrollElementProvider } from "./components/pageViewportScroll";
 
-const enabledRenderPerformanceTraceProbes = [
-] satisfies RenderPerformanceTraceProbe[];
+const enabledTraceProbes = [
+  "config-title-check-flow",
+] satisfies TraceProbe[];
 
-installRenderPerformanceTrace({
-  enabledProbes: enabledRenderPerformanceTraceProbes,
+installTrace({
+  enabledProbes: enabledTraceProbes,
 });
 
 type PageScrollKey = "list" | "config" | "spectrum";

@@ -18,7 +18,7 @@ export interface FastUrlResolveQueueSink {
 
 export interface FastUrlResolveQueueRuntime {
   concurrency(): number;
-  resolve(url: string): Promise<PastedDownloadUrlResolution>;
+  resolve(url: string, options?: { signal: AbortSignal }): Promise<PastedDownloadUrlResolution>;
   started?(input: { activeCount: number; id: string; queuedCount: number; url: string }): void;
   toErrorMessage(error: unknown): string;
 }

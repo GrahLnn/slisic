@@ -3,9 +3,10 @@ use super::playable_index::{
     claim_global_refresh_for_test, claim_playlist_refresh_for_test,
     commit_global_snapshot_for_test, commit_playlist_snapshot_for_test, consume_playlist_source,
     discard_playlist_source, initialize_runtime_for_test, mark_playlist_source_kind_for_test,
-    read_playlist_source, refresh_playlist_now_for_reason_for_test, refresh_playlist_now_for_test,
-    request_global_refresh_while_active_for_test, reset_for_test, restore_cache_file_json_for_test,
-    should_skip_global_refresh_for_test, should_skip_playlist_refresh_for_test,
+    notify_playlist_renamed, read_playlist_source, refresh_playlist_now_for_reason_for_test,
+    refresh_playlist_now_for_test, request_global_refresh_while_active_for_test, reset_for_test,
+    restore_cache_file_json_for_test, should_skip_global_refresh_for_test,
+    should_skip_playlist_refresh_for_test,
 };
 use crate::domain::playlists::model::{
     CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
@@ -90,6 +91,14 @@ async fn playable_index_reads_prepared_playlist_source_without_rebuilding() {
         .expect("index snapshot should exist");
 
     assert_eq!(sampled.playlist_name, "Focus");
+    let track = sampled
+        .track
+        .as_ref()
+        .expect("prepared playback track should exist");
+    assert_eq!(track.music_url, "https://example.com/watch?v=3");
+    assert_eq!(track.music_name, "Track 3");
+    assert_eq!(track.start_ms, 0);
+    assert_eq!(track.end_ms, 180_000);
     assert_eq!(
         sampled
             .source
@@ -190,6 +199,61 @@ async fn playable_index_consumption_removes_only_one_playlist_source_credential(
             .music
             .url,
         "https://example.com/watch?v=7"
+    );
+}
+
+#[tokio::test]
+async fn playable_index_rename_moves_prepared_sources_to_next_playlist_key() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("first test snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(4)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("spare test snapshot should commit");
+
+    notify_playlist_renamed("Focus", "Focus Renamed");
+
+    assert!(
+        read_playlist_source("Focus")
+            .expect("old playlist index read should succeed")
+            .is_none(),
+        "rename must remove the old first-slot key"
+    );
+    let renamed = read_playlist_source("Focus Renamed")
+        .expect("renamed playlist index read should succeed")
+        .expect("renamed playlist should keep prepared first source");
+    let renamed_track = renamed
+        .track
+        .as_ref()
+        .expect("renamed prepared track should exist");
+    assert_eq!(renamed.playlist_name, "Focus Renamed");
+    assert_eq!(renamed_track.playlist_name, "Focus Renamed");
+    assert_eq!(renamed_track.music_url, "https://example.com/watch?v=3");
+    assert!(consume_playlist_source(&renamed).expect("renamed source should be consumable"));
+
+    let spare = read_playlist_source("Focus Renamed")
+        .expect("renamed playlist index read should succeed")
+        .expect("renamed spare source should remain");
+    assert_eq!(
+        spare
+            .track
+            .as_ref()
+            .expect("renamed spare track should exist")
+            .playlist_name,
+        "Focus Renamed"
+    );
+    assert_eq!(
+        spare
+            .source
+            .expect("renamed spare source should exist")
+            .music
+            .url,
+        "https://example.com/watch?v=4"
     );
 }
 

@@ -11,7 +11,7 @@ export interface CandidateEffectDemand<TOutput> {
 
 export interface CandidateEffectQueueRuntime<TOutput> {
   concurrency(): number;
-  run(input: string): Promise<TOutput>;
+  run(input: string, options?: { signal: AbortSignal }): Promise<TOutput>;
   started?(input: { activeCount: number; id: string; input: string; queuedCount: number }): void;
   toErrorMessage(error: unknown): string;
 }
@@ -24,6 +24,7 @@ export interface CandidateEffectQueue<TOutput> {
 
 type QueuedCandidateEffect<TOutput> = CandidateEffectDemand<TOutput> & {
   cancelled: boolean;
+  controller: AbortController | null;
   token: number;
 };
 
@@ -56,6 +57,7 @@ export function createCandidateEffectQueue<TOutput>(
         continue;
       }
 
+      next.controller = new AbortController();
       active.set(next.token, next);
       runtime.started?.({
         activeCount: active.size,
@@ -64,7 +66,7 @@ export function createCandidateEffectQueue<TOutput>(
         queuedCount: queued.filter(isOpen).length,
       });
       void runtime
-        .run(next.input)
+        .run(next.input, { signal: next.controller.signal })
         .then((output) => {
           if (isOpen(next)) {
             next.sink.completed({
@@ -92,11 +94,13 @@ export function createCandidateEffectQueue<TOutput>(
     for (const item of queued) {
       if (item.id === demand.id) {
         item.cancelled = true;
+        item.controller?.abort();
       }
     }
     for (const [token, item] of active) {
       if (item.id === demand.id) {
         item.cancelled = true;
+        item.controller?.abort();
         active.delete(token);
       }
     }
@@ -106,6 +110,7 @@ export function createCandidateEffectQueue<TOutput>(
     queued.push({
       ...demand,
       cancelled: false,
+      controller: null,
       token,
     });
     pump();
@@ -116,11 +121,13 @@ export function createCandidateEffectQueue<TOutput>(
     for (const item of queued) {
       if (item.id === id) {
         item.cancelled = true;
+        item.controller?.abort();
       }
     }
     for (const [token, item] of active) {
       if (item.id === id) {
         item.cancelled = true;
+        item.controller?.abort();
         active.delete(token);
       }
     }
@@ -128,11 +135,16 @@ export function createCandidateEffectQueue<TOutput>(
   }
 
   function reset() {
-    queued.length = 0;
     latestTokenById.clear();
     for (const item of active.values()) {
       item.cancelled = true;
+      item.controller?.abort();
     }
+    for (const item of queued) {
+      item.cancelled = true;
+      item.controller?.abort();
+    }
+    queued.length = 0;
     active.clear();
   }
 

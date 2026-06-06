@@ -1,6 +1,7 @@
 #[cfg(not(test))]
 use super::event::{
     NowPlayingTrackChangedEvent, PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent,
+    PlaybackSurfaceStatus, PlaybackSurfaceStatusChangedEvent,
 };
 pub(crate) use super::model::ActivePlaybackRange;
 #[cfg(not(test))]
@@ -45,7 +46,7 @@ use tauri::{AppHandle, Manager};
 #[cfg(not(test))]
 use tauri_specta::Event;
 #[cfg(not(test))]
-use tokio::task;
+use tokio::{sync::watch, task};
 
 #[cfg(not(test))]
 static PLAYER_RUNTIME: OnceLock<Arc<PlayerRuntime>> = OnceLock::new();
@@ -76,13 +77,26 @@ pub struct PlayerRuntime {
 type SharedPlaybackTracks = Arc<RwLock<Vec<PlaybackTrack>>>;
 
 #[cfg(not(test))]
+type SharedPlaybackTrackRevisionSender = watch::Sender<u64>;
+
+#[cfg(not(test))]
+type SharedPlaybackTrackRevisionReceiver = watch::Receiver<u64>;
+
+#[cfg(not(test))]
 type SharedPlaybackStrategy = Arc<Mutex<PlaybackStrategySet>>;
+
+#[cfg(not(test))]
+fn notify_playback_track_revision(sender: &SharedPlaybackTrackRevisionSender) {
+    let next_revision = sender.borrow().checked_add(1).unwrap_or_default();
+    let _previous = sender.send_replace(next_revision);
+}
 
 #[cfg(not(test))]
 struct ActivePlaybackSession {
     playlist_name: String,
     session_generation: u64,
     tracks: SharedPlaybackTracks,
+    track_revision: SharedPlaybackTrackRevisionSender,
     strategy: SharedPlaybackStrategy,
     queue_mode: PlaybackQueueMode,
 }
@@ -338,6 +352,15 @@ pub(crate) async fn play_tracks_from_initial_track_for_request_with_queue_mode(
 }
 
 #[cfg(not(test))]
+pub(crate) async fn start_empty_session_for_request_with_queue_mode(
+    request: &PlaybackStartRequestHandle,
+    playlist_name: String,
+    queue_mode: PlaybackQueueMode,
+) -> Result<PlaybackSessionHandle> {
+    play_tracks_with_initial_track(playlist_name, vec![], None, queue_mode, Some(*request)).await
+}
+
+#[cfg(not(test))]
 async fn play_tracks_with_initial_track(
     playlist_name: String,
     tracks: Vec<PlaybackTrack>,
@@ -346,7 +369,7 @@ async fn play_tracks_with_initial_track(
     start_request: Option<PlaybackStartRequestHandle>,
 ) -> Result<PlaybackSessionHandle> {
     let trace_start = Instant::now();
-    if tracks.is_empty() {
+    if tracks.is_empty() && initial_track.is_some() {
         bail!("playback session `{playlist_name}` does not contain any playable tracks");
     }
     if let Some(initial_track) = initial_track.as_ref()
@@ -431,11 +454,13 @@ async fn play_tracks_with_initial_track(
     runtime.set_temporary_playback_pause(false)?;
 
     let shared_tracks = Arc::new(RwLock::new(tracks));
+    let (track_revision, _) = watch::channel(0);
     let shared_strategy = Arc::new(Mutex::new(PlaybackStrategySet::new()));
     runtime.replace_active_session(
         playlist_name.clone(),
         playback_run_generation,
         Arc::clone(&shared_tracks),
+        track_revision.clone(),
         Arc::clone(&shared_strategy),
         queue_mode,
     )?;
@@ -450,6 +475,7 @@ async fn play_tracks_with_initial_track(
         playlist_name: playlist_name.clone(),
         session_generation: playback_run_generation,
         tracks: shared_tracks,
+        track_revision,
         strategy: shared_strategy,
         queue_mode,
         initial_request: initial_track.map(|track| InitialPlaybackRequest {
@@ -513,14 +539,32 @@ pub async fn restore_spectrum_music(
 }
 
 #[cfg(not(test))]
-pub(crate) fn update_session_tracks(
+pub(crate) fn update_session_tracks_for_anchor(
     handle: &PlaybackSessionHandle,
+    expected_anchor: &PlaybackTrack,
     tracks: Vec<PlaybackTrack>,
 ) -> Result<bool> {
     if tracks.is_empty() {
         return Ok(is_session_current(handle)?);
     }
 
+    let runtime = runtime()?;
+    let active_anchor = runtime.active_request_track_snapshot_for_session(handle)?;
+    if active_anchor
+        .as_ref()
+        .is_some_and(|anchor| !are_playback_tracks_equal(anchor, expected_anchor))
+    {
+        return Ok(false);
+    }
+
+    runtime.replace_session_tracks(handle, tracks)
+}
+
+#[cfg(not(test))]
+pub(crate) fn update_session_tracks(
+    handle: &PlaybackSessionHandle,
+    tracks: Vec<PlaybackTrack>,
+) -> Result<bool> {
     runtime()?.replace_session_tracks(handle, tracks)
 }
 
@@ -1385,6 +1429,7 @@ impl PlayerRuntime {
         playlist_name: String,
         session_generation: u64,
         tracks: SharedPlaybackTracks,
+        track_revision: SharedPlaybackTrackRevisionSender,
         strategy: SharedPlaybackStrategy,
         queue_mode: PlaybackQueueMode,
     ) -> Result<()> {
@@ -1397,6 +1442,7 @@ impl PlayerRuntime {
             playlist_name,
             session_generation,
             tracks,
+            track_revision,
             strategy,
             queue_mode,
         });
@@ -1579,6 +1625,7 @@ impl PlayerRuntime {
             );
         }
         *current_tracks = tracks;
+        notify_playback_track_revision(&active.track_revision);
         Ok(true)
     }
 
@@ -1600,6 +1647,7 @@ impl PlayerRuntime {
         }
 
         *current_tracks = tracks;
+        notify_playback_track_revision(&active.track_revision);
         Ok(true)
     }
 
@@ -1648,6 +1696,7 @@ impl PlayerRuntime {
                 playlist_name: active.playlist_name.clone(),
                 session_generation: active.session_generation,
                 tracks: Arc::clone(&active.tracks),
+                track_revision: active.track_revision.clone(),
                 strategy: Arc::clone(&active.strategy),
                 queue_mode: active.queue_mode,
                 initial_request: Some(InitialPlaybackRequest {
@@ -1986,6 +2035,7 @@ struct PlaybackSession {
     playlist_name: String,
     session_generation: u64,
     tracks: SharedPlaybackTracks,
+    track_revision: SharedPlaybackTrackRevisionSender,
     strategy: SharedPlaybackStrategy,
     queue_mode: PlaybackQueueMode,
     initial_request: Option<InitialPlaybackRequest>,
@@ -2008,6 +2058,10 @@ impl PlaybackSession {
             .map(|tracks| tracks.clone())
             .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))
     }
+
+    fn subscribe_track_revision(&self) -> SharedPlaybackTrackRevisionReceiver {
+        self.track_revision.subscribe()
+    }
 }
 
 #[cfg(not(test))]
@@ -2018,6 +2072,7 @@ async fn run_playback_session(
     mut session: PlaybackSession,
 ) -> Result<()> {
     let trace_start = Instant::now();
+    let mut track_revision = session.subscribe_track_revision();
     loop {
         if runtime.playback_run_generation.load(Ordering::SeqCst) != generation {
             emit_player_trace(
@@ -2078,6 +2133,18 @@ async fn run_playback_session(
                     .elapsed(trace_start)
                     .queue_count(tracks.len()),
             );
+            if wait_for_session_tracks_after_exhaustion(
+                &runtime,
+                generation,
+                &session,
+                &mut track_revision,
+                trace_start,
+                tracks.len(),
+            )
+            .await?
+            {
+                continue;
+            }
             return Ok(());
         };
         emit_player_trace(
@@ -2258,6 +2325,85 @@ async fn resolve_next_session_track(
         );
     }
     Ok(track)
+}
+
+#[cfg(not(test))]
+async fn wait_for_session_tracks_after_exhaustion(
+    runtime: &PlayerRuntime,
+    generation: u64,
+    session: &PlaybackSession,
+    track_revision: &mut SharedPlaybackTrackRevisionReceiver,
+    trace_start: Instant,
+    queue_count: usize,
+) -> Result<bool> {
+    emit_playback_surface_status(
+        runtime,
+        session.session_generation,
+        &session.playlist_name,
+        PlaybackSurfaceStatus::Preparing,
+    )?;
+    emit_player_trace(
+        "player-run-session-waiting-for-tracks",
+        PlayerTrace::new(&runtime.app)
+            .playlist_name(&session.playlist_name)
+            .elapsed(trace_start)
+            .queue_count(queue_count)
+            .status("preparing")
+            .details(vec![trace_detail("generation", generation)]),
+    );
+
+    loop {
+        if runtime.playback_run_generation.load(Ordering::SeqCst) != generation {
+            emit_player_trace(
+                "player-run-session-waiting-ended",
+                PlayerTrace::new(&runtime.app)
+                    .playlist_name(&session.playlist_name)
+                    .elapsed(trace_start)
+                    .status("generation_changed")
+                    .details(vec![trace_detail("generation", generation)]),
+            );
+            return Ok(false);
+        }
+
+        if track_revision.changed().await.is_err() {
+            emit_player_trace(
+                "player-run-session-waiting-ended",
+                PlayerTrace::new(&runtime.app)
+                    .playlist_name(&session.playlist_name)
+                    .elapsed(trace_start)
+                    .status("track_revision_closed")
+                    .details(vec![trace_detail("generation", generation)]),
+            );
+            return Ok(false);
+        }
+
+        emit_player_trace(
+            "player-run-session-tracks-updated",
+            PlayerTrace::new(&runtime.app)
+                .playlist_name(&session.playlist_name)
+                .elapsed(trace_start)
+                .queue_count(session.tracks_snapshot()?.len())
+                .status("retry")
+                .details(vec![trace_detail("generation", generation)]),
+        );
+        return Ok(true);
+    }
+}
+
+#[cfg(not(test))]
+fn emit_playback_surface_status(
+    runtime: &PlayerRuntime,
+    session_generation: u64,
+    playlist_name: &str,
+    status: PlaybackSurfaceStatus,
+) -> Result<()> {
+    PlaybackSurfaceStatusChangedEvent {
+        session_generation,
+        playlist_name: playlist_name.to_string(),
+        status,
+    }
+    .emit(&runtime.app)?;
+    Ok(())
 }
 
 #[cfg(not(test))]

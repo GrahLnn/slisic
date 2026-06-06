@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import { useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import { action as appLogicAction, hook as appLogicHook } from "@/src/flow/appLogic";
-import { recordTrace } from "@/src/debug/renderPerformanceTrace";
+import { recordTrace } from "@/src/debug/trace";
 import type { MainStateT } from "@/src/flow/appLogic/events";
 import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import { PlayListPageItem, CreateNewPlayListItem } from "./PlayListPageItem";
@@ -37,9 +37,11 @@ export function PlayListPage({
     pendingPlaylistPreview,
     pendingPlaylistPlaybackRequest,
     playingPlaylistName,
+    playingSessionGeneration,
     nowPlayingTrackName,
     nowPlayingTrackUrl,
     nowPlayingTrackLiked,
+    playbackSurfaceStatus,
     titleToneHandoff,
   } = appLogicHook.useContext();
   const pageState = appLogicHook.useState();
@@ -57,11 +59,12 @@ export function PlayListPage({
   const pageStateValue = surfacePageState ?? livePageStateValue;
   const playbackSurface = usePlayListPlaybackSurface({
     pageState: pageStateValue,
-    playlists,
     playingPlaylistName,
+    playingSessionGeneration,
     nowPlayingTrackName,
     nowPlayingTrackUrl,
     nowPlayingTrackLiked,
+    playbackSurfaceStatus,
   });
   const titleReturnSurfaceTargetLayoutId = resolvePlayListPageTitleReturnSurfaceTargetLayoutId({
     pageState: pageStateValue,
@@ -73,23 +76,47 @@ export function PlayListPage({
   const titleReturnSurface = usePlayListTitleReturnSurface(titleReturnSurfaceTargetLayoutId);
   const [pressedTitleLayoutId, setPressedTitleLayoutId] = useState<string | null>(null);
   const releasePressedTitleLayoutFrameRef = useRef<number | null>(null);
-  const releasePressedTitleLayoutId = useCallback(() => {
+  const releasePressedTitleLayoutId = useCallback((layoutId?: string) => {
+    const traceLayoutId = layoutId ?? pressedTitleLayoutId;
+    recordTrace("playlist-page-pressed-title-release-requested", {
+      pressedTitleLayoutId: traceLayoutId,
+      hasPendingFrame: releasePressedTitleLayoutFrameRef.current !== null,
+    });
+
     if (typeof window === "undefined") {
       setPressedTitleLayoutId(null);
+      recordTrace("playlist-page-pressed-title-release-immediate", {
+        pressedTitleLayoutId: traceLayoutId,
+      });
       return;
     }
 
     if (releasePressedTitleLayoutFrameRef.current !== null) {
       window.cancelAnimationFrame(releasePressedTitleLayoutFrameRef.current);
+      recordTrace("playlist-page-pressed-title-release-frame-cancelled", {
+        pressedTitleLayoutId: traceLayoutId,
+      });
     }
 
     releasePressedTitleLayoutFrameRef.current = window.requestAnimationFrame(() => {
       releasePressedTitleLayoutFrameRef.current = null;
       setPressedTitleLayoutId(null);
+      recordTrace("playlist-page-pressed-title-released", {
+        pressedTitleLayoutId: traceLayoutId,
+      });
     });
-  }, []);
+  }, [pressedTitleLayoutId]);
   const commitPressedTitleLayoutId = useCallback((layoutId?: string) => {
+    recordTrace("playlist-page-pressed-title-commit-requested", {
+      layoutId: layoutId ?? null,
+      pressedTitleLayoutId,
+    });
+
     if (!layoutId) {
+      recordTrace("playlist-page-pressed-title-commit-skipped", {
+        reason: "missing_layout_id",
+        pressedTitleLayoutId,
+      });
       return;
     }
 
@@ -99,7 +126,10 @@ export function PlayListPage({
     flushSync(() => {
       setPressedTitleLayoutId(layoutId);
     });
-  }, []);
+    recordTrace("playlist-page-pressed-title-committed", {
+      layoutId,
+    });
+  }, [pressedTitleLayoutId]);
   useLayoutEffect(
     () => () => {
       if (releasePressedTitleLayoutFrameRef.current !== null) {
@@ -138,6 +168,7 @@ export function PlayListPage({
   const playbackTargetItem = viewModel.playbackTargetKey
     ? viewModel.itemViewModels.find((item) => item.playlistName === viewModel.playbackTargetKey)
     : null;
+  const stablePlaylistNames = new Set(renderData.playlists.map((playlist) => playlist.name));
   recordTrace("playlist-page-projection", {
     pageState: renderData.pageState,
     isFrozen: pageRenderFreeze.isFrozen,
@@ -146,17 +177,15 @@ export function PlayListPage({
     playingPlaylistName: renderData.playingPlaylistName,
     nowPlayingTrackName,
     nowPlayingTrackUrl,
+    playbackSurfaceStatus,
     pendingPlaylistPlaybackPhase: renderData.pendingPlaylistPlaybackRequest?.phase ?? null,
     pendingPlaylistPlaybackReason: renderData.pendingPlaylistPlaybackRequest?.reason ?? null,
-    pendingPlaylistPlaybackName:
-      renderData.pendingPlaylistPlaybackRequest?.playlistName ?? null,
-    pendingPlaylistPlaybackRequestId:
-      renderData.pendingPlaylistPlaybackRequest?.requestId ?? null,
+    pendingPlaylistPlaybackName: renderData.pendingPlaylistPlaybackRequest?.playlistName ?? null,
+    pendingPlaylistPlaybackRequestId: renderData.pendingPlaylistPlaybackRequest?.requestId ?? null,
     playbackSurfacePhase: renderData.playbackSurface?.phase ?? null,
     playbackSurfacePlaylistName: renderData.playbackSurface?.playlistName ?? null,
     playbackSurfaceTrackName: renderData.playbackSurface?.displayedTrackName ?? null,
-    playbackSurfaceTrackIsPlayable:
-      renderData.playbackSurface?.displayedTrackIsPlayable ?? null,
+    playbackSurfaceTrackIsPlayable: renderData.playbackSurface?.displayedTrackIsPlayable ?? null,
     playbackTargetKey: viewModel.playbackTargetKey,
     playbackTargetText: playbackTargetItem?.text ?? null,
     playbackTargetIsPreparing: playbackTargetItem?.isPlaybackPreparing ?? null,
@@ -200,27 +229,69 @@ export function PlayListPage({
                 }}
                 onLayoutAnimationComplete={titleReturnSurface.handleLayoutAnimationComplete}
                 onPrimaryCommit={() => {
+                  recordTrace("playlist-page-primary-commit-enter", {
+                    playlistName: itemViewModel.playlistName,
+                    layoutId: itemViewModel.layoutId ?? null,
+                    sourceLayoutId: itemViewModel.sourceLayoutId ?? null,
+                    text: itemViewModel.text,
+                    pageState: renderData.pageState,
+                    livePageState: livePageStateValue,
+                    isFrozen: pageRenderFreeze.isFrozen,
+                    pressedTitleLayoutId,
+                    isPlaybackPreparing: itemViewModel.isPlaybackPreparing,
+                    isPlaybackTarget: itemViewModel.isPlaybackTarget,
+                    shouldShowPlaybackIcons: itemViewModel.shouldShowPlaybackIcons,
+                    titleHoverVisual: itemViewModel.titleHoverVisual,
+                    playbackSurfacePhase: renderData.playbackSurface?.phase ?? null,
+                    playbackSurfacePlaylistName: renderData.playbackSurface?.playlistName ?? null,
+                    pendingPlaylistPlaybackPhase:
+                      renderData.pendingPlaylistPlaybackRequest?.phase ?? null,
+                    pendingPlaylistPlaybackName:
+                      renderData.pendingPlaylistPlaybackRequest?.playlistName ?? null,
+                    pendingPlaylistPlaybackRequestId:
+                      renderData.pendingPlaylistPlaybackRequest?.requestId ?? null,
+                  });
                   if (!itemViewModel.playlistName) {
+                    recordTrace("playlist-page-primary-commit-rejected-no-playlist", {
+                      text: itemViewModel.text,
+                      layoutId: itemViewModel.layoutId ?? null,
+                    });
                     return;
                   }
 
+                  recordTrace("playlist-page-primary-commit-pressed-title-before", {
+                    playlistName: itemViewModel.playlistName,
+                    layoutId: itemViewModel.layoutId ?? null,
+                  });
                   commitPressedTitleLayoutId(itemViewModel.layoutId);
+                  recordTrace("playlist-page-primary-commit-action-before", {
+                    playlistName: itemViewModel.playlistName,
+                  });
                   appLogicAction.playPlaylist(itemViewModel.playlistName);
-                  releasePressedTitleLayoutId();
+                  recordTrace("playlist-page-primary-commit-action-after", {
+                    playlistName: itemViewModel.playlistName,
+                  });
+                  releasePressedTitleLayoutId(itemViewModel.layoutId);
+                  recordTrace("playlist-page-primary-commit-exit", {
+                    playlistName: itemViewModel.playlistName,
+                  });
                 }}
                 onCommit={() => {
                   if (!itemViewModel.playlistName) {
                     return;
                   }
 
-                  flushSync(() => {
-                    pageRenderFreeze.freeze(
-                      createPlayListPageConfigExitRenderData(
-                        renderData,
-                        itemViewModel.playlistName,
-                      ),
-                    );
-                  });
+                  if (stablePlaylistNames.has(itemViewModel.playlistName)) {
+                    flushSync(() => {
+                      pageRenderFreeze.freeze(
+                        createPlayListPageConfigExitRenderData(
+                          renderData,
+                          itemViewModel.playlistName,
+                        ),
+                      );
+                    });
+                  }
+
                   appLogicAction.openPlaylist(itemViewModel.playlistName);
                 }}
                 onOpenSpectrum={() => {

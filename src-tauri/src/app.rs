@@ -131,6 +131,7 @@ pub fn run() {
             event::FullScreenEvent,
             utils::hardware_wheel::HardwareHorizontalWheelEvent,
             domain::player::event::NowPlayingTrackChangedEvent,
+            domain::player::event::PlaybackSurfaceStatusChangedEvent,
             domain::player::event::PlaybackExcludeCommittedEvent,
             domain::player::event::PlaybackDiagnosticTraceEvent,
             domain::downloads::service::DownloadTaskChangeSignal

@@ -8,6 +8,7 @@ import type {
   Group,
   Music,
   NowPlayingTrackChangedEvent,
+  PlaybackSurfaceStatusChangedEvent,
   PlayList,
   PlayListListView,
   PlayPlaylistSession,
@@ -34,6 +35,7 @@ const spectrumMusicCreateStarted = payloads["spectrum.music_create_started"];
 const spectrumMusicNameChanged = payloads["spectrum.music_name.changed"];
 const spectrumMusicRangeChanged = payloads["spectrum.music_range.changed"];
 const spectrumPlaybackScopeChanged = payloads["spectrum.playback_scope.changed"];
+const playbackSurfaceStatusChanged = payloads["player.playback_surface_status.changed"];
 
 const sampleCollectionOwner: CollectionGroupOwner = {
   name: "Quiet Morning",
@@ -139,6 +141,19 @@ function createNowPlayingTrackChangedEvent(
     start_ms: music.start_ms,
     end_ms: music.end_ms,
     liked: false,
+    ...overrides,
+  };
+}
+
+function createPlaybackSurfaceStatusChangedEvent(
+  sessionGeneration = 1,
+  playlistName = "Focus Session",
+  overrides: Partial<PlaybackSurfaceStatusChangedEvent> = {},
+): PlaybackSurfaceStatusChangedEvent {
+  return {
+    session_generation: sessionGeneration,
+    playlist_name: playlistName,
+    status: "preparing",
     ...overrides,
   };
 }
@@ -598,6 +613,45 @@ describe("appLogic machine", () => {
     assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
   });
 
+  test("does not promote pending preview into a stable edit draft baseline", async () => {
+    const collection = createCollection([createMusic()]);
+    const playlist = createPlaylist(collection);
+    let loadDraftCallCount = 0;
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () => createBootstrapResult([])),
+          loadPlaylistDraft: fromPromise<ConfigDraft, string>(
+            () =>
+              new Promise<ConfigDraft>(() => {
+                loadDraftCallCount += 1;
+              }),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(
+      payloads["playlist.preview.changed"].load({
+        draft: createConfigDraftFromPlaylist(playlist),
+        playlist: createPlaylistSurface(playlist),
+        previousName: null,
+      }),
+    );
+    actor.send(payloads["playlist.open"].load("Focus Session"));
+
+    assert.equal(actor.getSnapshot().value, "configLoading");
+    assert.equal(loadDraftCallCount, 1);
+    assert.equal(actor.getSnapshot().context.pendingPlaylistName, "Focus Session");
+    assert.equal(actor.getSnapshot().context.draftBaseline, null);
+    assert.equal(actor.getSnapshot().context.draft, null);
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPreview?.playlist.name, "Focus Session");
+  });
+
   test("rejects accepted playback after a missing first-slot result closed its intent", async () => {
     const music = createMusic();
     const collection = createCollection([music]);
@@ -743,6 +797,38 @@ describe("appLogic machine", () => {
     });
   });
 
+  test("closes preview playback intent without a failed surface when the target never stabilizes", async () => {
+    const collection = createCollection([createMusic()]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.stopped"].load({
+        error: "playlist preview closed before stable playback target",
+        playlistName: "Focus Session",
+        reason: "unstable_target",
+        requestId: 1,
+        session: null,
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().value, "ready");
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, null);
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackRequest, null);
+  });
+
   test("projects now playing evidence that arrives before playback is accepted", async () => {
     const music = createMusic();
     const collection = createCollection([music]);
@@ -824,6 +910,95 @@ describe("appLogic machine", () => {
     assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
     assert.equal(actor.getSnapshot().context.nowPlayingTrackName, null);
     assert.equal(actor.getSnapshot().context.pendingNowPlayingTrackEvidence, null);
+  });
+
+  test("projects preparing only from the accepted playback surface status", async () => {
+    const music = createMusic();
+    const collection = createCollection([music]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 1,
+        session: createStartedPlaybackSession(1),
+      }),
+    );
+    assert.equal(actor.getSnapshot().value, "play");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, null);
+    assert.equal(actor.getSnapshot().context.playbackSurfaceStatus, null);
+
+    actor.send(playbackSurfaceStatusChanged.load(createPlaybackSurfaceStatusChangedEvent(2)));
+    assert.equal(actor.getSnapshot().context.playbackSurfaceStatus, null);
+
+    actor.send(playbackSurfaceStatusChanged.load(createPlaybackSurfaceStatusChangedEvent(1)));
+    assert.equal(actor.getSnapshot().context.playbackSurfaceStatus, "preparing");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, null);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackUrl, null);
+
+    actor.send(
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(music, 1),
+      ),
+    );
+    assert.equal(actor.getSnapshot().context.playbackSurfaceStatus, null);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, music.alias);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackUrl, music.url);
+  });
+
+  test("keeps early preparing evidence pending until backend playback acceptance", async () => {
+    const music = createMusic();
+    const collection = createCollection([music]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(playbackSurfaceStatusChanged.load(createPlaybackSurfaceStatusChangedEvent(1)));
+
+    assert.equal(actor.getSnapshot().value, "ready");
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, "Focus Session");
+    assert.equal(actor.getSnapshot().context.playbackSurfaceStatus, null);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, null);
+    assert.equal(
+      actor.getSnapshot().context.pendingPlaybackSurfaceStatusEvidence?.status,
+      "preparing",
+    );
+
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 1,
+        session: createStartedPlaybackSession(1),
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().value, "play");
+    assert.equal(actor.getSnapshot().context.playbackSurfaceStatus, "preparing");
+    assert.equal(actor.getSnapshot().context.pendingPlaybackSurfaceStatusEvidence, null);
   });
 
   test("ignores stale now playing evidence from a superseded same-name playback session", async () => {

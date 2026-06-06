@@ -18,6 +18,13 @@ async function flushMicrotasks() {
   await Promise.resolve();
 }
 
+function assertAbortState(signal: AbortSignal | null, aborted: boolean) {
+  if (signal === null) {
+    assert.fail("expected candidate effect abort signal");
+  }
+  assert.equal(signal.aborted, aborted);
+}
+
 describe("candidate effect queue", () => {
   test("runs candidate effects with bounded concurrency", async () => {
     const first = createDeferred<string>();
@@ -71,9 +78,13 @@ describe("candidate effect queue", () => {
     const effect = createDeferred<string>();
     const completed: string[] = [];
     const failed: string[] = [];
+    let signal: AbortSignal | null = null;
     const queue = createCandidateEffectQueue({
       concurrency: () => 1,
-      run: () => effect.promise,
+      run: (_input, options) => {
+        signal = options?.signal ?? null;
+        return effect.promise;
+      },
       toErrorMessage: (error) => String(error),
     });
 
@@ -86,6 +97,7 @@ describe("candidate effect queue", () => {
       },
     });
     queue.cancel("candidate:1");
+    assertAbortState(signal, true);
     effect.resolve("done");
     await flushMicrotasks();
 
@@ -98,9 +110,18 @@ describe("candidate effect queue", () => {
     const newEffect = createDeferred<string>();
     const started: string[] = [];
     const completed: string[] = [];
+    let oldSignal: AbortSignal | null = null;
+    let newSignal: AbortSignal | null = null;
     const queue = createCandidateEffectQueue({
       concurrency: () => 1,
-      run: (input) => (input === "old" ? oldEffect.promise : newEffect.promise),
+      run: (input, options) => {
+        if (input === "old") {
+          oldSignal = options?.signal ?? null;
+          return oldEffect.promise;
+        }
+        newSignal = options?.signal ?? null;
+        return newEffect.promise;
+      },
       started: ({ input }) => started.push(input),
       toErrorMessage: (error) => String(error),
     });
@@ -112,10 +133,12 @@ describe("candidate effect queue", () => {
     queue.enqueue({ id: "candidate:old", input: "old", sink });
     await flushMicrotasks();
     queue.reset();
+    assertAbortState(oldSignal, true);
     queue.enqueue({ id: "candidate:new", input: "new", sink });
     await flushMicrotasks();
 
     assert.deepEqual(started, ["old", "new"]);
+    assertAbortState(newSignal, false);
 
     oldEffect.resolve("old done");
     newEffect.resolve("new done");

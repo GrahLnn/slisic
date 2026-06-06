@@ -21,6 +21,7 @@ import {
   type NowPlayingTrackChangedEvent,
   type PlaybackExcludeCommittedEvent,
   type PlaybackDiagnosticTraceEvent,
+  type PlaybackSurfaceStatusChangedEvent,
   type PlaybackContinuationMode,
   type PlaybackStatusPayload,
   type PlayListListView,
@@ -29,7 +30,7 @@ import {
   type SpectrumMusicContext,
   type SpectrumMusicSourceContext,
 } from "@/src/cmd";
-import { recordTrace } from "@/src/debug/renderPerformanceTrace";
+import { recordTrace } from "@/src/debug/trace";
 import { documentDir, join } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -124,7 +125,7 @@ export type PlaylistPlaybackStopped =
   | {
       error: string;
       playlistName: string;
-      reason: Extract<PlaylistPlaybackStopReason, "error" | "stale">;
+      reason: Extract<PlaylistPlaybackStopReason, "error" | "stale" | "unstable_target">;
       requestId: number;
       session: null;
     };
@@ -493,6 +494,12 @@ export async function listenNowPlayingTrackChanged(
   return crab.evt("nowPlayingTrackChangedEvent")(handler);
 }
 
+export async function listenPlaybackSurfaceStatusChanged(
+  handler: (payload: PlaybackSurfaceStatusChangedEvent) => void,
+): Promise<() => void> {
+  return crab.evt("playbackSurfaceStatusChangedEvent")(handler);
+}
+
 export async function listenDownloadTaskChanged(
   handler: (payload: DownloadTaskChangeSignal) => void,
 ): Promise<() => void> {
@@ -777,6 +784,7 @@ export const payloads = collect(
   ...event<ExcludeAddedChange>()("exclude.added"),
   ...event<ExcludeRemovedChange>()("exclude.removed"),
   ...event<NowPlayingTrackChangedEvent>()("player.now_playing_track.changed"),
+  ...event<PlaybackSurfaceStatusChangedEvent>()("player.playback_surface_status.changed"),
 );
 
 export type MainStateT = Extract<keyof typeof ss.mainx.State, string>;

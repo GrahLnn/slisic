@@ -17,7 +17,7 @@ use super::repo::{
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
-use appdb::model::meta::ModelMeta;
+use appdb::model::meta::{ModelMeta, ResolveRecordId};
 use appdb::{AutoFill, Crud};
 use serde_json::json;
 use std::path::PathBuf;
@@ -2454,9 +2454,10 @@ fn upsert_playlist_surface_is_immediately_usable_for_playback_selection() {
             created_at: AutoFill::pending(),
         };
 
-        let saved = upsert_playlist_surface(&PlayListWriteRequest::from_playlist(&playlist), None)
+        let upsert = upsert_playlist_surface(&PlayListWriteRequest::from_playlist(&playlist), None)
             .await
             .expect("playlist save should succeed");
+        let saved = upsert.playlist;
         let persisted_collection = get_collection_by_url(collection_url)
             .await
             .expect("library collection reload should succeed")
@@ -2471,6 +2472,7 @@ fn upsert_playlist_surface_is_immediately_usable_for_playback_selection() {
 
         assert_eq!(selection.playlist_name, playlist.name);
         assert_eq!(saved.name, playlist.name);
+        assert!(upsert.playback_selection_changed);
         assert_eq!(persisted_collection.musics.len(), 1);
         assert_eq!(
             persisted_collection.musics[0].url,
@@ -2484,6 +2486,232 @@ fn upsert_playlist_surface_is_immediately_usable_for_playback_selection() {
         );
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].music.url, populated_collection.musics[0].url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn upsert_playlist_surface_rename_is_immediately_usable_for_playback_selection() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let collection_url = "https://example.com/immediate-playback-rename";
+        let collection_folder = "youtube/immediate-playback-rename";
+        let populated_collection = collection_with_musics(
+            collection_url,
+            collection_folder,
+            Some(false),
+            vec![shared_music(collection_url, collection_folder)],
+        );
+        upsert_collection(&populated_collection)
+            .await
+            .expect("library collection should persist before playlist save");
+
+        let original = PlayList {
+            name: "Immediate Playback Original".to_string(),
+            collections: vec![Collection {
+                musics: vec![],
+                ..sample_collection(collection_url, Some(false))
+            }],
+            groups: vec![],
+            extra: vec![],
+            created_at: AutoFill::pending(),
+        };
+        let renamed = PlayList {
+            name: "Immediate Playback Renamed".to_string(),
+            ..original.clone()
+        };
+
+        let created =
+            upsert_playlist_surface(&PlayListWriteRequest::from_playlist(&original), None)
+                .await
+                .expect("playlist create should succeed");
+        let renamed_upsert = upsert_playlist_surface(
+            &PlayListWriteRequest::from_playlist(&renamed),
+            Some(&original.name),
+        )
+        .await
+        .expect("playlist rename should succeed");
+        let saved = renamed_upsert.playlist;
+        let missing_original = get_playlist_by_name(&original.name)
+            .await
+            .expect("original playlist lookup should succeed");
+        let selection = get_playlist_playback_selection_by_name(&saved.name)
+            .await
+            .expect("renamed playback selection lookup should succeed")
+            .expect("renamed playback selection should exist immediately after save");
+        let sources = load_playlist_playback_track_sources(&selection, 1)
+            .await
+            .expect("renamed playback source should load immediately after save");
+
+        assert!(created.playback_selection_changed);
+        assert!(
+            !renamed_upsert.playback_selection_changed,
+            "pure rename must not invalidate first-slot playback cargo"
+        );
+        assert!(missing_original.is_none());
+        assert_eq!(saved.name, renamed.name);
+        assert_eq!(selection.playlist_name, renamed.name);
+        assert_eq!(selection.collections.len(), 1);
+        assert_eq!(selection.collections[0].url, populated_collection.url);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].music.url, populated_collection.musics[0].url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn upsert_playlist_surface_rename_reports_playback_selection_change_only_for_ref_changes() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let first_collection_url = "https://example.com/rename-selection-first";
+        let second_collection_url = "https://example.com/rename-selection-second";
+        let first_collection = collection_with_musics(
+            first_collection_url,
+            "youtube/rename-selection-first",
+            Some(false),
+            vec![shared_music(
+                first_collection_url,
+                "youtube/rename-selection-first",
+            )],
+        );
+        let second_collection = collection_with_musics(
+            second_collection_url,
+            "youtube/rename-selection-second",
+            Some(false),
+            vec![shared_music(
+                second_collection_url,
+                "youtube/rename-selection-second",
+            )],
+        );
+        upsert_collection(&first_collection)
+            .await
+            .expect("first library collection should persist before playlist save");
+        upsert_collection(&second_collection)
+            .await
+            .expect("second library collection should persist before playlist save");
+
+        let original = PlayList {
+            name: "Rename Selection Original".to_string(),
+            collections: vec![Collection {
+                musics: vec![],
+                ..first_collection.clone()
+            }],
+            groups: vec![],
+            extra: vec![],
+            created_at: AutoFill::pending(),
+        };
+        let changed = PlayList {
+            name: "Rename Selection Changed".to_string(),
+            collections: vec![Collection {
+                musics: vec![],
+                ..second_collection.clone()
+            }],
+            ..original.clone()
+        };
+
+        upsert_playlist_surface(&PlayListWriteRequest::from_playlist(&original), None)
+            .await
+            .expect("playlist create should succeed");
+        let changed_upsert = upsert_playlist_surface(
+            &PlayListWriteRequest::from_playlist(&changed),
+            Some(&original.name),
+        )
+        .await
+        .expect("playlist rename with selection change should succeed");
+
+        assert!(
+            changed_upsert.playback_selection_changed,
+            "rename with changed playback refs must invalidate first-slot cargo"
+        );
+        let selection = get_playlist_playback_selection_by_name(&changed_upsert.playlist.name)
+            .await
+            .expect("changed playback selection lookup should succeed")
+            .expect("changed playback selection should exist");
+        assert_eq!(selection.collections.len(), 1);
+        assert_eq!(selection.collections[0].url, second_collection.url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn upsert_playlist_surface_writes_extra_refs_without_hydrating_music() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let collection_url = "https://example.com/surface-extra-library";
+        let collection_folder = "youtube/surface-extra-library";
+        let group = collection_group("Disc 1", &format!("{collection_url}#disc-1"), "Disc 1");
+        let extra_music = named_music(
+            "Surface Extra Track",
+            group,
+            "Disc 1/Surface Extra Track.m4a",
+        );
+        let collection = collection_with_musics(
+            collection_url,
+            collection_folder,
+            Some(false),
+            vec![extra_music.clone()],
+        );
+        upsert_collection(&collection)
+            .await
+            .expect("extra source collection should exist before playlist save");
+
+        let playlist = PlayList {
+            name: "Surface Extra Playlist".to_string(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![extra_music.clone()],
+            created_at: AutoFill::pending(),
+        };
+        let upsert = upsert_playlist_surface(&PlayListWriteRequest::from_playlist(&playlist), None)
+            .await
+            .expect("playlist surface save should succeed");
+        let saved = upsert.playlist;
+        let expected_music_record = extra_music
+            .resolve_record_id()
+            .await
+            .expect("extra music record id should resolve");
+        let mut row_result = get_db()
+            .expect("global playlist repo database handle should exist")
+            .query("SELECT VALUE extra FROM $table WHERE name = $name LIMIT 1;")
+            .bind(("table", Table::from(PlayList::table_name())))
+            .bind(("name", saved.name.clone()))
+            .await
+            .expect("playlist extra row query should succeed")
+            .check()
+            .expect("playlist extra row response should succeed");
+        let row_extra: Option<Vec<RecordId>> = row_result
+            .take(0)
+            .expect("playlist extra refs should decode");
+        let selection = get_playlist_playback_selection_by_name(&saved.name)
+            .await
+            .expect("playback selection lookup should succeed")
+            .expect("playback selection should exist immediately after save");
+        let sources = load_playlist_playback_track_sources(&selection, 1)
+            .await
+            .expect("extra playback source should load immediately after save");
+
+        assert!(upsert.playback_selection_changed);
+        assert_eq!(row_extra, Some(vec![expected_music_record]));
+        assert_eq!(selection.collections.len(), 0);
+        assert_eq!(selection.groups.len(), 0);
+        assert_eq!(selection.extra.len(), 1);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(
+            sources[0].music.canonical_music_id,
+            extra_music.canonical_music_id
+        );
 
         reset_db();
     });

@@ -92,15 +92,18 @@ pub async fn upsert_playlist(
     previous_name: Option<String>,
     playlist: PlayListWriteRequest,
 ) -> Result<PlayListListView, String> {
-    let saved = super::repo::upsert_playlist_surface(&playlist, previous_name.as_deref())
+    let upsert = super::repo::upsert_playlist_surface(&playlist, previous_name.as_deref())
         .await
         .map_err(|error| error.to_string())?;
+    let saved = upsert.playlist;
     if let Some(previous_name) = previous_name.as_deref()
         && previous_name != saved.name
     {
-        playable_index::notify_playlist_deleted(previous_name);
+        playable_index::notify_playlist_renamed(previous_name, &saved.name);
     }
-    playable_index::notify_playlist_changed(&saved.name);
+    if upsert.playback_selection_changed {
+        playable_index::notify_playlist_changed(&saved.name);
+    }
     Ok(saved)
 }
 

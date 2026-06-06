@@ -873,7 +873,11 @@ pub(crate) fn published_audio_style_model_snapshot() -> Option<Arc<AudioStyleMod
 #[cfg(not(test))]
 #[derive(Debug)]
 pub(crate) enum AudioStyleCenterlessSourceStatus {
-    Ready(PlaylistPlaybackTrackSource, AudioStyleCandidateSelection),
+    Ready(
+        PlaylistPlaybackTrackSource,
+        PlaybackTrack,
+        AudioStyleCandidateSelection,
+    ),
     ModelUnavailable,
     NoScopedCandidate,
 }
@@ -892,9 +896,9 @@ pub(crate) fn published_audio_style_centerless_source_from_candidates(
     snapshot
         .recommender()
         .propose_centerless_source_from_tracks(candidates)
-        .map(|(source, mut selection)| {
+        .map(|(source, track, mut selection)| {
             selection.model_generation = Some(snapshot.generation());
-            AudioStyleCenterlessSourceStatus::Ready(source, selection)
+            AudioStyleCenterlessSourceStatus::Ready(source, track, selection)
         })
         .unwrap_or(AudioStyleCenterlessSourceStatus::NoScopedCandidate)
 }
@@ -3281,14 +3285,22 @@ impl AudioStylePlaylistPlaybackRecommender {
     pub(crate) fn propose_centerless_source_from_tracks(
         &self,
         candidates: Vec<(PlaylistPlaybackTrackSource, PlaybackTrack)>,
-    ) -> Option<(PlaylistPlaybackTrackSource, AudioStyleCandidateSelection)> {
-        let (scoped, tracks): (Vec<_>, Vec<_>) = candidates
+    ) -> Option<(
+        PlaylistPlaybackTrackSource,
+        PlaybackTrack,
+        AudioStyleCandidateSelection,
+    )> {
+        let scoped = candidates
             .into_iter()
             .filter(|(_, track)| {
                 self.embeddings
                     .contains_key(&PlaybackTrackKey::from_track(track))
             })
-            .unzip();
+            .collect::<Vec<_>>();
+        let tracks = scoped
+            .iter()
+            .map(|(_, track)| track.clone())
+            .collect::<Vec<_>>();
         let selection = select_centerless_audio_style_candidate(
             &tracks,
             &self.embeddings,
@@ -3299,7 +3311,7 @@ impl AudioStylePlaylistPlaybackRecommender {
         scoped
             .get(selection.index)
             .cloned()
-            .map(|source| (source, selection))
+            .map(|(source, track)| (source, track, selection))
     }
 
     pub(crate) fn propose_centerless_queue_with_trace_and_recent_history(

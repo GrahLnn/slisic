@@ -1,6 +1,8 @@
 import type { MainStateT } from "@/src/flow/appLogic/events";
+import type { PlaybackSurfaceStatus } from "@/src/cmd";
 
 export type PlayListPlaybackSurfacePhase = "inactive" | "playing" | "restoring";
+const PREPARING_PLAYBACK_SURFACE_TEXT = "Preparing...";
 
 export type PlayListPlaybackSurfaceState =
   | {
@@ -13,6 +15,7 @@ export type PlayListPlaybackSurfaceState =
   | {
       phase: "playing";
       playlistName: string;
+      sessionGeneration: number;
       displayedTrackName: string | null;
       displayedTrackLiked: boolean | null;
       displayedTrackIsPlayable: boolean;
@@ -20,6 +23,7 @@ export type PlayListPlaybackSurfaceState =
   | {
       phase: "restoring";
       playlistName: string;
+      sessionGeneration: number;
       displayedTrackName: null;
       displayedTrackLiked: null;
       displayedTrackIsPlayable: false;
@@ -29,6 +33,7 @@ export type PlayListPlaybackSurfaceState =
 export interface PlayListPlaybackSurfaceSnapshot {
   phase: Exclude<PlayListPlaybackSurfacePhase, "inactive">;
   playlistName: string;
+  sessionGeneration: number;
   displayedTrackName: string | null;
   displayedTrackLiked: boolean | null;
   displayedTrackIsPlayable: boolean;
@@ -42,48 +47,40 @@ export const INACTIVE_PLAYBACK_SURFACE: PlayListPlaybackSurfaceState = {
   displayedTrackIsPlayable: false,
 };
 
-export function hasVisiblePlaylist(
-  playlists: readonly { name: string }[],
-  playlistName: string | null,
-) {
-  if (playlistName === null) {
-    return false;
-  }
-
-  return playlists.some((playlist) => playlist.name === playlistName);
-}
-
 export function resolveMachinePlaybackTarget(args: {
   pageState: MainStateT;
-  playlists: readonly { name: string }[];
   playingPlaylistName: string | null;
 }) {
   if (args.pageState !== "play") {
     return null;
   }
 
-  return hasVisiblePlaylist(args.playlists, args.playingPlaylistName)
-    ? args.playingPlaylistName
-    : null;
+  return args.playingPlaylistName;
 }
 
 export function syncPlaybackSurfaceState(args: {
   current: PlayListPlaybackSurfaceState;
   machinePlaybackTarget: string | null;
+  playingSessionGeneration: number | null;
   nowPlayingTrack: { liked: boolean | null; name: string; url: string } | null;
+  playbackSurfaceStatus: PlaybackSurfaceStatus | null;
 }) {
-  const displayedTrackName = args.nowPlayingTrack?.name ?? null;
+  const displayedTrackName =
+    args.nowPlayingTrack?.name ??
+    (args.playbackSurfaceStatus === "preparing" ? PREPARING_PLAYBACK_SURFACE_TEXT : null);
   const displayedTrackLiked = args.nowPlayingTrack?.liked === true ? true : null;
   const displayedTrackIsPlayable = !!args.nowPlayingTrack?.url;
 
-  if (args.machinePlaybackTarget !== null) {
+  if (args.machinePlaybackTarget !== null && args.playingSessionGeneration !== null) {
     if (
       args.current.playlistName !== args.machinePlaybackTarget ||
-      args.current.phase !== "playing"
+      args.current.phase !== "playing" ||
+      args.current.sessionGeneration !== args.playingSessionGeneration
     ) {
       return {
         phase: "playing",
         playlistName: args.machinePlaybackTarget,
+        sessionGeneration: args.playingSessionGeneration,
         displayedTrackName,
         displayedTrackLiked,
         displayedTrackIsPlayable,
@@ -91,10 +88,9 @@ export function syncPlaybackSurfaceState(args: {
     }
 
     if (
-      displayedTrackName !== null &&
-      (args.current.displayedTrackName !== displayedTrackName ||
-        args.current.displayedTrackLiked !== displayedTrackLiked ||
-        args.current.displayedTrackIsPlayable !== displayedTrackIsPlayable)
+      args.current.displayedTrackName !== displayedTrackName ||
+      args.current.displayedTrackLiked !== displayedTrackLiked ||
+      args.current.displayedTrackIsPlayable !== displayedTrackIsPlayable
     ) {
       return {
         ...args.current,
@@ -125,6 +121,7 @@ export function syncPlaybackSurfaceState(args: {
   return {
     phase: "restoring",
     playlistName: args.current.playlistName,
+    sessionGeneration: args.current.sessionGeneration,
     displayedTrackName: null,
     displayedTrackLiked: null,
     displayedTrackIsPlayable: false,
@@ -163,6 +160,7 @@ export function toPlayListPlaybackSurfaceSnapshot(
   return {
     phase: state.phase,
     playlistName: state.playlistName,
+    sessionGeneration: state.sessionGeneration,
     displayedTrackName: state.displayedTrackName,
     displayedTrackLiked: state.displayedTrackLiked,
     displayedTrackIsPlayable: state.displayedTrackIsPlayable,

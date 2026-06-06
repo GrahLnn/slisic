@@ -366,9 +366,12 @@ pub(crate) async fn persist_downloaded_leaf_music(
     collection.last_updated = now_timestamp();
     let saved = collection_repo::upsert_collection(collection).await?;
     *collection = saved;
-    notify_audio_style_inputs_changed("downloaded_music_persisted");
-    notify_playlist_playback_library_changed();
     Ok(())
+}
+
+pub(crate) fn notify_downloaded_leaf_collection_committed() {
+    notify_audio_style_inputs_changed("downloaded_leaf_collection_committed");
+    notify_playlist_playback_library_changed();
 }
 
 pub(crate) async fn import_local_collection_folder(
@@ -1471,7 +1474,40 @@ fn title_noise_affix_span_is_semantic_boundary(title: &str, start: usize, end: u
 fn title_text_boundary_is_semantic(title: &str, index: usize) -> bool {
     let previous = title[..index].chars().next_back();
     let next = title[index..].chars().next();
+    if title_text_boundary_is_inside_word_apostrophe(title, index, previous, next) {
+        return false;
+    }
     !previous.is_some_and(char::is_alphanumeric) || !next.is_some_and(char::is_alphanumeric)
+}
+
+fn title_text_boundary_is_inside_word_apostrophe(
+    title: &str,
+    index: usize,
+    previous: Option<char>,
+    next: Option<char>,
+) -> bool {
+    if previous.is_some_and(is_title_word_apostrophe) && next.is_some_and(is_ascii_alphabetic) {
+        return title[..index]
+            .chars()
+            .rev()
+            .nth(1)
+            .is_some_and(is_ascii_alphabetic);
+    }
+    if next.is_some_and(is_title_word_apostrophe) && previous.is_some_and(is_ascii_alphabetic) {
+        return title[index + next.expect("next was checked").len_utf8()..]
+            .chars()
+            .next()
+            .is_some_and(is_ascii_alphabetic);
+    }
+    false
+}
+
+fn is_title_word_apostrophe(character: char) -> bool {
+    matches!(character, '\'' | '’' | 'ʼ' | '`' | '´')
+}
+
+fn is_ascii_alphabetic(character: char) -> bool {
+    character.is_ascii_alphabetic()
 }
 
 fn is_dangling_title_separator(character: char) -> bool {

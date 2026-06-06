@@ -2,8 +2,7 @@
 use crate::domain::meta::service as meta_service;
 #[cfg(not(test))]
 use crate::domain::player::event::{PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent};
-#[cfg(not(test))]
-use crate::domain::player::model::PlaybackTrack;
+use crate::domain::player::model::{PlaybackTrack, PlaybackTrackPayload};
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
     AudioStyleCenterlessSourceStatus, published_audio_style_centerless_source_from_candidates,
@@ -19,7 +18,8 @@ use std::collections::{HashMap, HashSet};
 #[cfg(not(test))]
 use std::fs;
 #[cfg(not(test))]
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex, OnceLock,
     atomic::{AtomicU64, Ordering},
@@ -30,10 +30,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 #[cfg(not(test))]
 use tauri_specta::Event;
+use tokio::sync::watch;
 
 const PLAYABLE_INDEX_LOG_TARGET: &str = "playlist_playback_index";
 pub(crate) const FIRST_SLOT_CACHE_FILE_NAME: &str = "first-slot-cache.json";
-const FIRST_SLOT_CACHE_VERSION: &str = "first-slot-cache.v1";
+const FIRST_SLOT_CACHE_VERSION: &str = "first-slot-cache.v2";
 const FIRST_SLOT_PREPARED_POOL_TARGET: usize = 3;
 #[cfg(not(test))]
 const FIRST_SLOT_AUDIO_STYLE_CANDIDATE_PROBE_LIMIT: usize = 96;
@@ -84,6 +85,7 @@ pub(crate) struct PlaylistPlayableIndexSnapshot {
     pub(crate) playlist_name: String,
     pub(crate) generation: u64,
     pub(crate) source: Option<PlaylistPlaybackTrackSource>,
+    pub(crate) track: Option<PlaybackTrack>,
     #[cfg(test)]
     pub(crate) source_kind: Option<PlaylistPlayableIndexSourceKind>,
     credential_id: Option<u64>,
@@ -99,6 +101,7 @@ pub(crate) enum PlaylistPlayableIndexSourceKind {
 #[derive(Debug, Clone)]
 struct PreparedPlaylistSource {
     source: PlaylistPlaybackTrackSource,
+    track: PlaybackTrack,
     source_kind: PlaylistPlayableIndexSourceKind,
 }
 
@@ -107,6 +110,7 @@ struct PreparedPlaylistSourceCredential {
     generation: u64,
     credential_id: u64,
     source: PlaylistPlaybackTrackSource,
+    track: PlaybackTrack,
     source_kind: PlaylistPlayableIndexSourceKind,
 }
 
@@ -120,6 +124,13 @@ struct PreparedSourcePoolCommit {
     pool: PlaylistPlayableIndexPool,
     added_count: usize,
     removed_count: usize,
+}
+
+#[derive(Debug, Default)]
+struct PreparedPlaylistCommitOutcome {
+    committed: bool,
+    cache_changed: bool,
+    needs_refill: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +150,7 @@ struct FirstSlotCachePlaylist {
 struct FirstSlotCacheSource {
     collection_folder: String,
     music: crate::domain::playlists::model::Music,
+    track: PlaybackTrackPayload,
     source_kind: PlaylistPlayableIndexSourceKind,
 }
 
@@ -160,20 +172,25 @@ impl From<&PreparedPlaylistSourceCredential> for FirstSlotCacheSource {
         Self {
             collection_folder: value.source.collection_folder.clone(),
             music: value.source.music.clone(),
+            track: value.track.to_payload(),
             source_kind: value.source_kind,
         }
     }
 }
 
-impl From<FirstSlotCacheSource> for PreparedPlaylistSource {
-    fn from(value: FirstSlotCacheSource) -> Self {
-        Self {
+impl FirstSlotCacheSource {
+    fn into_prepared_source(self) -> Result<PreparedPlaylistSource> {
+        let mut track = PlaybackTrack::try_from_payload(self.track)
+            .map_err(|error| anyhow!("invalid cached first-slot playback track: {error}"))?;
+        track.source_music = Some(Box::new(self.music.clone()));
+        Ok(PreparedPlaylistSource {
             source: PlaylistPlaybackTrackSource {
-                collection_folder: value.collection_folder,
-                music: value.music,
+                collection_folder: self.collection_folder,
+                music: self.music,
             },
-            source_kind: value.source_kind,
-        }
+            track,
+            source_kind: self.source_kind,
+        })
     }
 }
 
@@ -192,6 +209,7 @@ struct PlayableIndexRuntime {
     #[cfg(not(test))]
     app: Mutex<Option<tauri::AppHandle>>,
     state: Mutex<PlayableIndexState>,
+    revision: watch::Sender<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -271,6 +289,15 @@ pub(crate) fn notify_playlist_changed(playlist_name: &str) {
     notify_playlist_changed_impl(playlist_name);
 }
 
+#[cfg(not(test))]
+pub(crate) fn request_playlist_slot_refill(playlist_name: &str) {
+    spawn_refresh_playlist(
+        None,
+        playlist_name.to_string(),
+        PlayableIndexRefreshReason::SlotVacancy,
+    );
+}
+
 pub(crate) fn notify_playlist_deleted(playlist_name: &str) {
     let mut removed = false;
     if let Ok(runtime) = try_runtime() {
@@ -281,6 +308,9 @@ pub(crate) fn notify_playlist_deleted(playlist_name: &str) {
             state
                 .playlist_generations
                 .insert(playlist_name.to_string(), generation);
+        }
+        if removed {
+            notify_index_revision(runtime.as_ref());
         }
     }
     if removed {
@@ -294,6 +324,10 @@ pub(crate) fn notify_playlist_deleted(playlist_name: &str) {
     );
 }
 
+pub(crate) fn notify_playlist_renamed(previous_name: &str, next_name: &str) {
+    notify_playlist_renamed_impl(previous_name, next_name);
+}
+
 pub(crate) fn notify_library_changed(reason: PlayableIndexRefreshReason) {
     notify_library_changed_impl(reason);
 }
@@ -303,7 +337,7 @@ pub(crate) fn notify_exclude_changed() {
 }
 
 pub(crate) fn consume_playlist_source(snapshot: &PlaylistPlayableIndexSnapshot) -> Result<bool> {
-    let consumed = remove_playlist_source_snapshot(snapshot)?;
+    let consumed = remove_playlist_source_snapshot(snapshot, "consume")?;
     if consumed {
         notify_prepared_source_consumed_impl(&snapshot.playlist_name);
     }
@@ -311,7 +345,7 @@ pub(crate) fn consume_playlist_source(snapshot: &PlaylistPlayableIndexSnapshot) 
 }
 
 pub(crate) fn discard_playlist_source(snapshot: &PlaylistPlayableIndexSnapshot) -> Result<bool> {
-    let discarded = remove_playlist_source_snapshot(snapshot)?;
+    let discarded = remove_playlist_source_snapshot(snapshot, "discard")?;
     if discarded {
         notify_prepared_source_consumed_impl(&snapshot.playlist_name);
     }
@@ -330,6 +364,83 @@ fn notify_playlist_changed_impl(playlist_name: &str) {
 #[cfg(test)]
 fn notify_playlist_changed_impl(_playlist_name: &str) {}
 
+fn rename_playlist_source_pool(pool: &mut PlaylistPlayableIndexPool, next_name: &str) {
+    pool.playlist_name = next_name.to_string();
+    for source in &mut pool.sources {
+        source.track.playlist_name = next_name.to_string();
+    }
+}
+
+fn move_playlist_source_pool(
+    state: &mut PlayableIndexState,
+    previous_name: &str,
+    next_name: &str,
+    generation: u64,
+) -> bool {
+    if previous_name == next_name {
+        return false;
+    }
+
+    let Some(mut pool) = state.playlists.remove(previous_name) else {
+        state
+            .playlist_generations
+            .insert(previous_name.to_string(), generation);
+        return false;
+    };
+
+    rename_playlist_source_pool(&mut pool, next_name);
+    state.playlists.insert(next_name.to_string(), pool);
+    state.active_refreshes.remove(previous_name);
+    if let Some(pending) = state.pending_refreshes.remove(previous_name) {
+        state
+            .pending_refreshes
+            .insert(next_name.to_string(), pending);
+    }
+    state
+        .playlist_generations
+        .insert(previous_name.to_string(), generation);
+    state
+        .playlist_generations
+        .insert(next_name.to_string(), generation);
+    true
+}
+
+#[cfg(not(test))]
+fn notify_playlist_renamed_impl(previous_name: &str, next_name: &str) {
+    let mut moved = false;
+    if let Ok(runtime) = try_runtime() {
+        let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Ok(mut state) = runtime.state.lock() {
+            moved = move_playlist_source_pool(&mut state, previous_name, next_name, generation);
+        }
+        if moved {
+            notify_index_revision(runtime.as_ref());
+        }
+    }
+    if moved {
+        write_first_slot_cache_for_registered_runtime();
+    }
+    log::info!(
+        target: PLAYABLE_INDEX_LOG_TARGET,
+        "first_slot_playlist_renamed previous=\"{}\" next=\"{}\" moved={}",
+        escape_log_value(previous_name),
+        escape_log_value(next_name),
+        moved
+    );
+}
+
+#[cfg(test)]
+fn notify_playlist_renamed_impl(previous_name: &str, next_name: &str) {
+    if let Ok(runtime) = try_runtime() {
+        let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Ok(mut state) = runtime.state.lock()
+            && move_playlist_source_pool(&mut state, previous_name, next_name, generation)
+        {
+            notify_index_revision(runtime.as_ref());
+        }
+    }
+}
+
 #[cfg(not(test))]
 fn notify_library_changed_impl(reason: PlayableIndexRefreshReason) {
     spawn_refresh_all_without_app(reason);
@@ -340,6 +451,18 @@ fn notify_library_changed_impl(_reason: PlayableIndexRefreshReason) {}
 
 #[cfg(not(test))]
 fn notify_prepared_source_consumed_impl(playlist_name: &str) {
+    emit_index_runtime_trace(
+        "playlist-playable-index-slot-vacancy-requested",
+        Some(playlist_name),
+        None,
+        None,
+        None,
+        "requested",
+        vec![index_trace_detail(
+            "reason",
+            PlayableIndexRefreshReason::SlotVacancy.as_str(),
+        )],
+    );
     spawn_refresh_playlist(
         None,
         playlist_name.to_string(),
@@ -359,45 +482,175 @@ pub(crate) fn read_playlist_source(
         .lock()
         .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
     let Some(pool) = state.playlists.get(playlist_name) else {
+        #[cfg(not(test))]
+        {
+            let mut details = vec![index_trace_detail(
+                "poolTarget",
+                FIRST_SLOT_PREPARED_POOL_TARGET,
+            )];
+            append_index_state_trace_details(&mut details, &state, playlist_name);
+            emit_index_runtime_trace(
+                "playlist-playable-index-read-miss",
+                Some(playlist_name),
+                state.playlist_generations.get(playlist_name).copied(),
+                Some(0),
+                None,
+                "pool_missing",
+                details,
+            );
+        }
         return Ok(None);
     };
     let Some(credential) = pool.sources.first() else {
+        #[cfg(not(test))]
+        {
+            let pool_size = pool.sources.len();
+            let mut details = vec![
+                index_trace_detail("poolTarget", FIRST_SLOT_PREPARED_POOL_TARGET),
+                index_trace_detail("poolSize", pool_size),
+            ];
+            append_index_state_trace_details(&mut details, &state, playlist_name);
+            emit_index_runtime_trace(
+                "playlist-playable-index-read-miss",
+                Some(playlist_name),
+                state.playlist_generations.get(playlist_name).copied(),
+                Some(pool_size),
+                None,
+                "pool_empty",
+                details,
+            );
+        }
         return Ok(None);
     };
+
+    #[cfg(not(test))]
+    {
+        let pool_size = pool.sources.len();
+        let mut details = vec![
+            index_trace_detail("poolTarget", FIRST_SLOT_PREPARED_POOL_TARGET),
+            index_trace_detail("poolSize", pool_size),
+        ];
+        append_credential_trace_details(&mut details, credential);
+        append_index_state_trace_details(&mut details, &state, playlist_name);
+        emit_index_runtime_trace(
+            "playlist-playable-index-read-hit",
+            Some(playlist_name),
+            Some(credential.generation),
+            Some(pool_size),
+            None,
+            "hit",
+            details,
+        );
+    }
 
     Ok(Some(PlaylistPlayableIndexSnapshot {
         playlist_name: pool.playlist_name.clone(),
         generation: credential.generation,
         source: Some(credential.source.clone()),
+        track: Some(credential.track.clone()),
         #[cfg(test)]
         source_kind: Some(credential.source_kind),
         credential_id: Some(credential.credential_id),
     }))
 }
 
-fn remove_playlist_source_snapshot(snapshot: &PlaylistPlayableIndexSnapshot) -> Result<bool> {
+fn remove_playlist_source_snapshot(
+    snapshot: &PlaylistPlayableIndexSnapshot,
+    _operation: &'static str,
+) -> Result<bool> {
     let runtime = try_runtime()?;
     let mut state = runtime
         .state
         .lock()
         .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
     let Some(pool) = state.playlists.get_mut(&snapshot.playlist_name) else {
+        #[cfg(not(test))]
+        {
+            let mut details = snapshot_trace_details(snapshot);
+            append_index_state_trace_details(&mut details, &state, &snapshot.playlist_name);
+            drop(state);
+            emit_index_runtime_trace(
+                &format!("playlist-playable-index-source-{_operation}"),
+                Some(&snapshot.playlist_name),
+                Some(snapshot.generation),
+                Some(0),
+                None,
+                "pool_missing",
+                details,
+            );
+        }
         return Ok(false);
     };
     let Some(credential_id) = snapshot.credential_id else {
+        #[cfg(not(test))]
+        {
+            let mut details = snapshot_trace_details(snapshot);
+            details.push(index_trace_detail("poolSize", pool.sources.len()));
+            drop(state);
+            emit_index_runtime_trace(
+                &format!("playlist-playable-index-source-{_operation}"),
+                Some(&snapshot.playlist_name),
+                Some(snapshot.generation),
+                None,
+                None,
+                "credential_missing",
+                details,
+            );
+        }
         return Ok(false);
     };
     let Some(index) = pool.sources.iter().position(|current| {
         current.generation == snapshot.generation && current.credential_id == credential_id
     }) else {
+        #[cfg(not(test))]
+        {
+            let mut details = snapshot_trace_details(snapshot);
+            details.push(index_trace_detail("poolSize", pool.sources.len()));
+            drop(state);
+            emit_index_runtime_trace(
+                &format!("playlist-playable-index-source-{_operation}"),
+                Some(&snapshot.playlist_name),
+                Some(snapshot.generation),
+                None,
+                None,
+                "credential_not_found",
+                details,
+            );
+        }
         return Ok(false);
     };
 
+    #[cfg(not(test))]
+    let before_pool_size = pool.sources.len();
+    #[cfg(not(test))]
+    let removed_source_kind = pool.sources[index].source_kind;
     pool.sources.remove(index);
+    #[cfg(not(test))]
+    let after_pool_size = pool.sources.len();
     if pool.sources.is_empty() {
         state.playlists.remove(&snapshot.playlist_name);
     }
     drop(state);
+    notify_index_revision(runtime.as_ref());
+    #[cfg(not(test))]
+    emit_index_runtime_trace(
+        &format!("playlist-playable-index-source-{_operation}"),
+        Some(&snapshot.playlist_name),
+        Some(snapshot.generation),
+        Some(after_pool_size),
+        Some(before_pool_size),
+        "removed",
+        {
+            let mut details = snapshot_trace_details(snapshot);
+            details.push(index_trace_detail("beforePoolSize", before_pool_size));
+            details.push(index_trace_detail("afterPoolSize", after_pool_size));
+            details.push(index_trace_detail(
+                "sourceKind",
+                source_kind_as_str(removed_source_kind),
+            ));
+            details
+        },
+    );
     write_first_slot_cache_for_registered_runtime();
     Ok(true)
 }
@@ -434,6 +687,7 @@ pub(crate) fn reset_for_test() {
         runtime.generation.store(0, Ordering::SeqCst);
         runtime.next_credential_id.store(0, Ordering::SeqCst);
         *state = PlayableIndexState::default();
+        notify_index_revision(runtime.as_ref());
     }
 }
 
@@ -461,8 +715,18 @@ fn runtime() -> &'static Arc<PlayableIndexRuntime> {
             #[cfg(not(test))]
             app: Mutex::new(None),
             state: Mutex::new(PlayableIndexState::default()),
+            revision: watch::channel(0).0,
         })
     })
+}
+
+fn notify_index_revision(runtime: &PlayableIndexRuntime) {
+    let next_revision = runtime.revision.borrow().checked_add(1).unwrap_or_default();
+    let _previous = runtime.revision.send_replace(next_revision);
+}
+
+pub(crate) fn subscribe_index_revision() -> Result<watch::Receiver<u64>> {
+    Ok(try_runtime()?.revision.subscribe())
 }
 
 #[cfg(not(test))]
@@ -675,6 +939,198 @@ fn playlist_source_key(source: &PlaylistPlaybackTrackSource) -> String {
     )
 }
 
+#[cfg(not(test))]
+fn source_kind_as_str(source_kind: PlaylistPlayableIndexSourceKind) -> &'static str {
+    match source_kind {
+        PlaylistPlayableIndexSourceKind::AudioStyle => "audio_style",
+        PlaylistPlayableIndexSourceKind::RandomFallback => "random_fallback",
+    }
+}
+
+#[cfg(not(test))]
+fn index_trace_detail(key: &str, value: impl ToString) -> PlaybackDiagnosticTraceDetail {
+    PlaybackDiagnosticTraceDetail {
+        key: key.to_string(),
+        value: value.to_string(),
+    }
+}
+
+#[cfg(not(test))]
+fn append_index_state_trace_details(
+    details: &mut Vec<PlaybackDiagnosticTraceDetail>,
+    state: &PlayableIndexState,
+    playlist_name: &str,
+) {
+    details.push(index_trace_detail(
+        "activeRefresh",
+        state.active_refreshes.contains(playlist_name),
+    ));
+    details.push(index_trace_detail(
+        "activeGlobalRefresh",
+        state.active_global_refresh,
+    ));
+    details.push(index_trace_detail(
+        "pendingReason",
+        state
+            .pending_refreshes
+            .get(playlist_name)
+            .map(|reason| reason.as_str())
+            .unwrap_or("none"),
+    ));
+    details.push(index_trace_detail(
+        "pendingGlobalReason",
+        state
+            .pending_global_refresh
+            .map(|reason| reason.as_str())
+            .unwrap_or("none"),
+    ));
+    details.push(index_trace_detail(
+        "playlistGeneration",
+        state
+            .playlist_generations
+            .get(playlist_name)
+            .copied()
+            .unwrap_or(0),
+    ));
+    details.push(index_trace_detail(
+        "globalGeneration",
+        state.global_generation,
+    ));
+}
+
+#[cfg(not(test))]
+fn append_credential_trace_details(
+    details: &mut Vec<PlaybackDiagnosticTraceDetail>,
+    credential: &PreparedPlaylistSourceCredential,
+) {
+    details.push(index_trace_detail("credentialId", credential.credential_id));
+    details.push(index_trace_detail(
+        "credentialGeneration",
+        credential.generation,
+    ));
+    details.push(index_trace_detail(
+        "sourceKind",
+        source_kind_as_str(credential.source_kind),
+    ));
+    details.push(index_trace_detail("musicUrl", &credential.source.music.url));
+    details.push(index_trace_detail(
+        "musicName",
+        &credential.source.music.alias,
+    ));
+    details.push(index_trace_detail(
+        "canonicalMusicId",
+        &credential.source.music.canonical_music_id,
+    ));
+    details.push(index_trace_detail(
+        "collectionFolder",
+        &credential.source.collection_folder,
+    ));
+    details.push(index_trace_detail(
+        "startMs",
+        credential.source.music.start_ms,
+    ));
+    details.push(index_trace_detail("endMs", credential.source.music.end_ms));
+    details.push(index_trace_detail(
+        "path",
+        credential.source.music.path.as_deref().unwrap_or("none"),
+    ));
+    details.push(index_trace_detail(
+        "trackPath",
+        credential.track.file_path.display(),
+    ));
+}
+
+#[cfg(not(test))]
+fn snapshot_trace_details(
+    snapshot: &PlaylistPlayableIndexSnapshot,
+) -> Vec<PlaybackDiagnosticTraceDetail> {
+    let mut details = vec![
+        index_trace_detail("snapshotGeneration", snapshot.generation),
+        index_trace_detail(
+            "credentialId",
+            snapshot
+                .credential_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+        ),
+    ];
+    if let Some(source) = snapshot.source.as_ref() {
+        details.push(index_trace_detail("musicUrl", &source.music.url));
+        details.push(index_trace_detail("musicName", &source.music.alias));
+        details.push(index_trace_detail(
+            "canonicalMusicId",
+            &source.music.canonical_music_id,
+        ));
+        details.push(index_trace_detail(
+            "collectionFolder",
+            &source.collection_folder,
+        ));
+        details.push(index_trace_detail("startMs", source.music.start_ms));
+        details.push(index_trace_detail("endMs", source.music.end_ms));
+        details.push(index_trace_detail(
+            "path",
+            source.music.path.as_deref().unwrap_or("none"),
+        ));
+        details.push(index_trace_detail(
+            "trackPath",
+            snapshot
+                .track
+                .as_ref()
+                .map(|track| track.file_path.display().to_string())
+                .unwrap_or_else(|| "none".to_string()),
+        ));
+    }
+    details
+}
+
+#[cfg(not(test))]
+fn emit_index_runtime_trace(
+    event: impl Into<String>,
+    playlist_name: Option<&str>,
+    generation: Option<u64>,
+    source_count: Option<usize>,
+    queue_count: Option<usize>,
+    status: &str,
+    details: Vec<PlaybackDiagnosticTraceDetail>,
+) {
+    let Some(app) = registered_runtime_app(runtime().as_ref()) else {
+        return;
+    };
+    let event = event.into();
+    if let Err(error) = (PlaybackDiagnosticTraceEvent {
+        event: event.clone(),
+        playlist_name: playlist_name.map(str::to_string),
+        music_name: None,
+        music_url: None,
+        start_ms: None,
+        end_ms: None,
+        elapsed_ms: None,
+        candidate_count: source_count,
+        queue_count,
+        status: Some(status.to_string()),
+        error: None,
+        details: Some({
+            let mut next = vec![index_trace_detail(
+                "generation",
+                generation
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+            )];
+            next.extend(details);
+            next
+        }),
+    })
+    .emit(&app)
+    {
+        log::error!(
+            target: PLAYABLE_INDEX_LOG_TARGET,
+            "first_slot_trace_emit_failed event=\"{}\" error=\"{}\"",
+            escape_log_value(&event),
+            escape_log_value(&error.to_string())
+        );
+    }
+}
+
 fn pool_needs_refresh(
     pool: Option<&PlaylistPlayableIndexPool>,
     reason: PlayableIndexRefreshReason,
@@ -781,6 +1237,7 @@ fn commit_prepared_sources_to_pool(
             generation,
             credential_id: next_credential_id(runtime),
             source: prepared.source,
+            track: prepared.track,
             source_kind: prepared.source_kind,
         });
         added_count += 1;
@@ -859,7 +1316,7 @@ fn restore_first_slot_cache_file(
             if pool.sources.len() >= FIRST_SLOT_PREPARED_POOL_TARGET {
                 break;
             }
-            let prepared = PreparedPlaylistSource::from(source);
+            let prepared = source.into_prepared_source()?;
             if !seen.insert(playlist_source_key(&prepared.source)) {
                 continue;
             }
@@ -867,6 +1324,7 @@ fn restore_first_slot_cache_file(
                 generation,
                 credential_id: next_credential_id(runtime),
                 source: prepared.source,
+                track: prepared.track,
                 source_kind: prepared.source_kind,
             });
         }
@@ -879,6 +1337,9 @@ fn restore_first_slot_cache_file(
             .playlist_generations
             .insert(cached_playlist.playlist_name.clone(), generation);
         state.playlists.insert(cached_playlist.playlist_name, pool);
+    }
+    if summary.source_count > 0 {
+        notify_index_revision(runtime.as_ref());
     }
     Ok(summary)
 }
@@ -1062,6 +1523,16 @@ fn spawn_refresh_playlist(
     if !can_start {
         let generation =
             skipped_generation.unwrap_or_else(|| runtime.generation.load(Ordering::SeqCst));
+        #[cfg(not(test))]
+        emit_index_runtime_trace(
+            "playlist-playable-index-refresh-claim",
+            Some(&playlist_name),
+            Some(generation),
+            None,
+            None,
+            skip_status,
+            vec![index_trace_detail("reason", reason.as_str())],
+        );
         emit_index_trace(
             app.as_ref(),
             "playlist-playable-index-refresh-skipped",
@@ -1082,6 +1553,16 @@ fn spawn_refresh_playlist(
         return;
     }
     let generation = claimed_generation.expect("playlist refresh claim should set generation");
+    #[cfg(not(test))]
+    emit_index_runtime_trace(
+        "playlist-playable-index-refresh-claim",
+        Some(&playlist_name),
+        Some(generation),
+        None,
+        None,
+        "claimed",
+        vec![index_trace_detail("reason", reason.as_str())],
+    );
     log::info!(
         target: PLAYABLE_INDEX_LOG_TARGET,
         "first_slot_playlist_refresh_started run_id={run_id} playlist=\"{}\" reason={} generation={generation}",
@@ -1152,13 +1633,20 @@ async fn refresh_all(
             "playlist playable index refresh requires app handle for playback source projection"
         )
     })?;
-    let mut next = HashMap::new();
+    let mut playlist_count = 0usize;
+    let mut source_count = 0usize;
+    let mut committed_count = 0usize;
+    let mut cache_changed = reason == PlayableIndexRefreshReason::Startup;
+    let mut refill_playlists = Vec::new();
+    let mut next_names = HashSet::new();
     for playlist in playlist_repo::list_playlists().await? {
         let Some(selection) =
             playlist_repo::get_playlist_playback_selection_by_name(&playlist.name).await?
         else {
             continue;
         };
+        next_names.insert(selection.playlist_name.clone());
+        playlist_count += 1;
         let excluded_source_keys =
             refresh_excluded_source_keys(runtime.as_ref(), &selection.playlist_name, reason)?;
         let missing_count = FIRST_SLOT_PREPARED_POOL_TARGET.saturating_sub(
@@ -1169,66 +1657,49 @@ async fn refresh_all(
         let prepared_sources =
             prepare_playlist_sources(app_handle, &selection, missing_count, &excluded_source_keys)
                 .await?;
-        next.insert(selection.playlist_name, prepared_sources);
+        source_count += prepared_sources.len();
+
+        let outcome = {
+            let mut state = runtime
+                .state
+                .lock()
+                .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+            let latest_generation = state
+                .playlist_generations
+                .get(&selection.playlist_name)
+                .copied()
+                .unwrap_or(0);
+            if state.global_generation == generation && latest_generation <= generation {
+                commit_prepared_playlist_sources(
+                    runtime.as_ref(),
+                    &mut state,
+                    selection.playlist_name.clone(),
+                    generation,
+                    prepared_sources,
+                    reason,
+                )
+            } else {
+                PreparedPlaylistCommitOutcome::default()
+            }
+        };
+        if outcome.committed {
+            committed_count += 1;
+        }
+        if outcome.cache_changed {
+            cache_changed = true;
+            write_first_slot_cache_for_registered_runtime();
+        }
+        if outcome.needs_refill {
+            refill_playlists.push(selection.playlist_name);
+        }
     }
 
-    let playlist_count = next.len();
-    let source_count = next.values().map(Vec::len).sum::<usize>();
-    let next_names = next.keys().cloned().collect::<HashSet<_>>();
-    let mut committed_count = 0usize;
-    let mut cache_changed = reason == PlayableIndexRefreshReason::Startup;
-    let mut refill_playlists = Vec::new();
     let has_pending_global_refresh: bool;
     {
         let mut state = runtime
             .state
             .lock()
             .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
-        for (playlist_name, prepared_sources) in next {
-            let latest_generation = state
-                .playlist_generations
-                .get(&playlist_name)
-                .copied()
-                .unwrap_or(0);
-            let current = state.playlists.get(&playlist_name);
-            let can_replace = can_commit_refresh_snapshot(current, reason);
-            if state.global_generation == generation
-                && latest_generation <= generation
-                && can_replace
-            {
-                if let Some(pool) = commit_prepared_sources_to_pool(
-                    &runtime,
-                    current,
-                    playlist_name.clone(),
-                    generation,
-                    prepared_sources,
-                    reason,
-                ) {
-                    let needs_refill = pool_needs_refresh(
-                        Some(&pool.pool),
-                        PlayableIndexRefreshReason::SlotVacancy,
-                    ) && pool.changed()
-                        && !reason.invalidates_existing_snapshots();
-                    state
-                        .playlist_generations
-                        .insert(playlist_name.clone(), generation);
-                    state.playlists.insert(playlist_name.clone(), pool.pool);
-                    committed_count += 1;
-                    cache_changed = true;
-                    if needs_refill {
-                        refill_playlists.push(playlist_name);
-                    }
-                } else if reason.replaces_existing_snapshots() {
-                    state
-                        .playlist_generations
-                        .insert(playlist_name.clone(), generation);
-                    if state.playlists.remove(&playlist_name).is_some() {
-                        cache_changed = true;
-                    }
-                }
-            }
-        }
-
         let stale_playlists = state
             .playlists
             .keys()
@@ -1244,6 +1715,7 @@ async fn refresh_all(
             if state.global_generation == generation && latest_generation <= generation {
                 if state.playlists.remove(&playlist_name).is_some() {
                     cache_changed = true;
+                    notify_index_revision(runtime.as_ref());
                 }
                 state.playlist_generations.insert(playlist_name, generation);
             }
@@ -1344,30 +1816,17 @@ async fn refresh_playlist(
             .copied()
             .is_some_and(|latest_generation| latest_generation == generation)
         {
-            let current = state.playlists.get(&playlist_name);
-            let can_replace = can_commit_refresh_snapshot(current, reason);
-            if can_replace {
-                if let Some(pool) = commit_prepared_sources_to_pool(
-                    &runtime,
-                    current,
-                    playlist_name.clone(),
-                    generation,
-                    prepared_sources,
-                    reason,
-                ) {
-                    needs_refill = pool_needs_refresh(
-                        Some(&pool.pool),
-                        PlayableIndexRefreshReason::SlotVacancy,
-                    ) && pool.changed()
-                        && !reason.invalidates_existing_snapshots();
-                    state.playlists.insert(playlist_name.clone(), pool.pool);
-                    committed = true;
-                    cache_changed = true;
-                } else if reason.replaces_existing_snapshots() {
-                    committed = true;
-                    cache_changed = state.playlists.remove(&playlist_name).is_some();
-                }
-            }
+            let outcome = commit_prepared_playlist_sources(
+                runtime.as_ref(),
+                &mut state,
+                playlist_name.clone(),
+                generation,
+                prepared_sources,
+                reason,
+            );
+            committed = outcome.committed;
+            cache_changed = outcome.cache_changed;
+            needs_refill = outcome.needs_refill;
         }
         state.active_refreshes.remove(&playlist_name);
         state.pending_refreshes.remove(&playlist_name)
@@ -1376,8 +1835,37 @@ async fn refresh_playlist(
         write_first_slot_cache_for_registered_runtime();
     }
     if let Some(pending_reason) = pending_reason {
+        #[cfg(not(test))]
+        emit_index_runtime_trace(
+            "playlist-playable-index-refresh-pending-spawned",
+            Some(&playlist_name),
+            Some(generation),
+            Some(source_count),
+            None,
+            "pending_reason",
+            vec![
+                index_trace_detail("reason", reason.as_str()),
+                index_trace_detail("pendingReason", pending_reason.as_str()),
+                index_trace_detail("committed", committed),
+                index_trace_detail("needsRefill", needs_refill),
+            ],
+        );
         spawn_refresh_playlist(app.clone(), playlist_name.clone(), pending_reason);
     } else if needs_refill {
+        #[cfg(not(test))]
+        emit_index_runtime_trace(
+            "playlist-playable-index-refresh-refill-spawned",
+            Some(&playlist_name),
+            Some(generation),
+            Some(source_count),
+            None,
+            "slot_vacancy",
+            vec![
+                index_trace_detail("reason", reason.as_str()),
+                index_trace_detail("committed", committed),
+                index_trace_detail("needsRefill", needs_refill),
+            ],
+        );
         spawn_refresh_playlist(
             app.clone(),
             playlist_name.clone(),
@@ -1482,7 +1970,7 @@ async fn prepare_playlist_source(
     let candidates =
         prepare_audio_style_candidate_tracks(app, selection, excluded_source_keys).await?;
     match published_audio_style_centerless_source_from_candidates(candidates) {
-        AudioStyleCenterlessSourceStatus::Ready(source, selection_trace) => {
+        AudioStyleCenterlessSourceStatus::Ready(source, track, selection_trace) => {
             log::info!(
                 target: PLAYABLE_INDEX_LOG_TARGET,
                 "first_slot_source_prepared playlist=\"{}\" source={} selection_reason={} probability={:.6} candidates={} model_generation={}",
@@ -1498,11 +1986,13 @@ async fn prepare_playlist_source(
             );
             Ok(Some(PreparedPlaylistSource {
                 source,
+                track,
                 source_kind: PlaylistPlayableIndexSourceKind::AudioStyle,
             }))
         }
         AudioStyleCenterlessSourceStatus::ModelUnavailable => {
             prepare_playlist_random_fallback_source(
+                app,
                 selection,
                 excluded_source_keys,
                 "model_unavailable",
@@ -1511,6 +2001,7 @@ async fn prepare_playlist_source(
         }
         AudioStyleCenterlessSourceStatus::NoScopedCandidate => {
             prepare_playlist_random_fallback_source(
+                app,
                 selection,
                 excluded_source_keys,
                 "no_scoped_model_candidate",
@@ -1567,32 +2058,108 @@ async fn prepare_playlist_sources(
     let mut prepared_sources = Vec::with_capacity(target_count);
     let mut seen = excluded_source_keys.clone();
 
-    for _ in 0..target_count {
+    for attempt_index in 0..target_count {
         let Some(prepared) = prepare_playlist_source(app, selection, &seen).await? else {
+            #[cfg(not(test))]
+            emit_index_runtime_trace(
+                "playlist-playable-index-prepare-step",
+                Some(&selection.playlist_name),
+                None,
+                Some(prepared_sources.len()),
+                None,
+                "source_missing",
+                vec![
+                    index_trace_detail("targetCount", target_count),
+                    index_trace_detail("attemptIndex", attempt_index),
+                    index_trace_detail("excludedSourceCount", excluded_source_keys.len()),
+                ],
+            );
             break;
         };
         if !seen.insert(playlist_source_key(&prepared.source)) {
+            #[cfg(not(test))]
+            emit_index_runtime_trace(
+                "playlist-playable-index-prepare-step",
+                Some(&selection.playlist_name),
+                None,
+                Some(prepared_sources.len()),
+                None,
+                "duplicate_source",
+                vec![
+                    index_trace_detail("targetCount", target_count),
+                    index_trace_detail("attemptIndex", attempt_index),
+                    index_trace_detail("sourceKind", source_kind_as_str(prepared.source_kind)),
+                    index_trace_detail("musicUrl", &prepared.source.music.url),
+                ],
+            );
             continue;
         }
+        #[cfg(not(test))]
+        emit_index_runtime_trace(
+            "playlist-playable-index-prepare-step",
+            Some(&selection.playlist_name),
+            None,
+            Some(prepared_sources.len() + 1),
+            None,
+            "prepared",
+            vec![
+                index_trace_detail("targetCount", target_count),
+                index_trace_detail("attemptIndex", attempt_index),
+                index_trace_detail("sourceKind", source_kind_as_str(prepared.source_kind)),
+                index_trace_detail("musicUrl", &prepared.source.music.url),
+                index_trace_detail("musicName", &prepared.source.music.alias),
+                index_trace_detail(
+                    "path",
+                    prepared.source.music.path.as_deref().unwrap_or("none"),
+                ),
+            ],
+        );
         prepared_sources.push(prepared);
     }
 
+    #[cfg(not(test))]
+    emit_index_runtime_trace(
+        "playlist-playable-index-prepare-finished",
+        Some(&selection.playlist_name),
+        None,
+        Some(prepared_sources.len()),
+        None,
+        "finished",
+        vec![
+            index_trace_detail("targetCount", target_count),
+            index_trace_detail("excludedSourceCount", excluded_source_keys.len()),
+        ],
+    );
     Ok(prepared_sources)
 }
 
 #[cfg(not(test))]
 async fn prepare_playlist_random_fallback_source(
+    app: &tauri::AppHandle,
     selection: &PlaylistPlaybackSelection,
     excluded_source_keys: &HashSet<String>,
     selection_reason: &'static str,
 ) -> Result<Option<PreparedPlaylistSource>> {
+    let save_root = meta_service::resolve_save_root(app).await?;
     let mut sources = playlist_repo::load_random_playlist_playback_track_sources(
         selection,
         FIRST_SLOT_PREPARED_POOL_TARGET + excluded_source_keys.len(),
     )
     .await?;
     sources.retain(|source| !excluded_source_keys.contains(&playlist_source_key(source)));
-    let Some(source) = sources.pop() else {
+    let Some((source, track)) = sources.into_iter().find_map(|source| {
+        let file_path =
+            playlist_playback_service::resolve_source_music_file_path(&save_root, &source)?;
+        if !file_path.is_file() {
+            return None;
+        }
+        let track = playlist_playback_service::project_playlist_playback_track_for_playlist(
+            &selection.playlist_name,
+            &source,
+            file_path,
+        );
+        Some((source, track))
+    }) else {
         log::warn!(
             target: PLAYABLE_INDEX_LOG_TARGET,
             "first_slot_source_unavailable playlist=\"{}\" status=random_fallback_empty selection_reason={} action=none",
@@ -1609,6 +2176,7 @@ async fn prepare_playlist_random_fallback_source(
     );
     Ok(Some(PreparedPlaylistSource {
         source,
+        track,
         source_kind: PlaylistPlayableIndexSourceKind::RandomFallback,
     }))
 }
@@ -1644,6 +2212,115 @@ fn can_commit_refresh_snapshot(
     reason: PlayableIndexRefreshReason,
 ) -> bool {
     reason.replaces_existing_snapshots() || pool_needs_refresh(current, reason)
+}
+
+fn commit_prepared_playlist_sources(
+    runtime: &PlayableIndexRuntime,
+    state: &mut PlayableIndexState,
+    playlist_name: String,
+    generation: u64,
+    prepared_sources: Vec<PreparedPlaylistSource>,
+    reason: PlayableIndexRefreshReason,
+) -> PreparedPlaylistCommitOutcome {
+    let current = state.playlists.get(&playlist_name);
+    if !can_commit_refresh_snapshot(current, reason) {
+        #[cfg(not(test))]
+        emit_index_runtime_trace(
+            "playlist-playable-index-commit-skipped",
+            Some(&playlist_name),
+            Some(generation),
+            current.map(|pool| pool.sources.len()),
+            None,
+            "commit_not_needed",
+            vec![
+                index_trace_detail("reason", reason.as_str()),
+                index_trace_detail("preparedSourceCount", prepared_sources.len()),
+                index_trace_detail("poolTarget", FIRST_SLOT_PREPARED_POOL_TARGET),
+            ],
+        );
+        return PreparedPlaylistCommitOutcome::default();
+    }
+
+    #[cfg(not(test))]
+    let prepared_source_count = prepared_sources.len();
+    if let Some(pool) = commit_prepared_sources_to_pool(
+        runtime,
+        current,
+        playlist_name.clone(),
+        generation,
+        prepared_sources,
+        reason,
+    ) {
+        let needs_refill =
+            pool_needs_refresh(Some(&pool.pool), PlayableIndexRefreshReason::SlotVacancy)
+                && pool.changed()
+                && !reason.invalidates_existing_snapshots();
+        #[cfg(not(test))]
+        let after_pool_size = pool.pool.sources.len();
+        #[cfg(not(test))]
+        let added_count = pool.added_count;
+        #[cfg(not(test))]
+        let removed_count = pool.removed_count;
+        state
+            .playlist_generations
+            .insert(playlist_name.clone(), generation);
+        state.playlists.insert(playlist_name.clone(), pool.pool);
+        notify_index_revision(runtime);
+        #[cfg(not(test))]
+        emit_index_runtime_trace(
+            "playlist-playable-index-commit",
+            Some(&playlist_name),
+            Some(generation),
+            Some(after_pool_size),
+            None,
+            "committed",
+            vec![
+                index_trace_detail("reason", reason.as_str()),
+                index_trace_detail("preparedSourceCount", prepared_source_count),
+                index_trace_detail("addedCount", added_count),
+                index_trace_detail("removedCount", removed_count),
+                index_trace_detail("afterPoolSize", after_pool_size),
+                index_trace_detail("poolTarget", FIRST_SLOT_PREPARED_POOL_TARGET),
+                index_trace_detail("needsRefill", needs_refill),
+            ],
+        );
+        return PreparedPlaylistCommitOutcome {
+            committed: true,
+            cache_changed: true,
+            needs_refill,
+        };
+    }
+
+    if reason.replaces_existing_snapshots() {
+        state
+            .playlist_generations
+            .insert(playlist_name.clone(), generation);
+        let removed_existing = state.playlists.remove(&playlist_name).is_some();
+        if removed_existing {
+            notify_index_revision(runtime);
+        }
+        #[cfg(not(test))]
+        emit_index_runtime_trace(
+            "playlist-playable-index-commit",
+            Some(&playlist_name),
+            Some(generation),
+            Some(0),
+            None,
+            "removed_empty_snapshot",
+            vec![
+                index_trace_detail("reason", reason.as_str()),
+                index_trace_detail("preparedSourceCount", prepared_source_count),
+                index_trace_detail("removedExistingPool", removed_existing),
+            ],
+        );
+        return PreparedPlaylistCommitOutcome {
+            committed: true,
+            cache_changed: removed_existing,
+            needs_refill: false,
+        };
+    }
+
+    PreparedPlaylistCommitOutcome::default()
 }
 
 #[cfg(test)]
@@ -1730,8 +2407,10 @@ pub(crate) fn commit_global_snapshot_for_test(
         state.global_generation == generation && latest_generation <= generation && can_replace;
     if committed {
         if let Some(source) = source {
+            let track = playback_track_from_source_for_test(&playlist_name, &source);
             let prepared_sources = vec![PreparedPlaylistSource {
                 source,
+                track,
                 source_kind: PlaylistPlayableIndexSourceKind::AudioStyle,
             }];
             let pool = commit_prepared_sources_to_pool(
@@ -1747,6 +2426,7 @@ pub(crate) fn commit_global_snapshot_for_test(
                     .playlist_generations
                     .insert(playlist_name.clone(), generation);
                 state.playlists.insert(playlist_name, pool.pool);
+                notify_index_revision(runtime);
             }
         }
     }
@@ -1792,11 +2472,13 @@ pub(crate) fn commit_playlist_snapshot_for_test(
     if committed {
         match source {
             Some(source) => {
+                let track = playback_track_from_source_for_test(&playlist_name, &source);
                 let current = state.playlists.get(&playlist_name);
                 let can_replace = can_commit_refresh_snapshot(current, reason);
                 if can_replace {
                     let prepared_sources = vec![PreparedPlaylistSource {
                         source,
+                        track,
                         source_kind: PlaylistPlayableIndexSourceKind::AudioStyle,
                     }];
                     if let Some(pool) = commit_prepared_sources_to_pool(
@@ -1808,6 +2490,7 @@ pub(crate) fn commit_playlist_snapshot_for_test(
                         reason,
                     ) {
                         state.playlists.insert(playlist_name.clone(), pool.pool);
+                        notify_index_revision(runtime);
                     }
                 }
             }
@@ -1912,9 +2595,11 @@ fn commit_playlist_snapshot(
         return Ok(());
     }
     if let Some(source) = source {
+        let track = playback_track_from_source_for_test(&playlist_name, &source);
         let current = state.playlists.get(&playlist_name);
         let prepared_sources = vec![PreparedPlaylistSource {
             source,
+            track,
             source_kind: PlaylistPlayableIndexSourceKind::AudioStyle,
         }];
         if let Some(pool) = commit_prepared_sources_to_pool(
@@ -1929,9 +2614,34 @@ fn commit_playlist_snapshot(
             state
                 .playlist_generations
                 .insert(playlist_name.clone(), generation);
+            notify_index_revision(runtime);
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn playback_track_from_source_for_test(
+    playlist_name: &str,
+    source: &PlaylistPlaybackTrackSource,
+) -> PlaybackTrack {
+    PlaybackTrack {
+        playlist_name: playlist_name.to_string(),
+        music_name: source.music.alias.clone(),
+        canonical_music_id: source.music.canonical_music_id.clone(),
+        music_url: source.music.url.clone(),
+        file_path: source
+            .music
+            .path
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_default(),
+        source_music: Some(Box::new(source.music.clone())),
+        start_ms: source.music.start_ms,
+        end_ms: source.music.end_ms,
+        liked: source.music.liked,
+        loudness: source.music.loudness,
+    }
 }
 
 fn escape_log_value(value: &str) -> String {

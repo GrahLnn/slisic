@@ -4,6 +4,12 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri_specta::Event;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackSurfaceStatus {
+    Preparing,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
 pub struct NowPlayingTrackChangedEvent {
     pub session_generation: u64,
@@ -15,6 +21,13 @@ pub struct NowPlayingTrackChangedEvent {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+pub struct PlaybackSurfaceStatusChangedEvent {
+    pub session_generation: u64,
+    pub playlist_name: String,
+    pub status: PlaybackSurfaceStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]

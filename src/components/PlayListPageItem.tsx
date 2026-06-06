@@ -3,6 +3,7 @@ import { motion, useIsPresent } from "motion/react";
 import type { TorphStage } from "@grahlnn/comps";
 import { cn } from "@/lib/utils";
 import { action as appLogicAction } from "@/src/flow/appLogic";
+import { recordTrace } from "@/src/debug/trace";
 import {
   collectionTitleClassName,
   collectionTitleLayoutTransition,
@@ -158,6 +159,26 @@ export function PlayListPageItem({
     titleHoverVisual === "hold" || titleHoverVisual === "retain"
       ? collectionTitleTextRetainHoverClassName
       : undefined;
+  const createTracePayload = (extra: Record<string, unknown> = {}) => ({
+    key: viewModel.key,
+    playlistName: viewModel.playlistName,
+    text: viewModel.text,
+    layoutId: viewModel.layoutId ?? null,
+    sourceLayoutId: viewModel.sourceLayoutId ?? null,
+    titleProjectionLayoutId: titleProjectionLayoutId ?? null,
+    commitGesture: viewModel.commitGesture,
+    isPlaybackPreparing: viewModel.isPlaybackPreparing,
+    isPlaybackTarget: viewModel.isPlaybackTarget,
+    shouldShowPlaybackIcons: viewModel.shouldShowPlaybackIcons,
+    isHiddenInPlay: viewModel.isHiddenInPlay,
+    shouldStartHiddenInPlay: viewModel.shouldStartHiddenInPlay,
+    titleHoverVisual,
+    requestedTitleHoverVisual,
+    retainedTitleHoverVisual,
+    torphStage,
+    textChanged,
+    ...extra,
+  });
 
   return (
     <motion.div
@@ -204,6 +225,7 @@ export function PlayListPageItem({
             });
             committedTextRef.current = nextCommittedText;
             setTorphStage(stage);
+            recordTrace("playlist-item-torph-stage-changed", createTracePayload({ stage }));
             onTorphStageChange?.(stage);
           }}
           onPointerDown={(event) => {
@@ -212,9 +234,21 @@ export function PlayListPageItem({
               gesture: viewModel.commitGesture,
             });
 
+            recordTrace(
+              event.button === 0
+                ? "playlist-item-primary-pointer-down"
+                : "playlist-item-pointer-down",
+              createTracePayload({
+                button: event.button,
+                shouldItemCommit,
+              }),
+            );
+
             if (event.button === 0) {
               onPrimaryPointerDown?.();
+              recordTrace("playlist-item-primary-commit-callback-before", createTracePayload());
               onPrimaryCommit?.();
+              recordTrace("playlist-item-primary-commit-callback-after", createTracePayload());
             }
 
             if (shouldItemCommit) {
@@ -230,8 +264,16 @@ export function PlayListPageItem({
               gesture: viewModel.commitGesture,
             });
 
+            recordTrace("playlist-item-click", createTracePayload({
+              eventDetail: event.detail,
+              shouldFallbackPrimaryCommit,
+              shouldItemCommit,
+            }));
+
             if (shouldFallbackPrimaryCommit) {
+              recordTrace("playlist-item-fallback-primary-commit-before", createTracePayload());
               onPrimaryCommit?.();
+              recordTrace("playlist-item-fallback-primary-commit-after", createTracePayload());
             }
 
             if (shouldItemCommit) {
@@ -243,6 +285,8 @@ export function PlayListPageItem({
               button: 2,
               gesture: viewModel.commitGesture,
             });
+
+            recordTrace("playlist-item-context-menu", createTracePayload({ shouldItemCommit }));
 
             if (shouldItemCommit) {
               onCommit();

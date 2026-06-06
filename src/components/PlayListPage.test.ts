@@ -9,6 +9,7 @@ import {
   shouldCommitPlayListPageItem,
   shouldRenderPlayListPageContent,
 } from "./PlayListPage.view-model";
+import type { PlayListPlaybackSurfaceSnapshot } from "./playListPlaybackSurface.model";
 
 function createPlayListFixture(args: {
   name: string;
@@ -23,6 +24,17 @@ function createPlayListFixture(args: {
     groups: args.groups ?? [],
     extra: args.extra ?? [],
     created_at: args.created_at ?? "2026-04-13T00:00:00Z",
+  };
+}
+
+function createPlaybackSurfaceFixture(
+  input: Omit<PlayListPlaybackSurfaceSnapshot, "sessionGeneration"> & {
+    sessionGeneration?: number;
+  },
+): PlayListPlaybackSurfaceSnapshot {
+  return {
+    sessionGeneration: 1,
+    ...input,
   };
 }
 
@@ -116,7 +128,7 @@ describe("PlayListPage", () => {
     );
   });
 
-  test("shows pending playlist previews with the same visible item behavior as stable playlists", () => {
+  test("shows pending playlist previews without disabling user intent", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "ready",
       activeLayoutId: null,
@@ -239,13 +251,13 @@ describe("PlayListPage", () => {
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: null,
-      playbackSurface: {
+      playbackSurface: createPlaybackSurfaceFixture({
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Track A",
         displayedTrackLiked: null,
         displayedTrackIsPlayable: true,
-      },
+      }),
       titleReturnSurface: null,
     });
 
@@ -308,13 +320,13 @@ describe("PlayListPage", () => {
       playingPlaylistName: null,
       titleToneHandoff: null,
       pressedLayoutId: null,
-      playbackSurface: {
+      playbackSurface: createPlaybackSurfaceFixture({
         phase: "playing",
         playlistName: "Missing",
         displayedTrackName: "Track A",
         displayedTrackLiked: null,
         displayedTrackIsPlayable: true,
-      },
+      }),
       titleReturnSurface: null,
     });
 
@@ -447,7 +459,7 @@ describe("PlayListPage", () => {
       ],
       pendingPlaylistPlaybackRequest: {
         error: null,
-        phase: "preparing",
+        phase: "starting",
         playlistName: "Quiet Morning",
         reason: "pending_first_track",
         requestId: 1,
@@ -481,13 +493,13 @@ describe("PlayListPage", () => {
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: null,
-      playbackSurface: {
+      playbackSurface: createPlaybackSurfaceFixture({
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
         displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
-      },
+      }),
       titleReturnSurface: null,
     });
 
@@ -515,13 +527,13 @@ describe("PlayListPage", () => {
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: null,
-      playbackSurface: {
+      playbackSurface: createPlaybackSurfaceFixture({
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Preparing...",
         displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
-      },
+      }),
       titleReturnSurface: null,
     });
 
@@ -535,6 +547,50 @@ describe("PlayListPage", () => {
     assert.equal(viewModel.shouldLockScroll, true);
   });
 
+  test("keeps a pending preview click on its title before stable playback acceptance", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "ready",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [],
+      pendingPlaylistPreview: {
+        playlist: createPlayListFixture({
+          name: "PlayList 1",
+          created_at: null,
+        }),
+        previousName: null,
+        draft: {
+          mode: "create",
+          name: "PlayList 1",
+          collections: [],
+          groups: [],
+          extra: [],
+          createdAt: null,
+        },
+      },
+      pendingPlaylistPlaybackRequest: {
+        error: null,
+        phase: "starting",
+        playlistName: "PlayList 1",
+        reason: null,
+        requestId: 1,
+      },
+      playingPlaylistName: null,
+      titleToneHandoff: null,
+      pressedLayoutId: "playlist-title:PlayList 1",
+      playbackSurface: null,
+      titleReturnSurface: null,
+    });
+
+    assert.equal(viewModel.shouldLockScroll, true);
+    assert.equal(viewModel.playbackTargetKey, "PlayList 1");
+    assert.equal(viewModel.itemViewModels[0]?.text, "PlayList 1");
+    assert.equal(viewModel.itemViewModels[0]?.isPlaybackTarget, true);
+    assert.equal(viewModel.itemViewModels[0]?.isPlaybackPreparing, false);
+    assert.equal(viewModel.itemViewModels[0]?.shouldShowPlaybackIcons, false);
+    assert.equal(viewModel.shouldShowCreateItem, false);
+  });
+
   test("keeps an empty playback surface on the playlist title without pending-first text", () => {
     const viewModel = resolvePlayListPageViewModel({
       pageState: "play",
@@ -543,7 +599,7 @@ describe("PlayListPage", () => {
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
       pendingPlaylistPlaybackRequest: {
         error: null,
-        phase: "preparing",
+        phase: "starting",
         playlistName: "Quiet Morning",
         reason: "pending_first_track",
         requestId: 1,
@@ -551,13 +607,13 @@ describe("PlayListPage", () => {
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: null,
-      playbackSurface: {
+      playbackSurface: createPlaybackSurfaceFixture({
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
         displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
-      },
+      }),
       titleReturnSurface: null,
     });
 
@@ -586,13 +642,13 @@ describe("PlayListPage", () => {
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: null,
-      playbackSurface: {
+      playbackSurface: createPlaybackSurfaceFixture({
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
         displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
-      },
+      }),
       titleReturnSurface: null,
     });
 
@@ -612,7 +668,7 @@ describe("PlayListPage", () => {
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
       pendingPlaylistPlaybackRequest: {
         error: null,
-        phase: "preparing",
+        phase: "starting",
         playlistName: "Quiet Morning",
         reason: "pending_first_track",
         requestId: 1,
@@ -620,13 +676,13 @@ describe("PlayListPage", () => {
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: null,
-      playbackSurface: {
+      playbackSurface: createPlaybackSurfaceFixture({
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Quiet Morning",
         displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
-      },
+      }),
       titleReturnSurface: null,
     });
 
@@ -646,7 +702,7 @@ describe("PlayListPage", () => {
       playlists: [createPlayListFixture({ name: "Quiet Morning" })],
       pendingPlaylistPlaybackRequest: {
         error: null,
-        phase: "preparing",
+        phase: "starting",
         playlistName: "Quiet Morning",
         reason: "pending_first_track",
         requestId: 1,
@@ -654,13 +710,13 @@ describe("PlayListPage", () => {
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: null,
-      playbackSurface: {
+      playbackSurface: createPlaybackSurfaceFixture({
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Track A",
         displayedTrackLiked: true,
         displayedTrackIsPlayable: true,
-      },
+      }),
       titleReturnSurface: null,
     });
 
@@ -684,13 +740,13 @@ describe("PlayListPage", () => {
       playingPlaylistName: "Quiet Morning",
       titleToneHandoff: null,
       pressedLayoutId: "playlist-title:Quiet Morning",
-      playbackSurface: {
+      playbackSurface: createPlaybackSurfaceFixture({
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Track A",
         displayedTrackLiked: null,
         displayedTrackIsPlayable: true,
-      },
+      }),
       titleReturnSurface: null,
     });
 
@@ -839,13 +895,13 @@ describe("PlayListPage", () => {
         tone: "solid",
       },
       pressedLayoutId: null,
-      playbackSurface: {
+      playbackSurface: createPlaybackSurfaceFixture({
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Track A",
         displayedTrackLiked: null,
         displayedTrackIsPlayable: true,
-      },
+      }),
       titleReturnSurface: null,
     });
 
@@ -924,13 +980,13 @@ describe("PlayListPage", () => {
         tone: "solid",
       },
       pressedLayoutId: null,
-      playbackSurface: {
+      playbackSurface: createPlaybackSurfaceFixture({
         phase: "playing",
         playlistName: "Quiet Morning",
         displayedTrackName: "Track A",
         displayedTrackLiked: null,
         displayedTrackIsPlayable: true,
-      },
+      }),
       titleReturnSurface: null,
     });
 
@@ -949,13 +1005,13 @@ describe("PlayListPage", () => {
       playingPlaylistName: null,
       titleToneHandoff: null,
       pressedLayoutId: null,
-      playbackSurface: {
+      playbackSurface: createPlaybackSurfaceFixture({
         phase: "restoring",
         playlistName: "Quiet Morning",
         displayedTrackName: null,
         displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
-      },
+      }),
       titleReturnSurface: null,
     });
 

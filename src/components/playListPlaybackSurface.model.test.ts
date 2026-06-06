@@ -9,11 +9,10 @@ import {
 } from "./playListPlaybackSurface.model";
 
 describe("playListPlaybackSurface model", () => {
-  test("only exposes a machine playback target while play mode points at a visible playlist", () => {
+  test("exposes the accepted machine playback target without waiting for playlist projection", () => {
     assert.equal(
       resolveMachinePlaybackTarget({
         pageState: "ready",
-        playlists: [{ name: "Quiet Morning" }],
         playingPlaylistName: "Quiet Morning",
       }),
       null,
@@ -21,15 +20,13 @@ describe("playListPlaybackSurface model", () => {
     assert.equal(
       resolveMachinePlaybackTarget({
         pageState: "play",
-        playlists: [{ name: "Quiet Morning" }],
-        playingPlaylistName: "Missing",
+        playingPlaylistName: "Quiet Morning",
       }),
-      null,
+      "Quiet Morning",
     );
     assert.equal(
       resolveMachinePlaybackTarget({
         pageState: "play",
-        playlists: [{ name: "Quiet Morning" }],
         playingPlaylistName: "Quiet Morning",
       }),
       "Quiet Morning",
@@ -41,11 +38,14 @@ describe("playListPlaybackSurface model", () => {
       syncPlaybackSurfaceState({
         current: INACTIVE_PLAYBACK_SURFACE,
         machinePlaybackTarget: "Quiet Morning",
+        playingSessionGeneration: 1,
         nowPlayingTrack: null,
+        playbackSurfaceStatus: null,
       }),
       {
         phase: "playing",
         playlistName: "Quiet Morning",
+        sessionGeneration: 1,
         displayedTrackName: null,
         displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
@@ -59,20 +59,24 @@ describe("playListPlaybackSurface model", () => {
         current: {
           phase: "playing",
           playlistName: "Quiet Morning",
+          sessionGeneration: 1,
           displayedTrackName: "Track A",
           displayedTrackLiked: null,
           displayedTrackIsPlayable: true,
         },
         machinePlaybackTarget: "Quiet Morning",
+        playingSessionGeneration: 1,
         nowPlayingTrack: {
           name: "Track B",
           liked: false,
           url: "https://example.com/track-b",
         },
+        playbackSurfaceStatus: null,
       }),
       {
         phase: "playing",
         playlistName: "Quiet Morning",
+        sessionGeneration: 1,
         displayedTrackName: "Track B",
         displayedTrackLiked: null,
         displayedTrackIsPlayable: true,
@@ -85,15 +89,18 @@ describe("playListPlaybackSurface model", () => {
       syncPlaybackSurfaceState({
         current: INACTIVE_PLAYBACK_SURFACE,
         machinePlaybackTarget: "Quiet Morning",
+        playingSessionGeneration: 1,
         nowPlayingTrack: {
           name: "Track A",
           liked: false,
           url: "https://example.com/track-a",
         },
+        playbackSurfaceStatus: null,
       }),
       {
         phase: "playing",
         playlistName: "Quiet Morning",
+        sessionGeneration: 1,
         displayedTrackName: "Track A",
         displayedTrackLiked: null,
         displayedTrackIsPlayable: true,
@@ -101,23 +108,78 @@ describe("playListPlaybackSurface model", () => {
     );
   });
 
-  test("marks non-playable playback status text separately from its label", () => {
+  test("shows preparing only from explicit playback surface status", () => {
     assert.deepEqual(
       syncPlaybackSurfaceState({
         current: INACTIVE_PLAYBACK_SURFACE,
         machinePlaybackTarget: "Quiet Morning",
-        nowPlayingTrack: {
-          name: "Preparing...",
-          liked: false,
-          url: "",
-        },
+        playingSessionGeneration: 1,
+        nowPlayingTrack: null,
+        playbackSurfaceStatus: "preparing",
       }),
       {
         phase: "playing",
         playlistName: "Quiet Morning",
+        sessionGeneration: 1,
         displayedTrackName: "Preparing...",
         displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
+      },
+    );
+  });
+
+  test("projects preparing on the first play sync without waiting for playlist projection", () => {
+    const machinePlaybackTarget = resolveMachinePlaybackTarget({
+      pageState: "play",
+      playingPlaylistName: "PlayList 1",
+    });
+
+    assert.deepEqual(
+      syncPlaybackSurfaceState({
+        current: INACTIVE_PLAYBACK_SURFACE,
+        machinePlaybackTarget,
+        playingSessionGeneration: 1,
+        nowPlayingTrack: null,
+        playbackSurfaceStatus: "preparing",
+      }),
+      {
+        phase: "playing",
+        playlistName: "PlayList 1",
+        sessionGeneration: 1,
+        displayedTrackName: "Preparing...",
+        displayedTrackLiked: null,
+        displayedTrackIsPlayable: false,
+      },
+    );
+  });
+
+  test("replaces preparing with a real now playing track", () => {
+    assert.deepEqual(
+      syncPlaybackSurfaceState({
+        current: {
+          phase: "playing",
+          playlistName: "Quiet Morning",
+          sessionGeneration: 1,
+          displayedTrackName: "Preparing...",
+          displayedTrackLiked: null,
+          displayedTrackIsPlayable: false,
+        },
+        machinePlaybackTarget: "Quiet Morning",
+        playingSessionGeneration: 1,
+        nowPlayingTrack: {
+          name: "Track A",
+          liked: true,
+          url: "https://example.com/track-a",
+        },
+        playbackSurfaceStatus: null,
+      }),
+      {
+        phase: "playing",
+        playlistName: "Quiet Morning",
+        sessionGeneration: 1,
+        displayedTrackName: "Track A",
+        displayedTrackLiked: true,
+        displayedTrackIsPlayable: true,
       },
     );
   });
@@ -128,16 +190,20 @@ describe("playListPlaybackSurface model", () => {
         current: {
           phase: "playing",
           playlistName: "Quiet Morning",
+          sessionGeneration: 1,
           displayedTrackName: "Track B",
           displayedTrackLiked: null,
           displayedTrackIsPlayable: true,
         },
         machinePlaybackTarget: null,
+        playingSessionGeneration: null,
         nowPlayingTrack: null,
+        playbackSurfaceStatus: null,
       }),
       {
         phase: "restoring",
         playlistName: "Quiet Morning",
+        sessionGeneration: 1,
         displayedTrackName: null,
         displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
@@ -151,12 +217,15 @@ describe("playListPlaybackSurface model", () => {
       current: {
         phase: "playing",
         playlistName: "Quiet Morning",
+        sessionGeneration: 1,
         displayedTrackName: "Track B",
         displayedTrackLiked: null,
         displayedTrackIsPlayable: true,
       },
       machinePlaybackTarget: null,
+      playingSessionGeneration: null,
       nowPlayingTrack: null,
+      playbackSurfaceStatus: null,
     });
 
     assert.deepEqual(
@@ -177,6 +246,7 @@ describe("playListPlaybackSurface model", () => {
     assert.deepEqual(started, {
       phase: "restoring",
       playlistName: "Quiet Morning",
+      sessionGeneration: 1,
       displayedTrackName: null,
       displayedTrackLiked: null,
       displayedTrackIsPlayable: false,
@@ -198,12 +268,15 @@ describe("playListPlaybackSurface model", () => {
         current: {
           phase: "playing",
           playlistName: "Quiet Morning",
+          sessionGeneration: 1,
           displayedTrackName: "Quiet Morning",
           displayedTrackLiked: null,
           displayedTrackIsPlayable: true,
         },
         machinePlaybackTarget: null,
+        playingSessionGeneration: null,
         nowPlayingTrack: null,
+        playbackSurfaceStatus: null,
       }),
       INACTIVE_PLAYBACK_SURFACE,
     );
@@ -215,6 +288,7 @@ describe("playListPlaybackSurface model", () => {
       toPlayListPlaybackSurfaceSnapshot({
         phase: "restoring",
         playlistName: "Quiet Morning",
+        sessionGeneration: 1,
         displayedTrackName: null,
         displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
@@ -223,6 +297,7 @@ describe("playListPlaybackSurface model", () => {
       {
         phase: "restoring",
         playlistName: "Quiet Morning",
+        sessionGeneration: 1,
         displayedTrackName: null,
         displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
@@ -236,16 +311,20 @@ describe("playListPlaybackSurface model", () => {
         current: {
           phase: "playing",
           playlistName: "Quiet Morning",
+          sessionGeneration: 1,
           displayedTrackName: null,
           displayedTrackLiked: null,
           displayedTrackIsPlayable: false,
         },
         machinePlaybackTarget: "Quiet Morning",
+        playingSessionGeneration: 1,
         nowPlayingTrack: null,
+        playbackSurfaceStatus: null,
       }),
       {
         phase: "playing",
         playlistName: "Quiet Morning",
+        sessionGeneration: 1,
         displayedTrackName: null,
         displayedTrackLiked: null,
         displayedTrackIsPlayable: false,

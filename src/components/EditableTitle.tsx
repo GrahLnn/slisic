@@ -19,6 +19,7 @@ import {
   collectionTitleTextStaticClassName,
   useCollectionTitleColor,
 } from "./collectionTitle";
+import { recordTrace } from "@/src/debug/trace";
 
 const EMPTY_TITLE_METRIC_ANCHOR = "A";
 const EDITABLE_TITLE_NEW_SYMBOL_BAR_LENGTH_EM = 0.7;
@@ -46,6 +47,7 @@ type EditableTitleProps = {
   customCursorEnabled?: boolean;
   isNewTitle?: boolean;
   onNewTitleActivate?: () => void;
+  traceId?: string;
 } & Omit<ComponentProps<"div">, "onChange">;
 
 export function resolveEditableTitleDisplayValue(value: string, placeholder?: string) {
@@ -341,11 +343,30 @@ function waitForNextFrame() {
   });
 }
 
+function recordEditableTitleTrace(
+  traceId: string | undefined,
+  event: string,
+  payload: Record<string, unknown> = {},
+) {
+  if (!traceId) {
+    return;
+  }
+
+  recordTrace(`editable-title-${event}`, {
+    traceId,
+    ...payload,
+  });
+}
+
 const EDITABLE_TITLE_AUTOFOCUS_DELAY_MS =
   Math.round(collectionTitleLayoutTransition.duration * 1000) + 16;
 
 export interface EditableTitleHandle {
-  commitResolvedValue(args: { value: string; animateTyping: boolean }): Promise<void>;
+  commitResolvedValue(args: {
+    value: string;
+    animateTyping: boolean;
+    waitForVisualCommit?: boolean;
+  }): Promise<void>;
   blur(): Promise<void>;
 }
 
@@ -371,6 +392,7 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
       customCursorEnabled = false,
       isNewTitle = false,
       onNewTitleActivate,
+      traceId,
       className,
       style,
       ...props
@@ -586,10 +608,31 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
         async commitResolvedValue(args) {
           const node = inputRef.current;
           const runId = autoWriteRunRef.current + 1;
+          const waitForVisualCommit = args.waitForVisualCommit ?? true;
           autoWriteRunRef.current = runId;
+          recordEditableTitleTrace(traceId, "commit-resolved-value-start", {
+            animateTyping: args.animateTyping,
+            hasNode: !!node,
+            nextValue: args.value,
+            previousValue: value,
+            waitForVisualCommit,
+          });
 
           if (!node) {
             onChange(args.value);
+            recordEditableTitleTrace(traceId, "commit-resolved-value-no-node", {
+              nextValue: args.value,
+            });
+            return;
+          }
+
+          if (!waitForVisualCommit) {
+            onChange(args.value);
+            node.blur();
+            recordEditableTitleTrace(traceId, "commit-resolved-value-skip-wait", {
+              activeElementIsInput: node.ownerDocument.activeElement === node,
+              nextValue: args.value,
+            });
             return;
           }
 
@@ -599,6 +642,9 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
             await waitForNextFrame();
             node.blur();
             await waitForNextFrame();
+            recordEditableTitleTrace(traceId, "commit-resolved-value-static-done", {
+              nextValue: args.value,
+            });
             return;
           }
 
@@ -622,13 +668,17 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
           if (autoWriteRunRef.current === runId) {
             setIsAutoWriting(false);
           }
+          recordEditableTitleTrace(traceId, "commit-resolved-value-autowrite-done", {
+            completed: autoWriteRunRef.current === runId,
+            nextValue: args.value,
+          });
         },
         async blur() {
           inputRef.current?.blur();
           await waitForNextFrame();
         },
       }),
-      [onChange],
+      [onChange, traceId, value],
     );
 
     function commitInputCursor(node: HTMLTextAreaElement) {
@@ -755,9 +805,21 @@ export const EditableTitle = forwardRef<EditableTitleHandle, EditableTitleProps>
             onChange={(event) => {
               resetCursorBlinkCycle();
               commitInputCursor(event.target);
+              recordEditableTitleTrace(traceId, "input-change", {
+                nextValue: event.target.value,
+                previousValue: value,
+              });
               onChange(event.target.value);
             }}
-            onBlur={(event) => onChange(event.target.value.trim())}
+            onBlur={(event) => {
+              const nextValue = event.target.value.trim();
+              recordEditableTitleTrace(traceId, "input-blur", {
+                nextValue,
+                previousValue: value,
+                rawValue: event.target.value,
+              });
+              onChange(nextValue);
+            }}
             onFocus={(event) => {
               setIsFocused(true);
               if (pointerFocusPendingRef.current) {
