@@ -75,6 +75,7 @@ through evidence, but they do not become one lifecycle.
 | `AudioStyleModelRuntime`         | `playlist_playback::recommendation`                           | library/download/import changes, embedding decode, training publication                                      | stable model snapshot and completed snapshot history                          |
 | `DownloadTaskRuntime`            | `downloads::service`                                          | enqueue, resolve, probing, downloading, persisting, terminal status                                          | task status, leaf status, task change signal                                  |
 | `CollectionImport`               | `collection_import`                                           | shell creation, collection planning, local import, downloaded leaf finalization                              | collection shell, music rows, collection manifest                             |
+| `AudioFileDurationEvidence`      | local audio decode duration probe                             | downloaded temp file, reusable final file, local import file, manifest restore file                          | decoded frame duration in the same coordinate system as waveform              |
 | `FirstSlot`                      | `playlist_playback::playable_index`                           | runtime startup, local cache restore, slot vacancy, model publication, playlist/library/exclude invalidation | prepared first-track credentials per playlist                                 |
 | `PlaybackStart`                  | `playlist_playback::service`                                  | one stable backend `playPlaylist(name)` request                                                              | `started`, `pending_first_track`, `superseded`, or error                      |
 | `PlayerSession`                  | `player::service`                                             | accepted playback session generation and track boundaries                                                    | now-playing events, queue consumption, stop, pause, resume                    |
@@ -196,6 +197,7 @@ FirstSlot lane:
     -> restore local first-slot cargo if present
     -> fill or validate prepared credentials for playlists
     -> model/library/exclude/playlist/slot-vacancy signals refill or invalidate
+    -> if prepared first loudness is missing, send first-loudness cargo to LoudnessEvidence
     -> PlaybackStart reads credential after a stable backend request exists
     -> player acceptance consumes credential
     -> consumption schedules same-playlist replacement
@@ -235,11 +237,13 @@ NextTrack lane:
   player accepted first
     -> inspect queue
     -> if missing distinct next, plan [current,next]
+    -> if next loudness is missing, send next-loudness cargo to LoudnessEvidence
     -> commit queue only if session and anchor still current
     -> later player boundary remains play -> play
 
 Loudness lane:
   trackWillPlay(track loudness == 0.0)
+  nextTrackWillPlaySoon(next loudness == 0.0)
     -> measure in background
     -> persist finite non-zero LUFS
     -> update current session if generation still current
@@ -305,7 +309,7 @@ the caller into an illegal state.
 | `PlaybackStart`               | accepted result: `started`, `pending_first_track`, `superseded`, error                    | `PlaylistItemClick`, `appLogic`                                                  | close matching request or enter accepted play                                | frontend manufactures track/preparing evidence or keeps pending overlay after matching closure                                        |
 | `NextTrack`                   | explicit queue proposal for current session generation and anchor                         | `PlayerSession`                                                                  | replace session queue only when still current and missing distinct next      | player calls recommendation model, model publication replaces existing next, or stale attempt commits                                 |
 | `PlayerSession`               | active session generation, active track, active range, now-playing event, playback status | `appLogic`, `PlaybackSurface`, `SpectrumScope`, `LoudnessEvidence`               | project play state, surface text, spectrum scope, loudness update            | UI chooses tracks, playback mutates click overlay, or now-playing from stale generation creates current play                          |
-| `LoudnessEvidence`            | finite non-zero LUFS for a track identity                                                 | `PlayerSession`, playlists repo                                                  | normalize playback and refresh now-playing for same identity                 | missing loudness blocks playback or measured LUFS applies to another file/range                                                       |
+| `LoudnessEvidence`            | finite non-zero LUFS for a track identity                                                 | `PlayerSession`, playlists repo, `PlaybackStart` waiting-first branch            | normalize playback, refresh now-playing, or resolve the accepted Preparing wait | missing loudness blocks same-turn first hit, startup, FirstSlot preparation, or measured LUFS applies to another file/range           |
 | `PlaylistInteractionResponse` | display lock, focused title, visible text, icon/preparing projection                      | rendered playlist page                                                           | preserve immediate human response                                            | backend trace or task status owns visual timing, or app state deletes title handoff details                                           |
 | trace registry                | diagnostic trace lines                                                                    | humans and tests during diagnosis                                                | observe timing after enabling trace                                          | trace event becomes a state transition, wait state, or source of truth                                                                |
 
@@ -1234,6 +1238,12 @@ The cache is not semantic truth:
   not.
 - Prepared-source consumption removes one credential and schedules replacement
   for the same playlist.
+- FirstSlot preparation and local cargo restore may request loudness evidence
+  for accepted first credentials whose loudness is still missing. This protects
+  the first audible track before user consumption; it is a bounded cargo
+  transfer, not a library scan, and it must not block startup or preparation.
+- When multiple prepared credentials are added together, loudness requests keep
+  the same priority order as first-slot consumption.
 - The pool target is small and bounded. It exists to provide immediate first
   evidence, not to cache whole playlists.
 - Each playlist keeps three prepared credentials so quick ready->play cycles do
@@ -1274,16 +1284,24 @@ PlaybackStart consumes FirstSlot as evidence:
 
 read(playlistName) -> FirstCredential | none
 FirstCredential -> resolveSourceTrack(saveRoot, playlistSelection)
-resolve ok -> player.submit([track])
+immediate track loudness missing -> request LoudnessEvidence(first) as background warmup
+resolve ok on immediate path -> player.submit([track])
+none -> return pending_first_track
+pending_first_track accepted by app -> player-owned Preparing surface may be projected
+FirstSlot later provides credential -> resolveSourceTrack(saveRoot, playlistSelection)
+waiting-first loudness missing -> wait LoudnessEvidence(first), then attach lufs if available
+waiting-first resolve ok -> player.submit([track])
 player accepted -> FirstSlot.consume(credential)
 player rejected -> FirstSlot keeps credential unless explicit discard is required
 resolve failed -> FirstSlot.discard(credential), then retry read loop
-none -> return pending_first_track
 ```
 
 This loop may discard stale, empty, out-of-scope, or unplayable prepared
 credentials. It still does not prepare a new first credential on the click path.
-Discard schedules pool repair in the FirstSlot lifecycle.
+Discard schedules pool repair in the FirstSlot lifecycle. The only branch that
+waits for loudness is the already-accepted `pending_first_track`/`Preparing...`
+branch; a same-turn FirstSlot hit requests missing loudness but still submits
+the first track immediately.
 
 ### FirstSlot Must Not
 
@@ -1754,11 +1772,14 @@ normalization(track) =
   track.loudness == 0.0 ? none : target((targetLufs = -18.0), (integratedLufs = track.loudness));
 ```
 
-Missing loudness does not block playback. It starts a side measurement. When
-measurement finishes and the session generation is still current, the same track
-identity is updated and now-playing evidence may be re-emitted. The measurement
-does not rerun `PlaylistItemClick`, does not change `FirstSlot`, and does not
-manufacture `Preparing...`.
+Missing loudness does not block ordinary playback or next-track selection. It
+starts a side measurement. The one allowed synchronous wait is the already
+accepted `pending_first_track`/`Preparing...` branch, where `PlaybackStart` may
+wait for `LoudnessEvidence` before submitting the first track to the player.
+When measurement finishes and the session generation is still current, the same
+track identity is updated and now-playing evidence may be re-emitted. The
+measurement does not rerun `PlaylistItemClick`, does not change `FirstSlot`, and
+does not manufacture `Preparing...`.
 
 ### Internal Rules
 
@@ -1841,9 +1862,11 @@ PlaybackStart =
   | ["idle"]
   | ["claimed", request: RequestHandle, playlistName: String]
   | ["readingFirst", request: RequestHandle, playlistName: String]
-  | ["submittingPlayer", request: RequestHandle, playlistName: String, credential: FirstCredential, first: Track]
+  | ["waitingFirst", request: RequestHandle, playlistName: String]
+  | ["waitingFirstLoudness", request: RequestHandle, playlistName: String, credential: FirstCredential, first: Track]
+  | ["submittingPlayer", request: RequestHandle, playlistName: String, credential: FirstCredential, first: Track, path: "immediate" | "afterPreparing"]
   | ["started", request: RequestHandle, sessionGeneration: Number, initialTrack: Track]
-  | ["pendingFirstTrack", request: RequestHandle]
+  | ["pendingFirstTrack", request: RequestHandle, playlistName: String]
   | ["superseded", request: RequestHandle]
   | ["failed", request: RequestHandle, reason: String];
 ```
@@ -1857,6 +1880,10 @@ Action =
   | ["first.read.credential", credential: FirstCredential]
   | ["first.invalid", credential: FirstCredential]
   | ["track.resolved", credential: FirstCredential, track: Track]
+  | ["app.acceptedPreparingSurface"]
+  | ["waiting.first.ready", credential: FirstCredential, track: Track]
+  | ["loudness.ready", lufs: Number]
+  | ["loudness.unavailable"]
   | ["player.accepted", sessionGeneration: Number]
   | ["player.rejected", reason: String]
   | ["request.superseded"]
@@ -1877,7 +1904,7 @@ readingFirst(request: RequestHandle, playlistName: String) =
   readFirstSlot(playlistName);
   next().is(
     | ["first.read.none"] =>
-        pendingFirstTrack(request)
+        pendingFirstTrack(request, playlistName)
     | ["first.read.credential", credential] =>
         credentialInScope(credential, playlistName)
           ? resolveTrack(credential)
@@ -1893,7 +1920,40 @@ readingFirst(request: RequestHandle, playlistName: String) =
         failed(request, reason)
   );
 
-submittingPlayer(request: RequestHandle, playlistName: String, credential: FirstCredential, first: Track) =
+pendingFirstTrack(request: RequestHandle, playlistName: String) =
+  next().is(
+    | ["app.acceptedPreparingSurface"] =>
+        waitingFirst(request, playlistName)
+    | ["request.superseded"] =>
+        superseded(request)
+  );
+
+waitingFirst(request: RequestHandle, playlistName: String) =
+  readFirstSlotUntilReady(playlistName);
+  next().is(
+    | ["waiting.first.ready", credential, track] =>
+        track.loudness == 0.0
+          ? waitingFirstLoudness(request, playlistName, credential, track)
+          : submittingPlayer(request, playlistName, credential, track, "afterPreparing")
+    | ["request.superseded"] =>
+        superseded(request)
+    | ["error", reason] =>
+        failed(request, reason)
+  );
+
+waitingFirstLoudness(request: RequestHandle, playlistName: String, credential: FirstCredential, first: Track) =
+  waitLoudnessEvidence(first);
+  next().is(
+    | ["loudness.ready", lufs] =>
+        submittingPlayer(request, playlistName, credential, first.withLoudness(lufs), "afterPreparing")
+    | ["loudness.unavailable"] =>
+        submittingPlayer(request, playlistName, credential, first, "afterPreparing")
+    | ["request.superseded"] =>
+        superseded(request)
+  );
+
+submittingPlayer(request: RequestHandle, playlistName: String, credential: FirstCredential, first: Track, path: String) =
+  first.loudness == 0.0 ? requestLoudnessEvidence(first) : none;
   submitPlayerSession(request, queue = [first]);
   next().is(
     | ["player.accepted", sessionGeneration] =>
@@ -1915,9 +1975,15 @@ stateDiagram-v2
   Claimed --> ReadingFirst: request claimed
   ReadingFirst --> PendingFirstTrack: first.read.none
   ReadingFirst --> ReadingFirst: invalid credential discarded
-  ReadingFirst --> SubmittingPlayer: track resolved
+  ReadingFirst --> SubmittingPlayer: track resolved / immediate
   ReadingFirst --> Superseded: request superseded
   ReadingFirst --> Failed: error
+  PendingFirstTrack --> WaitingFirst: app accepts preparing surface
+  WaitingFirst --> WaitingFirstLoudness: first ready with missing loudness
+  WaitingFirst --> SubmittingPlayer: first ready with loudness
+  WaitingFirstLoudness --> SubmittingPlayer: loudness ready or unavailable
+  WaitingFirst --> Superseded: request superseded
+  WaitingFirstLoudness --> Superseded: request superseded
   SubmittingPlayer --> Started: player accepted / consume credential
   SubmittingPlayer --> Failed: player rejected
   SubmittingPlayer --> Superseded: request superseded
@@ -1932,6 +1998,11 @@ stateDiagram-v2
 - consume a first credential before player acceptance;
 - emit `Preparing...`;
 - wait for downloads, model training, or import completion.
+
+PlaybackStart may wait for `LoudnessEvidence` only after this same request has
+already returned `pending_first_track` and the app has accepted the
+player-owned `Preparing...` surface. It must not wait for loudness on the
+same-turn FirstSlot hit path.
 
 ## Lifecycle: PlaybackSurface
 
@@ -2748,7 +2819,6 @@ DownloadLeaf =
   | ["downloadingTemp"]
   | ["readyFinalize"]
   | ["finalizing"]
-  | ["measuringLoudness"]
   | ["completed"]
   | ["failed", reason: String]
   | ["interrupted"];
@@ -2774,10 +2844,11 @@ Action =
   | ["leaf.prepared", leaf: Leaf, probe: LeafProbe]
   | ["leaf.existingFinalFile", leaf: Leaf, relativePath: String]
   | ["leaf.residualTemp", leaf: Leaf, tempPath: Path]
+  | ["leaf.audioDurationDecoded", leaf: Leaf, durationMs: Number]
   | ["leaf.readyDownload", leaf: Leaf]
   | ["leaf.downloadedTemp", leaf: Leaf, tempFile: Path]
   | ["leaf.importCommitted", leaf: Leaf, relativePath: String]
-  | ["leaf.loudnessMeasured", leaf: Leaf]
+  | ["leaf.loudnessRequested", leaf: Leaf]
   | ["leaf.failed", leaf: Leaf, reason: String]
   | ["pipeline.drained"]
   | ["process.interrupted"];
@@ -2837,14 +2908,16 @@ leafPipeline(task: DownloadTask, collection: Collection, pipeline: LeafPipelineS
     | ["leaf.existingFinalFile", leaf, relativePath] =>
         enqueueExistingFinalization(leaf, relativePath)
     | ["leaf.residualTemp", leaf, tempPath] =>
-        enqueueDownloadedFinalization(leaf, tempPath)
+        requestAudioDurationEvidence(leaf, tempPath)
+    | ["leaf.audioDurationDecoded", leaf, durationMs] =>
+        enqueueDownloadedFinalization(leaf, durationMs)
     | ["leaf.readyDownload", leaf] =>
         enqueueDownload(leaf)
     | ["leaf.downloadedTemp", leaf, tempFile] =>
-        enqueueDownloadedFinalization(leaf, tempFile)
+        requestAudioDurationEvidence(leaf, tempFile)
     | ["leaf.importCommitted", leaf, relativePath] =>
-        measuringLoudness(markLeafMeasuring(task, leaf, relativePath))
-    | ["leaf.loudnessMeasured", leaf] =>
+        requestLoudnessEvidence(leaf, relativePath)
+    | ["leaf.loudnessRequested", leaf] =>
         leafPipeline(removeResidualLeaf(task, leaf), collection, pipeline)
     | ["leaf.failed", leaf, reason] =>
         leafPipeline(markLeafFailed(task, leaf, reason), collection, pipeline)
@@ -2872,6 +2945,14 @@ Existing final file has two different meanings:
 | collection row plus stable file            | already materialized leaf | `CollectionImport` and `DownloadTaskRuntime` | residual leaf can be discarded before pipeline              |
 | stable file without current row completion | reusable audio file       | `CollectionImport`                           | must still persist music row and manifest before completion |
 
+Downloaded temp files, reusable final files, local import files, and manifest
+restore files must all pass through `AudioFileDurationEvidence` before their
+`Music.end_ms` can be accepted as a full-file boundary. Provider metadata,
+manifest integers, and existing collection rows may name an old boundary, but
+they do not own the local audio end coordinate. When the old boundary targets
+the local file tail, `CollectionImport` replaces it with decoded frame duration
+before materializing music identity.
+
 ### State Motion
 
 ```mermaid
@@ -2887,10 +2968,10 @@ stateDiagram-v2
   DiscardingMaterializedLeaves --> LeafPipeline: residual leaves remain
 
   LeafPipeline --> LeafPipeline: prepare leaf
-  LeafPipeline --> LeafPipeline: existing final file -> import commit
-  LeafPipeline --> LeafPipeline: residual temp -> import commit
+  LeafPipeline --> LeafPipeline: existing final file -> decode duration -> import commit
+  LeafPipeline --> LeafPipeline: residual temp -> decode duration -> import commit
   LeafPipeline --> LeafPipeline: fresh download -> temp artifact
-  LeafPipeline --> LeafPipeline: commit music/manifest -> measure loudness -> remove residual
+  LeafPipeline --> LeafPipeline: commit music/manifest -> request loudness -> remove residual
   LeafPipeline --> LeafPipeline: leaf failed
   LeafPipeline --> Terminalizing: pipeline drained
   Terminalizing --> Completed: no failed leaves
@@ -3095,6 +3176,90 @@ playlist repository.
 - create a second folder authority in downloads or UI;
 - let a task change signal substitute for playable-library wake.
 
+## Lifecycle: AudioFileDurationEvidence
+
+### Boundary
+
+`AudioFileDurationEvidence` owns the projection from a local audio file to the
+duration coordinate used by music ranges. Its truth source is decoded audio
+frame count from the saved file, using the same ffmpeg f32le decode shape as the
+waveform page. It is consumed by download finalization, existing-file reuse,
+manifest restore, and local import before a full-file `Music.end_ms` boundary is
+accepted.
+
+It does not own provider metadata, title probing, download admission, playback,
+loudness, waveform cache lifetime, playlist membership, or UI display. Waveform
+analysis may observe the same coordinate; waveform cache only accelerates
+drawing and cannot decide persisted music end.
+
+### Owned State
+
+```ts
+AudioFileDurationEvidence =
+  | ["idle"]
+  | ["decoding", file: Path]
+  | ["accepted", file: Path, durationMs: Number]
+  | ["rejected", file: Path, reason: String];
+```
+
+### Transition
+
+```ts
+Action =
+  | ["duration.requested", file: Path]
+  | ["ffmpeg.decoded", file: Path, decodedBytes: Number, sampleRate: Number]
+  | ["ffmpeg.failed", file: Path, reason: String];
+
+idle() =
+  next().is(
+    | ["duration.requested", file] =>
+        decoding(file)
+  );
+
+decoding(file: Path) =
+  next().is(
+    | ["ffmpeg.decoded", file, decodedBytes, sampleRate] =>
+        accepted(file, roundDecodedF32leBytesToMs(decodedBytes, sampleRate))
+    | ["ffmpeg.failed", file, reason] =>
+        rejected(file, reason)
+  );
+```
+
+### Boundary Replacement Law
+
+```ts
+replaceFullFileBoundary(oldEndMs, oldDurationMs, decodedDurationMs) =
+  boundaryMatches(oldEndMs, oldDurationMs)
+    ? decodedDurationMs
+    : oldEndMs;
+```
+
+For manifest restore, integer-second historical boundaries such as `344000ms`
+may be treated as file-tail claims when they are close to decoded file duration.
+Precise non-integer partial ranges are preserved unless they are already within
+the narrow local-file tail tolerance.
+
+### State Motion
+
+```mermaid
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Decoding: duration.requested(file)
+  Decoding --> Accepted: ffmpeg.decoded(bytes)
+  Decoding --> Rejected: ffmpeg.failed(reason)
+  Accepted --> [*]: cargo consumed by CollectionImport
+  Rejected --> [*]: caller keeps rejection evidence
+```
+
+### AudioFileDurationEvidence Must Not
+
+- use provider metadata as local file truth;
+- use waveform cache manifest as persisted music truth;
+- stretch partial ranges to full-file end;
+- block paste admission or title feedback;
+- trigger loudness or recommendation work by itself;
+- let UI compensate for a wrong persisted end boundary.
+
 ## Lifecycle: AudioStyleModelRuntime
 
 ### Boundary
@@ -3201,88 +3366,141 @@ stateDiagram-v2
 
 ### Boundary
 
-`LoudnessEvidence` owns the background measurement of a playback track whose
-loudness is `0.0`, persistence of finite non-zero LUFS evidence, and projection
-back into the current session when generation and identity still match.
+`LoudnessEvidence` owns only explicitly requested loudness measurement cargo:
+download-tail requests, first-slot warmup requests, waiting-first synchronous
+requests, current-playback requests, next-track warmup promotion, and startup
+restoration of a local pending-task file. It owns the pending task store,
+bounded worker queue, same-identity waiters, finite non-zero LUFS persistence,
+and projection back into the current session when identity still matches.
+
+It does not discover missing evidence by scanning the library. `Music.loudness =
+0.0` is an input guard used by request owners, not a startup or idle search
+predicate owned by `LoudnessEvidence`.
 
 ### Owned State
 
 ```ts
 LoudnessEvidence =
-  | ["idle"]
-  | ["requested", generation: Number, identity: TrackIdentity]
-  | ["measuring", generation: Number, identity: TrackIdentity]
-  | ["persisting", generation: Number, identity: TrackIdentity, lufs: Number]
-  | ["published", generation: Number, identity: TrackIdentity, lufs: Number]
-  | ["stale", generation: Number, identity: TrackIdentity]
-  | ["failed", generation: Number, identity: TrackIdentity, reason: String];
+  | ["idle", pending: PendingStore]
+  | ["queued", pending: PendingStore, queue: TrackIdentity[]]
+  | ["measuring", pending: PendingStore, identity: TrackIdentity]
+  | ["persisting", pending: PendingStore, identity: TrackIdentity, lufs: Number]
+  | ["published", pending: PendingStore, identity: TrackIdentity, lufs: Number]
+  | ["retained", pending: PendingStore, identity: TrackIdentity, reason: String]
+  | ["closed", pending: PendingStore, identity: TrackIdentity, reason: String];
+
+PendingStore = Map<TrackIdentity, LoudnessCargo>;
+
+LoudnessCargo = {
+  identity: TrackIdentity,
+  url: String,
+  filePath: Path,
+  startMs: Number,
+  endMs: Number,
+  source: "downloadTail" | "firstSlotWarmup" | "waitingFirst" | "currentPlayback" | "nextTrackWarmup" | "pendingRestore",
+};
 ```
 
 ### Transition
 
 ```ts
 Action =
-  | ["trackWillPlay", generation: Number, track: Track]
+  | ["startup.noPendingFile"]
+  | ["startup.pendingRestored", cargo: LoudnessCargo[]]
+  | ["request.explicit", cargo: LoudnessCargo]
+  | ["request.waitSameIdentity", identity: TrackIdentity]
+  | ["request.promote", identity: TrackIdentity]
+  | ["queue.admitted", identity: TrackIdentity]
+  | ["queue.dropped", identity: TrackIdentity]
   | ["analysis.ok", lufs: Number]
   | ["analysis.failed", reason: String]
   | ["persist.ok", lufs: Number]
-  | ["session.stale"]
-  | ["identity.mismatch"];
+  | ["session.matches"]
+  | ["session.missingOrMismatch"];
 
-idle() =
+idle(pending: PendingStore) =
   next().is(
-    | ["trackWillPlay", generation, track] =>
-        track.loudness == 0.0
-          ? requested(generation, identity(track))
-          : idle()
+    | ["startup.noPendingFile"] =>
+        idle(pending)
+    | ["startup.pendingRestored", cargo] =>
+        cargo.isEmpty()
+          ? idle(pending)
+          : queued(upsertAll(pending, cargo), enqueueBack(cargo))
+    | ["request.explicit", cargo] =>
+        queued(upsert(pending, cargo), enqueueFront(cargo.identity))
   );
 
-requested(generation: Number, identity: TrackIdentity) =
-  measuring(generation, identity);
+queued(pending: PendingStore, queue: TrackIdentity[]) =
+  next().is(
+    | ["request.explicit", cargo] =>
+        queued(upsert(pending, cargo), promoteOrEnqueueFront(queue, cargo.identity))
+    | ["queue.admitted", identity] =>
+        measuring(pending, identity)
+    | ["queue.dropped", identity] =>
+        queued(pending, without(queue, identity))
+  );
 
-measuring(generation: Number, identity: TrackIdentity) =
+measuring(pending: PendingStore, identity: TrackIdentity) =
   next().is(
     | ["analysis.ok", lufs] =>
         finiteNonZero(lufs)
-          ? persisting(generation, identity, lufs)
-          : failed(generation, identity, "invalid_loudness")
+          ? persisting(pending, identity, lufs)
+          : closed(remove(pending, identity), identity, "invalid_loudness")
     | ["analysis.failed", reason] =>
-        failed(generation, identity, reason)
-    | ["session.stale"] =>
-        stale(generation, identity)
+        terminalMeasurementFailure(reason)
+          ? closed(remove(pending, identity), identity, reason)
+          : retained(pending, identity, reason)
   );
 
-persisting(generation: Number, identity: TrackIdentity, lufs: Number) =
+persisting(pending: PendingStore, identity: TrackIdentity, lufs: Number) =
   next().is(
     | ["persist.ok", lufs] =>
-        currentSessionStillMatches(generation, identity)
-          ? published(generation, identity, lufs)
-          : stale(generation, identity)
+        currentSessionStillMatches(identity)
+          ? published(remove(pending, identity), identity, lufs)
+          : closed(remove(pending, identity), identity, "no_current_session_match")
   );
 ```
+
+The synchronous `waitingFirst` request is not a second measurement owner. If the
+same identity is already queued or being measured, it promotes the queued cargo
+when possible and waits for the owner result; if no owner result arrives before
+the bounded wait closes, playback continues without loudness evidence.
 
 ### State Motion
 
 ```mermaid
 stateDiagram-v2
   [*] --> Idle
-  Idle --> Requested: trackWillPlay loudness=0
-  Requested --> Measuring: worker admitted
+  Idle --> Idle: startup no pending file
+  Idle --> Queued: startup pending task file restored
+  Idle --> Queued: explicit request cargo
+  Queued --> Queued: explicit request promotes identity
+  Queued --> Queued: queue.dropped keeps pending task
+  Queued --> Measuring: bounded worker admitted
   Measuring --> Persisting: analysis.ok finite non-zero
-  Measuring --> Failed: analysis.failed or invalid LUFS
-  Measuring --> Stale: session stale
+  Measuring --> Retained: transient analysis.failed
+  Measuring --> Closed: invalid range/file/LUFS
   Persisting --> Published: persisted and session matches
-  Persisting --> Stale: session changed
+  Persisting --> Closed: persisted; no matching session
   Published --> Idle: now-playing refreshed
-  Failed --> Idle: error logged
-  Stale --> Idle: discarded
+  Retained --> Idle: pending task remains for later restore/request
+  Closed --> Idle: pending task removed
 ```
 
 ### LoudnessEvidence Must Not
 
-- block playback;
+- block startup, ready projection, FirstSlot preparation, same-turn first-slot
+  hit playback, or next-track selection;
+- wait synchronously except for the already accepted
+  `pending_first_track`/`Preparing...` branch;
+- query or scan the repository, database, files, or library for `loudness == 0`
+  on startup or idle;
+- start a worker when there is no pending-task file and no explicit request;
+- saturate startup, dev, playback, pointer input, or binary maintenance;
+- spawn unbounded measurement workers;
 - create `Preparing...`;
 - apply evidence to a different file/range identity;
+- remove pending task cargo merely because a queue entry was dropped;
 - change first or next selection;
 - treat `0.0` as a target normalization value.
 
@@ -3911,6 +4129,7 @@ state. The access kind is part of the transfer contract.
 | startup app projection         | `project` | `AppBootstrap`                          | `appLogic`                                            | playlists, config library, save path                              | replaces app shape only after mandatory snapshot evidence is accepted                                  |
 | first-slot startup             | `command` | app runtime                             | `FirstSlot`                                           | app local data path and repository access                         | schedules local cargo restore plus validation/fill; app startup does not wait for either               |
 | first-slot cargo restore       | `read`    | `FirstSlot`                             | `FirstSlot`                                           | `first-slot-cache.json` beside the database                       | acceleration only; restored cargo gets fresh generation and credential ids only in blank startup state |
+| prepared first loudness request | `command` | `FirstSlot`                             | `LoudnessEvidence`                                    | accepted prepared first credential identity, file, range          | missing loudness queues background evidence when first cargo enters the pool; startup, preparation, and click do not wait |
 | startup model wake             | `command` | app runtime                             | `AudioStyleModelRuntime`                              | app cache path and library repository access                      | schedules cached evidence restore/training decision; app startup does not wait for model work          |
 | click intent                   | `command` | `PlayListPage`                          | `PlaylistItemClick`                                   | playlist name                                                     | opens pending request only in `ready` or `play`                                                        |
 | pending title response         | `project` | `PlaylistItemClick`                     | `PlaylistInteractionResponse`                         | playlist name, request id                                         | same-turn title lock only; never preparing text                                                        |
@@ -3923,6 +4142,8 @@ state. The access kind is part of the transfer contract.
 | first credential read          | `read`    | `FirstSlot`                             | `PlaybackStart`                                       | generation, credential id, source                                 | read is not refill and not consumption                                                                 |
 | first credential discard       | `consume` | `PlaybackStart`                         | `FirstSlot`                                           | invalid credential id plus generation                             | owner removes matching stale credential and schedules repair                                           |
 | first credential consume       | `consume` | `PlaybackStart`                         | `FirstSlot`                                           | accepted credential id plus generation                            | only after player acceptance                                                                           |
+| first consumption loudness request | `command` | `PlaybackStart`                         | `LoudnessEvidence`                                    | resolved first track identity, file, range                        | same-turn FirstSlot hit only promotes background evidence; it must not wait before player submit        |
+| preparing first loudness wait  | `command` | `PlaybackStart`                         | `LoudnessEvidence`                                    | resolved first track identity, file, range                        | only after this request already returned `pending_first_track` and the app accepted `Preparing...`; may wait before player submit |
 | player acceptance              | `command` | `PlaybackStart`                         | `PlayerSession`                                       | `[first]`, request handle, queue mode                             | player may accept, reject, or supersede; it does not choose first                                      |
 | accepted playback              | `project` | `PlaybackStart`                         | `appLogic`                                            | playlist name, request id, session                                | enters `play` only if request still current                                                            |
 | request closure                | `project` | `PlaybackStart`                         | `PlaylistItemClick` and `PlaylistInteractionResponse` | `pending_first_track`, `superseded`, error, request id            | closes matching overlay; does not enter play and does not show preparing                               |
@@ -3948,12 +4169,13 @@ state. The access kind is part of the transfer contract.
 | download enqueue plan          | `command` | `PasteDownloadCandidate` or auto-update | `DownloadTaskRuntime`                                 | normalized URL and trigger                                        | task owner probes, persists residual plan, and emits task snapshots                                    |
 | download task change           | `wake`    | `DownloadTaskRuntime`                   | app projection, `FirstSlot`, `NextTrack`              | task id, task url, collection url, status                         | observers may refresh their own slots; they cannot declare the task terminal                           |
 | leaf finalization              | `command` | `DownloadTaskRuntime`                   | `CollectionImport`                                    | temp artifact, leaf URL, group context, collection shell          | only import owner writes stable file, music rows, manifest                                             |
+| audio duration decode          | `project` | `AudioFileDurationEvidence`             | `DownloadTaskRuntime` and `CollectionImport`          | decoded frame duration for the local file                         | full-file `Music.end_ms` uses this coordinate; metadata and old manifest values are only boundary hints |
 | collection import commit       | `read`    | `CollectionImport`                      | playlists repo and config projection                  | collection shell, music rows, manifest                            | consumers read canonical rows only after the import owner commits rows and manifest                    |
 | downloaded leaf wake           | `wake`    | `CollectionImport`                      | `FirstSlot`, `NextTrack`, audio-style model inputs    | committed music rows plus manifest                                | emitted only after downloaded-leaf manifest write succeeds                                             |
 | now-playing                    | `project` | `PlayerSession`                         | `appLogic` and `PlaybackSurface`                      | session generation, track payload                                 | can update track surface, liked, loudness, and clears preparing status                                 |
 | next repair request            | `wake`    | `PlayerSession`                         | `NextTrack`                                           | session generation, playlist name, active anchor, queue snapshot  | starts or replaces one repair attempt only when distinct next is missing                               |
 | next queue                     | `command` | `NextTrack`                             | `PlayerSession`                                       | explicit queue                                                    | player consumes queue only; recommendation policy stays outside player                                 |
-| loudness                       | `project` | `LoudnessEvidence`                      | playlists repo and player session                     | finite non-zero LUFS                                              | updates same identity; does not block playback                                                         |
+| loudness                       | `project` | `LoudnessEvidence`                      | playlists repo and player session                     | finite non-zero LUFS                                              | updates same identity; ordinary playback continues                                                     |
 | spectrum open                  | `command` | playlist page/app action                | `SpectrumScope`                                       | accepted playback source identity                                 | opens only from accepted play and allocates a backend scope id                                         |
 | spectrum scope                 | `consume` | `PlayerSession`                         | `SpectrumScope`                                       | scope id                                                          | linear handle, exits only if still current                                                             |
 | spectrum preview               | `command` | `SpectrumScope`                         | `PlayerSession`                                       | scope id, preview track, position/range                           | scoped player command may reject stale or missing scope                                                |
@@ -4004,7 +4226,9 @@ These paths are intentionally illegal:
 - NextTrack model publication -> replace existing distinct next.
 - NextTrack stale attempt -> queue commit.
 - `play.evolved` evidence -> create `play` from `ready`.
-- Loudness missing -> block playback.
+- Loudness missing -> block same-turn FirstSlot hit playback.
+- Loudness missing -> block startup, FirstSlot preparation, ready projection, or
+  click response.
 - Spectrum open -> pending click.
 - Ready projection -> destructive replacement of full first-slot pool.
 - AppLogic transaction helper -> hidden owner of backend lifecycle.
@@ -4014,6 +4238,9 @@ These paths are intentionally illegal:
 - Download task change -> direct playback state transition.
 - AudioStyleModelRuntime -> mutate current playback without a missing-cargo
   request from FirstSlot or NextTrack.
+- FirstSlot preparation or cargo restore -> library scan for loudness-missing
+  rows.
+- FirstSlot preparation or cargo restore -> blocking loudness measurement.
 - AppBootstrap -> complete downloads, train model, prepare first slot, or start
   playback synchronously.
 - PlaylistDraftCommit -> wait for playlist persistence, download, import, or

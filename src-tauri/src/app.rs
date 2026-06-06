@@ -201,6 +201,7 @@ pub fn run() {
                     utils::window::configure_existing_primary_windows(&handle);
                     domain::downloads::service::initialize_runtime(handle.clone());
                     domain::playlists::startup_bootstrap::initialize_runtime(handle.clone());
+                    domain::loudness_evidence::initialize_runtime(handle.clone());
                     domain::playlist_playback::service::initialize_runtime(handle.clone());
                     domain::player::service::initialize_runtime(handle.clone());
                     utils::binaries::spawn_binary_maintenance(
@@ -208,6 +209,7 @@ pub fn run() {
                         utils::binaries::BinaryMaintenanceActivity::new(
                             domain::player::service::has_active_player_binary_tasks,
                             domain::downloads::service::has_active_download_tasks,
+                            domain::loudness_evidence::has_active_loudness_binary_tasks,
                         ),
                     );
                     Ok(())

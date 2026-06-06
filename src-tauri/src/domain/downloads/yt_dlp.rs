@@ -18,6 +18,7 @@ const PYTHON_UTF8_ENV_VAR: &str = "PYTHONUTF8";
 const PYTHON_IO_ENCODING_ENV_VAR: &str = "PYTHONIOENCODING";
 const UTF8_ENCODING_VALUE: &str = "utf-8";
 pub(crate) const LOCAL_AUDIO_PROBE_SAMPLE_RATE: u32 = 48_000;
+pub(crate) const LOCAL_AUDIO_DURATION_BOUNDARY_TOLERANCE_MS: u32 = 1_000;
 const LOCAL_AUDIO_PROBE_RESAMPLE_FILTER_SIZE: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -768,8 +769,15 @@ pub(crate) fn duration_ms_from_f32le_bytes(decoded_bytes: u64, sample_rate: u32)
 
     let frame_count = decoded_bytes / 4;
     let sample_rate = sample_rate as u64;
-    let duration_ms = frame_count.saturating_mul(1_000) / sample_rate;
+    let duration_ms = frame_count
+        .saturating_mul(1_000)
+        .saturating_add(sample_rate / 2)
+        / sample_rate;
     duration_ms.min(u32::MAX as u64) as u32
+}
+
+pub(crate) fn audio_duration_boundary_matches(boundary_ms: u32, duration_ms: u32) -> bool {
+    boundary_ms.abs_diff(duration_ms) <= LOCAL_AUDIO_DURATION_BOUNDARY_TOLERANCE_MS
 }
 
 fn resolve_leaf_reference_url(entry: &Value, input_url: &str, entry_type: &str) -> Option<String> {

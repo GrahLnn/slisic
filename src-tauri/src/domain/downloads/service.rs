@@ -19,19 +19,20 @@ use super::yt_dlp::CliYtDlpClient;
 #[cfg(not(test))]
 use super::yt_dlp::probe_downloaded_audio_duration_ms;
 use super::yt_dlp::{
-    DownloadProgress, LeafProbe, RootProbe, YtDlpClient, classify_root_preference,
+    DownloadProgress, LeafProbe, RootProbe, YtDlpClient, audio_duration_boundary_matches,
+    classify_root_preference,
 };
 use crate::domain::collection_import;
 use crate::domain::collection_import::CollectionShellPlan;
 #[cfg(not(test))]
 use crate::domain::collection_import::{CollectionSyncPlan, PlannedLeaf};
 #[cfg(not(test))]
+use crate::domain::loudness_evidence::{self, LoudnessEvidenceRequest};
+#[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
 #[cfg(not(test))]
 use crate::domain::player::event::{PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent};
 use crate::domain::playlists::model::{Collection, Group};
-#[cfg(not(test))]
-use crate::domain::playlists::repo as playlists_repo;
 #[cfg(not(test))]
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 use anyhow::{Context, Result, anyhow, bail};
@@ -66,8 +67,6 @@ const AUTO_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
 const MIN_PARALLEL_LEAF_DOWNLOADS: usize = 1;
 const INITIAL_PARALLEL_LEAF_DOWNLOADS: usize = 4;
 const MAX_PARALLEL_LEAF_DOWNLOADS: usize = 8;
-#[cfg(not(test))]
-const MAX_PARALLEL_LOUDNESS_MEASUREMENTS: usize = 4;
 const MAX_LEAF_DOWNLOAD_ATTEMPTS: usize = 3;
 const LEAF_DOWNLOAD_RETRY_BASE_DELAY_SECS: u64 = 2;
 const LEAF_DOWNLOAD_RETRY_MAX_JITTER_MILLIS: u64 = 750;
@@ -1167,7 +1166,8 @@ async fn run_task_with_deps(
     let save_root = deps.save_root;
     let plan =
         resolve_collection_plan_with_root_probe(&task_snapshot, client.clone(), root_probe).await?;
-    let mut collection = collection_import::load_collection_shell(&plan, &save_root).await?;
+    let mut collection =
+        collection_import::load_collection_shell(&plan, &save_root, &deps.ffmpeg_path).await?;
     collection_import::apply_collection_plan_to_task(&mut task_snapshot, &plan);
     discard_materialized_planned_leaves(
         &mut task_snapshot,
@@ -1601,7 +1601,6 @@ async fn drain_ready_leaf_finalizations(
                     collection,
                     source_kind,
                     save_root,
-                    ffmpeg_path,
                     outcome,
                 )
                 .await?;
@@ -1911,7 +1910,6 @@ async fn handle_finished_leaf_download(
     collection: &mut Collection,
     source_kind: CollectionSourceKind,
     save_root: &Path,
-    ffmpeg_path: &Path,
     outcome: LeafDownloadOutcome,
 ) -> Result<()> {
     let completed = match outcome {
@@ -1976,7 +1974,7 @@ async fn handle_finished_leaf_download(
     leaf_snapshot.speed_bytes_per_second = completed.progress.speed_bytes_per_second;
     leaf_snapshot.eta_seconds = completed.progress.eta_seconds;
 
-    leaf_snapshot.status = DownloadLeafStatus::MeasuringLoudness;
+    leaf_snapshot.status = DownloadLeafStatus::Completed;
     leaf_snapshot.last_error = None;
     leaf_snapshot.touch();
     task_snapshot.replace_leaf(leaf_snapshot.clone());
@@ -1984,30 +1982,7 @@ async fn handle_finished_leaf_download(
     publish_download_task_change(&saved);
     *task_snapshot = saved;
 
-    if let Err(error) = measure_downloaded_leaf_loudness(
-        collection,
-        save_root,
-        &file_name,
-        ffmpeg_path.to_path_buf(),
-    )
-    .await
-    {
-        let error = error.to_string();
-        eprintln!(
-            "[downloads] leaf {} loudness measurement failed relative_path={} error={}",
-            leaf_id, file_name, error
-        );
-        mark_leaf_failed(task_snapshot, leaf_snapshot, error).await?;
-        return Ok(());
-    }
-
-    leaf_snapshot.status = DownloadLeafStatus::Completed;
-    leaf_snapshot.last_error = None;
-    leaf_snapshot.touch();
-    task_snapshot.replace_leaf(leaf_snapshot);
-    let saved = repo::save_task(task_snapshot.clone()).await?;
-    publish_download_task_change(&saved);
-    *task_snapshot = saved;
+    request_downloaded_leaf_loudness_evidence(collection, save_root, &file_name);
     eprintln!("[downloads] leaf {} completed file={}", leaf_id, file_name);
     Ok(())
 }
@@ -2064,7 +2039,7 @@ async fn handle_existing_leaf_completion(
 
     leaf_snapshot.file_name = Some(relative_path.clone());
     leaf_snapshot.relative_path = Some(relative_path.clone());
-    leaf_snapshot.status = DownloadLeafStatus::MeasuringLoudness;
+    leaf_snapshot.status = DownloadLeafStatus::Completed;
     leaf_snapshot.last_error = None;
     leaf_snapshot.touch();
     task_snapshot.replace_leaf(leaf_snapshot.clone());
@@ -2072,34 +2047,7 @@ async fn handle_existing_leaf_completion(
     publish_download_task_change(&saved);
     *task_snapshot = saved;
 
-    if let Err(error) = measure_downloaded_leaf_loudness(
-        collection,
-        save_root,
-        &relative_path,
-        ffmpeg_path.to_path_buf(),
-    )
-    .await
-    {
-        let error = error.to_string();
-        eprintln!(
-            "[downloads] leaf {} existing file loudness measurement failed relative_path={} error={}",
-            leaf_id, relative_path, error
-        );
-        mark_leaf_failed(task_snapshot, leaf_snapshot, error).await?;
-        if source_kind == CollectionSourceKind::Single {
-            let last_error = task_snapshot.last_error.clone();
-            update_task_status(task_snapshot, DownloadTaskStatus::Failed, last_error).await?;
-        }
-        return Ok(());
-    }
-
-    leaf_snapshot.status = DownloadLeafStatus::Completed;
-    leaf_snapshot.last_error = None;
-    leaf_snapshot.touch();
-    task_snapshot.replace_leaf(leaf_snapshot);
-    let saved = repo::save_task(task_snapshot.clone()).await?;
-    publish_download_task_change(&saved);
-    *task_snapshot = saved;
+    request_downloaded_leaf_loudness_evidence(collection, save_root, &relative_path);
     eprintln!(
         "[downloads] leaf {} completed existing file={} url={}",
         leaf_id, relative_path, leaf_url
@@ -2234,164 +2182,26 @@ async fn mark_leaf_failed(
 }
 
 #[cfg(not(test))]
-#[derive(Debug, Clone)]
-struct MusicLoudnessMeasurement {
-    url: String,
-    path: PathBuf,
-    start_ms: u32,
-    end_ms: u32,
-}
-
-#[cfg(not(test))]
-async fn measure_downloaded_leaf_loudness(
+fn request_downloaded_leaf_loudness_evidence(
     collection: &mut Collection,
     save_root: &Path,
     relative_path: &str,
-    ffmpeg_path: PathBuf,
-) -> Result<()> {
-    let measurements = collection
+) {
+    collection
         .musics
         .iter()
         .filter(|music| music.path.as_deref() == Some(relative_path))
         .filter(|music| music.loudness == 0.0)
-        .filter_map(|music| {
-            if music.start_ms >= music.end_ms {
-                return None;
-            }
-            Some(MusicLoudnessMeasurement {
+        .filter(|music| music.start_ms < music.end_ms)
+        .for_each(|music| {
+            loudness_evidence::request_track_loudness_evidence(LoudnessEvidenceRequest {
+                canonical_music_id: music.canonical_music_id.clone(),
                 url: music.url.clone(),
-                path: save_root.join(&collection.folder).join(relative_path),
+                file_path: save_root.join(&collection.folder).join(relative_path),
                 start_ms: music.start_ms,
                 end_ms: music.end_ms,
-            })
+            });
         })
-        .collect::<Vec<_>>();
-
-    if measurements.is_empty() {
-        return Ok(());
-    }
-
-    let evidence = run_music_loudness_measurements(ffmpeg_path, measurements).await?;
-    for measured in evidence {
-        for music in &mut collection.musics {
-            if music.url == measured.url
-                && music.start_ms == measured.start_ms
-                && music.end_ms == measured.end_ms
-            {
-                music.loudness = measured.loudness;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-#[cfg(not(test))]
-#[derive(Debug, Clone)]
-struct MusicLoudnessEvidence {
-    url: String,
-    start_ms: u32,
-    end_ms: u32,
-    loudness: f32,
-}
-
-#[cfg(not(test))]
-async fn run_music_loudness_measurements(
-    ffmpeg_path: PathBuf,
-    measurements: Vec<MusicLoudnessMeasurement>,
-) -> Result<Vec<MusicLoudnessEvidence>> {
-    let parallelism = loudness_measurement_parallelism(measurements.len());
-    let mut pending = measurements.into_iter();
-    let mut active = JoinSet::new();
-    let mut evidence = Vec::new();
-    let mut first_error = None;
-
-    loop {
-        while active.len() < parallelism {
-            let Some(measurement) = pending.next() else {
-                break;
-            };
-            let ffmpeg_path = ffmpeg_path.clone();
-            active.spawn(async move { measure_one_music_loudness(ffmpeg_path, measurement).await });
-        }
-
-        let Some(result) = active.join_next().await else {
-            break;
-        };
-
-        match result {
-            Ok(Ok(measured)) => {
-                evidence.push(measured);
-            }
-            Ok(Err(error)) => {
-                first_error.get_or_insert_with(|| error.to_string());
-            }
-            Err(error) => {
-                first_error.get_or_insert_with(|| format!("loudness worker failed: {error}"));
-            }
-        }
-    }
-
-    if let Some(error) = first_error {
-        bail!(error);
-    }
-
-    Ok(evidence)
-}
-
-#[cfg(not(test))]
-async fn measure_one_music_loudness(
-    ffmpeg_path: PathBuf,
-    measurement: MusicLoudnessMeasurement,
-) -> Result<MusicLoudnessEvidence> {
-    let analysis = run_blocking({
-        let path = measurement.path.clone();
-        let start_ms = measurement.start_ms;
-        let end_ms = measurement.end_ms;
-        move || {
-            ffplayr::analyze_loudness_with_binary(
-                &ffmpeg_path,
-                ffplayr::AudioLoudnessAnalysisRequest {
-                    path,
-                    time_range: Some(ffplayr::PlaybackTimeRange {
-                        start_ms,
-                        duration_ms: Some(end_ms.saturating_sub(start_ms)),
-                    }),
-                },
-            )
-            .map_err(anyhow::Error::msg)
-        }
-    })
-    .await?;
-
-    let updated = playlists_repo::set_music_loudness_by_identity(
-        &measurement.url,
-        measurement.start_ms,
-        measurement.end_ms,
-        analysis.integrated_lufs,
-    )
-    .await?;
-
-    Ok(MusicLoudnessEvidence {
-        url: measurement.url,
-        start_ms: measurement.start_ms,
-        end_ms: measurement.end_ms,
-        loudness: updated
-            .as_ref()
-            .map(|music| music.loudness)
-            .unwrap_or(analysis.integrated_lufs),
-    })
-}
-
-#[cfg(not(test))]
-fn loudness_measurement_parallelism(item_count: usize) -> usize {
-    let available = std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1);
-    item_count
-        .min(MAX_PARALLEL_LOUDNESS_MEASUREMENTS)
-        .min(available)
-        .max(1)
 }
 
 #[cfg(not(test))]
@@ -2641,8 +2451,24 @@ async fn run_auto_update_cycle() -> Result<()> {
 }
 
 pub(crate) fn apply_completed_audio_duration_evidence(probe: &mut LeafProbe, duration_ms: u32) {
+    let previous_duration_ms = probe.duration_ms.or_else(|| {
+        probe
+            .duration_seconds
+            .map(|seconds| seconds.saturating_mul(1_000))
+    });
+
     probe.duration_ms = Some(duration_ms);
     probe.duration_seconds = Some(duration_ms.div_ceil(1_000));
+
+    let Some(previous_duration_ms) = previous_duration_ms else {
+        return;
+    };
+
+    for chapter in &mut probe.chapters {
+        if audio_duration_boundary_matches(chapter.end_ms, previous_duration_ms) {
+            chapter.end_ms = duration_ms;
+        }
+    }
 }
 
 #[cfg(not(test))]

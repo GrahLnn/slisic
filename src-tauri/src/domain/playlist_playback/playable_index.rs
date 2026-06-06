@@ -1,4 +1,6 @@
 #[cfg(not(test))]
+use crate::domain::loudness_evidence;
+#[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
 #[cfg(not(test))]
 use crate::domain::player::event::{PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent};
@@ -124,6 +126,7 @@ struct PreparedSourcePoolCommit {
     pool: PlaylistPlayableIndexPool,
     added_count: usize,
     removed_count: usize,
+    added_credentials: Vec<PreparedPlaylistSourceCredential>,
 }
 
 #[derive(Debug, Default)]
@@ -131,6 +134,7 @@ struct PreparedPlaylistCommitOutcome {
     committed: bool,
     cache_changed: bool,
     needs_refill: bool,
+    added_credentials: Vec<PreparedPlaylistSourceCredential>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1226,6 +1230,7 @@ fn commit_prepared_sources_to_pool(
         .map(|source| playlist_source_key(&source.source))
         .collect::<HashSet<_>>();
     let mut added_count = 0usize;
+    let mut added_credentials = Vec::new();
     for prepared in prepared_sources {
         if pool.sources.len() >= FIRST_SLOT_PREPARED_POOL_TARGET {
             break;
@@ -1233,13 +1238,15 @@ fn commit_prepared_sources_to_pool(
         if !seen.insert(playlist_source_key(&prepared.source)) {
             continue;
         }
-        pool.sources.push(PreparedPlaylistSourceCredential {
+        let credential = PreparedPlaylistSourceCredential {
             generation,
             credential_id: next_credential_id(runtime),
             source: prepared.source,
             track: prepared.track,
             source_kind: prepared.source_kind,
-        });
+        };
+        added_credentials.push(credential.clone());
+        pool.sources.push(credential);
         added_count += 1;
     }
 
@@ -1250,7 +1257,22 @@ fn commit_prepared_sources_to_pool(
             pool,
             added_count,
             removed_count,
+            added_credentials,
         })
+    }
+}
+
+fn request_prepared_first_tracks_loudness_evidence(
+    _credentials: &[PreparedPlaylistSourceCredential],
+) {
+    #[cfg(not(test))]
+    {
+        for credential in _credentials.iter().rev() {
+            if playlist_playback_service::playlist_track_needs_loudness_evidence(&credential.track)
+            {
+                loudness_evidence::request_playback_track_loudness_evidence(&credential.track);
+            }
+        }
     }
 }
 
@@ -1291,56 +1313,63 @@ fn restore_first_slot_cache_file(
     }
 
     let runtime = try_runtime()?;
-    let mut state = runtime
-        .state
-        .lock()
-        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
-    if mode == FirstSlotCacheRestoreMode::BlankStartupOnly
-        && !runtime_state_accepts_startup_cache_restore(runtime.as_ref(), &state)
-    {
-        log::info!(
-            target: PLAYABLE_INDEX_LOG_TARGET,
-            "first_slot_cache_restore_skipped reason=runtime_already_advanced"
-        );
-        return Ok(FirstSlotCacheRestoreSummary::default());
-    }
-    let mut summary = FirstSlotCacheRestoreSummary::default();
-    for cached_playlist in cached.playlists {
-        let mut seen = HashSet::new();
-        let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let mut pool = PlaylistPlayableIndexPool {
-            playlist_name: cached_playlist.playlist_name.clone(),
-            sources: Vec::with_capacity(FIRST_SLOT_PREPARED_POOL_TARGET),
-        };
-        for source in cached_playlist.sources {
-            if pool.sources.len() >= FIRST_SLOT_PREPARED_POOL_TARGET {
-                break;
+    let mut restored_credentials = Vec::new();
+    let summary = {
+        let mut state = runtime
+            .state
+            .lock()
+            .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+        if mode == FirstSlotCacheRestoreMode::BlankStartupOnly
+            && !runtime_state_accepts_startup_cache_restore(runtime.as_ref(), &state)
+        {
+            log::info!(
+                target: PLAYABLE_INDEX_LOG_TARGET,
+                "first_slot_cache_restore_skipped reason=runtime_already_advanced"
+            );
+            return Ok(FirstSlotCacheRestoreSummary::default());
+        }
+        let mut summary = FirstSlotCacheRestoreSummary::default();
+        for cached_playlist in cached.playlists {
+            let mut seen = HashSet::new();
+            let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
+            let mut pool = PlaylistPlayableIndexPool {
+                playlist_name: cached_playlist.playlist_name.clone(),
+                sources: Vec::with_capacity(FIRST_SLOT_PREPARED_POOL_TARGET),
+            };
+            for source in cached_playlist.sources {
+                if pool.sources.len() >= FIRST_SLOT_PREPARED_POOL_TARGET {
+                    break;
+                }
+                let prepared = source.into_prepared_source()?;
+                if !seen.insert(playlist_source_key(&prepared.source)) {
+                    continue;
+                }
+                let credential = PreparedPlaylistSourceCredential {
+                    generation,
+                    credential_id: next_credential_id(runtime),
+                    source: prepared.source,
+                    track: prepared.track,
+                    source_kind: prepared.source_kind,
+                };
+                restored_credentials.push(credential.clone());
+                pool.sources.push(credential);
             }
-            let prepared = source.into_prepared_source()?;
-            if !seen.insert(playlist_source_key(&prepared.source)) {
+            if pool.sources.is_empty() {
                 continue;
             }
-            pool.sources.push(PreparedPlaylistSourceCredential {
-                generation,
-                credential_id: next_credential_id(runtime),
-                source: prepared.source,
-                track: prepared.track,
-                source_kind: prepared.source_kind,
-            });
+            summary.source_count += pool.sources.len();
+            summary.playlist_count += 1;
+            state
+                .playlist_generations
+                .insert(cached_playlist.playlist_name.clone(), generation);
+            state.playlists.insert(cached_playlist.playlist_name, pool);
         }
-        if pool.sources.is_empty() {
-            continue;
+        if summary.source_count > 0 {
+            notify_index_revision(runtime.as_ref());
         }
-        summary.source_count += pool.sources.len();
-        summary.playlist_count += 1;
-        state
-            .playlist_generations
-            .insert(cached_playlist.playlist_name.clone(), generation);
-        state.playlists.insert(cached_playlist.playlist_name, pool);
-    }
-    if summary.source_count > 0 {
-        notify_index_revision(runtime.as_ref());
-    }
+        summary
+    };
+    request_prepared_first_tracks_loudness_evidence(&restored_credentials);
     Ok(summary)
 }
 
@@ -1685,6 +1714,7 @@ async fn refresh_all(
         if outcome.committed {
             committed_count += 1;
         }
+        request_prepared_first_tracks_loudness_evidence(&outcome.added_credentials);
         if outcome.cache_changed {
             cache_changed = true;
             write_first_slot_cache_for_registered_runtime();
@@ -1805,6 +1835,7 @@ async fn refresh_playlist(
     let mut committed = false;
     let mut cache_changed = false;
     let mut needs_refill = false;
+    let mut added_credentials = Vec::new();
     let pending_reason = {
         let mut state = runtime
             .state
@@ -1827,10 +1858,12 @@ async fn refresh_playlist(
             committed = outcome.committed;
             cache_changed = outcome.cache_changed;
             needs_refill = outcome.needs_refill;
+            added_credentials = outcome.added_credentials;
         }
         state.active_refreshes.remove(&playlist_name);
         state.pending_refreshes.remove(&playlist_name)
     };
+    request_prepared_first_tracks_loudness_evidence(&added_credentials);
     if cache_changed {
         write_first_slot_cache_for_registered_runtime();
     }
@@ -2288,6 +2321,7 @@ fn commit_prepared_playlist_sources(
             committed: true,
             cache_changed: true,
             needs_refill,
+            added_credentials: pool.added_credentials,
         };
     }
 
@@ -2317,6 +2351,7 @@ fn commit_prepared_playlist_sources(
             committed: true,
             cache_changed: removed_existing,
             needs_refill: false,
+            added_credentials: Vec::new(),
         };
     }
 

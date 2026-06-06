@@ -29,9 +29,10 @@ use super::yt_dlp::{
 use crate::domain::collection_import::{
     CollectionSyncPlan, ExistingPlannedLeafCompletion, PlannedLeaf, apply_collection_plan_to_task,
     create_collection_shell, existing_leaf_identities, existing_planned_leaf_completions,
-    filter_new_planned_leaves, load_collection_shell, materialize_music_entries,
-    normalize_music_titles_within_collection, persist_download_collection_shell_from_task,
-    persist_downloaded_leaf_music, persist_enqueued_collection_plan, resolve_existing_leaf_file,
+    filter_new_planned_leaves, load_collection_shell_with_local_duration_probe,
+    materialize_music_entries, normalize_music_titles_within_collection,
+    persist_download_collection_shell_from_task, persist_downloaded_leaf_music,
+    persist_enqueued_collection_plan, resolve_existing_leaf_file,
 };
 use crate::domain::downloads::model::{
     DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
@@ -579,6 +580,61 @@ fn completed_audio_duration_evidence_replaces_integer_metadata_boundary() {
 
     assert_eq!(probe.duration_ms, Some(257_520));
     assert_eq!(probe.duration_seconds, Some(258));
+}
+
+#[test]
+fn completed_audio_duration_evidence_replaces_full_span_chapter_boundary() {
+    let mut probe = LeafProbe {
+        title: "What Now".to_string(),
+        webpage_url: "https://www.youtube.com/watch?v=Gv1CBp5NABw".to_string(),
+        extractor_key: Some("Youtube".to_string()),
+        album: Some("Life Changing Moments Seem Minor in Pictures".to_string()),
+        duration_ms: Some(344_437),
+        duration_seconds: Some(345),
+        chapters: vec![LeafChapter {
+            title: "What Now".to_string(),
+            start_ms: 0,
+            end_ms: 344_437,
+        }],
+    };
+
+    apply_completed_audio_duration_evidence(&mut probe, 344_455);
+
+    assert_eq!(probe.duration_ms, Some(344_455));
+    assert_eq!(probe.duration_seconds, Some(345));
+    assert_eq!(probe.chapters[0].end_ms, 344_455);
+}
+
+#[test]
+fn materialize_music_entries_uses_completed_duration_evidence_for_chapter_end() {
+    let mut probe = LeafProbe {
+        title: "What Now".to_string(),
+        webpage_url: "https://www.youtube.com/watch?v=Gv1CBp5NABw".to_string(),
+        extractor_key: Some("Youtube".to_string()),
+        album: Some("Life Changing Moments Seem Minor in Pictures".to_string()),
+        duration_ms: Some(344_437),
+        duration_seconds: Some(345),
+        chapters: vec![LeafChapter {
+            title: "What Now".to_string(),
+            start_ms: 0,
+            end_ms: 344_437,
+        }],
+    };
+    apply_completed_audio_duration_evidence(&mut probe, 344_455);
+
+    let group = collection_group(
+        "Life Changing Moments Seem Minor in Pictures",
+        "https://example.com/album",
+        "youtube/C418 - Releases/Life Changing Moments Seem Minor in Pictures",
+    );
+    let musics = materialize_music_entries(&probe, "Life Changing Moments/What Now.m4a", group);
+
+    assert_eq!(musics.len(), 1);
+    assert_eq!(musics[0].end_ms, 344_455);
+    assert_eq!(
+        musics[0].canonical_music_id,
+        canonical_music_id_for_source("https://www.youtube.com/watch?v=Gv1CBp5NABw", 0, 344_455)
+    );
 }
 
 #[test]
@@ -3561,9 +3617,11 @@ liked = false
             }],
         };
 
-        let collection = load_collection_shell(&plan, &save_root)
-            .await
-            .expect("manifest evidence should restore");
+        let collection = load_collection_shell_with_local_duration_probe(&plan, &save_root, |_| {
+            Ok(Some(180_000))
+        })
+        .await
+        .expect("manifest evidence should restore");
         let completions = existing_planned_leaf_completions(&collection, &plan, &save_root);
 
         assert_eq!(collection.musics.len(), 1);
@@ -3571,6 +3629,206 @@ liked = false
         assert_eq!(collection.musics[0].end_ms, 180_000);
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].leaf_id.to_string(), "leaf-one");
+
+        reset_db();
+        let _ = std::fs::remove_dir_all(save_root);
+    });
+}
+
+#[test]
+fn load_collection_shell_restores_manifest_music_end_from_local_duration_evidence() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let save_root = temp_test_dir();
+        let collection_folder = "youtube/Manifest Restore Duration";
+        let collection_dir = save_root.join(collection_folder);
+        std::fs::create_dir_all(&collection_dir).expect("collection dir should be created");
+        std::fs::write(collection_dir.join("What Now.m4a"), b"audio")
+            .expect("existing audio should be created");
+        std::fs::write(
+            collection_dir.join(".slisic.collection.toml"),
+            r#"version = 1
+
+groups = []
+
+[collection]
+name = "Manifest Restore Duration"
+url = "https://example.com/root"
+folder = "youtube/Manifest Restore Duration"
+source_kind = "list"
+enable_updates = false
+last_updated = "2026-05-27T00:00:00+00:00"
+
+[[music]]
+name = "What Now"
+alias = "What Now"
+url = "https://www.youtube.com/watch?v=Gv1CBp5NABw"
+path = "What Now.m4a"
+group_url = "https://example.com/root"
+start_ms = 0
+end_ms = 344000
+liked = false
+"#,
+        )
+        .expect("manifest should be written");
+
+        upsert_collection(&Collection {
+            name: "Manifest Restore Duration".to_string(),
+            url: "https://example.com/root".to_string(),
+            folder: collection_folder.to_string(),
+            musics: vec![],
+            last_updated: "2026-05-27T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        })
+        .await
+        .expect("collection shell should be saved");
+
+        let plan = CollectionSyncPlan {
+            source_kind: CollectionSourceKind::List,
+            collection_name: "Manifest Restore Duration".to_string(),
+            collection_url: "https://example.com/root".to_string(),
+            collection_folder: collection_folder.to_string(),
+            enable_updates: Some(false),
+            leaves: vec![PlannedLeaf {
+                id: Id::from("leaf-what-now"),
+                url: "https://www.youtube.com/watch?v=Gv1CBp5NABw".to_string(),
+                sequence: 0,
+                initial_probe: None,
+                music_title: Some("What Now".to_string()),
+                group_hint: None,
+            }],
+        };
+
+        let collection = load_collection_shell_with_local_duration_probe(&plan, &save_root, |_| {
+            Ok(Some(344_455))
+        })
+        .await
+        .expect("manifest duration evidence should restore");
+        let completions = existing_planned_leaf_completions(&collection, &plan, &save_root);
+
+        assert_eq!(collection.musics.len(), 1);
+        assert_eq!(collection.musics[0].end_ms, 344_455);
+        assert_eq!(
+            collection.musics[0].canonical_music_id,
+            canonical_music_id_for_source(
+                "https://www.youtube.com/watch?v=Gv1CBp5NABw",
+                0,
+                344_455
+            )
+        );
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].leaf_id.to_string(), "leaf-what-now");
+
+        reset_db();
+        let _ = std::fs::remove_dir_all(save_root);
+    });
+}
+
+#[test]
+fn load_collection_shell_replaces_existing_manifest_music_boundary_without_duplication() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let save_root = temp_test_dir();
+        let collection_folder = "youtube/Manifest Restore Boundary Replace";
+        let collection_dir = save_root.join(collection_folder);
+        std::fs::create_dir_all(&collection_dir).expect("collection dir should be created");
+        std::fs::write(collection_dir.join("What Now.m4a"), b"audio")
+            .expect("existing audio should be created");
+        std::fs::write(
+            collection_dir.join(".slisic.collection.toml"),
+            r#"version = 1
+
+groups = []
+
+[collection]
+name = "Manifest Restore Boundary Replace"
+url = "https://example.com/root"
+folder = "youtube/Manifest Restore Boundary Replace"
+source_kind = "list"
+enable_updates = false
+last_updated = "2026-05-27T00:00:00+00:00"
+
+[[music]]
+name = "What Now"
+alias = "What Now"
+url = "https://www.youtube.com/watch?v=Gv1CBp5NABw"
+path = "What Now.m4a"
+group_url = "https://example.com/root"
+start_ms = 0
+end_ms = 344000
+liked = false
+"#,
+        )
+        .expect("manifest should be written");
+
+        upsert_collection(&Collection {
+            name: "Manifest Restore Boundary Replace".to_string(),
+            url: "https://example.com/root".to_string(),
+            folder: collection_folder.to_string(),
+            musics: vec![Music {
+                name: "What Now".to_string(),
+                alias: "What Now".to_string(),
+                group: collection_group(
+                    "Manifest Restore Boundary Replace",
+                    "https://example.com/root",
+                    collection_folder,
+                ),
+                canonical_music_id: canonical_music_id_for_source(
+                    "https://www.youtube.com/watch?v=Gv1CBp5NABw",
+                    0,
+                    344_000,
+                ),
+                url: "https://www.youtube.com/watch?v=Gv1CBp5NABw".to_string(),
+                path: Some("What Now.m4a".to_string()),
+                start_ms: 0,
+                end_ms: 344_000,
+                liked: false,
+                loudness: 0.0,
+            }],
+            last_updated: "2026-05-27T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        })
+        .await
+        .expect("collection shell should be saved");
+
+        let plan = CollectionSyncPlan {
+            source_kind: CollectionSourceKind::List,
+            collection_name: "Manifest Restore Boundary Replace".to_string(),
+            collection_url: "https://example.com/root".to_string(),
+            collection_folder: collection_folder.to_string(),
+            enable_updates: Some(false),
+            leaves: vec![PlannedLeaf {
+                id: Id::from("leaf-what-now"),
+                url: "https://www.youtube.com/watch?v=Gv1CBp5NABw".to_string(),
+                sequence: 0,
+                initial_probe: None,
+                music_title: Some("What Now".to_string()),
+                group_hint: None,
+            }],
+        };
+
+        let collection = load_collection_shell_with_local_duration_probe(&plan, &save_root, |_| {
+            Ok(Some(344_455))
+        })
+        .await
+        .expect("manifest duration evidence should update existing music");
+
+        assert_eq!(collection.musics.len(), 1);
+        assert_eq!(collection.musics[0].end_ms, 344_455);
+        assert_eq!(
+            collection.musics[0].canonical_music_id,
+            canonical_music_id_for_source(
+                "https://www.youtube.com/watch?v=Gv1CBp5NABw",
+                0,
+                344_455
+            )
+        );
 
         reset_db();
         let _ = std::fs::remove_dir_all(save_root);

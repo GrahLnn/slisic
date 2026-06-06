@@ -9,7 +9,7 @@ use super::service::{
     create_start_anchor_playback_queue, place_track_at_queue_start,
     playlist_playback_proposal_contains_next_track,
     playlist_playback_queue_contains_next_track_after_anchor,
-    playlist_selection_has_relevant_active_downloads,
+    playlist_selection_has_relevant_active_downloads, playlist_track_needs_loudness_evidence,
     propose_audio_style_playlist_playback_queue_from_snapshots,
     propose_playlist_playback_queue_without_audio_style_model, propose_random_queue_after_exclude,
     resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
@@ -890,6 +890,32 @@ fn playlist_queue_fill_keeps_unconsumed_next_when_audio_style_model_generation_c
 fn playlist_queue_refresh_for_same_anchor_only_runs_when_next_is_missing() {
     assert!(should_refresh_playlist_queue_for_same_anchor(false));
     assert!(!should_refresh_playlist_queue_for_same_anchor(true));
+}
+
+#[test]
+fn playlist_track_loudness_warmup_requires_missing_evidence_and_real_file() {
+    let root = temp_root();
+    std::fs::create_dir_all(&root).expect("temp root should be created");
+    let file_path = root.join("next.m4a");
+    std::fs::write(&file_path, []).expect("test audio placeholder should exist");
+
+    let mut missing = playback_track("next");
+    missing.file_path = file_path.clone();
+    assert!(playlist_track_needs_loudness_evidence(&missing));
+
+    let mut measured = missing.clone();
+    measured.loudness = -21.0;
+    assert!(!playlist_track_needs_loudness_evidence(&measured));
+
+    let mut invalid_range = missing.clone();
+    invalid_range.end_ms = invalid_range.start_ms;
+    assert!(!playlist_track_needs_loudness_evidence(&invalid_range));
+
+    let mut missing_file = missing;
+    missing_file.file_path = root.join("missing.m4a");
+    assert!(!playlist_track_needs_loudness_evidence(&missing_file));
+
+    std::fs::remove_dir_all(root).expect("temp root should be removed");
 }
 
 #[test]

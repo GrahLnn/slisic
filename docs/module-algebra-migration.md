@@ -259,13 +259,13 @@ that every module is already deep enough.
 | `src-tauri/src/domain/downloads/service.rs`                  | Wide service Product + interpreters      | `TaskAdmission x RootTitleProbe x LeafPipeline x Recovery x Broadcast`                      | Downloads domain service           | Too many owners in one file; path-level contracts now protect paste feedback.                                             | Split by vertical contracts only: admission, root shell evidence, leaf pipeline, tail evidence, recovery. |
 | `src-tauri/src/domain/downloads/planning.rs`                 | Operator + interpreter boundary          | `RootProbe x ResidualEvidence -> CollectionPlan or Stops`                                   | Download planning owner            | Good planning owner; root shell and root full probes must stay separate.                                                  | Keep shell probe as title evidence, full probe as plan evidence.                                          |
 | `src-tauri/src/domain/downloads/yt_dlp.rs`                   | External interpreter adapter             | `ProviderInstruction -> ProviderEvidence or Error`                                          | yt-dlp interpreter                 | Must not invent fallback semantic titles.                                                                                 | Crash/error is preferable to false evidence.                                                              |
-| `src-tauri/src/domain/collection_import.rs`                  | Persistence operator + projection        | `CollectionShellPlan -> CollectionEvidence`                                                 | Collection shell/persistence owner | Strong but can become semantic source for URL normalization if overused.                                                  | Keep URL identity normalization explicit.                                                                 |
+| `src-tauri/src/domain/collection_import.rs`                  | Persistence operator + projection        | `CollectionShellPlan x LocalAudioDurationEvidence -> CollectionEvidence`                     | Collection shell/persistence owner | Strong but can become semantic source for URL normalization if overused.                                                  | Keep URL identity normalization explicit; local decoded duration owns full-file `Music.end_ms`.           |
 | `src-tauri/src/domain/playlist_playback/playable_index.rs`   | Lease/credential operator                | `LibraryShape -> PreparedCredentialPool`                                                    | First-slot credential owner        | Strong backend deep module; needs shared frontend language.                                                               | Treat credentials as Lease instances consumed linearly.                                                   |
 | `src-tauri/src/domain/playlist_playback/service.rs`          | Wide service Product                     | `PlaybackIntent -> StartedEvidence or Stops<pending_first_track>` plus queue recommendation | Playlist playback owner            | Still mixes start, recommendation, history, trace, exclusion, queue refresh.                                              | Extract only along checked contracts; do not block play on recommender/loudness.                          |
 | `src-tauri/src/domain/playlist_playback/recommendation.rs`   | Model/evidence operator                  | `AudioEmbeddings x CandidateSet -> QueueProposal or Stops`                                  | Recommendation owner               | Training/cache/proposal are close; previous bugs came from retraining conditions.                                         | Separate persisted evidence, missing evidence Stops, and background training interpreter.                 |
 | `src-tauri/src/domain/player/service.rs`                     | Interpreter + session operator           | `PlaybackInstruction -> PlayerEvidence`                                                     | Player session owner               | Must keep start/end independent and playback immediate.                                                                   | Player accepts play first; tail measurements are background.                                              |
 | `src-tauri/src/domain/player/track_identity_substitution.rs` | Transformation                           | `OldTrackIdentity x NewEvidence x Session -> SessionPatch or Stops`                         | Player identity substitution owner | Good algebraic boundary.                                                                                                  | Use as reference for commit reflect/rebase.                                                               |
-| `src-tauri/src/domain/player/waveform.rs`                    | Interpreter + cache                      | `AudioRangeDemand -> WaveformEvidence`                                                      | Waveform evidence owner            | Cache must not own semantic truth.                                                                                        | Keep cache observational/accelerating only.                                                               |
+| `src-tauri/src/domain/player/waveform.rs`                    | Interpreter + cache                      | `AudioRangeDemand -> WaveformEvidence`                                                      | Waveform evidence owner            | Cache must not own semantic truth.                                                                                        | Keep cache observational/accelerating only; decoded file duration is the shared coordinate.               |
 | `src-tauri/src/domain/playlists/repo.rs`                     | Persistence Product + projections        | `StoreInstruction -> PersistedEvidence`                                                     | Playlist persistence owner         | Store writes, views, memberships, exclude availability are co-located.                                                    | Split projection from persistence only under commit/rebase checker.                                       |
 | `src-tauri/src/domain/meta/*`                                | Persistence interpreter                  | `MetaInstruction -> MetaEvidence`                                                           | App metadata owner                 | Low risk if it stays simple.                                                                                              | Keep as interpreter.                                                                                      |
 
@@ -668,6 +668,12 @@ Contract:
   frontend title/check feedback path.
 - Media duration and loudness evidence belong at the tail of materialized music
   work, not at paste admission.
+- Local file duration is decoded frame evidence in the same coordinate system as
+  waveform analysis; provider duration and old manifest end values are only
+  boundary hints.
+- Manifest recovery must decode existing local files before accepting a
+  full-file `Music.end_ms`; it must preserve partial ranges that do not target
+  the file tail.
 - Recovery resumes residual work and emits task evidence; it does not own
   frontend candidate lifecycle.
 
@@ -690,6 +696,8 @@ Closed paths:
 - No one-URL full recursive expansion before frontend signal.
 - No active download worker as global URL parsing lock.
 - No fallback provider title derived from URL id.
+- No waveform-cache manifest as persisted music duration truth.
+- No UI compensation for wrong persisted file-tail end.
 
 ### 10. Loudness Evidence Contract
 
@@ -704,15 +712,29 @@ Contract:
 
 - `Music.loudness` is owned evidence for the marked music interval.
 - A value of `0` means missing/unmeasured evidence, not semantic silence.
-- Download tail work may measure loudness in parallel and persist evidence.
-- Playback must start immediately even when loudness is missing.
+- Download tail work may request loudness evidence after file persistence.
+- Runtime startup may restore only explicitly pending loudness tasks from the
+  local pending-task file; it must not scan the library for `loudness == 0`.
+- Same-turn playback must start immediately when a prepared first credential is
+  already available, even when loudness is missing.
+- The already accepted `pending_first_track`/`Preparing...` branch may wait for
+  `LoudnessEvidence` after the backend first track is resolved and before it is
+  submitted to the player. This wait consumes the loudness owner result; it does
+  not let playback measure by itself or scan the library.
 - Missing loudness may trigger a background measurement and database update.
+- First-slot preparation may promote an accepted prepared first credential to
+  the front of the loudness evidence queue when its loudness is still missing.
+- First-track consumption may promote the resolved first track to the front of
+  the loudness evidence queue when its loudness is still missing.
+- Next-track selection may promote the selected next track to the front of the
+  loudness evidence queue when its loudness is still missing.
 - `ffplayr` may implement the measurement capability, but the Slisic domain
   owns when evidence is accepted and persisted.
 
 Owners:
 
-- `src-tauri/src/domain/downloads/service.rs`: tail scheduling.
+- `src-tauri/src/domain/loudness_evidence.rs`: queue, measurement, persistence.
+- `src-tauri/src/domain/downloads/service.rs`: tail request scheduling.
 - `src-tauri/src/domain/player/service.rs`: playback request and gain use.
 - `ffplayr`: measurement interpreter capability.
 - `src-tauri/src/domain/playlists/repo.rs`: persistence.
@@ -725,8 +747,14 @@ Checkers:
 
 Closed paths:
 
-- No loudness measurement on the play-click critical path.
+- No loudness measurement on the same-turn play-click critical path.
+- No waiting-first loudness measurement outside the already accepted
+  `Preparing...` branch.
 - No UI paste dependency on loudness.
+- No loudness evidence request may change the selected next track.
+- No startup or idle library scan for missing loudness evidence.
+- No FirstSlot preparation or local cargo restore may scan the library or block
+  on loudness measurement.
 
 ## Current Source Classification
 

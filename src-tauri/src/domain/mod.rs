@@ -1,5 +1,6 @@
 pub mod collection_import;
 pub mod downloads;
+pub mod loudness_evidence;
 pub mod meta;
 pub mod player;
 pub mod playlist_playback;

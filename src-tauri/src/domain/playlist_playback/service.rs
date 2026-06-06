@@ -8,6 +8,8 @@ use crate::domain::downloads::repo as download_repo;
 #[cfg(not(test))]
 use crate::domain::downloads::service as download_service;
 #[cfg(not(test))]
+use crate::domain::loudness_evidence;
+#[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
 #[cfg(not(test))]
 use crate::domain::player::event::{
@@ -797,6 +799,7 @@ async fn resolve_prepared_playlist_initial_track(
             continue;
         }
 
+        request_first_track_loudness_evidence(&track);
         emit_playlist_playback_trace(
             "playlist-play-initial-prepared-hit",
             PlaylistPlaybackTrace::new(app)
@@ -812,6 +815,13 @@ async fn resolve_prepared_playlist_initial_track(
             track,
             prepared_source: Some(snapshot),
         }));
+    }
+}
+
+#[cfg(not(test))]
+fn request_first_track_loudness_evidence(track: &PlaybackTrack) {
+    if playlist_track_needs_loudness_evidence(track) {
+        loudness_evidence::request_playback_track_loudness_evidence(track);
     }
 }
 
@@ -943,7 +953,14 @@ async fn wait_for_playlist_initial_track_and_start_queue(
             .elapsed(trace_start)
             .status("waiting_first_slot"),
     );
-    let initial = wait_for_prepared_playlist_initial_track(&app, &playlist_name, &request).await?;
+    let mut initial =
+        wait_for_prepared_playlist_initial_track(&app, &playlist_name, &request).await?;
+    ensure_playlist_playback_request_current(&request)?;
+    if !player_service::is_session_current(&session)? {
+        return Err(player_service::PlaybackStartRequestSuperseded.into());
+    }
+    wait_for_initial_track_loudness_evidence(&app, &playlist_name, &mut initial, trace_start)
+        .await?;
     ensure_playlist_playback_request_current(&request)?;
     if !player_service::is_session_current(&session)? {
         return Err(player_service::PlaybackStartRequestSuperseded.into());
@@ -985,6 +1002,68 @@ async fn wait_for_playlist_initial_track_and_start_queue(
         recent_history,
         queue_refresh_gate,
     );
+    Ok(())
+}
+
+#[cfg(not(test))]
+async fn wait_for_initial_track_loudness_evidence(
+    app: &AppHandle,
+    playlist_name: &str,
+    initial: &mut ResolvedPlaylistInitialTrack,
+    trace_start: Instant,
+) -> Result<()> {
+    if !playlist_track_needs_loudness_evidence(&initial.track) {
+        return Ok(());
+    }
+    emit_playlist_playback_trace(
+        "playlist-play-backend-first-slot-loudness-wait",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(playlist_name)
+            .track(&initial.track)
+            .elapsed(trace_start)
+            .status("waiting_loudness"),
+    );
+    match loudness_evidence::measure_playback_track_loudness_now(&initial.track).await {
+        Ok(Some(loudness)) => {
+            initial.track.loudness = loudness;
+            emit_playlist_playback_trace(
+                "playlist-play-backend-first-slot-loudness-ready",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(playlist_name)
+                    .track(&initial.track)
+                    .elapsed(trace_start)
+                    .status("measured"),
+            );
+        }
+        Ok(None) => {
+            emit_playlist_playback_trace(
+                "playlist-play-backend-first-slot-loudness-ready",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(playlist_name)
+                    .track(&initial.track)
+                    .elapsed(trace_start)
+                    .status("unavailable"),
+            );
+        }
+        Err(error) => {
+            emit_playlist_playback_trace(
+                "playlist-play-backend-first-slot-loudness-ready",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(playlist_name)
+                    .track(&initial.track)
+                    .elapsed(trace_start)
+                    .status("failed")
+                    .error(&error),
+            );
+            log::error!(
+                target: PLAYLIST_PLAYBACK_LOG_TARGET,
+                "playlist_waiting_first_slot_loudness_failed playlist=\"{}\" music=\"{}\" error=\"{}\"",
+                escape_log_value(playlist_name),
+                escape_log_value(&initial.track.music_name),
+                escape_log_value(&error.to_string())
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1477,6 +1556,7 @@ fn propose_playlist_playback_queue_with_mode(
     let result = try_propose_audio_style_playlist_playback_queue(request, mode);
     match result {
         Ok(Some(proposal)) => {
+            request_next_track_loudness_evidence(mode, proposal.tracks.as_slice());
             if should_log_selection {
                 log_playlist_playback_next_track_selection(
                     "audio_style",
@@ -1513,6 +1593,7 @@ fn propose_unavailable_audio_style_playlist_playback_queue(
     should_log_selection: bool,
 ) -> Vec<PlaybackTrack> {
     let proposal = propose_random_playlist_playback_queue_with_trace(request, mode);
+    request_next_track_loudness_evidence(mode, proposal.tracks.as_slice());
     if should_log_selection {
         log_playlist_playback_next_track_selection(
             "random",
@@ -1522,6 +1603,23 @@ fn propose_unavailable_audio_style_playlist_playback_queue(
         );
     }
     proposal.tracks
+}
+
+#[cfg(not(test))]
+fn request_next_track_loudness_evidence(
+    mode: PlaylistPlaybackRecommendationMode,
+    tracks: &[PlaybackTrack],
+) {
+    let Some(next_track) = next_track_for_recommendation_mode(mode, tracks) else {
+        return;
+    };
+    if playlist_track_needs_loudness_evidence(next_track) {
+        loudness_evidence::request_playback_track_loudness_evidence(next_track);
+    }
+}
+
+pub(crate) fn playlist_track_needs_loudness_evidence(track: &PlaybackTrack) -> bool {
+    track.loudness == 0.0 && track.start_ms < track.end_ms && track.file_path.is_file()
 }
 
 #[cfg(not(test))]

@@ -12,7 +12,9 @@ use crate::domain::downloads::repo as download_repo;
 use crate::domain::downloads::service::{
     DownloadTaskChangeSignal, publish_download_task_change, try_claim_task,
 };
-use crate::domain::downloads::yt_dlp::{LeafProbe, probe_downloaded_audio_duration_ms};
+use crate::domain::downloads::yt_dlp::{
+    LeafProbe, audio_duration_boundary_matches, probe_downloaded_audio_duration_ms,
+};
 #[cfg(not(test))]
 use crate::domain::playlist_playback::service as playlist_playback_service;
 use crate::domain::playlists::model::{
@@ -29,6 +31,7 @@ use tokio::sync::broadcast;
 use walkdir::WalkDir;
 const COLLECTION_MANIFEST_FILE_NAME: &str = ".slisic.collection.toml";
 const TEMP_DOWNLOAD_MARKER: &str = ".__slisic_tmp__";
+const LOCAL_AUDIO_PRECISE_DURATION_BOUNDARY_TOLERANCE_MS: u32 = 100;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CollectionSyncPlan {
@@ -227,11 +230,24 @@ impl CollectionSyncPlan {
 pub(crate) async fn load_collection_shell(
     plan: &CollectionSyncPlan,
     save_root: &Path,
+    ffmpeg_path: &Path,
+) -> Result<Collection> {
+    load_collection_shell_with_local_duration_probe(plan, save_root, |file_path| {
+        probe_local_audio_file(ffmpeg_path, file_path)
+            .map(|probe| probe.map(|value| value.duration_ms))
+    })
+    .await
+}
+
+pub(crate) async fn load_collection_shell_with_local_duration_probe(
+    plan: &CollectionSyncPlan,
+    save_root: &Path,
+    local_duration_probe: impl Fn(&Path) -> Result<Option<u32>>,
 ) -> Result<Collection> {
     let existing = collection_repo::get_collection_by_url(&plan.collection_url).await?;
     let mut collection = create_collection_shell(plan, existing);
 
-    if restore_download_manifest_evidence(&mut collection, save_root)? {
+    if restore_download_manifest_evidence(&mut collection, save_root, &local_duration_probe)? {
         let saved = collection_repo::upsert_collection(&collection).await?;
         notify_audio_style_inputs_changed("download_manifest_evidence_restored");
         notify_playlist_playback_library_changed();
@@ -939,6 +955,7 @@ pub(crate) fn existing_planned_leaf_completions(
 fn restore_download_manifest_evidence(
     collection: &mut Collection,
     save_root: &Path,
+    local_duration_probe: &impl Fn(&Path) -> Result<Option<u32>>,
 ) -> Result<bool> {
     let collection_path = save_root.join(&collection.folder);
     let Some(manifest) = read_collection_manifest(&collection_path)? else {
@@ -953,21 +970,30 @@ fn restore_download_manifest_evidence(
         .iter()
         .map(|music| normalize_manifest_relative_path(&music.path))
         .collect::<Result<HashSet<_>>>()?;
-    let local_audio_files = collect_manifest_audio_file_paths(&collection_path, &manifest_paths)?;
+    let local_audio_files =
+        collect_manifest_audio_file_paths(&collection_path, &manifest_paths, local_duration_probe)?;
     let restored =
         collection_from_manifest(collection.folder.clone(), manifest, &local_audio_files)?;
     if restored.musics.is_empty() {
         return Ok(false);
     }
 
-    let mut existing_keys = collection
-        .musics
-        .iter()
-        .map(manifest_restored_music_key)
-        .collect::<HashSet<_>>();
     let mut restored_any = false;
     for music in restored.musics {
-        if existing_keys.insert(manifest_restored_music_key(&music)) {
+        if let Some(existing) = collection.musics.iter_mut().find(|existing| {
+            manifest_restored_music_source_key(existing)
+                == manifest_restored_music_source_key(&music)
+        }) {
+            if !manifest_restored_music_matches(existing, &music) {
+                *existing = music;
+                restored_any = true;
+            }
+            continue;
+        }
+
+        if !collection.musics.iter().any(|existing| {
+            manifest_restored_music_key(existing) == manifest_restored_music_key(&music)
+        }) {
             collection.musics.push(music);
             restored_any = true;
         }
@@ -985,6 +1011,31 @@ fn manifest_restored_music_key(music: &Music) -> String {
         music.start_ms,
         music.end_ms
     )
+}
+
+fn manifest_restored_music_source_key(music: &Music) -> String {
+    format!(
+        "{}\n{}\n{}\n{}",
+        music.url,
+        music.group.url,
+        music.path.as_deref().unwrap_or_default(),
+        music.start_ms
+    )
+}
+
+fn manifest_restored_music_matches(left: &Music, right: &Music) -> bool {
+    left.name == right.name
+        && left.alias == right.alias
+        && left.group.name == right.group.name
+        && left.group.url == right.group.url
+        && left.group.folder == right.group.folder
+        && left.canonical_music_id == right.canonical_music_id
+        && left.url == right.url
+        && left.path == right.path
+        && left.start_ms == right.start_ms
+        && left.end_ms == right.end_ms
+        && left.liked == right.liked
+        && left.loudness == right.loudness
 }
 
 pub(crate) fn normalize_music_titles_within_collection(collection: &mut Collection) {
@@ -1942,11 +1993,12 @@ fn collection_from_manifest(
         if music.end_ms > local_file.duration_ms.saturating_add(1_000) {
             continue;
         }
+        let end_ms = restore_manifest_music_end_ms_from_local_file(&music, local_file);
         if !seen.insert((
             music.url.clone(),
             music.group_url.clone(),
             music.start_ms,
-            music.end_ms,
+            end_ms,
             relative_path.clone(),
         )) {
             continue;
@@ -1974,7 +2026,7 @@ fn collection_from_manifest(
             alias.to_string()
         };
 
-        if music.start_ms >= music.end_ms {
+        if music.start_ms >= end_ms {
             continue;
         }
 
@@ -1983,15 +2035,11 @@ fn collection_from_manifest(
             name,
             alias,
             group,
-            canonical_music_id: canonical_music_id_for_source(
-                &music.url,
-                music.start_ms,
-                music.end_ms,
-            ),
+            canonical_music_id: canonical_music_id_for_source(&music.url, music.start_ms, end_ms),
             url: music.url,
             path: Some(relative_path),
             start_ms: music.start_ms,
-            end_ms: music.end_ms,
+            end_ms,
             liked: music.liked,
             loudness: 0.0,
         });
@@ -2093,6 +2141,7 @@ fn collect_local_audio_files(
 fn collect_manifest_audio_file_paths(
     collection_path: &Path,
     manifest_paths: &HashSet<String>,
+    local_duration_probe: &impl Fn(&Path) -> Result<Option<u32>>,
 ) -> Result<Vec<LocalAudioFile>> {
     let mut files = Vec::new();
     for file_path in local_collection_file_candidates(collection_path) {
@@ -2101,14 +2150,41 @@ fn collect_manifest_audio_file_paths(
             continue;
         }
 
+        let Some(duration_ms) = local_duration_probe(&file_path)? else {
+            continue;
+        };
+
         files.push(LocalAudioFile {
             absolute_path: file_path,
             relative_path,
-            duration_ms: u32::MAX,
+            duration_ms,
         });
     }
 
     Ok(files)
+}
+
+fn restore_manifest_music_end_ms_from_local_file(
+    music: &CollectionManifestMusic,
+    local_file: &LocalAudioFile,
+) -> u32 {
+    if manifest_music_end_ms_targets_local_file_boundary(music.end_ms, local_file.duration_ms) {
+        local_file.duration_ms
+    } else {
+        music.end_ms
+    }
+}
+
+fn manifest_music_end_ms_targets_local_file_boundary(end_ms: u32, duration_ms: u32) -> bool {
+    if end_ms == duration_ms {
+        return true;
+    }
+
+    if end_ms % 1_000 == 0 {
+        return audio_duration_boundary_matches(end_ms, duration_ms);
+    }
+
+    end_ms.abs_diff(duration_ms) <= LOCAL_AUDIO_PRECISE_DURATION_BOUNDARY_TOLERANCE_MS
 }
 
 fn local_collection_file_candidates(collection_path: &Path) -> Vec<PathBuf> {

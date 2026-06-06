@@ -41,6 +41,22 @@ mod domain {
         }
     }
 
+    pub mod player {
+        pub mod model {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/player/model.rs"
+            ));
+        }
+    }
+
+    pub mod loudness_evidence {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/domain/loudness_evidence.rs"
+        ));
+    }
+
     pub mod downloads {
         pub mod model {
             include!(concat!(

@@ -272,6 +272,70 @@ fn import_ignores_manifest_music_with_missing_nested_group_and_keeps_local_file_
 }
 
 #[test]
+fn manifest_import_restores_precise_local_duration_for_full_file_boundary() {
+    let local_audio_files = vec![LocalAudioFile {
+        absolute_path: PathBuf::from("C:/library/collection/What Now.m4a"),
+        relative_path: "What Now.m4a".to_string(),
+        duration_ms: 344_455,
+    }];
+    let manifest = CollectionManifest {
+        version: 1,
+        collection: manifest_collection(),
+        groups: vec![],
+        musics: vec![manifest_music(
+            "What Now",
+            "https://www.youtube.com/watch?v=Gv1CBp5NABw",
+            "What Now.m4a",
+            0,
+            344_000,
+        )],
+    };
+
+    let collection =
+        collection_from_manifest("D:/Music/collection".to_string(), manifest, &local_audio_files)
+            .expect("manifest full-file boundary should restore");
+
+    assert_eq!(collection.musics.len(), 1);
+    assert_eq!(collection.musics[0].end_ms, 344_455);
+    assert_eq!(
+        collection.musics[0].canonical_music_id,
+        canonical_music_id_for_source("https://www.youtube.com/watch?v=Gv1CBp5NABw", 0, 344_455)
+    );
+}
+
+#[test]
+fn manifest_import_preserves_partial_ranges_that_do_not_target_file_end() {
+    let local_audio_files = vec![LocalAudioFile {
+        absolute_path: PathBuf::from("C:/library/collection/long-track.m4a"),
+        relative_path: "long-track.m4a".to_string(),
+        duration_ms: 344_455,
+    }];
+    let manifest = CollectionManifest {
+        version: 1,
+        collection: manifest_collection(),
+        groups: vec![],
+        musics: vec![manifest_music(
+            "Partial",
+            "https://example.com/watch?v=partial",
+            "long-track.m4a",
+            0,
+            120_000,
+        )],
+    };
+
+    let collection =
+        collection_from_manifest("D:/Music/collection".to_string(), manifest, &local_audio_files)
+            .expect("manifest partial range should restore");
+
+    assert_eq!(collection.musics.len(), 1);
+    assert_eq!(collection.musics[0].end_ms, 120_000);
+    assert_eq!(
+        collection.musics[0].canonical_music_id,
+        canonical_music_id_for_source("https://example.com/watch?v=partial", 0, 120_000)
+    );
+}
+
+#[test]
 fn external_import_folder_remains_absolute_for_existing_playback_resolution() {
     let root = unique_temp_path("save-root");
     let collection = unique_temp_path("collection");

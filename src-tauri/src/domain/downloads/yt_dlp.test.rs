@@ -159,7 +159,7 @@ fn parses_selected_audio_duration_as_millisecond_boundary_evidence() {
 }
 
 #[test]
-fn decoded_f32le_byte_count_maps_to_floor_duration_ms() {
+fn decoded_f32le_byte_count_maps_to_waveform_duration_ms() {
     assert_eq!(
         duration_ms_from_f32le_bytes(48_000 * 4 * 2, LOCAL_AUDIO_PROBE_SAMPLE_RATE),
         2_000
@@ -171,6 +171,10 @@ fn decoded_f32le_byte_count_maps_to_floor_duration_ms() {
     assert_eq!(
         duration_ms_from_f32le_bytes(24_000 * 4 + 4, LOCAL_AUDIO_PROBE_SAMPLE_RATE),
         500
+    );
+    assert_eq!(
+        duration_ms_from_f32le_bytes(24_024 * 4, LOCAL_AUDIO_PROBE_SAMPLE_RATE),
+        501
     );
 }
 

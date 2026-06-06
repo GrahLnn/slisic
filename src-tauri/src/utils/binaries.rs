@@ -66,6 +66,7 @@ pub(crate) struct StagedBinary {
 pub(crate) struct BinaryMaintenanceActivity {
     has_active_player_binary_tasks: Arc<dyn Fn() -> bool + Send + Sync>,
     has_active_download_tasks: Arc<dyn Fn() -> bool + Send + Sync>,
+    has_active_loudness_binary_tasks: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,15 +96,19 @@ impl BinaryMaintenanceActivity {
     pub(crate) fn new(
         has_active_player_binary_tasks: impl Fn() -> bool + Send + Sync + 'static,
         has_active_download_tasks: impl Fn() -> bool + Send + Sync + 'static,
+        has_active_loudness_binary_tasks: impl Fn() -> bool + Send + Sync + 'static,
     ) -> Self {
         Self {
             has_active_player_binary_tasks: Arc::new(has_active_player_binary_tasks),
             has_active_download_tasks: Arc::new(has_active_download_tasks),
+            has_active_loudness_binary_tasks: Arc::new(has_active_loudness_binary_tasks),
         }
     }
 
     pub(crate) fn is_busy(&self) -> bool {
-        (self.has_active_player_binary_tasks)() || (self.has_active_download_tasks)()
+        (self.has_active_player_binary_tasks)()
+            || (self.has_active_download_tasks)()
+            || (self.has_active_loudness_binary_tasks)()
     }
 }
 
