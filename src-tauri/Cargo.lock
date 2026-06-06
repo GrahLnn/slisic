@@ -2874,7 +2874,9 @@ dependencies = [
 
 [[package]]
 name = "ffplayr"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72231d8d67ca00a767e181334d353de45e357643a38858d60070ec3151d63803"
 dependencies = [
  "base64 0.22.1",
  "rodio",
