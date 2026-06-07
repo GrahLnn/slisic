@@ -6,7 +6,9 @@ use super::service::{
     PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
     PlaylistPlaybackRecommender, PlaylistQueueRecommendationReadiness,
     RandomPlaylistPlaybackRecommender, audio_style_playlist_playback_proposal_is_complete,
-    create_start_anchor_playback_queue, place_track_at_queue_start,
+    apply_initial_track_loudness_evidence, create_start_anchor_playback_queue,
+    initial_track_release_requires_loudness_gate,
+    place_track_at_queue_start,
     playlist_playback_proposal_contains_next_track,
     playlist_playback_queue_contains_next_track_after_anchor,
     playlist_selection_has_relevant_active_downloads, playlist_track_needs_loudness_evidence,
@@ -15,6 +17,7 @@ use super::service::{
     resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
     should_commit_playlist_queue_refresh, should_refresh_playlist_queue_for_anchor_after_startup,
     should_refresh_playlist_queue_for_same_anchor, shuffle_playback_tracks,
+    PlaylistInitialTrackRelease,
 };
 use crate::domain::downloads::model::{
     DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
@@ -914,6 +917,91 @@ fn playlist_track_loudness_warmup_requires_missing_evidence_and_real_file() {
     let mut missing_file = missing;
     missing_file.file_path = root.join("missing.m4a");
     assert!(!playlist_track_needs_loudness_evidence(&missing_file));
+
+    std::fs::remove_dir_all(root).expect("temp root should be removed");
+}
+
+#[test]
+fn direct_first_slot_release_does_not_wait_for_loudness_evidence() {
+    let root = temp_root();
+    std::fs::create_dir_all(&root).expect("temp root should be created");
+    let file_path = root.join("direct-first.m4a");
+    std::fs::write(&file_path, []).expect("test audio placeholder should exist");
+    let mut track = playback_track("direct-first");
+    track.file_path = file_path;
+
+    assert!(playlist_track_needs_loudness_evidence(&track));
+    assert!(
+        !initial_track_release_requires_loudness_gate(
+            PlaylistInitialTrackRelease::DirectFirstSlot,
+            &track,
+        ),
+        "an already prepared FirstSlot is playable cargo; missing LUFS only starts warmup"
+    );
+    assert!(
+        initial_track_release_requires_loudness_gate(
+            PlaylistInitialTrackRelease::PreparingFirstSlot,
+            &track,
+        ),
+        "preparing owns the wait because no cargo has been released to player yet"
+    );
+
+    std::fs::remove_dir_all(root).expect("temp root should be removed");
+}
+
+#[test]
+fn preparing_initial_track_requires_loudness_before_playback_gate_opens() {
+    let root = temp_root();
+    std::fs::create_dir_all(&root).expect("temp root should be created");
+    let file_path = root.join("first.m4a");
+    std::fs::write(&file_path, []).expect("test audio placeholder should exist");
+    let mut track = playback_track("first");
+    track.file_path = file_path;
+
+    assert!(
+        apply_initial_track_loudness_evidence(track.clone(), None).is_err(),
+        "preparing must not release a track that still needs LUFS evidence"
+    );
+    assert!(
+        apply_initial_track_loudness_evidence(track.clone(), Some(0.0)).is_err(),
+        "zero LUFS is missing evidence, not a playable normalization value"
+    );
+
+    let ready = apply_initial_track_loudness_evidence(track, Some(-13.0))
+        .expect("finite non-zero LUFS should release the preparing gate");
+    assert_eq!(ready.loudness, -13.0);
+
+    std::fs::remove_dir_all(root).expect("temp root should be removed");
+}
+
+#[test]
+fn preparing_initial_track_loudness_updates_source_music_cargo() {
+    let root = temp_root();
+    std::fs::create_dir_all(&root).expect("temp root should be created");
+    let file_path = root.join("first-source.m4a");
+    std::fs::write(&file_path, []).expect("test audio placeholder should exist");
+    let source_music = music(
+        "first-source",
+        "https://example.com/first-source",
+        "first-source.m4a",
+        group("G", "https://example.com/g", "g"),
+    );
+    let mut track = playback_track("first-source");
+    track.file_path = file_path;
+    track.source_music = Some(Box::new(source_music));
+
+    let ready = apply_initial_track_loudness_evidence(track, Some(-17.5))
+        .expect("finite non-zero LUFS should update source cargo");
+
+    assert_eq!(ready.loudness, -17.5);
+    assert_eq!(
+        ready
+            .source_music
+            .as_ref()
+            .expect("source music should stay attached")
+            .loudness,
+        -17.5
+    );
 
     std::fs::remove_dir_all(root).expect("temp root should be removed");
 }

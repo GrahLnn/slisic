@@ -1,17 +1,19 @@
+use super::player::model::PlaybackTrack;
 #[cfg(not(test))]
-use super::player::{model::PlaybackTrack, service as player_service};
+use super::player::service as player_service;
+#[cfg(not(test))]
+use super::playlist_playback::playable_index;
 #[cfg(not(test))]
 use super::playlists::repo as playlists_repo;
 #[cfg(not(test))]
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 #[cfg(not(test))]
-use anyhow::{Context, Result, anyhow, bail};
-#[cfg(not(test))]
+use anyhow::bail;
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 #[cfg(not(test))]
-use std::collections::{HashMap, VecDeque};
-#[cfg(not(test))]
+use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
 #[cfg(not(test))]
@@ -30,16 +32,12 @@ const LOUDNESS_EVIDENCE_LOG_TARGET: &str = "loudness_evidence";
 #[cfg(not(test))]
 const MAX_LOUDNESS_EVIDENCE_QUEUE_LEN: usize = 256;
 #[cfg(not(test))]
-const MAX_COMPLETED_LOUDNESS_RESULT_COUNT: usize = 256;
-#[cfg(not(test))]
 const LOUDNESS_MEASUREMENT_COOLDOWN: Duration = Duration::from_millis(1500);
 #[cfg(not(test))]
-const LOUDNESS_SYNC_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+const LOUDNESS_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(not(test))]
-const LOUDNESS_SYNC_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
-#[cfg(not(test))]
+const LOUDNESS_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const LOUDNESS_PENDING_TASK_FILE_NAME: &str = "loudness-evidence-pending.json";
-#[cfg(not(test))]
 const LOUDNESS_PENDING_TASK_FILE_VERSION: &str = "loudness-evidence-pending.v1";
 
 #[cfg(not(test))]
@@ -52,7 +50,6 @@ struct LoudnessEvidenceRuntime {
     pending_task_file_lock: Mutex<()>,
     active_binary_tasks: AtomicUsize,
     active_identities: Mutex<HashSet<String>>,
-    completed_loudness: Mutex<HashMap<String, f32>>,
     completion_notify: tokio::sync::Notify,
     queue: Mutex<VecDeque<QueuedLoudnessEvidence>>,
     worker_running: AtomicBool,
@@ -112,14 +109,12 @@ pub(crate) struct LoudnessEvidenceRequest {
     pub(crate) end_ms: u32,
 }
 
-#[cfg(not(test))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LoudnessPendingTaskFile {
     version: String,
     requests: Vec<LoudnessPendingTaskEntry>,
 }
 
-#[cfg(not(test))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LoudnessPendingTaskEntry {
     canonical_music_id: String,
@@ -129,7 +124,6 @@ struct LoudnessPendingTaskEntry {
     end_ms: u32,
 }
 
-#[cfg(not(test))]
 impl From<&LoudnessEvidenceRequest> for LoudnessPendingTaskEntry {
     fn from(request: &LoudnessEvidenceRequest) -> Self {
         Self {
@@ -142,7 +136,6 @@ impl From<&LoudnessEvidenceRequest> for LoudnessPendingTaskEntry {
     }
 }
 
-#[cfg(not(test))]
 impl From<LoudnessPendingTaskEntry> for LoudnessEvidenceRequest {
     fn from(entry: LoudnessPendingTaskEntry) -> Self {
         Self {
@@ -173,7 +166,6 @@ pub(crate) fn initialize_runtime(app: AppHandle) {
                 pending_task_file_lock: Mutex::new(()),
                 active_binary_tasks: AtomicUsize::new(0),
                 active_identities: Mutex::new(HashSet::new()),
-                completed_loudness: Mutex::new(HashMap::new()),
                 completion_notify: tokio::sync::Notify::new(),
                 queue: Mutex::new(VecDeque::new()),
                 worker_running: AtomicBool::new(false),
@@ -209,67 +201,71 @@ pub(crate) fn request_track_loudness_evidence(request: LoudnessEvidenceRequest) 
 
 #[cfg(not(test))]
 pub(crate) fn request_playback_track_loudness_evidence(track: &PlaybackTrack) {
-    if track.loudness != 0.0 {
+    let Some(request) = loudness_request_from_playback_track(track) else {
         return;
-    }
-    let request = LoudnessEvidenceRequest {
-        canonical_music_id: track.canonical_music_id.clone(),
-        url: track.music_url.clone(),
-        file_path: track.file_path.clone(),
-        start_ms: track.start_ms,
-        end_ms: track.end_ms,
     };
 
     request_track_loudness_evidence(request);
 }
 
 #[cfg(not(test))]
-pub(crate) async fn measure_playback_track_loudness_now(
+pub(crate) fn request_first_slot_playback_track_loudness_evidence(track: &PlaybackTrack) {
+    let Some(request) = loudness_request_from_playback_track(track) else {
+        return;
+    };
+    let Some(runtime) = LOUDNESS_EVIDENCE_RUNTIME.get().cloned() else {
+        log::warn!(
+            target: LOUDNESS_EVIDENCE_LOG_TARGET,
+            "loudness_evidence_request_skipped reason=runtime_uninitialized source=first_slot canonical_music_id=\"{}\"",
+            request.canonical_music_id
+        );
+        return;
+    };
+
+    enqueue_loudness_measurement(runtime, request, LoudnessEvidenceSource::FirstSlot);
+}
+
+#[cfg(not(test))]
+pub(crate) async fn wait_for_playback_track_loudness_evidence(
     track: &PlaybackTrack,
 ) -> Result<Option<f32>> {
-    if track.loudness != 0.0 {
+    let Some(request) = loudness_request_from_playback_track(track) else {
         return Ok(Some(track.loudness));
-    }
+    };
     let Some(runtime) = LOUDNESS_EVIDENCE_RUNTIME.get().cloned() else {
         log::warn!(
             target: LOUDNESS_EVIDENCE_LOG_TARGET,
             "loudness_evidence_wait_skipped reason=runtime_uninitialized canonical_music_id=\"{}\"",
-            track.canonical_music_id
+            request.canonical_music_id
         );
         return Ok(None);
     };
-    let request = LoudnessEvidenceRequest {
+
+    if let Some(persisted) =
+        persisted_loudness_for_request(&request, LoudnessEvidenceSource::DirectRequest).await?
+    {
+        return Ok(Some(persisted));
+    }
+
+    enqueue_loudness_measurement(
+        Arc::clone(&runtime),
+        request.clone(),
+        LoudnessEvidenceSource::DirectRequest,
+    );
+    wait_for_loudness_request_result(&runtime, &request).await
+}
+
+fn loudness_request_from_playback_track(track: &PlaybackTrack) -> Option<LoudnessEvidenceRequest> {
+    if track.loudness != 0.0 {
+        return None;
+    }
+    Some(LoudnessEvidenceRequest {
         canonical_music_id: track.canonical_music_id.clone(),
         url: track.music_url.clone(),
         file_path: track.file_path.clone(),
         start_ms: track.start_ms,
         end_ms: track.end_ms,
-    };
-    let key = loudness_identity_key(&request);
-    if let Some(loudness) = completed_loudness_result(&runtime, &key)? {
-        return Ok(Some(loudness));
-    }
-
-    let claim = match claim_loudness_identity(Arc::clone(&runtime), &request)? {
-        Some(claim) => claim,
-        None => {
-            if promote_queued_loudness_identity(&runtime, &request) {
-                persist_pending_loudness_request(&runtime, &request);
-                ensure_loudness_worker(Arc::clone(&runtime));
-            }
-            return wait_for_loudness_identity_result(&runtime, &key).await;
-        }
-    };
-
-    let loudness = measure_and_persist_loudness(
-        Arc::clone(&runtime),
-        &request,
-        LoudnessEvidenceSource::DirectRequest,
-    )
-    .await?;
-    remove_pending_loudness_request(&runtime, &request);
-    drop(claim);
-    Ok(Some(loudness))
+    })
 }
 
 #[cfg(test)]
@@ -282,35 +278,51 @@ pub(crate) fn request_playback_track_loudness_evidence(
 }
 
 #[cfg(test)]
-pub(crate) async fn measure_playback_track_loudness_now(
+pub(crate) fn request_first_slot_playback_track_loudness_evidence(
+    _track: &super::player::model::PlaybackTrack,
+) {
+}
+
+#[cfg(test)]
+pub(crate) async fn wait_for_playback_track_loudness_evidence(
     _track: &super::player::model::PlaybackTrack,
 ) -> anyhow::Result<Option<f32>> {
     Ok(None)
 }
 
-#[cfg(not(test))]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LoudnessEvidenceSource {
     PendingStore,
     DirectRequest,
+    FirstSlot,
 }
 
-#[cfg(not(test))]
 impl LoudnessEvidenceSource {
+    #[cfg(not(test))]
     fn as_str(self) -> &'static str {
         match self {
             Self::PendingStore => "pending_store",
             Self::DirectRequest => "direct_request",
+            Self::FirstSlot => "first_slot",
         }
+    }
+
+    fn priority(self) -> u8 {
+        match self {
+            Self::PendingStore => 0,
+            Self::DirectRequest => 1,
+            Self::FirstSlot => 2,
+        }
+    }
+
+    fn persists_pending(self) -> bool {
+        matches!(self, Self::DirectRequest | Self::FirstSlot)
     }
 }
 
 #[cfg(not(test))]
 fn restore_pending_loudness_tasks(runtime: Arc<LoudnessEvidenceRuntime>) {
     if runtime.pending_task_path.as_os_str().is_empty() {
-        return;
-    }
-    if !runtime.pending_task_path.is_file() {
         return;
     }
 
@@ -375,8 +387,8 @@ fn enqueue_loudness_measurement(
     let claim = match claim_loudness_identity(Arc::clone(&runtime), &request) {
         Ok(Some(claim)) => claim,
         Ok(None) => {
-            if matches!(source, LoudnessEvidenceSource::DirectRequest)
-                && promote_queued_loudness_identity(&runtime, &request)
+            if source.persists_pending()
+                && promote_queued_loudness_identity(&runtime, &request, source)
             {
                 persist_pending_loudness_request(&runtime, &request);
                 ensure_loudness_worker(runtime);
@@ -405,7 +417,7 @@ fn enqueue_loudness_measurement(
         return;
     }
 
-    if matches!(source, LoudnessEvidenceSource::DirectRequest) {
+    if source.persists_pending() {
         persist_pending_loudness_request(&runtime, &request);
     }
     ensure_loudness_worker(runtime);
@@ -415,6 +427,7 @@ fn enqueue_loudness_measurement(
 fn promote_queued_loudness_identity(
     runtime: &Arc<LoudnessEvidenceRuntime>,
     request: &LoudnessEvidenceRequest,
+    source: LoudnessEvidenceSource,
 ) -> bool {
     let key = loudness_identity_key(request);
     let mut queue = match runtime.queue.lock() {
@@ -437,9 +450,14 @@ fn promote_queued_loudness_identity(
     let Some(mut queued) = queue.remove(position) else {
         return false;
     };
+    let previous_source = queued.source;
     queued.request = request.clone();
-    queued.source = LoudnessEvidenceSource::DirectRequest;
-    queue.push_front(queued);
+    queued.source = if source.priority() > previous_source.priority() {
+        source
+    } else {
+        previous_source
+    };
+    insert_loudness_queue(&mut queue, queued);
     true
 }
 
@@ -461,18 +479,43 @@ fn push_loudness_queue(
 
     if queue.len() >= MAX_LOUDNESS_EVIDENCE_QUEUE_LEN {
         match queued.source {
-            LoudnessEvidenceSource::DirectRequest => {
+            LoudnessEvidenceSource::DirectRequest | LoudnessEvidenceSource::FirstSlot => {
                 queue.pop_back();
             }
             LoudnessEvidenceSource::PendingStore => return false,
         }
     }
 
-    match queued.source {
-        LoudnessEvidenceSource::DirectRequest => queue.push_front(queued),
-        LoudnessEvidenceSource::PendingStore => queue.push_back(queued),
-    }
+    insert_loudness_queue(&mut queue, queued);
     true
+}
+
+#[cfg(not(test))]
+fn insert_loudness_queue(
+    queue: &mut VecDeque<QueuedLoudnessEvidence>,
+    queued: QueuedLoudnessEvidence,
+) {
+    let index = loudness_queue_insert_index(
+        queue.iter().map(|current| current.source),
+        queue.len(),
+        queued.source,
+    );
+    queue.insert(index, queued);
+}
+
+fn loudness_queue_insert_index(
+    current_sources: impl IntoIterator<Item = LoudnessEvidenceSource>,
+    current_len: usize,
+    source: LoudnessEvidenceSource,
+) -> usize {
+    let priority = source.priority();
+    if priority == LoudnessEvidenceSource::PendingStore.priority() {
+        return current_len;
+    }
+    current_sources
+        .into_iter()
+        .position(|current| current.priority() <= priority)
+        .unwrap_or(current_len)
 }
 
 #[cfg(not(test))]
@@ -556,34 +599,34 @@ fn claim_loudness_identity(
 }
 
 #[cfg(not(test))]
-fn completed_loudness_result(runtime: &LoudnessEvidenceRuntime, key: &str) -> Result<Option<f32>> {
-    let completed = runtime
-        .completed_loudness
-        .lock()
-        .map_err(|_| anyhow!("loudness evidence completed result map is poisoned"))?;
-    Ok(completed.get(key).copied())
-}
-
-#[cfg(not(test))]
-fn remember_completed_loudness_result(
-    runtime: &LoudnessEvidenceRuntime,
+async fn wait_for_loudness_request_result(
+    runtime: &Arc<LoudnessEvidenceRuntime>,
     request: &LoudnessEvidenceRequest,
-    loudness: f32,
-) -> Result<()> {
+) -> Result<Option<f32>> {
     let key = loudness_identity_key(request);
-    let mut completed = runtime
-        .completed_loudness
-        .lock()
-        .map_err(|_| anyhow!("loudness evidence completed result map is poisoned"))?;
-    if completed.len() >= MAX_COMPLETED_LOUDNESS_RESULT_COUNT
-        && !completed.contains_key(&key)
-        && let Some(stale_key) = completed.keys().next().cloned()
-    {
-        completed.remove(&stale_key);
+    let wait = async {
+        loop {
+            if let Some(loudness) =
+                persisted_loudness_for_request(request, LoudnessEvidenceSource::DirectRequest)
+                    .await?
+            {
+                return Ok(Some(loudness));
+            }
+            if !loudness_identity_active(runtime, &key)? {
+                return Ok(None);
+            }
+            let notified = runtime.completion_notify.notified();
+            tokio::select! {
+                _ = notified => {}
+                _ = tokio::time::sleep(LOUDNESS_WAIT_POLL_INTERVAL) => {}
+            }
+        }
+    };
+
+    match tokio::time::timeout(LOUDNESS_WAIT_TIMEOUT, wait).await {
+        Ok(result) => result,
+        Err(_) => Ok(None),
     }
-    completed.insert(key, loudness);
-    runtime.completion_notify.notify_waiters();
-    Ok(())
 }
 
 #[cfg(not(test))]
@@ -593,33 +636,6 @@ fn loudness_identity_active(runtime: &LoudnessEvidenceRuntime, key: &str) -> Res
         .lock()
         .map_err(|_| anyhow!("loudness evidence identity set is poisoned"))?;
     Ok(active.contains(key))
-}
-
-#[cfg(not(test))]
-async fn wait_for_loudness_identity_result(
-    runtime: &Arc<LoudnessEvidenceRuntime>,
-    key: &str,
-) -> Result<Option<f32>> {
-    let wait = async {
-        loop {
-            let notified = runtime.completion_notify.notified();
-            if let Some(loudness) = completed_loudness_result(runtime, key)? {
-                return Ok(Some(loudness));
-            }
-            if !loudness_identity_active(runtime, key)? {
-                return Ok(None);
-            }
-            tokio::select! {
-                _ = notified => {}
-                _ = tokio::time::sleep(LOUDNESS_SYNC_WAIT_POLL_INTERVAL) => {}
-            }
-        }
-    };
-
-    match tokio::time::timeout(LOUDNESS_SYNC_WAIT_TIMEOUT, wait).await {
-        Ok(result) => result,
-        Err(_) => Ok(None),
-    }
 }
 
 fn loudness_identity_key(request: &LoudnessEvidenceRequest) -> String {
@@ -680,7 +696,6 @@ fn remove_pending_loudness_request(
     }
 }
 
-#[cfg(not(test))]
 fn read_loudness_pending_task_file(path: &std::path::Path) -> Result<Vec<LoudnessEvidenceRequest>> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
@@ -711,7 +726,6 @@ fn read_loudness_pending_task_file(path: &std::path::Path) -> Result<Vec<Loudnes
     ))
 }
 
-#[cfg(not(test))]
 fn upsert_loudness_pending_task_file(
     path: &std::path::Path,
     request: &LoudnessEvidenceRequest,
@@ -722,7 +736,6 @@ fn upsert_loudness_pending_task_file(
     write_loudness_pending_task_file(path, &requests)
 }
 
-#[cfg(not(test))]
 fn remove_loudness_pending_task_from_file(
     path: &std::path::Path,
     request: &LoudnessEvidenceRequest,
@@ -733,7 +746,6 @@ fn remove_loudness_pending_task_from_file(
     write_loudness_pending_task_file(path, &requests)
 }
 
-#[cfg(not(test))]
 fn write_loudness_pending_task_file(
     path: &std::path::Path,
     requests: &[LoudnessEvidenceRequest],
@@ -793,12 +805,12 @@ fn deduplicate_pending_loudness_requests(
     deduplicated
 }
 
-#[cfg(not(test))]
 fn should_close_loudness_request_after_error(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     message.contains("invalid loudness evidence range")
         || message.contains("missing loudness evidence audio file")
         || message.contains("music loudness evidence must be a finite non-zero LUFS value")
+        || message.contains("music loudness evidence target not found")
         || message.contains("player session loudness evidence must be finite and non-zero")
 }
 
@@ -812,6 +824,41 @@ pub(crate) fn deduplicate_pending_loudness_requests_for_test(
     requests: Vec<LoudnessEvidenceRequest>,
 ) -> Vec<LoudnessEvidenceRequest> {
     deduplicate_pending_loudness_requests(requests)
+}
+
+#[cfg(test)]
+pub(crate) fn loudness_request_from_playback_track_for_test(
+    track: &PlaybackTrack,
+) -> Option<LoudnessEvidenceRequest> {
+    loudness_request_from_playback_track(track)
+}
+
+#[cfg(test)]
+pub(crate) fn read_loudness_pending_task_file_for_test(
+    path: &std::path::Path,
+) -> anyhow::Result<Vec<LoudnessEvidenceRequest>> {
+    read_loudness_pending_task_file(path)
+}
+
+#[cfg(test)]
+pub(crate) fn upsert_loudness_pending_task_file_for_test(
+    path: &std::path::Path,
+    request: &LoudnessEvidenceRequest,
+) -> anyhow::Result<()> {
+    upsert_loudness_pending_task_file(path, request)
+}
+
+#[cfg(test)]
+pub(crate) fn remove_loudness_pending_task_from_file_for_test(
+    path: &std::path::Path,
+    request: &LoudnessEvidenceRequest,
+) -> anyhow::Result<()> {
+    remove_loudness_pending_task_from_file(path, request)
+}
+
+#[cfg(test)]
+pub(crate) fn should_close_loudness_request_after_error_for_test(error: &anyhow::Error) -> bool {
+    should_close_loudness_request_after_error(error)
 }
 
 #[cfg(test)]
@@ -839,24 +886,33 @@ async fn measure_and_persist_loudness(
         );
     }
 
+    if let Some(persisted) = persisted_loudness_for_request(request, source).await? {
+        runtime.completion_notify.notify_waiters();
+        return Ok(persisted);
+    }
+
     let _guard = ActiveLoudnessBinaryTaskGuard::new(Arc::clone(&runtime));
     let ffmpeg_path = ensure_managed_binary(&runtime.app, ManagedBinary::Ffmpeg)
         .map_err(|error| anyhow!(error))?;
     let analysis = run_loudness_analysis(ffmpeg_path, request.clone()).await?;
-    let updated = playlists_repo::set_music_loudness_by_identity(
+    let persisted = playlists_repo::set_music_loudness_by_identity(
         &request.url,
         request.start_ms,
         request.end_ms,
         analysis.integrated_lufs,
     )
-    .await?;
-
-    let persisted = updated
-        .as_ref()
-        .map(|music| music.loudness)
-        .unwrap_or(analysis.integrated_lufs);
-    player_service::publish_loudness_evidence_to_current_session(&request, persisted)?;
-    remember_completed_loudness_result(&runtime, request, persisted)?;
+    .await?
+    .ok_or_else(|| {
+        anyhow!(
+            "music loudness evidence target not found for {} {}..{}",
+            request.url,
+            request.start_ms,
+            request.end_ms
+        )
+    })?
+    .loudness;
+    publish_persisted_loudness_evidence(request, persisted);
+    runtime.completion_notify.notify_waiters();
     log::info!(
         target: LOUDNESS_EVIDENCE_LOG_TARGET,
         "loudness_evidence_persisted source={} canonical_music_id=\"{}\" loudness={:.3}",
@@ -866,6 +922,57 @@ async fn measure_and_persist_loudness(
     );
 
     Ok(persisted)
+}
+
+#[cfg(not(test))]
+async fn persisted_loudness_for_request(
+    request: &LoudnessEvidenceRequest,
+    source: LoudnessEvidenceSource,
+) -> Result<Option<f32>> {
+    let Some(persisted) = playlists_repo::get_music_loudness_by_identity(
+        &request.url,
+        request.start_ms,
+        request.end_ms,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    publish_persisted_loudness_evidence(request, persisted);
+    log::info!(
+        target: LOUDNESS_EVIDENCE_LOG_TARGET,
+        "loudness_evidence_reused source={} canonical_music_id=\"{}\" loudness={:.3}",
+        source.as_str(),
+        request.canonical_music_id,
+        persisted
+    );
+    Ok(Some(persisted))
+}
+
+#[cfg(not(test))]
+fn publish_persisted_loudness_evidence(
+    request: &LoudnessEvidenceRequest,
+    persisted: f32,
+) {
+    if let Err(error) =
+        player_service::publish_loudness_evidence_to_current_session(request, persisted)
+    {
+        log::warn!(
+            target: LOUDNESS_EVIDENCE_LOG_TARGET,
+            "loudness_evidence_player_session_publish_failed canonical_music_id=\"{}\" error=\"{}\"",
+            request.canonical_music_id,
+            error
+        );
+    }
+    if let Err(error) = playable_index::publish_first_slot_loudness_evidence(request, persisted) {
+        log::warn!(
+            target: LOUDNESS_EVIDENCE_LOG_TARGET,
+            "loudness_evidence_first_slot_publish_failed canonical_music_id=\"{}\" error=\"{}\"",
+            request.canonical_music_id,
+            error
+        );
+    }
 }
 
 #[cfg(not(test))]

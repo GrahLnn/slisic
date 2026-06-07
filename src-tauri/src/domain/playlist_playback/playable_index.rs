@@ -1,5 +1,6 @@
 #[cfg(not(test))]
 use crate::domain::loudness_evidence;
+use crate::domain::loudness_evidence::LoudnessEvidenceRequest;
 #[cfg(not(test))]
 use crate::domain::meta::service as meta_service;
 #[cfg(not(test))]
@@ -356,6 +357,75 @@ pub(crate) fn discard_playlist_source(snapshot: &PlaylistPlayableIndexSnapshot) 
     Ok(discarded)
 }
 
+pub(crate) fn publish_first_slot_loudness_evidence(
+    request: &LoudnessEvidenceRequest,
+    loudness: f32,
+) -> Result<()> {
+    if !loudness.is_finite() || loudness == 0.0 {
+        return Err(anyhow!(
+            "first-slot loudness evidence must be finite and non-zero"
+        ));
+    }
+    let runtime = try_runtime()?;
+    let mut changed = 0usize;
+    let mut changed_playlist_names = Vec::new();
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+        for pool in state.playlists.values_mut() {
+            let mut pool_changed = false;
+            for credential in &mut pool.sources {
+                if !prepared_credential_matches_loudness_request(credential, request)
+                    || credential.track.loudness == loudness
+                {
+                    continue;
+                }
+                apply_prepared_credential_loudness(credential, loudness);
+                changed += 1;
+                pool_changed = true;
+            }
+            if pool_changed {
+                changed_playlist_names.push(pool.playlist_name.clone());
+            }
+        }
+    }
+
+    if changed == 0 {
+        return Ok(());
+    }
+    notify_index_revision(runtime.as_ref());
+    write_first_slot_cache_for_registered_runtime();
+    #[cfg(not(test))]
+    {
+        for playlist_name in changed_playlist_names {
+            emit_index_runtime_trace(
+                "playlist-playable-index-loudness-evidence-applied",
+                Some(&playlist_name),
+                None,
+                Some(changed),
+                None,
+                "updated",
+                vec![
+                    index_trace_detail("canonicalMusicId", &request.canonical_music_id),
+                    index_trace_detail("startMs", request.start_ms),
+                    index_trace_detail("endMs", request.end_ms),
+                    index_trace_detail("loudness", format!("{loudness:.3}")),
+                ],
+            );
+        }
+        log::info!(
+            target: PLAYABLE_INDEX_LOG_TARGET,
+            "first_slot_loudness_evidence_applied canonical_music_id=\"{}\" loudness={:.3} credentials={}",
+            escape_log_value(&request.canonical_music_id),
+            loudness,
+            changed
+        );
+    }
+    Ok(())
+}
+
 #[cfg(not(test))]
 fn notify_playlist_changed_impl(playlist_name: &str) {
     spawn_refresh_playlist(
@@ -372,6 +442,28 @@ fn rename_playlist_source_pool(pool: &mut PlaylistPlayableIndexPool, next_name: 
     pool.playlist_name = next_name.to_string();
     for source in &mut pool.sources {
         source.track.playlist_name = next_name.to_string();
+    }
+}
+
+fn prepared_credential_matches_loudness_request(
+    credential: &PreparedPlaylistSourceCredential,
+    request: &LoudnessEvidenceRequest,
+) -> bool {
+    credential.track.canonical_music_id == request.canonical_music_id
+        && credential.track.music_url == request.url
+        && credential.track.file_path == request.file_path
+        && credential.track.start_ms == request.start_ms
+        && credential.track.end_ms == request.end_ms
+}
+
+fn apply_prepared_credential_loudness(
+    credential: &mut PreparedPlaylistSourceCredential,
+    loudness: f32,
+) {
+    credential.track.loudness = loudness;
+    credential.source.music.loudness = loudness;
+    if let Some(music) = credential.track.source_music.as_mut() {
+        music.loudness = loudness;
     }
 }
 
@@ -1042,6 +1134,10 @@ fn append_credential_trace_details(
         "trackPath",
         credential.track.file_path.display(),
     ));
+    details.push(index_trace_detail(
+        "trackLoudness",
+        format!("{:.3}", credential.track.loudness),
+    ));
 }
 
 #[cfg(not(test))]
@@ -1270,7 +1366,9 @@ fn request_prepared_first_tracks_loudness_evidence(
         for credential in _credentials.iter().rev() {
             if playlist_playback_service::playlist_track_needs_loudness_evidence(&credential.track)
             {
-                loudness_evidence::request_playback_track_loudness_evidence(&credential.track);
+                loudness_evidence::request_first_slot_playback_track_loudness_evidence(
+                    &credential.track,
+                );
             }
         }
     }

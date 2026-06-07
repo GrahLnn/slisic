@@ -2208,6 +2208,27 @@ async fn run_playback_session(
             });
         let request = playback_request_for_track_range(&track, active_range);
         loudness_evidence::request_playback_track_loudness_evidence(&track);
+        log::info!(
+            target: "player",
+            "[now play] playlist=\"{}\" title=\"{}\" loudness={:.3} normalization={} target_lufs={} integrated_lufs={} range={}..{}",
+            track.playlist_name,
+            track.music_name,
+            track.loudness,
+            request.normalization.is_some(),
+            request
+                .normalization
+                .as_ref()
+                .map(|normalization| format!("{:.3}", normalization.target_lufs))
+                .unwrap_or_else(|| "none".to_string()),
+            request
+                .normalization
+                .as_ref()
+                .and_then(|normalization| normalization.integrated_lufs)
+                .map(|loudness| format!("{:.3}", loudness))
+                .unwrap_or_else(|| "none".to_string()),
+            active_range.start_ms,
+            active_range.end_ms,
+        );
         emit_player_trace(
             "player-run-play-request-start",
             PlayerTrace::new(&runtime.app)

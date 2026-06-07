@@ -651,7 +651,7 @@ struct PlaylistTrackResolutionSource {
 #[cfg(not(test))]
 struct ResolvedPlaylistInitialTrack {
     track: PlaybackTrack,
-    prepared_source: Option<playable_index::PlaylistPlayableIndexSnapshot>,
+    prepared_source: playable_index::PlaylistPlayableIndexSnapshot,
 }
 
 pub(crate) struct PlaylistTrackResolution {
@@ -714,6 +714,11 @@ async fn build_playlist_playback_material(
 ) -> Result<Option<PlaylistPlaybackMaterial>> {
     let trace_start = Instant::now();
     if let Some(initial) = resolve_prepared_playlist_initial_track(app, playlist_name).await? {
+        let release = PlaylistInitialTrackRelease::DirectFirstSlot;
+        debug_assert!(!initial_track_release_requires_loudness_gate(
+            release,
+            &initial.track,
+        ));
         let tracks = create_start_anchor_playback_queue(initial.track.clone());
         ensure_playlist_playback_request_current(request)?;
         emit_playlist_playback_trace(
@@ -726,7 +731,7 @@ async fn build_playlist_playback_material(
         );
         return Ok(Some(PlaylistPlaybackMaterial {
             playlist_name: playlist_name.to_string(),
-            initial_prepared_source: initial.prepared_source,
+            initial_prepared_source: Some(initial.prepared_source),
             initial_track: initial.track,
             tracks,
         }));
@@ -813,7 +818,7 @@ async fn resolve_prepared_playlist_initial_track(
         );
         return Ok(Some(ResolvedPlaylistInitialTrack {
             track,
-            prepared_source: Some(snapshot),
+            prepared_source: snapshot,
         }));
     }
 }
@@ -821,7 +826,7 @@ async fn resolve_prepared_playlist_initial_track(
 #[cfg(not(test))]
 fn request_first_track_loudness_evidence(track: &PlaybackTrack) {
     if playlist_track_needs_loudness_evidence(track) {
-        loudness_evidence::request_playback_track_loudness_evidence(track);
+        loudness_evidence::request_first_slot_playback_track_loudness_evidence(track);
     }
 }
 
@@ -955,22 +960,23 @@ async fn wait_for_playlist_initial_track_and_start_queue(
     );
     let mut initial =
         wait_for_prepared_playlist_initial_track(&app, &playlist_name, &request).await?;
+    initial.track = wait_for_initial_track_loudness_evidence(
+        &app,
+        &playlist_name,
+        PlaylistInitialTrackRelease::PreparingFirstSlot,
+        initial.track,
+        trace_start,
+    )
+    .await?;
     ensure_playlist_playback_request_current(&request)?;
     if !player_service::is_session_current(&session)? {
         return Err(player_service::PlaybackStartRequestSuperseded.into());
     }
-    wait_for_initial_track_loudness_evidence(&app, &playlist_name, &mut initial, trace_start)
-        .await?;
-    ensure_playlist_playback_request_current(&request)?;
-    if !player_service::is_session_current(&session)? {
-        return Err(player_service::PlaybackStartRequestSuperseded.into());
-    }
-
     let tracks = create_start_anchor_playback_queue(initial.track.clone());
     if !player_service::update_session_tracks(&session, tracks.clone())? {
         return Err(player_service::PlaybackStartRequestSuperseded.into());
     }
-    consume_playlist_initial_prepared_source(&initial.prepared_source);
+    consume_playlist_initial_prepared_source(&Some(initial.prepared_source));
     emit_playlist_playback_trace(
         "playlist-play-backend-first-slot-session-update",
         PlaylistPlaybackTrace::new(&app)
@@ -1009,62 +1015,74 @@ async fn wait_for_playlist_initial_track_and_start_queue(
 async fn wait_for_initial_track_loudness_evidence(
     app: &AppHandle,
     playlist_name: &str,
-    initial: &mut ResolvedPlaylistInitialTrack,
+    release: PlaylistInitialTrackRelease,
+    mut track: PlaybackTrack,
     trace_start: Instant,
-) -> Result<()> {
-    if !playlist_track_needs_loudness_evidence(&initial.track) {
-        return Ok(());
+) -> Result<PlaybackTrack> {
+    if !initial_track_release_requires_loudness_gate(release, &track) {
+        return Ok(track);
     }
+
     emit_playlist_playback_trace(
         "playlist-play-backend-first-slot-loudness-wait",
         PlaylistPlaybackTrace::new(app)
             .playlist_name(playlist_name)
-            .track(&initial.track)
+            .track(&track)
             .elapsed(trace_start)
             .status("waiting_loudness"),
     );
-    match loudness_evidence::measure_playback_track_loudness_now(&initial.track).await {
-        Ok(Some(loudness)) => {
-            initial.track.loudness = loudness;
-            emit_playlist_playback_trace(
-                "playlist-play-backend-first-slot-loudness-ready",
-                PlaylistPlaybackTrace::new(app)
-                    .playlist_name(playlist_name)
-                    .track(&initial.track)
-                    .elapsed(trace_start)
-                    .status("measured"),
-            );
-        }
-        Ok(None) => {
-            emit_playlist_playback_trace(
-                "playlist-play-backend-first-slot-loudness-ready",
-                PlaylistPlaybackTrace::new(app)
-                    .playlist_name(playlist_name)
-                    .track(&initial.track)
-                    .elapsed(trace_start)
-                    .status("unavailable"),
-            );
-        }
-        Err(error) => {
-            emit_playlist_playback_trace(
-                "playlist-play-backend-first-slot-loudness-ready",
-                PlaylistPlaybackTrace::new(app)
-                    .playlist_name(playlist_name)
-                    .track(&initial.track)
-                    .elapsed(trace_start)
-                    .status("failed")
-                    .error(&error),
-            );
-            log::error!(
-                target: PLAYLIST_PLAYBACK_LOG_TARGET,
-                "playlist_waiting_first_slot_loudness_failed playlist=\"{}\" music=\"{}\" error=\"{}\"",
-                escape_log_value(playlist_name),
-                escape_log_value(&initial.track.music_name),
-                escape_log_value(&error.to_string())
-            );
-        }
+    let loudness = loudness_evidence::wait_for_playback_track_loudness_evidence(&track).await?;
+    track = apply_initial_track_loudness_evidence(track, loudness)?;
+    emit_playlist_playback_trace(
+        "playlist-play-backend-first-slot-loudness-ready",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(playlist_name)
+            .track(&track)
+            .elapsed(trace_start)
+            .status("ready"),
+    );
+
+    Ok(track)
+}
+
+pub(crate) fn apply_initial_track_loudness_evidence(
+    mut track: PlaybackTrack,
+    loudness: Option<f32>,
+) -> anyhow::Result<PlaybackTrack> {
+    if !playlist_track_needs_loudness_evidence(&track) {
+        return Ok(track);
     }
-    Ok(())
+    let loudness = loudness.ok_or_else(|| {
+        anyhow::anyhow!(
+            "playlist initial track loudness evidence was not ready for {}",
+            track.canonical_music_id
+        )
+    })?;
+    if loudness == 0.0 || !loudness.is_finite() {
+        anyhow::bail!(
+            "playlist initial track loudness evidence must be finite and non-zero for {}",
+            track.canonical_music_id
+        );
+    }
+    track.loudness = loudness;
+    if let Some(music) = track.source_music.as_mut() {
+        music.loudness = loudness;
+    }
+    Ok(track)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaylistInitialTrackRelease {
+    DirectFirstSlot,
+    PreparingFirstSlot,
+}
+
+pub(crate) fn initial_track_release_requires_loudness_gate(
+    release: PlaylistInitialTrackRelease,
+    track: &PlaybackTrack,
+) -> bool {
+    matches!(release, PlaylistInitialTrackRelease::PreparingFirstSlot)
+        && playlist_track_needs_loudness_evidence(track)
 }
 
 #[cfg(not(test))]

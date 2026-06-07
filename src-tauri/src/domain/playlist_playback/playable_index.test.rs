@@ -3,11 +3,12 @@ use super::playable_index::{
     claim_global_refresh_for_test, claim_playlist_refresh_for_test,
     commit_global_snapshot_for_test, commit_playlist_snapshot_for_test, consume_playlist_source,
     discard_playlist_source, initialize_runtime_for_test, mark_playlist_source_kind_for_test,
-    notify_playlist_renamed, read_playlist_source, refresh_playlist_now_for_reason_for_test,
-    refresh_playlist_now_for_test, request_global_refresh_while_active_for_test, reset_for_test,
-    restore_cache_file_json_for_test, should_skip_global_refresh_for_test,
-    should_skip_playlist_refresh_for_test,
+    notify_playlist_renamed, publish_first_slot_loudness_evidence, read_playlist_source,
+    refresh_playlist_now_for_reason_for_test, refresh_playlist_now_for_test,
+    request_global_refresh_while_active_for_test, reset_for_test, restore_cache_file_json_for_test,
+    should_skip_global_refresh_for_test, should_skip_playlist_refresh_for_test,
 };
+use crate::domain::loudness_evidence::LoudnessEvidenceRequest;
 use crate::domain::playlists::model::{
     CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
 };
@@ -65,6 +66,34 @@ fn source(index: usize) -> PlaylistPlaybackTrackSource {
     }
 }
 
+fn loudness_request_for_track(
+    track: &crate::domain::player::model::PlaybackTrack,
+) -> LoudnessEvidenceRequest {
+    LoudnessEvidenceRequest {
+        canonical_music_id: track.canonical_music_id.clone(),
+        url: track.music_url.clone(),
+        file_path: track.file_path.clone(),
+        start_ms: track.start_ms,
+        end_ms: track.end_ms,
+    }
+}
+
+fn loudness_request_for_source(source: &PlaylistPlaybackTrackSource) -> LoudnessEvidenceRequest {
+    LoudnessEvidenceRequest {
+        canonical_music_id: source.music.canonical_music_id.clone(),
+        url: source.music.url.clone(),
+        file_path: source
+            .music
+            .path
+            .as_ref()
+            .expect("test source should have a relative music path")
+            .clone()
+            .into(),
+        start_ms: source.music.start_ms,
+        end_ms: source.music.end_ms,
+    }
+}
+
 fn selection(name: &str) -> PlaylistPlaybackSelection {
     PlaylistPlaybackSelection {
         playlist_name: name.to_string(),
@@ -106,6 +135,116 @@ async fn playable_index_reads_prepared_playlist_source_without_rebuilding() {
             .music
             .url,
         "https://example.com/watch?v=3"
+    );
+}
+
+#[tokio::test]
+async fn playable_index_loudness_evidence_updates_prepared_first_slot_cargo_without_consuming_it() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("test snapshot should commit");
+    let before = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("prepared source should exist");
+    let request = loudness_request_for_track(
+        before
+            .track
+            .as_ref()
+            .expect("prepared playback track should exist"),
+    );
+
+    publish_first_slot_loudness_evidence(&request, -14.25)
+        .expect("first-slot evidence should publish");
+
+    let updated = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("prepared source should still exist");
+    let updated_track = updated
+        .track
+        .as_ref()
+        .expect("prepared playback track should exist");
+    assert_eq!(updated_track.loudness, -14.25);
+    assert_eq!(
+        updated
+            .source
+            .as_ref()
+            .expect("prepared source should exist")
+            .music
+            .loudness,
+        -14.25
+    );
+    assert_eq!(
+        updated_track
+            .source_music
+            .as_ref()
+            .expect("source music should stay attached")
+            .loudness,
+        -14.25
+    );
+    assert!(
+        consume_playlist_source(&updated).expect("updated first-slot credential should consume"),
+        "loudness evidence must not consume the linear first-slot credential"
+    );
+}
+
+#[tokio::test]
+async fn playable_index_loudness_evidence_updates_only_matching_first_slot_identity() {
+    let _guard = setup_playable_index_test();
+    let first_source = source(3);
+    let second_source = source(4);
+    refresh_playlist_now_for_test(selection("Focus"), Some(first_source.clone()))
+        .await
+        .expect("first snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(second_source.clone()),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("second snapshot should commit");
+
+    publish_first_slot_loudness_evidence(&loudness_request_for_source(&second_source), -20.5)
+        .expect("second source evidence should publish");
+
+    let first = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("first source should exist");
+    assert_eq!(
+        first
+            .track
+            .as_ref()
+            .expect("first track should exist")
+            .loudness,
+        0.0
+    );
+    assert!(consume_playlist_source(&first).expect("first source should consume"));
+    let second = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("second source should exist");
+    assert_eq!(
+        second
+            .track
+            .as_ref()
+            .expect("second track should exist")
+            .loudness,
+        -20.5
+    );
+
+    let mut wrong_range = loudness_request_for_source(&second_source);
+    wrong_range.end_ms += 1;
+    publish_first_slot_loudness_evidence(&wrong_range, -8.0)
+        .expect("nonmatching evidence should be ignored");
+    let unchanged_second = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("second source should still exist");
+    assert_eq!(
+        unchanged_second
+            .track
+            .as_ref()
+            .expect("second track should exist")
+            .loudness,
+        -20.5
     );
 }
 

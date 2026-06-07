@@ -12,9 +12,11 @@ use super::repo::{
     list_config_library, list_musics_by_file_path, list_playlists,
     load_audio_style_training_musics, load_liked_playlist_playback_track_sources,
     load_playlist_playback_track_sources, load_random_playlist_playback_track_sources,
-    load_spectrum_music_context, playlist_playback_owner_attempt_order, push_extra, remove_exclude,
-    remove_extra, set_collection_updates, set_music_liked_by_identity, update_music,
-    upsert_collection, upsert_playlist, upsert_playlist_surface,
+    load_spectrum_music_context, playlist_playback_owner_attempt_order, push_extra,
+    remove_exclude, remove_extra, set_collection_updates, set_music_liked_by_identity,
+    get_music_loudness_by_identity,
+    set_music_loudness_by_identity, update_music, upsert_collection, upsert_playlist,
+    upsert_playlist_surface,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -1277,6 +1279,87 @@ fn canonical_music_identity_shares_liked_state_across_future_occurrences() {
         .expect("future canonical occurrence should save");
 
         assert!(saved.musics[0].liked);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn canonical_music_identity_shares_loudness_state_across_future_occurrences() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let first_url = "https://example.com/loudness-shared";
+        let second_url = "https://example.com/loudness-shared-copy";
+        let canonical_url = "https://example.com/watch/shared-loudness";
+        let first_group =
+            collection_group("Disc 1", "https://example.com/loudness#disc-1", "Disc 1");
+        let second_group =
+            collection_group("Disc 2", "https://example.com/loudness#disc-2", "Disc 2");
+        let first_music = Music {
+            name: "Shared Loudness".to_string(),
+            alias: "Shared Loudness".to_string(),
+            group: first_group,
+            canonical_music_id: music_canonical_id(canonical_url, 0, 180_000),
+            url: canonical_url.to_string(),
+            path: Some("Shared Loudness.m4a".to_string()),
+            start_ms: 0,
+            end_ms: 180_000,
+            liked: false,
+            loudness: 0.0,
+        };
+        let second_music = Music {
+            name: "Shared Loudness Copy".to_string(),
+            alias: "Shared Loudness Copy".to_string(),
+            group: second_group,
+            canonical_music_id: music_canonical_id(canonical_url, 0, 180_000),
+            url: canonical_url.to_string(),
+            path: Some("Shared Loudness Copy.m4a".to_string()),
+            start_ms: 0,
+            end_ms: 180_000,
+            liked: false,
+            loudness: 0.0,
+        };
+
+        upsert_collection(&collection_with_musics(
+            first_url,
+            "youtube/loudness-shared",
+            Some(false),
+            vec![first_music.clone()],
+        ))
+        .await
+        .expect("first loudness occurrence should save");
+        let updated = set_music_loudness_by_identity(canonical_url, 0, 180_000, -18.75)
+            .await
+            .expect("canonical loudness should save")
+            .expect("loudness occurrence should exist");
+        let reloaded_first = get_collection_by_url(first_url)
+            .await
+            .expect("first loudness collection should reload")
+            .expect("first loudness collection should exist");
+
+        assert_eq!(updated.loudness, -18.75);
+        assert_eq!(reloaded_first.musics[0].loudness, -18.75);
+        assert_eq!(
+            get_music_loudness_by_identity(canonical_url, 0, 180_000)
+                .await
+                .expect("canonical loudness should be readable"),
+            Some(-18.75)
+        );
+
+        let saved = upsert_collection(&collection_with_musics(
+            second_url,
+            "youtube/loudness-shared-copy",
+            Some(false),
+            vec![second_music],
+        ))
+        .await
+        .expect("future loudness occurrence should save");
+
+        assert_eq!(saved.musics[0].loudness, -18.75);
 
         reset_db();
     });

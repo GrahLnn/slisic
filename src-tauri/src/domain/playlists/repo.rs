@@ -275,6 +275,16 @@ pub async fn set_music_loudness_by_identity(
     Ok(first_updated)
 }
 
+pub async fn get_music_loudness_by_identity(
+    url: &str,
+    start_ms: u32,
+    end_ms: u32,
+) -> Result<Option<f32>> {
+    ensure_collection_graph_schema().await?;
+    let canonical_music_id = canonical_music_id_for_source(url, start_ms, end_ms);
+    canonical_music_id_loudness_evidence(&canonical_music_id).await
+}
+
 pub async fn is_music_identity_excluded_for_playback(
     url: &str,
     start_ms: u32,
@@ -1387,7 +1397,8 @@ pub async fn list_auto_update_collections() -> Result<Vec<Collection>> {
 pub async fn upsert_collection(collection: &Collection) -> Result<Collection> {
     ensure_collection_graph_schema().await?;
 
-    let collection = bind_collection_groups(&inherit_canonical_liked_state(collection).await?);
+    let collection =
+        bind_collection_groups(&inherit_canonical_music_evidence(collection).await?);
     let existing_record =
         find_unique_record_id_by_string_field::<Collection>("url", &collection.url).await?;
     let record = existing_record
@@ -1440,15 +1451,17 @@ fn bind_collection_groups(collection: &Collection) -> Collection {
     collection
 }
 
-async fn inherit_canonical_liked_state(collection: &Collection) -> Result<Collection> {
+async fn inherit_canonical_music_evidence(collection: &Collection) -> Result<Collection> {
     let mut collection = collection.clone();
     for music in &mut collection.musics {
-        if music.liked {
-            continue;
-        }
-
-        if canonical_music_id_has_liked_record(&music.canonical_music_id).await? {
+        if !music.liked && canonical_music_id_has_liked_record(&music.canonical_music_id).await? {
             music.liked = true;
+        }
+        if music.loudness == 0.0
+            && let Some(loudness) =
+                canonical_music_id_loudness_evidence(&music.canonical_music_id).await?
+        {
+            music.loudness = loudness;
         }
     }
 
@@ -1481,6 +1494,20 @@ async fn canonical_music_id_has_liked_record(canonical_music_id: &str) -> Result
 
     let count: Option<i64> = result.take(0)?;
     Ok(count.unwrap_or(0) > 0)
+}
+
+async fn canonical_music_id_loudness_evidence(
+    canonical_music_id: &str,
+) -> Result<Option<f32>> {
+    let records = find_music_record_ids_by_canonical_id(canonical_music_id).await?;
+    for record in records {
+        let music = Music::get_record(record).await?;
+        if music.loudness != 0.0 && music.loudness.is_finite() {
+            return Ok(Some(music.loudness));
+        }
+    }
+
+    Ok(None)
 }
 
 /// Collection persistence owns its graph schema so callers never need to

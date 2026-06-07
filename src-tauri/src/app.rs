@@ -199,9 +199,9 @@ pub fn run() {
                     init_db_with_options(db_path, db_options).await?;
 
                     utils::window::configure_existing_primary_windows(&handle);
+                    domain::loudness_evidence::initialize_runtime(handle.clone());
                     domain::downloads::service::initialize_runtime(handle.clone());
                     domain::playlists::startup_bootstrap::initialize_runtime(handle.clone());
-                    domain::loudness_evidence::initialize_runtime(handle.clone());
                     domain::playlist_playback::service::initialize_runtime(handle.clone());
                     domain::player::service::initialize_runtime(handle.clone());
                     utils::binaries::spawn_binary_maintenance(
